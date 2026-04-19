@@ -1,13 +1,20 @@
 import { For, Show } from "solid-js"
 import { useTheme } from "../context/theme"
 import { useAgent } from "../context/agent"
+import { setScrollRef } from "../app"
+import type { ScrollBoxRenderable } from "@opentui/core"
 
 export function Conversation() {
   const { theme } = useTheme()
   const { store } = useAgent()
 
   return (
-    <scrollbox flexGrow={1}>
+    <scrollbox
+      ref={(r: ScrollBoxRenderable) => setScrollRef(r)}
+      stickyScroll={true}
+      stickyStart="bottom"
+      flexGrow={1}
+    >
       <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1} gap={1}>
         <Show when={store.messages.length === 0 && !store.isStreaming}>
           <text fg={theme.textMuted}>

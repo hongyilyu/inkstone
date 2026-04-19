@@ -13,6 +13,7 @@ export function Footer() {
       gap={2}
     >
       <text fg={theme.textMuted}>ctrl+c quit</text>
+      <text fg={theme.textMuted}>pgup/pgdn scroll</text>
       <text fg={theme.textMuted}>enter send</text>
     </box>
   )
