@@ -45,6 +45,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 
   createEffect(on(() => store.filter, () => {
     setStore("selected", 0)
+    if (scroll) scroll.scrollTo(0)
   }))
 
   function move(direction: number) {
@@ -52,7 +53,22 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     let next = store.selected + direction
     if (next < 0) next = filtered().length - 1
     if (next >= filtered().length) next = 0
+    moveTo(next)
+  }
+
+  function moveTo(next: number) {
     setStore("selected", next)
+    if (!scroll) return
+    // Each row is 1 line tall. Scroll so the selected row is visible.
+    const viewportHeight = scroll.height
+    const scrollTop = scroll.scrollTop
+    const itemTop = next
+    const itemBottom = next + 1
+    if (itemBottom > scrollTop + viewportHeight) {
+      scroll.scrollTo(itemBottom - viewportHeight)
+    } else if (itemTop < scrollTop) {
+      scroll.scrollTo(itemTop)
+    }
   }
 
   useKeyboard((evt: any) => {
@@ -60,8 +76,8 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     if (evt.name === "down") move(1)
     if (evt.name === "pageup") move(-10)
     if (evt.name === "pagedown") move(10)
-    if (evt.name === "home") setStore("selected", 0)
-    if (evt.name === "end") setStore("selected", filtered().length - 1)
+    if (evt.name === "home") moveTo(0)
+    if (evt.name === "end") moveTo(filtered().length - 1)
 
     if (evt.name === "return") {
       const option = filtered()[store.selected]
