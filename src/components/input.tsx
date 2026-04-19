@@ -2,7 +2,7 @@ import { createSignal, createEffect } from "solid-js"
 import { useTheme } from "../context/theme"
 import { useAgent } from "../context/agent"
 import { useDialog } from "../ui/dialog"
-import { toBottom } from "../app"
+import { toBottom, setInputRef } from "../app"
 
 export function Input() {
   const { theme } = useTheme()
@@ -54,7 +54,7 @@ export function Input() {
       paddingRight={1}
     >
       <input
-        ref={(r: any) => (inputRef = r)}
+        ref={(r: any) => { inputRef = r; setInputRef(r) }}
         value={text()}
         onInput={(v: string) => setText(v)}
         onSubmit={handleSubmit}

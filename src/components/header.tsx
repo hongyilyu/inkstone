@@ -1,5 +1,6 @@
 import { TextAttributes } from "@opentui/core"
 import { useTheme } from "../context/theme"
+import { refocusInput } from "../app"
 
 export function Header() {
   const { theme } = useTheme()
@@ -12,6 +13,7 @@ export function Header() {
       paddingRight={1}
       borderColor={theme.borderSubtle}
       border={["bottom"]}
+      onMouseUp={() => setTimeout(() => refocusInput(), 1)}
     >
       <text fg={theme.primary} attributes={TextAttributes.BOLD}>
         inkstone

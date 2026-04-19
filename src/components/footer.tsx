@@ -1,4 +1,5 @@
 import { useTheme } from "../context/theme"
+import { refocusInput } from "../app"
 
 export function Footer() {
   const { theme } = useTheme()
@@ -11,6 +12,7 @@ export function Footer() {
       borderColor={theme.borderSubtle}
       border={["top"]}
       gap={2}
+      onMouseUp={() => setTimeout(() => refocusInput(), 1)}
     >
       <text fg={theme.textMuted}>ctrl+c quit</text>
       <text fg={theme.textMuted}>pgup/pgdn scroll</text>

@@ -1,7 +1,7 @@
 import { For, Show } from "solid-js"
 import { useTheme } from "../context/theme"
 import { useAgent } from "../context/agent"
-import { setScrollRef } from "../app"
+import { setScrollRef, refocusInput } from "../app"
 import type { ScrollBoxRenderable } from "@opentui/core"
 
 export function Conversation() {
@@ -14,6 +14,10 @@ export function Conversation() {
       stickyScroll={true}
       stickyStart="bottom"
       flexGrow={1}
+      onMouseUp={() => {
+        // Prevent clicks in the conversation from stealing focus from input
+        setTimeout(() => refocusInput(), 1)
+      }}
     >
       <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1} gap={1}>
         <Show when={store.messages.length === 0 && !store.isStreaming}>

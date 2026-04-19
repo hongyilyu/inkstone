@@ -10,9 +10,20 @@ import { Input } from "./components/input"
 import type { ScrollBoxRenderable } from "@opentui/core"
 
 let scroll: ScrollBoxRenderable | null = null
+let inputRef: any = null
 
 export function setScrollRef(ref: ScrollBoxRenderable) {
   scroll = ref
+}
+
+export function setInputRef(ref: any) {
+  inputRef = ref
+}
+
+export function refocusInput() {
+  if (inputRef && !inputRef.isDestroyed && !inputRef.focused) {
+    inputRef.focus()
+  }
 }
 
 export function toBottom() {

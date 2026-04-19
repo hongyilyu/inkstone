@@ -5,6 +5,7 @@ import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core"
 import { createAgentActions, getAgent, setConfirmFn, type AgentActions } from "../agent"
 import { useDialog } from "../ui/dialog"
 import { DialogConfirm } from "../ui/dialog-confirm"
+import { toBottom } from "../app"
 
 interface AgentStoreState {
   messages: AgentMessage[]
@@ -45,6 +46,8 @@ export function AgentProvider(props: ParentProps) {
           setStore("isStreaming", true)
           setStore("status", "streaming")
           setStore("streamingText", "")
+          // Snap to bottom so streaming text appears at the end
+          toBottom()
           break
 
         case "message_update":
