@@ -89,6 +89,10 @@ export function getCurrentModelId(): string {
   return currentModelId
 }
 
+export function getCurrentModel(): Model<Api> {
+  return getModel("amazon-bedrock", currentModelId as any)
+}
+
 export function getActiveArticle(): string | null {
   return activeArticle
 }

@@ -19,12 +19,6 @@ export function Conversation() {
       }}
     >
       <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1} gap={1}>
-        <Show when={store.messages.length === 0}>
-          <text fg={theme.textMuted}>
-            Use /article filename.md to start reading an article.
-          </text>
-        </Show>
-
         <For each={store.messages}>
           {(msg) => (
             <Show when={msg.text}>

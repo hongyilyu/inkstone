@@ -1,5 +1,6 @@
 {
   "name": "inkstone",
+  "version": "0.1.0",
   "module": "src/index.tsx",
   "type": "module",
   "private": true,
@@ -24,6 +25,7 @@
     "babel-preset-solid": "1.9.9",
     "diff": "^9.0.0",
     "fuzzysort": "^3.1.0",
+    "remeda": "^2.33.7",
     "solid-js": "1.9.9"
   }
 }

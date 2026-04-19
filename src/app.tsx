@@ -1,3 +1,4 @@
+import { Show } from "solid-js"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { ThemeProvider } from "./context/theme"
 import { ToastProvider } from "./ui/toast"
@@ -6,7 +7,8 @@ import { AgentProvider, useAgent } from "./context/agent"
 import { Header } from "./components/header"
 import { Footer } from "./components/footer"
 import { Conversation } from "./components/conversation"
-import { Input } from "./components/input"
+import { Prompt } from "./components/prompt"
+import { OpenPage } from "./components/open-page"
 import { DialogModel } from "./components/dialog-model"
 import { getCurrentModelId } from "./agent"
 import type { ScrollBoxRenderable } from "@opentui/core"
@@ -38,7 +40,7 @@ export function toBottom() {
 function Layout() {
   const renderer = useRenderer()
   const dialog = useDialog()
-  const { actions } = useAgent()
+  const { actions, store } = useAgent()
 
   useKeyboard((evt: any) => {
     if (evt.ctrl && evt.name === "c") {
@@ -82,12 +84,14 @@ function Layout() {
   })
 
   return (
-    <box flexDirection="column" flexGrow={1}>
-      <Header />
-      <Conversation />
-      <Input />
-      <Footer />
-    </box>
+    <Show when={store.messages.length > 0} fallback={<OpenPage />}>
+      <box flexDirection="column" flexGrow={1}>
+        <Header />
+        <Conversation />
+        <Prompt />
+        <Footer />
+      </box>
+    </Show>
   )
 }
 

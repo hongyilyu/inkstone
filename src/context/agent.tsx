@@ -2,13 +2,26 @@ import { createContext, useContext, type ParentProps } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { batch } from "solid-js"
 import { type AgentEvent } from "@mariozechner/pi-agent-core"
-import { createAgentActions, getAgent, setConfirmFn, type AgentActions } from "../agent"
+import { createAgentActions, getAgent, getCurrentModel, setConfirmFn, type AgentActions } from "../agent"
 import { useDialog } from "../ui/dialog"
 import { DialogConfirm } from "../ui/dialog-confirm"
 import { toBottom } from "../app"
-import type { Model, Api } from "@mariozechner/pi-ai"
+import type { Model, Api, AssistantMessage, Provider } from "@mariozechner/pi-ai"
 import { saveSession, loadSession, clearSession as clearSessionFile } from "../persistence/session"
 import { getCurrentModelId } from "../agent"
+
+/** Map raw provider identifiers to display names */
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+  "amazon-bedrock": "Amazon Bedrock",
+  "anthropic": "Anthropic",
+  "openai": "OpenAI",
+  "google": "Google",
+  "google-vertex": "Google Vertex",
+}
+
+function formatProvider(provider: Provider): string {
+  return PROVIDER_DISPLAY_NAMES[provider] ?? provider
+}
 
 export interface DisplayMessage {
   id: string
@@ -21,7 +34,11 @@ interface AgentStoreState {
   isStreaming: boolean
   activeArticle: string | null
   modelName: string
+  modelProvider: string
+  contextWindow: number
   status: "idle" | "streaming" | "tool_executing"
+  totalTokens: number
+  totalCost: number
 }
 
 interface AgentContextValue {
@@ -44,12 +61,19 @@ export function AgentProvider(props: ParentProps) {
   // Restore previous session if available
   const saved = loadSession()
 
+  // Get initial model info
+  const initialModel = getCurrentModel()
+
   const [store, setStore] = createStore<AgentStoreState>({
     messages: saved?.messages ?? [],
     isStreaming: false,
     activeArticle: saved?.activeArticle ?? null,
-    modelName: "Claude Sonnet 4",
+    modelName: initialModel.name,
+    modelProvider: formatProvider(initialModel.provider),
+    contextWindow: initialModel.contextWindow,
     status: "idle",
+    totalTokens: 0,
+    totalCost: 0,
   })
 
   // Set message counter past any restored messages
@@ -80,6 +104,19 @@ export function AgentProvider(props: ParentProps) {
             setStore("messages", store.messages.length - 1, "text", (t) => t + delta)
           }
           break
+
+        case "message_end": {
+          // Accumulate token usage and cost from assistant messages
+          const msg = (event as any).message
+          if (msg && msg.role === "assistant") {
+            const usage = (msg as AssistantMessage).usage
+            if (usage) {
+              setStore("totalTokens", (t) => t + usage.totalTokens)
+              setStore("totalCost", (c) => c + usage.cost.total)
+            }
+          }
+          break
+        }
 
         case "tool_execution_start":
           setStore("status", "tool_executing")
@@ -116,11 +153,15 @@ export function AgentProvider(props: ParentProps) {
     setModel(model: Model<Api>) {
       actions.setModel(model)
       setStore("modelName", model.name)
+      setStore("modelProvider", formatProvider(model.provider))
+      setStore("contextWindow", model.contextWindow)
     },
     clearSession() {
       actions.clearSession()
       setStore("messages", [])
       setStore("activeArticle", null)
+      setStore("totalTokens", 0)
+      setStore("totalCost", 0)
       clearSessionFile()
       messageCounter = 0
     },

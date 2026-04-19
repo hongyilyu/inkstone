@@ -4,6 +4,10 @@ import { createStore } from "solid-js/store"
 import { useTheme } from "../context/theme"
 import { Renderable, RGBA } from "@opentui/core"
 
+/**
+ * Dialog wrapper component.
+ * Ported from OpenCode's ui/dialog.tsx
+ */
 export function Dialog(
   props: ParentProps<{
     size?: "medium" | "large" | "xlarge"
@@ -13,6 +17,7 @@ export function Dialog(
   const dimensions = useTerminalDimensions()
   const { theme } = useTheme()
 
+  let dismiss = false
   const width = () => {
     if (props.size === "xlarge") return 116
     if (props.size === "large") return 88
@@ -21,7 +26,16 @@ export function Dialog(
 
   return (
     <box
-      onMouseUp={() => props.onClose?.()}
+      onMouseDown={() => {
+        dismiss = false
+      }}
+      onMouseUp={() => {
+        if (dismiss) {
+          dismiss = false
+          return
+        }
+        props.onClose?.()
+      }}
       width={dimensions().width}
       height={dimensions().height}
       alignItems="center"
@@ -33,7 +47,10 @@ export function Dialog(
       backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
     >
       <box
-        onMouseUp={(e: any) => e.stopPropagation()}
+        onMouseUp={(e: any) => {
+          dismiss = false
+          e.stopPropagation()
+        }}
         width={width()}
         maxWidth={dimensions().width - 2}
         backgroundColor={theme.backgroundPanel}
@@ -56,12 +73,18 @@ function init() {
 
   const renderer = useRenderer()
 
-  useKeyboard((evt) => {
+  useKeyboard((evt: any) => {
     if (store.stack.length === 0) return
+    if (evt.defaultPrevented) return
     if (evt.name === "escape" || (evt.ctrl && evt.name === "c")) {
+      if (renderer.getSelection()) {
+        renderer.clearSelection()
+      }
       const current = store.stack.at(-1)!
       current.onClose?.()
       setStore("stack", store.stack.slice(0, -1))
+      evt.preventDefault()
+      evt.stopPropagation()
       refocus()
     }
   })
@@ -71,6 +94,15 @@ function init() {
     setTimeout(() => {
       if (!focus) return
       if (focus.isDestroyed) return
+      function find(item: Renderable): boolean {
+        for (const child of item.getChildren()) {
+          if (child === focus) return true
+          if (find(child)) return true
+        }
+        return false
+      }
+      const found = find(renderer.root)
+      if (!found) return
       focus.focus()
     }, 1)
   }

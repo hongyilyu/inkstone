@@ -19,7 +19,7 @@ export function DialogModel(props: {
     return models.map((m) => ({
       title: m.name,
       value: { id: m.id, provider: m.provider },
-      description: m.id,
+      description: m.provider,
     }))
   })
 
