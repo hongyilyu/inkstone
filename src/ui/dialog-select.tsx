@@ -32,7 +32,19 @@ function truncate(str: string, max: number): string {
 
 /**
  * Fuzzy-searchable select dialog.
- * Ported from OpenCode's ui/dialog-select.tsx
+ * Ported from OpenCode's ui/dialog-select.tsx (minimal slice).
+ *
+ * TODO: Port remaining upstream features from opencode/src/cli/cmd/tui/ui/dialog-select.tsx:
+ * - Grouped categories (groupBy category key, categoryView rendering)
+ * - skipFilter option to disable filtering
+ * - Per-option keybind actions (keybind[] prop with footer display)
+ * - selectedForeground() for contrast-aware highlight text
+ * - Scroll acceleration (getScrollAcceleration util)
+ * - Disabled items (disabled flag + dimmed rendering)
+ * - footer / gutter / margin slots per option
+ * - DialogSelectRef for external control (moveTo, getSelected)
+ * - onMove / onFilter callbacks
+ * - flat mode toggle
  */
 export function DialogSelect<T>(props: DialogSelectProps<T>) {
   const dialog = useDialog()

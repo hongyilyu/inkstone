@@ -3,7 +3,16 @@ import { RGBA } from "@opentui/core"
 
 /**
  * Theme color tokens.
- * Matches OpenCode's TuiThemeCurrent shape.
+ * Matches OpenCode's TuiThemeCurrent shape (partial port).
+ *
+ * TODO: Port full upstream theme support from opencode/src/cli/cmd/tui/context/theme.tsx:
+ * - Light/system color mode detection and switching
+ * - Theme registry with multiple built-in themes (aura, catppuccin, dracula, etc.)
+ * - Custom theme loading from user config directory
+ * - Syntax highlighting / diff colors
+ * - selectedForeground() helper for contrast-aware text on colored backgrounds
+ * - thinkingOpacity token
+ * - Per-theme terminal color overrides (TerminalColors)
  */
 export interface ThemeColors {
   primary: RGBA

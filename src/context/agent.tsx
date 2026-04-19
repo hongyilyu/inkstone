@@ -8,7 +8,6 @@ import { DialogConfirm } from "../ui/dialog-confirm"
 import { toBottom } from "../app"
 import type { Model, Api, AssistantMessage, Provider } from "@mariozechner/pi-ai"
 import { saveSession, loadSession, clearSession as clearSessionFile } from "../persistence/session"
-import { getCurrentModelId } from "../agent"
 
 /** Map raw provider identifiers to display names */
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
@@ -128,7 +127,6 @@ export function AgentProvider(props: ParentProps) {
           // Persist session after each turn
           saveSession({
             messages: [...store.messages],
-            modelId: getCurrentModelId(),
             activeArticle: store.activeArticle,
           })
           break
@@ -168,6 +166,12 @@ export function AgentProvider(props: ParentProps) {
   }
 
   const value: AgentContextValue = { store, actions: wrappedActions }
+
+  // Reactivate article-specific system prompt / guard in the agent runtime
+  // if a previous session had an active article.
+  if (saved?.activeArticle) {
+    actions.loadArticle(saved.activeArticle)
+  }
 
   return <ctx.Provider value={value}>{props.children}</ctx.Provider>
 }

@@ -10,7 +10,6 @@ const SESSION_FILE = join(STATE_DIR, "session.json")
 
 interface SessionData {
   messages: DisplayMessage[]
-  modelId: string
   activeArticle: string | null
 }
 

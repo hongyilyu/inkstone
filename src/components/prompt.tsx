@@ -176,19 +176,16 @@ export function Prompt() {
         </Show>
 
         {/* Right side: usage stats or keybind hints */}
-        {/* Matches OpenCode prompt/index.tsx:1333-1361 */}
+        {/* TODO: Implement proper keybind system with tab-based agent/command selection.
+           Upstream reference: opencode/src/cli/cmd/tui/component/prompt/index.tsx:1333-1361
+           Currently only ctrl+p (model selection) is bound in src/app.tsx:55. */}
         <box gap={2} flexDirection="row">
-          <Show when={usageText()} fallback={
-            <box flexDirection="row">
-              <text fg={theme.text} attributes={TextAttributes.BOLD}>tab </text>
-              <text fg={theme.textMuted}>agents</text>
-            </box>
-          }>
+          <Show when={usageText()}>
             <text fg={theme.textMuted}>{usageText()}</text>
           </Show>
           <box flexDirection="row">
             <text fg={theme.text} attributes={TextAttributes.BOLD}>ctrl+p </text>
-            <text fg={theme.textMuted}>commands</text>
+            <text fg={theme.textMuted}>model</text>
           </box>
         </box>
       </box>

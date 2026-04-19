@@ -4,9 +4,16 @@ import { VAULT_DIR } from "../agent/constants"
 import pkg from "../../package.json"
 
 /**
- * Footer bar shown in the session (conversation) view.
- * Displays vault directory path (left) and version (right).
- * Matches OpenCode's feature-plugins/home/footer.tsx pattern.
+ * Session footer bar.
+ * Modeled after OpenCode's routes/session/footer.tsx:
+ * left = context path, right = status indicators (extensible via gap row).
+ *
+ * Intentionally omitted upstream right-side indicators (not applicable to inkstone):
+ * - LSP connection count (no LSP integration)
+ * - MCP server status (no MCP servers)
+ * - Permission warnings (no permission system)
+ * - /status command hint (no slash commands yet)
+ * - "Get started /connect" welcome ticker (no connect flow)
  */
 export function Footer() {
   const { theme } = useTheme()
@@ -17,6 +24,9 @@ export function Footer() {
   return (
     <box
       flexDirection="row"
+      justifyContent="space-between"
+      gap={1}
+      flexShrink={0}
       paddingLeft={1}
       paddingRight={1}
       borderColor={theme.borderSubtle}
@@ -24,8 +34,7 @@ export function Footer() {
       onMouseUp={() => setTimeout(() => refocusInput(), 1)}
     >
       <text fg={theme.textMuted}>{vaultDisplay}</text>
-      <box flexGrow={1} />
-      <box flexShrink={0}>
+      <box gap={2} flexDirection="row" flexShrink={0}>
         <text fg={theme.textMuted}>{pkg.version}</text>
       </box>
     </box>

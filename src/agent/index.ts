@@ -8,6 +8,7 @@ import { editFileTool } from "./tools/edit-file"
 import { writeFileTool } from "./tools/write-file"
 import { quoteArticleTool, setActiveArticle } from "./tools/quote-article"
 import { beforeToolCall, setConfirmFn } from "./guard"
+import { loadConfig, saveConfig } from "../persistence/config"
 
 export interface AgentActions {
   prompt(text: string): Promise<void>
@@ -17,9 +18,11 @@ export interface AgentActions {
   clearSession(): void
 }
 
+const DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+
 let agent: Agent | null = null
 let activeArticle: string | null = null
-let currentModelId: string = "us.anthropic.claude-sonnet-4-20250514-v1:0"
+let currentModelId: string = loadConfig().modelId ?? DEFAULT_MODEL_ID
 
 const tools = [readFileTool, editFileTool, writeFileTool, quoteArticleTool]
 
@@ -28,7 +31,7 @@ export function getAgent(): Agent {
     agent = new Agent({
       initialState: {
         systemPrompt: buildSystemPrompt(null),
-        model: getModel("amazon-bedrock", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
+        model: getModel("amazon-bedrock", currentModelId as any),
         thinkingLevel: "off",
         tools,
       },
@@ -75,6 +78,7 @@ export function createAgentActions(
     setModel(model: Model<Api>) {
       a.state.model = model
       currentModelId = model.id
+      saveConfig({ modelId: model.id })
     },
     clearSession() {
       a.state.messages = []

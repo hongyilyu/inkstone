@@ -1,7 +1,7 @@
 import { Show } from "solid-js"
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { ThemeProvider } from "./context/theme"
-import { ToastProvider } from "./ui/toast"
+import { Toast, ToastProvider } from "./ui/toast"
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { AgentProvider, useAgent } from "./context/agent"
 import { Header } from "./components/header"
@@ -84,14 +84,17 @@ function Layout() {
   })
 
   return (
-    <Show when={store.messages.length > 0} fallback={<OpenPage />}>
-      <box flexDirection="column" flexGrow={1}>
-        <Header />
-        <Conversation />
-        <Prompt />
-        <Footer />
-      </box>
-    </Show>
+    <>
+      <Show when={store.messages.length > 0} fallback={<OpenPage />}>
+        <box flexDirection="column" flexGrow={1}>
+          <Header />
+          <Conversation />
+          <Prompt />
+          <Footer />
+        </box>
+      </Show>
+      <Toast />
+    </>
   )
 }
 
