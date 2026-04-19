@@ -59,15 +59,14 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
   function moveTo(next: number) {
     setStore("selected", next)
     if (!scroll) return
-    // Each row is 1 line tall. Scroll so the selected row is visible.
-    const viewportHeight = scroll.height
-    const scrollTop = scroll.scrollTop
-    const itemTop = next
-    const itemBottom = next + 1
-    if (itemBottom > scrollTop + viewportHeight) {
-      scroll.scrollTo(itemBottom - viewportHeight)
-    } else if (itemTop < scrollTop) {
-      scroll.scrollTo(itemTop)
+    // Find the child element and scroll it into view (OpenCode pattern)
+    const target = scroll.getChildren().find((child) => child.id === `sel-${next}`)
+    if (!target) return
+    const y = target.y - scroll.y
+    if (y < 0) {
+      scroll.scrollBy(y)
+    } else if (y + target.height > scroll.height) {
+      scroll.scrollBy(y + target.height - scroll.height)
     }
   }
 
@@ -138,6 +137,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
               const active = () => index() === store.selected
               return (
                 <box
+                  id={`sel-${index()}`}
                   flexDirection="row"
                   backgroundColor={active() ? theme.primary : RGBA.fromInts(0, 0, 0, 0)}
                   paddingLeft={2}
