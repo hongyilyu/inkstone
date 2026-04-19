@@ -7,6 +7,8 @@ import { useDialog } from "../ui/dialog"
 import { DialogConfirm } from "../ui/dialog-confirm"
 import { toBottom } from "../app"
 import type { Model, Api } from "@mariozechner/pi-ai"
+import { saveSession, loadSession, clearSession as clearSessionFile } from "../persistence/session"
+import { getCurrentModelId } from "../agent"
 
 export interface DisplayMessage {
   id: string
@@ -39,13 +41,21 @@ export function AgentProvider(props: ParentProps) {
     return result === true
   })
 
+  // Restore previous session if available
+  const saved = loadSession()
+
   const [store, setStore] = createStore<AgentStoreState>({
-    messages: [],
+    messages: saved?.messages ?? [],
     isStreaming: false,
-    activeArticle: null,
+    activeArticle: saved?.activeArticle ?? null,
     modelName: "Claude Sonnet 4",
     status: "idle",
   })
+
+  // Set message counter past any restored messages
+  if (saved?.messages) {
+    messageCounter = saved.messages.length
+  }
 
   const actions = createAgentActions((event: AgentEvent) => {
     batch(() => {
@@ -78,6 +88,12 @@ export function AgentProvider(props: ParentProps) {
         case "agent_end":
           setStore("isStreaming", false)
           setStore("status", "idle")
+          // Persist session after each turn
+          saveSession({
+            messages: [...store.messages],
+            modelId: getCurrentModelId(),
+            activeArticle: store.activeArticle,
+          })
           break
       }
     })
@@ -100,6 +116,13 @@ export function AgentProvider(props: ParentProps) {
     setModel(model: Model<Api>) {
       actions.setModel(model)
       setStore("modelName", model.name)
+    },
+    clearSession() {
+      actions.clearSession()
+      setStore("messages", [])
+      setStore("activeArticle", null)
+      clearSessionFile()
+      messageCounter = 0
     },
   }
 

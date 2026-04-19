@@ -29,6 +29,13 @@ export function Input() {
     if (!value) return
     if (store.isStreaming) return
 
+    // Handle /clear command
+    if (value === "/clear") {
+      actions.clearSession()
+      setText("")
+      return
+    }
+
     // Handle /article command
     if (value.startsWith("/article ")) {
       const articleId = value.slice("/article ".length).trim()

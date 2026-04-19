@@ -14,6 +14,7 @@ export interface AgentActions {
   abort(): void
   loadArticle(articleId: string): void
   setModel(model: Model<Api>): void
+  clearSession(): void
 }
 
 let agent: Agent | null = null
@@ -74,6 +75,12 @@ export function createAgentActions(
     setModel(model: Model<Api>) {
       a.state.model = model
       currentModelId = model.id
+    },
+    clearSession() {
+      a.state.messages = []
+      activeArticle = null
+      setActiveArticle(null)
+      a.state.systemPrompt = buildSystemPrompt(null)
     },
   }
 }
