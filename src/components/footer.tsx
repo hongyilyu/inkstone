@@ -15,6 +15,7 @@ export function Footer() {
       onMouseUp={() => setTimeout(() => refocusInput(), 1)}
     >
       <text fg={theme.textMuted}>ctrl+c quit</text>
+      <text fg={theme.textMuted}>ctrl+m model</text>
       <text fg={theme.textMuted}>pgup/pgdn scroll</text>
       <text fg={theme.textMuted}>enter send</text>
     </box>

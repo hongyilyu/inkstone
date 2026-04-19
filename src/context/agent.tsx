@@ -6,6 +6,7 @@ import { createAgentActions, getAgent, setConfirmFn, type AgentActions } from ".
 import { useDialog } from "../ui/dialog"
 import { DialogConfirm } from "../ui/dialog-confirm"
 import { toBottom } from "../app"
+import type { Model, Api } from "@mariozechner/pi-ai"
 
 export interface DisplayMessage {
   id: string
@@ -17,6 +18,7 @@ interface AgentStoreState {
   messages: DisplayMessage[]
   isStreaming: boolean
   activeArticle: string | null
+  modelName: string
   status: "idle" | "streaming" | "tool_executing"
 }
 
@@ -41,6 +43,7 @@ export function AgentProvider(props: ParentProps) {
     messages: [],
     isStreaming: false,
     activeArticle: null,
+    modelName: "Claude Sonnet 4",
     status: "idle",
   })
 
@@ -93,6 +96,10 @@ export function AgentProvider(props: ParentProps) {
     loadArticle(articleId: string) {
       actions.loadArticle(articleId)
       setStore("activeArticle", articleId)
+    },
+    setModel(model: Model<Api>) {
+      actions.setModel(model)
+      setStore("modelName", model.name)
     },
   }
 

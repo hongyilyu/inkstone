@@ -1,5 +1,5 @@
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core"
-import { getModel } from "@mariozechner/pi-ai"
+import { getModel, type Model, type Api } from "@mariozechner/pi-ai"
 import { resolve } from "path"
 import { buildSystemPrompt } from "./prompt"
 import { ARTICLES_DIR } from "./constants"
@@ -13,10 +13,12 @@ export interface AgentActions {
   prompt(text: string): Promise<void>
   abort(): void
   loadArticle(articleId: string): void
+  setModel(model: Model<Api>): void
 }
 
 let agent: Agent | null = null
 let activeArticle: string | null = null
+let currentModelId: string = "us.anthropic.claude-sonnet-4-20250514-v1:0"
 
 const tools = [readFileTool, editFileTool, writeFileTool, quoteArticleTool]
 
@@ -69,7 +71,15 @@ export function createAgentActions(
       setActiveArticle(articleId)
       a.state.systemPrompt = buildSystemPrompt(articleId)
     },
+    setModel(model: Model<Api>) {
+      a.state.model = model
+      currentModelId = model.id
+    },
   }
+}
+
+export function getCurrentModelId(): string {
+  return currentModelId
 }
 
 export function getActiveArticle(): string | null {

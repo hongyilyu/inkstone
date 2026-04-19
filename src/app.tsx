@@ -1,12 +1,14 @@
 import { useKeyboard, useRenderer } from "@opentui/solid"
 import { ThemeProvider } from "./context/theme"
 import { ToastProvider } from "./ui/toast"
-import { DialogProvider } from "./ui/dialog"
-import { AgentProvider } from "./context/agent"
+import { DialogProvider, useDialog } from "./ui/dialog"
+import { AgentProvider, useAgent } from "./context/agent"
 import { Header } from "./components/header"
 import { Footer } from "./components/footer"
 import { Conversation } from "./components/conversation"
 import { Input } from "./components/input"
+import { DialogModel } from "./components/dialog-model"
+import { getCurrentModelId } from "./agent"
 import type { ScrollBoxRenderable } from "@opentui/core"
 
 let scroll: ScrollBoxRenderable | null = null
@@ -35,10 +37,21 @@ export function toBottom() {
 
 function Layout() {
   const renderer = useRenderer()
+  const dialog = useDialog()
+  const { actions } = useAgent()
 
   useKeyboard((evt: any) => {
     if (evt.ctrl && evt.name === "c") {
       renderer.destroy()
+      return
+    }
+
+    // Ctrl+M opens model selection
+    if (evt.ctrl && evt.name === "m") {
+      DialogModel.show(dialog, getCurrentModelId(), (model) => {
+        actions.setModel(model)
+        dialog.clear()
+      })
       return
     }
 

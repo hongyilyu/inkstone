@@ -1,9 +1,11 @@
 import { TextAttributes } from "@opentui/core"
 import { useTheme } from "../context/theme"
 import { refocusInput } from "../app"
+import { useAgent } from "../context/agent"
 
 export function Header() {
   const { theme } = useTheme()
+  const { store } = useAgent()
 
   return (
     <box
@@ -19,7 +21,7 @@ export function Header() {
         inkstone
       </text>
       <text fg={theme.textMuted}>
-        article-reader
+        {store.modelName} (ctrl+m)
       </text>
     </box>
   )
