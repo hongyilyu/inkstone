@@ -1,8 +1,10 @@
 import { createContext, useContext, type ParentProps } from "solid-js"
-import { createStore, produce } from "solid-js/store"
+import { createStore } from "solid-js/store"
 import { batch } from "solid-js"
 import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core"
-import { createAgentActions, getAgent, type AgentActions } from "../agent"
+import { createAgentActions, getAgent, setConfirmFn, type AgentActions } from "../agent"
+import { useDialog } from "../ui/dialog"
+import { DialogConfirm } from "../ui/dialog-confirm"
 
 interface AgentStoreState {
   messages: AgentMessage[]
@@ -20,6 +22,14 @@ interface AgentContextValue {
 const ctx = createContext<AgentContextValue>()
 
 export function AgentProvider(props: ParentProps) {
+  const dialog = useDialog()
+
+  // Inject dialog-based confirm into the guard
+  setConfirmFn(async (title, message) => {
+    const result = await DialogConfirm.show(dialog, title, message)
+    return result === true
+  })
+
   const [store, setStore] = createStore<AgentStoreState>({
     messages: [],
     streamingText: "",

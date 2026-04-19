@@ -19,14 +19,19 @@
   - components/header.tsx, footer.tsx, conversation.tsx, input.tsx
   - app.tsx (provider stack + layout)
   - Verified: `bun run dev` renders themed shell with working input
+- [x] Phase 2: Agent integration
+  - Bedrock streaming verified with live API call
+  - Messages render in conversation view
+  - System prompt active (reading workflow)
+- [x] Phase 3: File tools + guard + /article command
+  - read_file, edit_file (with diff), write_file tools (VAULT_DIR scoped)
+  - quote_article tool (paragraph search)
+  - beforeToolCall guard (frontmatter protection + notes/scraps confirm dialog)
+  - /article command wires system prompt + triggers Stage 1
 
 ## In Progress
 
-- [ ] Phase 2: Agent integration — verify with actual Bedrock API call
-  - Agent context and prompt wired
-  - Input sends to agent.prompt()
-  - Streaming text updates conversation view
-  - Needs: AWS credentials + live API test
+- [ ] Phase 4: Model selection dialog (Bedrock)
 
 ## Upcoming
 

@@ -1,6 +1,13 @@
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core"
 import { getModel } from "@mariozechner/pi-ai"
+import { resolve } from "path"
 import { buildSystemPrompt } from "./prompt"
+import { ARTICLES_DIR } from "./constants"
+import { readFileTool } from "./tools/read-file"
+import { editFileTool } from "./tools/edit-file"
+import { writeFileTool } from "./tools/write-file"
+import { quoteArticleTool, setActiveArticle } from "./tools/quote-article"
+import { beforeToolCall, setConfirmFn } from "./guard"
 
 export interface AgentActions {
   prompt(text: string): Promise<void>
@@ -8,16 +15,10 @@ export interface AgentActions {
   loadArticle(articleId: string): void
 }
 
-export interface AgentState {
-  messages: AgentMessage[]
-  streamingText: string
-  isStreaming: boolean
-  activeArticle: string | null
-  status: "idle" | "streaming" | "tool_executing"
-}
-
 let agent: Agent | null = null
 let activeArticle: string | null = null
+
+const tools = [readFileTool, editFileTool, writeFileTool, quoteArticleTool]
 
 export function getAgent(): Agent {
   if (!agent) {
@@ -26,7 +27,21 @@ export function getAgent(): Agent {
         systemPrompt: buildSystemPrompt(null),
         model: getModel("amazon-bedrock", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
         thinkingLevel: "off",
-        tools: [],
+        tools,
+      },
+      getApiKey: async (provider) => {
+        if (provider === "amazon-bedrock") {
+          return process.env.AWS_BEARER_TOKEN_BEDROCK
+        }
+        return undefined
+      },
+      beforeToolCall: async (ctx) => {
+        // Inject article path into context for the guard
+        const args = ctx.args as Record<string, any>
+        if (activeArticle) {
+          args._articlePath = resolve(ARTICLES_DIR, activeArticle)
+        }
+        return beforeToolCall(ctx)
       },
     })
   }
@@ -51,6 +66,7 @@ export function createAgentActions(
     },
     loadArticle(articleId: string) {
       activeArticle = articleId
+      setActiveArticle(articleId)
       a.state.systemPrompt = buildSystemPrompt(articleId)
     },
   }
@@ -59,3 +75,5 @@ export function createAgentActions(
 export function getActiveArticle(): string | null {
   return activeArticle
 }
+
+export { setConfirmFn }
