@@ -43,6 +43,9 @@ function Layout() {
   useKeyboard((evt: any) => {
     if (evt.ctrl && evt.name === "c") {
       renderer.destroy()
+      // renderer.destroy() restores terminal state; exit the process
+      // since pi-agent-core keeps handles alive
+      setTimeout(() => process.exit(0), 100)
       return
     }
 
