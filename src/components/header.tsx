@@ -21,7 +21,7 @@ export function Header() {
         inkstone
       </text>
       <text fg={theme.textMuted}>
-        {store.modelName} (ctrl+m)
+        {store.modelName} (ctrl+p)
       </text>
     </box>
   )

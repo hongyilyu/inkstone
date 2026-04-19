@@ -46,8 +46,10 @@ function Layout() {
       return
     }
 
-    // Ctrl+M opens model selection
-    if (evt.ctrl && evt.name === "m") {
+    // Ctrl+P opens model selection
+    if (evt.ctrl && evt.name === "p") {
+      evt.preventDefault()
+      evt.stopPropagation()
       DialogModel.show(dialog, getCurrentModelId(), (model) => {
         actions.setModel(model)
         dialog.clear()
