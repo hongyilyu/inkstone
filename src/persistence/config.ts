@@ -9,6 +9,7 @@ const CONFIG_FILE = join(CONFIG_DIR, "config.json")
 
 interface Config {
   modelId?: string
+  themeId?: string
 }
 
 let cached: Config | null = null

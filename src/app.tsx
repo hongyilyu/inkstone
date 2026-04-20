@@ -1,6 +1,6 @@
 import { Show } from "solid-js"
 import { useKeyboard, useRenderer } from "@opentui/solid"
-import { ThemeProvider } from "./context/theme"
+import { ThemeProvider, useTheme } from "./context/theme"
 import { Toast, ToastProvider } from "./ui/toast"
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { AgentProvider, useAgent } from "./context/agent"
@@ -9,8 +9,7 @@ import { Footer } from "./components/footer"
 import { Conversation } from "./components/conversation"
 import { Prompt } from "./components/prompt"
 import { OpenPage } from "./components/open-page"
-import { DialogModel } from "./components/dialog-model"
-import { getCurrentModelId } from "./agent"
+import { DialogCommand } from "./components/dialog-command"
 import type { ScrollBoxRenderable } from "@opentui/core"
 
 let scroll: ScrollBoxRenderable | null = null
@@ -41,6 +40,7 @@ function Layout() {
   const renderer = useRenderer()
   const dialog = useDialog()
   const { actions, store } = useAgent()
+  const { theme } = useTheme()
 
   useKeyboard((evt: any) => {
     if (evt.ctrl && evt.name === "c") {
@@ -51,14 +51,11 @@ function Layout() {
       return
     }
 
-    // Ctrl+P opens model selection
+    // Ctrl+P opens command panel
     if (evt.ctrl && evt.name === "p") {
       evt.preventDefault()
       evt.stopPropagation()
-      DialogModel.show(dialog, getCurrentModelId(), (model) => {
-        actions.setModel(model)
-        dialog.clear()
-      })
+      DialogCommand.show(dialog, actions)
       return
     }
 
@@ -86,7 +83,7 @@ function Layout() {
   return (
     <>
       <Show when={store.messages.length > 0} fallback={<OpenPage />}>
-        <box flexDirection="column" flexGrow={1}>
+        <box flexDirection="column" flexGrow={1} backgroundColor={theme.background}>
           <Header />
           <Conversation />
           <Prompt />

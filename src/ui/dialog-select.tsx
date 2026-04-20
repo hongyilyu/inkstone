@@ -1,4 +1,4 @@
-import { InputRenderable, RGBA, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
+import { InputRenderable, ScrollBoxRenderable, TextAttributes } from "@opentui/core"
 import { useTheme } from "../context/theme"
 import { useDialog } from "./dialog"
 import { batch, createEffect, createMemo, For, Show, on } from "solid-js"
@@ -20,6 +20,7 @@ export interface DialogSelectProps<T> {
   options: DialogSelectOption<T>[]
   onSelect?: (option: DialogSelectOption<T>) => void
   current?: T
+  closeOnSelect?: boolean
 }
 
 /**
@@ -160,7 +161,9 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
         evt.preventDefault()
         evt.stopPropagation()
         props.onSelect?.(option)
-        dialog.clear()
+        if (props.closeOnSelect !== false) {
+          dialog.clear()
+        }
       }
     }
   })
@@ -185,9 +188,11 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                 setStore("filter", e)
               })
             }}
+            backgroundColor={theme.backgroundPanel}
             focusedBackgroundColor={theme.backgroundPanel}
+            textColor={theme.text}
             cursorColor={theme.primary}
-            focusedTextColor={theme.textMuted}
+            focusedTextColor={theme.text}
             ref={(r: InputRenderable) => {
               input = r
               setTimeout(() => {
@@ -230,7 +235,9 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                   }}
                   onMouseUp={() => {
                     props.onSelect?.(option)
-                    dialog.clear()
+                    if (props.closeOnSelect !== false) {
+                      dialog.clear()
+                    }
                   }}
                   onMouseOver={() => {
                     if (store.input !== "mouse") return
@@ -243,7 +250,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                     if (index === -1) return
                     moveTo(index)
                   }}
-                  backgroundColor={active() ? theme.primary : RGBA.fromInts(0, 0, 0, 0)}
+                  backgroundColor={active() ? theme.primary : theme.backgroundPanel}
                   paddingLeft={current() ? 1 : 3}
                   paddingRight={3}
                   gap={1}

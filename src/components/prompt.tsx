@@ -115,15 +115,13 @@ export function Prompt() {
     return parts.join(" · ")
   })
 
-  const agentColor = theme.secondary
-
   return (
     <box>
       {/* Main input area with left border accent */}
       {/* Matches OpenCode prompt/index.tsx:974-981 */}
       <box
         border={["left"]}
-        borderColor={agentColor}
+        borderColor={theme.secondary}
         customBorderChars={{
           ...EmptyBorder,
           vertical: "┃",
@@ -146,14 +144,16 @@ export function Prompt() {
             placeholder={store.isStreaming ? "Waiting for response..." : "Type a message or /article <filename>..."}
             focused
             backgroundColor={theme.backgroundElement}
+            focusedBackgroundColor={theme.backgroundElement}
             textColor={theme.text}
+            focusedTextColor={theme.text}
             cursorColor={store.isStreaming ? theme.backgroundElement : theme.primary}
             placeholderColor={theme.textMuted}
           />
           {/* Agent / Model metadata row */}
           {/* Matches OpenCode prompt/index.tsx:1186-1223 */}
           <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1}>
-            <text fg={agentColor}>Reader</text>
+            <text fg={theme.secondary}>Reader</text>
             <text fg={theme.textMuted}>·</text>
             <text fg={theme.text}>{store.modelName}</text>
             <text fg={theme.textMuted}>{store.modelProvider}</text>
@@ -176,16 +176,13 @@ export function Prompt() {
         </Show>
 
         {/* Right side: usage stats or keybind hints */}
-        {/* TODO: Implement proper keybind system with tab-based agent/command selection.
-           Upstream reference: opencode/src/cli/cmd/tui/component/prompt/index.tsx:1333-1361
-           Currently only ctrl+p (model selection) is bound in src/app.tsx:55. */}
         <box gap={2} flexDirection="row">
           <Show when={usageText()}>
             <text fg={theme.textMuted}>{usageText()}</text>
           </Show>
           <box flexDirection="row">
             <text fg={theme.text} attributes={TextAttributes.BOLD}>ctrl+p </text>
-            <text fg={theme.textMuted}>model</text>
+            <text fg={theme.textMuted}>commands</text>
           </box>
         </box>
       </box>

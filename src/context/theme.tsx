@@ -1,19 +1,8 @@
-import { createContext, useContext, type ParentProps } from "solid-js"
+import { batch, createContext, createEffect, createSignal, on, useContext, type ParentProps } from "solid-js"
+import { createStore } from "solid-js/store"
 import { RGBA } from "@opentui/core"
+import { loadConfig, saveConfig } from "../persistence/config"
 
-/**
- * Theme color tokens.
- * Matches OpenCode's TuiThemeCurrent shape (partial port).
- *
- * TODO: Port full upstream theme support from opencode/src/cli/cmd/tui/context/theme.tsx:
- * - Light/system color mode detection and switching
- * - Theme registry with multiple built-in themes (aura, catppuccin, dracula, etc.)
- * - Custom theme loading from user config directory
- * - Syntax highlighting / diff colors
- * - selectedForeground() helper for contrast-aware text on colored backgrounds
- * - thinkingOpacity token
- * - Per-theme terminal color overrides (TerminalColors)
- */
 export interface ThemeColors {
   primary: RGBA
   secondary: RGBA
@@ -34,12 +23,17 @@ export interface ThemeColors {
   borderSubtle: RGBA
 }
 
+export interface ThemeDef {
+  id: string
+  name: string
+  colors: ThemeColors
+}
+
 function hex(color: string): RGBA {
   return RGBA.fromHex(color)
 }
 
-/** OpenCode "opencode" theme — dark mode */
-const DARK_THEME: ThemeColors = {
+const DARK: ThemeColors = {
   primary: hex("#fab283"),
   secondary: hex("#5c9cf5"),
   accent: hex("#9d7cd8"),
@@ -59,14 +53,112 @@ const DARK_THEME: ThemeColors = {
   borderSubtle: hex("#3c3c3c"),
 }
 
+const LIGHT: ThemeColors = {
+  primary: hex("#d75f00"),
+  secondary: hex("#0550ae"),
+  accent: hex("#8250df"),
+  error: hex("#cf222e"),
+  warning: hex("#bf8700"),
+  success: hex("#1a7f37"),
+  info: hex("#0969da"),
+  text: hex("#1f2328"),
+  textMuted: hex("#656d76"),
+  selectedListItemText: hex("#ffffff"),
+  background: hex("#ffffff"),
+  backgroundPanel: hex("#f6f8fa"),
+  backgroundElement: hex("#eaeef2"),
+  backgroundMenu: hex("#eaeef2"),
+  border: hex("#d0d7de"),
+  borderActive: hex("#0969da"),
+  borderSubtle: hex("#d8dee4"),
+}
+
+const CATPPUCCIN_MOCHA: ThemeColors = {
+  primary: hex("#89b4fa"),
+  secondary: hex("#cba6f7"),
+  accent: hex("#f5c2e7"),
+  error: hex("#f38ba8"),
+  warning: hex("#f9e2af"),
+  success: hex("#a6e3a1"),
+  info: hex("#94e2d5"),
+  text: hex("#cdd6f4"),
+  textMuted: hex("#9399b2"),
+  selectedListItemText: hex("#1e1e2e"),
+  background: hex("#1e1e2e"),
+  backgroundPanel: hex("#181825"),
+  backgroundElement: hex("#11111b"),
+  backgroundMenu: hex("#11111b"),
+  border: hex("#313244"),
+  borderActive: hex("#45475a"),
+  borderSubtle: hex("#585b70"),
+}
+
+const DRACULA: ThemeColors = {
+  primary: hex("#bd93f9"),
+  secondary: hex("#ff79c6"),
+  accent: hex("#8be9fd"),
+  error: hex("#ff5555"),
+  warning: hex("#f1fa8c"),
+  success: hex("#50fa7b"),
+  info: hex("#ffb86c"),
+  text: hex("#f8f8f2"),
+  textMuted: hex("#6272a4"),
+  selectedListItemText: hex("#282a36"),
+  background: hex("#282a36"),
+  backgroundPanel: hex("#21222c"),
+  backgroundElement: hex("#44475a"),
+  backgroundMenu: hex("#44475a"),
+  border: hex("#44475a"),
+  borderActive: hex("#bd93f9"),
+  borderSubtle: hex("#191a21"),
+}
+
+export const themes: ThemeDef[] = [
+  { id: "dark", name: "Dark", colors: DARK },
+  { id: "light", name: "Light", colors: LIGHT },
+  { id: "catppuccin-mocha", name: "Catppuccin Mocha", colors: CATPPUCCIN_MOCHA },
+  { id: "dracula", name: "Dracula", colors: DRACULA },
+]
+
+export function getThemeById(id: string): ThemeDef {
+  const found = themes.find((t) => t.id === id)
+  if (found) return found
+  return themes[0] as ThemeDef
+}
+
 interface ThemeContext {
   theme: ThemeColors
+  themeId: () => string
+  setTheme: (id: string) => void
 }
 
 const ctx = createContext<ThemeContext>()
 
 export function ThemeProvider(props: ParentProps) {
-  const value: ThemeContext = { theme: DARK_THEME }
+  const savedId = loadConfig().themeId ?? "dark"
+  const [themeId, setThemeId] = createSignal(savedId)
+  const [theme, setThemeColors] = createStore<ThemeColors>({ ...getThemeById(savedId).colors })
+
+  // Update store reactively when themeId signal changes
+  createEffect(
+    on(themeId, (id) => {
+      const colors = getThemeById(id).colors
+      batch(() => {
+        for (const [key, value] of Object.entries(colors)) {
+          setThemeColors(key as keyof ThemeColors, value as RGBA)
+        }
+      })
+    }, { defer: true }),
+  )
+
+  const value: ThemeContext = {
+    theme,
+    themeId,
+    setTheme(id: string) {
+      setThemeId(id)
+      saveConfig({ themeId: id })
+    },
+  }
   return <ctx.Provider value={value}>{props.children}</ctx.Provider>
 }
 

@@ -15,7 +15,7 @@ export function OpenPage() {
   const vaultDisplay = VAULT_DIR.replace(/^\/home\/[^/]+/, "~")
 
   return (
-    <box flexDirection="column" flexGrow={1}>
+    <box flexDirection="column" flexGrow={1} backgroundColor={theme.background}>
       {/* Main centered content */}
       {/* Matches OpenCode home.tsx: flexGrow spacers + alignItems center */}
       <box flexGrow={1} alignItems="center" paddingLeft={2} paddingRight={2}>

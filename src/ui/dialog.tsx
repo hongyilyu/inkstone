@@ -44,7 +44,12 @@ export function Dialog(
       paddingTop={dimensions().height / 4}
       left={0}
       top={0}
-      backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
+      backgroundColor={RGBA.fromInts(
+        Math.round(theme.background.r * 255),
+        Math.round(theme.background.g * 255),
+        Math.round(theme.background.b * 255),
+        150,
+      )}
     >
       <box
         onMouseUp={(e: any) => {
