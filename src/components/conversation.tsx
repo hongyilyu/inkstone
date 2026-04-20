@@ -37,7 +37,7 @@ export function Conversation() {
         setTimeout(() => refocusInput(), 1)
       }}
     >
-      <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1} gap={1}>
+      <box flexDirection="column" paddingTop={1} gap={1}>
         <For each={store.messages}>
           {(msg, index) => (
             <Show when={msg.text}>

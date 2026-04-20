@@ -8,8 +8,8 @@ import { VAULT_DIR } from "../agent/constants"
 import pkg from "../../package.json"
 
 const SIDEBAR_WIDTH = 30
-// Inner content width = SIDEBAR_WIDTH - paddingLeft(1) - paddingRight(1)
-const TITLE_MAX_CHARS = SIDEBAR_WIDTH - 2
+// Inner content width = SIDEBAR_WIDTH - paddingLeft(2) - paddingRight(2)
+const TITLE_MAX_CHARS = SIDEBAR_WIDTH - 4
 
 function stripExtension(filename: string): string {
   const dot = filename.lastIndexOf(".")
@@ -63,10 +63,9 @@ export function Sidebar() {
       width={SIDEBAR_WIDTH}
       flexShrink={0}
       flexDirection="column"
-      borderColor={theme.borderSubtle}
-      border={["left"]}
-      paddingLeft={1}
-      paddingRight={1}
+      backgroundColor={theme.backgroundPanel}
+      paddingLeft={2}
+      paddingRight={2}
       paddingTop={1}
       paddingBottom={1}
       gap={1}

@@ -87,7 +87,8 @@ function Layout() {
       <Show when={store.messages.length > 0} fallback={<OpenPage />}>
         <box flexDirection="row" flexGrow={1} backgroundColor={theme.background}>
           {/* Left column: conversation + prompt */}
-          <box flexDirection="column" flexGrow={1}>
+          {/* Horizontal padding + bottom gap matches OpenCode session/index.tsx:1043 */}
+          <box flexDirection="column" flexGrow={1} paddingLeft={2} paddingRight={2} paddingBottom={1}>
             <Conversation />
             <Prompt />
           </box>

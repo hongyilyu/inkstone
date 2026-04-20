@@ -116,10 +116,10 @@ export function Prompt() {
   })
 
   return (
-    <box>
-      {/* Main input area with left border accent */}
-      {/* Matches OpenCode prompt/index.tsx:974-981 */}
+    <box flexShrink={0}>
+      {/* prompt/index.tsx:974-1225 — input area with left border accent */}
       <box
+        flexShrink={0}
         border={["left"]}
         borderColor={theme.secondary}
         customBorderChars={{
@@ -134,7 +134,6 @@ export function Prompt() {
           paddingTop={1}
           flexShrink={0}
           backgroundColor={theme.backgroundElement}
-          flexGrow={1}
         >
           <input
             ref={(r: any) => { inputRef = r; setInputRef(r) }}
@@ -150,40 +149,39 @@ export function Prompt() {
             cursorColor={store.isStreaming ? theme.backgroundElement : theme.primary}
             placeholderColor={theme.textMuted}
           />
-          {/* Agent / Model metadata row */}
-          {/* Matches OpenCode prompt/index.tsx:1186-1223 */}
-          <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1}>
-            <text fg={theme.secondary}>Reader</text>
-            <text fg={theme.textMuted}>·</text>
-            <text fg={theme.text}>{store.modelName}</text>
-            <text fg={theme.textMuted}>{store.modelProvider}</text>
+          {/* prompt/index.tsx:1186-1223 — agent/model metadata */}
+          <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
+            <box flexDirection="row" gap={1}>
+              <text fg={theme.secondary}>Reader</text>
+              <text fg={theme.textMuted}>·</text>
+              <text flexShrink={0} fg={theme.text}>{store.modelName}</text>
+              <text fg={theme.textMuted}>{store.modelProvider}</text>
+            </box>
           </box>
         </box>
       </box>
 
-      {/* Hints / status row below the input box */}
-      {/* Matches OpenCode prompt/index.tsx:1252-1363 */}
-      <box width="100%" flexDirection="row" justifyContent="space-between">
-        {/* Left side: spinner when streaming, empty when idle */}
+      {/* prompt/index.tsx:1252-1363 — hints/status row */}
+      <box width="100%" flexDirection="row" justifyContent="space-between" paddingTop={1}>
         <Show when={store.isStreaming} fallback={<text />}>
-          <box flexDirection="row" gap={1} marginLeft={1}>
-            <Spinner color={theme.textMuted} />
-            <box flexDirection="row">
-              <text fg={theme.text} attributes={TextAttributes.BOLD}>esc </text>
-              <text fg={theme.textMuted}>interrupt</text>
+          <box flexDirection="row" gap={1} flexGrow={1} justifyContent="flex-start">
+            <box flexShrink={0} flexDirection="row" gap={1}>
+              <box marginLeft={1}>
+                <Spinner color={theme.textMuted} />
+              </box>
             </box>
+            <text fg={theme.text}>
+              esc <span style={{ fg: theme.textMuted }}>interrupt</span>
+            </text>
           </box>
         </Show>
-
-        {/* Right side: usage stats or keybind hints */}
         <box gap={2} flexDirection="row">
           <Show when={usageText()}>
-            <text fg={theme.textMuted}>{usageText()}</text>
+            <text fg={theme.textMuted} wrapMode="none">{usageText()}</text>
           </Show>
-          <box flexDirection="row">
-            <text fg={theme.text} attributes={TextAttributes.BOLD}>ctrl+p </text>
-            <text fg={theme.textMuted}>commands</text>
-          </box>
+          <text fg={theme.text}>
+            ctrl+p <span style={{ fg: theme.textMuted }}>commands</span>
+          </text>
         </box>
       </box>
     </box>
