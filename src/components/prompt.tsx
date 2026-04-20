@@ -162,7 +162,7 @@ export function Prompt() {
       </box>
 
       {/* prompt/index.tsx:1252-1363 — hints/status row */}
-      <box width="100%" flexDirection="row" justifyContent="space-between" paddingTop={1}>
+      <box width="100%" flexDirection="row" justifyContent="space-between">
         <Show when={store.isStreaming} fallback={<text />}>
           <box flexDirection="row" gap={1} flexGrow={1} justifyContent="flex-start">
             <box flexShrink={0} flexDirection="row" gap={1}>

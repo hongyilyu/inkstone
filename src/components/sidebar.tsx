@@ -107,7 +107,7 @@ export function Sidebar() {
 
       {/* Bottom-anchored vault path + app/version */}
       <box flexDirection="column">
-        <text fg={theme.textMuted}>{vaultDisplay}</text>
+        <text fg={theme.textMuted} wrapMode="none">{vaultDisplay}</text>
         <box flexDirection="row" gap={1}>
           <text fg={theme.success}>•</text>
           <text fg={theme.textMuted}>InkStone {pkg.version}</text>
