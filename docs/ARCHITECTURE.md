@@ -58,8 +58,7 @@ src/
     conversation.tsx            Scrollbox + message list
     message.tsx                 Render user/assistant/tool messages
     input.tsx                   Textarea prompt with /command parsing
-    header.tsx                  Article, model, status
-    footer.tsx                  Keybind hints
+    sidebar.tsx                 Session metadata panel (title, context, article)
 
   persistence/
     session.ts                  Save/load messages as JSON

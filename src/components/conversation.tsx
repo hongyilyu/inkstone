@@ -4,6 +4,25 @@ import { useAgent } from "../context/agent"
 import { setScrollRef, refocusInput } from "../app"
 import type { ScrollBoxRenderable } from "@opentui/core"
 
+const EmptyBorder = {
+  topLeft: "",
+  bottomLeft: "",
+  vertical: "",
+  topRight: "",
+  bottomRight: "",
+  horizontal: " ",
+  bottomT: "",
+  topT: "",
+  cross: "",
+  leftT: "",
+  rightT: "",
+}
+
+const SplitBorderChars = {
+  ...EmptyBorder,
+  vertical: "┃",
+}
+
 export function Conversation() {
   const { theme } = useTheme()
   const { store } = useAgent()
@@ -20,14 +39,33 @@ export function Conversation() {
     >
       <box flexDirection="column" paddingLeft={1} paddingRight={1} paddingTop={1} gap={1}>
         <For each={store.messages}>
-          {(msg) => (
+          {(msg, index) => (
             <Show when={msg.text}>
-              <box>
-                <text fg={msg.role === "user" ? theme.info : theme.text}>
-                  {msg.role === "user" ? "> " : ""}
-                  {msg.text}
-                </text>
-              </box>
+              <Show
+                when={msg.role === "user"}
+                fallback={
+                  <box>
+                    <text fg={theme.text}>{msg.text}</text>
+                  </box>
+                }
+              >
+                <box
+                  border={["left"]}
+                  borderColor={theme.secondary}
+                  customBorderChars={SplitBorderChars}
+                  marginTop={index() === 0 ? 0 : 1}
+                >
+                  <box
+                    paddingTop={1}
+                    paddingBottom={1}
+                    paddingLeft={2}
+                    backgroundColor={theme.backgroundPanel}
+                    flexShrink={0}
+                  >
+                    <text fg={theme.text}>{msg.text}</text>
+                  </box>
+                </box>
+              </Show>
             </Show>
           )}
         </For>

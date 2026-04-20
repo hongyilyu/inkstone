@@ -9,6 +9,15 @@ export function formatTokens(num: number): string {
   return num.toString()
 }
 
+/**
+ * Format a token count as a full comma-separated number.
+ * e.g. 158200 -> "158,200"
+ * Used in the session sidebar where horizontal room permits precision.
+ */
+export function formatTokensFull(num: number): string {
+  return num.toLocaleString("en-US")
+}
+
 const money = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",

@@ -1,13 +1,12 @@
-import { Show } from "solid-js"
-import { useKeyboard, useRenderer } from "@opentui/solid"
+import { Show, createMemo } from "solid-js"
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Toast, ToastProvider } from "./ui/toast"
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { AgentProvider, useAgent } from "./context/agent"
-import { Header } from "./components/header"
-import { Footer } from "./components/footer"
 import { Conversation } from "./components/conversation"
 import { Prompt } from "./components/prompt"
+import { Sidebar } from "./components/sidebar"
 import { OpenPage } from "./components/open-page"
 import { DialogCommand } from "./components/dialog-command"
 import type { ScrollBoxRenderable } from "@opentui/core"
@@ -41,6 +40,9 @@ function Layout() {
   const dialog = useDialog()
   const { actions, store } = useAgent()
   const { theme } = useTheme()
+
+  const dimensions = useTerminalDimensions()
+  const showSidebar = createMemo(() => dimensions().width >= 100)
 
   useKeyboard((evt: any) => {
     if (evt.ctrl && evt.name === "c") {
@@ -83,11 +85,16 @@ function Layout() {
   return (
     <>
       <Show when={store.messages.length > 0} fallback={<OpenPage />}>
-        <box flexDirection="column" flexGrow={1} backgroundColor={theme.background}>
-          <Header />
-          <Conversation />
-          <Prompt />
-          <Footer />
+        <box flexDirection="row" flexGrow={1} backgroundColor={theme.background}>
+          {/* Left column: conversation + prompt */}
+          <box flexDirection="column" flexGrow={1}>
+            <Conversation />
+            <Prompt />
+          </box>
+          {/* Right column: session metadata sidebar (hidden on narrow terminals) */}
+          <Show when={showSidebar()}>
+            <Sidebar />
+          </Show>
         </box>
       </Show>
       <Toast />
