@@ -1,12 +1,17 @@
-import { ARTICLES_DIR, SCRAPS_DIR, NOTES_DIR, TEMPLATES_DIR } from "./constants"
+import {
+	ARTICLES_DIR,
+	NOTES_DIR,
+	SCRAPS_DIR,
+	TEMPLATES_DIR,
+} from "./constants";
 
 export function buildSystemPrompt(articleId: string | null): string {
-  if (!articleId) {
-    return "You are a helpful reading assistant. Use /article <filename> to load an article and begin the reading workflow."
-  }
+	if (!articleId) {
+		return "You are a helpful reading assistant. Use /article <filename> to load an article and begin the reading workflow.";
+	}
 
-  const today = new Date().toISOString().slice(0, 10)
-  return `## Active Article: "${articleId}"
+	const today = new Date().toISOString().slice(0, 10);
+	return `## Active Article: "${articleId}"
 **Today's date:** ${today}
 
 ## Reading Guide Persona
@@ -215,5 +220,5 @@ When discussing specific claims or passages from the article, use the \`quote_ar
 When making a point about the article, explicitly label whether it comes from the article text ("The article states...") or from your own reasoning ("My inference is..."). Never blend the two without attribution.
 
 When the user's question is underspecified or could be interpreted in multiple ways, ask a clarifying question before answering.
-`
+`;
 }
