@@ -2,6 +2,7 @@ import { For, Show } from "solid-js"
 import { useTheme } from "../context/theme"
 import { useAgent } from "../context/agent"
 import { setScrollRef, refocusInput } from "../app"
+import { formatDuration } from "../util/format"
 import type { ScrollBoxRenderable } from "@opentui/core"
 
 const EmptyBorder = {
@@ -44,14 +45,28 @@ export function Conversation() {
               <Show
                 when={msg.role === "user"}
                 fallback={
-                  <box paddingLeft={3} flexShrink={0}>
-                    <markdown
-                      content={msg.text}
-                      syntaxStyle={syntax()}
-                      streaming={store.isStreaming && index() === store.messages.length - 1}
-                      fg={theme.text}
-                      bg={theme.background}
-                    />
+                  <box flexDirection="column" flexShrink={0}>
+                    <box paddingLeft={3} flexShrink={0}>
+                      <markdown
+                        content={msg.text}
+                        syntaxStyle={syntax()}
+                        streaming={store.isStreaming && index() === store.messages.length - 1}
+                        fg={theme.text}
+                        bg={theme.background}
+                      />
+                    </box>
+                    <Show when={msg.modelName}>
+                      <box paddingLeft={3} paddingTop={1} flexShrink={0}>
+                        <text wrapMode="none">
+                          <span style={{ fg: theme.secondary }}>{"▣ "}</span>
+                          <span style={{ fg: theme.text }}>{msg.agentName ?? "Reader"}</span>
+                          <span style={{ fg: theme.textMuted }}>
+                            {" "}· {msg.modelName}
+                            {msg.duration && msg.duration > 0 ? ` · ${formatDuration(msg.duration)}` : ""}
+                          </span>
+                        </text>
+                      </box>
+                    </Show>
                   </box>
                 }
               >

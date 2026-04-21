@@ -6,7 +6,7 @@ import { createAgentActions, getAgent, getCurrentModel, setConfirmFn, type Agent
 import { useDialog } from "../ui/dialog"
 import { DialogConfirm } from "../ui/dialog-confirm"
 import { toBottom } from "../app"
-import type { Model, Api, AssistantMessage, Provider } from "@mariozechner/pi-ai"
+import { getModel, type Model, type Api, type AssistantMessage, type Provider } from "@mariozechner/pi-ai"
 import { saveSession, loadSession, clearSession as clearSessionFile } from "../persistence/session"
 
 /** Map raw provider identifiers to display names */
@@ -26,10 +26,21 @@ export interface DisplayMessage {
   id: string
   role: "user" | "assistant"
   text: string
-}
-
-export interface LastTurnInfo {
-  modelName: string
+  // `agentName` and `modelName` are per-message: each assistant bubble records
+  // the agent and model that produced *that specific* reply, sourced from the
+  // `message_end` event (not from mutable store state).
+  //
+  // `duration` is per-turn: the wall-clock time from the user's prompt to the
+  // turn completing. It is stamped only on the turn-closing assistant bubble
+  // (the final assistant message whose `stopReason !== "toolUse"`), so
+  // intermediate assistant messages in a tool-driven turn intentionally carry
+  // `agentName` + `modelName` without a `duration`.
+  //
+  // All three are optional because user messages don't have them and legacy
+  // persisted sessions predate these fields.
+  agentName?: string
+  modelName?: string
+  duration?: number // ms
 }
 
 interface AgentStoreState {
@@ -43,8 +54,6 @@ interface AgentStoreState {
   totalTokens: number
   totalCost: number
   lastTurnStartedAt: number
-  lastTurnDuration: number
-  lastTurnInfo: LastTurnInfo | null
 }
 
 interface AgentContextValue {
@@ -81,8 +90,6 @@ export function AgentProvider(props: ParentProps) {
     totalTokens: 0,
     totalCost: 0,
     lastTurnStartedAt: 0,
-    lastTurnDuration: 0,
-    lastTurnInfo: null,
   })
 
   // Set message counter past any restored messages
@@ -96,12 +103,22 @@ export function AgentProvider(props: ParentProps) {
         case "agent_start":
           setStore("isStreaming", true)
           setStore("status", "streaming")
-          // Push an empty assistant message — text will grow in place via deltas
-          setStore("messages", produce((msgs) => {
-            msgs.push({ id: `msg-${++messageCounter}`, role: "assistant", text: "" })
-          }))
+          // A fresh assistant display bubble is pushed per-boundary on
+          // `message_start` so tool-driven turns with multiple assistant
+          // messages keep their footer metadata separate.
           toBottom()
           break
+
+        case "message_start": {
+          const msg = (event as any).message
+          if (msg && msg.role === "assistant") {
+            setStore("messages", produce((msgs) => {
+              msgs.push({ id: `msg-${++messageCounter}`, role: "assistant", text: "" })
+            }))
+            toBottom()
+          }
+          break
+        }
 
         case "message_update":
           if (
@@ -118,13 +135,27 @@ export function AgentProvider(props: ParentProps) {
           // Accumulate token usage and cost from assistant messages
           const msg = (event as any).message
           if (msg && msg.role === "assistant") {
-            const usage = (msg as AssistantMessage).usage
+            const assistantMsg = msg as AssistantMessage
+            const usage = assistantMsg.usage
             if (usage) {
               setStore("totalTokens", (t) => t + usage.totalTokens)
               setStore("totalCost", (c) => c + usage.cost.total)
             }
-            // Snapshot model name so the status line survives model switches
-            setStore("lastTurnInfo", { modelName: store.modelName })
+            // Snapshot agent + model onto the assistant bubble that was
+            // pushed in the matching `message_start`. Sourcing provider/model
+            // from the event (not `store.modelName`) means mid-run Ctrl+P
+            // model switches don't relabel an already-generated reply, and
+            // tool-driven turns with multiple assistant messages get their
+            // own correct per-bubble footer.
+            const lastIdx = store.messages.length - 1
+            const last = store.messages[lastIdx]
+            if (last && last.role === "assistant") {
+              const provider = assistantMsg.provider
+              const modelId = assistantMsg.model
+              const displayName = getModel(provider as any, modelId as any)?.name ?? modelId
+              setStore("messages", lastIdx, "agentName", "Reader")
+              setStore("messages", lastIdx, "modelName", displayName)
+            }
           }
           break
         }
@@ -136,8 +167,19 @@ export function AgentProvider(props: ParentProps) {
         case "agent_end":
           setStore("isStreaming", false)
           setStore("status", "idle")
+          // `duration` is a per-turn value. `agent_end` fires immediately after
+          // the turn-closing assistant `message_end`, and tool results are not
+          // rendered as display bubbles, so `messages[length - 1]` at this
+          // point is guaranteed to be the turn-closing assistant bubble. That
+          // bubble gets the stamp; intermediate tool-call assistant messages
+          // in the same turn correctly do not.
           if (store.lastTurnStartedAt > 0) {
-            setStore("lastTurnDuration", Date.now() - store.lastTurnStartedAt)
+            const duration = Date.now() - store.lastTurnStartedAt
+            const lastIdx = store.messages.length - 1
+            const last = store.messages[lastIdx]
+            if (last && last.role === "assistant") {
+              setStore("messages", lastIdx, "duration", duration)
+            }
           }
           // Persist session after each turn
           saveSession({
@@ -177,8 +219,6 @@ export function AgentProvider(props: ParentProps) {
       setStore("totalTokens", 0)
       setStore("totalCost", 0)
       setStore("lastTurnStartedAt", 0)
-      setStore("lastTurnDuration", 0)
-      setStore("lastTurnInfo", null)
       clearSessionFile()
       messageCounter = 0
     },

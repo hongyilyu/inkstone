@@ -88,7 +88,7 @@ The `AgentProvider` creates a pi-agent-core `Agent` instance and subscribes to i
 
 ```ts
 {
-  messages: DisplayMessage[]     // full history
+  messages: DisplayMessage[]     // full history (see below for shape)
   isStreaming: boolean
   activeArticle: string | null
   modelName: string
@@ -97,9 +97,20 @@ The `AgentProvider` creates a pi-agent-core `Agent` instance and subscribes to i
   status: "idle" | "streaming" | "tool_executing"
   totalTokens: number            // accumulated across all assistant turns
   totalCost: number              // accumulated across all assistant turns
-  lastTurnStartedAt: number      // Date.now() when user prompt sent
-  lastTurnDuration: number       // ms elapsed for last completed turn
-  lastTurnUsage: { input, output, cost } | null  // per-turn usage from last assistant message
+  lastTurnStartedAt: number      // Date.now() when user prompt sent; consumed in agent_end
+}
+```
+
+`DisplayMessage` (see `src/context/agent.tsx:25`):
+
+```ts
+{
+  id: string
+  role: "user" | "assistant"
+  text: string
+  agentName?: string   // assistant only, set in message_end
+  modelName?: string   // assistant only, set in message_end
+  duration?: number    // assistant only, ms, set in agent_end
 }
 ```
 
@@ -113,20 +124,36 @@ The `streaming` prop is enabled only on the final message while `store.isStreami
 
 `SyntaxStyle` wraps an FFI pointer into Zig-side allocations that JS GC cannot reclaim. The memo registers an `onCleanup(() => style.destroy())` so the previous instance is released on theme switch (recompute) and on provider disposal (app exit) — see `src/context/theme.tsx:222-227`.
 
-## Last-Turn Status Line
+## Per-Message Status Line
 
-A status line is rendered between `<Conversation />` and `<Prompt />` in `app.tsx` showing per-turn stats for the last completed assistant message:
+Each completed assistant message renders its own status line directly below its markdown body in `src/components/conversation.tsx`:
 
 ```
-Reader · Claude Opus 4.6 (US) · 1m 2s · 12.1K in · 4.2K out
+▣ Reader · Claude Opus 4.6 (US) · 1m 2s
 ```
 
-Data sources:
-- Agent name: hardcoded "Reader" (single-agent for now)
-- Model/provider: from `store.modelName` / `store.modelProvider`
-- Duration: `Date.now()` at `agent_end` minus `lastTurnStartedAt` (set in `prompt()`)
-- Token usage: `AssistantMessage.usage` captured in `message_end` event handler
-- Note: pi-ai `Usage` type does not separate thinking from output tokens; `output` includes both
+### Field scopes (per-message vs. per-turn)
+
+`DisplayMessage` splits footer fields by scope. This matters for tool-driven turns, which emit multiple assistant messages.
+
+- **Per-message** — `agentName`, `modelName`. Written in `message_end`. Each assistant bubble records the agent and model that produced *that specific* reply, sourced from the assistant event (not from mutable store state). A tool turn with two assistant messages produces two bubbles, each with its own correct `agentName`/`modelName`.
+- **Per-turn** — `duration`. Written in `agent_end`. Represents the wall-clock time from the user's prompt to the turn completing. Stamped only on the turn-closing assistant bubble, which is `messages[length - 1]` when `agent_end` fires (tool results aren't rendered as display bubbles, so the last bubble is always the turn-closing assistant message). Intermediate assistant bubbles in a tool turn intentionally carry `agentName` + `modelName` without a `duration` — "how long did the whole turn take?" only has a single answer per turn, and the turn-closing bubble is where it belongs.
+
+The conversation renderer shows the footer whenever `msg.modelName` is present, and adds the duration pip only when `msg.duration > 0`, so intermediate tool-turn bubbles render `▣ Reader · <model>` without a duration, and the turn-closing bubble renders the full `▣ Reader · <model> · <duration>`.
+
+### Bubble-per-assistant-boundary
+
+`AgentProvider` pushes a fresh empty assistant `DisplayMessage` on every pi-agent-core `message_start` event whose `message.role === "assistant"` (filtering out user/toolResult starts, which are handled elsewhere or not rendered). `message_update` deltas append to the last-pushed bubble, and `message_end` stamps `agentName` / `modelName` onto that same bubble.
+
+This mirrors pi-agent-core's own boundaries: a tool-using turn emits one assistant `message_start` / `message_end` pair before the tool call and another after the tool result. Each pair gets its own display bubble with its own per-message footer data, so saved sessions replay the original assistant boundaries and the per-message fields cannot leak between them. `<Show when={msg.text}>` in `conversation.tsx` hides bubbles that never received visible text (e.g., a pure tool-call assistant message), so empty bubbles don't clutter the conversation.
+
+Sourcing the model from `event.message` (rather than the mutable `store.modelName`) means switching models mid-run via Ctrl+P does not relabel the in-flight assistant reply. `store.modelName` continues to reflect the currently-selected model for the sidebar and the next prompt.
+
+### Duration and transient state
+
+`lastTurnStartedAt` is a transient set in `prompt()` and consumed in `agent_end`. Once written to the turn-closing message it's not read again, so messages loaded from a persisted session render their original footer unchanged even though the transient is `0` at startup.
+
+Older messages that predate these fields (legacy sessions) simply render without a footer because `modelName` is `undefined`.
 
 ## Guard Logic
 

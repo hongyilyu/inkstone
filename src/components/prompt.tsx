@@ -117,7 +117,8 @@ export function Prompt() {
 
   return (
     <box flexShrink={0}>
-      {/* prompt/index.tsx:974-1225 — input area with left border accent */}
+      {/* prompt/index.tsx:974-1225 — input area with left border accent.
+          The closing ╹ corner lives on the cap row below, not on this box. */}
       <box
         flexShrink={0}
         border={["left"]}
@@ -125,7 +126,6 @@ export function Prompt() {
         customBorderChars={{
           ...EmptyBorder,
           vertical: "┃",
-          bottomLeft: "╹",
         }}
       >
         <box
@@ -159,6 +159,31 @@ export function Prompt() {
             </box>
           </box>
         </box>
+      </box>
+
+      {/* prompt/index.tsx:1226-1251 — 1-row cap: ╹ corner on the left, ▀ fill
+          across the rest. The ▀ (upper half block) in backgroundElement extends
+          the input box's visual bottom by half a row and provides the gap to
+          the hints row below. Inkstone's theme backgrounds are always opaque
+          (RGBA.fromHex), so we skip OpenCode's alpha-channel conditional. */}
+      <box
+        height={1}
+        border={["left"]}
+        borderColor={theme.secondary}
+        customBorderChars={{
+          ...EmptyBorder,
+          vertical: "╹",
+        }}
+      >
+        <box
+          height={1}
+          border={["bottom"]}
+          borderColor={theme.backgroundElement}
+          customBorderChars={{
+            ...EmptyBorder,
+            horizontal: "▀",
+          }}
+        />
       </box>
 
       {/* prompt/index.tsx:1252-1363 — hints/status row */}
