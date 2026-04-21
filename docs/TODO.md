@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-21 (layer split refactor)
+**Last updated**: 2026-04-21 (Biome + boundary enforcement)
 
 ## Completed
 
@@ -22,10 +22,11 @@
 - [x] Fix: footer boundaries follow pi-agent-core's `message_start`/`message_end` events — one display bubble per assistant message boundary, with model name sourced from the event itself (not the mutable `store.modelName`). Tool-driven turns now show a distinct, correctly-labeled footer for each assistant reply, and mid-stream Ctrl+P model switches do not relabel in-flight replies.
 - [x] Docs: clarify `DisplayMessage` footer field scopes — `agentName`/`modelName` are per-message (stamped in `message_end` from the assistant event), `duration` is per-turn (stamped in `agent_end` on the turn-closing assistant bubble only). Intermediate assistant bubbles in tool turns correctly persist/render without a duration pip.
 - [x] Refactor: split `src/` into three layers with enforced dependency direction — `backend/` (headless agent, tools, persistence), `bridge/` (shared view-state types: `DisplayMessage`, `AgentStoreState`, `SessionData`), `tui/` (Solid + OpenTUI UI). Dependency graph: `tui → bridge, backend`; `backend → bridge` (types only); `bridge → nothing`. Enables parallel backend/frontend work and sets up a swappable frontend in the future.
+- [x] Tooling: add Biome (lint + format) with path aliases (`@backend/*`, `@bridge/*`, `@tui/*`) and `noRestrictedImports` overrides that mechanically enforce the layer boundary rules. `bun run ci` is the single CI-ready command. Mass format pass migrated the codebase to Biome defaults (tabs, semicolons, 80-char lines).
 
 ## In Progress
 
-- [ ] PR 2: Add Biome lint/format + enforce layer boundaries via lint rules (path aliases + `noRestrictedImports` overrides)
+(nothing)
 
 ## Known Issues
 

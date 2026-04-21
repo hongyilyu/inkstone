@@ -23,11 +23,25 @@ The codebase is split into three layers with enforced dependency direction so th
 | `src/bridge/` | Shared type contract between backend and any frontend. Pure TS, zero runtime. | none |
 | `src/tui/` | Solid + OpenTUI frontend — components, dialogs, theme, keybinds, store wiring. | solid-js, @opentui/* |
 
-**Dependency rules** (to be mechanically enforced by Biome's `noRestrictedImports` in a follow-up PR):
+**Dependency rules** (mechanically enforced by Biome's `noRestrictedImports` rule via `overrides` in `biome.json`):
 
 - `tui/` may import from `bridge/`, `backend/`.
 - `backend/` may import from `bridge/` (types only, zero runtime cost). **Must not** import from `tui/`.
 - `bridge/` must not import from `backend/` or `tui/`.
+
+### Path aliases
+
+Cross-layer imports use `tsconfig.json` aliases; intra-layer imports stay relative. This makes layer crossings visually distinct in source and gives `noRestrictedImports` stable prefixes to match on.
+
+| Alias | Resolves to |
+|---|---|
+| `@backend/*` | `src/backend/*` |
+| `@bridge/*` | `src/bridge/*` |
+| `@tui/*` | `src/tui/*` |
+
+### Lint + format
+
+`bun run ci` runs Biome with recommended rules (a11y off because there's no HTML; `noExplicitAny` off because of intentional `any` for unexported OpenTUI event types). Boundary rules fail the build if violated. Run `bun run check` locally to auto-fix format and safe lint issues; use `bun run lint` to see remaining warnings.
 
 ### Type-placement rule
 
