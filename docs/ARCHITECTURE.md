@@ -29,9 +29,16 @@ The codebase is split into three layers with enforced dependency direction so th
 - `backend/` may import from `bridge/` (types only, zero runtime cost). **Must not** import from `tui/`.
 - `bridge/` must not import from `backend/` or `tui/`.
 
+Each boundary rule uses two glob patterns per forbidden target so both bypass forms fail lint:
+
+- `@tui/*` — the alias form.
+- `**/tui/**` — any relative path that climbs into `tui/` (e.g. `../tui/app`, `../../tui/app`, `./tui/x`).
+
+Same pair (`@backend/*` + `**/backend/**`) for the backend restriction on bridge.
+
 ### Path aliases
 
-Cross-layer imports use `tsconfig.json` aliases; intra-layer imports stay relative. This makes layer crossings visually distinct in source and gives `noRestrictedImports` stable prefixes to match on.
+Cross-layer imports use `tsconfig.json` aliases; intra-layer imports stay relative. Aliases are the *preferred* spelling (clearer at a glance that the line crosses a layer boundary), but the boundary rule is independent of the spelling — writing `../tui/...` from `backend/` fails lint just as surely as `@tui/...`.
 
 | Alias | Resolves to |
 |---|---|

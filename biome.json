@@ -24,8 +24,8 @@
 							"options": {
 								"patterns": [
 									{
-										"group": ["@tui/*"],
-										"message": "backend/ cannot import from tui/."
+										"group": ["@tui/*", "**/tui/**"],
+										"message": "backend/ cannot import from tui/. Covers both the @tui/* alias and any relative path that climbs into tui/."
 									}
 								]
 							}
@@ -44,12 +44,12 @@
 							"options": {
 								"patterns": [
 									{
-										"group": ["@tui/*"],
-										"message": "bridge/ cannot import from tui/."
+										"group": ["@tui/*", "**/tui/**"],
+										"message": "bridge/ cannot import from tui/. Covers both the @tui/* alias and any relative path that climbs into tui/."
 									},
 									{
-										"group": ["@backend/*"],
-										"message": "bridge/ cannot import from backend/."
+										"group": ["@backend/*", "**/backend/**"],
+										"message": "bridge/ cannot import from backend/. Covers both the @backend/* alias and any relative path that climbs into backend/."
 									}
 								]
 							}
