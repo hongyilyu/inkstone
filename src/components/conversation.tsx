@@ -24,7 +24,7 @@ const SplitBorderChars = {
 }
 
 export function Conversation() {
-  const { theme } = useTheme()
+  const { theme, syntax } = useTheme()
   const { store } = useAgent()
 
   return (
@@ -44,8 +44,14 @@ export function Conversation() {
               <Show
                 when={msg.role === "user"}
                 fallback={
-                  <box>
-                    <text fg={theme.text}>{msg.text}</text>
+                  <box paddingLeft={3} flexShrink={0}>
+                    <markdown
+                      content={msg.text}
+                      syntaxStyle={syntax()}
+                      streaming={store.isStreaming && index() === store.messages.length - 1}
+                      fg={theme.text}
+                      bg={theme.background}
+                    />
                   </box>
                 }
               >

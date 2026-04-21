@@ -21,9 +21,19 @@ When starting or completing any task, update the relevant docs in `docs/`:
 4. Update the "Last updated" date in `docs/TODO.md`
 
 
+## Plan Review Protocol
+
+Before presenting any multi-step plan or non-trivial code change to the user, invoke the `behavioral-guidelines` skill/agent to review the proposed approach. The reviewer checks for overcomplication, over-engineering, unnecessary abstractions, speculative features, and missing success criteria. Apply the reviewer's minimal fixes before presenting the plan to the user.
+
+
+## UI Reference Protocol
+
+For any UI-side change (components, rendering, theming, layout, dialogs, keybinds, scroll/focus behavior, status lines, markdown/code display, etc.), **always consult the OpenCode TUI codebase at `../opencode/packages/opencode/src/cli/cmd/tui/` first** to see how the same concern is handled there before designing a solution. Inkstone tracks OpenCode's patterns — prefer porting the existing approach (trimmed to Inkstone's scope) over inventing a new one. When the OpenCode approach is too heavy for Inkstone's needs, state that explicitly in the plan and justify the simpler variant.
+
+
 ## Source References
 
-- OpenCode TUI: `~/dev/opencode/packages/opencode/src/cli/cmd/tui/`
+- OpenCode TUI: `../opencode/packages/opencode/src/cli/cmd/tui/`
 - OpenTUI skill: `.agents/skills/opentui/`
 - pi-agent-core types: `node_modules/@mariozechner/pi-agent-core/`
 - pi-ai types: `node_modules/@mariozechner/pi-ai/dist/types.d.ts`

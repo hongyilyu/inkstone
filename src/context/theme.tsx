@@ -1,6 +1,6 @@
-import { batch, createContext, createEffect, createSignal, on, useContext, type ParentProps } from "solid-js"
+import { batch, createContext, createEffect, createMemo, createSignal, on, onCleanup, useContext, type Accessor, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
-import { RGBA } from "@opentui/core"
+import { RGBA, SyntaxStyle, type ThemeTokenStyle } from "@opentui/core"
 import { loadConfig, saveConfig } from "../persistence/config"
 
 export interface ThemeColors {
@@ -126,10 +126,69 @@ export function getThemeById(id: string): ThemeDef {
   return themes[0] as ThemeDef
 }
 
+/**
+ * Build the syntax-style rule set for the markdown renderer + fenced code blocks.
+ * Reads only fields that already exist on ThemeColors — no new theme fields required.
+ */
+function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
+  return [
+    { scope: ["default"], style: { foreground: colors.text } },
+
+    // Markdown structure
+    { scope: ["markup.heading"], style: { foreground: colors.primary, bold: true } },
+    { scope: ["markup.heading.1"], style: { foreground: colors.primary, bold: true } },
+    { scope: ["markup.heading.2"], style: { foreground: colors.primary, bold: true } },
+    { scope: ["markup.heading.3"], style: { foreground: colors.primary, bold: true } },
+    { scope: ["markup.heading.4"], style: { foreground: colors.primary, bold: true } },
+    { scope: ["markup.heading.5"], style: { foreground: colors.primary, bold: true } },
+    { scope: ["markup.heading.6"], style: { foreground: colors.primary, bold: true } },
+    { scope: ["markup.bold", "markup.strong"], style: { foreground: colors.text, bold: true } },
+    { scope: ["markup.italic"], style: { foreground: colors.warning, italic: true } },
+    { scope: ["markup.strikethrough"], style: { foreground: colors.textMuted } },
+    { scope: ["markup.underline"], style: { foreground: colors.text, underline: true } },
+    { scope: ["markup.list"], style: { foreground: colors.secondary } },
+    { scope: ["markup.list.checked"], style: { foreground: colors.success } },
+    { scope: ["markup.list.unchecked"], style: { foreground: colors.textMuted } },
+    { scope: ["markup.quote"], style: { foreground: colors.warning, italic: true } },
+    { scope: ["markup.raw", "markup.raw.block"], style: { foreground: colors.success } },
+    { scope: ["markup.raw.inline"], style: { foreground: colors.success, background: colors.backgroundElement } },
+    { scope: ["markup.link"], style: { foreground: colors.info, underline: true } },
+    { scope: ["markup.link.label"], style: { foreground: colors.accent, underline: true } },
+    { scope: ["markup.link.url"], style: { foreground: colors.info, underline: true } },
+    { scope: ["conceal"], style: { foreground: colors.textMuted } },
+
+    // Core code scopes (for fenced code blocks)
+    { scope: ["comment"], style: { foreground: colors.textMuted, italic: true } },
+    { scope: ["comment.documentation"], style: { foreground: colors.textMuted, italic: true } },
+    { scope: ["keyword"], style: { foreground: colors.accent, italic: true } },
+    { scope: ["keyword.return", "keyword.conditional", "keyword.repeat"], style: { foreground: colors.accent, italic: true } },
+    { scope: ["keyword.function"], style: { foreground: colors.secondary } },
+    { scope: ["keyword.import", "keyword.export"], style: { foreground: colors.accent } },
+    { scope: ["keyword.type"], style: { foreground: colors.info, bold: true, italic: true } },
+    { scope: ["keyword.modifier", "keyword.exception"], style: { foreground: colors.accent, italic: true } },
+    { scope: ["string", "symbol", "character"], style: { foreground: colors.success } },
+    { scope: ["string.escape", "string.regexp"], style: { foreground: colors.accent } },
+    { scope: ["number", "boolean", "float", "constant"], style: { foreground: colors.warning } },
+    { scope: ["type", "module", "class", "namespace"], style: { foreground: colors.info } },
+    { scope: ["function", "function.call", "function.method", "function.method.call", "constructor"], style: { foreground: colors.secondary } },
+    { scope: ["variable", "variable.parameter", "variable.member", "property", "parameter", "field"], style: { foreground: colors.text } },
+    { scope: ["operator", "keyword.operator", "punctuation", "punctuation.bracket", "punctuation.delimiter"], style: { foreground: colors.text } },
+    { scope: ["attribute", "annotation"], style: { foreground: colors.warning } },
+    { scope: ["tag"], style: { foreground: colors.error } },
+    { scope: ["tag.attribute"], style: { foreground: colors.accent } },
+    { scope: ["variable.builtin", "type.builtin", "function.builtin", "constant.builtin"], style: { foreground: colors.error } },
+  ]
+}
+
+function generateSyntax(colors: ThemeColors): SyntaxStyle {
+  return SyntaxStyle.fromTheme(getSyntaxRules(colors))
+}
+
 interface ThemeContext {
   theme: ThemeColors
   themeId: () => string
   setTheme: (id: string) => void
+  syntax: Accessor<SyntaxStyle>
 }
 
 const ctx = createContext<ThemeContext>()
@@ -151,6 +210,22 @@ export function ThemeProvider(props: ParentProps) {
     }, { defer: true }),
   )
 
+  // Regenerate SyntaxStyle whenever the active theme changes.
+  // The memo depends on themeId — the store itself isn't tracked here
+  // because each field is a separate reactive source; keying off themeId
+  // avoids re-creating the style on every color write inside batch().
+  //
+  // SyntaxStyle wraps an FFI Pointer (see @opentui/core/zig.d.ts: destroySyntaxStyle).
+  // JS GC cannot free the Zig-side allocations, so we explicitly .destroy() the
+  // previous instance via onCleanup — fires on recompute (theme switch) and on
+  // provider disposal (app exit).
+  const syntax = createMemo(() => {
+    const id = themeId()
+    const style = generateSyntax(getThemeById(id).colors)
+    onCleanup(() => style.destroy())
+    return style
+  })
+
   const value: ThemeContext = {
     theme,
     themeId,
@@ -158,6 +233,7 @@ export function ThemeProvider(props: ParentProps) {
       setThemeId(id)
       saveConfig({ themeId: id })
     },
+    syntax,
   }
   return <ctx.Provider value={value}>{props.children}</ctx.Provider>
 }

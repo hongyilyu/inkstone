@@ -105,6 +105,14 @@ The `AgentProvider` creates a pi-agent-core `Agent` instance and subscribes to i
 
 Events from `agent.subscribe()` are batched via `batch()` and applied to the store. Solid's fine-grained reactivity ensures only affected UI nodes re-render.
 
+## Markdown Rendering
+
+Assistant messages are rendered through OpenTUI's `<markdown>` component in `src/components/conversation.tsx`. The component takes a `SyntaxStyle` built by `generateSyntax(colors)` in `src/context/theme.tsx`, which maps ~40 Tree-sitter scopes (markup.* for markdown structure, plus core code scopes for fenced blocks) onto the active theme's existing named colors. The style is exposed as a reactive accessor `useTheme().syntax()` and re-creates whenever the theme id changes, so switching themes re-paints already-rendered markdown.
+
+The `streaming` prop is enabled only on the final message while `store.isStreaming` is true, so the markdown parser keeps the trailing block unstable during deltas and finalizes token parsing on `agent_end`. Markdown syntax markers (`**`, `` ` ``, `#`, etc.) are concealed by default — users see rendered output, not source. User messages remain plain `<text>` inside the left-border bubble.
+
+`SyntaxStyle` wraps an FFI pointer into Zig-side allocations that JS GC cannot reclaim. The memo registers an `onCleanup(() => style.destroy())` so the previous instance is released on theme switch (recompute) and on provider disposal (app exit) — see `src/context/theme.tsx:222-227`.
+
 ## Last-Turn Status Line
 
 A status line is rendered between `<Conversation />` and `<Prompt />` in `app.tsx` showing per-turn stats for the last completed assistant message:

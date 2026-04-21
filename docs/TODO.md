@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-20
+**Last updated**: 2026-04-21
 
 ## Completed
 
@@ -16,6 +16,8 @@
 - [x] Fix: streaming text in-place growth (produce pattern from OpenCode)
 - [x] Fix: focus management (prompt always focused, click-refocus, scroll keybinds)
 - [x] Last-turn status line between conversation and prompt (agent, model, duration, input/output tokens)
+- [x] Markdown rendering for assistant messages (concealed syntax markers, inline/block code styling, list/quote/heading formatting, reactive to theme switch)
+- [x] Fix: destroy stale `SyntaxStyle` on theme switch and provider teardown to release FFI-backed native resources
 
 ## In Progress
 
