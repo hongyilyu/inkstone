@@ -88,15 +88,37 @@ The `AgentProvider` creates a pi-agent-core `Agent` instance and subscribes to i
 
 ```ts
 {
-  messages: AgentMessage[]       // full history
-  streamingText: string          // current delta accumulator
+  messages: DisplayMessage[]     // full history
   isStreaming: boolean
   activeArticle: string | null
+  modelName: string
+  modelProvider: string
+  contextWindow: number
   status: "idle" | "streaming" | "tool_executing"
+  totalTokens: number            // accumulated across all assistant turns
+  totalCost: number              // accumulated across all assistant turns
+  lastTurnStartedAt: number      // Date.now() when user prompt sent
+  lastTurnDuration: number       // ms elapsed for last completed turn
+  lastTurnUsage: { input, output, cost } | null  // per-turn usage from last assistant message
 }
 ```
 
 Events from `agent.subscribe()` are batched via `batch()` and applied to the store. Solid's fine-grained reactivity ensures only affected UI nodes re-render.
+
+## Last-Turn Status Line
+
+A status line is rendered between `<Conversation />` and `<Prompt />` in `app.tsx` showing per-turn stats for the last completed assistant message:
+
+```
+Reader · Claude Opus 4.6 (US) · 1m 2s · 12.1K in · 4.2K out
+```
+
+Data sources:
+- Agent name: hardcoded "Reader" (single-agent for now)
+- Model/provider: from `store.modelName` / `store.modelProvider`
+- Duration: `Date.now()` at `agent_end` minus `lastTurnStartedAt` (set in `prompt()`)
+- Token usage: `AssistantMessage.usage` captured in `message_end` event handler
+- Note: pi-ai `Usage` type does not separate thinking from output tokens; `output` includes both
 
 ## Guard Logic
 

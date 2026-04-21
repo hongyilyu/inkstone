@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-19
+**Last updated**: 2026-04-20
 
 ## Completed
 
@@ -15,12 +15,19 @@
 - [x] Phase 5: Session persistence (JSON save/restore, /clear command)
 - [x] Fix: streaming text in-place growth (produce pattern from OpenCode)
 - [x] Fix: focus management (prompt always focused, click-refocus, scroll keybinds)
+- [x] Last-turn status line between conversation and prompt (agent, model, duration, input/output tokens)
+
+## In Progress
+
+(nothing)
 
 ## Known Issues
 
 - [ ] Streaming text may still flash at top on first response (needs live testing)
 - [ ] Click-to-refocus may not work in all terminal emulators
 - [ ] pi-agent-core message history not restored on session load (only display messages)
+- [ ] Last-turn usage not persisted across session restores (resets on app restart)
+- [ ] pi-ai Usage type doesn't separate thinking tokens from output tokens
 
 ## Future Work (Post-MVP)
 

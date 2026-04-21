@@ -30,3 +30,15 @@ const money = new Intl.NumberFormat("en-US", {
 export function formatCost(cost: number): string {
   return money.format(cost)
 }
+
+/**
+ * Format a duration in milliseconds as a human-readable string.
+ * Ported from OpenCode's Locale.duration() (util/locale.ts:39-59).
+ */
+export function formatDuration(input: number): string {
+  if (input < 1000) return `${input}ms`
+  if (input < 60000) return `${(input / 1000).toFixed(1)}s`
+  const minutes = Math.floor(input / 60000)
+  const seconds = Math.floor((input % 60000) / 1000)
+  return `${minutes}m ${seconds}s`
+}

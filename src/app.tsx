@@ -3,12 +3,13 @@ import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Toast, ToastProvider } from "./ui/toast"
 import { DialogProvider, useDialog } from "./ui/dialog"
-import { AgentProvider, useAgent } from "./context/agent"
+import { AgentProvider, useAgent, type LastTurnInfo } from "./context/agent"
 import { Conversation } from "./components/conversation"
 import { Prompt } from "./components/prompt"
 import { Sidebar } from "./components/sidebar"
 import { OpenPage } from "./components/open-page"
 import { DialogCommand } from "./components/dialog-command"
+import { formatDuration } from "./util/format"
 import type { ScrollBoxRenderable } from "@opentui/core"
 
 let scroll: ScrollBoxRenderable | null = null
@@ -90,7 +91,24 @@ function Layout() {
           {/* Horizontal padding + bottom gap matches OpenCode session/index.tsx:1043 */}
           <box flexDirection="column" flexGrow={1} paddingLeft={2} paddingRight={2} paddingBottom={1}>
             <Conversation />
-            <Prompt />
+            {/* Last-turn status: agent · model · duration */}
+            <Show when={store.lastTurnInfo}>
+              {(info: () => LastTurnInfo) => (
+                <box paddingLeft={3} paddingTop={1} flexShrink={0}>
+                  <text wrapMode="none">
+                    <span style={{ fg: theme.secondary }}>{"▣ "}</span>
+                    <span style={{ fg: theme.text }}>Reader</span>
+                    <span style={{ fg: theme.textMuted }}>
+                      {" "}· {info().modelName}
+                      {store.lastTurnDuration > 0 ? ` · ${formatDuration(store.lastTurnDuration)}` : ""}
+                    </span>
+                  </text>
+                </box>
+              )}
+            </Show>
+            <box paddingTop={1} flexShrink={0}>
+              <Prompt />
+            </box>
           </box>
           {/* Right column: session metadata sidebar (hidden on narrow terminals) */}
           <Show when={showSidebar()}>

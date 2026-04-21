@@ -28,6 +28,10 @@ export interface DisplayMessage {
   text: string
 }
 
+export interface LastTurnInfo {
+  modelName: string
+}
+
 interface AgentStoreState {
   messages: DisplayMessage[]
   isStreaming: boolean
@@ -38,6 +42,9 @@ interface AgentStoreState {
   status: "idle" | "streaming" | "tool_executing"
   totalTokens: number
   totalCost: number
+  lastTurnStartedAt: number
+  lastTurnDuration: number
+  lastTurnInfo: LastTurnInfo | null
 }
 
 interface AgentContextValue {
@@ -73,6 +80,9 @@ export function AgentProvider(props: ParentProps) {
     status: "idle",
     totalTokens: 0,
     totalCost: 0,
+    lastTurnStartedAt: 0,
+    lastTurnDuration: 0,
+    lastTurnInfo: null,
   })
 
   // Set message counter past any restored messages
@@ -113,6 +123,8 @@ export function AgentProvider(props: ParentProps) {
               setStore("totalTokens", (t) => t + usage.totalTokens)
               setStore("totalCost", (c) => c + usage.cost.total)
             }
+            // Snapshot model name so the status line survives model switches
+            setStore("lastTurnInfo", { modelName: store.modelName })
           }
           break
         }
@@ -124,6 +136,9 @@ export function AgentProvider(props: ParentProps) {
         case "agent_end":
           setStore("isStreaming", false)
           setStore("status", "idle")
+          if (store.lastTurnStartedAt > 0) {
+            setStore("lastTurnDuration", Date.now() - store.lastTurnStartedAt)
+          }
           // Persist session after each turn
           saveSession({
             messages: [...store.messages],
@@ -141,6 +156,7 @@ export function AgentProvider(props: ParentProps) {
       setStore("messages", produce((msgs) => {
         msgs.push({ id: `msg-${++messageCounter}`, role: "user", text })
       }))
+      setStore("lastTurnStartedAt", Date.now())
       toBottom()
       await actions.prompt(text)
     },
@@ -160,6 +176,9 @@ export function AgentProvider(props: ParentProps) {
       setStore("activeArticle", null)
       setStore("totalTokens", 0)
       setStore("totalCost", 0)
+      setStore("lastTurnStartedAt", 0)
+      setStore("lastTurnDuration", 0)
+      setStore("lastTurnInfo", null)
       clearSessionFile()
       messageCounter = 0
     },
