@@ -3,8 +3,8 @@ import type { DialogContext } from "../ui/dialog"
 import { DialogModel } from "./dialog-model"
 import { DialogTheme } from "./dialog-theme"
 import { DialogProvider as DialogProviderSelect } from "./dialog-provider"
-import { getCurrentModelId } from "../../backend/agent"
-import type { AgentActions } from "../../backend/agent"
+import { getCurrentModelId } from "@backend/agent"
+import type { AgentActions } from "@backend/agent"
 import { useTheme } from "../context/theme"
 
 interface CommandOption {

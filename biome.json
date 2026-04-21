@@ -12,5 +12,51 @@
 				"noExplicitAny": "off"
 			}
 		}
-	}
+	},
+	"overrides": [
+		{
+			"includes": ["src/backend/**"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noRestrictedImports": {
+							"level": "error",
+							"options": {
+								"patterns": [
+									{
+										"group": ["@tui/*"],
+										"message": "backend/ cannot import from tui/."
+									}
+								]
+							}
+						}
+					}
+				}
+			}
+		},
+		{
+			"includes": ["src/bridge/**"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noRestrictedImports": {
+							"level": "error",
+							"options": {
+								"patterns": [
+									{
+										"group": ["@tui/*"],
+										"message": "bridge/ cannot import from tui/."
+									},
+									{
+										"group": ["@backend/*"],
+										"message": "bridge/ cannot import from backend/."
+									}
+								]
+							}
+						}
+					}
+				}
+			}
+		}
+	]
 }

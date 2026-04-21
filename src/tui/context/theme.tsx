@@ -1,7 +1,7 @@
 import { batch, createContext, createEffect, createMemo, createSignal, on, onCleanup, useContext, type Accessor, type ParentProps } from "solid-js"
 import { createStore } from "solid-js/store"
 import { RGBA, SyntaxStyle, type ThemeTokenStyle } from "@opentui/core"
-import { loadConfig, saveConfig } from "../../backend/persistence/config"
+import { loadConfig, saveConfig } from "@backend/persistence/config"
 
 export interface ThemeColors {
   primary: RGBA

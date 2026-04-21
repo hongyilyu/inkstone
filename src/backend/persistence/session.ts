@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "fs"
 import { join } from "path"
-import type { SessionData } from "../../bridge/view-model"
+import type { SessionData } from "@bridge/view-model"
 
 const STATE_DIR = join(
   process.env.XDG_STATE_HOME || join(process.env.HOME || "~", ".local", "state"),

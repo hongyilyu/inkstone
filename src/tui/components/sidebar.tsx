@@ -4,7 +4,7 @@ import { useTheme } from "../context/theme"
 import { useAgent } from "../context/agent"
 import { refocusInput } from "../app"
 import { formatTokensFull, formatCost } from "../util/format"
-import { VAULT_DIR } from "../../backend/agent/constants"
+import { VAULT_DIR } from "@backend/agent/constants"
 import pkg from "../../../package.json"
 
 const SIDEBAR_WIDTH = 30

@@ -2,13 +2,13 @@ import { createContext, useContext, type ParentProps } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { batch } from "solid-js"
 import { type AgentEvent } from "@mariozechner/pi-agent-core"
-import { createAgentActions, getCurrentModel, setConfirmFn, type AgentActions } from "../../backend/agent"
+import { createAgentActions, getCurrentModel, setConfirmFn, type AgentActions } from "@backend/agent"
 import { useDialog } from "../ui/dialog"
 import { DialogConfirm } from "../ui/dialog-confirm"
 import { toBottom } from "../app"
 import { getModel, type Model, type Api, type AssistantMessage, type Provider } from "@mariozechner/pi-ai"
-import { saveSession, loadSession, clearSession as clearSessionFile } from "../../backend/persistence/session"
-import type { AgentStoreState, DisplayMessage } from "../../bridge/view-model"
+import { saveSession, loadSession, clearSession as clearSessionFile } from "@backend/persistence/session"
+import type { AgentStoreState, DisplayMessage } from "@bridge/view-model"
 
 /** Map raw provider identifiers to display names */
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {

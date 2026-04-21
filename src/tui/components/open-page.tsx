@@ -1,6 +1,6 @@
 import { useTheme } from "../context/theme"
 import { Prompt } from "./prompt"
-import { VAULT_DIR } from "../../backend/agent/constants"
+import { VAULT_DIR } from "@backend/agent/constants"
 import pkg from "../../../package.json"
 
 /**

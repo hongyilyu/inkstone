@@ -25,6 +25,16 @@
     // Some stricter flags (disabled by default)
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "noPropertyAccessFromIndexSignature": false
+    "noPropertyAccessFromIndexSignature": false,
+
+    // Layer-boundary aliases. Cross-layer imports use these (e.g. @tui/app);
+    // intra-layer imports stay relative. Boundary rules in biome.json
+    // restrict which aliases each layer can import.
+    "baseUrl": ".",
+    "paths": {
+      "@backend/*": ["src/backend/*"],
+      "@bridge/*": ["src/bridge/*"],
+      "@tui/*": ["src/tui/*"]
+    }
   }
 }
