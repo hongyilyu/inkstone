@@ -1,17 +1,12 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "fs"
 import { join } from "path"
-import type { DisplayMessage } from "../context/agent"
+import type { SessionData } from "../../bridge/view-model"
 
 const STATE_DIR = join(
   process.env.XDG_STATE_HOME || join(process.env.HOME || "~", ".local", "state"),
   "inkstone",
 )
 const SESSION_FILE = join(STATE_DIR, "session.json")
-
-interface SessionData {
-  messages: DisplayMessage[]
-  activeArticle: string | null
-}
 
 export function saveSession(data: SessionData): void {
   if (!existsSync(STATE_DIR)) {

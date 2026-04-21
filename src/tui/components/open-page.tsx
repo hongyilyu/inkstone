@@ -1,7 +1,7 @@
 import { useTheme } from "../context/theme"
 import { Prompt } from "./prompt"
-import { VAULT_DIR } from "../agent/constants"
-import pkg from "../../package.json"
+import { VAULT_DIR } from "../../backend/agent/constants"
+import pkg from "../../../package.json"
 
 /**
  * Open page shown when no messages exist.

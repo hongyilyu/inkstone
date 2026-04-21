@@ -2,12 +2,13 @@ import { createContext, useContext, type ParentProps } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { batch } from "solid-js"
 import { type AgentEvent } from "@mariozechner/pi-agent-core"
-import { createAgentActions, getAgent, getCurrentModel, setConfirmFn, type AgentActions } from "../agent"
+import { createAgentActions, getCurrentModel, setConfirmFn, type AgentActions } from "../../backend/agent"
 import { useDialog } from "../ui/dialog"
 import { DialogConfirm } from "../ui/dialog-confirm"
 import { toBottom } from "../app"
 import { getModel, type Model, type Api, type AssistantMessage, type Provider } from "@mariozechner/pi-ai"
-import { saveSession, loadSession, clearSession as clearSessionFile } from "../persistence/session"
+import { saveSession, loadSession, clearSession as clearSessionFile } from "../../backend/persistence/session"
+import type { AgentStoreState, DisplayMessage } from "../../bridge/view-model"
 
 /** Map raw provider identifiers to display names */
 const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
@@ -20,40 +21,6 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 
 function formatProvider(provider: Provider): string {
   return PROVIDER_DISPLAY_NAMES[provider] ?? provider
-}
-
-export interface DisplayMessage {
-  id: string
-  role: "user" | "assistant"
-  text: string
-  // `agentName` and `modelName` are per-message: each assistant bubble records
-  // the agent and model that produced *that specific* reply, sourced from the
-  // `message_end` event (not from mutable store state).
-  //
-  // `duration` is per-turn: the wall-clock time from the user's prompt to the
-  // turn completing. It is stamped only on the turn-closing assistant bubble
-  // (the final assistant message whose `stopReason !== "toolUse"`), so
-  // intermediate assistant messages in a tool-driven turn intentionally carry
-  // `agentName` + `modelName` without a `duration`.
-  //
-  // All three are optional because user messages don't have them and legacy
-  // persisted sessions predate these fields.
-  agentName?: string
-  modelName?: string
-  duration?: number // ms
-}
-
-interface AgentStoreState {
-  messages: DisplayMessage[]
-  isStreaming: boolean
-  activeArticle: string | null
-  modelName: string
-  modelProvider: string
-  contextWindow: number
-  status: "idle" | "streaming" | "tool_executing"
-  totalTokens: number
-  totalCost: number
-  lastTurnStartedAt: number
 }
 
 interface AgentContextValue {
@@ -112,7 +79,7 @@ export function AgentProvider(props: ParentProps) {
         case "message_start": {
           const msg = (event as any).message
           if (msg && msg.role === "assistant") {
-            setStore("messages", produce((msgs) => {
+            setStore("messages", produce((msgs: DisplayMessage[]) => {
               msgs.push({ id: `msg-${++messageCounter}`, role: "assistant", text: "" })
             }))
             toBottom()
@@ -195,7 +162,7 @@ export function AgentProvider(props: ParentProps) {
   const wrappedActions: AgentActions = {
     ...actions,
     async prompt(text: string) {
-      setStore("messages", produce((msgs) => {
+      setStore("messages", produce((msgs: DisplayMessage[]) => {
         msgs.push({ id: `msg-${++messageCounter}`, role: "user", text })
       }))
       setStore("lastTurnStartedAt", Date.now())

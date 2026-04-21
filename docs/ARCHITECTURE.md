@@ -4,6 +4,41 @@
 
 Inkstone is a terminal UI application built with OpenTUI (Solid reconciler) that uses pi-agent-core as a headless LLM agent backend. The agent runs in-process — no server, no worker threads, no network boundary.
 
+The codebase is split into three layers with enforced dependency direction so the agent and the frontend can be worked on in parallel and the TUI can eventually be swapped for a desktop or web frontend without touching the agent logic.
+
+## Layer boundaries
+
+```
+┌─────────────┐       ┌──────────────┐       ┌────────────────────┐
+│  src/tui/   │──────▶│ src/bridge/  │◀──────│    src/backend/    │
+│  Solid +    │       │  pure types  │       │  pi-agent-core,    │
+│  OpenTUI    │──────▶│              │       │  tools, persist    │
+└─────────────┘       └──────────────┘       └────────────────────┘
+       └──────────── can call actions ─────────────▶
+```
+
+| Layer | Purpose | Runtime deps |
+|---|---|---|
+| `src/backend/` | Headless agent — pi-agent-core `Agent`, tools, guard, system prompt, config + session persistence. No Solid, no OpenTUI, no UI. | pi-agent-core, pi-ai, diff, typebox, fs |
+| `src/bridge/` | Shared type contract between backend and any frontend. Pure TS, zero runtime. | none |
+| `src/tui/` | Solid + OpenTUI frontend — components, dialogs, theme, keybinds, store wiring. | solid-js, @opentui/* |
+
+**Dependency rules** (to be mechanically enforced by Biome's `noRestrictedImports` in a follow-up PR):
+
+- `tui/` may import from `bridge/`, `backend/`.
+- `backend/` may import from `bridge/` (types only, zero runtime cost). **Must not** import from `tui/`.
+- `bridge/` must not import from `backend/` or `tui/`.
+
+### Type-placement rule
+
+| Location | Purpose | Example |
+|---|---|---|
+| `bridge/view-model.ts` | Shared view-state contract any frontend would render/persist | `DisplayMessage`, `AgentStoreState`, `SessionData` |
+| `backend/agent/*` | Backend's public API surface — consumed directly by frontends | `AgentActions`, re-exports from pi-agent-core |
+| `tui/**` | Frontend-internal only | `AgentContextValue`, theme accessors, component props |
+
+Bridge is for types **both sides need to agree on as a shared data shape**. Backend's API types (e.g. `AgentActions`) are published *by* the backend *to* its consumers; they don't go through the bridge.
+
 ## Data Flow
 
 ```
@@ -24,67 +59,67 @@ User input (textarea)
 
 ```
 src/
-  index.tsx                     Entry: createCliRenderer() + render(<App />)
-  app.tsx                       Provider stack + root layout + commands
+  index.tsx                         Entry: createCliRenderer() + render(<tui.App />)
 
-  agent/
-    index.ts                    Agent instance, subscribe, expose actions
-    prompt.ts                   READING_RULES system prompt
-    constants.ts                VAULT_DIR, ARTICLES_DIR, SCRAPS_DIR, etc.
-    guard.ts                    beforeToolCall (frontmatter guard + confirm)
-    tools/
-      quote-article.ts          Paragraph search in active article
-      read-file.ts              readFileSync, scoped to VAULT_DIR
-      edit-file.ts              String replace + unified diff, scoped to VAULT_DIR
-      write-file.ts             writeFileSync/append, scoped to VAULT_DIR
+  backend/                          Headless — no Solid, no OpenTUI
+    agent/
+      index.ts                      Agent instance, createAgentActions, query getters
+      prompt.ts                     READING_RULES system prompt
+      constants.ts                  VAULT_DIR, ARTICLES_DIR, SCRAPS_DIR, etc.
+      guard.ts                      beforeToolCall (frontmatter guard + confirm)
+      tools/
+        quote-article.ts            Paragraph search in active article
+        read-file.ts                readFileSync, scoped to VAULT_DIR
+        edit-file.ts                String replace + unified diff, scoped to VAULT_DIR
+        write-file.ts               writeFileSync/append, scoped to VAULT_DIR
+    persistence/
+      config.ts                     modelId + themeId (shared JSON)
+      session.ts                    DisplayMessage[] + activeArticle (JSON; SQLite candidate)
 
-  context/
-    helper.tsx                  createSimpleContext() factory
-    agent.tsx                   Bridge agent events → Solid store
-    dialog.tsx                  Dialog stack context
-    keybind.tsx                 Keyboard shortcut system
-    theme.tsx                   Theme loading, resolution, application
-    kv.tsx                      JSON-file-backed reactive KV store
-    local.tsx                   Model selection state + persistence
+  bridge/                           Pure TS — shared type contract
+    view-model.ts                   DisplayMessage, AgentStoreState, SessionData
 
-  ui/
-    dialog.tsx                  Stack-based modal rendering
-    dialog-confirm.tsx          Promise-based yes/no confirmation
-    dialog-select.tsx           Fuzzy filterable select list
-    toast.tsx                   Toast notifications
-
-  components/
-    dialog-model.tsx            Model selection dialog
-    conversation.tsx            Scrollbox + message list
-    message.tsx                 Render user/assistant/tool messages
-    input.tsx                   Textarea prompt with /command parsing
-    sidebar.tsx                 Session metadata panel (title, context, article)
-
-  persistence/
-    session.ts                  Save/load messages as JSON
+  tui/                              Solid + OpenTUI
+    app.tsx                         Provider stack + root layout + global keybinds
+    context/
+      agent.tsx                     AgentProvider + useAgent (Solid store + event reducer)
+      theme.tsx                     Theme loading, resolution, application (SyntaxStyle FFI)
+      helper.tsx                    createSimpleContext() factory
+    ui/
+      dialog.tsx                    Stack-based modal rendering
+      dialog-confirm.tsx            Promise-based yes/no confirmation
+      dialog-select.tsx             Fuzzy filterable select list
+      toast.tsx                     Toast notifications
+    components/
+      conversation.tsx              Scrollbox + message list
+      prompt.tsx                    Textarea prompt with /command parsing
+      sidebar.tsx                   Session metadata panel (title, context, article)
+      open-page.tsx                 Empty-state welcome page
+      dialog-command.tsx            Ctrl+P command palette
+      dialog-model.tsx              Model selection dialog
+      dialog-theme.tsx              Theme selection dialog
+      dialog-provider.tsx           Provider selection dialog
+    util/
+      format.ts                     formatTokens, formatCost, formatDuration
 ```
 
 ## Provider Stack
 
 ```tsx
 <ThemeProvider>
-  <KVProvider>
-    <KeybindProvider>
-      <DialogProvider>
-        <AgentProvider>
-          <LocalProvider>
-            <App />
-          </LocalProvider>
-        </AgentProvider>
-      </DialogProvider>
-    </KeybindProvider>
-  </KVProvider>
+  <ToastProvider>
+    <DialogProvider>
+      <AgentProvider>
+        <Layout />
+      </AgentProvider>
+    </DialogProvider>
+  </ToastProvider>
 </ThemeProvider>
 ```
 
 ## Agent Integration
 
-The `AgentProvider` creates a pi-agent-core `Agent` instance and subscribes to its events. State is held in a `createStore`:
+The `AgentProvider` creates a pi-agent-core `Agent` instance (via `backend/agent/`) and subscribes to its events. State is held in a `createStore`:
 
 ```ts
 {
@@ -101,7 +136,9 @@ The `AgentProvider` creates a pi-agent-core `Agent` instance and subscribes to i
 }
 ```
 
-`DisplayMessage` (see `src/context/agent.tsx:25`):
+Both `DisplayMessage` and `AgentStoreState` are defined in `src/bridge/view-model.ts` — they are the cross-frontend view-state contract.
+
+`DisplayMessage`:
 
 ```ts
 {
@@ -114,19 +151,21 @@ The `AgentProvider` creates a pi-agent-core `Agent` instance and subscribes to i
 }
 ```
 
-Events from `agent.subscribe()` are batched via `batch()` and applied to the store. Solid's fine-grained reactivity ensures only affected UI nodes re-render.
+Events from `agent.subscribe()` are batched via `batch()` and applied to the store by the switch statement in `tui/context/agent.tsx`. Solid's fine-grained reactivity ensures only affected UI nodes re-render.
+
+> Design note: the event → view-state reducer is intentionally kept inline in the TUI's `AgentProvider` (not extracted to a shared `bridge/` module). If a second non-TUI frontend arrives, factor it out then. Avoids speculative abstraction for a single-consumer project.
 
 ## Markdown Rendering
 
-Assistant messages are rendered through OpenTUI's `<markdown>` component in `src/components/conversation.tsx`. The component takes a `SyntaxStyle` built by `generateSyntax(colors)` in `src/context/theme.tsx`, which maps ~40 Tree-sitter scopes (markup.* for markdown structure, plus core code scopes for fenced blocks) onto the active theme's existing named colors. The style is exposed as a reactive accessor `useTheme().syntax()` and re-creates whenever the theme id changes, so switching themes re-paints already-rendered markdown.
+Assistant messages are rendered through OpenTUI's `<markdown>` component in `src/tui/components/conversation.tsx`. The component takes a `SyntaxStyle` built by `generateSyntax(colors)` in `src/tui/context/theme.tsx`, which maps ~40 Tree-sitter scopes (markup.* for markdown structure, plus core code scopes for fenced blocks) onto the active theme's existing named colors. The style is exposed as a reactive accessor `useTheme().syntax()` and re-creates whenever the theme id changes, so switching themes re-paints already-rendered markdown.
 
 The `streaming` prop is enabled only on the final message while `store.isStreaming` is true, so the markdown parser keeps the trailing block unstable during deltas and finalizes token parsing on `agent_end`. Markdown syntax markers (`**`, `` ` ``, `#`, etc.) are concealed by default — users see rendered output, not source. User messages remain plain `<text>` inside the left-border bubble.
 
-`SyntaxStyle` wraps an FFI pointer into Zig-side allocations that JS GC cannot reclaim. The memo registers an `onCleanup(() => style.destroy())` so the previous instance is released on theme switch (recompute) and on provider disposal (app exit) — see `src/context/theme.tsx:222-227`.
+`SyntaxStyle` wraps an FFI pointer into Zig-side allocations that JS GC cannot reclaim. The memo registers an `onCleanup(() => style.destroy())` so the previous instance is released on theme switch (recompute) and on provider disposal (app exit) — see `src/tui/context/theme.tsx`.
 
 ## Per-Message Status Line
 
-Each completed assistant message renders its own status line directly below its markdown body in `src/components/conversation.tsx`:
+Each completed assistant message renders its own status line directly below its markdown body in `src/tui/components/conversation.tsx`:
 
 ```
 ▣ Reader · Claude Opus 4.6 (US) · 1m 2s

@@ -4,8 +4,8 @@ import { useTheme } from "../context/theme"
 import { useAgent } from "../context/agent"
 import { refocusInput } from "../app"
 import { formatTokensFull, formatCost } from "../util/format"
-import { VAULT_DIR } from "../agent/constants"
-import pkg from "../../package.json"
+import { VAULT_DIR } from "../../backend/agent/constants"
+import pkg from "../../../package.json"
 
 const SIDEBAR_WIDTH = 30
 // Inner content width = SIDEBAR_WIDTH - paddingLeft(2) - paddingRight(2)
