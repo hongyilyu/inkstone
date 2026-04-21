@@ -5,9 +5,14 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun run --watch src/index.tsx"
+    "dev": "bun run --watch src/index.tsx",
+    "format": "biome format --write ./src",
+    "lint": "biome lint ./src",
+    "check": "biome check --write ./src",
+    "ci": "biome check ./src"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.12",
     "@types/bun": "latest",
     "@types/diff": "^8.0.0"
   },
