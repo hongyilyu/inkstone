@@ -1,3 +1,4 @@
+import { getAgentInfo } from "@backend/agent";
 import type { RGBA } from "@opentui/core";
 import {
 	createEffect,
@@ -93,7 +94,11 @@ export function Prompt() {
 			return;
 		}
 
-		if (value.startsWith("/article ")) {
+		// `/article` is a reader-only command. On any other agent we let the
+		// branch fall through so the literal text is sent as a normal prompt.
+		// (The prefix check itself is naive — robust slash-command parsing is
+		// tracked in docs/TODO.md Future Work.)
+		if (store.currentAgent === "reader" && value.startsWith("/article ")) {
 			const articleId = value.slice("/article ".length).trim();
 			if (articleId) {
 				actions.loadArticle(articleId);
@@ -125,6 +130,15 @@ export function Prompt() {
 		return parts.join(" · ");
 	});
 
+	// Current agent info (display name + theme color key). `getAgentInfo`
+	// falls back to the default agent for unknown names, so the memo is
+	// never undefined.
+	const agentInfo = createMemo(() => getAgentInfo(store.currentAgent));
+
+	// Tab-cycle hint only makes sense on a fresh session. Once the user has
+	// sent a message the agent is locked for the rest of the session.
+	const canCycleAgent = createMemo(() => store.messages.length === 0);
+
 	return (
 		<box flexShrink={0}>
 			{/* prompt/index.tsx:974-1225 — input area with left border accent.
@@ -132,7 +146,7 @@ export function Prompt() {
 			<box
 				flexShrink={0}
 				border={["left"]}
-				borderColor={theme.secondary}
+				borderColor={theme[agentInfo().colorKey]}
 				customBorderChars={{
 					...EmptyBorder,
 					vertical: "┃",
@@ -177,7 +191,9 @@ export function Prompt() {
 						justifyContent="space-between"
 					>
 						<box flexDirection="row" gap={1}>
-							<text fg={theme.secondary}>Reader</text>
+							<text fg={theme[agentInfo().colorKey]}>
+								{agentInfo().displayName}
+							</text>
 							<text fg={theme.textMuted}>·</text>
 							<text flexShrink={0} fg={theme.text}>
 								{store.modelName}
@@ -196,7 +212,7 @@ export function Prompt() {
 			<box
 				height={1}
 				border={["left"]}
-				borderColor={theme.secondary}
+				borderColor={theme[agentInfo().colorKey]}
 				customBorderChars={{
 					...EmptyBorder,
 					vertical: "╹",
@@ -236,6 +252,11 @@ export function Prompt() {
 					<Show when={usageText()}>
 						<text fg={theme.textMuted} wrapMode="none">
 							{usageText()}
+						</text>
+					</Show>
+					<Show when={canCycleAgent()}>
+						<text fg={theme.text}>
+							tab <span style={{ fg: theme.textMuted }}>agents</span>
 						</text>
 					</Show>
 					<text fg={theme.text}>

@@ -1,8 +1,10 @@
 import type { AgentActions } from "@backend/agent";
 import { getCurrentModelId } from "@backend/agent";
+import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import type { DialogContext } from "../ui/dialog";
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select";
+import { DialogAgent } from "./dialog-agent";
 import { DialogModel } from "./dialog-model";
 import { DialogProvider as DialogProviderSelect } from "./dialog-provider";
 import { DialogTheme } from "./dialog-theme";
@@ -16,8 +18,24 @@ export function DialogCommand(props: {
 	actions: AgentActions;
 }) {
 	const { themeId } = useTheme();
+	const { store } = useAgent();
+
+	// Agent switching is only meaningful on an empty session; hide the option
+	// once messages exist so the palette doesn't advertise a no-op. The store
+	// can't change while this dialog is open (input is blurred), so a
+	// single-shot computation is sufficient.
+	const canSwitchAgent = store.messages.length === 0;
 
 	const options: DialogSelectOption<CommandOption>[] = [
+		...(canSwitchAgent
+			? [
+					{
+						title: "Agents",
+						value: { id: "agents" },
+						description: "Switch agent",
+					},
+				]
+			: []),
 		{ title: "Models", value: { id: "models" }, description: "Switch model" },
 		{ title: "Themes", value: { id: "themes" }, description: "Switch theme" },
 		{
@@ -35,6 +53,9 @@ export function DialogCommand(props: {
 			closeOnSelect={false}
 			onSelect={(option) => {
 				switch (option.value.id) {
+					case "agents":
+						DialogAgent.show(props.dialog);
+						break;
 					case "models":
 						DialogModel.show(props.dialog, getCurrentModelId(), (model) => {
 							props.actions.setModel(model);

@@ -1,3 +1,4 @@
+import { listAgents } from "@backend/agent";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import {
 	useKeyboard,
@@ -62,6 +63,27 @@ function Layout() {
 			evt.preventDefault();
 			evt.stopPropagation();
 			DialogCommand.show(dialog, actions);
+			return;
+		}
+
+		// Tab / Shift+Tab cycle agents — only on an empty session (matches
+		// OpenCode's agent_cycle / agent_cycle_reverse keybinds, scoped to the
+		// open page). Once a message exists the agent is locked for the run.
+		if (
+			evt.name === "tab" &&
+			store.messages.length === 0 &&
+			dialog.stack.length === 0
+		) {
+			evt.preventDefault?.();
+			evt.stopPropagation?.();
+			const list = listAgents();
+			if (list.length > 1) {
+				const dir = evt.shift ? -1 : 1;
+				const i = list.findIndex((a) => a.name === store.currentAgent);
+				const base = i < 0 ? 0 : i;
+				const next = list[(base + dir + list.length) % list.length];
+				if (next) actions.setAgent(next.name);
+			}
 			return;
 		}
 

@@ -1,5 +1,6 @@
+import { getAgentInfo } from "@backend/agent";
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { For, Show } from "solid-js";
+import { createMemo, For, Show } from "solid-js";
 import { refocusInput, setScrollRef } from "../app";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
@@ -27,6 +28,14 @@ const SplitBorderChars = {
 export function Conversation() {
 	const { theme, syntax } = useTheme();
 	const { store } = useAgent();
+
+	// Accent color for user-message borders and the assistant-footer `▣` glyph,
+	// derived from the currently-active agent. Agent switching is locked to an
+	// empty session, so a single accent applies uniformly to every bubble in
+	// the current transcript.
+	const agentColor = createMemo(
+		() => theme[getAgentInfo(store.currentAgent).colorKey],
+	);
 
 	return (
 		<scrollbox
@@ -61,7 +70,7 @@ export function Conversation() {
 										<Show when={msg.modelName}>
 											<box paddingLeft={3} paddingTop={1} flexShrink={0}>
 												<text wrapMode="none">
-													<span style={{ fg: theme.secondary }}>{"▣ "}</span>
+													<span style={{ fg: agentColor() }}>{"▣ "}</span>
 													<span style={{ fg: theme.text }}>
 														{msg.agentName ?? "Reader"}
 													</span>
@@ -80,7 +89,7 @@ export function Conversation() {
 							>
 								<box
 									border={["left"]}
-									borderColor={theme.secondary}
+									borderColor={agentColor()}
 									customBorderChars={SplitBorderChars}
 									marginTop={index() === 0 ? 0 : 1}
 								>

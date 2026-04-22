@@ -2,19 +2,17 @@ import { resolve } from "node:path";
 import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
 import { type Api, getModel, type Model } from "@mariozechner/pi-ai";
 import { loadConfig, saveConfig } from "../persistence/config";
+import { AGENTS, type AgentInfo, DEFAULT_AGENT, getAgentInfo } from "./agents";
 import { ARTICLES_DIR } from "./constants";
 import { beforeToolCall, setConfirmFn } from "./guard";
-import { buildSystemPrompt } from "./prompt";
-import { editFileTool } from "./tools/edit-file";
-import { quoteArticleTool, setActiveArticle } from "./tools/quote-article";
-import { readFileTool } from "./tools/read-file";
-import { writeFileTool } from "./tools/write-file";
+import { setActiveArticle } from "./tools/quote-article";
 
 export interface AgentActions {
 	prompt(text: string): Promise<void>;
 	abort(): void;
 	loadArticle(articleId: string): void;
 	setModel(model: Model<Api>): void;
+	setAgent(name: string): void;
 	clearSession(): void;
 }
 
@@ -23,17 +21,22 @@ const DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0";
 let agent: Agent | null = null;
 let activeArticle: string | null = null;
 let currentModelId: string = loadConfig().modelId ?? DEFAULT_MODEL_ID;
-
-const tools = [readFileTool, editFileTool, writeFileTool, quoteArticleTool];
+let currentAgent: string = (() => {
+	const stored = loadConfig().currentAgent;
+	return stored && AGENTS.some((a) => a.name === stored)
+		? stored
+		: DEFAULT_AGENT;
+})();
 
 export function getAgent(): Agent {
 	if (!agent) {
+		const info = getAgentInfo(currentAgent);
 		agent = new Agent({
 			initialState: {
-				systemPrompt: buildSystemPrompt(null),
+				systemPrompt: info.buildSystemPrompt(activeArticle),
 				model: getModel("amazon-bedrock", currentModelId as any),
 				thinkingLevel: "off",
-				tools,
+				tools: info.tools,
 			},
 			getApiKey: async (provider) => {
 				if (provider === "amazon-bedrock") {
@@ -73,18 +76,29 @@ export function createAgentActions(
 		loadArticle(articleId: string) {
 			activeArticle = articleId;
 			setActiveArticle(articleId);
-			a.state.systemPrompt = buildSystemPrompt(articleId);
+			// Rebuild the system prompt through whichever agent is currently active.
+			// In practice only the reader agent reads `activeArticle` — other agents
+			// silently ignore the argument.
+			a.state.systemPrompt =
+				getAgentInfo(currentAgent).buildSystemPrompt(activeArticle);
 		},
 		setModel(model: Model<Api>) {
 			a.state.model = model;
 			currentModelId = model.id;
 			saveConfig({ modelId: model.id });
 		},
+		setAgent(name: string) {
+			const info = getAgentInfo(name);
+			currentAgent = info.name;
+			a.state.systemPrompt = info.buildSystemPrompt(activeArticle);
+			a.state.tools = info.tools;
+			saveConfig({ currentAgent: info.name });
+		},
 		clearSession() {
 			a.state.messages = [];
 			activeArticle = null;
 			setActiveArticle(null);
-			a.state.systemPrompt = buildSystemPrompt(null);
+			a.state.systemPrompt = getAgentInfo(currentAgent).buildSystemPrompt(null);
 		},
 	};
 }
@@ -101,4 +115,12 @@ export function getActiveArticle(): string | null {
 	return activeArticle;
 }
 
-export { setConfirmFn };
+export function getCurrentAgent(): string {
+	return currentAgent;
+}
+
+export function listAgents(): AgentInfo[] {
+	return AGENTS;
+}
+
+export { type AgentInfo, getAgentInfo, setConfirmFn };

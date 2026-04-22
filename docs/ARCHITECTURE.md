@@ -85,7 +85,8 @@ src/
   backend/                          Headless — no Solid, no OpenTUI
     agent/
       index.ts                      Agent instance, createAgentActions, query getters
-      prompt.ts                     READING_RULES system prompt
+      agents.ts                     Static agent registry (AGENTS, getAgentInfo)
+      prompt.ts                     READING_RULES system prompt (used by `reader` entry in agents.ts)
       constants.ts                  VAULT_DIR, ARTICLES_DIR, SCRAPS_DIR, etc.
       guard.ts                      beforeToolCall (frontmatter guard + confirm)
       tools/
@@ -94,7 +95,7 @@ src/
         edit-file.ts                String replace + unified diff, scoped to VAULT_DIR
         write-file.ts               writeFileSync/append, scoped to VAULT_DIR
     persistence/
-      config.ts                     modelId + themeId (shared JSON)
+      config.ts                     modelId + themeId + currentAgent (shared JSON)
       session.ts                    DisplayMessage[] + activeArticle (JSON; SQLite candidate)
 
   bridge/                           Pure TS — shared type contract
@@ -112,11 +113,12 @@ src/
       dialog-select.tsx             Fuzzy filterable select list
       toast.tsx                     Toast notifications
     components/
-      conversation.tsx              Scrollbox + message list
-      prompt.tsx                    Textarea prompt with /command parsing
+      conversation.tsx              Scrollbox + message list (user-bubble border + `▣` glyph derive from active agent color)
+      prompt.tsx                    Textarea prompt with /command parsing, agent label, tab-cycle hint
       sidebar.tsx                   Session metadata panel (title, context, article)
       open-page.tsx                 Empty-state welcome page
-      dialog-command.tsx            Ctrl+P command palette
+      dialog-command.tsx            Ctrl+P command palette (Agents entry shown only when session is empty)
+      dialog-agent.tsx              Agent selection dialog
       dialog-model.tsx              Model selection dialog
       dialog-theme.tsx              Theme selection dialog
       dialog-provider.tsx           Provider selection dialog
@@ -154,6 +156,7 @@ The `AgentProvider` creates a pi-agent-core `Agent` instance (via `backend/agent
   totalTokens: number            // accumulated across all assistant turns
   totalCost: number              // accumulated across all assistant turns
   lastTurnStartedAt: number      // Date.now() when user prompt sent; consumed in agent_end
+  currentAgent: string           // active agent name (e.g. "reader" | "example")
 }
 ```
 
@@ -224,6 +227,41 @@ The `beforeToolCall` hook runs before each tool execution:
 3. **Notes/scraps confirmation**: show DialogConfirm, await user response
 
 The confirmation dialog is async — `beforeToolCall` awaits the dialog promise before returning `{ block: true/false }`.
+
+## Agent Registry
+
+Multi-agent support is implemented as a static registry in `src/backend/agent/agents.ts`. Each entry (`AgentInfo`) declares a name, display name, description, theme `colorKey`, tool set, and a `buildSystemPrompt(activeArticle)` builder. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
+
+Two agents ship today:
+
+| Name | Tools | Prompt behavior | Color |
+|------|-------|-----------------|-------|
+| `reader` | `read_file`, `edit_file`, `write_file`, `quote_article` | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
+| `example` | none | Short static "general-purpose assistant" prompt; ignores `activeArticle` | `theme.accent` |
+
+### Switching rules
+
+Switching is intentionally locked to empty sessions (`store.messages.length === 0`), diverging from OpenCode's always-on `agent_cycle`. This matches Inkstone's "one agent per session" model and avoids the bookkeeping OpenCode needs (per-message `agent` stamps on user bubbles, tool-result routing, mid-stream prompt rebuilds).
+
+- **Tab / Shift+Tab** on the open page cycle forward / backward through the registry. Handled in the top-level `useKeyboard` in `src/tui/app.tsx`, after the gating check.
+- **Command palette → Agents** opens `DialogAgent`, the entry is hidden once `store.messages.length > 0`.
+- **Persistence**: the selected agent is saved to `config.json` as `currentAgent` on every switch and restored at boot. Unknown names fall back to the first registry entry.
+
+### Data flow
+
+```
+setAgent(name)
+  → AgentActions.setAgent (backend/agent/index.ts)
+    → currentAgent = info.name
+    → a.state.systemPrompt = info.buildSystemPrompt(activeArticle)
+    → a.state.tools = info.tools
+    → saveConfig({ currentAgent })
+  → tui wrapper (context/agent.tsx)
+    → setStore("currentAgent", getCurrentAgent())
+      → prompt label, input border, user-bubble border, assistant ▣ glyph all re-theme via `theme[getAgentInfo(store.currentAgent).colorKey]`
+```
+
+The assistant `message_end` handler stamps `agentName` onto the new bubble using `getAgentInfo(store.currentAgent).displayName`. Because switching is locked mid-session, the stamped name is guaranteed to be the agent that actually produced the reply.
 
 ## Key Patterns (from OpenCode)
 

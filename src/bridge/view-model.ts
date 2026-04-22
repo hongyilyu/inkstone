@@ -48,9 +48,24 @@ export interface AgentStoreState {
 	totalTokens: number;
 	totalCost: number;
 	lastTurnStartedAt: number;
+	/**
+	 * Name of the currently-active agent persona (e.g. "reader", "example").
+	 * The full agent registry is static, owned by `backend/agent/agents.ts`,
+	 * and imported directly by any frontend that needs the agent list — so
+	 * only the selected agent crosses the bridge as reactive state.
+	 */
+	currentAgent: string;
 }
 
 export interface SessionData {
 	messages: DisplayMessage[];
 	activeArticle: string | null;
+	/**
+	 * Agent active at the time the session was saved. Optional for backward
+	 * compatibility with sessions persisted before multi-agent support. When
+	 * present, restoring the session uses this value in preference to the
+	 * last-selected agent from `config.json` — otherwise a persisted session
+	 * could reopen under the wrong agent if config drifted independently.
+	 */
+	currentAgent?: string;
 }

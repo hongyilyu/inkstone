@@ -1,6 +1,8 @@
 import {
 	type AgentActions,
 	createAgentActions,
+	getAgentInfo,
+	getCurrentAgent,
 	getCurrentModel,
 	setConfirmFn,
 } from "@backend/agent";
@@ -71,6 +73,7 @@ export function AgentProvider(props: ParentProps) {
 		totalTokens: 0,
 		totalCost: 0,
 		lastTurnStartedAt: 0,
+		currentAgent: getCurrentAgent(),
 	});
 
 	// Set message counter past any restored messages
@@ -147,7 +150,11 @@ export function AgentProvider(props: ParentProps) {
 							const modelId = assistantMsg.model;
 							const displayName =
 								getModel(provider as any, modelId as any)?.name ?? modelId;
-							setStore("messages", lastIdx, "agentName", "Reader");
+							// Switching agents is locked to the empty-session open
+							// page, so `store.currentAgent` at event time is
+							// guaranteed to be the agent that produced this reply.
+							const agentName = getAgentInfo(store.currentAgent).displayName;
+							setStore("messages", lastIdx, "agentName", agentName);
 							setStore("messages", lastIdx, "modelName", displayName);
 						}
 					}
@@ -179,6 +186,7 @@ export function AgentProvider(props: ParentProps) {
 					saveSession({
 						messages: [...store.messages],
 						activeArticle: store.activeArticle,
+						currentAgent: store.currentAgent,
 					});
 					break;
 			}
@@ -209,6 +217,12 @@ export function AgentProvider(props: ParentProps) {
 			setStore("modelProvider", formatProvider(model.provider));
 			setStore("contextWindow", model.contextWindow);
 		},
+		setAgent(name: string) {
+			actions.setAgent(name);
+			// Read back the canonical name (the registry may coerce unknown names
+			// to the default agent) so the UI stays consistent with the backend.
+			setStore("currentAgent", getCurrentAgent());
+		},
 		clearSession() {
 			actions.clearSession();
 			setStore("messages", []);
@@ -222,6 +236,16 @@ export function AgentProvider(props: ParentProps) {
 	};
 
 	const value: AgentContextValue = { store, actions: wrappedActions };
+
+	// Restore the agent recorded in the saved session *before* loadArticle, so
+	// the system-prompt rebuild inside `loadArticle` runs under the correct
+	// agent's prompt builder. Without this, a transcript persisted under one
+	// agent could reopen under whichever agent is currently in `config.json`,
+	// with no way to switch back (agent cycling is locked once messages exist).
+	// Legacy sessions that predate the field fall through and use config.
+	if (saved?.currentAgent) {
+		wrappedActions.setAgent(saved.currentAgent);
+	}
 
 	// Reactivate article-specific system prompt / guard in the agent runtime
 	// if a previous session had an active article.
