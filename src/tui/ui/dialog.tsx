@@ -14,6 +14,7 @@ import {
 } from "solid-js";
 import { createStore } from "solid-js/store";
 import { useTheme } from "../context/theme";
+import * as Keybind from "../util/keybind";
 
 /**
  * Dialog wrapper component.
@@ -92,7 +93,7 @@ function init() {
 	useKeyboard((evt: any) => {
 		if (store.stack.length === 0) return;
 		if (evt.defaultPrevented) return;
-		if (evt.name === "escape" || (evt.ctrl && evt.name === "c")) {
+		if (Keybind.match("dialog_close", evt)) {
 			if (renderer.getSelection()) {
 				renderer.clearSelection();
 			}

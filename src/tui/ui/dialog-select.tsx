@@ -9,6 +9,7 @@ import { isDeepEqual } from "remeda";
 import { batch, createEffect, createMemo, For, on, Show } from "solid-js";
 import { createStore } from "solid-js/store";
 import { useTheme } from "../context/theme";
+import * as Keybind from "../util/keybind";
 import { useDialog } from "./dialog";
 
 export interface DialogSelectOption<T = any> {
@@ -158,14 +159,45 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 	useKeyboard((evt: any) => {
 		setStore("input", "keyboard");
 
-		if (evt.name === "up" || (evt.ctrl && evt.name === "p")) move(-1);
-		if (evt.name === "down" || (evt.ctrl && evt.name === "n")) move(1);
-		if (evt.name === "pageup") move(-10);
-		if (evt.name === "pagedown") move(10);
-		if (evt.name === "home") moveTo(0);
-		if (evt.name === "end") moveTo(flat().length - 1);
+		// Navigation bindings include emacs-style ctrl+p/ctrl+n on top of
+		// arrow keys — see KEYBINDS.select_{up,down}. We `preventDefault` on
+		// any nav match so the CommandProvider's ctrl+p palette-open binding
+		// doesn't also fire (belt-and-suspenders alongside its
+		// `dialog.stack.length > 0` guard).
+		if (Keybind.match("select_up", evt)) {
+			evt.preventDefault?.();
+			evt.stopPropagation?.();
+			move(-1);
+			return;
+		}
+		if (Keybind.match("select_down", evt)) {
+			evt.preventDefault?.();
+			evt.stopPropagation?.();
+			move(1);
+			return;
+		}
+		if (Keybind.match("select_page_up", evt)) {
+			evt.preventDefault?.();
+			move(-10);
+			return;
+		}
+		if (Keybind.match("select_page_down", evt)) {
+			evt.preventDefault?.();
+			move(10);
+			return;
+		}
+		if (Keybind.match("select_first", evt)) {
+			evt.preventDefault?.();
+			moveTo(0);
+			return;
+		}
+		if (Keybind.match("select_last", evt)) {
+			evt.preventDefault?.();
+			moveTo(flat().length - 1);
+			return;
+		}
 
-		if (evt.name === "return") {
+		if (Keybind.match("select_submit", evt)) {
 			const option = selected();
 			if (option) {
 				evt.preventDefault();

@@ -1,4 +1,4 @@
-import { listAgents } from "@backend/agent";
+import { getCurrentModelId, listAgents } from "@backend/agent";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import {
 	useKeyboard,
@@ -7,7 +7,15 @@ import {
 } from "@opentui/solid";
 import { createMemo, Show } from "solid-js";
 import { Conversation } from "./components/conversation";
-import { DialogCommand } from "./components/dialog-command";
+import { DialogAgent } from "./components/dialog-agent";
+import {
+	type CommandOption,
+	CommandProvider,
+	useCommand,
+} from "./components/dialog-command";
+import { DialogModel } from "./components/dialog-model";
+import { DialogProvider as DialogProviderSelect } from "./components/dialog-provider";
+import { DialogTheme } from "./components/dialog-theme";
 import { OpenPage } from "./components/open-page";
 import { Prompt } from "./components/prompt";
 import { Sidebar } from "./components/sidebar";
@@ -15,6 +23,7 @@ import { AgentProvider, useAgent } from "./context/agent";
 import { ThemeProvider, useTheme } from "./context/theme";
 import { DialogProvider, useDialog } from "./ui/dialog";
 import { Toast, ToastProvider } from "./ui/toast";
+import * as Keybind from "./util/keybind";
 
 let scroll: ScrollBoxRenderable | null = null;
 let inputRef: any = null;
@@ -43,68 +52,129 @@ export function toBottom() {
 function Layout() {
 	const renderer = useRenderer();
 	const dialog = useDialog();
+	const command = useCommand();
 	const { actions, store } = useAgent();
-	const { theme } = useTheme();
+	const { theme, themeId } = useTheme();
 
 	const dimensions = useTerminalDimensions();
 	const showSidebar = createMemo(() => dimensions().width >= 100);
 
+	// Commands shown in the palette (Ctrl+P) plus any with a `keybind` field
+	// are dispatched by `CommandProvider`. Registration is reactive: returning
+	// `[]` when a command shouldn't apply (e.g. agent cycling on a non-empty
+	// session) removes it both from the palette and from global dispatch.
+	command.register(() => {
+		const canSwitchAgent = store.messages.length === 0;
+		const list: CommandOption[] = [];
+
+		if (canSwitchAgent) {
+			list.push({
+				id: "agents",
+				title: "Agents",
+				description: "Switch agent",
+				onSelect: (d) => {
+					DialogAgent.show(d);
+				},
+			});
+		}
+
+		list.push(
+			{
+				id: "models",
+				title: "Models",
+				description: "Switch model",
+				onSelect: (d) => {
+					DialogModel.show(d, getCurrentModelId(), (model) => {
+						actions.setModel(model);
+						d.clear();
+					});
+				},
+			},
+			{
+				id: "themes",
+				title: "Themes",
+				description: "Switch theme",
+				onSelect: (d) => {
+					DialogTheme.show(d, themeId());
+				},
+			},
+			{
+				id: "connect",
+				title: "Connect",
+				description: "Switch provider",
+				onSelect: (d) => {
+					DialogProviderSelect.show(d);
+				},
+			},
+		);
+
+		// Tab / Shift+Tab cycle agents on the open page only. Hidden from the
+		// palette (they're keybind-only) and disabled once messages exist.
+		if (canSwitchAgent) {
+			const cycle = (dir: 1 | -1) => {
+				const all = listAgents();
+				if (all.length <= 1) return;
+				const i = all.findIndex((a) => a.name === store.currentAgent);
+				const base = i < 0 ? 0 : i;
+				const next = all[(base + dir + all.length) % all.length];
+				if (next) actions.setAgent(next.name);
+			};
+			list.push(
+				{
+					id: "agent_cycle",
+					title: "Next agent",
+					keybind: "agent_cycle",
+					hidden: true,
+					onSelect: () => cycle(1),
+				},
+				{
+					id: "agent_cycle_reverse",
+					title: "Previous agent",
+					keybind: "agent_cycle_reverse",
+					hidden: true,
+					onSelect: () => cycle(-1),
+				},
+			);
+		}
+
+		return list;
+	});
+
+	// Bare-metal + scroll keybinds. These don't go through the command
+	// registry because:
+	//   - `app_exit` destroys the renderer (not a normal "command")
+	//   - the scroll targets (`scroll` ref) are local to this Layout and
+	//     only meaningful when the session view is mounted
 	useKeyboard((evt: any) => {
-		if (evt.ctrl && evt.name === "c") {
+		if (Keybind.match("app_exit", evt)) {
+			// Only exit when no dialog is open — otherwise the dialog stack's
+			// handler in `ui/dialog.tsx` treats ctrl+c as "close dialog".
+			if (dialog.stack.length > 0) return;
 			renderer.destroy();
 			// renderer.destroy() restores terminal state; exit the process
-			// since pi-agent-core keeps handles alive
+			// since pi-agent-core keeps handles alive.
 			setTimeout(() => process.exit(0), 100);
 			return;
 		}
 
-		// Ctrl+P opens command panel
-		if (evt.ctrl && evt.name === "p") {
-			evt.preventDefault();
-			evt.stopPropagation();
-			DialogCommand.show(dialog, actions);
+		if (!scroll || scroll.isDestroyed) return;
+		if (dialog.stack.length > 0) return;
+
+		if (Keybind.match("messages_page_up", evt)) {
+			scroll.scrollBy(-scroll.height / 2);
 			return;
 		}
-
-		// Tab / Shift+Tab cycle agents — only on an empty session (matches
-		// OpenCode's agent_cycle / agent_cycle_reverse keybinds, scoped to the
-		// open page). Once a message exists the agent is locked for the run.
-		if (
-			evt.name === "tab" &&
-			store.messages.length === 0 &&
-			dialog.stack.length === 0
-		) {
-			evt.preventDefault?.();
-			evt.stopPropagation?.();
-			const list = listAgents();
-			if (list.length > 1) {
-				const dir = evt.shift ? -1 : 1;
-				const i = list.findIndex((a) => a.name === store.currentAgent);
-				const base = i < 0 ? 0 : i;
-				const next = list[(base + dir + list.length) % list.length];
-				if (next) actions.setAgent(next.name);
-			}
+		if (Keybind.match("messages_page_down", evt)) {
+			scroll.scrollBy(scroll.height / 2);
 			return;
 		}
-
-		// Scroll keybinds (prompt stays focused)
-		if (scroll && !scroll.isDestroyed) {
-			if (evt.name === "pageup" || (evt.meta && evt.name === "up")) {
-				scroll.scrollBy(-scroll.height / 2);
-				return;
-			}
-			if (evt.name === "pagedown" || (evt.meta && evt.name === "down")) {
-				scroll.scrollBy(scroll.height / 2);
-				return;
-			}
-			if (evt.ctrl && evt.name === "home") {
-				scroll.scrollTo(0);
-				return;
-			}
-			if (evt.ctrl && evt.name === "end") {
-				scroll.scrollTo(scroll.scrollHeight);
-				return;
-			}
+		if (Keybind.match("messages_first", evt)) {
+			scroll.scrollTo(0);
+			return;
+		}
+		if (Keybind.match("messages_last", evt)) {
+			scroll.scrollTo(scroll.scrollHeight);
+			return;
 		}
 	});
 
@@ -146,9 +216,11 @@ export function App() {
 		<ThemeProvider>
 			<ToastProvider>
 				<DialogProvider>
-					<AgentProvider>
-						<Layout />
-					</AgentProvider>
+					<CommandProvider>
+						<AgentProvider>
+							<Layout />
+						</AgentProvider>
+					</CommandProvider>
 				</DialogProvider>
 			</ToastProvider>
 		</ThemeProvider>

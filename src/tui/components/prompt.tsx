@@ -13,6 +13,7 @@ import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import { useDialog } from "../ui/dialog";
 import { formatCost, formatTokens } from "../util/format";
+import * as Keybind from "../util/keybind";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -256,11 +257,13 @@ export function Prompt() {
 					</Show>
 					<Show when={canCycleAgent()}>
 						<text fg={theme.text}>
-							tab <span style={{ fg: theme.textMuted }}>agents</span>
+							{Keybind.print("agent_cycle")}{" "}
+							<span style={{ fg: theme.textMuted }}>agents</span>
 						</text>
 					</Show>
 					<text fg={theme.text}>
-						ctrl+p <span style={{ fg: theme.textMuted }}>commands</span>
+						{Keybind.print("command_list")}{" "}
+						<span style={{ fg: theme.textMuted }}>commands</span>
 					</text>
 				</box>
 			</box>

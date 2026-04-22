@@ -102,28 +102,29 @@ src/
     view-model.ts                   DisplayMessage, AgentStoreState, SessionData
 
   tui/                              Solid + OpenTUI
-    app.tsx                         Provider stack + root layout + global keybinds
+    app.tsx                         Provider stack + root layout + app_exit + scroll keybinds; registers top-level commands via `useCommand().register`
     context/
       agent.tsx                     AgentProvider + useAgent (Solid store + event reducer)
       theme.tsx                     Theme loading, resolution, application (SyntaxStyle FFI)
       helper.tsx                    createSimpleContext() factory
     ui/
-      dialog.tsx                    Stack-based modal rendering
-      dialog-confirm.tsx            Promise-based yes/no confirmation
-      dialog-select.tsx             Fuzzy filterable select list
+      dialog.tsx                    Stack-based modal rendering (uses `Keybind.match("dialog_close")`)
+      dialog-confirm.tsx            Promise-based yes/no confirmation (local y/n/arrow keys)
+      dialog-select.tsx             Fuzzy filterable select list (uses `Keybind.match("select_*")`)
       toast.tsx                     Toast notifications
     components/
       conversation.tsx              Scrollbox + message list (user-bubble border + `▣` glyph derive from active agent color)
-      prompt.tsx                    Textarea prompt with /command parsing, agent label, tab-cycle hint
+      prompt.tsx                    Textarea prompt with /command parsing, agent label, tab-cycle hint (hints via `Keybind.print`)
       sidebar.tsx                   Session metadata panel (title, context, article)
       open-page.tsx                 Empty-state welcome page
-      dialog-command.tsx            Ctrl+P command palette (Agents entry shown only when session is empty)
+      dialog-command.tsx            `CommandProvider` + `useCommand` + internal palette. Registry-driven: components call `register(() => CommandOption[])`; the provider's `useKeyboard` dispatches any matching `keybind` and opens the palette on `command_list`.
       dialog-agent.tsx              Agent selection dialog
       dialog-model.tsx              Model selection dialog
       dialog-theme.tsx              Theme selection dialog
       dialog-provider.tsx           Provider selection dialog
     util/
       format.ts                     formatTokens, formatCost, formatDuration
+      keybind.ts                    `KEYBINDS` action map + `match(action, evt)` + `print(action)` (single source of truth for all keybinds outside dialog-confirm's local y/n)
 ```
 
 ## Provider Stack
@@ -132,13 +133,17 @@ src/
 <ThemeProvider>
   <ToastProvider>
     <DialogProvider>
-      <AgentProvider>
-        <Layout />
-      </AgentProvider>
+      <CommandProvider>
+        <AgentProvider>
+          <Layout />
+        </AgentProvider>
+      </CommandProvider>
     </DialogProvider>
   </ToastProvider>
 </ThemeProvider>
 ```
+
+`CommandProvider` sits inside `DialogProvider` because its dispatch loop reads the dialog stack (to yield to open dialogs). `AgentProvider` runs inside `CommandProvider` so `Layout` can call both `useAgent()` and `useCommand()`.
 
 ## Agent Integration
 
@@ -243,7 +248,7 @@ Two agents ship today:
 
 Switching is intentionally locked to empty sessions (`store.messages.length === 0`), diverging from OpenCode's always-on `agent_cycle`. This matches Inkstone's "one agent per session" model and avoids the bookkeeping OpenCode needs (per-message `agent` stamps on user bubbles, tool-result routing, mid-stream prompt rebuilds).
 
-- **Tab / Shift+Tab** on the open page cycle forward / backward through the registry. Handled in the top-level `useKeyboard` in `src/tui/app.tsx`, after the gating check.
+- **Tab / Shift+Tab** on the open page cycle forward / backward through the registry. Registered as hidden commands via `useCommand().register` in `Layout()` (`src/tui/app.tsx`), gated by `store.messages.length === 0` inside the registration callback so the bindings auto-disable once a message exists.
 - **Command palette → Agents** opens `DialogAgent`, the entry is hidden once `store.messages.length > 0`.
 - **Persistence**: the selected agent is saved to `config.json` as `currentAgent` on every switch and restored at boot. Unknown names fall back to the first registry entry.
 
@@ -263,10 +268,93 @@ setAgent(name)
 
 The assistant `message_end` handler stamps `agentName` onto the new bubble using `getAgentInfo(store.currentAgent).displayName`. Because switching is locked mid-session, the stamped name is guaranteed to be the agent that actually produced the reply.
 
+## Keybinds + Commands
+
+Keyboard shortcuts are in two layers — a pure data map (actions → binding strings) plus a registry-based dispatcher — ported from OpenCode's `util/keybind.ts` + `component/dialog-command.tsx` pattern.
+
+### Layer 1 — `src/tui/util/keybind.ts`
+
+The central `KEYBINDS` constant is a `Record<action, bindingString>`. Each value is a comma-separated list of alternates; each alternate is a `+`-separated list of modifier tokens and a key name. Supported tokens: `ctrl`, `alt` / `meta` / `option`, `shift`, `super`, `esc` (alias for `escape`). A value of `"none"` disables the action.
+
+The module exports two pure functions:
+
+- `Keybind.match(action, evt): boolean` — true iff the `ParsedKey` event matches any alternate for the action.
+- `Keybind.print(action): string` — human-readable label (`"ctrl+p"`, `"shift+tab"`, …) used in prompt hints and palette footers so labels stay in sync with bindings.
+
+Bindings are pre-parsed once at module load. No provider, no reactivity — bindings are static constants. When user overrides (`config.json`) land, they can be added without changing the call-site API.
+
+Action naming groups by scope:
+
+| Prefix / name | Scope |
+|---|---|
+| `app_exit` | Top-level renderer exit, in `app.tsx` |
+| `command_list` | CommandProvider — opens the Ctrl+P palette |
+| `agent_cycle`, `agent_cycle_reverse` | CommandProvider — registered commands in `app.tsx` |
+| `messages_*` | Top-level scroll handler in `app.tsx` (only mounted while the session view is rendered) |
+| `dialog_close` | `ui/dialog.tsx` — dismisses the top-of-stack dialog |
+| `select_*` | `ui/dialog-select.tsx` — local nav (arrow keys + emacs `ctrl+n`/`ctrl+p`) |
+
+`dialog-confirm.tsx` uses its own inline `y`/`n`/`left`/`right`/`return` checks — those keys are dialog-local and don't belong in the shared map.
+
+### Layer 2 — `src/tui/components/dialog-command.tsx` (CommandProvider)
+
+Replaces the previous static 4-item palette. `CommandProvider` owns a Solid signal of registration accessors and a single `useKeyboard` that:
+
+1. Returns early if a dialog is on the stack (so dialog-local handlers win).
+2. Opens the palette on `command_list`.
+3. Walks registered commands and fires the first whose `keybind` matches the event.
+
+Components register with `useCommand().register(() => CommandOption[])`. The callback is wrapped in a `createMemo`, so signal reads inside it track — returning `[]` when a command shouldn't apply naturally removes it from both the palette and global dispatch. Registrations auto-dispose on component unmount via `onCleanup` (the provider also attaches to its own owner via `runWithOwner` so future async/plugin registrations don't leak).
+
+`CommandOption` shape:
+
+```ts
+interface CommandOption {
+  id: string                                     // unique, DialogSelect value
+  title: string                                  // palette row
+  description?: string                           // palette row (appended with keybind hint if both)
+  keybind?: KeybindAction                        // optional global hotkey
+  hidden?: boolean                               // keybind-only; invisible in palette
+  onSelect: (dialog: DialogContext) => void
+}
+```
+
+### Collision safety
+
+`ctrl+p` is both `command_list` (global) and one alternate of `select_up` (dialog-local). This is safe because:
+
+- CommandProvider's dispatcher returns early on `dialog.stack.length > 0`.
+- DialogSelect calls `evt.preventDefault()` on nav matches, so even if handler order were reversed, the downstream CommandProvider would skip via its `defaultPrevented` check.
+
+Ctrl+C follows the same scope rule: inside a dialog it's caught by `ui/dialog.tsx`'s `dialog_close`; at the session view it's caught by `app.tsx`'s `app_exit` (gated to `dialog.stack.length === 0`).
+
+### Data flow
+
+```
+keypress
+  ↓
+useKeyboard dispatch order (roughly):
+  dialog.tsx            → match("dialog_close")?      yes: close + preventDefault; else skip
+  dialog-select.tsx     → match("select_*")?          yes: act + preventDefault
+  CommandProvider       → (dialog open? skip)
+                        → match("command_list")?      yes: open palette
+                        → iterate registrations, match(keybind)?  yes: fire onSelect
+  app.tsx Layout        → (dialog open? skip scroll)
+                        → match("app_exit")?           yes: destroy renderer
+                        → match("messages_*")?         yes: scroll
+```
+
+### Non-goals (deferred; see docs/TODO.md)
+
+- User overrides in `config.json`
+- Leader-chord (`<leader>X`) support
+- Plugin-registered keybinds
+- Textarea `input_*` action mapping (OpenTUI defaults are currently fine)
+
 ## Key Patterns (from OpenCode)
 
 - `createSimpleContext()` — factory for typed context providers
 - Stack-based dialog system with focus save/restore
 - KV persistence via JSON file in state directory
 - Theme resolution: hex → refs → dark/light variants → RGBA
-- Keybind system with leader key support
+- Named-action keybind map + command registry (see Keybinds + Commands section). Leader-chord and user overrides still deferred — see docs/TODO.md.

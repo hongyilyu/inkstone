@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-21 (multi-agent shell + session-persisted agent + /article reader-gate)
+**Last updated**: 2026-04-21 (keybind registry + command provider)
 
 ## Completed
 
@@ -26,6 +26,7 @@
 - [x] Multi-agent shell: static registry (`backend/agent/agents.ts`) with two agents — `reader` (existing Obsidian reading guide, 4 tools, `secondary` accent) and `example` (placeholder chat assistant, no tools, `accent` accent). `Tab` / `Shift+Tab` cycle agents on the open page; switching is locked once the session has messages (diverges from OpenCode's always-on `agent_cycle` to match Inkstone's "one agent per session" model). Current agent persists to `config.json` alongside `modelId`/`themeId`. Prompt label + input border + user-bubble border + assistant-footer `▣` glyph all derive their color from the active agent's `colorKey`. Command-palette entry shown only on the open page. Bubble-footer `agentName` now stamped with the active agent's `displayName` at `message_end`.
 - [x] Fix (review): `/article` is now gated on the reader agent — on any other agent the text falls through as a normal prompt (avoids a broken reading flow under an agent that has no article tools).
 - [x] Fix (review): `currentAgent` is persisted inside `session.json` and wins over `config.json` on restore, so a transcript always reopens under the agent that produced it, regardless of any intervening config drift. Legacy sessions without the field still fall through to config.
+- [x] Keybind registry + command provider: central `src/tui/util/keybind.ts` with a `KEYBINDS` action map and pure `match(action, evt)` / `print(action)` helpers; `CommandProvider` in `src/tui/components/dialog-command.tsx` with a reactive `register(() => CommandOption[])` API. Ctrl+P palette is now fully registry-driven (registered by `Layout()` in `app.tsx`). Fixes a latent bug where Ctrl+P inside an open DialogSelect could re-stack the palette, via CommandProvider's `dialog.stack.length === 0` guard. DialogSelect nav supports emacs-style Ctrl+P/Ctrl+N on top of arrow keys. Prompt hints render via `Keybind.print(...)` so labels stay in sync with bindings. Still deferred: user overrides, leader-chord, plugin keybinds, textarea action mapping.
 
 ## In Progress
 
@@ -54,5 +55,5 @@
 - [ ] Article file picker dialog (list files in ARTICLES_DIR)
 - [ ] Reading progress indicator (stage display in header)
 - [ ] Full theme system (33 themes, dark/light switching, custom themes)
-- [ ] Keybind system with leader key (from OpenCode)
+- [ ] User-configurable keybinds + leader-chord support (extend `src/tui/util/keybind.ts` with a Zod override schema merged from `config.json`, and port OpenCode's `<leader>X` chord machinery in `tui/context/keybind.tsx`).
 - [ ] KV persistence for settings (from OpenCode)
