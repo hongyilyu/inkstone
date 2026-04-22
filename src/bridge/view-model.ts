@@ -42,6 +42,11 @@ export interface AgentStoreState {
 	isStreaming: boolean;
 	activeArticle: string | null;
 	modelName: string;
+	/**
+	 * Provider id (e.g. "amazon-bedrock"), not a display string. Frontends
+	 * resolve this through `backend/providers` when rendering so formatting
+	 * stays a pure UI concern.
+	 */
 	modelProvider: string;
 	contextWindow: number;
 	status: "idle" | "streaming" | "tool_executing";

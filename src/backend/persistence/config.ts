@@ -8,6 +8,10 @@ const CONFIG_DIR = join(
 const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 
 interface Config {
+	/** Active provider id (e.g. "amazon-bedrock"). Missing on configs written
+	 * before the provider abstraction landed; callers should default to the
+	 * first registered provider in that case. */
+	providerId?: string;
 	modelId?: string;
 	themeId?: string;
 	currentAgent?: string;

@@ -1,4 +1,8 @@
-import { getCurrentModelId, listAgents } from "@backend/agent";
+import {
+	getCurrentModelId,
+	getCurrentProviderId,
+	listAgents,
+} from "@backend/agent";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import {
 	useKeyboard,
@@ -84,10 +88,17 @@ function Layout() {
 				title: "Models",
 				description: "Switch model",
 				onSelect: (d) => {
-					DialogModel.show(d, getCurrentModelId(), (model) => {
-						actions.setModel(model);
-						d.clear();
-					});
+					DialogModel.show(
+						d,
+						{
+							providerId: getCurrentProviderId(),
+							modelId: getCurrentModelId(),
+						},
+						(model) => {
+							actions.setModel(model);
+							d.clear();
+						},
+					);
 				},
 			},
 			{
@@ -101,7 +112,7 @@ function Layout() {
 			{
 				id: "connect",
 				title: "Connect",
-				description: "Switch provider",
+				description: "Manage providers",
 				onSelect: (d) => {
 					DialogProviderSelect.show(d);
 				},

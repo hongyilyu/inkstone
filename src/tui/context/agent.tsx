@@ -18,26 +18,12 @@ import {
 	type AssistantMessage,
 	getModel,
 	type Model,
-	type Provider,
 } from "@mariozechner/pi-ai";
 import { batch, createContext, type ParentProps, useContext } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { toBottom } from "../app";
 import { useDialog } from "../ui/dialog";
 import { DialogConfirm } from "../ui/dialog-confirm";
-
-/** Map raw provider identifiers to display names */
-const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-	"amazon-bedrock": "Amazon Bedrock",
-	anthropic: "Anthropic",
-	openai: "OpenAI",
-	google: "Google",
-	"google-vertex": "Google Vertex",
-};
-
-function formatProvider(provider: Provider): string {
-	return PROVIDER_DISPLAY_NAMES[provider] ?? provider;
-}
 
 interface AgentContextValue {
 	store: AgentStoreState;
@@ -67,7 +53,7 @@ export function AgentProvider(props: ParentProps) {
 		isStreaming: false,
 		activeArticle: saved?.activeArticle ?? null,
 		modelName: initialModel.name,
-		modelProvider: formatProvider(initialModel.provider),
+		modelProvider: initialModel.provider,
 		contextWindow: initialModel.contextWindow,
 		status: "idle",
 		totalTokens: 0,
@@ -214,7 +200,7 @@ export function AgentProvider(props: ParentProps) {
 		setModel(model: Model<Api>) {
 			actions.setModel(model);
 			setStore("modelName", model.name);
-			setStore("modelProvider", formatProvider(model.provider));
+			setStore("modelProvider", model.provider);
 			setStore("contextWindow", model.contextWindow);
 		},
 		setAgent(name: string) {

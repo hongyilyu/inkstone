@@ -7,7 +7,7 @@ A terminal UI application for guided article reading, built with OpenTUI (Solid)
 ## Constraints
 
 - File operations scoped to `VAULT_DIR` (`/home/hongyi/Documents/Obsidian/LifeOS`) only
-- Bedrock provider only (initially)
+- Bedrock is the first provider; more drop in through `src/backend/providers/`
 - No plugin system
 - No multi-session (one article per session)
 - No worker threads — agent runs in-process

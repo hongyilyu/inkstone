@@ -1,7 +1,8 @@
 import { resolve } from "node:path";
 import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
-import { type Api, getModel, type Model } from "@mariozechner/pi-ai";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import { loadConfig, saveConfig } from "../persistence/config";
+import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
 import { AGENTS, type AgentInfo, DEFAULT_AGENT, getAgentInfo } from "./agents";
 import { ARTICLES_DIR } from "./constants";
 import { beforeToolCall, setConfirmFn } from "./guard";
@@ -16,17 +17,45 @@ export interface AgentActions {
 	clearSession(): void;
 }
 
-const DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-20250514-v1:0";
-
 let agent: Agent | null = null;
 let activeArticle: string | null = null;
-let currentModelId: string = loadConfig().modelId ?? DEFAULT_MODEL_ID;
+
+// Active provider/model. Both are resolved at module load from the on-disk
+// config, falling back to the first registered provider's first model when
+// unset (fresh install) or when the stored model no longer exists in the
+// registry (e.g. a previous provider was removed).
+const initialConfig = loadConfig();
+let currentProviderId: string = initialConfig.providerId ?? DEFAULT_PROVIDER;
+let currentModelId: string = (() => {
+	const stored = initialConfig.modelId;
+	if (stored && resolveModel(currentProviderId, stored)) return stored;
+	// Fall back to the provider's explicit curated default, not to
+	// `listModels()[0]`. The first entry in pi-ai's Bedrock model list is
+	// `amazon.nova-2-lite-v1:0`, which would silently relocate fresh
+	// installs (and any install whose stored id ever stops resolving) to
+	// an arbitrary low-tier model.
+	const info = getProvider(currentProviderId);
+	if (resolveModel(info.id, info.defaultModelId)) return info.defaultModelId;
+	throw new Error(
+		`Provider '${info.id}' default model '${info.defaultModelId}' is not available in the registry. ` +
+			`Update the provider's \`defaultModelId\` or ensure pi-ai's registry still ships that model.`,
+	);
+})();
 let currentAgent: string = (() => {
-	const stored = loadConfig().currentAgent;
+	const stored = initialConfig.currentAgent;
 	return stored && AGENTS.some((a) => a.name === stored)
 		? stored
 		: DEFAULT_AGENT;
 })();
+
+function currentModel(): Model<Api> {
+	const m = resolveModel(currentProviderId, currentModelId);
+	if (!m)
+		throw new Error(
+			`Model '${currentModelId}' is not available from provider '${currentProviderId}'.`,
+		);
+	return m;
+}
 
 export function getAgent(): Agent {
 	if (!agent) {
@@ -34,15 +63,12 @@ export function getAgent(): Agent {
 		agent = new Agent({
 			initialState: {
 				systemPrompt: info.buildSystemPrompt(activeArticle),
-				model: getModel("amazon-bedrock", currentModelId as any),
+				model: currentModel(),
 				thinkingLevel: "off",
 				tools: info.tools,
 			},
 			getApiKey: async (provider) => {
-				if (provider === "amazon-bedrock") {
-					return process.env.AWS_BEARER_TOKEN_BEDROCK;
-				}
-				return undefined;
+				return getProvider(provider).getApiKey();
 			},
 			beforeToolCall: async (ctx) => {
 				// Inject article path into context for the guard
@@ -84,8 +110,9 @@ export function createAgentActions(
 		},
 		setModel(model: Model<Api>) {
 			a.state.model = model;
+			currentProviderId = model.provider;
 			currentModelId = model.id;
-			saveConfig({ modelId: model.id });
+			saveConfig({ providerId: model.provider, modelId: model.id });
 		},
 		setAgent(name: string) {
 			const info = getAgentInfo(name);
@@ -103,12 +130,16 @@ export function createAgentActions(
 	};
 }
 
+export function getCurrentProviderId(): string {
+	return currentProviderId;
+}
+
 export function getCurrentModelId(): string {
 	return currentModelId;
 }
 
 export function getCurrentModel(): Model<Api> {
-	return getModel("amazon-bedrock", currentModelId as any);
+	return currentModel();
 }
 
 export function getActiveArticle(): string | null {

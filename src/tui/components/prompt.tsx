@@ -1,4 +1,5 @@
 import { getAgentInfo } from "@backend/agent";
+import { getProvider } from "@backend/providers";
 import type { RGBA } from "@opentui/core";
 import {
 	createEffect,
@@ -199,7 +200,9 @@ export function Prompt() {
 							<text flexShrink={0} fg={theme.text}>
 								{store.modelName}
 							</text>
-							<text fg={theme.textMuted}>{store.modelProvider}</text>
+							<text fg={theme.textMuted}>
+								{getProvider(store.modelProvider).displayName}
+							</text>
 						</box>
 					</box>
 				</box>

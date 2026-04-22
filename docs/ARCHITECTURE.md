@@ -19,7 +19,7 @@ The codebase is split into three layers with enforced dependency direction so th
 
 | Layer | Purpose | Runtime deps |
 |---|---|---|
-| `src/backend/` | Headless agent — pi-agent-core `Agent`, tools, guard, system prompt, config + session persistence. No Solid, no OpenTUI, no UI. | pi-agent-core, pi-ai, diff, typebox, fs |
+| `src/backend/` | Headless agent — pi-agent-core `Agent`, tools, guard, system prompt, config + session persistence, **provider registry**. No Solid, no OpenTUI, no UI. | pi-agent-core, pi-ai, diff, typebox, fs |
 | `src/bridge/` | Shared type contract between backend and any frontend. Pure TS, zero runtime. | none |
 | `src/tui/` | Solid + OpenTUI frontend — components, dialogs, theme, keybinds, store wiring. | solid-js, @opentui/* |
 
@@ -67,7 +67,7 @@ User input (textarea)
   → command parsing (/article, /model, etc.)
   → agent.prompt(text)
     → pi-agent-core Agent loop
-      → LLM API call (Bedrock)
+      → LLM API call (provider from registry — Bedrock today)
       → tool calls (read_file, edit_file, write_file, quote_article)
         → beforeToolCall guard (block/confirm/allow)
       → streaming events
@@ -94,8 +94,12 @@ src/
         read-file.ts                readFileSync, scoped to VAULT_DIR
         edit-file.ts                String replace + unified diff, scoped to VAULT_DIR
         write-file.ts               writeFileSync/append, scoped to VAULT_DIR
+    providers/
+      types.ts                      ProviderInfo interface (id, displayName, listModels, getApiKey, isConnected, authInstructions)
+      amazon-bedrock.ts             Bedrock provider — wraps pi-ai `getModels("amazon-bedrock")`, auth via `getEnvApiKey`
+      index.ts                      PROVIDERS registry + getProvider/listProviders/resolveModel helpers
     persistence/
-      config.ts                     modelId + themeId + currentAgent (shared JSON)
+      config.ts                     providerId + modelId + themeId + currentAgent (shared JSON)
       session.ts                    DisplayMessage[] + activeArticle (JSON; SQLite candidate)
 
   bridge/                           Pure TS — shared type contract
@@ -155,7 +159,7 @@ The `AgentProvider` creates a pi-agent-core `Agent` instance (via `backend/agent
   isStreaming: boolean
   activeArticle: string | null
   modelName: string
-  modelProvider: string
+  modelProvider: string          // provider *id* (e.g. "amazon-bedrock"); format via getProvider(id).displayName at render time
   contextWindow: number
   status: "idle" | "streaming" | "tool_executing"
   totalTokens: number            // accumulated across all assistant turns
@@ -267,6 +271,65 @@ setAgent(name)
 ```
 
 The assistant `message_end` handler stamps `agentName` onto the new bubble using `getAgentInfo(store.currentAgent).displayName`. Because switching is locked mid-session, the stamped name is guaranteed to be the agent that actually produced the reply.
+
+## Provider Registry
+
+Providers are declared in `src/backend/providers/` as a static registry — same pattern as `agent/agents.ts`. The registry wraps pi-ai's per-API stream functions (`getModels(provider)` + pi-ai's internal `api-registry`) with the user-facing metadata Inkstone needs: display name, connection check, auth instructions.
+
+### Why a registry on top of pi-ai
+
+pi-ai already owns streaming for each API it ships (`bedrock-converse-stream`, `anthropic-messages`, `openai-responses`, …). Inkstone's `ProviderInfo` sits above that:
+
+- The registry owns the list of providers Inkstone actually exposes (pi-ai ships many; a given Inkstone build may surface a subset).
+- Each provider decides how its credentials resolve and reports a connected/disconnected status so the UI can gate on it.
+- Custom providers that pi-ai doesn't ship (e.g. Bedrock-Converse-compatible endpoints like Amazon Kiro) can return hand-built `Model<Api>` objects with a custom `baseUrl`, reusing pi-ai's existing stream function for that API. No change to pi-ai itself.
+- The extension point for fundamentally-different custom providers (own `streamFn`) is intentionally *not* wired here. Add it when the first such provider lands; not speculatively.
+
+### `ProviderInfo` shape
+
+```ts
+interface ProviderInfo {
+  id: string;                        // e.g. "amazon-bedrock"
+  displayName: string;               // "Amazon Bedrock"
+  defaultModelId: string;            // curated default when config is empty / stale
+  listModels(): Model<Api>[];
+  getApiKey(): string | undefined;   // forwarded to Agent.getApiKey hook
+  isConnected(): boolean;            // credentials configured?
+  authInstructions: string;          // shown in Connect dialog on a miss
+}
+```
+
+`defaultModelId` is required (not optional) so every provider declares its own curated fallback rather than depending on registry order. The agent module throws on boot if the declared default no longer resolves through `listModels()`, surfacing pi-ai registry drift loudly instead of silently relocating the user to an arbitrary model.
+
+One provider ships today:
+
+| id | displayName | Default | Auth detection | Models |
+|---|---|---|---|---|
+| `amazon-bedrock` | Amazon Bedrock | `us.anthropic.claude-opus-4-7` | pi-ai's `getEnvApiKey("amazon-bedrock")` (AWS_PROFILE / AWS_ACCESS_KEY_ID+SECRET / AWS_BEARER_TOKEN_BEDROCK / ECS/IRSA) **or** presence of `~/.aws/credentials` / `~/.aws/config` (honoring AWS_SHARED_CREDENTIALS_FILE / AWS_CONFIG_FILE overrides). IMDS-only EC2 is not probed. | `getModels("amazon-bedrock")` from pi-ai |
+
+`getApiKey()` returns `undefined` for Bedrock because pi-ai's Bedrock stream function reads AWS env vars directly via the AWS SDK chain — forwarding anything through pi-agent-core's `getApiKey` hook would be silently dropped.
+
+### Agent integration
+
+`backend/agent/index.ts` no longer hardcodes `"amazon-bedrock"`:
+
+- Active state is `(currentProviderId, currentModelId)` loaded from `config.json` (legacy configs with only `modelId` fall back to `DEFAULT_PROVIDER`).
+- `getApiKey` hook dispatches to `getProvider(provider).getApiKey()`.
+- `setModel(model)` reads the incoming `Model<Api>`'s `.provider` + `.id` and persists both.
+- `resolveModel(providerId, modelId)` looks up the live `Model<Api>` object through the registry at each access, so a provider implementation can mint custom models dynamically.
+
+### UI: two dialogs
+
+| Palette entry | Dialog | Behavior |
+|---|---|---|
+| **Models** | `DialogModel` | Flat list of models from every connected provider, `description` = provider display name. Empty placeholder when zero providers connected, directing the user to Connect. |
+| **Connect** | `DialogProvider` | All providers, sorted connected-first, `description` = `"✓ Connected"` / `"Not configured"`. Disconnected select → toast with `authInstructions`. Connected select is a no-op (reserved for future disconnect/manage). |
+
+The Models dialog does not drill down through providers — with only connected providers in the list, flat is simpler. When a future provider adds an API-key auth flow, the two-step would land as: DialogProvider → api-key input → DialogModel scoped to the newly-connected provider. That scoped form can be re-added to `DialogModel` (via an optional `providerId` prop) when needed.
+
+### modelProvider in AgentStoreState
+
+`AgentStoreState.modelProvider` holds the **provider id** (e.g. `"amazon-bedrock"`), not a display string. Frontends resolve to the display name through `getProvider(id).displayName` at render time (`components/prompt.tsx`). Keeping the store free of formatted strings means provider metadata changes propagate without a store update.
 
 ## Keybinds + Commands
 

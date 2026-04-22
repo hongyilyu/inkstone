@@ -1,4 +1,5 @@
-import { type Api, getModels, type Model } from "@mariozechner/pi-ai";
+import { getProvider, listProviders } from "@backend/providers";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import { createMemo } from "solid-js";
 import type { DialogContext } from "../ui/dialog";
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select";
@@ -6,32 +7,50 @@ import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select";
 type AnyModel = Model<Api>;
 
 interface ModelValue {
-	id: string;
-	provider: string;
+	providerId: string;
+	modelId: string;
 }
 
+/**
+ * Flat model picker.
+ *
+ * Lists models from every *connected* provider. Disconnected providers are
+ * hidden — use the Connect dialog to set credentials and make them appear.
+ * Options carry `category: provider.displayName` so DialogSelect can group
+ * them once category rendering is ported from OpenCode.
+ */
 export function DialogModel(props: {
-	currentModelId: string;
+	current: ModelValue;
 	onSelect: (model: AnyModel) => void;
 }) {
-	const options = createMemo<DialogSelectOption<ModelValue>[]>(() => {
-		const models = getModels("amazon-bedrock");
-		return models.map((m) => ({
-			title: m.name,
-			value: { id: m.id, provider: m.provider },
-			description: m.provider,
-		}));
-	});
+	const connectedProviders = createMemo(() =>
+		listProviders().filter((p) => p.isConnected()),
+	);
+
+	const options = createMemo<DialogSelectOption<ModelValue>[]>(() =>
+		connectedProviders().flatMap((provider) =>
+			provider.listModels().map((m) => ({
+				title: m.name,
+				value: { providerId: provider.id, modelId: m.id },
+				description: provider.displayName,
+				category: provider.displayName,
+			})),
+		),
+	);
 
 	return (
 		<DialogSelect
 			title="Select Model"
-			placeholder="Search models..."
+			placeholder={
+				connectedProviders().length === 0
+					? "No providers connected — use Connect to set credentials"
+					: "Search models..."
+			}
 			options={options()}
-			current={{ id: props.currentModelId, provider: "amazon-bedrock" }}
+			current={props.current}
 			onSelect={(option) => {
-				const models = getModels("amazon-bedrock");
-				const model = models.find((m) => m.id === option.value.id);
+				const models = getProvider(option.value.providerId).listModels();
+				const model = models.find((m) => m.id === option.value.modelId);
 				if (model) props.onSelect(model);
 			}}
 		/>
@@ -40,10 +59,8 @@ export function DialogModel(props: {
 
 DialogModel.show = (
 	dialog: DialogContext,
-	currentModelId: string,
+	current: ModelValue,
 	onSelect: (model: AnyModel) => void,
 ) => {
-	dialog.replace(() => (
-		<DialogModel currentModelId={currentModelId} onSelect={onSelect} />
-	));
+	dialog.replace(() => <DialogModel current={current} onSelect={onSelect} />);
 };
