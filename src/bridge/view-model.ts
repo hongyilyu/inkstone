@@ -16,6 +16,8 @@
  * public API, not a shared view-state contract.
  */
 
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+
 export interface DisplayMessage {
 	id: string;
 	role: "user" | "assistant";
@@ -49,6 +51,22 @@ export interface AgentStoreState {
 	 */
 	modelProvider: string;
 	contextWindow: number;
+	/**
+	 * Whether the currently-selected model supports reasoning (pi-ai's
+	 * `Model.reasoning` capability flag). Surfaced into the store so reactive
+	 * UI (e.g. the palette visibility of the "Effort" entry, the statusline
+	 * effort badge) can gate on it without a backend call.
+	 */
+	modelReasoning: boolean;
+	/**
+	 * Reasoning effort currently applied to the active model. Mirrors
+	 * pi-agent-core's `Agent.state.thinkingLevel`. `"off"` when the model is
+	 * non-reasoning or when the user explicitly selected "Off". Storage is
+	 * per-model (keyed by `${providerId}/${modelId}` in `config.json`) — this
+	 * field is the resolved value for the *currently-selected* model, not the
+	 * full per-model map.
+	 */
+	thinkingLevel: ThinkingLevel;
 	status: "idle" | "streaming" | "tool_executing";
 	totalTokens: number;
 	totalCost: number;

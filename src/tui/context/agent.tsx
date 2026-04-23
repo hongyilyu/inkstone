@@ -4,6 +4,7 @@ import {
 	getAgentInfo,
 	getCurrentAgent,
 	getCurrentModel,
+	getCurrentThinkingLevel,
 	setConfirmFn,
 } from "@backend/agent";
 import {
@@ -12,7 +13,7 @@ import {
 	saveSession,
 } from "@backend/persistence/session";
 import type { AgentStoreState, DisplayMessage } from "@bridge/view-model";
-import type { AgentEvent } from "@mariozechner/pi-agent-core";
+import type { AgentEvent, ThinkingLevel } from "@mariozechner/pi-agent-core";
 import {
 	type Api,
 	type AssistantMessage,
@@ -55,6 +56,8 @@ export function AgentProvider(props: ParentProps) {
 		modelName: initialModel.name,
 		modelProvider: initialModel.provider,
 		contextWindow: initialModel.contextWindow,
+		modelReasoning: initialModel.reasoning,
+		thinkingLevel: getCurrentThinkingLevel(),
 		status: "idle",
 		totalTokens: 0,
 		totalCost: 0,
@@ -202,6 +205,16 @@ export function AgentProvider(props: ParentProps) {
 			setStore("modelName", model.name);
 			setStore("modelProvider", model.provider);
 			setStore("contextWindow", model.contextWindow);
+			setStore("modelReasoning", model.reasoning);
+			// Backend `setModel` also re-applies the per-model stored
+			// thinkingLevel (or "off") onto the agent state, so surface that
+			// into the store at the same time — otherwise the status-line
+			// suffix would lag a model switch by one interaction.
+			setStore("thinkingLevel", getCurrentThinkingLevel());
+		},
+		setThinkingLevel(level: ThinkingLevel) {
+			actions.setThinkingLevel(level);
+			setStore("thinkingLevel", level);
 		},
 		setAgent(name: string) {
 			actions.setAgent(name);

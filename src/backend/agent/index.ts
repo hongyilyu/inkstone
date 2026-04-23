@@ -1,6 +1,10 @@
 import { resolve } from "node:path";
-import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
-import type { Api, Model } from "@mariozechner/pi-ai";
+import {
+	Agent,
+	type AgentEvent,
+	type ThinkingLevel,
+} from "@mariozechner/pi-agent-core";
+import { type Api, type Model, supportsXhigh } from "@mariozechner/pi-ai";
 import { loadConfig, saveConfig } from "../persistence/config";
 import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
 import { AGENTS, type AgentInfo, DEFAULT_AGENT, getAgentInfo } from "./agents";
@@ -13,6 +17,7 @@ export interface AgentActions {
 	abort(): void;
 	loadArticle(articleId: string): void;
 	setModel(model: Model<Api>): void;
+	setThinkingLevel(level: ThinkingLevel): void;
 	setAgent(name: string): void;
 	clearSession(): void;
 }
@@ -48,6 +53,35 @@ let currentAgent: string = (() => {
 		: DEFAULT_AGENT;
 })();
 
+// Per-model reasoning effort, keyed by `${providerId}/${modelId}`. Persisted
+// in `config.thinkingLevels`. Missing key == `"off"` (pi-agent-core's sentinel
+// for "no reasoning"). Matches OpenCode's `local.model.variant` per-model
+// keying so a model remembers the effort the user last picked for it.
+const thinkingLevels: Record<string, ThinkingLevel> = {
+	...(initialConfig.thinkingLevels ?? {}),
+};
+
+function thinkingKey(providerId: string, modelId: string): string {
+	return `${providerId}/${modelId}`;
+}
+
+/**
+ * Resolve the effective `ThinkingLevel` for a model. Falls back to `"off"`
+ * when the user has not picked an effort for this model. pi-agent-core +
+ * pi-ai already guard non-reasoning models (they return `undefined` for
+ * thinking fields regardless of the level passed — see
+ * `pi-mono/packages/ai/src/providers/amazon-bedrock.ts:623-625`), so we
+ * don't re-check capability here.
+ *
+ * pi-ai also silently normalizes some levels at the wire (e.g. `"minimal"`
+ * → `effort: "low"` on adaptive Claude). That's a pi-ai design choice —
+ * the two levels produce the same model behavior — so we surface whatever
+ * the user picked and let pi-ai map it.
+ */
+function resolveThinkingLevel(model: Model<Api>): ThinkingLevel {
+	return thinkingLevels[thinkingKey(model.provider, model.id)] ?? "off";
+}
+
 function currentModel(): Model<Api> {
 	const m = resolveModel(currentProviderId, currentModelId);
 	if (!m)
@@ -57,6 +91,27 @@ function currentModel(): Model<Api> {
 	return m;
 }
 
+/**
+ * ThinkingLevels the UI should offer for a model.
+ *
+ * Non-reasoning models have nothing to pick — the Effort palette entry is
+ * hidden anyway. Reasoning models get the pi-agent-core set; `"xhigh"` is
+ * gated on pi-ai's own `supportsXhigh()` capability helper (Opus 4.6/4.7,
+ * GPT-5.2+).
+ *
+ * pi-ai may collapse some levels to the same wire value internally (e.g.
+ * `"minimal"` → `effort: "low"` on adaptive Claude). That's intentional on
+ * pi-ai's side — the collapsed levels produce identical model behavior, so
+ * surfacing both in the picker is fine; the user's choice is still honored
+ * semantically.
+ */
+export function availableThinkingLevels(model: Model<Api>): ThinkingLevel[] {
+	if (!model.reasoning) return ["off"];
+	const base: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+	if (supportsXhigh(model)) base.push("xhigh");
+	return base;
+}
+
 export function getAgent(): Agent {
 	if (!agent) {
 		const info = getAgentInfo(currentAgent);
@@ -64,7 +119,7 @@ export function getAgent(): Agent {
 			initialState: {
 				systemPrompt: info.buildSystemPrompt(activeArticle),
 				model: currentModel(),
-				thinkingLevel: "off",
+				thinkingLevel: resolveThinkingLevel(currentModel()),
 				tools: info.tools,
 			},
 			getApiKey: async (provider) => {
@@ -112,7 +167,20 @@ export function createAgentActions(
 			a.state.model = model;
 			currentProviderId = model.provider;
 			currentModelId = model.id;
+			// Restore the effort previously picked for this model (or "off" if
+			// none, or when the model is non-reasoning). Matches OpenCode's
+			// per-model variant memory: switching back to a model re-applies
+			// the effort the user last set for it.
+			a.state.thinkingLevel = resolveThinkingLevel(model);
 			saveConfig({ providerId: model.provider, modelId: model.id });
+		},
+		setThinkingLevel(level: ThinkingLevel) {
+			a.state.thinkingLevel = level;
+			thinkingLevels[thinkingKey(currentProviderId, currentModelId)] = level;
+			// Persist the full map — `saveConfig` shallow-merges, so the key
+			// addition/overwrite on this specific model survives without
+			// clobbering other stored per-model levels.
+			saveConfig({ thinkingLevels: { ...thinkingLevels } });
 		},
 		setAgent(name: string) {
 			const info = getAgentInfo(name);
@@ -140,6 +208,10 @@ export function getCurrentModelId(): string {
 
 export function getCurrentModel(): Model<Api> {
 	return currentModel();
+}
+
+export function getCurrentThinkingLevel(): ThinkingLevel {
+	return resolveThinkingLevel(currentModel());
 }
 
 export function getActiveArticle(): string | null {

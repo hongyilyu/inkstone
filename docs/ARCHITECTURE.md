@@ -124,6 +124,7 @@ src/
       dialog-command.tsx            `CommandProvider` + `useCommand` + internal palette. Registry-driven: components call `register(() => CommandOption[])`; the provider's `useKeyboard` dispatches any matching `keybind` and opens the palette on `command_list`.
       dialog-agent.tsx              Agent selection dialog
       dialog-model.tsx              Model selection dialog
+      dialog-variant.tsx            Reasoning-effort (ThinkingLevel) picker — opened standalone via the "Effort" palette entry for reasoning-capable models
       dialog-theme.tsx              Theme selection dialog
       dialog-provider.tsx           Provider selection dialog
     util/
@@ -161,6 +162,8 @@ The `AgentProvider` creates a pi-agent-core `Agent` instance (via `backend/agent
   modelName: string
   modelProvider: string          // provider *id* (e.g. "amazon-bedrock"); format via getProvider(id).displayName at render time
   contextWindow: number
+  modelReasoning: boolean        // pi-ai's Model.reasoning capability flag; gates visibility of the "Effort" palette entry + statusline effort badge
+  thinkingLevel: ThinkingLevel   // pi-agent-core's reasoning effort for the active model; "off" when model is non-reasoning or user disabled it
   status: "idle" | "streaming" | "tool_executing"
   totalTokens: number            // accumulated across all assistant turns
   totalCost: number              // accumulated across all assistant turns
@@ -318,14 +321,79 @@ One provider ships today:
 - `setModel(model)` reads the incoming `Model<Api>`'s `.provider` + `.id` and persists both.
 - `resolveModel(providerId, modelId)` looks up the live `Model<Api>` object through the registry at each access, so a provider implementation can mint custom models dynamically.
 
-### UI: two dialogs
+### UI: three palette entries
 
 | Palette entry | Dialog | Behavior |
 |---|---|---|
-| **Models** | `DialogModel` | Flat list of models from every connected provider, `description` = provider display name. Empty placeholder when zero providers connected, directing the user to Connect. |
+| **Models** | `DialogModel` | Flat list of models from every connected provider, `description` = provider display name. Empty placeholder when zero providers connected, directing the user to Connect. Auto-closes on select (backend `setModel` also auto-restores the per-model stored effort). |
+| **Effort** | `DialogVariant` | Standalone reasoning-effort picker for the currently-active model. Registered only when `store.modelReasoning === true` — non-reasoning models hide the entry to avoid palette noise. See "Effort variants" below. |
 | **Connect** | `DialogProvider` | All providers, sorted connected-first, `description` = `"✓ Connected"` / `"Not configured"`. Disconnected select → toast with `authInstructions`. Connected select is a no-op (reserved for future disconnect/manage). |
 
 The Models dialog does not drill down through providers — with only connected providers in the list, flat is simpler. When a future provider adds an API-key auth flow, the two-step would land as: DialogProvider → api-key input → DialogModel scoped to the newly-connected provider. That scoped form can be re-added to `DialogModel` (via an optional `providerId` prop) when needed.
+
+### Effort variants (reasoning levels)
+
+Reasoning-capable models expose a dedicated **Effort** palette entry that opens `DialogVariant` on the currently-active model and lets the user pick a pi-agent-core `ThinkingLevel`. Inkstone follows OpenCode's standalone-entry pattern (OpenCode's `variant.list` command + `/variants` slash, `dialog-variant.tsx`) trimmed to pi-ai's unified level enum — no per-SDK `variants()` switch is needed because pi-ai already owns the provider-specific mapping internally.
+
+The entry is **not** a cascade from the Models dialog. Picking a model via Models is a one-step action that sets the model and auto-restores its stored effort (see "setModel auto-restore" below); changing effort on the current model is a separate palette action. This mirrors how OpenCode separates model selection from variant selection in its palette and slash-command surface (`opencode/src/cli/cmd/tui/app.tsx:532-544`).
+
+**Entry visibility** — driven reactively by `store.modelReasoning`:
+
+- `model.reasoning === false` → Effort entry hidden from Ctrl+P (OpenCode uses a `hidden` flag on the `variant.list` command with `local.model.variant.list().length === 0` — same intent, simpler shape since Inkstone is palette-only)
+- `model.reasoning === true` → Effort entry shown between Models and Themes
+
+**Level set per model** — computed by `availableThinkingLevels(model)` in `backend/agent/index.ts`:
+
+- `model.reasoning === false` → `["off"]` (Effort entry hidden anyway)
+- `model.reasoning === true` → `["off", "minimal", "low", "medium", "high"]`, plus `"xhigh"` iff pi-ai's `supportsXhigh(model)` returns true (Claude Opus 4.6/4.7, GPT-5.2+)
+
+`"off"` is an explicit first-class option (not a synthetic "Default" row), matching pi-agent-core's `ThinkingLevel = "off" | ...` sentinel — picking "Off" literally sets `Agent.state.thinkingLevel = "off"`, which disables `reasoning:` on the next pi-ai stream call.
+
+pi-ai internally collapses some levels to the same wire value on certain models (e.g. `"minimal"` → `effort: "low"` on adaptive Claude; `xhigh` budget → `high`'s 16384 tokens on non-adaptive Claude). That's a pi-ai design choice — the collapsed levels produce identical model behavior — so Inkstone surfaces the full pi-agent-core enum and lets pi-ai do the mapping. The only capability gate we apply is `supportsXhigh(model)`, which is pi-ai's own exported helper (not a mirror of internals).
+
+**On the "max" wire value:** Anthropic renamed their top-tier adaptive-thinking effort between Opus 4.6 (wire name: `"max"`) and Opus 4.7 (wire name: `"xhigh"`). pi-ai maps the unified `ThinkingLevel = "xhigh"` to whichever wire value is top for the target model — so on Opus 4.6 it sends `output_config: { effort: "max" }`, on Opus 4.7 it sends `output_config: { effort: "xhigh" }` (`pi-mono/packages/ai/src/providers/amazon-bedrock.ts:493-514`, tests at `pi-mono/packages/ai/test/bedrock-thinking-payload.test.ts:64-76` and `stream.test.ts:1247`). OpenCode exposes separate `xhigh` + `max` rows for Opus 4.7, but under pi-mono's contract that's redundant — both land at the same "top tier". Inkstone follows pi-mono, so `xhigh` on Opus 4.7 IS the maximum reasoning tier reachable via the Anthropic API.
+
+**Storage — per-model, keyed by `${providerId}/${modelId}`:**
+
+```jsonc
+// config.json
+{
+  "providerId": "amazon-bedrock",
+  "modelId": "us.anthropic.claude-opus-4-7",
+  "thinkingLevels": {
+    "amazon-bedrock/us.anthropic.claude-opus-4-7": "high",
+    "amazon-bedrock/anthropic.claude-sonnet-4": "medium"
+  }
+}
+```
+
+Missing key resolves to `"off"`. Matches OpenCode's `local.model.variant: Record<${providerID}/${modelID}, string | undefined>` keying so a model remembers the effort the user last picked for it.
+
+**Data flow:**
+
+```
+Ctrl+P → Effort
+  → DialogVariant.show(dialog, currentModel, currentLevel, onSelect)
+    → user picks level
+      → actions.setThinkingLevel(level)
+        → AgentActions.setThinkingLevel (backend/agent/index.ts)
+          → a.state.thinkingLevel = level
+          → thinkingLevels[`${providerId}/${modelId}`] = level
+          → saveConfig({ thinkingLevels: { ... } })
+        → tui wrapper (context/agent.tsx)
+          → setStore("thinkingLevel", level)
+            → prompt.tsx renders `· <level>` in warning color when level !== "off"
+```
+
+**setModel auto-restore:** `AgentActions.setModel(model)` also re-applies `a.state.thinkingLevel = resolveThinkingLevel(model)` after swapping the model, so switching back to a previously-used reasoning model restores its prior effort without the user needing to re-pick it via the Effort entry. The TUI wrapper mirrors this by calling `setStore("thinkingLevel", getCurrentThinkingLevel())` after `setModel`, so the status-line suffix tracks model switches in lockstep. The wrapper also writes `setStore("modelReasoning", model.reasoning)` so the palette's Effort-entry visibility updates in the same tick.
+
+**Safety guard:** pi-ai/pi-agent-core already ignores `reasoning:` on non-reasoning models (`pi-mono/packages/ai/src/providers/amazon-bedrock.ts:623-625`), so Inkstone doesn't re-guard capability in `resolveThinkingLevel`.
+
+**Non-goals (deferred):**
+
+- Mid-session effort cycle keybind (OpenCode uses `ctrl+t`). Palette-only access is consistent with Inkstone's current pattern (model switch is also palette-only).
+- Per-message effort stamping. `DisplayMessage` stays lean — effort is session-scope, matching OpenCode's statusline-only display.
+- User-configurable per-model level lists (`config.provider[X].models[Y].variants`). pi-ai's `supportsXhigh` + `model.reasoning` already cover every model in the current registry; custom overrides are speculative.
 
 ### modelProvider in AgentStoreState
 

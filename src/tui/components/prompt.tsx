@@ -1,6 +1,6 @@
 import { getAgentInfo } from "@backend/agent";
 import { getProvider } from "@backend/providers";
-import type { RGBA } from "@opentui/core";
+import { type RGBA, TextAttributes } from "@opentui/core";
 import {
 	createEffect,
 	createMemo,
@@ -203,6 +203,19 @@ export function Prompt() {
 							<text fg={theme.textMuted}>
 								{getProvider(store.modelProvider).displayName}
 							</text>
+							{/* Reasoning effort badge, only when the user has
+                                opted into a non-off effort for the active
+                                model. Mirrors OpenCode's prompt statusline
+                                variant indicator (`prompt/index.tsx:901-906,
+                                1204-1211`) — bold + warning-tinted so it
+                                reads as a state annotation rather than part
+                                of the model name. */}
+							<Show when={store.thinkingLevel !== "off"}>
+								<text fg={theme.textMuted}>·</text>
+								<text fg={theme.warning} attributes={TextAttributes.BOLD}>
+									{store.thinkingLevel}
+								</text>
+							</Show>
 						</box>
 					</box>
 				</box>

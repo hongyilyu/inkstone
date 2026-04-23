@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-22 (provider default + broader Bedrock auth probe)
+**Last updated**: 2026-04-22 (per-model reasoning-effort variants)
 
 ## Completed
 
@@ -31,6 +31,8 @@
 - [x] Two-dialog provider flow: **Connect** (`DialogProvider`) lists every registered provider sorted connected-first, with `"✓ Connected"` / `"Not configured"` descriptions; selecting a disconnected provider toasts the provider's `authInstructions`; selecting a connected provider closes the dialog (no-op — reserved for future disconnect/manage). **Models** (`DialogModel`) lists only models from *connected* providers (flat list, categories populated for future grouping), with an empty-state hint when nothing is connected. `AgentStoreState.modelProvider` now holds the raw provider id; the prompt bar formats via `getProvider(id).displayName` at render time.
 - [x] Fix (review): curated per-provider default model. `ProviderInfo` gained a required `defaultModelId` field — the boot fallback no longer picks `listModels()[0]` (which was `amazon.nova-2-lite-v1:0` under pi-ai's current ordering) and instead uses the provider's declared default. Bedrock defaults to `us.anthropic.claude-opus-4-7`. If the declared default no longer resolves through pi-ai, the agent module throws on boot so registry drift surfaces loudly instead of silently.
 - [x] Fix (review): broader Bedrock connection probe. `isConnected()` now also returns true when `~/.aws/credentials` or `~/.aws/config` exists (honoring AWS_SHARED_CREDENTIALS_FILE / AWS_CONFIG_FILE overrides), not just when an AWS env marker is set. Users with a `[default]` profile from `aws configure` / `aws sso login` no longer see Bedrock falsely marked "Not configured" and their models are no longer hidden from the picker.
+- [x] Per-model reasoning-effort variants (OpenCode-style dedicated entry). Reasoning-capable models expose a dedicated **Effort** palette entry (between Models and Themes) that opens `DialogVariant` on the current model and lets the user pick a pi-agent-core `ThinkingLevel` — `"off" | "minimal" | "low" | "medium" | "high"`, plus `"xhigh"` for `supportsXhigh(model)`-true models (Claude Opus 4.6/4.7, GPT-5.2+). Non-reasoning models hide the entry from the palette via `store.modelReasoning` (mirroring OpenCode's `hidden` flag on `variant.list` in `opencode/src/cli/cmd/tui/app.tsx:537`). Selected level is persisted per-model in `config.thinkingLevels: Record<"${providerId}/${modelId}", ThinkingLevel>` and re-applied automatically on model switch via `setModel`'s auto-restore. The active effort renders as a bold warning-toned suffix (`· high`) in the prompt status line when non-off, matching OpenCode's statusline variant badge (`prompt/index.tsx:1204-1211`). Under the hood, pi-agent-core's `Agent.state.thinkingLevel` plumbs the level to pi-ai's unified `reasoning:` stream param (pi-ai owns the per-provider mapping to `reasoning_effort` / `thinking.budgetTokens` / `thinkingConfig.thinkingLevel` / etc., including silent collapses like `minimal → "low"` on adaptive Claude that produce identical model behavior). Deferred (not built): mid-session cycle keybind, per-message footer stamping, user-configurable per-model level lists.
+- [x] Docs: add a dedicated E2E testing plan file covering the chosen test layer and first feature targets (`docs/E2E-PLAN.md`)
 
 ## In Progress
 
@@ -53,6 +55,8 @@
 - [ ] Robust slash-command parsing (token-first, registry-driven; replace naive `startsWith`/equality checks in `prompt.tsx`). The current parser will misidentify messages that happen to begin with `/article ` or equal `/clear`. A real parser should recognize only the leading token, dispatch through a per-command registry, and be optionally scoped per agent.
 - [ ] Per-agent UI beyond prompt color (e.g., agent-specific sidebar info, icons)
 - [ ] Mid-session agent switching (requires per-message agent stamping on user bubbles and tool-result routing rules — intentionally deferred)
+- [ ] Effort-variant cycle keybind + slash command (OpenCode uses `ctrl+t` + `/variants`). Palette-only access ships; add when effort becomes a frequently-toggled setting.
+- [ ] Per-message reasoning-effort stamping on `DisplayMessage`. Currently the effort is session-scope and shown only in the prompt status line — matches OpenCode's pattern. Add if users need to see which effort produced a historical reply after switching mid-session.
 - [ ] More providers beyond Bedrock (Anthropic direct, OpenAI, etc.). When a provider needs user-supplied credentials (API key), add an `ApiMethod`-style input flow from OpenCode's `dialog-provider.tsx` that, on success, advances to `DialogModel` scoped to that provider (reintroduce the optional `providerId` prop that was removed in this PR).
 - [ ] Custom providers that bring their own streaming transport (non-pi-ai). Extend `ProviderInfo` with an optional `streamFn` field wired into `Agent` construction. Not speculatively built.
 - [ ] Disconnect / re-auth actions in the Connect dialog (selecting a connected provider is currently a no-op).

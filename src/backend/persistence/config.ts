@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 
 const CONFIG_DIR = join(
 	process.env.XDG_CONFIG_HOME || join(process.env.HOME || "~", ".config"),
@@ -15,6 +16,13 @@ interface Config {
 	modelId?: string;
 	themeId?: string;
 	currentAgent?: string;
+	/**
+	 * Reasoning effort stored per-model, keyed by `${providerId}/${modelId}`.
+	 * Missing key == `"off"`. Matches OpenCode's per-model variant storage
+	 * (`tui/context/local.tsx` `local.model.variant`). Scoping per-model keeps
+	 * each model at its own sweet-spot effort as the user swaps between them.
+	 */
+	thinkingLevels?: Record<string, ThinkingLevel>;
 }
 
 let cached: Config | null = null;

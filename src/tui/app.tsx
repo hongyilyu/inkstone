@@ -1,6 +1,8 @@
 import {
+	getCurrentModel,
 	getCurrentModelId,
 	getCurrentProviderId,
+	getCurrentThinkingLevel,
 	listAgents,
 } from "@backend/agent";
 import type { ScrollBoxRenderable } from "@opentui/core";
@@ -20,6 +22,7 @@ import {
 import { DialogModel } from "./components/dialog-model";
 import { DialogProvider as DialogProviderSelect } from "./components/dialog-provider";
 import { DialogTheme } from "./components/dialog-theme";
+import { DialogVariant } from "./components/dialog-variant";
 import { OpenPage } from "./components/open-page";
 import { Prompt } from "./components/prompt";
 import { Sidebar } from "./components/sidebar";
@@ -82,25 +85,54 @@ function Layout() {
 			});
 		}
 
-		list.push(
-			{
-				id: "models",
-				title: "Models",
-				description: "Switch model",
+		list.push({
+			id: "models",
+			title: "Models",
+			description: "Switch model",
+			onSelect: (d) => {
+				DialogModel.show(
+					d,
+					{
+						providerId: getCurrentProviderId(),
+						modelId: getCurrentModelId(),
+					},
+					(model) => {
+						actions.setModel(model);
+					},
+				);
+			},
+		});
+
+		// "Effort" palette entry — standalone switcher for the current
+		// model's reasoning level. Only registered when the active model
+		// supports reasoning; a non-reasoning model has nothing to pick
+		// (the only available level is "off"), so the entry is hidden to
+		// avoid palette noise. Mirrors OpenCode's `hidden` flag on the
+		// `variant.list` command
+		// (`opencode/src/cli/cmd/tui/app.tsx:537`), which is driven by
+		// `local.model.variant.list().length === 0`. The `store
+		// .modelReasoning` read makes this registration reactive, so
+		// switching to/from a reasoning model shows/hides the entry
+		// immediately.
+		if (store.modelReasoning) {
+			list.push({
+				id: "effort",
+				title: "Effort",
+				description: "Reasoning effort",
 				onSelect: (d) => {
-					DialogModel.show(
+					DialogVariant.show(
 						d,
-						{
-							providerId: getCurrentProviderId(),
-							modelId: getCurrentModelId(),
-						},
-						(model) => {
-							actions.setModel(model);
-							d.clear();
+						getCurrentModel(),
+						getCurrentThinkingLevel(),
+						(level) => {
+							actions.setThinkingLevel(level);
 						},
 					);
 				},
-			},
+			});
+		}
+
+		list.push(
 			{
 				id: "themes",
 				title: "Themes",
