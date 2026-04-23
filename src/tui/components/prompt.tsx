@@ -1,12 +1,11 @@
 import { getAgentInfo } from "@backend/agent";
 import { getProvider } from "@backend/providers";
-import { type RGBA, TextAttributes } from "@opentui/core";
+import { TextAttributes } from "@opentui/core";
 import {
 	createEffect,
 	createMemo,
 	createSignal,
 	onCleanup,
-	onMount,
 	Show,
 } from "solid-js";
 import { setInputRef, toBottom } from "../app";
@@ -16,8 +15,7 @@ import { useDialog } from "../ui/dialog";
 import { formatCost, formatTokens } from "../util/format";
 import * as Keybind from "../util/keybind";
 import { useCommand } from "./dialog-command";
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+import { SpinnerWave } from "./spinner-wave";
 
 /**
  * Border chars matching OpenCode's EmptyBorder pattern.
@@ -36,26 +34,6 @@ const EmptyBorder = {
 	leftT: "",
 	rightT: "",
 };
-
-/**
- * Simple braille-dot spinner component.
- * Matches OpenCode's generic Spinner component (spinner.tsx).
- */
-function Spinner(props: { color?: RGBA }) {
-	const { theme } = useTheme();
-	const [frame, setFrame] = createSignal(0);
-
-	onMount(() => {
-		const interval = setInterval(() => {
-			setFrame((f) => (f + 1) % SPINNER_FRAMES.length);
-		}, 80);
-		onCleanup(() => clearInterval(interval));
-	});
-
-	return (
-		<text fg={props.color ?? theme.textMuted}>{SPINNER_FRAMES[frame()]}</text>
-	);
-}
 
 /**
  * Unified prompt component used by both the open page and the session view.
@@ -323,7 +301,7 @@ export function Prompt() {
 					>
 						<box flexShrink={0} flexDirection="row" gap={1}>
 							<box marginLeft={1}>
-								<Spinner color={theme.textMuted} />
+								<SpinnerWave color={theme[agentInfo().colorKey]} />
 							</box>
 						</box>
 						<text fg={interrupt() > 0 ? theme.primary : theme.text}>

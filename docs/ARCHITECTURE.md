@@ -118,7 +118,9 @@ src/
       toast.tsx                     Toast notifications
     components/
       conversation.tsx              Scrollbox + message list (user-bubble border + `▣` glyph derive from active agent color)
-      prompt.tsx                    Textarea prompt with /command parsing, agent label, tab-cycle hint (hints via `Keybind.print`)
+      prompt.tsx                    Textarea prompt with /command parsing, agent label, tab-cycle hint (hints via `Keybind.print`); streaming indicator = `SpinnerWave` colored by the active agent
+      spinner.tsx                   Simple braille-dot spinner (`Spinner`). Not used by the prompt; kept importable for future subagent-status / background-tool indicators
+      spinner-wave.tsx              `SpinnerWave` — 8-cell bidirectional knight-rider wave. Port of OpenCode's `ui/spinner.ts` (blocks + bidirectional branches only); 54 precomputed frames at 40 ms interval, per-cell RGBA derived from a single base color via a 6-step trail + alpha fade
       sidebar.tsx                   Session metadata panel (title, context, article)
       open-page.tsx                 Empty-state welcome page
       dialog-command.tsx            `CommandProvider` + `useCommand` + internal palette. Registry-driven: components call `register(() => CommandOption[])`; the provider's `useKeyboard` dispatches any matching `keybind` and opens the palette on `command_list`.
