@@ -422,34 +422,26 @@ Action naming groups by scope:
 | `app_exit` | Top-level renderer exit, in `app.tsx` |
 | `command_list` | CommandProvider — opens the Ctrl+P palette |
 | `agent_cycle`, `agent_cycle_reverse` | CommandProvider — registered commands in `app.tsx` |
+| `session_interrupt` | CommandProvider — registered by `prompt.tsx`, streaming-gated. ESC double-tap aborts the in-flight turn (see below) |
 | `messages_*` | Top-level scroll handler in `app.tsx` (only mounted while the session view is rendered) |
 | `dialog_close` | `ui/dialog.tsx` — dismisses the top-of-stack dialog |
 | `select_*` | `ui/dialog-select.tsx` — local nav (arrow keys + emacs `ctrl+n`/`ctrl+p`) |
 
 `dialog-confirm.tsx` uses its own inline `y`/`n`/`left`/`right`/`return` checks — those keys are dialog-local and don't belong in the shared map.
 
-### Layer 2 — `src/tui/components/dialog-command.tsx` (CommandProvider)
+### Session interrupt (double-tap ESC)
 
-Replaces the previous static 4-item palette. `CommandProvider` owns a Solid signal of registration accessors and a single `useKeyboard` that:
+Ported from OpenCode (`opencode/src/cli/cmd/tui/component/prompt/index.tsx:273-303, 1325-1330`). The `session_interrupt` keybind (default `escape`) is registered by `Prompt()` in `src/tui/components/prompt.tsx` via `useCommand().register`, with the registration memo gated on `store.isStreaming` — so the binding is live only while a turn is in flight. When idle, the registration returns `[]` and ESC falls through (no global handler is listening).
 
-1. Returns early if a dialog is on the stack (so dialog-local handlers win).
-2. Opens the palette on `command_list`.
-3. Walks registered commands and fires the first whose `keybind` matches the event.
+Double-tap semantics live in a local signal inside `Prompt()` (`interrupt: number`, not in `AgentStoreState` — pure UI transient, no cross-frontend contract):
 
-Components register with `useCommand().register(() => CommandOption[])`. The callback is wrapped in a `createMemo`, so signal reads inside it track — returning `[]` when a command shouldn't apply naturally removes it from both the palette and global dispatch. Registrations auto-dispose on component unmount via `onCleanup` (the provider also attaches to its own owner via `runWithOwner` so future async/plugin registrations don't leak).
+- **First ESC** → `interrupt` increments to 1; the prompt hint flips from `esc interrupt` (in `theme.text` + `theme.textMuted`) to `esc again to interrupt` (both spans in `theme.primary`); a 5 s timer is armed to reset `interrupt` to 0.
+- **Second ESC within 5 s** → `actions.abort()` is called (pi-agent-core `Agent.abort()`), `interrupt` resets to 0, the pending timer is cleared.
+- **5 s elapses without a second press** → `interrupt` resets to 0, the hint reverts to `esc interrupt`. The next press starts the sequence over — a single ESC after the timeout does **not** abort.
 
-`CommandOption` shape:
+Inkstone additionally scopes the arm to the current turn via a `createEffect` on `store.isStreaming`: when streaming flips back to false, the pending 5 s timer is cleared and `interrupt` returns to 0. Without this reset, a single ESC press late in a turn that completes before the timer fires would leave `interrupt === 1`; the first ESC of the next turn would then satisfy the `next >= 2` branch in `handleInterrupt` and abort immediately instead of arming the double-tap. OpenCode's prompt carries the same latent bug (`opencode/src/cli/cmd/tui/component/prompt/index.tsx:290-294`); this is an intentional Inkstone divergence.
 
-```ts
-interface CommandOption {
-  id: string                                     // unique, DialogSelect value
-  title: string                                  // palette row
-  description?: string                           // palette row (appended with keybind hint if both)
-  keybind?: KeybindAction                        // optional global hotkey
-  hidden?: boolean                               // keybind-only; invisible in palette
-  onSelect: (dialog: DialogContext) => void
-}
-```
+`actions.abort()` is the existing `AgentActions.abort` (`backend/agent/index.ts:154`) that forwards to pi-agent-core's `Agent.abort()`. pi-agent-core fires `message_end` with `stopReason === "aborted"`, which is already surfaced by `AgentProvider`'s reducer onto the assistant bubble's `error` field (`tui/context/agent.tsx:153-165`) and rendered via the shared error panel in `conversation.tsx`. No new event-handling is required.
 
 ### Collision safety
 
@@ -457,6 +449,8 @@ interface CommandOption {
 
 - CommandProvider's dispatcher returns early on `dialog.stack.length > 0`.
 - DialogSelect calls `evt.preventDefault()` on nav matches, so even if handler order were reversed, the downstream CommandProvider would skip via its `defaultPrevented` check.
+
+`escape` is both `session_interrupt` (global, streaming-only) and `dialog_close` (dialog-local). Dialog's `useKeyboard` in `ui/dialog.tsx` returns early when `store.stack.length === 0`, and calls `preventDefault` + `stopPropagation` when closing. CommandProvider's dispatcher additionally short-circuits on `dialog.stack.length > 0` before iterating registered keybinds. So: dialog open ⇒ ESC closes the dialog, no interrupt; dialog closed + streaming ⇒ ESC runs the interrupt handler; dialog closed + idle ⇒ `session_interrupt` isn't registered, ESC is a no-op.
 
 Ctrl+C follows the same scope rule: inside a dialog it's caught by `ui/dialog.tsx`'s `dialog_close`; at the session view it's caught by `app.tsx`'s `app_exit` (gated to `dialog.stack.length === 0`).
 

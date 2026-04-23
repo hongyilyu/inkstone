@@ -40,13 +40,19 @@ export interface Info {
  * Scope hints (for maintainers):
  *   - `app_*`, `command_list`, `agent_cycle*`, `messages_*`: global actions
  *     fired from the session view (Layout's useKeyboard + CommandProvider)
+ *   - `session_interrupt`: streaming-gated command registered by `prompt.tsx`
+ *     (double-tap ESC to abort; see "Session interrupt" in ARCHITECTURE.md)
  *   - `dialog_close`: dialog stack close handler (src/tui/ui/dialog.tsx)
  *   - `select_*`: dialog-select local nav (src/tui/ui/dialog-select.tsx)
  *
- * Collision: `ctrl+p` is both `command_list` and one alternate of `select_up`.
- * This is intentional and safe — CommandProvider guards its dispatch with
- * `dialog.stack.length === 0`, and dialog-select calls `evt.preventDefault()`
- * on nav matches.
+ * Collisions (all intentional, resolved by dispatch order / scope guards):
+ *   - `ctrl+p` is both `command_list` and one alternate of `select_up`.
+ *     CommandProvider guards its dispatch with `dialog.stack.length === 0`,
+ *     and dialog-select calls `evt.preventDefault()` on nav matches.
+ *   - `escape` is both `session_interrupt` and `dialog_close`. Dialog's
+ *     useKeyboard runs first and calls `preventDefault` when a dialog is
+ *     on the stack, so CommandProvider's dispatch sees an already-handled
+ *     event (and also short-circuits on `dialog.stack.length > 0`).
  */
 export const KEYBINDS = {
 	app_exit: "ctrl+c",
@@ -57,6 +63,7 @@ export const KEYBINDS = {
 	messages_page_down: "pagedown,meta+down",
 	messages_first: "ctrl+home",
 	messages_last: "ctrl+end",
+	session_interrupt: "escape",
 	dialog_close: "escape,ctrl+c",
 	select_up: "up,ctrl+p",
 	select_down: "down,ctrl+n",

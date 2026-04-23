@@ -15,6 +15,7 @@ import { useTheme } from "../context/theme";
 import { useDialog } from "../ui/dialog";
 import { formatCost, formatTokens } from "../util/format";
 import * as Keybind from "../util/keybind";
+import { useCommand } from "./dialog-command";
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -69,7 +70,72 @@ export function Prompt() {
 	const { theme } = useTheme();
 	const { actions, store } = useAgent();
 	const dialog = useDialog();
+	const command = useCommand();
 	const [text, setText] = createSignal("");
+
+	// Double-tap ESC to interrupt. Matches OpenCode's pattern
+	// (`opencode/src/cli/cmd/tui/component/prompt/index.tsx:273-303, 1325-1330`):
+	// first press flips the hint to "esc again to interrupt" in `theme.primary`
+	// and arms a 5s reset timer; second press within the window calls
+	// `actions.abort()` and resets the counter.
+	const [interrupt, setInterrupt] = createSignal(0);
+	let interruptTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function handleInterrupt() {
+		if (interruptTimer) {
+			clearTimeout(interruptTimer);
+			interruptTimer = undefined;
+		}
+		const next = interrupt() + 1;
+		setInterrupt(next);
+		if (next >= 2) {
+			actions.abort();
+			setInterrupt(0);
+			return;
+		}
+		interruptTimer = setTimeout(() => {
+			setInterrupt(0);
+			interruptTimer = undefined;
+		}, 5000);
+	}
+
+	// Scope the interrupt arm to the current turn. Without this, a single ESC
+	// press late in a turn that completes before the 5s timer fires leaves
+	// `interrupt === 1`; the next turn's first ESC would then hit the
+	// `next >= 2` branch and abort immediately instead of arming the
+	// double-tap. Intentional divergence from OpenCode, which carries the
+	// same latent bug (prompt/index.tsx:290-294).
+	createEffect(() => {
+		if (store.isStreaming) return;
+		if (interruptTimer) {
+			clearTimeout(interruptTimer);
+			interruptTimer = undefined;
+		}
+		setInterrupt(0);
+	});
+
+	// Register the interrupt command reactively — gated on `store.isStreaming`
+	// so the ESC keybind is live only while a turn is in flight. Mirrors
+	// OpenCode's `enabled: status().type !== "idle"`; returning `[]` when
+	// inactive removes both the (hidden) palette row and the global dispatch
+	// for the keybind. `CommandProvider` already skips when a dialog is on
+	// the stack, so ESC inside a dialog still closes the dialog.
+	command.register(() => {
+		if (!store.isStreaming) return [];
+		return [
+			{
+				id: "session_interrupt",
+				title: "Interrupt session",
+				keybind: "session_interrupt",
+				hidden: true,
+				onSelect: handleInterrupt,
+			},
+		];
+	});
+
+	onCleanup(() => {
+		if (interruptTimer) clearTimeout(interruptTimer);
+	});
 
 	let inputRef: any;
 
@@ -260,8 +326,15 @@ export function Prompt() {
 								<Spinner color={theme.textMuted} />
 							</box>
 						</box>
-						<text fg={theme.text}>
-							esc <span style={{ fg: theme.textMuted }}>interrupt</span>
+						<text fg={interrupt() > 0 ? theme.primary : theme.text}>
+							esc{" "}
+							<span
+								style={{
+									fg: interrupt() > 0 ? theme.primary : theme.textMuted,
+								}}
+							>
+								{interrupt() > 0 ? "again to interrupt" : "interrupt"}
+							</span>
 						</text>
 					</box>
 				</Show>
