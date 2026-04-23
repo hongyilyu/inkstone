@@ -3,10 +3,12 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-23 (OpenCode-style knight-rider spinner)
+**Last updated**: 2026-04-23 (Kiro provider + Connect device-code flow)
 
 ## Completed
 
+- [x] Amazon Kiro provider (`backend/providers/kiro.ts`). Wraps `pi-kiro/core` — registers `kiro-api` with pi-ai's api-registry at module load, returns region-scoped models via `filterModelsByRegion` + `baseUrl` rewrite, and does lazy token refresh in `getApiKey()` (no background scheduler). Credentials persist to `~/.config/inkstone/auth.json` (mode 0600, dir 0700) via a new `backend/persistence/auth.ts` module keyed by provider id so future OAuth providers slot in. `ProviderInfo.getApiKey` widened to `string | undefined | Promise<string | undefined>`; Bedrock's sync implementation still compiles (pi-agent-core already awaits). Boot fallback widened: if a stored OAuth provider's default model no longer resolves (cleared creds), the agent module falls back to `DEFAULT_PROVIDER` instead of throwing — the user can re-connect from Connect. See `docs/ARCHITECTURE.md` "Provider Registry → Kiro provider" for the flow.
+- [x] Connect command palette activation for Kiro. New `DialogPrompt` + `DialogAuthWait` UI primitives (`src/tui/ui/`) drive pi-kiro's `loginKiro` callbacks against the existing dialog stack via `dialog.replace`, so only one dialog is on the stack at any time (sidesteps pi-kiro's documented mirrored-cursor glitch from `oauth.ts:16-23`). ESC at any step aborts via an `AbortController` passed to `loginKiro`; pi-kiro throws "Login cancelled" which is swallowed silently. On success the flow chains into `DialogModel` scoped to Kiro so the user lands on the freshly-available catalog (mirrors OpenCode's `dialog-provider.tsx:183-184`).
 - [x] Phase 0: Project scaffolded, deps installed, docs created
 - [x] Phase 1: App shell (theme, dialog, toast, components)
 - [x] Phase 2: Agent integration (Bedrock streaming verified)

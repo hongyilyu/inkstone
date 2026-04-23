@@ -46,8 +46,12 @@ export interface ProviderInfo {
 
 	/** Value forwarded to pi-agent-core's Agent `getApiKey` hook when this
 	 * provider is active. Returning `undefined` is valid for providers whose
-	 * SDK reads credentials from the environment directly (e.g. Bedrock). */
-	getApiKey(): string | undefined;
+	 * SDK reads credentials from the environment directly (e.g. Bedrock).
+	 *
+	 * May return a Promise — pi-agent-core's hook awaits it (`agent-loop.js:156`).
+	 * OAuth providers use this to refresh expired access tokens lazily on the
+	 * next stream instead of running a background scheduler. */
+	getApiKey(): string | undefined | Promise<string | undefined>;
 
 	/** True when credentials are configured and the provider can be used. */
 	isConnected(): boolean;

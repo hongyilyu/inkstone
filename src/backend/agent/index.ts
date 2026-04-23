@@ -34,15 +34,31 @@ let currentProviderId: string = initialConfig.providerId ?? DEFAULT_PROVIDER;
 let currentModelId: string = (() => {
 	const stored = initialConfig.modelId;
 	if (stored && resolveModel(currentProviderId, stored)) return stored;
-	// Fall back to the provider's explicit curated default, not to
-	// `listModels()[0]`. The first entry in pi-ai's Bedrock model list is
-	// `amazon.nova-2-lite-v1:0`, which would silently relocate fresh
-	// installs (and any install whose stored id ever stops resolving) to
-	// an arbitrary low-tier model.
+	// Fall back to the stored provider's curated default if it still
+	// resolves. Do NOT fall back to `listModels()[0]`, which is pi-ai-
+	// registry-order-dependent (Nova 2 Lite today).
 	const info = getProvider(currentProviderId);
 	if (resolveModel(info.id, info.defaultModelId)) return info.defaultModelId;
+	// The stored provider has nothing we can use — typically an OAuth
+	// provider (e.g. Kiro) whose creds have been cleared or expired past
+	// refresh. Fall through to the default provider so the app still
+	// boots; the user can re-connect from the Connect palette.
+	//
+	// Note: we intentionally do NOT persist this fallback via saveConfig.
+	// The stored `providerId` stays as the user's original pick, so the
+	// next boot repeats this detection and re-connecting restores the
+	// original selection without the user having to re-pick from
+	// DialogModel. The in-memory `currentProviderId` flip is enough to
+	// keep streaming pointed at a working provider until re-connect.
+	if (currentProviderId !== DEFAULT_PROVIDER) {
+		currentProviderId = DEFAULT_PROVIDER;
+		const fallback = getProvider(DEFAULT_PROVIDER);
+		if (resolveModel(fallback.id, fallback.defaultModelId)) {
+			return fallback.defaultModelId;
+		}
+	}
 	throw new Error(
-		`Provider '${info.id}' default model '${info.defaultModelId}' is not available in the registry. ` +
+		`Default provider '${DEFAULT_PROVIDER}' default model is not available in the registry. ` +
 			`Update the provider's \`defaultModelId\` or ensure pi-ai's registry still ships that model.`,
 	);
 })();

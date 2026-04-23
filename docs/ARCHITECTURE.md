@@ -97,9 +97,12 @@ src/
     providers/
       types.ts                      ProviderInfo interface (id, displayName, listModels, getApiKey, isConnected, authInstructions)
       amazon-bedrock.ts             Bedrock provider — wraps pi-ai `getModels("amazon-bedrock")`, auth via `getEnvApiKey`
+      kiro.ts                       Amazon Kiro provider — wraps `pi-kiro/core`; registers `kiro-api` with pi-ai; OAuth (Builder ID / IdC) with lazy refresh
       index.ts                      PROVIDERS registry + getProvider/listProviders/resolveModel helpers
     persistence/
       config.ts                     providerId + modelId + themeId + currentAgent (shared JSON)
+      auth.ts                       OAuth credentials loader/saver (provider-keyed)
+      auth.json                     Runtime file (~/.config/inkstone/auth.json, mode 0600)
       session.ts                    DisplayMessage[] + activeArticle (JSON; SQLite candidate)
 
   bridge/                           Pure TS — shared type contract
@@ -115,6 +118,8 @@ src/
       dialog.tsx                    Stack-based modal rendering (uses `Keybind.match("dialog_close")`)
       dialog-confirm.tsx            Promise-based yes/no confirmation (local y/n/arrow keys)
       dialog-select.tsx             Fuzzy filterable select list (uses `Keybind.match("select_*")`)
+      dialog-prompt.tsx             Promise-based single-line input (`DialogPrompt.show(...)`)
+      dialog-auth-wait.tsx          Read-only URL + user-code + progress screen used during OAuth device-code flows
       toast.tsx                     Toast notifications
     components/
       conversation.tsx              Scrollbox + message list (user-bubble border + `▣` glyph derive from active agent color)
@@ -312,8 +317,21 @@ One provider ships today:
 | id | displayName | Default | Auth detection | Models |
 |---|---|---|---|---|
 | `amazon-bedrock` | Amazon Bedrock | `us.anthropic.claude-opus-4-7` | pi-ai's `getEnvApiKey("amazon-bedrock")` (AWS_PROFILE / AWS_ACCESS_KEY_ID+SECRET / AWS_BEARER_TOKEN_BEDROCK / ECS/IRSA) **or** presence of `~/.aws/credentials` / `~/.aws/config` (honoring AWS_SHARED_CREDENTIALS_FILE / AWS_CONFIG_FILE overrides). IMDS-only EC2 is not probed. | `getModels("amazon-bedrock")` from pi-ai |
+| `kiro` | Amazon Kiro | `claude-opus-4-7` | Presence of saved OAuth creds in `~/.config/inkstone/auth.json` (mode 0600). Device-code login triggered from Connect dialog. | `kiroModels` from `pi-kiro/core`, region-filtered via `filterModelsByRegion` + `baseUrl` rewrite per `resolveApiRegion(creds.region)` |
 
-`getApiKey()` returns `undefined` for Bedrock because pi-ai's Bedrock stream function reads AWS env vars directly via the AWS SDK chain — forwarding anything through pi-agent-core's `getApiKey` hook would be silently dropped.
+`getApiKey()` returns `undefined` for Bedrock because pi-ai's Bedrock stream function reads AWS env vars directly via the AWS SDK chain — forwarding anything through pi-agent-core's `getApiKey` hook would be silently dropped. For Kiro, `getApiKey()` is async: it checks `creds.expires`, calls `refreshKiroToken()` if past-due, persists the refreshed pair, and returns the fresh `access` token. On refresh failure it clears stored creds and throws a "run Connect again" error — pi-agent-core surfaces this via the existing error-bubble path.
+
+### Kiro provider — registration, region scoping, refresh
+
+The `kiro.ts` module has three responsibilities on top of the shared `ProviderInfo` contract:
+
+1. **API registration** — at module load it calls `registerApiProvider({ api: "kiro-api", stream: streamKiro, streamSimple: streamKiro })` with pi-ai so pi-agent-core's default `streamFn` (pi-ai's `streamSimple`) can dispatch to `pi-kiro/core`'s `streamKiro` whenever it sees `model.api === "kiro-api"`. `backend/providers/index.ts` imports `./kiro` so registration fires before the agent module resolves any model. We don't pass a custom `streamFn` to `new Agent(...)` — the registry is the canonical dispatch point.
+2. **Region scoping** — pi-kiro ships one canonical `kiroModels` catalog; per-region availability is a runtime filter and the `baseUrl` has to be rewritten to point at the user's API region (`q.{region}.amazonaws.com`). `listModels()` reads the saved creds, computes `resolveApiRegion(creds.region)`, runs `filterModelsByRegion(kiroModels, apiRegion)`, and clones each model with the rewritten `baseUrl`. Returns `[]` when not signed in so `DialogModel` hides Kiro entries until the user authenticates. Mirrors pi-kiro's `modifyModels` hook in `extension.ts:32-41`, applied here because we consume pi-kiro through `/core` (not pi's extension runtime).
+3. **Lazy refresh** — `getApiKey()` checks `Date.now() > creds.expires`, and on miss calls `refreshKiroToken()` and `saveKiroCreds()` before returning. No background scheduler — refresh happens at the single point that actually needs a fresh token. On refresh failure we `clearKiroCreds()` and throw, pushing the user back through Connect.
+
+### Credential storage — `~/.config/inkstone/auth.json`
+
+Kept separate from `config.json` because OAuth tokens are sensitive (pi-kiro's `oauth.ts:55-72` explicitly calls out the refresh token + `clientSecret` pair as credentials that can mint access tokens for the user's AWS identity). `config.json` is frequently screenshared (themes, model ids) so a split avoids accidental leaks. File mode is forced to `0600` (directory `0700`) on every write via `chmodSync`. Shape is keyed by provider id (`{ kiro?: KiroCredentials }`) so future interactive providers slot in without migration.
 
 ### Agent integration
 
@@ -330,7 +348,18 @@ One provider ships today:
 |---|---|---|
 | **Models** | `DialogModel` | Flat list of models from every connected provider, `description` = provider display name. Empty placeholder when zero providers connected, directing the user to Connect. Auto-closes on select (backend `setModel` also auto-restores the per-model stored effort). |
 | **Effort** | `DialogVariant` | Standalone reasoning-effort picker for the currently-active model. Registered only when `store.modelReasoning === true` — non-reasoning models hide the entry to avoid palette noise. See "Effort variants" below. |
-| **Connect** | `DialogProvider` | All providers, sorted connected-first, `description` = `"✓ Connected"` / `"Not configured"`. Disconnected select → toast with `authInstructions`. Connected select is a no-op (reserved for future disconnect/manage). |
+| **Connect** | `DialogProvider` | All providers, sorted connected-first, `description` = `"✓ Connected"` / `"Not configured"`. Disconnected Kiro → device-code login flow (prompts → auth-wait → save → DialogModel scoped to Kiro). Disconnected Bedrock → toast with `authInstructions`. Connected select is a no-op (reserved for future disconnect/manage). |
+
+#### Kiro device-code login flow
+
+`startKiroLogin` in `components/dialog-provider.tsx` wires pi-kiro's `loginKiro` callbacks against the existing dialog stack:
+
+- `onPrompt({ message, placeholder, allowEmpty })` → `DialogPrompt.show(...)` returns a promise. pi-kiro calls this up to twice (Builder ID vs IdC start URL, optional IdC region). Each call uses `dialog.replace`, so only one dialog is on the stack at any time — sidesteps pi-kiro's documented mirrored-cursor glitch (`oauth.ts:16-23`), where two input widgets appended to the same container double-render typed characters.
+- `onAuth({ url, instructions })` → replaces the prompt with `DialogAuthWait` showing the verification URL (primary color), user code + expiry note, and a live progress line fed by `onProgress`.
+- `onProgress(msg)` → updates a signal consumed by `DialogAuthWait`.
+- Cancellation: closing any dialog in the chain resolves the prompt promise to `null` (`DialogPrompt.show`) or invokes the wait dialog's `onClose`, which aborts the `AbortController` passed to `loginKiro`. pi-kiro throws "Login cancelled"; we swallow it silently and `dialog.clear()`.
+- Success: `saveKiroCreds(creds)`, success toast, then `DialogModel.show(...)` scoped to `{ providerId: "kiro", modelId: "claude-opus-4-7" }` so the user lands on the freshly-available catalog. Mirrors OpenCode's chain in `component/dialog-provider.tsx:183-184`.
+- Failure (non-cancel): error toast with the pi-kiro error message.
 
 The Models dialog does not drill down through providers — with only connected providers in the list, flat is simpler. When a future provider adds an API-key auth flow, the two-step would land as: DialogProvider → api-key input → DialogModel scoped to the newly-connected provider. That scoped form can be re-added to `DialogModel` (via an optional `providerId` prop) when needed.
 

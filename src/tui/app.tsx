@@ -146,7 +146,9 @@ function Layout() {
 				title: "Connect",
 				description: "Manage providers",
 				onSelect: (d) => {
-					DialogProviderSelect.show(d);
+					DialogProviderSelect.show(d, (model) => {
+						actions.setModel(model);
+					});
 				},
 			},
 		);

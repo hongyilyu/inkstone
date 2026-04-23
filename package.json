@@ -30,6 +30,8 @@
     "babel-preset-solid": "1.9.9",
     "diff": "^9.0.0",
     "fuzzysort": "^3.1.0",
+    "open": "^11.0.0",
+    "pi-kiro": "^0.1.1",
     "remeda": "^2.33.7",
     "solid-js": "1.9.9"
   }
