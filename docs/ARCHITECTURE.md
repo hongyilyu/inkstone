@@ -184,6 +184,7 @@ Both `DisplayMessage` and `AgentStoreState` are defined in `src/bridge/view-mode
   agentName?: string   // assistant only, set in message_end
   modelName?: string   // assistant only, set in message_end
   duration?: number    // assistant only, ms, set in agent_end
+  error?: string       // assistant only, pi-ai errorMessage on stopReason error/aborted
 }
 ```
 
@@ -211,16 +212,16 @@ Each completed assistant message renders its own status line directly below its 
 
 `DisplayMessage` splits footer fields by scope. This matters for tool-driven turns, which emit multiple assistant messages.
 
-- **Per-message** — `agentName`, `modelName`. Written in `message_end`. Each assistant bubble records the agent and model that produced *that specific* reply, sourced from the assistant event (not from mutable store state). A tool turn with two assistant messages produces two bubbles, each with its own correct `agentName`/`modelName`.
+- **Per-message** — `agentName`, `modelName`, `error`. Written in `message_end`. Each assistant bubble records the agent and model that produced *that specific* reply, sourced from the assistant event (not from mutable store state). A tool turn with two assistant messages produces two bubbles, each with its own correct `agentName`/`modelName`. `error` carries pi-ai's `AssistantMessage.errorMessage` when the turn ended with `stopReason === "error" | "aborted"` — each bubble can fail independently, and the failure is scoped to the specific assistant boundary that produced it.
 - **Per-turn** — `duration`. Written in `agent_end`. Represents the wall-clock time from the user's prompt to the turn completing. Stamped only on the turn-closing assistant bubble, which is `messages[length - 1]` when `agent_end` fires (tool results aren't rendered as display bubbles, so the last bubble is always the turn-closing assistant message). Intermediate assistant bubbles in a tool turn intentionally carry `agentName` + `modelName` without a `duration` — "how long did the whole turn take?" only has a single answer per turn, and the turn-closing bubble is where it belongs.
 
-The conversation renderer shows the footer whenever `msg.modelName` is present, and adds the duration pip only when `msg.duration > 0`, so intermediate tool-turn bubbles render `▣ Reader · <model>` without a duration, and the turn-closing bubble renders the full `▣ Reader · <model> · <duration>`.
+The conversation renderer shows the footer whenever `msg.modelName` is present, and adds the duration pip only when `msg.duration > 0`, so intermediate tool-turn bubbles render `▣ Reader · <model>` without a duration, and the turn-closing bubble renders the full `▣ Reader · <model> · <duration>`. When `msg.error` is set, a warning-bordered panel (left border in `theme.error`, muted body text) renders between the markdown body and the footer, mirroring OpenCode's per-message error surface (`routes/session/index.tsx:1374-1387`). An errored bubble with empty text (the common case — pi-ai returns empty content on provider errors) still renders because the outer gate is `msg.text || msg.error`, not `msg.text` alone. Abort (`stopReason === "aborted"`) currently uses the same panel; differentiating it via a muted `· interrupted` footer suffix (OpenCode's pattern at `routes/session/index.tsx:1407-1409`) is tracked as future work.
 
 ### Bubble-per-assistant-boundary
 
 `AgentProvider` pushes a fresh empty assistant `DisplayMessage` on every pi-agent-core `message_start` event whose `message.role === "assistant"` (filtering out user/toolResult starts, which are handled elsewhere or not rendered). `message_update` deltas append to the last-pushed bubble, and `message_end` stamps `agentName` / `modelName` onto that same bubble.
 
-This mirrors pi-agent-core's own boundaries: a tool-using turn emits one assistant `message_start` / `message_end` pair before the tool call and another after the tool result. Each pair gets its own display bubble with its own per-message footer data, so saved sessions replay the original assistant boundaries and the per-message fields cannot leak between them. `<Show when={msg.text}>` in `conversation.tsx` hides bubbles that never received visible text (e.g., a pure tool-call assistant message), so empty bubbles don't clutter the conversation.
+This mirrors pi-agent-core's own boundaries: a tool-using turn emits one assistant `message_start` / `message_end` pair before the tool call and another after the tool result. Each pair gets its own display bubble with its own per-message footer data, so saved sessions replay the original assistant boundaries and the per-message fields cannot leak between them. `<Show when={msg.text || msg.error}>` in `conversation.tsx` hides bubbles that are neither visible text nor a failure (e.g., a pure tool-call assistant message with `stopReason === "toolUse"`), so empty bubbles don't clutter the conversation while errored bubbles (empty text + populated `error`) still render.
 
 Sourcing the model from `event.message` (rather than the mutable `store.modelName`) means switching models mid-run via Ctrl+P does not relabel the in-flight assistant reply. `store.modelName` continues to reflect the currently-selected model for the sidebar and the next prompt.
 

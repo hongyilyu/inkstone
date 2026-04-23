@@ -145,6 +145,24 @@ export function AgentProvider(props: ParentProps) {
 							const agentName = getAgentInfo(store.currentAgent).displayName;
 							setStore("messages", lastIdx, "agentName", agentName);
 							setStore("messages", lastIdx, "modelName", displayName);
+							// Surface any assistant-turn failure onto the bubble. pi-ai
+							// converts provider SDK exceptions into stream `error` events
+							// (see amazon-bedrock.js:164-167) which pi-agent-core forwards
+							// through message_end with `stopReason` set and `errorMessage`
+							// populated. Without this stash the errored bubble renders as
+							// empty text with no user-facing hint that anything went wrong.
+							if (
+								(assistantMsg.stopReason === "error" ||
+									assistantMsg.stopReason === "aborted") &&
+								assistantMsg.errorMessage
+							) {
+								setStore(
+									"messages",
+									lastIdx,
+									"error",
+									assistantMsg.errorMessage,
+								);
+							}
 						}
 					}
 					break;

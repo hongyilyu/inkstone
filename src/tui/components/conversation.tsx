@@ -50,23 +50,53 @@ export function Conversation() {
 			<box flexDirection="column" paddingTop={1} paddingRight={1} gap={1}>
 				<For each={store.messages}>
 					{(msg, index) => (
-						<Show when={msg.text}>
+						<Show when={msg.text || msg.error}>
 							<Show
 								when={msg.role === "user"}
 								fallback={
 									<box flexDirection="column" flexShrink={0}>
-										<box paddingLeft={3} flexShrink={0}>
-											<markdown
-												content={msg.text}
-												syntaxStyle={syntax()}
-												streaming={
-													store.isStreaming &&
-													index() === store.messages.length - 1
-												}
-												fg={theme.text}
-												bg={theme.background}
-											/>
-										</box>
+										<Show when={msg.text}>
+											<box paddingLeft={3} flexShrink={0}>
+												<markdown
+													content={msg.text}
+													syntaxStyle={syntax()}
+													streaming={
+														store.isStreaming &&
+														index() === store.messages.length - 1
+													}
+													fg={theme.text}
+													bg={theme.background}
+												/>
+											</box>
+										</Show>
+										{/* Assistant-turn error panel. Mirrors OpenCode's
+                                            per-message error box
+                                            (`routes/session/index.tsx:1374-1387`) — left
+                                            border in theme.error, muted body text.
+                                            `marginLeft={3}` aligns the left edge with the
+                                            markdown body above. Covers both
+                                            `stopReason === "error"` and `"aborted"` for
+                                            now; distinct "interrupted" footer styling is
+                                            tracked as future work. */}
+										<Show when={msg.error}>
+											<box
+												marginLeft={3}
+												marginTop={msg.text ? 1 : 0}
+												border={["left"]}
+												borderColor={theme.error}
+												customBorderChars={SplitBorderChars}
+											>
+												<box
+													paddingTop={1}
+													paddingBottom={1}
+													paddingLeft={2}
+													backgroundColor={theme.backgroundPanel}
+													flexShrink={0}
+												>
+													<text fg={theme.textMuted}>{msg.error}</text>
+												</box>
+											</box>
+										</Show>
 										<Show when={msg.modelName}>
 											<box paddingLeft={3} paddingTop={1} flexShrink={0}>
 												<text wrapMode="none">

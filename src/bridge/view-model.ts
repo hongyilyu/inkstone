@@ -37,6 +37,19 @@ export interface DisplayMessage {
 	agentName?: string;
 	modelName?: string;
 	duration?: number; // ms
+	/**
+	 * pi-ai's `AssistantMessage.errorMessage`, populated when the turn ended
+	 * with `stopReason === "error" | "aborted"`. Rendered as a warning-
+	 * bordered panel below the assistant body. Mirrors OpenCode's per-message
+	 * error surface (`routes/session/index.tsx:1374-1387`), trimmed to a
+	 * single field — Inkstone doesn't yet differentiate abort ("interrupted"
+	 * footer suffix) from hard error (red panel); both render as the panel.
+	 * That's a deferred polish, not a semantic contract difference.
+	 *
+	 * Optional for backward compatibility with sessions persisted before this
+	 * field existed.
+	 */
+	error?: string;
 }
 
 export interface AgentStoreState {
