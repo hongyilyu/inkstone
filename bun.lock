@@ -16,7 +16,7 @@
         "diff": "^9.0.0",
         "fuzzysort": "^3.1.0",
         "open": "^11.0.0",
-        "pi-kiro": "^0.1.1",
+        "pi-kiro": "^0.1.2",
         "remeda": "^2.33.7",
         "solid-js": "1.9.9",
       },
@@ -649,7 +649,7 @@
 
     "peek-readable": ["peek-readable@4.1.0", "", {}, "sha512-ZI3LnwUv5nOGbQzD9c2iDG6toheuXSZP5esSHBjopsXH4dg19soufvpUGA3uohi5anFtGb2lhAVdHzH6R/Evvg=="],
 
-    "pi-kiro": ["pi-kiro@0.1.1", "", { "peerDependencies": { "@mariozechner/pi-ai": "*", "@mariozechner/pi-coding-agent": "^0.69.0", "typescript": "^5" }, "optionalPeers": ["@mariozechner/pi-coding-agent"] }, "sha512-CQbrpkEjqPxG3qCwLlQZvImao13joN/ztMoqvgWJwlR6wSuy7Yo+1a54mN0BZuqJRGsh1UgpGp0NlbOGfMhnzQ=="],
+    "pi-kiro": ["pi-kiro@0.1.2", "", { "peerDependencies": { "@mariozechner/pi-ai": "*", "@mariozechner/pi-coding-agent": "^0.69.0", "typescript": "^5" }, "optionalPeers": ["@mariozechner/pi-coding-agent"] }, "sha512-G+rBfVZLs9ZoU+Qnho69fZJRtqwDu4Pc2THBiJ23Jg2ozsQ76vnCJtvfmtcLHw9dZnlimervXIy/P9oKz0OAGw=="],
 
     "picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
 

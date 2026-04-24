@@ -6,6 +6,7 @@
   "private": true,
   "scripts": {
     "dev": "bun run --watch src/index.tsx",
+    "dev:log": "KIRO_LOG=debug KIRO_LOG_FILE=/tmp/inkstone-kiro.log bun run --watch src/index.tsx",
     "format": "biome format --write ./src",
     "lint": "biome lint ./src",
     "check": "biome check --write ./src",
@@ -31,7 +32,7 @@
     "diff": "^9.0.0",
     "fuzzysort": "^3.1.0",
     "open": "^11.0.0",
-    "pi-kiro": "^0.1.1",
+    "pi-kiro": "^0.1.2",
     "remeda": "^2.33.7",
     "solid-js": "1.9.9"
   }

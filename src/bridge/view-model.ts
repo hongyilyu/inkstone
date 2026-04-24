@@ -40,6 +40,10 @@ export interface DisplayMessage {
 	 * order the model emitted them (driven by pi-ai's `text_start` /
 	 * `thinking_start` boundaries). Redacted thinking is dropped at
 	 * `thinking_end` time, so no `redacted` flag lives on parts.
+	 * Known placeholder strings (`[REDACTED]` from OpenRouter,
+	 * `Reasoning hidden by provider` from pi-kiro conformance §26a)
+	 * are stripped in the reducer — see `REDACTED_THINKING_PLACEHOLDERS`
+	 * in `tui/context/agent.tsx`.
 	 */
 	parts: DisplayPart[];
 	// `agentName` and `modelName` are per-message: each assistant bubble records

@@ -28,6 +28,21 @@ import {
 import { batch, createContext, type ParentProps, useContext } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { toBottom } from "../app";
+
+/**
+ * Placeholder strings that providers inject into redacted thinking blocks.
+ * When a `thinking_end` arrives and the accumulated text consists solely of
+ * one of these placeholders (possibly with surrounding whitespace), the
+ * thinking part is dropped from the message — it carries no user-visible
+ * information and would otherwise persist as a dead breadcrumb.
+ *
+ * - `[REDACTED]`                    — OpenRouter literal (all providers)
+ * - `Reasoning hidden by provider`  — pi-kiro slow-path marker (conformance §26a)
+ */
+const REDACTED_THINKING_PLACEHOLDERS = [
+	"[REDACTED]",
+	"Reasoning hidden by provider",
+] as const;
 import { useDialog } from "../ui/dialog";
 import { DialogConfirm } from "../ui/dialog-confirm";
 
@@ -183,25 +198,32 @@ export function AgentProvider(props: ParentProps) {
 							break;
 						}
 						case "thinking_end": {
-							// Drop the part if nothing renderable accumulated. Two
-							// redacted-thinking shapes land here:
+							// Drop the part if nothing renderable accumulated.
+							// Several redacted-thinking shapes land here:
 							//   - Anthropic `redacted: true` — pi-ai emits no
 							//     `thinking_delta` at all, so `text` is "".
 							//   - OpenRouter's `[REDACTED]` literal — arrives as a
 							//     delta chunk and would otherwise render verbatim
 							//     (`"[REDACTED]".trim()` is truthy).
-							// Strip the literal before the trim so both cases
-							// collapse to empty and get popped. OpenCode filters the
-							// same literal at render time (`routes/session/index.tsx:1443`);
-							// we do it reducer-side because Inkstone has no
-							// `showThinking` toggle, so a stored-but-never-rendered
-							// part would just be dead weight in persistence.
+							//   - pi-kiro's `Reasoning hidden by provider` — slow-path
+							//     marker per conformance §26a; same shape as above.
+							// Strip all known placeholders before the trim so every
+							// case collapses to empty and gets popped. OpenCode
+							// filters the same literal at render time
+							// (`routes/session/index.tsx:1443`); we do it reducer-side
+							// because Inkstone has no `showThinking` toggle, so a
+							// stored-but-never-rendered part would just be dead weight
+							// in persistence.
 							const lastMsg = store.messages[lastMsgIdx];
 							if (!lastMsg) break;
 							const lastPartIdx = lastMsg.parts.length - 1;
 							const lastPart = lastMsg.parts[lastPartIdx];
 							if (!lastPart || lastPart.type !== "thinking") break;
-							if (!lastPart.text.replace("[REDACTED]", "").trim()) {
+							const stripped = REDACTED_THINKING_PLACEHOLDERS.reduce(
+								(s, p) => s.replace(p, ""),
+								lastPart.text,
+							);
+							if (!stripped.trim()) {
 								setStore(
 									"messages",
 									lastMsgIdx,

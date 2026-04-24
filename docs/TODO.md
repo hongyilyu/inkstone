@@ -3,9 +3,11 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-23 (thinking-block review fixes)
+**Last updated**: 2026-04-23 (pi-kiro redacted-thinking placeholder)
 
 ## Completed
+
+- [x] Handle pi-kiro's `Reasoning hidden by provider` redacted-thinking placeholder. Extended the `thinking_end` pop predicate in `context/agent.tsx` to strip all known placeholder strings via a `REDACTED_THINKING_PLACEHOLDERS` array (previously only `[REDACTED]` was handled). Updated JSDoc in `bridge/view-model.ts` to document both placeholder shapes and their origins.
 
 - [x] Thinking-block review fixes: (a) `thinking_end` pop predicate in `context/agent.tsx` now strips the `[REDACTED]` literal before trimming, so OpenRouter's `[REDACTED]`-as-delta shape collapses to empty and gets popped (previously `"[REDACTED]".trim()` was truthy, so the block would have rendered verbatim). Anthropic's zero-delta `redacted: true` path still covered. (b) Reverted leftover `KIRO_LOG=debug KIRO_LOG_FILE=/tmp/inkstone-kiro.log` from the `dev` script in `package.json`. (c) Documented reducer-guaranteed `part.type` immutability in `docs/ARCHITECTURE.md` so future contributors know the non-reactive `<For>` branch in `ReasoningPart` / `TextPart` dispatch is intentional.
 - [x] Thinking-block `subtleSyntax` port. Added `thinkingOpacity: number` (0.6) to `ThemeColors` on all four themes and `generateSubtleSyntax(colors)` in `src/tui/context/theme.tsx` — rebuilds every `getSyntaxRules` rule's foreground at `thinkingOpacity` alpha, preserving per-scope hue. `useTheme()` now exposes `subtleSyntax: Accessor<SyntaxStyle>` alongside `syntax`, with the same `onCleanup(() => style.destroy())` FFI lifecycle. `conversation.tsx` `ReasoningPart` rewritten to match OpenCode's `routes/session/index.tsx:1437-1468` byte-for-byte (minus `<code filetype="markdown">` → `<markdown>` for renderer consistency): single `<markdown content="_Thinking:_ …" syntaxStyle={subtleSyntax()}>`, border `theme.backgroundElement`, no outer `fg` override. Dropped orphaned `TextAttributes` import.
