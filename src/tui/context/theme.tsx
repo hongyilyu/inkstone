@@ -1,5 +1,10 @@
 import { loadConfig, saveConfig } from "@backend/persistence/config";
-import { RGBA, SyntaxStyle, type ThemeTokenStyle } from "@opentui/core";
+import {
+	parseColor,
+	RGBA,
+	SyntaxStyle,
+	type ThemeTokenStyle,
+} from "@opentui/core";
 import {
 	type Accessor,
 	batch,
@@ -32,6 +37,15 @@ export interface ThemeColors {
 	border: RGBA;
 	borderActive: RGBA;
 	borderSubtle: RGBA;
+	/**
+	 * Alpha multiplier applied to every syntax-style foreground color when
+	 * rendering reasoning ("thinking") blocks. Mirrors OpenCode's
+	 * `Theme.thinkingOpacity` (see `opencode/.../context/theme.tsx`) — the
+	 * reasoning body uses a `subtleSyntax` variant of the normal syntax rules
+	 * with foregrounds rebuilt at this alpha, producing a uniformly faded
+	 * rendering while preserving per-scope hue. 0.6 matches OpenCode's default.
+	 */
+	thinkingOpacity: number;
 }
 
 export interface ThemeDef {
@@ -62,6 +76,7 @@ const DARK: ThemeColors = {
 	border: hex("#484848"),
 	borderActive: hex("#606060"),
 	borderSubtle: hex("#3c3c3c"),
+	thinkingOpacity: 0.6,
 };
 
 const LIGHT: ThemeColors = {
@@ -82,6 +97,7 @@ const LIGHT: ThemeColors = {
 	border: hex("#d0d7de"),
 	borderActive: hex("#0969da"),
 	borderSubtle: hex("#d8dee4"),
+	thinkingOpacity: 0.6,
 };
 
 const CATPPUCCIN_MOCHA: ThemeColors = {
@@ -102,6 +118,7 @@ const CATPPUCCIN_MOCHA: ThemeColors = {
 	border: hex("#313244"),
 	borderActive: hex("#45475a"),
 	borderSubtle: hex("#585b70"),
+	thinkingOpacity: 0.6,
 };
 
 const DRACULA: ThemeColors = {
@@ -122,6 +139,7 @@ const DRACULA: ThemeColors = {
 	border: hex("#44475a"),
 	borderActive: hex("#bd93f9"),
 	borderSubtle: hex("#191a21"),
+	thinkingOpacity: 0.6,
 };
 
 export const themes: ThemeDef[] = [
@@ -325,11 +343,40 @@ function generateSyntax(colors: ThemeColors): SyntaxStyle {
 	return SyntaxStyle.fromTheme(getSyntaxRules(colors));
 }
 
+/**
+ * `generateSyntax` variant where every rule's `foreground` has its alpha
+ * replaced by `colors.thinkingOpacity`. Used for rendering reasoning blocks:
+ * hue-per-scope is preserved, but everything reads uniformly faded.
+ * Mirrors OpenCode's `generateSubtleSyntax` (see opencode's `context/theme.tsx`).
+ * `RGBA.fromValues` takes 0–1 floats (see `@opentui/core/lib/RGBA.d.ts`),
+ * so no rescale is needed when copying r/g/b off the source RGBA.
+ */
+function generateSubtleSyntax(colors: ThemeColors): SyntaxStyle {
+	const rules = getSyntaxRules(colors);
+	return SyntaxStyle.fromTheme(
+		rules.map((rule) => {
+			if (!rule.style.foreground) return rule;
+			// `foreground` is typed as `ColorInput` (RGBA | string); all rules in
+			// `getSyntaxRules` pass pre-resolved RGBAs, but the union forces us
+			// to normalize via `parseColor` to safely read r/g/b.
+			const fg = parseColor(rule.style.foreground);
+			return {
+				...rule,
+				style: {
+					...rule.style,
+					foreground: RGBA.fromValues(fg.r, fg.g, fg.b, colors.thinkingOpacity),
+				},
+			};
+		}),
+	);
+}
+
 interface ThemeContext {
 	theme: ThemeColors;
 	themeId: () => string;
 	setTheme: (id: string) => void;
 	syntax: Accessor<SyntaxStyle>;
+	subtleSyntax: Accessor<SyntaxStyle>;
 }
 
 const ctx = createContext<ThemeContext>();
@@ -349,7 +396,11 @@ export function ThemeProvider(props: ParentProps) {
 				const colors = getThemeById(id).colors;
 				batch(() => {
 					for (const [key, value] of Object.entries(colors)) {
-						setThemeColors(key as keyof ThemeColors, value as RGBA);
+						// Store fields are heterogeneous (RGBA for colors + one
+						// `thinkingOpacity: number`). Solid's `setStore` has an
+						// overload that accepts `unknown` per-key; cast to that
+						// instead of lying to TS with `as RGBA`.
+						setThemeColors(key as keyof ThemeColors, value as never);
 					}
 				});
 			},
@@ -373,6 +424,15 @@ export function ThemeProvider(props: ParentProps) {
 		return style;
 	});
 
+	// Sibling of `syntax` for reasoning ("thinking") blocks. Same FFI cleanup
+	// contract; alpha-faded per-scope via `colors.thinkingOpacity`.
+	const subtleSyntax = createMemo(() => {
+		const id = themeId();
+		const style = generateSubtleSyntax(getThemeById(id).colors);
+		onCleanup(() => style.destroy());
+		return style;
+	});
+
 	const value: ThemeContext = {
 		theme,
 		themeId,
@@ -381,6 +441,7 @@ export function ThemeProvider(props: ParentProps) {
 			saveConfig({ themeId: id });
 		},
 		syntax,
+		subtleSyntax,
 	};
 	return <ctx.Provider value={value}>{props.children}</ctx.Provider>;
 }

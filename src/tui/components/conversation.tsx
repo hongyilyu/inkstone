@@ -26,7 +26,7 @@ const SplitBorderChars = {
 };
 
 export function Conversation() {
-	const { theme, syntax } = useTheme();
+	const { theme, syntax, subtleSyntax } = useTheme();
 	const { store } = useAgent();
 
 	// Accent color for user-message borders and the assistant-footer `▣` glyph,
@@ -50,25 +50,66 @@ export function Conversation() {
 			<box flexDirection="column" paddingTop={1} paddingRight={1} gap={1}>
 				<For each={store.messages}>
 					{(msg, index) => (
-						<Show when={msg.text || msg.error}>
+						<Show when={msg.parts.length > 0 || msg.error}>
 							<Show
 								when={msg.role === "user"}
 								fallback={
 									<box flexDirection="column" flexShrink={0}>
-										<Show when={msg.text}>
-											<box paddingLeft={3} flexShrink={0}>
-												<markdown
-													content={msg.text}
-													syntaxStyle={syntax()}
-													streaming={
-														store.isStreaming &&
-														index() === store.messages.length - 1
-													}
-													fg={theme.text}
-													bg={theme.background}
-												/>
-											</box>
-										</Show>
+										<For each={msg.parts}>
+											{(part, partIndex) => {
+												// `streaming` must only flag the absolute tail block
+												// of the in-flight turn; markdown's partial-token
+												// parser keeps that block unstable and finalizes
+												// earlier ones.
+												const isTail = () =>
+													store.isStreaming &&
+													index() === store.messages.length - 1 &&
+													partIndex() === msg.parts.length - 1;
+												if (part.type === "thinking") {
+													// Mirrors OpenCode's `ReasoningPart`
+													// (`routes/session/index.tsx:1437-1468`): single
+													// markdown block with an inline `_Thinking:_`
+													// italic prefix, rendered through `subtleSyntax`
+													// so every token is alpha-faded uniformly while
+													// preserving per-scope hue. No outer `fg` — that
+													// would flatten all tokens to one color and cancel
+													// the per-scope dimming.
+													return (
+														<box
+															paddingLeft={2}
+															marginTop={partIndex() === 0 ? 0 : 1}
+															border={["left"]}
+															borderColor={theme.backgroundElement}
+															customBorderChars={SplitBorderChars}
+															flexShrink={0}
+															flexDirection="column"
+														>
+															<markdown
+																content={`_Thinking:_ ${part.text}`}
+																syntaxStyle={subtleSyntax()}
+																streaming={isTail()}
+																bg={theme.background}
+															/>
+														</box>
+													);
+												}
+												return (
+													<box
+														paddingLeft={3}
+														marginTop={partIndex() === 0 ? 0 : 1}
+														flexShrink={0}
+													>
+														<markdown
+															content={part.text}
+															syntaxStyle={syntax()}
+															streaming={isTail()}
+															fg={theme.text}
+															bg={theme.background}
+														/>
+													</box>
+												);
+											}}
+										</For>
 										{/* Assistant-turn error panel. Mirrors OpenCode's
                                             per-message error box
                                             (`routes/session/index.tsx:1374-1387`) — left
@@ -81,7 +122,7 @@ export function Conversation() {
 										<Show when={msg.error}>
 											<box
 												marginLeft={3}
-												marginTop={msg.text ? 1 : 0}
+												marginTop={msg.parts.length > 0 ? 1 : 0}
 												border={["left"]}
 												borderColor={theme.error}
 												customBorderChars={SplitBorderChars}
@@ -130,7 +171,7 @@ export function Conversation() {
 										backgroundColor={theme.backgroundPanel}
 										flexShrink={0}
 									>
-										<text fg={theme.text}>{msg.text}</text>
+										<text fg={theme.text}>{msg.parts[0]?.text ?? ""}</text>
 									</box>
 								</box>
 							</Show>

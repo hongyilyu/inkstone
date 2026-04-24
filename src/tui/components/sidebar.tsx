@@ -41,9 +41,10 @@ export function Sidebar() {
 			return stripExtension(store.activeArticle).slice(0, TITLE_MAX_CHARS);
 		}
 		const firstUser = store.messages.find((m) => m.role === "user");
-		if (firstUser?.text) {
+		const firstUserText = firstUser?.parts[0]?.text;
+		if (firstUserText) {
 			// Strip newlines so a multiline prompt doesn't blow up the title
-			const flat = firstUser.text.replace(/\s+/g, " ").trim();
+			const flat = firstUserText.replace(/\s+/g, " ").trim();
 			return flat.slice(0, TITLE_MAX_CHARS);
 		}
 		return "inkstone";

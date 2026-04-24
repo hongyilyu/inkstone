@@ -12,11 +12,16 @@ import {
 	loadSession,
 	saveSession,
 } from "@backend/persistence/session";
-import type { AgentStoreState, DisplayMessage } from "@bridge/view-model";
+import type {
+	AgentStoreState,
+	DisplayMessage,
+	DisplayPart,
+} from "@bridge/view-model";
 import type { AgentEvent, ThinkingLevel } from "@mariozechner/pi-agent-core";
 import {
 	type Api,
 	type AssistantMessage,
+	type AssistantMessageEvent,
 	getModel,
 	type Model,
 } from "@mariozechner/pi-ai";
@@ -35,6 +40,26 @@ const ctx = createContext<AgentContextValue>();
 
 let messageCounter = 0;
 
+/**
+ * Migrate a persisted `DisplayMessage` from the old `text: string` shape to
+ * the current `parts: DisplayPart[]` shape. Sessions saved before the parts
+ * change come back off disk with `(msg as any).text` populated and no
+ * `parts` field; we rebuild a single text part so the bubble renders without
+ * a render-path crash. Messages already in the new shape pass through
+ * untouched. The legacy `text` field is explicitly dropped so it doesn't
+ * round-trip through `saveSession`.
+ */
+function migrateMessage(msg: DisplayMessage): DisplayMessage {
+	if (Array.isArray(msg.parts)) return msg;
+	const { text: legacyText, ...rest } = msg as DisplayMessage & {
+		text?: string;
+	};
+	return {
+		...rest,
+		parts: legacyText ? [{ type: "text", text: legacyText }] : [],
+	};
+}
+
 export function AgentProvider(props: ParentProps) {
 	const dialog = useDialog();
 
@@ -50,7 +75,7 @@ export function AgentProvider(props: ParentProps) {
 	const initialModel = getCurrentModel();
 
 	const [store, setStore] = createStore<AgentStoreState>({
-		messages: saved?.messages ?? [],
+		messages: (saved?.messages ?? []).map(migrateMessage),
 		isStreaming: false,
 		activeArticle: saved?.activeArticle ?? null,
 		modelName: initialModel.name,
@@ -91,7 +116,7 @@ export function AgentProvider(props: ParentProps) {
 								msgs.push({
 									id: `msg-${++messageCounter}`,
 									role: "assistant",
-									text: "",
+									parts: [],
 								});
 							}),
 						);
@@ -100,21 +125,106 @@ export function AgentProvider(props: ParentProps) {
 					break;
 				}
 
-				case "message_update":
-					if (
-						"assistantMessageEvent" in event &&
-						(event as any).assistantMessageEvent?.type === "text_delta"
-					) {
-						const delta = (event as any).assistantMessageEvent.delta as string;
-						// Append delta to the last message's text — no array replacement
-						setStore(
-							"messages",
-							store.messages.length - 1,
-							"text",
-							(t) => t + delta,
-						);
+				case "message_update": {
+					// pi-ai's `AssistantMessageEvent` union fires `text_start` /
+					// `thinking_start` deterministically before the first matching
+					// delta (see pi-agent-core `agent-loop.js:175-190`). We still
+					// runtime-guard the tail-part type in each delta arm — cheap
+					// insurance against future upstream reordering, and it's the
+					// single failure mode that would silently cross-append text
+					// into a thinking block (or vice versa).
+					if (!("assistantMessageEvent" in event)) break;
+					const ame = (
+						event as { assistantMessageEvent?: AssistantMessageEvent }
+					).assistantMessageEvent;
+					if (!ame) break;
+					const lastMsgIdx = store.messages.length - 1;
+					if (lastMsgIdx < 0) break;
+
+					switch (ame.type) {
+						case "text_start":
+							setStore(
+								"messages",
+								lastMsgIdx,
+								"parts",
+								produce((parts: DisplayPart[]) => {
+									parts.push({ type: "text", text: "" });
+								}),
+							);
+							break;
+						case "thinking_start":
+							setStore(
+								"messages",
+								lastMsgIdx,
+								"parts",
+								produce((parts: DisplayPart[]) => {
+									parts.push({ type: "thinking", text: "" });
+								}),
+							);
+							break;
+						case "text_delta":
+						case "thinking_delta": {
+							if (!ame.delta) break;
+							const lastMsg = store.messages[lastMsgIdx];
+							if (!lastMsg) break;
+							const lastPartIdx = lastMsg.parts.length - 1;
+							const lastPart = lastMsg.parts[lastPartIdx];
+							if (!lastPart) break;
+							const expected = ame.type === "text_delta" ? "text" : "thinking";
+							if (lastPart.type !== expected) break;
+							setStore(
+								"messages",
+								lastMsgIdx,
+								"parts",
+								lastPartIdx,
+								"text",
+								(t) => t + ame.delta,
+							);
+							break;
+						}
+						case "thinking_end": {
+							// Drop the part if nothing renderable accumulated. Two
+							// redacted-thinking shapes land here:
+							//   - Anthropic `redacted: true` — pi-ai emits no
+							//     `thinking_delta` at all, so `text` is "".
+							//   - OpenRouter's `[REDACTED]` literal — arrives as a
+							//     delta chunk and would otherwise render verbatim
+							//     (`"[REDACTED]".trim()` is truthy).
+							// Strip the literal before the trim so both cases
+							// collapse to empty and get popped. OpenCode filters the
+							// same literal at render time (`routes/session/index.tsx:1443`);
+							// we do it reducer-side because Inkstone has no
+							// `showThinking` toggle, so a stored-but-never-rendered
+							// part would just be dead weight in persistence.
+							const lastMsg = store.messages[lastMsgIdx];
+							if (!lastMsg) break;
+							const lastPartIdx = lastMsg.parts.length - 1;
+							const lastPart = lastMsg.parts[lastPartIdx];
+							if (!lastPart || lastPart.type !== "thinking") break;
+							if (!lastPart.text.replace("[REDACTED]", "").trim()) {
+								setStore(
+									"messages",
+									lastMsgIdx,
+									"parts",
+									produce((p: DisplayPart[]) => {
+										p.pop();
+									}),
+								);
+							}
+							break;
+						}
+						// Other `AssistantMessageEvent` variants (`start`,
+						// `text_end`, `toolcall_*`, `done`, `error`) are
+						// intentionally ignored — `text_end` is a no-op for us
+						// (deltas already built the part), tool-call rendering
+						// isn't wired in display bubbles yet, and stream
+						// lifecycle is handled by `message_start` / `message_end`
+						// / `agent_end` on the outer `AgentEvent`.
+						default:
+							break;
 					}
 					break;
+				}
 
 				case "message_end": {
 					// Accumulate token usage and cost from assistant messages
@@ -207,7 +317,11 @@ export function AgentProvider(props: ParentProps) {
 			setStore(
 				"messages",
 				produce((msgs: DisplayMessage[]) => {
-					msgs.push({ id: `msg-${++messageCounter}`, role: "user", text });
+					msgs.push({
+						id: `msg-${++messageCounter}`,
+						role: "user",
+						parts: [{ type: "text", text }],
+					});
 				}),
 			);
 			setStore("lastTurnStartedAt", Date.now());

@@ -18,10 +18,30 @@
 
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 
+/**
+ * A single rendered block inside an assistant (or user) message. Mirrors
+ * pi-ai's per-block event model so interleaved thinking/text from a single
+ * assistant turn renders in source order instead of being collapsed into
+ * one flat string.
+ *
+ * Kept intentionally narrow — `tool` is not a part type because Inkstone
+ * doesn't render tool calls in bubbles yet; when it does, this union grows.
+ */
+export type DisplayPart =
+	| { type: "text"; text: string }
+	| { type: "thinking"; text: string };
+
 export interface DisplayMessage {
 	id: string;
 	role: "user" | "assistant";
-	text: string;
+	/**
+	 * Ordered block list. User messages always have exactly one `text` part.
+	 * Assistant messages may interleave `text` and `thinking` parts in the
+	 * order the model emitted them (driven by pi-ai's `text_start` /
+	 * `thinking_start` boundaries). Redacted thinking is dropped at
+	 * `thinking_end` time, so no `redacted` flag lives on parts.
+	 */
+	parts: DisplayPart[];
 	// `agentName` and `modelName` are per-message: each assistant bubble records
 	// the agent and model that produced *that specific* reply, sourced from the
 	// `message_end` event (not from mutable store state).
