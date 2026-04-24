@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../persistence/config";
+import { loadConfig } from "../config/config";
 
 /**
  * Absolute path to the Obsidian vault root.

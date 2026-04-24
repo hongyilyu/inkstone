@@ -99,12 +99,14 @@ src/
       amazon-bedrock.ts             Bedrock provider — wraps pi-ai `getModels("amazon-bedrock")`, auth via `getEnvApiKey`
       kiro.ts                       Amazon Kiro provider — wraps `pi-kiro/core`; registers `kiro-api` with pi-ai; OAuth (Builder ID / IdC) with lazy refresh
       index.ts                      PROVIDERS registry + getProvider/listProviders/resolveModel helpers
-    persistence/
-      config.ts                     providerId + modelId + themeId + currentAgent + vaultDir (shared JSON)
-      auth.ts                       OAuth credentials loader/saver (provider-keyed)
+    config/
+      config.ts                     providerId + modelId + themeId + currentAgent + vaultDir (shared JSON; Zod-validated on load via `config/schema.ts`)
+      auth.ts                       OAuth credentials loader/saver (provider-keyed; Zod-validated on load)
       auth.json                     Runtime file (~/.config/inkstone/auth.json, mode 0600)
       session.ts                    DisplayMessage[] + activeArticle (JSON; SQLite candidate)
-      errors.ts                     Shared persistence-write error hook (setPersistenceErrorHandler / reportPersistenceError)
+      errors.ts                     Shared persistence-file error hook (setPersistenceErrorHandler / reportPersistenceError); `kind: "config" | "auth" | "session"`
+      paths.ts                      Shared XDG paths: CONFIG_DIR, STATE_DIR, CONFIG_FILE, AUTH_FILE, SESSION_FILE
+      schema.ts                     Zod schemas for Config + AuthFile (strictObject, field-level validation)
 
   bridge/                           Pure TS — shared type contract
     view-model.ts                   DisplayMessage, AgentStoreState, SessionData

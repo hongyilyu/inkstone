@@ -1,4 +1,4 @@
-import { saveKiroCreds } from "@backend/persistence/auth";
+import { saveKiroCreds } from "@backend/config/auth";
 import { getProvider, listProviders } from "@backend/providers";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { loginKiro } from "pi-kiro/core";

@@ -7,11 +7,7 @@ import {
 	resolveApiRegion,
 	streamKiro,
 } from "pi-kiro/core";
-import {
-	clearKiroCreds,
-	loadKiroCreds,
-	saveKiroCreds,
-} from "../persistence/auth";
+import { clearKiroCreds, loadKiroCreds, saveKiroCreds } from "../config/auth";
 import type { ProviderInfo } from "./types";
 
 // Register the `kiro-api` with pi-ai's api-registry so pi-ai's

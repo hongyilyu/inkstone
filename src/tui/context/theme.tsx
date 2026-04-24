@@ -1,4 +1,4 @@
-import { loadConfig, saveConfig } from "@backend/persistence/config";
+import { loadConfig, saveConfig } from "@backend/config/config";
 import {
 	parseColor,
 	RGBA,

@@ -1,14 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import type { SessionData } from "@bridge/view-model";
 import { reportPersistenceError } from "./errors";
+import { SESSION_FILE, STATE_DIR } from "./paths";
 
-const STATE_DIR = join(
-	process.env.XDG_STATE_HOME ||
-		join(process.env.HOME || "~", ".local", "state"),
-	"inkstone",
-);
-const SESSION_FILE = join(STATE_DIR, "session.json");
+/**
+ * Persist the most recent session to `~/.local/state/inkstone/session.json`.
+ *
+ * No Zod schema here — `SessionData` is an internal Inkstone type owned by
+ * `@bridge/view-model`, written and read only by Inkstone itself. There's
+ * no untrusted-input boundary worth validating against. If the file is
+ * corrupt on load we fall back to `null` (treated by callers as "no saved
+ * session") and surface the error so the user knows their state was lost.
+ */
 
 export function saveSession(data: SessionData): void {
 	try {
@@ -26,7 +29,8 @@ export function loadSession(): SessionData | null {
 	try {
 		const raw = readFileSync(SESSION_FILE, "utf-8");
 		return JSON.parse(raw) as SessionData;
-	} catch {
+	} catch (error) {
+		reportPersistenceError({ kind: "session", action: "load", error });
 		return null;
 	}
 }

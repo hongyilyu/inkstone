@@ -7,12 +7,12 @@ import {
 	getCurrentThinkingLevel,
 	setConfirmFn,
 } from "@backend/agent";
-import { setPersistenceErrorHandler } from "@backend/persistence/errors";
+import { setPersistenceErrorHandler } from "@backend/config/errors";
 import {
 	clearSession as clearSessionFile,
 	loadSession,
 	saveSession,
-} from "@backend/persistence/session";
+} from "@backend/config/session";
 import type {
 	AgentStoreState,
 	DisplayMessage,
