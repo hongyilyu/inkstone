@@ -3,9 +3,9 @@ import {
 	NOTES_DIR,
 	SCRAPS_DIR,
 	TEMPLATES_DIR,
-} from "./constants";
+} from "../../constants";
 
-export function buildSystemPrompt(articleId: string | null): string {
+export function buildReaderInstructions(articleId: string | null): string {
 	if (!articleId) {
 		return "You are a helpful reading assistant. Use /article <filename> to load an article and begin the reading workflow.";
 	}

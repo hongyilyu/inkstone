@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
 import { createTwoFilesPatch, diffLines } from "diff";
-import { VAULT_DIR } from "../constants";
+import { VAULT_DIR } from "../../../constants";
 
 const Parameters = Type.Object({
 	path: Type.String({

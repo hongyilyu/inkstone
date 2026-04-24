@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
-import { VAULT_DIR } from "../constants";
+import { VAULT_DIR } from "../../../constants";
 
 const Parameters = Type.Object({
 	path: Type.String({

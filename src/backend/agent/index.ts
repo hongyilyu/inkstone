@@ -7,10 +7,11 @@ import {
 import { type Api, type Model, supportsXhigh } from "@mariozechner/pi-ai";
 import { loadConfig, saveConfig } from "../config/config";
 import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
-import { AGENTS, type AgentInfo, DEFAULT_AGENT, getAgentInfo } from "./agents";
+import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
+import { setActiveArticle } from "./agents/reader/tools/quote-article";
+import { type AgentInfo, composeSystemPrompt, composeTools } from "./base";
 import { ARTICLES_DIR } from "./constants";
 import { beforeToolCall, setConfirmFn } from "./guard";
-import { setActiveArticle } from "./tools/quote-article";
 
 export interface AgentActions {
 	prompt(text: string): Promise<void>;
@@ -133,10 +134,10 @@ export function getAgent(): Agent {
 		const info = getAgentInfo(currentAgent);
 		agent = new Agent({
 			initialState: {
-				systemPrompt: info.buildSystemPrompt(activeArticle),
+				systemPrompt: composeSystemPrompt(info, { activeArticle }),
 				model: currentModel(),
 				thinkingLevel: resolveThinkingLevel(currentModel()),
-				tools: info.tools,
+				tools: composeTools(info),
 			},
 			getApiKey: async (provider) => {
 				return getProvider(provider).getApiKey();
@@ -176,8 +177,9 @@ export function createAgentActions(
 			// Rebuild the system prompt through whichever agent is currently active.
 			// In practice only the reader agent reads `activeArticle` — other agents
 			// silently ignore the argument.
-			a.state.systemPrompt =
-				getAgentInfo(currentAgent).buildSystemPrompt(activeArticle);
+			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent), {
+				activeArticle,
+			});
 		},
 		setModel(model: Model<Api>) {
 			a.state.model = model;
@@ -201,15 +203,17 @@ export function createAgentActions(
 		setAgent(name: string) {
 			const info = getAgentInfo(name);
 			currentAgent = info.name;
-			a.state.systemPrompt = info.buildSystemPrompt(activeArticle);
-			a.state.tools = info.tools;
+			a.state.systemPrompt = composeSystemPrompt(info, { activeArticle });
+			a.state.tools = composeTools(info);
 			saveConfig({ currentAgent: info.name });
 		},
 		clearSession() {
 			a.state.messages = [];
 			activeArticle = null;
 			setActiveArticle(null);
-			a.state.systemPrompt = getAgentInfo(currentAgent).buildSystemPrompt(null);
+			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent), {
+				activeArticle: null,
+			});
 		},
 	};
 }

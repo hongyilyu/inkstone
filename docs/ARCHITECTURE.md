@@ -85,15 +85,23 @@ src/
   backend/                          Headless — no Solid, no OpenTUI
     agent/
       index.ts                      Agent instance, createAgentActions, query getters
-      agents.ts                     Static agent registry (AGENTS, getAgentInfo)
-      prompt.ts                     READING_RULES system prompt (used by `reader` entry in agents.ts)
+      agents.ts                     Registry assembler — imports each agent's AgentInfo literal and exports AGENTS[]
       constants.ts                  VAULT_DIR, ARTICLES_DIR, SCRAPS_DIR, etc.
-      guard.ts                      beforeToolCall (frontmatter guard + confirm)
-      tools/
-        quote-article.ts            Paragraph search in active article
-        read-file.ts                readFileSync, scoped to VAULT_DIR
-        edit-file.ts                String replace + unified diff, scoped to VAULT_DIR
-        write-file.ts               writeFileSync/append, scoped to VAULT_DIR
+      guard.ts                      beforeToolCall (frontmatter guard + confirm); cross-cutting, stays at top level
+      base/                         Foundation layer — the "base agent"
+        index.ts                    AgentInfo type + AgentColorKey + BASE_TOOLS + BASE_PREAMBLE + composeTools + composeSystemPrompt
+        tools/
+          read-file.ts              readFileSync, scoped to VAULT_DIR — available to every agent via BASE_TOOLS
+      agents/                       Custom agents, one self-contained folder each
+        reader/
+          index.ts                  readerAgent: AgentInfo literal
+          instructions.ts           buildReaderInstructions(articleId) — the reader's system-prompt body + 6-stage workflow
+          tools/
+            quote-article.ts        Paragraph search in active article
+            edit-file.ts            String replace + unified diff, scoped to VAULT_DIR
+            write-file.ts           writeFileSync/append, scoped to VAULT_DIR
+        example/
+          index.ts                  exampleAgent: AgentInfo literal (1-line prompt, no extra tools)
     providers/
       types.ts                      ProviderInfo interface (id, displayName, listModels, getApiKey, isConnected, authInstructions)
       amazon-bedrock.ts             Bedrock provider — wraps pi-ai `getModels("amazon-bedrock")`, auth via `getEnvApiKey`
@@ -273,14 +281,37 @@ The confirmation dialog is async — `beforeToolCall` awaits the dialog promise 
 
 ## Agent Registry
 
-Multi-agent support is implemented as a static registry in `src/backend/agent/agents.ts`. Each entry (`AgentInfo`) declares a name, display name, description, theme `colorKey`, tool set, and a `buildSystemPrompt(activeArticle)` builder. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
+Multi-agent support is a **flat registry with runtime composition** — no inheritance. Each agent is a self-contained folder under `src/backend/agent/agents/<name>/` that exports an `AgentInfo` literal (name, displayName, description, `colorKey`, `extraTools`, `buildInstructions`). `src/backend/agent/agents.ts` is a thin assembler that imports each agent's literal and exports them as `AGENTS: AgentInfo[]`. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
 
-Two agents ship today:
+### Base layer (the "base agent")
 
-| Name | Tools | Prompt behavior | Color |
-|------|-------|-----------------|-------|
-| `reader` | `read_file`, `edit_file`, `write_file`, `quote_article` | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
-| `example` | none | Short static "general-purpose assistant" prompt; ignores `activeArticle` | `theme.accent` |
+`src/backend/agent/base/` owns everything shared across agents:
+
+- `AgentInfo` (the type) and `AgentColorKey`.
+- `BASE_TOOLS: AgentTool[]` — tools every agent receives. Today just `read_file` (scoped to `VAULT_DIR`). Future additions (`memory_write`, `web_search`, `skill`) land here once their supporting systems exist.
+- `BASE_PREAMBLE: string` — a shared system-prompt prefix. **Empty today** — the mechanism is the point. Future PRs will grow this into a composed block that includes persona guidance, tool-use discipline, and memory-file contents (`user.md`, `memory.md` from `~/.config/inkstone/`).
+- `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]`. Every agent gets the base set unconditionally; there is no opt-out flag (decision made in the redesign discussion — keeps the API flat and the Example agent now has `read_file` via base).
+- `composeSystemPrompt(info, ctx)` — prepends `BASE_PREAMBLE` to `info.buildInstructions(ctx)` when non-empty; otherwise returns the instructions unchanged (so the composer is a byte-identical no-op while `BASE_PREAMBLE === ""`).
+
+`backend/agent/index.ts` calls both composers at the four moments where the agent's tools or system prompt must be rebuilt: initial `getAgent()` instantiation, `setAgent()`, `loadArticle()`, and `clearSession()`.
+
+### Agents on ship
+
+| Name | extraTools | Composed tools | Prompt behavior | Color |
+|------|------------|----------------|-----------------|-------|
+| `reader` | `quote_article`, `edit_file`, `write_file` | `read_file` + the extras | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
+| `example` | — | `read_file` only | Short static "general-purpose assistant" prompt; ignores `activeArticle` | `theme.accent` |
+
+### Adding a new agent
+
+The folder-per-agent shape makes this a local change:
+
+1. Create `src/backend/agent/agents/<name>/index.ts` exporting `<name>Agent: AgentInfo`.
+2. If the agent needs an agent-specific system prompt, add `instructions.ts` next to it and import it from `index.ts`.
+3. If it owns tools that no other agent uses, add them under `agents/<name>/tools/`.
+4. Add one import + one entry in `backend/agent/agents.ts`.
+
+No changes to `base/`, to `backend/agent/index.ts`, to the TUI, or to config schemas are required.
 
 ### Switching rules
 
@@ -296,13 +327,15 @@ Switching is intentionally locked to empty sessions (`store.messages.length === 
 setAgent(name)
   → AgentActions.setAgent (backend/agent/index.ts)
     → currentAgent = info.name
-    → a.state.systemPrompt = info.buildSystemPrompt(activeArticle)
-    → a.state.tools = info.tools
+    → a.state.systemPrompt = composeSystemPrompt(info, { activeArticle })
+    → a.state.tools        = composeTools(info)
     → saveConfig({ currentAgent })
   → tui wrapper (context/agent.tsx)
     → setStore("currentAgent", getCurrentAgent())
       → prompt label, input border, user-bubble border, assistant ▣ glyph all re-theme via `theme[getAgentInfo(store.currentAgent).colorKey]`
 ```
+
+The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/base/index.ts`. Today the system-prompt composer is a byte-identical pass-through while `BASE_PREAMBLE === ""` — `composeSystemPrompt(readerAgent, { activeArticle })` returns the exact string `buildReaderInstructions(activeArticle)` returns, with no prefix.
 
 The assistant `message_end` handler stamps `agentName` onto the new bubble using `getAgentInfo(store.currentAgent).displayName`. Because switching is locked mid-session, the stamped name is guaranteed to be the agent that actually produced the reply.
 

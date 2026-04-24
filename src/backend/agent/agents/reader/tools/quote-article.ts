@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
-import { ARTICLES_DIR } from "../constants";
+import { ARTICLES_DIR } from "../../../constants";
 
 const Parameters = Type.Object({
 	query: Type.String({

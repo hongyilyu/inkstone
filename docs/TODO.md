@@ -3,9 +3,11 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-24 (config refactor)
+**Last updated**: 2026-04-24 (agent shell refactor)
 
 ## Completed
+
+- [x] Agent shell refactor — introduce a base layer + folder-per-agent structure. Flat registry + runtime composition, no inheritance. `backend/agent/base/` now owns the foundation tools (`read_file`), the empty-today `BASE_PREAMBLE`, the shared `AgentInfo` type, and the `composeTools` / `composeSystemPrompt` helpers. Each custom agent lives in its own folder (`backend/agent/agents/reader/`, `backend/agent/agents/example/`) — self-contained with `index.ts`, optional `instructions.ts`, and optional `tools/` subdirectory. `backend/agent/agents.ts` is reduced to a thin registry assembler. The four composition call sites (`getAgent`, `setAgent`, `loadArticle`, `clearSession`) in `backend/agent/index.ts` now route through the composers. Adding a new agent is now one folder + one line in `agents.ts` — no changes to `base/`, `index.ts`, the TUI, or config schemas. Only user-visible behavior change: the `example` agent gains `read_file` via base (its 1-line prompt drops the now-stale "You have no tools available" sentence). Reader's emitted system prompt is byte-identical to pre-refactor (confirmed with a string-compare test at both `activeArticle: null` and `activeArticle: "test.md"`). Shell-only scope — skills system, memory system, `memory_write`, `web_search`, and per-agent permission rulesets are deliberately deferred for future PRs; `base/` is the single extension point where they'll land.
 
 - [x] Config refactor — move `backend/persistence/` → `backend/config/`, add Zod v4 as a direct dep, and introduce `config/schema.ts` with `strictObject` schemas for `config.json` and `auth.json`. Parse failures (wrong field type, unknown top-level key, bad `thinkingLevels` enum value, malformed JSON) now surface a field-level error through `reportPersistenceError` and fall back to defaults so the app still boots. `errors.ts` `kind` widens to `"config" | "auth" | "session"` and covers `action: "load"` in addition to save/clear; load failures hit the built-in `console.error` path since they fire before the frontend wires its toast handler. New `config/paths.ts` deduplicates the XDG logic previously repeated in `config.ts` / `auth.ts`. `SessionData` deliberately stays un-schema'd — it's an internal Inkstone type with no untrusted-input boundary. Six call sites updated with pure import-path renames; no function-name changes.
 
