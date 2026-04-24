@@ -27,6 +27,21 @@ export function DialogConfirm(props: DialogConfirmProps) {
 			if (store.active === "confirm") props.onConfirm?.();
 			if (store.active === "cancel") props.onCancel?.();
 			dialog.clear();
+			return;
+		}
+
+		// `y` / `n` shortcuts: commit immediately without the two-step
+		// left/right + return dance. Standard confirm-dialog UX and matches
+		// the documented keybinds (`docs/ARCHITECTURE.md`).
+		if (evt.name === "y") {
+			props.onConfirm?.();
+			dialog.clear();
+			return;
+		}
+		if (evt.name === "n") {
+			props.onCancel?.();
+			dialog.clear();
+			return;
 		}
 
 		if (evt.name === "left" || evt.name === "right") {

@@ -82,7 +82,7 @@ export function Dialog(
 function init() {
 	const [store, setStore] = createStore({
 		stack: [] as {
-			element: JSX.Element;
+			element: () => JSX.Element;
 			onClose?: () => void;
 		}[],
 		size: "medium" as "medium" | "large" | "xlarge",
@@ -136,7 +136,7 @@ function init() {
 			});
 			refocus();
 		},
-		replace(input: any, onClose?: () => void) {
+		replace(input: () => JSX.Element, onClose?: () => void) {
 			if (store.stack.length === 0) {
 				focus = renderer.currentFocusedRenderable;
 				focus?.blur();

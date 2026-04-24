@@ -7,6 +7,7 @@ import {
 	getCurrentThinkingLevel,
 	setConfirmFn,
 } from "@backend/agent";
+import { setPersistenceErrorHandler } from "@backend/persistence/errors";
 import {
 	clearSession as clearSessionFile,
 	loadSession,
@@ -43,8 +44,10 @@ const REDACTED_THINKING_PLACEHOLDERS = [
 	"[REDACTED]",
 	"Reasoning hidden by provider",
 ] as const;
+
 import { useDialog } from "../ui/dialog";
 import { DialogConfirm } from "../ui/dialog-confirm";
+import { useToast } from "../ui/toast";
 
 interface AgentContextValue {
 	store: AgentStoreState;
@@ -77,10 +80,25 @@ function migrateMessage(msg: DisplayMessage): DisplayMessage {
 
 export function AgentProvider(props: ParentProps) {
 	const dialog = useDialog();
+	const toast = useToast();
 
 	setConfirmFn(async (title, message) => {
 		const result = await DialogConfirm.show(dialog, title, message);
 		return result === true;
+	});
+
+	// Route backend persistence write failures (disk-full, permission-denied,
+	// read-only filesystem) through the toast surface. The backend calls
+	// `reportPersistenceError`, which fans out to this handler; without a
+	// handler it falls back to `console.error` so the failure is never silent.
+	setPersistenceErrorHandler(({ kind, action, error }) => {
+		const msg = error instanceof Error ? error.message : String(error);
+		toast.show({
+			variant: "error",
+			title: `${kind === "config" ? "Config" : "Session"} ${action} failed`,
+			message: msg,
+			duration: 6000,
+		});
 	});
 
 	// Restore previous session if available
@@ -348,7 +366,50 @@ export function AgentProvider(props: ParentProps) {
 			);
 			setStore("lastTurnStartedAt", Date.now());
 			toBottom();
-			await actions.prompt(text);
+			// Guard against a pre-stream throw from `actions.prompt()`.
+			// pi-agent-core funnels most provider errors through `message_end`
+			// with `stopReason === "error"`, which the reducer already surfaces
+			// onto the bubble. But failures *before* the first stream event —
+			// `getApiKey()` rejection, a network error on the first request,
+			// a thrown provider factory — bypass that path. Without a catch
+			// here, `wrappedActions.prompt` rejects and the fire-and-forget
+			// call sites in `prompt.tsx` turn into unhandled rejections that
+			// can crash the process.
+			try {
+				await actions.prompt(text);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				batch(() => {
+					setStore("isStreaming", false);
+					setStore("status", "idle");
+					const lastIdx = store.messages.length - 1;
+					const last = store.messages[lastIdx];
+					if (last && last.role === "assistant") {
+						setStore("messages", lastIdx, "error", msg);
+					} else {
+						// No assistant bubble was ever pushed (failure happened
+						// before `message_start`). Append a synthetic one so the
+						// error has a render target.
+						setStore(
+							"messages",
+							produce((msgs: DisplayMessage[]) => {
+								msgs.push({
+									id: `msg-${++messageCounter}`,
+									role: "assistant",
+									parts: [],
+									error: msg,
+								});
+							}),
+						);
+					}
+				});
+				toast.show({
+					variant: "error",
+					title: "Agent error",
+					message: msg,
+					duration: 6000,
+				});
+			}
 		},
 		loadArticle(articleId: string) {
 			actions.loadArticle(articleId);

@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+
 /**
  * Format a token count as a compact string.
  * e.g. 68700 -> "68.7K", 1200000 -> "1.2M"
@@ -41,4 +43,17 @@ export function formatDuration(input: number): string {
 	const minutes = Math.floor(input / 60000);
 	const seconds = Math.floor((input % 60000) / 1000);
 	return `${minutes}m ${seconds}s`;
+}
+
+/**
+ * Collapse the user's home directory to `~` for display. Platform-neutral —
+ * reads `os.homedir()` instead of assuming `/home/<user>`, so the Linux
+ * `/home/...` and macOS `/Users/...` shapes both work.
+ */
+const HOME = homedir();
+export function displayPath(p: string): string {
+	if (HOME && (p === HOME || p.startsWith(`${HOME}/`))) {
+		return `~${p.slice(HOME.length)}`;
+	}
+	return p;
 }

@@ -1,6 +1,7 @@
 import { VAULT_DIR } from "@backend/agent/constants";
 import pkg from "../../../package.json";
 import { useTheme } from "../context/theme";
+import { displayPath } from "../util/format";
 import { Prompt } from "./prompt";
 
 /**
@@ -11,8 +12,8 @@ import { Prompt } from "./prompt";
 export function OpenPage() {
 	const { theme } = useTheme();
 
-	// Display vault path with ~ for home dir
-	const vaultDisplay = VAULT_DIR.replace(/^\/home\/[^/]+/, "~");
+	// Display vault path with ~ for home dir (platform-neutral helper).
+	const vaultDisplay = displayPath(VAULT_DIR);
 
 	return (
 		<box flexDirection="column" flexGrow={1} backgroundColor={theme.background}>

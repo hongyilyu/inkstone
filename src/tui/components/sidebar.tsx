@@ -5,7 +5,7 @@ import pkg from "../../../package.json";
 import { refocusInput } from "../app";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
-import { formatCost, formatTokensFull } from "../util/format";
+import { displayPath, formatCost, formatTokensFull } from "../util/format";
 
 const SIDEBAR_WIDTH = 30;
 // Inner content width = SIDEBAR_WIDTH - paddingLeft(2) - paddingRight(2)
@@ -33,8 +33,9 @@ export function Sidebar() {
 	const { theme } = useTheme();
 	const { store } = useAgent();
 
-	// Display vault path with ~ for home dir (same substitution used in footer.tsx:22)
-	const vaultDisplay = VAULT_DIR.replace(/^\/home\/[^/]+/, "~");
+	// Display vault path with ~ for home dir (platform-neutral helper,
+	// shared with the open-page footer).
+	const vaultDisplay = displayPath(VAULT_DIR);
 
 	const title = createMemo(() => {
 		if (store.activeArticle) {

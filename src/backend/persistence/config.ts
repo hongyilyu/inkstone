@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+import { reportPersistenceError } from "./errors";
 
 const CONFIG_DIR = join(
 	process.env.XDG_CONFIG_HOME || join(process.env.HOME || "~", ".config"),
@@ -23,6 +24,13 @@ interface Config {
 	 * each model at its own sweet-spot effort as the user swaps between them.
 	 */
 	thinkingLevels?: Record<string, ThinkingLevel>;
+	/**
+	 * Absolute path to the Obsidian vault root. When unset, `agent/constants.ts`
+	 * falls back to `~/Documents/Obsidian/LifeOS` via `os.homedir()`. Users can
+	 * point Inkstone at any vault by writing this value into
+	 * `$XDG_CONFIG_HOME/inkstone/config.json` (or `~/.config/inkstone/config.json`).
+	 */
+	vaultDir?: string;
 }
 
 let cached: Config | null = null;
@@ -46,9 +54,16 @@ export function loadConfig(): Config {
 export function saveConfig(updates: Partial<Config>): void {
 	const current = loadConfig();
 	const merged = { ...current, ...updates };
-	if (!existsSync(CONFIG_DIR)) {
-		mkdirSync(CONFIG_DIR, { recursive: true });
+	try {
+		if (!existsSync(CONFIG_DIR)) {
+			mkdirSync(CONFIG_DIR, { recursive: true });
+		}
+		writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), "utf-8");
+		cached = merged;
+	} catch (error) {
+		// Keep the in-memory `cached` pointing at the old on-disk value so a
+		// failed save doesn't desync `loadConfig()` readers from what's
+		// actually persisted. The handler surfaces the failure to the user.
+		reportPersistenceError({ kind: "config", action: "save", error });
 	}
-	writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), "utf-8");
-	cached = merged;
 }

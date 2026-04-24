@@ -100,10 +100,11 @@ src/
       kiro.ts                       Amazon Kiro provider — wraps `pi-kiro/core`; registers `kiro-api` with pi-ai; OAuth (Builder ID / IdC) with lazy refresh
       index.ts                      PROVIDERS registry + getProvider/listProviders/resolveModel helpers
     persistence/
-      config.ts                     providerId + modelId + themeId + currentAgent (shared JSON)
+      config.ts                     providerId + modelId + themeId + currentAgent + vaultDir (shared JSON)
       auth.ts                       OAuth credentials loader/saver (provider-keyed)
       auth.json                     Runtime file (~/.config/inkstone/auth.json, mode 0600)
       session.ts                    DisplayMessage[] + activeArticle (JSON; SQLite candidate)
+      errors.ts                     Shared persistence-write error hook (setPersistenceErrorHandler / reportPersistenceError)
 
   bridge/                           Pure TS — shared type contract
     view-model.ts                   DisplayMessage, AgentStoreState, SessionData
@@ -111,9 +112,8 @@ src/
   tui/                              Solid + OpenTUI
     app.tsx                         Provider stack + root layout + app_exit + scroll keybinds; registers top-level commands via `useCommand().register`
     context/
-      agent.tsx                     AgentProvider + useAgent (Solid store + event reducer)
+      agent.tsx                     AgentProvider + useAgent (Solid store + event reducer); wires persistence error hook to toast
       theme.tsx                     Theme loading, resolution, application (SyntaxStyle FFI)
-      helper.tsx                    createSimpleContext() factory
     ui/
       dialog.tsx                    Stack-based modal rendering (uses `Keybind.match("dialog_close")`)
       dialog-confirm.tsx            Promise-based yes/no confirmation (local y/n/arrow keys)
@@ -135,7 +135,7 @@ src/
       dialog-theme.tsx              Theme selection dialog
       dialog-provider.tsx           Provider selection dialog
     util/
-      format.ts                     formatTokens, formatCost, formatDuration
+      format.ts                     formatTokens, formatCost, formatDuration, displayPath (~-collapse for home dir, platform-neutral)
       keybind.ts                    `KEYBINDS` action map + `match(action, evt)` + `print(action)` (single source of truth for all keybinds outside dialog-confirm's local y/n)
 ```
 
