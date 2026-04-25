@@ -297,21 +297,22 @@ Multi-agent support is a **flat registry with runtime composition** — no inher
 `src/backend/agent/base/` owns everything shared across agents:
 
 - `AgentInfo` (the type) and `AgentColorKey`.
-- `AgentCommand` + `CommandContext` types (see Commands below).
+- `AgentCommand` + `AgentCommandContext` types (see Commands below).
 - `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today just `read_file` (scoped to `VAULT_DIR`). Frozen at module load so external modules can't mutate.
-- `BUILTIN_COMMANDS: readonly AgentCommand[]` — session-global commands available under every agent. Today `[{ name: "clear", ... }]`. Frozen.
 - `BASE_PREAMBLE: string` — a shared system-prompt prefix. **Empty today** — the mechanism is the point. Future PRs will grow this into a composed block that includes persona guidance, tool-use discipline, and memory-file contents (`user.md`, `memory.md` from `~/.config/inkstone/`).
 - `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]`. Every agent gets the base set unconditionally; there is no opt-out flag.
 - `composeSystemPrompt(info)` — prepends `BASE_PREAMBLE` to `info.buildInstructions()` when non-empty; otherwise returns the instructions unchanged. Nullary — `buildInstructions` reads any agent-owned state (e.g. reader's `activeArticle`) directly.
 
-`backend/agent/index.ts` calls both composers at the moments where the agent's tools or system prompt must be rebuilt: initial `getAgent()` instantiation, `setAgent()`, `clearSession()`, and whenever a command calls `ctx.refreshSystemPrompt()`.
+`backend/agent/index.ts` calls both composers at the moments where the agent's tools or system prompt must be rebuilt: initial `getAgent()` instantiation, `setAgent()`, `clearSession()`, and `AgentActions.refreshSystemPrompt()`.
 
 ### Agents on ship
 
 | Name | extraTools | Composed tools | Commands | Prompt behavior | Color |
 |------|------------|----------------|----------|-----------------|-------|
-| `reader` | `edit_file`, `write_file`, `quote_article` | `read_file` + the extras | `article` (+ built-in `clear`) | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
-| `example` | — | `read_file` only | (built-in `clear` only) | Short static "general-purpose assistant" prompt | `theme.accent` |
+| `reader` | `edit_file`, `write_file`, `quote_article` | `read_file` + the extras | `/article <filename>` | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
+| `example` | — | `read_file` only | — | Short static "general-purpose assistant" prompt | `theme.accent` |
+
+Both agents inherit the shell-level `/clear` verb via the unified command registry (see Commands below) — no per-agent declaration needed.
 
 ### Adding a new agent
 
@@ -320,7 +321,7 @@ The folder-per-agent shape makes this a local change:
 1. Create `src/backend/agent/agents/<name>/index.ts` exporting `<name>Agent: AgentInfo`.
 2. If the agent needs an agent-specific system prompt, add `instructions.ts` next to it and import it from `index.ts`.
 3. If it owns tools that no other agent uses, add them under `agents/<name>/tools/`.
-4. If it has user-facing verbs, declare them as `AgentCommand[]` and set `commands: [...]` on the `AgentInfo`.
+4. If it has user-facing verbs, declare them as `AgentCommand[]` and set `commands: [...]` on the `AgentInfo`. The TUI's `BridgeAgentCommands` (see Commands below) picks them up automatically.
 5. Add one import + one entry in `backend/agent/agents.ts`.
 
 No changes to `base/`, to `backend/agent/index.ts`, to the TUI, or to config schemas are required.
@@ -329,13 +330,33 @@ No changes to `base/`, to `backend/agent/index.ts`, to the TUI, or to config sch
 
 Commands are user-invoked verbs, distinct from tools (which are LLM-invoked mid-turn). See [`AGENT-DESIGN.md` D9](./AGENT-DESIGN.md) for the rationale; this section documents the runtime.
 
-**Type shape** (`backend/agent/base/index.ts`):
+**Single unified registry.** Slash verbs (`/clear`, `/article`), palette-only commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`), and keybind-only actions (ESC interrupt, Tab agent-cycle) all live in the same TUI-side command registry (`src/tui/components/dialog-command.tsx`). Per [`SLASH-COMMANDS.md`](./SLASH-COMMANDS.md) Path A, the two previously-separate surfaces (backend `AgentCommand` + TUI `CommandOption`) now share one type. Agent-declared verbs stay data-only in `AgentInfo.commands`; the TUI bridges them into registry entries at mount time.
+
+**Type shape** (`src/tui/components/dialog-command.tsx`):
 
 ```ts
-export interface CommandContext {
+export interface SlashSpec {
+  name: string;
+  takesArgs?: boolean;
+  argHint?: string;
+}
+
+export interface CommandOption {
+  id: string;
+  title: string;
+  description?: string;
+  keybind?: Keybind.KeybindAction;  // global keybind dispatch
+  slash?: SlashSpec;                // typed `/name args` dispatch
+  hidden?: boolean;                 // hide from Ctrl+P palette
+  onSelect: (dialog: DialogContext, args?: string) => void;
+}
+```
+
+Agent-declared verbs (backend-side, `src/backend/agent/base/index.ts`):
+
+```ts
+export interface AgentCommandContext {
   prompt(text: string): Promise<void>;
-  abort(): void;
-  clearSession(): void;
   refreshSystemPrompt(): void;
 }
 
@@ -344,65 +365,61 @@ export interface AgentCommand {
   description?: string;
   argHint?: string;
   takesArgs?: boolean;
-  execute(args: string, ctx: CommandContext): void | Promise<void>;
+  execute(args: string, ctx: AgentCommandContext): void | Promise<void>;
 }
 ```
 
-**Sources**:
-- `BUILTIN_COMMANDS` in `base/` — session-global. Today: `/clear`.
-- `AgentInfo.commands` on a custom agent — agent-scoped. Today: reader's `/article`.
+`AgentCommandContext` is deliberately narrow — only the two hooks commands actually need (`prompt`, `refreshSystemPrompt`). Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over `AgentActions.clearSession` directly, so they don't need a context hand-off.
 
-**Dispatch** (`AgentActions.runAgentCommand(name, args?, context?)` in `backend/agent/index.ts`):
+**Sources of commands** (all flow into the same registry):
 
-```
-runAgentCommand(name, args, context?)
-  → info = getAgentInfo(currentAgent)
-  → cmd = info.commands?.find(c => c.name === name)         ← agent-scoped first
-       ?? BUILTIN_COMMANDS.find(c => c.name === name)       ← built-in fallback
-  → if !cmd: throw "Unknown command"
-  → if cmd.takesArgs && args.trim() === "": throw "requires arguments"
-  → cmd.execute(args, ctx)
-      ctx = context ?? {
-        prompt:              actions.prompt,
-        abort:               actions.abort,
-        clearSession:        actions.clearSession,
-        refreshSystemPrompt: actions.refreshSystemPrompt,
-      }
-```
+| Source | Registered by | Examples |
+|--------|---------------|----------|
+| Shell palette entries | `Layout()` in `src/tui/app.tsx` | `/agents`, `/models`, `/effort`, `/themes`, `/connect`, `/clear`, Tab agent-cycle |
+| Prompt-local keybinds | `Prompt()` in `src/tui/components/prompt.tsx` | ESC interrupt |
+| Agent-declared verbs | `BridgeAgentCommands` in `src/tui/context/agent.tsx`, reactive on `store.currentAgent` | reader's `/article <filename>` |
 
-Agent-scoped commands take precedence over built-ins on name collision (intentional — an agent can override a built-in).
-
-`AgentActions.canRunAgentCommand(name, args?)` applies the same lookup and required-argument check without executing the command. The TUI uses it before intercepting slash-prefixed input.
-
-**TUI submit path** (`tui/components/prompt.tsx`):
+**Slash dispatch** (`command.triggerSlash(name, args)` in `dialog-command.tsx`):
 
 ```
 user types "/article foo.md" + Enter
-  → handleSubmit
+  → handleSubmit (src/tui/components/prompt.tsx)
     → value.startsWith("/") → split on first space
       → name="article", args="foo.md"
-      → actions.canRunAgentCommand("article", "foo.md") === true
-      → actions.runAgentCommand("article", "foo.md")
-        → reader's articleCommand.execute("foo.md", ctx)
-          → setActiveArticle("foo.md")              (reader module state)
-          → ctx.refreshSystemPrompt()               (rebuild with article context)
-          → await ctx.prompt("Read foo.md")         (streaming turn begins)
-      → setText("")                                  (clear input)
+      → command.triggerSlash("article", "foo.md") === true
+        → entries().find(e => e.slash?.name === "article")
+          → BridgeAgentCommands' reader entry (agent-scoped registers first)
+          → takesArgs gate passes
+          → entry.onSelect(dialog, "foo.md")
+            → cmd.execute("foo.md", { prompt, refreshSystemPrompt })
+              → setActiveArticle("foo.md")       (reader module state)
+              → ctx.refreshSystemPrompt()        (rebuild with article context)
+              → await ctx.prompt("Read foo.md")  (streaming turn begins)
+            → queueMicrotask: setStore("activeArticle", getActiveArticle())
+      → setText("")                              (clear input)
+
+user types "/clear" + Enter
+  → handleSubmit
+    → command.triggerSlash("clear", "") === true
+      → Layout's session.clear entry
+      → entry.onSelect() → actions.clearSession()
+    → setText("")
 
 user types "/xyz" + Enter
   → handleSubmit
-    → actions.canRunAgentCommand("xyz", "") === false
-    → actions.prompt("/xyz")                         (plain prompt)
+    → command.triggerSlash("xyz", "") === false
+    → actions.prompt("/xyz")                     (plain prompt)
 
 user types "/article" + Enter
   → handleSubmit
-    → actions.canRunAgentCommand("article", "") === false
-    → actions.prompt("/article")                     (plain prompt)
+    → command.triggerSlash("article", "") === false
+      (takesArgs gate fails)
+    → actions.prompt("/article")                 (plain prompt)
 ```
 
-`AgentProvider` passes a `CommandContext` backed by `wrappedActions` when the TUI runs a command. That keeps command side effects on the same path as direct UI actions: `/clear` updates the Solid store and clears the session file, while `/article foo.md` adds the generated user turn through `wrappedActions.prompt()` before streaming.
+**Precedence on slash-name collision**: first-match wins. `AgentProvider` mounts inside `CommandProvider` (see `src/tui/app.tsx` tree), and `command.register` prepends to the internal registration list — so `BridgeAgentCommands` entries sit ahead of `Layout`'s entries. An agent that declares a verb with the same name as a shell-level verb overrides the shell version for that agent only. This preserves D9's "agent overrides built-in" rule; it's theoretical today (no agent redefines `clear`).
 
-**Session restore** bypasses the command dispatcher — it rehydrates state without triggering a prompt turn. `context/agent.tsx` calls `setActiveArticle(saved.activeArticle)` + `actions.refreshSystemPrompt()` directly.
+**Session restore** bypasses the command system entirely — it rehydrates state without triggering a prompt turn. `context/agent.tsx` calls `setActiveArticle(saved.activeArticle)` + `wrappedActions.refreshSystemPrompt()` directly.
 
 ### Switching rules
 

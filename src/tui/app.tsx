@@ -151,6 +151,19 @@ function Layout() {
 					});
 				},
 			},
+			// Shell-level slash verb. Registered here (not on an agent) so
+			// every agent inherits it without declaring a `clear` command.
+			// Slash dispatch in `prompt.tsx` matches against the unified
+			// registry — see SLASH-COMMANDS.md Path A.
+			{
+				id: "session.clear",
+				title: "Clear session",
+				description: "Clear the current session",
+				slash: { name: "clear" },
+				onSelect: () => {
+					actions.clearSession();
+				},
+			},
 		);
 
 		// Tab / Shift+Tab cycle agents on the open page only. Hidden from the

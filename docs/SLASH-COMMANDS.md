@@ -2,23 +2,28 @@
 
 This doc captures the design exploration for a slash-command dropdown in the prompt. A first implementation landed in commit `8ff3876` and was reverted in the same PR; the revert commit references this doc. Pick up from here when returning to the feature.
 
-**Status: exploration captured, implementation deferred.** Core unresolved question is the invocation UX (see §5). Backend agent architecture is the active thread; slash-command UI is a TUI concern that should wait.
+**Status:**
+- **Registry unification (Path A below): implemented.** `CommandOption.slash?: SlashSpec` + unified dispatch through `command.canRunSlash` / `command.triggerSlash`; `AgentCommand` bridges into `CommandOption` via `BridgeAgentCommands`; `/clear` is a palette entry in `Layout()`. The two previously-disconnected command paths (hardcoded `startsWith` in `prompt.tsx` + palette registry) now share one registration surface.
+- **Dropdown UI: still deferred.** Core unresolved question is the invocation UX (see §5). The registry-half above is the foundation the deferred dropdown would sit on top of.
 
 ## 1. Problem
 
-The prompt has two disconnected command paths today:
+Historically the prompt had two disconnected command paths:
 
-- **Hardcoded `startsWith` checks** in `src/tui/components/prompt.tsx:139-161` for `/clear` and `/article <filename>`.
+- **Hardcoded `startsWith` checks** in `src/tui/components/prompt.tsx` for `/clear` and `/article <filename>`. Later superseded by a backend `AgentCommand` + `runAgentCommand` path.
 - **Palette registry** via `CommandProvider` in `src/tui/components/dialog-command.tsx` for `/agents`, `/models`, `/effort`, `/themes`, `/connect` — shown in Ctrl+P.
 
-Users don't have a way to discover or invoke these by typing `/` in the prompt textarea. OpenCode, Discord, Slack, and Claude Code all support a live slash-command dropdown; Inkstone should too.
+After the registry unification, both flows go through the same `CommandOption` registry. The remaining gap is UX: users still can't discover or invoke commands by typing `/` in the prompt textarea with dropdown autocompletion. OpenCode, Discord, Slack, and Claude Code all support a live slash-command dropdown; Inkstone should too.
 
-## 2. Current state (post-revert)
+## 2. Current state (post-unification)
 
-- Hardcoded `/clear` + `/article <filename>` parser in `prompt.tsx`.
-- Palette entries in `CommandProvider` without a `slash` field.
-- No dropdown UI.
-- `Object.freeze(BASE_TOOLS)` already in `src/backend/agent/base/index.ts` (shipped in commit `fb7ec0f`, separate concern).
+- `CommandOption.slash?: SlashSpec` — name / takesArgs / argHint.
+- `command.canRunSlash(name, args)` + `command.triggerSlash(name, args)` on the provider API.
+- `prompt.tsx` submit handler dispatches typed `/name args` through `triggerSlash`; unknown or arg-missing slashes fall through as plain prompts.
+- `/clear` is a `CommandOption` registered by `Layout()` in `src/tui/app.tsx` with `slash: { name: "clear" }` that closes over `actions.clearSession`.
+- `AgentCommand` entries from the current agent are bridged into palette entries via `BridgeAgentCommands` in `src/tui/context/agent.tsx`; argful commands set `hidden: true` so they don't appear in Ctrl+P.
+- Dispatch precedence: agent-scoped entries beat shell-scoped on slash-name collision (first-match, agent-bridge registers first).
+- No dropdown UI yet.
 
 ## 3. OpenCode reference pattern
 
@@ -64,34 +69,13 @@ Implications the exploration surfaced:
 
 The exploration ended because (A) the first implementation had a bug (`/clear` swallowed — see §7), and (B) the user's UX principle arrived mid-remediation, which reshapes the whole feature. Revisit when the UX decisions are resolved.
 
-## 6. Architecture tension — layer boundary
+## 6. Architecture tension — layer boundary (resolved for the registry half)
 
 `backend/` cannot import `DialogContext` from `src/tui/ui/dialog.tsx` (enforced by Biome `noRestrictedImports` rules in `biome.json`). A single `SlashCommand` type in backend with `execute(args, { actions, dialog }) => void` is therefore impossible — the type would need to reference a TUI type.
 
-Three authoring paths map to this tension:
+**Path A shipped.** `SlashCommand` lives in backend as `AgentCommand` with a narrow `AgentCommandContext` (`{ prompt, refreshSystemPrompt }`). The TUI's `BridgeAgentCommands` component adapts each `AgentCommand` into a `CommandOption` with a `slash` field, closing over `wrappedActions` for the execute context. Dialog-opening commands stay as native `CommandOption` literals with `onSelect(dialog)`. Both kinds flow through the same registry; typed submit, palette, and keybinds treat them identically.
 
-### Path A — Registry-unified, two authoring kinds
-
-- **Backend `SlashCommand`** — `execute(args, actions) => void`. Defined in `src/backend/agent/base/index.ts`. Used for action-based commands (`/clear`, `/article`) — they only need `AgentActions`, which already lives in backend.
-- **TUI palette entries** — stay as `CommandOption` literals with `onSelect(dialog)` (today's shape, with a `slash` field added). Used for dialog-openers (`/agents`, `/models`, `/effort`, `/themes`, `/connect`).
-- **Both flow through `CommandProvider`**. Adapters convert backend `SlashCommand` → `CommandOption`. Dropdown + palette + typed submit treat them identically.
-
-User-facing consistency delivered; authoring split reflects the layer boundary honestly.
-
-### Path B1 — Hoist `SlashCommand` into TUI
-
-- `SlashCommand` lives in TUI with full `execute(args, { actions, dialog })` context.
-- `AgentInfo.slashCommands` becomes metadata-only (`{ name, description, takesArgs, argHint }` — no `execute`).
-- TUI owns a handler registry keyed by agent-name + command-name.
-- **Downside**: handlers disconnected from agent folders; adding a per-agent command requires editing two places.
-
-### Path B2 — Hoist + mirror folders
-
-- Same `SlashCommand` hoist as B1.
-- Each agent gets a TUI-side mirror folder: `src/tui/agents/<name>/slash-commands.ts` exports handlers; `src/backend/agent/agents/<name>/` has the backend `AgentInfo`.
-- **Downside**: each agent has two homes. Scales at 2× folder count.
-
-The user leaned toward **Path A** in the exploration. If the UX principle in §5 gets resolved differently (e.g., `/article` gets a picker and no text-verb commands remain), Path A is even cleaner because `execute(args, actions)` covers all action-based commands and palette-entry dialog-openers stay as-is.
+The two rejected alternatives (B1: hoist `SlashCommand` into TUI; B2: hoist + mirror folders) stay rejected — B1's disconnection of handlers from agent folders and B2's 2× folder count don't pay off.
 
 ## 7. First attempt (reverted in commit right after `8ff3876`)
 
@@ -130,14 +114,14 @@ The user pushed for the architectural fix — then raised the UX principle in §
 
 ## 9. When to revisit — checklist
 
-Before picking this up again:
+Before picking up the **dropdown UI**:
 
-1. **Resolve §5's UX principle.** Specifically: what triggers invocation (A vs B vs neither), and `/article`'s fate (picker / carve-out / drop), and hardcoded `/clear` parser retention.
-2. **Confirm Path A vs B1 vs B2** given whatever §5 resolves to. Note that the backend-side piece — agent-declared session verbs — is already tracked as a pressure point in `docs/AGENT-DESIGN.md` and might land independently of the UI work.
+1. **Resolve §5's UX principle.** Specifically: what triggers invocation (A vs B vs neither), and `/article`'s fate (picker / carve-out / drop). The hardcoded `/clear` parser is already gone — `/clear` is a registry entry now.
+2. **Path A is shipped** (see §6 Status). No remaining authoring-path decision.
 3. **Pick a positioning strategy upfront** — sibling-in-parent vs polling — and name which terminal-size / layout scenarios are in the verification matrix.
 4. **Budget the Autocomplete component** with awareness that ~180 lines is the realistic floor for the trimmed feature set (not 120); anything larger than ~220 warrants a pause.
 
-Once this ships cleanly, delete this doc (or collapse into `AGENT-DESIGN.md`'s pressure-point section as "resolved").
+Once the dropdown ships cleanly, delete this doc (or collapse into `AGENT-DESIGN.md` D9 as "resolved").
 
 ## References
 

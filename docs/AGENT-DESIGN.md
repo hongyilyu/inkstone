@@ -103,17 +103,17 @@ This is D5 ("ship mechanism, defer content") extended to cover the future-work d
 **Chosen:** two orthogonal concepts at the agent layer.
 
 - **Tools** (`AgentTool`) — model-invoked mid-turn. Already a first-class pi-agent-core concept. `read_file`, `edit_file`, `quote_article`, etc. The agent decides when to invoke each one while executing a turn.
-- **Commands** (`AgentCommand`) — user-invoked at turn boundaries. Declared on `AgentInfo.commands`. The shell exposes `AgentActions.runAgentCommand(name, args?)` to dispatch. Examples: reader's `/article`, built-in `/clear`, hypothetical KB agent's `/ingest`, `/query`, `/lint`.
+- **Commands** (`AgentCommand`) — user-invoked at turn boundaries. Declared on `AgentInfo.commands`. The TUI bridges each declared command into a single unified command registry so slash dispatch, palette, and keybinds share one surface. Examples: reader's `/article <filename>`, hypothetical KB agent's `/ingest`, `/query`, `/lint`.
 
 **Why:** commands and tools answer different questions. Commands are "what does the user want the agent to do?" Tools are "what can the agent do to accomplish that?" Collapsing them (e.g. treating `/ingest` as a tool the model decides to invoke) loses the user-verb semantics; collapsing the other way (tools as commands) loses the mid-turn invocation pattern. Keeping them separate mirrors how Discord/Slack/OpenCode structure user input vs agent capabilities.
 
 **Shape**:
 
 ```ts
-export interface CommandContext {
+// src/backend/agent/base/index.ts — narrow context with only
+// capabilities actual commands use today.
+export interface AgentCommandContext {
   prompt(text: string): Promise<void>;
-  abort(): void;
-  clearSession(): void;
   refreshSystemPrompt(): void;
 }
 
@@ -122,28 +122,26 @@ export interface AgentCommand {
   description?: string;
   argHint?: string;               // "<filename>", "<folder>", "<question>"
   takesArgs?: boolean;            // requires non-empty args for typed slash dispatch
-  execute(args: string, ctx: CommandContext): void | Promise<void>;
+  execute(args: string, ctx: AgentCommandContext): void | Promise<void>;
 }
 
 export interface AgentInfo {
   // ... existing
   commands?: AgentCommand[];
 }
-
-export const BUILTIN_COMMANDS: readonly AgentCommand[] = Object.freeze([
-  { name: "clear", description: "Clear the session", execute: (_, ctx) => ctx.clearSession() },
-]);
 ```
 
-`execute` can mutate agent-owned state, call `ctx.prompt(template)` to kick off an LLM turn with a command-specific template, call `ctx.clearSession()` / `ctx.abort()`, and/or call `ctx.refreshSystemPrompt()` after state changes. TUI callers pass a `CommandContext` backed by the wrapped UI actions, so command effects share the same store and persistence side effects as direct prompt or clear actions.
+`execute` can mutate agent-owned state, call `ctx.prompt(template)` to kick off an LLM turn with a command-specific template, and/or call `ctx.refreshSystemPrompt()` after state changes. The TUI's `BridgeAgentCommands` component (`src/tui/context/agent.tsx`) picks up `AgentInfo.commands` reactively on `store.currentAgent` and converts each entry into a `CommandOption` in the unified registry. `onSelect` closes over the narrow `AgentCommandContext` built from `wrappedActions.prompt` / `wrappedActions.refreshSystemPrompt`, so command side effects share the same Solid-store and persistence path as direct UI actions.
 
-**Dispatch precedence**: agent-declared commands override built-ins on name collision. Intentional — an agent can redefine `/clear` if its semantics differ (none do today).
+**Shell-level verbs** (`/clear`) live directly as `CommandOption` entries in `Layout()` (`src/tui/app.tsx`), closing over `AgentActions.clearSession`. They don't go through `AgentCommand` because there's no agent-owned state involved — a shell action registered with `slash: { name: "clear" }` is the simpler expression. This is what removed the `clearSession` trampoline that used to live on `CommandContext`.
 
-**Why the context is narrow**: `CommandContext` deliberately omits `setModel`, `setAgent`, `runAgentCommand`, and other shell actions. Those are user-driven UI concerns, not something a command should do during execution. Widening the context has to be an explicit decision per capability.
+**Dispatch precedence**: agent-declared commands override shell-level commands on slash-name collision. Mechanism: `AgentProvider` mounts inside `CommandProvider`, and `command.register` prepends to its internal list, so agent-bridge entries sit ahead of `Layout`'s entries. First-match wins. Intentional — an agent can redefine `/clear` if its semantics differ (none do today).
 
-**What this resolves**: the "Reader-specific vocabulary leaks onto AgentActions" pressure point (see below). `loadArticle` is gone from `AgentActions`; it's now a reader command with state owned by the reader module. `buildInstructions` is nullary — no `AgentBuildContext` carrying reader-shaped fields.
+**Why the context is narrow**: `AgentCommandContext` exposes only `prompt` and `refreshSystemPrompt`. Anything a shell knows how to do — clearing the session, switching agent/model, opening a dialog — is not a command concern and is deliberately absent. Shell actions register their own `CommandOption` entries; commands don't invoke them. Widening the context has to be an explicit decision per capability.
 
-**Non-goal**: dialog-opening commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`). They need `DialogContext`, which is TUI-only — can't cross the layer boundary per D7's separation. They remain `CommandOption` entries in the TUI's palette registry, not agent commands. Future slash-dropdown work (see `docs/SLASH-COMMANDS.md`) may unify the user-facing surface without unifying the types.
+**What this resolves**: the "Reader-specific vocabulary leaks onto AgentActions" pressure point. `loadArticle` is gone from `AgentActions`; it's now a reader command with state owned by the reader module. `buildInstructions` is nullary — no `AgentBuildContext` carrying reader-shaped fields. D9's original design introduced `runAgentCommand` + `canRunAgentCommand` on `AgentActions` plus a wider `CommandContext` with `clearSession` and `abort` — both have since been removed (see "Unified command registry" below) in favor of the bridge pattern.
+
+**Unified command registry** (SLASH-COMMANDS.md Path A): the dialog-opening commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`) and agent-declared commands (`/article`) now share the same TUI-side `CommandOption` type. The previous "Non-goal" here (dialog-openers stay palette-only because `DialogContext` can't cross the layer boundary) is resolved: `DialogContext` never crosses the boundary, because `AgentCommand` no longer holds an `onSelect` — the TUI's bridge owns the adapter. Agent code stays layer-correct (declares plain data); TUI code owns presentation (closes over `DialogContext` and `AgentActions` as needed).
 
 ## Rejected alternatives
 

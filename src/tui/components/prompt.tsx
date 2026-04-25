@@ -134,23 +134,23 @@ export function Prompt() {
 		if (!value) return;
 		if (store.isStreaming) return;
 
-		// Slash-command dispatch via the registry. Splits on the first
-		// whitespace: `/name args...`. Matching OpenCode's prompt submit
-		// path, only executable commands are intercepted; unknown commands
-		// or commands missing required args fall through as plain prompts.
+		// Slash-command dispatch via the unified command registry.
+		// Splits on the first whitespace: `/name args...`. Matching
+		// OpenCode's prompt submit path, only entries whose `slash` field
+		// matches are intercepted; unknown slashes or commands missing
+		// required args fall through as plain prompts.
 		//
-		// Commands may be async (most call `ctx.prompt(...)` which starts
-		// a streaming turn); we don't await here — `handleSubmit` returns
-		// synchronously and the turn streams as usual.
+		// Per SLASH-COMMANDS.md Path A, agent-declared commands and
+		// shell-level commands share the same registry; `triggerSlash`
+		// resolves them uniformly. Agent-bridge registrations register
+		// first so agent-scoped slashes beat shell-scoped on name
+		// collision — preserves the D9 "agent overrides built-in" rule.
 		if (value.startsWith("/")) {
 			const spaceAt = value.indexOf(" ");
 			const name = spaceAt === -1 ? value.slice(1) : value.slice(1, spaceAt);
 			const args = spaceAt === -1 ? "" : value.slice(spaceAt + 1).trim();
-			if (actions.canRunAgentCommand(name, args)) {
+			if (command.triggerSlash(name, args)) {
 				setText("");
-				void actions.runAgentCommand(name, args).catch(() => {
-					setText(value);
-				});
 				toBottom();
 				return;
 			}

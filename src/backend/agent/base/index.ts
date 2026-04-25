@@ -16,27 +16,27 @@ export type AgentColorKey =
 	| "info";
 
 /**
- * Shell capabilities exposed to an `AgentCommand.execute`. Kept narrow —
- * only what commands actually need today (triggering turns, abort,
- * clearing the session, rebuilding the system prompt after state
- * changes). Adding new capabilities here is an explicit decision, not
- * a pass-through of the whole `AgentActions` surface.
+ * Capabilities exposed to `AgentCommand.execute`. Narrow by design — only
+ * the two hooks commands actually need today: kick off a new turn
+ * (`prompt`) and rebuild the system prompt after mutating agent-owned
+ * state (`refreshSystemPrompt`). Anything a shell knows how to do —
+ * clearing the session, switching agent/model, opening a dialog — is
+ * not a command concern and is deliberately absent.
  *
- * A command doesn't get direct access to `setModel` / `setAgent` /
- * `runAgentCommand` — those are user-driven actions, not something a
- * command should do during execution.
+ * Shell-level verbs (`/clear`) live in the TUI command registry as
+ * regular `CommandOption` entries that close over `AgentActions`. See
+ * `docs/SLASH-COMMANDS.md` Path A + `src/tui/app.tsx` for the shell
+ * registration point.
  */
-export interface CommandContext {
+export interface AgentCommandContext {
 	prompt(text: string): Promise<void>;
-	abort(): void;
-	clearSession(): void;
 	refreshSystemPrompt(): void;
 }
 
 /**
- * A user-facing verb an agent (or the built-in set) declares. Commands
- * are conceptually distinct from tools: tools are model-invoked mid-turn
- * (`AgentTool`), commands are user-invoked at turn boundaries.
+ * A user-facing verb an agent declares. Commands are conceptually
+ * distinct from tools: tools are model-invoked mid-turn (`AgentTool`),
+ * commands are user-invoked at turn boundaries.
  *
  * `execute(args, ctx)` can do any mix of:
  *   - Mutate agent-scoped session state (held as module-level state in
@@ -44,19 +44,23 @@ export interface CommandContext {
  *   - Call `ctx.refreshSystemPrompt()` after state changes.
  *   - Call `ctx.prompt(template)` to kick off an LLM turn with a
  *     command-specific template.
- *   - Call `ctx.clearSession()` / `ctx.abort()` for shell-level effects.
  *
  * `takesArgs` means typed slash submission requires a non-empty argument
  * string before dispatch; otherwise the slash text falls through as a
  * plain prompt. A future slash-command dropdown can also use it to
  * rewrite the textarea to `/name ` instead of invoking immediately.
+ *
+ * The TUI bridges each `AgentCommand` into a `CommandOption` in the
+ * unified registry (see `src/tui/context/agent.tsx:BridgeAgentCommands`),
+ * so agent-declared verbs share the same slash-dispatch + palette
+ * surface as shell-level commands.
  */
 export interface AgentCommand {
 	name: string;
 	description?: string;
 	argHint?: string;
 	takesArgs?: boolean;
-	execute(args: string, ctx: CommandContext): void | Promise<void>;
+	execute(args: string, ctx: AgentCommandContext): void | Promise<void>;
 }
 
 /**
@@ -73,9 +77,11 @@ export interface AgentCommand {
  * and reads it at compose time. The composer prepends `BASE_PREAMBLE`
  * (empty today).
  *
- * `commands` declares the agent's user-facing verbs. The shell merges
- * them with `BUILTIN_COMMANDS` and exposes dispatch via
- * `AgentActions.runAgentCommand(name, args)`.
+ * `commands` declares the agent's user-facing verbs. The TUI bridges
+ * them into the unified command registry at mount time (see
+ * `src/tui/context/agent.tsx:BridgeAgentCommands`); they then share the
+ * same slash-dispatch + palette surface as shell-level commands
+ * declared in `src/tui/app.tsx`.
  */
 export interface AgentInfo {
 	name: string;
@@ -100,22 +106,6 @@ export interface AgentInfo {
  */
 export const BASE_TOOLS: readonly AgentTool<any>[] = Object.freeze([
 	readFileTool,
-]);
-
-/**
- * Session-global commands available under every agent. Today: `/clear`
- * only. Frozen for the same reason as `BASE_TOOLS` — `base/` owns the
- * set. Agent-declared commands in `AgentInfo.commands` merge with this
- * list in the dispatcher; agent-scoped entries take precedence on name
- * collision (intentional — an agent can override a built-in for its
- * own semantics).
- */
-export const BUILTIN_COMMANDS: readonly AgentCommand[] = Object.freeze([
-	{
-		name: "clear",
-		description: "Clear the session",
-		execute: (_, ctx) => ctx.clearSession(),
-	},
 ]);
 
 /**

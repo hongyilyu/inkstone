@@ -1,5 +1,6 @@
 import {
 	type AgentActions,
+	type AgentCommandContext,
 	createAgentActions,
 	getActiveArticle,
 	getAgentInfo,
@@ -31,6 +32,7 @@ import {
 import { batch, createContext, type ParentProps, useContext } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { toBottom } from "../app";
+import { type CommandOption, useCommand } from "../components/dialog-command";
 
 /**
  * Placeholder strings that providers inject into redacted thinking blocks.
@@ -448,28 +450,70 @@ export function AgentProvider(props: ParentProps) {
 		refreshSystemPrompt() {
 			actions.refreshSystemPrompt();
 		},
-		runAgentCommand(name: string, args?: string) {
-			const p = actions.runAgentCommand(name, args, {
-				prompt: (text) => wrappedActions.prompt(text),
-				abort: () => wrappedActions.abort(),
-				clearSession: () => wrappedActions.clearSession(),
-				refreshSystemPrompt: () => wrappedActions.refreshSystemPrompt(),
-			});
-			// After the command's synchronous execute body runs (before the
-			// first `await` in `execute`), mirror any backend state the TUI
-			// store tracks. Done via `queueMicrotask` so this runs after the
-			// sync portion of execute but before the TUI processes further
-			// events. Today only `activeArticle` is mirrored; add more
-			// fields here if future commands mutate other store-backed
-			// state synchronously.
-			queueMicrotask(() => {
-				setStore("activeArticle", getActiveArticle());
-			});
-			return p;
-		},
 	};
 
 	const value: AgentContextValue = { store, actions: wrappedActions };
+
+	/**
+	 * Bridge backend-declared `AgentCommand`s into the unified command
+	 * registry. Defined as a closure component so it can capture
+	 * `store`, `setStore`, and `wrappedActions` without widening the
+	 * `useAgent()` context value. Mounts as a child of `<ctx.Provider>`
+	 * so it has an owner for `onCleanup` and is inside `CommandProvider`
+	 * (which wraps `AgentProvider` at the app root).
+	 *
+	 * Reactive on `store.currentAgent`: the registration callback re-runs
+	 * when the user switches agents, so an agent's slash verbs only
+	 * match while that agent is active (e.g. reader's `/article` stops
+	 * matching under the Example agent).
+	 *
+	 * Argful commands (`takesArgs`) register with `hidden: true` so they
+	 * don't appear in the Ctrl+P palette — palette-click can't supply
+	 * arguments, so showing them would be misleading. They're still
+	 * slash-dispatched through the prompt.
+	 *
+	 * Agent-bridge registrations sit ahead of shell registrations in the
+	 * registry's `entries` list (AgentProvider mounts inside
+	 * CommandProvider, and `register` prepends to the list), so on slash-
+	 * name collision the agent-scoped entry wins — preserves D9's
+	 * "agent overrides built-in" rule.
+	 */
+	function BridgeAgentCommands() {
+		const command = useCommand();
+		command.register((): CommandOption[] => {
+			const info = getAgentInfo(store.currentAgent);
+			if (!info.commands || info.commands.length === 0) return [];
+			const executeCtx: AgentCommandContext = {
+				prompt: (text) => wrappedActions.prompt(text),
+				refreshSystemPrompt: () => wrappedActions.refreshSystemPrompt(),
+			};
+			return info.commands.map((c) => ({
+				id: `agent.${info.name}.${c.name}`,
+				title: `/${c.name}${c.argHint ? ` ${c.argHint}` : ""}`,
+				description: c.description,
+				hidden: !!c.takesArgs,
+				slash: {
+					name: c.name,
+					takesArgs: c.takesArgs,
+					argHint: c.argHint,
+				},
+				onSelect: (_d, args) => {
+					// Fire-and-forget. `cmd.execute` may await a streaming
+					// turn; the sync portion (state mutations like
+					// `setActiveArticle`) runs before the first `await`,
+					// so a microtask-scheduled mirror picks it up before
+					// the UI processes further events. Only `activeArticle`
+					// is mirrored today; extend this list when future
+					// commands mutate other store-backed state synchronously.
+					void c.execute(args ?? "", executeCtx);
+					queueMicrotask(() => {
+						setStore("activeArticle", getActiveArticle());
+					});
+				},
+			}));
+		});
+		return null;
+	}
 
 	// Restore the agent recorded in the saved session *before* the article
 	// state, so the system-prompt rebuild below runs under the correct
@@ -492,7 +536,12 @@ export function AgentProvider(props: ParentProps) {
 		setStore("activeArticle", saved.activeArticle);
 	}
 
-	return <ctx.Provider value={value}>{props.children}</ctx.Provider>;
+	return (
+		<ctx.Provider value={value}>
+			<BridgeAgentCommands />
+			{props.children}
+		</ctx.Provider>
+	);
 }
 
 export function useAgent() {

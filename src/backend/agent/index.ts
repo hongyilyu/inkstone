@@ -11,9 +11,8 @@ import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
 import { getActiveArticle, setActiveArticle } from "./agents/reader";
 import {
 	type AgentCommand,
+	type AgentCommandContext,
 	type AgentInfo,
-	BUILTIN_COMMANDS,
-	type CommandContext,
 	composeSystemPrompt,
 	composeTools,
 } from "./base";
@@ -29,35 +28,15 @@ export interface AgentActions {
 	clearSession(): void;
 	/**
 	 * Rebuild the system prompt from the current agent's
-	 * `buildInstructions()`. Useful for callers outside the command
-	 * dispatcher that mutate agent-owned state directly (e.g. session
-	 * restore calls `setActiveArticle(savedId)` on boot, then needs the
-	 * prompt to pick up the restored context before the next turn).
-	 *
-	 * Commands running via `runAgentCommand` receive an equivalent
-	 * `ctx.refreshSystemPrompt()` — same operation, different surface.
+	 * `buildInstructions()`. Called by the TUI's agent-command bridge
+	 * (`BridgeAgentCommands` in `src/tui/context/agent.tsx`) after a
+	 * command mutates agent-owned state (e.g. reader's `/article` sets
+	 * `activeArticle` then calls this before triggering a turn), and by
+	 * session restore on boot (restores `activeArticle` from disk, then
+	 * needs the prompt to pick up the restored context before the next
+	 * turn).
 	 */
 	refreshSystemPrompt(): void;
-	/**
-	 * Dispatch a command the current agent (or the built-in set) has
-	 * declared. `name` is the verb (e.g. `"article"`, `"clear"`), `args`
-	 * is the raw argument string. Agent-declared commands take precedence
-	 * over built-ins on name collision. Throws if `name` is not a known
-	 * command on the current agent — TUI callers typically try/catch and
-	 * fall through to submitting the typed text as a plain prompt.
-	 */
-	runAgentCommand(
-		name: string,
-		args?: string,
-		context?: CommandContext,
-	): Promise<void>;
-	/**
-	 * True when the current agent (or built-in set) exposes `name` and the
-	 * supplied args are sufficient to execute it. TUI submit uses this to
-	 * mirror OpenCode's slash behavior: only executable slash text is
-	 * intercepted as a command; everything else falls through as a prompt.
-	 */
-	canRunAgentCommand(name: string, args?: string): boolean;
 }
 
 let agent: Agent | null = null;
@@ -142,20 +121,6 @@ function currentModel(): Model<Api> {
 			`Model '${currentModelId}' is not available from provider '${currentProviderId}'.`,
 		);
 	return m;
-}
-
-function findAgentCommand(
-	info: AgentInfo,
-	name: string,
-): AgentCommand | undefined {
-	return (
-		info.commands?.find((c) => c.name === name) ??
-		BUILTIN_COMMANDS.find((c) => c.name === name)
-	);
-}
-
-function hasRequiredCommandArgs(cmd: AgentCommand, args: string): boolean {
-	return !cmd.takesArgs || args.trim().length > 0;
 }
 
 /**
@@ -261,33 +226,6 @@ export function createAgentActions(
 		refreshSystemPrompt() {
 			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
 		},
-		async runAgentCommand(
-			name: string,
-			args: string = "",
-			context?: CommandContext,
-		) {
-			const info = getAgentInfo(currentAgent);
-			const cmd = findAgentCommand(info, name);
-			if (!cmd) {
-				throw new Error(`Unknown command '/${name}' on agent '${info.name}'.`);
-			}
-			if (!hasRequiredCommandArgs(cmd, args)) {
-				throw new Error(`Command '/${name}' requires arguments.`);
-			}
-			await cmd.execute(
-				args,
-				context ?? {
-					prompt: (text) => actions.prompt(text),
-					abort: () => actions.abort(),
-					clearSession: () => actions.clearSession(),
-					refreshSystemPrompt: () => actions.refreshSystemPrompt(),
-				},
-			);
-		},
-		canRunAgentCommand(name: string, args: string = "") {
-			const cmd = findAgentCommand(getAgentInfo(currentAgent), name);
-			return !!cmd && hasRequiredCommandArgs(cmd, args);
-		},
 	};
 
 	return actions;
@@ -318,6 +256,8 @@ export function listAgents(): AgentInfo[] {
 }
 
 export {
+	type AgentCommand,
+	type AgentCommandContext,
 	type AgentInfo,
 	getActiveArticle,
 	getAgentInfo,
