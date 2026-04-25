@@ -1,5 +1,5 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { readFileTool } from "./tools/read-file";
+import { readTool } from "./tools";
 
 /**
  * Theme keys used for per-agent accents. Must match keys on `ThemeColors`
@@ -70,6 +70,9 @@ export interface AgentCommand {
  *
  * `extraTools` is appended to `BASE_TOOLS`. Every agent gets the base
  * set unconditionally; per-user-decision there is no opt-out field.
+ * Entries typically come from the shared pool in `./tools.ts`; an agent
+ * that owns a state-coupled tool can still colocate it under its own
+ * folder (none do today).
  *
  * `buildInstructions()` returns the agent-specific portion of the
  * system prompt. Nullary by design — if an agent needs session state
@@ -95,18 +98,16 @@ export interface AgentInfo {
 
 /**
  * Tools every agent receives through the foundation layer. Kept minimal
- * on ship: `read_file` only. Future additions (e.g. a memory tool once
- * the memory files land, or a skill tool once the skills system lands)
- * are added here.
+ * on ship: `read` only. Future additions (e.g. a memory tool once the
+ * memory files land, or a skill tool once the skills system lands) are
+ * added here.
  *
  * Frozen so external modules can't `.push(...)` or swap indices. The
- * "`base/` owns what's in `BASE_TOOLS`" invariant is now enforced at the
- * language level. `composeTools` already returns a fresh array via
+ * "`base.ts` owns what's in `BASE_TOOLS`" invariant is now enforced at
+ * the language level. `composeTools` already returns a fresh array via
  * spread, so compositions are unaffected.
  */
-export const BASE_TOOLS: readonly AgentTool<any>[] = Object.freeze([
-	readFileTool,
-]);
+export const BASE_TOOLS: readonly AgentTool<any>[] = Object.freeze([readTool]);
 
 /**
  * Shared prompt prefix applied to every agent's system prompt. Empty

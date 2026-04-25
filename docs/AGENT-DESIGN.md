@@ -35,24 +35,28 @@ Shipped in PR #1 (branch `refactor/agent-shell-base-layer`). The base layer + fo
 
 ### D2 — Folder-per-agent layout
 
-**Chosen:** each custom agent lives in `src/backend/agent/agents/<name>/` with its own `index.ts`, optional `instructions.ts`, and optional `tools/` subdirectory. Tools that only one agent uses are colocated with that agent, not pooled in a central tools directory.
+**Chosen:** each custom agent lives in `src/backend/agent/agents/<name>/` with its own `index.ts`, optional `instructions.ts`, and optional `tools/` subdirectory for **state-coupled** tools only. Agent-neutral tools live in the shared pool at `src/backend/agent/tools.ts` and are pulled into an agent's `extraTools` by import.
 
-**Why:** self-contained units scale. `agents/reader/` is the canonical place for everything reader-related; `agents/example/` likewise. When Researcher lands, it drops into `agents/researcher/` as a peer, touching nothing else. Deletion is `rm -rf`. Portability is copy-a-folder.
+**Why:** self-contained units scale. `agents/reader/` is the canonical place for everything reader-specific; `agents/example/` likewise. When Researcher lands, it drops into `agents/researcher/` as a peer, touching nothing else. Deletion is `rm -rf`. Portability is copy-a-folder.
 
-**Trade-off:** tools that are genuinely shared (today just `read_file`) live in `base/tools/`, which is a different folder from where most tools live. That's by design — shared ≠ agent-specific — but it means "where does a tool live?" has a categorical answer ("base" vs "specific agent's folder"), not a positional one.
+**Trade-off:** "where does a tool live?" has a categorical answer, not a positional one. If the tool is agent-neutral (no per-agent state), it goes in the shared pool (`agent/tools.ts`). If it's coupled to one agent's module-level state (e.g. a hypothetical `quote_active_article` that reads reader's in-memory active article), it goes under `agents/<agent>/tools/` and the agent's `index.ts` re-exports any state helpers the shell needs. The shell's boundary rule (`biome.json`) blocks deep imports of `agents/*/tools/*` to keep that contract honest.
 
 ### D3 — Base layer bundle
 
-The base layer (`backend/agent/base/index.ts`) exports:
+The base layer (`backend/agent/base.ts`) exports:
 
 | Symbol | Purpose |
 |---|---|
 | `AgentInfo` (type) | The shape every agent conforms to |
 | `AgentColorKey` (type) | Constrained string union for theme-accent keys |
-| `BASE_TOOLS: AgentTool[]` | Foundation tools every agent receives (today: `[readFileTool]`) |
+| `BASE_TOOLS: AgentTool[]` | Foundation tools every agent receives (today: `[readTool]`, drawn from `backend/agent/tools.ts`) |
 | `BASE_PREAMBLE: string` | Shared system-prompt prefix (today: `""`) |
 | `composeTools(info)` | Returns `[...BASE_TOOLS, ...info.extraTools]` |
 | `composeSystemPrompt(info, ctx)` | Prepends `BASE_PREAMBLE` to `info.buildInstructions(ctx)` when non-empty |
+
+`backend/agent/tools.ts` is the **shared tool pool** — agent-neutral tools that any agent could plausibly want. Populated by calling `@mariozechner/pi-coding-agent`'s `createReadTool` / `createWriteTool` / `createEditTool` with `VAULT_DIR` as the `cwd`. Agents pick entries into `extraTools`; `BASE_TOOLS` references `readTool` from the same pool so every agent gets it.
+
+**Classification rule**: a tool belongs to the shared pool if it's agent-neutral (no coupling to a specific agent's module-level state). State-coupled tools (none today) stay in `agents/<name>/tools/` and re-export any public helpers from the agent's `index.ts`, so the shell's agent-internal boundary rule (`biome.json`) can block deep imports.
 
 **Why bundle these?** They are the "universal behavior" side of the system. Putting them together makes the extension point obvious: anything every agent should get goes here. Anything only one agent needs goes in that agent's folder.
 
@@ -62,13 +66,13 @@ The base layer (`backend/agent/base/index.ts`) exports:
 
 **Chosen:** no opt-out. Every agent gets `BASE_TOOLS` unconditionally.
 
-**Why:** simpler. Claiming an agent has "no tools" while its tool list contains one is worse than letting the Example agent have `read_file`. If "base" genuinely means "universal", the type should reflect that. Adding an opt-out lane now, speculatively, to support one agent's "minimal" aesthetic, would be the wrong trade-off — the Example prompt just drops the stale "You have no tools available" sentence.
+**Why:** simpler. Claiming an agent has "no tools" while its tool list contains one is worse than letting the Example agent have `read`. If "base" genuinely means "universal", the type should reflect that. Adding an opt-out lane now, speculatively, to support one agent's "minimal" aesthetic, would be the wrong trade-off — the Example prompt just drops the stale "You have no tools available" sentence.
 
 **Consequence:** the Example agent has exactly the `BASE_TOOLS` set. It's still a useful smoke-test target ("agent with nothing extra"), just not "agent with zero tools".
 
 ### D5 — Ship mechanism, defer content
 
-`BASE_PREAMBLE = ""` on ship. `BASE_TOOLS = [readFileTool]` only. No skills, no memory, no web search, no per-agent permission rulesets in the type.
+`BASE_PREAMBLE = ""` on ship. `BASE_TOOLS = [readTool]` only. No skills, no memory, no web search, no per-agent permission rulesets in the type.
 
 **Why:** separates the redesign work (shape, composition, folder layout) from the content work (what should the preamble say? what tools belong in base? how do skills actually discover and load?). Shipping the mechanism first means future PRs are additive edits in one file, not structural rewrites.
 
@@ -102,7 +106,7 @@ This is D5 ("ship mechanism, defer content") extended to cover the future-work d
 
 **Chosen:** two orthogonal concepts at the agent layer.
 
-- **Tools** (`AgentTool`) — model-invoked mid-turn. Already a first-class pi-agent-core concept. `read_file`, `edit_file`, `quote_article`, etc. The agent decides when to invoke each one while executing a turn.
+- **Tools** (`AgentTool`) — model-invoked mid-turn. Already a first-class pi-agent-core concept. `read`, `edit`, `write`, etc. The agent decides when to invoke each one while executing a turn.
 - **Commands** (`AgentCommand`) — user-invoked at turn boundaries. Declared on `AgentInfo.commands`. The TUI bridges each declared command into a single unified command registry so slash dispatch, palette, and keybinds share one surface. Examples: reader's `/article <filename>`, hypothetical KB agent's `/ingest`, `/query`, `/lint`.
 
 **Why:** commands and tools answer different questions. Commands are "what does the user want the agent to do?" Tools are "what can the agent do to accomplish that?" Collapsing them (e.g. treating `/ingest` as a tool the model decides to invoke) loses the user-verb semantics; collapsing the other way (tools as commands) loses the mid-turn invocation pattern. Keeping them separate mirrors how Discord/Slack/OpenCode structure user input vs agent capabilities.
@@ -110,7 +114,7 @@ This is D5 ("ship mechanism, defer content") extended to cover the future-work d
 **Shape**:
 
 ```ts
-// src/backend/agent/base/index.ts — narrow context with only
+// src/backend/agent/base.ts — narrow context with only
 // capabilities actual commands use today.
 export interface AgentCommandContext {
   prompt(text: string): Promise<void>;
@@ -142,6 +146,23 @@ export interface AgentInfo {
 **What this resolves**: the "Reader-specific vocabulary leaks onto AgentActions" pressure point. `loadArticle` is gone from `AgentActions`; it's now a reader command with state owned by the reader module. `buildInstructions` is nullary — no `AgentBuildContext` carrying reader-shaped fields. D9's original design introduced `runAgentCommand` + `canRunAgentCommand` on `AgentActions` plus a wider `CommandContext` with `clearSession` and `abort` — both have since been removed (see "Unified command registry" below) in favor of the bridge pattern.
 
 **Unified command registry** (SLASH-COMMANDS.md Path A): the dialog-opening commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`) and agent-declared commands (`/article`) now share the same TUI-side `CommandOption` type. The previous "Non-goal" here (dialog-openers stay palette-only because `DialogContext` can't cross the layer boundary) is resolved: `DialogContext` never crosses the boundary, because `AgentCommand` no longer holds an `onSelect` — the TUI's bridge owns the adapter. Agent code stays layer-correct (declares plain data); TUI code owns presentation (closes over `DialogContext` and `AgentActions` as needed).
+
+### D10 — Tool implementations come from pi-coding-agent
+
+**Considered:** own Inkstone-specific `readFileTool` / `editFileTool` / `writeFileTool` forever (the pre-refactor state — 4 custom tools, one per file).
+
+**Chosen:** delegate to `@mariozechner/pi-coding-agent`'s factory functions (`createReadTool`, `createWriteTool`, `createEditTool`) called with `VAULT_DIR` as the `cwd`. Inkstone's `backend/agent/tools.ts` is a thin wrapper that instantiates them once at module load and exports them for the base layer + agent `extraTools` to consume.
+
+**Why:** Inkstone was re-implementing the generic file-tool capability. pi-coding-agent's versions cover the same vocabulary with meaningfully more rigor — offset/limit reads, image-file support, multi-edit in a single `edit` call, per-path mutation queueing to serialize concurrent writes, and truncation with actionable continuation hints. Owning parallel implementations is bookkeeping we don't need; upstream drift is the price.
+
+**Trade-offs accepted:**
+
+- **pi-tui transitive dep.** pi-coding-agent's tool source files import `@mariozechner/pi-tui` at module scope for their `renderCall` / `renderResult` hooks. `wrapToolDefinition` strips those hooks when the tool is handed to pi-agent-core, so pi-tui never runs in Inkstone — but it IS loaded at module-resolve time. Inert at runtime, a few hundred KB of JS that does nothing. Acceptable cost for dropping 4 hand-maintained tool files.
+- **pi-agent-core version bump** from `^0.67.68` to `^0.69` (pi-coding-agent@0.69 requires it). The public type surface Inkstone uses (`Agent`, `AgentTool`, `AgentEvent`, `BeforeToolCallContext`, `ThinkingLevel`, `AssistantMessageEvent`) is unchanged between the two versions.
+- **Prompt-cache bust** (one-time). Tool names changed (`read_file` → `read`, etc.) and count dropped from 4 to 3 for reader (no more `quote_article`). Anthropic/Bedrock/OpenAI prompt caches keyed on the byte-exact tools prefix invalidate once on first turn after deploy. Unavoidable with a rename.
+- **Guard must mirror pi-coding-agent's path expansion.** pi-coding-agent expands `~` / `~/` against `$HOME` and strips a leading `@`. Inkstone's guard inlines the same subset (`backend/agent/guard.ts:resolvePath`); otherwise the guard's `startsWith(VAULT_DIR)` check could pass on a literal `~/foo` while the tool writes to `$HOME/foo`. pi-coding-agent doesn't re-export those helpers from its package index, so the subset is inlined rather than imported.
+
+**Quote article dropped.** `quote_article` was a paragraph-substring search over the currently-open article — in practice, the LLM can achieve the same thing with `read` + its own context window, so the tool was a hole-filler rather than genuine capability. Removed. Reader's instructions now tell the model to read the article and quote from its context.
 
 ## Rejected alternatives
 
@@ -184,7 +205,7 @@ Residual: the shell's `clearSession()` calls `setActiveArticle(null)` to reset r
 
 ### BASE_TOOLS mutability (resolved)
 
-`BASE_TOOLS` is exported as `readonly AgentTool<any>[]` and wrapped in `Object.freeze`. External code cannot `.push(...)` or swap indices; `composeTools` already returns a fresh array via spread, so the "`base/` owns what's in `BASE_TOOLS`" invariant is now enforced at the language level.
+`BASE_TOOLS` is exported as `readonly AgentTool<any>[]` and wrapped in `Object.freeze`. External code cannot `.push(...)` or swap indices; `composeTools` already returns a fresh array via spread, so the "`base.ts` owns what's in `BASE_TOOLS`" invariant is now enforced at the language level.
 
 A `registerBaseTool(tool)` registration function would be the plugin-era answer if multi-module contribution ever becomes a real requirement, but Inkstone has no plugin model today. Don't design it speculatively.
 
@@ -203,13 +224,13 @@ If a real split emerges (e.g. Researcher can read outside `ARTICLES_DIR` but Rea
 ## Terminology
 
 - **Agent** — the persona the user is chatting with. `readerAgent` / `exampleAgent` / future `researcherAgent`. A literal conforming to `AgentInfo`.
-- **Base agent** — the shared foundation layer, conceptually. Not an instance, not a class. Everything exported from `backend/agent/base/index.ts` and contained in `backend/agent/base/tools/`.
+- **Base agent** — the shared foundation layer, conceptually. Not an instance, not a class. Everything exported from `backend/agent/base.ts`, with tool implementations pulled in from `backend/agent/tools.ts`.
 - **Custom agent** — any agent under `backend/agent/agents/`. Reader and Example today.
 - **extraTools** — tools specific to a custom agent, composed with `BASE_TOOLS` at runtime by `composeTools`.
 - **BASE_TOOLS / BASE_PREAMBLE / composeTools / composeSystemPrompt** — the four canonical exports that define the base layer's public contract.
 - **Foundation tools** — informal synonym for `BASE_TOOLS`. Used interchangeably in discussion; code uses `BASE_TOOLS`.
 - **Command** (`AgentCommand`) — a user-invoked verb declared on `AgentInfo.commands` or in `BUILTIN_COMMANDS`. `/article`, `/clear`. Distinct from a **tool**: commands are user-facing, invoked at turn boundaries via `runAgentCommand`; tools are LLM-invoked mid-turn. See D9.
-- **Tool** (`AgentTool`) — a pi-agent-core capability the LLM invokes during a turn. `read_file`, `quote_article`. Distinct from a **command**.
+- **Tool** (`AgentTool`) — a pi-agent-core capability the LLM invokes during a turn. `read`, `write`, `edit`. Distinct from a **command**.
 - **Skills** (future) — self-contained knowledge bundles (SKILL.md files) loaded on demand into conversations. See `docs/SKILLS.md`.
 - **Memory files** (future) — `user.md` + `memory.md` under `~/.config/inkstone/`, inlined into the system prompt at compose time. See `docs/MEMORY.md`.
 - **Pressure point** — a place where current code shape is known to strain under anticipated future work, documented with the pressure + open questions but without a pre-committed API. See D8.

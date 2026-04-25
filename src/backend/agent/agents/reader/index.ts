@@ -1,11 +1,6 @@
 import type { AgentCommand, AgentInfo } from "../../base";
+import { editTool, writeTool } from "../../tools";
 import { buildReaderInstructions } from "./instructions";
-import { editFileTool } from "./tools/edit-file";
-import {
-	quoteArticleTool,
-	setActiveArticle as setQuoteArticleActiveArticle,
-} from "./tools/quote-article";
-import { writeFileTool } from "./tools/write-file";
 
 /**
  * Reader's session state — the currently-open article, if any. Reader
@@ -23,15 +18,8 @@ export function getActiveArticle(): string | null {
 	return activeArticle;
 }
 
-/**
- * Update the active article. Also propagates to `quote-article`'s
- * internal state — both stores track the same value; kept separate
- * historically because `quote_article` is a pi-agent-core `AgentTool`
- * and tools own their own state.
- */
 export function setActiveArticle(id: string | null): void {
 	activeArticle = id;
-	setQuoteArticleActiveArticle(id);
 }
 
 /**
@@ -63,14 +51,11 @@ const articleCommand: AgentCommand = {
  * 6-stage reading workflow (see `./instructions.ts`) and manages
  * article frontmatter edits, scraps, and notes inside the vault.
  *
- * Tools: `read_file` comes from `BASE_TOOLS`; the three write/search
- * tools below are reader-specific and live next to this agent's folder.
- *
- * extraTools order is `[edit_file, write_file, quote_article]` so that
- * after `BASE_TOOLS` (`[read_file]`) is prepended by `composeTools`,
- * the final declaration order is
- * `[read_file, edit_file, write_file, quote_article]` — byte-identical
- * to the pre-refactor shape for provider prompt-cache stability.
+ * Tools: `read` comes from `BASE_TOOLS`; `edit` + `write` are pulled
+ * from the shared pool in `backend/agent/tools.ts`. Model-side, the
+ * LLM sees the declaration order `[read, edit, write]` — provider
+ * prompt caches (Anthropic/Bedrock/OpenAI) key on the byte-exact
+ * tools prefix, so the order is worth preserving across refactors.
  *
  * `buildInstructions` is nullary and reads `activeArticle` from module
  * scope — the agent owns its own session state without a shell-shaped
@@ -81,7 +66,7 @@ export const readerAgent: AgentInfo = {
 	displayName: "Reader",
 	description: "Obsidian reading guide",
 	colorKey: "secondary",
-	extraTools: [editFileTool, writeFileTool, quoteArticleTool],
+	extraTools: [editTool, writeTool],
 	buildInstructions: () => buildReaderInstructions(activeArticle),
 	commands: [articleCommand],
 };

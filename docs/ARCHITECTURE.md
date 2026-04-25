@@ -28,7 +28,7 @@ The codebase is split into three layers with enforced dependency direction so th
 - `tui/` may import from `bridge/`, `backend/`.
 - `backend/` may import from `bridge/` (types only, zero runtime cost). **Must not** import from `tui/`.
 - `bridge/` must not import from `backend/` or `tui/`.
-- The agent shell (`backend/agent/index.ts` and `backend/agent/agents.ts`) must not deep-import custom-agent tool internals (`agents/<name>/tools/*`). Agent-owned public state/helpers must be re-exported from that agent folder's `index.ts`.
+- The agent shell (`backend/agent/index.ts` and `backend/agent/agents.ts`) must not deep-import custom-agent tool internals (`agents/<name>/tools/*`). Agent-owned public state/helpers must be re-exported from that agent folder's `index.ts`. (Today no agent has a `tools/` subfolder — the rule stays in place for future state-coupled agent tools.)
 - `tui/` must use `@backend/agent` public APIs for agent data and actions, not custom-agent internals under `backend/agent/agents/<name>/`.
 
 Each boundary rule uses two glob patterns per forbidden target so both bypass forms fail lint:
@@ -75,7 +75,7 @@ User input (textarea)
   → agent.prompt(text)
     → pi-agent-core Agent loop
       → LLM API call (provider from registry — Bedrock today)
-      → tool calls (read_file, edit_file, write_file, quote_article)
+      → tool calls (read, edit, write)
         → beforeToolCall guard (block/confirm/allow)
       → streaming events
     → agent.subscribe() callback
@@ -93,20 +93,14 @@ src/
     agent/
       index.ts                      Agent instance, createAgentActions, query getters
       agents.ts                     Registry assembler — imports each agent's AgentInfo literal and exports AGENTS[]
+      base.ts                       Foundation layer — AgentInfo type + AgentColorKey + BASE_TOOLS + BASE_PREAMBLE + composeTools + composeSystemPrompt
+      tools.ts                      Shared tool pool — readTool, writeTool, editTool via @mariozechner/pi-coding-agent factories, passed VAULT_DIR as cwd
       constants.ts                  VAULT_DIR, ARTICLES_DIR, SCRAPS_DIR, etc.
-      guard.ts                      beforeToolCall (frontmatter guard + confirm); cross-cutting, stays at top level
-      base/                         Foundation layer — the "base agent"
-        index.ts                    AgentInfo type + AgentColorKey + BASE_TOOLS + BASE_PREAMBLE + composeTools + composeSystemPrompt
-        tools/
-          read-file.ts              readFileSync, scoped to VAULT_DIR — available to every agent via BASE_TOOLS
+      guard.ts                      beforeToolCall (frontmatter guard + confirm); pattern-matches on new names (`read` / `edit` / `write`); path expansion mirrors pi-coding-agent (`~` and `@` prefixes) so sandbox enforcement cannot be bypassed
       agents/                       Custom agents, one self-contained folder each
         reader/
-          index.ts                  readerAgent: AgentInfo literal
+          index.ts                  readerAgent: AgentInfo literal (extraTools pulled from ../../tools)
           instructions.ts           buildReaderInstructions(articleId) — the reader's system-prompt body + 6-stage workflow
-          tools/
-            quote-article.ts        Paragraph search in active article
-            edit-file.ts            String replace + unified diff, scoped to VAULT_DIR
-            write-file.ts           writeFileSync/append, scoped to VAULT_DIR
         example/
           index.ts                  exampleAgent: AgentInfo literal (1-line prompt, no extra tools)
     providers/
@@ -280,9 +274,9 @@ Older messages that predate these fields (legacy sessions) simply render without
 
 The `beforeToolCall` hook runs before each tool execution:
 
-1. **Path validation**: reject any path resolving outside VAULT_DIR
-2. **Article file protection**: allow frontmatter edits, block content edits and full writes
-3. **Notes/scraps confirmation**: show DialogConfirm, await user response
+1. **Path validation**: reject any path resolving outside VAULT_DIR. The guard's `resolvePath` helper mirrors pi-coding-agent's `expandPath` + `resolveToCwd` (strips a leading `@`, expands `~` / `~/` against `$HOME`) so its `startsWith(VAULT_DIR)` check cannot disagree with the tool's own resolution. pi-coding-agent doesn't re-export those helpers from its package index, so the subset is inlined.
+2. **Article file protection**: allow frontmatter edits, block content edits and full writes. Edit-guard iterates the multi-edit schema (`args.edits: [{ oldText, newText }, ...]`) and requires every `oldText` to appear in the frontmatter.
+3. **Notes/scraps confirmation**: show DialogConfirm, await user response.
 
 The confirmation dialog is async — `beforeToolCall` awaits the dialog promise before returning `{ block: true/false }`.
 
@@ -294,14 +288,16 @@ Multi-agent support is a **flat registry with runtime composition** — no inher
 
 ### Base layer (the "base agent")
 
-`src/backend/agent/base/` owns everything shared across agents:
+`src/backend/agent/base.ts` owns everything shared across agents:
 
 - `AgentInfo` (the type) and `AgentColorKey`.
 - `AgentCommand` + `AgentCommandContext` types (see Commands below).
-- `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today just `read_file` (scoped to `VAULT_DIR`). Frozen at module load so external modules can't mutate.
+- `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today just `read` (from the shared pool, scoped to `VAULT_DIR`). Frozen at module load so external modules can't mutate.
 - `BASE_PREAMBLE: string` — a shared system-prompt prefix. **Empty today** — the mechanism is the point. Future PRs will grow this into a composed block that includes persona guidance, tool-use discipline, and memory-file contents (`user.md`, `memory.md` from `~/.config/inkstone/`).
 - `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]`. Every agent gets the base set unconditionally; there is no opt-out flag.
 - `composeSystemPrompt(info)` — prepends `BASE_PREAMBLE` to `info.buildInstructions()` when non-empty; otherwise returns the instructions unchanged. Nullary — `buildInstructions` reads any agent-owned state (e.g. reader's `activeArticle`) directly.
+
+Tool implementations come from `@mariozechner/pi-coding-agent` via the shared pool in `backend/agent/tools.ts` — Inkstone does not re-implement read/write/edit. Each factory is called with `VAULT_DIR` as the `cwd` so vault-relative paths resolve inside the vault; absolute paths are honored by the tool and sandboxed by the guard. pi-coding-agent's tool source transitively imports `@mariozechner/pi-tui`, but `wrapToolDefinition` strips the render hooks — the tools are pure `AgentTool<any>` at runtime, and pi-tui is inert code-path-wise (Inkstone renders through OpenTUI in `src/tui/**`).
 
 `backend/agent/index.ts` calls both composers at the moments where the agent's tools or system prompt must be rebuilt: initial `getAgent()` instantiation, `setAgent()`, `clearSession()`, and `AgentActions.refreshSystemPrompt()`.
 
@@ -309,8 +305,8 @@ Multi-agent support is a **flat registry with runtime composition** — no inher
 
 | Name | extraTools | Composed tools | Commands | Prompt behavior | Color |
 |------|------------|----------------|----------|-----------------|-------|
-| `reader` | `edit_file`, `write_file`, `quote_article` | `read_file` + the extras | `/article <filename>` | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
-| `example` | — | `read_file` only | — | Short static "general-purpose assistant" prompt | `theme.accent` |
+| `reader` | `edit`, `write` | `read` + the extras | `/article <filename>` | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
+| `example` | — | `read` only | — | Short static "general-purpose assistant" prompt | `theme.accent` |
 
 Both agents inherit the shell-level `/clear` verb via the unified command registry (see Commands below) — no per-agent declaration needed.
 
@@ -320,11 +316,11 @@ The folder-per-agent shape makes this a local change:
 
 1. Create `src/backend/agent/agents/<name>/index.ts` exporting `<name>Agent: AgentInfo`.
 2. If the agent needs an agent-specific system prompt, add `instructions.ts` next to it and import it from `index.ts`.
-3. If it owns tools that no other agent uses, add them under `agents/<name>/tools/`.
+3. If it wants tools from the shared pool, import them from `backend/agent/tools.ts` and list them in `extraTools`. If it owns a state-coupled tool that no other agent uses, add it under `agents/<name>/tools/` and re-export any public state helpers from the agent's `index.ts` (so the shell can stay out of deep imports per the boundary rule above).
 4. If it has user-facing verbs, declare them as `AgentCommand[]` and set `commands: [...]` on the `AgentInfo`. The TUI's `BridgeAgentCommands` (see Commands below) picks them up automatically.
 5. Add one import + one entry in `backend/agent/agents.ts`.
 
-No changes to `base/`, to `backend/agent/index.ts`, to the TUI, or to config schemas are required.
+No changes to `base.ts`, `tools.ts`, `backend/agent/index.ts`, the TUI, or config schemas are required.
 
 ### Commands
 
@@ -352,7 +348,7 @@ export interface CommandOption {
 }
 ```
 
-Agent-declared verbs (backend-side, `src/backend/agent/base/index.ts`):
+Agent-declared verbs (backend-side, `src/backend/agent/base.ts`):
 
 ```ts
 export interface AgentCommandContext {
@@ -443,7 +439,7 @@ setAgent(name)
       → prompt label, input border, user-bubble border, assistant ▣ glyph all re-theme via `theme[getAgentInfo(store.currentAgent).colorKey]`
 ```
 
-The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/base/index.ts`. With `BASE_PREAMBLE === ""`, `composeSystemPrompt(info)` is a pass-through to `info.buildInstructions()`.
+The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/base.ts`. With `BASE_PREAMBLE === ""`, `composeSystemPrompt(info)` is a pass-through to `info.buildInstructions()`.
 
 The assistant `message_end` handler stamps `agentName` onto the new bubble using `getAgentInfo(store.currentAgent).displayName`. Because switching is locked mid-session, the stamped name is guaranteed to be the agent that actually produced the reply.
 
