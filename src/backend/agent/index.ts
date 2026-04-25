@@ -8,7 +8,7 @@ import { type Api, type Model, supportsXhigh } from "@mariozechner/pi-ai";
 import { loadConfig, saveConfig } from "../config/config";
 import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
 import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
-import { setActiveArticle } from "./agents/reader/tools/quote-article";
+import { setActiveArticle } from "./agents/reader";
 import { type AgentInfo, composeSystemPrompt, composeTools } from "./base";
 import { ARTICLES_DIR } from "./constants";
 import { beforeToolCall, setConfirmFn } from "./guard";
