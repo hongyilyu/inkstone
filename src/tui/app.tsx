@@ -79,7 +79,6 @@ function Layout() {
 				id: "agents",
 				title: "Agents",
 				description: "Switch agent",
-				slash: { name: "agents" },
 				onSelect: (d) => {
 					DialogAgent.show(d);
 				},
@@ -90,7 +89,6 @@ function Layout() {
 			id: "models",
 			title: "Models",
 			description: "Switch model",
-			slash: { name: "models" },
 			onSelect: (d) => {
 				DialogModel.show(
 					d,
@@ -121,7 +119,6 @@ function Layout() {
 				id: "effort",
 				title: "Effort",
 				description: "Reasoning effort",
-				slash: { name: "effort" },
 				onSelect: (d) => {
 					DialogVariant.show(
 						d,
@@ -140,7 +137,6 @@ function Layout() {
 				id: "themes",
 				title: "Themes",
 				description: "Switch theme",
-				slash: { name: "themes" },
 				onSelect: (d) => {
 					DialogTheme.show(d, themeId());
 				},
@@ -149,7 +145,6 @@ function Layout() {
 				id: "connect",
 				title: "Connect",
 				description: "Manage providers",
-				slash: { name: "connect" },
 				onSelect: (d) => {
 					DialogProviderSelect.show(d, (model) => {
 						actions.setModel(model);
