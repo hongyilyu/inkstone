@@ -24,3 +24,4 @@ export const STATE_DIR = join(
 export const CONFIG_FILE = join(CONFIG_DIR, "config.json");
 export const AUTH_FILE = join(CONFIG_DIR, "auth.json");
 export const SESSION_FILE = join(STATE_DIR, "session.json");
+export const DB_FILE = join(STATE_DIR, "inkstone.db");
