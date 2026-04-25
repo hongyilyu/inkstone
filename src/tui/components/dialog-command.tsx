@@ -40,6 +40,18 @@ export interface CommandOption {
 	/** Optional global keybind action name (from `Keybind.KEYBINDS`). */
 	keybind?: Keybind.KeybindAction;
 	/**
+	 * Optional slash-command shape. When set, the entry surfaces in the
+	 * `/`-triggered dropdown in the prompt textarea (`Autocomplete`). The
+	 * dropdown reads visible entries directly — no separate getter on the
+	 * context — and filters by `slash.name` + `description`. Invoking the
+	 * entry from the dropdown calls the same `onSelect(dialog)` as the
+	 * palette / keybind paths, so shell entries open the same dialogs
+	 * regardless of invocation route.
+	 *
+	 * No `aliases` today — add when a concrete command needs one.
+	 */
+	slash?: { name: string };
+	/**
 	 * If true, the command does not appear in the palette. Useful for
 	 * keybind-only actions like `agent_cycle` / `agent_cycle_reverse`
 	 * that should fire the binding but not clutter the list.
@@ -55,6 +67,7 @@ function init() {
 	// (e.g. any future plugin surface) still get a reactive scope.
 	const root = getOwner();
 	const [registrations, setRegistrations] = createSignal<Registration[]>([]);
+	const [suppressed, setSuppressed] = createSignal(false);
 	const dialog = useDialog();
 
 	const entries = createMemo(() => registrations().flatMap((x) => x()));
@@ -100,12 +113,29 @@ function init() {
 				setRegistrations((arr) => arr.filter((x) => x !== ref));
 			};
 		},
+		/**
+		 * Suspend global keybind dispatch (including the `command_list`
+		 * palette-open key) while some other consumer owns the keyboard.
+		 * Used today by `Autocomplete` so that when the `/` dropdown is
+		 * visible, Ctrl+P does not open the palette and `session_interrupt`
+		 * does not fire.
+		 *
+		 * Needed because multiple `useKeyboard` handlers all receive every
+		 * event and fire in registration order; `CommandProvider` registers
+		 * earlier than `Autocomplete` (which mounts inside `Prompt`), so an
+		 * `evt.preventDefault()` from the Autocomplete handler would arrive
+		 * too late. A signal read at the top of this handler short-circuits
+		 * dispatch before that order matters.
+		 */
+		setSuppressed,
 	};
 
 	// Global dispatch: palette-open key first, then any registered command.
-	// Skip entirely while a dialog is open so dialog-local handlers win.
+	// Skip entirely while a dialog is open so dialog-local handlers win,
+	// and while another consumer has suspended dispatch via `setSuppressed`.
 	useKeyboard((evt: any) => {
 		if (dialog.stack.length > 0) return;
+		if (suppressed()) return;
 		if (evt.defaultPrevented) return;
 
 		if (Keybind.match("command_list", evt)) {

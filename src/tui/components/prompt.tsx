@@ -14,6 +14,7 @@ import { useTheme } from "../context/theme";
 import { useDialog } from "../ui/dialog";
 import { formatCost, formatTokens } from "../util/format";
 import * as Keybind from "../util/keybind";
+import { Autocomplete, type AutocompleteRef } from "./autocomplete";
 import { useCommand } from "./dialog-command";
 import { SpinnerWave } from "./spinner-wave";
 
@@ -116,6 +117,7 @@ export function Prompt() {
 	});
 
 	let inputRef: any;
+	let autoRef: AutocompleteRef | undefined;
 
 	// Auto-focus: prompt always has focus unless a dialog is open
 	// Mirrors OpenCode prompt/index.tsx:469-479
@@ -130,6 +132,15 @@ export function Prompt() {
 	});
 
 	function handleSubmit() {
+		// Slash-dropdown short-circuit (per review I13): when the Autocomplete
+		// is visible, Enter confirms the current selection rather than
+		// submitting the textarea value. Defensive even if the Autocomplete's
+		// own `useKeyboard` already intercepts Enter.
+		if (autoRef?.visible()) {
+			autoRef.select();
+			return;
+		}
+
 		const value = text().trim();
 		if (!value) return;
 		if (store.isStreaming) return;
@@ -187,6 +198,12 @@ export function Prompt() {
 
 	return (
 		<box flexShrink={0}>
+			<Autocomplete
+				ref={(r) => {
+					autoRef = r;
+				}}
+				clearText={() => setText("")}
+			/>
 			{/* prompt/index.tsx:974-1225 — input area with left border accent.
           The closing ╹ corner lives on the cap row below, not on this box. */}
 			<box
@@ -211,7 +228,10 @@ export function Prompt() {
 							setInputRef(r);
 						}}
 						value={text()}
-						onInput={(v: string) => setText(v)}
+						onInput={(v: string) => {
+							setText(v);
+							autoRef?.onInput(v);
+						}}
 						onSubmit={handleSubmit}
 						placeholder={
 							store.isStreaming
@@ -326,6 +346,11 @@ export function Prompt() {
 						<text fg={theme.text}>
 							{Keybind.print("agent_cycle")}{" "}
 							<span style={{ fg: theme.textMuted }}>agents</span>
+						</text>
+					</Show>
+					<Show when={text() === ""}>
+						<text fg={theme.text}>
+							/ <span style={{ fg: theme.textMuted }}>slash</span>
 						</text>
 					</Show>
 					<text fg={theme.text}>
