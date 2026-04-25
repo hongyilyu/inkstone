@@ -166,36 +166,11 @@ These are the points where Inkstone's usage is likely to push next. Per D8, each
 
 ### Skills (deferred)
 
-Known shape:
+See [`docs/SKILLS.md`](./SKILLS.md) for the full exploration — known shape, open questions at implementation time, and when to revisit.
 
-- Self-contained knowledge bundles (SKILL.md files with front-matter + body) stored under `~/.config/inkstone/skills/`.
-- Loaded lazily — a summary surfaced in the system prompt, the full body fetched on demand when the agent invokes a skill-loading tool. OpenCode's pattern; avoids token bloat when skills go unused.
-- Agent-created skills (an agent authoring a new bundle at runtime) are part of the design intent.
+### Memory files (deferred — read + write paths)
 
-Open when we build it:
-
-- Where in the composed system prompt the skill summary lives (before or after memory files).
-- Whether filtering is agent-driven (agent declares which skills it may access) or skill-driven (skill declares which agents can access it). Leaning agent-driven, but not committing.
-- Whether `AgentInfo` needs a skills field at all — the list may live in the loader rather than on the agent type.
-- How agent-created skills discover and register with the loader.
-
-Why defer the shape: each of these choices is cheap to decide *after* a real loader exists and the first two or three SKILL.md bundles exist to shape it. Deciding now risks porting OpenCode's shape instead of Inkstone's.
-
-### Memory files (deferred — split into read and write)
-
-Known shape (read path):
-
-- Two files under `~/.config/inkstone/`: `user.md` (user preferences — communication style, domain interests) and `memory.md` (durable facts the agent has learned — environment details, project conventions, discovered workarounds).
-- `composeSystemPrompt` grows to inline both files' contents into the system prompt after `BASE_PREAMBLE`.
-- Likely a universal read — every agent benefits from knowing user preferences and durable context.
-
-Write path is a separate, more sensitive design problem:
-
-- Every-agent write access means low-signal or adversarial prompts can pollute long-term context. Higher bar than read.
-- Open: explicit tool vs automatic end-of-turn summary; confirmation rules; overwrite vs append-only vs structured edit; user-visible review/edit flow; per-agent gating.
-- Open: whether the writer is a base tool, an opt-in per-agent tool, or a system-level behavior outside the agent loop.
-
-Why defer write: we don't yet have the signals to pick between these tradeoffs. Ship read first (low-risk inclusion), revisit write once there's lived experience with what agents actually want to persist.
+See [`docs/MEMORY.md`](./MEMORY.md) for the full exploration — read-path known shape, write-path design problem, and when to revisit each.
 
 ### Reader-specific vocabulary leaks onto AgentActions (resolved via D9)
 
