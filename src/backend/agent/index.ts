@@ -8,23 +8,46 @@ import { type Api, type Model, supportsXhigh } from "@mariozechner/pi-ai";
 import { loadConfig, saveConfig } from "../config/config";
 import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
 import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
-import { setActiveArticle } from "./agents/reader";
-import { type AgentInfo, composeSystemPrompt, composeTools } from "./base";
+import { getActiveArticle, setActiveArticle } from "./agents/reader";
+import {
+	type AgentInfo,
+	BUILTIN_COMMANDS,
+	composeSystemPrompt,
+	composeTools,
+} from "./base";
 import { ARTICLES_DIR } from "./constants";
 import { beforeToolCall, setConfirmFn } from "./guard";
 
 export interface AgentActions {
 	prompt(text: string): Promise<void>;
 	abort(): void;
-	loadArticle(articleId: string): void;
 	setModel(model: Model<Api>): void;
 	setThinkingLevel(level: ThinkingLevel): void;
 	setAgent(name: string): void;
 	clearSession(): void;
+	/**
+	 * Rebuild the system prompt from the current agent's
+	 * `buildInstructions()`. Useful for callers outside the command
+	 * dispatcher that mutate agent-owned state directly (e.g. session
+	 * restore calls `setActiveArticle(savedId)` on boot, then needs the
+	 * prompt to pick up the restored context before the next turn).
+	 *
+	 * Commands running via `runAgentCommand` receive an equivalent
+	 * `ctx.refreshSystemPrompt()` — same operation, different surface.
+	 */
+	refreshSystemPrompt(): void;
+	/**
+	 * Dispatch a command the current agent (or the built-in set) has
+	 * declared. `name` is the verb (e.g. `"article"`, `"clear"`), `args`
+	 * is the raw argument string. Agent-declared commands take precedence
+	 * over built-ins on name collision. Throws if `name` is not a known
+	 * command on the current agent — TUI callers typically try/catch and
+	 * fall through to submitting the typed text as a plain prompt.
+	 */
+	runAgentCommand(name: string, args?: string): Promise<void>;
 }
 
 let agent: Agent | null = null;
-let activeArticle: string | null = null;
 
 // Active provider/model. Both are resolved at module load from the on-disk
 // config, falling back to the first registered provider's first model when
@@ -134,7 +157,7 @@ export function getAgent(): Agent {
 		const info = getAgentInfo(currentAgent);
 		agent = new Agent({
 			initialState: {
-				systemPrompt: composeSystemPrompt(info, { activeArticle }),
+				systemPrompt: composeSystemPrompt(info),
 				model: currentModel(),
 				thinkingLevel: resolveThinkingLevel(currentModel()),
 				tools: composeTools(info),
@@ -143,10 +166,12 @@ export function getAgent(): Agent {
 				return getProvider(provider).getApiKey();
 			},
 			beforeToolCall: async (ctx) => {
-				// Inject article path into context for the guard
+				// Inject article path into context for the guard. Reader owns
+				// the `activeArticle` state; shell reads via the getter.
 				const args = ctx.args as Record<string, any>;
-				if (activeArticle) {
-					args._articlePath = resolve(ARTICLES_DIR, activeArticle);
+				const article = getActiveArticle();
+				if (article) {
+					args._articlePath = resolve(ARTICLES_DIR, article);
 				}
 				return beforeToolCall(ctx);
 			},
@@ -164,22 +189,12 @@ export function createAgentActions(
 		onEvent(event);
 	});
 
-	return {
+	const actions: AgentActions = {
 		async prompt(text: string) {
 			await a.prompt(text);
 		},
 		abort() {
 			a.abort();
-		},
-		loadArticle(articleId: string) {
-			activeArticle = articleId;
-			setActiveArticle(articleId);
-			// Rebuild the system prompt through whichever agent is currently active.
-			// In practice only the reader agent reads `activeArticle` — other agents
-			// silently ignore the argument.
-			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent), {
-				activeArticle,
-			});
 		},
 		setModel(model: Model<Api>) {
 			a.state.model = model;
@@ -203,19 +218,44 @@ export function createAgentActions(
 		setAgent(name: string) {
 			const info = getAgentInfo(name);
 			currentAgent = info.name;
-			a.state.systemPrompt = composeSystemPrompt(info, { activeArticle });
+			a.state.systemPrompt = composeSystemPrompt(info);
 			a.state.tools = composeTools(info);
 			saveConfig({ currentAgent: info.name });
 		},
 		clearSession() {
 			a.state.messages = [];
-			activeArticle = null;
+			// Reset reader-owned state. Other agents don't yet have state
+			// that needs clearing; when they do, either (a) add similar
+			// per-agent reset calls here or (b) introduce a lifecycle hook
+			// on AgentInfo (e.g. `onSessionClear`) that the shell iterates.
 			setActiveArticle(null);
-			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent), {
-				activeArticle: null,
+			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
+		},
+		refreshSystemPrompt() {
+			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
+		},
+		async runAgentCommand(name: string, args: string = "") {
+			const info = getAgentInfo(currentAgent);
+			const cmd =
+				info.commands?.find((c) => c.name === name) ??
+				BUILTIN_COMMANDS.find((c) => c.name === name);
+			if (!cmd) {
+				throw new Error(`Unknown command '/${name}' on agent '${info.name}'.`);
+			}
+			await cmd.execute(args, {
+				prompt: (text) => actions.prompt(text),
+				abort: () => actions.abort(),
+				clearSession: () => actions.clearSession(),
+				refreshSystemPrompt: () => {
+					a.state.systemPrompt = composeSystemPrompt(
+						getAgentInfo(currentAgent),
+					);
+				},
 			});
 		},
 	};
+
+	return actions;
 }
 
 export function getCurrentProviderId(): string {
@@ -234,10 +274,6 @@ export function getCurrentThinkingLevel(): ThinkingLevel {
 	return resolveThinkingLevel(currentModel());
 }
 
-export function getActiveArticle(): string | null {
-	return activeArticle;
-}
-
 export function getCurrentAgent(): string {
 	return currentAgent;
 }
@@ -246,4 +282,10 @@ export function listAgents(): AgentInfo[] {
 	return AGENTS;
 }
 
-export { type AgentInfo, getAgentInfo, setConfirmFn };
+export {
+	type AgentInfo,
+	getActiveArticle,
+	getAgentInfo,
+	setActiveArticle,
+	setConfirmFn,
+};

@@ -281,28 +281,30 @@ The confirmation dialog is async — `beforeToolCall` awaits the dialog promise 
 
 ## Agent Registry
 
-Multi-agent support is a **flat registry with runtime composition** — no inheritance. Each agent is a self-contained folder under `src/backend/agent/agents/<name>/` that exports an `AgentInfo` literal (name, displayName, description, `colorKey`, `extraTools`, `buildInstructions`). `src/backend/agent/agents.ts` is a thin assembler that imports each agent's literal and exports them as `AGENTS: AgentInfo[]`. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
+Multi-agent support is a **flat registry with runtime composition** — no inheritance. Each agent is a self-contained folder under `src/backend/agent/agents/<name>/` that exports an `AgentInfo` literal (name, displayName, description, `colorKey`, `extraTools`, `buildInstructions`, optionally `commands`). `src/backend/agent/agents.ts` is a thin assembler that imports each agent's literal and exports them as `AGENTS: AgentInfo[]`. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
 
-> **Design rationale:** see [`AGENT-DESIGN.md`](./AGENT-DESIGN.md) for why the system is shaped this way (composition over inheritance, folder-per-agent, base layer, no opt-out on `BASE_TOOLS`, vault ≠ config), what alternatives were rejected, and how future features (skills, memory, per-agent session actions) are designed to plug in without restructuring.
+> **Design rationale:** see [`AGENT-DESIGN.md`](./AGENT-DESIGN.md) for why the system is shaped this way (composition over inheritance, folder-per-agent, base layer, no opt-out on `BASE_TOOLS`, vault ≠ config, commands vs tools), what alternatives were rejected, and how future features (skills, memory) are designed to plug in without restructuring.
 
 ### Base layer (the "base agent")
 
 `src/backend/agent/base/` owns everything shared across agents:
 
 - `AgentInfo` (the type) and `AgentColorKey`.
-- `BASE_TOOLS: AgentTool[]` — tools every agent receives. Today just `read_file` (scoped to `VAULT_DIR`). Future additions (`memory_write`, `web_search`, `skill`) land here once their supporting systems exist.
+- `AgentCommand` + `CommandContext` types (see Commands below).
+- `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today just `read_file` (scoped to `VAULT_DIR`). Frozen at module load so external modules can't mutate.
+- `BUILTIN_COMMANDS: readonly AgentCommand[]` — session-global commands available under every agent. Today `[{ name: "clear", ... }]`. Frozen.
 - `BASE_PREAMBLE: string` — a shared system-prompt prefix. **Empty today** — the mechanism is the point. Future PRs will grow this into a composed block that includes persona guidance, tool-use discipline, and memory-file contents (`user.md`, `memory.md` from `~/.config/inkstone/`).
-- `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]`. Every agent gets the base set unconditionally; there is no opt-out flag (decision made in the redesign discussion — keeps the API flat and the Example agent now has `read_file` via base).
-- `composeSystemPrompt(info, ctx)` — prepends `BASE_PREAMBLE` to `info.buildInstructions(ctx)` when non-empty; otherwise returns the instructions unchanged (so the composer is a byte-identical no-op while `BASE_PREAMBLE === ""`).
+- `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]`. Every agent gets the base set unconditionally; there is no opt-out flag.
+- `composeSystemPrompt(info)` — prepends `BASE_PREAMBLE` to `info.buildInstructions()` when non-empty; otherwise returns the instructions unchanged. Nullary — `buildInstructions` reads any agent-owned state (e.g. reader's `activeArticle`) directly.
 
-`backend/agent/index.ts` calls both composers at the four moments where the agent's tools or system prompt must be rebuilt: initial `getAgent()` instantiation, `setAgent()`, `loadArticle()`, and `clearSession()`.
+`backend/agent/index.ts` calls both composers at the moments where the agent's tools or system prompt must be rebuilt: initial `getAgent()` instantiation, `setAgent()`, `clearSession()`, and whenever a command calls `ctx.refreshSystemPrompt()`.
 
 ### Agents on ship
 
-| Name | extraTools | Composed tools | Prompt behavior | Color |
-|------|------------|----------------|-----------------|-------|
-| `reader` | `quote_article`, `edit_file`, `write_file` | `read_file` + the extras | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
-| `example` | — | `read_file` only | Short static "general-purpose assistant" prompt; ignores `activeArticle` | `theme.accent` |
+| Name | extraTools | Composed tools | Commands | Prompt behavior | Color |
+|------|------------|----------------|----------|-----------------|-------|
+| `reader` | `edit_file`, `write_file`, `quote_article` | `read_file` + the extras | `article` (+ built-in `clear`) | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
+| `example` | — | `read_file` only | (built-in `clear` only) | Short static "general-purpose assistant" prompt | `theme.accent` |
 
 ### Adding a new agent
 
@@ -311,9 +313,79 @@ The folder-per-agent shape makes this a local change:
 1. Create `src/backend/agent/agents/<name>/index.ts` exporting `<name>Agent: AgentInfo`.
 2. If the agent needs an agent-specific system prompt, add `instructions.ts` next to it and import it from `index.ts`.
 3. If it owns tools that no other agent uses, add them under `agents/<name>/tools/`.
-4. Add one import + one entry in `backend/agent/agents.ts`.
+4. If it has user-facing verbs, declare them as `AgentCommand[]` and set `commands: [...]` on the `AgentInfo`.
+5. Add one import + one entry in `backend/agent/agents.ts`.
 
 No changes to `base/`, to `backend/agent/index.ts`, to the TUI, or to config schemas are required.
+
+### Commands
+
+Commands are user-invoked verbs, distinct from tools (which are LLM-invoked mid-turn). See [`AGENT-DESIGN.md` D9](./AGENT-DESIGN.md) for the rationale; this section documents the runtime.
+
+**Type shape** (`backend/agent/base/index.ts`):
+
+```ts
+export interface CommandContext {
+  prompt(text: string): Promise<void>;
+  abort(): void;
+  clearSession(): void;
+  refreshSystemPrompt(): void;
+}
+
+export interface AgentCommand {
+  name: string;
+  description?: string;
+  argHint?: string;
+  takesArgs?: boolean;
+  execute(args: string, ctx: CommandContext): void | Promise<void>;
+}
+```
+
+**Sources**:
+- `BUILTIN_COMMANDS` in `base/` — session-global. Today: `/clear`.
+- `AgentInfo.commands` on a custom agent — agent-scoped. Today: reader's `/article`.
+
+**Dispatch** (`AgentActions.runAgentCommand(name, args?)` in `backend/agent/index.ts`):
+
+```
+runAgentCommand(name, args)
+  → info = getAgentInfo(currentAgent)
+  → cmd = info.commands?.find(c => c.name === name)         ← agent-scoped first
+       ?? BUILTIN_COMMANDS.find(c => c.name === name)       ← built-in fallback
+  → if !cmd: throw "Unknown command"
+  → cmd.execute(args, ctx)
+      ctx = {
+        prompt:              actions.prompt,
+        abort:               actions.abort,
+        clearSession:        actions.clearSession,
+        refreshSystemPrompt: rebuild a.state.systemPrompt,
+      }
+```
+
+Agent-scoped commands take precedence over built-ins on name collision (intentional — an agent can override a built-in).
+
+**TUI submit path** (`tui/components/prompt.tsx`):
+
+```
+user types "/article foo.md" + Enter
+  → handleSubmit
+    → value.startsWith("/") → split on first space
+      → name="article", args="foo.md"
+      → actions.runAgentCommand("article", "foo.md")
+        → reader's articleCommand.execute("foo.md", ctx)
+          → setActiveArticle("foo.md")              (reader module state)
+          → ctx.refreshSystemPrompt()               (rebuild with article context)
+          → await ctx.prompt("Read foo.md")         (streaming turn begins)
+      → setText("")                                  (clear input)
+
+user types "/xyz" + Enter
+  → handleSubmit
+    → actions.runAgentCommand("xyz", "")
+      → throws "Unknown command"
+    → .catch → restore original text (user can edit / resubmit)
+```
+
+**Session restore** bypasses the command dispatcher — it rehydrates state without triggering a prompt turn. `context/agent.tsx` calls `setActiveArticle(saved.activeArticle)` + `actions.refreshSystemPrompt()` directly.
 
 ### Switching rules
 
@@ -323,13 +395,13 @@ Switching is intentionally locked to empty sessions (`store.messages.length === 
 - **Command palette → Agents** opens `DialogAgent`, the entry is hidden once `store.messages.length > 0`.
 - **Persistence**: the selected agent is saved to `config.json` as `currentAgent` on every switch and restored at boot. Unknown names fall back to the first registry entry.
 
-### Data flow
+### Data flow (agent switching)
 
 ```
 setAgent(name)
   → AgentActions.setAgent (backend/agent/index.ts)
     → currentAgent = info.name
-    → a.state.systemPrompt = composeSystemPrompt(info, { activeArticle })
+    → a.state.systemPrompt = composeSystemPrompt(info)
     → a.state.tools        = composeTools(info)
     → saveConfig({ currentAgent })
   → tui wrapper (context/agent.tsx)
@@ -337,7 +409,7 @@ setAgent(name)
       → prompt label, input border, user-bubble border, assistant ▣ glyph all re-theme via `theme[getAgentInfo(store.currentAgent).colorKey]`
 ```
 
-The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/base/index.ts`. Today the system-prompt composer is a byte-identical pass-through while `BASE_PREAMBLE === ""` — `composeSystemPrompt(readerAgent, { activeArticle })` returns the exact string `buildReaderInstructions(activeArticle)` returns, with no prefix.
+The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/base/index.ts`. With `BASE_PREAMBLE === ""`, `composeSystemPrompt(info)` is a pass-through to `info.buildInstructions()`.
 
 The assistant `message_end` handler stamps `agentName` onto the new bubble using `getAgentInfo(store.currentAgent).displayName`. Because switching is locked mid-session, the stamped name is guaranteed to be the agent that actually produced the reply.
 

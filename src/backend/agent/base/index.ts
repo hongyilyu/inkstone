@@ -16,13 +16,46 @@ export type AgentColorKey =
 	| "info";
 
 /**
- * Context passed to an agent's `buildInstructions` at compose time. Agents
- * that don't care about an argument simply ignore it; the composer always
- * provides the full shape so adding a new field (e.g. today's date, vault
- * path) is a one-file change.
+ * Shell capabilities exposed to an `AgentCommand.execute`. Kept narrow —
+ * only what commands actually need today (triggering turns, abort,
+ * clearing the session, rebuilding the system prompt after state
+ * changes). Adding new capabilities here is an explicit decision, not
+ * a pass-through of the whole `AgentActions` surface.
+ *
+ * A command doesn't get direct access to `setModel` / `setAgent` /
+ * `runAgentCommand` — those are user-driven actions, not something a
+ * command should do during execution.
  */
-export interface AgentBuildContext {
-	activeArticle: string | null;
+export interface CommandContext {
+	prompt(text: string): Promise<void>;
+	abort(): void;
+	clearSession(): void;
+	refreshSystemPrompt(): void;
+}
+
+/**
+ * A user-facing verb an agent (or the built-in set) declares. Commands
+ * are conceptually distinct from tools: tools are model-invoked mid-turn
+ * (`AgentTool`), commands are user-invoked at turn boundaries.
+ *
+ * `execute(args, ctx)` can do any mix of:
+ *   - Mutate agent-scoped session state (held as module-level state in
+ *     the agent's folder).
+ *   - Call `ctx.refreshSystemPrompt()` after state changes.
+ *   - Call `ctx.prompt(template)` to kick off an LLM turn with a
+ *     command-specific template.
+ *   - Call `ctx.clearSession()` / `ctx.abort()` for shell-level effects.
+ *
+ * `takesArgs` is a UI hint for a future slash-command dropdown: when
+ * true, the dropdown can rewrite the textarea to `/name ` instead of
+ * invoking immediately. No behavior in the backend depends on it today.
+ */
+export interface AgentCommand {
+	name: string;
+	description?: string;
+	argHint?: string;
+	takesArgs?: boolean;
+	execute(args: string, ctx: CommandContext): void | Promise<void>;
 }
 
 /**
@@ -33,9 +66,15 @@ export interface AgentBuildContext {
  * `extraTools` is appended to `BASE_TOOLS`. Every agent gets the base
  * set unconditionally; per-user-decision there is no opt-out field.
  *
- * `buildInstructions(ctx)` returns the agent-specific portion of the
- * system prompt. The composer prepends `BASE_PREAMBLE` (empty today,
- * grows in future PRs with universal tool-use discipline + memory files).
+ * `buildInstructions()` returns the agent-specific portion of the
+ * system prompt. Nullary by design — if an agent needs session state
+ * (e.g. reader's `activeArticle`), it owns that state in its own folder
+ * and reads it at compose time. The composer prepends `BASE_PREAMBLE`
+ * (empty today).
+ *
+ * `commands` declares the agent's user-facing verbs. The shell merges
+ * them with `BUILTIN_COMMANDS` and exposes dispatch via
+ * `AgentActions.runAgentCommand(name, args)`.
  */
 export interface AgentInfo {
 	name: string;
@@ -43,7 +82,8 @@ export interface AgentInfo {
 	description: string;
 	colorKey: AgentColorKey;
 	extraTools: AgentTool<any>[];
-	buildInstructions(ctx: AgentBuildContext): string;
+	buildInstructions(): string;
+	commands?: AgentCommand[];
 }
 
 /**
@@ -62,6 +102,22 @@ export const BASE_TOOLS: readonly AgentTool<any>[] = Object.freeze([
 ]);
 
 /**
+ * Session-global commands available under every agent. Today: `/clear`
+ * only. Frozen for the same reason as `BASE_TOOLS` — `base/` owns the
+ * set. Agent-declared commands in `AgentInfo.commands` merge with this
+ * list in the dispatcher; agent-scoped entries take precedence on name
+ * collision (intentional — an agent can override a built-in for its
+ * own semantics).
+ */
+export const BUILTIN_COMMANDS: readonly AgentCommand[] = Object.freeze([
+	{
+		name: "clear",
+		description: "Clear the session",
+		execute: (_, ctx) => ctx.clearSession(),
+	},
+]);
+
+/**
  * Shared prompt prefix applied to every agent's system prompt. Empty
  * today — the mechanism is the point. Future PRs will grow this into a
  * composed block that includes persona guidance, tool-use discipline,
@@ -74,10 +130,7 @@ export function composeTools(info: AgentInfo): AgentTool<any>[] {
 	return [...BASE_TOOLS, ...info.extraTools];
 }
 
-export function composeSystemPrompt(
-	info: AgentInfo,
-	ctx: AgentBuildContext,
-): string {
-	const body = info.buildInstructions(ctx);
+export function composeSystemPrompt(info: AgentInfo): string {
+	const body = info.buildInstructions();
 	return BASE_PREAMBLE ? `${BASE_PREAMBLE}\n\n${body}` : body;
 }

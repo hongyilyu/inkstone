@@ -1,10 +1,12 @@
 import {
 	type AgentActions,
 	createAgentActions,
+	getActiveArticle,
 	getAgentInfo,
 	getCurrentAgent,
 	getCurrentModel,
 	getCurrentThinkingLevel,
+	setActiveArticle,
 	setConfirmFn,
 } from "@backend/agent";
 import { setPersistenceErrorHandler } from "@backend/config/errors";
@@ -411,10 +413,6 @@ export function AgentProvider(props: ParentProps) {
 				});
 			}
 		},
-		loadArticle(articleId: string) {
-			actions.loadArticle(articleId);
-			setStore("activeArticle", articleId);
-		},
 		setModel(model: Model<Api>) {
 			actions.setModel(model);
 			setStore("modelName", model.name);
@@ -447,24 +445,46 @@ export function AgentProvider(props: ParentProps) {
 			clearSessionFile();
 			messageCounter = 0;
 		},
+		refreshSystemPrompt() {
+			actions.refreshSystemPrompt();
+		},
+		runAgentCommand(name: string, args?: string) {
+			const p = actions.runAgentCommand(name, args);
+			// After the command's synchronous execute body runs (before the
+			// first `await` in `execute`), mirror any backend state the TUI
+			// store tracks. Done via `queueMicrotask` so this runs after the
+			// sync portion of execute but before the TUI processes further
+			// events. Today only `activeArticle` is mirrored; add more
+			// fields here if future commands mutate other store-backed
+			// state synchronously.
+			queueMicrotask(() => {
+				setStore("activeArticle", getActiveArticle());
+			});
+			return p;
+		},
 	};
 
 	const value: AgentContextValue = { store, actions: wrappedActions };
 
-	// Restore the agent recorded in the saved session *before* loadArticle, so
-	// the system-prompt rebuild inside `loadArticle` runs under the correct
+	// Restore the agent recorded in the saved session *before* the article
+	// state, so the system-prompt rebuild below runs under the correct
 	// agent's prompt builder. Without this, a transcript persisted under one
 	// agent could reopen under whichever agent is currently in `config.json`,
-	// with no way to switch back (agent cycling is locked once messages exist).
-	// Legacy sessions that predate the field fall through and use config.
+	// with no way to switch back (agent cycling is locked once messages
+	// exist). Legacy sessions that predate the field fall through and use
+	// config.
 	if (saved?.currentAgent) {
 		wrappedActions.setAgent(saved.currentAgent);
 	}
 
-	// Reactivate article-specific system prompt / guard in the agent runtime
-	// if a previous session had an active article.
+	// Reactivate reader's active article from saved state. Direct setter +
+	// system-prompt rebuild — no prompt turn triggered (which `/article` as
+	// a user-invoked command would do). Restoration rehydrates state; it
+	// doesn't replay the command.
 	if (saved?.activeArticle) {
-		actions.loadArticle(saved.activeArticle);
+		setActiveArticle(saved.activeArticle);
+		wrappedActions.refreshSystemPrompt();
+		setStore("activeArticle", saved.activeArticle);
 	}
 
 	return <ctx.Provider value={value}>{props.children}</ctx.Provider>;

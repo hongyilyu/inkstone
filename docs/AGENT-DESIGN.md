@@ -98,6 +98,53 @@ All Inkstone runtime state (config, session, future memory files, future skill b
 
 This is D5 ("ship mechanism, defer content") extended to cover the future-work documentation surface, not just the shipped code. The "Anticipated pressure points" section below follows this discipline: each entry names the pressure + open questions, nothing more.
 
+### D9 — Commands are first-class, declared per-agent, distinct from tools
+
+**Chosen:** two orthogonal concepts at the agent layer.
+
+- **Tools** (`AgentTool`) — model-invoked mid-turn. Already a first-class pi-agent-core concept. `read_file`, `edit_file`, `quote_article`, etc. The agent decides when to invoke each one while executing a turn.
+- **Commands** (`AgentCommand`) — user-invoked at turn boundaries. Declared on `AgentInfo.commands`. The shell exposes `AgentActions.runAgentCommand(name, args?)` to dispatch. Examples: reader's `/article`, built-in `/clear`, hypothetical KB agent's `/ingest`, `/query`, `/lint`.
+
+**Why:** commands and tools answer different questions. Commands are "what does the user want the agent to do?" Tools are "what can the agent do to accomplish that?" Collapsing them (e.g. treating `/ingest` as a tool the model decides to invoke) loses the user-verb semantics; collapsing the other way (tools as commands) loses the mid-turn invocation pattern. Keeping them separate mirrors how Discord/Slack/OpenCode structure user input vs agent capabilities.
+
+**Shape**:
+
+```ts
+export interface CommandContext {
+  prompt(text: string): Promise<void>;
+  abort(): void;
+  clearSession(): void;
+  refreshSystemPrompt(): void;
+}
+
+export interface AgentCommand {
+  name: string;                   // verb without the leading slash
+  description?: string;
+  argHint?: string;               // "<filename>", "<folder>", "<question>"
+  takesArgs?: boolean;            // UI hint for a future slash-command dropdown
+  execute(args: string, ctx: CommandContext): void | Promise<void>;
+}
+
+export interface AgentInfo {
+  // ... existing
+  commands?: AgentCommand[];
+}
+
+export const BUILTIN_COMMANDS: readonly AgentCommand[] = Object.freeze([
+  { name: "clear", description: "Clear the session", execute: (_, ctx) => ctx.clearSession() },
+]);
+```
+
+`execute` can mutate agent-owned state, call `ctx.prompt(template)` to kick off an LLM turn with a command-specific template, call `ctx.clearSession()` / `ctx.abort()`, and/or call `ctx.refreshSystemPrompt()` after state changes.
+
+**Dispatch precedence**: agent-declared commands override built-ins on name collision. Intentional — an agent can redefine `/clear` if its semantics differ (none do today).
+
+**Why the context is narrow**: `CommandContext` deliberately omits `setModel`, `setAgent`, `runAgentCommand`, and other shell actions. Those are user-driven UI concerns, not something a command should do during execution. Widening the context has to be an explicit decision per capability.
+
+**What this resolves**: the "Reader-specific vocabulary leaks onto AgentActions" pressure point (see below). `loadArticle` is gone from `AgentActions`; it's now a reader command with state owned by the reader module. `buildInstructions` is nullary — no `AgentBuildContext` carrying reader-shaped fields.
+
+**Non-goal**: dialog-opening commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`). They need `DialogContext`, which is TUI-only — can't cross the layer boundary per D7's separation. They remain `CommandOption` entries in the TUI's palette registry, not agent commands. Future slash-dropdown work (see `docs/SLASH-COMMANDS.md`) may unify the user-facing surface without unifying the types.
+
 ## Rejected alternatives
 
 | Alternative | Why rejected |
@@ -150,19 +197,17 @@ Write path is a separate, more sensitive design problem:
 
 Why defer write: we don't yet have the signals to pick between these tradeoffs. Ship read first (low-risk inclusion), revisit write once there's lived experience with what agents actually want to persist.
 
-### Reader-specific vocabulary leaks onto AgentActions (pressure point)
+### Reader-specific vocabulary leaks onto AgentActions (resolved via D9)
 
-`AgentActions.loadArticle` is reader-shaped vocabulary on a "generic" action surface. The shell in `backend/agent/index.ts` still knows reader owns `activeArticle` state (re-exported via `agents/reader/index.ts`), and the TUI has a hard-coded `/article` slash command.
+`AgentActions.loadArticle` was reader-shaped vocabulary on a "generic" action surface. `activeArticle` lived as module-level state in `backend/agent/index.ts`. `buildInstructions(ctx)` took an `AgentBuildContext` with a reader-shaped `activeArticle` field every agent received.
 
-A proper fix spans multiple concerns:
+All three resolved via D9:
 
-- Backend action dispatch (calling agent-specific verbs without hard-coding them in the shell).
-- Slash-command parsing and registration (today hard-coded in `prompt.tsx`).
-- Command labels, descriptions, palette / hint discoverability.
-- Argument validation (today none).
-- Session-state ownership (module-level `activeArticle` is a reader-internal concern).
+- **Verb**: `AgentActions.loadArticle` is gone. Reader declares `articleCommand: AgentCommand` in `agents/reader/index.ts`. Shell dispatches via `AgentActions.runAgentCommand("article", filename)`.
+- **State**: `activeArticle` moved to `agents/reader/index.ts` as module-level state. Reader exposes `getActiveArticle()` / `setActiveArticle(id)` for the shell's `beforeToolCall` guard injection and session restore.
+- **Context**: `AgentBuildContext` dropped. `AgentInfo.buildInstructions()` is nullary — each agent reads its own state directly.
 
-Revisit the shape when a second agent needs its own session state — likely Researcher's "active topic" or Knowledge Base's "active ingest source". The answer may be a dispatch map on `AgentInfo`, a full command-registration system paralleling the palette registry, or something else. Picking an API now would likely miss one of the concerns above.
+Residual: the shell's `clearSession()` calls `setActiveArticle(null)` to reset reader's state. Minimal reader-knowledge leak acceptable for now; when a second agent gains per-agent session state, introduce an `onSessionClear?()` lifecycle hook on `AgentInfo` that the shell iterates.
 
 ### BASE_TOOLS mutability (resolved)
 
@@ -190,8 +235,10 @@ If a real split emerges (e.g. Researcher can read outside `ARTICLES_DIR` but Rea
 - **extraTools** — tools specific to a custom agent, composed with `BASE_TOOLS` at runtime by `composeTools`.
 - **BASE_TOOLS / BASE_PREAMBLE / composeTools / composeSystemPrompt** — the four canonical exports that define the base layer's public contract.
 - **Foundation tools** — informal synonym for `BASE_TOOLS`. Used interchangeably in discussion; code uses `BASE_TOOLS`.
-- **Skills** (future) — self-contained knowledge bundles (SKILL.md files) loaded on demand into conversations. See Anticipated pressure points → Skills.
-- **Memory files** (future) — `user.md` + `memory.md` under `~/.config/inkstone/`, inlined into the system prompt at compose time. See Anticipated pressure points → Memory files.
+- **Command** (`AgentCommand`) — a user-invoked verb declared on `AgentInfo.commands` or in `BUILTIN_COMMANDS`. `/article`, `/clear`. Distinct from a **tool**: commands are user-facing, invoked at turn boundaries via `runAgentCommand`; tools are LLM-invoked mid-turn. See D9.
+- **Tool** (`AgentTool`) — a pi-agent-core capability the LLM invokes during a turn. `read_file`, `quote_article`. Distinct from a **command**.
+- **Skills** (future) — self-contained knowledge bundles (SKILL.md files) loaded on demand into conversations. See `docs/SKILLS.md`.
+- **Memory files** (future) — `user.md` + `memory.md` under `~/.config/inkstone/`, inlined into the system prompt at compose time. See `docs/MEMORY.md`.
 - **Pressure point** — a place where current code shape is known to strain under anticipated future work, documented with the pressure + open questions but without a pre-committed API. See D8.
 
 ## References

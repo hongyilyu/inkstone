@@ -134,25 +134,32 @@ export function Prompt() {
 		if (!value) return;
 		if (store.isStreaming) return;
 
-		if (value === "/clear") {
-			actions.clearSession();
+		// Slash-command dispatch via the registry. Splits on the first
+		// whitespace: `/name args...`. If the name resolves to an agent
+		// command (or a built-in), the dispatcher runs it. If not, the
+		// catch block falls through to submitting the typed text as a
+		// plain prompt — preserves today's behavior for unknown `/xyz`.
+		//
+		// Commands may be async (most call `ctx.prompt(...)` which starts
+		// a streaming turn); we don't await here — `handleSubmit` returns
+		// synchronously and the turn streams as usual.
+		if (value.startsWith("/")) {
+			const spaceAt = value.indexOf(" ");
+			const name = spaceAt === -1 ? value.slice(1) : value.slice(1, spaceAt);
+			const args = spaceAt === -1 ? "" : value.slice(spaceAt + 1).trim();
 			setText("");
+			actions.runAgentCommand(name, args).catch((err) => {
+				// Unknown command — restore the typed text so the user can
+				// resubmit as a plain prompt, or edit. Mirrors today's "type
+				// `/xyz` and get it submitted as text" fallback at a slightly
+				// better UX (undo-the-clear rather than silent send).
+				const message = err instanceof Error ? err.message : String(err);
+				if (message.startsWith("Unknown command")) {
+					setText(value);
+				}
+			});
+			toBottom();
 			return;
-		}
-
-		// `/article` is a reader-only command. On any other agent we let the
-		// branch fall through so the literal text is sent as a normal prompt.
-		// (The prefix check itself is naive — robust slash-command parsing is
-		// tracked in docs/TODO.md Future Work.)
-		if (store.currentAgent === "reader" && value.startsWith("/article ")) {
-			const articleId = value.slice("/article ".length).trim();
-			if (articleId) {
-				actions.loadArticle(articleId);
-				actions.prompt(`Read ${articleId}`);
-				setText("");
-				toBottom();
-				return;
-			}
 		}
 
 		actions.prompt(value);
