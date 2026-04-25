@@ -48,10 +48,18 @@ export interface AgentInfo {
 
 /**
  * Tools every agent receives through the foundation layer. Kept minimal
- * on ship: `read_file` only. Future additions (`memory_write`,
- * `web_search`, `skill`) land here once their supporting systems exist.
+ * on ship: `read_file` only. Future additions (e.g. a memory tool once
+ * the memory files land, or a skill tool once the skills system lands)
+ * are added here.
+ *
+ * Frozen so external modules can't `.push(...)` or swap indices. The
+ * "`base/` owns what's in `BASE_TOOLS`" invariant is now enforced at the
+ * language level. `composeTools` already returns a fresh array via
+ * spread, so compositions are unaffected.
  */
-export const BASE_TOOLS: AgentTool<any>[] = [readFileTool];
+export const BASE_TOOLS: readonly AgentTool<any>[] = Object.freeze([
+	readFileTool,
+]);
 
 /**
  * Shared prompt prefix applied to every agent's system prompt. Empty

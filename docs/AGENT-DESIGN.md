@@ -90,6 +90,14 @@ All Inkstone runtime state (config, session, future memory files, future skill b
 
 **Consequence:** future `memory.md`, `user.md`, and skill bundles live under `~/.config/inkstone/`, not inside the vault. A later pass may introduce per-vault overrides that layer on top, but that's an extension — not the default shape.
 
+### D8 — Deferred features are pressure points, not APIs
+
+**Chosen:** when we identify a feature that should land eventually (skills, memory, per-agent permissions, etc.), we document *the pressure that motivates it* and *the open questions at implementation time* — not a specific API shape, field name, or function signature.
+
+**Why:** committing to a shape before the use case exists risks porting another system's design (OpenCode, Claude Code) instead of shaping around Inkstone's actual constraints. The shape arrives with the first real implementation — by then we know what pressure it's resolving, what adjacent concerns it must coexist with, and which of the candidate approaches actually fits.
+
+This is D5 ("ship mechanism, defer content") extended to cover the future-work documentation surface, not just the shipped code. The "Anticipated pressure points" section below follows this discipline: each entry names the pressure + open questions, nothing more.
+
 ## Rejected alternatives
 
 | Alternative | Why rejected |
@@ -98,61 +106,81 @@ All Inkstone runtime state (config, session, future memory files, future skill b
 | OpenCode-style permission ruleset per agent | Overkill at 2–3 agents. Today's `guard.ts` covers vault scoping + confirmations. Revisit when an agent needs truly different tool access from its peers. |
 | Global tool registry + per-agent allow/deny rules | Same reasoning as above — pattern-driven permissions are the power answer; we don't have the demand yet. |
 | User-defined agents via `.md` files | Out of scope for the dev-facing redesign. Revisit if an end-user path becomes relevant. |
-| Eager-load all skills at session boot | When skills land, we'll use lazy loading via a `skill` tool (OpenCode pattern) — summaries in the system prompt, full bodies on demand. Eager loading inflates tokens on every turn even when a skill is never used. |
+| Eager-load all skills at session boot | When skills land, we'll use lazy loading (summaries in the system prompt, full bodies fetched on demand) — OpenCode's pattern. Eager loading inflates tokens on every turn even when a skill is never used. |
 | Skill bundles colocated under `agents/<name>/skills/` | User direction: skills are agent-created or global, not colocated. Will live under `~/.config/inkstone/skills/`. |
 | `memory.md` / `user.md` inside the vault (e.g. `$VAULT/.inkstone/`) | Rejected in design discussion — see D7. |
 | Session.json colocated with vault | Same as above. |
 | Subagent delegation via a `task` tool (OpenCode pattern) | Single agent per session is the Inkstone constraint today. Revisit if a concrete use case (e.g. Reader delegating a targeted search to Researcher) emerges. |
 | `foundationTools?: boolean` opt-out on `AgentInfo` | See D4. Coarse opt-out speculative for one agent's aesthetic. |
 
-## Extension points (design for future PRs)
+## Anticipated pressure points
 
-These are the places designed to absorb future features. Each is a specific, small edit surface — not a "redesign" — because the base layer was built to accept them.
+These are the points where Inkstone's usage is likely to push next. Per D8, each is documented as *pressure + open questions*, not as a pre-committed API. The first real implementation drives the shape.
 
 ### Skills (deferred)
 
-Shape when it lands:
+Known shape:
 
-- `AgentInfo` gains `skills?: string[]` — list of skill names this agent may load.
-- A new `skillTool` in `BASE_TOOLS` — loads a skill's full body into the conversation on demand.
-- `composeSystemPrompt` grows to inject a summary (name + description per skill in `info.skills`) into the prompt, right after `BASE_PREAMBLE`.
-- Skill bundles live in `~/.config/inkstone/skills/<name>/SKILL.md` with front-matter (`name`, `description`) + body. Agent-created skills (an agent authoring a new bundle at runtime) are part of the design intent — exact mechanism TBD.
-- Filtering model: either skill declares `agents: [...]` in front-matter, or agent declares `skills: [...]` whitelist. Decision made at implementation time.
+- Self-contained knowledge bundles (SKILL.md files with front-matter + body) stored under `~/.config/inkstone/skills/`.
+- Loaded lazily — a summary surfaced in the system prompt, the full body fetched on demand when the agent invokes a skill-loading tool. OpenCode's pattern; avoids token bloat when skills go unused.
+- Agent-created skills (an agent authoring a new bundle at runtime) are part of the design intent.
 
-### Memory files (deferred)
+Open when we build it:
 
-- `user.md` — user preferences (communication style, domain interests). Written by the user.
-- `memory.md` — durable facts: environment details, project conventions, discovered workarounds, lessons learned. Written by the agent.
-- Both under `~/.config/inkstone/`.
-- A new `memoryWriteTool` in `BASE_TOOLS` — append/update `memory.md`. `user.md` stays user-authored.
-- `composeSystemPrompt` grows to inline both files' contents after `BASE_PREAMBLE`.
-- No auto-summary initially; writes are explicit and agent-driven.
+- Where in the composed system prompt the skill summary lives (before or after memory files).
+- Whether filtering is agent-driven (agent declares which skills it may access) or skill-driven (skill declares which agents can access it). Leaning agent-driven, but not committing.
+- Whether `AgentInfo` needs a skills field at all — the list may live in the loader rather than on the agent type.
+- How agent-created skills discover and register with the loader.
 
-### Per-agent session actions (deferred)
+Why defer the shape: each of these choices is cheap to decide *after* a real loader exists and the first two or three SKILL.md bundles exist to shape it. Deciding now risks porting OpenCode's shape instead of Inkstone's.
 
-Today `AgentActions.loadArticle` is reader-shaped vocabulary on a "generic" action surface — the shell still knows reader owns `activeArticle` state (re-exported via `agents/reader/index.ts`). Proper fix when a second agent needs its own session state:
+### Memory files (deferred — split into read and write)
 
-- `AgentInfo.sessionActions?: Record<string, (arg: any) => void>` — agent declares its per-session verbs.
-- A generic `runAgentAction(name: string, arg: any)` on `AgentActions` — dispatches to the current agent's registered action.
-- TUI's `/article` command becomes one dispatch path among many; other agents contribute their own verbs (e.g. Researcher's `/topic`, Knowledge Base's `/ingest`).
+Known shape (read path):
 
-### BASE_TOOLS immutability (deferred)
+- Two files under `~/.config/inkstone/`: `user.md` (user preferences — communication style, domain interests) and `memory.md` (durable facts the agent has learned — environment details, project conventions, discovered workarounds).
+- `composeSystemPrompt` grows to inline both files' contents into the system prompt after `BASE_PREAMBLE`.
+- Likely a universal read — every agent benefits from knowing user preferences and durable context.
 
-`BASE_TOOLS` is an exported mutable array. Nothing prevents `BASE_TOOLS.push(...)` from outside `base/`. When a second module wants to contribute a base tool (memory module, skills module, or future plugin system), replace the export with a `registerBaseTool(tool)` function + frozen getter so the extension contract is enforced, not implicit.
+Write path is a separate, more sensitive design problem:
 
-Same hazard applies to any future `BASE_SKILLS` or `BASE_PREAMBLE_FRAGMENTS` collection.
+- Every-agent write access means low-signal or adversarial prompts can pollute long-term context. Higher bar than read.
+- Open: explicit tool vs automatic end-of-turn summary; confirmation rules; overwrite vs append-only vs structured edit; user-visible review/edit flow; per-agent gating.
+- Open: whether the writer is a base tool, an opt-in per-agent tool, or a system-level behavior outside the agent loop.
 
-### Web search (deferred)
+Why defer write: we don't yet have the signals to pick between these tradeoffs. Ship read first (low-risk inclusion), revisit write once there's lived experience with what agents actually want to persist.
 
-A new `webSearchTool` in `BASE_TOOLS` once a provider / API is chosen. Universal capability — every agent benefits from research.
+### Reader-specific vocabulary leaks onto AgentActions (pressure point)
 
-### Per-agent permissions (deferred)
+`AgentActions.loadArticle` is reader-shaped vocabulary on a "generic" action surface. The shell in `backend/agent/index.ts` still knows reader owns `activeArticle` state (re-exported via `agents/reader/index.ts`), and the TUI has a hard-coded `/article` slash command.
 
-If and when a 2nd agent needs truly different tool access (e.g. Researcher can read everywhere in the vault, but Reader is still scoped to `ARTICLES_DIR` for writes):
+A proper fix spans multiple concerns:
 
-- `AgentInfo.permission?: Ruleset` — OpenCode-style allow/deny rules per agent.
-- Plumbed into the `beforeToolCall` guard, layered over the default guard rules.
-- Possible this stays as-is indefinitely if our concrete agents all share the same guard model. Not speculatively built.
+- Backend action dispatch (calling agent-specific verbs without hard-coding them in the shell).
+- Slash-command parsing and registration (today hard-coded in `prompt.tsx`).
+- Command labels, descriptions, palette / hint discoverability.
+- Argument validation (today none).
+- Session-state ownership (module-level `activeArticle` is a reader-internal concern).
+
+Revisit the shape when a second agent needs its own session state — likely Researcher's "active topic" or Knowledge Base's "active ingest source". The answer may be a dispatch map on `AgentInfo`, a full command-registration system paralleling the palette registry, or something else. Picking an API now would likely miss one of the concerns above.
+
+### BASE_TOOLS mutability (resolved)
+
+`BASE_TOOLS` is exported as `readonly AgentTool<any>[]` and wrapped in `Object.freeze`. External code cannot `.push(...)` or swap indices; `composeTools` already returns a fresh array via spread, so the "`base/` owns what's in `BASE_TOOLS`" invariant is now enforced at the language level.
+
+A `registerBaseTool(tool)` registration function would be the plugin-era answer if multi-module contribution ever becomes a real requirement, but Inkstone has no plugin model today. Don't design it speculatively.
+
+### Web search (candidate, scope TBD)
+
+Likely useful, not obviously universal. Researcher almost certainly wants it. Reader may or may not. Knowledge Base may want constrained ingestion search rather than open web search. Cost, privacy, provider selection, and per-agent permission all come into play.
+
+Decide whether a web-search tool lives in `BASE_TOOLS` or per-agent `extraTools` when Researcher is actually implemented. "Universal" was a premature claim.
+
+### Per-agent permissions (probably never)
+
+No concrete case exists yet where two Inkstone agents need different tool access under the same set of tools. `guard.ts` covers vault scoping and confirmations uniformly, and that may continue to suffice.
+
+If a real split emerges (e.g. Researcher can read outside `ARTICLES_DIR` but Reader cannot), design the ruleset against Inkstone's actual tools and guard shape — don't port OpenCode's `Permission.Ruleset`. Porting without a driving case would pre-commit to pattern matching, `ask/allow/deny` tri-state, and rule-merge semantics that Inkstone has shown no need for.
 
 ## Terminology
 
@@ -162,9 +190,9 @@ If and when a 2nd agent needs truly different tool access (e.g. Researcher can r
 - **extraTools** — tools specific to a custom agent, composed with `BASE_TOOLS` at runtime by `composeTools`.
 - **BASE_TOOLS / BASE_PREAMBLE / composeTools / composeSystemPrompt** — the four canonical exports that define the base layer's public contract.
 - **Foundation tools** — informal synonym for `BASE_TOOLS`. Used interchangeably in discussion; code uses `BASE_TOOLS`.
-- **Skills** (future) — self-contained knowledge bundles (SKILL.md files) loadable into conversations on demand via a `skill` tool.
-- **Memory files** (future) — `user.md` + `memory.md` under `~/.config/inkstone/`, inlined into the system prompt by `composeSystemPrompt`.
-- **Session actions** (future) — agent-declared verbs exposed through a generic `runAgentAction` dispatch on `AgentActions`. Today only reader's `loadArticle` exists, as a special case hard-wired in the shell.
+- **Skills** (future) — self-contained knowledge bundles (SKILL.md files) loaded on demand into conversations. See Anticipated pressure points → Skills.
+- **Memory files** (future) — `user.md` + `memory.md` under `~/.config/inkstone/`, inlined into the system prompt at compose time. See Anticipated pressure points → Memory files.
+- **Pressure point** — a place where current code shape is known to strain under anticipated future work, documented with the pressure + open questions but without a pre-committed API. See D8.
 
 ## References
 
