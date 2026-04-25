@@ -28,6 +28,8 @@ The codebase is split into three layers with enforced dependency direction so th
 - `tui/` may import from `bridge/`, `backend/`.
 - `backend/` may import from `bridge/` (types only, zero runtime cost). **Must not** import from `tui/`.
 - `bridge/` must not import from `backend/` or `tui/`.
+- The agent shell (`backend/agent/index.ts` and `backend/agent/agents.ts`) must not deep-import custom-agent tool internals (`agents/<name>/tools/*`). Agent-owned public state/helpers must be re-exported from that agent folder's `index.ts`.
+- `tui/` must use `@backend/agent` public APIs for agent data and actions, not custom-agent internals under `backend/agent/agents/<name>/`.
 
 Each boundary rule uses two glob patterns per forbidden target so both bypass forms fail lint:
 
@@ -35,6 +37,11 @@ Each boundary rule uses two glob patterns per forbidden target so both bypass fo
 - `**/tui/**` — any relative path that climbs into `tui/` (e.g. `../tui/app`, `../../tui/app`, `./tui/x`).
 
 Same pair (`@backend/*` + `**/backend/**`) for the backend restriction on bridge.
+
+Agent-internal rules additionally block the concrete bypass forms we have seen:
+
+- `./agents/*/tools/**` from the agent shell.
+- `@backend/agent/agents/**` (and relative equivalents) from the TUI.
 
 ### Path aliases
 
@@ -64,7 +71,7 @@ Bridge is for types **both sides need to agree on as a shared data shape**. Back
 
 ```
 User input (textarea)
-  → command parsing (/article, /model, etc.)
+  → executable slash-command lookup (/article, /clear; otherwise plain prompt)
   → agent.prompt(text)
     → pi-agent-core Agent loop
       → LLM API call (provider from registry — Bedrock today)
@@ -345,24 +352,27 @@ export interface AgentCommand {
 - `BUILTIN_COMMANDS` in `base/` — session-global. Today: `/clear`.
 - `AgentInfo.commands` on a custom agent — agent-scoped. Today: reader's `/article`.
 
-**Dispatch** (`AgentActions.runAgentCommand(name, args?)` in `backend/agent/index.ts`):
+**Dispatch** (`AgentActions.runAgentCommand(name, args?, context?)` in `backend/agent/index.ts`):
 
 ```
-runAgentCommand(name, args)
+runAgentCommand(name, args, context?)
   → info = getAgentInfo(currentAgent)
   → cmd = info.commands?.find(c => c.name === name)         ← agent-scoped first
        ?? BUILTIN_COMMANDS.find(c => c.name === name)       ← built-in fallback
   → if !cmd: throw "Unknown command"
+  → if cmd.takesArgs && args.trim() === "": throw "requires arguments"
   → cmd.execute(args, ctx)
-      ctx = {
+      ctx = context ?? {
         prompt:              actions.prompt,
         abort:               actions.abort,
         clearSession:        actions.clearSession,
-        refreshSystemPrompt: rebuild a.state.systemPrompt,
+        refreshSystemPrompt: actions.refreshSystemPrompt,
       }
 ```
 
 Agent-scoped commands take precedence over built-ins on name collision (intentional — an agent can override a built-in).
+
+`AgentActions.canRunAgentCommand(name, args?)` applies the same lookup and required-argument check without executing the command. The TUI uses it before intercepting slash-prefixed input.
 
 **TUI submit path** (`tui/components/prompt.tsx`):
 
@@ -371,6 +381,7 @@ user types "/article foo.md" + Enter
   → handleSubmit
     → value.startsWith("/") → split on first space
       → name="article", args="foo.md"
+      → actions.canRunAgentCommand("article", "foo.md") === true
       → actions.runAgentCommand("article", "foo.md")
         → reader's articleCommand.execute("foo.md", ctx)
           → setActiveArticle("foo.md")              (reader module state)
@@ -380,10 +391,16 @@ user types "/article foo.md" + Enter
 
 user types "/xyz" + Enter
   → handleSubmit
-    → actions.runAgentCommand("xyz", "")
-      → throws "Unknown command"
-    → .catch → restore original text (user can edit / resubmit)
+    → actions.canRunAgentCommand("xyz", "") === false
+    → actions.prompt("/xyz")                         (plain prompt)
+
+user types "/article" + Enter
+  → handleSubmit
+    → actions.canRunAgentCommand("article", "") === false
+    → actions.prompt("/article")                     (plain prompt)
 ```
+
+`AgentProvider` passes a `CommandContext` backed by `wrappedActions` when the TUI runs a command. That keeps command side effects on the same path as direct UI actions: `/clear` updates the Solid store and clears the session file, while `/article foo.md` adds the generated user turn through `wrappedActions.prompt()` before streaming.
 
 **Session restore** bypasses the command dispatcher — it rehydrates state without triggering a prompt turn. `context/agent.tsx` calls `setActiveArticle(saved.activeArticle)` + `actions.refreshSystemPrompt()` directly.
 

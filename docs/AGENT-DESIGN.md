@@ -121,7 +121,7 @@ export interface AgentCommand {
   name: string;                   // verb without the leading slash
   description?: string;
   argHint?: string;               // "<filename>", "<folder>", "<question>"
-  takesArgs?: boolean;            // UI hint for a future slash-command dropdown
+  takesArgs?: boolean;            // requires non-empty args for typed slash dispatch
   execute(args: string, ctx: CommandContext): void | Promise<void>;
 }
 
@@ -135,7 +135,7 @@ export const BUILTIN_COMMANDS: readonly AgentCommand[] = Object.freeze([
 ]);
 ```
 
-`execute` can mutate agent-owned state, call `ctx.prompt(template)` to kick off an LLM turn with a command-specific template, call `ctx.clearSession()` / `ctx.abort()`, and/or call `ctx.refreshSystemPrompt()` after state changes.
+`execute` can mutate agent-owned state, call `ctx.prompt(template)` to kick off an LLM turn with a command-specific template, call `ctx.clearSession()` / `ctx.abort()`, and/or call `ctx.refreshSystemPrompt()` after state changes. TUI callers pass a `CommandContext` backed by the wrapped UI actions, so command effects share the same store and persistence side effects as direct prompt or clear actions.
 
 **Dispatch precedence**: agent-declared commands override built-ins on name collision. Intentional — an agent can redefine `/clear` if its semantics differ (none do today).
 

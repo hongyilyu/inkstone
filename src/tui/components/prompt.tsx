@@ -135,10 +135,9 @@ export function Prompt() {
 		if (store.isStreaming) return;
 
 		// Slash-command dispatch via the registry. Splits on the first
-		// whitespace: `/name args...`. If the name resolves to an agent
-		// command (or a built-in), the dispatcher runs it. If not, the
-		// catch block falls through to submitting the typed text as a
-		// plain prompt — preserves today's behavior for unknown `/xyz`.
+		// whitespace: `/name args...`. Matching OpenCode's prompt submit
+		// path, only executable commands are intercepted; unknown commands
+		// or commands missing required args fall through as plain prompts.
 		//
 		// Commands may be async (most call `ctx.prompt(...)` which starts
 		// a streaming turn); we don't await here — `handleSubmit` returns
@@ -147,22 +146,17 @@ export function Prompt() {
 			const spaceAt = value.indexOf(" ");
 			const name = spaceAt === -1 ? value.slice(1) : value.slice(1, spaceAt);
 			const args = spaceAt === -1 ? "" : value.slice(spaceAt + 1).trim();
-			setText("");
-			actions.runAgentCommand(name, args).catch((err) => {
-				// Unknown command — restore the typed text so the user can
-				// resubmit as a plain prompt, or edit. Mirrors today's "type
-				// `/xyz` and get it submitted as text" fallback at a slightly
-				// better UX (undo-the-clear rather than silent send).
-				const message = err instanceof Error ? err.message : String(err);
-				if (message.startsWith("Unknown command")) {
+			if (actions.canRunAgentCommand(name, args)) {
+				setText("");
+				void actions.runAgentCommand(name, args).catch(() => {
 					setText(value);
-				}
-			});
-			toBottom();
-			return;
+				});
+				toBottom();
+				return;
+			}
 		}
 
-		actions.prompt(value);
+		void actions.prompt(value);
 		setText("");
 		toBottom();
 	}

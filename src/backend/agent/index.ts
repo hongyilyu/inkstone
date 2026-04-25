@@ -10,8 +10,10 @@ import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
 import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
 import { getActiveArticle, setActiveArticle } from "./agents/reader";
 import {
+	type AgentCommand,
 	type AgentInfo,
 	BUILTIN_COMMANDS,
+	type CommandContext,
 	composeSystemPrompt,
 	composeTools,
 } from "./base";
@@ -44,7 +46,18 @@ export interface AgentActions {
 	 * command on the current agent — TUI callers typically try/catch and
 	 * fall through to submitting the typed text as a plain prompt.
 	 */
-	runAgentCommand(name: string, args?: string): Promise<void>;
+	runAgentCommand(
+		name: string,
+		args?: string,
+		context?: CommandContext,
+	): Promise<void>;
+	/**
+	 * True when the current agent (or built-in set) exposes `name` and the
+	 * supplied args are sufficient to execute it. TUI submit uses this to
+	 * mirror OpenCode's slash behavior: only executable slash text is
+	 * intercepted as a command; everything else falls through as a prompt.
+	 */
+	canRunAgentCommand(name: string, args?: string): boolean;
 }
 
 let agent: Agent | null = null;
@@ -129,6 +142,20 @@ function currentModel(): Model<Api> {
 			`Model '${currentModelId}' is not available from provider '${currentProviderId}'.`,
 		);
 	return m;
+}
+
+function findAgentCommand(
+	info: AgentInfo,
+	name: string,
+): AgentCommand | undefined {
+	return (
+		info.commands?.find((c) => c.name === name) ??
+		BUILTIN_COMMANDS.find((c) => c.name === name)
+	);
+}
+
+function hasRequiredCommandArgs(cmd: AgentCommand, args: string): boolean {
+	return !cmd.takesArgs || args.trim().length > 0;
 }
 
 /**
@@ -234,24 +261,32 @@ export function createAgentActions(
 		refreshSystemPrompt() {
 			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
 		},
-		async runAgentCommand(name: string, args: string = "") {
+		async runAgentCommand(
+			name: string,
+			args: string = "",
+			context?: CommandContext,
+		) {
 			const info = getAgentInfo(currentAgent);
-			const cmd =
-				info.commands?.find((c) => c.name === name) ??
-				BUILTIN_COMMANDS.find((c) => c.name === name);
+			const cmd = findAgentCommand(info, name);
 			if (!cmd) {
 				throw new Error(`Unknown command '/${name}' on agent '${info.name}'.`);
 			}
-			await cmd.execute(args, {
-				prompt: (text) => actions.prompt(text),
-				abort: () => actions.abort(),
-				clearSession: () => actions.clearSession(),
-				refreshSystemPrompt: () => {
-					a.state.systemPrompt = composeSystemPrompt(
-						getAgentInfo(currentAgent),
-					);
+			if (!hasRequiredCommandArgs(cmd, args)) {
+				throw new Error(`Command '/${name}' requires arguments.`);
+			}
+			await cmd.execute(
+				args,
+				context ?? {
+					prompt: (text) => actions.prompt(text),
+					abort: () => actions.abort(),
+					clearSession: () => actions.clearSession(),
+					refreshSystemPrompt: () => actions.refreshSystemPrompt(),
 				},
-			});
+			);
+		},
+		canRunAgentCommand(name: string, args: string = "") {
+			const cmd = findAgentCommand(getAgentInfo(currentAgent), name);
+			return !!cmd && hasRequiredCommandArgs(cmd, args);
 		},
 	};
 

@@ -449,7 +449,12 @@ export function AgentProvider(props: ParentProps) {
 			actions.refreshSystemPrompt();
 		},
 		runAgentCommand(name: string, args?: string) {
-			const p = actions.runAgentCommand(name, args);
+			const p = actions.runAgentCommand(name, args, {
+				prompt: (text) => wrappedActions.prompt(text),
+				abort: () => wrappedActions.abort(),
+				clearSession: () => wrappedActions.clearSession(),
+				refreshSystemPrompt: () => wrappedActions.refreshSystemPrompt(),
+			});
 			// After the command's synchronous execute body runs (before the
 			// first `await` in `execute`), mirror any backend state the TUI
 			// store tracks. Done via `queueMicrotask` so this runs after the

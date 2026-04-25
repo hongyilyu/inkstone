@@ -11,6 +11,7 @@ A terminal UI application for guided article reading, built with OpenTUI (Solid)
 - No plugin system
 - No multi-session (one article per session)
 - No worker threads — agent runs in-process
+- Biome enforces layer and agent import boundaries: the TUI consumes `@backend/agent` public APIs, and the agent shell does not deep-import custom-agent tool internals.
 
 ## Source References
 

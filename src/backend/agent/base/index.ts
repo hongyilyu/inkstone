@@ -46,9 +46,10 @@ export interface CommandContext {
  *     command-specific template.
  *   - Call `ctx.clearSession()` / `ctx.abort()` for shell-level effects.
  *
- * `takesArgs` is a UI hint for a future slash-command dropdown: when
- * true, the dropdown can rewrite the textarea to `/name ` instead of
- * invoking immediately. No behavior in the backend depends on it today.
+ * `takesArgs` means typed slash submission requires a non-empty argument
+ * string before dispatch; otherwise the slash text falls through as a
+ * plain prompt. A future slash-command dropdown can also use it to
+ * rewrite the textarea to `/name ` instead of invoking immediately.
  */
 export interface AgentCommand {
 	name: string;
