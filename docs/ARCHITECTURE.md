@@ -283,6 +283,8 @@ The confirmation dialog is async — `beforeToolCall` awaits the dialog promise 
 
 Multi-agent support is a **flat registry with runtime composition** — no inheritance. Each agent is a self-contained folder under `src/backend/agent/agents/<name>/` that exports an `AgentInfo` literal (name, displayName, description, `colorKey`, `extraTools`, `buildInstructions`). `src/backend/agent/agents.ts` is a thin assembler that imports each agent's literal and exports them as `AGENTS: AgentInfo[]`. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
 
+> **Design rationale:** see [`AGENT-DESIGN.md`](./AGENT-DESIGN.md) for why the system is shaped this way (composition over inheritance, folder-per-agent, base layer, no opt-out on `BASE_TOOLS`, vault ≠ config), what alternatives were rejected, and how future features (skills, memory, per-agent session actions) are designed to plug in without restructuring.
+
 ### Base layer (the "base agent")
 
 `src/backend/agent/base/` owns everything shared across agents:

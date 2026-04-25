@@ -3,9 +3,11 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-24 (agent shell refactor + review follow-ups)
+**Last updated**: 2026-04-24 (agent design doc)
 
 ## Completed
+
+- [x] `docs/AGENT-DESIGN.md` — dedicated design-rationale doc for the agent system. Captures the seven key decisions (composition over inheritance, folder-per-agent layout, base-layer bundle, no opt-out on `BASE_TOOLS`, ship-mechanism-defer-content, `AgentInfo` as data not a class, vault ≠ config), rejected alternatives with reasoning, extension points where future features (skills, memory, per-agent session actions, `BASE_TOOLS` immutability, web search, per-agent permissions) are designed to plug in, and a terminology glossary disambiguating "base agent" (a layer, not a class), "custom agent", `extraTools`, "foundation tools", "skills", "memory files", "session actions". `ARCHITECTURE.md`'s "Agent Registry" section gains a pointer to the new doc so readers land on the "why" when they want it.
 
 - [x] Agent shell — review follow-ups. (P2) `setActiveArticle` is now re-exported from `backend/agent/agents/reader/index.ts`; the shell in `backend/agent/index.ts` imports it from `./agents/reader` instead of `./agents/reader/tools/quote-article`, so the "generic" agent module no longer reaches into a specific agent's internal tool file. `grep` in `backend/agent/index.ts` for `agents/reader/tools` returns no matches. This is a scaffolding fix — the deeper issue (`AgentActions.loadArticle` being reader-shaped vocabulary on a supposedly generic interface) is tracked in Future Work. (P3) Reader's `extraTools` reordered to `[editFileTool, writeFileTool, quoteArticleTool]` so that with `BASE_TOOLS = [readFileTool]` prepended by `composeTools`, the composed tool order is `[read_file, edit_file, write_file, quote_article]` — byte-identical to pre-refactor. Matters for provider prompt-cache stability (Anthropic / OpenAI / Bedrock cache by byte-exact tools prefix, so any reorder forces a one-time cache rebuild on affected providers).
 
