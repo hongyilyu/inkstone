@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-24 (AGENT-DESIGN polish + BASE_TOOLS freeze)
+**Last updated**: 2026-04-25 (slash-dropdown reverted + design doc)
 
 ## Completed
 
@@ -74,6 +74,7 @@
 
 ## Future Work (Post-MVP)
 
+- [ ] Slash-command dropdown in the prompt textarea — design exploration captured in `docs/SLASH-COMMANDS.md`. A first implementation (`commit 8ff3876`) was reverted in the same PR after review surfaced a `/clear`-swallowing bug; during remediation the user raised a UX principle ("dropdown is a suggestion, not a trap — invoke only on explicit dropdown confirmation; Esc or keep-typing-past = plain prompt") that reshapes the whole feature and wasn't resolvable without a separate design pass. TUI-side feature — **not a backend agent architecture concern**. Pick up by resolving: (1) invocation trigger (Enter-while-dropdown-active vs auto-on-exact-match), (2) `/article`'s arg-handling fate (picker / carve-out / drop), (3) whether the hardcoded `/clear` parser stays. Backend-side counterpart (agent-declared session verbs) is the "Reader-specific verbs leak onto `AgentActions`" entry below.
 - [ ] Reader-specific verbs leak onto `AgentActions` — `loadArticle` is reader-shaped vocabulary on a supposedly generic action surface. Today the shell in `backend/agent/index.ts` still knows reader owns `activeArticle` state (dispatches through a re-export from `agents/reader/index.ts`), and the TUI's `/article` slash command is hard-coded in `prompt.tsx`. A proper fix spans backend dispatch, slash-command parsing + registration, command labels + palette integration, and argument validation — not just a field on `AgentInfo`. Revisit when a second agent needs its own session state (Researcher's "active topic", Knowledge Base's "active ingest source"); picking an API now would likely miss one of those dimensions.
 - [ ] Robust slash-command parsing (token-first, registry-driven; replace naive `startsWith`/equality checks in `prompt.tsx`). The current parser will misidentify messages that happen to begin with `/article ` or equal `/clear`. A real parser should recognize only the leading token, dispatch through a per-command registry, and be optionally scoped per agent.
 - [ ] Per-agent UI beyond prompt color (e.g., agent-specific sidebar info, icons)
