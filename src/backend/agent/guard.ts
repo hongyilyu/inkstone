@@ -25,26 +25,25 @@ function getFrontmatter(content: string): string | null {
 }
 
 /**
- * Inlined subset of pi-coding-agent's `expandPath` + `resolveToCwd`
- * (`node_modules/@mariozechner/pi-coding-agent/dist/core/tools/path-utils.js`).
+ * Resolve the LLM-supplied path to the absolute path the tool will
+ * actually touch on disk. The guard's `startsWith(VAULT_DIR)` sandbox
+ * check is only meaningful if it operates on the same string the tool
+ * writes to.
  *
- * The guard MUST resolve paths the same way the tool does. If the model
- * sends `~/foo` and the guard used `resolve(VAULT_DIR, ...)` with the
- * literal `~`, it would see `{VAULT_DIR}/~/foo` (passes the sandbox
- * check) while the tool expands `~` and writes to `{HOME}/foo` (escapes
- * the sandbox). Same bypass for the `@` prefix pi-coding-agent strips.
+ * pi-coding-agent's read/write/edit tools resolve paths by:
+ *   - stripping a leading `@` (rarely seen in practice)
+ *   - expanding `~` / `~/` against `$HOME`
+ *   - resolving the result against the tool's `cwd` (here, `VAULT_DIR`)
+ *     when still relative, or returning it as-is when absolute.
  *
- * We replicate rather than import because pi-coding-agent's
- * `package.json` `exports` field only exposes the package root and a
- * (currently-empty) `./hooks` entry — `core/tools/path-utils` is not
- * reachable as a public subpath, and bun enforces the `exports` map at
- * runtime (deep imports throw `Cannot find module` even when tsc is
- * happy). The cost is ~10 lines; upstream refactors of path-utils stay
- * our problem to notice.
+ * If we skipped any of that, a path like `~/foo` would land outside
+ * `VAULT_DIR` on disk but pass the sandbox check (because the literal
+ * `~/foo` joined to VAULT_DIR stays inside). Same for `@/etc/shadow`.
+ * Both bypasses are cheap and we mirror the behavior exactly.
  *
- * Unicode-space normalization is omitted — a path with exotic spaces
- * would simply fail `startsWith(VAULT_DIR)` and get blocked, which is
- * safe (just a UX miss, not a security gap).
+ * Unicode-space normalization (which pi-coding-agent also does) is
+ * omitted; a path with exotic spaces would fail `startsWith(VAULT_DIR)`
+ * and get blocked — less ergonomic than the tool for no security cost.
  */
 function resolvePath(p: string): string {
 	const stripped = p.startsWith("@") ? p.slice(1) : p;
