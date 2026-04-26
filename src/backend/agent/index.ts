@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 import {
 	Agent,
 	type AgentEvent,
@@ -16,8 +15,7 @@ import {
 	composeSystemPrompt,
 	composeTools,
 } from "./base";
-import { ARTICLES_DIR } from "./constants";
-import { beforeToolCall, setConfirmFn } from "./guard";
+import { dispatchBeforeToolCall, setConfirmFn } from "./permissions";
 
 export interface AgentActions {
 	prompt(text: string): Promise<void>;
@@ -147,14 +145,13 @@ export function getAgent(): Agent {
 				return getProvider(provider).getApiKey();
 			},
 			beforeToolCall: async (ctx) => {
-				// Inject article path into context for the guard. Reader owns
-				// the `activeArticle` state; shell reads via the getter.
-				const args = ctx.args as Record<string, any>;
-				const article = getActiveArticle();
-				if (article) {
-					args._articlePath = resolve(ARTICLES_DIR, article);
-				}
-				return beforeToolCall(ctx);
+				// Delegate to the permission dispatcher. It reads the active
+				// tool's baseline rules (registered in `./tools.ts`) and the
+				// active agent's overlay (optional `AgentInfo.getPermissions`,
+				// reader supplies one; example does not), evaluates in order,
+				// short-circuits on first block. See `./permissions.ts`.
+				const overlay = getAgentInfo(currentAgent).getPermissions?.();
+				return dispatchBeforeToolCall(ctx, overlay);
 			},
 		});
 	}

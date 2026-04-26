@@ -1,4 +1,5 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentOverlay } from "./permissions";
 import { readTool } from "./tools";
 
 /**
@@ -123,6 +124,14 @@ export interface AgentCommand {
  * `src/tui/context/agent.tsx:BridgeAgentCommands`); they then share the
  * same slash-dispatch + palette surface as shell-level commands
  * declared in `src/tui/app.tsx`.
+ *
+ * `getPermissions()` returns an agent-scoped permission overlay that
+ * layers on top of each tool's baseline (see `./permissions.ts`). Called
+ * by the permission dispatcher ONCE PER TOOL CALL, so state-dependent
+ * rules (e.g. reader's "block overwrite of the currently-active
+ * article") can inline fresh path values each time. Rules themselves
+ * are pure data — only the overlay *factory* is a function. Absent when
+ * the agent needs no overlay (Example).
  */
 export interface AgentInfo {
 	name: string;
@@ -132,6 +141,7 @@ export interface AgentInfo {
 	extraTools: AgentTool<any>[];
 	buildInstructions(): string;
 	commands?: AgentCommand[];
+	getPermissions?(): AgentOverlay;
 }
 
 /**

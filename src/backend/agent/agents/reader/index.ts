@@ -1,4 +1,7 @@
+import { resolve } from "node:path";
 import type { AgentCommand, AgentInfo } from "../../base";
+import { ARTICLES_DIR } from "../../constants";
+import type { AgentOverlay } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
 import { buildReaderInstructions } from "./instructions";
 
@@ -6,8 +9,9 @@ import { buildReaderInstructions } from "./instructions";
  * Reader's session state — the currently-open article, if any. Reader
  * owns this rather than the shell (`backend/agent/index.ts`) because
  * it's reader-specific vocabulary, not a generic shell concept. The
- * shell reads via `getActiveArticle()` for the `beforeToolCall` guard
- * injection, and resets via `setActiveArticle(null)` on session clear.
+ * shell reads via `getActiveArticle()` for session restore/clear, and
+ * reader's own `getPermissions()` (below) reads it to inline the
+ * article's absolute path into the permission overlay for each turn.
  *
  * Reader's `/article` command mutates this state and then triggers a
  * prompt turn asking the agent to start the reading workflow.
@@ -47,6 +51,39 @@ const articleCommand: AgentCommand = {
 };
 
 /**
+ * Reader's permission overlay — layers on top of the tool baselines
+ * declared in `backend/agent/tools.ts` (`insideDirs: [VAULT_DIR]`,
+ * `confirmDirs: [NOTES_DIR, SCRAPS_DIR]`). Called by the permission
+ * dispatcher once per tool call; rule objects are freshly constructed
+ * each call so the article's absolute path is always current.
+ *
+ * - `write`: block overwriting the active article file (frontmatter
+ *   edits still flow through `edit` below).
+ * - `edit`: on the active article file, every edit's `oldText` must
+ *   fall inside the frontmatter block. Non-article paths skip this
+ *   rule (matched by `targetPath` equality inside the dispatcher).
+ *
+ * Returns an empty overlay when no article is active — the 6-stage
+ * workflow starts at `/article <filename>`, so until that happens the
+ * agent has no article-specific policy.
+ */
+function getReaderPermissions(): AgentOverlay {
+	if (!activeArticle) return {};
+	const articlePath = resolve(ARTICLES_DIR, activeArticle);
+	return {
+		[writeTool.name]: [
+			{
+				kind: "blockPath",
+				path: articlePath,
+				reason:
+					"Cannot overwrite the article file. Use edit to modify frontmatter only.",
+			},
+		],
+		[editTool.name]: [{ kind: "frontmatterOnlyFor", targetPath: articlePath }],
+	};
+}
+
+/**
  * Reader — the Obsidian reading guide. Walks the user through the
  * 6-stage reading workflow (see `./instructions.ts`) and manages
  * article frontmatter edits, scraps, and notes inside the vault.
@@ -69,4 +106,5 @@ export const readerAgent: AgentInfo = {
 	extraTools: [editTool, writeTool],
 	buildInstructions: () => buildReaderInstructions(activeArticle),
 	commands: [articleCommand],
+	getPermissions: getReaderPermissions,
 };

@@ -94,12 +94,12 @@ src/
       index.ts                      Agent instance, createAgentActions, query getters
       agents.ts                     Registry assembler — imports each agent's AgentInfo literal and exports AGENTS[]
       base.ts                       Foundation layer — AgentInfo type + AgentColorKey + BASE_TOOLS + BASE_PREAMBLE + composeTools + composeSystemPrompt
-      tools.ts                      Shared tool pool — readTool, writeTool, editTool via @mariozechner/pi-coding-agent factories, passed VAULT_DIR as cwd
+      tools.ts                      Shared tool pool — readTool, writeTool, editTool via @mariozechner/pi-coding-agent factories, passed VAULT_DIR as cwd; registers per-tool baseline permissions at module load
+      permissions.ts                Declarative permission dispatcher — Rule union, registerBaseline, dispatchBeforeToolCall, setConfirmFn, path resolution; single hook wired into pi-agent-core's beforeToolCall
       constants.ts                  VAULT_DIR, ARTICLES_DIR, SCRAPS_DIR, etc.
-      guard.ts                      beforeToolCall (frontmatter guard + confirm); pattern-matches on new names (`read` / `edit` / `write`); path expansion mirrors pi-coding-agent (`~` and `@` prefixes) so sandbox enforcement cannot be bypassed
       agents/                       Custom agents, one self-contained folder each
         reader/
-          index.ts                  readerAgent: AgentInfo literal (extraTools pulled from ../../tools)
+          index.ts                  readerAgent: AgentInfo literal (extraTools pulled from ../../tools; `getPermissions` supplies the article-specific overlay)
           instructions.ts           buildReaderInstructions(articleId) — the reader's system-prompt body + 6-stage workflow
         example/
           index.ts                  exampleAgent: AgentInfo literal (1-line prompt, no extra tools)
@@ -270,15 +270,60 @@ Sourcing the model from `event.message` (rather than the mutable `store.modelNam
 
 Older messages that predate these fields (legacy sessions) simply render without a footer because `modelName` is `undefined`.
 
-## Guard Logic
+## Permission Dispatcher
 
-The `beforeToolCall` hook runs before each tool execution:
+Policy enforcement is declarative. The shell wires a single `beforeToolCall` hook that delegates to `dispatchBeforeToolCall` in `src/backend/agent/permissions.ts`. The dispatcher reads the active tool's baseline rules plus the active agent's overlay and evaluates them in order; the first rule that returns `{ block, reason }` short-circuits.
 
-1. **Path validation**: reject any path resolving outside VAULT_DIR. The guard's `resolvePath` helper mirrors pi-coding-agent's `expandPath` + `resolveToCwd` (strips a leading `@`, expands `~` / `~/` against `$HOME`) so its `startsWith(VAULT_DIR)` check cannot disagree with the tool's own resolution. pi-coding-agent doesn't re-export those helpers from its package index, so the subset is inlined.
-2. **Article file protection**: allow frontmatter edits, block content edits and full writes. Edit-guard iterates the multi-edit schema (`args.edits: [{ oldText, newText }, ...]`) and requires every `oldText` to appear in the frontmatter.
-3. **Notes/scraps confirmation**: show DialogConfirm, await user response.
+```
+[...baselineRules[toolName], ...overlay[toolName]] → evaluate in declaration order
+```
 
-The confirmation dialog is async — `beforeToolCall` awaits the dialog promise before returning `{ block: true/false }`.
+### Rule kinds
+
+`Rule` is a tagged-union array. All current rule kinds are path-keyed (they read `args.path`); a tool without a `path` arg passes through.
+
+| Kind | Shape | Purpose |
+|---|---|---|
+| `insideDirs` | `{ dirs: string[] }` | Resolved path must be inside ANY listed dir. Multiple rules AND-join. |
+| `confirmDirs` | `{ dirs: string[] }` | If resolved path is in any listed dir, await `confirmFn`; decline → block. |
+| `blockPath` | `{ path: string; reason: string }` | Block when resolved path exactly equals `path`. |
+| `frontmatterOnlyFor` | `{ targetPath: string }` | On `edit` against `targetPath`, every `args.edits[].oldText` must appear inside the file's `---`-delimited frontmatter. |
+
+Path resolution mirrors pi-coding-agent (`~` / `~/` expansion, `@` prefix strip, absolute passes through, relative resolves against `VAULT_DIR`) so the sandbox check operates on the same bytes the tool will touch. pi-coding-agent doesn't re-export those helpers from its package index; the subset is inlined.
+
+### Tool baselines
+
+Each tool in the shared pool registers baseline rules at module load (`src/backend/agent/tools.ts`):
+
+| Tool | Baseline |
+|---|---|
+| `read` | `insideDirs: [VAULT_DIR]` |
+| `write` | `insideDirs: [VAULT_DIR]`, `confirmDirs: [NOTES_DIR, SCRAPS_DIR]` |
+| `edit` | `insideDirs: [VAULT_DIR]`, `confirmDirs: [NOTES_DIR, SCRAPS_DIR]` |
+
+Tools without a registered baseline run unsandboxed (pi-coding-agent's own default). By convention every tool Inkstone composes into `BASE_TOOLS` or an agent's `extraTools` registers its baseline.
+
+### Agent overlays
+
+`AgentInfo.getPermissions?(): AgentOverlay` is called by the dispatcher once per tool call. Reader supplies one; Example does not. Rule objects are freshly constructed each call so dynamic state (e.g. reader's `activeArticle`) is inlined at evaluation time while the rules themselves stay pure data:
+
+```ts
+// agents/reader/index.ts
+function getReaderPermissions(): AgentOverlay {
+  if (!activeArticle) return {};
+  const articlePath = resolve(ARTICLES_DIR, activeArticle);
+  return {
+    write: [{ kind: "blockPath", path: articlePath, reason: "..." }],
+    edit:  [{ kind: "frontmatterOnlyFor", targetPath: articlePath }],
+  };
+}
+```
+
+Overlay rules run AFTER baselines — an overlay can add restrictions but can't relax them (a later rule can't un-block an earlier block because first-block-wins). No tool today declares a permissive baseline that an overlay would want to tighten.
+
+### What this replaces
+
+The pre-dispatcher guard was a single procedural function in `backend/agent/guard.ts` that pattern-matched tool names and encoded reader's article rule directly. Reader-specific vocabulary leaked into the shell and the shell mutated `ctx.args._articlePath` as a side channel. Both are gone: the dispatcher has no reader knowledge, and reader's `getPermissions` owns its own state.
 
 ## Agent Registry
 

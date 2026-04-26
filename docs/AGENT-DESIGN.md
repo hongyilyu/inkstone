@@ -159,9 +159,31 @@ export interface AgentInfo {
 - **pi-tui transitive dep.** pi-coding-agent's tool source files import `@mariozechner/pi-tui` at module scope for their `renderCall` / `renderResult` hooks. `wrapToolDefinition` strips those hooks when the tool is handed to pi-agent-core, so pi-tui never runs in Inkstone — but it IS loaded at module-resolve time. Inert at runtime, a few hundred KB of JS that does nothing. Acceptable cost for dropping 4 hand-maintained tool files.
 - **pi-agent-core version bump** from `^0.67.68` to `^0.69` (pi-coding-agent@0.69 requires it). The public type surface Inkstone uses (`Agent`, `AgentTool`, `AgentEvent`, `BeforeToolCallContext`, `ThinkingLevel`, `AssistantMessageEvent`) is unchanged between the two versions.
 - **Prompt-cache bust** (one-time). Tool names changed (`read_file` → `read`, etc.) and count dropped from 4 to 3 for reader (no more `quote_article`). Anthropic/Bedrock/OpenAI prompt caches keyed on the byte-exact tools prefix invalidate once on first turn after deploy. Unavoidable with a rename.
-- **Guard must mirror pi-coding-agent's path expansion.** pi-coding-agent expands `~` / `~/` against `$HOME` and strips a leading `@`. Inkstone's guard inlines the same subset (`backend/agent/guard.ts:resolvePath`); otherwise the guard's `startsWith(VAULT_DIR)` check could pass on a literal `~/foo` while the tool writes to `$HOME/foo`. pi-coding-agent doesn't re-export those helpers from its package index, so the subset is inlined rather than imported.
+- **Guard must mirror pi-coding-agent's path expansion.** pi-coding-agent expands `~` / `~/` against `$HOME` and strips a leading `@`. The permission dispatcher inlines the same subset (`backend/agent/permissions.ts:resolvePath`); otherwise `startsWith(VAULT_DIR)` could pass on a literal `~/foo` while the tool writes to `$HOME/foo`. pi-coding-agent doesn't re-export those helpers from its package index, so the subset is inlined rather than imported.
 
 **Quote article dropped.** `quote_article` was a paragraph-substring search over the currently-open article — in practice, the LLM can achieve the same thing with `read` + its own context window, so the tool was a hole-filler rather than genuine capability. Removed. Reader's instructions now tell the model to read the article and quote from its context.
+
+### D11 — Declarative permission dispatcher
+
+**Considered:** keep the procedural guard in `guard.ts` that pattern-matches tool names (`read` / `edit` / `write`) and encodes reader's article rule inline, with `_articlePath` injected into `ctx.args` as a side channel so the guard can see the active article.
+
+**Chosen:** a single `beforeToolCall` entry point delegates to `dispatchBeforeToolCall` in `backend/agent/permissions.ts`. Rules are declarative data (array of tagged objects). Tools register baseline rules at module load; agents expose optional `getPermissions?(): AgentOverlay` for agent-scoped additions. See `docs/ARCHITECTURE.md` Permission Dispatcher.
+
+**Why:** the procedural guard bundled reader-specific knowledge into the shell and forced the `_articlePath` hack. Splitting into (a) per-tool baselines + (b) per-agent overlay produces:
+- **DRY**: VAULT_DIR sandbox declared once on each tool, shared by every agent.
+- **Local ownership**: reader's article rule lives with reader's `activeArticle` state, not in shell code.
+- **No side channels**: overlay rules close over module state directly; no `ctx.args` mutation.
+- **Extension point**: future agents plug in additional rules without touching shell, tools, or reader.
+
+**Trade-offs accepted:**
+
+- **`getPermissions` is a function.** Pure data is the goal; rule *production* remains a factory callback so state-dependent values (reader's article path) can be inlined fresh each call. The rules themselves are still pure data — only the producer is a function. A push model (reader calls `setPermissions(rules)` on every state change) was considered but adds coordination cost for no readability gain.
+- **Speculative rule kinds.** `blockPath` and `frontmatterOnlyFor` exist only for reader today. Defensible vs. the alternative (cohabitation with a legacy guard) but worth acknowledging: the rule-kind union is sized to current needs + one (the "one" being whatever the first non-reader agent wants, TBD).
+- **No enforcement that every tool has a baseline.** A tool registered in `composeTools` without a matching `registerBaseline(tool.name, ...)` call runs unsandboxed. Convention suffices today (fixed tool set); enforcement (e.g. throw at compose time) can be added when plugin tools arrive.
+
+**Function escape hatch not built.** A rule kind whose predicate is `(params) => boolean` was considered but deferred — every current need fits a named rule kind. Add if a real case doesn't.
+
+**What this resolves:** the "shell knows reader's business" pressure point. The dispatcher has no reader knowledge. Session restore stops caring about `_articlePath`. A future Researcher or Knowledge-Base agent declares its own overlay (or doesn't) without modifying the dispatcher or the shell.
 
 ## Rejected alternatives
 
