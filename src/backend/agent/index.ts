@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 import {
 	Agent,
 	type AgentEvent,
@@ -7,15 +6,20 @@ import {
 import { type Api, type Model, supportsXhigh } from "@mariozechner/pi-ai";
 import { loadConfig, saveConfig } from "../persistence/config";
 import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
-import { AGENTS, type AgentInfo, DEFAULT_AGENT, getAgentInfo } from "./agents";
-import { ARTICLES_DIR } from "./constants";
-import { beforeToolCall, setConfirmFn } from "./guard";
-import { setActiveArticle } from "./tools/quote-article";
+import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
+import { getActiveArticle, setActiveArticle } from "./agents/reader";
+import {
+	type AgentCommand,
+	type AgentCommandContext,
+	type AgentInfo,
+	composeSystemPrompt,
+	composeTools,
+} from "./base";
+import { dispatchBeforeToolCall, setConfirmFn } from "./permissions";
 
 export interface AgentActions {
 	prompt(text: string): Promise<void>;
 	abort(): void;
-	loadArticle(articleId: string): void;
 	setModel(model: Model<Api>): void;
 	setThinkingLevel(level: ThinkingLevel): void;
 	setAgent(name: string): void;
@@ -23,7 +27,6 @@ export interface AgentActions {
 }
 
 let agent: Agent | null = null;
-let activeArticle: string | null = null;
 
 // Active provider/model. Both are resolved at module load from the on-disk
 // config, falling back to the first registered provider's first model when
@@ -133,21 +136,22 @@ export function getAgent(): Agent {
 		const info = getAgentInfo(currentAgent);
 		agent = new Agent({
 			initialState: {
-				systemPrompt: info.buildSystemPrompt(activeArticle),
+				systemPrompt: composeSystemPrompt(info),
 				model: currentModel(),
 				thinkingLevel: resolveThinkingLevel(currentModel()),
-				tools: info.tools,
+				tools: composeTools(info),
 			},
 			getApiKey: async (provider) => {
 				return getProvider(provider).getApiKey();
 			},
 			beforeToolCall: async (ctx) => {
-				// Inject article path into context for the guard
-				const args = ctx.args as Record<string, any>;
-				if (activeArticle) {
-					args._articlePath = resolve(ARTICLES_DIR, activeArticle);
-				}
-				return beforeToolCall(ctx);
+				// Delegate to the permission dispatcher. It reads the active
+				// tool's baseline rules (registered in `./tools.ts`) and the
+				// active agent's overlay (optional `AgentInfo.getPermissions`,
+				// reader supplies one; example does not), evaluates in order,
+				// short-circuits on first block. See `./permissions.ts`.
+				const overlay = getAgentInfo(currentAgent).getPermissions?.();
+				return dispatchBeforeToolCall(ctx, overlay);
 			},
 		});
 	}
@@ -163,21 +167,21 @@ export function createAgentActions(
 		onEvent(event);
 	});
 
-	return {
+	const actions: AgentActions = {
 		async prompt(text: string) {
+			// Rebuild the system prompt at every turn boundary so any
+			// agent-owned state mutations (e.g. reader's `activeArticle`
+			// set by `/article`) land in the next turn automatically.
+			// This replaces the old explicit `refreshSystemPrompt()` call:
+			// commands now just mutate state and call `ctx.prompt(...)`,
+			// and the shell takes care of composing. Session restore, the
+			// other former caller, relies on the same property — the first
+			// user turn after boot rebuilds before sending.
+			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
 			await a.prompt(text);
 		},
 		abort() {
 			a.abort();
-		},
-		loadArticle(articleId: string) {
-			activeArticle = articleId;
-			setActiveArticle(articleId);
-			// Rebuild the system prompt through whichever agent is currently active.
-			// In practice only the reader agent reads `activeArticle` — other agents
-			// silently ignore the argument.
-			a.state.systemPrompt =
-				getAgentInfo(currentAgent).buildSystemPrompt(activeArticle);
 		},
 		setModel(model: Model<Api>) {
 			a.state.model = model;
@@ -201,17 +205,29 @@ export function createAgentActions(
 		setAgent(name: string) {
 			const info = getAgentInfo(name);
 			currentAgent = info.name;
-			a.state.systemPrompt = info.buildSystemPrompt(activeArticle);
-			a.state.tools = info.tools;
+			// Tools MUST be swapped immediately — pi-agent-core may serialize
+			// them for the next request independently of when the system
+			// prompt is read. System prompt is also refreshed here as a
+			// mid-session correctness measure (something reading
+			// `agent.state.systemPrompt` between turns would otherwise see
+			// the previous agent's bytes). `prompt()` will rebuild again on
+			// the next turn; that's fine, the output is byte-identical.
+			a.state.systemPrompt = composeSystemPrompt(info);
+			a.state.tools = composeTools(info);
 			saveConfig({ currentAgent: info.name });
 		},
 		clearSession() {
 			a.state.messages = [];
-			activeArticle = null;
+			// Reset reader-owned state. Other agents don't yet have state
+			// that needs clearing; when they do, either (a) add similar
+			// per-agent reset calls here or (b) introduce a lifecycle hook
+			// on AgentInfo (e.g. `onSessionClear`) that the shell iterates.
 			setActiveArticle(null);
-			a.state.systemPrompt = getAgentInfo(currentAgent).buildSystemPrompt(null);
+			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
 		},
 	};
+
+	return actions;
 }
 
 export function getCurrentProviderId(): string {
@@ -230,10 +246,6 @@ export function getCurrentThinkingLevel(): ThinkingLevel {
 	return resolveThinkingLevel(currentModel());
 }
 
-export function getActiveArticle(): string | null {
-	return activeArticle;
-}
-
 export function getCurrentAgent(): string {
 	return currentAgent;
 }
@@ -242,4 +254,12 @@ export function listAgents(): AgentInfo[] {
 	return AGENTS;
 }
 
-export { type AgentInfo, getAgentInfo, setConfirmFn };
+export {
+	type AgentCommand,
+	type AgentCommandContext,
+	type AgentInfo,
+	getActiveArticle,
+	getAgentInfo,
+	setActiveArticle,
+	setConfirmFn,
+};

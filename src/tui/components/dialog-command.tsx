@@ -30,6 +30,22 @@ import * as Keybind from "../util/keybind";
  *     OpenCode's scoping rule: dialog-local handlers take precedence.
  */
 
+/**
+ * Declarative slash-command metadata attached to a `CommandOption`.
+ *
+ * The prompt's submit handler (`prompt.tsx:handleSubmit`) matches a typed
+ * `/name args...` against entries whose `slash.name === name`, respecting
+ * `takesArgs` gating. Palette / keybind dispatch still fire independently
+ * via `onSelect`. `argHint` is reserved for a future dropdown UI (see
+ * `docs/SLASH-COMMANDS.md`) that would prefill the textarea with
+ * `/name ` on select — no UI consumes it today.
+ */
+export interface SlashSpec {
+	name: string;
+	takesArgs?: boolean;
+	argHint?: string;
+}
+
 export interface CommandOption {
 	/** Unique identifier; also serves as the DialogSelect value. */
 	id: string;
@@ -40,12 +56,25 @@ export interface CommandOption {
 	/** Optional global keybind action name (from `Keybind.KEYBINDS`). */
 	keybind?: Keybind.KeybindAction;
 	/**
+	 * Optional slash-command metadata. Typed `/name args...` in the prompt
+	 * dispatches to this entry's `onSelect(dialog, args)`.
+	 */
+	slash?: SlashSpec;
+	/**
 	 * If true, the command does not appear in the palette. Useful for
 	 * keybind-only actions like `agent_cycle` / `agent_cycle_reverse`
-	 * that should fire the binding but not clutter the list.
+	 * that should fire the binding but not clutter the list. Also used
+	 * for argful slash commands (`/article <filename>`) that make no
+	 * sense without an argument — palette-click can't provide one, so
+	 * they're slash-only.
 	 */
 	hidden?: boolean;
-	onSelect: (dialog: DialogContext) => void;
+	/**
+	 * Invoked by palette-select (with `args` unset), keybind dispatch
+	 * (unset), or slash dispatch (set to the text after the verb, which
+	 * may be empty when no args were typed).
+	 */
+	onSelect: (dialog: DialogContext, args?: string) => void;
 }
 
 type Registration = Accessor<CommandOption[]>;
@@ -64,11 +93,46 @@ function init() {
 		dialog.replace(() => <DialogCommand visible={visible} />);
 	}
 
+	/**
+	 * First slash match for `name`. First-match precedence means agent-
+	 * scoped registrations (registered earlier in the registration list
+	 * via `AgentProvider` mounting inside `CommandProvider`) beat shell-
+	 * scoped ones on name collision — preserves the "agent overrides
+	 * built-in" rule from AGENT-DESIGN.md D9.
+	 */
+	function findSlash(name: string): CommandOption | undefined {
+		return entries().find((e) => e.slash?.name === name);
+	}
+
+	function canRunSlash(name: string, args: string): boolean {
+		const entry = findSlash(name);
+		if (!entry) return false;
+		if (entry.slash?.takesArgs && args.trim().length === 0) return false;
+		return true;
+	}
+
+	/**
+	 * Dispatch `/name args` to the matching slash entry. Returns true if
+	 * an entry was found and invoked; callers should check the return to
+	 * decide whether to fall through (e.g. submit as a plain prompt).
+	 */
+	function triggerSlash(name: string, args: string): boolean {
+		const entry = findSlash(name);
+		if (!entry) return false;
+		if (entry.slash?.takesArgs && args.trim().length === 0) return false;
+		entry.onSelect(dialog, args);
+		return true;
+	}
+
 	const api = {
 		/** Reactive list of visible commands (for the palette). */
 		visible,
 		/** Open the command palette programmatically. */
 		show: showPalette,
+		/** See `canRunSlash` above. */
+		canRunSlash,
+		/** See `triggerSlash` above. */
+		triggerSlash,
 		/**
 		 * Register a batch of commands. The callback is memoized and re-run
 		 * whenever its tracked signals change, so gated commands (e.g. only

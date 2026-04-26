@@ -57,6 +57,65 @@
 					}
 				}
 			}
+		},
+		{
+			"includes": ["src/backend/agent/index.ts", "src/backend/agent/agents.ts"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noRestrictedImports": {
+							"level": "error",
+							"options": {
+								"patterns": [
+									{
+										"group": ["@tui/*", "**/tui/**"],
+										"message": "backend/ cannot import from tui/. Covers both the @tui/* alias and any relative path that climbs into tui/."
+									},
+									{
+										"group": [
+											"./agents/*/tools",
+											"./agents/*/tools/*",
+											"./agents/*/tools/**",
+											"@backend/agent/agents/*/tools",
+											"@backend/agent/agents/*/tools/*",
+											"@backend/agent/agents/*/tools/**",
+											"**/backend/agent/agents/*/tools",
+											"**/backend/agent/agents/*/tools/*",
+											"**/backend/agent/agents/*/tools/**"
+										],
+										"message": "The agent shell must not import custom-agent tool internals. Re-export public state/helpers from the agent folder index.ts instead."
+									}
+								]
+							}
+						}
+					}
+				}
+			}
+		},
+		{
+			"includes": ["src/tui/**"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noRestrictedImports": {
+							"level": "error",
+							"options": {
+								"patterns": [
+									{
+										"group": [
+											"@backend/agent/agents/*",
+											"@backend/agent/agents/**",
+											"**/backend/agent/agents/*",
+											"**/backend/agent/agents/**"
+										],
+										"message": "TUI must use @backend/agent public APIs, not custom-agent internals."
+									}
+								]
+							}
+						}
+					}
+				}
+			}
 		}
 	]
 }

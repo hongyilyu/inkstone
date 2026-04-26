@@ -28,6 +28,8 @@ The codebase is split into three layers with enforced dependency direction so th
 - `tui/` may import from `bridge/`, `backend/`.
 - `backend/` may import from `bridge/` (types only, zero runtime cost). **Must not** import from `tui/`.
 - `bridge/` must not import from `backend/` or `tui/`.
+- The agent shell (`backend/agent/index.ts` and `backend/agent/agents.ts`) must not deep-import custom-agent tool internals (`agents/<name>/tools/*`). Agent-owned public state/helpers must be re-exported from that agent folder's `index.ts`. (Today no agent has a `tools/` subfolder — the rule stays in place for future state-coupled agent tools.)
+- `tui/` must use `@backend/agent` public APIs for agent data and actions, not custom-agent internals under `backend/agent/agents/<name>/`.
 
 Each boundary rule uses two glob patterns per forbidden target so both bypass forms fail lint:
 
@@ -35,6 +37,11 @@ Each boundary rule uses two glob patterns per forbidden target so both bypass fo
 - `**/tui/**` — any relative path that climbs into `tui/` (e.g. `../tui/app`, `../../tui/app`, `./tui/x`).
 
 Same pair (`@backend/*` + `**/backend/**`) for the backend restriction on bridge.
+
+Agent-internal rules additionally block the concrete bypass forms we have seen:
+
+- `./agents/*/tools/**` from the agent shell.
+- `@backend/agent/agents/**` (and relative equivalents) from the TUI.
 
 ### Path aliases
 
@@ -64,11 +71,11 @@ Bridge is for types **both sides need to agree on as a shared data shape**. Back
 
 ```
 User input (textarea)
-  → command parsing (/article, /model, etc.)
+  → executable slash-command lookup (/article, /clear; otherwise plain prompt)
   → agent.prompt(text)
     → pi-agent-core Agent loop
       → LLM API call (provider from registry — Bedrock today)
-      → tool calls (read_file, edit_file, write_file, quote_article)
+      → tool calls (read, edit, write)
         → beforeToolCall guard (block/confirm/allow)
       → streaming events
     → agent.subscribe() callback
@@ -85,15 +92,17 @@ src/
   backend/                          Headless — no Solid, no OpenTUI
     agent/
       index.ts                      Agent instance, createAgentActions, query getters
-      agents.ts                     Static agent registry (AGENTS, getAgentInfo)
-      prompt.ts                     READING_RULES system prompt (used by `reader` entry in agents.ts)
+      agents.ts                     Registry assembler — imports each agent's AgentInfo literal and exports AGENTS[]
+      base.ts                       Foundation layer — AgentInfo type + AgentColorKey + BASE_TOOLS + BASE_PREAMBLE + composeTools + composeSystemPrompt
+      tools.ts                      Shared tool pool — readTool, writeTool, editTool via @mariozechner/pi-coding-agent factories, passed VAULT_DIR as cwd; registers per-tool baseline permissions at module load
+      permissions.ts                Declarative permission dispatcher — Rule union, registerBaseline, dispatchBeforeToolCall, setConfirmFn, path resolution; single hook wired into pi-agent-core's beforeToolCall
       constants.ts                  VAULT_DIR, ARTICLES_DIR, SCRAPS_DIR, etc.
-      guard.ts                      beforeToolCall (frontmatter guard + confirm)
-      tools/
-        quote-article.ts            Paragraph search in active article
-        read-file.ts                readFileSync, scoped to VAULT_DIR
-        edit-file.ts                String replace + unified diff, scoped to VAULT_DIR
-        write-file.ts               writeFileSync/append, scoped to VAULT_DIR
+      agents/                       Custom agents, one self-contained folder each
+        reader/
+          index.ts                  readerAgent: AgentInfo literal (extraTools pulled from ../../tools; `getPermissions` supplies the article-specific overlay)
+          instructions.ts           buildReaderInstructions(articleId) — the reader's system-prompt body + 6-stage workflow
+        example/
+          index.ts                  exampleAgent: AgentInfo literal (1-line prompt, no extra tools)
     providers/
       types.ts                      ProviderInfo interface (id, displayName, listModels, getApiKey, isConnected, authInstructions)
       amazon-bedrock.ts             Bedrock provider — wraps pi-ai `getModels("amazon-bedrock")`, auth via `getEnvApiKey`
@@ -265,26 +274,196 @@ Sourcing the model from `event.message` (rather than the mutable `store.modelNam
 
 Older messages that predate these fields (legacy sessions) simply render without a footer because `modelName` is `undefined`.
 
-## Guard Logic
+## Permission Dispatcher
 
-The `beforeToolCall` hook runs before each tool execution:
+Policy enforcement is declarative. The shell wires a single `beforeToolCall` hook that delegates to `dispatchBeforeToolCall` in `src/backend/agent/permissions.ts`. The dispatcher reads the active tool's baseline rules plus the active agent's overlay and evaluates them in order; the first rule that returns `{ block, reason }` short-circuits.
 
-1. **Path validation**: reject any path resolving outside VAULT_DIR
-2. **Article file protection**: allow frontmatter edits, block content edits and full writes
-3. **Notes/scraps confirmation**: show DialogConfirm, await user response
+```
+[...baselineRules[toolName], ...overlay[toolName]] → evaluate in declaration order
+```
 
-The confirmation dialog is async — `beforeToolCall` awaits the dialog promise before returning `{ block: true/false }`.
+### Rule kinds
+
+`Rule` is a tagged-union array. All current rule kinds are path-keyed (they read `args.path`); a tool without a `path` arg passes through.
+
+| Kind | Shape | Purpose |
+|---|---|---|
+| `insideDirs` | `{ dirs: string[] }` | Resolved path must be inside ANY listed dir. Multiple rules AND-join. |
+| `confirmDirs` | `{ dirs: string[] }` | If resolved path is in any listed dir, await `confirmFn`; decline → block. |
+| `blockPath` | `{ path: string; reason: string }` | Block when resolved path exactly equals `path`. |
+| `frontmatterOnlyFor` | `{ targetPath: string }` | On `edit` against `targetPath`, every `args.edits[].oldText` must appear inside the file's `---`-delimited frontmatter. |
+
+Path resolution mirrors pi-coding-agent (`~` / `~/` expansion, `@` prefix strip, absolute passes through, relative resolves against `VAULT_DIR`) so the sandbox check operates on the same bytes the tool will touch. pi-coding-agent doesn't re-export those helpers from its package index; the subset is inlined.
+
+### Tool baselines
+
+Each tool in the shared pool registers baseline rules at module load (`src/backend/agent/tools.ts`):
+
+| Tool | Baseline |
+|---|---|
+| `read` | `insideDirs: [VAULT_DIR]` |
+| `write` | `insideDirs: [VAULT_DIR]`, `confirmDirs: [NOTES_DIR, SCRAPS_DIR]` |
+| `edit` | `insideDirs: [VAULT_DIR]`, `confirmDirs: [NOTES_DIR, SCRAPS_DIR]` |
+
+Tools without a registered baseline run unsandboxed (pi-coding-agent's own default). By convention every tool Inkstone composes into `BASE_TOOLS` or an agent's `extraTools` registers its baseline.
+
+### Agent overlays
+
+`AgentInfo.getPermissions?(): AgentOverlay` is called by the dispatcher once per tool call. Reader supplies one; Example does not. Rule objects are freshly constructed each call so dynamic state (e.g. reader's `activeArticle`) is inlined at evaluation time while the rules themselves stay pure data:
+
+```ts
+// agents/reader/index.ts
+function getReaderPermissions(): AgentOverlay {
+  if (!activeArticle) return {};
+  const articlePath = resolve(ARTICLES_DIR, activeArticle);
+  return {
+    write: [{ kind: "blockPath", path: articlePath, reason: "..." }],
+    edit:  [{ kind: "frontmatterOnlyFor", targetPath: articlePath }],
+  };
+}
+```
+
+Overlay rules run AFTER baselines — an overlay can add restrictions but can't relax them (a later rule can't un-block an earlier block because first-block-wins). No tool today declares a permissive baseline that an overlay would want to tighten.
+
+### What this replaces
+
+The pre-dispatcher guard was a single procedural function in `backend/agent/guard.ts` that pattern-matched tool names and encoded reader's article rule directly. Reader-specific vocabulary leaked into the shell and the shell mutated `ctx.args._articlePath` as a side channel. Both are gone: the dispatcher has no reader knowledge, and reader's `getPermissions` owns its own state.
 
 ## Agent Registry
 
-Multi-agent support is implemented as a static registry in `src/backend/agent/agents.ts`. Each entry (`AgentInfo`) declares a name, display name, description, theme `colorKey`, tool set, and a `buildSystemPrompt(activeArticle)` builder. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
+Multi-agent support is a **flat registry with runtime composition** — no inheritance. Each agent is a self-contained folder under `src/backend/agent/agents/<name>/` that exports an `AgentInfo` literal (name, displayName, description, `colorKey`, `extraTools`, `buildInstructions`, optionally `commands`). `src/backend/agent/agents.ts` is a thin assembler that imports each agent's literal and exports them as `AGENTS: AgentInfo[]`. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
 
-Two agents ship today:
+> **Design rationale:** see [`AGENT-DESIGN.md`](./AGENT-DESIGN.md) for why the system is shaped this way (composition over inheritance, folder-per-agent, base layer, no opt-out on `BASE_TOOLS`, vault ≠ config, commands vs tools), what alternatives were rejected, and how future features (skills, memory) are designed to plug in without restructuring.
 
-| Name | Tools | Prompt behavior | Color |
-|------|-------|-----------------|-------|
-| `reader` | `read_file`, `edit_file`, `write_file`, `quote_article` | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
-| `example` | none | Short static "general-purpose assistant" prompt; ignores `activeArticle` | `theme.accent` |
+### Base layer (the "base agent")
+
+`src/backend/agent/base.ts` owns everything shared across agents:
+
+- `AgentInfo` (the type) and `AgentColorKey`.
+- `AgentCommand` + `AgentCommandContext` types (see Commands below).
+- `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today just `read` (from the shared pool, scoped to `VAULT_DIR`). Frozen at module load so external modules can't mutate.
+- `BASE_PREAMBLE: string` — a shared system-prompt prefix. **Empty today** — the mechanism is the point. Future PRs will grow this into a composed block that includes persona guidance, tool-use discipline, and memory-file contents (`user.md`, `memory.md` from `~/.config/inkstone/`).
+- `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]`. Every agent gets the base set unconditionally; there is no opt-out flag.
+- `composeSystemPrompt(info)` — prepends `BASE_PREAMBLE` to `info.buildInstructions()` when non-empty; otherwise returns the instructions unchanged. Nullary — `buildInstructions` reads any agent-owned state (e.g. reader's `activeArticle`) directly.
+
+Tool implementations come from `@mariozechner/pi-coding-agent` via the shared pool in `backend/agent/tools.ts` — Inkstone does not re-implement read/write/edit. Each factory is called with `VAULT_DIR` as the `cwd` so vault-relative paths resolve inside the vault; absolute paths are honored by the tool and sandboxed by the guard. pi-coding-agent's tool source transitively imports `@mariozechner/pi-tui`, but `wrapToolDefinition` strips the render hooks — the tools are pure `AgentTool<any>` at runtime, and pi-tui is inert code-path-wise (Inkstone renders through OpenTUI in `src/tui/**`).
+
+`backend/agent/index.ts` rebuilds the system prompt at the start of every `AgentActions.prompt(text)` call. `setAgent()` and `clearSession()` also rebuild inline for correctness on mid-session reads of `a.state.systemPrompt` (e.g. a tool that echoes the current prompt) — the next turn's prompt-wrapper rebuild produces byte-identical output. Tools are rebuilt eagerly on `setAgent()` only (pi-agent-core may serialize them independently of prompt composition).
+
+### Agents on ship
+
+| Name | extraTools | Composed tools | Commands | Prompt behavior | Color |
+|------|------------|----------------|----------|-----------------|-------|
+| `reader` | `edit`, `write` | `read` + the extras | `/article <filename>` | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
+| `example` | — | `read` only | — | Short static "general-purpose assistant" prompt | `theme.accent` |
+
+Both agents inherit the shell-level `/clear` verb via the unified command registry (see Commands below) — no per-agent declaration needed.
+
+### Adding a new agent
+
+The folder-per-agent shape makes this a local change:
+
+1. Create `src/backend/agent/agents/<name>/index.ts` exporting `<name>Agent: AgentInfo`.
+2. If the agent needs an agent-specific system prompt, add `instructions.ts` next to it and import it from `index.ts`.
+3. If it wants tools from the shared pool, import them from `backend/agent/tools.ts` and list them in `extraTools`. If it owns a state-coupled tool that no other agent uses, add it under `agents/<name>/tools/` and re-export any public state helpers from the agent's `index.ts` (so the shell can stay out of deep imports per the boundary rule above).
+4. If it has user-facing verbs, declare them as `AgentCommand[]` and set `commands: [...]` on the `AgentInfo`. The TUI's `BridgeAgentCommands` (see Commands below) picks them up automatically.
+5. Add one import + one entry in `backend/agent/agents.ts`.
+
+No changes to `base.ts`, `tools.ts`, `backend/agent/index.ts`, the TUI, or config schemas are required.
+
+### Commands
+
+Commands are user-invoked verbs, distinct from tools (which are LLM-invoked mid-turn). See [`AGENT-DESIGN.md` D9](./AGENT-DESIGN.md) for the rationale; this section documents the runtime.
+
+**Single unified registry.** Slash verbs (`/clear`, `/article`), palette-only commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`), and keybind-only actions (ESC interrupt, Tab agent-cycle) all live in the same TUI-side command registry (`src/tui/components/dialog-command.tsx`). Per [`SLASH-COMMANDS.md`](./SLASH-COMMANDS.md) Path A, the two previously-separate surfaces (backend `AgentCommand` + TUI `CommandOption`) now share one type. Agent-declared verbs stay data-only in `AgentInfo.commands`; the TUI bridges them into registry entries at mount time.
+
+**Type shape** (`src/tui/components/dialog-command.tsx`):
+
+```ts
+export interface SlashSpec {
+  name: string;
+  takesArgs?: boolean;
+  argHint?: string;
+}
+
+export interface CommandOption {
+  id: string;
+  title: string;
+  description?: string;
+  keybind?: Keybind.KeybindAction;  // global keybind dispatch
+  slash?: SlashSpec;                // typed `/name args` dispatch
+  hidden?: boolean;                 // hide from Ctrl+P palette
+  onSelect: (dialog: DialogContext, args?: string) => void;
+}
+```
+
+Agent-declared verbs (backend-side, `src/backend/agent/base.ts`):
+
+```ts
+export interface AgentCommandContext {
+  prompt(text: string): Promise<void>;
+}
+
+export interface AgentCommand {
+  name: string;
+  description?: string;
+  argHint?: string;
+  takesArgs?: boolean;
+  execute(args: string, ctx: AgentCommandContext): void | Promise<void>;
+}
+```
+
+`AgentCommandContext` is deliberately narrow — the only hook commands need is `prompt`. Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over `AgentActions.clearSession` directly, so they don't need a context hand-off. Commands mutate agent-owned module state directly (e.g. reader's `activeArticle`); the shell's `AgentActions.prompt` wrapper rebuilds `systemPrompt` at the next turn boundary, so no explicit refresh call is needed.
+
+**Sources of commands** (all flow into the same registry):
+
+| Source | Registered by | Examples |
+|--------|---------------|----------|
+| Shell palette entries | `Layout()` in `src/tui/app.tsx` | `/agents`, `/models`, `/effort`, `/themes`, `/connect`, `/clear`, Tab agent-cycle |
+| Prompt-local keybinds | `Prompt()` in `src/tui/components/prompt.tsx` | ESC interrupt |
+| Agent-declared verbs | `BridgeAgentCommands` in `src/tui/context/agent.tsx`, reactive on `store.currentAgent` | reader's `/article <filename>` |
+
+**Slash dispatch** (`command.triggerSlash(name, args)` in `dialog-command.tsx`):
+
+```
+user types "/article foo.md" + Enter
+  → handleSubmit (src/tui/components/prompt.tsx)
+    → value.startsWith("/") → split on first space
+      → name="article", args="foo.md"
+      → command.triggerSlash("article", "foo.md") === true
+        → entries().find(e => e.slash?.name === "article")
+          → BridgeAgentCommands' reader entry (agent-scoped registers first)
+          → takesArgs gate passes
+          → entry.onSelect(dialog, "foo.md")
+            → cmd.execute("foo.md", { prompt })
+              → setActiveArticle("foo.md")       (reader module state)
+              → await ctx.prompt("Read foo.md")  (shell rebuilds systemPrompt,
+                                                  then streaming turn begins)
+            → queueMicrotask: setStore("activeArticle", getActiveArticle())
+      → setText("")                              (clear input)
+
+user types "/clear" + Enter
+  → handleSubmit
+    → command.triggerSlash("clear", "") === true
+      → Layout's session.clear entry
+      → entry.onSelect() → actions.clearSession()
+    → setText("")
+
+user types "/xyz" + Enter
+  → handleSubmit
+    → command.triggerSlash("xyz", "") === false
+    → actions.prompt("/xyz")                     (plain prompt)
+
+user types "/article" + Enter
+  → handleSubmit
+    → command.triggerSlash("article", "") === false
+      (takesArgs gate fails)
+    → actions.prompt("/article")                 (plain prompt)
+```
+
+**Precedence on slash-name collision**: first-match wins. `AgentProvider` mounts inside `CommandProvider` (see `src/tui/app.tsx` tree), and `command.register` prepends to the internal registration list — so `BridgeAgentCommands` entries sit ahead of `Layout`'s entries. An agent that declares a verb with the same name as a shell-level verb overrides the shell version for that agent only. This preserves D9's "agent overrides built-in" rule; it's theoretical today (no agent redefines `clear`).
+
+**Session restore** bypasses the command system entirely — it rehydrates state without triggering a prompt turn. `context/agent.tsx` calls `setActiveArticle(saved.activeArticle)` directly. No explicit system-prompt rebuild is needed because the next user turn's `AgentActions.prompt` wrapper composes the system prompt fresh from the restored state.
 
 ### Switching rules
 
@@ -294,19 +473,21 @@ Switching is intentionally locked to empty sessions (`store.messages.length === 
 - **Command palette → Agents** opens `DialogAgent`, the entry is hidden once `store.messages.length > 0`.
 - **Persistence**: the selected agent is saved to `config.json` as `currentAgent` on every switch and restored at boot. Unknown names fall back to the first registry entry.
 
-### Data flow
+### Data flow (agent switching)
 
 ```
 setAgent(name)
   → AgentActions.setAgent (backend/agent/index.ts)
     → currentAgent = info.name
-    → a.state.systemPrompt = info.buildSystemPrompt(activeArticle)
-    → a.state.tools = info.tools
+    → a.state.systemPrompt = composeSystemPrompt(info)
+    → a.state.tools        = composeTools(info)
     → saveConfig({ currentAgent })
   → tui wrapper (context/agent.tsx)
     → setStore("currentAgent", getCurrentAgent())
       → prompt label, input border, user-bubble border, assistant ▣ glyph all re-theme via `theme[getAgentInfo(store.currentAgent).colorKey]`
 ```
+
+The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/base.ts`. With `BASE_PREAMBLE === ""`, `composeSystemPrompt(info)` is a pass-through to `info.buildInstructions()`.
 
 The assistant `message_end` handler stamps `agentName` onto the new bubble using `getAgentInfo(store.currentAgent).displayName`. Because switching is locked mid-session, the stamped name is guaranteed to be the agent that actually produced the reply.
 

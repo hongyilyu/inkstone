@@ -3,9 +3,9 @@ import {
 	NOTES_DIR,
 	SCRAPS_DIR,
 	TEMPLATES_DIR,
-} from "./constants";
+} from "../../constants";
 
-export function buildSystemPrompt(articleId: string | null): string {
+export function buildReaderInstructions(articleId: string | null): string {
 	if (!articleId) {
 		return "You are a helpful reading assistant. Use /article <filename> to load an article and begin the reading workflow.";
 	}
@@ -215,7 +215,7 @@ Do not do future-stage work early.
 
 ## Article Tool Usage
 
-When discussing specific claims or passages from the article, use the \`quote_article\` tool to retrieve exact text. Do not paraphrase from memory.
+When discussing specific claims or passages from the article, use the \`read\` tool to load the article content and quote from there. Do not paraphrase from memory.
 
 When making a point about the article, explicitly label whether it comes from the article text ("The article states...") or from your own reasoning ("My inference is..."). Never blend the two without attribution.
 

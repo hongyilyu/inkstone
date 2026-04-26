@@ -1,11 +1,13 @@
 import {
 	type AgentActions,
+	type AgentCommandContext,
 	createAgentActions,
 	getAgent,
 	getAgentInfo,
 	getCurrentAgent,
 	getCurrentModel,
 	getCurrentThinkingLevel,
+	setActiveArticle,
 	setConfirmFn,
 } from "@backend/agent";
 import { setPersistenceErrorHandler } from "@backend/persistence/errors";
@@ -44,6 +46,7 @@ import {
 import { batch, createContext, type ParentProps, useContext } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { toBottom } from "../app";
+import { type CommandOption, useCommand } from "../components/dialog-command";
 
 /**
  * Placeholder strings that providers inject into redacted thinking blocks.
@@ -514,13 +517,6 @@ export function AgentProvider(props: ParentProps) {
 				});
 			}
 		},
-		loadArticle(articleId: string) {
-			actions.loadArticle(articleId);
-			setStore("activeArticle", articleId);
-			if (currentSessionId) {
-				persistActiveArticle(currentSessionId, articleId);
-			}
-		},
 		setModel(model: Model<Api>) {
 			actions.setModel(model);
 			setStore("modelName", model.name);
@@ -562,21 +558,103 @@ export function AgentProvider(props: ParentProps) {
 
 	const value: AgentContextValue = { store, actions: wrappedActions };
 
-	// Restore the agent recorded in the resumed session *before* loadArticle,
-	// so the system-prompt rebuild inside `loadArticle` runs under the correct
-	// agent's prompt builder. Without this, a transcript persisted under one
+	/**
+	 * Bridge backend-declared `AgentCommand`s into the unified command
+	 * registry. Defined as a closure component so it can capture
+	 * `store`, `setStore`, `wrappedActions`, and `currentSessionId`
+	 * without widening the `useAgent()` context value. Mounts as a child
+	 * of `<ctx.Provider>` so it has an owner for `onCleanup` and is
+	 * inside `CommandProvider` (which wraps `AgentProvider` at the app
+	 * root).
+	 *
+	 * Reactive on `store.currentAgent`: the registration callback re-runs
+	 * when the user switches agents, so an agent's slash verbs only
+	 * match while that agent is active (e.g. reader's `/article` stops
+	 * matching under the Example agent).
+	 *
+	 * Argful commands (`takesArgs`) register with `hidden: true` so they
+	 * don't appear in the Ctrl+P palette — palette-click can't supply
+	 * arguments, so showing them would be misleading. They're still
+	 * slash-dispatched through the prompt.
+	 *
+	 * Agent-bridge registrations sit ahead of shell registrations in the
+	 * registry's `entries` list (AgentProvider mounts inside
+	 * CommandProvider, and `register` prepends to the list), so on slash-
+	 * name collision the agent-scoped entry wins — preserves D9's
+	 * "agent overrides built-in" rule.
+	 *
+	 * `executeCtx.setActiveArticle` centralizes the three side effects
+	 * that follow an activeArticle change (backend module state, solid
+	 * store mirror, SQLite session-row update) so reader's command doesn't
+	 * touch any of them directly. See `AgentCommandContext`'s JSDoc for
+	 * the acknowledged reader-vocabulary leak.
+	 */
+	function BridgeAgentCommands() {
+		const command = useCommand();
+		command.register((): CommandOption[] => {
+			const info = getAgentInfo(store.currentAgent);
+			if (!info.commands || info.commands.length === 0) return [];
+			const executeCtx: AgentCommandContext = {
+				prompt: (text) => wrappedActions.prompt(text),
+				setActiveArticle: (id) => {
+					setActiveArticle(id);
+					setStore("activeArticle", id);
+					if (currentSessionId) {
+						persistActiveArticle(currentSessionId, id);
+					}
+				},
+			};
+			return info.commands.map((c) => ({
+				id: `agent.${info.name}.${c.name}`,
+				title: `/${c.name}${c.argHint ? ` ${c.argHint}` : ""}`,
+				description: c.description,
+				hidden: !!c.takesArgs,
+				slash: {
+					name: c.name,
+					takesArgs: c.takesArgs,
+					argHint: c.argHint,
+				},
+				onSelect: (_d, args) => {
+					// Fire-and-forget. `cmd.execute` may await a streaming
+					// turn; the synchronous side effects of the command
+					// (e.g. `ctx.setActiveArticle(...)`) run before the
+					// first `await`, so by the time control returns here
+					// the store and DB are already in sync.
+					void c.execute(args ?? "", executeCtx);
+				},
+			}));
+		});
+		return null;
+	}
+
+	// Restore the agent recorded in the resumed session *before* the article
+	// state, so the correct agent is active when the first turn rebuilds
+	// its system prompt. Without this, a transcript persisted under one
 	// agent could reopen under whichever agent is currently in `config.json`,
 	// with no way to switch back (agent cycling is locked once messages exist).
 	if (loaded) {
 		wrappedActions.setAgent(loaded.session.agent);
-		// Reactivate article-specific system prompt / guard in the agent runtime
-		// if the resumed session had an active article.
+		// Reactivate reader's active article from the resumed session.
+		// Direct module setter — no prompt turn triggered (which `/article`
+		// as a user-invoked command would do). Restoration rehydrates
+		// state; it doesn't replay the command. No explicit system-prompt
+		// rebuild: the shell's `prompt()` wrapper composes the system
+		// prompt fresh on every turn, so the next user turn after restore
+		// picks up the reactivated article automatically. The store's
+		// `activeArticle` is already seeded from `loaded.session.activeArticle`
+		// above, and the DB already has the value (it came from there), so
+		// no mirror/persist call is needed.
 		if (loaded.session.activeArticle) {
-			actions.loadArticle(loaded.session.activeArticle);
+			setActiveArticle(loaded.session.activeArticle);
 		}
 	}
 
-	return <ctx.Provider value={value}>{props.children}</ctx.Provider>;
+	return (
+		<ctx.Provider value={value}>
+			<BridgeAgentCommands />
+			{props.children}
+		</ctx.Provider>
+	);
 }
 
 export function useAgent() {

@@ -11,6 +11,7 @@ A terminal UI application for guided article reading, built with OpenTUI (Solid)
 - No plugin system
 - No multi-session (one article per session)
 - No worker threads — agent runs in-process
+- Biome enforces layer and agent import boundaries: the TUI consumes `@backend/agent` public APIs, and the agent shell does not deep-import custom-agent tool internals.
 
 ## Source References
 
@@ -33,6 +34,7 @@ A terminal UI application for guided article reading, built with OpenTUI (Solid)
 | `@opentui/solid` | Solid reconciler for OpenTUI |
 | `solid-js` | Reactive UI framework |
 | `@mariozechner/pi-agent-core` | Headless LLM agent (loop, tools, hooks) |
+| `@mariozechner/pi-coding-agent` | Built-in read / write / edit tool factories (Inkstone delegates rather than reimplementing) |
 | `@sinclair/typebox` | Tool parameter schemas |
 | `@solid-primitives/event-bus` | Event batching |
 | `fuzzysort` | Fuzzy search in dialogs |
@@ -65,12 +67,13 @@ The agent follows a 6-stage reading workflow driven entirely by prompt instructi
 
 ## File Tool Specs
 
+Tool implementations come from `@mariozechner/pi-coding-agent` (see `src/backend/agent/tools.ts`). Inkstone passes `VAULT_DIR` as the tool's `cwd`; the `beforeToolCall` guard enforces the vault boundary since pi-coding-agent's tools themselves do not sandbox.
+
 | Tool | Input | Output | Notes |
 |------|-------|--------|-------|
-| `read_file` | `{ path }` | File content | Scoped to VAULT_DIR |
-| `edit_file` | `{ path, oldText, newText }` | Unified diff | Replace first match, return diff |
-| `write_file` | `{ path, content, append? }` | Confirmation | Create dirs if needed |
-| `quote_article` | `{ query }` | Matching paragraphs | Search active article by substring |
+| `read` | `{ path, offset?, limit? }` | File content (+ image attachment for image files) | Vault-relative paths resolve under VAULT_DIR. Truncates to ~2000 lines / ~50 KB by default |
+| `edit` | `{ path, edits: [{ oldText, newText }, ...] }` | Unified diff | Multi-edit in one call. Mutation-queued. Guard iterates each `oldText` when editing the active article (all must target frontmatter) |
+| `write` | `{ path, content }` | Confirmation | Overwrite-only; creates parent dirs. Mutation-queued |
 
 ## Guard Logic
 

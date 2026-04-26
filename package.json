@@ -24,7 +24,9 @@
   "dependencies": {
     "@babel/core": "^7.29.0",
     "@babel/preset-typescript": "^7.28.5",
-    "@mariozechner/pi-agent-core": "^0.67.68",
+    "@mariozechner/pi-agent-core": "^0.69.0",
+    "@mariozechner/pi-ai": "^0.69.0",
+    "@mariozechner/pi-coding-agent": "^0.69.0",
     "@opentui/core": "^0.1.99",
     "@opentui/solid": "^0.1.99",
     "@sinclair/typebox": "^0.34.49",

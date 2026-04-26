@@ -134,28 +134,29 @@ export function Prompt() {
 		if (!value) return;
 		if (store.isStreaming) return;
 
-		if (value === "/clear") {
-			actions.clearSession();
-			setText("");
-			return;
-		}
-
-		// `/article` is a reader-only command. On any other agent we let the
-		// branch fall through so the literal text is sent as a normal prompt.
-		// (The prefix check itself is naive — robust slash-command parsing is
-		// tracked in docs/TODO.md Future Work.)
-		if (store.currentAgent === "reader" && value.startsWith("/article ")) {
-			const articleId = value.slice("/article ".length).trim();
-			if (articleId) {
-				actions.loadArticle(articleId);
-				actions.prompt(`Read ${articleId}`);
+		// Slash-command dispatch via the unified command registry.
+		// Splits on the first whitespace: `/name args...`. Matching
+		// OpenCode's prompt submit path, only entries whose `slash` field
+		// matches are intercepted; unknown slashes or commands missing
+		// required args fall through as plain prompts.
+		//
+		// Per SLASH-COMMANDS.md Path A, agent-declared commands and
+		// shell-level commands share the same registry; `triggerSlash`
+		// resolves them uniformly. Agent-bridge registrations register
+		// first so agent-scoped slashes beat shell-scoped on name
+		// collision — preserves the D9 "agent overrides built-in" rule.
+		if (value.startsWith("/")) {
+			const spaceAt = value.indexOf(" ");
+			const name = spaceAt === -1 ? value.slice(1) : value.slice(1, spaceAt);
+			const args = spaceAt === -1 ? "" : value.slice(spaceAt + 1).trim();
+			if (command.triggerSlash(name, args)) {
 				setText("");
 				toBottom();
 				return;
 			}
 		}
 
-		actions.prompt(value);
+		void actions.prompt(value);
 		setText("");
 		toBottom();
 	}
