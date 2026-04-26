@@ -25,18 +25,26 @@ function getFrontmatter(content: string): string | null {
 }
 
 /**
- * Replicate pi-coding-agent's `expandPath` + `resolveToCwd` behavior
+ * Inlined subset of pi-coding-agent's `expandPath` + `resolveToCwd`
  * (`node_modules/@mariozechner/pi-coding-agent/dist/core/tools/path-utils.js`).
  *
- * The guard MUST match the tool's resolution exactly. If the model sends
- * `~/foo` and we used `resolve(VAULT_DIR, ...)` with a literal `~`, the
- * guard would see `{VAULT_DIR}/~/foo` (inside the vault) while the tool
- * expands `~` and writes to `{HOME}/foo` (outside). Same for the `@`
- * prefix pi-coding-agent's `normalizeAtPrefix` strips. pi-coding-agent's
- * path utils are not re-exported from the package index, so we inline
- * the minimal subset. Unicode-space normalization is omitted — a path
- * with exotic spaces would simply fail `startsWith(VAULT_DIR)` and get
- * blocked, which is safe.
+ * The guard MUST resolve paths the same way the tool does. If the model
+ * sends `~/foo` and the guard used `resolve(VAULT_DIR, ...)` with the
+ * literal `~`, it would see `{VAULT_DIR}/~/foo` (passes the sandbox
+ * check) while the tool expands `~` and writes to `{HOME}/foo` (escapes
+ * the sandbox). Same bypass for the `@` prefix pi-coding-agent strips.
+ *
+ * We replicate rather than import because pi-coding-agent's
+ * `package.json` `exports` field only exposes the package root and a
+ * (currently-empty) `./hooks` entry — `core/tools/path-utils` is not
+ * reachable as a public subpath, and bun enforces the `exports` map at
+ * runtime (deep imports throw `Cannot find module` even when tsc is
+ * happy). The cost is ~10 lines; upstream refactors of path-utils stay
+ * our problem to notice.
+ *
+ * Unicode-space normalization is omitted — a path with exotic spaces
+ * would simply fail `startsWith(VAULT_DIR)` and get blocked, which is
+ * safe (just a UX miss, not a security gap).
  */
 function resolvePath(p: string): string {
 	const stripped = p.startsWith("@") ? p.slice(1) : p;
