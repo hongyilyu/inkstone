@@ -16,46 +16,82 @@ export type AgentColorKey =
 	| "info";
 
 /**
- * Capabilities exposed to `AgentCommand.execute`. Narrow by design —
- * the only hook commands need today: kick off a new turn (`prompt`).
+ * Runtime capabilities the shell injects into `AgentCommand.execute` at
+ * dispatch time. Today: just `prompt`. Kept as a named object (not a
+ * positional arg) so adding a capability later — e.g. `confirm(question)`
+ * for a command that wants user approval, `notify(msg)` for a toast — is
+ * additive, not breaking.
  *
- * Commands mutate agent-owned state (module-level, inside the agent's
- * folder) before calling `prompt`; the shell's `AgentActions.prompt`
- * wrapper rebuilds `systemPrompt` at the turn boundary, so no explicit
- * refresh call is needed.
+ * Why this isn't `AgentActions` directly: commands shouldn't be able to
+ * clear the session, switch agent/model, or open dialogs. Those are
+ * shell concerns and live as regular `CommandOption` entries in the TUI
+ * registry, closing over `AgentActions` at their own call sites. See
+ * `docs/SLASH-COMMANDS.md` Path A + `src/tui/app.tsx` for that boundary.
  *
- * Anything a shell knows how to do — clearing the session, switching
- * agent/model, opening a dialog — is not a command concern and is
- * deliberately absent. Shell-level verbs (`/clear`) live in the TUI
- * command registry as regular `CommandOption` entries that close over
- * `AgentActions`. See `docs/SLASH-COMMANDS.md` Path A + `src/tui/app.tsx`
- * for the shell registration point.
+ * @example
+ * // Shell side (src/tui/context/agent.tsx) — build the context at
+ * // dispatch time and hand it to the command:
+ * const ctx: AgentCommandContext = { prompt: wrappedActions.prompt };
+ * await cmd.execute(args, ctx);
+ *
+ * @example
+ * // Agent side — mutate owned state, then kick off a turn. The shell's
+ * // `prompt()` wrapper recomposes `systemPrompt` from the new state
+ * // before streaming, so no explicit "refresh" step is needed:
+ * execute: async (args, ctx) => {
+ *   setActiveArticle(args);
+ *   await ctx.prompt(`Read ${args}`);
+ * }
  */
 export interface AgentCommandContext {
 	prompt(text: string): Promise<void>;
 }
 
 /**
- * A user-facing verb an agent declares. Commands are conceptually
- * distinct from tools: tools are model-invoked mid-turn (`AgentTool`),
- * commands are user-invoked at turn boundaries.
+ * A user-facing verb an agent declares — e.g. reader's `/article
+ * <filename>`. Distinct from a tool: tools are model-invoked mid-turn;
+ * commands are user-invoked at turn boundaries (typed slash, Ctrl+P
+ * palette, keybind).
  *
- * `execute(args, ctx)` typically:
- *   - Mutates agent-scoped session state (held as module-level state in
- *     the agent's folder).
- *   - Calls `ctx.prompt(template)` to kick off an LLM turn with a
- *     command-specific template. The shell rebuilds `systemPrompt` at
- *     the start of that turn, so the new state is visible automatically.
+ * Fields:
+ *   - `name`         slash identifier without the leading `/`
+ *   - `description`  one-line help shown in the palette
+ *   - `argHint`      placeholder like `<filename>` rendered next to `name`
+ *   - `takesArgs`    if true, typed slash requires non-empty args;
+ *                    otherwise the slash text falls through as a plain
+ *                    prompt. A future slash-command dropdown can also
+ *                    use it to rewrite the textarea to `/name ` instead
+ *                    of invoking immediately.
+ *   - `execute`      the agent's behavior. Receives the raw arg string
+ *                    after the slash name, plus an `AgentCommandContext`.
+ *                    Typically mutates agent-owned state, then calls
+ *                    `ctx.prompt(template)` to kick off a turn.
  *
- * `takesArgs` means typed slash submission requires a non-empty argument
- * string before dispatch; otherwise the slash text falls through as a
- * plain prompt. A future slash-command dropdown can also use it to
- * rewrite the textarea to `/name ` instead of invoking immediately.
+ * The TUI's `BridgeAgentCommands` (`src/tui/context/agent.tsx`) converts
+ * each `AgentCommand` into a `CommandOption` in the unified registry, so
+ * slash dispatch, palette, and keybinds all share one surface.
  *
- * The TUI bridges each `AgentCommand` into a `CommandOption` in the
- * unified registry (see `src/tui/context/agent.tsx:BridgeAgentCommands`),
- * so agent-declared verbs share the same slash-dispatch + palette
- * surface as shell-level commands.
+ * @example
+ * // Reader's `/article <filename>`:
+ * const articleCommand: AgentCommand = {
+ *   name: "article",
+ *   description: "Open an article for guided reading",
+ *   argHint: "<filename>",
+ *   takesArgs: true,
+ *   execute: async (args, ctx) => {
+ *     const id = args.trim();
+ *     if (!id) return;
+ *     setActiveArticle(id);              // mutate agent-owned state
+ *     await ctx.prompt(`Read ${id}`);    // kick off a turn
+ *   },
+ * };
+ *
+ * // User types "/article foo.md":
+ * //   - `args`               = "foo.md"  (text after the slash name)
+ * //   - `ctx.prompt(...)`    = shell-injected capability
+ * //   - `"Read foo.md"`      = NEW text the command synthesizes; this
+ * //                            is the user message the LLM sees, NOT
+ * //                            the user's original "/article foo.md".
  */
 export interface AgentCommand {
 	name: string;
