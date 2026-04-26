@@ -2,7 +2,7 @@ import {
 	type AgentActions,
 	type AgentCommandContext,
 	createAgentActions,
-	getActiveArticle,
+	getAgent,
 	getAgentInfo,
 	getCurrentAgent,
 	getCurrentModel,
@@ -10,18 +10,32 @@ import {
 	setActiveArticle,
 	setConfirmFn,
 } from "@backend/agent";
-import { setPersistenceErrorHandler } from "@backend/config/errors";
+import { setPersistenceErrorHandler } from "@backend/persistence/errors";
+import { importLegacySessionJsonIfNeeded } from "@backend/persistence/import-legacy";
 import {
-	clearSession as clearSessionFile,
+	appendAgentMessage,
+	appendDisplayMessage,
+	createSession,
+	endSession,
+	finalizeDisplayMessageParts,
+	findActiveSession,
 	loadSession,
-	saveSession,
-} from "@backend/config/session";
+	newId,
+	setActiveArticle as persistActiveArticle,
+	repairSession,
+	runInTransaction,
+	updateDisplayMessageMeta,
+} from "@backend/persistence/sessions";
 import type {
 	AgentStoreState,
 	DisplayMessage,
 	DisplayPart,
 } from "@bridge/view-model";
-import type { AgentEvent, ThinkingLevel } from "@mariozechner/pi-agent-core";
+import type {
+	AgentEvent,
+	AgentMessage,
+	ThinkingLevel,
+} from "@mariozechner/pi-agent-core";
 import {
 	type Api,
 	type AssistantMessage,
@@ -60,28 +74,6 @@ interface AgentContextValue {
 
 const ctx = createContext<AgentContextValue>();
 
-let messageCounter = 0;
-
-/**
- * Migrate a persisted `DisplayMessage` from the old `text: string` shape to
- * the current `parts: DisplayPart[]` shape. Sessions saved before the parts
- * change come back off disk with `(msg as any).text` populated and no
- * `parts` field; we rebuild a single text part so the bubble renders without
- * a render-path crash. Messages already in the new shape pass through
- * untouched. The legacy `text` field is explicitly dropped so it doesn't
- * round-trip through `saveSession`.
- */
-function migrateMessage(msg: DisplayMessage): DisplayMessage {
-	if (Array.isArray(msg.parts)) return msg;
-	const { text: legacyText, ...rest } = msg as DisplayMessage & {
-		text?: string;
-	};
-	return {
-		...rest,
-		parts: legacyText ? [{ type: "text", text: legacyText }] : [],
-	};
-}
-
 export function AgentProvider(props: ParentProps) {
 	const dialog = useDialog();
 	const toast = useToast();
@@ -92,29 +84,64 @@ export function AgentProvider(props: ParentProps) {
 	});
 
 	// Route backend persistence write failures (disk-full, permission-denied,
-	// read-only filesystem) through the toast surface. The backend calls
-	// `reportPersistenceError`, which fans out to this handler; without a
-	// handler it falls back to `console.error` so the failure is never silent.
+	// read-only filesystem, DB I/O errors) through the toast surface. Without
+	// a handler the backend falls back to `console.error`, so the failure is
+	// never silent.
 	setPersistenceErrorHandler(({ kind, action, error }) => {
 		const msg = error instanceof Error ? error.message : String(error);
+		const titleKind =
+			kind === "config"
+				? "Config"
+				: kind === "auth"
+					? "Auth"
+					: kind === "db"
+						? "DB"
+						: "Session";
 		toast.show({
 			variant: "error",
-			title: `${kind === "config" ? "Config" : "Session"} ${action} failed`,
+			title: `${titleKind} ${action} failed`,
 			message: msg,
 			duration: 6000,
 		});
 	});
 
-	// Restore previous session if available
-	const saved = loadSession();
+	// One-shot import from the pre-SQLite `session.json`. No-op after the
+	// first successful run (the file is renamed to `.migrated`). Safe to
+	// call on every boot because the zero-rows gate inside is cheap.
+	importLegacySessionJsonIfNeeded(getCurrentAgent());
+
+	// Try to resume an active session for the currently-selected agent.
+	// Sessions are scoped by agent: switching agents on the empty open page
+	// means `findActiveSession` looks for *that* agent's active row, not
+	// whichever session ran last overall.
+	const resumeAgent = getCurrentAgent();
+	const active = findActiveSession(resumeAgent);
+	// Run crash-repair before hydrating so trailing empty assistant shells
+	// from a mid-stream SIGKILL don't surface as empty bubbles. With the
+	// `message_end`-in-one-transaction fix this shouldn't happen for new
+	// sessions, but the call handles pre-existing corruption and any path
+	// that sidesteps the reducer's transactional boundary.
+	if (active) repairSession(active.id);
+	const loaded = active ? loadSession(active.id) : null;
+
+	// Seed the pi-agent-core message list from persisted raw AgentMessages
+	// *before* the store is created, so the first `actions.prompt()` sees
+	// full LLM context.
+	if (loaded && loaded.agentMessages.length > 0) {
+		getAgent().state.messages = loaded.agentMessages;
+	}
+
+	// Mutable session handle. Lazily created on first user prompt to avoid
+	// churning empty rows when the user boots without interacting.
+	let currentSessionId: string | null = loaded?.session.id ?? null;
 
 	// Get initial model info
 	const initialModel = getCurrentModel();
 
 	const [store, setStore] = createStore<AgentStoreState>({
-		messages: (saved?.messages ?? []).map(migrateMessage),
+		messages: loaded?.displayMessages ?? [],
 		isStreaming: false,
-		activeArticle: saved?.activeArticle ?? null,
+		activeArticle: loaded?.session.activeArticle ?? null,
 		modelName: initialModel.name,
 		modelProvider: initialModel.provider,
 		contextWindow: initialModel.contextWindow,
@@ -127,9 +154,25 @@ export function AgentProvider(props: ParentProps) {
 		currentAgent: getCurrentAgent(),
 	});
 
-	// Set message counter past any restored messages
-	if (saved?.messages) {
-		messageCounter = saved.messages.length;
+	/**
+	 * Ensure we have a session row to write to. Called from inside the
+	 * user-prompt path (before we push the user bubble) so only actually
+	 * active sessions get rows.
+	 *
+	 * Invariant: every `AgentEvent` we receive runs after a user prompt,
+	 * and that prompt calls `ensureSession()` synchronously before pushing
+	 * the user bubble. Therefore `currentSessionId` is guaranteed non-null
+	 * inside every branch of the reducer below — the guards are defensive,
+	 * not structural.
+	 */
+	function ensureSession(): string {
+		if (currentSessionId) return currentSessionId;
+		const rec = createSession({
+			agent: store.currentAgent,
+			activeArticle: store.activeArticle,
+		});
+		currentSessionId = rec.id;
+		return rec.id;
 	}
 
 	const actions = createAgentActions((event: AgentEvent) => {
@@ -147,16 +190,39 @@ export function AgentProvider(props: ParentProps) {
 				case "message_start": {
 					const msg = (event as any).message;
 					if (msg && msg.role === "assistant") {
+						const newMsg: DisplayMessage = {
+							id: newId(),
+							role: "assistant",
+							parts: [],
+						};
 						setStore(
 							"messages",
 							produce((msgs: DisplayMessage[]) => {
-								msgs.push({
-									id: `msg-${++messageCounter}`,
-									role: "assistant",
-									parts: [],
-								});
+								msgs.push(newMsg);
 							}),
 						);
+						// Insert the header row only — parts stream in and get
+						// flushed as a batch on `message_end` via
+						// `finalizeDisplayMessageParts`. Avoids the old
+						// DELETE+re-INSERT thrash that ran on every end event.
+						//
+						// `currentSessionId` is guaranteed non-null: this branch
+						// only fires during a turn, and turns only start via
+						// `wrappedActions.prompt` which called `ensureSession()`.
+						//
+						// One-statement wrap in `runInTransaction` — the writer
+						// API requires a tx; this single insert is atomic by
+						// nature, so we wrap the one call instead of aggregating
+						// with message_end (which is on a separate event loop
+						// tick).
+						if (currentSessionId) {
+							const sid = currentSessionId;
+							runInTransaction((tx) =>
+								appendDisplayMessage(tx, sid, newMsg, {
+									includeParts: false,
+								}),
+							);
+						}
 						toBottom();
 					}
 					break;
@@ -230,12 +296,7 @@ export function AgentProvider(props: ParentProps) {
 							//   - pi-kiro's `Reasoning hidden by provider` — slow-path
 							//     marker per conformance §26a; same shape as above.
 							// Strip all known placeholders before the trim so every
-							// case collapses to empty and gets popped. OpenCode
-							// filters the same literal at render time
-							// (`routes/session/index.tsx:1443`); we do it reducer-side
-							// because Inkstone has no `showThinking` toggle, so a
-							// stored-but-never-rendered part would just be dead weight
-							// in persistence.
+							// case collapses to empty and gets popped.
 							const lastMsg = store.messages[lastMsgIdx];
 							if (!lastMsg) break;
 							const lastPartIdx = lastMsg.parts.length - 1;
@@ -272,7 +333,7 @@ export function AgentProvider(props: ParentProps) {
 
 				case "message_end": {
 					// Accumulate token usage and cost from assistant messages
-					const msg = (event as any).message;
+					const msg = (event as any).message as AgentMessage | undefined;
 					if (msg && msg.role === "assistant") {
 						const assistantMsg = msg as AssistantMessage;
 						const usage = assistantMsg.usage;
@@ -317,7 +378,30 @@ export function AgentProvider(props: ParentProps) {
 									assistantMsg.errorMessage,
 								);
 							}
+							// Commit the three related artifacts (header meta, parts,
+							// raw AgentMessage) in a single transaction so a crash
+							// between them can't leave the session in a half-written
+							// state. Eliminates the repair path for new corruption.
+							if (currentSessionId) {
+								const sid = currentSessionId;
+								const updated = store.messages[lastIdx];
+								if (updated) {
+									runInTransaction((tx) => {
+										updateDisplayMessageMeta(tx, sid, updated);
+										finalizeDisplayMessageParts(tx, sid, updated);
+										appendAgentMessage(tx, sid, msg, {
+											displayMessageId: updated.id,
+										});
+									});
+								}
+							}
 						}
+					} else if (msg && currentSessionId) {
+						// Tool-result / user / custom messages — persist so the
+						// raw-message timeline is complete for resume. No display
+						// bubble, so `displayMessageId` stays NULL.
+						const sid = currentSessionId;
+						runInTransaction((tx) => appendAgentMessage(tx, sid, msg));
 					}
 					break;
 				}
@@ -341,14 +425,15 @@ export function AgentProvider(props: ParentProps) {
 						const last = store.messages[lastIdx];
 						if (last && last.role === "assistant") {
 							setStore("messages", lastIdx, "duration", duration);
+							const updated = store.messages[lastIdx];
+							if (currentSessionId && updated) {
+								const sid = currentSessionId;
+								runInTransaction((tx) =>
+									updateDisplayMessageMeta(tx, sid, updated),
+								);
+							}
 						}
 					}
-					// Persist session after each turn
-					saveSession({
-						messages: [...store.messages],
-						activeArticle: store.activeArticle,
-						currentAgent: store.currentAgent,
-					});
 					break;
 			}
 		});
@@ -358,17 +443,20 @@ export function AgentProvider(props: ParentProps) {
 	const wrappedActions: AgentActions = {
 		...actions,
 		async prompt(text: string) {
+			const sessionId = ensureSession();
+			const userMsg: DisplayMessage = {
+				id: newId(),
+				role: "user",
+				parts: [{ type: "text", text }],
+			};
 			setStore(
 				"messages",
 				produce((msgs: DisplayMessage[]) => {
-					msgs.push({
-						id: `msg-${++messageCounter}`,
-						role: "user",
-						parts: [{ type: "text", text }],
-					});
+					msgs.push(userMsg);
 				}),
 			);
 			setStore("lastTurnStartedAt", Date.now());
+			runInTransaction((tx) => appendDisplayMessage(tx, sessionId, userMsg));
 			toBottom();
 			// Guard against a pre-stream throw from `actions.prompt()`.
 			// pi-agent-core funnels most provider errors through `message_end`
@@ -390,21 +478,35 @@ export function AgentProvider(props: ParentProps) {
 					const last = store.messages[lastIdx];
 					if (last && last.role === "assistant") {
 						setStore("messages", lastIdx, "error", msg);
+						const updated = store.messages[lastIdx];
+						if (currentSessionId && updated) {
+							const sid = currentSessionId;
+							runInTransaction((tx) =>
+								updateDisplayMessageMeta(tx, sid, updated),
+							);
+						}
 					} else {
 						// No assistant bubble was ever pushed (failure happened
 						// before `message_start`). Append a synthetic one so the
 						// error has a render target.
+						const synthetic: DisplayMessage = {
+							id: newId(),
+							role: "assistant",
+							parts: [],
+							error: msg,
+						};
 						setStore(
 							"messages",
 							produce((msgs: DisplayMessage[]) => {
-								msgs.push({
-									id: `msg-${++messageCounter}`,
-									role: "assistant",
-									parts: [],
-									error: msg,
-								});
+								msgs.push(synthetic);
 							}),
 						);
+						if (currentSessionId) {
+							const sid = currentSessionId;
+							runInTransaction((tx) =>
+								appendDisplayMessage(tx, sid, synthetic),
+							);
+						}
 					}
 				});
 				toast.show({
@@ -439,13 +541,18 @@ export function AgentProvider(props: ParentProps) {
 		},
 		clearSession() {
 			actions.clearSession();
+			// End the current session row (if any) so `findActiveSession` no
+			// longer resurrects it on next boot. The row itself stays on disk
+			// — that's the whole point of persistence-as-memory-substrate.
+			if (currentSessionId) {
+				endSession(currentSessionId);
+				currentSessionId = null;
+			}
 			setStore("messages", []);
 			setStore("activeArticle", null);
 			setStore("totalTokens", 0);
 			setStore("totalCost", 0);
 			setStore("lastTurnStartedAt", 0);
-			clearSessionFile();
-			messageCounter = 0;
 		},
 	};
 
@@ -454,10 +561,11 @@ export function AgentProvider(props: ParentProps) {
 	/**
 	 * Bridge backend-declared `AgentCommand`s into the unified command
 	 * registry. Defined as a closure component so it can capture
-	 * `store`, `setStore`, and `wrappedActions` without widening the
-	 * `useAgent()` context value. Mounts as a child of `<ctx.Provider>`
-	 * so it has an owner for `onCleanup` and is inside `CommandProvider`
-	 * (which wraps `AgentProvider` at the app root).
+	 * `store`, `setStore`, `wrappedActions`, and `currentSessionId`
+	 * without widening the `useAgent()` context value. Mounts as a child
+	 * of `<ctx.Provider>` so it has an owner for `onCleanup` and is
+	 * inside `CommandProvider` (which wraps `AgentProvider` at the app
+	 * root).
 	 *
 	 * Reactive on `store.currentAgent`: the registration callback re-runs
 	 * when the user switches agents, so an agent's slash verbs only
@@ -474,6 +582,12 @@ export function AgentProvider(props: ParentProps) {
 	 * CommandProvider, and `register` prepends to the list), so on slash-
 	 * name collision the agent-scoped entry wins — preserves D9's
 	 * "agent overrides built-in" rule.
+	 *
+	 * `executeCtx.setActiveArticle` centralizes the three side effects
+	 * that follow an activeArticle change (backend module state, solid
+	 * store mirror, SQLite session-row update) so reader's command doesn't
+	 * touch any of them directly. See `AgentCommandContext`'s JSDoc for
+	 * the acknowledged reader-vocabulary leak.
 	 */
 	function BridgeAgentCommands() {
 		const command = useCommand();
@@ -482,6 +596,13 @@ export function AgentProvider(props: ParentProps) {
 			if (!info.commands || info.commands.length === 0) return [];
 			const executeCtx: AgentCommandContext = {
 				prompt: (text) => wrappedActions.prompt(text),
+				setActiveArticle: (id) => {
+					setActiveArticle(id);
+					setStore("activeArticle", id);
+					if (currentSessionId) {
+						persistActiveArticle(currentSessionId, id);
+					}
+				},
 			};
 			return info.commands.map((c) => ({
 				id: `agent.${info.name}.${c.name}`,
@@ -495,42 +616,37 @@ export function AgentProvider(props: ParentProps) {
 				},
 				onSelect: (_d, args) => {
 					// Fire-and-forget. `cmd.execute` may await a streaming
-					// turn; the sync portion (state mutations like
-					// `setActiveArticle`) runs before the first `await`,
-					// so a microtask-scheduled mirror picks it up before
-					// the UI processes further events. Only `activeArticle`
-					// is mirrored today; extend this list when future
-					// commands mutate other store-backed state synchronously.
+					// turn; the synchronous side effects of the command
+					// (e.g. `ctx.setActiveArticle(...)`) run before the
+					// first `await`, so by the time control returns here
+					// the store and DB are already in sync.
 					void c.execute(args ?? "", executeCtx);
-					queueMicrotask(() => {
-						setStore("activeArticle", getActiveArticle());
-					});
 				},
 			}));
 		});
 		return null;
 	}
 
-	// Restore the agent recorded in the saved session *before* the article
+	// Restore the agent recorded in the resumed session *before* the article
 	// state, so the correct agent is active when the first turn rebuilds
 	// its system prompt. Without this, a transcript persisted under one
 	// agent could reopen under whichever agent is currently in `config.json`,
-	// with no way to switch back (agent cycling is locked once messages
-	// exist). Legacy sessions that predate the field fall through and use
-	// config.
-	if (saved?.currentAgent) {
-		wrappedActions.setAgent(saved.currentAgent);
-	}
-
-	// Reactivate reader's active article from saved state. Direct setter —
-	// no prompt turn triggered (which `/article` as a user-invoked command
-	// would do). Restoration rehydrates state; it doesn't replay the command.
-	// No explicit system-prompt rebuild: the shell's `prompt()` wrapper
-	// composes the system prompt fresh on every turn, so the next user turn
-	// after restore picks up the reactivated article automatically.
-	if (saved?.activeArticle) {
-		setActiveArticle(saved.activeArticle);
-		setStore("activeArticle", saved.activeArticle);
+	// with no way to switch back (agent cycling is locked once messages exist).
+	if (loaded) {
+		wrappedActions.setAgent(loaded.session.agent);
+		// Reactivate reader's active article from the resumed session.
+		// Direct module setter — no prompt turn triggered (which `/article`
+		// as a user-invoked command would do). Restoration rehydrates
+		// state; it doesn't replay the command. No explicit system-prompt
+		// rebuild: the shell's `prompt()` wrapper composes the system
+		// prompt fresh on every turn, so the next user turn after restore
+		// picks up the reactivated article automatically. The store's
+		// `activeArticle` is already seeded from `loaded.session.activeArticle`
+		// above, and the DB already has the value (it came from there), so
+		// no mirror/persist call is needed.
+		if (loaded.session.activeArticle) {
+			setActiveArticle(loaded.session.activeArticle);
+		}
 	}
 
 	return (

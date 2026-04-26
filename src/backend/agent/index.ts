@@ -4,7 +4,7 @@ import {
 	type ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
 import { type Api, type Model, supportsXhigh } from "@mariozechner/pi-ai";
-import { loadConfig, saveConfig } from "../config/config";
+import { loadConfig, saveConfig } from "../persistence/config";
 import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
 import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
 import { getActiveArticle, setActiveArticle } from "./agents/reader";

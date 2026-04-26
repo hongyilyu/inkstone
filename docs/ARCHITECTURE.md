@@ -108,14 +108,18 @@ src/
       amazon-bedrock.ts             Bedrock provider — wraps pi-ai `getModels("amazon-bedrock")`, auth via `getEnvApiKey`
       kiro.ts                       Amazon Kiro provider — wraps `pi-kiro/core`; registers `kiro-api` with pi-ai; OAuth (Builder ID / IdC) with lazy refresh
       index.ts                      PROVIDERS registry + getProvider/listProviders/resolveModel helpers
-    config/
-      config.ts                     providerId + modelId + themeId + currentAgent + vaultDir (shared JSON; Zod-validated on load via `config/schema.ts`)
+    persistence/
+      config.ts                     providerId + modelId + themeId + currentAgent + vaultDir (shared JSON; Zod-validated on load via `schema.ts`)
       auth.ts                       OAuth credentials loader/saver (provider-keyed; Zod-validated on load)
-      auth.json                     Runtime file (~/.config/inkstone/auth.json, mode 0600)
-      session.ts                    DisplayMessage[] + activeArticle (JSON; SQLite candidate)
-      errors.ts                     Shared persistence-file error hook (setPersistenceErrorHandler / reportPersistenceError); `kind: "config" | "auth" | "session"`
-      paths.ts                      Shared XDG paths: CONFIG_DIR, STATE_DIR, CONFIG_FILE, AUTH_FILE, SESSION_FILE
+      errors.ts                     Shared persistence error hook (setPersistenceErrorHandler / reportPersistenceError); `kind: "config" | "auth" | "session" | "db"`
+      paths.ts                      Shared XDG paths: CONFIG_DIR, STATE_DIR, CONFIG_FILE, AUTH_FILE, SESSION_FILE, DB_FILE
       schema.ts                     Zod schemas for Config + AuthFile (strictObject, field-level validation)
+      sessions.ts                   SQLite session store — see `docs/SQL.md` for the full API. Exports `newId`, `runInTransaction`, `repairSession`, `findActiveSession`, `createSession`, `loadSession`, `listSessions`, `endSession`, `setActiveArticle`, `appendDisplayMessage`, `updateDisplayMessageMeta`, `finalizeDisplayMessageParts`, `appendAgentMessage`.
+      import-legacy.ts              One-shot importer — `session.json` → SQLite on first boot, then rename to `.migrated`
+      db/
+        client.ts                   Lazy bun:sqlite client, WAL PRAGMAs, drizzle-kit migrator on open
+        schema.ts                   Drizzle tables: sessions, messages, parts, agent_messages
+        migrations/                 drizzle-kit-generated SQL migrations (applied on DB open)
 
   bridge/                           Pure TS — shared type contract
     view-model.ts                   DisplayMessage, AgentStoreState, SessionData
@@ -711,6 +715,29 @@ useKeyboard dispatch order (roughly):
 - Leader-chord (`<leader>X`) support
 - Plugin-registered keybinds
 - Textarea `input_*` action mapping (OpenTUI defaults are currently fine)
+
+## Key Patterns (from OpenCode)
+
+- `createSimpleContext()` — factory for typed context providers
+- Stack-based dialog system with focus save/restore
+- KV persistence via JSON file in state directory
+- Theme resolution: hex → refs → dark/light variants → RGBA
+- Named-action keybind map + command registry (see Keybinds + Commands section). Leader-chord and user overrides still deferred — see docs/TODO.md.
+
+## Persistence
+
+See **`docs/SQL.md`** for the authoritative persistence design — schema,
+lifecycle, transactional boundary, migration strategy, invariants, and
+recipes. Summary below for cross-referencing from other sections.
+
+SQLite at `~/.local/state/inkstone/inkstone.db`, accessed via Drizzle ORM on
+`bun:sqlite`. Four tables: `sessions`, `messages`, `parts`, `agent_messages`.
+Ids are UUIDv7 (globally unique + time-ordered). Visibility is agent-scoped.
+Sessions are created lazily on first user prompt; `/clear` marks the row
+ended rather than deleting. `message_end` commits meta + parts + raw
+AgentMessage in a single transaction via `runInTransaction`, so crashes
+can't leave half-written state; `repairSession` is the backstop for
+pre-transaction data. Config + auth stay in JSON under `~/.config/inkstone/`.
 
 ## Key Patterns (from OpenCode)
 

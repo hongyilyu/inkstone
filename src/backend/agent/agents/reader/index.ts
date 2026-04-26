@@ -28,10 +28,12 @@ export function setActiveArticle(id: string | null): void {
 
 /**
  * `/article <filename>` — reader's canonical verb. Sets the active
- * article, then kicks off an LLM turn asking the agent to start the
- * reading workflow. The shell's `AgentActions.prompt` wrapper rebuilds
- * the system prompt at the turn boundary, so `buildInstructions()`
- * reads the freshly-set `activeArticle` automatically.
+ * article via the shell-provided context method (which also mirrors
+ * the value into the store and persists it to the session row), then
+ * kicks off an LLM turn asking the agent to start the reading
+ * workflow. The shell's `AgentActions.prompt` wrapper rebuilds the
+ * system prompt at the turn boundary, so `buildInstructions()` reads
+ * the freshly-set `activeArticle` automatically.
  *
  * Empty args are a no-op (user typed `/article` with nothing after).
  * The submit handler in `prompt.tsx` already guards against that by
@@ -45,7 +47,7 @@ const articleCommand: AgentCommand = {
 	execute: async (args, ctx) => {
 		const articleId = args.trim();
 		if (!articleId) return;
-		setActiveArticle(articleId);
+		ctx.setActiveArticle(articleId);
 		await ctx.prompt(`Read ${articleId}`);
 	},
 };

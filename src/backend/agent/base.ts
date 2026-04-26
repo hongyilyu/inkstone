@@ -18,10 +18,10 @@ export type AgentColorKey =
 
 /**
  * Runtime capabilities the shell injects into `AgentCommand.execute` at
- * dispatch time. Today: just `prompt`. Kept as a named object (not a
- * positional arg) so adding a capability later — e.g. `confirm(question)`
- * for a command that wants user approval, `notify(msg)` for a toast — is
- * additive, not breaking.
+ * dispatch time. Kept as a named object (not a positional arg) so
+ * adding a capability later — e.g. `confirm(question)` for a command
+ * that wants user approval, `notify(msg)` for a toast — is additive,
+ * not breaking.
  *
  * Why this isn't `AgentActions` directly: commands shouldn't be able to
  * clear the session, switch agent/model, or open dialogs. Those are
@@ -29,23 +29,42 @@ export type AgentColorKey =
  * registry, closing over `AgentActions` at their own call sites. See
  * `docs/SLASH-COMMANDS.md` Path A + `src/tui/app.tsx` for that boundary.
  *
+ * `setActiveArticle` is reader-shaped vocabulary on a generic contract
+ * — acknowledged leak. The alternative (microtask mirror of module
+ * state from the TUI) was considered and rejected as more magical.
+ * When a second agent needs similar "shell, please mirror + persist
+ * this state change" wiring, this will be the point where a generic
+ * replacement lands (candidate shape: `ctx.syncStore(key, value)`).
+ * Until then the explicit named method is clearer than an abstraction
+ * with one caller.
+ *
  * @example
  * // Shell side (src/tui/context/agent.tsx) — build the context at
- * // dispatch time and hand it to the command:
- * const ctx: AgentCommandContext = { prompt: wrappedActions.prompt };
+ * // dispatch time and hand it to the command. `setActiveArticle`
+ * // closes over `currentSessionId` so the persistence call has a
+ * // target:
+ * const ctx: AgentCommandContext = {
+ *   prompt: wrappedActions.prompt,
+ *   setActiveArticle: (id) => {
+ *     setActiveArticle(id);             // backend module state
+ *     setStore("activeArticle", id);    // solid store mirror
+ *     if (currentSessionId) persistActiveArticle(currentSessionId, id);
+ *   },
+ * };
  * await cmd.execute(args, ctx);
  *
  * @example
- * // Agent side — mutate owned state, then kick off a turn. The shell's
- * // `prompt()` wrapper recomposes `systemPrompt` from the new state
- * // before streaming, so no explicit "refresh" step is needed:
+ * // Agent side — mutate owned state via ctx, then kick off a turn.
+ * // The shell's `prompt()` wrapper recomposes `systemPrompt` from the
+ * // new state before streaming, so no explicit "refresh" step is needed:
  * execute: async (args, ctx) => {
- *   setActiveArticle(args);
+ *   ctx.setActiveArticle(args);
  *   await ctx.prompt(`Read ${args}`);
  * }
  */
 export interface AgentCommandContext {
 	prompt(text: string): Promise<void>;
+	setActiveArticle(id: string | null): void;
 }
 
 /**
@@ -82,7 +101,7 @@ export interface AgentCommandContext {
  *   execute: async (args, ctx) => {
  *     const id = args.trim();
  *     if (!id) return;
- *     setActiveArticle(id);              // mutate agent-owned state
+ *     ctx.setActiveArticle(id);          // mutate agent-owned state
  *     await ctx.prompt(`Read ${id}`);    // kick off a turn
  *   },
  * };

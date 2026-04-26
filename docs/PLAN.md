@@ -39,6 +39,8 @@ A terminal UI application for guided article reading, built with OpenTUI (Solid)
 | `@solid-primitives/event-bus` | Event batching |
 | `fuzzysort` | Fuzzy search in dialogs |
 | `diff` | Unified diff generation for edit_file tool |
+| `drizzle-orm` | Typed SQLite schema + queries (persistence layer) |
+| `drizzle-kit` (dev) | Migration generation for the SQLite schema |
 
 ## Phases
 
@@ -50,6 +52,7 @@ A terminal UI application for guided article reading, built with OpenTUI (Solid)
 | 3 | File tools + quote_article + guard + `/article` | `/article file.md` → Stage 1, guards enforced |
 | 4 | Model selection dialog (Bedrock) | Switch model, next prompt uses it |
 | 5 | Session persistence (JSON) | Quit + restart preserves conversation |
+| 6 | SQLite persistence via Drizzle | Session transcripts + raw AgentMessages persist agent-scoped; resume restores full LLM context; `memory` table scaffolded for summarization phase |
 
 ## Agent Workflow (Article Reader)
 

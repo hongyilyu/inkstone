@@ -37,3 +37,12 @@ For any UI-side change (components, rendering, theming, layout, dialogs, keybind
 - OpenTUI skill: `.agents/skills/opentui/`
 - pi-agent-core types: `node_modules/@mariozechner/pi-agent-core/`
 - pi-ai types: `node_modules/@mariozechner/pi-ai/dist/types.d.ts`
+
+## Persistence
+
+For any change to `src/backend/persistence/` — schema, migrations,
+session lifecycle, the write split, load-time repair, or anything
+that touches SQLite — read `docs/SQL.md` first. It is the single
+source of truth for the persistence layer's design decisions,
+invariants, and recipes. Update it alongside any schema or API
+change.
