@@ -24,9 +24,10 @@ export function setActiveArticle(id: string | null): void {
 
 /**
  * `/article <filename>` — reader's canonical verb. Sets the active
- * article, rebuilds the system prompt so `buildInstructions()` picks
- * up the new article context, then kicks off an LLM turn asking the
- * agent to start the reading workflow.
+ * article, then kicks off an LLM turn asking the agent to start the
+ * reading workflow. The shell's `AgentActions.prompt` wrapper rebuilds
+ * the system prompt at the turn boundary, so `buildInstructions()`
+ * reads the freshly-set `activeArticle` automatically.
  *
  * Empty args are a no-op (user typed `/article` with nothing after).
  * The submit handler in `prompt.tsx` already guards against that by
@@ -41,7 +42,6 @@ const articleCommand: AgentCommand = {
 		const articleId = args.trim();
 		if (!articleId) return;
 		setActiveArticle(articleId);
-		ctx.refreshSystemPrompt();
 		await ctx.prompt(`Read ${articleId}`);
 	},
 };

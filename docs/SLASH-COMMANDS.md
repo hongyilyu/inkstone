@@ -73,7 +73,7 @@ The exploration ended because (A) the first implementation had a bug (`/clear` s
 
 `backend/` cannot import `DialogContext` from `src/tui/ui/dialog.tsx` (enforced by Biome `noRestrictedImports` rules in `biome.json`). A single `SlashCommand` type in backend with `execute(args, { actions, dialog }) => void` is therefore impossible — the type would need to reference a TUI type.
 
-**Path A shipped.** `SlashCommand` lives in backend as `AgentCommand` with a narrow `AgentCommandContext` (`{ prompt, refreshSystemPrompt }`). The TUI's `BridgeAgentCommands` component adapts each `AgentCommand` into a `CommandOption` with a `slash` field, closing over `wrappedActions` for the execute context. Dialog-opening commands stay as native `CommandOption` literals with `onSelect(dialog)`. Both kinds flow through the same registry; typed submit, palette, and keybinds treat them identically.
+**Path A shipped.** `SlashCommand` lives in backend as `AgentCommand` with a narrow `AgentCommandContext` (`{ prompt }` only — `refreshSystemPrompt` was removed once the shell's `prompt()` wrapper took over composing `systemPrompt` at the turn boundary). The TUI's `BridgeAgentCommands` component adapts each `AgentCommand` into a `CommandOption` with a `slash` field, closing over `wrappedActions` for the execute context. Dialog-opening commands stay as native `CommandOption` literals with `onSelect(dialog)`. Both kinds flow through the same registry; typed submit, palette, and keybinds treat them identically.
 
 The two rejected alternatives (B1: hoist `SlashCommand` into TUI; B2: hoist + mirror folders) stay rejected — B1's disconnection of handlers from agent folders and B2's 2× folder count don't pay off.
 

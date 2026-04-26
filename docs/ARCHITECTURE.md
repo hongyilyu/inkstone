@@ -299,7 +299,7 @@ Multi-agent support is a **flat registry with runtime composition** — no inher
 
 Tool implementations come from `@mariozechner/pi-coding-agent` via the shared pool in `backend/agent/tools.ts` — Inkstone does not re-implement read/write/edit. Each factory is called with `VAULT_DIR` as the `cwd` so vault-relative paths resolve inside the vault; absolute paths are honored by the tool and sandboxed by the guard. pi-coding-agent's tool source transitively imports `@mariozechner/pi-tui`, but `wrapToolDefinition` strips the render hooks — the tools are pure `AgentTool<any>` at runtime, and pi-tui is inert code-path-wise (Inkstone renders through OpenTUI in `src/tui/**`).
 
-`backend/agent/index.ts` calls both composers at the moments where the agent's tools or system prompt must be rebuilt: initial `getAgent()` instantiation, `setAgent()`, `clearSession()`, and `AgentActions.refreshSystemPrompt()`.
+`backend/agent/index.ts` rebuilds the system prompt at the start of every `AgentActions.prompt(text)` call. `setAgent()` and `clearSession()` also rebuild inline for correctness on mid-session reads of `a.state.systemPrompt` (e.g. a tool that echoes the current prompt) — the next turn's prompt-wrapper rebuild produces byte-identical output. Tools are rebuilt eagerly on `setAgent()` only (pi-agent-core may serialize them independently of prompt composition).
 
 ### Agents on ship
 
@@ -353,7 +353,6 @@ Agent-declared verbs (backend-side, `src/backend/agent/base.ts`):
 ```ts
 export interface AgentCommandContext {
   prompt(text: string): Promise<void>;
-  refreshSystemPrompt(): void;
 }
 
 export interface AgentCommand {
@@ -365,7 +364,7 @@ export interface AgentCommand {
 }
 ```
 
-`AgentCommandContext` is deliberately narrow — only the two hooks commands actually need (`prompt`, `refreshSystemPrompt`). Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over `AgentActions.clearSession` directly, so they don't need a context hand-off.
+`AgentCommandContext` is deliberately narrow — the only hook commands need is `prompt`. Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over `AgentActions.clearSession` directly, so they don't need a context hand-off. Commands mutate agent-owned module state directly (e.g. reader's `activeArticle`); the shell's `AgentActions.prompt` wrapper rebuilds `systemPrompt` at the next turn boundary, so no explicit refresh call is needed.
 
 **Sources of commands** (all flow into the same registry):
 
@@ -387,10 +386,10 @@ user types "/article foo.md" + Enter
           → BridgeAgentCommands' reader entry (agent-scoped registers first)
           → takesArgs gate passes
           → entry.onSelect(dialog, "foo.md")
-            → cmd.execute("foo.md", { prompt, refreshSystemPrompt })
+            → cmd.execute("foo.md", { prompt })
               → setActiveArticle("foo.md")       (reader module state)
-              → ctx.refreshSystemPrompt()        (rebuild with article context)
-              → await ctx.prompt("Read foo.md")  (streaming turn begins)
+              → await ctx.prompt("Read foo.md")  (shell rebuilds systemPrompt,
+                                                  then streaming turn begins)
             → queueMicrotask: setStore("activeArticle", getActiveArticle())
       → setText("")                              (clear input)
 
@@ -415,7 +414,7 @@ user types "/article" + Enter
 
 **Precedence on slash-name collision**: first-match wins. `AgentProvider` mounts inside `CommandProvider` (see `src/tui/app.tsx` tree), and `command.register` prepends to the internal registration list — so `BridgeAgentCommands` entries sit ahead of `Layout`'s entries. An agent that declares a verb with the same name as a shell-level verb overrides the shell version for that agent only. This preserves D9's "agent overrides built-in" rule; it's theoretical today (no agent redefines `clear`).
 
-**Session restore** bypasses the command system entirely — it rehydrates state without triggering a prompt turn. `context/agent.tsx` calls `setActiveArticle(saved.activeArticle)` + `wrappedActions.refreshSystemPrompt()` directly.
+**Session restore** bypasses the command system entirely — it rehydrates state without triggering a prompt turn. `context/agent.tsx` calls `setActiveArticle(saved.activeArticle)` directly. No explicit system-prompt rebuild is needed because the next user turn's `AgentActions.prompt` wrapper composes the system prompt fresh from the restored state.
 
 ### Switching rules
 

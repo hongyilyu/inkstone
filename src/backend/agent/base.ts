@@ -16,21 +16,23 @@ export type AgentColorKey =
 	| "info";
 
 /**
- * Capabilities exposed to `AgentCommand.execute`. Narrow by design — only
- * the two hooks commands actually need today: kick off a new turn
- * (`prompt`) and rebuild the system prompt after mutating agent-owned
- * state (`refreshSystemPrompt`). Anything a shell knows how to do —
- * clearing the session, switching agent/model, opening a dialog — is
- * not a command concern and is deliberately absent.
+ * Capabilities exposed to `AgentCommand.execute`. Narrow by design —
+ * the only hook commands need today: kick off a new turn (`prompt`).
  *
- * Shell-level verbs (`/clear`) live in the TUI command registry as
- * regular `CommandOption` entries that close over `AgentActions`. See
- * `docs/SLASH-COMMANDS.md` Path A + `src/tui/app.tsx` for the shell
- * registration point.
+ * Commands mutate agent-owned state (module-level, inside the agent's
+ * folder) before calling `prompt`; the shell's `AgentActions.prompt`
+ * wrapper rebuilds `systemPrompt` at the turn boundary, so no explicit
+ * refresh call is needed.
+ *
+ * Anything a shell knows how to do — clearing the session, switching
+ * agent/model, opening a dialog — is not a command concern and is
+ * deliberately absent. Shell-level verbs (`/clear`) live in the TUI
+ * command registry as regular `CommandOption` entries that close over
+ * `AgentActions`. See `docs/SLASH-COMMANDS.md` Path A + `src/tui/app.tsx`
+ * for the shell registration point.
  */
 export interface AgentCommandContext {
 	prompt(text: string): Promise<void>;
-	refreshSystemPrompt(): void;
 }
 
 /**
@@ -38,12 +40,12 @@ export interface AgentCommandContext {
  * distinct from tools: tools are model-invoked mid-turn (`AgentTool`),
  * commands are user-invoked at turn boundaries.
  *
- * `execute(args, ctx)` can do any mix of:
- *   - Mutate agent-scoped session state (held as module-level state in
+ * `execute(args, ctx)` typically:
+ *   - Mutates agent-scoped session state (held as module-level state in
  *     the agent's folder).
- *   - Call `ctx.refreshSystemPrompt()` after state changes.
- *   - Call `ctx.prompt(template)` to kick off an LLM turn with a
- *     command-specific template.
+ *   - Calls `ctx.prompt(template)` to kick off an LLM turn with a
+ *     command-specific template. The shell rebuilds `systemPrompt` at
+ *     the start of that turn, so the new state is visible automatically.
  *
  * `takesArgs` means typed slash submission requires a non-empty argument
  * string before dispatch; otherwise the slash text falls through as a

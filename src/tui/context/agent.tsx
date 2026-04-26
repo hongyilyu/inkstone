@@ -447,9 +447,6 @@ export function AgentProvider(props: ParentProps) {
 			clearSessionFile();
 			messageCounter = 0;
 		},
-		refreshSystemPrompt() {
-			actions.refreshSystemPrompt();
-		},
 	};
 
 	const value: AgentContextValue = { store, actions: wrappedActions };
@@ -485,7 +482,6 @@ export function AgentProvider(props: ParentProps) {
 			if (!info.commands || info.commands.length === 0) return [];
 			const executeCtx: AgentCommandContext = {
 				prompt: (text) => wrappedActions.prompt(text),
-				refreshSystemPrompt: () => wrappedActions.refreshSystemPrompt(),
 			};
 			return info.commands.map((c) => ({
 				id: `agent.${info.name}.${c.name}`,
@@ -516,8 +512,8 @@ export function AgentProvider(props: ParentProps) {
 	}
 
 	// Restore the agent recorded in the saved session *before* the article
-	// state, so the system-prompt rebuild below runs under the correct
-	// agent's prompt builder. Without this, a transcript persisted under one
+	// state, so the correct agent is active when the first turn rebuilds
+	// its system prompt. Without this, a transcript persisted under one
 	// agent could reopen under whichever agent is currently in `config.json`,
 	// with no way to switch back (agent cycling is locked once messages
 	// exist). Legacy sessions that predate the field fall through and use
@@ -526,13 +522,14 @@ export function AgentProvider(props: ParentProps) {
 		wrappedActions.setAgent(saved.currentAgent);
 	}
 
-	// Reactivate reader's active article from saved state. Direct setter +
-	// system-prompt rebuild — no prompt turn triggered (which `/article` as
-	// a user-invoked command would do). Restoration rehydrates state; it
-	// doesn't replay the command.
+	// Reactivate reader's active article from saved state. Direct setter —
+	// no prompt turn triggered (which `/article` as a user-invoked command
+	// would do). Restoration rehydrates state; it doesn't replay the command.
+	// No explicit system-prompt rebuild: the shell's `prompt()` wrapper
+	// composes the system prompt fresh on every turn, so the next user turn
+	// after restore picks up the reactivated article automatically.
 	if (saved?.activeArticle) {
 		setActiveArticle(saved.activeArticle);
-		wrappedActions.refreshSystemPrompt();
 		setStore("activeArticle", saved.activeArticle);
 	}
 

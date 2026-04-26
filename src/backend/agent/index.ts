@@ -26,17 +26,6 @@ export interface AgentActions {
 	setThinkingLevel(level: ThinkingLevel): void;
 	setAgent(name: string): void;
 	clearSession(): void;
-	/**
-	 * Rebuild the system prompt from the current agent's
-	 * `buildInstructions()`. Called by the TUI's agent-command bridge
-	 * (`BridgeAgentCommands` in `src/tui/context/agent.tsx`) after a
-	 * command mutates agent-owned state (e.g. reader's `/article` sets
-	 * `activeArticle` then calls this before triggering a turn), and by
-	 * session restore on boot (restores `activeArticle` from disk, then
-	 * needs the prompt to pick up the restored context before the next
-	 * turn).
-	 */
-	refreshSystemPrompt(): void;
 }
 
 let agent: Agent | null = null;
@@ -183,6 +172,15 @@ export function createAgentActions(
 
 	const actions: AgentActions = {
 		async prompt(text: string) {
+			// Rebuild the system prompt at every turn boundary so any
+			// agent-owned state mutations (e.g. reader's `activeArticle`
+			// set by `/article`) land in the next turn automatically.
+			// This replaces the old explicit `refreshSystemPrompt()` call:
+			// commands now just mutate state and call `ctx.prompt(...)`,
+			// and the shell takes care of composing. Session restore, the
+			// other former caller, relies on the same property — the first
+			// user turn after boot rebuilds before sending.
+			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
 			await a.prompt(text);
 		},
 		abort() {
@@ -210,6 +208,13 @@ export function createAgentActions(
 		setAgent(name: string) {
 			const info = getAgentInfo(name);
 			currentAgent = info.name;
+			// Tools MUST be swapped immediately — pi-agent-core may serialize
+			// them for the next request independently of when the system
+			// prompt is read. System prompt is also refreshed here as a
+			// mid-session correctness measure (something reading
+			// `agent.state.systemPrompt` between turns would otherwise see
+			// the previous agent's bytes). `prompt()` will rebuild again on
+			// the next turn; that's fine, the output is byte-identical.
 			a.state.systemPrompt = composeSystemPrompt(info);
 			a.state.tools = composeTools(info);
 			saveConfig({ currentAgent: info.name });
@@ -221,9 +226,6 @@ export function createAgentActions(
 			// per-agent reset calls here or (b) introduce a lifecycle hook
 			// on AgentInfo (e.g. `onSessionClear`) that the shell iterates.
 			setActiveArticle(null);
-			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
-		},
-		refreshSystemPrompt() {
 			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
 		},
 	};

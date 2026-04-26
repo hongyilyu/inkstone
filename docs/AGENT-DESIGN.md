@@ -115,10 +115,9 @@ This is D5 ("ship mechanism, defer content") extended to cover the future-work d
 
 ```ts
 // src/backend/agent/base.ts — narrow context with only
-// capabilities actual commands use today.
+// the single capability actual commands use today.
 export interface AgentCommandContext {
   prompt(text: string): Promise<void>;
-  refreshSystemPrompt(): void;
 }
 
 export interface AgentCommand {
@@ -135,15 +134,15 @@ export interface AgentInfo {
 }
 ```
 
-`execute` can mutate agent-owned state, call `ctx.prompt(template)` to kick off an LLM turn with a command-specific template, and/or call `ctx.refreshSystemPrompt()` after state changes. The TUI's `BridgeAgentCommands` component (`src/tui/context/agent.tsx`) picks up `AgentInfo.commands` reactively on `store.currentAgent` and converts each entry into a `CommandOption` in the unified registry. `onSelect` closes over the narrow `AgentCommandContext` built from `wrappedActions.prompt` / `wrappedActions.refreshSystemPrompt`, so command side effects share the same Solid-store and persistence path as direct UI actions.
+`execute` mutates agent-owned state directly (module-level, inside the agent's folder) and calls `ctx.prompt(template)` to kick off an LLM turn with a command-specific template. The shell's `AgentActions.prompt` wrapper rebuilds `systemPrompt` at the turn boundary via `composeSystemPrompt(getAgentInfo(currentAgent))`, so any state mutated before `ctx.prompt(...)` is visible to the next turn automatically. The TUI's `BridgeAgentCommands` component (`src/tui/context/agent.tsx`) picks up `AgentInfo.commands` reactively on `store.currentAgent` and converts each entry into a `CommandOption` in the unified registry. `onSelect` closes over the narrow `AgentCommandContext` built from `wrappedActions.prompt`, so command side effects share the same Solid-store and persistence path as direct UI actions.
 
 **Shell-level verbs** (`/clear`) live directly as `CommandOption` entries in `Layout()` (`src/tui/app.tsx`), closing over `AgentActions.clearSession`. They don't go through `AgentCommand` because there's no agent-owned state involved — a shell action registered with `slash: { name: "clear" }` is the simpler expression. This is what removed the `clearSession` trampoline that used to live on `CommandContext`.
 
 **Dispatch precedence**: agent-declared commands override shell-level commands on slash-name collision. Mechanism: `AgentProvider` mounts inside `CommandProvider`, and `command.register` prepends to its internal list, so agent-bridge entries sit ahead of `Layout`'s entries. First-match wins. Intentional — an agent can redefine `/clear` if its semantics differ (none do today).
 
-**Why the context is narrow**: `AgentCommandContext` exposes only `prompt` and `refreshSystemPrompt`. Anything a shell knows how to do — clearing the session, switching agent/model, opening a dialog — is not a command concern and is deliberately absent. Shell actions register their own `CommandOption` entries; commands don't invoke them. Widening the context has to be an explicit decision per capability.
+**Why the context is narrow**: `AgentCommandContext` exposes only `prompt`. Anything a shell knows how to do — clearing the session, switching agent/model, opening a dialog — is not a command concern and is deliberately absent. Shell actions register their own `CommandOption` entries; commands don't invoke them. Widening the context has to be an explicit decision per capability.
 
-**What this resolves**: the "Reader-specific vocabulary leaks onto AgentActions" pressure point. `loadArticle` is gone from `AgentActions`; it's now a reader command with state owned by the reader module. `buildInstructions` is nullary — no `AgentBuildContext` carrying reader-shaped fields. D9's original design introduced `runAgentCommand` + `canRunAgentCommand` on `AgentActions` plus a wider `CommandContext` with `clearSession` and `abort` — both have since been removed (see "Unified command registry" below) in favor of the bridge pattern.
+**What this resolves**: the "Reader-specific vocabulary leaks onto AgentActions" pressure point. `loadArticle` is gone from `AgentActions`; it's now a reader command with state owned by the reader module. `buildInstructions` is nullary — no `AgentBuildContext` carrying reader-shaped fields. D9's original design introduced `runAgentCommand` + `canRunAgentCommand` on `AgentActions` plus a wider `CommandContext` with `clearSession` and `abort` — all three have since been removed in favor of the bridge pattern (see "Unified command registry" below). The originally-proposed `refreshSystemPrompt` hook was also dropped when the shell's `prompt()` wrapper took over prompt composition at the turn boundary — commands no longer need an explicit "invalidate cache" signal.
 
 **Unified command registry** (SLASH-COMMANDS.md Path A): the dialog-opening commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`) and agent-declared commands (`/article`) now share the same TUI-side `CommandOption` type. The previous "Non-goal" here (dialog-openers stay palette-only because `DialogContext` can't cross the layer boundary) is resolved: `DialogContext` never crosses the boundary, because `AgentCommand` no longer holds an `onSelect` — the TUI's bridge owns the adapter. Agent code stays layer-correct (declares plain data); TUI code owns presentation (closes over `DialogContext` and `AgentActions` as needed).
 
