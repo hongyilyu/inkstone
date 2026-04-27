@@ -1,23 +1,12 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 
 /**
- * Inkstone's provider abstraction.
- *
- * A `ProviderInfo` wraps one logical model-hosting service (e.g. Amazon
- * Bedrock, Amazon Kiro, Anthropic direct). It exists on top of pi-ai's
- * per-API stream-function registry so that:
- *
- *   1. Inkstone has a single place that owns user-facing metadata
- *      (displayName, connection check, auth instructions) per provider.
- *   2. Custom providers that pi-ai doesn't ship (but that are wire-compatible
- *      with an existing pi-ai API — e.g. Bedrock-Converse-compatible endpoints
- *      like Amazon Kiro) can plug in by building their own `Model<Api>`
- *      objects with a custom `baseUrl`, without modifying pi-ai itself.
- *
- * Fundamentally-different custom providers that need their own streaming
- * transport would additionally require threading a custom `streamFn` into
- * pi-agent-core. That extension is not present here — add it the day we
- * actually need it, not speculatively.
+ * Inkstone's provider abstraction. A `ProviderInfo` wraps one logical
+ * model-hosting service (Amazon Bedrock, Amazon Kiro, …) with the
+ * user-facing metadata Inkstone needs on top of pi-ai's per-API stream
+ * registry. See `docs/ARCHITECTURE.md` § Provider registry for why the
+ * registry sits above pi-ai, how custom `baseUrl` providers slot in,
+ * and which extension points are intentionally deferred.
  */
 export interface ProviderInfo {
 	/** Stable provider id. Must match the `Model.provider` field of models

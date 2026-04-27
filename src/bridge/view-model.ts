@@ -31,39 +31,23 @@ export interface DisplayMessage {
 	id: string;
 	role: "user" | "assistant";
 	/**
-	 * Ordered block list. User messages always have exactly one `text` part.
-	 * Assistant messages may interleave `text` and `thinking` parts in the
-	 * order the model emitted them (driven by pi-ai's `text_start` /
-	 * `thinking_start` boundaries). Redacted thinking is dropped at
-	 * `thinking_end` time, so no `redacted` flag lives on parts.
-	 * Known placeholder strings (`[REDACTED]` from OpenRouter,
-	 * `Reasoning hidden by provider` from pi-kiro conformance §26a)
-	 * are stripped in the reducer — see `REDACTED_THINKING_PLACEHOLDERS`
-	 * in `tui/context/agent.tsx`.
+	 * Ordered block list. User messages have exactly one `text` part;
+	 * assistant messages may interleave `text` and `thinking` parts in
+	 * emission order. Redacted-thinking handling lives in the reducer —
+	 * see `REDACTED_THINKING_PLACEHOLDERS` in `tui/context/agent.tsx`.
 	 */
 	parts: DisplayPart[];
-	// `agentName` and `modelName` are per-message: each assistant bubble records
-	// the agent and model that produced *that specific* reply, sourced from the
-	// `message_end` event (not from mutable store state).
-	//
-	// `duration` is per-turn: the wall-clock time from the user's prompt to the
-	// turn completing. It is stamped only on the turn-closing assistant bubble
-	// (the final assistant message whose `stopReason !== "toolUse"`), so
-	// intermediate assistant messages in a tool-driven turn intentionally carry
-	// `agentName` + `modelName` without a `duration`.
-	//
-	// All three are optional because user messages don't have them.
+	// `agentName` / `modelName` are per-message (stamped in `message_end`);
+	// `duration` is per-turn (stamped in `agent_end` on the turn-closing
+	// bubble only). See `docs/ARCHITECTURE.md` § Duration and transient state.
+	// Optional because user messages don't have them.
 	agentName?: string;
 	modelName?: string;
 	duration?: number; // ms
 	/**
-	 * pi-ai's `AssistantMessage.errorMessage`, populated when the turn ended
-	 * with `stopReason === "error" | "aborted"`. Rendered as a warning-
-	 * bordered panel below the assistant body. Mirrors OpenCode's per-message
-	 * error surface (`routes/session/index.tsx:1374-1387`), trimmed to a
-	 * single field — Inkstone doesn't yet differentiate abort ("interrupted"
-	 * footer suffix) from hard error (red panel); both render as the panel.
-	 * That's a deferred polish, not a semantic contract difference.
+	 * pi-ai's `AssistantMessage.errorMessage`, populated when the turn
+	 * ended with `stopReason === "error" | "aborted"`. Rendered as a
+	 * warning-bordered panel below the assistant body.
 	 */
 	error?: string;
 }

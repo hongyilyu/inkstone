@@ -1,18 +1,9 @@
 /**
- * Keybind registry + match/print helpers.
+ * Keybind registry + match/print helpers. See `docs/ARCHITECTURE.md`
+ * § Keybinds + Commands for the overall pattern and scoping rules.
  *
- * Ported from OpenCode's `config/keybinds.ts` + `util/keybind.ts`, trimmed to
- * what Inkstone currently needs:
- *   - no `<leader>` chord support (no chord keybinds today)
- *   - no user overrides (bindings are static constants; config.json schema
- *     doesn't have a keybinds field yet)
- *   - no provider/context (bindings are static, so `match`/`print` are
- *     plain module functions)
- *
- * Consumers: import the namespace and call `Keybind.match("action", evt)` or
- * `Keybind.print("action")`. The action name is the single source of truth —
- * changing a binding string in `KEYBINDS` automatically updates every call
- * site and every hint.
+ * Consumers: `Keybind.match("action", evt)` for dispatch, `Keybind.print("action")`
+ * for hint labels. Action names are the single source of truth.
  */
 import type { ParsedKey } from "@opentui/core";
 import { isDeepEqual } from "remeda";
@@ -33,17 +24,9 @@ export interface Info {
 
 /**
  * Central keybind map. Each value is a comma-separated list of alternate
- * bindings; each alternate is a `+`-separated list of modifiers and a key
+ * bindings; each alternate is a `+`-separated list of modifiers + a key
  * name. Tokens: `ctrl`, `alt` / `meta` / `option`, `shift`, `super`, `esc`
- * (alias for `escape`). A value of `"none"` disables the binding.
- *
- * Scope hints (for maintainers):
- *   - `app_*`, `command_list`, `agent_cycle*`, `messages_*`: global actions
- *     fired from the session view (Layout's useKeyboard + CommandProvider)
- *   - `session_interrupt`: streaming-gated command registered by `prompt.tsx`
- *     (double-tap ESC to abort; see "Session interrupt" in ARCHITECTURE.md)
- *   - `dialog_close`: dialog stack close handler (src/tui/ui/dialog.tsx)
- *   - `select_*`: dialog-select local nav (src/tui/ui/dialog-select.tsx)
+ * (alias for `escape`). Value `"none"` disables the binding.
  *
  * Collisions (all intentional, resolved by dispatch order / scope guards):
  *   - `ctrl+p` is both `command_list` and one alternate of `select_up`.
