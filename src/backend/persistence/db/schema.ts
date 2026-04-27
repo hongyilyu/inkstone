@@ -23,7 +23,6 @@ export const sessions = sqliteTable("sessions", {
 	startedAt: integer("started_at").notNull(),
 	endedAt: integer("ended_at"),
 	agent: text("agent").notNull(),
-	activeArticle: text("active_article"),
 	title: text("title"),
 });
 

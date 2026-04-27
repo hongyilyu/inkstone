@@ -79,7 +79,6 @@ export interface DisplayMessage {
 export interface AgentStoreState {
 	messages: DisplayMessage[];
 	isStreaming: boolean;
-	activeArticle: string | null;
 	modelName: string;
 	/**
 	 * Provider id (e.g. "amazon-bedrock"), not a display string. Frontends
@@ -109,7 +108,7 @@ export interface AgentStoreState {
 	totalCost: number;
 	lastTurnStartedAt: number;
 	/**
-	 * Name of the currently-active agent persona (e.g. "reader", "example").
+	 * Name of the currently-active agent persona (e.g. "reader").
 	 * The full agent registry is static, owned by `backend/agent/agents.ts`,
 	 * and imported directly by any frontend that needs the agent list — so
 	 * only the selected agent crosses the bridge as reactive state.
@@ -119,7 +118,6 @@ export interface AgentStoreState {
 
 export interface SessionData {
 	messages: DisplayMessage[];
-	activeArticle: string | null;
 	/**
 	 * Agent active at the time the session was saved. Optional for backward
 	 * compatibility with sessions persisted before multi-agent support. When

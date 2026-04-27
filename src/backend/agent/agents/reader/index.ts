@@ -1,69 +1,80 @@
+import { lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { ARTICLES_DIR } from "../../constants";
-import type { AgentOverlay } from "../../permissions";
+import { type AgentOverlay, isInsideDir } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
 import type { AgentCommand, AgentInfo, AgentZone } from "../../types";
 import { buildReaderInstructions } from "./instructions";
 
 /**
- * Reader's session state — the currently-open article, if any. Reader
- * owns this rather than the shell (`backend/agent/index.ts`) because
- * it's reader-specific vocabulary, not a generic shell concept. The
- * shell reads via `getActiveArticle()` for session restore/clear, and
- * reader's own `getPermissions()` (below) reads it to inline the
- * article's absolute path into the permission overlay for each turn.
+ * `/article <filename>` — reader's canonical verb.
  *
- * Reader's `/article` command mutates this state and then triggers a
- * prompt turn asking the agent to start the reading workflow.
- */
-let activeArticle: string | null = null;
-
-export function getActiveArticle(): string | null {
-	return activeArticle;
-}
-
-export function setActiveArticle(id: string | null): void {
-	activeArticle = id;
-}
-
-/**
- * `/article <filename>` — reader's canonical verb. Sets the active
- * article via the shell-provided context method (which also mirrors
- * the value into the store and persists it to the session row), then
- * kicks off an LLM turn asking the agent to start the reading
- * workflow. The shell's `AgentActions.prompt` wrapper rebuilds the
- * system prompt at the turn boundary, so `buildInstructions()` reads
- * the freshly-set `activeArticle` automatically.
+ * Resolves the filename inside `ARTICLES_DIR` only. Rejects paths that
+ * escape the Articles folder, point at the folder itself, don't exist,
+ * resolve through a symlink, or don't resolve to a regular file. On
+ * success, reads the file and hands the path + content to the LLM as
+ * the opening user message, kicking off the 6-stage reading workflow.
  *
- * Empty args are a no-op (user typed `/article` with nothing after).
- * The submit handler in `prompt.tsx` already guards against that by
- * leaving the token as a plain prompt, but the check here is defensive.
+ * Symlinks are rejected as a class (`lstatSync` + reject if
+ * `isSymbolicLink()`). A symlink inside Articles pointing at an
+ * arbitrary file outside the vault would otherwise pass the
+ * `isInsideDir` check (which operates on the lexical path) and leak
+ * external content through the opening user message. The vault is
+ * trusted content, so this is defense-in-depth, not a hard boundary —
+ * but the error text claims "inside the Articles folder" and we keep
+ * that claim true.
+ *
+ * Whitespace-only args throw rather than silently returning; a typed
+ * `/article   ` would otherwise produce no visible outcome.
+ *
+ * No cross-turn state: the article lives in the conversation history,
+ * and reader's permission rules apply statically to any file inside
+ * the Articles zone.
  */
 const articleCommand: AgentCommand = {
 	name: "article",
 	description: "Open an article for guided reading",
 	argHint: "<filename>",
 	takesArgs: true,
-	execute: async (args, ctx) => {
-		const articleId = args.trim();
-		if (!articleId) return;
-		ctx.setActiveArticle(articleId);
-		await ctx.prompt(`Read ${articleId}`);
+	execute: async (args, prompt) => {
+		const filename = args.trim();
+		if (!filename) {
+			throw new Error("Missing filename. Usage: /article <filename>");
+		}
+		const articlePath = resolve(ARTICLES_DIR, filename);
+		// `isInsideDir` is `path.sep`-boundary-safe and cross-platform;
+		// the equality short-circuit also means `articlePath === ARTICLES_DIR`
+		// slips through, so we reject the bare-dir case explicitly.
+		if (
+			!isInsideDir(articlePath, ARTICLES_DIR) ||
+			articlePath === ARTICLES_DIR
+		) {
+			throw new Error(`Not a file inside the Articles folder: '${filename}'`);
+		}
+		// `lstatSync` doesn't follow symlinks; combined with the
+		// `isSymbolicLink()` reject, this closes the symlink-out-of-vault
+		// hole (a link inside Articles that points at an arbitrary file).
+		let stat: ReturnType<typeof lstatSync>;
+		try {
+			stat = lstatSync(articlePath);
+		} catch {
+			throw new Error(`Article not found: ${filename}`);
+		}
+		if (stat.isSymbolicLink()) {
+			throw new Error(`Symlinks are not supported for /article: '${filename}'`);
+		}
+		if (!stat.isFile()) {
+			throw new Error(`Not a regular file: ${filename}`);
+		}
+		const content = readFileSync(articlePath, "utf-8");
+		await prompt(
+			`Read this article and begin the reading workflow.\n\nPath: ${articlePath}\n\nContent:\n\n${content}`,
+		);
 	},
 };
 
 /**
- * Reader's workspace — three zones, all confirm-before-write. Articles
- * live in `010 RAW/013 Articles/` and reader may only touch their
- * frontmatter (enforced by the `frontmatterOnlyFor` rule in the
- * overlay below; zones just gate the directory). Scraps and Notes are
- * the two preservation destinations Stage 5 writes to.
- *
- * Declared as vault-relative paths; the composer resolves them against
- * `VAULT_DIR` at overlay-build time. These mirror the absolute
- * constants in `../../constants.ts` — the duplication is the cost of
- * zones being declarative data rather than a function call. Worth it
- * for the LLM-visibility half (the `<your workspace>` prompt block).
+ * Reader's workspace — three zones, all confirm-before-write.
  */
 const readerZones: AgentZone[] = [
 	{ path: "010 RAW/013 Articles", write: "confirm" },
@@ -72,38 +83,34 @@ const readerZones: AgentZone[] = [
 ];
 
 /**
- * Reader's permission overlay — only the article-specific rules that
- * zones can't express. Directory-level confirm rules are derived from
- * `readerZones` by `composeZonesOverlay` (see `../../base.ts`), so
- * this overlay is the escape hatch for state-dependent policies:
+ * Reader's permission overlay — static rules on the Articles zone.
  *
- * - `write` on the active article is blocked outright (frontmatter
- *   changes must go through `edit`, never a full overwrite).
- * - `edit` on the active article is restricted to frontmatter hunks
- *   via the `frontmatterOnlyFor` rule.
+ * - `write` anywhere inside Articles is blocked (articles are treated
+ *   as read-only source material; use `edit` for frontmatter updates).
+ * - `edit` inside Articles is restricted to frontmatter hunks via
+ *   `frontmatterOnlyInDirs`.
  *
- * Rules are freshly constructed each call so the article path is
- * always current for the active article. Non-article paths aren't
- * matched by either rule (`blockPath` is equality, `frontmatterOnlyFor`
- * is keyed on `targetPath`).
+ * Non-article paths aren't matched by either rule (`blockInsideDirs`
+ * and `frontmatterOnlyInDirs` both gate on prefix).
  *
- * Returns an empty overlay when no article is active — reader has no
- * article-specific policy until `/article <filename>` kicks the
- * workflow off.
+ * Previously this overlay keyed on the currently-active article path,
+ * which required module-level `activeArticle` state plumbed through
+ * command context, store, persistence, and sidebar. Moving to
+ * zone-wide static rules applies the protection to every article — a
+ * deliberate behavior broadening (tracked in TODO) that trades
+ * per-file precision for a stateless reader.
  */
 function getReaderPermissions(): AgentOverlay {
-	if (!activeArticle) return {};
-	const articlePath = resolve(ARTICLES_DIR, activeArticle);
 	return {
 		[writeTool.name]: [
 			{
-				kind: "blockPath",
-				path: articlePath,
+				kind: "blockInsideDirs",
+				dirs: [ARTICLES_DIR],
 				reason:
-					"Cannot overwrite the article file. Use edit to modify frontmatter only.",
+					"Articles are read-only source material. Use edit to modify frontmatter only.",
 			},
 		],
-		[editTool.name]: [{ kind: "frontmatterOnlyFor", targetPath: articlePath }],
+		[editTool.name]: [{ kind: "frontmatterOnlyInDirs", dirs: [ARTICLES_DIR] }],
 	};
 }
 
@@ -113,14 +120,7 @@ function getReaderPermissions(): AgentOverlay {
  * article frontmatter edits, scraps, and notes inside the vault.
  *
  * Tools: `read` comes from `BASE_TOOLS`; `edit` + `write` are pulled
- * from the shared pool in `backend/agent/tools.ts`. Model-side, the
- * LLM sees the declaration order `[read, edit, write]` — provider
- * prompt caches (Anthropic/Bedrock/OpenAI) key on the byte-exact
- * tools prefix, so the order is worth preserving across refactors.
- *
- * `buildInstructions` is nullary and reads `activeArticle` from module
- * scope — the agent owns its own session state without a shell-shaped
- * context object.
+ * from the shared pool in `backend/agent/tools.ts`.
  */
 export const readerAgent: AgentInfo = {
 	name: "reader",
@@ -129,7 +129,7 @@ export const readerAgent: AgentInfo = {
 	colorKey: "secondary",
 	extraTools: [editTool, writeTool],
 	zones: readerZones,
-	buildInstructions: () => buildReaderInstructions(activeArticle),
+	buildInstructions: () => buildReaderInstructions(),
 	commands: [articleCommand],
 	getPermissions: getReaderPermissions,
 };

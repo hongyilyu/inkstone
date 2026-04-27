@@ -1,13 +1,11 @@
 import {
 	type AgentActions,
-	type AgentCommandContext,
 	createAgentActions,
 	getAgent,
 	getAgentInfo,
 	getCurrentAgent,
 	getCurrentModel,
 	getCurrentThinkingLevel,
-	setActiveArticle,
 	setConfirmFn,
 } from "@backend/agent";
 import { setPersistenceErrorHandler } from "@backend/persistence/errors";
@@ -21,7 +19,6 @@ import {
 	findActiveSession,
 	loadSession,
 	newId,
-	setActiveArticle as persistActiveArticle,
 	repairSession,
 	runInTransaction,
 	updateDisplayMessageMeta,
@@ -141,7 +138,6 @@ export function AgentProvider(props: ParentProps) {
 	const [store, setStore] = createStore<AgentStoreState>({
 		messages: loaded?.displayMessages ?? [],
 		isStreaming: false,
-		activeArticle: loaded?.session.activeArticle ?? null,
 		modelName: initialModel.name,
 		modelProvider: initialModel.provider,
 		contextWindow: initialModel.contextWindow,
@@ -169,7 +165,6 @@ export function AgentProvider(props: ParentProps) {
 		if (currentSessionId) return currentSessionId;
 		const rec = createSession({
 			agent: store.currentAgent,
-			activeArticle: store.activeArticle,
 		});
 		currentSessionId = rec.id;
 		return rec.id;
@@ -549,7 +544,6 @@ export function AgentProvider(props: ParentProps) {
 				currentSessionId = null;
 			}
 			setStore("messages", []);
-			setStore("activeArticle", null);
 			setStore("totalTokens", 0);
 			setStore("totalCost", 0);
 			setStore("lastTurnStartedAt", 0);
@@ -561,16 +555,14 @@ export function AgentProvider(props: ParentProps) {
 	/**
 	 * Bridge backend-declared `AgentCommand`s into the unified command
 	 * registry. Defined as a closure component so it can capture
-	 * `store`, `setStore`, `wrappedActions`, and `currentSessionId`
-	 * without widening the `useAgent()` context value. Mounts as a child
-	 * of `<ctx.Provider>` so it has an owner for `onCleanup` and is
-	 * inside `CommandProvider` (which wraps `AgentProvider` at the app
-	 * root).
+	 * `wrappedActions` without widening the `useAgent()` context value.
+	 * Mounts as a child of `<ctx.Provider>` so it has an owner for
+	 * `onCleanup` and is inside `CommandProvider` (which wraps
+	 * `AgentProvider` at the app root).
 	 *
 	 * Reactive on `store.currentAgent`: the registration callback re-runs
 	 * when the user switches agents, so an agent's slash verbs only
-	 * match while that agent is active (e.g. reader's `/article` stops
-	 * matching under the Example agent).
+	 * match while that agent is active.
 	 *
 	 * Argful commands (`takesArgs`) register with `hidden: true` so they
 	 * don't appear in the Ctrl+P palette — palette-click can't supply
@@ -582,28 +574,12 @@ export function AgentProvider(props: ParentProps) {
 	 * CommandProvider, and `register` prepends to the list), so on slash-
 	 * name collision the agent-scoped entry wins — preserves D9's
 	 * "agent overrides built-in" rule.
-	 *
-	 * `executeCtx.setActiveArticle` centralizes the three side effects
-	 * that follow an activeArticle change (backend module state, solid
-	 * store mirror, SQLite session-row update) so reader's command doesn't
-	 * touch any of them directly. See `AgentCommandContext`'s JSDoc for
-	 * the acknowledged reader-vocabulary leak.
 	 */
 	function BridgeAgentCommands() {
 		const command = useCommand();
 		command.register((): CommandOption[] => {
 			const info = getAgentInfo(store.currentAgent);
 			if (!info.commands || info.commands.length === 0) return [];
-			const executeCtx: AgentCommandContext = {
-				prompt: (text) => wrappedActions.prompt(text),
-				setActiveArticle: (id) => {
-					setActiveArticle(id);
-					setStore("activeArticle", id);
-					if (currentSessionId) {
-						persistActiveArticle(currentSessionId, id);
-					}
-				},
-			};
 			return info.commands.map((c) => ({
 				id: `agent.${info.name}.${c.name}`,
 				title: `/${c.name}${c.argHint ? ` ${c.argHint}` : ""}`,
@@ -615,38 +591,38 @@ export function AgentProvider(props: ParentProps) {
 					argHint: c.argHint,
 				},
 				onSelect: (_d, args) => {
-					// Fire-and-forget. `cmd.execute` may await a streaming
-					// turn; the synchronous side effects of the command
-					// (e.g. `ctx.setActiveArticle(...)`) run before the
-					// first `await`, so by the time control returns here
-					// the store and DB are already in sync.
-					void c.execute(args ?? "", executeCtx);
+					// Fire-and-forget. Errors thrown before `prompt(...)` runs
+					// (e.g. reader's `/article missing.md` throws during file
+					// validation, before any agent turn starts) bypass the
+					// prompt wrapper's catch — so we handle rejections here
+					// directly and surface a toast. Errors raised *during* a
+					// streaming turn still flow through `wrappedActions.prompt`
+					// and land on the in-flight bubble as usual.
+					// `execute` may return `void` (sync commands); wrap in
+					// Promise.resolve so `.catch` is always available.
+					Promise.resolve(
+						c.execute(args ?? "", (text) => wrappedActions.prompt(text)),
+					).catch((err: unknown) => {
+						const msg = err instanceof Error ? err.message : String(err);
+						toast.show({
+							variant: "error",
+							title: "Command error",
+							message: msg,
+							duration: 6000,
+						});
+					});
 				},
 			}));
 		});
 		return null;
 	}
 
-	// Restore the agent recorded in the resumed session *before* the article
-	// state, so the correct agent is active when the first turn rebuilds
-	// its system prompt. Without this, a transcript persisted under one
-	// agent could reopen under whichever agent is currently in `config.json`,
-	// with no way to switch back (agent cycling is locked once messages exist).
+	// Restore the agent recorded in the resumed session. Without this, a
+	// transcript persisted under one agent could reopen under whichever
+	// agent is currently in `config.json`, with no way to switch back
+	// (agent cycling is locked once messages exist).
 	if (loaded) {
 		wrappedActions.setAgent(loaded.session.agent);
-		// Reactivate reader's active article from the resumed session.
-		// Direct module setter — no prompt turn triggered (which `/article`
-		// as a user-invoked command would do). Restoration rehydrates
-		// state; it doesn't replay the command. No explicit system-prompt
-		// rebuild: the shell's `prompt()` wrapper composes the system
-		// prompt fresh on every turn, so the next user turn after restore
-		// picks up the reactivated article automatically. The store's
-		// `activeArticle` is already seeded from `loaded.session.activeArticle`
-		// above, and the DB already has the value (it came from there), so
-		// no mirror/persist call is needed.
-		if (loaded.session.activeArticle) {
-			setActiveArticle(loaded.session.activeArticle);
-		}
 	}
 
 	return (

@@ -11,20 +11,13 @@ const SIDEBAR_WIDTH = 30;
 // Inner content width = SIDEBAR_WIDTH - paddingLeft(2) - paddingRight(2)
 const TITLE_MAX_CHARS = SIDEBAR_WIDTH - 4;
 
-function stripExtension(filename: string): string {
-	const dot = filename.lastIndexOf(".");
-	return dot > 0 ? filename.slice(0, dot) : filename;
-}
-
 /**
  * Right-side session metadata panel.
  *
  * Layout:
- *   [title]        bold (active article, else first user msg, else "inkstone")
+ *   [title]        bold (first user msg, else "inkstone")
  *   Context        bold label
  *   tokens / % used / cost
- *   Article        bold label (only when an article is loaded)
- *   <filename>
  *   <spacer>
  *   vault path     muted
  *   version        muted
@@ -38,9 +31,6 @@ export function Sidebar() {
 	const vaultDisplay = displayPath(VAULT_DIR);
 
 	const title = createMemo(() => {
-		if (store.activeArticle) {
-			return stripExtension(store.activeArticle).slice(0, TITLE_MAX_CHARS);
-		}
 		const firstUser = store.messages.find((m) => m.role === "user");
 		const firstUserText = firstUser?.parts[0]?.text;
 		if (firstUserText) {
@@ -95,19 +85,6 @@ export function Sidebar() {
 					<text fg={theme.textMuted}>{formatCost(store.totalCost)} spent</text>
 				</Show>
 			</box>
-
-			{/* Article (only when one is loaded) */}
-			<Show when={store.activeArticle}>
-				<box flexDirection="column">
-					<text fg={theme.text} attributes={TextAttributes.BOLD}>
-						Article
-					</text>
-					<text fg={theme.textMuted}>
-						{/* biome-ignore lint/style/noNonNullAssertion: guarded by <Show when={store.activeArticle}> above */}
-						{stripExtension(store.activeArticle!)}
-					</text>
-				</box>
-			</Show>
 
 			{/* Spacer pushes the bottom section down */}
 			<box flexGrow={1} />
