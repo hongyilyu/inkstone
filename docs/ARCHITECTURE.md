@@ -324,7 +324,7 @@ composeOverlay(info) = info.getPermissions?.() ⊕ composeZonesOverlay(info)
 - Each zone with `write: "confirm"` → combined into one `confirmDirs` rule keyed under both `write` and `edit`.
 - Each zone with `write: "auto"` → no rule emitted (writes inside the zone pass through the vault baseline unchanged).
 
-Zone paths are joined with `VAULT_DIR` via `node:path.join` so leading/trailing slashes normalize. Absolute zone paths throw at compose time (misconfiguration should be loud).
+Zone paths are joined with `VAULT_DIR` via `node:path.join` so leading/trailing slashes normalize. Absolute zone paths (POSIX `/`, Windows drive-letter, UNC) and paths containing `..` segments throw at compose time (misconfiguration should be loud).
 
 Zones cover directory-level write policies. The `getPermissions?()` callback is the escape hatch for rules zones can't express — reader's `frontmatterOnlyFor` rule keyed on `activeArticle` is the current example:
 

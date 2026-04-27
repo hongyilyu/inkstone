@@ -59,10 +59,14 @@ export function registerBaseline(toolName: string, rules: Rule[]): void {
 
 /**
  * Confirmation-dialog injection. The TUI wires this at boot via
- * `@backend/agent`'s re-export. Guards referencing `confirmDirs` call
- * the stored function; if unset (e.g. pre-boot, or a headless runner),
- * the confirm is skipped — safe because the path already passed
- * `insideDirs`.
+ * `@backend/agent`'s re-export. When unset, `confirmDirs` rules
+ * **block by default** rather than falling through — headless callers
+ * (tests, future scripting) must explicitly opt in to auto-allow by
+ * calling `setConfirmFn(async () => true)` before dispatching tool
+ * calls. Fail-closed is the right default now that D12 moved
+ * directory-level confirmation entirely onto zones: skipping the
+ * confirm would silently bypass the user's declared policy, not just
+ * a redundant gate.
  */
 let confirmFn: ((title: string, message: string) => Promise<boolean>) | null =
 	null;
@@ -145,7 +149,15 @@ async function evaluateRule(
 			if (resolvedPath === undefined) return undefined;
 			if (!rule.dirs.some((d) => isInsideDir(resolvedPath, d)))
 				return undefined;
-			if (!confirmFn) return undefined;
+			// Fail-closed when no UI is wired. Post-D12 this check owns the
+			// user's declared per-zone confirm policy; silently passing would
+			// bypass it in headless contexts. See `setConfirmFn` docstring.
+			if (!confirmFn) {
+				return {
+					block: true,
+					reason: "Confirmation required but no UI is wired.",
+				};
+			}
 			const ok = await confirmFn(
 				"Write confirmation",
 				`Allow write to ${resolvedPath}?`,

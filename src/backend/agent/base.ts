@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { VAULT_DIR } from "./constants";
 import type { AgentOverlay, Rule } from "./permissions";
@@ -64,12 +64,18 @@ export function composeZonesOverlay(info: AgentInfo): AgentOverlay {
 
 	const confirmPaths: string[] = [];
 	for (const zone of info.zones) {
-		if (zone.path.startsWith("/")) {
+		// Reject absolute paths cross-platform. `isAbsolute` covers POSIX
+		// (`/etc`), Windows drive-letter (`C:\foo`), and UNC (`\\server\share`)
+		// when run under Windows. A plain `startsWith("/")` would miss the
+		// latter two.
+		if (isAbsolute(zone.path)) {
 			throw new Error(
 				`Zone path must be vault-relative, got absolute path: '${zone.path}' on agent '${info.name}'.`,
 			);
 		}
-		if (zone.path.split("/").some((seg) => seg === "..")) {
+		// Reject `..` segments on both separator styles so a Windows-authored
+		// zone like `"..\\etc"` doesn't slip past a POSIX-only split.
+		if (zone.path.split(/[/\\]/).some((seg) => seg === "..")) {
 			throw new Error(
 				`Zone path must not escape the vault via '..' segments: '${zone.path}' on agent '${info.name}'.`,
 			);
