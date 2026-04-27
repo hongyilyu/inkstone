@@ -272,6 +272,8 @@ Sourcing the model from `event.message` (rather than the mutable `store.modelNam
 
 `lastTurnStartedAt` is a transient set in `prompt()` and consumed in `agent_end`. Once written to the turn-closing message it's not read again, so messages loaded from a persisted session render their original footer unchanged even though the transient is `0` at startup.
 
+`duration` stamps only the **turn-closing** assistant bubble — the final assistant message whose `stopReason !== "toolUse"`. Intermediate assistant messages in a tool-driven turn carry `agentName` + `modelName` (per-message, stamped in `message_end`) without a `duration` (per-turn, stamped in `agent_end` on the closing bubble only).
+
 ## Permission Dispatcher
 
 Policy enforcement is declarative. The shell wires a single `beforeToolCall` hook that delegates to `dispatchBeforeToolCall` in `src/backend/agent/permissions.ts`. The dispatcher reads the active tool's baseline rules plus the active agent's overlay and evaluates them in order; the first rule that returns `{ block, reason }` short-circuits.
@@ -349,6 +351,12 @@ The pre-dispatcher guard was a single procedural function in `backend/agent/guar
 The zones refactor (D12) further split reader's policy: directory-level confirmation rules now live in declarative `zones` data (which the prompt also reads — see Agent Registry → Zones), while article-specific rules stay in `getPermissions`. The zones refactor also trimmed tool baselines to the hard vault boundary (`insideDirs: [VAULT_DIR]` only); directory-level confirmation moved entirely to zones so agents opt into it per-zone rather than inheriting it globally.
 
 A follow-up pass (the statelessness refactor) replaced reader's state-keyed rules (`blockPath` + `frontmatterOnlyFor`, both keyed on the currently-active article) with static zone-wide rules (`blockInsideDirs` + `frontmatterOnlyInDirs` covering all of Articles). `activeArticle` state is gone — the `/article` command reads the file and inlines it as the opening user message, and the permission rules apply uniformly to every article. Broader protection surface, simpler reader. Tracked as a behavioral shift in TODO.md.
+
+### Adding a rule kind
+
+1. Add a variant to the `Rule` tagged union in `src/backend/agent/permissions.ts`.
+2. Handle it in the `evaluateRule` switch. Return `{ block, reason }` to veto, `undefined` to pass. `evaluateRule` is async — a rule may await a user dialog (see `confirmDirs`).
+3. Update the Rule kinds table above if the rule has user-visible semantics.
 
 ## Agent Registry
 
