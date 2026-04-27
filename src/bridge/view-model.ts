@@ -6,14 +6,10 @@
  *
  *   - `DisplayMessage` — how a single user/assistant message is rendered.
  *   - `AgentStoreState` — the shape of the per-session state a frontend holds.
- *   - `SessionData` — what gets persisted to disk so a new session can
- *     resume the previous conversation.
  *
- * A future non-TUI frontend would import these types, render `DisplayMessage`
- * its own way, and call `saveSession()` / `loadSession()` with the same
- * `SessionData` shape. The backend's `AgentActions` surface is *not* defined
- * here — that lives in `backend/agent/` because it describes the backend's
- * public API, not a shared view-state contract.
+ * The backend's `AgentActions` surface is *not* defined here — that lives
+ * in `backend/agent/` because it describes the backend's public API, not a
+ * shared view-state contract.
  */
 
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
@@ -56,8 +52,7 @@ export interface DisplayMessage {
 	// intermediate assistant messages in a tool-driven turn intentionally carry
 	// `agentName` + `modelName` without a `duration`.
 	//
-	// All three are optional because user messages don't have them and legacy
-	// persisted sessions predate these fields.
+	// All three are optional because user messages don't have them.
 	agentName?: string;
 	modelName?: string;
 	duration?: number; // ms
@@ -69,9 +64,6 @@ export interface DisplayMessage {
 	 * single field — Inkstone doesn't yet differentiate abort ("interrupted"
 	 * footer suffix) from hard error (red panel); both render as the panel.
 	 * That's a deferred polish, not a semantic contract difference.
-	 *
-	 * Optional for backward compatibility with sessions persisted before this
-	 * field existed.
 	 */
 	error?: string;
 }
@@ -114,16 +106,4 @@ export interface AgentStoreState {
 	 * only the selected agent crosses the bridge as reactive state.
 	 */
 	currentAgent: string;
-}
-
-export interface SessionData {
-	messages: DisplayMessage[];
-	/**
-	 * Agent active at the time the session was saved. Optional for backward
-	 * compatibility with sessions persisted before multi-agent support. When
-	 * present, restoring the session uses this value in preference to the
-	 * last-selected agent from `config.json` — otherwise a persisted session
-	 * could reopen under the wrong agent if config drifted independently.
-	 */
-	currentAgent?: string;
 }

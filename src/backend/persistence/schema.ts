@@ -10,10 +10,6 @@ import { z } from "zod";
  * They intentionally mirror the hand-written TS shapes we used to ship; Zod
  * is here to add field-level validation and surface typos via `.strictObject`,
  * not to widen the persisted API.
- *
- * `SessionData` is NOT schema'd here — it is internal to Inkstone (only
- * Inkstone ever writes or reads it), so there is no untrusted-input boundary
- * worth paying for. Its TS type stays in `@bridge/view-model`.
  */
 
 /**

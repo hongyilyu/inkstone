@@ -61,7 +61,7 @@ Cross-layer imports use `tsconfig.json` aliases; intra-layer imports stay relati
 
 | Location | Purpose | Example |
 |---|---|---|
-| `bridge/view-model.ts` | Shared view-state contract any frontend would render/persist | `DisplayMessage`, `AgentStoreState`, `SessionData` |
+| `bridge/view-model.ts` | Shared view-state contract any frontend would render/persist | `DisplayMessage`, `AgentStoreState` |
 | `backend/agent/*` | Backend's public API surface — consumed directly by frontends | `AgentActions`, re-exports from pi-agent-core |
 | `tui/**` | Frontend-internal only | `AgentContextValue`, theme accessors, component props |
 
@@ -113,18 +113,17 @@ src/
     persistence/
       config.ts                     providerId + modelId + themeId + currentAgent + vaultDir (shared JSON; Zod-validated on load via `schema.ts`)
       auth.ts                       OAuth credentials loader/saver (provider-keyed; Zod-validated on load)
-      errors.ts                     Shared persistence error hook (setPersistenceErrorHandler / reportPersistenceError); `kind: "config" | "auth" | "session" | "db"`
-      paths.ts                      Shared XDG paths: CONFIG_DIR, STATE_DIR, CONFIG_FILE, AUTH_FILE, SESSION_FILE, DB_FILE
+      errors.ts                     Shared persistence error hook (setPersistenceErrorHandler / reportPersistenceError); `kind: "config" | "auth" | "session"`
+      paths.ts                      Shared XDG paths: CONFIG_DIR, STATE_DIR, CONFIG_FILE, AUTH_FILE, DB_FILE
       schema.ts                     Zod schemas for Config + AuthFile (strictObject, field-level validation)
       sessions.ts                   SQLite session store — see `docs/SQL.md` for the full API. Exports `newId`, `runInTransaction`, `repairSession`, `findActiveSession`, `createSession`, `loadSession`, `listSessions`, `endSession`, `appendDisplayMessage`, `updateDisplayMessageMeta`, `finalizeDisplayMessageParts`, `appendAgentMessage`.
-      import-legacy.ts              One-shot importer — `session.json` → SQLite on first boot, then rename to `.migrated`
       db/
         client.ts                   Lazy bun:sqlite client, WAL PRAGMAs, drizzle-kit migrator on open
         schema.ts                   Drizzle tables: sessions, messages, parts, agent_messages
         migrations/                 drizzle-kit-generated SQL migrations (applied on DB open)
 
   bridge/                           Pure TS — shared type contract
-    view-model.ts                   DisplayMessage, AgentStoreState, SessionData
+    view-model.ts                   DisplayMessage, AgentStoreState
 
   tui/                              Solid + OpenTUI
     app.tsx                         Provider stack + root layout + app_exit + scroll keybinds; registers top-level commands via `useCommand().register`
@@ -272,8 +271,6 @@ Sourcing the model from `event.message` (rather than the mutable `store.modelNam
 ### Duration and transient state
 
 `lastTurnStartedAt` is a transient set in `prompt()` and consumed in `agent_end`. Once written to the turn-closing message it's not read again, so messages loaded from a persisted session render their original footer unchanged even though the transient is `0` at startup.
-
-Older messages that predate these fields (legacy sessions) simply render without a footer because `modelName` is `undefined`.
 
 ## Permission Dispatcher
 
@@ -793,8 +790,10 @@ Ids are UUIDv7 (globally unique + time-ordered). Visibility is agent-scoped.
 Sessions are created lazily on first user prompt; `/clear` marks the row
 ended rather than deleting. `message_end` commits meta + parts + raw
 AgentMessage in a single transaction via `runInTransaction`, so crashes
-can't leave half-written state; `repairSession` is the backstop for
-pre-transaction data. Config + auth stay in JSON under `~/.config/inkstone/`.
+can't leave half-written state; `repairSession` strips trailing empty
+assistant shells from a SIGKILL between `message_start` and the
+`message_end` transaction. Config + auth stay in JSON under
+`~/.config/inkstone/`.
 
 ## Key Patterns (from OpenCode)
 

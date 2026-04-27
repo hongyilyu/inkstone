@@ -9,7 +9,6 @@ import {
 	setConfirmFn,
 } from "@backend/agent";
 import { setPersistenceErrorHandler } from "@backend/persistence/errors";
-import { importLegacySessionJsonIfNeeded } from "@backend/persistence/import-legacy";
 import {
 	appendAgentMessage,
 	appendDisplayMessage,
@@ -87,13 +86,7 @@ export function AgentProvider(props: ParentProps) {
 	setPersistenceErrorHandler(({ kind, action, error }) => {
 		const msg = error instanceof Error ? error.message : String(error);
 		const titleKind =
-			kind === "config"
-				? "Config"
-				: kind === "auth"
-					? "Auth"
-					: kind === "db"
-						? "DB"
-						: "Session";
+			kind === "config" ? "Config" : kind === "auth" ? "Auth" : "Session";
 		toast.show({
 			variant: "error",
 			title: `${titleKind} ${action} failed`,
@@ -101,11 +94,6 @@ export function AgentProvider(props: ParentProps) {
 			duration: 6000,
 		});
 	});
-
-	// One-shot import from the pre-SQLite `session.json`. No-op after the
-	// first successful run (the file is renamed to `.migrated`). Safe to
-	// call on every boot because the zero-rows gate inside is cheap.
-	importLegacySessionJsonIfNeeded(getCurrentAgent());
 
 	// Try to resume an active session for the currently-selected agent.
 	// Sessions are scoped by agent: switching agents on the empty open page
