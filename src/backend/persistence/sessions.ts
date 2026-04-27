@@ -290,9 +290,6 @@ export function appendAgentMessage(
  * that `message_end`'s atomicity cannot cover. This call handles that
  * window.
  *
- * Also handles pre-transaction session data from older Inkstone
- * versions (which had per-event implicit transactions).
- *
  * "Trailing" is load-bearing — mid-session empty assistant rows are
  * legitimate (tool-call-only assistant messages with
  * `stopReason: "toolUse"` that render as empty bubbles and are hidden

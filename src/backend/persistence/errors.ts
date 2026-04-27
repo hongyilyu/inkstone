@@ -2,12 +2,12 @@
  * Shared error-reporting hook for persisted-state access.
  *
  * `config.ts`, `auth.ts`, and the SQLite session store (`sessions.ts`,
- * `import-legacy.ts`, `db/client.ts`) all touch disk synchronously and
- * can fail on disk-full, permission-denied, read-only-filesystem, or
- * schema-drift conditions. Without a hook, a bare throw would crash the
- * TUI; swallowing silently would hide a real data-loss event. This module
- * provides a single injection point that a frontend wires to a toast (or
- * logger, test spy, etc.) so the backend stays frontend-agnostic.
+ * `db/client.ts`) all touch disk synchronously and can fail on disk-full,
+ * permission-denied, read-only-filesystem, or schema-drift conditions.
+ * Without a hook, a bare throw would crash the TUI; swallowing silently
+ * would hide a real data-loss event. This module provides a single
+ * injection point that a frontend wires to a toast (or logger, test spy,
+ * etc.) so the backend stays frontend-agnostic.
  *
  * Install a handler from the frontend *before* any write path runs. Load
  * paths (action: "load") run at module init, before the frontend has had
@@ -19,10 +19,10 @@
 export interface PersistenceErrorContext {
 	/**
 	 * Which persisted surface failed. Lets frontends title their toasts.
-	 * `"session"` covers both the legacy `session.json` and the SQLite
-	 * session store (messages, parts, agent_messages, events, memory).
+	 * `"session"` covers the SQLite session store (sessions, messages,
+	 * parts, agent_messages).
 	 */
-	kind: "config" | "auth" | "session" | "db";
+	kind: "config" | "auth" | "session";
 	/** Short action label: "load", "save", "clear", "append-message", etc. */
 	action: string;
 	/** The thrown value. */

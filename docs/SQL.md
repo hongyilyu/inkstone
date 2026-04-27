@@ -47,7 +47,6 @@ Paths are XDG-style with standard overrides. Resolved in `paths.ts`.
 | `~/.config/inkstone/auth.json` | OAuth credentials (mode 0600, JSON) |
 | `~/.local/state/inkstone/inkstone.db` | Session store |
 | `~/.local/state/inkstone/inkstone.db-wal` / `-shm` | SQLite WAL artifacts |
-| `~/.local/state/inkstone/session.json.migrated` | Residue of legacy one-shot import (do not re-process) |
 
 JSON files for small, hand-editable, sometimes-screen-shared state.
 SQLite for everything conversation-scoped.
@@ -144,8 +143,7 @@ Switching agents is UI-locked to the empty-session open page (see
 ## Session lifecycle
 
 ```
-boot ─▶ importLegacySessionJsonIfNeeded        [no-op after first run]
-     ─▶ findActiveSession(agent)
+boot ─▶ findActiveSession(agent)
          │
          ├─ null  ─▶ no resume
          └─ row   ─▶ repairSession(id)         [explicit crash-repair]
@@ -178,11 +176,11 @@ without interacting leaves the DB clean.
 
 `repairSession(id)` is a separate call, not embedded in `loadSession`.
 It strips trailing assistant rows where `parts.length === 0 &&
-error === null` — leftovers from a pre-transaction-boundary world
-where a process kill between `message_start` and `message_end` could
-leave an empty shell. With the transactional boundary (below) new
-kills can't produce these; the call handles pre-existing corruption
-and anything that sidesteps the reducer.
+error === null` — a SIGKILL between `message_start` (which writes
+the assistant shell outside any transaction) and the `message_end`
+transaction opening would leave an empty shell that `message_end`'s
+atomicity cannot cover. This call handles that window and anything
+that sidesteps the reducer.
 
 ## Transactional boundary
 
@@ -307,7 +305,7 @@ through `reportPersistenceError`:
 
 ```ts
 {
-  kind: "config" | "auth" | "session" | "db"
+  kind: "config" | "auth" | "session"
   action: string   // e.g. "append-message (b05c700e)"
   error: unknown
 }
@@ -427,7 +425,7 @@ rm ~/.config/inkstone/config.json
 1. Export a `sqliteTable(...)` from `db/schema.ts`.
 2. Add read/write helpers in `sessions.ts` (or a new module).
 3. `bunx drizzle-kit generate --name add-<table>`.
-4. Route all errors through `reportPersistenceError({ kind: "db", ... })`.
+4. Route all errors through `reportPersistenceError({ kind: "session", ... })`.
 
 ## Source map
 
@@ -437,7 +435,6 @@ rm ~/.config/inkstone/config.json
 | `src/backend/persistence/db/client.ts` | Lazy `bun:sqlite` singleton, PRAGMAs, migrator |
 | `src/backend/persistence/db/migrations/` | `drizzle-kit`-generated SQL |
 | `src/backend/persistence/sessions.ts` | Public API (`newId`, reads, writes, `runInTransaction`, `repairSession`, `shortId`) |
-| `src/backend/persistence/import-legacy.ts` | One-shot `session.json` → SQLite importer |
 | `src/backend/persistence/errors.ts` | `reportPersistenceError` hook |
 | `src/backend/persistence/paths.ts` | XDG path resolution |
 | `src/tui/context/agent.tsx` | Frontend consumer — reducer, `ensureSession`, `repairSession` + resume wiring |
