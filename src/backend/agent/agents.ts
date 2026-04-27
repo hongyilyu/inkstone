@@ -1,6 +1,6 @@
 import { exampleAgent } from "./agents/example";
 import { readerAgent } from "./agents/reader";
-import type { AgentInfo } from "./base";
+import type { AgentInfo } from "./types";
 
 /**
  * Static agent registry. Each agent lives in its own self-contained

@@ -1,4 +1,4 @@
-import type { AgentInfo } from "../../base";
+import type { AgentInfo } from "../../types";
 
 /**
  * Example — a minimal general-purpose chat assistant. Kept as a smoke-
