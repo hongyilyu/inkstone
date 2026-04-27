@@ -10,7 +10,8 @@
     "format": "biome format --write ./src",
     "lint": "biome lint ./src",
     "check": "biome check --write ./src",
-    "ci": "biome check ./src"
+    "test": "bun test --timeout 30000",
+    "ci": "biome check ./src && bun test --timeout 30000"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.12",
