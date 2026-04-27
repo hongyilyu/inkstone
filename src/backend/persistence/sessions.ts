@@ -12,9 +12,9 @@
  *   this runs in isolation."
  * - `findActiveSession`, `loadSession`, `listSessions`, `repairSession`
  *   run on the root client — reads don't take a tx.
- * - `createSession`, `endSession`, `setActiveArticle` are session-scope
- *   mutators on a single row — they don't take a tx either; each is
- *   atomic by virtue of being one statement.
+ * - `createSession`, `endSession` are session-scope mutators on a
+ *   single row — they don't take a tx either; each is atomic by virtue
+ *   of being one statement.
  *
  * A session is the root entity; messages + parts + raw AgentMessages
  * hang off it with FK cascades. All top-level ids are UUIDv7 so
@@ -38,7 +38,6 @@ import { reportPersistenceError } from "./errors";
 export interface SessionRecord {
 	id: string;
 	agent: string;
-	activeArticle: string | null;
 	startedAt: number;
 	endedAt: number | null;
 	title: string | null;
@@ -100,17 +99,13 @@ export function findActiveSession(agent: string): SessionRecord | null {
 	return {
 		id: row.id,
 		agent: row.agent,
-		activeArticle: row.activeArticle,
 		startedAt: row.startedAt,
 		endedAt: row.endedAt,
 		title: row.title,
 	};
 }
 
-export function createSession(init: {
-	agent: string;
-	activeArticle: string | null;
-}): SessionRecord {
+export function createSession(init: { agent: string }): SessionRecord {
 	const db = getDb();
 	const now = Date.now();
 	const row = {
@@ -118,7 +113,6 @@ export function createSession(init: {
 		startedAt: now,
 		endedAt: null,
 		agent: init.agent,
-		activeArticle: init.activeArticle,
 		title: null,
 	};
 	try {
@@ -130,7 +124,6 @@ export function createSession(init: {
 	return {
 		id: row.id,
 		agent: row.agent,
-		activeArticle: row.activeArticle,
 		startedAt: row.startedAt,
 		endedAt: row.endedAt,
 		title: row.title,
@@ -146,25 +139,6 @@ export function endSession(sessionId: string): void {
 			.run();
 	} catch (error) {
 		reportPersistenceError({ kind: "session", action: "end", error });
-	}
-}
-
-export function setActiveArticle(
-	sessionId: string,
-	articleId: string | null,
-): void {
-	const db = getDb();
-	try {
-		db.update(sessions)
-			.set({ activeArticle: articleId })
-			.where(eq(sessions.id, sessionId))
-			.run();
-	} catch (error) {
-		reportPersistenceError({
-			kind: "session",
-			action: "set-article",
-			error,
-		});
 	}
 }
 
@@ -414,7 +388,6 @@ export function loadSession(sessionId: string): LoadedSession | null {
 		session: {
 			id: sess.id,
 			agent: sess.agent,
-			activeArticle: sess.activeArticle,
 			startedAt: sess.startedAt,
 			endedAt: sess.endedAt,
 			title: sess.title,
@@ -476,7 +449,4 @@ function shortId(id: string): string {
 	return id.slice(-8);
 }
 
-export type StoreSeed = Pick<
-	AgentStoreState,
-	"messages" | "activeArticle" | "currentAgent"
->;
+export type StoreSeed = Pick<AgentStoreState, "messages" | "currentAgent">;

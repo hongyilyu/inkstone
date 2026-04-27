@@ -90,7 +90,6 @@ export function importLegacySessionJsonIfNeeded(defaultAgent: string): void {
 	try {
 		const rec = createSession({
 			agent,
-			activeArticle: data.activeArticle ?? null,
 		});
 		// Batch all message inserts into one transaction — one write per
 		// message would be N statements; the import runs once per install

@@ -7,15 +7,9 @@ import { type Api, type Model, supportsXhigh } from "@mariozechner/pi-ai";
 import { loadConfig, saveConfig } from "../persistence/config";
 import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
 import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
-import { getActiveArticle, setActiveArticle } from "./agents/reader";
 import { composeSystemPrompt, composeTools } from "./compose";
 import { dispatchBeforeToolCall, setConfirmFn } from "./permissions";
-import type {
-	AgentCommand,
-	AgentCommandContext,
-	AgentInfo,
-	AgentZone,
-} from "./types";
+import type { AgentCommand, AgentInfo, AgentZone } from "./types";
 import { composeOverlay } from "./zones";
 
 export interface AgentActions {
@@ -149,9 +143,9 @@ export function getAgent(): Agent {
 				// Delegate to the permission dispatcher. The overlay combines
 				// the zones-derived rules (directory write policies declared
 				// on `AgentInfo.zones`) with the agent's optional `getPermissions`
-				// escape hatch (state-dependent rules zones can't express,
-				// e.g. reader's `frontmatterOnlyFor` on the active article).
-				// See `./base.ts:composeOverlay` + `./permissions.ts`.
+				// escape hatch (rules zones can't express, e.g. reader's
+				// `frontmatterOnlyInDirs` on the Articles zone).
+				// See `./zones.ts:composeOverlay` + `./permissions.ts`.
 				const overlay = composeOverlay(getAgentInfo(currentAgent));
 				return dispatchBeforeToolCall(ctx, overlay);
 			},
@@ -172,13 +166,12 @@ export function createAgentActions(
 	const actions: AgentActions = {
 		async prompt(text: string) {
 			// Rebuild the system prompt at every turn boundary so any
-			// agent-owned state mutations (e.g. reader's `activeArticle`
-			// set by `/article`) land in the next turn automatically.
-			// This replaces the old explicit `refreshSystemPrompt()` call:
-			// commands now just mutate state and call `ctx.prompt(...)`,
-			// and the shell takes care of composing. Session restore, the
-			// other former caller, relies on the same property — the first
-			// user turn after boot rebuilds before sending.
+			// agent-owned state mutations land in the next turn automatically.
+			// No current agent holds cross-turn state — reader inlines article
+			// content into a user message at `/article` time, not into the
+			// system prompt — so the rebuild is a no-op today in terms of
+			// content. Kept as a cheap invariant for any future agent that
+			// does mutate `buildInstructions`-visible state between turns.
 			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
 			await a.prompt(text);
 		},
@@ -220,11 +213,6 @@ export function createAgentActions(
 		},
 		clearSession() {
 			a.state.messages = [];
-			// Reset reader-owned state. Other agents don't yet have state
-			// that needs clearing; when they do, either (a) add similar
-			// per-agent reset calls here or (b) introduce a lifecycle hook
-			// on AgentInfo (e.g. `onSessionClear`) that the shell iterates.
-			setActiveArticle(null);
 			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
 		},
 	};
@@ -258,11 +246,8 @@ export function listAgents(): AgentInfo[] {
 
 export {
 	type AgentCommand,
-	type AgentCommandContext,
 	type AgentInfo,
 	type AgentZone,
-	getActiveArticle,
 	getAgentInfo,
-	setActiveArticle,
 	setConfirmFn,
 };

@@ -62,18 +62,26 @@ export function composeZonesOverlay(info: AgentInfo): AgentOverlay {
 
 /**
  * Merge the agent's optional custom overlay with the zones-derived
- * overlay. Custom rules come first (stricter escape hatches) so the
- * dispatcher's first-block-wins evaluation short-circuits on them
- * before the zone-level confirm prompts fire.
+ * overlay. Custom rules come first, zones come second.
  *
- * Concrete case: reader's active article lives inside the Articles
- * zone (confirmDirs). A `write` against it should block outright
- * (custom `blockPath`), not confirm-then-block. Putting custom rules
- * first lets the block win without a wasted prompt. An `edit` of
- * frontmatter should pass without a confirm prompt because
- * `frontmatterOnlyFor` evaluates first and returns `undefined` (pass);
- * only then does the zone's `confirmDirs` fire. Net: confirm only
- * when no custom rule has an opinion.
+ * Rationale: zones emit lenient, directory-scoped `confirmDirs` that
+ * cover whole workspaces. Custom rules (from `getPermissions`) are
+ * typically stricter and file- or shape-specific. With first-block-wins
+ * in the dispatcher, the stricter rules must evaluate first for two
+ * reasons:
+ *
+ *   1. For legitimate calls that both rules would let through, the
+ *      custom rule returns `undefined` (pass) and the zone's
+ *      `confirmDirs` then fires exactly once — one user prompt per
+ *      legitimate write. Example: reader editing article frontmatter —
+ *      the `frontmatterOnlyInDirs` rule passes, then the zone
+ *      confirms.
+ *
+ *   2. For calls the custom rule would reject outright, putting it
+ *      first means the block wins without a wasted prompt. Example:
+ *      reader blocking a `write` against any article via
+ *      `blockInsideDirs` — the zone's confirm prompt never fires for a
+ *      call that's guaranteed to fail anyway.
  *
  * Keys with rules in both overlays are concatenated; custom first,
  * zones second.

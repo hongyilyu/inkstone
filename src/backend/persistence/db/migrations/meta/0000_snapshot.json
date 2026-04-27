@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "dc8c3f43-636e-4b52-8b03-adffe8d8e875",
+  "id": "f8f2c9e9-17ef-4cab-8f71-9c6b5a9b3718",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "agent_messages": {
@@ -263,13 +263,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
-        },
-        "active_article": {
-          "name": "active_article",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
           "autoincrement": false
         },
         "title": {

@@ -17,7 +17,7 @@ import { registerBaseline } from "./permissions";
  *   - `edit`  — multi-edit unified diff; mutation-queued. Params are
  *               `{ path, edits: [{ oldText, newText }, ...] }`. The
  *               permission dispatcher iterates `args.edits[]` when the
- *               `frontmatterOnlyFor` rule fires (see `./permissions.ts`).
+ *               `frontmatterOnlyInDirs` rule fires (see `./permissions.ts`).
  *
  * `VAULT_DIR` is passed as `cwd` so vault-relative paths resolve inside
  * the vault. The factories do NOT sandbox — an absolute `/etc/passwd`

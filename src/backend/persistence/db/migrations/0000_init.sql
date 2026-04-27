@@ -36,6 +36,5 @@ CREATE TABLE `sessions` (
 	`started_at` integer NOT NULL,
 	`ended_at` integer,
 	`agent` text NOT NULL,
-	`active_article` text,
 	`title` text
 );

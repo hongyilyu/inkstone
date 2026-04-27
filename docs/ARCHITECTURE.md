@@ -93,7 +93,9 @@ src/
     agent/
       index.ts                      Agent instance, createAgentActions, query getters
       agents.ts                     Registry assembler — imports each agent's AgentInfo literal and exports AGENTS[]
-      base.ts                       Foundation layer — AgentInfo + AgentZone + AgentColorKey + BASE_TOOLS + BASE_PREAMBLE + composeTools + composeSystemPrompt + composeZonesOverlay + composeOverlay
+      types.ts                      Foundation types — AgentInfo, AgentZone, AgentColorKey, AgentCommand
+      compose.ts                    BASE_TOOLS + BASE_PREAMBLE + composeTools + composeSystemPrompt
+      zones.ts                      composeZonesOverlay + composeOverlay — zone-to-permission rule derivation
       tools.ts                      Shared tool pool — readTool, writeTool, editTool via @mariozechner/pi-coding-agent factories, passed VAULT_DIR as cwd; registers per-tool baseline permissions at module load
       permissions.ts                Declarative permission dispatcher — Rule union, registerBaseline, dispatchBeforeToolCall, setConfirmFn, path resolution; single hook wired into pi-agent-core's beforeToolCall
       constants.ts                  VAULT_DIR, ARTICLES_DIR, SCRAPS_DIR, etc.
@@ -114,7 +116,7 @@ src/
       errors.ts                     Shared persistence error hook (setPersistenceErrorHandler / reportPersistenceError); `kind: "config" | "auth" | "session" | "db"`
       paths.ts                      Shared XDG paths: CONFIG_DIR, STATE_DIR, CONFIG_FILE, AUTH_FILE, SESSION_FILE, DB_FILE
       schema.ts                     Zod schemas for Config + AuthFile (strictObject, field-level validation)
-      sessions.ts                   SQLite session store — see `docs/SQL.md` for the full API. Exports `newId`, `runInTransaction`, `repairSession`, `findActiveSession`, `createSession`, `loadSession`, `listSessions`, `endSession`, `setActiveArticle`, `appendDisplayMessage`, `updateDisplayMessageMeta`, `finalizeDisplayMessageParts`, `appendAgentMessage`.
+      sessions.ts                   SQLite session store — see `docs/SQL.md` for the full API. Exports `newId`, `runInTransaction`, `repairSession`, `findActiveSession`, `createSession`, `loadSession`, `listSessions`, `endSession`, `appendDisplayMessage`, `updateDisplayMessageMeta`, `finalizeDisplayMessageParts`, `appendAgentMessage`.
       import-legacy.ts              One-shot importer — `session.json` → SQLite on first boot, then rename to `.migrated`
       db/
         client.ts                   Lazy bun:sqlite client, WAL PRAGMAs, drizzle-kit migrator on open
@@ -141,7 +143,7 @@ src/
       prompt.tsx                    Textarea prompt with /command parsing, agent label, tab-cycle hint (hints via `Keybind.print`); streaming indicator = `SpinnerWave` colored by the active agent
       spinner.tsx                   Simple braille-dot spinner (`Spinner`). Not used by the prompt; kept importable for future subagent-status / background-tool indicators
       spinner-wave.tsx              `SpinnerWave` — 8-cell bidirectional knight-rider wave. Port of OpenCode's `ui/spinner.ts` (blocks + bidirectional branches only); 54 precomputed frames at 40 ms interval, per-cell RGBA derived from a single base color via a 6-step trail + alpha fade
-      sidebar.tsx                   Session metadata panel (title, context, article)
+      sidebar.tsx                   Session metadata panel (title, context usage)
       open-page.tsx                 Empty-state welcome page
       dialog-command.tsx            `CommandProvider` + `useCommand` + internal palette. Registry-driven: components call `register(() => CommandOption[])`; the provider's `useKeyboard` dispatches any matching `keybind` and opens the palette on `command_list`.
       dialog-agent.tsx              Agent selection dialog
@@ -180,7 +182,6 @@ The `AgentProvider` creates a pi-agent-core `Agent` instance (via `backend/agent
 {
   messages: DisplayMessage[]     // full history (see below for shape)
   isStreaming: boolean
-  activeArticle: string | null
   modelName: string
   modelProvider: string          // provider *id* (e.g. "amazon-bedrock"); format via getProvider(id).displayName at render time
   contextWindow: number
@@ -190,7 +191,7 @@ The `AgentProvider` creates a pi-agent-core `Agent` instance (via `backend/agent
   totalTokens: number            // accumulated across all assistant turns
   totalCost: number              // accumulated across all assistant turns
   lastTurnStartedAt: number      // Date.now() when user prompt sent; consumed in agent_end
-  currentAgent: string           // active agent name (e.g. "reader" | "example")
+  currentAgent: string           // active agent name (e.g. "reader")
 }
 ```
 
@@ -290,10 +291,10 @@ Policy enforcement is declarative. The shell wires a single `beforeToolCall` hoo
 |---|---|---|
 | `insideDirs` | `{ dirs: string[] }` | Resolved path must be inside ANY listed dir. Multiple rules AND-join. |
 | `confirmDirs` | `{ dirs: string[] }` | If resolved path is in any listed dir, await `confirmFn`; decline → block. |
-| `blockPath` | `{ path: string; reason: string }` | Block when resolved path exactly equals `path`. |
-| `frontmatterOnlyFor` | `{ targetPath: string }` | On `edit` against `targetPath`, every `args.edits[].oldText` must appear inside the file's `---`-delimited frontmatter. |
+| `blockInsideDirs` | `{ dirs: string[]; reason: string }` | Block when resolved path is inside any listed dir. Used for "this whole directory tree is read-only for this agent." |
+| `frontmatterOnlyInDirs` | `{ dirs: string[] }` | On `edit` when resolved path is inside any listed dir, every `args.edits[].oldText` must appear inside the file's `---`-delimited frontmatter. |
 
-Path resolution mirrors pi-coding-agent (`~` / `~/` expansion, `@` prefix strip, absolute passes through, relative resolves against `VAULT_DIR`) so the sandbox check operates on the same bytes the tool will touch. pi-coding-agent doesn't re-export those helpers from its package index; the subset is inlined.
+Path resolution mirrors pi-coding-agent (`~` / `~/` expansion, `@` prefix strip, absolute passes through, relative resolves against `VAULT_DIR`) so the sandbox check operates on the same bytes the tool will touch. pi-coding-agent doesn't re-export those helpers from its package index; the subset is inlined. The `isInsideDir` helper (exported from `permissions.ts`) is the single source of truth for "is this path inside that directory?" — used by the dispatcher and by agent-internal callers like reader's `/article` escape check.
 
 ### Tool baselines
 
@@ -311,13 +312,13 @@ Tools without a registered baseline run unsandboxed (pi-coding-agent's own defau
 
 ### Agent overlays
 
-The dispatcher accepts a combined overlay built by `composeOverlay(info)` in `src/backend/agent/base.ts`:
+The dispatcher accepts a combined overlay built by `composeOverlay(info)` in `src/backend/agent/zones.ts`:
 
 ```
 composeOverlay(info) = info.getPermissions?.() ⊕ composeZonesOverlay(info)
 ```
 
-**Custom rules come first**, zones come second. Keys with entries in both are concatenated; within a concatenated list, custom rules evaluate before zone rules. First-block-wins means the stricter (file-level) custom rules short-circuit before the looser (directory-level) zone rules fire. Concretely: reader's active article lives inside its Articles zone (confirmDirs); a `write` against the article hits the custom `blockPath` first and blocks outright, without wasting a user prompt on a confirm that would be followed by a block.
+**Custom rules come first**, zones come second. Keys with entries in both are concatenated; within a concatenated list, custom rules evaluate before zone rules. First-block-wins means the stricter (file-level) custom rules short-circuit before the looser (directory-level) zone rules fire. Concretely: reader's custom `blockInsideDirs` on Articles rejects a `write` against any article outright, without the zone's confirm prompt firing for a call that would be rejected anyway.
 
 **`composeZonesOverlay(info)`** derives permission rules from `AgentInfo.zones` (see Agent Registry → Zones):
 
@@ -326,29 +327,31 @@ composeOverlay(info) = info.getPermissions?.() ⊕ composeZonesOverlay(info)
 
 Zone paths are joined with `VAULT_DIR` via `node:path.join` so leading/trailing slashes normalize. Absolute zone paths (POSIX `/`, Windows drive-letter, UNC) and paths containing `..` segments throw at compose time (misconfiguration should be loud).
 
-Zones cover directory-level write policies. The `getPermissions?()` callback is the escape hatch for rules zones can't express — reader's `frontmatterOnlyFor` rule keyed on `activeArticle` is the current example:
+Zones cover directory-level write policies. The `getPermissions?()` callback is the escape hatch for rules zones can't express — reader declares a static overlay on the Articles zone:
 
 ```ts
 // agents/reader/index.ts
 function getReaderPermissions(): AgentOverlay {
-  if (!activeArticle) return {};
-  const articlePath = resolve(ARTICLES_DIR, activeArticle);
   return {
-    [writeTool.name]: [{ kind: "blockPath", path: articlePath, reason: "..." }],
-    [editTool.name]:  [{ kind: "frontmatterOnlyFor", targetPath: articlePath }],
+    [writeTool.name]: [
+      { kind: "blockInsideDirs", dirs: [ARTICLES_DIR], reason: "..." },
+    ],
+    [editTool.name]: [{ kind: "frontmatterOnlyInDirs", dirs: [ARTICLES_DIR] }],
   };
 }
 ```
 
-Reader's directory-level rules (`confirmDirs` on Notes/Scraps/Articles) moved out of `getPermissions` into the `zones` declaration. What's left in `getPermissions` is the article-specific policy that zones can't express.
+Reader's directory-level confirm rules (`confirmDirs` on Articles/Notes/Scraps) live in the `zones` declaration. What's in `getPermissions` is the article-specific policy zones can't express: *any* write to Articles is blocked; *any* edit to Articles must touch only frontmatter. The rules are static (they reference `ARTICLES_DIR` directly), so no per-turn state flows through `getPermissions`.
 
 Overlay rules run AFTER tool baselines — an overlay can add restrictions but can't relax them (a later rule can't un-block an earlier block because first-block-wins). No tool today declares a permissive baseline that an overlay would want to tighten.
 
 ### What this replaces
 
-The pre-dispatcher guard was a single procedural function in `backend/agent/guard.ts` that pattern-matched tool names and encoded reader's article rule directly. Reader-specific vocabulary leaked into the shell and the shell mutated `ctx.args._articlePath` as a side channel. Both are gone: the dispatcher has no reader knowledge, and reader's `getPermissions` owns its own state.
+The pre-dispatcher guard was a single procedural function in `backend/agent/guard.ts` that pattern-matched tool names and encoded reader's article rule directly. Reader-specific vocabulary leaked into the shell and the shell mutated `ctx.args._articlePath` as a side channel. Both are gone: the dispatcher has no reader knowledge, and reader's `getPermissions` owns its own data.
 
-Phase 1 of the zones refactor further split reader's policy: directory-level rules now live in declarative `zones` data (which the prompt also reads — see Agent Registry → Zones), while article-specific state-dependent rules stay in `getPermissions`. Phase 1 also trimmed tool baselines to the hard vault boundary (`insideDirs: [VAULT_DIR]` only); directory-level confirmation moved entirely to zones so agents opt into it per-zone rather than inheriting it globally.
+The zones refactor (D12) further split reader's policy: directory-level confirmation rules now live in declarative `zones` data (which the prompt also reads — see Agent Registry → Zones), while article-specific rules stay in `getPermissions`. The zones refactor also trimmed tool baselines to the hard vault boundary (`insideDirs: [VAULT_DIR]` only); directory-level confirmation moved entirely to zones so agents opt into it per-zone rather than inheriting it globally.
+
+A follow-up pass (the statelessness refactor) replaced reader's state-keyed rules (`blockPath` + `frontmatterOnlyFor`, both keyed on the currently-active article) with static zone-wide rules (`blockInsideDirs` + `frontmatterOnlyInDirs` covering all of Articles). `activeArticle` state is gone — the `/article` command reads the file and inlines it as the opening user message, and the permission rules apply uniformly to every article. Broader protection surface, simpler reader. Tracked as a behavioral shift in TODO.md.
 
 ## Agent Registry
 
@@ -358,15 +361,18 @@ Multi-agent support is a **flat registry with runtime composition** — no inher
 
 ### Base layer (the "base agent")
 
-`src/backend/agent/base.ts` owns everything shared across agents:
+The foundation layer is split across three files:
 
-- `AgentInfo` (the type) and `AgentColorKey`.
-- `AgentZone` + `composeZonesOverlay` + `composeOverlay` (see Zones below).
-- `AgentCommand` + `AgentCommandContext` types (see Commands below).
+- `src/backend/agent/types.ts` — `AgentInfo`, `AgentZone`, `AgentColorKey`, `AgentCommand`. Pure types, no runtime.
+- `src/backend/agent/compose.ts` — `BASE_TOOLS`, `BASE_PREAMBLE`, `composeTools(info)`, `composeSystemPrompt(info)`.
+- `src/backend/agent/zones.ts` — `composeZonesOverlay(info)`, `composeOverlay(info)`.
+
+Shared constants and helpers:
+
 - `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today just `read` (from the shared pool, scoped to `VAULT_DIR`). Frozen at module load so external modules can't mutate.
 - `BASE_PREAMBLE: string` — a shared system-prompt prefix. **Empty today** — the mechanism is the point. Future PRs will grow this into a composed block that includes persona guidance, tool-use discipline, and memory-file contents (`user.md`, `memory.md` from `~/.config/inkstone/`).
 - `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]`. Every agent gets the base set unconditionally; there is no opt-out flag.
-- `composeSystemPrompt(info)` — builds the full system prompt as three non-empty sections joined by blank lines: the zones block (when `info.zones.length > 0`), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. `buildInstructions` reads any agent-owned state (e.g. reader's `activeArticle`) directly.
+- `composeSystemPrompt(info)` — builds the full system prompt as three non-empty sections joined by blank lines: the zones block (when `info.zones.length > 0`), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. `buildInstructions` is nullary; no agent today has per-turn state, but the composer rebuilds per turn to keep that option open for future agents.
 
 ### Zones
 
@@ -377,7 +383,7 @@ Multi-agent support is a **flat registry with runtime composition** — no inher
 
 Single source of truth prevents drift between what the LLM is told and what the dispatcher enforces. Read is always vault-wide (bounded only by the tool baseline `insideDirs: [VAULT_DIR]`); zones only constrain writes.
 
-A `deny` policy (read-only zone inside a workspace) was considered and cut in D12: `blockPath` does exact-path equality, not prefix matching, so `deny` on a directory would be inert against files inside it. Revisit when a real agent needs this, and add a `blockInsideDirs` rule kind — not a `deny` zone policy on top of `blockPath` — see TODO.md.
+A `deny` policy (read-only zone inside a workspace) was considered and cut in D12. The matching rule kind (`blockInsideDirs`) later shipped for reader's Articles restriction, so zones could now grow a `"deny"` → `blockInsideDirs` mapping cheaply. Deferred per D8 until a real agent wants it — see TODO.md.
 
 Example — reader's zones:
 
@@ -397,13 +403,13 @@ zones: [],
 
 Tool implementations come from `@mariozechner/pi-coding-agent` via the shared pool in `backend/agent/tools.ts` — Inkstone does not re-implement read/write/edit. Each factory is called with `VAULT_DIR` as the `cwd` so vault-relative paths resolve inside the vault; absolute paths are honored by the tool and sandboxed by the guard. pi-coding-agent's tool source transitively imports `@mariozechner/pi-tui`, but `wrapToolDefinition` strips the render hooks — the tools are pure `AgentTool<any>` at runtime, and pi-tui is inert code-path-wise (Inkstone renders through OpenTUI in `src/tui/**`).
 
-`backend/agent/index.ts` rebuilds the system prompt at the start of every `AgentActions.prompt(text)` call. `setAgent()` and `clearSession()` also rebuild inline for correctness on mid-session reads of `a.state.systemPrompt` (e.g. a tool that echoes the current prompt) — the next turn's prompt-wrapper rebuild produces byte-identical output. Tools are rebuilt eagerly on `setAgent()` only (pi-agent-core may serialize them independently of prompt composition).
+`backend/agent/index.ts` rebuilds the system prompt at the start of every `AgentActions.prompt(text)` call. `setAgent()` and `clearSession()` also rebuild inline for correctness on mid-session reads of `a.state.systemPrompt` (e.g. a tool that echoes the current prompt) — the next turn's prompt-wrapper rebuild produces byte-identical output. Tools are rebuilt eagerly on `setAgent()` only (pi-agent-core may serialize them independently of prompt composition). No agent today has cross-turn state that affects the prompt — reader inlines article content into a user message at `/article` time rather than into the system prompt — so the per-turn rebuild is a no-op today content-wise; kept as a cheap invariant for future agents that may want turn-varying system prompts.
 
 ### Agents on ship
 
 | Name | extraTools | Composed tools | Zones | Commands | Prompt behavior | Color |
 |------|------------|----------------|-------|----------|-----------------|-------|
-| `reader` | `edit`, `write` | `read` + the extras | `010 RAW/013 Articles` + `020 HUMAN/022 Scraps` + `020 HUMAN/023 Notes`, all confirm | `/article <filename>` | `<your workspace>` block + the active article + the 6-stage reading workflow | `theme.secondary` |
+| `reader` | `edit`, `write` | `read` + the extras | `010 RAW/013 Articles` + `020 HUMAN/022 Scraps` + `020 HUMAN/023 Notes`, all confirm | `/article <filename>` | `<your workspace>` block + the 6-stage reading workflow. `/article` reads the file and sends path + content as the opening user message. | `theme.secondary` |
 | `example` | — | `read` only | — | — | Short static "general-purpose assistant" prompt, no workspace block | `theme.accent` |
 
 Both agents inherit the shell-level `/clear` verb via the unified command registry (see Commands below) — no per-agent declaration needed.
@@ -417,10 +423,10 @@ The folder-per-agent shape makes this a local change:
 3. Declare `zones: AgentZone[]` for write targets inside the vault (or `zones: []` if the agent has no workspace).
 4. If it wants tools from the shared pool, import them from `backend/agent/tools.ts` and list them in `extraTools`. If it owns a state-coupled tool that no other agent uses, add it under `agents/<name>/tools/` and re-export any public state helpers from the agent's `index.ts` (so the shell can stay out of deep imports per the boundary rule above).
 5. If it has user-facing verbs, declare them as `AgentCommand[]` and set `commands: [...]` on the `AgentInfo`. The TUI's `BridgeAgentCommands` (see Commands below) picks them up automatically.
-6. If zones can't express the full policy (e.g. reader's `frontmatterOnlyFor` rule keyed on session state), declare `getPermissions?(): AgentOverlay` on the `AgentInfo`.
+6. If zones can't express the full policy (e.g. reader's `frontmatterOnlyInDirs` rule on the Articles zone), declare `getPermissions?(): AgentOverlay` on the `AgentInfo`.
 7. Add one import + one entry in `backend/agent/agents.ts`.
 
-No changes to `base.ts`, `tools.ts`, `backend/agent/index.ts`, the TUI, or config schemas are required.
+No changes to `types.ts`, `compose.ts`, `zones.ts`, `tools.ts`, `backend/agent/index.ts`, the TUI, or config schemas are required.
 
 ### Commands
 
@@ -448,23 +454,22 @@ export interface CommandOption {
 }
 ```
 
-Agent-declared verbs (backend-side, `src/backend/agent/base.ts`):
+Agent-declared verbs (backend-side, `src/backend/agent/types.ts`):
 
 ```ts
-export interface AgentCommandContext {
-  prompt(text: string): Promise<void>;
-}
-
 export interface AgentCommand {
   name: string;
   description?: string;
   argHint?: string;
   takesArgs?: boolean;
-  execute(args: string, ctx: AgentCommandContext): void | Promise<void>;
+  execute(
+    args: string,
+    prompt: (text: string) => Promise<void>,
+  ): void | Promise<void>;
 }
 ```
 
-`AgentCommandContext` is deliberately narrow — the only hook commands need is `prompt`. Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over `AgentActions.clearSession` directly, so they don't need a context hand-off. Commands mutate agent-owned module state directly (e.g. reader's `activeArticle`); the shell's `AgentActions.prompt` wrapper rebuilds `systemPrompt` at the next turn boundary, so no explicit refresh call is needed.
+`execute` takes a positional `prompt` function the shell injects — no wrapper context object. Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over `AgentActions.clearSession` directly, so they don't need anything handed off. Commands typically compose a user message (e.g. reader inlines the article's path + content) and call `prompt(text)` to kick off a turn; they don't mutate system-prompt state (no agent today has cross-turn state), so no explicit refresh is needed.
 
 **Sources of commands** (all flow into the same registry):
 
@@ -486,11 +491,12 @@ user types "/article foo.md" + Enter
           → BridgeAgentCommands' reader entry (agent-scoped registers first)
           → takesArgs gate passes
           → entry.onSelect(dialog, "foo.md")
-            → cmd.execute("foo.md", { prompt })
-              → setActiveArticle("foo.md")       (reader module state)
-              → await ctx.prompt("Read foo.md")  (shell rebuilds systemPrompt,
-                                                  then streaming turn begins)
-            → queueMicrotask: setStore("activeArticle", getActiveArticle())
+            → cmd.execute("foo.md", prompt)
+              → resolve + validate path inside ARTICLES_DIR
+              → readFileSync(articlePath, "utf-8")
+              → await prompt("Read this article...\n\nPath: ...\n\nContent:\n\n...")
+                (shell rebuilds systemPrompt, then streaming turn begins
+                 with the article as the opening user message)
       → setText("")                              (clear input)
 
 user types "/clear" + Enter
@@ -514,7 +520,7 @@ user types "/article" + Enter
 
 **Precedence on slash-name collision**: first-match wins. `AgentProvider` mounts inside `CommandProvider` (see `src/tui/app.tsx` tree), and `command.register` prepends to the internal registration list — so `BridgeAgentCommands` entries sit ahead of `Layout`'s entries. An agent that declares a verb with the same name as a shell-level verb overrides the shell version for that agent only. This preserves D9's "agent overrides built-in" rule; it's theoretical today (no agent redefines `clear`).
 
-**Session restore** bypasses the command system entirely — it rehydrates state without triggering a prompt turn. `context/agent.tsx` calls `setActiveArticle(saved.activeArticle)` directly. No explicit system-prompt rebuild is needed because the next user turn's `AgentActions.prompt` wrapper composes the system prompt fresh from the restored state.
+**Session restore** rehydrates messages + sets the active agent without triggering a prompt turn. `context/agent.tsx` seeds `store.messages` from `loaded.displayMessages`, replays the raw pi-agent-core messages, and calls `wrappedActions.setAgent(loaded.session.agent)` to align the backend. No reader-specific state to restore — the article's content lives inside the session's user message, visible to the LLM on the next turn via conversation history.
 
 ### Switching rules
 
@@ -538,7 +544,7 @@ setAgent(name)
       → prompt label, input border, user-bubble border, assistant ▣ glyph all re-theme via `theme[getAgentInfo(store.currentAgent).colorKey]`
 ```
 
-The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/base.ts`. With `BASE_PREAMBLE === ""`, `composeSystemPrompt(info)` is a pass-through to `info.buildInstructions()`.
+The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/compose.ts`. With `BASE_PREAMBLE === ""`, `composeSystemPrompt(info)` is a pass-through to `info.buildInstructions()`.
 
 The assistant `message_end` handler stamps `agentName` onto the new bubble using `getAgentInfo(store.currentAgent).displayName`. Because switching is locked mid-session, the stamped name is guaranteed to be the agent that actually produced the reply.
 

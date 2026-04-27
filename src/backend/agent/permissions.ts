@@ -28,15 +28,16 @@ export type Rule =
 	/** If the resolved path is inside any listed dir, ask the user via the
 	 *  injected `confirmFn`. Decline → block. */
 	| { kind: "confirmDirs"; dirs: string[] }
-	/** Block when the resolved path equals `path`. Used for "cannot
-	 *  overwrite this specific file" rules. */
-	| { kind: "blockPath"; path: string; reason: string }
-	/** On tools with an `edits` array (pi-coding-agent's `edit`), every
-	 *  `edits[].oldText` must fall inside the frontmatter of `targetPath`
-	 *  when the resolved args.path matches `targetPath`. Used by reader to
-	 *  permit frontmatter edits on the active article while blocking body
-	 *  edits. */
-	| { kind: "frontmatterOnlyFor"; targetPath: string };
+	/** Block when the resolved path is inside any listed dir (prefix match
+	 *  with path-separator boundary). Used for "this whole directory tree
+	 *  is read-only for this agent" rules. */
+	| { kind: "blockInsideDirs"; dirs: string[]; reason: string }
+	/** On tools with an `edits` array (pi-coding-agent's `edit`), when the
+	 *  resolved `args.path` is inside any listed dir, every
+	 *  `edits[].oldText` must fall inside the file's `---`-delimited
+	 *  frontmatter. Used by reader to enforce "only frontmatter edits on
+	 *  files inside Articles." */
+	| { kind: "frontmatterOnlyInDirs"; dirs: string[] };
 
 /**
  * Agent-scoped rule overlay, keyed by tool name. Merged AFTER the tool's
@@ -112,8 +113,13 @@ function getFrontmatter(content: string): string | null {
  * boundary so `.../LifeOS` doesn't match `.../LifeOS-backup/x`. Equality
  * (`child === dir`) counts as inside — a tool call against the directory
  * itself is covered by the same rule as a file inside it.
+ *
+ * Exported for agent-internal callers (e.g. reader's `/article` escape
+ * check) so "inside a directory" has one implementation across the
+ * backend. The prefix-string-match spelling leaks; use this instead of
+ * `startsWith(dir + "/")` anywhere the boundary matters.
  */
-function isInsideDir(child: string, dir: string): boolean {
+export function isInsideDir(child: string, dir: string): boolean {
 	if (child === dir) return true;
 	const prefix = dir.endsWith(sep) ? dir : dir + sep;
 	return child.startsWith(prefix);
@@ -165,16 +171,19 @@ async function evaluateRule(
 			if (!ok) return { block: true, reason: "User declined." };
 			return undefined;
 		}
-		case "blockPath": {
-			if (resolvedPath === rule.path) {
+		case "blockInsideDirs": {
+			if (resolvedPath === undefined) return undefined;
+			if (rule.dirs.some((d) => isInsideDir(resolvedPath, d))) {
 				return { block: true, reason: rule.reason };
 			}
 			return undefined;
 		}
-		case "frontmatterOnlyFor": {
-			if (resolvedPath !== rule.targetPath) return undefined;
-			if (!existsSync(rule.targetPath)) return undefined;
-			const content = readFileSync(rule.targetPath, "utf-8");
+		case "frontmatterOnlyInDirs": {
+			if (resolvedPath === undefined) return undefined;
+			if (!rule.dirs.some((d) => isInsideDir(resolvedPath, d)))
+				return undefined;
+			if (!existsSync(resolvedPath)) return undefined;
+			const content = readFileSync(resolvedPath, "utf-8");
 			const frontmatter = getFrontmatter(content);
 			const edits = (args.edits ?? []) as Array<{ oldText?: string }>;
 			for (const edit of edits) {
@@ -183,7 +192,7 @@ async function evaluateRule(
 					return {
 						block: true,
 						reason:
-							"Only frontmatter modifications are allowed on the article file.",
+							"Only frontmatter modifications are allowed on files in this directory.",
 					};
 				}
 			}

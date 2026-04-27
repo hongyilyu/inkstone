@@ -222,9 +222,9 @@ This is intentional ergonomic friction:
 
 Reads (`findActiveSession`, `loadSession`, `listSessions`,
 `repairSession`) use the root client directly; they don't take `tx`.
-Single-row session mutators (`createSession`, `endSession`,
-`setActiveArticle`) also use the root client — each is one statement,
-which SQLite auto-commits atomically.
+Single-row session mutators (`createSession`, `endSession`) also use
+the root client — each is one statement, which SQLite auto-commits
+atomically.
 
 ### Crash-repair boundary
 
@@ -258,10 +258,9 @@ for the authoritative signatures. Quick reference:
 All writers take a required `tx: Tx` parameter. Wrap single writes in
 `runInTransaction` (see § Transactional boundary).
 
-- `createSession({ agent, activeArticle })` — new row. (No tx; single
+- `createSession({ agent })` — new row. (No tx; single
   statement.)
 - `endSession(id)` — stamp `ended_at = now`. (No tx.)
-- `setActiveArticle(id, articleId)` — update. (No tx.)
 - `appendDisplayMessage(tx, id, msg, { includeParts? })` — insert
   header, optionally parts.
 - `updateDisplayMessageMeta(tx, id, msg)` — header-only update.

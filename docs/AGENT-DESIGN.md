@@ -43,7 +43,7 @@ Shipped in PR #1 (branch `refactor/agent-shell-base-layer`). The base layer + fo
 
 ### D3 — Base layer bundle
 
-The base layer (`backend/agent/base.ts`) exports:
+The base layer is split across three files in `backend/agent/` — `types.ts` (pure types), `compose.ts` (BASE_TOOLS, composers), `zones.ts` (zone-to-permission rule derivation). Together they export:
 
 | Symbol | Purpose |
 |---|---|
@@ -113,21 +113,18 @@ This is D5 ("ship mechanism, defer content") extended to cover the future-work d
 
 **Why:** commands and tools answer different questions. Commands are "what does the user want the agent to do?" Tools are "what can the agent do to accomplish that?" Collapsing them (e.g. treating `/ingest` as a tool the model decides to invoke) loses the user-verb semantics; collapsing the other way (tools as commands) loses the mid-turn invocation pattern. Keeping them separate mirrors how Discord/Slack/OpenCode structure user input vs agent capabilities.
 
-**Shape**:
+**Shape** (`src/backend/agent/types.ts`):
 
 ```ts
-// src/backend/agent/base.ts — narrow context with only
-// the single capability actual commands use today.
-export interface AgentCommandContext {
-  prompt(text: string): Promise<void>;
-}
-
 export interface AgentCommand {
   name: string;                   // verb without the leading slash
   description?: string;
   argHint?: string;               // "<filename>", "<folder>", "<question>"
   takesArgs?: boolean;            // requires non-empty args for typed slash dispatch
-  execute(args: string, ctx: AgentCommandContext): void | Promise<void>;
+  execute(
+    args: string,
+    prompt: (text: string) => Promise<void>,
+  ): void | Promise<void>;
 }
 
 export interface AgentInfo {
@@ -136,17 +133,17 @@ export interface AgentInfo {
 }
 ```
 
-`execute` mutates agent-owned state directly (module-level, inside the agent's folder) and calls `ctx.prompt(template)` to kick off an LLM turn with a command-specific template. The shell's `AgentActions.prompt` wrapper rebuilds `systemPrompt` at the turn boundary via `composeSystemPrompt(getAgentInfo(currentAgent))`, so any state mutated before `ctx.prompt(...)` is visible to the next turn automatically. The TUI's `BridgeAgentCommands` component (`src/tui/context/agent.tsx`) picks up `AgentInfo.commands` reactively on `store.currentAgent` and converts each entry into a `CommandOption` in the unified registry. `onSelect` closes over the narrow `AgentCommandContext` built from `wrappedActions.prompt`, so command side effects share the same Solid-store and persistence path as direct UI actions.
+`execute` receives a positional `prompt` function that kicks off an LLM turn. Commands typically compose a user message (e.g. reader's `/article` reads the article file and inlines path + content) and call `prompt(text)` to send it. The shell's `AgentActions.prompt` wrapper rebuilds `systemPrompt` at the turn boundary via `composeSystemPrompt(getAgentInfo(currentAgent))`, so any agent-owned state the command mutated would propagate automatically — though no agent today has such state. The TUI's `BridgeAgentCommands` component (`src/tui/context/agent.tsx`) picks up `AgentInfo.commands` reactively on `store.currentAgent` and converts each entry into a `CommandOption` in the unified registry.
 
-**Shell-level verbs** (`/clear`) live directly as `CommandOption` entries in `Layout()` (`src/tui/app.tsx`), closing over `AgentActions.clearSession`. They don't go through `AgentCommand` because there's no agent-owned state involved — a shell action registered with `slash: { name: "clear" }` is the simpler expression. This is what removed the `clearSession` trampoline that used to live on `CommandContext`.
+**Shell-level verbs** (`/clear`) live directly as `CommandOption` entries in `Layout()` (`src/tui/app.tsx`), closing over `AgentActions.clearSession`. They don't go through `AgentCommand` because there's no agent-owned state involved — a shell action registered with `slash: { name: "clear" }` is the simpler expression.
 
 **Dispatch precedence**: agent-declared commands override shell-level commands on slash-name collision. Mechanism: `AgentProvider` mounts inside `CommandProvider`, and `command.register` prepends to its internal list, so agent-bridge entries sit ahead of `Layout`'s entries. First-match wins. Intentional — an agent can redefine `/clear` if its semantics differ (none do today).
 
-**Why the context is narrow**: `AgentCommandContext` exposes only `prompt`. Anything a shell knows how to do — clearing the session, switching agent/model, opening a dialog — is not a command concern and is deliberately absent. Shell actions register their own `CommandOption` entries; commands don't invoke them. Widening the context has to be an explicit decision per capability.
+**Why `prompt` is positional, not wrapped in a context object**: an earlier iteration of D9 introduced an `AgentCommandContext { prompt, setActiveArticle }` object, justified as "widening has to be an explicit decision per capability." In practice only `prompt` was used universally, and `setActiveArticle` was reader-shaped leakage on a supposedly generic type. When reader went stateless (see the reader statelessness refactor in `docs/TODO.md`), `setActiveArticle` disappeared entirely. The remaining one-field context had no justification for existing, so the context object was replaced with a positional `prompt` argument. If a second capability ever does arrive, revisit — but don't re-introduce the wrapper prematurely; the positional-function shape is the minimum-viable surface. D8's "pressure point, not API" applies.
 
-**What this resolves**: the "Reader-specific vocabulary leaks onto AgentActions" pressure point. `loadArticle` is gone from `AgentActions`; it's now a reader command with state owned by the reader module. `buildInstructions` is nullary — no `AgentBuildContext` carrying reader-shaped fields. D9's original design introduced `runAgentCommand` + `canRunAgentCommand` on `AgentActions` plus a wider `CommandContext` with `clearSession` and `abort` — all three have since been removed in favor of the bridge pattern (see "Unified command registry" below). The originally-proposed `refreshSystemPrompt` hook was also dropped when the shell's `prompt()` wrapper took over prompt composition at the turn boundary — commands no longer need an explicit "invalidate cache" signal.
+**What this resolves**: the "Reader-specific vocabulary leaks onto AgentActions" pressure point. `loadArticle` is gone from `AgentActions`; it's now a reader command. `buildInstructions` is nullary — no `AgentBuildContext` carrying reader-shaped fields. D9's original design introduced `runAgentCommand` + `canRunAgentCommand` on `AgentActions` plus a wider `CommandContext` with `clearSession` and `abort` — all of those have since been removed in favor of the bridge pattern (see "Unified command registry" below). The originally-proposed `refreshSystemPrompt` hook was also dropped when the shell's `prompt()` wrapper took over prompt composition at the turn boundary. The `AgentCommandContext` wrapper itself was dropped later when reader's statelessness refactor made it one-field-only.
 
-**Unified command registry** (SLASH-COMMANDS.md Path A): the dialog-opening commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`) and agent-declared commands (`/article`) now share the same TUI-side `CommandOption` type. The previous "Non-goal" here (dialog-openers stay palette-only because `DialogContext` can't cross the layer boundary) is resolved: `DialogContext` never crosses the boundary, because `AgentCommand` no longer holds an `onSelect` — the TUI's bridge owns the adapter. Agent code stays layer-correct (declares plain data); TUI code owns presentation (closes over `DialogContext` and `AgentActions` as needed).
+**Unified command registry** (SLASH-COMMANDS.md Path A): the dialog-opening commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`) and agent-declared commands (`/article`) share the same TUI-side `CommandOption` type. `AgentCommand` holds only data (no `onSelect`); the TUI's bridge owns the adapter. Agent code stays layer-correct (declares plain data); TUI code owns presentation (closes over `DialogContext` and `AgentActions` as needed).
 
 ### D10 — Tool implementations come from pi-coding-agent
 
@@ -173,14 +170,14 @@ export interface AgentInfo {
 
 **Why:** the procedural guard bundled reader-specific knowledge into the shell and forced the `_articlePath` hack. Splitting into (a) per-tool baselines + (b) per-agent overlay produces:
 - **DRY**: VAULT_DIR sandbox declared once on each tool, shared by every agent.
-- **Local ownership**: reader's article rule lives with reader's `activeArticle` state, not in shell code.
+- **Local ownership**: reader's article rule lives in reader's own folder (`getPermissions`), not in shell code.
 - **No side channels**: overlay rules close over module state directly; no `ctx.args` mutation.
 - **Extension point**: future agents plug in additional rules without touching shell, tools, or reader.
 
 **Trade-offs accepted:**
 
 - **`getPermissions` is a function.** Pure data is the goal; rule *production* remains a factory callback so state-dependent values (reader's article path) can be inlined fresh each call. The rules themselves are still pure data — only the producer is a function. A push model (reader calls `setPermissions(rules)` on every state change) was considered but adds coordination cost for no readability gain.
-- **Speculative rule kinds.** `blockPath` and `frontmatterOnlyFor` exist only for reader today. Defensible vs. the alternative (cohabitation with a legacy guard) but worth acknowledging: the rule-kind union is sized to current needs + one (the "one" being whatever the first non-reader agent wants, TBD).
+- **Speculative rule kinds.** The rule-kind union is sized to current needs + one. Today reader uses `blockInsideDirs` and `frontmatterOnlyInDirs`; both originated as reader-specific shapes but are generic enough that a future agent with read-only directories or frontmatter-only zones can reuse them. Earlier per-file variants (`blockPath`, `frontmatterOnlyFor`) existed during the active-article phase and were deleted when reader went stateless — the union is now smaller than it was, not larger.
 - **No enforcement that every tool has a baseline.** A tool registered in `composeTools` without a matching `registerBaseline(tool.name, ...)` call runs unsandboxed. Convention suffices today (fixed tool set); enforcement (e.g. throw at compose time) can be added when plugin tools arrive.
 
 **Function escape hatch not built.** A rule kind whose predicate is `(params) => boolean` was considered but deferred — every current need fits a named rule kind. Add if a real case doesn't.
@@ -196,19 +193,19 @@ export interface AgentInfo {
 
 **Why:** the prior shape had two independent declarations of the same rule — reader's workspace was described in prose inside `buildInstructions` *and* enforced by rules inside `getPermissions`. They had to agree by hand. With zones, the LLM's stated workspace and the dispatcher's enforced workspace derive from the same data; drift between prompt and dispatcher is impossible.
 
-**Merge order: custom rules first, then zones.** `composeOverlay(info) = info.getPermissions?.() ⊕ composeZonesOverlay(info)` (custom first). The dispatcher is first-block-wins, so the stricter rule must come first to short-circuit before the looser one fires. Concretely: reader's active article lives inside its Articles zone (which would otherwise confirm every write); the custom `blockPath` rule on the article must evaluate before the zone's `confirmDirs` to block outright instead of confirm-then-block. This is the opposite of the "baseline first, tighten second" intuition that governed D11's tool baselines; D12 flips it because zones are *lenient* directory policies layered *over* stricter file-level custom rules, not under.
+**Merge order: custom rules first, then zones.** `composeOverlay(info) = info.getPermissions?.() ⊕ composeZonesOverlay(info)` (custom first). The dispatcher is first-block-wins, so the stricter rule must come first to short-circuit before the looser one fires. Concretely: reader's custom `blockInsideDirs` rejects `write` against any article outright; the zone's `confirmDirs` on the same Articles path would otherwise prompt for a write that's guaranteed to fail. Custom-first lets the block win without a wasted prompt. This is the opposite of the "baseline first, tighten second" intuition that governed D11's tool baselines; D12 flips it because zones are *lenient* directory policies layered *over* stricter file-level custom rules, not under.
 
 **Tool baselines trimmed to the hard vault boundary.** Before D12, the `write`/`edit` tool baselines carried `confirmDirs: [NOTES_DIR, SCRAPS_DIR]` as a global guardrail. That produced double-confirms once zones also covered Notes/Scraps. Fix: directory-level confirmation moved entirely to zones. The baseline still owns `insideDirs: [VAULT_DIR]` — the hard boundary every agent must respect — but no directory-level confirmation. An agent with empty zones (example) gets no confirmation on vault-internal writes, which is what "empty workspace" means.
 
 **Read stays vault-wide.** Zones constrain writes only. Any agent can read anywhere in the vault (subject to the tool baseline `insideDirs: [VAULT_DIR]`). The ambient-context pattern — agent reads `090 SYSTEM/` or similar on demand to discover workflows, schemas, templates — depends on vault-wide read. Zones are the right line because "where I work" ≠ "where I look up references."
 
-**`getPermissions` stays as an escape hatch.** Zones are the declarative baseline; `getPermissions` handles rules zones can't express — today's example is reader's `frontmatterOnlyFor` rule on the active article. State-dependent, not directory-based, not a zone policy. The escape hatch being function-shaped (not data) is the same D8 trade-off as D11: rule *production* can stay dynamic while rule *data* stays pure.
+**`getPermissions` stays as an escape hatch.** Zones are the declarative baseline; `getPermissions` handles rules zones can't express — today's example is reader's `frontmatterOnlyInDirs` rule on the Articles zone. Directory-scoped but not a zone policy (it constrains edit *shape*, not just whether writes are allowed). The escape hatch being function-shaped (not data) is the same D8 trade-off as D11: rule *production* can stay dynamic while rule *data* stays pure.
 
 **Path matching stays `startsWith`-based.** Zones are folder paths today. Composer uses `node:path.join(VAULT_DIR, zone.path)` so leading/trailing slashes normalize; absolute zone paths throw at compose time. Glob support (for targeting a specific file inside a zone, for example) is a deferred decision pending a real use case.
 
 **Policy verbs are phrased, not named, in the prompt.** `auto` renders as "write freely", `confirm` as "confirm before write". The LLM reasons about consequences, not internal labels.
 
-**`deny` not implemented.** A third policy for read-only zones was considered — but `blockPath` in the D11 rule union does exact-path equality, not prefix matching, so a `deny` zone on a directory would be inert against every file inside it. The semantically correct shape is a new `blockInsideDirs` rule kind, not a `deny` zone policy. Deferred until a real agent needs read-only access to a specific directory inside its workspace.
+**`deny` zone policy not yet shipped.** A third policy for read-only zones was considered. The matching rule kind (`blockInsideDirs`) now exists as a standalone primitive — reader uses it via `getPermissions` to make the Articles zone read-only-except-frontmatter. Adding `write: "deny"` on `AgentZone` that maps to `blockInsideDirs` is a small ergonomics win for agents that want declarative read-only zones. Deferred per D8 until a real agent asks.
 
 **Consequence:** adding a zone-declaring agent is a data-only change. Reader's workspace paragraphs in the instruction prose are gone — the composer renders them from `zones` — so a new agent copy-pasting reader's shape gets the right prompt block + the right permission rules from a single field.
 
@@ -243,21 +240,21 @@ See [`docs/SKILLS.md`](./SKILLS.md) for the full exploration — known shape, op
 
 See [`docs/MEMORY.md`](./MEMORY.md) for the full exploration — read-path known shape, write-path design problem, and when to revisit each.
 
-### Reader-specific vocabulary leaks onto AgentActions (resolved via D9)
+### Reader-specific vocabulary leaks onto AgentActions (resolved via D9 + statelessness refactor)
 
 `AgentActions.loadArticle` was reader-shaped vocabulary on a "generic" action surface. `activeArticle` lived as module-level state in `backend/agent/index.ts`. `buildInstructions(ctx)` took an `AgentBuildContext` with a reader-shaped `activeArticle` field every agent received.
 
-All three resolved via D9:
+All three resolved via D9, then further simplified by the reader statelessness refactor:
 
-- **Verb**: `AgentActions.loadArticle` is gone. Reader declares `articleCommand: AgentCommand` in `agents/reader/index.ts`. Shell dispatches via `AgentActions.runAgentCommand("article", filename)`.
-- **State**: `activeArticle` moved to `agents/reader/index.ts` as module-level state. Reader exposes `getActiveArticle()` / `setActiveArticle(id)` for the shell's `beforeToolCall` guard injection and session restore.
-- **Context**: `AgentBuildContext` dropped. `AgentInfo.buildInstructions()` is nullary — each agent reads its own state directly.
+- **Verb**: `AgentActions.loadArticle` is gone. Reader declares `articleCommand: AgentCommand` in `agents/reader/index.ts`. Slash dispatch goes through the TUI's `BridgeAgentCommands` bridge.
+- **State**: `activeArticle` module state is **gone entirely**. Reader's `/article` command reads the file at invocation time and inlines path + content into the opening user message. No cross-turn state survives.
+- **Context**: `AgentBuildContext` was dropped early (D9). `AgentCommandContext` followed later — with reader's state gone, the only remaining capability (`prompt`) became a positional argument on `AgentCommand.execute`. `AgentInfo.buildInstructions()` is nullary; each agent reads whatever per-turn context it needs directly (no agent does today).
 
-Residual: the shell's `clearSession()` calls `setActiveArticle(null)` to reset reader's state. Minimal reader-knowledge leak acceptable for now; when a second agent gains per-agent session state, introduce an `onSessionClear?()` lifecycle hook on `AgentInfo` that the shell iterates.
+No residual leakage. `clearSession` no longer touches reader state (there isn't any to touch). The anticipated `onSessionClear?()` lifecycle hook that would have abstracted the reset across multiple agents is also unneeded — absent the state, there's nothing to hook onto. When the next agent arrives with genuine cross-turn state, revisit then.
 
 ### BASE_TOOLS mutability (resolved)
 
-`BASE_TOOLS` is exported as `readonly AgentTool<any>[]` and wrapped in `Object.freeze`. External code cannot `.push(...)` or swap indices; `composeTools` already returns a fresh array via spread, so the "`base.ts` owns what's in `BASE_TOOLS`" invariant is now enforced at the language level.
+`BASE_TOOLS` is exported as `readonly AgentTool<any>[]` and wrapped in `Object.freeze`. External code cannot `.push(...)` or swap indices; `composeTools` already returns a fresh array via spread, so the "`compose.ts` owns what's in `BASE_TOOLS`" invariant is now enforced at the language level.
 
 A `registerBaseTool(tool)` registration function would be the plugin-era answer if multi-module contribution ever becomes a real requirement, but Inkstone has no plugin model today. Don't design it speculatively.
 
@@ -276,7 +273,7 @@ If a real split emerges (e.g. Researcher can read outside `ARTICLES_DIR` but Rea
 ## Terminology
 
 - **Agent** — the persona the user is chatting with. `readerAgent` / `exampleAgent` / future `researcherAgent`. A literal conforming to `AgentInfo`.
-- **Base agent** — the shared foundation layer, conceptually. Not an instance, not a class. Everything exported from `backend/agent/base.ts`, with tool implementations pulled in from `backend/agent/tools.ts`.
+- **Base agent** — the shared foundation layer, conceptually. Not an instance, not a class. Everything exported from `backend/agent/{types,compose,zones}.ts`, with tool implementations pulled in from `backend/agent/tools.ts`.
 - **Custom agent** — any agent under `backend/agent/agents/`. Reader and Example today.
 - **extraTools** — tools specific to a custom agent, composed with `BASE_TOOLS` at runtime by `composeTools`.
 - **BASE_TOOLS / BASE_PREAMBLE / composeTools / composeSystemPrompt** — the four canonical exports that define the base layer's public contract.
