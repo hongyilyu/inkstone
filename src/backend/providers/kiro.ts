@@ -15,13 +15,10 @@ import {
 import type { ProviderInfo } from "./types";
 
 // Register the `kiro-api` with pi-ai's api-registry so pi-ai's
-// `streamSimple(model, ...)` (which is pi-agent-core's default `streamFn`)
-// can resolve and dispatch Kiro requests. pi-kiro's `streamKiro` accepts
-// exactly the `SimpleStreamOptions` shape so it slots in as both `stream`
-// and `streamSimple`.
-//
-// Side-effect at module load. `providers/index.ts` imports this module so
-// registration fires before `backend/agent/index.ts` resolves any model.
+// `streamSimple(model, ...)` can dispatch to pi-kiro. Side-effect at
+// module load; `providers/index.ts` imports this module so registration
+// fires before the agent module resolves any model. See
+// `docs/ARCHITECTURE.md` § Kiro provider for the full flow.
 registerApiProvider({
 	api: "kiro-api",
 	stream: streamKiro,
@@ -29,11 +26,10 @@ registerApiProvider({
 });
 
 /**
- * Lazy refresh. Called from both `listModels()` (to advertise fresh-region-
- * scoped model ids) and `getApiKey()` (to ensure the token handed to the
- * stream is valid). Writes refreshed creds back to disk and the in-memory
- * cache. Clears and throws on hard refresh failure so the user is pushed
- * back through /connect instead of seeing opaque 403s mid-stream.
+ * Lazy token refresh. Called from `getApiKey()` (and `listModels()` via
+ * `loadKiroCreds`) — see `docs/ARCHITECTURE.md` § Kiro provider. Clears
+ * creds and throws on hard refresh failure so the user is pushed back
+ * through Connect instead of seeing opaque 403s mid-stream.
  */
 async function refreshIfNeeded(): Promise<
 	ReturnType<typeof loadKiroCreds> | undefined
@@ -56,18 +52,10 @@ async function refreshIfNeeded(): Promise<
 }
 
 /**
- * Region-scoped, baseUrl-rewritten model list.
- *
- * pi-kiro ships one canonical `kiroModels` catalog; per-region availability
- * is a runtime filter (`filterModelsByRegion`) and the baseUrl has to be
- * rewritten to point at the user's API region (`q.{region}.amazonaws.com`).
- * Without this, every Kiro stream would hit us-east-1 regardless of the
- * token's issuing region. Mirrors pi-kiro's `modifyModels` hook in
- * `extension.ts:32-41`, applied here because we consume pi-kiro through
- * `/core` (not pi's extension runtime).
- *
- * Returns `[]` when not signed in — drives `DialogModel`'s empty-state and
- * keeps Kiro models out of the flat picker until the user authenticates.
+ * Region-scoped, baseUrl-rewritten model list. Returns `[]` when not
+ * signed in so `DialogModel` hides Kiro until the user authenticates.
+ * See `docs/ARCHITECTURE.md` § Kiro provider for the region-scoping
+ * rationale and the `modifyModels` parallel.
  */
 function listKiroModels(): Model<Api>[] {
 	const creds = loadKiroCreds();

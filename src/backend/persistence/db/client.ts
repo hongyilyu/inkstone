@@ -1,15 +1,8 @@
 /**
- * SQLite client for Inkstone's persistence layer.
- *
- * - Uses `bun:sqlite` via `drizzle-orm/bun-sqlite`. Bun ships SQLite
- *   built-in, so no native dep and no platform split (unlike opencode's
- *   bun/node dual client — Inkstone runs only under Bun).
- * - Lazy-initialized singleton. First call opens the file, applies PRAGMAs,
- *   runs pending migrations, then returns the drizzle handle.
- * - PRAGMAs follow opencode's settings: WAL journal, NORMAL sync,
- *   foreign-keys on, 5 s busy timeout, ~64 MB page cache.
- * - Migrations live under `migrations/` and are generated via
- *   `drizzle-kit`. Runtime applies them via `drizzle-orm/bun-sqlite/migrator`.
+ * SQLite client for Inkstone's persistence layer. Lazy singleton
+ * backed by `bun:sqlite` + `drizzle-orm`; opens the file, applies
+ * PRAGMAs, and runs pending migrations on first call. See `docs/SQL.md`
+ * § Migrations for PRAGMA choices and the file layout.
  */
 
 import { Database } from "bun:sqlite";

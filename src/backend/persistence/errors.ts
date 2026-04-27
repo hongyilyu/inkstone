@@ -1,19 +1,12 @@
 /**
- * Shared error-reporting hook for persisted-state access.
+ * Shared error-reporting hook for persisted-state access. The frontend
+ * installs a handler (typically a toast) so the backend stays
+ * frontend-agnostic; when unset, `console.error` is the fallback.
  *
- * `config.ts`, `auth.ts`, and the SQLite session store (`sessions.ts`,
- * `db/client.ts`) all touch disk synchronously and can fail on disk-full,
- * permission-denied, read-only-filesystem, or schema-drift conditions.
- * Without a hook, a bare throw would crash the TUI; swallowing silently
- * would hide a real data-loss event. This module provides a single
- * injection point that a frontend wires to a toast (or logger, test spy,
- * etc.) so the backend stays frontend-agnostic.
- *
- * Install a handler from the frontend *before* any write path runs. Load
- * paths (action: "load") run at module init, before the frontend has had
- * a chance to install a handler; for those cases the fallback
- * `console.error` is the intended user-visible surface — TUI users always
- * have a terminal open, so the message is visible on startup.
+ * Install *before* any write path runs. Load paths (action: "load")
+ * fire at module init, before the frontend wires a handler — those hit
+ * the `console.error` fallback, which is the intended user-visible
+ * surface on startup.
  */
 
 export interface PersistenceErrorContext {

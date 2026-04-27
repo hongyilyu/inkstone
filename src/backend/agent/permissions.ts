@@ -8,17 +8,10 @@ import type {
 import { VAULT_DIR } from "./constants";
 
 /**
- * Declarative permission rules. Evaluated in order by `dispatchBeforeToolCall`;
- * the first rule that returns `{ block, reason }` short-circuits.
- *
- * All current rule kinds are path-keyed (they read `args.path`). Tools
- * without a `path` arg (none today) would pass through untouched.
- *
- * Adding a rule kind:
- *   1. Add a variant to the `Rule` union below.
- *   2. Handle it in `evaluateRule` (the switch).
- *   3. Update `docs/ARCHITECTURE.md` Guard Logic if the rule has
- *      user-visible semantics.
+ * Declarative permission rules evaluated by `dispatchBeforeToolCall`.
+ * First-block-wins; all current rule kinds are path-keyed (they read
+ * `args.path`). See `docs/ARCHITECTURE.md` § Permission Dispatcher for
+ * the pipeline, rule-kinds table, and the "Adding a rule kind" recipe.
  */
 export type Rule =
 	/** Path must resolve inside ANY listed dir. Multiple `insideDirs` rules
@@ -82,9 +75,9 @@ export function setConfirmFn(
  * Resolve the LLM-supplied path to the absolute path pi-coding-agent's
  * tool will actually touch. Mirrors `expandPath` + `resolveToCwd` from
  * `@mariozechner/pi-coding-agent/dist/core/tools/path-utils` (not a
- * public subpath — see `docs/ARCHITECTURE.md` Guard Logic for why we
- * inline the subset). The sandbox check is only meaningful if it runs
- * against the same bytes the tool ends up resolving to.
+ * public subpath — see `docs/ARCHITECTURE.md` § Permission Dispatcher
+ * for why we inline the subset). The sandbox check is only meaningful
+ * if it runs against the same bytes the tool ends up resolving to.
  */
 function resolvePath(p: string): string {
 	const stripped = p.startsWith("@") ? p.slice(1) : p;
