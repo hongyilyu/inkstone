@@ -1,8 +1,8 @@
 import { resolve } from "node:path";
-import type { AgentCommand, AgentInfo, AgentZone } from "../../base";
 import { ARTICLES_DIR } from "../../constants";
 import type { AgentOverlay } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
+import type { AgentCommand, AgentInfo, AgentZone } from "../../types";
 import { buildReaderInstructions } from "./instructions";
 
 /**

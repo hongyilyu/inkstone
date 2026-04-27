@@ -8,16 +8,15 @@ import { loadConfig, saveConfig } from "../persistence/config";
 import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
 import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
 import { getActiveArticle, setActiveArticle } from "./agents/reader";
-import {
-	type AgentCommand,
-	type AgentCommandContext,
-	type AgentInfo,
-	type AgentZone,
-	composeOverlay,
-	composeSystemPrompt,
-	composeTools,
-} from "./base";
+import { composeSystemPrompt, composeTools } from "./compose";
 import { dispatchBeforeToolCall, setConfirmFn } from "./permissions";
+import type {
+	AgentCommand,
+	AgentCommandContext,
+	AgentInfo,
+	AgentZone,
+} from "./types";
+import { composeOverlay } from "./zones";
 
 export interface AgentActions {
 	prompt(text: string): Promise<void>;
