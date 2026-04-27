@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { AgentCommand, AgentInfo } from "../../base";
+import type { AgentCommand, AgentInfo, AgentZone } from "../../base";
 import { ARTICLES_DIR } from "../../constants";
 import type { AgentOverlay } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
@@ -53,21 +53,43 @@ const articleCommand: AgentCommand = {
 };
 
 /**
- * Reader's permission overlay — layers on top of the tool baselines
- * declared in `backend/agent/tools.ts` (`insideDirs: [VAULT_DIR]`,
- * `confirmDirs: [NOTES_DIR, SCRAPS_DIR]`). Called by the permission
- * dispatcher once per tool call; rule objects are freshly constructed
- * each call so the article's absolute path is always current.
+ * Reader's workspace — three zones, all confirm-before-write. Articles
+ * live in `010 RAW/013 Articles/` and reader may only touch their
+ * frontmatter (enforced by the `frontmatterOnlyFor` rule in the
+ * overlay below; zones just gate the directory). Scraps and Notes are
+ * the two preservation destinations Stage 5 writes to.
  *
- * - `write`: block overwriting the active article file (frontmatter
- *   edits still flow through `edit` below).
- * - `edit`: on the active article file, every edit's `oldText` must
- *   fall inside the frontmatter block. Non-article paths skip this
- *   rule (matched by `targetPath` equality inside the dispatcher).
+ * Declared as vault-relative paths; the composer resolves them against
+ * `VAULT_DIR` at overlay-build time. These mirror the absolute
+ * constants in `../../constants.ts` — the duplication is the cost of
+ * zones being declarative data rather than a function call. Worth it
+ * for the LLM-visibility half (the `<your workspace>` prompt block).
+ */
+const readerZones: AgentZone[] = [
+	{ path: "010 RAW/013 Articles", write: "confirm" },
+	{ path: "020 HUMAN/022 Scraps", write: "confirm" },
+	{ path: "020 HUMAN/023 Notes", write: "confirm" },
+];
+
+/**
+ * Reader's permission overlay — only the article-specific rules that
+ * zones can't express. Directory-level confirm rules are derived from
+ * `readerZones` by `composeZonesOverlay` (see `../../base.ts`), so
+ * this overlay is the escape hatch for state-dependent policies:
  *
- * Returns an empty overlay when no article is active — the 6-stage
- * workflow starts at `/article <filename>`, so until that happens the
- * agent has no article-specific policy.
+ * - `write` on the active article is blocked outright (frontmatter
+ *   changes must go through `edit`, never a full overwrite).
+ * - `edit` on the active article is restricted to frontmatter hunks
+ *   via the `frontmatterOnlyFor` rule.
+ *
+ * Rules are freshly constructed each call so the article path is
+ * always current for the active article. Non-article paths aren't
+ * matched by either rule (`blockPath` is equality, `frontmatterOnlyFor`
+ * is keyed on `targetPath`).
+ *
+ * Returns an empty overlay when no article is active — reader has no
+ * article-specific policy until `/article <filename>` kicks the
+ * workflow off.
  */
 function getReaderPermissions(): AgentOverlay {
 	if (!activeArticle) return {};
@@ -106,6 +128,7 @@ export const readerAgent: AgentInfo = {
 	description: "Obsidian reading guide",
 	colorKey: "secondary",
 	extraTools: [editTool, writeTool],
+	zones: readerZones,
 	buildInstructions: () => buildReaderInstructions(activeArticle),
 	commands: [articleCommand],
 	getPermissions: getReaderPermissions,

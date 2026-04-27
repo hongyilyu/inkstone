@@ -12,6 +12,7 @@ export const exampleAgent: AgentInfo = {
 	description: "General-purpose chat assistant",
 	colorKey: "accent",
 	extraTools: [],
+	zones: [],
 	buildInstructions: () =>
 		"You are a helpful, concise general-purpose assistant. Answer the user's questions directly.",
 };

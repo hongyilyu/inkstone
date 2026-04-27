@@ -18,7 +18,7 @@ Shipped in PR #1 (branch `refactor/agent-shell-base-layer`). The base layer + fo
 
 - User-defined agents (markdown-authored, config-file-authored, etc.). Dev-registered only for now.
 - Subagents, task-tool delegation, mid-session agent switching.
-- Full per-agent permission ruleset. The existing `guard.ts` (vault scoping + confirmations) is sufficient at 2–3 agents.
+- Full per-agent permission ruleset. The current permission dispatcher (see `docs/ARCHITECTURE.md` → Permission Dispatcher) covers vault scoping, per-agent zone confirmations, and reader's article-specific rules through the baseline + zones + overlay split — sufficient at 2–3 agents.
 - Provider-pluggable or plugin-extensible agent frameworks.
 
 ## Key decisions
@@ -86,13 +86,15 @@ This is explicit in the code and docs — we are not pretending the system is do
 
 **Trade-off:** we lose the language-level "override this method" ergonomic. We don't need it — agents are declarative specs, not behavioral objects. The composers handle the "runtime merge" job that inheritance would otherwise provide.
 
-### D7 — Vault ≠ config
+### D7 — Vault ≠ runtime state
 
-All Inkstone runtime state (config, session, future memory files, future skill bundles) lives under `~/.config/inkstone/`. The vault (`$VAULT`) is user knowledge content only.
+Inkstone runtime state (config, sessions, OAuth credentials) lives under `~/.config/inkstone/`. Inkstone *vault-scoped configuration* (per-agent skills bundles and anything else an agent carries alongside its content) lives under `$VAULT/InkStone/`. The vault ($VAULT) itself remains user knowledge content.
 
-**Why:** separation of concerns. The vault should be portable — a user can swap between vaults without carrying Inkstone's state with them. Conversely, Inkstone's state is per-user across machines (via dotfile sync), not per-vault. Bleeding config into the vault would couple them.
+**Why split this way:** the vault should be portable — a user can swap between vaults without carrying Inkstone's session history, OAuth tokens, or model selection with them. Runtime state is per-user-per-machine (via dotfile sync, typically). Putting it in the vault would couple machines. But **per-agent configuration travels with the vault it's scoped to** — a skill that teaches reader how to handle one specific vault's article format belongs alongside that vault. Putting skills under `~/.config/inkstone/` would mean swapping vaults silently loses them.
 
-**Consequence:** future `memory.md`, `user.md`, and skill bundles live under `~/.config/inkstone/`, not inside the vault. A later pass may introduce per-vault overrides that layer on top, but that's an extension — not the default shape.
+**Consequence:** skills (when they land) live under `$VAULT/InkStone/skills/<agent>/<skill>/SKILL.md`. Future per-agent configuration files follow the same `$VAULT/InkStone/` convention. `user.md` and `memory.md` (when they land) remain runtime state under `~/.config/inkstone/` — they're per-user identity, not per-vault content.
+
+**Original framing** — "vault ≠ config" — is amended. The invariant that holds is **vault ≠ runtime state**. Vault-scoped configuration is legal and expected.
 
 ### D8 — Deferred features are pressure points, not APIs
 
@@ -185,17 +187,46 @@ export interface AgentInfo {
 
 **What this resolves:** the "shell knows reader's business" pressure point. The dispatcher has no reader knowledge. Session restore stops caring about `_articlePath`. A future Researcher or Knowledge-Base agent declares its own overlay (or doesn't) without modifying the dispatcher or the shell.
 
+### D12 — Zones: declarative workspace
+
+**Chosen:** each agent declares a `zones: AgentZone[]` field on `AgentInfo`. A zone is `{ path: string, write: "auto" | "confirm" }` where `path` is vault-relative. Zones feed two composers from one declaration:
+
+- `composeZonesOverlay(info)` produces the matching D11 permission rules (`confirmDirs` for `confirm` zones; `auto` emits nothing — the baseline already permits writes inside the vault). Merged with `AgentInfo.getPermissions?.()` by `composeOverlay`.
+- `composeSystemPrompt(info)` prepends a `<your workspace>` block at the top of the system prompt listing each zone's path and policy so the LLM knows where it may write.
+
+**Why:** the prior shape had two independent declarations of the same rule — reader's workspace was described in prose inside `buildInstructions` *and* enforced by rules inside `getPermissions`. They had to agree by hand. With zones, the LLM's stated workspace and the dispatcher's enforced workspace derive from the same data; drift between prompt and dispatcher is impossible.
+
+**Merge order: custom rules first, then zones.** `composeOverlay(info) = info.getPermissions?.() ⊕ composeZonesOverlay(info)` (custom first). The dispatcher is first-block-wins, so the stricter rule must come first to short-circuit before the looser one fires. Concretely: reader's active article lives inside its Articles zone (which would otherwise confirm every write); the custom `blockPath` rule on the article must evaluate before the zone's `confirmDirs` to block outright instead of confirm-then-block. This is the opposite of the "baseline first, tighten second" intuition that governed D11's tool baselines; D12 flips it because zones are *lenient* directory policies layered *over* stricter file-level custom rules, not under.
+
+**Tool baselines trimmed to the hard vault boundary.** Before D12, the `write`/`edit` tool baselines carried `confirmDirs: [NOTES_DIR, SCRAPS_DIR]` as a global guardrail. That produced double-confirms once zones also covered Notes/Scraps. Fix: directory-level confirmation moved entirely to zones. The baseline still owns `insideDirs: [VAULT_DIR]` — the hard boundary every agent must respect — but no directory-level confirmation. An agent with empty zones (example) gets no confirmation on vault-internal writes, which is what "empty workspace" means.
+
+**Read stays vault-wide.** Zones constrain writes only. Any agent can read anywhere in the vault (subject to the tool baseline `insideDirs: [VAULT_DIR]`). The ambient-context pattern — agent reads `090 SYSTEM/` or similar on demand to discover workflows, schemas, templates — depends on vault-wide read. Zones are the right line because "where I work" ≠ "where I look up references."
+
+**`getPermissions` stays as an escape hatch.** Zones are the declarative baseline; `getPermissions` handles rules zones can't express — today's example is reader's `frontmatterOnlyFor` rule on the active article. State-dependent, not directory-based, not a zone policy. The escape hatch being function-shaped (not data) is the same D8 trade-off as D11: rule *production* can stay dynamic while rule *data* stays pure.
+
+**Path matching stays `startsWith`-based.** Zones are folder paths today. Composer uses `node:path.join(VAULT_DIR, zone.path)` so leading/trailing slashes normalize; absolute zone paths throw at compose time. Glob support (for targeting a specific file inside a zone, for example) is a deferred decision pending a real use case.
+
+**Policy verbs are phrased, not named, in the prompt.** `auto` renders as "write freely", `confirm` as "confirm before write". The LLM reasons about consequences, not internal labels.
+
+**`deny` not implemented.** A third policy for read-only zones was considered — but `blockPath` in the D11 rule union does exact-path equality, not prefix matching, so a `deny` zone on a directory would be inert against every file inside it. The semantically correct shape is a new `blockInsideDirs` rule kind, not a `deny` zone policy. Deferred until a real agent needs read-only access to a specific directory inside its workspace.
+
+**Consequence:** adding a zone-declaring agent is a data-only change. Reader's workspace paragraphs in the instruction prose are gone — the composer renders them from `zones` — so a new agent copy-pasting reader's shape gets the right prompt block + the right permission rules from a single field.
+
+**Rejected alternative:** per-zone *read* policy. "Read is always vault-wide" was a user call — agents need broad reads for cross-zone references and ambient context. An agent that wants to read outside its write zone is the normal case, not the exception. If a future agent needs a read fence (e.g. privacy-scoped assistant that must not see financial notes), extend the type then.
+
+**Open pressure point**: all hard-coded vault paths in code (zone declarations, `constants.ts`) should eventually move to user configuration so non-default vault layouts work without code changes. Tracked in TODO.md.
+
 ## Rejected alternatives
 
 | Alternative | Why rejected |
 |---|---|
 | Class hierarchy (`BaseAgent` → `ReaderAgent`) | See D1. Industry pattern is flat + composition; inheritance fights divergence. |
-| OpenCode-style permission ruleset per agent | Overkill at 2–3 agents. Today's `guard.ts` covers vault scoping + confirmations. Revisit when an agent needs truly different tool access from its peers. |
+| OpenCode-style permission ruleset per agent | Overkill at 2–3 agents. The current permission dispatcher (baseline + zones + overlay) covers vault scoping + per-agent confirmations. Revisit when an agent needs truly different tool access from its peers. |
 | Global tool registry + per-agent allow/deny rules | Same reasoning as above — pattern-driven permissions are the power answer; we don't have the demand yet. |
 | User-defined agents via `.md` files | Out of scope for the dev-facing redesign. Revisit if an end-user path becomes relevant. |
 | Eager-load all skills at session boot | When skills land, we'll use lazy loading (summaries in the system prompt, full bodies fetched on demand) — OpenCode's pattern. Eager loading inflates tokens on every turn even when a skill is never used. |
-| Skill bundles colocated under `agents/<name>/skills/` | User direction: skills are agent-created or global, not colocated. Will live under `~/.config/inkstone/skills/`. |
-| `memory.md` / `user.md` inside the vault (e.g. `$VAULT/.inkstone/`) | Rejected in design discussion — see D7. |
+| Skill bundles colocated under `agents/<name>/skills/` | User direction amended in D7: skills live under `$VAULT/InkStone/skills/<agent>/<skill>/SKILL.md`, per-agent (not shared). |
+| `memory.md` / `user.md` inside the vault (e.g. `$VAULT/.inkstone/`) | D7 amended: vault-scoped configuration goes under `$VAULT/InkStone/`, but memory files remain runtime state under `~/.config/inkstone/` (per-user identity, not per-vault content). |
 | Session.json colocated with vault | Same as above. |
 | Subagent delegation via a `task` tool (OpenCode pattern) | Single agent per session is the Inkstone constraint today. Revisit if a concrete use case (e.g. Reader delegating a targeted search to Researcher) emerges. |
 | `foundationTools?: boolean` opt-out on `AgentInfo` | See D4. Coarse opt-out speculative for one agent's aesthetic. |
@@ -238,7 +269,7 @@ Decide whether a web-search tool lives in `BASE_TOOLS` or per-agent `extraTools`
 
 ### Per-agent permissions (probably never)
 
-No concrete case exists yet where two Inkstone agents need different tool access under the same set of tools. `guard.ts` covers vault scoping and confirmations uniformly, and that may continue to suffice.
+No concrete case exists yet where two Inkstone agents need different tool access under the same set of tools. The permission dispatcher (baseline + zones + overlay) covers vault scoping uniformly and per-agent confirmations via zones, and that may continue to suffice.
 
 If a real split emerges (e.g. Researcher can read outside `ARTICLES_DIR` but Reader cannot), design the ruleset against Inkstone's actual tools and guard shape — don't port OpenCode's `Permission.Ruleset`. Porting without a driving case would pre-commit to pattern matching, `ask/allow/deny` tri-state, and rule-merge semantics that Inkstone has shown no need for.
 

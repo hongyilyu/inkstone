@@ -12,7 +12,7 @@ import { loadConfig } from "../persistence/config";
  *
  * The value is captured at module load; changing `config.vaultDir` at runtime
  * requires a restart. That's fine because every derived path (`ARTICLES_DIR`,
- * etc.) and every path-guard check in `guard.ts` reads `VAULT_DIR` as a
+ * etc.) and every path check in `permissions.ts` reads `VAULT_DIR` as a
  * module constant at call time.
  */
 export const VAULT_DIR =

@@ -89,20 +89,20 @@ User input (textarea)
 src/
   index.tsx                         Entry: createCliRenderer() + render(<tui.App />)
 
-  backend/                          Headless — no Solid, no OpenTUI
+    backend/                          Headless — no Solid, no OpenTUI
     agent/
       index.ts                      Agent instance, createAgentActions, query getters
       agents.ts                     Registry assembler — imports each agent's AgentInfo literal and exports AGENTS[]
-      base.ts                       Foundation layer — AgentInfo type + AgentColorKey + BASE_TOOLS + BASE_PREAMBLE + composeTools + composeSystemPrompt
+      base.ts                       Foundation layer — AgentInfo + AgentZone + AgentColorKey + BASE_TOOLS + BASE_PREAMBLE + composeTools + composeSystemPrompt + composeZonesOverlay + composeOverlay
       tools.ts                      Shared tool pool — readTool, writeTool, editTool via @mariozechner/pi-coding-agent factories, passed VAULT_DIR as cwd; registers per-tool baseline permissions at module load
       permissions.ts                Declarative permission dispatcher — Rule union, registerBaseline, dispatchBeforeToolCall, setConfirmFn, path resolution; single hook wired into pi-agent-core's beforeToolCall
       constants.ts                  VAULT_DIR, ARTICLES_DIR, SCRAPS_DIR, etc.
       agents/                       Custom agents, one self-contained folder each
         reader/
-          index.ts                  readerAgent: AgentInfo literal (extraTools pulled from ../../tools; `getPermissions` supplies the article-specific overlay)
+          index.ts                  readerAgent: AgentInfo literal (zones + extraTools pulled from ../../tools; `getPermissions` supplies the article-specific escape-hatch overlay)
           instructions.ts           buildReaderInstructions(articleId) — the reader's system-prompt body + 6-stage workflow
         example/
-          index.ts                  exampleAgent: AgentInfo literal (1-line prompt, no extra tools)
+          index.ts                  exampleAgent: AgentInfo literal (1-line prompt, empty zones, no extra tools)
     providers/
       types.ts                      ProviderInfo interface (id, displayName, listModels, getApiKey, isConnected, authInstructions)
       amazon-bedrock.ts             Bedrock provider — wraps pi-ai `getModels("amazon-bedrock")`, auth via `getEnvApiKey`
@@ -302,14 +302,31 @@ Each tool in the shared pool registers baseline rules at module load (`src/backe
 | Tool | Baseline |
 |---|---|
 | `read` | `insideDirs: [VAULT_DIR]` |
-| `write` | `insideDirs: [VAULT_DIR]`, `confirmDirs: [NOTES_DIR, SCRAPS_DIR]` |
-| `edit` | `insideDirs: [VAULT_DIR]`, `confirmDirs: [NOTES_DIR, SCRAPS_DIR]` |
+| `write` | `insideDirs: [VAULT_DIR]` |
+| `edit` | `insideDirs: [VAULT_DIR]` |
+
+Baselines own only the hard vault boundary — writes outside `VAULT_DIR` are blocked regardless of agent declarations. Directory-level confirmation lives on zones (per-agent), not on the baseline (global), since D12: having both a baseline `confirmDirs` and a zones-derived `confirmDirs` for the same directory produced double-prompts.
 
 Tools without a registered baseline run unsandboxed (pi-coding-agent's own default). By convention every tool Inkstone composes into `BASE_TOOLS` or an agent's `extraTools` registers its baseline.
 
 ### Agent overlays
 
-`AgentInfo.getPermissions?(): AgentOverlay` is called by the dispatcher once per tool call. Reader supplies one; Example does not. Rule objects are freshly constructed each call so dynamic state (e.g. reader's `activeArticle`) is inlined at evaluation time while the rules themselves stay pure data:
+The dispatcher accepts a combined overlay built by `composeOverlay(info)` in `src/backend/agent/base.ts`:
+
+```
+composeOverlay(info) = info.getPermissions?.() ⊕ composeZonesOverlay(info)
+```
+
+**Custom rules come first**, zones come second. Keys with entries in both are concatenated; within a concatenated list, custom rules evaluate before zone rules. First-block-wins means the stricter (file-level) custom rules short-circuit before the looser (directory-level) zone rules fire. Concretely: reader's active article lives inside its Articles zone (confirmDirs); a `write` against the article hits the custom `blockPath` first and blocks outright, without wasting a user prompt on a confirm that would be followed by a block.
+
+**`composeZonesOverlay(info)`** derives permission rules from `AgentInfo.zones` (see Agent Registry → Zones):
+
+- Each zone with `write: "confirm"` → combined into one `confirmDirs` rule keyed under both `write` and `edit`.
+- Each zone with `write: "auto"` → no rule emitted (writes inside the zone pass through the vault baseline unchanged).
+
+Zone paths are joined with `VAULT_DIR` via `node:path.join` so leading/trailing slashes normalize. Absolute zone paths (POSIX `/`, Windows drive-letter, UNC) and paths containing `..` segments throw at compose time (misconfiguration should be loud).
+
+Zones cover directory-level write policies. The `getPermissions?()` callback is the escape hatch for rules zones can't express — reader's `frontmatterOnlyFor` rule keyed on `activeArticle` is the current example:
 
 ```ts
 // agents/reader/index.ts
@@ -317,34 +334,66 @@ function getReaderPermissions(): AgentOverlay {
   if (!activeArticle) return {};
   const articlePath = resolve(ARTICLES_DIR, activeArticle);
   return {
-    write: [{ kind: "blockPath", path: articlePath, reason: "..." }],
-    edit:  [{ kind: "frontmatterOnlyFor", targetPath: articlePath }],
+    [writeTool.name]: [{ kind: "blockPath", path: articlePath, reason: "..." }],
+    [editTool.name]:  [{ kind: "frontmatterOnlyFor", targetPath: articlePath }],
   };
 }
 ```
 
-Overlay rules run AFTER baselines — an overlay can add restrictions but can't relax them (a later rule can't un-block an earlier block because first-block-wins). No tool today declares a permissive baseline that an overlay would want to tighten.
+Reader's directory-level rules (`confirmDirs` on Notes/Scraps/Articles) moved out of `getPermissions` into the `zones` declaration. What's left in `getPermissions` is the article-specific policy that zones can't express.
+
+Overlay rules run AFTER tool baselines — an overlay can add restrictions but can't relax them (a later rule can't un-block an earlier block because first-block-wins). No tool today declares a permissive baseline that an overlay would want to tighten.
 
 ### What this replaces
 
 The pre-dispatcher guard was a single procedural function in `backend/agent/guard.ts` that pattern-matched tool names and encoded reader's article rule directly. Reader-specific vocabulary leaked into the shell and the shell mutated `ctx.args._articlePath` as a side channel. Both are gone: the dispatcher has no reader knowledge, and reader's `getPermissions` owns its own state.
 
+Phase 1 of the zones refactor further split reader's policy: directory-level rules now live in declarative `zones` data (which the prompt also reads — see Agent Registry → Zones), while article-specific state-dependent rules stay in `getPermissions`. Phase 1 also trimmed tool baselines to the hard vault boundary (`insideDirs: [VAULT_DIR]` only); directory-level confirmation moved entirely to zones so agents opt into it per-zone rather than inheriting it globally.
+
 ## Agent Registry
 
-Multi-agent support is a **flat registry with runtime composition** — no inheritance. Each agent is a self-contained folder under `src/backend/agent/agents/<name>/` that exports an `AgentInfo` literal (name, displayName, description, `colorKey`, `extraTools`, `buildInstructions`, optionally `commands`). `src/backend/agent/agents.ts` is a thin assembler that imports each agent's literal and exports them as `AGENTS: AgentInfo[]`. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
+Multi-agent support is a **flat registry with runtime composition** — no inheritance. Each agent is a self-contained folder under `src/backend/agent/agents/<name>/` that exports an `AgentInfo` literal (name, displayName, description, `colorKey`, `extraTools`, `zones`, `buildInstructions`, optionally `commands`, optionally `getPermissions`). `src/backend/agent/agents.ts` is a thin assembler that imports each agent's literal and exports them as `AGENTS: AgentInfo[]`. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
 
-> **Design rationale:** see [`AGENT-DESIGN.md`](./AGENT-DESIGN.md) for why the system is shaped this way (composition over inheritance, folder-per-agent, base layer, no opt-out on `BASE_TOOLS`, vault ≠ config, commands vs tools), what alternatives were rejected, and how future features (skills, memory) are designed to plug in without restructuring.
+> **Design rationale:** see [`AGENT-DESIGN.md`](./AGENT-DESIGN.md) for why the system is shaped this way (composition over inheritance, folder-per-agent, base layer, no opt-out on `BASE_TOOLS`, vault ≠ runtime state, commands vs tools, zones as declarative workspace), what alternatives were rejected, and how future features (skills, memory) are designed to plug in without restructuring.
 
 ### Base layer (the "base agent")
 
 `src/backend/agent/base.ts` owns everything shared across agents:
 
 - `AgentInfo` (the type) and `AgentColorKey`.
+- `AgentZone` + `composeZonesOverlay` + `composeOverlay` (see Zones below).
 - `AgentCommand` + `AgentCommandContext` types (see Commands below).
 - `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today just `read` (from the shared pool, scoped to `VAULT_DIR`). Frozen at module load so external modules can't mutate.
 - `BASE_PREAMBLE: string` — a shared system-prompt prefix. **Empty today** — the mechanism is the point. Future PRs will grow this into a composed block that includes persona guidance, tool-use discipline, and memory-file contents (`user.md`, `memory.md` from `~/.config/inkstone/`).
 - `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]`. Every agent gets the base set unconditionally; there is no opt-out flag.
-- `composeSystemPrompt(info)` — prepends `BASE_PREAMBLE` to `info.buildInstructions()` when non-empty; otherwise returns the instructions unchanged. Nullary — `buildInstructions` reads any agent-owned state (e.g. reader's `activeArticle`) directly.
+- `composeSystemPrompt(info)` — builds the full system prompt as three non-empty sections joined by blank lines: the zones block (when `info.zones.length > 0`), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. `buildInstructions` reads any agent-owned state (e.g. reader's `activeArticle`) directly.
+
+### Zones
+
+`AgentInfo.zones: AgentZone[]` declares an agent's write workspace. Each zone is `{ path: string, write: "auto" | "confirm" }` where `path` is vault-relative. The same data drives two places:
+
+- **Prompt**: `composeSystemPrompt` prepends a `<your workspace>` block listing each zone's path and policy verbally (`"write freely"` / `"confirm before write"`). Omitted for agents with empty zones.
+- **Permissions**: `composeZonesOverlay` produces the matching D11 rules — all `confirm` zone paths combine into one `confirmDirs` rule under both `write` and `edit`; `auto` emits nothing (the baseline already permits writes inside the vault). Merged with `getPermissions?.()` via `composeOverlay`.
+
+Single source of truth prevents drift between what the LLM is told and what the dispatcher enforces. Read is always vault-wide (bounded only by the tool baseline `insideDirs: [VAULT_DIR]`); zones only constrain writes.
+
+A `deny` policy (read-only zone inside a workspace) was considered and cut in D12: `blockPath` does exact-path equality, not prefix matching, so `deny` on a directory would be inert against files inside it. Revisit when a real agent needs this, and add a `blockInsideDirs` rule kind — not a `deny` zone policy on top of `blockPath` — see TODO.md.
+
+Example — reader's zones:
+
+```ts
+zones: [
+  { path: "010 RAW/013 Articles", write: "confirm" },
+  { path: "020 HUMAN/022 Scraps", write: "confirm" },
+  { path: "020 HUMAN/023 Notes",  write: "confirm" },
+]
+```
+
+Example — the example agent:
+
+```ts
+zones: [],
+```
 
 Tool implementations come from `@mariozechner/pi-coding-agent` via the shared pool in `backend/agent/tools.ts` — Inkstone does not re-implement read/write/edit. Each factory is called with `VAULT_DIR` as the `cwd` so vault-relative paths resolve inside the vault; absolute paths are honored by the tool and sandboxed by the guard. pi-coding-agent's tool source transitively imports `@mariozechner/pi-tui`, but `wrapToolDefinition` strips the render hooks — the tools are pure `AgentTool<any>` at runtime, and pi-tui is inert code-path-wise (Inkstone renders through OpenTUI in `src/tui/**`).
 
@@ -352,10 +401,10 @@ Tool implementations come from `@mariozechner/pi-coding-agent` via the shared po
 
 ### Agents on ship
 
-| Name | extraTools | Composed tools | Commands | Prompt behavior | Color |
-|------|------------|----------------|----------|-----------------|-------|
-| `reader` | `edit`, `write` | `read` + the extras | `/article <filename>` | Embeds the active article and the 6-stage reading workflow | `theme.secondary` |
-| `example` | — | `read` only | — | Short static "general-purpose assistant" prompt | `theme.accent` |
+| Name | extraTools | Composed tools | Zones | Commands | Prompt behavior | Color |
+|------|------------|----------------|-------|----------|-----------------|-------|
+| `reader` | `edit`, `write` | `read` + the extras | `010 RAW/013 Articles` + `020 HUMAN/022 Scraps` + `020 HUMAN/023 Notes`, all confirm | `/article <filename>` | `<your workspace>` block + the active article + the 6-stage reading workflow | `theme.secondary` |
+| `example` | — | `read` only | — | — | Short static "general-purpose assistant" prompt, no workspace block | `theme.accent` |
 
 Both agents inherit the shell-level `/clear` verb via the unified command registry (see Commands below) — no per-agent declaration needed.
 
@@ -365,9 +414,11 @@ The folder-per-agent shape makes this a local change:
 
 1. Create `src/backend/agent/agents/<name>/index.ts` exporting `<name>Agent: AgentInfo`.
 2. If the agent needs an agent-specific system prompt, add `instructions.ts` next to it and import it from `index.ts`.
-3. If it wants tools from the shared pool, import them from `backend/agent/tools.ts` and list them in `extraTools`. If it owns a state-coupled tool that no other agent uses, add it under `agents/<name>/tools/` and re-export any public state helpers from the agent's `index.ts` (so the shell can stay out of deep imports per the boundary rule above).
-4. If it has user-facing verbs, declare them as `AgentCommand[]` and set `commands: [...]` on the `AgentInfo`. The TUI's `BridgeAgentCommands` (see Commands below) picks them up automatically.
-5. Add one import + one entry in `backend/agent/agents.ts`.
+3. Declare `zones: AgentZone[]` for write targets inside the vault (or `zones: []` if the agent has no workspace).
+4. If it wants tools from the shared pool, import them from `backend/agent/tools.ts` and list them in `extraTools`. If it owns a state-coupled tool that no other agent uses, add it under `agents/<name>/tools/` and re-export any public state helpers from the agent's `index.ts` (so the shell can stay out of deep imports per the boundary rule above).
+5. If it has user-facing verbs, declare them as `AgentCommand[]` and set `commands: [...]` on the `AgentInfo`. The TUI's `BridgeAgentCommands` (see Commands below) picks them up automatically.
+6. If zones can't express the full policy (e.g. reader's `frontmatterOnlyFor` rule keyed on session state), declare `getPermissions?(): AgentOverlay` on the `AgentInfo`.
+7. Add one import + one entry in `backend/agent/agents.ts`.
 
 No changes to `base.ts`, `tools.ts`, `backend/agent/index.ts`, the TUI, or config schemas are required.
 
