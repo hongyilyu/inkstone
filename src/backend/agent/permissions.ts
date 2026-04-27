@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, resolve, sep } from "node:path";
 import type {
 	BeforeToolCallContext,
 	BeforeToolCallResult,
@@ -104,6 +104,18 @@ function getFrontmatter(content: string): string | null {
 }
 
 /**
+ * Prefix-safe check for "is `child` inside `dir`?". Uses `path.sep` as a
+ * boundary so `.../LifeOS` doesn't match `.../LifeOS-backup/x`. Equality
+ * (`child === dir`) counts as inside — a tool call against the directory
+ * itself is covered by the same rule as a file inside it.
+ */
+function isInsideDir(child: string, dir: string): boolean {
+	if (child === dir) return true;
+	const prefix = dir.endsWith(sep) ? dir : dir + sep;
+	return child.startsWith(prefix);
+}
+
+/**
  * Evaluate one rule against the current tool call. Returns `{ block,
  * reason }` to veto execution, `undefined` to pass. Async because
  * `confirmDirs` may await a user dialog.
@@ -118,7 +130,7 @@ async function evaluateRule(
 	switch (rule.kind) {
 		case "insideDirs": {
 			if (resolvedPath === undefined) return undefined;
-			if (!rule.dirs.some((d) => resolvedPath.startsWith(d))) {
+			if (!rule.dirs.some((d) => isInsideDir(resolvedPath, d))) {
 				return {
 					block: true,
 					reason:
@@ -131,7 +143,8 @@ async function evaluateRule(
 		}
 		case "confirmDirs": {
 			if (resolvedPath === undefined) return undefined;
-			if (!rule.dirs.some((d) => resolvedPath.startsWith(d))) return undefined;
+			if (!rule.dirs.some((d) => isInsideDir(resolvedPath, d)))
+				return undefined;
 			if (!confirmFn) return undefined;
 			const ok = await confirmFn(
 				"Write confirmation",

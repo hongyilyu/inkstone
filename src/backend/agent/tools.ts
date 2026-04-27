@@ -3,7 +3,7 @@ import {
 	createReadTool,
 	createWriteTool,
 } from "@mariozechner/pi-coding-agent";
-import { NOTES_DIR, SCRAPS_DIR, VAULT_DIR } from "./constants";
+import { VAULT_DIR } from "./constants";
 import { registerBaseline } from "./permissions";
 
 /**
@@ -40,19 +40,20 @@ export const editTool = createEditTool(VAULT_DIR);
 /**
  * Baseline permission rules registered at module load. Every agent that
  * composes one of these tools through `composeTools` inherits the
- * baseline; agents can layer additional rules via `AgentInfo.getPermissions`
- * (see reader).
+ * baseline; agents layer additional policy via `AgentInfo.zones`
+ * (directory-level write confirmation) or `AgentInfo.getPermissions`
+ * (rules zones can't express, e.g. reader's frontmatter-only edit).
  *
- * Reads are bounded to the vault. Writes and edits add a `confirmDirs`
- * rule so the user is prompted before the agent modifies notes or
- * scraps — the same guardrail the pre-dispatcher guard enforced.
+ * Baselines are the *hard* vault boundary — writes outside `VAULT_DIR`
+ * are blocked regardless of agent declarations. Directory-level
+ * confirmation used to live here (`confirmDirs: [NOTES_DIR, SCRAPS_DIR]`
+ * on `write`/`edit`) but moved to zones in the D12 refactor: having
+ * both a baseline `confirmDirs` and a zones-derived `confirmDirs`
+ * covering overlapping dirs produced double-prompts. Zones now own
+ * confirmation because they're per-agent (the example agent has no
+ * zones and accepts no confirmation; reader declares its three zones
+ * and gets confirmation on each).
  */
 registerBaseline(readTool.name, [{ kind: "insideDirs", dirs: [VAULT_DIR] }]);
-registerBaseline(writeTool.name, [
-	{ kind: "insideDirs", dirs: [VAULT_DIR] },
-	{ kind: "confirmDirs", dirs: [NOTES_DIR, SCRAPS_DIR] },
-]);
-registerBaseline(editTool.name, [
-	{ kind: "insideDirs", dirs: [VAULT_DIR] },
-	{ kind: "confirmDirs", dirs: [NOTES_DIR, SCRAPS_DIR] },
-]);
+registerBaseline(writeTool.name, [{ kind: "insideDirs", dirs: [VAULT_DIR] }]);
+registerBaseline(editTool.name, [{ kind: "insideDirs", dirs: [VAULT_DIR] }]);

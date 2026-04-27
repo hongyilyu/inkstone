@@ -12,6 +12,8 @@ import {
 	type AgentCommand,
 	type AgentCommandContext,
 	type AgentInfo,
+	type AgentZone,
+	composeOverlay,
 	composeSystemPrompt,
 	composeTools,
 } from "./base";
@@ -145,12 +147,13 @@ export function getAgent(): Agent {
 				return getProvider(provider).getApiKey();
 			},
 			beforeToolCall: async (ctx) => {
-				// Delegate to the permission dispatcher. It reads the active
-				// tool's baseline rules (registered in `./tools.ts`) and the
-				// active agent's overlay (optional `AgentInfo.getPermissions`,
-				// reader supplies one; example does not), evaluates in order,
-				// short-circuits on first block. See `./permissions.ts`.
-				const overlay = getAgentInfo(currentAgent).getPermissions?.();
+				// Delegate to the permission dispatcher. The overlay combines
+				// the zones-derived rules (directory write policies declared
+				// on `AgentInfo.zones`) with the agent's optional `getPermissions`
+				// escape hatch (state-dependent rules zones can't express,
+				// e.g. reader's `frontmatterOnlyFor` on the active article).
+				// See `./base.ts:composeOverlay` + `./permissions.ts`.
+				const overlay = composeOverlay(getAgentInfo(currentAgent));
 				return dispatchBeforeToolCall(ctx, overlay);
 			},
 		});
@@ -258,6 +261,7 @@ export {
 	type AgentCommand,
 	type AgentCommandContext,
 	type AgentInfo,
+	type AgentZone,
 	getActiveArticle,
 	getAgentInfo,
 	setActiveArticle,

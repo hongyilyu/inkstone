@@ -1,6 +1,121 @@
+import { join } from "node:path";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import type { AgentOverlay } from "./permissions";
-import { readTool } from "./tools";
+import { VAULT_DIR } from "./constants";
+import type { AgentOverlay, Rule } from "./permissions";
+import { editTool, readTool, writeTool } from "./tools";
+
+/**
+ * A declared write zone on an agent's workspace. Read is always
+ * vault-wide; zones only constrain where an agent may write.
+ *
+ * - `path` is vault-relative (e.g. `"020 HUMAN/023 Notes"`). Resolved
+ *   against `VAULT_DIR` at compose time via `node:path.join` so
+ *   leading/trailing slashes normalize. Absolute paths are rejected —
+ *   see `composeZonesOverlay`.
+ * - `write` policy:
+ *   - `auto`    — agent writes freely inside this zone, no prompt.
+ *   - `confirm` — user is prompted before each write (dispatcher's
+ *                 `confirmDirs` rule).
+ *
+ * The permission dispatcher always enforces `insideDirs: [VAULT_DIR]`
+ * as a tool baseline (see `./tools.ts`), so writes outside the vault
+ * are blocked regardless of zones. An agent with empty `zones` can
+ * still write inside the vault but nowhere specifically declared —
+ * the example agent uses this shape.
+ *
+ * A `deny` policy was considered and cut: the directory-block semantics
+ * that `deny` would want don't compose with the current `blockPath`
+ * rule kind, which does exact-path equality (not prefix matching).
+ * Revisit when a real agent needs read-only access to a specific
+ * directory inside its workspace; the right shape at that point is
+ * likely a new `blockInsideDirs` rule kind, not a `deny` zone policy
+ * shoehorned onto `blockPath`.
+ */
+export interface AgentZone {
+	/** Vault-relative path (e.g. `"020 HUMAN/023 Notes"`). */
+	path: string;
+	/** Write policy for this zone. */
+	write: "auto" | "confirm";
+}
+
+/**
+ * Derive a permission overlay from an agent's zones. Produces rules
+ * for the two mutating tools (`edit`, `write`) that the reader cares
+ * about today; if a future agent composes additional mutating tools,
+ * extend the key set.
+ *
+ * Policy by `AgentZone.write`:
+ *   - `auto`    — no rule needed; writes inside this zone pass through
+ *                 the vault baseline unchanged.
+ *   - `confirm` — emit a `confirmDirs` rule listing the zone path.
+ *
+ * Zone paths are joined with `VAULT_DIR` via `node:path.join` so
+ * leading/trailing slashes normalize. Absolute paths and paths containing
+ * `..` segments are rejected at compose time to catch misconfiguration
+ * loudly — a zone `/etc` or `../etc` would otherwise produce a path
+ * outside the vault, and silent failure would leave the zone inert
+ * (or worse, apply its `confirm`-semantics to something the agent was
+ * never meant to touch).
+ *
+ * Returns an empty overlay for agents with no zones (example agent).
+ */
+export function composeZonesOverlay(info: AgentInfo): AgentOverlay {
+	if (info.zones.length === 0) return {};
+
+	const confirmPaths: string[] = [];
+	for (const zone of info.zones) {
+		if (zone.path.startsWith("/")) {
+			throw new Error(
+				`Zone path must be vault-relative, got absolute path: '${zone.path}' on agent '${info.name}'.`,
+			);
+		}
+		if (zone.path.split("/").some((seg) => seg === "..")) {
+			throw new Error(
+				`Zone path must not escape the vault via '..' segments: '${zone.path}' on agent '${info.name}'.`,
+			);
+		}
+		if (zone.write === "confirm") {
+			confirmPaths.push(join(VAULT_DIR, zone.path));
+		}
+	}
+
+	const overlay: AgentOverlay = {};
+	if (confirmPaths.length > 0) {
+		const rule: Rule = { kind: "confirmDirs", dirs: confirmPaths };
+		overlay[writeTool.name] = [rule];
+		overlay[editTool.name] = [rule];
+	}
+	return overlay;
+}
+
+/**
+ * Merge the agent's optional custom overlay with the zones-derived
+ * overlay. Custom rules come first (stricter escape hatches) so the
+ * dispatcher's first-block-wins evaluation short-circuits on them
+ * before the zone-level confirm prompts fire.
+ *
+ * Concrete case: reader's active article lives inside the Articles
+ * zone (confirmDirs). A `write` against it should block outright
+ * (custom `blockPath`), not confirm-then-block. Putting custom rules
+ * first lets the block win without a wasted prompt. An `edit` of
+ * frontmatter should pass without a confirm prompt because
+ * `frontmatterOnlyFor` evaluates first and returns `undefined` (pass);
+ * only then does the zone's `confirmDirs` fire. Net: confirm only
+ * when no custom rule has an opinion.
+ *
+ * Keys with rules in both overlays are concatenated; custom first,
+ * zones second.
+ */
+export function composeOverlay(info: AgentInfo): AgentOverlay {
+	const zones = composeZonesOverlay(info);
+	const custom = info.getPermissions?.() ?? {};
+	const merged: AgentOverlay = { ...custom };
+	for (const [toolName, rules] of Object.entries(zones)) {
+		if (!rules) continue;
+		merged[toolName] = [...(merged[toolName] ?? []), ...rules];
+	}
+	return merged;
+}
 
 /**
  * Theme keys used for per-agent accents. Must match keys on `ThemeColors`
@@ -135,8 +250,15 @@ export interface AgentCommand {
  * `buildInstructions()` returns the agent-specific portion of the
  * system prompt. Nullary by design — if an agent needs session state
  * (e.g. reader's `activeArticle`), it owns that state in its own folder
- * and reads it at compose time. The composer prepends `BASE_PREAMBLE`
- * (empty today).
+ * and reads it at compose time. The composer prepends the zones block
+ * and `BASE_PREAMBLE`.
+ *
+ * `zones` declares the agent's write workspace. Feeds both
+ * `composeSystemPrompt` (emits a `<your workspace>` block so the LLM
+ * knows where it works) and `composeZonesOverlay` (emits the matching
+ * permission rules so the dispatcher enforces it). Read is always
+ * vault-wide; zones only constrain writes. Empty array = no declared
+ * workspace (example agent).
  *
  * `commands` declares the agent's user-facing verbs. The TUI bridges
  * them into the unified command registry at mount time (see
@@ -145,12 +267,14 @@ export interface AgentCommand {
  * declared in `src/tui/app.tsx`.
  *
  * `getPermissions()` returns an agent-scoped permission overlay that
- * layers on top of each tool's baseline (see `./permissions.ts`). Called
- * by the permission dispatcher ONCE PER TOOL CALL, so state-dependent
- * rules (e.g. reader's "block overwrite of the currently-active
- * article") can inline fresh path values each time. Rules themselves
- * are pure data — only the overlay *factory* is a function. Absent when
- * the agent needs no overlay (Example).
+ * layers on top of each tool's baseline (see `./permissions.ts`).
+ * Zones cover the common case (directory-based write policies); this
+ * callback is the escape hatch for rules zones can't express — e.g.
+ * reader's `frontmatterOnlyFor` rule tied to `activeArticle` state.
+ * Called by the permission dispatcher ONCE PER TOOL CALL, so
+ * state-dependent rules can inline fresh values each time. Rules
+ * themselves are pure data — only the overlay *factory* is a function.
+ * Absent when the agent needs no bespoke rules.
  */
 export interface AgentInfo {
 	name: string;
@@ -158,6 +282,7 @@ export interface AgentInfo {
 	description: string;
 	colorKey: AgentColorKey;
 	extraTools: AgentTool<any>[];
+	zones: AgentZone[];
 	buildInstructions(): string;
 	commands?: AgentCommand[];
 	getPermissions?(): AgentOverlay;
@@ -189,7 +314,40 @@ export function composeTools(info: AgentInfo): AgentTool<any>[] {
 	return [...BASE_TOOLS, ...info.extraTools];
 }
 
+/**
+ * Render the agent's declared zones as a `<your workspace>` block the
+ * LLM sees at the top of its system prompt. Single source of truth
+ * with `composeZonesOverlay`: the same `AgentZone[]` drives both the
+ * permission dispatcher and the prompt text, so the LLM's stated
+ * workspace can't drift from the enforced one.
+ *
+ * Omitted entirely when the agent has no zones (example agent).
+ *
+ * The policy verbs map to concrete phrasing so the LLM can reason
+ * about the rule, not just the directory:
+ *   - `auto`    → "write freely"
+ *   - `confirm` → "confirm before write"
+ */
+function composeZonesBlock(info: AgentInfo): string {
+	if (info.zones.length === 0) return "";
+	const lines = info.zones.map((z) => {
+		const policy = z.write === "auto" ? "write freely" : "confirm before write";
+		return `  - ${z.path} (${policy})`;
+	});
+	return [
+		"<your workspace>",
+		"Primary write zones:",
+		...lines,
+		"You may read anywhere in the vault.",
+		"</your workspace>",
+	].join("\n");
+}
+
 export function composeSystemPrompt(info: AgentInfo): string {
+	const zonesBlock = composeZonesBlock(info);
 	const body = info.buildInstructions();
-	return BASE_PREAMBLE ? `${BASE_PREAMBLE}\n\n${body}` : body;
+	const sections = [zonesBlock, BASE_PREAMBLE, body].filter(
+		(s) => s.length > 0,
+	);
+	return sections.join("\n\n");
 }
