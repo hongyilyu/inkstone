@@ -555,7 +555,7 @@ selectAgent(name)                                 [only legal on empty session]
       → prompt label, input border, user-bubble border, assistant ▣ glyph all re-theme via `theme[getAgentInfo(store.currentAgent).colorKey]`
 ```
 
-The mid-session agent swap is rejected both by the UI (Tab/palette gates on empty sessions) and by the backend (throws on non-empty). See D13 for the rationale. The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/compose.ts`. With `BASE_PREAMBLE === ""`, `composeSystemPrompt(info)` is a pass-through to `info.buildInstructions()`.
+The mid-session agent swap is rejected both by the UI (Tab/palette gates on empty sessions) and by the backend (throws on non-empty). See D13 for the rationale. The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/compose.ts`. `composeSystemPrompt(info)` joins up to three non-empty sections: a `<your workspace>` zones block (present when `info.zones` is non-empty — e.g. reader), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. For agents with no zones and an empty preamble, the result is just the agent's instructions.
 
 The assistant `message_end` handler stamps `agentName` onto the new bubble using `getAgentInfo(store.currentAgent).displayName`. Because switching is locked mid-session, the stamped name is guaranteed to be the agent that actually produced the reply.
 
