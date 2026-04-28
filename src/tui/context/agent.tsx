@@ -57,7 +57,10 @@ import { useToast } from "../ui/toast";
 
 interface AgentContextValue {
 	store: AgentStoreState;
-	actions: AgentActions & { selectAgent(name: string): void };
+	actions: AgentActions & {
+		selectAgent(name: string): void;
+		clearSession(): void;
+	};
 	/**
 	 * Read accessors for dialog seeding. Exposed so dialog call sites
 	 * (DialogModel, DialogVariant) don't need to reach into the backend
@@ -411,10 +414,10 @@ export function AgentProvider(props: ParentProps) {
 		});
 	}
 
-	// Wrap prompt to add the user message to the store before calling
-	// the agent. Also owns the TUI-only `selectAgent` verb that swaps
-	// the in-flight agent on an empty session (throws otherwise — see
-	// D13 in `docs/AGENT-DESIGN.md`).
+	// Wrap per-turn actions with TUI-specific side effects (push user
+	// bubble, sync store fields). Also owns the TUI-only lifecycle
+	// verbs `selectAgent` and `clearSession` that bridge Session's
+	// lifecycle methods with store resets.
 	const wrappedActions: AgentContextValue["actions"] = {
 		...agentSession.actions,
 		async prompt(text: string) {
@@ -525,7 +528,7 @@ export function AgentProvider(props: ParentProps) {
 			setStore("currentAgent", agentSession.agentName);
 		},
 		clearSession() {
-			agentSession.actions.clearSession();
+			agentSession.clearSession();
 			// In-memory reset only. We no longer terminate the DB row —
 			// `ended_at` is gone, and the future `/resume` command will
 			// list past rows as-is. `currentSessionId = null` here just

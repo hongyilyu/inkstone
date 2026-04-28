@@ -62,7 +62,7 @@ Cross-layer imports use `tsconfig.json` aliases; intra-layer imports stay relati
 | Location | Purpose | Example |
 |---|---|---|
 | `bridge/view-model.ts` | Shared view-state contract any frontend would render/persist | `DisplayMessage`, `AgentStoreState` |
-| `backend/agent/*` | Backend's public API surface — consumed directly by frontends | `AgentActions`, re-exports from pi-agent-core |
+| `backend/agent/*` | Backend's public API surface — consumed directly by frontends | `AgentActions`, `Session`, re-exports from pi-agent-core |
 | `tui/**` | Frontend-internal only | `AgentContextValue`, theme accessors, component props |
 
 Bridge is for types **both sides need to agree on as a shared data shape**. Backend's API types (e.g. `AgentActions`) are published *by* the backend *to* its consumers; they don't go through the bridge.
@@ -408,7 +408,7 @@ zones: [],
 
 Tool implementations come from `@mariozechner/pi-coding-agent` via the shared pool in `backend/agent/tools.ts` — Inkstone does not re-implement read/write/edit. Each factory is called with `VAULT_DIR` as the `cwd` so vault-relative paths resolve inside the vault; absolute paths are honored by the tool and sandboxed by the guard. pi-coding-agent's tool source transitively imports `@mariozechner/pi-tui`, but `wrapToolDefinition` strips the render hooks — the tools are pure `AgentTool<any>` at runtime, and pi-tui is inert code-path-wise (Inkstone renders through OpenTUI in `src/tui/**`).
 
-`backend/agent/index.ts` exports `createSession({ agentName, onEvent })` which builds a pi-agent-core `Agent` bound to one agent name for the session's lifetime. `systemPrompt` + `tools` are composed once from the resolved `AgentInfo` and stay byte-stable across turns — see D9's stability invariant and D13's session-agent binding. `Session.selectAgent(name)` rewrites both fields on an empty session; it throws on non-empty sessions (mid-session agent swap is not supported). `clearSession()` wipes `agent.state.messages` without touching the prompt.
+`backend/agent/index.ts` exports `createSession({ agentName, onEvent })` which builds a pi-agent-core `Agent` bound to one agent name for the session's lifetime. `systemPrompt` + `tools` are composed once from the resolved `AgentInfo` and stay byte-stable across turns — see D9's stability invariant and D13's session-agent binding. `Session.selectAgent(name)` rewrites both fields on an empty session; it throws on non-empty sessions (mid-session agent swap is not supported). `Session.clearSession()` wipes `agent.state.messages` without touching the prompt. Per-turn operations (`prompt`, `abort`, `setModel`, `setThinkingLevel`) live on `Session.actions`.
 
 ### Agents on ship
 
@@ -474,9 +474,9 @@ export interface AgentCommand {
 }
 ```
 
-`execute` takes a positional `prompt` function the shell injects — no wrapper context object. Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over `AgentActions.clearSession` directly, so they don't need anything handed off. Commands typically compose a user message (e.g. reader inlines the article's path + content) and call `prompt(text)` to kick off a turn.
+`execute` takes a positional `prompt` function the shell injects — no wrapper context object. Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over the TUI wrapper's `clearSession` directly, so they don't need anything handed off. Commands typically compose a user message (e.g. reader inlines the article's path + content) and call `prompt(text)` to kick off a turn.
 
-**System-prompt stability invariant.** `AgentInfo.buildInstructions()` must return a stable string for a given `AgentInfo`. pi-agent-core's `Agent` reads `state.systemPrompt` once per `prompt()` call (via `createContextSnapshot()`; see `node_modules/@mariozechner/pi-agent-core/dist/agent.js`), and both Anthropic's `cache_control` block and Bedrock's `cachePoint` are pinned to the byte-exact system prefix — any drift between turns invalidates the cache. The shell builds `systemPrompt` at two points only: `createSession` on construction and `Session.selectAgent` on an empty-session agent swap (see D13). `clearSession` wipes messages without touching the prompt. Commands **must not** mutate state that `buildInstructions` reads; dynamic per-turn context (date, cwd, memory recall, file snapshots, article content) goes into a user message via `prompt(text)`. Reader's `/article` is the reference pattern.
+**System-prompt stability invariant.** `AgentInfo.buildInstructions()` must return a stable string for a given `AgentInfo`. pi-agent-core's `Agent` reads `state.systemPrompt` once per `prompt()` call (via `createContextSnapshot()`; see `node_modules/@mariozechner/pi-agent-core/dist/agent.js`), and both Anthropic's `cache_control` block and Bedrock's `cachePoint` are pinned to the byte-exact system prefix — any drift between turns invalidates the cache. The shell builds `systemPrompt` at two points only: `createSession` on construction and `Session.selectAgent` on an empty-session agent swap (see D13). `Session.clearSession` wipes messages without touching the prompt. Commands **must not** mutate state that `buildInstructions` reads; dynamic per-turn context (date, cwd, memory recall, file snapshots, article content) goes into a user message via `prompt(text)`. Reader's `/article` is the reference pattern.
 
 **Sources of commands** (all flow into the same registry):
 

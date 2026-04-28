@@ -14,24 +14,18 @@ import type { AgentCommand, AgentInfo, AgentZone } from "./types";
 import { composeOverlay } from "./zones";
 
 /**
- * Actions exposed on a {@link Session}. Narrow on purpose: agent
- * selection is NOT here — the agent is fixed for a session's lifetime
- * (see D13 in `docs/AGENT-DESIGN.md`). To change agents, the TUI builds
- * a new session via `createSession`.
+ * Actions exposed on a {@link Session}. Narrow on purpose: only
+ * per-turn operations live here. Session lifecycle (`clearSession`,
+ * `selectAgent`) lives on `Session` itself. Agent selection is NOT
+ * here — the agent is fixed for a session's lifetime (see D13 in
+ * `docs/AGENT-DESIGN.md`). To change agents, the TUI builds a new
+ * session via `createSession`.
  */
 export interface AgentActions {
 	prompt(text: string): Promise<void>;
 	abort(): void;
 	setModel(model: Model<Api>): void;
 	setThinkingLevel(level: ThinkingLevel): void;
-	/**
-	 * Wipe the in-memory conversation. Leaves the underlying `Agent`
-	 * instance, its system prompt, its tools, and its model alone —
-	 * the session can continue with the same agent. The TUI wrapper
-	 * additionally resets store-local state (messages, totals, session
-	 * row id).
-	 */
-	clearSession(): void;
 }
 
 /**
@@ -39,10 +33,12 @@ export interface AgentActions {
  * for its whole lifetime, plus the actions the TUI drives.
  *
  * The raw `Agent` is deliberately NOT exposed on this shape. Callers
- * read model/thinking-level via the accessor methods; everything else
- * goes through `actions`. Keeping the Agent encapsulated matches D13
- * ("one agent per session") — there is no legitimate caller-owned
- * mutation of `agent.state.*` besides the ones `actions` performs.
+ * read model/thinking-level via the accessor methods; per-turn
+ * operations go through `actions`; session lifecycle goes through
+ * `clearSession` and `selectAgent`. Keeping the Agent encapsulated
+ * matches D13 ("one agent per session") — there is no legitimate
+ * caller-owned mutation of `agent.state.*` besides the ones this
+ * façade performs.
  *
  * `selectAgent(name)` is an explicit escape hatch for the TUI's
  * empty-session agent picker (Tab / Ctrl+P → Agents / DialogAgent).
@@ -57,6 +53,14 @@ export interface Session {
 	getProviderId(): string;
 	getModelId(): string;
 	getThinkingLevel(): ThinkingLevel;
+	/**
+	 * Wipe the in-memory conversation. Leaves the underlying `Agent`
+	 * instance, its system prompt, its tools, and its model alone —
+	 * the session can continue with the same agent. The TUI wrapper
+	 * additionally resets store-local state (messages, totals, session
+	 * row id).
+	 */
+	clearSession(): void;
 	/**
 	 * Swap the bound agent name. Only legal when the session has no
 	 * messages yet. Rewrites `agent.state.systemPrompt` + `tools` so
@@ -251,9 +255,6 @@ export function createSession(params: {
 			// without clobbering other stored per-model levels.
 			saveConfig({ thinkingLevels: { ...thinkingLevels } });
 		},
-		clearSession() {
-			agent.state.messages = [];
-		},
 	};
 
 	return {
@@ -302,6 +303,9 @@ export function createSession(params: {
 			agent.state.systemPrompt = composeSystemPrompt(info);
 			agent.state.tools = composeTools(info);
 			saveConfig({ currentAgent: info.name });
+		},
+		clearSession() {
+			agent.state.messages = [];
 		},
 	};
 }
