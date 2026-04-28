@@ -10,11 +10,11 @@
  *   `runInTransaction`. One code path, no optional-tx branching, no
  *   casts. Forces every call site to state intent: "this is atomic /
  *   this runs in isolation."
- * - `findActiveSession`, `loadSession`, `listSessions`, `repairSession`
- *   run on the root client — reads don't take a tx.
- * - `createSession`, `endSession` are session-scope mutators on a
- *   single row — they don't take a tx either; each is atomic by virtue
- *   of being one statement.
+ * - `loadSession`, `listSessions` run on the root client — reads don't
+ *   take a tx.
+ * - `createSession` is a session-scope mutator on a single row — it
+ *   doesn't take a tx either; it's atomic by virtue of being one
+ *   statement.
  *
  * A session is the root entity; messages + parts + raw AgentMessages
  * hang off it with FK cascades. All top-level ids are UUIDv7 so
@@ -24,13 +24,9 @@
  * Visibility is agent-scoped: every read path filters on `sessions.agent`.
  */
 
-import type {
-	AgentStoreState,
-	DisplayMessage,
-	DisplayPart,
-} from "@bridge/view-model";
+import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { and, asc, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { asc, count, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { agentMessages, messages, parts, sessions } from "./db/schema";
 import { reportPersistenceError } from "./errors";
@@ -39,7 +35,6 @@ export interface SessionRecord {
 	id: string;
 	agent: string;
 	startedAt: number;
-	endedAt: number | null;
 	title: string | null;
 }
 
@@ -80,38 +75,12 @@ export function runInTransaction<T>(fn: (tx: Tx) => T): T {
 	return db.transaction((tx) => fn(tx));
 }
 
-/**
- * Locate the active (`ended_at IS NULL`) session for `agent`. `null` if
- * the agent has no active session. `/clear` marks a session ended
- * without deleting it, so cleared rows are excluded here.
- */
-export function findActiveSession(agent: string): SessionRecord | null {
-	const db = getDb();
-	const rows = db
-		.select()
-		.from(sessions)
-		.where(and(eq(sessions.agent, agent), isNull(sessions.endedAt)))
-		.orderBy(desc(sessions.id))
-		.limit(1)
-		.all();
-	const row = rows[0];
-	if (!row) return null;
-	return {
-		id: row.id,
-		agent: row.agent,
-		startedAt: row.startedAt,
-		endedAt: row.endedAt,
-		title: row.title,
-	};
-}
-
 export function createSession(init: { agent: string }): SessionRecord {
 	const db = getDb();
 	const now = Date.now();
 	const row = {
 		id: newId(),
 		startedAt: now,
-		endedAt: null,
 		agent: init.agent,
 		title: null,
 	};
@@ -125,21 +94,8 @@ export function createSession(init: { agent: string }): SessionRecord {
 		id: row.id,
 		agent: row.agent,
 		startedAt: row.startedAt,
-		endedAt: row.endedAt,
 		title: row.title,
 	};
-}
-
-export function endSession(sessionId: string): void {
-	const db = getDb();
-	try {
-		db.update(sessions)
-			.set({ endedAt: Date.now() })
-			.where(eq(sessions.id, sessionId))
-			.run();
-	} catch (error) {
-		reportPersistenceError({ kind: "session", action: "end", error });
-	}
 }
 
 /**
@@ -279,60 +235,10 @@ export function appendAgentMessage(
 }
 
 /**
- * Repair a session on boot. Strips trailing assistant shells with no
- * parts and no error.
- *
- * Why this still exists after the `message_end` transactional boundary:
- * `message_start` writes the assistant shell *outside* any transaction
- * (the shell's parts + meta + agent_message only land together inside
- * `message_end`'s transaction). A SIGKILL between the shell insert and
- * the `message_end` transaction opening leaves a trailing empty row
- * that `message_end`'s atomicity cannot cover. This call handles that
- * window.
- *
- * "Trailing" is load-bearing — mid-session empty assistant rows are
- * legitimate (tool-call-only assistant messages with
- * `stopReason: "toolUse"` that render as empty bubbles and are hidden
- * by `msg.parts.length > 0` in the renderer). Only rows newer than the
- * latest non-empty / errored message may be stripped.
- *
- * Implementation: find the latest message id whose bubble has content
- * (non-zero parts OR an error set), then delete every empty assistant
- * with a strictly larger id. One statement, no per-row probe.
- *
- * Best-effort: errors reported, never thrown.
- */
-export function repairSession(sessionId: string): void {
-	const db = getDb();
-	try {
-		db.run(sql`
-			DELETE FROM messages
-			WHERE session_id = ${sessionId}
-			  AND role = 'assistant'
-			  AND error IS NULL
-			  AND NOT EXISTS (
-			    SELECT 1 FROM parts p WHERE p.message_id = messages.id
-			  )
-			  AND id > COALESCE(
-			    (SELECT MAX(m2.id) FROM messages m2
-			     WHERE m2.session_id = ${sessionId}
-			       AND (m2.error IS NOT NULL
-			            OR EXISTS (SELECT 1 FROM parts p2 WHERE p2.message_id = m2.id))),
-			    ''
-			  )
-		`);
-	} catch (error) {
-		reportPersistenceError({
-			kind: "session",
-			action: "repair-session",
-			error,
-		});
-	}
-}
-
-/**
- * Hydrate everything needed to resume a session. Pure read — call
- * `repairSession(id)` separately before this if you want crash-repair.
+ * Hydrate everything needed to render a past session. Kept for the
+ * future `/resume` command — boot no longer auto-resumes, so this
+ * function has no runtime caller today but remains the obvious shape
+ * for the resume flow when it lands.
  */
 export function loadSession(sessionId: string): LoadedSession | null {
 	const db = getDb();
@@ -386,7 +292,6 @@ export function loadSession(sessionId: string): LoadedSession | null {
 			id: sess.id,
 			agent: sess.agent,
 			startedAt: sess.startedAt,
-			endedAt: sess.endedAt,
 			title: sess.title,
 		},
 		displayMessages,
@@ -398,7 +303,6 @@ export interface SessionSummary {
 	id: string;
 	agent: string;
 	startedAt: number;
-	endedAt: number | null;
 	title: string | null;
 	messageCount: number;
 }
@@ -430,7 +334,6 @@ export function listSessions(agent: string): SessionSummary[] {
 		id: r.id,
 		agent: r.agent,
 		startedAt: r.startedAt,
-		endedAt: r.endedAt,
 		title: r.title,
 		messageCount: countBy.get(r.id) ?? 0,
 	}));
@@ -445,5 +348,3 @@ export function listSessions(agent: string): SessionSummary[] {
 function shortId(id: string): string {
 	return id.slice(-8);
 }
-
-export type StoreSeed = Pick<AgentStoreState, "messages" | "currentAgent">;

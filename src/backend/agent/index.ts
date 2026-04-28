@@ -5,6 +5,7 @@ import {
 } from "@mariozechner/pi-agent-core";
 import { type Api, type Model, supportsXhigh } from "@mariozechner/pi-ai";
 import { loadConfig, saveConfig } from "../persistence/config";
+import type { Config } from "../persistence/schema";
 import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
 import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
 import { composeSystemPrompt, composeTools } from "./compose";
@@ -12,97 +13,114 @@ import { dispatchBeforeToolCall, setConfirmFn } from "./permissions";
 import type { AgentCommand, AgentInfo, AgentZone } from "./types";
 import { composeOverlay } from "./zones";
 
+/**
+ * Actions exposed on a {@link Session}. Narrow on purpose: only
+ * per-turn operations live here. Session lifecycle (`clearSession`,
+ * `selectAgent`) lives on `Session` itself. Agent selection is NOT
+ * here — the agent is fixed for a session's lifetime (see D13 in
+ * `docs/AGENT-DESIGN.md`). To change agents, the TUI builds a new
+ * session via `createSession`.
+ */
 export interface AgentActions {
 	prompt(text: string): Promise<void>;
 	abort(): void;
 	setModel(model: Model<Api>): void;
 	setThinkingLevel(level: ThinkingLevel): void;
-	setAgent(name: string): void;
-	clearSession(): void;
 }
 
-let agent: Agent | null = null;
+/**
+ * A live session — an `Agent` instance bound to a single agent name
+ * for its whole lifetime, plus the actions the TUI drives.
+ *
+ * The raw `Agent` is deliberately NOT exposed on this shape. Callers
+ * read model/thinking-level via the accessor methods; per-turn
+ * operations go through `actions`; session lifecycle goes through
+ * `clearSession` and `selectAgent`. Keeping the Agent encapsulated
+ * matches D13 ("one agent per session") — there is no legitimate
+ * caller-owned mutation of `agent.state.*` besides the ones this
+ * façade performs.
+ *
+ * `selectAgent(name)` is an explicit escape hatch for the TUI's
+ * empty-session agent picker (Tab / Ctrl+P → Agents / DialogAgent).
+ * It throws when the session has any messages — swapping mid-flight
+ * would silently break prompt-cache stability (systemPrompt + tools
+ * change) and scramble per-bubble agent stamps. See D13.
+ */
+export interface Session {
+	readonly actions: AgentActions;
+	readonly agentName: string;
+	getModel(): Model<Api>;
+	getProviderId(): string;
+	getModelId(): string;
+	getThinkingLevel(): ThinkingLevel;
+	/**
+	 * Wipe the in-memory conversation. Leaves the underlying `Agent`
+	 * instance, its system prompt, its tools, and its model alone —
+	 * the session can continue with the same agent. The TUI wrapper
+	 * additionally resets store-local state (messages, totals, session
+	 * row id).
+	 */
+	clearSession(): void;
+	/**
+	 * Swap the bound agent name. Only legal when the session has no
+	 * messages yet. Rewrites `agent.state.systemPrompt` + `tools` so
+	 * the next turn matches the new agent. Persists the choice so the
+	 * next `createSession()` defaults to it.
+	 *
+	 * Throws if the session has messages; callers must clear first.
+	 */
+	selectAgent(name: string): void;
+	/**
+	 * Number of messages currently on the Agent's state. Used by the
+	 * TUI wrapper to mirror emptiness checks (e.g. gating `selectAgent`)
+	 * without exposing the raw Agent.
+	 */
+	readonly messageCount: number;
+}
 
-// Active provider/model. Both are resolved at module load from the on-disk
-// config, falling back to the first registered provider's first model when
-// unset (fresh install) or when the stored model no longer exists in the
-// registry (e.g. a previous provider was removed).
-const initialConfig = loadConfig();
-let currentProviderId: string = initialConfig.providerId ?? DEFAULT_PROVIDER;
-let currentModelId: string = (() => {
-	const stored = initialConfig.modelId;
-	if (stored && resolveModel(currentProviderId, stored)) return stored;
-	// Fall back to the stored provider's curated default if it still
-	// resolves. Do NOT fall back to `listModels()[0]`, which is pi-ai-
-	// registry-order-dependent (Nova 2 Lite today).
-	const info = getProvider(currentProviderId);
-	if (resolveModel(info.id, info.defaultModelId)) return info.defaultModelId;
-	// The stored provider has nothing we can use — typically an OAuth
-	// provider (e.g. Kiro) whose creds have been cleared or expired past
-	// refresh. Fall through to the default provider so the app still
-	// boots; the user can re-connect from the Connect palette.
-	//
-	// Note: we intentionally do NOT persist this fallback via saveConfig.
-	// The stored `providerId` stays as the user's original pick, so the
-	// next boot repeats this detection and re-connecting restores the
-	// original selection without the user having to re-pick from
-	// DialogModel. The in-memory `currentProviderId` flip is enough to
-	// keep streaming pointed at a working provider until re-connect.
-	if (currentProviderId !== DEFAULT_PROVIDER) {
-		currentProviderId = DEFAULT_PROVIDER;
+/**
+ * Resolve the provider/model pair from config with the same fallback
+ * chain as before the factory refactor:
+ *   1. The stored `(providerId, modelId)` if it still resolves.
+ *   2. The stored provider's curated default model.
+ *   3. The default provider's default model (covers an OAuth provider
+ *      whose creds have expired).
+ *
+ * We intentionally do NOT persist step-3 back to config via
+ * `saveConfig` — the user's original pick stays on disk so a later
+ * re-connect restores it without re-picking from DialogModel. The
+ * in-memory flip is enough to boot against a working provider.
+ */
+function resolveInitialProviderModel(cfg: Config): {
+	providerId: string;
+	modelId: string;
+} {
+	const providerId = cfg.providerId ?? DEFAULT_PROVIDER;
+	const stored = cfg.modelId;
+	if (stored && resolveModel(providerId, stored)) {
+		return { providerId, modelId: stored };
+	}
+	const info = getProvider(providerId);
+	if (resolveModel(info.id, info.defaultModelId)) {
+		return { providerId, modelId: info.defaultModelId };
+	}
+	if (providerId !== DEFAULT_PROVIDER) {
 		const fallback = getProvider(DEFAULT_PROVIDER);
 		if (resolveModel(fallback.id, fallback.defaultModelId)) {
-			return fallback.defaultModelId;
+			return { providerId: DEFAULT_PROVIDER, modelId: fallback.defaultModelId };
 		}
 	}
 	throw new Error(
 		`Default provider '${DEFAULT_PROVIDER}' default model is not available in the registry. ` +
 			`Update the provider's \`defaultModelId\` or ensure pi-ai's registry still ships that model.`,
 	);
-})();
-let currentAgent: string = (() => {
-	const stored = initialConfig.currentAgent;
-	return stored && AGENTS.some((a) => a.name === stored)
-		? stored
+}
+
+function resolveInitialAgentName(cfg: Config, requested?: string): string {
+	const candidate = requested ?? cfg.currentAgent;
+	return candidate && AGENTS.some((a) => a.name === candidate)
+		? candidate
 		: DEFAULT_AGENT;
-})();
-
-// Per-model reasoning effort, keyed by `${providerId}/${modelId}`. Persisted
-// in `config.thinkingLevels`. Missing key == `"off"` (pi-agent-core's sentinel
-// for "no reasoning"). Matches OpenCode's `local.model.variant` per-model
-// keying so a model remembers the effort the user last picked for it.
-const thinkingLevels: Record<string, ThinkingLevel> = {
-	...(initialConfig.thinkingLevels ?? {}),
-};
-
-function thinkingKey(providerId: string, modelId: string): string {
-	return `${providerId}/${modelId}`;
-}
-
-/**
- * Resolve the effective `ThinkingLevel` for a model. Falls back to `"off"`
- * when the user has not picked an effort for this model. pi-agent-core +
- * pi-ai already guard non-reasoning models (they return `undefined` for
- * thinking fields regardless of the level passed — see
- * `pi-mono/packages/ai/src/providers/amazon-bedrock.ts:623-625`), so we
- * don't re-check capability here.
- *
- * pi-ai also silently normalizes some levels at the wire (e.g. `"minimal"`
- * → `effort: "low"` on adaptive Claude). That's a pi-ai design choice —
- * the two levels produce the same model behavior — so we surface whatever
- * the user picked and let pi-ai map it.
- */
-function resolveThinkingLevel(model: Model<Api>): ThinkingLevel {
-	return thinkingLevels[thinkingKey(model.provider, model.id)] ?? "off";
-}
-
-function currentModel(): Model<Api> {
-	const m = resolveModel(currentProviderId, currentModelId);
-	if (!m)
-		throw new Error(
-			`Model '${currentModelId}' is not available from provider '${currentProviderId}'.`,
-		);
-	return m;
 }
 
 /**
@@ -126,118 +144,171 @@ export function availableThinkingLevels(model: Model<Api>): ThinkingLevel[] {
 	return base;
 }
 
-export function getAgent(): Agent {
-	if (!agent) {
-		const info = getAgentInfo(currentAgent);
-		agent = new Agent({
-			initialState: {
-				systemPrompt: composeSystemPrompt(info),
-				model: currentModel(),
-				thinkingLevel: resolveThinkingLevel(currentModel()),
-				tools: composeTools(info),
-			},
-			getApiKey: async (provider) => {
-				return getProvider(provider).getApiKey();
-			},
-			beforeToolCall: async (ctx) => {
-				// Delegate to the permission dispatcher. The overlay combines
-				// the zones-derived rules (directory write policies declared
-				// on `AgentInfo.zones`) with the agent's optional `getPermissions`
-				// escape hatch (rules zones can't express, e.g. reader's
-				// `frontmatterOnlyInDirs` on the Articles zone).
-				// See `./zones.ts:composeOverlay` + `./permissions.ts`.
-				const overlay = composeOverlay(getAgentInfo(currentAgent));
-				return dispatchBeforeToolCall(ctx, overlay);
-			},
-		});
+/**
+ * Build a {@link Session}: a pi-agent-core `Agent` plus the actions the
+ * TUI drives, bound to a single agent name for the session's whole
+ * lifetime. Replaces the previous module-level singleton + `getAgent`
+ * + `createAgentActions` + `getCurrent*` surface.
+ *
+ * Parameters:
+ *   - `agentName` — which agent's instructions/tools/zones to load. When
+ *     omitted, falls back to `config.currentAgent`, then `DEFAULT_AGENT`.
+ *     An unknown name coerces to `DEFAULT_AGENT` (matches the previous
+ *     registry behavior).
+ *   - `onEvent` — subscriber for pi-agent-core's `AgentEvent` stream.
+ *
+ * The `systemPrompt` is built once here and stays byte-stable for the
+ * session's lifetime (see D9 in `docs/AGENT-DESIGN.md`). Anthropic
+ * `cache_control` / Bedrock `cachePoint` are pinned to the byte-exact
+ * system prefix, so dynamic per-turn context belongs in a user message
+ * (reader's `/article` is the reference pattern), not here.
+ */
+export function createSession(params: {
+	agentName?: string;
+	onEvent: (event: AgentEvent) => void;
+}): Session {
+	const cfg = loadConfig();
+	const initialInfo = getAgentInfo(
+		resolveInitialAgentName(cfg, params.agentName),
+	);
+	// `info` drifts on `selectAgent`; everything after construction reads
+	// this ref to pick up the current agent's zones/tools/instructions.
+	let info: AgentInfo = initialInfo;
+
+	// ── Model + thinking state ─────────────────────────────
+	let providerSel = resolveInitialProviderModel(cfg);
+	const initialModel = resolveModel(
+		providerSel.providerId,
+		providerSel.modelId,
+	);
+	if (!initialModel) {
+		throw new Error(
+			`Model '${providerSel.modelId}' is not available from provider '${providerSel.providerId}'.`,
+		);
 	}
-	return agent;
-}
 
-export function createAgentActions(
-	onEvent: (event: AgentEvent) => void,
-): AgentActions {
-	const a = getAgent();
+	// Per-model reasoning effort, keyed by `${providerId}/${modelId}`.
+	// Loaded from config at session start and mirrored back to config
+	// on `setThinkingLevel`. Session-local (not module-level) so a
+	// future second session can carry a different map without coupling.
+	const thinkingLevels: Record<string, ThinkingLevel> = {
+		...(cfg.thinkingLevels ?? {}),
+	};
+	function thinkingKey(providerId: string, modelId: string): string {
+		return `${providerId}/${modelId}`;
+	}
+	function resolveThinkingLevel(model: Model<Api>): ThinkingLevel {
+		return thinkingLevels[thinkingKey(model.provider, model.id)] ?? "off";
+	}
+	// ────────────────────────────────────────────────────────
 
-	a.subscribe((event) => {
-		onEvent(event);
+	const agent = new Agent({
+		initialState: {
+			systemPrompt: composeSystemPrompt(info),
+			model: initialModel,
+			thinkingLevel: resolveThinkingLevel(initialModel),
+			tools: composeTools(info),
+		},
+		getApiKey: async (provider) => {
+			return getProvider(provider).getApiKey();
+		},
+		beforeToolCall: async (ctx) => {
+			// Delegate to the permission dispatcher. The overlay combines
+			// the zones-derived rules (directory write policies declared
+			// on `AgentInfo.zones`) with the agent's optional `getPermissions`
+			// escape hatch (rules zones can't express, e.g. reader's
+			// `frontmatterOnlyInDirs` on the Articles zone).
+			//
+			// Reads the live `info` closure — after `selectAgent`, the
+			// overlay reflects the new agent without needing to
+			// reconstruct the Agent.
+			const overlay = composeOverlay(info);
+			return dispatchBeforeToolCall(ctx, overlay);
+		},
+	});
+
+	agent.subscribe((event) => {
+		params.onEvent(event);
 	});
 
 	const actions: AgentActions = {
 		async prompt(text: string) {
-			// Rebuild the system prompt at every turn boundary so any
-			// agent-owned state mutations land in the next turn automatically.
-			// No current agent holds cross-turn state — reader inlines article
-			// content into a user message at `/article` time, not into the
-			// system prompt — so the rebuild is a no-op today in terms of
-			// content. Kept as a cheap invariant for any future agent that
-			// does mutate `buildInstructions`-visible state between turns.
-			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
-			await a.prompt(text);
+			await agent.prompt(text);
 		},
 		abort() {
-			a.abort();
+			agent.abort();
 		},
 		setModel(model: Model<Api>) {
-			a.state.model = model;
-			currentProviderId = model.provider;
-			currentModelId = model.id;
-			// Restore the effort previously picked for this model (or "off" if
-			// none, or when the model is non-reasoning). Matches OpenCode's
-			// per-model variant memory: switching back to a model re-applies
-			// the effort the user last set for it.
-			a.state.thinkingLevel = resolveThinkingLevel(model);
+			agent.state.model = model;
+			providerSel = { providerId: model.provider, modelId: model.id };
+			// Restore the effort previously picked for this model (or "off"
+			// if none, or when the model is non-reasoning). Matches
+			// OpenCode's per-model variant memory.
+			agent.state.thinkingLevel = resolveThinkingLevel(model);
 			saveConfig({ providerId: model.provider, modelId: model.id });
 		},
 		setThinkingLevel(level: ThinkingLevel) {
-			a.state.thinkingLevel = level;
-			thinkingLevels[thinkingKey(currentProviderId, currentModelId)] = level;
-			// Persist the full map — `saveConfig` shallow-merges, so the key
-			// addition/overwrite on this specific model survives without
-			// clobbering other stored per-model levels.
+			agent.state.thinkingLevel = level;
+			thinkingLevels[thinkingKey(providerSel.providerId, providerSel.modelId)] =
+				level;
+			// Persist the full map — `saveConfig` shallow-merges, so the
+			// key addition/overwrite on this specific model survives
+			// without clobbering other stored per-model levels.
 			saveConfig({ thinkingLevels: { ...thinkingLevels } });
-		},
-		setAgent(name: string) {
-			const info = getAgentInfo(name);
-			currentAgent = info.name;
-			// Tools MUST be swapped immediately — pi-agent-core may serialize
-			// them for the next request independently of when the system
-			// prompt is read. System prompt is also refreshed here as a
-			// mid-session correctness measure (something reading
-			// `agent.state.systemPrompt` between turns would otherwise see
-			// the previous agent's bytes). `prompt()` will rebuild again on
-			// the next turn; that's fine, the output is byte-identical.
-			a.state.systemPrompt = composeSystemPrompt(info);
-			a.state.tools = composeTools(info);
-			saveConfig({ currentAgent: info.name });
-		},
-		clearSession() {
-			a.state.messages = [];
-			a.state.systemPrompt = composeSystemPrompt(getAgentInfo(currentAgent));
 		},
 	};
 
-	return actions;
-}
-
-export function getCurrentProviderId(): string {
-	return currentProviderId;
-}
-
-export function getCurrentModelId(): string {
-	return currentModelId;
-}
-
-export function getCurrentModel(): Model<Api> {
-	return currentModel();
-}
-
-export function getCurrentThinkingLevel(): ThinkingLevel {
-	return resolveThinkingLevel(currentModel());
-}
-
-export function getCurrentAgent(): string {
-	return currentAgent;
+	return {
+		actions,
+		get agentName() {
+			return info.name;
+		},
+		get messageCount() {
+			return agent.state.messages.length;
+		},
+		getModel() {
+			const m = resolveModel(providerSel.providerId, providerSel.modelId);
+			if (!m)
+				throw new Error(
+					`Model '${providerSel.modelId}' is not available from provider '${providerSel.providerId}'.`,
+				);
+			return m;
+		},
+		getProviderId() {
+			return providerSel.providerId;
+		},
+		getModelId() {
+			return providerSel.modelId;
+		},
+		getThinkingLevel() {
+			// Mirror `getModel`'s error surface: `providerSel` is always
+			// a resolved pair post-construction (either the config's
+			// stored pick or a fallback that validated via `resolveModel`),
+			// so an unresolvable model here is an invariant violation.
+			const m = resolveModel(providerSel.providerId, providerSel.modelId);
+			if (!m)
+				throw new Error(
+					`Model '${providerSel.modelId}' is not available from provider '${providerSel.providerId}'.`,
+				);
+			return resolveThinkingLevel(m);
+		},
+		selectAgent(name: string) {
+			// Empty-session invariant. See D13 in `docs/AGENT-DESIGN.md`.
+			if (agent.state.messages.length > 0) {
+				throw new Error(
+					"Agent is fixed for the lifetime of a session. " +
+						"Clear the session before selecting a different agent.",
+				);
+			}
+			info = getAgentInfo(name);
+			agent.state.systemPrompt = composeSystemPrompt(info);
+			agent.state.tools = composeTools(info);
+			saveConfig({ currentAgent: info.name });
+		},
+		clearSession() {
+			agent.state.messages = [];
+		},
+	};
 }
 
 export function listAgents(): AgentInfo[] {

@@ -31,7 +31,7 @@ export function DialogAgent() {
 			options={options}
 			current={{ name: store.currentAgent }}
 			onSelect={(option) => {
-				actions.setAgent(option.value.name);
+				actions.selectAgent(option.value.name);
 			}}
 		/>
 	);

@@ -34,7 +34,6 @@ CREATE TABLE `parts` (
 CREATE TABLE `sessions` (
 	`id` text PRIMARY KEY NOT NULL,
 	`started_at` integer NOT NULL,
-	`ended_at` integer,
 	`agent` text NOT NULL,
 	`title` text
 );

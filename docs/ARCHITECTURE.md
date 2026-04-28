@@ -62,7 +62,7 @@ Cross-layer imports use `tsconfig.json` aliases; intra-layer imports stay relati
 | Location | Purpose | Example |
 |---|---|---|
 | `bridge/view-model.ts` | Shared view-state contract any frontend would render/persist | `DisplayMessage`, `AgentStoreState` |
-| `backend/agent/*` | Backend's public API surface — consumed directly by frontends | `AgentActions`, re-exports from pi-agent-core |
+| `backend/agent/*` | Backend's public API surface — consumed directly by frontends | `AgentActions`, `Session`, re-exports from pi-agent-core |
 | `tui/**` | Frontend-internal only | `AgentContextValue`, theme accessors, component props |
 
 Bridge is for types **both sides need to agree on as a shared data shape**. Backend's API types (e.g. `AgentActions`) are published *by* the backend *to* its consumers; they don't go through the bridge.
@@ -116,7 +116,7 @@ src/
       errors.ts                     Shared persistence error hook (setPersistenceErrorHandler / reportPersistenceError); `kind: "config" | "auth" | "session"`
       paths.ts                      Shared XDG paths: CONFIG_DIR, STATE_DIR, CONFIG_FILE, AUTH_FILE, DB_FILE
       schema.ts                     Zod schemas for Config + AuthFile (strictObject, field-level validation)
-      sessions.ts                   SQLite session store — see `docs/SQL.md` for the full API. Exports `newId`, `runInTransaction`, `repairSession`, `findActiveSession`, `createSession`, `loadSession`, `listSessions`, `endSession`, `appendDisplayMessage`, `updateDisplayMessageMeta`, `finalizeDisplayMessageParts`, `appendAgentMessage`.
+      sessions.ts                   SQLite session store — see `docs/SQL.md` for the full API. Exports `newId`, `runInTransaction`, `createSession`, `loadSession`, `listSessions`, `appendDisplayMessage`, `updateDisplayMessageMeta`, `finalizeDisplayMessageParts`, `appendAgentMessage`.
       db/
         client.ts                   Lazy bun:sqlite client, WAL PRAGMAs, drizzle-kit migrator on open
         schema.ts                   Drizzle tables: sessions, messages, parts, agent_messages
@@ -408,7 +408,7 @@ zones: [],
 
 Tool implementations come from `@mariozechner/pi-coding-agent` via the shared pool in `backend/agent/tools.ts` — Inkstone does not re-implement read/write/edit. Each factory is called with `VAULT_DIR` as the `cwd` so vault-relative paths resolve inside the vault; absolute paths are honored by the tool and sandboxed by the guard. pi-coding-agent's tool source transitively imports `@mariozechner/pi-tui`, but `wrapToolDefinition` strips the render hooks — the tools are pure `AgentTool<any>` at runtime, and pi-tui is inert code-path-wise (Inkstone renders through OpenTUI in `src/tui/**`).
 
-`backend/agent/index.ts` rebuilds the system prompt at the start of every `AgentActions.prompt(text)` call. `setAgent()` and `clearSession()` also rebuild inline for correctness on mid-session reads of `a.state.systemPrompt` (e.g. a tool that echoes the current prompt) — the next turn's prompt-wrapper rebuild produces byte-identical output. Tools are rebuilt eagerly on `setAgent()` only (pi-agent-core may serialize them independently of prompt composition). No agent today has cross-turn state that affects the prompt — reader inlines article content into a user message at `/article` time rather than into the system prompt — so the per-turn rebuild is a no-op today content-wise; kept as a cheap invariant for future agents that may want turn-varying system prompts.
+`backend/agent/index.ts` exports `createSession({ agentName, onEvent })` which builds a pi-agent-core `Agent` bound to one agent name for the session's lifetime. `systemPrompt` + `tools` are composed once from the resolved `AgentInfo` and stay byte-stable across turns — see D9's stability invariant and D13's session-agent binding. `Session.selectAgent(name)` rewrites both fields on an empty session; it throws on non-empty sessions (mid-session agent swap is not supported). `Session.clearSession()` wipes `agent.state.messages` without touching the prompt. Per-turn operations (`prompt`, `abort`, `setModel`, `setThinkingLevel`) live on `Session.actions`.
 
 ### Agents on ship
 
@@ -474,7 +474,9 @@ export interface AgentCommand {
 }
 ```
 
-`execute` takes a positional `prompt` function the shell injects — no wrapper context object. Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over `AgentActions.clearSession` directly, so they don't need anything handed off. Commands typically compose a user message (e.g. reader inlines the article's path + content) and call `prompt(text)` to kick off a turn; they don't mutate system-prompt state (no agent today has cross-turn state), so no explicit refresh is needed.
+`execute` takes a positional `prompt` function the shell injects — no wrapper context object. Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over the TUI wrapper's `clearSession` directly, so they don't need anything handed off. Commands typically compose a user message (e.g. reader inlines the article's path + content) and call `prompt(text)` to kick off a turn.
+
+**System-prompt stability invariant.** `AgentInfo.buildInstructions()` must return a stable string for a given `AgentInfo`. pi-agent-core's `Agent` reads `state.systemPrompt` once per `prompt()` call (via `createContextSnapshot()`; see `node_modules/@mariozechner/pi-agent-core/dist/agent.js`), and both Anthropic's `cache_control` block and Bedrock's `cachePoint` are pinned to the byte-exact system prefix — any drift between turns invalidates the cache. The shell builds `systemPrompt` at two points only: `createSession` on construction and `Session.selectAgent` on an empty-session agent swap (see D13). `Session.clearSession` wipes messages without touching the prompt. Commands **must not** mutate state that `buildInstructions` reads; dynamic per-turn context (date, cwd, memory recall, file snapshots, article content) goes into a user message via `prompt(text)`. Reader's `/article` is the reference pattern.
 
 **Sources of commands** (all flow into the same registry):
 
@@ -500,8 +502,10 @@ user types "/article foo.md" + Enter
               → resolve + validate path inside ARTICLES_DIR
               → readFileSync(articlePath, "utf-8")
               → await prompt("Read this article...\n\nPath: ...\n\nContent:\n\n...")
-                (shell rebuilds systemPrompt, then streaming turn begins
-                 with the article as the opening user message)
+                (article content arrives as the opening user message;
+                 systemPrompt was built once at createSession() —
+                 unchanged here, so Anthropic's cache_control prefix
+                 hits on the next turn)
       → setText("")                              (clear input)
 
 user types "/clear" + Enter
@@ -525,7 +529,7 @@ user types "/article" + Enter
 
 **Precedence on slash-name collision**: first-match wins. `AgentProvider` mounts inside `CommandProvider` (see `src/tui/app.tsx` tree), and `command.register` prepends to the internal registration list — so `BridgeAgentCommands` entries sit ahead of `Layout`'s entries. An agent that declares a verb with the same name as a shell-level verb overrides the shell version for that agent only. This preserves D9's "agent overrides built-in" rule; it's theoretical today (no agent redefines `clear`).
 
-**Session restore** rehydrates messages + sets the active agent without triggering a prompt turn. `context/agent.tsx` seeds `store.messages` from `loaded.displayMessages`, replays the raw pi-agent-core messages, and calls `wrappedActions.setAgent(loaded.session.agent)` to align the backend. No reader-specific state to restore — the article's content lives inside the session's user message, visible to the LLM on the next turn via conversation history.
+**No session auto-resume.** Boot always shows the openpage. Past session rows linger on disk for a future `/resume` command. This removes the "align agent before seeding messages" reconciliation window the previous resume flow had to manage — agent is now picked at session construction and fixed for the lifetime (see D13).
 
 ### Switching rules
 
@@ -538,18 +542,20 @@ Switching is intentionally locked to empty sessions (`store.messages.length === 
 ### Data flow (agent switching)
 
 ```
-setAgent(name)
-  → AgentActions.setAgent (backend/agent/index.ts)
-    → currentAgent = info.name
-    → a.state.systemPrompt = composeSystemPrompt(info)
-    → a.state.tools        = composeTools(info)
-    → saveConfig({ currentAgent })
-  → tui wrapper (context/agent.tsx)
-    → setStore("currentAgent", getCurrentAgent())
+selectAgent(name)                                 [only legal on empty session]
+  → TUI wrapper (context/agent.tsx)
+    → guard: throw if store.messages.length > 0
+    → agentSession.selectAgent(name)              [Session, backend/agent/index.ts]
+      → guard: throw if agent.state.messages.length > 0
+      → info = getAgentInfo(name)                 [closure reference updated]
+      → a.state.systemPrompt = composeSystemPrompt(info)
+      → a.state.tools        = composeTools(info)
+      → saveConfig({ currentAgent })
+    → setStore("currentAgent", agentSession.agentName)
       → prompt label, input border, user-bubble border, assistant ▣ glyph all re-theme via `theme[getAgentInfo(store.currentAgent).colorKey]`
 ```
 
-The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/compose.ts`. With `BASE_PREAMBLE === ""`, `composeSystemPrompt(info)` is a pass-through to `info.buildInstructions()`.
+The mid-session agent swap is rejected both by the UI (Tab/palette gates on empty sessions) and by the backend (throws on non-empty). See D13 for the rationale. The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/compose.ts`. `composeSystemPrompt(info)` joins up to three non-empty sections: a `<your workspace>` zones block (present when `info.zones` is non-empty — e.g. reader), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. For agents with no zones and an empty preamble, the result is just the agent's instructions.
 
 The assistant `message_end` handler stamps `agentName` onto the new bubble using `getAgentInfo(store.currentAgent).displayName`. Because switching is locked mid-session, the stamped name is guaranteed to be the agent that actually produced the reply.
 
@@ -795,13 +801,13 @@ recipes. Summary below for cross-referencing from other sections.
 SQLite at `~/.local/state/inkstone/inkstone.db`, accessed via Drizzle ORM on
 `bun:sqlite`. Four tables: `sessions`, `messages`, `parts`, `agent_messages`.
 Ids are UUIDv7 (globally unique + time-ordered). Visibility is agent-scoped.
-Sessions are created lazily on first user prompt; `/clear` marks the row
-ended rather than deleting. `message_end` commits meta + parts + raw
-AgentMessage in a single transaction via `runInTransaction`, so crashes
-can't leave half-written state; `repairSession` strips trailing empty
-assistant shells from a SIGKILL between `message_start` and the
-`message_end` transaction. Config + auth stay in JSON under
-`~/.config/inkstone/`.
+Sessions are created lazily on first user prompt; `/clear` drops the
+in-memory session id so the next prompt creates a fresh row (past rows
+stay on disk for a future `/resume`). Boot does not auto-resume — the
+openpage always greets the user. `message_end` commits meta + parts +
+raw AgentMessage in a single transaction via `runInTransaction`, so
+crashes can't leave half-written state. Config + auth stay in JSON
+under `~/.config/inkstone/`.
 
 ## Key Patterns (from OpenCode)
 

@@ -1,10 +1,4 @@
-import {
-	getCurrentModel,
-	getCurrentModelId,
-	getCurrentProviderId,
-	getCurrentThinkingLevel,
-	listAgents,
-} from "@backend/agent";
+import { listAgents } from "@backend/agent";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import {
 	useKeyboard,
@@ -60,7 +54,7 @@ function Layout() {
 	const renderer = useRenderer();
 	const dialog = useDialog();
 	const command = useCommand();
-	const { actions, store } = useAgent();
+	const { actions, store, session } = useAgent();
 	const { theme, themeId } = useTheme();
 
 	const dimensions = useTerminalDimensions();
@@ -93,8 +87,8 @@ function Layout() {
 				DialogModel.show(
 					d,
 					{
-						providerId: getCurrentProviderId(),
-						modelId: getCurrentModelId(),
+						providerId: session.getProviderId(),
+						modelId: session.getModelId(),
 					},
 					(model) => {
 						actions.setModel(model);
@@ -122,8 +116,8 @@ function Layout() {
 				onSelect: (d) => {
 					DialogVariant.show(
 						d,
-						getCurrentModel(),
-						getCurrentThinkingLevel(),
+						session.getModel(),
+						session.getThinkingLevel(),
 						(level) => {
 							actions.setThinkingLevel(level);
 						},
@@ -175,7 +169,7 @@ function Layout() {
 				const i = all.findIndex((a) => a.name === store.currentAgent);
 				const base = i < 0 ? 0 : i;
 				const next = all[(base + dir + all.length) % all.length];
-				if (next) actions.setAgent(next.name);
+				if (next) actions.selectAgent(next.name);
 			};
 			list.push(
 				{
