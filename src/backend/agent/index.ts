@@ -78,10 +78,6 @@ export interface Session {
 	readonly messageCount: number;
 }
 
-function thinkingKey(providerId: string, modelId: string): string {
-	return `${providerId}/${modelId}`;
-}
-
 /**
  * Resolve the provider/model pair from config with the same fallback
  * chain as before the factory refactor:
@@ -179,6 +175,7 @@ export function createSession(params: {
 	// this ref to pick up the current agent's zones/tools/instructions.
 	let info: AgentInfo = initialInfo;
 
+	// ── Model + thinking state ─────────────────────────────
 	let providerSel = resolveInitialProviderModel(cfg);
 	const initialModel = resolveModel(
 		providerSel.providerId,
@@ -197,9 +194,13 @@ export function createSession(params: {
 	const thinkingLevels: Record<string, ThinkingLevel> = {
 		...(cfg.thinkingLevels ?? {}),
 	};
+	function thinkingKey(providerId: string, modelId: string): string {
+		return `${providerId}/${modelId}`;
+	}
 	function resolveThinkingLevel(model: Model<Api>): ThinkingLevel {
 		return thinkingLevels[thinkingKey(model.provider, model.id)] ?? "off";
 	}
+	// ────────────────────────────────────────────────────────
 
 	const agent = new Agent({
 		initialState: {
