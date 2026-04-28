@@ -1,11 +1,7 @@
 import {
 	type AgentActions,
-	createAgentActions,
-	getAgent,
+	createSession as createAgentSession,
 	getAgentInfo,
-	getCurrentAgent,
-	getCurrentModel,
-	getCurrentThinkingLevel,
 	setConfirmFn,
 } from "@backend/agent";
 import { setPersistenceErrorHandler } from "@backend/persistence/errors";
@@ -13,12 +9,8 @@ import {
 	appendAgentMessage,
 	appendDisplayMessage,
 	createSession,
-	endSession,
 	finalizeDisplayMessageParts,
-	findActiveSession,
-	loadSession,
 	newId,
-	repairSession,
 	runInTransaction,
 	updateDisplayMessageMeta,
 } from "@backend/persistence/sessions";
@@ -65,7 +57,18 @@ import { useToast } from "../ui/toast";
 
 interface AgentContextValue {
 	store: AgentStoreState;
-	actions: AgentActions;
+	actions: AgentActions & { selectAgent(name: string): void };
+	/**
+	 * Read accessors for dialog seeding. Exposed so dialog call sites
+	 * (DialogModel, DialogVariant) don't need to reach into the backend
+	 * module or duplicate the provider/model resolution.
+	 */
+	session: {
+		getModel(): Model<Api>;
+		getProviderId(): string;
+		getModelId(): string;
+		getThinkingLevel(): ThinkingLevel;
+	};
 }
 
 const ctx = createContext<AgentContextValue>();
@@ -95,47 +98,33 @@ export function AgentProvider(props: ParentProps) {
 		});
 	});
 
-	// Try to resume an active session for the currently-selected agent.
-	// Sessions are scoped by agent: switching agents on the empty open page
-	// means `findActiveSession` looks for *that* agent's active row, not
-	// whichever session ran last overall.
-	const resumeAgent = getCurrentAgent();
-	const active = findActiveSession(resumeAgent);
-	// Run crash-repair before hydrating so trailing empty assistant shells
-	// from a mid-stream SIGKILL don't surface as empty bubbles. With the
-	// `message_end`-in-one-transaction fix this shouldn't happen for new
-	// sessions, but the call handles pre-existing corruption and any path
-	// that sidesteps the reducer's transactional boundary.
-	if (active) repairSession(active.id);
-	const loaded = active ? loadSession(active.id) : null;
+	// Build the one session this provider owns. Boot always shows the
+	// openpage — no auto-resume. Past session rows stay on disk for a
+	// future `/resume` command (not yet built). See D13 in
+	// `docs/AGENT-DESIGN.md`: agent is fixed for a session's lifetime.
+	const agentSession = createAgentSession({
+		onEvent: (event: AgentEvent) => onAgentEvent(event),
+	});
 
-	// Seed the pi-agent-core message list from persisted raw AgentMessages
-	// *before* the store is created, so the first `actions.prompt()` sees
-	// full LLM context.
-	if (loaded && loaded.agentMessages.length > 0) {
-		getAgent().state.messages = loaded.agentMessages;
-	}
+	// Mutable DB row handle. Lazily created on first user prompt to
+	// avoid churning empty rows when the user boots without interacting.
+	let currentSessionId: string | null = null;
 
-	// Mutable session handle. Lazily created on first user prompt to avoid
-	// churning empty rows when the user boots without interacting.
-	let currentSessionId: string | null = loaded?.session.id ?? null;
-
-	// Get initial model info
-	const initialModel = getCurrentModel();
+	const initialModel = agentSession.getModel();
 
 	const [store, setStore] = createStore<AgentStoreState>({
-		messages: loaded?.displayMessages ?? [],
+		messages: [],
 		isStreaming: false,
 		modelName: initialModel.name,
 		modelProvider: initialModel.provider,
 		contextWindow: initialModel.contextWindow,
 		modelReasoning: initialModel.reasoning,
-		thinkingLevel: getCurrentThinkingLevel(),
+		thinkingLevel: agentSession.getThinkingLevel(),
 		status: "idle",
 		totalTokens: 0,
 		totalCost: 0,
 		lastTurnStartedAt: 0,
-		currentAgent: getCurrentAgent(),
+		currentAgent: agentSession.agentName,
 	});
 
 	/**
@@ -158,7 +147,7 @@ export function AgentProvider(props: ParentProps) {
 		return rec.id;
 	}
 
-	const actions = createAgentActions((event: AgentEvent) => {
+	function onAgentEvent(event: AgentEvent) {
 		batch(() => {
 			switch (event.type) {
 				case "agent_start":
@@ -420,11 +409,14 @@ export function AgentProvider(props: ParentProps) {
 					break;
 			}
 		});
-	});
+	}
 
-	// Wrap prompt to add the user message to the store before calling the agent
-	const wrappedActions: AgentActions = {
-		...actions,
+	// Wrap prompt to add the user message to the store before calling
+	// the agent. Also owns the TUI-only `selectAgent` verb that swaps
+	// the in-flight agent on an empty session (throws otherwise — see
+	// D13 in `docs/AGENT-DESIGN.md`).
+	const wrappedActions: AgentContextValue["actions"] = {
+		...agentSession.actions,
 		async prompt(text: string) {
 			const sessionId = ensureSession();
 			const userMsg: DisplayMessage = {
@@ -451,7 +443,7 @@ export function AgentProvider(props: ParentProps) {
 			// call sites in `prompt.tsx` turn into unhandled rejections that
 			// can crash the process.
 			try {
-				await actions.prompt(text);
+				await agentSession.actions.prompt(text);
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
 				batch(() => {
@@ -501,7 +493,7 @@ export function AgentProvider(props: ParentProps) {
 			}
 		},
 		setModel(model: Model<Api>) {
-			actions.setModel(model);
+			agentSession.actions.setModel(model);
 			setStore("modelName", model.name);
 			setStore("modelProvider", model.provider);
 			setStore("contextWindow", model.contextWindow);
@@ -510,27 +502,35 @@ export function AgentProvider(props: ParentProps) {
 			// thinkingLevel (or "off") onto the agent state, so surface that
 			// into the store at the same time — otherwise the status-line
 			// suffix would lag a model switch by one interaction.
-			setStore("thinkingLevel", getCurrentThinkingLevel());
+			setStore("thinkingLevel", agentSession.getThinkingLevel());
 		},
 		setThinkingLevel(level: ThinkingLevel) {
-			actions.setThinkingLevel(level);
+			agentSession.actions.setThinkingLevel(level);
 			setStore("thinkingLevel", level);
 		},
-		setAgent(name: string) {
-			actions.setAgent(name);
-			// Read back the canonical name (the registry may coerce unknown names
-			// to the default agent) so the UI stays consistent with the backend.
-			setStore("currentAgent", getCurrentAgent());
+		selectAgent(name: string) {
+			// Agent-for-life invariant: swapping with messages in flight
+			// would silently break prompt-cache stability (systemPrompt +
+			// tools change mid-conversation) and scramble bubble agent
+			// stamps. The backend throws on non-empty; we check here too
+			// so the error surfaces before any UI state mutation.
+			// See D13 in `docs/AGENT-DESIGN.md`.
+			if (store.messages.length > 0) {
+				throw new Error(
+					"Agent is fixed for the lifetime of a session. " +
+						"Use /clear before selecting a different agent.",
+				);
+			}
+			agentSession.selectAgent(name);
+			setStore("currentAgent", agentSession.agentName);
 		},
 		clearSession() {
-			actions.clearSession();
-			// End the current session row (if any) so `findActiveSession` no
-			// longer resurrects it on next boot. The row itself stays on disk
-			// — that's the whole point of persistence-as-memory-substrate.
-			if (currentSessionId) {
-				endSession(currentSessionId);
-				currentSessionId = null;
-			}
+			agentSession.actions.clearSession();
+			// In-memory reset only. We no longer terminate the DB row —
+			// `ended_at` is gone, and the future `/resume` command will
+			// list past rows as-is. `currentSessionId = null` here just
+			// means the NEXT prompt creates a fresh row.
+			currentSessionId = null;
 			setStore("messages", []);
 			setStore("totalTokens", 0);
 			setStore("totalCost", 0);
@@ -538,7 +538,16 @@ export function AgentProvider(props: ParentProps) {
 		},
 	};
 
-	const value: AgentContextValue = { store, actions: wrappedActions };
+	const value: AgentContextValue = {
+		store,
+		actions: wrappedActions,
+		session: {
+			getModel: () => agentSession.getModel(),
+			getProviderId: () => agentSession.getProviderId(),
+			getModelId: () => agentSession.getModelId(),
+			getThinkingLevel: () => agentSession.getThinkingLevel(),
+		},
+	};
 
 	/**
 	 * Bridge backend-declared `AgentCommand`s into the unified command
@@ -603,14 +612,6 @@ export function AgentProvider(props: ParentProps) {
 			}));
 		});
 		return null;
-	}
-
-	// Restore the agent recorded in the resumed session. Without this, a
-	// transcript persisted under one agent could reopen under whichever
-	// agent is currently in `config.json`, with no way to switch back
-	// (agent cycling is locked once messages exist).
-	if (loaded) {
-		wrappedActions.setAgent(loaded.session.agent);
 	}
 
 	return (

@@ -21,7 +21,6 @@ import {
 export const sessions = sqliteTable("sessions", {
 	id: text("id").primaryKey(),
 	startedAt: integer("started_at").notNull(),
-	endedAt: integer("ended_at"),
 	agent: text("agent").notNull(),
 	title: text("title"),
 });

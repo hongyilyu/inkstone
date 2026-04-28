@@ -67,7 +67,7 @@ sessions ──┬── messages ── parts       (display-layer fanout)
 
 | Table | Purpose |
 |---|---|
-| `sessions` | Conversation root. `agent` column scopes all reads. `ended_at` nullable — null = active, set by `/clear`. |
+| `sessions` | Conversation root. `agent` column scopes all reads. `/clear` ends the in-memory session; the row stays on disk untouched. |
 | `messages` | One row per `DisplayMessage` (bubble). UUIDv7 `id`. Per-message metadata (agent/model/duration/error) mirrors the bubble footer. |
 | `parts` | `DisplayPart` fanout. Composite PK `(message_id, seq)` — parts have no cross-session identity. |
 | `agent_messages` | Raw pi-agent-core `AgentMessage` as JSON, for LLM-context restore on resume. `display_message_id` links back to the bubble this message produced (NULL for tool-result / user / custom messages). |
@@ -130,7 +130,6 @@ order.
 
 Every read path filters `WHERE sessions.agent = ?`:
 
-- `findActiveSession(agent)` — scoped by the argument.
 - `listSessions(agent)` — scoped by the argument.
 - `loadSession(id)` — scoped by session id, which is unique — no agent
   filter needed. A caller passing a foreign session id would leak
@@ -143,15 +142,10 @@ Switching agents is UI-locked to the empty-session open page (see
 ## Session lifecycle
 
 ```
-boot ─▶ findActiveSession(agent)
-         │
-         ├─ null  ─▶ no resume
-         └─ row   ─▶ repairSession(id)         [explicit crash-repair]
-                  ─▶ loadSession(id)           [pure read]
-                     ├─ hydrate Agent.state.messages from agent_messages
-                     └─ seed UI store from displayMessages
+boot ─▶ createSession(agentName)            [in-memory Agent; no DB read]
+      ─▶ openpage                           [messages: [] — no auto-resume]
 
-first user prompt ─▶ ensureSession()           [creates row if none]
+first user prompt ─▶ ensureSession()        [creates DB row if none]
                    ─▶ appendDisplayMessage(userMsg)
 
 assistant turn    ─▶ message_start  ─▶ appendDisplayMessage(shell,
@@ -164,7 +158,7 @@ assistant turn    ─▶ message_start  ─▶ appendDisplayMessage(shell,
                                         })
                    ─▶ agent_end      ─▶ updateDisplayMessageMeta (duration)
 
-/clear           ─▶ endSession(id)             [row stays; ended_at stamped]
+/clear           ─▶ drop in-memory sessionId (row stays on disk untouched)
 ```
 
 ### Lazy session creation
@@ -172,15 +166,12 @@ assistant turn    ─▶ message_start  ─▶ appendDisplayMessage(shell,
 No row exists on disk until the first user prompt. Booting and quitting
 without interacting leaves the DB clean.
 
-### Explicit crash-repair
+### No auto-resume at boot
 
-`repairSession(id)` is a separate call, not embedded in `loadSession`.
-It strips trailing assistant rows where `parts.length === 0 &&
-error === null` — a SIGKILL between `message_start` (which writes
-the assistant shell outside any transaction) and the `message_end`
-transaction opening would leave an empty shell that `message_end`'s
-atomicity cannot cover. This call handles that window and anything
-that sidesteps the reducer.
+Boot always shows the openpage — Inkstone does not auto-resume the
+previous session. Past session rows stay on disk as-is; a future
+`/resume` or `/session` command will list and load them. See D13 in
+`docs/AGENT-DESIGN.md`.
 
 ## Transactional boundary
 
@@ -218,26 +209,23 @@ This is intentional ergonomic friction:
 - New writers can't accidentally forget to participate in an outer tx
   — they physically can't run without one.
 
-Reads (`findActiveSession`, `loadSession`, `listSessions`,
-`repairSession`) use the root client directly; they don't take `tx`.
-Single-row session mutators (`createSession`, `endSession`) also use
-the root client — each is one statement, which SQLite auto-commits
-atomically.
+Reads (`loadSession`, `listSessions`) use the root client directly;
+they don't take `tx`. The single session-row mutator
+(`createSession`) also uses the root client — one statement, which
+SQLite auto-commits atomically.
 
 ### Crash-repair boundary
 
 The transactional boundary covers `message_end`, but not the shell
 insert at `message_start`. A SIGKILL between `message_start`'s shell
 write and `message_end` opening its transaction leaves a trailing
-empty assistant row. `repairSession(id)` is called on boot to strip
-these.
+empty assistant row.
 
-The repair is one SQL `DELETE`: find the latest message with content
-(parts or an error set), delete every empty assistant with a strictly
-larger id. No per-row probes, no tail-scan — bounded work
-independent of session length. Mid-session empty assistants
-(legitimate tool-call-only messages) are untouched because they have
-a content-bearing message *after* them.
+Today, no code strips these — boot doesn't auto-resume, so empty
+shells never reach the UI. When `/resume` lands, it'll need a
+repair pass before `loadSession` to avoid surfacing the shells as
+empty bubbles. The prior implementation's one-statement DELETE is in
+the git history under `repairSession`.
 
 ## Public API — `sessions.ts`
 
@@ -246,10 +234,10 @@ for the authoritative signatures. Quick reference:
 
 ### Reads
 
-- `findActiveSession(agent)` — newest `ended_at IS NULL` row.
-- `loadSession(id)` — full hydration; pure read.
+- `loadSession(id)` — full hydration; pure read. No runtime caller
+  today; kept for the future `/resume` command.
 - `listSessions(agent)` — newest-first summaries with `messageCount`
-  (single `GROUP BY` query, no N+1).
+  (single `GROUP BY` query, no N+1). Also `/resume`-candidate.
 
 ### Writes — require `tx`
 
@@ -258,7 +246,6 @@ All writers take a required `tx: Tx` parameter. Wrap single writes in
 
 - `createSession({ agent })` — new row. (No tx; single
   statement.)
-- `endSession(id)` — stamp `ended_at = now`. (No tx.)
 - `appendDisplayMessage(tx, id, msg, { includeParts? })` — insert
   header, optionally parts.
 - `updateDisplayMessageMeta(tx, id, msg)` — header-only update.
@@ -267,9 +254,8 @@ All writers take a required `tx: Tx` parameter. Wrap single writes in
 - `appendAgentMessage(tx, id, rawMsg, { displayMessageId? })` —
   insert raw message, optionally link to a bubble.
 
-### Repair + utility
+### Utility
 
-- `repairSession(id)` — strip trailing empty assistant shells.
 - `runInTransaction(fn)` — wrap multiple writes in one tx.
 - `newId()` — fresh UUIDv7.
 
@@ -332,10 +318,11 @@ the event type for appends. Grep-friendly.
    reducer ever go false, something is firing `AgentEvent`s without
    going through `prompt()`.
 
-3. **`repairSession` deletes from disk**. A pruned assistant bubble
-   doesn't just disappear from the returned list — the row is dropped.
-   Non-trailing empties (legitimate tool-call-only assistant messages
-   with `stopReason: "toolUse"`) are untouched.
+3. **Crash-repair is deferred**. A SIGKILL during streaming can leave
+   an empty assistant shell in the DB. Today's code doesn't strip
+   these because boot no longer auto-resumes. `/resume` will need a
+   repair pass when it lands; git history holds the prior one-statement
+   DELETE under `repairSession`.
 
 4. **`$type<AgentMessage>` gives no runtime guarantee**. Column is
    TEXT; Drizzle does no validation. Pin pi versions.
@@ -356,12 +343,11 @@ the event type for appends. Grep-friendly.
 ## Known limitations
 
 - **No concurrency story.** `getDb()` is a per-process singleton. Two
-  Inkstone processes (second terminal, accidental double-launch) can
-  each call `findActiveSession` for the same agent, both get the same
-  row, and interleave writes. SQLite's WAL means the file doesn't
-  corrupt, but the session's logical state does. No fix today — document
-  and move on. Options when this becomes real: advisory flock on
-  `DB_FILE`, or `sessions.owner_pid` checked on attach.
+  Inkstone processes (second terminal, accidental double-launch) each
+  create their own session row on first prompt. SQLite's WAL means the
+  file doesn't corrupt, but each process's session state is independent.
+  No fix today — document and move on. Options when this becomes real:
+  advisory flock on `DB_FILE`, or `sessions.owner_pid` checked on attach.
 - **Migration bundling** — see Migrations § Bundling.
 - **UUIDv7 sub-ms ordering** — rows written in the same millisecond
   may sort arbitrarily via tail bits. Rare in practice; add a
@@ -375,7 +361,7 @@ the event type for appends. Grep-friendly.
 sqlite3 ~/.local/state/inkstone/inkstone.db
 .headers on
 .mode column
-select id, agent, started_at, ended_at, title from sessions order by id desc limit 10;
+select id, agent, started_at, title from sessions order by id desc limit 10;
 ```
 
 ### Count messages per session
@@ -434,8 +420,8 @@ rm ~/.config/inkstone/config.json
 | `src/backend/persistence/db/schema.ts` | Drizzle table definitions — source of truth for columns |
 | `src/backend/persistence/db/client.ts` | Lazy `bun:sqlite` singleton, PRAGMAs, migrator |
 | `src/backend/persistence/db/migrations/` | `drizzle-kit`-generated SQL |
-| `src/backend/persistence/sessions.ts` | Public API (`newId`, reads, writes, `runInTransaction`, `repairSession`, `shortId`) |
+| `src/backend/persistence/sessions.ts` | Public API (`newId`, reads, writes, `runInTransaction`, `shortId`) |
 | `src/backend/persistence/errors.ts` | `reportPersistenceError` hook |
 | `src/backend/persistence/paths.ts` | XDG path resolution |
-| `src/tui/context/agent.tsx` | Frontend consumer — reducer, `ensureSession`, `repairSession` + resume wiring |
+| `src/tui/context/agent.tsx` | Frontend consumer — reducer, `ensureSession`, wiring |
 | `drizzle.config.ts` (repo root) | `drizzle-kit` CLI config |

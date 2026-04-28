@@ -26,6 +26,16 @@ When starting or completing any task, update the relevant docs in `docs/`:
 Before presenting any multi-step plan or non-trivial code change to the user, invoke the `behavioral-guidelines` skill/agent to review the proposed approach. The reviewer checks for overcomplication, over-engineering, unnecessary abstractions, speculative features, and missing success criteria. Apply the reviewer's minimal fixes before presenting the plan to the user.
 
 
+## Post-Implementation Review Protocol
+
+After completing any non-trivial implementation, spawn a fresh-context subagent to review the changes before considering the task done. Contract:
+
+1. **Do not pass any context from the main agent's conversation to the subagent.** The subagent must form its opinion from the diff and code alone. Bias reduction is the whole point.
+2. **Do pass a concise "known limitations" note** — things the main agent consciously accepted (e.g. "behavioral widening is intentional, see TODO Known Issues") — so the reviewer doesn't waste cycles re-raising already-decided trade-offs.
+3. **Evaluate every reviewer comment.** Address the ones that hold up; explicitly justify dismissals for the ones that don't. Record both outcomes in the response to the user.
+4. **Do not blindly apply reviewer suggestions.** Reviewers without context can over-index on style or speculative risks; the main agent has final say.
+
+
 ## UI Reference Protocol
 
 For any UI-side change (components, rendering, theming, layout, dialogs, keybinds, scroll/focus behavior, status lines, markdown/code display, etc.), **always consult the OpenCode TUI codebase at `../opencode/packages/opencode/src/cli/cmd/tui/` first** to see how the same concern is handled there before designing a solution. Inkstone tracks OpenCode's patterns — prefer porting the existing approach (trimmed to Inkstone's scope) over inventing a new one. When the OpenCode approach is too heavy for Inkstone's needs, state that explicitly in the plan and justify the simpler variant.

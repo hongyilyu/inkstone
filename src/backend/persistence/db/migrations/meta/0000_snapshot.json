@@ -251,13 +251,6 @@
           "notNull": true,
           "autoincrement": false
         },
-        "ended_at": {
-          "name": "ended_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "agent": {
           "name": "agent",
           "type": "text",
