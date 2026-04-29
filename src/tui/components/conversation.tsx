@@ -1,41 +1,23 @@
-import { getAgentInfo } from "@backend/agent";
+import type { DisplayMessage } from "@bridge/view-model";
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { createMemo, For, Show } from "solid-js";
+import { For, Show } from "solid-js";
 import { refocusInput, setScrollRef } from "../app";
 import { useAgent } from "../context/agent";
-import { useTheme } from "../context/theme";
-import { formatDuration } from "../util/format";
+import { AssistantMessage, UserMessage } from "./message";
 
-const EmptyBorder = {
-	topLeft: "",
-	bottomLeft: "",
-	vertical: "",
-	topRight: "",
-	bottomRight: "",
-	horizontal: " ",
-	bottomT: "",
-	topT: "",
-	cross: "",
-	leftT: "",
-	rightT: "",
-};
-
-const SplitBorderChars = {
-	...EmptyBorder,
-	vertical: "┃",
-};
-
+/**
+ * Scrollable conversation view. Owns only list layout and per-row
+ * routing — bubble rendering lives in `message.tsx`.
+ *
+ * Dangling-user detection: a user bubble is "dangling" when it has no
+ * real assistant reply following it AND no stream is pending. A real
+ * reply is one with at least one part OR an error — the outer `<Show>`
+ * gate below uses the same shape, so an orphan empty-parts assistant
+ * (a header row inserted on `message_start` but parts never flushed
+ * because `message_end` never fired) doesn't mask the marker.
+ */
 export function Conversation() {
-	const { theme, syntax, subtleSyntax } = useTheme();
 	const { store } = useAgent();
-
-	// Accent color for user-message borders and the assistant-footer `▣` glyph,
-	// derived from the currently-active agent. Agent switching is locked to an
-	// empty session, so a single accent applies uniformly to every bubble in
-	// the current transcript.
-	const agentColor = createMemo(
-		() => theme[getAgentInfo(store.currentAgent).colorKey],
-	);
 
 	return (
 		<scrollbox
@@ -49,177 +31,50 @@ export function Conversation() {
 		>
 			<box flexDirection="column" paddingTop={1} paddingRight={1} gap={1}>
 				<For each={store.messages}>
-					{(msg, index) => {
-						// A user bubble is "dangling" when it has no real
-						// assistant reply following it AND we're not currently
-						// streaming a reply for it. "Real" means at least one
-						// part OR an error — matches the outer `<Show>` gate
-						// so a trailing empty-parts orphan (left behind when
-						// the stream was killed between `message_start` and
-						// `message_end` — a display row was inserted but
-						// parts never flushed) doesn't mask the marker.
-						//
-						// The `isTail && isStreaming` skip covers the window
-						// where `message_start` pushed an assistant bubble
-						// but no parts have streamed in yet — that's a
-						// pending reply, not an orphan.
-						const isDanglingUser = createMemo(() => {
-							if (msg.role !== "user") return false;
-							const next = store.messages[index() + 1];
-							if (next && next.role === "assistant") {
-								const real = next.parts.length > 0 || !!next.error;
-								if (real) return false;
-								// Falls through to dangling: the orphan empty
-								// assistant isn't a real reply.
-							}
-							const isTail = index() === store.messages.length - 1;
-							if (isTail && store.isStreaming) return false;
-							return true;
-						});
-						return (
-							<Show when={msg.parts.length > 0 || msg.error}>
-								<Show
-									when={msg.role === "user"}
-									fallback={
-										<box flexDirection="column" flexShrink={0}>
-											<For each={msg.parts}>
-												{(part, partIndex) => {
-													// `streaming` must only flag the absolute tail block
-													// of the in-flight turn; markdown's partial-token
-													// parser keeps that block unstable and finalizes
-													// earlier ones.
-													const isTail = () =>
-														store.isStreaming &&
-														index() === store.messages.length - 1 &&
-														partIndex() === msg.parts.length - 1;
-													if (part.type === "thinking") {
-														// Mirrors OpenCode's `ReasoningPart`
-														// (`routes/session/index.tsx:1437-1468`): single
-														// markdown block with an inline `_Thinking:_`
-														// italic prefix, rendered through `subtleSyntax`
-														// so every token is alpha-faded uniformly while
-														// preserving per-scope hue. No outer `fg` — that
-														// would flatten all tokens to one color and cancel
-														// the per-scope dimming.
-														return (
-															<box
-																paddingLeft={2}
-																marginTop={partIndex() === 0 ? 0 : 1}
-																border={["left"]}
-																borderColor={theme.backgroundElement}
-																customBorderChars={SplitBorderChars}
-																flexShrink={0}
-																flexDirection="column"
-															>
-																<markdown
-																	content={`_Thinking:_ ${part.text}`}
-																	syntaxStyle={subtleSyntax()}
-																	streaming={isTail()}
-																	bg={theme.background}
-																/>
-															</box>
-														);
-													}
-													return (
-														<box
-															paddingLeft={3}
-															marginTop={partIndex() === 0 ? 0 : 1}
-															flexShrink={0}
-														>
-															<markdown
-																content={part.text}
-																syntaxStyle={syntax()}
-																streaming={isTail()}
-																fg={theme.text}
-																bg={theme.background}
-															/>
-														</box>
-													);
-												}}
-											</For>
-											{/* Assistant-turn error panel. Mirrors OpenCode's
-                                            per-message error box
-                                            (`routes/session/index.tsx:1374-1387`) — left
-                                            border in theme.error, muted body text.
-                                            `marginLeft={3}` aligns the left edge with the
-                                            markdown body above. Covers both
-                                            `stopReason === "error"` and `"aborted"` for
-                                            now; distinct "interrupted" footer styling is
-                                            tracked as future work. */}
-											<Show when={msg.error}>
-												<box
-													marginLeft={3}
-													marginTop={msg.parts.length > 0 ? 1 : 0}
-													border={["left"]}
-													borderColor={theme.error}
-													customBorderChars={SplitBorderChars}
-												>
-													<box
-														paddingTop={1}
-														paddingBottom={1}
-														paddingLeft={2}
-														backgroundColor={theme.backgroundPanel}
-														flexShrink={0}
-													>
-														<text fg={theme.textMuted}>{msg.error}</text>
-													</box>
-												</box>
-											</Show>
-											<Show when={msg.modelName}>
-												<box paddingLeft={3} paddingTop={1} flexShrink={0}>
-													<text wrapMode="none">
-														<span style={{ fg: agentColor() }}>{"▣ "}</span>
-														<span style={{ fg: theme.text }}>
-															{msg.agentName ?? "Reader"}
-														</span>
-														<span style={{ fg: theme.textMuted }}>
-															{" "}
-															· {msg.modelName}
-															{msg.duration && msg.duration > 0
-																? ` · ${formatDuration(msg.duration)}`
-																: ""}
-														</span>
-													</text>
-												</box>
-											</Show>
-										</box>
-									}
-								>
-									<box flexDirection="column" flexShrink={0}>
-										<box
-											border={["left"]}
-											borderColor={agentColor()}
-											customBorderChars={SplitBorderChars}
-											marginTop={index() === 0 ? 0 : 1}
-										>
-											<box
-												paddingTop={1}
-												paddingBottom={1}
-												paddingLeft={2}
-												backgroundColor={theme.backgroundPanel}
-												flexShrink={0}
-											>
-												<text fg={theme.text}>{msg.parts[0]?.text ?? ""}</text>
-											</box>
-										</box>
-										{/* Dangling-user marker: the stored stream was
-                                        killed mid-turn so no assistant reply
-                                        followed. Mirrors the load-time repair
-                                        in `loadSession` — the user's typed text
-                                        stays in scrollback; the marker tells
-                                        them why there's no response beneath. */}
-										<Show when={isDanglingUser()}>
-											<box paddingLeft={3} paddingTop={1} flexShrink={0}>
-												<text fg={theme.textMuted}>[Interrupted by user]</text>
-											</box>
-										</Show>
-									</box>
-								</Show>
+					{(msg, index) => (
+						<Show when={msg.parts.length > 0 || msg.error}>
+							<Show
+								when={msg.role === "user"}
+								fallback={
+									<AssistantMessage
+										message={msg}
+										isTailTurn={index() === store.messages.length - 1}
+									/>
+								}
+							>
+								<UserMessage
+									message={msg}
+									first={index() === 0}
+									dangling={isDanglingUser(
+										msg,
+										index(),
+										store.messages,
+										store.isStreaming,
+									)}
+								/>
 							</Show>
-						);
-					}}
+						</Show>
+					)}
 				</For>
 			</box>
 		</scrollbox>
 	);
+}
+
+function isDanglingUser(
+	msg: DisplayMessage,
+	index: number,
+	messages: DisplayMessage[],
+	isStreaming: boolean,
+): boolean {
+	if (msg.role !== "user") return false;
+	const next = messages[index + 1];
+	if (next && next.role === "assistant") {
+		const real = next.parts.length > 0 || !!next.error;
+		if (real) return false;
+		// Ghost assistant header (parts never flushed) — fall through.
+	}
+	const isTail = index === messages.length - 1;
+	if (isTail && isStreaming) return false;
+	return true;
 }
