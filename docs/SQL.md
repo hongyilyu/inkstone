@@ -234,10 +234,17 @@ for the authoritative signatures. Quick reference:
 
 ### Reads
 
-- `loadSession(id)` — full hydration; pure read. No runtime caller
-  today; kept for the future `/resume` command.
+- `loadSession(id)` — full hydration; pure read. Now called by the
+  session list panel's resume flow (see `ARCHITECTURE.md §Session list
+  panel`). Performs **load-time tail repair**: if the stored
+  `agent_messages` tail is `role: "user"` (session killed mid-turn
+  between `message_start` and `message_end` — Ctrl+C / process crash),
+  appends a synthetic `assistant` `AgentMessage` with `stopReason:
+  "aborted"` so the returned list satisfies provider alternation
+  invariants. Stored rows are **not** modified; repair is pure
+  read-time transformation.
 - `listSessions(agent)` — newest-first summaries with `messageCount`
-  (single `GROUP BY` query, no N+1). Also `/resume`-candidate.
+  (single `GROUP BY` query, no N+1). Also used by the panel.
 
 ### Writes — require `tx`
 

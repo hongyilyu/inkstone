@@ -26,6 +26,7 @@
 
 import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { and, asc, count, desc, eq, inArray, min } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { agentMessages, messages, parts, sessions } from "./db/schema";
@@ -287,6 +288,48 @@ export function loadSession(sessionId: string): LoadedSession | null {
 		.orderBy(asc(agentMessages.id))
 		.all();
 
+	const agentMessagesOut = agentMsgRows.map((r) => r.data);
+
+	// Load-time alternation repair. Two classes of corruption can end up
+	// on disk when a stream is killed mid-turn (Ctrl+C / process crash
+	// between `message_start` and `message_end`):
+	//
+	//   (a) TAIL ORPHAN — the interrupted turn was the last one in the
+	//       session. `agent_messages` ends with a lone `user` row.
+	//   (b) INTERIOR GAP — the interrupted turn was followed by a
+	//       successful later turn after resume. `agent_messages` has
+	//       two adjacent `user` rows with no assistant between them
+	//       (first user's reply never committed; second user is the
+	//       post-resume prompt).
+	//
+	// Both shapes hand the provider consecutive user turns on the next
+	// prompt: Anthropic silently merges them, Bedrock 400s on
+	// `ValidationException`. Synthesize a closing assistant placeholder
+	// between every adjacent `user`/`user` pair AND after a trailing
+	// `user`, so `agent.state.messages` alternates cleanly. Placeholder
+	// never reaches a provider — it only fills the alternation slot in
+	// `state.messages`. Stored rows are untouched (pure read-time
+	// repair).
+	//
+	// Metadata sourcing: latest prior assistant's `api`/`provider`/
+	// `model`, falling back to bland defaults if none exists in the
+	// preceding slice. `agent.state.messages` only uses these fields
+	// to round-trip through `convertToLlm` for non-tail assistants.
+	const repaired: AgentMessage[] = [];
+	for (const msg of agentMessagesOut) {
+		const prev = repaired[repaired.length - 1];
+		if (prev && prev.role === "user" && msg.role === "user") {
+			const priorAssistant = findLatestAssistant(repaired);
+			repaired.push(buildAbortedAssistant(priorAssistant));
+		}
+		repaired.push(msg);
+	}
+	const trailing = repaired[repaired.length - 1];
+	if (trailing && trailing.role === "user") {
+		const priorAssistant = findLatestAssistant(repaired);
+		repaired.push(buildAbortedAssistant(priorAssistant));
+	}
+
 	return {
 		session: {
 			id: sess.id,
@@ -295,7 +338,47 @@ export function loadSession(sessionId: string): LoadedSession | null {
 			title: sess.title,
 		},
 		displayMessages,
-		agentMessages: agentMsgRows.map((r) => r.data),
+		agentMessages: repaired,
+	};
+}
+
+function findLatestAssistant(
+	list: AgentMessage[],
+): AssistantMessage | undefined {
+	for (let i = list.length - 1; i >= 0; i--) {
+		const m = list[i];
+		if (m && m.role === "assistant") return m;
+	}
+	return undefined;
+}
+
+function buildAbortedAssistant(
+	prior: AssistantMessage | undefined,
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "" }],
+		api: prior?.api ?? ("anthropic-messages" as AssistantMessage["api"]),
+		provider:
+			prior?.provider ?? ("amazon-bedrock" as AssistantMessage["provider"]),
+		model: prior?.model ?? "placeholder",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: 0,
+			},
+		},
+		stopReason: "aborted",
+		errorMessage: "[Interrupted by user]",
+		timestamp: Date.now(),
 	};
 }
 
