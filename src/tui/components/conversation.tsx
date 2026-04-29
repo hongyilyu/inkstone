@@ -50,23 +50,28 @@ export function Conversation() {
 			<box flexDirection="column" paddingTop={1} paddingRight={1} gap={1}>
 				<For each={store.messages}>
 					{(msg, index) => {
-						// A user bubble is "dangling" when no assistant reply
-						// follows it AND we're not currently streaming a reply
-						// for it. Covers the resumed-orphan case (session was
-						// killed mid-turn, so `agent_messages` + `messages`
-						// both stored the user with no assistant) — we render
-						// a muted "[Interrupted by user]" marker beneath so
-						// the history reads correctly.
+						// A user bubble is "dangling" when it has no real
+						// assistant reply following it AND we're not currently
+						// streaming a reply for it. "Real" means at least one
+						// part OR an error — matches the outer `<Show>` gate
+						// so a trailing empty-parts orphan (left behind when
+						// the stream was killed between `message_start` and
+						// `message_end` — a display row was inserted but
+						// parts never flushed) doesn't mask the marker.
 						//
-						// The `isTail && isStreaming` skip is because
-						// `message_start` hasn't pushed the assistant bubble
-						// onto `store.messages` yet during that window; the
-						// tail user during an in-flight reply is not
-						// dangling.
+						// The `isTail && isStreaming` skip covers the window
+						// where `message_start` pushed an assistant bubble
+						// but no parts have streamed in yet — that's a
+						// pending reply, not an orphan.
 						const isDanglingUser = createMemo(() => {
 							if (msg.role !== "user") return false;
 							const next = store.messages[index() + 1];
-							if (next && next.role === "assistant") return false;
+							if (next && next.role === "assistant") {
+								const real = next.parts.length > 0 || !!next.error;
+								if (real) return false;
+								// Falls through to dangling: the orphan empty
+								// assistant isn't a real reply.
+							}
 							const isTail = index() === store.messages.length - 1;
 							if (isTail && store.isStreaming) return false;
 							return true;

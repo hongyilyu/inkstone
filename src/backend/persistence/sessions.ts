@@ -290,26 +290,44 @@ export function loadSession(sessionId: string): LoadedSession | null {
 
 	const agentMessagesOut = agentMsgRows.map((r) => r.data);
 
-	// Load-time tail repair. If the stored stream was killed mid-turn —
-	// Ctrl+C / process crash between `message_start` and `message_end` —
-	// the last `agent_messages` row is a lone `user` with no closing
-	// assistant. Resuming and prompting again would hand the provider
-	// `[..., user, user]`: Anthropic silently merges into one turn,
-	// Bedrock 400s on `ValidationException`. Synthesize a closing
-	// assistant placeholder here so `agent.state.messages` alternates
-	// cleanly; the placeholder is never sent back to a provider and
-	// stored rows are untouched (this is a pure read-time repair).
+	// Load-time alternation repair. Two classes of corruption can end up
+	// on disk when a stream is killed mid-turn (Ctrl+C / process crash
+	// between `message_start` and `message_end`):
 	//
-	// Metadata sourcing: the latest prior assistant's `api`/`provider`/
-	// `model`, falling back to dummy strings if the session was killed
-	// on its very first turn (no prior assistant exists to crib from).
-	// `agent.state.messages` only uses these fields to round-trip back
-	// through `convertToLlm`, and that conversion never looks at them
-	// for a non-tail assistant — so dummies are safe.
-	const tail = agentMessagesOut[agentMessagesOut.length - 1];
-	if (tail && tail.role === "user") {
-		const priorAssistant = findLatestAssistant(agentMessagesOut);
-		agentMessagesOut.push(buildAbortedAssistant(priorAssistant));
+	//   (a) TAIL ORPHAN — the interrupted turn was the last one in the
+	//       session. `agent_messages` ends with a lone `user` row.
+	//   (b) INTERIOR GAP — the interrupted turn was followed by a
+	//       successful later turn after resume. `agent_messages` has
+	//       two adjacent `user` rows with no assistant between them
+	//       (first user's reply never committed; second user is the
+	//       post-resume prompt).
+	//
+	// Both shapes hand the provider consecutive user turns on the next
+	// prompt: Anthropic silently merges them, Bedrock 400s on
+	// `ValidationException`. Synthesize a closing assistant placeholder
+	// between every adjacent `user`/`user` pair AND after a trailing
+	// `user`, so `agent.state.messages` alternates cleanly. Placeholder
+	// never reaches a provider — it only fills the alternation slot in
+	// `state.messages`. Stored rows are untouched (pure read-time
+	// repair).
+	//
+	// Metadata sourcing: latest prior assistant's `api`/`provider`/
+	// `model`, falling back to bland defaults if none exists in the
+	// preceding slice. `agent.state.messages` only uses these fields
+	// to round-trip through `convertToLlm` for non-tail assistants.
+	const repaired: AgentMessage[] = [];
+	for (const msg of agentMessagesOut) {
+		const prev = repaired[repaired.length - 1];
+		if (prev && prev.role === "user" && msg.role === "user") {
+			const priorAssistant = findLatestAssistant(repaired);
+			repaired.push(buildAbortedAssistant(priorAssistant));
+		}
+		repaired.push(msg);
+	}
+	const trailing = repaired[repaired.length - 1];
+	if (trailing && trailing.role === "user") {
+		const priorAssistant = findLatestAssistant(repaired);
+		repaired.push(buildAbortedAssistant(priorAssistant));
 	}
 
 	return {
@@ -320,7 +338,7 @@ export function loadSession(sessionId: string): LoadedSession | null {
 			title: sess.title,
 		},
 		displayMessages,
-		agentMessages: agentMessagesOut,
+		agentMessages: repaired,
 	};
 }
 

@@ -397,6 +397,39 @@ export function AgentProvider(props: ParentProps) {
 				case "agent_end":
 					setStore("isStreaming", false);
 					setStore("status", "idle");
+					// Persist any closing assistant AgentMessage that
+					// `handleRunFailure` synthesized on abort/error.
+					// pi-agent-core's `handleRunFailure` pushes a synthetic
+					// `{ role: "assistant", stopReason: "aborted"|"error" }`
+					// into `_state.messages` and emits **only** `agent_end`
+					// — no `message_end` — so our normal persistence path
+					// (which writes to `agent_messages` inside `message_end`)
+					// misses it. Without this catch-up write, the next
+					// prompt on this session hands the provider
+					// `[..., user, user]`: Anthropic silently merges
+					// consecutive user turns; Bedrock 400s. `agent_end`
+					// carries the synthesized message(s) in its `messages`
+					// array — see `handleRunFailure` in pi-agent-core
+					// `agent.js:326-341`. We append any message from that
+					// array that wasn't already persisted via the normal
+					// `message_end` path.
+					{
+						const endedMsgs = (event as { messages?: AgentMessage[] }).messages;
+						if (endedMsgs && endedMsgs.length > 0 && currentSessionId) {
+							const sid = currentSessionId;
+							runInTransaction((tx) => {
+								for (const m of endedMsgs) {
+									if (!m) continue;
+									if (
+										m.role === "assistant" &&
+										(m.stopReason === "aborted" || m.stopReason === "error")
+									) {
+										appendAgentMessage(tx, sid, m);
+									}
+								}
+							});
+						}
+					}
 					// `duration` is a per-turn value. `agent_end` fires immediately after
 					// the turn-closing assistant `message_end`, and tool results are not
 					// rendered as display bubbles, so `messages[length - 1]` at this

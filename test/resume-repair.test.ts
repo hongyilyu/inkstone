@@ -195,4 +195,35 @@ describe("loadSession — tail repair", () => {
 			expect(tail.model).toBe("placeholder");
 		},
 	);
+
+	test(
+		"interior gap (user, user, assistant) → placeholder inserted between users",
+		() => {
+			// Real-world shape from the reproducer: the user Ctrl+C'd
+			// after typing `:q`, resumed via Ctrl+N, then typed `test`.
+			// On disk: user1, user2, assistant (the reply to the merged
+			// pair). Without repair, the next prompt after resume would
+			// hand Anthropic `[user1, user2, assistant, user3]` — still
+			// valid at that point, BUT this test specifically guards the
+			// case where the stored context is itself malformed and the
+			// agent is about to continue from it.
+			const sid = seedSession([
+				userMsg(":q"),
+				userMsg("test"),
+				assistantMsg(),
+			]);
+			const loaded = loadSession(sid);
+			const msgs = loaded!.agentMessages;
+			expect(msgs.length).toBe(4);
+			expect(msgs[0]?.role).toBe("user");
+			expect(msgs[1]?.role).toBe("assistant");
+			expect((msgs[1] as AssistantMessage).stopReason).toBe("aborted");
+			expect((msgs[1] as AssistantMessage).errorMessage).toBe(
+				"[Interrupted by user]",
+			);
+			expect(msgs[2]?.role).toBe("user");
+			expect(msgs[3]?.role).toBe("assistant");
+			expect((msgs[3] as AssistantMessage).stopReason).toBe("stop");
+		},
+	);
 });
