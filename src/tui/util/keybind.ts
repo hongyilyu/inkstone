@@ -40,6 +40,7 @@ export interface Info {
 export const KEYBINDS = {
 	app_exit: "ctrl+c",
 	command_list: "ctrl+p",
+	session_list: "ctrl+n",
 	agent_cycle: "tab",
 	agent_cycle_reverse: "shift+tab",
 	messages_page_up: "pageup,meta+up",
@@ -48,6 +49,7 @@ export const KEYBINDS = {
 	messages_last: "ctrl+end",
 	session_interrupt: "escape",
 	dialog_close: "escape,ctrl+c",
+	panel_close: "escape,ctrl+n",
 	select_up: "up,ctrl+p",
 	select_down: "down,ctrl+n",
 	select_page_up: "pageup",

@@ -26,7 +26,7 @@
 
 import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { asc, count, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, min } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { agentMessages, messages, parts, sessions } from "./db/schema";
 import { reportPersistenceError } from "./errors";
@@ -305,6 +305,13 @@ export interface SessionSummary {
 	startedAt: number;
 	title: string | null;
 	messageCount: number;
+	/**
+	 * Single-line preview derived from the session's first user message.
+	 * Empty string when the session has no user message yet (it was
+	 * created but the prompt failed pre-stream, for example). Used by
+	 * the session list panel as a fallback label when `title` is null.
+	 */
+	preview: string;
 }
 
 export function listSessions(agent: string): SessionSummary[] {
@@ -330,13 +337,66 @@ export function listSessions(agent: string): SessionSummary[] {
 		.all();
 	const countBy = new Map(counts.map((c) => [c.sessionId, c.n]));
 
-	return rows.map((r) => ({
-		id: r.id,
-		agent: r.agent,
-		startedAt: r.startedAt,
-		title: r.title,
-		messageCount: countBy.get(r.id) ?? 0,
-	}));
+	// Preview = concatenation of text parts from each session's first
+	// user message. Pre-filter in SQL via `min(messages.id)` per
+	// sessionId — UUIDv7's lexical ordering equals chronological order
+	// (see docs/SQL.md §Identity model), so `min(id)` is "earliest".
+	// The join then hits parts for one message per session instead of
+	// all user messages per session.
+	//
+	// The subquery output is aliased `first_message_id` (not plain
+	// `message_id`) so drizzle's unqualified emission in the join
+	// predicate — `parts.message_id = message_id` — isn't ambiguous to
+	// SQLite. `parts.message_id` exists in the joined table; any alias
+	// that doesn't collide with a `parts` column works.
+	const firstUserMsgSq = db
+		.select({
+			sessionId: messages.sessionId,
+			firstMessageId: min(messages.id).as("first_message_id"),
+		})
+		.from(messages)
+		.where(
+			and(
+				eq(messages.role, "user"),
+				inArray(
+					messages.sessionId,
+					rows.map((r) => r.id),
+				),
+			),
+		)
+		.groupBy(messages.sessionId)
+		.as("first_user_msg");
+
+	const userPartRows = db
+		.select({
+			sessionId: firstUserMsgSq.sessionId,
+			partType: parts.type,
+			partText: parts.text,
+		})
+		.from(firstUserMsgSq)
+		.innerJoin(parts, eq(parts.messageId, firstUserMsgSq.firstMessageId))
+		.orderBy(asc(parts.seq))
+		.all();
+
+	const previewBy = new Map<string, string>();
+	for (const row of userPartRows) {
+		if (row.partType !== "text") continue;
+		const existing = previewBy.get(row.sessionId) ?? "";
+		previewBy.set(row.sessionId, existing + row.partText);
+	}
+
+	return rows.map((r) => {
+		const raw = previewBy.get(r.id) ?? "";
+		const preview = raw.replace(/\s+/g, " ").trim();
+		return {
+			id: r.id,
+			agent: r.agent,
+			startedAt: r.startedAt,
+			title: r.title,
+			messageCount: countBy.get(r.id) ?? 0,
+			preview,
+		};
+	});
 }
 
 /**

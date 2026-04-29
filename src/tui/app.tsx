@@ -5,7 +5,7 @@ import {
 	useRenderer,
 	useTerminalDimensions,
 } from "@opentui/solid";
-import { createMemo, Show } from "solid-js";
+import { createMemo, createSignal, Show } from "solid-js";
 import { Conversation } from "./components/conversation";
 import { DialogAgent } from "./components/dialog-agent";
 import {
@@ -19,11 +19,12 @@ import { DialogTheme } from "./components/dialog-theme";
 import { DialogVariant } from "./components/dialog-variant";
 import { OpenPage } from "./components/open-page";
 import { Prompt } from "./components/prompt";
+import { SessionList } from "./components/session-list";
 import { Sidebar } from "./components/sidebar";
 import { AgentProvider, useAgent } from "./context/agent";
 import { ThemeProvider, useTheme } from "./context/theme";
 import { DialogProvider, useDialog } from "./ui/dialog";
-import { Toast, ToastProvider } from "./ui/toast";
+import { Toast, ToastProvider, useToast } from "./ui/toast";
 import * as Keybind from "./util/keybind";
 
 let scroll: ScrollBoxRenderable | null = null;
@@ -43,6 +44,17 @@ export function refocusInput() {
 	}
 }
 
+/**
+ * Blur the prompt so the session panel can take over keyboard input
+ * without double-dispatching keys (arrows, Enter) through both surfaces.
+ * Paired with `refocusInput()` on panel close.
+ */
+export function blurInput() {
+	if (inputRef && !inputRef.isDestroyed && inputRef.focused) {
+		inputRef.blur();
+	}
+}
+
 export function toBottom() {
 	setTimeout(() => {
 		if (!scroll || scroll.isDestroyed) return;
@@ -54,11 +66,23 @@ function Layout() {
 	const renderer = useRenderer();
 	const dialog = useDialog();
 	const command = useCommand();
+	const toast = useToast();
 	const { actions, store, session } = useAgent();
 	const { theme, themeId } = useTheme();
 
 	const dimensions = useTerminalDimensions();
-	const showSidebar = createMemo(() => dimensions().width >= 100);
+	const [sessionListOpen, setSessionListOpen] = createSignal(false);
+	// Hide the right metadata sidebar either because the terminal is too
+	// narrow or because the session list panel is on the left (giving all
+	// remaining width to the conversation).
+	const showSidebar = createMemo(
+		() => dimensions().width >= 100 && !sessionListOpen(),
+	);
+
+	function closeSessionList() {
+		setSessionListOpen(false);
+		refocusInput();
+	}
 
 	// Commands shown in the palette (Ctrl+P) plus any with a `keybind` field
 	// are dispatched by `CommandProvider`. Registration is reactive: returning
@@ -158,6 +182,31 @@ function Layout() {
 					actions.clearSession();
 				},
 			},
+			// Keybind-only: Ctrl+N toggles the left session panel. Hidden
+			// from the palette (a palette click can't meaningfully "toggle"
+			// a panel — it'd just open it, which is misleading).
+			{
+				id: "session_list",
+				title: "Sessions",
+				keybind: "session_list",
+				hidden: true,
+				onSelect: () => {
+					if (sessionListOpen()) {
+						closeSessionList();
+						return;
+					}
+					if (dimensions().width < 80) {
+						toast.show({
+							variant: "warning",
+							title: "Terminal too narrow",
+							message: "Widen the window to open the session panel.",
+							duration: 3000,
+						});
+						return;
+					}
+					setSessionListOpen(true);
+				},
+			},
 		);
 
 		// Tab / Shift+Tab cycle agents on the open page only. Hidden from the
@@ -232,13 +281,45 @@ function Layout() {
 
 	return (
 		<>
-			<Show when={store.messages.length > 0} fallback={<OpenPage />}>
+			<Show
+				when={store.messages.length > 0}
+				fallback={
+					<box
+						flexDirection="row"
+						flexGrow={1}
+						backgroundColor={theme.background}
+					>
+						<Show when={sessionListOpen()}>
+							<SessionList
+								onClose={closeSessionList}
+								onSelect={(id) => {
+									actions.resumeSession(id);
+									closeSessionList();
+								}}
+							/>
+						</Show>
+						<box flexGrow={1}>
+							<OpenPage />
+						</box>
+					</box>
+				}
+			>
 				<box
 					flexDirection="row"
 					flexGrow={1}
 					backgroundColor={theme.background}
 				>
-					{/* Left column: conversation + prompt */}
+					{/* Left column: session list panel (Ctrl+N toggle) */}
+					<Show when={sessionListOpen()}>
+						<SessionList
+							onClose={closeSessionList}
+							onSelect={(id) => {
+								actions.resumeSession(id);
+								closeSessionList();
+							}}
+						/>
+					</Show>
+					{/* Middle column: conversation + prompt */}
 					{/* Horizontal padding + bottom gap matches OpenCode session/index.tsx:1043 */}
 					<box
 						flexDirection="column"
@@ -252,7 +333,7 @@ function Layout() {
 							<Prompt />
 						</box>
 					</box>
-					{/* Right column: session metadata sidebar (hidden on narrow terminals) */}
+					{/* Right column: session metadata sidebar (hidden on narrow terminals or when session panel is open) */}
 					<Show when={showSidebar()}>
 						<Sidebar />
 					</Show>
