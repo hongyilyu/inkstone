@@ -68,19 +68,18 @@ export function UserMessage(props: {
 				</box>
 			</box>
 			{/* Dangling-user marker — stream was killed mid-turn so no
-			    assistant reply followed. OpenCode uses `· interrupted`
-			    but as a suffix on the assistant footer
-			    (`routes/session/index.tsx:1420-1422`), where the leading
-			    `·` separates it from the preceding agent/model/duration
-			    spans. We don't have an assistant footer under a dangling
-			    user bubble, so the leading separator would look orphaned.
-			    Drop the separator and render `interrupted` on its own in
-			    muted text. */}
+			    assistant reply followed. We considered OpenCode's
+			    `· interrupted` pattern (`routes/session/index.tsx:1420-
+			    1422`) but that's a SUFFIX on the assistant footer (agent
+			    / model / duration / · interrupted). We don't have real
+			    agent/model/duration for a turn that never completed —
+			    loadSession's placeholder fills pi-agent-core's slot for
+			    provider alternation, but its fields are bland defaults
+			    (see buildAbortedAssistant in sessions.ts), not data we'd
+			    want rendered. A bare muted line is the honest shape. */}
 			<Show when={dangling()}>
 				<box paddingLeft={3} paddingTop={1} flexShrink={0}>
-					<text fg={theme.textMuted} wrapMode="none">
-						interrupted
-					</text>
+					<text fg={theme.textMuted}>[Interrupted by user]</text>
 				</box>
 			</Show>
 		</box>
