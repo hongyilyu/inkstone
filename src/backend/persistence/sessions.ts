@@ -343,10 +343,16 @@ export function listSessions(agent: string): SessionSummary[] {
 	// (see docs/SQL.md §Identity model), so `min(id)` is "earliest".
 	// The join then hits parts for one message per session instead of
 	// all user messages per session.
+	//
+	// The subquery output is aliased `first_message_id` (not plain
+	// `message_id`) so drizzle's unqualified emission in the join
+	// predicate — `parts.message_id = message_id` — isn't ambiguous to
+	// SQLite. `parts.message_id` exists in the joined table; any alias
+	// that doesn't collide with a `parts` column works.
 	const firstUserMsgSq = db
 		.select({
 			sessionId: messages.sessionId,
-			messageId: min(messages.id).as("message_id"),
+			firstMessageId: min(messages.id).as("first_message_id"),
 		})
 		.from(messages)
 		.where(
@@ -368,7 +374,7 @@ export function listSessions(agent: string): SessionSummary[] {
 			partText: parts.text,
 		})
 		.from(firstUserMsgSq)
-		.innerJoin(parts, eq(parts.messageId, firstUserMsgSq.messageId))
+		.innerJoin(parts, eq(parts.messageId, firstUserMsgSq.firstMessageId))
 		.orderBy(asc(parts.seq))
 		.all();
 
