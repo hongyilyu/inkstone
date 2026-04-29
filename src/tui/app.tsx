@@ -182,7 +182,7 @@ function Layout() {
 					actions.clearSession();
 				},
 			},
-			// Keybind-only: Ctrl+R toggles the left session panel. Hidden
+			// Keybind-only: Ctrl+N toggles the left session panel. Hidden
 			// from the palette (a palette click can't meaningfully "toggle"
 			// a panel — it'd just open it, which is misleading).
 			{
@@ -309,7 +309,7 @@ function Layout() {
 					flexGrow={1}
 					backgroundColor={theme.background}
 				>
-					{/* Left column: session list panel (Ctrl+R toggle) */}
+					{/* Left column: session list panel (Ctrl+N toggle) */}
 					<Show when={sessionListOpen()}>
 						<SessionList
 							onClose={closeSessionList}

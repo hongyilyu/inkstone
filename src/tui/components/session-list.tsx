@@ -22,7 +22,7 @@ export interface SessionListProps {
 }
 
 /**
- * Left-side panel listing past sessions for the current agent. Ctrl+R
+ * Left-side panel listing past sessions for the current agent. Ctrl+N
  * toggles this panel on; Enter on a selected row calls `onSelect`, which
  * the layout wires to `actions.resumeSession`.
  *
@@ -31,7 +31,7 @@ export interface SessionListProps {
  * so we simply don't offer it.
  *
  * The keyboard handler matches the subset of DialogSelect's nav (up /
- * down / enter / esc / ctrl+r). We deliberately skip the fuzzy filter,
+ * down / enter / esc / ctrl+n). We deliberately skip the fuzzy filter,
  * mouse input-mode tracking, and page-up / page-down from DialogSelect —
  * the session list's shape (small, flat, visible-when-you-opened-it)
  * doesn't need them. If that stops being true, refactor toward a
