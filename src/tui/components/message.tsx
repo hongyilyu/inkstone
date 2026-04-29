@@ -41,11 +41,13 @@ export const SplitBorderChars = {
 export function UserMessage(props: {
 	message: DisplayMessage;
 	first: boolean;
-	dangling: boolean;
 }) {
 	const { theme } = useTheme();
 	const { store } = useAgent();
 	const agentColor = () => theme[getAgentInfo(store.currentAgent).colorKey];
+
+	const dangling = () =>
+		isDanglingUser(props.message, store.messages, store.isStreaming);
 
 	return (
 		<box flexDirection="column" flexShrink={0}>
@@ -65,18 +67,57 @@ export function UserMessage(props: {
 					<text fg={theme.text}>{props.message.parts[0]?.text ?? ""}</text>
 				</box>
 			</box>
-			{/* Dangling-user marker: the stored stream was killed mid-turn
-                so no real assistant reply followed. Mirrors the load-time
-                repair in `loadSession`; the user's typed text stays in
-                scrollback while the marker explains why no response is
-                beneath. */}
-			<Show when={props.dangling}>
+			{/* Dangling-user marker — stream was killed mid-turn so no
+			    assistant reply followed. Mirrors OpenCode's
+			    `· interrupted` suffix pattern
+			    (`routes/session/index.tsx:1420-1422`): single muted line
+			    aligned with the footer column, no border box, no
+			    bracketed label. Just enough to explain why the bubble
+			    has no response beneath it. */}
+			<Show when={dangling()}>
 				<box paddingLeft={3} paddingTop={1} flexShrink={0}>
-					<text fg={theme.textMuted}>[Interrupted by user]</text>
+					<text fg={theme.textMuted} wrapMode="none">
+						· interrupted
+					</text>
 				</box>
 			</Show>
 		</box>
 	);
+}
+
+/**
+ * A user bubble is "dangling" when it has no real assistant reply
+ * following it AND no stream is pending. "Real" means at least one
+ * part OR an error — matches the outer `<Show>` gate in the list so
+ * an orphan empty-parts assistant (a header row inserted on
+ * `message_start` but parts never flushed because `message_end` never
+ * fired — a Ctrl+C window) doesn't mask the marker.
+ *
+ * The `isTail && isStreaming` skip covers the window where
+ * `message_start` pushed an assistant bubble but no parts have
+ * streamed in yet — that's a pending reply, not an orphan.
+ *
+ * Pure function: determined entirely by the message + its surrounding
+ * list, so it reads cleanly at the bubble level without needing the
+ * list to pre-compute and pass the flag down.
+ */
+function isDanglingUser(
+	msg: DisplayMessage,
+	messages: DisplayMessage[],
+	isStreaming: boolean,
+): boolean {
+	if (msg.role !== "user") return false;
+	const index = messages.indexOf(msg);
+	if (index === -1) return false;
+	const next = messages[index + 1];
+	if (next && next.role === "assistant") {
+		const real = next.parts.length > 0 || !!next.error;
+		if (real) return false;
+		// Ghost assistant header (parts never flushed) — fall through.
+	}
+	const isTail = index === messages.length - 1;
+	if (isTail && isStreaming) return false;
+	return true;
 }
 
 // ---------------------------------------------------------------------------
