@@ -68,16 +68,18 @@ export function UserMessage(props: {
 				</box>
 			</box>
 			{/* Dangling-user marker — stream was killed mid-turn so no
-			    assistant reply followed. Mirrors OpenCode's
-			    `· interrupted` suffix pattern
-			    (`routes/session/index.tsx:1420-1422`): single muted line
-			    aligned with the footer column, no border box, no
-			    bracketed label. Just enough to explain why the bubble
-			    has no response beneath it. */}
+			    assistant reply followed. OpenCode uses `· interrupted`
+			    but as a suffix on the assistant footer
+			    (`routes/session/index.tsx:1420-1422`), where the leading
+			    `·` separates it from the preceding agent/model/duration
+			    spans. We don't have an assistant footer under a dangling
+			    user bubble, so the leading separator would look orphaned.
+			    Drop the separator and render `interrupted` on its own in
+			    muted text. */}
 			<Show when={dangling()}>
 				<box paddingLeft={3} paddingTop={1} flexShrink={0}>
 					<text fg={theme.textMuted} wrapMode="none">
-						· interrupted
+						interrupted
 					</text>
 				</box>
 			</Show>
