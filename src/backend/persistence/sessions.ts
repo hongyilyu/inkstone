@@ -26,7 +26,7 @@
 
 import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, min } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { agentMessages, messages, parts, sessions } from "./db/schema";
 import { reportPersistenceError } from "./errors";
@@ -337,24 +337,18 @@ export function listSessions(agent: string): SessionSummary[] {
 		.all();
 	const countBy = new Map(counts.map((c) => [c.sessionId, c.n]));
 
-	// Preview = first text part of each session's first user message.
-	// Join messages + parts once, filter to user messages, ORDER BY
-	// message.id ASC so the first row per sessionId is that session's
-	// earliest user bubble. Relies on UUIDv7's global time-monotonicity
-	// (`newId` uses `Bun.randomUUIDv7()`) to make "first seen per
-	// sessionId in this global-ordered scan" equal to "per-session
-	// earliest user message" — holds because the random tail breaks
-	// any ms-level ties, so two messages written in the same ms still
-	// sort deterministically.
-	const userMsgRows = db
+	// Preview = concatenation of text parts from each session's first
+	// user message. Pre-filter in SQL via `min(messages.id)` per
+	// sessionId — UUIDv7's lexical ordering equals chronological order
+	// (see docs/SQL.md §Identity model), so `min(id)` is "earliest".
+	// The join then hits parts for one message per session instead of
+	// all user messages per session.
+	const firstUserMsgSq = db
 		.select({
 			sessionId: messages.sessionId,
-			messageId: messages.id,
-			partType: parts.type,
-			partText: parts.text,
+			messageId: min(messages.id).as("message_id"),
 		})
 		.from(messages)
-		.innerJoin(parts, eq(parts.messageId, messages.id))
 		.where(
 			and(
 				eq(messages.role, "user"),
@@ -364,19 +358,22 @@ export function listSessions(agent: string): SessionSummary[] {
 				),
 			),
 		)
-		.orderBy(asc(messages.id), asc(parts.seq))
+		.groupBy(messages.sessionId)
+		.as("first_user_msg");
+
+	const userPartRows = db
+		.select({
+			sessionId: firstUserMsgSq.sessionId,
+			partType: parts.type,
+			partText: parts.text,
+		})
+		.from(firstUserMsgSq)
+		.innerJoin(parts, eq(parts.messageId, firstUserMsgSq.messageId))
+		.orderBy(asc(parts.seq))
 		.all();
 
 	const previewBy = new Map<string, string>();
-	const firstUserMsgBy = new Map<string, string>();
-	for (const row of userMsgRows) {
-		// Lock in the first user message seen per session. Later rows
-		// for other messages in the same session are ignored.
-		if (!firstUserMsgBy.has(row.sessionId)) {
-			firstUserMsgBy.set(row.sessionId, row.messageId);
-		} else if (firstUserMsgBy.get(row.sessionId) !== row.messageId) {
-			continue;
-		}
+	for (const row of userPartRows) {
 		if (row.partType !== "text") continue;
 		const existing = previewBy.get(row.sessionId) ?? "";
 		previewBy.set(row.sessionId, existing + row.partText);
