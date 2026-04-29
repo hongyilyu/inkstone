@@ -143,6 +143,7 @@ src/
       spinner.tsx                   Simple braille-dot spinner (`Spinner`). Not used by the prompt; kept importable for future subagent-status / background-tool indicators
       spinner-wave.tsx              `SpinnerWave` — 8-cell bidirectional knight-rider wave. Port of OpenCode's `ui/spinner.ts` (blocks + bidirectional branches only); 54 precomputed frames at 40 ms interval, per-cell RGBA derived from a single base color via a 6-step trail + alpha fade
       sidebar.tsx                   Session metadata panel (title, context usage)
+      session-list.tsx              Left-side session history panel (Ctrl+N toggle; lists past sessions for current agent; Enter resumes)
       open-page.tsx                 Empty-state welcome page
       dialog-command.tsx            `CommandProvider` + `useCommand` + internal palette. Registry-driven: components call `register(() => CommandOption[])`; the provider's `useKeyboard` dispatches any matching `keybind` and opens the palette on `command_list`.
       dialog-agent.tsx              Agent selection dialog
@@ -151,7 +152,7 @@ src/
       dialog-theme.tsx              Theme selection dialog
       dialog-provider.tsx           Provider selection dialog
     util/
-      format.ts                     formatTokens, formatCost, formatDuration, displayPath (~-collapse for home dir, platform-neutral)
+      format.ts                     formatTokens, formatCost, formatDuration, formatRelativeTime, displayPath (~-collapse for home dir, platform-neutral)
       keybind.ts                    `KEYBINDS` action map + `match(action, evt)` + `print(action)` (single source of truth for all keybinds outside dialog-confirm's local y/n)
 ```
 
@@ -728,10 +729,12 @@ Action naming groups by scope:
 |---|---|
 | `app_exit` | Top-level renderer exit, in `app.tsx` |
 | `command_list` | CommandProvider — opens the Ctrl+P palette |
+| `session_list` | CommandProvider — toggles the left session panel (registered in `app.tsx`) |
 | `agent_cycle`, `agent_cycle_reverse` | CommandProvider — registered commands in `app.tsx` |
 | `session_interrupt` | CommandProvider — registered by `prompt.tsx`, streaming-gated. ESC double-tap aborts the in-flight turn (see below) |
 | `messages_*` | Top-level scroll handler in `app.tsx` (only mounted while the session view is rendered) |
 | `dialog_close` | `ui/dialog.tsx` — dismisses the top-of-stack dialog |
+| `panel_close` | `components/session-list.tsx` — closes the session panel (ESC or Ctrl+N) |
 | `select_*` | `ui/dialog-select.tsx` — local nav (arrow keys + emacs `ctrl+n`/`ctrl+p`) |
 
 `dialog-confirm.tsx` uses its own inline `y`/`n`/`left`/`right`/`return` checks — those keys are dialog-local and don't belong in the shared map.
@@ -760,6 +763,23 @@ Inkstone additionally scopes the arm to the current turn via a `createEffect` on
 `escape` is both `session_interrupt` (global, streaming-only) and `dialog_close` (dialog-local). Dialog's `useKeyboard` in `ui/dialog.tsx` returns early when `store.stack.length === 0`, and calls `preventDefault` + `stopPropagation` when closing. CommandProvider's dispatcher additionally short-circuits on `dialog.stack.length > 0` before iterating registered keybinds. So: dialog open ⇒ ESC closes the dialog, no interrupt; dialog closed + streaming ⇒ ESC runs the interrupt handler; dialog closed + idle ⇒ `session_interrupt` isn't registered, ESC is a no-op.
 
 Ctrl+C follows the same scope rule: inside a dialog it's caught by `ui/dialog.tsx`'s `dialog_close`; at the session view it's caught by `app.tsx`'s `app_exit` (gated to `dialog.stack.length === 0`).
+
+### Session list panel (Ctrl+N)
+
+A left-side panel mirroring the right-side metadata `Sidebar` pattern, toggled by `Ctrl+N`. When open it lists all past sessions for the current agent (filtered because agent is fixed per session lifetime — see D13); selecting a row calls `actions.resumeSession(id)`, which:
+
+1. Guards on `store.isStreaming` with a toast (blocks resume mid-turn — the user must press ESC first).
+2. `loadSession(id)` from SQLite.
+3. Asserts `loaded.session.agent === store.currentAgent`. The list is agent-filtered, so this is an invariant check: a failure means stale panel state or a caller bypassed the filter.
+4. Inside a `batch()`: `agentSession.clearSession()` to wipe current pi-agent-core state, `agentSession.restoreMessages(loaded.agentMessages)` to seed the Agent with the persisted conversation, and store resets (`messages`, `totalTokens`, `totalCost`, `lastTurnStartedAt`).
+
+`Session.restoreMessages(messages: AgentMessage[])` is the minimal accessor for the load path. Implementation: `agent.state.messages = messages`. The backend `agent` instance is private to `createSession`'s closure, so the TUI needs an explicit entry point; naming it `restoreMessages` (rather than `setMessages`) signals "load-only, don't reach for it mid-turn."
+
+Token/cost counters reset to zero on resume because pi-ai's per-turn usage isn't reconstructed from raw `AgentMessage`s today. The right `Sidebar`'s existing `hasUsageData` memo hides the usage block when both are zero, so a resumed session doesn't misreport "0 spent" beside N prior turns — the counter re-accrues as soon as a new turn starts.
+
+When the session panel is open, the right `Sidebar` is hidden regardless of width (single rule replacing an earlier two-threshold design). The panel itself refuses to open when `dimensions().width < 80` and surfaces a toast hint.
+
+`panel_close: "escape,ctrl+n"` is a second keybind that aliases ESC and Ctrl+N so the panel treats open-key and dismiss-key symmetrically. `ctrl+n` is also a `select_down` alternate inside dialogs and the panel checks `panel_close` **before** `select_down` in its key handler, so reopening-key-as-close wins. The global `session_list` dispatcher in `CommandProvider` short-circuits on `dialog.stack.length > 0`, so `ctrl+n` inside an open dialog still means "move selection down" and can't accidentally open a second panel layer.
 
 ### Data flow
 

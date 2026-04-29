@@ -10,6 +10,7 @@ import {
 	appendDisplayMessage,
 	createSession,
 	finalizeDisplayMessageParts,
+	loadSession,
 	newId,
 	runInTransaction,
 	updateDisplayMessageMeta,
@@ -60,6 +61,7 @@ interface AgentContextValue {
 	actions: AgentActions & {
 		selectAgent(name: string): void;
 		clearSession(): void;
+		resumeSession(sessionId: string): void;
 	};
 	/**
 	 * Read accessors for dialog seeding. Exposed so dialog call sites
@@ -71,6 +73,13 @@ interface AgentContextValue {
 		getProviderId(): string;
 		getModelId(): string;
 		getThinkingLevel(): ThinkingLevel;
+		/**
+		 * The DB row id for the currently-active session, or null when
+		 * no session has been committed yet (pre-first-prompt). Used by
+		 * the session list panel to render the `●` current-session
+		 * marker.
+		 */
+		getCurrentSessionId(): string | null;
 	};
 }
 
@@ -539,6 +548,64 @@ export function AgentProvider(props: ParentProps) {
 			setStore("totalCost", 0);
 			setStore("lastTurnStartedAt", 0);
 		},
+		resumeSession(sessionId: string) {
+			// Block during an in-flight turn. `isStreaming` is set on
+			// `agent_start` and cleared on `agent_end` (which fires after
+			// tool execution completes), so this one check covers both
+			// streaming text and tool_executing status.
+			if (store.isStreaming) {
+				toast.show({
+					variant: "warning",
+					title: "Session busy",
+					message: "Press Esc to stop the current turn, then try again.",
+					duration: 4000,
+				});
+				return;
+			}
+			const loaded = loadSession(sessionId);
+			if (!loaded) {
+				toast.show({
+					variant: "error",
+					title: "Session not found",
+					message: `No session with id ${sessionId.slice(-8)}.`,
+					duration: 4000,
+				});
+				return;
+			}
+			// Agent-filter safety net. The panel is agent-filtered, so a
+			// mismatch here usually means stale panel state — e.g. the
+			// user pressed Tab to cycle agents while the panel was open,
+			// then picked a row from the (now-stale) snapshot. Toast and
+			// bail instead of swapping the agent mid-session; breaking
+			// the "one agent per session" invariant (D13) would scramble
+			// prompt-cache stability and per-bubble agent stamps.
+			if (loaded.session.agent !== store.currentAgent) {
+				toast.show({
+					variant: "warning",
+					title: "Agent changed",
+					message:
+						"This session was started under a different agent. Switch back, then try again.",
+					duration: 5000,
+				});
+				return;
+			}
+			batch(() => {
+				agentSession.clearSession();
+				agentSession.restoreMessages(loaded.agentMessages);
+				currentSessionId = loaded.session.id;
+				setStore("messages", loaded.displayMessages);
+				// Token / cost counters are session-local accumulators built
+				// from streaming events. They aren't persisted, so a resumed
+				// session starts from zero; the right Sidebar's `hasUsageData`
+				// memo already hides the usage block when both are zero, so
+				// the resumed view won't misreport "0 spent" next to N prior
+				// turns.
+				setStore("totalTokens", 0);
+				setStore("totalCost", 0);
+				setStore("lastTurnStartedAt", 0);
+			});
+			toBottom();
+		},
 	};
 
 	const value: AgentContextValue = {
@@ -549,6 +616,7 @@ export function AgentProvider(props: ParentProps) {
 			getProviderId: () => agentSession.getProviderId(),
 			getModelId: () => agentSession.getModelId(),
 			getThinkingLevel: () => agentSession.getThinkingLevel(),
+			getCurrentSessionId: () => currentSessionId,
 		},
 	};
 

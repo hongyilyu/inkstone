@@ -1,6 +1,7 @@
 import {
 	Agent,
 	type AgentEvent,
+	type AgentMessage,
 	type ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
 import { type Api, type Model, supportsXhigh } from "@mariozechner/pi-ai";
@@ -61,6 +62,16 @@ export interface Session {
 	 * row id).
 	 */
 	clearSession(): void;
+	/**
+	 * Seed the Agent's conversation with a previously-persisted message
+	 * list. Used by the resume-session path only.
+	 *
+	 * Caller must pass the full ordered conversation as returned by
+	 * `loadSession().agentMessages`. pi-agent-core's contract assumes
+	 * `state.messages` is a complete, ordered history — any gap or
+	 * reorder silently corrupts prompt context on the next turn.
+	 */
+	restoreMessages(messages: AgentMessage[]): void;
 	/**
 	 * Swap the bound agent name. Only legal when the session has no
 	 * messages yet. Rewrites `agent.state.systemPrompt` + `tools` so
@@ -307,6 +318,9 @@ export function createSession(params: {
 		},
 		clearSession() {
 			agent.state.messages = [];
+		},
+		restoreMessages(messages: AgentMessage[]) {
+			agent.state.messages = messages;
 		},
 	};
 }

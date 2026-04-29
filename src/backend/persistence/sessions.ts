@@ -26,7 +26,7 @@
 
 import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
-import { asc, count, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { agentMessages, messages, parts, sessions } from "./db/schema";
 import { reportPersistenceError } from "./errors";
@@ -305,6 +305,13 @@ export interface SessionSummary {
 	startedAt: number;
 	title: string | null;
 	messageCount: number;
+	/**
+	 * Single-line preview derived from the session's first user message.
+	 * Empty string when the session has no user message yet (it was
+	 * created but the prompt failed pre-stream, for example). Used by
+	 * the session list panel as a fallback label when `title` is null.
+	 */
+	preview: string;
 }
 
 export function listSessions(agent: string): SessionSummary[] {
@@ -330,13 +337,63 @@ export function listSessions(agent: string): SessionSummary[] {
 		.all();
 	const countBy = new Map(counts.map((c) => [c.sessionId, c.n]));
 
-	return rows.map((r) => ({
-		id: r.id,
-		agent: r.agent,
-		startedAt: r.startedAt,
-		title: r.title,
-		messageCount: countBy.get(r.id) ?? 0,
-	}));
+	// Preview = first text part of each session's first user message.
+	// Join messages + parts once, filter to user messages, ORDER BY
+	// message.id ASC so the first row per sessionId is that session's
+	// earliest user bubble. Relies on UUIDv7's global time-monotonicity
+	// (`newId` uses `Bun.randomUUIDv7()`) to make "first seen per
+	// sessionId in this global-ordered scan" equal to "per-session
+	// earliest user message" — holds because the random tail breaks
+	// any ms-level ties, so two messages written in the same ms still
+	// sort deterministically.
+	const userMsgRows = db
+		.select({
+			sessionId: messages.sessionId,
+			messageId: messages.id,
+			partType: parts.type,
+			partText: parts.text,
+		})
+		.from(messages)
+		.innerJoin(parts, eq(parts.messageId, messages.id))
+		.where(
+			and(
+				eq(messages.role, "user"),
+				inArray(
+					messages.sessionId,
+					rows.map((r) => r.id),
+				),
+			),
+		)
+		.orderBy(asc(messages.id), asc(parts.seq))
+		.all();
+
+	const previewBy = new Map<string, string>();
+	const firstUserMsgBy = new Map<string, string>();
+	for (const row of userMsgRows) {
+		// Lock in the first user message seen per session. Later rows
+		// for other messages in the same session are ignored.
+		if (!firstUserMsgBy.has(row.sessionId)) {
+			firstUserMsgBy.set(row.sessionId, row.messageId);
+		} else if (firstUserMsgBy.get(row.sessionId) !== row.messageId) {
+			continue;
+		}
+		if (row.partType !== "text") continue;
+		const existing = previewBy.get(row.sessionId) ?? "";
+		previewBy.set(row.sessionId, existing + row.partText);
+	}
+
+	return rows.map((r) => {
+		const raw = previewBy.get(r.id) ?? "";
+		const preview = raw.replace(/\s+/g, " ").trim();
+		return {
+			id: r.id,
+			agent: r.agent,
+			startedAt: r.startedAt,
+			title: r.title,
+			messageCount: countBy.get(r.id) ?? 0,
+			preview,
+		};
+	});
 }
 
 /**
