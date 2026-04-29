@@ -26,6 +26,7 @@
 
 import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { and, asc, count, desc, eq, inArray, min } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { agentMessages, messages, parts, sessions } from "./db/schema";
@@ -287,6 +288,30 @@ export function loadSession(sessionId: string): LoadedSession | null {
 		.orderBy(asc(agentMessages.id))
 		.all();
 
+	const agentMessagesOut = agentMsgRows.map((r) => r.data);
+
+	// Load-time tail repair. If the stored stream was killed mid-turn —
+	// Ctrl+C / process crash between `message_start` and `message_end` —
+	// the last `agent_messages` row is a lone `user` with no closing
+	// assistant. Resuming and prompting again would hand the provider
+	// `[..., user, user]`: Anthropic silently merges into one turn,
+	// Bedrock 400s on `ValidationException`. Synthesize a closing
+	// assistant placeholder here so `agent.state.messages` alternates
+	// cleanly; the placeholder is never sent back to a provider and
+	// stored rows are untouched (this is a pure read-time repair).
+	//
+	// Metadata sourcing: the latest prior assistant's `api`/`provider`/
+	// `model`, falling back to dummy strings if the session was killed
+	// on its very first turn (no prior assistant exists to crib from).
+	// `agent.state.messages` only uses these fields to round-trip back
+	// through `convertToLlm`, and that conversion never looks at them
+	// for a non-tail assistant — so dummies are safe.
+	const tail = agentMessagesOut[agentMessagesOut.length - 1];
+	if (tail && tail.role === "user") {
+		const priorAssistant = findLatestAssistant(agentMessagesOut);
+		agentMessagesOut.push(buildAbortedAssistant(priorAssistant));
+	}
+
 	return {
 		session: {
 			id: sess.id,
@@ -295,7 +320,47 @@ export function loadSession(sessionId: string): LoadedSession | null {
 			title: sess.title,
 		},
 		displayMessages,
-		agentMessages: agentMsgRows.map((r) => r.data),
+		agentMessages: agentMessagesOut,
+	};
+}
+
+function findLatestAssistant(
+	list: AgentMessage[],
+): AssistantMessage | undefined {
+	for (let i = list.length - 1; i >= 0; i--) {
+		const m = list[i];
+		if (m && m.role === "assistant") return m;
+	}
+	return undefined;
+}
+
+function buildAbortedAssistant(
+	prior: AssistantMessage | undefined,
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: "" }],
+		api: prior?.api ?? ("anthropic-messages" as AssistantMessage["api"]),
+		provider:
+			prior?.provider ?? ("amazon-bedrock" as AssistantMessage["provider"]),
+		model: prior?.model ?? "placeholder",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				total: 0,
+			},
+		},
+		stopReason: "aborted",
+		errorMessage: "[Interrupted by user]",
+		timestamp: Date.now(),
 	};
 }
 
