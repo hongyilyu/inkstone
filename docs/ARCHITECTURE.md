@@ -91,7 +91,7 @@ src/
 
     backend/                          Headless — no Solid, no OpenTUI
     agent/
-      index.ts                      Agent instance, createAgentActions, query getters
+      index.ts                      `createSession` factory + `AgentActions` / `Session` types + `availableThinkingLevels` + public re-exports (`AgentCommand`, `AgentInfo`, `AgentZone`, `getAgentInfo`, `setConfirmFn`)
       agents.ts                     Registry assembler — imports each agent's AgentInfo literal and exports AGENTS[]
       types.ts                      Foundation types — AgentInfo, AgentZone, AgentColorKey, AgentCommand
       compose.ts                    BASE_TOOLS + BASE_PREAMBLE + composeTools + composeSystemPrompt
@@ -102,7 +102,7 @@ src/
       agents/                       Custom agents, one self-contained folder each
         reader/
           index.ts                  readerAgent: AgentInfo literal (zones + extraTools pulled from ../../tools; `getPermissions` supplies the article-specific escape-hatch overlay)
-          instructions.ts           buildReaderInstructions(articleId) — the reader's system-prompt body + 6-stage workflow
+          instructions.ts           `buildReaderInstructions()` — nullary; returns the reader's system-prompt body + 6-stage workflow
           recommendations.ts        recommendArticles(limit) — scans ARTICLES_DIR, scores unread articles via index.base ranking logic, returns top N as ArticleRecommendation[]; formatRecommendationList(recs) for the inline bubble text
         example/
           index.ts                  exampleAgent: AgentInfo literal (1-line prompt, empty zones, no extra tools)
@@ -139,7 +139,8 @@ src/
       dialog-auth-wait.tsx          Read-only URL + user-code + progress screen used during OAuth device-code flows
       toast.tsx                     Toast notifications
     components/
-      conversation.tsx              Scrollbox + message list (user-bubble border + `▣` glyph derive from active agent color)
+      conversation.tsx              Thin scrollbox + message list + routing layer (bubble rendering lives in `message.tsx`)
+      message.tsx                   `UserMessage` (user-bubble border + file-chip renderer derived from active agent color), `AssistantMessage` (parts loop + error panel + `▣`-glyph footer), `TextPart`, `ReasoningPart`, `SplitBorderChars`, `isDanglingUser`, `durationSuffix`
       prompt.tsx                    Textarea prompt with /command parsing, agent label, tab-cycle hint (hints via `Keybind.print`); streaming indicator = `SpinnerWave` colored by the active agent
       spinner.tsx                   Simple braille-dot spinner (`Spinner`). Not used by the prompt; kept importable for future subagent-status / background-tool indicators
       spinner-wave.tsx              `SpinnerWave` — 8-cell bidirectional knight-rider wave. Port of OpenCode's `ui/spinner.ts` (blocks + bidirectional branches only); 54 precomputed frames at 40 ms interval, per-cell RGBA derived from a single base color via a 6-step trail + alpha fade
@@ -205,7 +206,7 @@ Both `DisplayMessage` and `AgentStoreState` are defined in `src/bridge/view-mode
 {
   id: string
   role: "user" | "assistant"
-  parts: DisplayPart[]     // ordered blocks; user messages always a single text part
+  parts: DisplayPart[]     // ordered blocks; user bubbles are usually [text], commands may emit [text, file, ...]
   agentName?: string   // assistant only, set in message_end
   modelName?: string   // assistant only, set in message_end
   duration?: number    // assistant only, ms, set in agent_end
@@ -215,7 +216,10 @@ Both `DisplayMessage` and `AgentStoreState` are defined in `src/bridge/view-mode
 type DisplayPart =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string }
+  | { type: "file"; mime: string; filename: string }
 ```
+
+The `file` part is display-only. Agent commands like reader's `/article` hand the TUI a compact render shape (short prose + file chip) via `AgentCommand.execute`'s optional `displayParts` callback argument, while the full file content still reaches pi-agent-core as the single prompt `text`. pi-ai's `UserMessage.content` stays a plain string (Inkstone never uses the multi-block form); the split lives entirely between `wrappedActions.prompt` and the user-bubble renderer. See "Commands → Slash dispatch" below and `src/tui/components/message.tsx`'s `UserMessage` for the chip rendering.
 
 Events from `agent.subscribe()` are batched via `batch()` and applied to the store by the switch statement in `tui/context/agent.tsx`. Solid's fine-grained reactivity ensures only affected UI nodes re-render.
 
@@ -223,17 +227,17 @@ Events from `agent.subscribe()` are batched via `batch()` and applied to the sto
 
 ## Markdown Rendering
 
-Assistant messages are rendered through OpenTUI's `<markdown>` component in `src/tui/components/conversation.tsx`. The component takes a `SyntaxStyle` built by `generateSyntax(colors)` in `src/tui/context/theme.tsx`, which maps ~40 Tree-sitter scopes (markup.* for markdown structure, plus core code scopes for fenced blocks) onto the active theme's existing named colors. The style is exposed as a reactive accessor `useTheme().syntax()` and re-creates whenever the theme id changes, so switching themes re-paints already-rendered markdown.
+Assistant messages are rendered through OpenTUI's `<markdown>` component in `src/tui/components/message.tsx` (the bubble-rendering module; `conversation.tsx` is a thin list + routing layer that iterates `store.messages` and dispatches to `UserMessage` / `AssistantMessage`). The component takes a `SyntaxStyle` built by `generateSyntax(colors)` in `src/tui/context/theme.tsx`, which maps ~40 Tree-sitter scopes (markup.* for markdown structure, plus core code scopes for fenced blocks) onto the active theme's existing named colors. The style is exposed as a reactive accessor `useTheme().syntax()` and re-creates whenever the theme id changes, so switching themes re-paints already-rendered markdown.
 
-Each assistant bubble iterates `msg.parts` and renders one `<markdown>` per block, so interleaved thinking/text from a single turn renders in emission order. The `streaming` prop is enabled only on the **tail block of the last bubble** while `store.isStreaming` is true, so the markdown parser keeps only that trailing block unstable during deltas and finalizes earlier blocks. Markdown syntax markers (`**`, `` ` ``, `#`, etc.) are concealed by default — users see rendered output, not source. User messages remain plain `<text>` inside the left-border bubble, reading `msg.parts[0].text` (user turns always hold exactly one text part).
+Each assistant bubble iterates `msg.parts` and renders one `<markdown>` per block, so interleaved thinking/text from a single turn renders in emission order. The `streaming` prop is enabled only on the **tail block of the last bubble** while `store.isStreaming` is true, so the markdown parser keeps only that trailing block unstable during deltas and finalizes earlier blocks. Markdown syntax markers (`**`, `` ` ``, `#`, etc.) are concealed by default — users see rendered output, not source. User messages are plain `<text>` inside the left-border bubble, iterating `msg.parts` so commands that supply explicit `displayParts` (reader's `/article`: `[text, file]`) render a short prose line + a file chip instead of the full payload the LLM sees. Plain user prompts produce a single `text` part, matching the pre-displayParts shape.
 
 ### Thinking blocks
 
 Ported from OpenCode's `ReasoningPart` (`routes/session/index.tsx:1437-1468`), trimmed to Inkstone's scope:
 
-- Part type: `DisplayPart` with `type: "thinking"` — a first-class sibling to `text`, dispatched by the `parts` iterator in `conversation.tsx`.
+- Part type: `DisplayPart` with `type: "thinking"` — a first-class sibling to `text`, dispatched by the `parts` iterator in `AssistantMessage` (`message.tsx`).
 - Event capture: `message_update` in `context/agent.tsx` branches on `assistantMessageEvent.type` (typed as pi-ai's `AssistantMessageEvent` union). `thinking_start` pushes a fresh `{ type: "thinking", text: "" }` part; `thinking_delta` appends to the tail part's text after a runtime guard that the tail's `type === "thinking"` (cheap insurance against upstream event reordering); `thinking_end` pops the part when `lastPart.text.replace("[REDACTED]", "").trim()` is empty. That predicate covers both redacted-thinking shapes: Anthropic's `redacted: true` path emits no `thinking_delta` at all (empty text), while OpenRouter emits the literal `[REDACTED]` as a delta chunk that would otherwise render verbatim (`"[REDACTED]".trim()` is truthy). OpenCode filters the same literal at render time (`routes/session/index.tsx:1443`); Inkstone filters reducer-side because it has no `showThinking` toggle, so a stored-but-never-rendered part would just be dead weight in persistence. Same switch dispatches `text_start` / `text_delta` symmetrically for assistant text.
-- Part-type immutability: `part.type` is reducer-guaranteed to be stable for the lifetime of the part — `message_update` only ever pushes new parts or appends to the tail's `text`, never mutates `type`. The `ReasoningPart` / `TextPart` dispatch inside `<For>` in `conversation.tsx` reads `part.type` non-reactively (the `<For>` item callback evaluates the branch once per render and keys items by reference). If future work ever mutates `part.type` in-place, the renderer must be refactored to a reactive primitive (e.g. `<Switch>/<Match>` keyed on a memo of `part.type`) or the dispatch will stick to the first-seen type.
+- Part-type immutability: `part.type` is reducer-guaranteed to be stable for the lifetime of the part — `message_update` only ever pushes new parts or appends to the tail's `text`, never mutates `type`. The `ReasoningPart` / `TextPart` dispatch inside the parts loop in `AssistantMessage` (`message.tsx`) reads `part.type` non-reactively (the callback evaluates the branch once per render and keys items by reference). If future work ever mutates `part.type` in-place, the renderer must be refactored to a reactive primitive (e.g. `<Switch>/<Match>` keyed on a memo of `part.type`) or the dispatch will stick to the first-seen type.
 - Visual treatment: left bar (`┃` via `SplitBorderChars`) in `theme.backgroundElement`, `paddingLeft={2}`, `marginTop={1}` when not the first block, single `<markdown>` body with `"_Thinking:_ "` prepended to the part text so the label renders inline as italic markdown (per OpenCode's `ReasoningPart`). Body is rendered with `syntaxStyle={subtleSyntax()}`, no outer `fg` override — an outer `fg` would flatten all tokens to one color and defeat per-scope dimming.
 - Part stacking: each non-first part carries `marginTop={1}`, the first part carries `marginTop={0}`. Intentional divergence from OpenCode's `AssistantMessage`, which sets `marginTop={1}` unconditionally on every part (`routes/session/index.tsx:1450, 1475`). OpenCode renders assistant bodies as a bare fragment so each `marginTop` lands directly; Inkstone wraps the body in a `<box flexDirection="column">` inside an outer `<For>` with `gap={1}` between bubbles, so an unconditional first-part `marginTop={1}` would double-space against the outer gap. Footer uses `paddingTop={1}` on its own box (same pattern as OpenCode's `box paddingLeft={3}` + `text marginTop={1}` at line 1403-1404, simplified).
 - **Always rendered** when present — no `showThinking` toggle, no keybind, no palette entry. Matches the current "no slash-command system" constraint; a toggle lands when slash-commands or a KV layer do.
@@ -248,7 +252,7 @@ Ported verbatim from OpenCode's `generateSubtleSyntax` (`opencode/.../context/th
 
 ## Per-Message Status Line
 
-Each completed assistant message renders its own status line directly below its markdown body in `src/tui/components/conversation.tsx`:
+Each completed assistant message renders its own status line directly below its markdown body in `src/tui/components/message.tsx` (inside `AssistantMessage`):
 
 ```
 ▣ Reader · Claude Opus 4.6 (US) · 1m 2s
@@ -267,7 +271,7 @@ The conversation renderer shows the footer whenever `msg.modelName` is present, 
 
 `AgentProvider` pushes a fresh empty assistant `DisplayMessage` on every pi-agent-core `message_start` event whose `message.role === "assistant"` (filtering out user/toolResult starts, which are handled elsewhere or not rendered). `message_update` deltas append to the last-pushed bubble, and `message_end` stamps `agentName` / `modelName` onto that same bubble.
 
-This mirrors pi-agent-core's own boundaries: a tool-using turn emits one assistant `message_start` / `message_end` pair before the tool call and another after the tool result. Each pair gets its own display bubble with its own per-message footer data, so saved sessions replay the original assistant boundaries and the per-message fields cannot leak between them. `<Show when={msg.parts.length > 0 || msg.error}>` in `conversation.tsx` hides bubbles that are neither visible content nor a failure (e.g., a pure tool-call assistant message with `stopReason === "toolUse"`), so empty bubbles don't clutter the conversation while errored bubbles (empty parts + populated `error`) still render.
+This mirrors pi-agent-core's own boundaries: a tool-using turn emits one assistant `message_start` / `message_end` pair before the tool call and another after the tool result. Each pair gets its own display bubble with its own per-message footer data, so saved sessions replay the original assistant boundaries and the per-message fields cannot leak between them. `<Show when={msg.parts.length > 0 || msg.error}>` in `conversation.tsx` hides bubbles that are neither visible content nor a failure (e.g., a pure tool-call assistant message with `stopReason === "toolUse"`), so empty bubbles don't clutter the conversation while errored bubbles (empty parts + populated `error`) still render. The actual bubble body and error panel live in `AssistantMessage` (`message.tsx`).
 
 Sourcing the model from `event.message` (rather than the mutable `store.modelName`) means switching models mid-run via Ctrl+P does not relabel the in-flight assistant reply. `store.modelName` continues to reflect the currently-selected model for the sidebar and the next prompt.
 
@@ -380,7 +384,7 @@ Shared constants and helpers:
 - `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today just `read` (from the shared pool, scoped to `VAULT_DIR`). Frozen at module load so external modules can't mutate.
 - `BASE_PREAMBLE: string` — a shared system-prompt prefix. **Empty today** — the mechanism is the point. Future PRs will grow this into a composed block that includes persona guidance, tool-use discipline, and memory-file contents (`user.md`, `memory.md` from `~/.config/inkstone/`).
 - `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]`. Every agent gets the base set unconditionally; there is no opt-out flag.
-- `composeSystemPrompt(info)` — builds the full system prompt as three non-empty sections joined by blank lines: the zones block (when `info.zones.length > 0`), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. `buildInstructions` is nullary; no agent today has per-turn state, but the composer rebuilds per turn to keep that option open for future agents.
+- `composeSystemPrompt(info)` — builds the full system prompt as three non-empty sections joined by blank lines: the zones block (when `info.zones.length > 0`), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. `buildInstructions` is nullary. Called once at `createSession` and again on `Session.selectAgent` (empty-session agent swap); not on every turn — `state.systemPrompt` stays byte-stable for the session's lifetime so Anthropic `cache_control` / Bedrock `cachePoint` prefixes hit. See D9's stability invariant.
 
 ### Zones
 
@@ -417,7 +421,7 @@ Tool implementations come from `@mariozechner/pi-coding-agent` via the shared po
 
 | Name | extraTools | Composed tools | Zones | Commands | Prompt behavior | Color |
 |------|------------|----------------|-------|----------|-----------------|-------|
-| `reader` | `edit`, `write` | `read` + the extras | `010 RAW/013 Articles` + `020 HUMAN/022 Scraps` + `020 HUMAN/023 Notes`, all confirm | `/article [filename]` | `<your workspace>` block + the 6-stage reading workflow. `/article <filename>` reads the file and sends path + content as the opening user message. `/article` (bare) scans ARTICLES_DIR, displays a numbered recommendation list as a user bubble, and opens a DialogSelect picker; selecting an article runs the normal loading path. | `theme.secondary` |
+| `reader` | `edit`, `write` | `read` + the extras | `010 RAW/013 Articles` + `020 HUMAN/022 Scraps` + `020 HUMAN/023 Notes`, all confirm | `/article [filename]` | `<your workspace>` block + the 6-stage reading workflow. `/article <filename>` reads the file and sends path + full content as the LLM-facing prompt text, while passing the TUI compact `displayParts = [text "Read this article.", file text/markdown <vault-relative>]` so the bubble renders a short prose line + a file chip instead of the full article body. `/article` (bare) scans ARTICLES_DIR, displays a numbered recommendation list as a user bubble, and opens a DialogSelect picker; selecting an article runs the same compact-bubble loading path. | `theme.secondary` |
 | `example` | — | `read` only | — | — | Short static "general-purpose assistant" prompt, no workspace block | `theme.accent` |
 
 Both agents inherit the shell-level `/clear` verb via the unified command registry (see Commands below) — no per-agent declaration needed.
@@ -483,7 +487,13 @@ export interface AgentCommand {
 }
 ```
 
-`execute` takes an `AgentCommandHelpers` bag the TUI bridge injects — `prompt` starts an LLM turn, `displayMessage` pushes a user bubble without a turn (e.g. the recommendation list), and `pickFromList` opens a `DialogSelect` picker. The optional helpers require an interactive frontend; headless callers omit them and commands that need them throw a clear error. Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over the TUI wrapper's `clearSession` directly, so they don't need anything handed off. Commands typically compose a user message (e.g. reader inlines the article's path + content) and call `helpers.prompt(text)` to kick off a turn.
+`execute` takes an `AgentCommandHelpers` bag the TUI bridge injects:
+
+- `helpers.prompt(text, displayParts?)` starts an LLM turn. The first arg is what pi-agent-core (and in turn pi-ai) hands to the LLM. The optional `displayParts` replace the user bubble's rendered parts without changing what reaches the model — the LLM still sees the full `text`. Reader's `/article` uses this to inline the full article in `text` while rendering a compact "short prose + file chip" bubble via `displayParts = [text "Read this article.", file text/markdown <vault-relative>]`. Commands that omit `displayParts` get the default `[{ type: "text", text }]` shape.
+- `helpers.displayMessage(text)` pushes a user bubble without a turn (used for the bare-`/article` recommendation list).
+- `helpers.pickFromList({...})` opens a `DialogSelect` picker and resolves with the picked value or `undefined` on cancel.
+
+The optional helpers require an interactive frontend; headless callers omit them and commands that need them throw a clear error. Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over the TUI wrapper's `clearSession` directly, so they don't need anything handed off.
 
 **System-prompt stability invariant.** `AgentInfo.buildInstructions()` must return a stable string for a given `AgentInfo`. pi-agent-core's `Agent` reads `state.systemPrompt` once per `prompt()` call (via `createContextSnapshot()`; see `node_modules/@mariozechner/pi-agent-core/dist/agent.js`), and both Anthropic's `cache_control` block and Bedrock's `cachePoint` are pinned to the byte-exact system prefix — any drift between turns invalidates the cache. The shell builds `systemPrompt` at two points only: `createSession` on construction and `Session.selectAgent` on an empty-session agent swap (see D13). `Session.clearSession` wipes messages without touching the prompt. Commands **must not** mutate state that `buildInstructions` reads; dynamic per-turn context (date, cwd, memory recall, file snapshots, article content) goes into a user message via `prompt(text)`. Reader's `/article` is the reference pattern.
 
@@ -511,7 +521,16 @@ user types "/article foo.md" + Enter
               → runArticle("foo.md", helpers.prompt)
                 → resolve + validate path inside ARTICLES_DIR
                 → readFileSync(articlePath, "utf-8")
-                → await helpers.prompt("Read this article...\n\nPath: ...\n\nContent:\n\n...")
+                → await helpers.prompt(
+                    "Read this article...\n\nPath: ...\n\nContent:\n\n...",
+                    [ { type: "text", text: "Read this article." },
+                      { type: "file", mime: "text/markdown", filename: <vault-relative> } ],
+                  )
+                  (first arg is the full LLM-facing text; second arg is
+                   what the user bubble renders. pi-agent-core only ever
+                   sees the text. systemPrompt was built once at
+                   createSession() — unchanged here, so Anthropic's
+                   cache_control prefix hits on the next turn.)
       → setText("")                              (clear input)
 
 user types "/article" + Enter (bare — no argument)
@@ -774,7 +793,7 @@ Double-tap semantics live in a local signal inside `Prompt()` (`interrupt: numbe
 
 Inkstone additionally scopes the arm to the current turn via a `createEffect` on `store.isStreaming`: when streaming flips back to false, the pending 5 s timer is cleared and `interrupt` returns to 0. Without this reset, a single ESC press late in a turn that completes before the timer fires would leave `interrupt === 1`; the first ESC of the next turn would then satisfy the `next >= 2` branch in `handleInterrupt` and abort immediately instead of arming the double-tap. OpenCode's prompt carries the same latent bug (`opencode/src/cli/cmd/tui/component/prompt/index.tsx:290-294`); this is an intentional Inkstone divergence.
 
-`actions.abort()` is the existing `AgentActions.abort` (`backend/agent/index.ts:154`) that forwards to pi-agent-core's `Agent.abort()`. pi-agent-core fires `message_end` with `stopReason === "aborted"`, which is already surfaced by `AgentProvider`'s reducer onto the assistant bubble's `error` field (`tui/context/agent.tsx:153-165`) and rendered via the shared error panel in `conversation.tsx`. No new event-handling is required.
+`actions.abort()` is the existing `AgentActions.abort` (`backend/agent/index.ts`) that forwards to pi-agent-core's `Agent.abort()`. pi-agent-core fires `message_end` with `stopReason === "aborted"`, which is already surfaced by `AgentProvider`'s reducer onto the assistant bubble's `error` field (`tui/context/agent.tsx`) and rendered via the shared error panel in `AssistantMessage` (`message.tsx`). No new event-handling is required.
 
 ### Collision safety
 
@@ -807,7 +826,9 @@ When the session panel is open, the right `Sidebar` is hidden regardless of widt
 
 `panel_close: "escape,ctrl+n"` is a second keybind that aliases ESC and Ctrl+N so the panel treats open-key and dismiss-key symmetrically. `ctrl+n` is also a `select_down` alternate inside dialogs and the panel checks `panel_close` **before** `select_down` in its key handler, so reopening-key-as-close wins. The global `session_list` dispatcher in `CommandProvider` short-circuits on `dialog.stack.length > 0`, so `ctrl+n` inside an open dialog still means "move selection down" and can't accidentally open a second panel layer.
 
-**Load-time tail repair.** `loadSession` inspects the tail of `agent_messages` after loading; if it's a `role: "user"` row with no following assistant (session was killed mid-turn — Ctrl+C / process crash between `message_start` and `message_end`), it appends a synthetic `assistant` `AgentMessage` with `stopReason: "aborted"` and `errorMessage: "[Interrupted by user]"` to the returned `agentMessages` array. Without this, the next prompt on the resumed session would hand the provider `[..., user, user]`: Anthropic silently merges into one turn, Bedrock 400s. The repair is read-only — stored rows are never mutated. Placeholder metadata (`api`/`provider`/`model`) is sourced from the latest prior assistant in the same session; if the session was interrupted on its very first turn, bland defaults are used (never reach a provider — they only satisfy the `AssistantMessage` type contract so pi-agent-core can round-trip through `convertToLlm`). The display layer mirrors this via an `isDanglingUser` memo in `conversation.tsx` that renders a muted `[Interrupted by user]` marker beneath any user bubble with no assistant following and no in-flight stream. Research notes and alternatives considered (Claude Code sentinel pattern, OpenCode eager-write, pi-agent-core prevention-only) captured in the TODO entry.
+**Load-time alternation repair.** `loadSession` inspects `agent_messages` after loading and fills every `user`→`user` gap in the stream — both the trailing case (session killed mid-turn on the last turn — Ctrl+C / process crash between `message_start` and `message_end`) AND the interior case (the orphaned turn was followed by a successful later turn after resume, leaving two adjacent `user` rows with no assistant between them). Both shapes are repaired by synthesizing a closing `assistant` `AgentMessage` with `stopReason: "aborted"` and `errorMessage: "[Interrupted by user]"` in the right slot so `agent.state.messages` alternates cleanly. Without this, the next prompt on the resumed session would hand the provider consecutive user turns: Anthropic silently merges into one turn, Bedrock 400s. The repair is read-only — stored rows are never mutated. Placeholder metadata (`api`/`provider`/`model`) is sourced from the latest prior assistant in the same session; if the session was interrupted on its very first turn, bland defaults are used (never reach a provider — they only satisfy the `AssistantMessage` type contract so pi-agent-core can round-trip through `convertToLlm`). The display layer mirrors this via an `isDanglingUser` memo in `message.tsx` that renders a muted `[Interrupted by user]` marker beneath any user bubble with no assistant following and no in-flight stream.
+
+The backend also catches the common case *prevention-side*: pi-agent-core's `handleRunFailure` synthesizes a closing assistant and emits **only** `agent_end` (no `message_end`) on abort/error paths, so the reducer's `agent_end` handler in `tui/context/agent.tsx` appends any such synthesized `AgentMessage` to `agent_messages` at runtime. Between the `agent_end` catch-up write (prevention) and the load-time repair (backstop), both Ctrl+C-between-events and pi-agent-core-abort paths round-trip cleanly. Research notes and alternatives considered (Claude Code sentinel pattern, OpenCode eager-write, pi-agent-core prevention-only) captured in the TODO entry.
 
 ### Data flow
 
@@ -848,19 +869,12 @@ recipes. Summary below for cross-referencing from other sections.
 
 SQLite at `~/.local/state/inkstone/inkstone.db`, accessed via Drizzle ORM on
 `bun:sqlite`. Four tables: `sessions`, `messages`, `parts`, `agent_messages`.
-Ids are UUIDv7 (globally unique + time-ordered). Visibility is agent-scoped.
-Sessions are created lazily on first user prompt; `/clear` drops the
-in-memory session id so the next prompt creates a fresh row (past rows
-stay on disk for a future `/resume`). Boot does not auto-resume — the
-openpage always greets the user. `message_end` commits meta + parts +
-raw AgentMessage in a single transaction via `runInTransaction`, so
-crashes can't leave half-written state. Config + auth stay in JSON
-under `~/.config/inkstone/`.
-
-## Key Patterns (from OpenCode)
-
-- `createSimpleContext()` — factory for typed context providers
-- Stack-based dialog system with focus save/restore
-- KV persistence via JSON file in state directory
-- Theme resolution: hex → refs → dark/light variants → RGBA
-- Named-action keybind map + command registry (see Keybinds + Commands section). Leader-chord and user overrides still deferred — see docs/TODO.md.
+Ids are UUIDv7 (globally unique + time-ordered). Visibility is global —
+`listSessions()` returns rows across every agent, each carrying its own
+`agent` column so the Ctrl+N panel can render a cross-agent list. Sessions
+are created lazily on first user prompt; `/clear` drops the in-memory
+session id so the next prompt creates a fresh row (past rows stay on disk
+for a future `/resume`). Boot does not auto-resume — the openpage always
+greets the user. `message_end` commits meta + parts + raw AgentMessage in
+a single transaction via `runInTransaction`, so crashes can't leave
+half-written state. Config + auth stay in JSON under `~/.config/inkstone/`.

@@ -134,12 +134,7 @@ export function appendDisplayMessage(
 				const p = msg.parts[i];
 				if (!p) continue;
 				tx.insert(parts)
-					.values({
-						messageId: msg.id,
-						seq: i,
-						type: p.type,
-						text: p.text,
-					})
+					.values(serializePart(msg.id, i, p))
 					.run();
 			}
 		}
@@ -192,12 +187,7 @@ export function finalizeDisplayMessageParts(
 			const p = msg.parts[i];
 			if (!p) continue;
 			tx.insert(parts)
-				.values({
-					messageId: msg.id,
-					seq: i,
-					type: p.type,
-					text: p.text,
-				})
+				.values(serializePart(msg.id, i, p))
 				.run();
 		}
 	} catch (error) {
@@ -207,6 +197,41 @@ export function finalizeDisplayMessageParts(
 			error,
 		});
 	}
+}
+
+/**
+ * Serialize a `DisplayPart` into a row for `parts`. The table's
+ * `text` column is NOT NULL — we keep it that way for text/thinking
+ * rows and store `""` on file rows, which carry their display data
+ * in `mime` + `filename`. Centralized here so both `appendDisplayMessage`
+ * (message_start path) and `finalizeDisplayMessageParts` (message_end
+ * path) produce identical rows. Return type is pinned to Drizzle's
+ * inferred insert shape so a future column addition to `parts` forces
+ * a compile error here rather than at the two distant call sites.
+ */
+function serializePart(
+	messageId: string,
+	seq: number,
+	p: DisplayPart,
+): typeof parts.$inferInsert {
+	if (p.type === "file") {
+		return {
+			messageId,
+			seq,
+			type: p.type,
+			text: "",
+			mime: p.mime,
+			filename: p.filename,
+		};
+	}
+	return {
+		messageId,
+		seq,
+		type: p.type,
+		text: p.text,
+		mime: null,
+		filename: null,
+	};
 }
 
 /**
@@ -270,7 +295,7 @@ export function loadSession(sessionId: string): LoadedSession | null {
 	const partsByMessage = new Map<string, DisplayPart[]>();
 	for (const p of partRows.sort((a, b) => a.seq - b.seq)) {
 		const list = partsByMessage.get(p.messageId) ?? [];
-		list.push({ type: p.type, text: p.text });
+		list.push(deserializePart(p));
 		partsByMessage.set(p.messageId, list);
 	}
 
@@ -343,6 +368,40 @@ export function loadSession(sessionId: string): LoadedSession | null {
 		displayMessages,
 		agentMessages: repaired,
 	};
+}
+
+/**
+ * Rehydrate a `DisplayPart` from a row in `parts`. Inverse of
+ * `serializePart`. File rows with missing `mime`/`filename` shouldn't
+ * happen under current writers — `serializePart` always populates
+ * both for file rows — but if corruption is ever observed, report
+ * through the persistence error hook and degrade to an empty text
+ * part so the session still loads. Loud-but-non-fatal matches the
+ * existing posture of other loader defenses (alternation repair,
+ * empty-shell pruning).
+ */
+function deserializePart(row: {
+	messageId: string;
+	seq: number;
+	type: "text" | "thinking" | "file";
+	text: string;
+	mime: string | null;
+	filename: string | null;
+}): DisplayPart {
+	if (row.type === "file") {
+		if (row.mime == null || row.filename == null) {
+			reportPersistenceError({
+				kind: "session",
+				action: `deserialize-part (${shortId(row.messageId)}#${row.seq})`,
+				error: new Error(
+					`file part missing mime/filename on row (${row.messageId}, ${row.seq})`,
+				),
+			});
+			return { type: "text", text: "" };
+		}
+		return { type: "file", mime: row.mime, filename: row.filename };
+	}
+	return { type: row.type, text: row.text };
 }
 
 function findLatestAssistant(
@@ -453,22 +512,36 @@ export function listSessions(): SessionSummary[] {
 			sessionId: firstUserMsgSq.sessionId,
 			partType: parts.type,
 			partText: parts.text,
+			partFilename: parts.filename,
 		})
 		.from(firstUserMsgSq)
 		.innerJoin(parts, eq(parts.messageId, firstUserMsgSq.firstMessageId))
 		.orderBy(asc(parts.seq))
 		.all();
 
+	// Build preview from text parts first; if no text survived (e.g. a
+	// `/article`-opened session whose display is short-prose + file-chip
+	// only — see `DisplayPart` in bridge/view-model.ts), fall back to
+	// the first file part's filename. Matches the "resumed bubble
+	// renders identically" invariant: the list row carries the same
+	// signal the bubble does when the user opens the session.
 	const previewBy = new Map<string, string>();
+	const firstFilenameBy = new Map<string, string>();
 	for (const row of userPartRows) {
-		if (row.partType !== "text") continue;
-		const existing = previewBy.get(row.sessionId) ?? "";
-		previewBy.set(row.sessionId, existing + row.partText);
+		if (row.partType === "text") {
+			const existing = previewBy.get(row.sessionId) ?? "";
+			previewBy.set(row.sessionId, existing + row.partText);
+		} else if (row.partType === "file" && row.partFilename) {
+			if (!firstFilenameBy.has(row.sessionId)) {
+				firstFilenameBy.set(row.sessionId, row.partFilename);
+			}
+		}
 	}
 
 	return rows.map((r) => {
 		const raw = previewBy.get(r.id) ?? "";
-		const preview = raw.replace(/\s+/g, " ").trim();
+		const textPreview = raw.replace(/\s+/g, " ").trim();
+		const preview = textPreview || (firstFilenameBy.get(r.id) ?? "");
 		return {
 			id: r.id,
 			agent: r.agent,

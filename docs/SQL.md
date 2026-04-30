@@ -17,7 +17,7 @@ these invariants for granted.
 - [File layout on disk](#file-layout-on-disk)
 - [Schema overview](#schema-overview)
 - [Identity model (UUIDv7)](#identity-model-uuidv7)
-- [Agent-scoped visibility](#agent-scoped-visibility)
+- [Visibility](#visibility)
 - [Session lifecycle](#session-lifecycle)
 - [Transactional boundary](#transactional-boundary)
 - [Public API — `sessions.ts`](#public-api--sessionsts)
@@ -69,7 +69,7 @@ sessions ──┬── messages ── parts       (display-layer fanout)
 |---|---|
 | `sessions` | Conversation root. `agent` column scopes all reads. `/clear` ends the in-memory session; the row stays on disk untouched. |
 | `messages` | One row per `DisplayMessage` (bubble). UUIDv7 `id`. Per-message metadata (agent/model/duration/error) mirrors the bubble footer. |
-| `parts` | `DisplayPart` fanout. Composite PK `(message_id, seq)` — parts have no cross-session identity. |
+| `parts` | `DisplayPart` fanout. Composite PK `(message_id, seq)` — parts have no cross-session identity. `type ∈ {text, thinking, file}`; `text` is NOT NULL (stored as `""` on `file` rows, whose display data lives in the nullable `mime` + `filename` columns). Two flat columns instead of a JSON `meta` blob so `listSessions`'s preview fallback can read `filename` in SQL. |
 | `agent_messages` | Raw pi-agent-core `AgentMessage` as JSON, for LLM-context restore on resume. `display_message_id` links back to the bubble this message produced (NULL for tool-result / user / custom messages). |
 
 ### Why `agent_messages` is a separate table
@@ -222,11 +222,31 @@ insert at `message_start`. A SIGKILL between `message_start`'s shell
 write and `message_end` opening its transaction leaves a trailing
 empty assistant row.
 
-Today, no code strips these — boot doesn't auto-resume, so empty
-shells never reach the UI. When `/resume` lands, it'll need a
-repair pass before `loadSession` to avoid surfacing the shells as
-empty bubbles. The prior implementation's one-statement DELETE is in
-the git history under `repairSession`.
+Two complementary repair paths keep `agent_messages` alternation-clean
+across the crash window:
+
+1. **Prevention — `agent_end` catch-up write.** pi-agent-core's
+   `handleRunFailure` (see `agent.js`) synthesizes a closing
+   `{ role: "assistant", stopReason: "aborted" | "error" }` and emits
+   **only** `agent_end` (no matching `message_end`) on abort/error
+   paths. The reducer's `agent_end` branch in
+   `src/tui/context/agent.tsx` appends any such synthesized message
+   to `agent_messages` directly, so disk never sees the bare-user
+   tail for pi-agent-core-originated aborts.
+2. **Backstop — load-time repair in `loadSession`.** For corruption
+   that slipped past prevention (SIGKILL between events, older data
+   predating the catch-up write), `loadSession` scans
+   `agent_messages` post-read and fills every `user`→`user` gap —
+   trailing OR interior — by synthesizing an aborted assistant
+   between the adjacent user rows. Pure read-time transformation;
+   stored rows are never mutated.
+
+Empty assistant *display* shells (header row from `message_start`
+with no `message_end` follow-up) are still on disk, but don't reach
+the UI because `conversation.tsx`'s outer `<Show>` gate drops bubbles
+with zero parts and no error. No repair runs for those today; the
+git history holds a one-statement DELETE under `repairSession` if
+the pass is ever needed.
 
 ## Public API — `sessions.ts`
 
@@ -235,15 +255,19 @@ for the authoritative signatures. Quick reference:
 
 ### Reads
 
-- `loadSession(id)` — full hydration; pure read. Now called by the
+- `loadSession(id)` — full hydration; pure read. Called by the
   session list panel's resume flow (see `ARCHITECTURE.md §Session list
-  panel`). Performs **load-time tail repair**: if the stored
-  `agent_messages` tail is `role: "user"` (session killed mid-turn
-  between `message_start` and `message_end` — Ctrl+C / process crash),
-  appends a synthetic `assistant` `AgentMessage` with `stopReason:
-  "aborted"` so the returned list satisfies provider alternation
+  panel`). Performs **load-time alternation repair**: scans the
+  returned `agent_messages` tail AND interior for any `user`→`user`
+  gap (session killed mid-turn between `message_start` and
+  `message_end` — Ctrl+C / process crash) and synthesizes an aborted
+  `assistant` `AgentMessage` (`stopReason: "aborted"`,
+  `errorMessage: "[Interrupted by user]"`) between each adjacent
+  user pair so the returned list satisfies provider alternation
   invariants. Stored rows are **not** modified; repair is pure
-  read-time transformation.
+  read-time transformation. Works in tandem with the `agent_end`
+  catch-up write (see § Crash-repair boundary) which prevents the
+  common pi-agent-core-abort corruption from ever landing on disk.
 - `listSessions()` — newest-first summaries across every agent, with
   `messageCount` (single `GROUP BY` query, no N+1). Each row carries
   its own `agent` so the Ctrl+N panel can render a cross-agent list.
@@ -327,11 +351,16 @@ the event type for appends. Grep-friendly.
    reducer ever go false, something is firing `AgentEvent`s without
    going through `prompt()`.
 
-3. **Crash-repair is deferred**. A SIGKILL during streaming can leave
-   an empty assistant shell in the DB. Today's code doesn't strip
-   these because boot no longer auto-resumes. `/resume` will need a
-   repair pass when it lands; git history holds the prior one-statement
-   DELETE under `repairSession`.
+3. **Crash-repair is layered**. Prevention: pi-agent-core-originated
+   aborts are caught via the `agent_end` reducer branch, which appends
+   the synthesized closing assistant to `agent_messages` at runtime.
+   Backstop: `loadSession` repairs any `user`→`user` gap in the raw
+   stream at load time. Empty assistant display shells (header row
+   from `message_start` with no `message_end` follow-up) remain on
+   disk after a SIGKILL but don't reach the UI because
+   `conversation.tsx`'s outer `<Show>` gate drops bubbles with zero
+   parts and no error. Git history holds a one-statement DELETE
+   under `repairSession` if a stripping pass becomes necessary.
 
 4. **`$type<AgentMessage>` gives no runtime guarantee**. Column is
    TEXT; Drizzle does no validation. Pin pi versions.
@@ -429,7 +458,7 @@ rm ~/.config/inkstone/config.json
 | `src/backend/persistence/db/schema.ts` | Drizzle table definitions — source of truth for columns |
 | `src/backend/persistence/db/client.ts` | Lazy `bun:sqlite` singleton, PRAGMAs, migrator |
 | `src/backend/persistence/db/migrations/` | `drizzle-kit`-generated SQL |
-| `src/backend/persistence/sessions.ts` | Public API (`newId`, reads, writes, `runInTransaction`, `shortId`) |
+| `src/backend/persistence/sessions.ts` | Public API (`newId`, reads, writes, `runInTransaction`). `shortId` is an internal helper — not exported. |
 | `src/backend/persistence/errors.ts` | `reportPersistenceError` hook |
 | `src/backend/persistence/paths.ts` | XDG path resolution |
 | `src/tui/context/agent.tsx` | Frontend consumer — reducer, `ensureSession`, wiring |

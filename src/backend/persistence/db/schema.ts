@@ -49,8 +49,19 @@ export const parts = sqliteTable(
 			.notNull()
 			.references(() => messages.id, { onDelete: "cascade" }),
 		seq: integer("seq").notNull(),
-		type: text("type", { enum: ["text", "thinking"] }).notNull(),
+		type: text("type", { enum: ["text", "thinking", "file"] }).notNull(),
+		// `text` is the body of text/thinking parts AND is unused for
+		// `file` parts — kept NOT NULL with an empty string on file
+		// rows rather than widening to nullable, because the invariant
+		// "text parts have a body" is easier to read as a NOT NULL
+		// column than as a per-type check. File parts carry their
+		// display metadata in `mime` + `filename` below.
 		text: text("text").notNull(),
+		// File-part display metadata. NULL for text/thinking rows.
+		// Two flat columns (not JSON) so the `listSessions` preview
+		// fallback can read `filename` in SQL without JSON extraction.
+		mime: text("mime"),
+		filename: text("filename"),
 	},
 	(t) => [primaryKey({ columns: [t.messageId, t.seq] })],
 );

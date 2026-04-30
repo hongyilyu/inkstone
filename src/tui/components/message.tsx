@@ -5,12 +5,12 @@
  * stays a thin list + routing layer. Mirrors OpenCode's split in
  * `routes/session/index.tsx` (`UserMessage`, `AssistantMessage`,
  * `ReasoningPart`, `TextPart`) — trimmed to Inkstone's part types
- * (`text` / `thinking`; tool parts not rendered yet).
+ * (`text` / `thinking` / `file`; tool parts not rendered yet).
  */
 
 import { getAgentInfo } from "@backend/agent";
 import type { DisplayMessage } from "@bridge/view-model";
-import { Show } from "solid-js";
+import { For, Show } from "solid-js";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import { formatDuration } from "../util/format";
@@ -38,6 +38,20 @@ export const SplitBorderChars = {
 // User bubble.
 // ---------------------------------------------------------------------------
 
+/**
+ * MIME → short badge label. Minimal on purpose: today only reader's
+ * `/article` produces file parts, and those are always markdown. An
+ * unknown mime falls back to the raw string so adding a future entry
+ * is a one-line change.
+ */
+const MIME_BADGE: Record<string, string> = {
+	"text/markdown": "md",
+};
+
+function mimeBadge(mime: string): string {
+	return MIME_BADGE[mime] ?? mime;
+}
+
 export function UserMessage(props: {
 	message: DisplayMessage;
 	first: boolean;
@@ -63,8 +77,56 @@ export function UserMessage(props: {
 					paddingLeft={2}
 					backgroundColor={theme.backgroundPanel}
 					flexShrink={0}
+					flexDirection="column"
 				>
-					<text fg={theme.text}>{props.message.parts[0]?.text ?? ""}</text>
+					{/* Iterate parts so commands like reader's `/article` can
+					    render a compact bubble (short prose + file chip)
+					    while still sending the full payload to the LLM via a
+					    sibling `text` part on the agent-facing `prompt()`
+					    call. See `wrappedActions.prompt` in
+					    `tui/context/agent.tsx` for the split. Non-first
+					    parts get `marginTop={1}` to separate stacked rows
+					    (mirrors `AssistantMessage`'s parts loop). */}
+					<For each={props.message.parts}>
+						{(part, i) => {
+							const first = i() === 0;
+							if (part.type === "text") {
+								return (
+									<text fg={theme.text} marginTop={first ? 0 : 1}>
+										{part.text}
+									</text>
+								);
+							}
+							if (part.type === "file") {
+								return (
+									<text wrapMode="none" marginTop={first ? 0 : 1}>
+										<span
+											style={{
+												bg: agentColor(),
+												fg: theme.background,
+											}}
+										>
+											{` ${mimeBadge(part.mime)} `}
+										</span>
+										<span
+											style={{
+												bg: theme.backgroundElement,
+												fg: theme.textMuted,
+											}}
+										>
+											{` ${part.filename} `}
+										</span>
+									</text>
+								);
+							}
+							// `thinking` on a user bubble is unreachable today
+							// (the reducer only pushes thinking parts onto
+							// assistant messages). Guard silently instead of
+							// rendering to keep the renderer total over the
+							// union.
+							return null;
+						}}
+					</For>
 				</box>
 			</box>
 			{/* Dangling-user marker — stream was killed mid-turn so no
@@ -214,9 +276,21 @@ export function AssistantMessage(props: {
 							/>
 						);
 					}
-					return (
-						<TextPart text={part.text} first={first} streaming={streaming()} />
-					);
+					if (part.type === "text") {
+						return (
+							<TextPart
+								text={part.text}
+								first={first}
+								streaming={streaming()}
+							/>
+						);
+					}
+					// `file` parts only live on user bubbles (see
+					// `UserMessage`). Assistant bubbles never receive them
+					// from the reducer, but the part union covers the
+					// whole DisplayPart set — skip silently to keep the
+					// render total.
+					return null;
 				})}
 			</box>
 

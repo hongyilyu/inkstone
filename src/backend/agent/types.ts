@@ -1,3 +1,4 @@
+import type { DisplayPart } from "@bridge/view-model";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import type { AgentOverlay } from "./permissions";
 
@@ -67,7 +68,15 @@ export interface AgentZone {
  *                    after the slash name plus a `prompt` function the
  *                    shell injects. Commands typically compose a user
  *                    message (e.g. inline file content) and call
- *                    `prompt(text)` to kick off a turn.
+ *                    `prompt(text)` to kick off a turn. The optional
+ *                    second argument `displayParts` overrides the user
+ *                    bubble's rendered parts without changing what
+ *                    reaches pi-agent-core — `text` is still the single
+ *                    string pi-ai sees, so the LLM gets the full
+ *                    payload while the bubble can stay compact. Reader's
+ *                    `/article` is the reference pattern: `text` carries
+ *                    `Path: + Content:`; `displayParts` is a short prose
+ *                    line plus a file chip.
  *
  * The TUI's `BridgeAgentCommands` (`src/tui/context/agent.tsx`) converts
  * each `AgentCommand` into a `CommandOption` in the unified registry, so
@@ -81,8 +90,16 @@ export interface AgentZone {
  * that need them should throw a clear error when they're absent.
  */
 export interface AgentCommandHelpers {
-	/** Send a user message and start an LLM turn. */
-	prompt(text: string): Promise<void>;
+	/**
+	 * Send a user message and start an LLM turn. `text` is what pi-
+	 * agent-core (and in turn pi-ai) hands to the LLM. The optional
+	 * `displayParts` replace the user bubble's rendered parts without
+	 * changing what reaches the model — the LLM still sees the full
+	 * `text`. Reader's `/article` uses this to inline the full article
+	 * content in `text` while rendering a compact "short prose + file
+	 * chip" bubble via `displayParts`.
+	 */
+	prompt(text: string, displayParts?: DisplayPart[]): Promise<void>;
 	/**
 	 * Push a user-role bubble into the conversation (persisted to DB)
 	 * without starting an LLM turn. Useful for displaying informational

@@ -59,7 +59,17 @@ import { useToast } from "../ui/toast";
 
 interface AgentContextValue {
 	store: AgentStoreState;
-	actions: AgentActions & {
+	actions: Omit<AgentActions, "prompt"> & {
+		/**
+		 * Send a user turn. `text` is the full payload pi-agent-core hands
+		 * to pi-ai (and in turn to the LLM). `displayParts`, when supplied,
+		 * replaces the default single-text-part rendering of the user
+		 * bubble — used by commands like reader's `/article` that inline a
+		 * large payload in `text` but want a compact bubble (short prose +
+		 * file chip). When omitted, the bubble renders as `[{ type:
+		 * "text", text }]`, matching the pre-displayParts shape.
+		 */
+		prompt(text: string, displayParts?: DisplayPart[]): Promise<void>;
 		selectAgent(name: string): void;
 		clearSession(): void;
 		resumeSession(sessionId: string): void;
@@ -260,13 +270,21 @@ export function AgentProvider(props: ParentProps) {
 							if (!lastPart) break;
 							const expected = ame.type === "text_delta" ? "text" : "thinking";
 							if (lastPart.type !== expected) break;
+							// Narrow through `produce` because Solid's store
+							// path typing can't see the runtime `lastPart.type`
+							// guard above — addressing `"text"` on the union
+							// `text | thinking | file` would fail typecheck
+							// even though the runtime guard makes it safe.
 							setStore(
 								"messages",
 								lastMsgIdx,
 								"parts",
 								lastPartIdx,
-								"text",
-								(t) => t + ame.delta,
+								produce((p: DisplayPart) => {
+									if (p.type === "text" || p.type === "thinking") {
+										p.text += ame.delta;
+									}
+								}),
 							);
 							break;
 						}
@@ -463,12 +481,18 @@ export function AgentProvider(props: ParentProps) {
 	// lifecycle methods with store resets.
 	const wrappedActions: AgentContextValue["actions"] = {
 		...agentSession.actions,
-		async prompt(text: string) {
+		async prompt(text: string, displayParts?: DisplayPart[]) {
 			const sessionId = ensureSession();
+			// LLM text vs. bubble display split: when a command supplies
+			// `displayParts` (reader's `/article` does), use those verbatim
+			// so the bubble can render a file chip instead of the full
+			// article body; otherwise fall back to the one-text-part shape
+			// that covers plain prompts. pi-agent-core only ever sees
+			// `text`, so whatever the LLM needs must be in `text`.
 			const userMsg: DisplayMessage = {
 				id: newId(),
 				role: "user",
-				parts: [{ type: "text", text }],
+				parts: displayParts ?? [{ type: "text", text }],
 			};
 			setStore(
 				"messages",
@@ -660,7 +684,13 @@ export function AgentProvider(props: ParentProps) {
 	 */
 	function buildCommandHelpers(): import("@backend/agent/types").AgentCommandHelpers {
 		return {
-			prompt: (text) => wrappedActions.prompt(text),
+			// Forward the optional `displayParts` so commands like reader's
+			// `/article` can render a compact bubble while pi-agent-core
+			// still receives the full-content `text`. See
+			// `wrappedActions.prompt` for the split; pi-agent-core is blind
+			// to `displayParts` by construction — it lives entirely in the
+			// Solid store.
+			prompt: (text, displayParts) => wrappedActions.prompt(text, displayParts),
 			displayMessage(text: string) {
 				const sessionId = ensureSession();
 				const userMsg: DisplayMessage = {
