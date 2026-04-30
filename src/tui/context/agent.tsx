@@ -36,6 +36,7 @@ import { batch, createContext, type ParentProps, useContext } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { toBottom } from "../app";
 import { type CommandOption, useCommand } from "../components/dialog-command";
+import { DialogSelect } from "../ui/dialog-select";
 
 /**
  * Placeholder strings that providers inject into redacted thinking blocks.
@@ -652,6 +653,71 @@ export function AgentProvider(props: ParentProps) {
 	};
 
 	/**
+	 * Build the `AgentCommandHelpers` bag injected into every
+	 * `AgentCommand.execute` call. Closes over `wrappedActions`,
+	 * `dialog`, and the store so commands can push display bubbles
+	 * and open picker dialogs without knowing about the TUI layer.
+	 */
+	function buildCommandHelpers(): import("@backend/agent/types").AgentCommandHelpers {
+		return {
+			prompt: (text) => wrappedActions.prompt(text),
+			displayMessage(text: string) {
+				const sessionId = ensureSession();
+				const userMsg: DisplayMessage = {
+					id: newId(),
+					role: "user",
+					parts: [{ type: "text", text }],
+				};
+				setStore(
+					"messages",
+					produce((msgs: DisplayMessage[]) => {
+						msgs.push(userMsg);
+					}),
+				);
+				runInTransaction((tx) => appendDisplayMessage(tx, sessionId, userMsg));
+				toBottom();
+			},
+			pickFromList({ title, size, options }) {
+				let settled = false;
+				return new Promise<string | undefined>((resolve) => {
+					dialog.replace(
+						() => (
+							<DialogSelect<string>
+								title={title}
+								placeholder="Search..."
+								options={options.map((o) => ({
+									title: o.title,
+									value: o.value,
+									description: o.description,
+								}))}
+								onSelect={(opt) => {
+									if (settled) return;
+									settled = true;
+									resolve(opt.value);
+								}}
+							/>
+						),
+						// `onClose` fires when ESC dismisses the dialog
+						// without a selection — resolve `undefined` so the
+						// command can exit cleanly without starting a turn.
+						// Also fires after `dialog.clear()` on the select
+						// path (double-resolve); the `settled` flag ensures
+						// only the first resolve takes effect.
+						() => {
+							if (settled) return;
+							settled = true;
+							resolve(undefined);
+						},
+					);
+					// `dialog.replace` resets size to "medium"; set the
+					// requested size after so it takes effect.
+					if (size) dialog.setSize(size);
+				});
+			},
+		};
+	}
+
+	/**
 	 * Bridge backend-declared `AgentCommand`s into the unified command
 	 * registry. Defined as a closure component so it can capture
 	 * `wrappedActions` without widening the `useAgent()` context value.
@@ -699,17 +765,18 @@ export function AgentProvider(props: ParentProps) {
 					// and land on the in-flight bubble as usual.
 					// `execute` may return `void` (sync commands); wrap in
 					// Promise.resolve so `.catch` is always available.
-					Promise.resolve(
-						c.execute(args ?? "", (text) => wrappedActions.prompt(text)),
-					).catch((err: unknown) => {
-						const msg = err instanceof Error ? err.message : String(err);
-						toast.show({
-							variant: "error",
-							title: "Command error",
-							message: msg,
-							duration: 6000,
-						});
-					});
+					const helpers = buildCommandHelpers();
+					Promise.resolve(c.execute(args ?? "", helpers)).catch(
+						(err: unknown) => {
+							const msg = err instanceof Error ? err.message : String(err);
+							toast.show({
+								variant: "error",
+								title: "Command error",
+								message: msg,
+								duration: 6000,
+							});
+						},
+					);
 				},
 			}));
 		});

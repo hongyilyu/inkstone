@@ -5,71 +5,93 @@ import { type AgentOverlay, isInsideDir } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
 import type { AgentCommand, AgentInfo, AgentZone } from "../../types";
 import { buildReaderInstructions } from "./instructions";
+import { recommendArticles } from "./recommendations";
 
 /**
- * `/article <filename>` — reader's canonical verb.
+ * Core article-loading logic shared by the bare-case (picker) and the
+ * arg-case (direct filename). Resolves the filename inside
+ * `ARTICLES_DIR`, validates, reads, and sends the opening user message.
+ */
+async function runArticle(
+	filename: string,
+	prompt: (text: string) => Promise<void>,
+): Promise<void> {
+	const articlePath = resolve(ARTICLES_DIR, filename);
+	if (!isInsideDir(articlePath, ARTICLES_DIR) || articlePath === ARTICLES_DIR) {
+		throw new Error(`Not a file inside the Articles folder: '${filename}'`);
+	}
+	let stat: ReturnType<typeof lstatSync>;
+	try {
+		stat = lstatSync(articlePath);
+	} catch {
+		throw new Error(`Article not found: ${filename}`);
+	}
+	if (stat.isSymbolicLink()) {
+		throw new Error(`Symlinks are not supported for /article: '${filename}'`);
+	}
+	if (!stat.isFile()) {
+		throw new Error(`Not a regular file: ${filename}`);
+	}
+	const content = readFileSync(articlePath, "utf-8");
+	await prompt(
+		`Read this article and begin the reading workflow.\n\nPath: ${articlePath}\n\nContent:\n\n${content}`,
+	);
+}
+
+/**
+ * `/article [filename]` — reader's canonical verb.
  *
- * Resolves the filename inside `ARTICLES_DIR` only. Rejects paths that
- * escape the Articles folder, point at the folder itself, don't exist,
- * resolve through a symlink, or don't resolve to a regular file. On
- * success, reads the file and hands the path + content to the LLM as
- * the opening user message, kicking off the 6-stage reading workflow.
+ * Two modes:
  *
- * Symlinks are rejected as a class (`lstatSync` + reject if
- * `isSymbolicLink()`). A symlink inside Articles pointing at an
- * arbitrary file outside the vault would otherwise pass the
- * `isInsideDir` check (which operates on the lexical path) and leak
- * external content through the opening user message. The vault is
- * trusted content, so this is defense-in-depth, not a hard boundary —
- * but the error text claims "inside the Articles folder" and we keep
- * that claim true.
+ * 1. **Bare** (`/article` with no argument or whitespace-only):
+ *    Scans `ARTICLES_DIR`, scores unread articles using the `index.base`
+ *    ranking logic, pushes a numbered recommendation list into the
+ *    conversation as a user bubble, then opens a `DialogSelect` picker.
+ *    Selecting an article runs the normal loading path. Cancelling (ESC)
+ *    leaves the list in the conversation without starting a turn.
  *
- * Whitespace-only args throw rather than silently returning; a typed
- * `/article   ` would otherwise produce no visible outcome.
+ * 2. **With filename** (`/article foo.md`):
+ *    Resolves the filename inside `ARTICLES_DIR` only. Rejects paths
+ *    that escape the Articles folder, point at the folder itself, don't
+ *    exist, resolve through a symlink, or don't resolve to a regular
+ *    file. On success, reads the file and hands the path + content to
+ *    the LLM as the opening user message, kicking off the 6-stage
+ *    reading workflow.
  *
- * No cross-turn state: the article lives in the conversation history,
- * and reader's permission rules apply statically to any file inside
- * the Articles zone.
+ * `takesArgs: false` so the bare invocation is dispatched by the slash
+ * gate (previously `true` caused bare `/article` to fall through as a
+ * plain prompt). The command also appears in the Ctrl+P palette —
+ * clicking it opens the picker.
  */
 const articleCommand: AgentCommand = {
 	name: "article",
 	description: "Open an article for guided reading",
-	argHint: "<filename>",
-	takesArgs: true,
-	execute: async (args, prompt) => {
+	argHint: "[filename]",
+	takesArgs: false,
+	execute: async (args, helpers) => {
 		const filename = args.trim();
 		if (!filename) {
-			throw new Error("Missing filename. Usage: /article <filename>");
+			// Bare invocation — show a picker dialog with recommended articles.
+			const recs = recommendArticles(10);
+			if (recs.length === 0) {
+				throw new Error("No unread articles found in the Articles folder");
+			}
+			if (!helpers.pickFromList) {
+				throw new Error("Article picker requires an interactive frontend");
+			}
+			const picked = await helpers.pickFromList({
+				title: "Recommended articles",
+				size: "large",
+				options: recs.map((r) => ({
+					title: r.title,
+					value: r.filename,
+					description: r.bucket,
+				})),
+			});
+			if (!picked) return; // User cancelled — no turn started.
+			return runArticle(picked, helpers.prompt);
 		}
-		const articlePath = resolve(ARTICLES_DIR, filename);
-		// `isInsideDir` is `path.sep`-boundary-safe and cross-platform;
-		// the equality short-circuit also means `articlePath === ARTICLES_DIR`
-		// slips through, so we reject the bare-dir case explicitly.
-		if (
-			!isInsideDir(articlePath, ARTICLES_DIR) ||
-			articlePath === ARTICLES_DIR
-		) {
-			throw new Error(`Not a file inside the Articles folder: '${filename}'`);
-		}
-		// `lstatSync` doesn't follow symlinks; combined with the
-		// `isSymbolicLink()` reject, this closes the symlink-out-of-vault
-		// hole (a link inside Articles that points at an arbitrary file).
-		let stat: ReturnType<typeof lstatSync>;
-		try {
-			stat = lstatSync(articlePath);
-		} catch {
-			throw new Error(`Article not found: ${filename}`);
-		}
-		if (stat.isSymbolicLink()) {
-			throw new Error(`Symlinks are not supported for /article: '${filename}'`);
-		}
-		if (!stat.isFile()) {
-			throw new Error(`Not a regular file: ${filename}`);
-		}
-		const content = readFileSync(articlePath, "utf-8");
-		await prompt(
-			`Read this article and begin the reading workflow.\n\nPath: ${articlePath}\n\nContent:\n\n${content}`,
-		);
+		return runArticle(filename, helpers.prompt);
 	},
 };
 
