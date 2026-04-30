@@ -16,6 +16,9 @@ import { createSignal } from "solid-js";
 
 export interface SecondaryPageState {
 	/** Markdown content to render. */
+	// TODO: Currently only supports markdown rendering. Expand to support
+	// other formats (plain text, structured data, custom JSX) when needed
+	// — e.g. subagent work output, logs, or non-markdown file types.
 	content: string;
 	/** Optional title shown in the sidebar. */
 	title?: string;
