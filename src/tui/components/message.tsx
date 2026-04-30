@@ -52,6 +52,57 @@ function mimeBadge(mime: string): string {
 	return MIME_BADGE[mime] ?? mime;
 }
 
+/**
+ * Single part inside a user bubble. Dispatches on `DisplayPart.type`:
+ *
+ * - `text`     → plain prose line.
+ * - `file`     → MIME-badge chip (agent-colored bg + muted filename).
+ * - `thinking` → unreachable today (reducer only pushes thinking onto
+ *                assistant messages); returns null defensively.
+ *
+ * Mirrors the `TextPart` / `ReasoningPart` split on the assistant side
+ * so each part type has a dedicated component and the parent `UserMessage`
+ * stays a thin layout wrapper.
+ */
+function UserPart(props: {
+	part: import("@bridge/view-model").DisplayPart;
+	first: boolean;
+	agentColor: import("@opentui/core").RGBA;
+}) {
+	const { theme } = useTheme();
+
+	if (props.part.type === "text") {
+		return (
+			<text fg={theme.text} marginTop={props.first ? 0 : 1}>
+				{props.part.text}
+			</text>
+		);
+	}
+	if (props.part.type === "file") {
+		return (
+			<text wrapMode="none" marginTop={props.first ? 0 : 1}>
+				<span
+					style={{
+						bg: props.agentColor,
+						fg: theme.background,
+					}}
+				>
+					{` ${mimeBadge(props.part.mime)} `}
+				</span>
+				<span
+					style={{
+						bg: theme.backgroundElement,
+						fg: theme.textMuted,
+					}}
+				>
+					{` ${props.part.filename} `}
+				</span>
+			</text>
+		);
+	}
+	return null;
+}
+
 export function UserMessage(props: {
 	message: DisplayMessage;
 	first: boolean;
@@ -79,53 +130,14 @@ export function UserMessage(props: {
 					flexShrink={0}
 					flexDirection="column"
 				>
-					{/* Iterate parts so commands like reader's `/article` can
-					    render a compact bubble (short prose + file chip)
-					    while still sending the full payload to the LLM via a
-					    sibling `text` part on the agent-facing `prompt()`
-					    call. See `wrappedActions.prompt` in
-					    `tui/context/agent.tsx` for the split. Non-first
-					    parts get `marginTop={1}` to separate stacked rows
-					    (mirrors `AssistantMessage`'s parts loop). */}
 					<For each={props.message.parts}>
-						{(part, i) => {
-							const first = i() === 0;
-							if (part.type === "text") {
-								return (
-									<text fg={theme.text} marginTop={first ? 0 : 1}>
-										{part.text}
-									</text>
-								);
-							}
-							if (part.type === "file") {
-								return (
-									<text wrapMode="none" marginTop={first ? 0 : 1}>
-										<span
-											style={{
-												bg: agentColor(),
-												fg: theme.background,
-											}}
-										>
-											{` ${mimeBadge(part.mime)} `}
-										</span>
-										<span
-											style={{
-												bg: theme.backgroundElement,
-												fg: theme.textMuted,
-											}}
-										>
-											{` ${part.filename} `}
-										</span>
-									</text>
-								);
-							}
-							// `thinking` on a user bubble is unreachable today
-							// (the reducer only pushes thinking parts onto
-							// assistant messages). Guard silently instead of
-							// rendering to keep the renderer total over the
-							// union.
-							return null;
-						}}
+						{(part, i) => (
+							<UserPart
+								part={part}
+								first={i() === 0}
+								agentColor={agentColor()}
+							/>
+						)}
 					</For>
 				</box>
 			</box>
