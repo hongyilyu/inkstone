@@ -142,6 +142,7 @@ src/
       conversation.tsx              Scrollbox + message list routing
       message.tsx                   Bubble rendering (UserMessage, AssistantMessage, parts)
       prompt.tsx                    Textarea prompt with /command parsing + streaming indicator
+      prompt-autocomplete.tsx        Slash-command dropdown above the textarea — fuzzysort-filtered list of `CommandOption`s with `slash` fields; column-0-only trigger, keyboard nav, argful insert
       spinner.tsx                   Simple braille-dot spinner
       spinner-wave.tsx              Knight-rider wave spinner (port of OpenCode's)
       sidebar.tsx                   Session metadata panel
@@ -475,6 +476,10 @@ user types "/xyz" + Enter
 ```
 
 **Precedence on slash-name collision**: first-match wins. `AgentProvider` mounts inside `CommandProvider` (see `src/tui/app.tsx` tree), and `command.register` prepends to the internal registration list — so `BridgeAgentCommands` entries sit ahead of `Layout`'s entries. An agent that declares a verb with the same name as a shell-level verb overrides the shell version for that agent only. This preserves D9's "agent overrides built-in" rule; it's theoretical today (no agent redefines `clear`).
+
+**Slash-command dropdown** (`src/tui/components/prompt-autocomplete.tsx`):
+
+Typing `/` at column 0 in the prompt opens a dropdown above the textarea listing all registered commands with a `slash` field. The dropdown reads `command.visible()` from the unified registry and filters via `fuzzysort` against the text after the leading `/`. Keyboard: Up/Down (+ Ctrl+P/Ctrl+N) navigate, Enter/Tab select, Esc dismiss. When the dropdown is visible with matches, Enter selects the highlighted entry; when no matches remain (user typed past all options), Enter falls through to the existing `handleSubmit` path (plain prompt or `triggerSlash`). Argless commands (e.g. `/clear`) fire immediately on selection; argful commands (e.g. `/article`) insert `/name ` into the textarea and close the dropdown so the user can type the argument. The dropdown dismisses on: Esc, space (whitespace in the text), backspace past the `/`, or explicit selection. Positioned via `position="absolute" bottom={6}` inside the prompt's outer `<box position="relative">`. Ported from OpenCode's `prompt/autocomplete.tsx` (slash-command subset only — no `@` mentions, no frecency, no directory expansion, no mouse handling).
 
 **No session auto-resume.** Boot always shows the openpage. Past session rows linger on disk for a future `/resume` command. This removes the "align agent before seeding messages" reconciliation window the previous resume flow had to manage — agent is now picked at session construction and fixed for the lifetime (see D13).
 

@@ -84,6 +84,7 @@ function init() {
 	// (e.g. any future plugin surface) still get a reactive scope.
 	const root = getOwner();
 	const [registrations, setRegistrations] = createSignal<Registration[]>([]);
+	const [suspendCount, setSuspendCount] = createSignal(0);
 	const dialog = useDialog();
 
 	const entries = createMemo(() => registrations().flatMap((x) => x()));
@@ -134,6 +135,18 @@ function init() {
 		/** See `triggerSlash` above. */
 		triggerSlash,
 		/**
+		 * Suspend / resume global keybind dispatch. The autocomplete
+		 * dropdown calls `suspend()` while visible so Ctrl+N/Ctrl+P
+		 * don't fire `session_list` / `command_list` behind it.
+		 * Balanced: every `suspend()` must pair with a `resume()`.
+		 */
+		suspend() {
+			setSuspendCount((c) => c + 1);
+		},
+		resume() {
+			setSuspendCount((c) => Math.max(0, c - 1));
+		},
+		/**
 		 * Register a batch of commands. The callback is memoized and re-run
 		 * whenever its tracked signals change, so gated commands (e.g. only
 		 * valid on an empty session) can simply return `[]` when inactive.
@@ -167,8 +180,10 @@ function init() {
 	};
 
 	// Global dispatch: palette-open key first, then any registered command.
-	// Skip entirely while a dialog is open so dialog-local handlers win.
+	// Skip entirely while a dialog is on the stack or while the autocomplete
+	// dropdown has suspended global keybind dispatch.
 	useKeyboard((evt: any) => {
+		if (suspendCount() > 0) return;
 		if (dialog.stack.length > 0) return;
 		if (evt.defaultPrevented) return;
 
