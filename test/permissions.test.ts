@@ -18,6 +18,14 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readerAgent } from "@backend/agent/agents/reader";
 import {
+	computePublishedBand,
+	computeReadingBucket,
+	computeReadingScore,
+	computeSavedBand,
+	parseFrontmatter,
+	recommendArticles,
+} from "@backend/agent/agents/reader/recommendations";
+import {
 	dispatchBeforeToolCall,
 	setConfirmFn,
 } from "@backend/agent/permissions";
@@ -177,6 +185,94 @@ describe("dispatchBeforeToolCall + reader overlay", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Recommendation scoring tests — verify the index.base ranking logic port.
+// ---------------------------------------------------------------------------
+
+describe("recommendations — scoring helpers", () => {
+	test("parseFrontmatter — extracts known keys", () => {
+		const content = `---\ntitle: "Test Article"\npublished: 2026-04-20\ndescription: A short desc\nreading_completed: 2026-04-25\nauthor: Someone\n---\nBody`;
+		const fm = parseFrontmatter(content);
+		expect(fm.title).toBe("Test Article");
+		expect(fm.published).toBe("2026-04-20");
+		expect(fm.description).toBe("A short desc");
+		expect(fm.reading_completed).toBe("2026-04-25");
+		// `author` is not in the known-keys set.
+		expect((fm as Record<string, unknown>).author).toBeUndefined();
+	});
+
+	test("parseFrontmatter — handles single-quoted values", () => {
+		const content = `---\ntitle: 'Hello World'\n---\n`;
+		expect(parseFrontmatter(content).title).toBe("Hello World");
+	});
+
+	test("parseFrontmatter — no frontmatter returns empty", () => {
+		expect(parseFrontmatter("No frontmatter here")).toEqual({});
+	});
+
+	test("computeSavedBand — new/recent/old", () => {
+		const now = new Date("2026-04-29");
+		// 3 days ago → new
+		expect(computeSavedBand(new Date("2026-04-26").getTime(), now)).toBe("new");
+		// 10 days ago → recent
+		expect(computeSavedBand(new Date("2026-04-19").getTime(), now)).toBe("recent");
+		// 30 days ago → old
+		expect(computeSavedBand(new Date("2026-03-30").getTime(), now)).toBe("old");
+	});
+
+	test("computePublishedBand — fresh/recent/old/unknown", () => {
+		const now = new Date("2026-04-29");
+		expect(computePublishedBand("2026-04-20", now)).toBe("fresh");
+		expect(computePublishedBand("2026-04-01", now)).toBe("recent");
+		expect(computePublishedBand("2026-02-01", now)).toBe("old");
+		expect(computePublishedBand(undefined, now)).toBe("unknown");
+	});
+
+	test("computeReadingBucket — matches index.base formulas", () => {
+		expect(computeReadingBucket("new", "fresh")).toBe("🔥 Fresh catch");
+		expect(computeReadingBucket("old", "recent")).toBe("✅ Still worth reading");
+		expect(computeReadingBucket("old", "old")).toBe("🧊 Probably stale");
+		expect(computeReadingBucket("recent", "fresh")).toBe("📚 Active backlog");
+		expect(computeReadingBucket("new", "unknown")).toBe("❓ Missing published");
+	});
+
+	test("computeReadingScore — unread vs read", () => {
+		// Unread, new saved, fresh published → 0 + 30 + 30 = 60
+		expect(computeReadingScore(false, "new", "fresh")).toBe(60);
+		// Read, new saved, fresh published → -100 + 30 + 30 = -40
+		expect(computeReadingScore(true, "new", "fresh")).toBe(-40);
+		// Unread, old saved, unknown published → 0 + 10 + 0 = 10
+		expect(computeReadingScore(false, "old", "unknown")).toBe(10);
+	});
+});
+
+describe("recommendations — recommendArticles", () => {
+	test("returns unread articles from test vault", () => {
+		const recs = recommendArticles(10);
+		// Test vault has foo.md (reading_intent: keeper, no reading_completed)
+		// and bar.md (no reading_completed). Both are unread.
+		// sneak.md is a symlink and should be excluded.
+		expect(recs.length).toBe(2);
+		const filenames = recs.map((r) => r.filename);
+		expect(filenames).toContain("foo.md");
+		expect(filenames).toContain("bar.md");
+		expect(filenames).not.toContain("sneak.md");
+	});
+
+	test("results are sorted by score DESC, then filename ASC", () => {
+		const recs = recommendArticles(10);
+		// Both files have the same mtime (just created) and no published
+		// date, so scores should be equal. Tie-break is filename ASC.
+		expect(recs[0]?.filename).toBe("bar.md");
+		expect(recs[1]?.filename).toBe("foo.md");
+	});
+
+	test("limit caps the result count", () => {
+		const recs = recommendArticles(1);
+		expect(recs.length).toBe(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // `/article` command tests — each case has a distinct shape (throw vs
 // prompt vs prompt-with-content), so they stay as separate test blocks.
 // ---------------------------------------------------------------------------
@@ -185,17 +281,35 @@ describe("reader /article command", () => {
 	// biome-ignore lint/style/noNonNullAssertion: readerAgent.commands is declared in source
 	const articleCommand = readerAgent.commands!.find((c) => c.name === "article");
 
+	/** Build a minimal `AgentCommandHelpers` bag for testing. */
+	function makeHelpers(overrides?: {
+		prompt?: (text: string) => Promise<void>;
+		pickFromList?: (params: {
+			title: string;
+			options: { title: string; value: string; description?: string }[];
+		}) => Promise<string | undefined>;
+		displayMessage?: (text: string) => void;
+	}) {
+		return {
+			prompt: overrides?.prompt ?? (async () => {}),
+			pickFromList: overrides?.pickFromList,
+			displayMessage: overrides?.displayMessage,
+		};
+	}
+
 	test("command is declared", () => {
 		expect(articleCommand).toBeDefined();
 	});
 
 	test("foo.md — prompts with path + content", async () => {
 		let promptCalledWith: string | null = null;
-		const fakePrompt = async (text: string) => {
-			promptCalledWith = text;
-		};
+		const helpers = makeHelpers({
+			prompt: async (text: string) => {
+				promptCalledWith = text;
+			},
+		});
 		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await articleCommand!.execute("foo.md", fakePrompt);
+		await articleCommand!.execute("foo.md", helpers);
 		expect(promptCalledWith).not.toBeNull();
 		// Narrow the type for subsequent assertions — we've just verified non-null.
 		const text = promptCalledWith as unknown as string;
@@ -204,34 +318,76 @@ describe("reader /article command", () => {
 	});
 
 	test("missing.md — throws 'Article not found'", async () => {
-		const fakePrompt = async () => {};
 		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await expect(articleCommand!.execute("missing.md", fakePrompt)).rejects.toThrow(/not found/i);
+		await expect(articleCommand!.execute("missing.md", makeHelpers())).rejects.toThrow(/not found/i);
 	});
 
 	test("../outside.md — throws (escape attempt)", async () => {
-		const fakePrompt = async () => {};
 		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await expect(articleCommand!.execute("../outside.md", fakePrompt)).rejects.toThrow(
+		await expect(articleCommand!.execute("../outside.md", makeHelpers())).rejects.toThrow(
 			/not a file inside|not found|not a regular file/i,
 		);
 	});
 
-	test("empty args — throws 'Missing filename'", async () => {
-		const fakePrompt = async () => {};
+	test("bare /article — calls pickFromList with recommendations", async () => {
+		let pickerOptions: { title: string; value: string }[] = [];
+		const helpers = makeHelpers({
+			pickFromList: async (params) => {
+				pickerOptions = params.options;
+				return undefined; // simulate cancel
+			},
+		});
 		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await expect(articleCommand!.execute("", fakePrompt)).rejects.toThrow(/missing filename/i);
+		await articleCommand!.execute("", helpers);
+		// The picker should have been opened with at least one option.
+		// (test vault has foo.md and bar.md unread — no reading_completed)
+		expect(pickerOptions.length).toBeGreaterThan(0);
 	});
 
-	test("whitespace-only args — throws 'Missing filename'", async () => {
-		const fakePrompt = async () => {};
+	test("bare /article — selecting an article prompts with content", async () => {
+		let promptCalledWith: string | null = null;
+		const helpers = makeHelpers({
+			prompt: async (text: string) => {
+				promptCalledWith = text;
+			},
+			pickFromList: async () => "bar.md",
+		});
 		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await expect(articleCommand!.execute("   ", fakePrompt)).rejects.toThrow(/missing filename/i);
+		await articleCommand!.execute("", helpers);
+		expect(promptCalledWith).not.toBeNull();
+		const text = promptCalledWith as unknown as string;
+		expect(text).toContain("bar.md");
+		expect(text).toContain("Another article body.");
+	});
+
+	test("bare /article — cancel returns without prompting", async () => {
+		let promptCalled = false;
+		const helpers = makeHelpers({
+			prompt: async () => {
+				promptCalled = true;
+			},
+			pickFromList: async () => undefined, // simulate ESC
+		});
+		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
+		await articleCommand!.execute("", helpers);
+		expect(promptCalled).toBe(false);
+	});
+
+	test("whitespace-only args — opens picker (bare case)", async () => {
+		let pickerOpened = false;
+		const helpers = makeHelpers({
+			pickFromList: async () => {
+				pickerOpened = true;
+				return undefined;
+			},
+		});
+		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
+		await articleCommand!.execute("   ", helpers);
+		expect(pickerOpened).toBe(true);
 	});
 
 	test("sneak.md (symlink) — throws (lstat reject)", async () => {
-		const fakePrompt = async () => {};
 		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await expect(articleCommand!.execute("sneak.md", fakePrompt)).rejects.toThrow(/symlink/i);
+		await expect(articleCommand!.execute("sneak.md", makeHelpers())).rejects.toThrow(/symlink/i);
 	});
 });
