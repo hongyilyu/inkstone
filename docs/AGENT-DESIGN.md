@@ -116,15 +116,24 @@ This is D5 ("ship mechanism, defer content") extended to cover the future-work d
 **Shape** (`src/backend/agent/types.ts`):
 
 ```ts
+import type { DisplayPart } from "@bridge/view-model";
+
+export interface AgentCommandHelpers {
+  prompt(text: string, displayParts?: DisplayPart[]): Promise<void>;
+  displayMessage?(text: string): void;
+  pickFromList?(params: {
+    title: string;
+    size?: "medium" | "large" | "xlarge";
+    options: { title: string; value: string; description?: string }[];
+  }): Promise<string | undefined>;
+}
+
 export interface AgentCommand {
   name: string;                   // verb without the leading slash
   description?: string;
-  argHint?: string;               // "<filename>", "<folder>", "<question>"
+  argHint?: string;               // "[filename]", "<folder>", "<question>"
   takesArgs?: boolean;            // requires non-empty args for typed slash dispatch
-  execute(
-    args: string,
-    prompt: (text: string) => Promise<void>,
-  ): void | Promise<void>;
+  execute(args: string, helpers: AgentCommandHelpers): void | Promise<void>;
 }
 
 export interface AgentInfo {
@@ -133,7 +142,7 @@ export interface AgentInfo {
 }
 ```
 
-`execute` receives a positional `prompt` function that kicks off an LLM turn. Commands typically compose a user message (e.g. reader's `/article` reads the article file and inlines path + content) and call `prompt(text)` to send it. The TUI's `BridgeAgentCommands` component (`src/tui/context/agent.tsx`) picks up `AgentInfo.commands` reactively on `store.currentAgent` and converts each entry into a `CommandOption` in the unified registry.
+`execute` receives an `AgentCommandHelpers` bag the TUI bridge injects. `helpers.prompt(text, displayParts?)` starts an LLM turn — `text` is what pi-agent-core hands to the LLM; the optional `displayParts` replace the user bubble's rendered parts without changing what reaches the model (reader's `/article` uses this to inline the full article in `text` while rendering a compact "short prose + file chip" bubble). `helpers.displayMessage(text)` pushes a user bubble without starting a turn (used for the bare-`/article` recommendation list). `helpers.pickFromList({...})` opens a `DialogSelect` picker. The optional helpers require an interactive frontend; headless callers omit them and commands that need them throw a clear error. The TUI's `BridgeAgentCommands` component (`src/tui/context/agent.tsx`) picks up `AgentInfo.commands` reactively on `store.currentAgent` and converts each entry into a `CommandOption` in the unified registry.
 
 **System-prompt stability invariant.** `AgentInfo.buildInstructions()` must return a stable string for a given `AgentInfo`. pi-agent-core's `Agent` reads `state.systemPrompt` once per `prompt()` call via `createContextSnapshot()` and feeds the same bytes to every turn within that call; both Anthropic's `cache_control` block and Bedrock's `cachePoint` are pinned to the byte-exact system prefix, so any drift between turns invalidates the cache. `createSession` builds the prompt once; `Session.selectAgent` rebuilds it on an empty-session agent swap (see D13); `Session.clearSession` wipes messages without touching the prompt. Commands **must not** mutate state that `buildInstructions` reads. Dynamic per-turn context (date, cwd, memory recall, file snapshots, article content) goes into a user message via `prompt(text)`, not into the system prompt; reader's `/article` is the reference pattern. This matches pi-mono's expected usage (see `coding-agent`'s `_baseSystemPrompt` — rebuild only on tool-set change, resource reload, or extension override) and the cross-codebase consensus (claude-code's `prependUserContext`, openclaw's cache boundary, opencode's synthetic user parts, hermes's `ephemeral_system_prompt` escape hatch).
 
@@ -141,7 +150,7 @@ export interface AgentInfo {
 
 **Dispatch precedence**: agent-declared commands override shell-level commands on slash-name collision. Mechanism: `AgentProvider` mounts inside `CommandProvider`, and `command.register` prepends to its internal list, so agent-bridge entries sit ahead of `Layout`'s entries. First-match wins. Intentional — an agent can redefine `/clear` if its semantics differ (none do today).
 
-**Why `prompt` is positional, not wrapped in a context object**: an earlier iteration of D9 introduced an `AgentCommandContext { prompt, setActiveArticle }` object, justified as "widening has to be an explicit decision per capability." In practice only `prompt` was used universally, and `setActiveArticle` was reader-shaped leakage on a supposedly generic type. When reader went stateless (see the reader statelessness refactor in `docs/TODO.md`), `setActiveArticle` disappeared entirely. The remaining one-field context had no justification for existing, so the context object was replaced with a positional `prompt` argument. If a second capability ever does arrive, revisit — but don't re-introduce the wrapper prematurely; the positional-function shape is the minimum-viable surface. D8's "pressure point, not API" applies.
+**Why a helpers bag, not a positional `prompt`**: an earlier iteration of D9 used a positional `prompt` function as the sole second argument. When the bare-`/article` picker landed, two more capabilities were needed (`displayMessage`, `pickFromList`). Rather than growing positional arguments, the surface was widened to `AgentCommandHelpers` — a bag where `prompt` is always available and the interactive helpers are optional (headless callers omit them). The bag also carries the `displayParts?` parameter on `prompt` so commands can split the LLM payload from the bubble render without a separate API. D8's "pressure point, not API" still applies: add capabilities to the bag only when a real command needs them.
 
 **What this resolves**: the "Reader-specific vocabulary leaks onto AgentActions" pressure point. `loadArticle` is gone from `AgentActions`; it's now a reader command. `buildInstructions` is nullary — no `AgentBuildContext` carrying reader-shaped fields. D9's original design introduced `runAgentCommand` + `canRunAgentCommand` on `AgentActions` plus a wider `CommandContext` with `clearSession` and `abort` — all of those have since been removed in favor of the bridge pattern (see "Unified command registry" below). The originally-proposed `refreshSystemPrompt` hook was dropped when the shell briefly moved to per-turn prompt rebuilding, and then the per-turn rebuild itself was dropped in favor of the stability invariant documented above. The `AgentCommandContext` wrapper was dropped when reader's statelessness refactor made it one-field-only.
 

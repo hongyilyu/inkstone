@@ -5,15 +5,16 @@
  * stays a thin list + routing layer. Mirrors OpenCode's split in
  * `routes/session/index.tsx` (`UserMessage`, `AssistantMessage`,
  * `ReasoningPart`, `TextPart`) — trimmed to Inkstone's part types
- * (`text` / `thinking`; tool parts not rendered yet).
+ * (`text` / `thinking` / `file`; tool parts not rendered yet).
  */
 
 import { getAgentInfo } from "@backend/agent";
 import type { DisplayMessage } from "@bridge/view-model";
-import { Show } from "solid-js";
+import { For, Show } from "solid-js";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import { formatDuration } from "../util/format";
+import { UserPart } from "./user-part";
 
 const EmptyBorder = {
 	topLeft: "",
@@ -63,8 +64,17 @@ export function UserMessage(props: {
 					paddingLeft={2}
 					backgroundColor={theme.backgroundPanel}
 					flexShrink={0}
+					flexDirection="column"
 				>
-					<text fg={theme.text}>{props.message.parts[0]?.text ?? ""}</text>
+					<For each={props.message.parts}>
+						{(part, i) => (
+							<UserPart
+								part={part}
+								first={i() === 0}
+								agentColor={agentColor()}
+							/>
+						)}
+					</For>
 				</box>
 			</box>
 			{/* Dangling-user marker — stream was killed mid-turn so no
@@ -214,9 +224,21 @@ export function AssistantMessage(props: {
 							/>
 						);
 					}
-					return (
-						<TextPart text={part.text} first={first} streaming={streaming()} />
-					);
+					if (part.type === "text") {
+						return (
+							<TextPart
+								text={part.text}
+								first={first}
+								streaming={streaming()}
+							/>
+						);
+					}
+					// `file` parts only live on user bubbles (see
+					// `UserMessage`). Assistant bubbles never receive them
+					// from the reducer, but the part union covers the
+					// whole DisplayPart set — skip silently to keep the
+					// render total.
+					return null;
 				})}
 			</box>
 

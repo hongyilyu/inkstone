@@ -22,19 +22,32 @@ import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
  *
  * Kept intentionally narrow — `tool` is not a part type because Inkstone
  * doesn't render tool calls in bubbles yet; when it does, this union grows.
+ *
+ * `file` is display-only: an agent command (e.g. reader's `/article`) can
+ * hand the TUI a compact render shape — a short prose line plus a file
+ * chip — while still passing the *full* file content as the prompt text
+ * that reaches pi-agent-core. The LLM sees the single full text; the
+ * bubble renders the compact parts. `mime` drives the badge label
+ * (`text/markdown` → `"md"`, fall back to the raw mime), `filename` is
+ * the display path (typically vault-relative).
  */
 export type DisplayPart =
 	| { type: "text"; text: string }
-	| { type: "thinking"; text: string };
+	| { type: "thinking"; text: string }
+	| { type: "file"; mime: string; filename: string };
 
 export interface DisplayMessage {
 	id: string;
 	role: "user" | "assistant";
 	/**
-	 * Ordered block list. User messages have exactly one `text` part;
-	 * assistant messages may interleave `text` and `thinking` parts in
-	 * emission order. Redacted-thinking handling lives in the reducer —
-	 * see `REDACTED_THINKING_PLACEHOLDERS` in `tui/context/agent.tsx`.
+	 * Ordered block list. User messages are usually a single `text` part,
+	 * but commands that hand the TUI explicit `displayParts` (e.g. reader's
+	 * `/article`) can place any mix of `text` + `file` parts here — the
+	 * LLM-facing prompt text is separate and always passed unmodified to
+	 * pi-agent-core. Assistant messages may interleave `text` and
+	 * `thinking` parts in emission order. Redacted-thinking handling
+	 * lives in the reducer — see `REDACTED_THINKING_PLACEHOLDERS` in
+	 * `tui/context/agent.tsx`.
 	 */
 	parts: DisplayPart[];
 	// `agentName` / `modelName` are per-message (stamped in `message_end`);

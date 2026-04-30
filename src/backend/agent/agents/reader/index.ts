@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { ARTICLES_DIR } from "../../constants";
+import { relative, resolve } from "node:path";
+import type { DisplayPart } from "@bridge/view-model";
+import { ARTICLES_DIR, VAULT_DIR } from "../../constants";
 import { type AgentOverlay, isInsideDir } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
 import type { AgentCommand, AgentInfo, AgentZone } from "../../types";
@@ -11,15 +12,29 @@ import { recommendArticles } from "./recommendations";
  * Core article-loading logic shared by the bare-case (picker) and the
  * arg-case (direct filename). Resolves the filename inside
  * `ARTICLES_DIR`, validates, reads, and sends the opening user message.
+ *
+ * Splits the display and LLM payloads: `prompt` receives the full
+ * `Path: + Content:` blob as `text` (what pi-agent-core hands to pi-ai)
+ * and a compact `[short prose, file chip]` array as `displayParts` (what
+ * the user bubble renders). See `wrappedActions.prompt` in
+ * `src/tui/context/agent.tsx` for the split — pi-agent-core only ever
+ * sees `text`, so the LLM gets the full article while the bubble stays
+ * scannable.
  */
 async function runArticle(
 	filename: string,
-	prompt: (text: string) => Promise<void>,
+	prompt: (text: string, displayParts?: DisplayPart[]) => Promise<void>,
 ): Promise<void> {
 	const articlePath = resolve(ARTICLES_DIR, filename);
+	// `isInsideDir` is `path.sep`-boundary-safe and cross-platform;
+	// the equality short-circuit also means `articlePath === ARTICLES_DIR`
+	// slips through, so we reject the bare-dir case explicitly.
 	if (!isInsideDir(articlePath, ARTICLES_DIR) || articlePath === ARTICLES_DIR) {
 		throw new Error(`Not a file inside the Articles folder: '${filename}'`);
 	}
+	// `lstatSync` doesn't follow symlinks; combined with the
+	// `isSymbolicLink()` reject, this closes the symlink-out-of-vault
+	// hole (a link inside Articles that points at an arbitrary file).
 	let stat: ReturnType<typeof lstatSync>;
 	try {
 		stat = lstatSync(articlePath);
@@ -33,8 +48,16 @@ async function runArticle(
 		throw new Error(`Not a regular file: ${filename}`);
 	}
 	const content = readFileSync(articlePath, "utf-8");
+	// Chip filename is vault-relative — shorter than the absolute path
+	// and unambiguous inside the vault. The absolute path still goes
+	// into the LLM text so tools resolve the same file later.
+	const relPath = relative(VAULT_DIR, articlePath);
 	await prompt(
 		`Read this article and begin the reading workflow.\n\nPath: ${articlePath}\n\nContent:\n\n${content}`,
+		[
+			{ type: "text", text: "Read this article." },
+			{ type: "file", mime: "text/markdown", filename: relPath },
+		],
 	);
 }
 
