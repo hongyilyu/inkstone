@@ -1,8 +1,11 @@
 /**
- * Secondary page — local UI state for displaying a full-screen file
- * viewer that replaces the conversation area.
+ * Secondary page — local UI state for displaying a full-screen page
+ * that replaces the conversation area.
  *
- * Generic: any agent can open a secondary page to display a file.
+ * Generic: any agent or component can open a secondary page with
+ * arbitrary markdown content. Use cases: file viewer, subagent
+ * output, help pages, etc.
+ *
  * Not agent/session state — purely a TUI navigation concern.
  *
  * Module-level signal so deeply nested components (UserPart, Sidebar,
@@ -11,13 +14,18 @@
 
 import { createSignal } from "solid-js";
 
-const [secondaryPage, setSecondaryPage] = createSignal<{
-	filename: string;
-} | null>(null);
+export interface SecondaryPageState {
+	/** Markdown content to render. */
+	content: string;
+	/** Optional title shown in the sidebar. */
+	title?: string;
+}
 
-/** Open a secondary page to display a file. `filename` is vault-relative. */
-export function openSecondaryPage(filename: string) {
-	setSecondaryPage({ filename });
+const [secondaryPage, setSecondaryPage] = createSignal<SecondaryPageState | null>(null);
+
+/** Open a secondary page with the given markdown content. */
+export function openSecondaryPage(state: SecondaryPageState) {
+	setSecondaryPage(state);
 }
 
 /** Return from the secondary page to the conversation. */
