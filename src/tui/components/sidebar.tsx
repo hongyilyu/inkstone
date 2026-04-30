@@ -1,6 +1,6 @@
 import { VAULT_DIR } from "@backend/agent/constants";
 import { TextAttributes } from "@opentui/core";
-import { createMemo, Show } from "solid-js";
+import { createMemo, For, Show } from "solid-js";
 import pkg from "../../../package.json";
 import { refocusInput } from "../app";
 import { useAgent } from "../context/agent";
@@ -15,16 +15,18 @@ const TITLE_MAX_CHARS = SIDEBAR_WIDTH - 4;
  * Right-side session metadata panel.
  *
  * Layout:
- *   [title]        bold (first user msg, else "inkstone")
- *   Context        bold label
+ *   [back button]   only in article view
+ *   [title]         bold (first user msg, else "inkstone")
+ *   Context         bold label
  *   tokens / % used / cost
+ *   [dynamic sections]  from store.sidebarSections
  *   <spacer>
- *   vault path     muted
- *   version        muted
+ *   vault path      muted
+ *   version         muted
  */
 export function Sidebar() {
-	const { theme } = useTheme();
-	const { store } = useAgent();
+	const { theme, syntax } = useTheme();
+	const { store, actions } = useAgent();
 
 	// Display vault path with ~ for home dir (platform-neutral helper,
 	// shared with the open-page footer).
@@ -63,6 +65,8 @@ export function Sidebar() {
 		() => store.totalTokens > 0 || store.totalCost > 0,
 	);
 
+	const inArticleView = () => store.articleView !== null;
+
 	return (
 		<box
 			width={SIDEBAR_WIDTH}
@@ -73,35 +77,60 @@ export function Sidebar() {
 			paddingRight={2}
 			paddingTop={1}
 			paddingBottom={1}
-			gap={1}
 			onMouseUp={() => setTimeout(() => refocusInput(), 1)}
 		>
-			{/* Title */}
-			<text fg={theme.text} attributes={TextAttributes.BOLD}>
-				{title()}
-			</text>
-
-			{/* Context */}
-			<box flexDirection="column">
-				<text fg={theme.text} attributes={TextAttributes.BOLD}>
-					Context
-				</text>
-				<Show when={hasUsageData()}>
-					<text fg={theme.textMuted}>
-						{formatTokensFull(store.totalTokens)} tokens
-					</text>
-					<Show when={contextPct() !== null}>
-						<text fg={theme.textMuted}>{contextPct()}% used</text>
-					</Show>
-					<text fg={theme.textMuted}>{formatCost(store.totalCost)} spent</text>
+			{/* Top section — grows to fill, footer stays anchored below */}
+			<box flexDirection="column" flexGrow={1} gap={1}>
+				{/* Back button — only in article view */}
+				<Show when={inArticleView()}>
+					<box onMouseDown={() => actions.closeArticle()}>
+						<text fg={theme.accent}>{"← Back"}</text>
+					</box>
 				</Show>
+
+				{/* Title */}
+				<text fg={theme.text} attributes={TextAttributes.BOLD}>
+					{title()}
+				</text>
+
+				{/* Context */}
+				<box flexDirection="column">
+					<text fg={theme.text} attributes={TextAttributes.BOLD}>
+						Context
+					</text>
+					<Show when={hasUsageData()}>
+						<text fg={theme.textMuted}>
+							{formatTokensFull(store.totalTokens)} tokens
+						</text>
+						<Show when={contextPct() !== null}>
+							<text fg={theme.textMuted}>{contextPct()}% used</text>
+						</Show>
+						<text fg={theme.textMuted}>
+							{formatCost(store.totalCost)} spent
+						</text>
+					</Show>
+				</box>
+
+				{/* Dynamic sidebar sections from update_sidebar tool */}
+				<For each={store.sidebarSections}>
+					{(section) => (
+						<box flexDirection="column">
+							<text fg={theme.text} attributes={TextAttributes.BOLD}>
+								{section.title}
+							</text>
+							<markdown
+								content={section.content}
+								syntaxStyle={syntax()}
+								fg={theme.textMuted}
+								bg={theme.backgroundPanel}
+							/>
+						</box>
+					)}
+				</For>
 			</box>
 
-			{/* Spacer pushes the bottom section down */}
-			<box flexGrow={1} />
-
 			{/* Bottom-anchored vault path + app/version */}
-			<box flexDirection="column">
+			<box flexDirection="column" paddingTop={1}>
 				<text fg={theme.textMuted} wrapMode="none">
 					{vaultDisplay}
 				</text>

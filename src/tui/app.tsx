@@ -18,6 +18,7 @@ import { DialogProvider as DialogProviderSelect } from "./components/dialog-prov
 import { DialogTheme } from "./components/dialog-theme";
 import { DialogVariant } from "./components/dialog-variant";
 import { OpenPage } from "./components/open-page";
+import { ArticlePage } from "./components/article-page";
 import { Prompt } from "./components/prompt";
 import { SessionList } from "./components/session-list";
 import { Sidebar } from "./components/sidebar";
@@ -258,6 +259,18 @@ function Layout() {
 			return;
 		}
 
+		// ESC / Ctrl+[ — close article reader page and return to conversation.
+		// Checked after app_exit but before scroll guards. Gated on no open
+		// dialogs so ESC closes a dialog first when one is on the stack.
+		if (
+			Keybind.match("article_close", evt) &&
+			store.articleView &&
+			dialog.stack.length === 0
+		) {
+			actions.closeArticle();
+			return;
+		}
+
 		if (!scroll || scroll.isDestroyed) return;
 		if (dialog.stack.length > 0) return;
 
@@ -319,20 +332,33 @@ function Layout() {
 							}}
 						/>
 					</Show>
-					{/* Middle column: conversation + prompt */}
+				{/* Middle column: conversation + prompt (or article page) */}
 					{/* Horizontal padding + bottom gap matches OpenCode session/index.tsx:1043 */}
-					<box
-						flexDirection="column"
-						flexGrow={1}
-						paddingLeft={2}
-						paddingRight={2}
-						paddingBottom={1}
+					<Show
+						when={!store.articleView}
+						fallback={
+							<box
+								flexDirection="column"
+								flexGrow={1}
+								paddingBottom={1}
+							>
+								<ArticlePage />
+							</box>
+						}
 					>
-						<Conversation />
-						<box paddingTop={1} flexShrink={0}>
-							<Prompt />
+						<box
+							flexDirection="column"
+							flexGrow={1}
+							paddingLeft={2}
+							paddingRight={2}
+							paddingBottom={1}
+						>
+							<Conversation />
+							<box paddingTop={1} flexShrink={0}>
+								<Prompt />
+							</box>
 						</box>
-					</box>
+					</Show>
 					{/* Right column: session metadata sidebar (hidden on narrow terminals or when session panel is open) */}
 					<Show when={showSidebar()}>
 						<Sidebar />

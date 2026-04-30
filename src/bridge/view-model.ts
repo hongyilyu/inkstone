@@ -36,6 +36,18 @@ export type DisplayPart =
 	| { type: "thinking"; text: string }
 	| { type: "file"; mime: string; filename: string };
 
+/**
+ * A dynamic sidebar section set by an agent tool (`update_sidebar`).
+ * Ephemeral — lives only in the Solid store, not persisted to SQLite.
+ * Sections are keyed by `id` for upsert/delete semantics.
+ */
+export interface SidebarSection {
+	id: string;
+	title: string;
+	/** Markdown content rendered via `<markdown>` in the sidebar. */
+	content: string;
+}
+
 export interface DisplayMessage {
 	id: string;
 	role: "user" | "assistant";
@@ -68,6 +80,16 @@ export interface DisplayMessage {
 export interface AgentStoreState {
 	messages: DisplayMessage[];
 	isStreaming: boolean;
+	/**
+	 * Dynamic sidebar sections set by the `update_sidebar` tool.
+	 * Ephemeral — cleared on `clearSession()`, not persisted.
+	 */
+	sidebarSections: SidebarSection[];
+	/**
+	 * When non-null, the TUI renders the article page instead of the
+	 * conversation. `filename` is vault-relative (same as `DisplayPart.file.filename`).
+	 */
+	articleView: { filename: string } | null;
 	modelName: string;
 	/**
 	 * Provider id (e.g. "amazon-bedrock"), not a display string. Frontends

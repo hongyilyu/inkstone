@@ -19,6 +19,7 @@ import type {
 	AgentStoreState,
 	DisplayMessage,
 	DisplayPart,
+	SidebarSection,
 } from "@bridge/view-model";
 import type {
 	AgentEvent,
@@ -73,6 +74,10 @@ interface AgentContextValue {
 		selectAgent(name: string): void;
 		clearSession(): void;
 		resumeSession(sessionId: string): void;
+		/** Navigate to the article reader page. `filename` is vault-relative. */
+		openArticle(filename: string): void;
+		/** Return from the article reader page to the conversation. */
+		closeArticle(): void;
 	};
 	/**
 	 * Read accessors for dialog seeding. Exposed so dialog call sites
@@ -138,6 +143,8 @@ export function AgentProvider(props: ParentProps) {
 	const [store, setStore] = createStore<AgentStoreState>({
 		messages: [],
 		isStreaming: false,
+		sidebarSections: [],
+		articleView: null,
 		modelName: initialModel.name,
 		modelProvider: initialModel.provider,
 		contextWindow: initialModel.contextWindow,
@@ -413,6 +420,50 @@ export function AgentProvider(props: ParentProps) {
 					setStore("status", "tool_executing");
 					break;
 
+				case "tool_execution_end": {
+					// Handle update_sidebar tool — apply the structured details
+					// to the store so the sidebar reacts immediately.
+					const endEvt = event as {
+						type: "tool_execution_end";
+						toolName: string;
+						result: any;
+					};
+					if (endEvt.toolName === "update_sidebar" && endEvt.result?.details) {
+						const d = endEvt.result.details as {
+							operation: "upsert" | "delete";
+							id: string;
+							title?: string;
+							content?: string;
+						};
+						if (d.operation === "delete") {
+							setStore(
+								"sidebarSections",
+								(sections) => sections.filter((s) => s.id !== d.id),
+							);
+						} else if (d.operation === "upsert" && d.title && d.content) {
+							const title = d.title;
+							const content = d.content;
+							setStore(
+								"sidebarSections",
+								produce((sections: SidebarSection[]) => {
+									const idx = sections.findIndex((s) => s.id === d.id);
+									const entry: SidebarSection = {
+										id: d.id,
+										title,
+										content,
+									};
+									if (idx >= 0) {
+										sections[idx] = entry;
+									} else {
+										sections.push(entry);
+									}
+								}),
+							);
+						}
+					}
+					break;
+				}
+
 				case "agent_end":
 					setStore("isStreaming", false);
 					setStore("status", "idle");
@@ -481,6 +532,12 @@ export function AgentProvider(props: ParentProps) {
 	// lifecycle methods with store resets.
 	const wrappedActions: AgentContextValue["actions"] = {
 		...agentSession.actions,
+		openArticle(filename: string) {
+			setStore("articleView", { filename });
+		},
+		closeArticle() {
+			setStore("articleView", null);
+		},
 		async prompt(text: string, displayParts?: DisplayPart[]) {
 			const sessionId = ensureSession();
 			// LLM text vs. bubble display split: when a command supplies
@@ -602,6 +659,8 @@ export function AgentProvider(props: ParentProps) {
 			// means the NEXT prompt creates a fresh row.
 			currentSessionId = null;
 			setStore("messages", []);
+			setStore("sidebarSections", []);
+			setStore("articleView", null);
 			setStore("totalTokens", 0);
 			setStore("totalCost", 0);
 			setStore("lastTurnStartedAt", 0);
@@ -659,6 +718,10 @@ export function AgentProvider(props: ParentProps) {
 				setStore("totalTokens", 0);
 				setStore("totalCost", 0);
 				setStore("lastTurnStartedAt", 0);
+				// Ephemeral UI state — reset so the resumed session doesn't
+				// inherit stale article view or sidebar sections.
+				setStore("sidebarSections", []);
+				setStore("articleView", null);
 			});
 			toBottom();
 		},

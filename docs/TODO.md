@@ -3,9 +3,11 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-30 (slash-command dropdown in prompt)
+**Last updated**: 2026-04-30 (article reader page + sidebar sections tool)
 
 ## Completed
+
+- [x] Article reader page + sidebar sections tool. Clicking the `md` file chip in a user bubble opens a full-screen article reader page (replaces the conversation area). The page renders the article markdown from disk via `<markdown>` in a scrollable view. The sidebar gains dynamic sections driven by a new `update_sidebar` tool (generic, available to all agents via `BASE_TOOLS`): agents call it with `{ operation: "upsert"|"delete", id, title, content }` to add/update/remove sidebar sections. The reader agent's Stage 2 instructions now tell the LLM to call `update_sidebar` with the first-pass prompts after generating them, so they appear in the sidebar. Navigation: Ctrl+[ or a "← Back" button in the sidebar returns to the conversation. New store fields: `sidebarSections: SidebarSection[]` (ephemeral, cleared on `clearSession`/`resumeSession`), `articleView: { filename } | null`. New actions: `openArticle(filename)`, `closeArticle()`. The article page includes an `isInsideDir` sandbox check to prevent path traversal. New keybind: `article_close: "ctrl+["`. Files: `view-model.ts` (types), `tools.ts` (tool), `compose.ts` (BASE_TOOLS), `agent.tsx` (reducer + actions + store), `user-part.tsx` (clickable chip), `article-page.tsx` (new), `sidebar.tsx` (dynamic sections + back button), `app.tsx` (routing + keybind), `keybind.ts` (new action), `instructions.ts` (Stage 2 update_sidebar call). `bun run ci` passes (biome + 39 tests); `tsc --noEmit` clean.
 
 - [x] Doc cleanup — strip inline code references from ARCHITECTURE.md, AGENT-DESIGN.md, SQL.md. Replaced inlined TS interfaces/shapes (AgentStoreState, DisplayMessage, ProviderInfo, CommandOption, AgentCommand, config.json effort keys, reader permissions overlay) with prose summaries + file-path pointers. Trimmed the 70-line annotated file tree in ARCHITECTURE.md to one-line-purpose annotations. Stripped OpenCode line-range citations (e.g. `routes/session/index.tsx:1437-1468`) down to bare file paths. Replaced `node_modules/` dist paths with package-name references. Removed the duplicated error-surface ts block in SQL.md. Kept: Provider Stack nesting tree, transaction-example ts blocks in SQL.md, sh/sql recipe blocks. All `src/` paths in the cleaned docs verified to resolve. No code changes.
 
@@ -116,6 +118,8 @@ _None._
 
 
 ## Known Issues
+
+- [ ] Tool calls produce a second assistant bubble with no visual indication of the tool invocation between them. When the LLM calls a tool mid-turn (e.g. `update_sidebar` in the reader's Stage 2), pi-agent-core emits two `message_start`/`message_end` pairs — one before the tool call, one after the tool result. Each pair gets its own display bubble (the bubble-per-assistant-boundary design). The result is two consecutive assistant bubbles where the first has no duration (pre-tool) and the second has the turn duration (post-tool), with nothing between them to explain the gap. The second bubble looks like a separate conversational turn rather than a continuation. This is the existing "tool-call rendering isn't wired in display bubbles yet" gap noted in `view-model.ts:24` and `agent.tsx:326-330`. Fix: render tool calls as a visible element between the two assistant bubbles — either a compact inline indicator (e.g. `⚙ update_sidebar` in muted text) or a collapsible tool-call/result panel. `DisplayPart` would grow a `tool` variant, and the `message_update` reducer would handle `toolcall_*` events from `AssistantMessageEvent`. See OpenCode's tool-call rendering in `routes/session/index.tsx` for the reference pattern.
 
 - [ ] `/clear` mid-stream leaves pi-agent-core internal state (isStreaming, streamingMessage, pendingToolCalls) dirty. `Session.clearSession()` wipes `agent.state.messages` but doesn't call pi-agent-core's `reset()` or `abort()`. The next prompt throws "Agent is already processing a prompt" and surfaces as a toast. Pre-dates the session-handle refactor (old `/clear` had the same shape). Fix options: (a) gate `/clear` palette entry on `!store.isStreaming` in `Layout()`, (b) call `agent.abort()` + `agent.reset()` in backend `clearSession`. (a) is minimum-viable; (b) is more complete.
 

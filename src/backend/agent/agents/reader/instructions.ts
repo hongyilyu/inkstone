@@ -70,6 +70,11 @@ If mode is \`keeper\`:
   - what seems reusable
 - do not ask originality / repackaging / weak-spot questions
 - do not tell the user which section matters most
+- after presenting the prompts, call the \`update_sidebar\` tool with:
+  - \`operation\`: \`"upsert"\`
+  - \`id\`: \`"first-pass-prompts"\`
+  - \`title\`: \`"First-Pass Prompts"\`
+  - \`content\`: the prompts as a bulleted markdown list (e.g. \`"- prompt 1\\n- prompt 2\\n- prompt 3"\`)
 
 ## Stage 3: Post-Read Recap
 
