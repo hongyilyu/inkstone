@@ -73,15 +73,42 @@ export interface AgentZone {
  * each `AgentCommand` into a `CommandOption` in the unified registry, so
  * slash dispatch, palette, and keybinds all share one surface.
  */
+/**
+ * Helpers injected into `AgentCommand.execute` by the TUI bridge.
+ *
+ * `prompt` is always available. The optional helpers require an
+ * interactive frontend — headless callers may omit them, and commands
+ * that need them should throw a clear error when they're absent.
+ */
+export interface AgentCommandHelpers {
+	/** Send a user message and start an LLM turn. */
+	prompt(text: string): Promise<void>;
+	/**
+	 * Push a user-role bubble into the conversation (persisted to DB)
+	 * without starting an LLM turn. Useful for displaying informational
+	 * content (e.g. a recommendation list) that the user can read before
+	 * deciding what to do next.
+	 */
+	displayMessage?(text: string): void;
+	/**
+	 * Ask the user to pick one string from a list. Resolves with the
+	 * picked value, or `undefined` if the user cancelled (ESC).
+	 * TUI implementation opens a `DialogSelect`; a future headless
+	 * caller can stub this with a stdin prompt.
+	 */
+	pickFromList?(params: {
+		title: string;
+		size?: "medium" | "large" | "xlarge";
+		options: { title: string; value: string; description?: string }[];
+	}): Promise<string | undefined>;
+}
+
 export interface AgentCommand {
 	name: string;
 	description?: string;
 	argHint?: string;
 	takesArgs?: boolean;
-	execute(
-		args: string,
-		prompt: (text: string) => Promise<void>,
-	): void | Promise<void>;
+	execute(args: string, helpers: AgentCommandHelpers): void | Promise<void>;
 }
 
 /**
