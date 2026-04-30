@@ -113,36 +113,7 @@ This is D5 ("ship mechanism, defer content") extended to cover the future-work d
 
 **Why:** commands and tools answer different questions. Commands are "what does the user want the agent to do?" Tools are "what can the agent do to accomplish that?" Collapsing them (e.g. treating `/ingest` as a tool the model decides to invoke) loses the user-verb semantics; collapsing the other way (tools as commands) loses the mid-turn invocation pattern. Keeping them separate mirrors how Discord/Slack/OpenCode structure user input vs agent capabilities.
 
-**Shape** (`src/backend/agent/types.ts`):
-
-```ts
-import type { DisplayPart } from "@bridge/view-model";
-
-export interface AgentCommandHelpers {
-  prompt(text: string, displayParts?: DisplayPart[]): Promise<void>;
-  displayMessage?(text: string): void;
-  pickFromList?(params: {
-    title: string;
-    size?: "medium" | "large" | "xlarge";
-    options: { title: string; value: string; description?: string }[];
-  }): Promise<string | undefined>;
-}
-
-export interface AgentCommand {
-  name: string;                   // verb without the leading slash
-  description?: string;
-  argHint?: string;               // "[filename]", "<folder>", "<question>"
-  takesArgs?: boolean;            // requires non-empty args for typed slash dispatch
-  execute(args: string, helpers: AgentCommandHelpers): void | Promise<void>;
-}
-
-export interface AgentInfo {
-  // ... existing
-  commands?: AgentCommand[];
-}
-```
-
-`execute` receives an `AgentCommandHelpers` bag the TUI bridge injects. `helpers.prompt(text, displayParts?)` starts an LLM turn — `text` is what pi-agent-core hands to the LLM; the optional `displayParts` replace the user bubble's rendered parts without changing what reaches the model (reader's `/article` uses this to inline the full article in `text` while rendering a compact "short prose + file chip" bubble). `helpers.displayMessage(text)` pushes a user bubble without starting a turn (used for the bare-`/article` recommendation list). `helpers.pickFromList({...})` opens a `DialogSelect` picker. The optional helpers require an interactive frontend; headless callers omit them and commands that need them throw a clear error. The TUI's `BridgeAgentCommands` component (`src/tui/context/agent.tsx`) picks up `AgentInfo.commands` reactively on `store.currentAgent` and converts each entry into a `CommandOption` in the unified registry.
+**Shape.** See `src/backend/agent/types.ts` for `AgentCommandHelpers`, `AgentCommand`, and the `commands` field on `AgentInfo`. A command declares `name`, optional `description` / `argHint` / `takesArgs`, and `execute(args, helpers)`. The helpers bag gives commands `prompt(text, displayParts?)` (always available), plus optional `displayMessage(text)` and `pickFromList({…})` that require an interactive frontend. The TUI's `BridgeAgentCommands` component (`src/tui/context/agent.tsx`) picks up `AgentInfo.commands` reactively on `store.currentAgent` and converts each entry into a `CommandOption` in the unified registry.
 
 **System-prompt stability invariant.** `AgentInfo.buildInstructions()` must return a stable string for a given `AgentInfo`. pi-agent-core's `Agent` reads `state.systemPrompt` once per `prompt()` call via `createContextSnapshot()` and feeds the same bytes to every turn within that call; both Anthropic's `cache_control` block and Bedrock's `cachePoint` are pinned to the byte-exact system prefix, so any drift between turns invalidates the cache. `createSession` builds the prompt once; `Session.selectAgent` rebuilds it on an empty-session agent swap (see D13); `Session.clearSession` wipes messages without touching the prompt. Commands **must not** mutate state that `buildInstructions` reads. Dynamic per-turn context (date, cwd, memory recall, file snapshots, article content) goes into a user message via `prompt(text)`, not into the system prompt; reader's `/article` is the reference pattern. This matches pi-mono's expected usage (see `coding-agent`'s `_baseSystemPrompt` — rebuild only on tool-set change, resource reload, or extension override) and the cross-codebase consensus (claude-code's `prependUserContext`, openclaw's cache boundary, opencode's synthetic user parts, hermes's `ephemeral_system_prompt` escape hatch).
 
@@ -320,4 +291,4 @@ If a real split emerges (e.g. Researcher can read outside `ARTICLES_DIR` but Rea
 - Implementation reference — `docs/ARCHITECTURE.md` → "Agent Registry" section.
 - Active / future work — `docs/TODO.md` → "Future Work (Post-MVP)".
 - OpenCode comparison — `../opencode/packages/opencode/src/agent/agent.ts` (flat registry + permission ruleset for per-agent tool scoping).
-- pi-agent-core API — `node_modules/@mariozechner/pi-agent-core/dist/agent.d.ts`.
+- pi-agent-core API — `@mariozechner/pi-agent-core` (`Agent`, `AgentTool`, `AgentEvent`, etc.).

@@ -87,137 +87,100 @@ User input (textarea)
 
 ```
 src/
-  index.tsx                         Entry: createCliRenderer() + render(<tui.App />)
+  index.tsx                         Entry point — renderer + root component
 
     backend/                          Headless — no Solid, no OpenTUI
     agent/
-      index.ts                      `createSession` factory + `AgentActions` / `Session` types + `availableThinkingLevels` + public re-exports (`AgentCommand`, `AgentInfo`, `AgentZone`, `getAgentInfo`, `setConfirmFn`)
-      agents.ts                     Registry assembler — imports each agent's AgentInfo literal and exports AGENTS[]
-      types.ts                      Foundation types — AgentInfo, AgentZone, AgentColorKey, AgentCommand
-      compose.ts                    BASE_TOOLS + BASE_PREAMBLE + composeTools + composeSystemPrompt
-      zones.ts                      composeZonesOverlay + composeOverlay — zone-to-permission rule derivation
-      tools.ts                      Shared tool pool — readTool, writeTool, editTool via @mariozechner/pi-coding-agent factories, passed VAULT_DIR as cwd; registers per-tool baseline permissions at module load
-      permissions.ts                Declarative permission dispatcher — Rule union, registerBaseline, dispatchBeforeToolCall, setConfirmFn, path resolution; single hook wired into pi-agent-core's beforeToolCall
-      constants.ts                  VAULT_DIR, ARTICLES_DIR, SCRAPS_DIR, etc.
+      index.ts                      Session factory + public API surface
+      agents.ts                     Registry assembler — imports each agent's AgentInfo
+      types.ts                      Foundation types (AgentInfo, AgentZone, AgentCommand, etc.)
+      compose.ts                    BASE_TOOLS, BASE_PREAMBLE, composeTools, composeSystemPrompt
+      zones.ts                      Zone-to-permission rule derivation
+      tools.ts                      Shared tool pool (read, write, edit via pi-coding-agent)
+      permissions.ts                Declarative permission dispatcher
+      constants.ts                  Vault and directory path constants
       agents/                       Custom agents, one self-contained folder each
         reader/
-          index.ts                  readerAgent: AgentInfo literal (zones + extraTools pulled from ../../tools; `getPermissions` supplies the article-specific escape-hatch overlay)
-          instructions.ts           `buildReaderInstructions()` — nullary; returns the reader's system-prompt body + 6-stage workflow
-          recommendations.ts        recommendArticles(limit) — scans ARTICLES_DIR, scores unread articles via index.base ranking logic, returns top N as ArticleRecommendation[]; formatRecommendationList(recs) for the inline bubble text
+          index.ts                  Reader agent definition (zones, extraTools, permissions)
+          instructions.ts           Reader system-prompt body + 6-stage workflow
+          recommendations.ts        Article scoring + recommendation list
         example/
-          index.ts                  exampleAgent: AgentInfo literal (1-line prompt, empty zones, no extra tools)
+          index.ts                  Example agent definition (minimal)
     providers/
-      types.ts                      ProviderInfo interface (id, displayName, listModels, getApiKey, isConnected, authInstructions)
-      amazon-bedrock.ts             Bedrock provider — wraps pi-ai `getModels("amazon-bedrock")`, auth via `getEnvApiKey`
-      kiro.ts                       Amazon Kiro provider — wraps `pi-kiro/core`; registers `kiro-api` with pi-ai; OAuth (Builder ID / IdC) with lazy refresh
-      index.ts                      PROVIDERS registry + getProvider/listProviders/resolveModel helpers
+      types.ts                      ProviderInfo interface
+      amazon-bedrock.ts             Bedrock provider
+      kiro.ts                       Amazon Kiro provider (OAuth, region scoping)
+      index.ts                      Provider registry + helpers
     persistence/
-      config.ts                     providerId + modelId + themeId + currentAgent + vaultDir (shared JSON; Zod-validated on load via `schema.ts`)
-      auth.ts                       OAuth credentials loader/saver (provider-keyed; Zod-validated on load)
-      errors.ts                     Shared persistence error hook (setPersistenceErrorHandler / reportPersistenceError); `kind: "config" | "auth" | "session"`
-      paths.ts                      Shared XDG paths: CONFIG_DIR, STATE_DIR, CONFIG_FILE, AUTH_FILE, DB_FILE
-      schema.ts                     Zod schemas for Config + AuthFile (strictObject, field-level validation)
-      sessions.ts                   SQLite session store — see `docs/SQL.md` for the full API. Exports `newId`, `runInTransaction`, `createSession`, `loadSession`, `listSessions`, `appendDisplayMessage`, `updateDisplayMessageMeta`, `finalizeDisplayMessageParts`, `appendAgentMessage`.
+      config.ts                     User preferences (JSON, Zod-validated)
+      auth.ts                       OAuth credentials loader/saver
+      errors.ts                     Shared persistence error hook
+      paths.ts                      XDG path resolution
+      schema.ts                     Zod schemas for config + auth
+      sessions.ts                   SQLite session store (see docs/SQL.md)
       db/
-        client.ts                   Lazy bun:sqlite client, WAL PRAGMAs, drizzle-kit migrator on open
-        schema.ts                   Drizzle tables: sessions, messages, parts, agent_messages
-        migrations/                 drizzle-kit-generated SQL migrations (applied on DB open)
+        client.ts                   Lazy bun:sqlite client, WAL PRAGMAs, migrator
+        schema.ts                   Drizzle table definitions
+        migrations/                 drizzle-kit-generated SQL migrations
 
   bridge/                           Pure TS — shared type contract
     view-model.ts                   DisplayMessage, AgentStoreState
 
   tui/                              Solid + OpenTUI
-    app.tsx                         Provider stack + root layout + app_exit + scroll keybinds; registers top-level commands via `useCommand().register`
+    app.tsx                         Provider stack + root layout + top-level commands
     context/
-      agent.tsx                     AgentProvider + useAgent (Solid store + event reducer); wires persistence error hook to toast
-      theme.tsx                     Theme loading, resolution, application (SyntaxStyle FFI)
+      agent.tsx                     AgentProvider + useAgent (store + event reducer)
+      theme.tsx                     Theme loading, resolution, SyntaxStyle FFI
     ui/
-      dialog.tsx                    Stack-based modal rendering (uses `Keybind.match("dialog_close")`)
-      dialog-confirm.tsx            Promise-based yes/no confirmation (local y/n/arrow keys)
-      dialog-select.tsx             Fuzzy filterable select list (uses `Keybind.match("select_*")`)
-      dialog-prompt.tsx             Promise-based single-line input (`DialogPrompt.show(...)`)
-      dialog-auth-wait.tsx          Read-only URL + user-code + progress screen used during OAuth device-code flows
+      dialog.tsx                    Stack-based modal rendering
+      dialog-confirm.tsx            Promise-based yes/no confirmation
+      dialog-select.tsx             Fuzzy filterable select list
+      dialog-prompt.tsx             Promise-based single-line input
+      dialog-auth-wait.tsx          OAuth device-code flow screen
       toast.tsx                     Toast notifications
     components/
-      conversation.tsx              Thin scrollbox + message list + routing layer (bubble rendering lives in `message.tsx`)
-      message.tsx                   `UserMessage` (user-bubble border + file-chip renderer derived from active agent color), `AssistantMessage` (parts loop + error panel + `▣`-glyph footer), `TextPart`, `ReasoningPart`, `SplitBorderChars`, `isDanglingUser`, `durationSuffix`
-      prompt.tsx                    Textarea prompt with /command parsing, agent label, tab-cycle hint (hints via `Keybind.print`); streaming indicator = `SpinnerWave` colored by the active agent
-      spinner.tsx                   Simple braille-dot spinner (`Spinner`). Not used by the prompt; kept importable for future subagent-status / background-tool indicators
-      spinner-wave.tsx              `SpinnerWave` — 8-cell bidirectional knight-rider wave. Port of OpenCode's `ui/spinner.ts` (blocks + bidirectional branches only); 54 precomputed frames at 40 ms interval, per-cell RGBA derived from a single base color via a 6-step trail + alpha fade
-      sidebar.tsx                   Session metadata panel (title, context usage)
-      session-list.tsx              Left-side session history panel (Ctrl+N toggle; lists past sessions across every agent; Enter resumes, swapping the live Session's agent when it differs)
-      session-list-item.tsx         Single row renderer for `session-list.tsx` (title + `<agent> · <time>` line, agent tinted by its theme color)
+      conversation.tsx              Scrollbox + message list routing
+      message.tsx                   Bubble rendering (UserMessage, AssistantMessage, parts)
+      prompt.tsx                    Textarea prompt with /command parsing + streaming indicator
+      spinner.tsx                   Simple braille-dot spinner
+      spinner-wave.tsx              Knight-rider wave spinner (port of OpenCode's)
+      sidebar.tsx                   Session metadata panel
+      session-list.tsx              Left-side session history panel (Ctrl+N)
+      session-list-item.tsx         Single row renderer for session list
       open-page.tsx                 Empty-state welcome page
-      dialog-command.tsx            `CommandProvider` + `useCommand` + internal palette. Registry-driven: components call `register(() => CommandOption[])`; the provider's `useKeyboard` dispatches any matching `keybind` and opens the palette on `command_list`.
+      dialog-command.tsx            CommandProvider + useCommand + palette
       dialog-agent.tsx              Agent selection dialog
       dialog-model.tsx              Model selection dialog
-      dialog-variant.tsx            Reasoning-effort (ThinkingLevel) picker — opened standalone via the "Effort" palette entry for reasoning-capable models
+      dialog-variant.tsx            Reasoning-effort picker
       dialog-theme.tsx              Theme selection dialog
       dialog-provider.tsx           Provider selection dialog
     util/
-      format.ts                     formatTokens, formatCost, formatDuration, formatRelativeTime, displayPath (~-collapse for home dir, platform-neutral)
-      keybind.ts                    `KEYBINDS` action map + `match(action, evt)` + `print(action)` (single source of truth for all keybinds outside dialog-confirm's local y/n)
+      format.ts                     Token/cost/duration/path formatting helpers
+      keybind.ts                    Keybind action map + match/print helpers
 ```
 
 ## Provider Stack
 
-```tsx
-<ThemeProvider>
-  <ToastProvider>
-    <DialogProvider>
-      <CommandProvider>
-        <AgentProvider>
-          <Layout />
-        </AgentProvider>
-      </CommandProvider>
-    </DialogProvider>
-  </ToastProvider>
-</ThemeProvider>
+Provider nesting order (see `src/tui/app.tsx`):
+
+```
+ThemeProvider
+  ToastProvider
+    DialogProvider
+      CommandProvider
+        AgentProvider
+          Layout
 ```
 
 `CommandProvider` sits inside `DialogProvider` because its dispatch loop reads the dialog stack (to yield to open dialogs). `AgentProvider` runs inside `CommandProvider` so `Layout` can call both `useAgent()` and `useCommand()`.
 
 ## Agent Integration
 
-The `AgentProvider` creates a pi-agent-core `Agent` instance (via `backend/agent/`) and subscribes to its events. State is held in a `createStore`:
-
-```ts
-{
-  messages: DisplayMessage[]     // full history (see below for shape)
-  isStreaming: boolean
-  modelName: string
-  modelProvider: string          // provider *id* (e.g. "amazon-bedrock"); format via getProvider(id).displayName at render time
-  contextWindow: number
-  modelReasoning: boolean        // pi-ai's Model.reasoning capability flag; gates visibility of the "Effort" palette entry + statusline effort badge
-  thinkingLevel: ThinkingLevel   // pi-agent-core's reasoning effort for the active model; "off" when model is non-reasoning or user disabled it
-  status: "idle" | "streaming" | "tool_executing"
-  totalTokens: number            // accumulated across all assistant turns
-  totalCost: number              // accumulated across all assistant turns
-  lastTurnStartedAt: number      // Date.now() when user prompt sent; consumed in agent_end
-  currentAgent: string           // active agent name (e.g. "reader")
-}
-```
+The `AgentProvider` creates a pi-agent-core `Agent` instance (via `backend/agent/`) and subscribes to its events. State is held in a `createStore` whose shape is defined in `src/bridge/view-model.ts` as `AgentStoreState`. Key fields: `messages: DisplayMessage[]`, `isStreaming`, `modelName`, `modelProvider` (provider id — format via `getProvider(id).displayName` at render time), `contextWindow`, `modelReasoning` (gates the Effort palette entry), `thinkingLevel` (pi-agent-core's reasoning effort; `"off"` when non-reasoning or user-disabled), `status` (`"idle" | "streaming" | "tool_executing"`), `totalTokens`, `totalCost`, `lastTurnStartedAt` (consumed in `agent_end`), `currentAgent`.
 
 Both `DisplayMessage` and `AgentStoreState` are defined in `src/bridge/view-model.ts` — they are the cross-frontend view-state contract.
 
-`DisplayMessage`:
-
-```ts
-{
-  id: string
-  role: "user" | "assistant"
-  parts: DisplayPart[]     // ordered blocks; user bubbles are usually [text], commands may emit [text, file, ...]
-  agentName?: string   // assistant only, set in message_end
-  modelName?: string   // assistant only, set in message_end
-  duration?: number    // assistant only, ms, set in agent_end
-  error?: string       // assistant only, pi-ai errorMessage on stopReason error/aborted
-}
-
-type DisplayPart =
-  | { type: "text"; text: string }
-  | { type: "thinking"; text: string }
-  | { type: "file"; mime: string; filename: string }
-```
+`DisplayMessage` carries `id`, `role` (`"user" | "assistant"`), `parts: DisplayPart[]` (ordered blocks), and optional assistant-only fields: `agentName`, `modelName` (set in `message_end`), `duration` (ms, set in `agent_end`), `error` (pi-ai `errorMessage` on `stopReason` error/aborted). `DisplayPart` is a discriminated union: `text` (with `text: string`), `thinking` (with `text: string`), and display-only `file` (with `mime` + `filename`).
 
 The `file` part is display-only. Agent commands like reader's `/article` hand the TUI a compact render shape (short prose + file chip) via `AgentCommand.execute`'s optional `displayParts` callback argument, while the full file content still reaches pi-agent-core as the single prompt `text`. pi-ai's `UserMessage.content` stays a plain string (Inkstone never uses the multi-block form); the split lives entirely between `wrappedActions.prompt` and the user-bubble renderer. See "Commands → Slash dispatch" below and `src/tui/components/message.tsx`'s `UserMessage` for the chip rendering.
 
@@ -233,19 +196,19 @@ Each assistant bubble iterates `msg.parts` and renders one `<markdown>` per bloc
 
 ### Thinking blocks
 
-Ported from OpenCode's `ReasoningPart` (`routes/session/index.tsx:1437-1468`), trimmed to Inkstone's scope:
+Ported from OpenCode's `ReasoningPart` (in `routes/session/index.tsx`), trimmed to Inkstone's scope:
 
 - Part type: `DisplayPart` with `type: "thinking"` — a first-class sibling to `text`, dispatched by the `parts` iterator in `AssistantMessage` (`message.tsx`).
-- Event capture: `message_update` in `context/agent.tsx` branches on `assistantMessageEvent.type` (typed as pi-ai's `AssistantMessageEvent` union). `thinking_start` pushes a fresh `{ type: "thinking", text: "" }` part; `thinking_delta` appends to the tail part's text after a runtime guard that the tail's `type === "thinking"` (cheap insurance against upstream event reordering); `thinking_end` pops the part when `lastPart.text.replace("[REDACTED]", "").trim()` is empty. That predicate covers both redacted-thinking shapes: Anthropic's `redacted: true` path emits no `thinking_delta` at all (empty text), while OpenRouter emits the literal `[REDACTED]` as a delta chunk that would otherwise render verbatim (`"[REDACTED]".trim()` is truthy). OpenCode filters the same literal at render time (`routes/session/index.tsx:1443`); Inkstone filters reducer-side because it has no `showThinking` toggle, so a stored-but-never-rendered part would just be dead weight in persistence. Same switch dispatches `text_start` / `text_delta` symmetrically for assistant text.
+- Event capture: `message_update` in `context/agent.tsx` branches on `assistantMessageEvent.type` (typed as pi-ai's `AssistantMessageEvent` union). `thinking_start` pushes a fresh `{ type: "thinking", text: "" }` part; `thinking_delta` appends to the tail part's text after a runtime guard that the tail's `type === "thinking"` (cheap insurance against upstream event reordering); `thinking_end` pops the part when `lastPart.text.replace("[REDACTED]", "").trim()` is empty. That predicate covers both redacted-thinking shapes: Anthropic's `redacted: true` path emits no `thinking_delta` at all (empty text), while OpenRouter emits the literal `[REDACTED]` as a delta chunk that would otherwise render verbatim (`"[REDACTED]".trim()` is truthy). OpenCode filters the same literal at render time (in `routes/session/index.tsx`); Inkstone filters reducer-side because it has no `showThinking` toggle, so a stored-but-never-rendered part would just be dead weight in persistence. Same switch dispatches `text_start` / `text_delta` symmetrically for assistant text.
 - Part-type immutability: `part.type` is reducer-guaranteed to be stable for the lifetime of the part — `message_update` only ever pushes new parts or appends to the tail's `text`, never mutates `type`. The `ReasoningPart` / `TextPart` dispatch inside the parts loop in `AssistantMessage` (`message.tsx`) reads `part.type` non-reactively (the callback evaluates the branch once per render and keys items by reference). If future work ever mutates `part.type` in-place, the renderer must be refactored to a reactive primitive (e.g. `<Switch>/<Match>` keyed on a memo of `part.type`) or the dispatch will stick to the first-seen type.
 - Visual treatment: left bar (`┃` via `SplitBorderChars`) in `theme.backgroundElement`, `paddingLeft={2}`, `marginTop={1}` when not the first block, single `<markdown>` body with `"_Thinking:_ "` prepended to the part text so the label renders inline as italic markdown (per OpenCode's `ReasoningPart`). Body is rendered with `syntaxStyle={subtleSyntax()}`, no outer `fg` override — an outer `fg` would flatten all tokens to one color and defeat per-scope dimming.
-- Part stacking: each non-first part carries `marginTop={1}`, the first part carries `marginTop={0}`. Intentional divergence from OpenCode's `AssistantMessage`, which sets `marginTop={1}` unconditionally on every part (`routes/session/index.tsx:1450, 1475`). OpenCode renders assistant bodies as a bare fragment so each `marginTop` lands directly; Inkstone wraps the body in a `<box flexDirection="column">` inside an outer `<For>` with `gap={1}` between bubbles, so an unconditional first-part `marginTop={1}` would double-space against the outer gap. Footer uses `paddingTop={1}` on its own box (same pattern as OpenCode's `box paddingLeft={3}` + `text marginTop={1}` at line 1403-1404, simplified).
+- Part stacking: each non-first part carries `marginTop={1}`, the first part carries `marginTop={0}`. Intentional divergence from OpenCode's `AssistantMessage`, which sets `marginTop={1}` unconditionally on every part (in `routes/session/index.tsx`). OpenCode renders assistant bodies as a bare fragment so each `marginTop` lands directly; Inkstone wraps the body in a `<box flexDirection="column">` inside an outer `<For>` with `gap={1}` between bubbles, so an unconditional first-part `marginTop={1}` would double-space against the outer gap. Footer uses `paddingTop={1}` on its own box (same pattern as OpenCode's, simplified).
 - **Always rendered** when present — no `showThinking` toggle, no keybind, no palette entry. Matches the current "no slash-command system" constraint; a toggle lands when slash-commands or a KV layer do.
 - Trimmed from OpenCode's port: per-turn elapsed timer, "Thinking..." spinner, transcript/export parity (Inkstone has no export flow). The `subtleSyntax()` variant (60%-alpha syntax rules) and its `thinkingOpacity` theme knob ARE ported — see below.
 
 ### subtleSyntax (reasoning-block dimming)
 
-Ported verbatim from OpenCode's `generateSubtleSyntax` (`opencode/.../context/theme.tsx`). `generateSubtleSyntax(colors)` in `src/tui/context/theme.tsx` maps over `getSyntaxRules(colors)` and, for every rule with a `foreground`, rebuilds the `RGBA` at alpha `colors.thinkingOpacity` (default `0.6`, set per-theme on `ThemeColors`). `useTheme().subtleSyntax()` exposes the memoized `SyntaxStyle`, re-created on theme switch with the same `onCleanup(() => style.destroy())` FFI cleanup as the normal `syntax()` memo. Used only by `ReasoningPart`. Normal text parts continue to use `syntax()` at full saturation.
+Ported verbatim from OpenCode's `generateSubtleSyntax` (in `context/theme.tsx`). `generateSubtleSyntax(colors)` in `src/tui/context/theme.tsx` maps over `getSyntaxRules(colors)` and, for every rule with a `foreground`, rebuilds the `RGBA` at alpha `colors.thinkingOpacity` (default `0.6`, set per-theme on `ThemeColors`). `useTheme().subtleSyntax()` exposes the memoized `SyntaxStyle`, re-created on theme switch with the same `onCleanup(() => style.destroy())` FFI cleanup as the normal `syntax()` memo. Used only by `ReasoningPart`. Normal text parts continue to use `syntax()` at full saturation.
 
 
 `SyntaxStyle` wraps an FFI pointer into Zig-side allocations that JS GC cannot reclaim. The memo registers an `onCleanup(() => style.destroy())` so the previous instance is released on theme switch (recompute) and on provider disposal (app exit) — see `src/tui/context/theme.tsx`.
@@ -265,7 +228,7 @@ Each completed assistant message renders its own status line directly below its 
 - **Per-message** — `agentName`, `modelName`, `error`. Written in `message_end`. Each assistant bubble records the agent and model that produced *that specific* reply, sourced from the assistant event (not from mutable store state). A tool turn with two assistant messages produces two bubbles, each with its own correct `agentName`/`modelName`. `error` carries pi-ai's `AssistantMessage.errorMessage` when the turn ended with `stopReason === "error" | "aborted"` — each bubble can fail independently, and the failure is scoped to the specific assistant boundary that produced it.
 - **Per-turn** — `duration`. Written in `agent_end`. Represents the wall-clock time from the user's prompt to the turn completing. Stamped only on the turn-closing assistant bubble, which is `messages[length - 1]` when `agent_end` fires (tool results aren't rendered as display bubbles, so the last bubble is always the turn-closing assistant message). Intermediate assistant bubbles in a tool turn intentionally carry `agentName` + `modelName` without a `duration` — "how long did the whole turn take?" only has a single answer per turn, and the turn-closing bubble is where it belongs.
 
-The conversation renderer shows the footer whenever `msg.modelName` is present, and adds the duration pip only when `msg.duration > 0`, so intermediate tool-turn bubbles render `▣ Reader · <model>` without a duration, and the turn-closing bubble renders the full `▣ Reader · <model> · <duration>`. When `msg.error` is set, a warning-bordered panel (left border in `theme.error`, muted body text) renders between the part list and the footer, mirroring OpenCode's per-message error surface (`routes/session/index.tsx:1374-1387`). An errored bubble with empty parts (the common case — pi-ai returns empty content on provider errors) still renders because the outer gate is `msg.parts.length > 0 || msg.error`, not parts alone. Abort (`stopReason === "aborted"`) currently uses the same panel; differentiating it via a muted `· interrupted` footer suffix (OpenCode's pattern at `routes/session/index.tsx:1407-1409`) is tracked as future work.
+The conversation renderer shows the footer whenever `msg.modelName` is present, and adds the duration pip only when `msg.duration > 0`, so intermediate tool-turn bubbles render `▣ Reader · <model>` without a duration, and the turn-closing bubble renders the full `▣ Reader · <model> · <duration>`. When `msg.error` is set, a warning-bordered panel (left border in `theme.error`, muted body text) renders between the part list and the footer, mirroring OpenCode's per-message error surface (in `routes/session/index.tsx`). An errored bubble with empty parts (the common case — pi-ai returns empty content on provider errors) still renders because the outer gate is `msg.parts.length > 0 || msg.error`, not parts alone. Abort (`stopReason === "aborted"`) currently uses the same panel; differentiating it via a muted `· interrupted` footer suffix (OpenCode's pattern in `routes/session/index.tsx`) is tracked as future work.
 
 ### Bubble-per-assistant-boundary
 
@@ -333,19 +296,7 @@ composeOverlay(info) = info.getPermissions?.() ⊕ composeZonesOverlay(info)
 
 Zone paths are joined with `VAULT_DIR` via `node:path.join` so leading/trailing slashes normalize. Absolute zone paths (POSIX `/`, Windows drive-letter, UNC) and paths containing `..` segments throw at compose time (misconfiguration should be loud).
 
-Zones cover directory-level write policies. The `getPermissions?()` callback is the escape hatch for rules zones can't express — reader declares a static overlay on the Articles zone:
-
-```ts
-// agents/reader/index.ts
-function getReaderPermissions(): AgentOverlay {
-  return {
-    [writeTool.name]: [
-      { kind: "blockInsideDirs", dirs: [ARTICLES_DIR], reason: "..." },
-    ],
-    [editTool.name]: [{ kind: "frontmatterOnlyInDirs", dirs: [ARTICLES_DIR] }],
-  };
-}
-```
+Zones cover directory-level write policies. The `getPermissions?()` callback is the escape hatch for rules zones can't express — reader declares a static overlay on the Articles zone (see `getReaderPermissions` in `src/backend/agent/agents/reader/index.ts`): `blockInsideDirs` on `write` (any article overwrite blocked) and `frontmatterOnlyInDirs` on `edit` (any article edit must target frontmatter).
 
 Reader's directory-level confirm rules (`confirmDirs` on Articles/Notes/Scraps) live in the `zones` declaration. What's in `getPermissions` is the article-specific policy zones can't express: *any* write to Articles is blocked; *any* edit to Articles must touch only frontmatter. The rules are static (they reference `ARTICLES_DIR` directly), so no per-turn state flows through `getPermissions`.
 
@@ -399,19 +350,9 @@ A `deny` policy (read-only zone inside a workspace) was considered and cut in D1
 
 Example — reader's zones:
 
-```ts
-zones: [
-  { path: "010 RAW/013 Articles", write: "confirm" },
-  { path: "020 HUMAN/022 Scraps", write: "confirm" },
-  { path: "020 HUMAN/023 Notes",  write: "confirm" },
-]
-```
+Example — reader's zones (see `src/backend/agent/agents/reader/index.ts`): three `confirm` zones under Articles, Scraps, and Notes.
 
-Example — the example agent:
-
-```ts
-zones: [],
-```
+Example — the example agent (see `src/backend/agent/agents/example/index.ts`): `zones: []`.
 
 Tool implementations come from `@mariozechner/pi-coding-agent` via the shared pool in `backend/agent/tools.ts` — Inkstone does not re-implement read/write/edit. Each factory is called with `VAULT_DIR` as the `cwd` so vault-relative paths resolve inside the vault; absolute paths are honored by the tool and sandboxed by the guard. pi-coding-agent's tool source transitively imports `@mariozechner/pi-tui`, but `wrapToolDefinition` strips the render hooks — the tools are pure `AgentTool<any>` at runtime, and pi-tui is inert code-path-wise (Inkstone renders through OpenTUI in `src/tui/**`).
 
@@ -446,46 +387,9 @@ Commands are user-invoked verbs, distinct from tools (which are LLM-invoked mid-
 
 **Single unified registry.** Slash verbs (`/clear`, `/article`), palette-only commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`), and keybind-only actions (ESC interrupt, Tab agent-cycle) all live in the same TUI-side command registry (`src/tui/components/dialog-command.tsx`). Per [`SLASH-COMMANDS.md`](./SLASH-COMMANDS.md) Path A, the two previously-separate surfaces (backend `AgentCommand` + TUI `CommandOption`) now share one type. Agent-declared verbs stay data-only in `AgentInfo.commands`; the TUI bridges them into registry entries at mount time.
 
-**Type shape** (`src/tui/components/dialog-command.tsx`):
+**Type shape.** See `src/tui/components/dialog-command.tsx` for `CommandOption` and `SlashSpec`. A `CommandOption` carries `id`, `title`, optional `description`, optional `keybind` (for global keybind dispatch), optional `slash: SlashSpec` (for typed `/name args` dispatch), `hidden` (to suppress palette display), and `onSelect(dialog, args?)`.
 
-```ts
-export interface SlashSpec {
-  name: string;
-  takesArgs?: boolean;
-  argHint?: string;
-}
-
-export interface CommandOption {
-  id: string;
-  title: string;
-  description?: string;
-  keybind?: Keybind.KeybindAction;  // global keybind dispatch
-  slash?: SlashSpec;                // typed `/name args` dispatch
-  hidden?: boolean;                 // hide from Ctrl+P palette
-  onSelect: (dialog: DialogContext, args?: string) => void;
-}
-```
-
-Agent-declared verbs (backend-side, `src/backend/agent/types.ts`):
-
-```ts
-export interface AgentCommandHelpers {
-  prompt(text: string): Promise<void>;
-  displayMessage?(text: string): void;
-  pickFromList?(params: {
-    title: string;
-    options: { title: string; value: string; description?: string }[];
-  }): Promise<string | undefined>;
-}
-
-export interface AgentCommand {
-  name: string;
-  description?: string;
-  argHint?: string;
-  takesArgs?: boolean;
-  execute(args: string, helpers: AgentCommandHelpers): void | Promise<void>;
-}
-```
+Agent-declared verbs live backend-side. See `src/backend/agent/types.ts` for `AgentCommand` and `AgentCommandHelpers`. A command declares `name`, optional `description` / `argHint` / `takesArgs`, and `execute(args, helpers)`. The helpers bag gives commands `prompt(text, displayParts?)` (always available), plus optional `displayMessage(text)` and `pickFromList({…})` that require an interactive frontend.
 
 `execute` takes an `AgentCommandHelpers` bag the TUI bridge injects:
 
@@ -495,7 +399,7 @@ export interface AgentCommand {
 
 The optional helpers require an interactive frontend; headless callers omit them and commands that need them throw a clear error. Shell-level verbs (`/clear`) live as regular `CommandOption` entries that close over the TUI wrapper's `clearSession` directly, so they don't need anything handed off.
 
-**System-prompt stability invariant.** `AgentInfo.buildInstructions()` must return a stable string for a given `AgentInfo`. pi-agent-core's `Agent` reads `state.systemPrompt` once per `prompt()` call (via `createContextSnapshot()`; see `node_modules/@mariozechner/pi-agent-core/dist/agent.js`), and both Anthropic's `cache_control` block and Bedrock's `cachePoint` are pinned to the byte-exact system prefix — any drift between turns invalidates the cache. The shell builds `systemPrompt` at two points only: `createSession` on construction and `Session.selectAgent` on an empty-session agent swap (see D13). `Session.clearSession` wipes messages without touching the prompt. Commands **must not** mutate state that `buildInstructions` reads; dynamic per-turn context (date, cwd, memory recall, file snapshots, article content) goes into a user message via `prompt(text)`. Reader's `/article` is the reference pattern.
+**System-prompt stability invariant.** `AgentInfo.buildInstructions()` must return a stable string for a given `AgentInfo`. pi-agent-core's `Agent` reads `state.systemPrompt` once per `prompt()` call (via `createContextSnapshot()` in `@mariozechner/pi-agent-core`), and both Anthropic's `cache_control` block and Bedrock's `cachePoint` are pinned to the byte-exact system prefix — any drift between turns invalidates the cache. The shell builds `systemPrompt` at two points only: `createSession` on construction and `Session.selectAgent` on an empty-session agent swap (see D13). `Session.clearSession` wipes messages without touching the prompt. Commands **must not** mutate state that `buildInstructions` reads; dynamic per-turn context (date, cwd, memory recall, file snapshots, article content) goes into a user message via `prompt(text)`. Reader's `/article` is the reference pattern.
 
 **Sources of commands** (all flow into the same registry):
 
@@ -617,17 +521,7 @@ pi-ai already owns streaming for each API it ships (`bedrock-converse-stream`, `
 
 ### `ProviderInfo` shape
 
-```ts
-interface ProviderInfo {
-  id: string;                        // e.g. "amazon-bedrock"
-  displayName: string;               // "Amazon Bedrock"
-  defaultModelId: string;            // curated default when config is empty / stale
-  listModels(): Model<Api>[];
-  getApiKey(): string | undefined;   // forwarded to Agent.getApiKey hook
-  isConnected(): boolean;            // credentials configured?
-  authInstructions: string;          // shown in Connect dialog on a miss
-}
-```
+See `src/backend/providers/types.ts` for the interface. Each provider declares `id`, `displayName`, `defaultModelId` (curated fallback when config is empty/stale), `listModels()`, `getApiKey()` (sync or async, may return `undefined`), `isConnected()`, and `authInstructions` (shown in the Connect dialog on a miss).
 
 `defaultModelId` is required (not optional) so every provider declares its own curated fallback rather than depending on registry order. The agent module throws on boot if the declared default no longer resolves through `listModels()`, surfacing pi-ai registry drift loudly instead of silently relocating the user to an arbitrary model.
 
@@ -645,12 +539,12 @@ One provider ships today:
 The `kiro.ts` module has three responsibilities on top of the shared `ProviderInfo` contract:
 
 1. **API registration** — at module load it calls `registerApiProvider({ api: "kiro-api", stream: streamKiro, streamSimple: streamKiro })` with pi-ai so pi-agent-core's default `streamFn` (pi-ai's `streamSimple`) can dispatch to `pi-kiro/core`'s `streamKiro` whenever it sees `model.api === "kiro-api"`. `backend/providers/index.ts` imports `./kiro` so registration fires before the agent module resolves any model. We don't pass a custom `streamFn` to `new Agent(...)` — the registry is the canonical dispatch point.
-2. **Region scoping** — pi-kiro ships one canonical `kiroModels` catalog; per-region availability is a runtime filter and the `baseUrl` has to be rewritten to point at the user's API region (`q.{region}.amazonaws.com`). `listModels()` reads the saved creds, computes `resolveApiRegion(creds.region)`, runs `filterModelsByRegion(kiroModels, apiRegion)`, and clones each model with the rewritten `baseUrl`. Returns `[]` when not signed in so `DialogModel` hides Kiro entries until the user authenticates. Mirrors pi-kiro's `modifyModels` hook in `extension.ts:32-41`, applied here because we consume pi-kiro through `/core` (not pi's extension runtime).
+2. **Region scoping** — pi-kiro ships one canonical `kiroModels` catalog; per-region availability is a runtime filter and the `baseUrl` has to be rewritten to point at the user's API region (`q.{region}.amazonaws.com`). `listModels()` reads the saved creds, computes `resolveApiRegion(creds.region)`, runs `filterModelsByRegion(kiroModels, apiRegion)`, and clones each model with the rewritten `baseUrl`. Returns `[]` when not signed in so `DialogModel` hides Kiro entries until the user authenticates. Mirrors pi-kiro's `modifyModels` hook in `extension.ts`, applied here because we consume pi-kiro through `/core` (not pi's extension runtime).
 3. **Lazy refresh** — `getApiKey()` checks `Date.now() > creds.expires`, and on miss calls `refreshKiroToken()` and `saveKiroCreds()` before returning. No background scheduler — refresh happens at the single point that actually needs a fresh token. On refresh failure we `clearKiroCreds()` and throw, pushing the user back through Connect.
 
 ### Credential storage — `~/.config/inkstone/auth.json`
 
-Kept separate from `config.json` because OAuth tokens are sensitive (pi-kiro's `oauth.ts:55-72` explicitly calls out the refresh token + `clientSecret` pair as credentials that can mint access tokens for the user's AWS identity). `config.json` is frequently screenshared (themes, model ids) so a split avoids accidental leaks. File mode is forced to `0600` (directory `0700`) on every write via `chmodSync`. Shape is keyed by provider id (`{ kiro?: KiroCredentials }`) so future interactive providers slot in without migration.
+Kept separate from `config.json` because OAuth tokens are sensitive (pi-kiro's `oauth.ts` explicitly calls out the refresh token + `clientSecret` pair as credentials that can mint access tokens for the user's AWS identity). `config.json` is frequently screenshared (themes, model ids) so a split avoids accidental leaks. File mode is forced to `0600` (directory `0700`) on every write via `chmodSync`. Shape is keyed by provider id (`{ kiro?: KiroCredentials }`) so future interactive providers slot in without migration.
 
 ### Agent integration
 
@@ -673,11 +567,11 @@ Kept separate from `config.json` because OAuth tokens are sensitive (pi-kiro's `
 
 `startKiroLogin` in `components/dialog-provider.tsx` wires pi-kiro's `loginKiro` callbacks against the existing dialog stack:
 
-- `onPrompt({ message, placeholder, allowEmpty })` → `DialogPrompt.show(...)` returns a promise. pi-kiro calls this up to twice (Builder ID vs IdC start URL, optional IdC region). Each call uses `dialog.replace`, so only one dialog is on the stack at any time — sidesteps pi-kiro's documented mirrored-cursor glitch (`oauth.ts:16-23`), where two input widgets appended to the same container double-render typed characters.
+- `onPrompt({ message, placeholder, allowEmpty })` → `DialogPrompt.show(...)` returns a promise. pi-kiro calls this up to twice (Builder ID vs IdC start URL, optional IdC region). Each call uses `dialog.replace`, so only one dialog is on the stack at any time — sidesteps pi-kiro's documented mirrored-cursor glitch (in `oauth.ts`), where two input widgets appended to the same container double-render typed characters.
 - `onAuth({ url, instructions })` → replaces the prompt with `DialogAuthWait` showing the verification URL (primary color), user code + expiry note, and a live progress line fed by `onProgress`.
 - `onProgress(msg)` → updates a signal consumed by `DialogAuthWait`.
 - Cancellation: closing any dialog in the chain resolves the prompt promise to `null` (`DialogPrompt.show`) or invokes the wait dialog's `onClose`, which aborts the `AbortController` passed to `loginKiro`. pi-kiro throws "Login cancelled"; we swallow it silently and `dialog.clear()`.
-- Success: `saveKiroCreds(creds)`, success toast, then `DialogModel.show(...)` scoped to `{ providerId: "kiro", modelId: "claude-opus-4-7" }` so the user lands on the freshly-available catalog. Mirrors OpenCode's chain in `component/dialog-provider.tsx:183-184`.
+- Success: `saveKiroCreds(creds)`, success toast, then `DialogModel.show(...)` scoped to `{ providerId: "kiro", modelId: "claude-opus-4-7" }` so the user lands on the freshly-available catalog. Mirrors OpenCode's chain in `component/dialog-provider.tsx`.
 - Failure (non-cancel): error toast with the pi-kiro error message.
 
 The Models dialog does not drill down through providers — with only connected providers in the list, flat is simpler. When a future provider adds an API-key auth flow, the two-step would land as: DialogProvider → api-key input → DialogModel scoped to the newly-connected provider. That scoped form can be re-added to `DialogModel` (via an optional `providerId` prop) when needed.
@@ -686,7 +580,7 @@ The Models dialog does not drill down through providers — with only connected 
 
 Reasoning-capable models expose a dedicated **Effort** palette entry that opens `DialogVariant` on the currently-active model and lets the user pick a pi-agent-core `ThinkingLevel`. Inkstone follows OpenCode's standalone-entry pattern (OpenCode's `variant.list` command + `/variants` slash, `dialog-variant.tsx`) trimmed to pi-ai's unified level enum — no per-SDK `variants()` switch is needed because pi-ai already owns the provider-specific mapping internally.
 
-The entry is **not** a cascade from the Models dialog. Picking a model via Models is a one-step action that sets the model and auto-restores its stored effort (see "setModel auto-restore" below); changing effort on the current model is a separate palette action. This mirrors how OpenCode separates model selection from variant selection in its palette and slash-command surface (`opencode/src/cli/cmd/tui/app.tsx:532-544`).
+The entry is **not** a cascade from the Models dialog. Picking a model via Models is a one-step action that sets the model and auto-restores its stored effort (see "setModel auto-restore" below); changing effort on the current model is a separate palette action. This mirrors how OpenCode separates model selection from variant selection in its palette and slash-command surface (see `opencode/src/cli/cmd/tui/app.tsx`).
 
 **Entry visibility** — driven reactively by `store.modelReasoning`:
 
@@ -702,23 +596,9 @@ The entry is **not** a cascade from the Models dialog. Picking a model via Model
 
 pi-ai internally collapses some levels to the same wire value on certain models (e.g. `"minimal"` → `effort: "low"` on adaptive Claude; `xhigh` budget → `high`'s 16384 tokens on non-adaptive Claude). That's a pi-ai design choice — the collapsed levels produce identical model behavior — so Inkstone surfaces the full pi-agent-core enum and lets pi-ai do the mapping. The only capability gate we apply is `supportsXhigh(model)`, which is pi-ai's own exported helper (not a mirror of internals).
 
-**On the "max" wire value:** Anthropic renamed their top-tier adaptive-thinking effort between Opus 4.6 (wire name: `"max"`) and Opus 4.7 (wire name: `"xhigh"`). pi-ai maps the unified `ThinkingLevel = "xhigh"` to whichever wire value is top for the target model — so on Opus 4.6 it sends `output_config: { effort: "max" }`, on Opus 4.7 it sends `output_config: { effort: "xhigh" }` (`pi-mono/packages/ai/src/providers/amazon-bedrock.ts:493-514`, tests at `pi-mono/packages/ai/test/bedrock-thinking-payload.test.ts:64-76` and `stream.test.ts:1247`). OpenCode exposes separate `xhigh` + `max` rows for Opus 4.7, but under pi-mono's contract that's redundant — both land at the same "top tier". Inkstone follows pi-mono, so `xhigh` on Opus 4.7 IS the maximum reasoning tier reachable via the Anthropic API.
+**On the "max" wire value:** Anthropic renamed their top-tier adaptive-thinking effort between Opus 4.6 (wire name: `"max"`) and Opus 4.7 (wire name: `"xhigh"`). pi-ai maps the unified `ThinkingLevel = "xhigh"` to whichever wire value is top for the target model — so on Opus 4.6 it sends `output_config: { effort: "max" }`, on Opus 4.7 it sends `output_config: { effort: "xhigh" }` (see `pi-mono/packages/ai/src/providers/amazon-bedrock.ts` and its tests). OpenCode exposes separate `xhigh` + `max` rows for Opus 4.7, but under pi-mono's contract that's redundant — both land at the same "top tier". Inkstone follows pi-mono, so `xhigh` on Opus 4.7 IS the maximum reasoning tier reachable via the Anthropic API.
 
-**Storage — per-model, keyed by `${providerId}/${modelId}`:**
-
-```jsonc
-// config.json
-{
-  "providerId": "amazon-bedrock",
-  "modelId": "us.anthropic.claude-opus-4-7",
-  "thinkingLevels": {
-    "amazon-bedrock/us.anthropic.claude-opus-4-7": "high",
-    "amazon-bedrock/anthropic.claude-sonnet-4": "medium"
-  }
-}
-```
-
-Missing key resolves to `"off"`. Matches OpenCode's `local.model.variant: Record<${providerID}/${modelID}, string | undefined>` keying so a model remembers the effort the user last picked for it.
+**Storage — per-model, keyed by `${providerId}/${modelId}`.** Stored in `config.json` under `thinkingLevels: Record<"${providerId}/${modelId}", ThinkingLevel>`. Missing key resolves to `"off"`. Schema: `src/backend/persistence/schema.ts`. Matches OpenCode's `local.model.variant` keying so a model remembers the effort the user last picked for it.
 
 **Data flow:**
 
@@ -738,7 +618,7 @@ Ctrl+P → Effort
 
 **setModel auto-restore:** `AgentActions.setModel(model)` also re-applies `a.state.thinkingLevel = resolveThinkingLevel(model)` after swapping the model, so switching back to a previously-used reasoning model restores its prior effort without the user needing to re-pick it via the Effort entry. The TUI wrapper mirrors this by calling `setStore("thinkingLevel", getCurrentThinkingLevel())` after `setModel`, so the status-line suffix tracks model switches in lockstep. The wrapper also writes `setStore("modelReasoning", model.reasoning)` so the palette's Effort-entry visibility updates in the same tick.
 
-**Safety guard:** pi-ai/pi-agent-core already ignores `reasoning:` on non-reasoning models (`pi-mono/packages/ai/src/providers/amazon-bedrock.ts:623-625`), so Inkstone doesn't re-guard capability in `resolveThinkingLevel`.
+**Safety guard:** pi-ai/pi-agent-core already ignores `reasoning:` on non-reasoning models (see `pi-mono/packages/ai/src/providers/amazon-bedrock.ts`), so Inkstone doesn't re-guard capability in `resolveThinkingLevel`.
 
 **Non-goals (deferred):**
 
@@ -783,7 +663,7 @@ Action naming groups by scope:
 
 ### Session interrupt (double-tap ESC)
 
-Ported from OpenCode (`opencode/src/cli/cmd/tui/component/prompt/index.tsx:273-303, 1325-1330`). The `session_interrupt` keybind (default `escape`) is registered by `Prompt()` in `src/tui/components/prompt.tsx` via `useCommand().register`, with the registration memo gated on `store.isStreaming` — so the binding is live only while a turn is in flight. When idle, the registration returns `[]` and ESC falls through (no global handler is listening).
+Ported from OpenCode (see `opencode/src/cli/cmd/tui/component/prompt/index.tsx`). The `session_interrupt` keybind (default `escape`) is registered by `Prompt()` in `src/tui/components/prompt.tsx` via `useCommand().register`, with the registration memo gated on `store.isStreaming` — so the binding is live only while a turn is in flight. When idle, the registration returns `[]` and ESC falls through (no global handler is listening).
 
 Double-tap semantics live in a local signal inside `Prompt()` (`interrupt: number`, not in `AgentStoreState` — pure UI transient, no cross-frontend contract):
 
@@ -791,7 +671,7 @@ Double-tap semantics live in a local signal inside `Prompt()` (`interrupt: numbe
 - **Second ESC within 5 s** → `actions.abort()` is called (pi-agent-core `Agent.abort()`), `interrupt` resets to 0, the pending timer is cleared.
 - **5 s elapses without a second press** → `interrupt` resets to 0, the hint reverts to `esc interrupt`. The next press starts the sequence over — a single ESC after the timeout does **not** abort.
 
-Inkstone additionally scopes the arm to the current turn via a `createEffect` on `store.isStreaming`: when streaming flips back to false, the pending 5 s timer is cleared and `interrupt` returns to 0. Without this reset, a single ESC press late in a turn that completes before the timer fires would leave `interrupt === 1`; the first ESC of the next turn would then satisfy the `next >= 2` branch in `handleInterrupt` and abort immediately instead of arming the double-tap. OpenCode's prompt carries the same latent bug (`opencode/src/cli/cmd/tui/component/prompt/index.tsx:290-294`); this is an intentional Inkstone divergence.
+Inkstone additionally scopes the arm to the current turn via a `createEffect` on `store.isStreaming`: when streaming flips back to false, the pending 5 s timer is cleared and `interrupt` returns to 0. Without this reset, a single ESC press late in a turn that completes before the timer fires would leave `interrupt === 1`; the first ESC of the next turn would then satisfy the `next >= 2` branch in `handleInterrupt` and abort immediately instead of arming the double-tap. OpenCode's prompt carries the same latent bug (see `opencode/src/cli/cmd/tui/component/prompt/index.tsx`); this is an intentional Inkstone divergence.
 
 `actions.abort()` is the existing `AgentActions.abort` (`backend/agent/index.ts`) that forwards to pi-agent-core's `Agent.abort()`. pi-agent-core fires `message_end` with `stopReason === "aborted"`, which is already surfaced by `AgentProvider`'s reducer onto the assistant bubble's `error` field (`tui/context/agent.tsx`) and rendered via the shared error panel in `AssistantMessage` (`message.tsx`). No new event-handling is required.
 
