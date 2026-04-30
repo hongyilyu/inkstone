@@ -1,5 +1,5 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { readTool } from "./tools";
+import { readTool, updateSidebarTool } from "./tools";
 import type { AgentInfo } from "./types";
 
 /**
@@ -7,7 +7,10 @@ import type { AgentInfo } from "./types";
  * can't mutate the array. See `docs/AGENT-DESIGN.md` D4 (no opt-out) +
  * D5 (ship mechanism, defer content).
  */
-export const BASE_TOOLS: readonly AgentTool<any>[] = Object.freeze([readTool]);
+export const BASE_TOOLS: readonly AgentTool<any>[] = Object.freeze([
+	readTool,
+	updateSidebarTool,
+]);
 
 /**
  * Shared system-prompt prefix prepended to every agent. Empty today —

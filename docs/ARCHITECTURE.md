@@ -96,7 +96,7 @@ src/
       types.ts                      Foundation types (AgentInfo, AgentZone, AgentCommand, etc.)
       compose.ts                    BASE_TOOLS, BASE_PREAMBLE, composeTools, composeSystemPrompt
       zones.ts                      Zone-to-permission rule derivation
-      tools.ts                      Shared tool pool (read, write, edit via pi-coding-agent)
+      tools.ts                      Shared tool pool (read, write, edit via pi-coding-agent; updateSidebarTool for generic sidebar section management)
       permissions.ts                Declarative permission dispatcher
       constants.ts                  Vault and directory path constants
       agents/                       Custom agents, one self-contained folder each
@@ -124,7 +124,7 @@ src/
         migrations/                 drizzle-kit-generated SQL migrations
 
   bridge/                           Pure TS — shared type contract
-    view-model.ts                   DisplayMessage, AgentStoreState
+    view-model.ts                   DisplayMessage, DisplayPart, SidebarSection, AgentStoreState
 
   tui/                              Solid + OpenTUI
     app.tsx                         Provider stack + root layout + top-level commands
@@ -141,11 +141,13 @@ src/
     components/
       conversation.tsx              Scrollbox + message list routing
       message.tsx                   Bubble rendering (UserMessage, AssistantMessage, parts)
+      user-part.tsx                 Single part inside a user bubble — text or clickable file chip (opens article reader page)
+      article-page.tsx              Full-screen article reader page — renders article markdown from disk in a scrollable view
       prompt.tsx                    Textarea prompt with /command parsing + streaming indicator
       prompt-autocomplete.tsx        Slash-command dropdown above the textarea — fuzzysort-filtered list of `CommandOption`s with `slash` fields; column-0-only trigger, keyboard nav, argful insert
       spinner.tsx                   Simple braille-dot spinner
       spinner-wave.tsx              Knight-rider wave spinner (port of OpenCode's)
-      sidebar.tsx                   Session metadata panel
+      sidebar.tsx                   Session metadata panel (title, context, dynamic sidebar sections, back button in article view)
       session-list.tsx              Left-side session history panel (Ctrl+N)
       session-list-item.tsx         Single row renderer for session list
       open-page.tsx                 Empty-state welcome page
@@ -177,7 +179,7 @@ ThemeProvider
 
 ## Agent Integration
 
-The `AgentProvider` creates a pi-agent-core `Agent` instance (via `backend/agent/`) and subscribes to its events. State is held in a `createStore` whose shape is defined in `src/bridge/view-model.ts` as `AgentStoreState`. Key fields: `messages: DisplayMessage[]`, `isStreaming`, `modelName`, `modelProvider` (provider id — format via `getProvider(id).displayName` at render time), `contextWindow`, `modelReasoning` (gates the Effort palette entry), `thinkingLevel` (pi-agent-core's reasoning effort; `"off"` when non-reasoning or user-disabled), `status` (`"idle" | "streaming" | "tool_executing"`), `totalTokens`, `totalCost`, `lastTurnStartedAt` (consumed in `agent_end`), `currentAgent`.
+The `AgentProvider` creates a pi-agent-core `Agent` instance (via `backend/agent/`) and subscribes to its events. State is held in a `createStore` whose shape is defined in `src/bridge/view-model.ts` as `AgentStoreState`. Key fields: `messages: DisplayMessage[]`, `isStreaming`, `sidebarSections: SidebarSection[]` (ephemeral dynamic sections set by the `update_sidebar` tool), `articleView: { filename } | null` (non-null = article reader page shown), `modelName`, `modelProvider` (provider id — format via `getProvider(id).displayName` at render time), `contextWindow`, `modelReasoning` (gates the Effort palette entry), `thinkingLevel` (pi-agent-core's reasoning effort; `"off"` when non-reasoning or user-disabled), `status` (`"idle" | "streaming" | "tool_executing"`), `totalTokens`, `totalCost`, `lastTurnStartedAt` (consumed in `agent_end`), `currentAgent`.
 
 Both `DisplayMessage` and `AgentStoreState` are defined in `src/bridge/view-model.ts` — they are the cross-frontend view-state contract.
 
@@ -333,7 +335,7 @@ The foundation layer is split across three files:
 
 Shared constants and helpers:
 
-- `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today just `read` (from the shared pool, scoped to `VAULT_DIR`). Frozen at module load so external modules can't mutate.
+- `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today: `read` (from the shared pool, scoped to `VAULT_DIR`) and `update_sidebar` (generic sidebar section management — upsert/delete sections by id; no filesystem access, no permission baseline). Frozen at module load so external modules can't mutate.
 - `BASE_PREAMBLE: string` — a shared system-prompt prefix. **Empty today** — the mechanism is the point. Future PRs will grow this into a composed block that includes persona guidance, tool-use discipline, and memory-file contents (`user.md`, `memory.md` from `~/.config/inkstone/`).
 - `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]`. Every agent gets the base set unconditionally; there is no opt-out flag.
 - `composeSystemPrompt(info)` — builds the full system prompt as three non-empty sections joined by blank lines: the zones block (when `info.zones.length > 0`), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. `buildInstructions` is nullary. Called once at `createSession` and again on `Session.selectAgent` (empty-session agent swap); not on every turn — `state.systemPrompt` stays byte-stable for the session's lifetime so Anthropic `cache_control` / Bedrock `cachePoint` prefixes hit. See D9's stability invariant.
@@ -363,8 +365,8 @@ Tool implementations come from `@mariozechner/pi-coding-agent` via the shared po
 
 | Name | extraTools | Composed tools | Zones | Commands | Prompt behavior | Color |
 |------|------------|----------------|-------|----------|-----------------|-------|
-| `reader` | `edit`, `write` | `read` + the extras | `010 RAW/013 Articles` + `020 HUMAN/022 Scraps` + `020 HUMAN/023 Notes`, all confirm | `/article [filename]` | `<your workspace>` block + the 6-stage reading workflow. `/article <filename>` reads the file and sends path + full content as the LLM-facing prompt text, while passing the TUI compact `displayParts = [text "Read this article.", file text/markdown <vault-relative>]` so the bubble renders a short prose line + a file chip instead of the full article body. `/article` (bare) scans ARTICLES_DIR, displays a numbered recommendation list as a user bubble, and opens a DialogSelect picker; selecting an article runs the same compact-bubble loading path. | `theme.secondary` |
-| `example` | — | `read` only | — | — | Short static "general-purpose assistant" prompt, no workspace block | `theme.accent` |
+| `reader` | `edit`, `write` | `read`, `update_sidebar` + the extras | `010 RAW/013 Articles` + `020 HUMAN/022 Scraps` + `020 HUMAN/023 Notes`, all confirm | `/article [filename]` | `<your workspace>` block + the 6-stage reading workflow. `/article <filename>` reads the file and sends path + full content as the LLM-facing prompt text, while passing the TUI compact `displayParts = [text "Read this article.", file text/markdown <vault-relative>]` so the bubble renders a short prose line + a clickable file chip (opens the article reader page) instead of the full article body. `/article` (bare) scans ARTICLES_DIR, displays a numbered recommendation list as a user bubble, and opens a DialogSelect picker; selecting an article runs the same compact-bubble loading path. In Stage 2 (keeper mode), the LLM calls `update_sidebar` to pin the first-pass prompts in the sidebar. | `theme.secondary` |
+| `example` | — | `read`, `update_sidebar` only | — | — | Short static "general-purpose assistant" prompt, no workspace block | `theme.accent` |
 
 Both agents inherit the shell-level `/clear` verb via the unified command registry (see Commands below) — no per-agent declaration needed.
 

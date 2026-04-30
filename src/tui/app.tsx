@@ -18,10 +18,12 @@ import { DialogProvider as DialogProviderSelect } from "./components/dialog-prov
 import { DialogTheme } from "./components/dialog-theme";
 import { DialogVariant } from "./components/dialog-variant";
 import { OpenPage } from "./components/open-page";
+import { SecondaryPage } from "./components/secondary-page";
 import { Prompt } from "./components/prompt";
 import { SessionList } from "./components/session-list";
 import { Sidebar } from "./components/sidebar";
 import { AgentProvider, useAgent } from "./context/agent";
+import { closeSecondaryPage, getSecondaryPage } from "./context/secondary-page";
 import { ThemeProvider, useTheme } from "./context/theme";
 import { DialogProvider, useDialog } from "./ui/dialog";
 import { Toast, ToastProvider, useToast } from "./ui/toast";
@@ -191,6 +193,7 @@ function Layout() {
 				keybind: "session_list",
 				hidden: true,
 				onSelect: () => {
+					if (getSecondaryPage()) return; // no session list while secondary page is open
 					if (sessionListOpen()) {
 						closeSessionList();
 						return;
@@ -258,6 +261,18 @@ function Layout() {
 			return;
 		}
 
+		// ESC / Ctrl+[ — close secondary page and return to conversation.
+		// Checked after app_exit but before scroll guards. Gated on no open
+		// dialogs so ESC closes a dialog first when one is on the stack.
+		if (
+			Keybind.match("secondary_page_close", evt) &&
+			getSecondaryPage() &&
+			dialog.stack.length === 0
+		) {
+			closeSecondaryPage();
+			return;
+		}
+
 		if (!scroll || scroll.isDestroyed) return;
 		if (dialog.stack.length > 0) return;
 
@@ -319,23 +334,36 @@ function Layout() {
 							}}
 						/>
 					</Show>
-					{/* Middle column: conversation + prompt */}
+				{/* Middle column: conversation + prompt (or secondary page) */}
 					{/* Horizontal padding + bottom gap matches OpenCode session/index.tsx:1043 */}
-					<box
-						flexDirection="column"
-						flexGrow={1}
-						paddingLeft={2}
-						paddingRight={2}
-						paddingBottom={1}
+					<Show
+						when={!getSecondaryPage()}
+						fallback={
+							<box
+								flexDirection="column"
+								flexGrow={1}
+								paddingBottom={1}
+							>
+								<SecondaryPage />
+							</box>
+						}
 					>
-						<Conversation />
-						<box paddingTop={1} flexShrink={0}>
-							<Prompt />
+						<box
+							flexDirection="column"
+							flexGrow={1}
+							paddingLeft={2}
+							paddingRight={2}
+							paddingBottom={1}
+						>
+							<Conversation />
+							<box paddingTop={1} flexShrink={0}>
+								<Prompt />
+							</box>
 						</box>
-					</box>
+					</Show>
 					{/* Right column: session metadata sidebar (hidden on narrow terminals or when session panel is open) */}
 					<Show when={showSidebar()}>
-						<Sidebar />
+						<Sidebar inSecondaryPage={!!getSecondaryPage()} />
 					</Show>
 				</box>
 			</Show>

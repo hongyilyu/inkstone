@@ -19,6 +19,7 @@ import type {
 	AgentStoreState,
 	DisplayMessage,
 	DisplayPart,
+	SidebarSection,
 } from "@bridge/view-model";
 import type {
 	AgentEvent,
@@ -35,6 +36,7 @@ import {
 import { batch, createContext, type ParentProps, useContext } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { toBottom } from "../app";
+import { closeSecondaryPage } from "./secondary-page";
 import { type CommandOption, useCommand } from "../components/dialog-command";
 import { DialogSelect } from "../ui/dialog-select";
 
@@ -138,6 +140,7 @@ export function AgentProvider(props: ParentProps) {
 	const [store, setStore] = createStore<AgentStoreState>({
 		messages: [],
 		isStreaming: false,
+		sidebarSections: [],
 		modelName: initialModel.name,
 		modelProvider: initialModel.provider,
 		contextWindow: initialModel.contextWindow,
@@ -413,6 +416,50 @@ export function AgentProvider(props: ParentProps) {
 					setStore("status", "tool_executing");
 					break;
 
+				case "tool_execution_end": {
+					// Handle update_sidebar tool — apply the structured details
+					// to the store so the sidebar reacts immediately.
+					const endEvt = event as {
+						type: "tool_execution_end";
+						toolName: string;
+						result: any;
+					};
+					if (endEvt.toolName === "update_sidebar" && endEvt.result?.details) {
+						const d = endEvt.result.details as {
+							operation: "upsert" | "delete";
+							id: string;
+							title?: string;
+							content?: string;
+						};
+						if (d.operation === "delete") {
+							setStore(
+								"sidebarSections",
+								(sections) => sections.filter((s) => s.id !== d.id),
+							);
+						} else if (d.operation === "upsert" && d.title && d.content) {
+							const title = d.title;
+							const content = d.content;
+							setStore(
+								"sidebarSections",
+								produce((sections: SidebarSection[]) => {
+									const idx = sections.findIndex((s) => s.id === d.id);
+									const entry: SidebarSection = {
+										id: d.id,
+										title,
+										content,
+									};
+									if (idx >= 0) {
+										sections[idx] = entry;
+									} else {
+										sections.push(entry);
+									}
+								}),
+							);
+						}
+					}
+					break;
+				}
+
 				case "agent_end":
 					setStore("isStreaming", false);
 					setStore("status", "idle");
@@ -486,7 +533,7 @@ export function AgentProvider(props: ParentProps) {
 			// LLM text vs. bubble display split: when a command supplies
 			// `displayParts` (reader's `/article` does), use those verbatim
 			// so the bubble can render a file chip instead of the full
-			// article body; otherwise fall back to the one-text-part shape
+			// content; otherwise fall back to the one-text-part shape
 			// that covers plain prompts. pi-agent-core only ever sees
 			// `text`, so whatever the LLM needs must be in `text`.
 			const userMsg: DisplayMessage = {
@@ -602,6 +649,8 @@ export function AgentProvider(props: ParentProps) {
 			// means the NEXT prompt creates a fresh row.
 			currentSessionId = null;
 			setStore("messages", []);
+			setStore("sidebarSections", []);
+			closeSecondaryPage();
 			setStore("totalTokens", 0);
 			setStore("totalCost", 0);
 			setStore("lastTurnStartedAt", 0);
@@ -659,6 +708,10 @@ export function AgentProvider(props: ParentProps) {
 				setStore("totalTokens", 0);
 				setStore("totalCost", 0);
 				setStore("lastTurnStartedAt", 0);
+				// Ephemeral UI state — reset so the resumed session doesn't
+				// inherit stale sidebar sections or secondary page.
+				setStore("sidebarSections", []);
+				closeSecondaryPage();
 			});
 			toBottom();
 		},
