@@ -193,6 +193,7 @@ function Layout() {
 				keybind: "session_list",
 				hidden: true,
 				onSelect: () => {
+					if (getSecondaryPage()) return; // no session list while secondary page is open
 					if (sessionListOpen()) {
 						closeSessionList();
 						return;
