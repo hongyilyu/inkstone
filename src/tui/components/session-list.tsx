@@ -9,8 +9,8 @@ import { createStore } from "solid-js/store";
 import { blurInput } from "../app";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
-import { formatRelativeTime } from "../util/format";
 import * as Keybind from "../util/keybind";
+import { SessionListItem } from "./session-list-item";
 
 const PANEL_WIDTH = 34;
 // Inner content width = PANEL_WIDTH - paddingLeft(2) - paddingRight(2)
@@ -22,13 +22,13 @@ export interface SessionListProps {
 }
 
 /**
- * Left-side panel listing past sessions for the current agent. Ctrl+N
+ * Left-side panel listing past sessions across every agent. Ctrl+N
  * toggles this panel on; Enter on a selected row calls `onSelect`, which
- * the layout wires to `actions.resumeSession`.
- *
- * Scoping: the list is filtered to `store.currentAgent` — cross-agent
- * browsing would require a swap that breaks D13 (agent-for-session),
- * so we simply don't offer it.
+ * the layout wires to `actions.resumeSession`. Resuming a session bound
+ * to a different agent silently swaps the live Session to that agent
+ * (see D13 in `docs/AGENT-DESIGN.md` — the one-agent-per-session rule
+ * applies to a session's in-memory lifetime; resume constructs a fresh
+ * in-memory lifetime).
  *
  * The keyboard handler matches the subset of DialogSelect's nav (up /
  * down / enter / esc / ctrl+n). We deliberately skip the fuzzy filter,
@@ -36,18 +36,19 @@ export interface SessionListProps {
  * the session list's shape (small, flat, visible-when-you-opened-it)
  * doesn't need them. If that stops being true, refactor toward a
  * panel-variant of DialogSelect rather than letting this file grow.
+ *
+ * Row rendering lives in `session-list-item.tsx`; this file owns the
+ * panel chrome, nav state, and keyboard handler only.
  */
 export function SessionList(props: SessionListProps) {
 	const { theme } = useTheme();
-	const { store, session } = useAgent();
+	const { session } = useAgent();
 
 	// Snapshot taken on mount. The panel re-mounts on every open (see
 	// `<Show when={sessionListOpen()}>` in app.tsx), so a closed-then-
 	// reopened panel always sees a fresh listing without needing a
 	// subscription surface.
-	const [rows] = createSignal<SessionSummary[]>(
-		listSessions(store.currentAgent),
-	);
+	const [rows] = createSignal<SessionSummary[]>(listSessions());
 
 	// Blur the prompt input while the panel is mounted so this component's
 	// `useKeyboard` has exclusive claim to nav keys. Without this, pressing
@@ -167,79 +168,24 @@ export function SessionList(props: SessionListProps) {
 			>
 				<scrollbox scrollbarOptions={{ visible: false }} flexGrow={1}>
 					<For each={rows()}>
-						{(row, i) => {
-							const active = createMemo(() => i() === navStore.selected);
-							const current = createMemo(() => row.id === currentSessionId());
-							return (
-								<box
-									flexDirection="column"
-									backgroundColor={
-										active() ? theme.primary : theme.backgroundPanel
-									}
-									paddingLeft={current() ? 0 : 2}
-									paddingRight={1}
-									paddingTop={0}
-									paddingBottom={0}
-									marginBottom={1}
-									onMouseUp={() => {
-										setNavStore("selected", i());
-										// Click-to-select fires immediately instead of
-										// requiring a second Enter; matches DialogSelect.
-										props.onSelect(row.id);
-									}}
-									onMouseOver={() => setNavStore("selected", i())}
-								>
-									<box flexDirection="row" gap={1}>
-										<Show when={current()}>
-											<text
-												flexShrink={0}
-												fg={
-													active() ? theme.selectedListItemText : theme.primary
-												}
-											>
-												●
-											</text>
-										</Show>
-										<text
-											flexGrow={1}
-											fg={
-												active()
-													? theme.selectedListItemText
-													: current()
-														? theme.primary
-														: theme.text
-											}
-											attributes={active() ? TextAttributes.BOLD : undefined}
-											wrapMode="none"
-											overflow="hidden"
-										>
-											{truncate(rowTitle(row), TITLE_MAX_CHARS)}
-										</text>
-									</box>
-									<text
-										fg={active() ? theme.selectedListItemText : theme.textMuted}
-										wrapMode="none"
-									>
-										{formatRelativeTime(row.startedAt)} · {row.messageCount} msg
-									</text>
-								</box>
-							);
-						}}
+						{(row, i) => (
+							<SessionListItem
+								row={row}
+								active={i() === navStore.selected}
+								current={row.id === currentSessionId()}
+								titleMaxChars={TITLE_MAX_CHARS}
+								onMouseOver={() => setNavStore("selected", i())}
+								onMouseUp={() => {
+									setNavStore("selected", i());
+									// Click-to-select fires immediately instead of
+									// requiring a second Enter; matches DialogSelect.
+									props.onSelect(row.id);
+								}}
+							/>
+						)}
 					</For>
 				</scrollbox>
 			</Show>
 		</box>
 	);
-}
-
-function rowTitle(row: SessionSummary): string {
-	const t = row.title?.trim();
-	if (t) return t;
-	if (row.preview) return row.preview;
-	return "Untitled";
-}
-
-function truncate(s: string, max: number): string {
-	if (s.length <= max) return s;
-	return `${s.slice(0, max - 1)}…`;
 }

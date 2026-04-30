@@ -605,27 +605,25 @@ export function AgentProvider(props: ParentProps) {
 				});
 				return;
 			}
-			// Agent-filter safety net. The panel is agent-filtered, so a
-			// mismatch here usually means stale panel state — e.g. the
-			// user pressed Tab to cycle agents while the panel was open,
-			// then picked a row from the (now-stale) snapshot. Toast and
-			// bail instead of swapping the agent mid-session; breaking
-			// the "one agent per session" invariant (D13) would scramble
-			// prompt-cache stability and per-bubble agent stamps.
-			if (loaded.session.agent !== store.currentAgent) {
-				toast.show({
-					variant: "warning",
-					title: "Agent changed",
-					message:
-						"This session was started under a different agent. Switch back, then try again.",
-					duration: 5000,
-				});
-				return;
-			}
 			batch(() => {
+				// Ordering matters. `agentSession.selectAgent` throws when
+				// the live Agent's `messages.length > 0`; `clearSession`
+				// wipes them first so the swap is always valid. Only then
+				// do we seed the persisted history via `restoreMessages`.
+				//
+				// Cross-agent resume is intentional (see D13 in
+				// `docs/AGENT-DESIGN.md`): the "one agent per session"
+				// invariant covers a session's in-memory lifetime. Resume
+				// constructs a fresh in-memory lifetime, so we rebind the
+				// live Session onto the stored session's agent rather than
+				// refusing.
 				agentSession.clearSession();
+				if (loaded.session.agent !== agentSession.agentName) {
+					agentSession.selectAgent(loaded.session.agent);
+				}
 				agentSession.restoreMessages(loaded.agentMessages);
 				currentSessionId = loaded.session.id;
+				setStore("currentAgent", agentSession.agentName);
 				setStore("messages", loaded.displayMessages);
 				// Token / cost counters are session-local accumulators built
 				// from streaming events. They aren't persisted, so a resumed

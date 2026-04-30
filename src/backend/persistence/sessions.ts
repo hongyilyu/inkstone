@@ -21,7 +21,10 @@
  * `ORDER BY id` gives chronological order. Parts use a composite
  * `(message_id, seq)` key — parts don't have cross-session identity.
  *
- * Visibility is agent-scoped: every read path filters on `sessions.agent`.
+ * Visibility is global: `listSessions()` returns rows across every agent.
+ * Row-level `agent` still lets consumers filter client-side; the resume
+ * path in the TUI uses this to swap `Session.selectAgent` when the
+ * target session was bound to a different agent.
  */
 
 import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
@@ -397,14 +400,9 @@ export interface SessionSummary {
 	preview: string;
 }
 
-export function listSessions(agent: string): SessionSummary[] {
+export function listSessions(): SessionSummary[] {
 	const db = getDb();
-	const rows = db
-		.select()
-		.from(sessions)
-		.where(eq(sessions.agent, agent))
-		.orderBy(desc(sessions.id))
-		.all();
+	const rows = db.select().from(sessions).orderBy(desc(sessions.id)).all();
 	if (rows.length === 0) return [];
 
 	const counts = db
