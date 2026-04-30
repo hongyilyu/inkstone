@@ -73,7 +73,7 @@ If mode is \`keeper\`:
 - after presenting the prompts, call the \`update_sidebar\` tool with:
   - \`operation\`: \`"upsert"\`
   - \`id\`: \`"first-pass-prompts"\`
-  - \`title\`: \`"First-Pass Prompts"\`
+  - \`title\`: \`"Watch for"\`
   - \`content\`: the prompts as a bulleted markdown list (e.g. \`"- prompt 1\\n- prompt 2\\n- prompt 3"\`)
 
 ## Stage 3: Post-Read Recap

@@ -35,7 +35,7 @@ import {
 } from "@mariozechner/pi-ai";
 import { batch, createContext, type ParentProps, useContext } from "solid-js";
 import { createStore, produce } from "solid-js/store";
-import { toBottom } from "../app";
+import { closeSecondaryPage, toBottom } from "../app";
 import { type CommandOption, useCommand } from "../components/dialog-command";
 import { DialogSelect } from "../ui/dialog-select";
 
@@ -74,10 +74,6 @@ interface AgentContextValue {
 		selectAgent(name: string): void;
 		clearSession(): void;
 		resumeSession(sessionId: string): void;
-		/** Navigate to the article reader page. `filename` is vault-relative. */
-		openArticle(filename: string): void;
-		/** Return from the article reader page to the conversation. */
-		closeArticle(): void;
 	};
 	/**
 	 * Read accessors for dialog seeding. Exposed so dialog call sites
@@ -144,7 +140,6 @@ export function AgentProvider(props: ParentProps) {
 		messages: [],
 		isStreaming: false,
 		sidebarSections: [],
-		articleView: null,
 		modelName: initialModel.name,
 		modelProvider: initialModel.provider,
 		contextWindow: initialModel.contextWindow,
@@ -532,12 +527,6 @@ export function AgentProvider(props: ParentProps) {
 	// lifecycle methods with store resets.
 	const wrappedActions: AgentContextValue["actions"] = {
 		...agentSession.actions,
-		openArticle(filename: string) {
-			setStore("articleView", { filename });
-		},
-		closeArticle() {
-			setStore("articleView", null);
-		},
 		async prompt(text: string, displayParts?: DisplayPart[]) {
 			const sessionId = ensureSession();
 			// LLM text vs. bubble display split: when a command supplies
@@ -660,7 +649,7 @@ export function AgentProvider(props: ParentProps) {
 			currentSessionId = null;
 			setStore("messages", []);
 			setStore("sidebarSections", []);
-			setStore("articleView", null);
+			closeSecondaryPage();
 			setStore("totalTokens", 0);
 			setStore("totalCost", 0);
 			setStore("lastTurnStartedAt", 0);
@@ -719,9 +708,9 @@ export function AgentProvider(props: ParentProps) {
 				setStore("totalCost", 0);
 				setStore("lastTurnStartedAt", 0);
 				// Ephemeral UI state — reset so the resumed session doesn't
-				// inherit stale article view or sidebar sections.
+				// inherit stale sidebar sections or secondary page.
 				setStore("sidebarSections", []);
-				setStore("articleView", null);
+				closeSecondaryPage();
 			});
 			toBottom();
 		},

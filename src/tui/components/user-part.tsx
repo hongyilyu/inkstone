@@ -15,8 +15,8 @@
 
 import type { DisplayPart } from "@bridge/view-model";
 import type { RGBA } from "@opentui/core";
-import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
+import { openSecondaryPage } from "../app";
 
 /**
  * MIME → short badge label. Minimal on purpose: today only reader's
@@ -38,7 +38,6 @@ export function UserPart(props: {
 	agentColor: RGBA;
 }) {
 	const { theme } = useTheme();
-	const { actions } = useAgent();
 
 	if (props.part.type === "text") {
 		return (
@@ -52,7 +51,7 @@ export function UserPart(props: {
 		return (
 			<box
 				marginTop={props.first ? 0 : 1}
-				onMouseDown={() => actions.openArticle(filename)}
+				onMouseDown={() => openSecondaryPage(filename)}
 			>
 				<text wrapMode="none">
 					<span

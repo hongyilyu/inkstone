@@ -1,9 +1,9 @@
 /**
- * Full-screen article reader page. Replaces the conversation area when
- * `store.articleView` is non-null. Renders the article markdown from
- * disk in a scrollable main area.
+ * Full-screen secondary page. Replaces the conversation area when
+ * a secondary page is open. Renders file markdown from disk in a
+ * scrollable main area.
  *
- * Navigation: Ctrl+[ or the sidebar back button calls `actions.closeArticle()`.
+ * Navigation: ESC/Ctrl+[ or the sidebar back button calls `closeSecondaryPage()`.
  */
 
 import { readFileSync } from "node:fs";
@@ -11,25 +11,24 @@ import { resolve } from "node:path";
 import { VAULT_DIR } from "@backend/agent/constants";
 import { isInsideDir } from "@backend/agent/permissions";
 import { createMemo } from "solid-js";
-import { useAgent } from "../context/agent";
+import { getSecondaryPage } from "../app";
 import { useTheme } from "../context/theme";
 
 export function ArticlePage() {
-	const { store } = useAgent();
 	const { theme, syntax } = useTheme();
 
 	const content = createMemo(() => {
-		const view = store.articleView;
-		if (!view) return "";
+		const page = getSecondaryPage();
+		if (!page) return "";
 		try {
-			const abs = resolve(VAULT_DIR, view.filename);
+			const abs = resolve(VAULT_DIR, page.filename);
 			// Sandbox check — reject paths that escape the vault.
 			if (!isInsideDir(abs, VAULT_DIR) || abs === VAULT_DIR) {
-				return `_Path outside vault: ${view.filename}_`;
+				return `_Path outside vault: ${page.filename}_`;
 			}
 			return readFileSync(abs, "utf-8");
 		} catch {
-			return `_Could not read file: ${view.filename}_`;
+			return `_Could not read file: ${page.filename}_`;
 		}
 	});
 

@@ -2,7 +2,7 @@ import { VAULT_DIR } from "@backend/agent/constants";
 import { TextAttributes } from "@opentui/core";
 import { createMemo, For, Show } from "solid-js";
 import pkg from "../../../package.json";
-import { refocusInput } from "../app";
+import { closeSecondaryPage, refocusInput } from "../app";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import { displayPath, formatCost, formatTokensFull } from "../util/format";
@@ -24,9 +24,9 @@ const TITLE_MAX_CHARS = SIDEBAR_WIDTH - 4;
  *   vault path      muted
  *   version         muted
  */
-export function Sidebar() {
+export function Sidebar(props: { inSecondaryPage?: boolean }) {
 	const { theme, syntax } = useTheme();
-	const { store, actions } = useAgent();
+	const { store } = useAgent();
 
 	// Display vault path with ~ for home dir (platform-neutral helper,
 	// shared with the open-page footer).
@@ -65,8 +65,6 @@ export function Sidebar() {
 		() => store.totalTokens > 0 || store.totalCost > 0,
 	);
 
-	const inArticleView = () => store.articleView !== null;
-
 	return (
 		<box
 			width={SIDEBAR_WIDTH}
@@ -81,12 +79,12 @@ export function Sidebar() {
 		>
 			{/* Top section — grows to fill, footer stays anchored below */}
 			<box flexDirection="column" flexGrow={1} gap={1}>
-				{/* Back button — only in article view */}
-				<Show when={inArticleView()}>
-					<box onMouseDown={() => actions.closeArticle()}>
-						<text fg={theme.accent}>{"← Back"}</text>
-					</box>
-				</Show>
+			{/* Back button — only in secondary page view */}
+			<Show when={props.inSecondaryPage}>
+				<box onMouseDown={() => closeSecondaryPage()}>
+					<text fg={theme.accent}>{"← Back"}</text>
+				</box>
+			</Show>
 
 				{/* Title */}
 				<text fg={theme.text} attributes={TextAttributes.BOLD}>

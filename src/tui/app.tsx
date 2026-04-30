@@ -63,6 +63,34 @@ export function toBottom() {
 	}, 50);
 }
 
+// ---------------------------------------------------------------------------
+// Secondary page — local UI state (not agent/session state).
+// Module-level signal so deeply nested components (UserPart, Sidebar,
+// ArticlePage) can read/write without prop drilling. Same pattern as
+// `scroll`/`inputRef` above.
+//
+// Generic: any agent can open a secondary page to display a file.
+// ---------------------------------------------------------------------------
+
+const [secondaryPage, setSecondaryPage] = createSignal<{
+	filename: string;
+} | null>(null);
+
+/** Open a secondary page to display a file. `filename` is vault-relative. */
+export function openSecondaryPage(filename: string) {
+	setSecondaryPage({ filename });
+}
+
+/** Return from the secondary page to the conversation. */
+export function closeSecondaryPage() {
+	setSecondaryPage(null);
+}
+
+/** Current secondary page state (null = conversation visible). */
+export function getSecondaryPage() {
+	return secondaryPage();
+}
+
 function Layout() {
 	const renderer = useRenderer();
 	const dialog = useDialog();
@@ -264,10 +292,10 @@ function Layout() {
 		// dialogs so ESC closes a dialog first when one is on the stack.
 		if (
 			Keybind.match("article_close", evt) &&
-			store.articleView &&
+			secondaryPage() &&
 			dialog.stack.length === 0
 		) {
-			actions.closeArticle();
+			closeSecondaryPage();
 			return;
 		}
 
@@ -335,7 +363,7 @@ function Layout() {
 				{/* Middle column: conversation + prompt (or article page) */}
 					{/* Horizontal padding + bottom gap matches OpenCode session/index.tsx:1043 */}
 					<Show
-						when={!store.articleView}
+						when={!secondaryPage()}
 						fallback={
 							<box
 								flexDirection="column"
@@ -361,7 +389,7 @@ function Layout() {
 					</Show>
 					{/* Right column: session metadata sidebar (hidden on narrow terminals or when session panel is open) */}
 					<Show when={showSidebar()}>
-						<Sidebar />
+						<Sidebar inSecondaryPage={!!secondaryPage()} />
 					</Show>
 				</box>
 			</Show>

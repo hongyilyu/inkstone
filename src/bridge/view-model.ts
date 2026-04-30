@@ -85,11 +85,6 @@ export interface AgentStoreState {
 	 * Ephemeral — cleared on `clearSession()`, not persisted.
 	 */
 	sidebarSections: SidebarSection[];
-	/**
-	 * When non-null, the TUI renders the article page instead of the
-	 * conversation. `filename` is vault-relative (same as `DisplayPart.file.filename`).
-	 */
-	articleView: { filename: string } | null;
 	modelName: string;
 	/**
 	 * Provider id (e.g. "amazon-bedrock"), not a display string. Frontends
