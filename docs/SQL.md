@@ -126,18 +126,19 @@ independent clocks — interleaving by id across the two tables is
 correlate a raw message with its bubble; don't try to align them by id
 order.
 
-## Agent-scoped visibility
+## Visibility
 
-Every read path filters `WHERE sessions.agent = ?`:
-
-- `listSessions(agent)` — scoped by the argument.
+- `listSessions()` — returns every session on the store, newest first.
+  Each `SessionSummary` carries its own `agent` field so callers can
+  render a cross-agent list. The TUI's Ctrl+N panel uses this directly.
 - `loadSession(id)` — scoped by session id, which is unique — no agent
-  filter needed. A caller passing a foreign session id would leak
-  across agents, but the TUI only calls `loadSession` with an id it
-  just got from a scoped query, so this is safe in practice.
+  filter. A resume path that spans agents must swap the live `Session`
+  via `selectAgent` before seeding the Agent with the loaded history;
+  see `src/tui/context/agent.tsx::resumeSession`.
 
-Switching agents is UI-locked to the empty-session open page (see
-`docs/ARCHITECTURE.md` "Agent Registry → Switching rules").
+Mid-session agent switching on the live Session is still gated to the
+empty-session open page (see `docs/ARCHITECTURE.md` "Agent Registry →
+Switching rules" and `docs/AGENT-DESIGN.md` D13).
 
 ## Session lifecycle
 
@@ -243,8 +244,9 @@ for the authoritative signatures. Quick reference:
   "aborted"` so the returned list satisfies provider alternation
   invariants. Stored rows are **not** modified; repair is pure
   read-time transformation.
-- `listSessions(agent)` — newest-first summaries with `messageCount`
-  (single `GROUP BY` query, no N+1). Also used by the panel.
+- `listSessions()` — newest-first summaries across every agent, with
+  `messageCount` (single `GROUP BY` query, no N+1). Each row carries
+  its own `agent` so the Ctrl+N panel can render a cross-agent list.
 
 ### Writes — require `tx`
 

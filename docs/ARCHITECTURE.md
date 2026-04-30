@@ -143,7 +143,8 @@ src/
       spinner.tsx                   Simple braille-dot spinner (`Spinner`). Not used by the prompt; kept importable for future subagent-status / background-tool indicators
       spinner-wave.tsx              `SpinnerWave` — 8-cell bidirectional knight-rider wave. Port of OpenCode's `ui/spinner.ts` (blocks + bidirectional branches only); 54 precomputed frames at 40 ms interval, per-cell RGBA derived from a single base color via a 6-step trail + alpha fade
       sidebar.tsx                   Session metadata panel (title, context usage)
-      session-list.tsx              Left-side session history panel (Ctrl+N toggle; lists past sessions for current agent; Enter resumes)
+      session-list.tsx              Left-side session history panel (Ctrl+N toggle; lists past sessions across every agent; Enter resumes, swapping the live Session's agent when it differs)
+      session-list-item.tsx         Single row renderer for `session-list.tsx` (title + `<agent> · <time>` line, agent tinted by its theme color)
       open-page.tsx                 Empty-state welcome page
       dialog-command.tsx            `CommandProvider` + `useCommand` + internal palette. Registry-driven: components call `register(() => CommandOption[])`; the provider's `useKeyboard` dispatches any matching `keybind` and opens the palette on `command_list`.
       dialog-agent.tsx              Agent selection dialog
@@ -766,12 +767,15 @@ Ctrl+C follows the same scope rule: inside a dialog it's caught by `ui/dialog.ts
 
 ### Session list panel (Ctrl+N)
 
-A left-side panel mirroring the right-side metadata `Sidebar` pattern, toggled by `Ctrl+N`. When open it lists all past sessions for the current agent (filtered because agent is fixed per session lifetime — see D13); selecting a row calls `actions.resumeSession(id)`, which:
+A left-side panel mirroring the right-side metadata `Sidebar` pattern, toggled by `Ctrl+N`. When open it lists all past sessions across every agent (newest first); each row shows the title on line 1 and `<agent> · <relativeTime>` on line 2, with the agent token tinted via `theme[getAgentInfo(row.agent).colorKey]` so cross-agent scanning is visual. Selecting a row calls `actions.resumeSession(id)`, which:
 
 1. Guards on `store.isStreaming` with a toast (blocks resume mid-turn — the user must press ESC first).
 2. `loadSession(id)` from SQLite.
-3. Asserts `loaded.session.agent === store.currentAgent`. The list is agent-filtered, so this is an invariant check: a failure means stale panel state or a caller bypassed the filter.
-4. Inside a `batch()`: `agentSession.clearSession()` to wipe current pi-agent-core state, `agentSession.restoreMessages(loaded.agentMessages)` to seed the Agent with the persisted conversation, and store resets (`messages`, `totalTokens`, `totalCost`, `lastTurnStartedAt`).
+3. Inside a `batch()`, in this order: `agentSession.clearSession()` to wipe the live Agent's state; if `loaded.session.agent !== agentSession.agentName`, `agentSession.selectAgent(loaded.session.agent)` to rebind the live Session onto the stored session's agent; `agentSession.restoreMessages(loaded.agentMessages)` to seed the Agent with the persisted conversation; then store resets (`currentAgent`, `messages`, `totalTokens`, `totalCost`, `lastTurnStartedAt`).
+
+Ordering matters for the swap path: `Session.selectAgent` throws when the live Agent's `messages.length > 0`, so `clearSession` must precede it; `restoreMessages` must follow so the seeded history isn't wiped by the clear. The in-batch `currentAgent` write drives prompt accent color, sidebar header, and `CommandProvider`'s agent-scoped registrations to re-derive against the resumed agent.
+
+Cross-agent resume is intentional. The "one agent per session" invariant (D13 in `docs/AGENT-DESIGN.md`) governs a session's **in-memory** lifetime; a stored session's bubbles retain their original `agentName` stamps at write time. Resume constructs a fresh in-memory lifetime bound to the stored session's agent, so the invariant is preserved rather than broken.
 
 `Session.restoreMessages(messages: AgentMessage[])` is the minimal accessor for the load path. Implementation: `agent.state.messages = messages`. The backend `agent` instance is private to `createSession`'s closure, so the TUI needs an explicit entry point; naming it `restoreMessages` (rather than `setMessages`) signals "load-only, don't reach for it mid-turn."
 

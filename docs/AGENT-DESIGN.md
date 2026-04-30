@@ -217,7 +217,9 @@ export interface AgentInfo {
 
 ### D13 — Session-agent binding
 
-**Chosen:** one agent per session; agent fixed for the session's lifetime. The `Session` returned from `createSession({ agentName, onEvent })` is bound to one agent name; `selectAgent(name)` is legal only when the session has zero messages and throws otherwise. Model is orthogonal — mid-session `setModel` / `setThinkingLevel` stay supported.
+**Chosen:** one agent per session for the session's **in-memory** lifetime. The `Session` returned from `createSession({ agentName, onEvent })` is bound to one agent name; `selectAgent(name)` is legal only when the live Agent has zero messages and throws otherwise. Model is orthogonal — mid-session `setModel` / `setThinkingLevel` stay supported.
+
+Persisted sessions are replayable into any agent context: the Ctrl+N resume path calls `clearSession()` → `selectAgent(target.agent)` → `restoreMessages(target.agentMessages)` inside a batch, constructing a fresh in-memory lifetime bound to the stored session's agent. That path satisfies the empty-session `selectAgent` guard naturally (clear runs first) and preserves the invariant one lifetime at a time. See `docs/ARCHITECTURE.md` §"Session list panel (Ctrl+N)".
 
 **Why:**
 
