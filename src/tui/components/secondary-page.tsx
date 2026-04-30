@@ -14,7 +14,7 @@ import { createMemo } from "solid-js";
 import { getSecondaryPage } from "../context/secondary-page";
 import { useTheme } from "../context/theme";
 
-export function ArticlePage() {
+export function SecondaryPage() {
 	const { theme, syntax } = useTheme();
 
 	const content = createMemo(() => {

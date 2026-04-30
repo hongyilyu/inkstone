@@ -6,7 +6,7 @@
  * Not agent/session state — purely a TUI navigation concern.
  *
  * Module-level signal so deeply nested components (UserPart, Sidebar,
- * ArticlePage) can read/write without prop drilling.
+ * SecondaryPage) can read/write without prop drilling.
  */
 
 import { createSignal } from "solid-js";
