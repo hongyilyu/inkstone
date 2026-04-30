@@ -4,7 +4,7 @@ This doc captures the design exploration for a slash-command dropdown in the pro
 
 **Status:**
 - **Registry unification (Path A below): implemented.** `CommandOption.slash?: SlashSpec` + unified dispatch through `command.canRunSlash` / `command.triggerSlash`; `AgentCommand` bridges into `CommandOption` via `BridgeAgentCommands`; `/clear` is a palette entry in `Layout()`. The two previously-disconnected command paths (hardcoded `startsWith` in `prompt.tsx` + palette registry) now share one registration surface.
-- **Dropdown UI: still deferred.** Core unresolved question is the invocation UX (see §5). The registry-half above is the foundation the deferred dropdown would sit on top of.
+- **Dropdown UI: implemented.** `src/tui/components/prompt-autocomplete.tsx` — fuzzysort-filtered list of slash entries above the textarea. Column-0-only trigger, keyboard nav (Up/Down/Ctrl+P/Ctrl+N), Enter/Tab select, Esc dismiss. UX decision: plan (A) from §5 — dropdown-gated invocation (Enter selects when matches exist; falls through to plain prompt when empty). Argful commands insert `/name ` and close the dropdown. No `suspended` signal needed — the autocomplete's `useKeyboard` handler `preventDefault`s consumed keys directly.
 
 ## 1. Problem
 

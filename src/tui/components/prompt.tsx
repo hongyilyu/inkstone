@@ -15,6 +15,7 @@ import { useDialog } from "../ui/dialog";
 import { formatCost, formatTokens } from "../util/format";
 import * as Keybind from "../util/keybind";
 import { useCommand } from "./dialog-command";
+import { PromptAutocomplete } from "./prompt-autocomplete";
 import { SpinnerWave } from "./spinner-wave";
 
 /**
@@ -187,7 +188,8 @@ export function Prompt() {
 	const canCycleAgent = createMemo(() => store.messages.length === 0);
 
 	return (
-		<box flexShrink={0}>
+		<box flexShrink={0} position="relative">
+			<PromptAutocomplete text={text()} setText={setText} />
 			{/* prompt/index.tsx:974-1225 — input area with left border accent.
           The closing ╹ corner lives on the cap row below, not on this box. */}
 			<box
