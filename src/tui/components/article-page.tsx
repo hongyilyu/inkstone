@@ -11,7 +11,7 @@ import { resolve } from "node:path";
 import { VAULT_DIR } from "@backend/agent/constants";
 import { isInsideDir } from "@backend/agent/permissions";
 import { createMemo } from "solid-js";
-import { getSecondaryPage } from "../app";
+import { getSecondaryPage } from "../context/secondary-page";
 import { useTheme } from "../context/theme";
 
 export function ArticlePage() {

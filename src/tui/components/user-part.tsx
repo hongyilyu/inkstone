@@ -16,7 +16,7 @@
 import type { DisplayPart } from "@bridge/view-model";
 import type { RGBA } from "@opentui/core";
 import { useTheme } from "../context/theme";
-import { openSecondaryPage } from "../app";
+import { openSecondaryPage } from "../context/secondary-page";
 
 /**
  * MIME → short badge label. Minimal on purpose: today only reader's

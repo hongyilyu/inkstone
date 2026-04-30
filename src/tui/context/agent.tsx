@@ -35,7 +35,8 @@ import {
 } from "@mariozechner/pi-ai";
 import { batch, createContext, type ParentProps, useContext } from "solid-js";
 import { createStore, produce } from "solid-js/store";
-import { closeSecondaryPage, toBottom } from "../app";
+import { toBottom } from "../app";
+import { closeSecondaryPage } from "./secondary-page";
 import { type CommandOption, useCommand } from "../components/dialog-command";
 import { DialogSelect } from "../ui/dialog-select";
 

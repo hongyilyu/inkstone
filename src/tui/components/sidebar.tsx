@@ -2,8 +2,9 @@ import { VAULT_DIR } from "@backend/agent/constants";
 import { TextAttributes } from "@opentui/core";
 import { createMemo, For, Show } from "solid-js";
 import pkg from "../../../package.json";
-import { closeSecondaryPage, refocusInput } from "../app";
+import { refocusInput } from "../app";
 import { useAgent } from "../context/agent";
+import { closeSecondaryPage } from "../context/secondary-page";
 import { useTheme } from "../context/theme";
 import { displayPath, formatCost, formatTokensFull } from "../util/format";
 

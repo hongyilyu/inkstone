@@ -23,6 +23,7 @@ import { Prompt } from "./components/prompt";
 import { SessionList } from "./components/session-list";
 import { Sidebar } from "./components/sidebar";
 import { AgentProvider, useAgent } from "./context/agent";
+import { closeSecondaryPage, getSecondaryPage } from "./context/secondary-page";
 import { ThemeProvider, useTheme } from "./context/theme";
 import { DialogProvider, useDialog } from "./ui/dialog";
 import { Toast, ToastProvider, useToast } from "./ui/toast";
@@ -61,34 +62,6 @@ export function toBottom() {
 		if (!scroll || scroll.isDestroyed) return;
 		scroll.scrollTo(scroll.scrollHeight);
 	}, 50);
-}
-
-// ---------------------------------------------------------------------------
-// Secondary page — local UI state (not agent/session state).
-// Module-level signal so deeply nested components (UserPart, Sidebar,
-// ArticlePage) can read/write without prop drilling. Same pattern as
-// `scroll`/`inputRef` above.
-//
-// Generic: any agent can open a secondary page to display a file.
-// ---------------------------------------------------------------------------
-
-const [secondaryPage, setSecondaryPage] = createSignal<{
-	filename: string;
-} | null>(null);
-
-/** Open a secondary page to display a file. `filename` is vault-relative. */
-export function openSecondaryPage(filename: string) {
-	setSecondaryPage({ filename });
-}
-
-/** Return from the secondary page to the conversation. */
-export function closeSecondaryPage() {
-	setSecondaryPage(null);
-}
-
-/** Current secondary page state (null = conversation visible). */
-export function getSecondaryPage() {
-	return secondaryPage();
 }
 
 function Layout() {
@@ -287,12 +260,12 @@ function Layout() {
 			return;
 		}
 
-		// ESC / Ctrl+[ — close article reader page and return to conversation.
+		// ESC / Ctrl+[ — close secondary page and return to conversation.
 		// Checked after app_exit but before scroll guards. Gated on no open
 		// dialogs so ESC closes a dialog first when one is on the stack.
 		if (
-			Keybind.match("article_close", evt) &&
-			secondaryPage() &&
+			Keybind.match("secondary_page_close", evt) &&
+			getSecondaryPage() &&
 			dialog.stack.length === 0
 		) {
 			closeSecondaryPage();
@@ -363,7 +336,7 @@ function Layout() {
 				{/* Middle column: conversation + prompt (or article page) */}
 					{/* Horizontal padding + bottom gap matches OpenCode session/index.tsx:1043 */}
 					<Show
-						when={!secondaryPage()}
+						when={!getSecondaryPage()}
 						fallback={
 							<box
 								flexDirection="column"
@@ -389,7 +362,7 @@ function Layout() {
 					</Show>
 					{/* Right column: session metadata sidebar (hidden on narrow terminals or when session panel is open) */}
 					<Show when={showSidebar()}>
-						<Sidebar inSecondaryPage={!!secondaryPage()} />
+						<Sidebar inSecondaryPage={!!getSecondaryPage()} />
 					</Show>
 				</box>
 			</Show>
