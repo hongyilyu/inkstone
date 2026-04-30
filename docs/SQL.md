@@ -320,24 +320,16 @@ a single executable needs a bundler trick (opencode uses an
 ## Error surface
 
 All persistence writes wrap their query in try/catch and route failures
-through `reportPersistenceError`:
-
-```ts
-{
-  kind: "config" | "auth" | "session"
-  action: string   // e.g. "append-message (b05c700e)"
-  error: unknown
-}
-```
+through `reportPersistenceError` (see `src/backend/persistence/errors.ts`).
+Each report carries `kind` (`"config" | "auth" | "session"`), a
+grep-friendly `action` string (embeds `shortId(msg.id)` — last 8 hex
+chars of the UUIDv7 random tail — plus the event type for appends),
+and an `error: unknown`.
 
 `AgentProvider` installs a handler that turns these into toasts.
 Load-path failures (which fire at module init, before any handler is
 installed) land on `console.error` — TUI users always have a terminal
 visible.
-
-The `action` string embeds a short id (`shortId(msg.id)`, last 8 hex
-chars of the UUIDv7 — the random tail, not the timestamp prefix) and
-the event type for appends. Grep-friendly.
 
 ## Invariants and gotchas
 
