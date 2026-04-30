@@ -533,7 +533,7 @@ export function AgentProvider(props: ParentProps) {
 			// LLM text vs. bubble display split: when a command supplies
 			// `displayParts` (reader's `/article` does), use those verbatim
 			// so the bubble can render a file chip instead of the full
-			// article body; otherwise fall back to the one-text-part shape
+			// content; otherwise fall back to the one-text-part shape
 			// that covers plain prompts. pi-agent-core only ever sees
 			// `text`, so whatever the LLM needs must be in `text`.
 			const userMsg: DisplayMessage = {

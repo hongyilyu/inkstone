@@ -16,7 +16,7 @@ const TITLE_MAX_CHARS = SIDEBAR_WIDTH - 4;
  * Right-side session metadata panel.
  *
  * Layout:
- *   [back button]   only in article view
+ *   [back button]   only in secondary page view
  *   [title]         bold (first user msg, else "inkstone")
  *   Context         bold label
  *   tokens / % used / cost

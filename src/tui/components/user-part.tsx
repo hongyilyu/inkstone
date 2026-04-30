@@ -3,7 +3,7 @@
  *
  * - `text`     → plain prose line.
  * - `file`     → MIME-badge chip (agent-colored bg + muted filename).
- *                Wrapped in a clickable `<box>` that opens the article
+ *                Wrapped in a clickable `<box>` that opens the secondary
  *                reader page when clicked.
  * - `thinking` → unreachable today (reducer only pushes thinking onto
  *                assistant messages); returns null defensively.
