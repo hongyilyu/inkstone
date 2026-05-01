@@ -15,8 +15,13 @@ import { lstatSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { VAULT_DIR } from "@backend/agent/constants";
 
-/** File extensions surfaced in the `@` dropdown. */
-const ALLOWED_EXTENSIONS = new Set([".md", ".markdown", ".txt"]);
+/**
+ * File extensions surfaced in the `@` dropdown. Exported so
+ * `readFileSafe` in `mentions.ts` applies the same allowlist when
+ * reading a manually-typed `@path` — otherwise `@foo.json` bypasses
+ * the dropdown's filter and still inlines into the LLM text.
+ */
+export const ALLOWED_VAULT_EXTENSIONS = new Set([".md", ".markdown", ".txt"]);
 
 /**
  * Directory basenames skipped during the walk. Matches Obsidian/Git
@@ -86,7 +91,7 @@ function walk(dir: string, out: string[]): void {
 		const dot = entry.lastIndexOf(".");
 		if (dot === -1) continue;
 		const ext = entry.slice(dot).toLowerCase();
-		if (!ALLOWED_EXTENSIONS.has(ext)) continue;
+		if (!ALLOWED_VAULT_EXTENSIONS.has(ext)) continue;
 
 		// Store vault-relative paths with forward-slash separators so
 		// they match the `/article` chip format and render identically

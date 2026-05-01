@@ -23,6 +23,7 @@ import { resolve } from "node:path";
 import { VAULT_DIR } from "@backend/agent/constants";
 import { isInsideDir } from "@backend/agent/permissions";
 import type { DisplayPart } from "@bridge/view-model";
+import { ALLOWED_VAULT_EXTENSIONS } from "./vault-files";
 
 export interface Mention {
 	/** Byte offset in the prompt text where `@` starts. */
@@ -135,17 +136,23 @@ function mimeFor(path: string): string {
  * Read a vault-relative file safely for inline mention expansion.
  *
  * Returns the UTF-8 contents on success; `null` on any failure
- * (outside vault, symlink, non-regular file, I/O error). Callers
- * surface aggregate failures via a single toast.
+ * (outside vault, symlink, non-regular file, I/O error, disallowed
+ * extension). Callers surface aggregate failures via a single toast.
  *
  * Mirrors the guard pattern in `user-part.tsx` for file-chip clicks
  * and reader's `/article` loader — path must be inside `VAULT_DIR`,
- * must not be a symlink, must be a regular file.
+ * must not be a symlink, must be a regular file. Additionally, the
+ * file must have an extension in `ALLOWED_VAULT_EXTENSIONS` so a
+ * manually-typed `@foo.json` doesn't bypass the dropdown's filter.
  */
 export function readFileSafe(vaultRelPath: string): string | null {
 	try {
 		const abs = resolve(VAULT_DIR, vaultRelPath);
 		if (!isInsideDir(abs, VAULT_DIR) || abs === VAULT_DIR) return null;
+		const dot = vaultRelPath.lastIndexOf(".");
+		if (dot === -1) return null;
+		const ext = vaultRelPath.slice(dot).toLowerCase();
+		if (!ALLOWED_VAULT_EXTENSIONS.has(ext)) return null;
 		const stat = lstatSync(abs);
 		if (stat.isSymbolicLink() || !stat.isFile()) return null;
 		return readFileSync(abs, "utf-8");

@@ -199,7 +199,18 @@ export function PromptAutocomplete(props: {
 		const t = props.text;
 		const start = store.triggerIndex + 1; // skip the trigger char
 		if (start > t.length) return "";
-		return t.slice(start);
+		// Bound by cursor, not end-of-buffer — otherwise inserting a
+		// mention in the middle of an existing prompt folds the trailing
+		// suffix into the search term and the filter stops matching.
+		// Matches the `activeQuery` computation used by the mention-mode
+		// close-gate below. Note: `input.cursorOffset` is non-reactive,
+		// so this memo re-runs only when `props.text` changes — fine for
+		// the common typing case; cursor-only arrow motion inside the
+		// query lags by one keystroke (acceptable for MVP).
+		const input = props.input();
+		const end = input ? Math.min(input.cursorOffset, t.length) : t.length;
+		if (end < start) return "";
+		return t.slice(start, end);
 	});
 
 	const filtered = createMemo((): Option[] => {
@@ -337,13 +348,22 @@ export function PromptAutocomplete(props: {
 		const name = evt.name?.toLowerCase();
 		const ctrlOnly = evt.ctrl && !evt.meta && !evt.shift;
 
+		// Nav keys only consume when there's a list to navigate. When
+		// the user has typed past all matches the dropdown is hidden
+		// (`visible={... && filtered().length > 0}`), but this handler
+		// still fires globally — so without the guard, Up/Down would
+		// silently swallow textarea navigation in the no-results state.
+		const hasResults = filtered().length > 0;
+
 		if (name === "up" || (ctrlOnly && name === "p")) {
+			if (!hasResults) return;
 			evt.preventDefault?.();
 			evt.stopPropagation?.();
 			move(-1);
 			return;
 		}
 		if (name === "down" || (ctrlOnly && name === "n")) {
+			if (!hasResults) return;
 			evt.preventDefault?.();
 			evt.stopPropagation?.();
 			move(1);

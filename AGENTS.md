@@ -21,6 +21,15 @@ When starting or completing any task, update the relevant docs in `docs/`:
 4. Update the "Last updated" date in `docs/TODO.md`
 
 
+## Pre-Commit Protocol
+
+Before creating any git commit, run `bun run check` (Biome format + safe lint auto-fixes) and then `bun run ci` (Biome check + `bun test`). The `ci` step must pass. This keeps the tree format-clean so review diffs stay focused on semantic changes, not whitespace churn.
+
+Order matters: `bun run check` writes fixes, so running it *before* `git add` catches format drift in the files you're about to stage. Running `bun run ci` after confirms the staged version lints clean.
+
+If `bun run ci` fails on unrelated pre-existing issues, surface the failures to the user rather than silently committing past them.
+
+
 ## Plan Review Protocol
 
 Before presenting any multi-step plan or non-trivial code change to the user, invoke the `behavioral-guidelines` skill/agent to review the proposed approach. The reviewer checks for overcomplication, over-engineering, unnecessary abstractions, speculative features, and missing success criteria. Apply the reviewer's minimal fixes before presenting the plan to the user.
