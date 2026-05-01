@@ -24,7 +24,8 @@ export interface SecondaryPageState {
 	title?: string;
 }
 
-const [secondaryPage, setSecondaryPage] = createSignal<SecondaryPageState | null>(null);
+const [secondaryPage, setSecondaryPage] =
+	createSignal<SecondaryPageState | null>(null);
 
 /** Open a secondary page with the given markdown content. */
 export function openSecondaryPage(state: SecondaryPageState) {

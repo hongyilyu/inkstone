@@ -36,9 +36,9 @@ import {
 import { batch, createContext, type ParentProps, useContext } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { toBottom } from "../app";
-import { closeSecondaryPage } from "./secondary-page";
 import { type CommandOption, useCommand } from "../components/dialog-command";
 import { DialogSelect } from "../ui/dialog-select";
+import { closeSecondaryPage } from "./secondary-page";
 
 /**
  * Placeholder strings that providers inject into redacted thinking blocks.
@@ -54,6 +54,33 @@ const REDACTED_THINKING_PLACEHOLDERS = [
 	"[REDACTED]",
 	"Reasoning hidden by provider",
 ] as const;
+
+/**
+ * Pull a short error line out of a failed tool result. pi-agent-core
+ * wraps tool execution in a try/catch and constructs an error-shaped
+ * result — `content[0].text` holds the Error message. Falls through to
+ * `undefined` so the renderer shows a generic error state.
+ *
+ * Success results are deliberately not summarized: today's tools
+ * (`read`/`edit`/`write`/`update_sidebar`) all carry their user-visible
+ * information in the args, so a second "result" line would just restate
+ * what the header already said. If a future tool's result carries info
+ * the args don't (e.g. `grep` match count), reintroduce a summary path.
+ */
+function extractErrorMessage(result: any): string | undefined {
+	if (!result) return undefined;
+	const first = Array.isArray(result.content) ? result.content[0] : undefined;
+	if (first && first.type === "text" && typeof first.text === "string") {
+		return trimOneLine(first.text);
+	}
+	return undefined;
+}
+
+function trimOneLine(s: string, limit = 120): string {
+	const flat = s.replace(/\s+/g, " ").trim();
+	if (flat.length <= limit) return flat;
+	return `${flat.slice(0, limit - 1)}…`;
+}
 
 import { useDialog } from "../ui/dialog";
 import { DialogConfirm } from "../ui/dialog-confirm";
@@ -276,8 +303,9 @@ export function AgentProvider(props: ParentProps) {
 							// Narrow through `produce` because Solid's store
 							// path typing can't see the runtime `lastPart.type`
 							// guard above — addressing `"text"` on the union
-							// `text | thinking | file` would fail typecheck
-							// even though the runtime guard makes it safe.
+							// `text | thinking | file | tool` would fail
+							// typecheck even though the runtime guard makes
+							// it safe.
 							setStore(
 								"messages",
 								lastMsgIdx,
@@ -324,13 +352,44 @@ export function AgentProvider(props: ParentProps) {
 							}
 							break;
 						}
+						case "toolcall_end": {
+							// pi-ai builds the full `ToolCall` during
+							// `toolcall_delta` and hands it to us on `end`
+							// with `id` / `name` / `arguments`. Push a
+							// `tool` display part in `"pending"` state onto
+							// the assistant bubble that emitted the call —
+							// same bubble pi-ai put the `toolCall` block on
+							// in its `content` array. The state flips to
+							// `"completed"` / `"error"` on
+							// `tool_execution_end` further below.
+							const tc = ame.toolCall;
+							if (!tc) break;
+							setStore(
+								"messages",
+								lastMsgIdx,
+								"parts",
+								produce((parts: DisplayPart[]) => {
+									parts.push({
+										type: "tool",
+										callId: tc.id,
+										name: tc.name,
+										args: tc.arguments,
+										state: "pending",
+									});
+								}),
+							);
+							break;
+						}
 						// Other `AssistantMessageEvent` variants (`start`,
-						// `text_end`, `toolcall_*`, `done`, `error`) are
-						// intentionally ignored — `text_end` is a no-op for us
-						// (deltas already built the part), tool-call rendering
-						// isn't wired in display bubbles yet, and stream
-						// lifecycle is handled by `message_start` / `message_end`
-						// / `agent_end` on the outer `AgentEvent`.
+						// `text_end`, `toolcall_start`, `toolcall_delta`,
+						// `done`, `error`) are intentionally ignored —
+						// `text_end` is a no-op for us (deltas already
+						// built the part), `toolcall_start` / `_delta`
+						// stream arg tokens we don't need (the full
+						// `ToolCall` arrives in `toolcall_end`), and
+						// stream lifecycle is handled by `message_start`
+						// / `message_end` / `agent_end` on the outer
+						// `AgentEvent`.
 						default:
 							break;
 					}
@@ -417,13 +476,84 @@ export function AgentProvider(props: ParentProps) {
 					break;
 
 				case "tool_execution_end": {
-					// Handle update_sidebar tool — apply the structured details
-					// to the store so the sidebar reacts immediately.
-					const endEvt = event as {
-						type: "tool_execution_end";
-						toolName: string;
-						result: any;
-					};
+					// Flip the tool part from pending → completed/error on
+					// the assistant bubble that emitted this call. The
+					// bubble's `message_end` already ran (pi-agent-core
+					// emits that before tool execution), so its parts are
+					// already committed to SQLite via
+					// `finalizeDisplayMessageParts`. We update the store
+					// AND re-finalize the parts so the DB matches live
+					// state and survives resume.
+					//
+					// Also reset `status` from `"tool_executing"` back to
+					// `"streaming"` — `tool_execution_start` set it, and
+					// without this line it stays stuck for the remainder
+					// of the turn. For non-terminating tools (`read` /
+					// `edit` / `write`) the LLM will stream its follow-up
+					// assistant message next; any UI gated on
+					// `status === "streaming"` would read wrong otherwise.
+					// `agent_end` still resets to `"idle"` at turn close.
+					if (store.status === "tool_executing") {
+						setStore("status", "streaming");
+					}
+					const endEvt = event;
+					// Find the bubble + part index for this callId. Scan
+					// tail-first because the matching tool part is always
+					// on one of the most recent assistant bubbles (pi-
+					// agent-core emits `message_end` for the assistant
+					// immediately before `tool_execution_*`).
+					let foundMsgIdx = -1;
+					let foundPartIdx = -1;
+					outer: for (let mi = store.messages.length - 1; mi >= 0; mi--) {
+						const m = store.messages[mi];
+						if (!m || m.role !== "assistant") continue;
+						for (let pi = m.parts.length - 1; pi >= 0; pi--) {
+							const p = m.parts[pi];
+							if (p?.type === "tool" && p.callId === endEvt.toolCallId) {
+								foundMsgIdx = mi;
+								foundPartIdx = pi;
+								break outer;
+							}
+						}
+					}
+					if (foundMsgIdx >= 0) {
+						const state: "completed" | "error" = endEvt.isError
+							? "error"
+							: "completed";
+						const errorMsg = endEvt.isError
+							? extractErrorMessage(endEvt.result)
+							: undefined;
+						setStore(
+							"messages",
+							foundMsgIdx,
+							"parts",
+							foundPartIdx,
+							produce((p: DisplayPart) => {
+								if (p.type !== "tool") return;
+								p.state = state;
+								if (errorMsg !== undefined) p.error = errorMsg;
+							}),
+						);
+						// Re-finalize parts for this bubble so the row
+						// reflects the new tool state. The whole parts
+						// array for that message is DELETE + re-INSERTed
+						// inside `finalizeDisplayMessageParts`.
+						if (currentSessionId) {
+							const sid = currentSessionId;
+							const updated = store.messages[foundMsgIdx];
+							if (updated) {
+								runInTransaction((tx) =>
+									finalizeDisplayMessageParts(tx, sid, updated),
+								);
+							}
+						}
+					}
+
+					// `update_sidebar` sidebar mutation. Independent of
+					// the tool-part lookup above — the sidebar should
+					// update whether or not we find the matching display
+					// part (e.g. a session restored mid-turn could lack
+					// the part but still want the section).
 					if (endEvt.toolName === "update_sidebar" && endEvt.result?.details) {
 						const d = endEvt.result.details as {
 							operation: "upsert" | "delete";
@@ -432,9 +562,8 @@ export function AgentProvider(props: ParentProps) {
 							content?: string;
 						};
 						if (d.operation === "delete") {
-							setStore(
-								"sidebarSections",
-								(sections) => sections.filter((s) => s.id !== d.id),
+							setStore("sidebarSections", (sections) =>
+								sections.filter((s) => s.id !== d.id),
 							);
 						} else if (d.operation === "upsert" && d.title && d.content) {
 							const title = d.title;
@@ -463,6 +592,47 @@ export function AgentProvider(props: ParentProps) {
 				case "agent_end":
 					setStore("isStreaming", false);
 					setStore("status", "idle");
+					// Sweep any `pending` tool parts on assistant bubbles
+					// from this session. pi-agent-core emits `agent_end`
+					// for both normal completion and `handleRunFailure`
+					// paths; in the failure path (user abort mid-tool,
+					// provider crash in `afterToolCall`, hook exception),
+					// no `tool_execution_end` fires, so the matching tool
+					// part would otherwise render `~ tool …` forever —
+					// live and on resume. Flip to `"error"` with a
+					// generic marker. Scan all assistant bubbles because
+					// a multi-tool turn can leave >1 pending (rare; safe
+					// to sweep all). Flush each touched bubble's parts
+					// so the repair survives resume.
+					{
+						const touchedMessageIds: string[] = [];
+						setStore(
+							"messages",
+							produce((msgs: DisplayMessage[]) => {
+								for (const m of msgs) {
+									if (m.role !== "assistant") continue;
+									let touched = false;
+									for (const p of m.parts) {
+										if (p.type === "tool" && p.state === "pending") {
+											p.state = "error";
+											if (!p.error) p.error = "Tool execution interrupted";
+											touched = true;
+										}
+									}
+									if (touched) touchedMessageIds.push(m.id);
+								}
+							}),
+						);
+						if (currentSessionId && touchedMessageIds.length > 0) {
+							const sid = currentSessionId;
+							runInTransaction((tx) => {
+								for (const id of touchedMessageIds) {
+									const m = store.messages.find((x) => x.id === id);
+									if (m) finalizeDisplayMessageParts(tx, sid, m);
+								}
+							});
+						}
+					}
 					// Persist any closing assistant AgentMessage that
 					// `handleRunFailure` synthesized on abort/error.
 					// pi-agent-core's `handleRunFailure` pushes a synthetic

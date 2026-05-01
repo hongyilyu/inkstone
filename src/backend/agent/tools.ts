@@ -1,10 +1,10 @@
+import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import {
 	createEditTool,
 	createReadTool,
 	createWriteTool,
 } from "@mariozechner/pi-coding-agent";
-import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
-import { Type, type Static } from "typebox";
+import { type Static, Type } from "typebox";
 import { VAULT_DIR } from "./constants";
 import { registerBaseline } from "./permissions";
 
@@ -40,9 +40,15 @@ registerBaseline(editTool.name, [{ kind: "insideDirs", dirs: [VAULT_DIR] }]);
 
 const updateSidebarSchema = Type.Object({
 	operation: Type.Union([Type.Literal("upsert"), Type.Literal("delete")]),
-	id: Type.String({ description: "Unique section identifier (e.g. 'first-pass-prompts')" }),
-	title: Type.Optional(Type.String({ description: "Section heading (required for upsert)" })),
-	content: Type.Optional(Type.String({ description: "Markdown content (required for upsert)" })),
+	id: Type.String({
+		description: "Unique section identifier (e.g. 'watch-for')",
+	}),
+	title: Type.Optional(
+		Type.String({ description: "Section heading (required for upsert)" }),
+	),
+	content: Type.Optional(
+		Type.String({ description: "Markdown content (required for upsert)" }),
+	),
 });
 
 export type UpdateSidebarInput = Static<typeof updateSidebarSchema>;
@@ -65,7 +71,10 @@ export interface UpdateSidebarDetails {
  *
  * No filesystem access — no permission baseline needed.
  */
-export const updateSidebarTool: AgentTool<typeof updateSidebarSchema, UpdateSidebarDetails> = {
+export const updateSidebarTool: AgentTool<
+	typeof updateSidebarSchema,
+	UpdateSidebarDetails
+> = {
 	name: "update_sidebar",
 	label: "Update Sidebar",
 	description:
@@ -91,6 +100,16 @@ export const updateSidebarTool: AgentTool<typeof updateSidebarSchema, UpdateSide
 		return {
 			content: [{ type: "text", text: summary }],
 			details,
+			// Stop the agent loop after this tool batch. `update_sidebar`
+			// mutates UI state — there's nothing productive for the LLM to
+			// say after the sidebar updates, and the default loop behavior
+			// (another assistant turn after tool_result) costs ~100 tokens
+			// + a full inference round for an ack like "Ready when you
+			// are". pi-agent-core's early-termination rule requires every
+			// tool in the batch to set this true, which matches how this
+			// tool is used in practice — called alone, not alongside
+			// filesystem tools.
+			terminate: true,
 		};
 	},
 };

@@ -20,9 +20,6 @@ import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
  * assistant turn renders in source order instead of being collapsed into
  * one flat string.
  *
- * Kept intentionally narrow — `tool` is not a part type because Inkstone
- * doesn't render tool calls in bubbles yet; when it does, this union grows.
- *
  * `file` is display-only: an agent command (e.g. reader's `/article`) can
  * hand the TUI a compact render shape — a short prose line plus a file
  * chip — while still passing the *full* file content as the prompt text
@@ -30,11 +27,33 @@ import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
  * bubble renders the compact parts. `mime` drives the badge label
  * (`text/markdown` → `"md"`, fall back to the raw mime), `filename` is
  * the display path (typically vault-relative).
+ *
+ * `tool` is an assistant-only part produced when the LLM invokes a tool.
+ * pi-ai puts the `ToolCall` in the assistant message's `content`, so the
+ * part lives on the assistant bubble that emitted it (not a standalone
+ * row between bubbles). `callId` is pi-ai's `ToolCall.id` and is the
+ * join key between the stream's `toolcall_end` event (which carries the
+ * arguments) and the later `tool_execution_end` event (which carries
+ * the result). `state` transitions `pending → completed | error`:
+ * pushed as `"pending"` on `toolcall_end`, flipped by
+ * `tool_execution_end`. `error` holds a short human-readable message
+ * for failed tools; success results aren't stashed on the part because
+ * today's tools carry all the user-visible information in their args
+ * (the raw `AgentToolResult` stays in `agent_messages` as the
+ * LLM-facing source of truth).
  */
 export type DisplayPart =
 	| { type: "text"; text: string }
 	| { type: "thinking"; text: string }
-	| { type: "file"; mime: string; filename: string };
+	| { type: "file"; mime: string; filename: string }
+	| {
+			type: "tool";
+			callId: string;
+			name: string;
+			args: unknown;
+			state: "pending" | "completed" | "error";
+			error?: string;
+	  };
 
 /**
  * A dynamic sidebar section set by an agent tool (`update_sidebar`).
@@ -56,8 +75,8 @@ export interface DisplayMessage {
 	 * but commands that hand the TUI explicit `displayParts` (e.g. reader's
 	 * `/article`) can place any mix of `text` + `file` parts here — the
 	 * LLM-facing prompt text is separate and always passed unmodified to
-	 * pi-agent-core. Assistant messages may interleave `text` and
-	 * `thinking` parts in emission order. Redacted-thinking handling
+	 * pi-agent-core. Assistant messages may interleave `text`, `thinking`,
+	 * and `tool` parts in emission order. Redacted-thinking handling
 	 * lives in the reducer — see `REDACTED_THINKING_PLACEHOLDERS` in
 	 * `tui/context/agent.tsx`.
 	 */

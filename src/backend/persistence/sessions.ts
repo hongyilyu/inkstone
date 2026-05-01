@@ -202,8 +202,9 @@ export function finalizeDisplayMessageParts(
 /**
  * Serialize a `DisplayPart` into a row for `parts`. The table's
  * `text` column is NOT NULL — we keep it that way for text/thinking
- * rows and store `""` on file rows, which carry their display data
- * in `mime` + `filename`. Centralized here so both `appendDisplayMessage`
+ * rows and store `""` on file / tool rows, which carry their display
+ * data in dedicated columns (`mime`+`filename` for file; `call_id`+
+ * `tool_data` for tool). Centralized here so both `appendDisplayMessage`
  * (message_start path) and `finalizeDisplayMessageParts` (message_end
  * path) produce identical rows. Return type is pinned to Drizzle's
  * inferred insert shape so a future column addition to `parts` forces
@@ -222,6 +223,25 @@ function serializePart(
 			text: "",
 			mime: p.mime,
 			filename: p.filename,
+			callId: null,
+			toolData: null,
+		};
+	}
+	if (p.type === "tool") {
+		return {
+			messageId,
+			seq,
+			type: p.type,
+			text: "",
+			mime: null,
+			filename: null,
+			callId: p.callId,
+			toolData: {
+				name: p.name,
+				args: p.args,
+				state: p.state,
+				error: p.error,
+			},
 		};
 	}
 	return {
@@ -231,6 +251,8 @@ function serializePart(
 		text: p.text,
 		mime: null,
 		filename: null,
+		callId: null,
+		toolData: null,
 	};
 }
 
@@ -372,22 +394,18 @@ export function loadSession(sessionId: string): LoadedSession | null {
 
 /**
  * Rehydrate a `DisplayPart` from a row in `parts`. Inverse of
- * `serializePart`. File rows with missing `mime`/`filename` shouldn't
- * happen under current writers — `serializePart` always populates
- * both for file rows — but if corruption is ever observed, report
- * through the persistence error hook and degrade to an empty text
- * part so the session still loads. Loud-but-non-fatal matches the
- * existing posture of other loader defenses (alternation repair,
- * empty-shell pruning).
+ * `serializePart`. File rows with missing `mime`/`filename` (or tool
+ * rows with missing `call_id`/`tool_data`) shouldn't happen under
+ * current writers — `serializePart` always populates both — but if
+ * corruption is ever observed, report through the persistence error
+ * hook and degrade to an empty text part so the session still loads.
+ * Loud-but-non-fatal matches the existing posture of other loader
+ * defenses (alternation repair, empty-shell pruning).
+ *
+ * Row type is pinned to Drizzle's `$inferSelect` so a schema column
+ * addition forces a compile error here rather than silent drift.
  */
-function deserializePart(row: {
-	messageId: string;
-	seq: number;
-	type: "text" | "thinking" | "file";
-	text: string;
-	mime: string | null;
-	filename: string | null;
-}): DisplayPart {
+function deserializePart(row: typeof parts.$inferSelect): DisplayPart {
 	if (row.type === "file") {
 		if (row.mime == null || row.filename == null) {
 			reportPersistenceError({
@@ -400,6 +418,26 @@ function deserializePart(row: {
 			return { type: "text", text: "" };
 		}
 		return { type: "file", mime: row.mime, filename: row.filename };
+	}
+	if (row.type === "tool") {
+		if (row.callId == null || row.toolData == null) {
+			reportPersistenceError({
+				kind: "session",
+				action: `deserialize-part (${shortId(row.messageId)}#${row.seq})`,
+				error: new Error(
+					`tool part missing call_id/tool_data on row (${row.messageId}, ${row.seq})`,
+				),
+			});
+			return { type: "text", text: "" };
+		}
+		return {
+			type: "tool",
+			callId: row.callId,
+			name: row.toolData.name,
+			args: row.toolData.args,
+			state: row.toolData.state,
+			error: row.toolData.error,
+		};
 	}
 	return { type: row.type, text: row.text };
 }

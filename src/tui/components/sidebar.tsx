@@ -80,12 +80,12 @@ export function Sidebar(props: { inSecondaryPage?: boolean }) {
 		>
 			{/* Top section — grows to fill, footer stays anchored below */}
 			<box flexDirection="column" flexGrow={1} gap={1}>
-			{/* Back button — only in secondary page view */}
-			<Show when={props.inSecondaryPage}>
-				<box onMouseDown={() => closeSecondaryPage()}>
-					<text fg={theme.accent}>{"← Back"}</text>
-				</box>
-			</Show>
+				{/* Back button — only in secondary page view */}
+				<Show when={props.inSecondaryPage}>
+					<box onMouseDown={() => closeSecondaryPage()}>
+						<text fg={theme.accent}>{"← Back"}</text>
+					</box>
+				</Show>
 
 				{/* Title */}
 				<text fg={theme.text} attributes={TextAttributes.BOLD}>
