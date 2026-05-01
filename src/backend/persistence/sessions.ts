@@ -452,22 +452,34 @@ export function loadSession(sessionId: string): LoadedSession | null {
 	// `state.messages`. Stored rows are untouched (pure read-time
 	// repair).
 	//
+	// Alternation is evaluated against the last `user | assistant` role
+	// in `repaired` — NOT the direct neighbor — so `toolResult` /
+	// `custom` rows between two `user`s don't mask the gap. Without
+	// this, `[user, toolResult, user]` (post-tool crash between the
+	// second assistant's `message_start` and `message_end`) would
+	// escape repair and trip Bedrock 400 on the next prompt.
+	//
 	// Metadata sourcing: latest prior assistant's `api`/`provider`/
-	// `model`, falling back to bland defaults if none exists in the
-	// preceding slice. `agent.state.messages` only uses these fields
-	// to round-trip through `convertToLlm` for non-tail assistants.
+	// `model`, **excluding** synthesized placeholders (identified by
+	// the distinctive `stopReason: "aborted"` + `errorMessage:
+	// "[Interrupted by user]"` pair). Without this skip, sequential
+	// dangling gaps compound — the second placeholder would inherit
+	// `model: "placeholder"` from the first. `agent.state.messages`
+	// only uses these fields to round-trip through `convertToLlm` for
+	// non-tail assistants; real aborted-user bubbles happen to match
+	// the same skip predicate but their metadata would propagate
+	// correctly anyway (same provider/model), so the widening is
+	// harmless — documented as accepted behavior in docs/TODO.md.
 	const repaired: AgentMessage[] = [];
 	for (const msg of agentMessagesOut) {
-		const prev = repaired[repaired.length - 1];
-		if (prev && prev.role === "user" && msg.role === "user") {
-			const priorAssistant = findLatestAssistant(repaired);
+		if (lastAlternationRole(repaired) === "user" && msg.role === "user") {
+			const priorAssistant = findLatestRealAssistant(repaired);
 			repaired.push(buildAbortedAssistant(priorAssistant));
 		}
 		repaired.push(msg);
 	}
-	const trailing = repaired[repaired.length - 1];
-	if (trailing && trailing.role === "user") {
-		const priorAssistant = findLatestAssistant(repaired);
+	if (lastAlternationRole(repaired) === "user") {
+		const priorAssistant = findLatestRealAssistant(repaired);
 		repaired.push(buildAbortedAssistant(priorAssistant));
 	}
 
@@ -533,14 +545,57 @@ function deserializePart(row: typeof parts.$inferSelect): DisplayPart {
 	return { type: row.type, text: row.text };
 }
 
-function findLatestAssistant(
+/**
+ * Role of the last alternation-relevant message (`user | assistant`),
+ * skipping `toolResult` / `custom` rows that sit between a user turn
+ * and its closing assistant. Used by the load-time repair so a
+ * `toolResult` doesn't mask a `[user, user]` gap.
+ */
+function lastAlternationRole(
+	list: AgentMessage[],
+): "user" | "assistant" | null {
+	for (let i = list.length - 1; i >= 0; i--) {
+		const r = list[i]?.role;
+		if (r === "user" || r === "assistant") return r;
+	}
+	return null;
+}
+
+/**
+ * Marker on synthesized aborted placeholders so the metadata-source
+ * search skips them. Exported so `buildAbortedAssistant` and
+ * `findLatestRealAssistant` stay in sync. The literal is also
+ * surfaced in the display layer (`isDanglingUser` in `message.tsx`),
+ * which matches on the same string.
+ */
+const INTERRUPTED_MARKER = "[Interrupted by user]";
+
+/**
+ * Latest assistant message whose metadata (`api`/`provider`/`model`)
+ * is safe to propagate onto a fresh synthesized placeholder. Skips
+ * synthesized placeholders themselves — identified by the
+ * `"aborted"` stopReason + `INTERRUPTED_MARKER` errorMessage pair —
+ * so sequential dangling-user gaps don't compound (each placeholder
+ * would otherwise inherit `model: "placeholder"` from the one
+ * before it).
+ *
+ * Real user-aborted bubbles match the same predicate but their
+ * metadata would propagate correctly anyway (same provider/model),
+ * so skipping them is harmless. Documented as accepted widening in
+ * docs/TODO.md.
+ */
+function findLatestRealAssistant(
 	list: AgentMessage[],
 ): AssistantMessage | undefined {
 	for (let i = list.length - 1; i >= 0; i--) {
 		const m = list[i];
-		if (m && m.role === "assistant") return m;
+		if (m && m.role === "assistant" && !isSynthesizedAbort(m)) return m;
 	}
 	return undefined;
+}
+
+function isSynthesizedAbort(m: AssistantMessage): boolean {
+	return m.stopReason === "aborted" && m.errorMessage === INTERRUPTED_MARKER;
 }
 
 function buildAbortedAssistant(
@@ -568,7 +623,7 @@ function buildAbortedAssistant(
 			},
 		},
 		stopReason: "aborted",
-		errorMessage: "[Interrupted by user]",
+		errorMessage: INTERRUPTED_MARKER,
 		timestamp: Date.now(),
 	};
 }
