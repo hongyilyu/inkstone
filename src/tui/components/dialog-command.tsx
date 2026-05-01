@@ -38,14 +38,35 @@ import * as Keybind from "../util/keybind";
  * The prompt's submit handler (`prompt.tsx:handleSubmit`) matches a typed
  * `/name args...` against entries whose `slash.name === name`, respecting
  * `takesArgs` gating. Palette / keybind dispatch still fire independently
- * via `onSelect`. `argHint` is reserved for a future dropdown UI (see
- * `docs/SLASH-COMMANDS.md`) that would prefill the textarea with
- * `/name ` on select — no UI consumes it today.
+ * via `onSelect`.
+ *
+ * `takesArgs` and `argHint` answer different questions and must be set
+ * independently:
+ *   - `takesArgs` — "is a non-empty arg REQUIRED for dispatch?" Gate used
+ *     by `canRunSlash` / `triggerSlash` to decide whether bare `/name`
+ *     dispatches or falls through as a plain prompt.
+ *   - `argHint`   — "does this command ACCEPT an arg (required or
+ *     optional)?" Used by the palette title renderer (`/name <hint>`)
+ *     and by the slash dropdown's selection UX in
+ *     `prompt-autocomplete.tsx`: argHint set → selection inserts
+ *     `/name ` into the textarea so the user can type; unset → selection
+ *     fires immediately.
+ *
+ * An optional-arg command (e.g. reader's `/article [filename]`) sets
+ * `argHint: "[filename]"` + `takesArgs: false` — bare invocation is
+ * valid (opens a picker), but dropdown-select should still let the user
+ * optionally type a filename.
+ *
+ * `argGuide` is a separate, post-select coaching string (shown by the
+ * prompt's hint row when the buffer is exactly `/name `). It does NOT
+ * fall back from `argHint`: `argHint` drives palette + dropdown UX,
+ * `argGuide` drives the coaching hint. Set independently.
  */
 export interface SlashSpec {
 	name: string;
 	takesArgs?: boolean;
 	argHint?: string;
+	argGuide?: string;
 }
 
 export interface CommandOption {
@@ -136,6 +157,13 @@ function init() {
 		canRunSlash,
 		/** See `triggerSlash` above. */
 		triggerSlash,
+		/**
+		 * Lookup a command by slash name. Returns entries whether visible
+		 * or hidden — the caller decides what to do with the result (e.g.
+		 * the post-select hint row in `prompt.tsx` uses this to read
+		 * `argGuide` regardless of palette-visibility).
+		 */
+		findSlash,
 		/**
 		 * Suspend / resume global keybind dispatch. Two callers:
 		 *   - The autocomplete dropdown calls `suspend()` while visible

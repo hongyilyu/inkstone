@@ -58,12 +58,31 @@ export interface AgentZone {
  * Fields:
  *   - `name`         slash identifier without the leading `/`
  *   - `description`  one-line help shown in the palette
- *   - `argHint`      placeholder like `<filename>` rendered next to `name`
- *   - `takesArgs`    if true, typed slash requires non-empty args;
+ *   - `argHint`      placeholder like `<filename>` rendered next to
+ *                    `name` in the palette title. **Also signals the
+ *                    slash-dropdown UX**: argHint set → selecting from
+ *                    the dropdown inserts `/name ` into the textarea so
+ *                    the user can type; unset → selection fires
+ *                    immediately. Set whenever the command accepts an
+ *                    arg (required OR optional).
+ *   - `takesArgs`    if true, typed slash REQUIRES non-empty args;
  *                    otherwise the slash text falls through as a plain
- *                    prompt. A future slash-command dropdown can also
- *                    use it to rewrite the textarea to `/name ` instead
- *                    of invoking immediately.
+ *                    prompt. Narrower than `argHint`: a command with an
+ *                    optional arg (e.g. reader's `/article`) sets
+ *                    `argHint: "[filename]"` + `takesArgs: false` —
+ *                    bare invocation is valid (opens a picker), but
+ *                    dropdown-select still lets the user optionally
+ *                    type a filename.
+ *   - `argGuide`     optional one-liner shown in a muted row beneath
+ *                    the textarea when the user has typed `/name `
+ *                    (verb + trailing space, no args yet). Use it to
+ *                    coach toward the idiomatic way to provide the
+ *                    arg — e.g. reader sets
+ *                    `argGuide: "use @ to pick a file"` to point the
+ *                    user at the `@`-mention flow. Only renders when
+ *                    explicitly set (no fallback to `argHint`); stays
+ *                    distinct from `argHint` which is the inline
+ *                    palette-title placeholder.
  *   - `execute`      the agent's behavior. Receives the raw arg string
  *                    after the slash name plus a `prompt` function the
  *                    shell injects. Commands typically compose a user
@@ -124,6 +143,7 @@ export interface AgentCommand {
 	name: string;
 	description?: string;
 	argHint?: string;
+	argGuide?: string;
 	takesArgs?: boolean;
 	execute(args: string, helpers: AgentCommandHelpers): void | Promise<void>;
 }

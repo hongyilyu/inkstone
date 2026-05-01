@@ -133,6 +133,48 @@ function mimeFor(path: string): string {
 }
 
 /**
+ * Expand `@`-mention spans in a text string to their resolved absolute
+ * vault paths, without reading file contents.
+ *
+ * Used by the slash-dispatch path in `prompt.tsx:handleSubmit` so a
+ * command like `/article @foo.md` sees `args = "<abs>/foo.md"` instead
+ * of the literal `@foo.md` that would fail downstream path resolution.
+ * Distinct from `buildMentionPayload` (which inlines file content) —
+ * slash args want a bare path, not a `Path: + Content:` block.
+ *
+ * Mentions whose vault-relative path resolves OUTSIDE `VAULT_DIR` keep
+ * their literal `@<path>` substring in place — defense-in-depth against
+ * corrupted extmark metadata. The downstream command will then fail to
+ * resolve it with its own error, rather than a misleading "not in X
+ * folder" message for a vault-escape.
+ *
+ * Pure: no I/O, no renderable access. Mentions must be sorted by
+ * `start` ascending (same contract as `buildMentionPayload`).
+ */
+export function expandMentionsToPaths(
+	text: string,
+	mentions: Mention[],
+): string {
+	if (mentions.length === 0) return text;
+	const out: string[] = [];
+	let cursor = 0;
+	for (const m of mentions) {
+		if (m.start > cursor) out.push(text.slice(cursor, m.start));
+		const abs = resolve(VAULT_DIR, m.path);
+		if (isInsideDir(abs, VAULT_DIR) && abs !== VAULT_DIR) {
+			out.push(abs);
+		} else {
+			// Vault-escape or bare-vault-dir: preserve the literal `@<path>`
+			// so the downstream command fails on its own terms.
+			out.push(text.slice(m.start, m.end));
+		}
+		cursor = m.end;
+	}
+	if (cursor < text.length) out.push(text.slice(cursor));
+	return out.join("");
+}
+
+/**
  * Read a vault-relative file safely for inline mention expansion.
  *
  * Returns the UTF-8 contents on success; `null` on any failure

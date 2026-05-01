@@ -1024,6 +1024,7 @@ export function AgentProvider(props: ParentProps) {
 					name: c.name,
 					takesArgs: c.takesArgs,
 					argHint: c.argHint,
+					argGuide: c.argGuide,
 				},
 				onSelect: (_d, args) => {
 					// Fire-and-forget. Errors thrown before `prompt(...)` runs

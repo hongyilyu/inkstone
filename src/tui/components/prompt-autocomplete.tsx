@@ -102,7 +102,16 @@ export function PromptAutocomplete(props: {
 				description: e.description ?? e.title,
 				onSelect: () => {
 					const input = props.input();
-					if (e.slash?.takesArgs) {
+					// Dropdown UX keys on `argHint` presence, not `takesArgs`.
+					// `argHint` means "this command accepts an argument"
+					// (required OR optional) — `takesArgs` only answers the
+					// narrower "is an arg required for dispatch" question used
+					// by `canRunSlash`/`triggerSlash`. `/article` sets
+					// `argHint: "[filename]"` + `takesArgs: false` (bare is
+					// valid, opens a picker); keying on `takesArgs` here would
+					// fire the picker on dropdown-select instead of letting
+					// the user optionally type a filename.
+					if (e.slash?.argHint) {
 						// Argful: insert `/name ` and let the user type the arg.
 						// Textarea is uncontrolled (no `value=` prop), so write
 						// goes through the renderable directly. `onContentChange`
