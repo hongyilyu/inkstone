@@ -1,0 +1,266 @@
+/**
+ * Conversation rendering tests.
+ *
+ * Script a full turn via the fake session's `emit(AgentEvent)` so the
+ * real reducer in `src/tui/context/agent.tsx` runs against synthetic
+ * events. Assert that the rendered frame contains the expected prose.
+ *
+ * Markdown rendering is async (tree-sitter highlighting runs on a
+ * worker), so assistant-body assertions go through `waitForFrame`
+ * which polls renderOnce + captureCharFrame until the needle shows up
+ * or the timeout fires.
+ */
+
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+	assistantMessage,
+	ev_agentEnd,
+	ev_agentStart,
+	ev_messageEnd,
+	ev_messageStart,
+	ev_textDelta,
+	ev_textStart,
+	ev_thinkingDelta,
+	ev_thinkingEnd,
+	ev_thinkingStart,
+	ev_toolExecEnd,
+	ev_toolExecStart,
+	ev_toolcallEnd,
+	makeFakeSession,
+} from "./fake-session";
+import { renderApp, waitForFrame } from "./harness";
+
+let setup: Awaited<ReturnType<typeof renderApp>> | undefined;
+
+afterEach(() => {
+	if (setup) {
+		setup.renderer.destroy();
+		setup = undefined;
+	}
+});
+
+async function seedUserTurn(setup_: NonNullable<typeof setup>, text: string) {
+	await setup_.mockInput.typeText(text);
+	setup_.mockInput.pressEnter();
+	await setup_.renderOnce();
+}
+
+describe("conversation rendering", () => {
+	test("user + assistant text round-trip", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		await seedUserTurn(setup, "hello there");
+
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(ev_textStart());
+		fake.emit(ev_textDelta("Hi! "));
+		fake.emit(ev_textDelta("How can I help?"));
+		fake.emit(ev_messageEnd({ stopReason: "stop" }));
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
+
+		const f = await waitForFrame(setup, "How can I help?");
+		expect(f).toContain("hello there");
+		expect(f).toContain("Hi!");
+	});
+
+	test("thinking block renders with Thinking: marker", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await seedUserTurn(setup, "q");
+
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(ev_thinkingStart());
+		fake.emit(ev_thinkingDelta("let me consider"));
+		fake.emit(ev_thinkingEnd("let me consider"));
+		fake.emit(ev_textStart());
+		fake.emit(ev_textDelta("Answer"));
+		fake.emit(ev_messageEnd({ stopReason: "stop" }));
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
+
+		const f = await waitForFrame(setup, "Answer");
+		expect(f).toContain("Thinking:");
+		expect(f).toContain("let me consider");
+	});
+
+	test("redacted thinking placeholders drop the part", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await seedUserTurn(setup, "q");
+
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(ev_thinkingStart());
+		fake.emit(ev_thinkingDelta("[REDACTED]"));
+		fake.emit(ev_thinkingEnd("[REDACTED]"));
+		fake.emit(ev_textStart());
+		fake.emit(ev_textDelta("Direct answer"));
+		fake.emit(ev_messageEnd({ stopReason: "stop" }));
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
+
+		const f = await waitForFrame(setup, "Direct answer");
+		expect(f).not.toContain("[REDACTED]");
+		expect(f).not.toContain("Thinking:");
+	});
+
+	test("tool call pending → completed", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await seedUserTurn(setup, "do something");
+
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(ev_textStart());
+		fake.emit(ev_textDelta("Working..."));
+		fake.emit(ev_toolcallEnd("c1", "read", { path: "notes/foo.md" }));
+		fake.emit(ev_messageEnd({ stopReason: "toolUse" }));
+
+		// Pending state visible — tilde icon heading the tool line.
+		await waitForFrame(setup, /~\s*read/);
+
+		fake.emit(ev_toolExecStart("c1", "read", { path: "notes/foo.md" }));
+		fake.emit(
+			ev_toolExecEnd("c1", "read", {
+				result: { content: [{ type: "text", text: "ok" }] },
+			}),
+		);
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "toolUse" })]));
+
+		// `⚙` header glyph means the tool flipped to completed.
+		await waitForFrame(setup, /⚙\s*read/);
+	});
+
+	test("tool error surfaces the error line", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await seedUserTurn(setup, "go");
+
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(ev_toolcallEnd("c2", "read", { path: "missing" }));
+		fake.emit(ev_messageEnd({ stopReason: "toolUse" }));
+		fake.emit(ev_toolExecStart("c2", "read", { path: "missing" }));
+		fake.emit(
+			ev_toolExecEnd("c2", "read", {
+				isError: true,
+				result: {
+					content: [{ type: "text", text: "File not found: missing" }],
+				},
+			}),
+		);
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "toolUse" })]));
+
+		await waitForFrame(setup, "File not found: missing");
+	});
+
+	test("assistant error panel renders when stopReason is error", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await seedUserTurn(setup, "bad");
+
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(
+			ev_messageEnd({
+				stopReason: "error",
+				errorMessage: "Provider returned 500",
+			}),
+		);
+		fake.emit(
+			ev_agentEnd([
+				assistantMessage({
+					stopReason: "error",
+					errorMessage: "Provider returned 500",
+				}),
+			]),
+		);
+
+		await waitForFrame(setup, "Provider returned 500");
+	});
+
+	test("streaming interrupt hint appears during a turn and clears after", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await seedUserTurn(setup, "hi");
+
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(ev_textStart());
+		fake.emit(ev_textDelta("..."));
+
+		await waitForFrame(setup, "interrupt");
+
+		fake.emit(ev_messageEnd({ stopReason: "stop" }));
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
+
+		// Wait for the hint to clear.
+		const start = Date.now();
+		while (Date.now() - start < 1000) {
+			await setup.renderOnce();
+			if (!setup.captureCharFrame().includes("interrupt")) break;
+			await Bun.sleep(20);
+		}
+		expect(setup.captureCharFrame()).not.toContain("interrupt");
+	});
+
+	test("pre-stream actions.prompt rejection surfaces a synthetic error bubble", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		// Make the NEXT actions.prompt reject — simulates a pre-stream
+		// failure like `getApiKey` rejection or a network error on the
+		// very first request. pi-agent-core would normally wrap these in
+		// a `stopReason === "error"` message_end, but the pre-stream
+		// catch in `wrappedActions.prompt` (agent.tsx) handles the case
+		// where nothing is emitted at all.
+		fake.failNextPrompt(new Error("pre-stream boom"));
+
+		await setup.mockInput.typeText("hello");
+		setup.mockInput.pressEnter();
+
+		// The reducer's catch block pushes a synthetic assistant bubble
+		// with the error text. Also fires an "Agent error" toast.
+		const f = await waitForFrame(setup, "pre-stream boom");
+		expect(f).toContain("pre-stream boom");
+	});
+
+	test("user bubble with `@`-mention renders file chip (`[md]` + path)", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		// Type a plain text + `@`-mention to a seeded vault file.
+		// preload.ts seeds bar.md and foo.md under 010 RAW/013 Articles.
+		await setup.mockInput.typeText("look at ");
+		await setup.mockInput.typeText("@");
+		await waitForFrame(setup, "foo.md", { timeout: 3000 });
+		// Select the top option — the insert writes `@<path> ` into the
+		// buffer and attaches a virtual extmark covering the `@<path>` span.
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(50);
+
+		// Submit.
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(50);
+
+		// The user bubble renders `md` mime badge + the filename.
+		// bar.md sorts first alphabetically, so it gets picked.
+		const f = await waitForFrame(setup, "bar.md");
+		// `md` chip appears on the bubble — MIME_BADGE maps "text/markdown" → "md".
+		expect(f).toMatch(/\bmd\b/);
+		// Filename present in the chip.
+		expect(f).toContain("010 RAW/013 Articles/bar.md");
+	});
+});

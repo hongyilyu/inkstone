@@ -2,8 +2,23 @@ import {
 	type AgentActions,
 	createSession as createAgentSession,
 	getAgentInfo,
+	type Session,
 	setConfirmFn,
 } from "@backend/agent";
+import type { AgentEvent as AgentEventType } from "@mariozechner/pi-agent-core";
+
+/**
+ * Factory signature for `AgentProvider`'s underlying `Session`. The
+ * default value is `createAgentSession` from `@backend/agent`; tests
+ * inject a fake that captures `onEvent` so synthetic `AgentEvent`s can
+ * be emitted without a real pi-agent-core loop.
+ */
+export type SessionFactory = (params: {
+	agentName?: string;
+	onEvent: (event: AgentEventType) => void;
+}) => Session;
+export type { Session };
+
 import { setPersistenceErrorHandler } from "@backend/persistence/errors";
 import {
 	appendAgentMessage,
@@ -127,7 +142,9 @@ interface AgentContextValue {
 
 const ctx = createContext<AgentContextValue>();
 
-export function AgentProvider(props: ParentProps) {
+export function AgentProvider(
+	props: ParentProps<{ session?: SessionFactory }>,
+) {
 	const dialog = useDialog();
 	const toast = useToast();
 
@@ -156,7 +173,8 @@ export function AgentProvider(props: ParentProps) {
 	// openpage — no auto-resume. Past session rows stay on disk for a
 	// future `/resume` command (not yet built). See D13 in
 	// `docs/AGENT-DESIGN.md`: agent is fixed for a session's lifetime.
-	const agentSession = createAgentSession({
+	const factory: SessionFactory = props.session ?? createAgentSession;
+	const agentSession = factory({
 		onEvent: (event: AgentEvent) => onAgentEvent(event),
 	});
 

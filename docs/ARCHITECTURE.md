@@ -805,3 +805,43 @@ comments marking them "do not harden into persistThen" because their
 failure modes are handled elsewhere (resume is out of scope for tool-
 result persist; load-time alternation repair absorbs synthesized-abort
 persist failures).
+
+## Testing
+
+Tests live in `test/` and run via `bun test` (wired through `bun run ci`).
+The backend tests (`test/permissions.test.ts`,
+`test/persistence-failure.test.ts`, `test/resume-repair.test.ts`,
+`test/display-file-part.test.ts`, `test/mentions.test.ts`) exercise the
+shared tool pool, reader permissions, persistence repair, the display
+chip round-trip, and the pure mention-payload builder.
+
+TUI tests live in `test/tui/` and mount the full provider stack through
+OpenTUI Solid's `testRender`:
+
+- `test/tui/harness.tsx` — `renderApp({ session, width?, height? })`
+  mounts Theme → Toast → Dialog → Command → AgentProvider → Layout.
+  `waitForFrame(needle)` polls `renderOnce + captureCharFrame` because
+  markdown rendering goes through a tree-sitter worker and isn't
+  synchronous after store mutation.
+- `test/tui/fake-session.ts` — `makeFakeSession()` returns a factory
+  matching `SessionFactory` (exported from `tui/context/agent.tsx`) plus
+  an `emit(AgentEvent)` hook and a `calls` record for asserting on
+  `actions.*` invocations. Event builders (`ev_agentStart`,
+  `ev_messageStart`, `ev_textDelta`, `ev_toolcallEnd`, etc.) compose a
+  scripted turn without a real pi-agent-core loop.
+
+Injection seam: `AgentProvider` accepts an optional `session?:
+SessionFactory` prop — default is the real `createSession` from
+`@backend/agent`. Tests pass `fake.factory`; production passes nothing.
+One prop, one file, no reducer extraction.
+
+Assertions use `captureCharFrame()` substrings (not snapshots) so a
+theme-color tweak doesn't cascade into a suite rewrite. Tests cover:
+empty-state open page, conversation rendering (text / thinking /
+redacted-thinking / tool pending→completed / tool error / assistant error
+panel), streaming flow (tool-use turn boundaries, agent_end pending-tool
+sweep, duration stamp), prompt submission + slash dispatch, ESC
+double-tap interrupt, slash + mention autocomplete dropdowns, command
+palette (Ctrl+P), and session list panel (Ctrl+N). `bunfig.toml` preloads
+both `@opentui/solid/preload` (JSX runtime) and `./test/preload.ts`
+(isolated XDG + vault).
