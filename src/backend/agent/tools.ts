@@ -20,6 +20,11 @@ import { registerBaseline } from "./permissions";
  * by `wrapToolDefinition`, so pi-tui is loaded transitively at module-
  * resolve but never invoked at runtime — Inkstone renders via OpenTUI
  * in `src/tui/**`.
+ *
+ * When adding a tool, also add an entry to `TOOL_ARG_RENDERERS` in
+ * `src/bridge/tool-renderers.ts` so its args render alongside the
+ * tool name in `ToolPart`. Missing renderer → just the tool name
+ * shows, no args row.
  */
 export const readTool = createReadTool(VAULT_DIR);
 export const writeTool = createWriteTool(VAULT_DIR);
