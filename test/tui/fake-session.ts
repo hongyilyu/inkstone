@@ -166,27 +166,44 @@ export function makeFakeSession(
 // `AgentEvent` builders. Compose a full turn by chaining them through `emit`.
 // ---------------------------------------------------------------------------
 
-/** Stable-shape assistant base so tests can fill in just what matters. */
+/**
+ * Stable-shape assistant base so tests can fill in just what matters.
+ *
+ * Top-level fields override via spread. `usage` is deep-merged: a test
+ * passing `{ usage: { totalTokens: 1234 } }` keeps the default zeros
+ * for `input`/`output`/`cacheRead`/`cacheWrite`/`cost.*` so tests that
+ * only care about the total don't need to spell out the full object.
+ * `usage.cost` merges one level deeper for the same reason.
+ */
 export function assistantMessage(
 	partial: Partial<AssistantMessage> = {},
 ): AssistantMessage {
+	const baseUsage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const { usage: partialUsage, ...rest } = partial;
+	const usage = partialUsage
+		? {
+				...baseUsage,
+				...partialUsage,
+				cost: { ...baseUsage.cost, ...(partialUsage.cost ?? {}) },
+			}
+		: baseUsage;
 	return {
 		role: "assistant",
 		content: [],
 		api: FAKE_MODEL.api,
 		provider: FAKE_MODEL.provider,
 		model: FAKE_MODEL.id,
-		usage: {
-			input: 0,
-			output: 0,
-			cacheRead: 0,
-			cacheWrite: 0,
-			totalTokens: 0,
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-		},
 		stopReason: "stop",
 		timestamp: Date.now(),
-		...partial,
+		...rest,
+		usage,
 	};
 }
 

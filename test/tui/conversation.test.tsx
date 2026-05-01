@@ -87,7 +87,10 @@ describe("conversation rendering", () => {
 		expect(f).toContain("let me consider");
 	});
 
-	test("redacted thinking placeholders drop the part", async () => {
+	test.each([
+		["[REDACTED]"], // OpenRouter literal
+		["Reasoning hidden by provider"], // pi-kiro slow-path marker (§26a)
+	])("redacted thinking placeholder %p drops the part", async (placeholder) => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });
 		await setup.renderOnce();
@@ -96,15 +99,15 @@ describe("conversation rendering", () => {
 		fake.emit(ev_agentStart());
 		fake.emit(ev_messageStart());
 		fake.emit(ev_thinkingStart());
-		fake.emit(ev_thinkingDelta("[REDACTED]"));
-		fake.emit(ev_thinkingEnd("[REDACTED]"));
+		fake.emit(ev_thinkingDelta(placeholder));
+		fake.emit(ev_thinkingEnd(placeholder));
 		fake.emit(ev_textStart());
 		fake.emit(ev_textDelta("Direct answer"));
 		fake.emit(ev_messageEnd({ stopReason: "stop" }));
 		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
 
 		const f = await waitForFrame(setup, "Direct answer");
-		expect(f).not.toContain("[REDACTED]");
+		expect(f).not.toContain(placeholder);
 		expect(f).not.toContain("Thinking:");
 	});
 
@@ -262,5 +265,51 @@ describe("conversation rendering", () => {
 		expect(f).toMatch(/\bmd\b/);
 		// Filename present in the chip.
 		expect(f).toContain("010 RAW/013 Articles/bar.md");
+	});
+
+	test("sidebar Context block renders token count and cost after a turn with usage", async () => {
+		const fake = makeFakeSession();
+		// Width 120 so the sidebar renders (gated on `dimensions.width >= 100`).
+		setup = await renderApp({ session: fake.factory, width: 120 });
+		await setup.renderOnce();
+
+		await seedUserTurn(setup, "usage turn");
+
+		// Close the turn with a non-zero usage payload. The reducer's
+		// `message_end` branch increments `totalTokens` + `totalCost`
+		// from the assistant message's `usage` field; the sidebar
+		// `hasUsageData` memo flips truthy and the Context block
+		// renders the tokens/cost lines.
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(ev_textStart());
+		fake.emit(ev_textDelta("ok"));
+		fake.emit(
+			ev_messageEnd({
+				stopReason: "stop",
+				usage: {
+					totalTokens: 1234,
+					cost: { total: 0.05 },
+				} as any, // deep-merge in assistantMessage() fills the rest
+			}),
+		);
+		fake.emit(
+			ev_agentEnd([
+				assistantMessage({
+					stopReason: "stop",
+					usage: {
+						totalTokens: 1234,
+						cost: { total: 0.05 },
+					} as any,
+				}),
+			]),
+		);
+
+		// "Context" header is always shown; token line + cost line
+		// appear only when counters are non-zero.
+		const f = await waitForFrame(setup, "1,234 tokens");
+		expect(f).toContain("Context");
+		expect(f).toContain("1,234 tokens");
+		expect(f).toContain("$0.05");
 	});
 });

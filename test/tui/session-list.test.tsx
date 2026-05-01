@@ -18,7 +18,14 @@ import {
 	runInTransaction,
 } from "@backend/persistence/sessions";
 import type { DisplayMessage } from "@bridge/view-model";
-import { makeFakeSession } from "./fake-session";
+import {
+	assistantMessage,
+	ev_agentEnd,
+	ev_agentStart,
+	ev_messageEnd,
+	ev_messageStart,
+	makeFakeSession,
+} from "./fake-session";
 import { renderApp, waitForFrame } from "./harness";
 
 let setup: Awaited<ReturnType<typeof renderApp>> | undefined;
@@ -187,5 +194,79 @@ describe("session list panel", () => {
 		setup.mockInput.pressEnter();
 		// Resume flow runs inside a batch; give it a tick to settle.
 		await waitForFrame(setup, "Interrupted by user");
+	});
+
+	test("resume wipes dynamic sidebar sections from the previous session", async () => {
+		// Seed a session to resume into, with a raw agent_message so
+		// `restoreMessages` is called with content (matches the style
+		// of the "Enter on a row resumes" case above).
+		const rec = createSessionRow({ agent: "reader" });
+		const seededMsg: DisplayMessage = {
+			id: newId(),
+			role: "user",
+			parts: [{ type: "text", text: "target session" }],
+		};
+		runInTransaction((tx) => {
+			appendDisplayMessage(tx, rec.id, seededMsg);
+			appendAgentMessage(tx, rec.id, {
+				role: "user",
+				content: "target session",
+				timestamp: Date.now(),
+			});
+		});
+
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory, width: 120 });
+		await setup.renderOnce();
+
+		// In the live session, emit an `update_sidebar` upsert to get a
+		// section into `store.sidebarSections`.
+		await setup.mockInput.typeText("live turn");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(20);
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit({
+			type: "tool_execution_end",
+			toolCallId: "sb-live",
+			toolName: "update_sidebar",
+			result: {
+				content: [{ type: "text", text: "ok" }],
+				details: {
+					operation: "upsert",
+					id: "live-notes",
+					title: "Live",
+					content: "should vanish on resume",
+				},
+			},
+			isError: false,
+		});
+		fake.emit(ev_messageEnd({ stopReason: "toolUse" }));
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "toolUse" })]));
+		await waitForFrame(setup, "should vanish on resume");
+
+		// Open the session list panel and resume the seeded row.
+		setup.mockInput.pressKey("n", { ctrl: true });
+		await waitForFrame(setup, "target session");
+		await Bun.sleep(30);
+		setup.mockInput.pressEnter();
+
+		// Wait for the resume batch to settle. The sidebar section
+		// from the live session should be gone — `resumeSession` sets
+		// `sidebarSections = []` inside the batch.
+		const start = Date.now();
+		while (Date.now() - start < 1500) {
+			await setup.renderOnce();
+			if (
+				!setup.captureCharFrame().includes("should vanish on resume")
+			) {
+				break;
+			}
+			await Bun.sleep(30);
+		}
+		expect(setup.captureCharFrame()).not.toContain("should vanish on resume");
+		// Sanity: the resume actually happened.
+		expect(fake.calls.restoreMessages.length).toBeGreaterThanOrEqual(1);
 	});
 });
