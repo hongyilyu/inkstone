@@ -90,6 +90,7 @@ const articleCommand: AgentCommand = {
 	name: "article",
 	description: "Open an article for guided reading",
 	argHint: "[filename]",
+	argGuide: "use @ to pick a file, or leave empty for recommendations",
 	takesArgs: false,
 	execute: async (args, helpers) => {
 		const filename = args.trim();

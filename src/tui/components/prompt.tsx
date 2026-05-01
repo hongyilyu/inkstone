@@ -18,6 +18,7 @@ import { formatCost, formatTokens } from "../util/format";
 import * as Keybind from "../util/keybind";
 import {
 	buildMentionPayload,
+	expandMentionsToPaths,
 	type Mention,
 	readFileSafe,
 } from "../util/mentions";
@@ -172,39 +173,13 @@ export function Prompt() {
 		if (!value) return;
 		if (store.isStreaming) return;
 
-		// Slash-command dispatch via the unified command registry.
-		// Splits on the first whitespace: `/name args...`. Matching
-		// OpenCode's prompt submit path, only entries whose `slash` field
-		// matches are intercepted; unknown slashes or commands missing
-		// required args fall through as plain prompts.
-		//
-		// Per SLASH-COMMANDS.md Path A, agent-declared commands and
-		// shell-level commands share the same registry; `triggerSlash`
-		// resolves them uniformly. Agent-bridge registrations register
-		// first so agent-scoped slashes beat shell-scoped on name
-		// collision — preserves the D9 "agent overrides built-in" rule.
-		if (value.startsWith("/")) {
-			const spaceAt = value.indexOf(" ");
-			const name = spaceAt === -1 ? value.slice(1) : value.slice(1, spaceAt);
-			const args = spaceAt === -1 ? "" : value.slice(spaceAt + 1).trim();
-			if (command.triggerSlash(name, args)) {
-				clearInput();
-				toBottom();
-				return;
-			}
-		}
-
-		// `@` mention expansion. Read any live extmarks off the input
-		// buffer, pair with their metadata paths, sort by position
-		// (extmarks come back in INSERTION order from `getAllForTypeId`
-		// — if the user inserted `@a`, moved cursor back, inserted `@b`,
-		// position order is [b, a] but insertion order is [a, b]), then
-		// run the pure builder to produce the LLM-facing text + bubble
-		// parts. `value` is the trimmed text; but the extmark offsets
-		// reference the untrimmed plainText — use `text()` (untrimmed)
-		// for slicing in `buildMentionPayload`, and let the pure fn
-		// pass through verbatim so the sent text matches exactly what
-		// was in the buffer.
+		// Read mention extmarks once, up front. Both the slash-dispatch
+		// branch and the plain-prompt branch consume them — slash expands
+		// `@path` spans to absolute paths so a command like `/article
+		// @foo.md` sees its args as `/abs/vault/foo.md` instead of the
+		// literal `@foo.md` that would fail downstream. Extmarks come
+		// back in INSERTION order, not position order, so the sort is
+		// load-bearing.
 		const rawText = text();
 		const input = inputRef;
 		const mentions: Mention[] =
@@ -221,6 +196,67 @@ export function Prompt() {
 						.sort((a: Mention, b: Mention) => a.start - b.start)
 				: [];
 
+		// Slash-command dispatch via the unified command registry.
+		// Splits on the first whitespace: `/name args...`. Matching
+		// OpenCode's prompt submit path, only entries whose `slash` field
+		// matches are intercepted; unknown slashes or commands missing
+		// required args fall through as plain prompts.
+		//
+		// Per SLASH-COMMANDS.md Path A, agent-declared commands and
+		// shell-level commands share the same registry; `triggerSlash`
+		// resolves them uniformly. Agent-bridge registrations register
+		// first so agent-scoped slashes beat shell-scoped on name
+		// collision — preserves the D9 "agent overrides built-in" rule.
+		//
+		// Mentions inside the args range are expanded to their absolute
+		// vault paths BEFORE the dispatch. Mentions entirely before the
+		// first whitespace (inside the verb `/name`) stay as literal
+		// text in the buffer — `canRunSlash` will fail to match the
+		// mangled name and the input falls through as a plain prompt.
+		// Trailing text after a mention (e.g. `/article @foo.md junk`)
+		// is passed through verbatim to the command; reader's error
+		// message is clear enough for a rare user-input bug.
+		//
+		// `rawText` may have leading whitespace (e.g. `  /article @foo.md`);
+		// `slashStart` anchors the `/` index so the name/args split reads
+		// from the right offset and mention-range filtering references
+		// the raw-buffer positions that extmarks carry.
+		if (value.startsWith("/")) {
+			const slashStart = rawText.indexOf("/");
+			const spaceAt = rawText.indexOf(" ", slashStart);
+			const name =
+				spaceAt === -1
+					? rawText.slice(slashStart + 1).trim()
+					: rawText.slice(slashStart + 1, spaceAt);
+			if (spaceAt === -1) {
+				// Bare `/name` with no whitespace after — no mentions in args range.
+				if (command.triggerSlash(name, "")) {
+					clearInput();
+					toBottom();
+					return;
+				}
+			} else {
+				const argsStart = spaceAt + 1;
+				const argsText = rawText.slice(argsStart);
+				const argsMentions: Mention[] = mentions
+					.filter((m) => m.start >= argsStart)
+					.map((m) => ({
+						start: m.start - argsStart,
+						end: m.end - argsStart,
+						path: m.path,
+					}));
+				const expanded = expandMentionsToPaths(argsText, argsMentions).trim();
+				if (command.triggerSlash(name, expanded)) {
+					clearInput();
+					toBottom();
+					return;
+				}
+			}
+		}
+
+		// Plain-prompt path: inline mention content via `buildMentionPayload`
+		// (same format as reader's `/article` for LLM-facing text; the user
+		// bubble gets compact `[md] path` chips via `displayParts`).
 		const { llmText, displayParts, failed } = buildMentionPayload(
 			rawText,
 			mentions,
@@ -273,6 +309,28 @@ export function Prompt() {
 	// falls back to the default agent for unknown names, so the memo is
 	// never undefined.
 	const agentInfo = createMemo(() => getAgentInfo(store.currentAgent));
+
+	// Post-select coaching hint for slash commands. Shown only when the
+	// buffer is exactly `/<name> ` (verb + trailing space, no args yet)
+	// AND the matching command has `argGuide` set. `argHint` (the palette
+	// placeholder) is intentionally NOT a fallback — the two fields have
+	// distinct jobs; see SlashSpec JSDoc.
+	//
+	// Reactivity: depends on `text()` and `store.currentAgent` (via
+	// `command.findSlash` → registry → BridgeAgentCommands re-registers
+	// on agent switch). `store.isStreaming` gates it off mid-turn so the
+	// hint doesn't linger while the user watches a response arrive.
+	const guideInfo = createMemo(() => {
+		if (store.isStreaming) return null;
+		const t = text();
+		if (!t.startsWith("/")) return null;
+		const spaceAt = t.indexOf(" ");
+		if (spaceAt === -1) return null; // still typing the name
+		if (t.slice(spaceAt + 1).length > 0) return null; // typing args
+		const name = t.slice(1, spaceAt);
+		const entry = command.findSlash(name);
+		return entry?.slash?.argGuide ?? null;
+	});
 
 	// Tab-cycle hint only makes sense on a fresh session. Once the user has
 	// sent a message the agent is locked for the rest of the session.
@@ -332,59 +390,83 @@ export function Prompt() {
 					    and relying on the fact that the renderable
 					    merges user bindings with its own — so we only
 					    need to name the submit triggers here. */}
-					<textarea
-						ref={(r: TextareaRenderable) => {
-							inputRef = r;
-							setInputRef(r);
-							// Register the prompt-mention extmark type once per
-							// mount. Returns a stable numeric id usable until
-							// the input is destroyed.
-							promptPartTypeId = r.extmarks.registerType("prompt-mention");
-						}}
-						minHeight={1}
-						maxHeight={6}
-						wrapMode="word"
-						keyBindings={[
-							// Plain Enter submits. Every other Enter variant
-							// and Ctrl+J inserts a newline — mirrors OpenCode's
-							// `input_newline: shift+return, ctrl+return,
-							// alt+return, ctrl+j` config. OpenTUI parses Ctrl+J
-							// as the `linefeed` key, so we do NOT bind
-							// `linefeed → submit` (as `<input>` does by default)
-							// — that'd hijack Ctrl+J and collide with the
-							// explicit newline binding below.
-							{ name: "return", action: "submit" },
-							{ name: "return", shift: true, action: "newline" },
-							{ name: "return", ctrl: true, action: "newline" },
-							{ name: "return", meta: true, action: "newline" },
-							{ name: "j", ctrl: true, action: "newline" },
-						]}
-						onContentChange={() => {
-							if (inputRef) setText(inputRef.plainText);
-						}}
-						onSubmit={handleSubmit}
-						placeholder={
-							store.isStreaming
-								? "Waiting for response..."
-								: "Type a message or /article <filename>..."
-						}
-						focused
-						// Syntax style drives extmark highlighting — without it,
-						// `styleId`s on extmarks have no palette to resolve
-						// against and spans render in the default text color.
-						// Same `SyntaxStyle` instance used by the markdown
-						// renderer; the shared `extmark.file` rule in
-						// `getSyntaxRules` is what paints the `@path` span.
-						syntaxStyle={syntax()}
-						backgroundColor={theme.backgroundElement}
-						focusedBackgroundColor={theme.backgroundElement}
-						textColor={theme.text}
-						focusedTextColor={theme.text}
-						cursorColor={
-							store.isStreaming ? theme.backgroundElement : theme.primary
-						}
-						placeholderColor={theme.textMuted}
-					/>
+					{/* Textarea + inline coaching hint on the same row.
+					    The hint is a muted trailing annotation (right of the
+					    textarea) shown when the buffer is exactly `/<name> `
+					    and the command sets `argGuide`. `flexDirection="row"`
+					    aligns the hint with the textarea's first row; the
+					    textarea owns its own growth (`minHeight=1, maxHeight=6`)
+					    so the hint stays anchored to the top row even when the
+					    textarea grows — which is fine because the hint only
+					    appears while the buffer is a single verb + space (one
+					    row of content). Reader's `/article` uses this to point
+					    at the `@`-mention flow + bare-picker fallback. */}
+					<box flexDirection="row" flexShrink={0} flexGrow={1}>
+						<box flexShrink={1} flexGrow={1}>
+							<textarea
+								ref={(r: TextareaRenderable) => {
+									inputRef = r;
+									setInputRef(r);
+									// Register the prompt-mention extmark type once per
+									// mount. Returns a stable numeric id usable until
+									// the input is destroyed.
+									promptPartTypeId = r.extmarks.registerType("prompt-mention");
+								}}
+								minHeight={1}
+								maxHeight={6}
+								wrapMode="word"
+								keyBindings={[
+									// Plain Enter submits. Every other Enter variant
+									// and Ctrl+J inserts a newline — mirrors OpenCode's
+									// `input_newline: shift+return, ctrl+return,
+									// alt+return, ctrl+j` config. OpenTUI parses Ctrl+J
+									// as the `linefeed` key, so we do NOT bind
+									// `linefeed → submit` (as `<input>` does by default)
+									// — that'd hijack Ctrl+J and collide with the
+									// explicit newline binding below.
+									{ name: "return", action: "submit" },
+									{ name: "return", shift: true, action: "newline" },
+									{ name: "return", ctrl: true, action: "newline" },
+									{ name: "return", meta: true, action: "newline" },
+									{ name: "j", ctrl: true, action: "newline" },
+								]}
+								onContentChange={() => {
+									if (inputRef) setText(inputRef.plainText);
+								}}
+								onSubmit={handleSubmit}
+								placeholder={
+									store.isStreaming
+										? "Waiting for response..."
+										: "Type a message or /article <filename>..."
+								}
+								focused
+								// Syntax style drives extmark highlighting — without it,
+								// `styleId`s on extmarks have no palette to resolve
+								// against and spans render in the default text color.
+								// Same `SyntaxStyle` instance used by the markdown
+								// renderer; the shared `extmark.file` rule in
+								// `getSyntaxRules` is what paints the `@path` span.
+								syntaxStyle={syntax()}
+								backgroundColor={theme.backgroundElement}
+								focusedBackgroundColor={theme.backgroundElement}
+								textColor={theme.text}
+								focusedTextColor={theme.text}
+								cursorColor={
+									store.isStreaming ? theme.backgroundElement : theme.primary
+								}
+								placeholderColor={theme.textMuted}
+							/>
+						</box>
+						<Show when={guideInfo()}>
+							{(guide: () => string) => (
+								<box flexShrink={0} paddingLeft={2}>
+									<text fg={theme.textMuted} wrapMode="none">
+										{guide()}
+									</text>
+								</box>
+							)}
+						</Show>
+					</box>
 					{/* prompt/index.tsx:1186-1223 — agent/model metadata */}
 					<box
 						flexDirection="row"
