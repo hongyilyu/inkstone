@@ -13,6 +13,8 @@ import {
 	loadSession,
 	newId,
 	runInTransaction,
+	safeRun,
+	type Tx,
 	updateDisplayMessageMeta,
 } from "@backend/persistence/sessions";
 import type {
@@ -200,6 +202,34 @@ export function AgentProvider(props: ParentProps) {
 		return rec.id;
 	}
 
+	/**
+	 * Persist-first helper: run a tx body and apply a follow-up store
+	 * mutation only if the tx succeeded. Used at reducer sites that
+	 * mutate already-persisted state — inverts the old
+	 * mutate-then-persist ordering so a failed write leaves the store
+	 * at its pre-mutation value. The user-visible signal on failure is
+	 * the toast already fired by `reportPersistenceError` inside the
+	 * writer (or `runInTransaction`'s outer catch for pre-writer tx-
+	 * open failures); the dedup sentinel on the error object stops the
+	 * rethrow from double-toasting up the chain.
+	 *
+	 * Pre-stream sites (new bubble / new shell / tool-result persist /
+	 * synthesized-abort persist) have no store state to gate — they
+	 * use `safeRun` instead, which preserves today's "log and continue"
+	 * behavior.
+	 */
+	function persistThen(writes: (tx: Tx) => void, onSuccess: () => void): void {
+		try {
+			runInTransaction(writes);
+		} catch {
+			// Already reported by the writer or by runInTransaction's
+			// outer catch. Skip onSuccess so the store stays at its
+			// pre-mutation value.
+			return;
+		}
+		onSuccess();
+	}
+
 	function onAgentEvent(event: AgentEvent) {
 		batch(() => {
 			switch (event.type) {
@@ -235,17 +265,26 @@ export function AgentProvider(props: ParentProps) {
 						// only fires during a turn, and turns only start via
 						// `wrappedActions.prompt` which called `ensureSession()`.
 						//
-						// One-statement wrap in `runInTransaction` — the writer
-						// API requires a tx; this single insert is atomic by
-						// nature, so we wrap the one call instead of aggregating
-						// with message_end (which is on a separate event loop
-						// tick).
+						// `safeRun`: pre-stream append. A failed insert means
+						// the shell row is missing from disk but present in the
+						// store; `message_end`'s `persistThen` later uses
+						// `updateDisplayMessageMeta` + `finalizeDisplayMessageParts`
+						// which are UPDATE + DELETE/INSERT by `msg.id`, so the
+						// UPDATE is a no-op and the INSERTs create parts with a
+						// dangling FK — drizzle would fail. Acceptable because
+						// the outer tx rolls back and `persistThen` skips its
+						// `onSuccess`, leaving the store meta un-stamped. The
+						// transient assistant bubble stays in memory for the
+						// rest of the session; resume rebuilds cleanly (the
+						// shell is gone, so no orphan).
 						if (currentSessionId) {
 							const sid = currentSessionId;
-							runInTransaction((tx) =>
-								appendDisplayMessage(tx, sid, newMsg, {
-									includeParts: false,
-								}),
+							safeRun(() =>
+								runInTransaction((tx) =>
+									appendDisplayMessage(tx, sid, newMsg, {
+										includeParts: false,
+									}),
+								),
 							);
 						}
 						toBottom();
@@ -423,50 +462,79 @@ export function AgentProvider(props: ParentProps) {
 							// page, so `store.currentAgent` at event time is
 							// guaranteed to be the agent that produced this reply.
 							const agentName = getAgentInfo(store.currentAgent).displayName;
-							setStore("messages", lastIdx, "agentName", agentName);
-							setStore("messages", lastIdx, "modelName", displayName);
 							// Surface any assistant-turn failure onto the bubble. pi-ai
 							// converts provider SDK exceptions into stream `error` events
 							// (see amazon-bedrock.js:164-167) which pi-agent-core forwards
 							// through message_end with `stopReason` set and `errorMessage`
 							// populated. Without this stash the errored bubble renders as
 							// empty text with no user-facing hint that anything went wrong.
-							if (
+							const errorStr =
 								(assistantMsg.stopReason === "error" ||
 									assistantMsg.stopReason === "aborted") &&
 								assistantMsg.errorMessage
-							) {
-								setStore(
-									"messages",
-									lastIdx,
-									"error",
-									assistantMsg.errorMessage,
-								);
-							}
-							// Commit the three related artifacts (header meta, parts,
-							// raw AgentMessage) in a single transaction so a crash
-							// between them can't leave the session in a half-written
-							// state. Eliminates the repair path for new corruption.
+									? assistantMsg.errorMessage
+									: undefined;
+
+							// Persist-first: build the intended post-state as a
+							// plain object so the tx writes the new meta WITHOUT
+							// mutating the store. On success, mirror the meta
+							// fields into the store. On failure, `persistThen`
+							// swallows the rethrown error (already reported via
+							// `reportPersistenceError`'s dedup sentinel) and the
+							// store stays at its pre-mutation value — the bubble
+							// renders without a footer, matching what `/resume`
+							// would reconstruct.
+							//
+							// Parts are shallow-cloned so `updated` is fully
+							// decoupled from the live Solid proxy. Matches the
+							// shape at the other persistThen sites
+							// (tool_execution_end, agent_end sweep) and removes
+							// reliance on the implicit "reducer is synchronous"
+							// invariant that kept a live-proxy splat safe.
 							if (currentSessionId) {
 								const sid = currentSessionId;
-								const updated = store.messages[lastIdx];
-								if (updated) {
-									runInTransaction((tx) => {
+								const updated: DisplayMessage = {
+									...last,
+									parts: last.parts.map((p) => ({ ...p })),
+									agentName,
+									modelName: displayName,
+									...(errorStr ? { error: errorStr } : {}),
+								};
+								persistThen(
+									(tx) => {
 										updateDisplayMessageMeta(tx, sid, updated);
 										finalizeDisplayMessageParts(tx, sid, updated);
 										appendAgentMessage(tx, sid, msg, {
 											displayMessageId: updated.id,
 										});
-									});
-								}
+									},
+									() => {
+										setStore("messages", lastIdx, "agentName", agentName);
+										setStore("messages", lastIdx, "modelName", displayName);
+										if (errorStr) {
+											setStore("messages", lastIdx, "error", errorStr);
+										}
+									},
+								);
 							}
 						}
 					} else if (msg && currentSessionId) {
 						// Tool-result / user / custom messages — persist so the
 						// raw-message timeline is complete for resume. No display
 						// bubble, so `displayMessageId` stays NULL.
+						//
+						// `safeRun`: no store state to gate. Persistence failure
+						// here is benign at runtime (pi-agent-core's in-memory
+						// timeline stays valid for the active session) but causes
+						// a missing tool-result row on resume — out of scope for
+						// the drift fix because there's no store mirror to roll
+						// back to. Fixing requires either queued retry or
+						// surfacing failure into the turn-failure path; see
+						// docs/TODO.md Known Issues.
 						const sid = currentSessionId;
-						runInTransaction((tx) => appendAgentMessage(tx, sid, msg));
+						safeRun(() =>
+							runInTransaction((tx) => appendAgentMessage(tx, sid, msg)),
+						);
 					}
 					break;
 				}
@@ -523,29 +591,46 @@ export function AgentProvider(props: ParentProps) {
 						const errorMsg = endEvt.isError
 							? extractErrorMessage(endEvt.result)
 							: undefined;
-						setStore(
-							"messages",
-							foundMsgIdx,
-							"parts",
-							foundPartIdx,
-							produce((p: DisplayPart) => {
-								if (p.type !== "tool") return;
-								p.state = state;
-								if (errorMsg !== undefined) p.error = errorMsg;
-							}),
-						);
-						// Re-finalize parts for this bubble so the row
-						// reflects the new tool state. The whole parts
-						// array for that message is DELETE + re-INSERTed
-						// inside `finalizeDisplayMessageParts`.
-						if (currentSessionId) {
+						// Persist-first: build the post-mutation parts array
+						// locally, write it to disk, then apply the single-
+						// part produce mutation to the store on success. The
+						// cloned `nextParts` leaves the store proxies
+						// untouched — only the clone at `foundPartIdx`
+						// carries the new state. On failure the bubble keeps
+						// rendering `pending`, matching what `/resume` would
+						// load.
+						const msgAtIdx = store.messages[foundMsgIdx];
+						if (currentSessionId && msgAtIdx) {
 							const sid = currentSessionId;
-							const updated = store.messages[foundMsgIdx];
-							if (updated) {
-								runInTransaction((tx) =>
-									finalizeDisplayMessageParts(tx, sid, updated),
-								);
-							}
+							const nextParts = msgAtIdx.parts.map((p, i) => {
+								if (i !== foundPartIdx || p.type !== "tool") return p;
+								const updatedPart: DisplayPart = {
+									...p,
+									state,
+									...(errorMsg !== undefined ? { error: errorMsg } : {}),
+								};
+								return updatedPart;
+							});
+							const updated: DisplayMessage = {
+								...msgAtIdx,
+								parts: nextParts,
+							};
+							persistThen(
+								(tx) => finalizeDisplayMessageParts(tx, sid, updated),
+								() => {
+									setStore(
+										"messages",
+										foundMsgIdx,
+										"parts",
+										foundPartIdx,
+										produce((p: DisplayPart) => {
+											if (p.type !== "tool") return;
+											p.state = state;
+											if (errorMsg !== undefined) p.error = errorMsg;
+										}),
+									);
+								},
+							);
 						}
 					}
 
@@ -554,6 +639,12 @@ export function AgentProvider(props: ParentProps) {
 					// update whether or not we find the matching display
 					// part (e.g. a session restored mid-turn could lack
 					// the part but still want the section).
+					//
+					// No persist-first gating here: `sidebarSections` is
+					// ephemeral store-state (cleared on `clearSession` /
+					// `resumeSession`), not persisted to disk. There's
+					// no disk state to keep in sync with, so the
+					// persist-then-mutate invariant doesn't apply.
 					if (endEvt.toolName === "update_sidebar" && endEvt.result?.details) {
 						const d = endEvt.result.details as {
 							operation: "upsert" | "delete";
@@ -602,35 +693,57 @@ export function AgentProvider(props: ParentProps) {
 					// live and on resume. Flip to `"error"` with a
 					// generic marker. Scan all assistant bubbles because
 					// a multi-tool turn can leave >1 pending (rare; safe
-					// to sweep all). Flush each touched bubble's parts
-					// so the repair survives resume.
+					// to sweep all). Persist-first: build cloned post-
+					// state messages, write them atomically, then apply
+					// the in-place produce walk to the store on success.
 					{
-						const touchedMessageIds: string[] = [];
-						setStore(
-							"messages",
-							produce((msgs: DisplayMessage[]) => {
-								for (const m of msgs) {
-									if (m.role !== "assistant") continue;
-									let touched = false;
-									for (const p of m.parts) {
-										if (p.type === "tool" && p.state === "pending") {
-											p.state = "error";
-											if (!p.error) p.error = "Tool execution interrupted";
-											touched = true;
-										}
-									}
-									if (touched) touchedMessageIds.push(m.id);
-								}
-							}),
-						);
-						if (currentSessionId && touchedMessageIds.length > 0) {
-							const sid = currentSessionId;
-							runInTransaction((tx) => {
-								for (const id of touchedMessageIds) {
-									const m = store.messages.find((x) => x.id === id);
-									if (m) finalizeDisplayMessageParts(tx, sid, m);
-								}
+						const touched: DisplayMessage[] = [];
+						for (const m of store.messages) {
+							if (m.role !== "assistant") continue;
+							const hasPending = m.parts.some(
+								(p) => p.type === "tool" && p.state === "pending",
+							);
+							if (!hasPending) continue;
+							touched.push({
+								...m,
+								parts: m.parts.map((p) => {
+									if (p.type !== "tool" || p.state !== "pending") return p;
+									const cloned: DisplayPart = {
+										...p,
+										state: "error" as const,
+										error: p.error ?? "Tool execution interrupted",
+									};
+									return cloned;
+								}),
 							});
+						}
+						if (currentSessionId && touched.length > 0) {
+							const sid = currentSessionId;
+							persistThen(
+								(tx) => {
+									for (const m of touched) {
+										finalizeDisplayMessageParts(tx, sid, m);
+									}
+								},
+								() => {
+									setStore(
+										"messages",
+										produce((msgs: DisplayMessage[]) => {
+											for (const m of msgs) {
+												if (m.role !== "assistant") continue;
+												for (const p of m.parts) {
+													if (p.type === "tool" && p.state === "pending") {
+														p.state = "error";
+														if (!p.error) {
+															p.error = "Tool execution interrupted";
+														}
+													}
+												}
+											}
+										}),
+									);
+								},
+							);
 						}
 					}
 					// Persist any closing assistant AgentMessage that
@@ -649,21 +762,31 @@ export function AgentProvider(props: ParentProps) {
 					// `agent.js:326-341`. We append any message from that
 					// array that wasn't already persisted via the normal
 					// `message_end` path.
+					//
+					// `safeRun`: persistence failure here is absorbed by
+					// load-time alternation repair in sessions.ts
+					// (`TAIL ORPHAN` / `INTERIOR GAP` logic). Don't
+					// "harden" this into `persistThen` — the repair path
+					// exists precisely because this synthesized-abort
+					// write can legitimately fail or be pre-empted by
+					// process kill.
 					{
 						const endedMsgs = (event as { messages?: AgentMessage[] }).messages;
 						if (endedMsgs && endedMsgs.length > 0 && currentSessionId) {
 							const sid = currentSessionId;
-							runInTransaction((tx) => {
-								for (const m of endedMsgs) {
-									if (!m) continue;
-									if (
-										m.role === "assistant" &&
-										(m.stopReason === "aborted" || m.stopReason === "error")
-									) {
-										appendAgentMessage(tx, sid, m);
+							safeRun(() =>
+								runInTransaction((tx) => {
+									for (const m of endedMsgs) {
+										if (!m) continue;
+										if (
+											m.role === "assistant" &&
+											(m.stopReason === "aborted" || m.stopReason === "error")
+										) {
+											appendAgentMessage(tx, sid, m);
+										}
 									}
-								}
-							});
+								}),
+							);
 						}
 					}
 					// `duration` is a per-turn value. `agent_end` fires immediately after
@@ -671,20 +794,19 @@ export function AgentProvider(props: ParentProps) {
 					// rendered as display bubbles, so `messages[length - 1]` at this
 					// point is guaranteed to be the turn-closing assistant bubble. That
 					// bubble gets the stamp; intermediate tool-call assistant messages
-					// in the same turn correctly do not.
+					// in the same turn correctly do not. Persist-first: meta update is
+					// gated on tx success — store reflects disk.
 					if (store.lastTurnStartedAt > 0) {
 						const duration = Date.now() - store.lastTurnStartedAt;
 						const lastIdx = store.messages.length - 1;
 						const last = store.messages[lastIdx];
-						if (last && last.role === "assistant") {
-							setStore("messages", lastIdx, "duration", duration);
-							const updated = store.messages[lastIdx];
-							if (currentSessionId && updated) {
-								const sid = currentSessionId;
-								runInTransaction((tx) =>
-									updateDisplayMessageMeta(tx, sid, updated),
-								);
-							}
+						if (last && last.role === "assistant" && currentSessionId) {
+							const sid = currentSessionId;
+							const updated: DisplayMessage = { ...last, duration };
+							persistThen(
+								(tx) => updateDisplayMessageMeta(tx, sid, updated),
+								() => setStore("messages", lastIdx, "duration", duration),
+							);
 						}
 					}
 					break;
@@ -711,15 +833,27 @@ export function AgentProvider(props: ParentProps) {
 				role: "user",
 				parts: displayParts ?? [{ type: "text", text }],
 			};
-			setStore(
-				"messages",
-				produce((msgs: DisplayMessage[]) => {
-					msgs.push(userMsg);
-				}),
+			// Persist-first: push the user bubble, stamp the turn clock,
+			// and start the LLM turn only if the insert committed. On
+			// failure, `reportPersistenceError` has already toasted and
+			// `prompt.tsx` has already cleared the input — the user
+			// retypes. Short-circuiting here keeps store/disk in sync.
+			let persisted = false;
+			persistThen(
+				(tx) => appendDisplayMessage(tx, sessionId, userMsg),
+				() => {
+					persisted = true;
+					setStore(
+						"messages",
+						produce((msgs: DisplayMessage[]) => {
+							msgs.push(userMsg);
+						}),
+					);
+					setStore("lastTurnStartedAt", Date.now());
+					toBottom();
+				},
 			);
-			setStore("lastTurnStartedAt", Date.now());
-			runInTransaction((tx) => appendDisplayMessage(tx, sessionId, userMsg));
-			toBottom();
+			if (!persisted) return;
 			// Guard against a pre-stream throw from `actions.prompt()`.
 			// pi-agent-core funnels most provider errors through `message_end`
 			// with `stopReason === "error"`, which the reducer already surfaces
@@ -743,8 +877,15 @@ export function AgentProvider(props: ParentProps) {
 						const updated = store.messages[lastIdx];
 						if (currentSessionId && updated) {
 							const sid = currentSessionId;
-							runInTransaction((tx) =>
-								updateDisplayMessageMeta(tx, sid, updated),
+							// safeRun: no store state to gate. The in-memory
+							// bubble already shows the error; a persistence
+							// failure here just means the error won't appear
+							// on resume, which is acceptable since the agent
+							// turn already failed.
+							safeRun(() =>
+								runInTransaction((tx) =>
+									updateDisplayMessageMeta(tx, sid, updated),
+								),
 							);
 						}
 					} else {
@@ -765,8 +906,14 @@ export function AgentProvider(props: ParentProps) {
 						);
 						if (currentSessionId) {
 							const sid = currentSessionId;
-							runInTransaction((tx) =>
-								appendDisplayMessage(tx, sid, synthetic),
+							// safeRun: synthetic bubble is best-effort. If the
+							// insert fails, the in-memory view still shows the
+							// error — resume will miss this particular failure
+							// marker but the session timeline stays valid.
+							safeRun(() =>
+								runInTransaction((tx) =>
+									appendDisplayMessage(tx, sid, synthetic),
+								),
 							);
 						}
 					}
@@ -944,7 +1091,16 @@ export function AgentProvider(props: ParentProps) {
 						msgs.push(userMsg);
 					}),
 				);
-				runInTransaction((tx) => appendDisplayMessage(tx, sessionId, userMsg));
+				// safeRun: `displayMessage` is a command helper that pushes
+				// a user-authored line into the conversation as a bubble
+				// (e.g. reader's `/article` recommendation list). Failure
+				// is benign at runtime — the bubble still shows in-memory;
+				// resume would miss it. Matches the pre-fix behavior.
+				safeRun(() =>
+					runInTransaction((tx) =>
+						appendDisplayMessage(tx, sessionId, userMsg),
+					),
+				);
 				toBottom();
 			},
 			pickFromList({ title, size, options }) {

@@ -30,6 +30,18 @@ export function setPersistenceErrorHandler(
 	handler = fn;
 }
 
+/**
+ * Sentinel flag key used by `runInTransaction`'s outer catch in
+ * `sessions.ts` to dedup reports of the same rethrown error up the
+ * chain. Exported as a shared constant so the tx wrapper and this
+ * module stay in sync. Scoped narrowly on purpose: only the writer-
+ * rethrow-then-outer-tx-catch chain needs dedup; making
+ * `reportPersistenceError` globally idempotent would leak the flag
+ * onto every error value the module ever sees (config, auth, load
+ * paths), including errors external logging might serialize.
+ */
+export const REPORTED_SENTINEL = "__inkstoneReported";
+
 export function reportPersistenceError(ctx: PersistenceErrorContext): void {
 	if (handler) {
 		try {

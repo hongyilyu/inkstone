@@ -289,8 +289,66 @@ All writers take a required `tx: Tx` parameter. Wrap single writes in
 
 ### Utility
 
-- `runInTransaction(fn)` — wrap multiple writes in one tx.
+- `runInTransaction(fn)` — wrap multiple writes in one tx. Wraps its
+  body in a try/catch that reports pre-writer failures (db-acquire,
+  SQLITE_BUSY, tx-open) as `action: "tx"` and rethrows. Writer-
+  originated failures are reported by the writer first; the outer
+  catch sees the same rethrown error and is a no-op thanks to the
+  dedup sentinel in `reportPersistenceError`.
+- `safeRun(fn)` — swallow after reporting. Wraps a `runInTransaction`
+  call at the 6 pre-stream / best-effort persist sites in the reducer
+  (`message_start` shell insert, `message_end` non-assistant branch,
+  `agent_end` synthesized-abort loop, synthetic error bubble,
+  `displayMessage` command helper) where there's no already-persisted
+  state to roll back to. The toast has already fired; the body's
+  throw is swallowed to preserve "log and continue" semantics.
 - `newId()` — fresh UUIDv7.
+
+### Writer error contract
+
+Writers report-and-rethrow on failure (each `catch` calls
+`reportPersistenceError` then re-throws). The `reportPersistenceError`
+hook is idempotent via a `__inkstoneReported` sentinel attached to the
+error object on first report, so re-reports of the same rethrown error
+up the chain no-op — no duplicate toasts when a writer throws and
+`runInTransaction`'s outer catch sees it.
+
+Two caller-side shapes on top of the throw contract:
+
+- **`safeRun(() => runInTransaction(…))`** — preserves the old
+  log-and-continue behavior. Use at pre-stream appends and any site
+  where persistence failure is benign at runtime (disk mismatch
+  absorbed by resume-time repair or by being ephemeral).
+- **`persistThen(writes, onSuccess)`** (defined in
+  `tui/context/agent.tsx`) — gates a follow-up store mutation on tx
+  success. Use at reducer sites that mutate already-persisted state,
+  so that on tx throw the live view stays at its pre-mutation value
+  and matches what `/resume` would reconstruct. Eliminates the
+  store/DB drift window that let bubbles render `completed` while
+  disk still had `pending`.
+
+Recipe — reducer site (persist-first):
+
+```ts
+const updated: DisplayMessage = { ...store.messages[lastIdx]!, agentName, modelName };
+persistThen(
+  (tx) => {
+    updateDisplayMessageMeta(tx, sid, updated);
+    finalizeDisplayMessageParts(tx, sid, updated);
+    appendAgentMessage(tx, sid, rawMsg, { displayMessageId: updated.id });
+  },
+  () => {
+    setStore("messages", lastIdx, "agentName", agentName);
+    setStore("messages", lastIdx, "modelName", modelName);
+  },
+);
+```
+
+Recipe — pre-stream / best-effort site:
+
+```ts
+safeRun(() => runInTransaction((tx) => appendDisplayMessage(tx, sid, shell, { includeParts: false })));
+```
 
 ## Migrations
 
@@ -324,7 +382,10 @@ through `reportPersistenceError` (see `src/backend/persistence/errors.ts`).
 Each report carries `kind` (`"config" | "auth" | "session"`), a
 grep-friendly `action` string (embeds `shortId(msg.id)` — last 8 hex
 chars of the UUIDv7 random tail — plus the event type for appends),
-and an `error: unknown`.
+and an `error: unknown`. Reports are deduplicated via a
+`__inkstoneReported` sentinel attached to the error value on first
+call, so writer-then-`runInTransaction`-outer-catch chains toast once
+per failure, not twice.
 
 `AgentProvider` installs a handler that turns these into toasts.
 Load-path failures (which fire at module init, before any handler is
@@ -450,8 +511,8 @@ rm ~/.config/inkstone/config.json
 | `src/backend/persistence/db/schema.ts` | Drizzle table definitions — source of truth for columns |
 | `src/backend/persistence/db/client.ts` | Lazy `bun:sqlite` singleton, PRAGMAs, migrator |
 | `src/backend/persistence/db/migrations/` | `drizzle-kit`-generated SQL |
-| `src/backend/persistence/sessions.ts` | Public API (`newId`, reads, writes, `runInTransaction`). `shortId` is an internal helper — not exported. |
-| `src/backend/persistence/errors.ts` | `reportPersistenceError` hook |
+| `src/backend/persistence/sessions.ts` | Public API (`newId`, reads, writes, `runInTransaction`, `safeRun`). `shortId` is an internal helper — not exported. |
+| `src/backend/persistence/errors.ts` | `reportPersistenceError` hook + dedup sentinel |
 | `src/backend/persistence/paths.ts` | XDG path resolution |
 | `src/tui/context/agent.tsx` | Frontend consumer — reducer, `ensureSession`, wiring |
 | `drizzle.config.ts` (repo root) | `drizzle-kit` CLI config |
