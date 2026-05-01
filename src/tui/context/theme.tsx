@@ -167,6 +167,17 @@ function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
 	return [
 		{ scope: ["default"], style: { foreground: colors.text } },
 
+		// Prompt extmark scopes. Lives in the shared rule set so the style id
+		// resolves against whichever `SyntaxStyle` instance is live — on
+		// theme switches `generateSyntax` recreates the instance with this
+		// rule re-registered, and `syntax().getStyleId("extmark.file")`
+		// returns the new id. See `src/tui/components/prompt.tsx` for the
+		// extmark create-site.
+		{
+			scope: ["extmark.file"],
+			style: { foreground: colors.warning, bold: true },
+		},
+
 		// Markdown structure
 		{
 			scope: ["markup.heading"],

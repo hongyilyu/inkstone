@@ -1,5 +1,6 @@
 import { getAgentInfo } from "@backend/agent";
 import { getProvider } from "@backend/providers";
+import type { TextareaRenderable } from "@opentui/core";
 import { TextAttributes } from "@opentui/core";
 import {
 	createEffect,
@@ -12,8 +13,14 @@ import { setInputRef, toBottom } from "../app";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import { useDialog } from "../ui/dialog";
+import { useToast } from "../ui/toast";
 import { formatCost, formatTokens } from "../util/format";
 import * as Keybind from "../util/keybind";
+import {
+	buildMentionPayload,
+	type Mention,
+	readFileSafe,
+} from "../util/mentions";
 import { useCommand } from "./dialog-command";
 import { PromptAutocomplete } from "./prompt-autocomplete";
 import { SpinnerWave } from "./spinner-wave";
@@ -46,10 +53,11 @@ const EmptyBorder = {
  *     [spinner / hints]    [usage / commands]
  */
 export function Prompt() {
-	const { theme } = useTheme();
+	const { theme, syntax } = useTheme();
 	const { actions, store } = useAgent();
 	const dialog = useDialog();
 	const command = useCommand();
+	const toast = useToast();
 	const [text, setText] = createSignal("");
 
 	// Double-tap ESC to interrupt. Matches OpenCode's pattern
@@ -116,12 +124,41 @@ export function Prompt() {
 		if (interruptTimer) clearTimeout(interruptTimer);
 	});
 
-	let inputRef: any;
+	let inputRef: TextareaRenderable | undefined;
 
-	// Auto-focus: prompt always has focus unless a dialog is open
-	// Mirrors OpenCode prompt/index.tsx:469-479
+	/**
+	 * Extmark type id for prompt mentions — registered once per mount on
+	 * the input buffer. Mentions are created as virtual extmarks with
+	 * `typeId: promptPartTypeId` so `input.extmarks.getAllForTypeId` at
+	 * submit returns exactly the mention spans (not, e.g., pasted-text
+	 * marks future work might add). 0 means "not yet registered" (the
+	 * `<input>` ref fires post-render).
+	 */
+	let promptPartTypeId = 0;
+
+	/**
+	 * Style id for `extmark.file` resolved against the currently-active
+	 * `SyntaxStyle`. Re-computed on theme switch because `syntax()` is a
+	 * memo that recreates the `SyntaxStyle` instance (and its style ids)
+	 * when the theme id changes. Extmarks already on the buffer keep
+	 * their stored `styleId` field; OpenTUI resolves the style from the
+	 * current `SyntaxStyle` at paint time, so live spans repaint in the
+	 * new theme without explicit re-creation.
+	 */
+	const fileStyleId = createMemo(() => syntax().getStyleId("extmark.file"));
+
+	// Auto-focus: prompt always has focus unless a dialog is open.
+	// Mirrors OpenCode prompt/index.tsx:469-479.
+	//
+	// Reactive sources: `dialog.stack.length` drives blur-on-open /
+	// refocus-on-close. The ref-callback below focuses on mount, so this
+	// effect doesn't need to handle first-focus — it only has to react
+	// to dialog-stack changes. This matters because `inputRef` is a
+	// plain `let` binding (not a signal); Solid doesn't re-run effects
+	// when non-reactive locals change, so "focus when the ref finally
+	// populates" must happen inside the ref callback.
 	createEffect(() => {
-		const el = inputRef;
+		const el = inputRef as any;
 		if (!el || el.isDestroyed) return;
 		if (dialog.stack.length > 0) {
 			if (el.focused) el.blur();
@@ -151,15 +188,69 @@ export function Prompt() {
 			const name = spaceAt === -1 ? value.slice(1) : value.slice(1, spaceAt);
 			const args = spaceAt === -1 ? "" : value.slice(spaceAt + 1).trim();
 			if (command.triggerSlash(name, args)) {
-				setText("");
+				clearInput();
 				toBottom();
 				return;
 			}
 		}
 
-		void actions.prompt(value);
-		setText("");
+		// `@` mention expansion. Read any live extmarks off the input
+		// buffer, pair with their metadata paths, sort by position
+		// (extmarks come back in INSERTION order from `getAllForTypeId`
+		// — if the user inserted `@a`, moved cursor back, inserted `@b`,
+		// position order is [b, a] but insertion order is [a, b]), then
+		// run the pure builder to produce the LLM-facing text + bubble
+		// parts. `value` is the trimmed text; but the extmark offsets
+		// reference the untrimmed plainText — use `text()` (untrimmed)
+		// for slicing in `buildMentionPayload`, and let the pure fn
+		// pass through verbatim so the sent text matches exactly what
+		// was in the buffer.
+		const rawText = text();
+		const input = inputRef;
+		const mentions: Mention[] =
+			input && promptPartTypeId
+				? input.extmarks
+						.getAllForTypeId(promptPartTypeId)
+						.map((e: any) => {
+							const meta = input.extmarks.getMetadataFor(e.id);
+							return meta?.path
+								? { start: e.start, end: e.end, path: meta.path as string }
+								: null;
+						})
+						.filter((m: Mention | null): m is Mention => m !== null)
+						.sort((a: Mention, b: Mention) => a.start - b.start)
+				: [];
+
+		const { llmText, displayParts, failed } = buildMentionPayload(
+			rawText,
+			mentions,
+			readFileSafe,
+		);
+
+		if (failed.length > 0) {
+			toast.show({
+				variant: "warning",
+				message: `Could not read ${failed.length} file${failed.length === 1 ? "" : "s"}`,
+			});
+		}
+
+		void actions.prompt(llmText, displayParts);
+		clearInput();
 		toBottom();
+	}
+
+	/**
+	 * Clear the textarea buffer AND its extmarks. `input.setText("")`
+	 * routes through `ExtmarksController.wrapSetText` which clears all
+	 * extmarks as a side effect, so an explicit `extmarks.clear()` is
+	 * redundant. The JS signal resets explicitly too because the
+	 * textarea is uncontrolled — `onContentChange` would fire
+	 * eventually, but handleSubmit's subsequent re-renders read `text()`
+	 * so we sync it now to keep them consistent.
+	 */
+	function clearInput() {
+		if (inputRef) inputRef.setText("");
+		setText("");
 	}
 
 	// Usage display: "68.7K (7%) · $2.25"
@@ -189,11 +280,22 @@ export function Prompt() {
 
 	return (
 		<box flexShrink={0} position="relative">
-			<PromptAutocomplete text={text()} setText={setText} />
+			<PromptAutocomplete
+				text={text()}
+				setText={setText}
+				input={() => inputRef}
+				promptPartTypeId={() => promptPartTypeId}
+				fileStyleId={() => fileStyleId() ?? null}
+			/>
 			{/* prompt/index.tsx:974-1225 — input area with left border accent.
-          The closing ╹ corner lives on the cap row below, not on this box. */}
+          The closing ╹ corner lives on the cap row below, not on this box.
+          `flexGrow={1}` on both boxes (outer border + inner padded) so the
+          bubble fills available width — otherwise the background hugs
+          the text and the right side reads as empty terminal. Matches
+          OpenCode prompt/index.tsx:988. */}
 			<box
 				flexShrink={0}
+				flexGrow={1}
 				border={["left"]}
 				borderColor={theme[agentInfo().colorKey]}
 				customBorderChars={{
@@ -206,15 +308,60 @@ export function Prompt() {
 					paddingRight={2}
 					paddingTop={1}
 					flexShrink={0}
+					flexGrow={1}
 					backgroundColor={theme.backgroundElement}
 				>
-					<input
-						ref={(r: any) => {
+					{/* `<textarea>` not `<input>` so overflowing text wraps
+					    to the next line instead of horizontally scrolling
+					    inside a single-line viewport. OpenCode uses the
+					    same shape (`prompt/index.tsx:990` — textarea with
+					    minHeight=1, maxHeight=6). `wrapMode="word"` is
+					    the default but spelling it out makes the intent
+					    explicit. `onContentChange` replaces `onInput` —
+					    `<input>` emits INPUT via Solid's `onInput` prop,
+					    but `<textarea>` exposes content changes via the
+					    core EditBufferRenderable `content-changed`
+					    event, surfaced as `onContentChange`.
+					    `<input>` hard-codes Enter/Linefeed → submit, but
+					    `<textarea>` needs that wiring explicit via
+					    `keyBindings` — without this, Enter inserts a
+					    newline and `onSubmit` never fires. Keep the
+					    textarea defaults for move/delete/word-boundary
+					    etc. by appending our two bindings via spread in
+					    the core (see `Textarea.ts`'s default bindings)
+					    and relying on the fact that the renderable
+					    merges user bindings with its own — so we only
+					    need to name the submit triggers here. */}
+					<textarea
+						ref={(r: TextareaRenderable) => {
 							inputRef = r;
 							setInputRef(r);
+							// Register the prompt-mention extmark type once per
+							// mount. Returns a stable numeric id usable until
+							// the input is destroyed.
+							promptPartTypeId = r.extmarks.registerType("prompt-mention");
 						}}
-						value={text()}
-						onInput={(v: string) => setText(v)}
+						minHeight={1}
+						maxHeight={6}
+						wrapMode="word"
+						keyBindings={[
+							// Plain Enter submits. Every other Enter variant
+							// and Ctrl+J inserts a newline — mirrors OpenCode's
+							// `input_newline: shift+return, ctrl+return,
+							// alt+return, ctrl+j` config. OpenTUI parses Ctrl+J
+							// as the `linefeed` key, so we do NOT bind
+							// `linefeed → submit` (as `<input>` does by default)
+							// — that'd hijack Ctrl+J and collide with the
+							// explicit newline binding below.
+							{ name: "return", action: "submit" },
+							{ name: "return", shift: true, action: "newline" },
+							{ name: "return", ctrl: true, action: "newline" },
+							{ name: "return", meta: true, action: "newline" },
+							{ name: "j", ctrl: true, action: "newline" },
+						]}
+						onContentChange={() => {
+							if (inputRef) setText(inputRef.plainText);
+						}}
 						onSubmit={handleSubmit}
 						placeholder={
 							store.isStreaming
@@ -222,6 +369,13 @@ export function Prompt() {
 								: "Type a message or /article <filename>..."
 						}
 						focused
+						// Syntax style drives extmark highlighting — without it,
+						// `styleId`s on extmarks have no palette to resolve
+						// against and spans render in the default text color.
+						// Same `SyntaxStyle` instance used by the markdown
+						// renderer; the shared `extmark.file` rule in
+						// `getSyntaxRules` is what paints the `@path` span.
+						syntaxStyle={syntax()}
 						backgroundColor={theme.backgroundElement}
 						focusedBackgroundColor={theme.backgroundElement}
 						textColor={theme.text}

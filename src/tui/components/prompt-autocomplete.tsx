@@ -1,3 +1,4 @@
+import type { TextareaRenderable } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import fuzzysort from "fuzzysort";
 import {
@@ -11,52 +12,86 @@ import {
 import { createStore } from "solid-js/store";
 import { useTheme } from "../context/theme";
 import { useDialog } from "../ui/dialog";
+import { listVaultFiles } from "../util/vault-files";
 import { useCommand } from "./dialog-command";
 
 /**
- * Slash-command autocomplete dropdown for the prompt.
+ * Autocomplete dropdown for the prompt textarea.
  *
- * Reads entries with a `slash` field from the unified command registry
- * and renders a filterable list above the textarea. Trigger: `/` typed
- * at column 0. Dismiss: Esc, space, backspace past the `/`, or
- * explicit selection.
+ * Two modes, mutually exclusive (single `mode` state machine, matching
+ * OpenCode's `store.visible: false | "@" | "/"`):
  *
- * Ported from OpenCode's `prompt/autocomplete.tsx` (slash-command
- * subset only — no `@` mentions, no frecency, no directory expansion,
- * no mouse handling). See `docs/SLASH-COMMANDS.md` for design history.
+ *   - `"slash"` — triggered by `/` at column 0, reads entries with a
+ *     `slash` field from the unified command registry. Selection
+ *     writes the textarea via `props.setText`, flowing back through
+ *     the controlled `<input>`'s `value={text()}` → `set value`.
+ *   - `"mention"` — triggered by `@` after whitespace or start-of-input,
+ *     lists vault `.md`/`.markdown`/`.txt` files. Selection inserts a
+ *     highlighted `@path` span into the textarea via imperative
+ *     `input.deleteRange` + `input.insertText` + `input.extmarks.create`
+ *     (direct buffer/extmark access — `value=` round-trips via
+ *     `InputRenderable.setText` which clears all extmarks, so mention
+ *     insertion can't go through `setText`).
+ *
+ * Dismissal (both modes): Esc, whitespace typed in the query, backspace
+ * past the trigger, or explicit selection.
+ *
+ * Ported from OpenCode's `prompt/autocomplete.tsx` (slash + mention
+ * subset only — no frecency, no directory expansion, no mouse
+ * handling, no `@agent` mentions, no line-range syntax).
  */
 
-interface SlashOption {
+type Mode = "slash" | "mention" | null;
+
+/** Cap on visible rows in the dropdown (matches OpenCode's limit). */
+const MAX_RESULTS = 10;
+
+interface Option {
 	display: string;
 	description?: string;
 	onSelect: () => void;
 }
 
 export function PromptAutocomplete(props: {
-	/** Current textarea value (reactive). */
+	/** Current textarea value (reactive, mirrors `input.plainText`). */
 	text: string;
-	/** Callback to replace the textarea value. */
+	/** Replace the textarea value (drives the controlled `<input>`). */
 	setText: (v: string) => void;
+	/** Getter for the input renderable — used for mention-mode imperative edits. */
+	input: () => TextareaRenderable | undefined;
+	/** Prompt extmark type id (registered once in `prompt.tsx`). */
+	promptPartTypeId: () => number;
+	/** Style id for `extmark.file` (re-resolved on theme switch). */
+	fileStyleId: () => number | null;
 }) {
 	const { theme } = useTheme();
 	const command = useCommand();
 	const dialog = useDialog();
 
 	const [store, setStore] = createStore({
-		visible: false,
+		mode: null as Mode,
 		selected: 0,
+		/**
+		 * Byte offset of the trigger character (`/` or `@`) at the time
+		 * the dropdown opened. Used to:
+		 *   - compute the query = `text.slice(triggerIndex + 1, cursor)`
+		 *   - locate where mention insertion should delete/replace
+		 * Slash mode always has triggerIndex === 0 (column-0 only).
+		 */
+		triggerIndex: 0,
 	});
 
 	// Safety: if the component unmounts while the dropdown is visible,
 	// resume global keybind dispatch so Ctrl+N/Ctrl+P aren't stuck.
 	onCleanup(() => {
-		if (store.visible) command.resume();
+		if (store.mode !== null) command.resume();
 	});
 
-	// Build the slash option list from the command registry. Only entries
-	// with a `slash` field participate. Sorted alphabetically, with the
-	// display padded to align descriptions (matches OpenCode's padding).
-	const slashOptions = createMemo((): SlashOption[] => {
+	// ------------------------------------------------------------
+	// Slash mode — option list from the command registry.
+	// ------------------------------------------------------------
+
+	const slashOptions = createMemo((): Option[] => {
 		const entries = command.visible();
 		const raw: { name: string; description: string; onSelect: () => void }[] =
 			[];
@@ -66,11 +101,21 @@ export function PromptAutocomplete(props: {
 				name: `/${e.slash.name}`,
 				description: e.description ?? e.title,
 				onSelect: () => {
+					const input = props.input();
 					if (e.slash?.takesArgs) {
 						// Argful: insert `/name ` and let the user type the arg.
+						// Textarea is uncontrolled (no `value=` prop), so write
+						// goes through the renderable directly. `onContentChange`
+						// will mirror `plainText` into the parent's `text()`
+						// signal on the next tick.
+						if (input) {
+							input.setText(`/${e.slash.name} `);
+							input.cursorOffset = input.plainText.length;
+						}
 						props.setText(`/${e.slash.name} `);
 					} else {
-						// Argless: fire immediately.
+						// Argless: clear buffer, fire the command.
+						if (input) input.setText("");
 						props.setText("");
 						e.onSelect(dialog);
 					}
@@ -80,7 +125,6 @@ export function PromptAutocomplete(props: {
 		raw.sort((a, b) => a.name.localeCompare(b.name));
 
 		// Pad display strings so descriptions align (OpenCode pattern).
-		// Build new objects so the memo returns immutable values.
 		const max = raw.reduce((m, o) => Math.max(m, o.name.length), 0);
 		return raw.map((o) => ({
 			display: max > 0 ? o.name.padEnd(max + 2) : o.name,
@@ -89,23 +133,84 @@ export function PromptAutocomplete(props: {
 		}));
 	});
 
-	// Filter text = everything after the leading `/`.
-	const filterText = createMemo(() => {
-		if (!store.visible) return "";
-		const t = props.text;
-		if (!t.startsWith("/")) return "";
-		return t.slice(1);
+	// ------------------------------------------------------------
+	// Mention mode — option list from the vault file scanner.
+	// First access triggers the lazy walk (session-scoped cache);
+	// subsequent triggers are O(files).
+	// ------------------------------------------------------------
+
+	const mentionOptions = createMemo((): Option[] => {
+		if (store.mode !== "mention") return [];
+		const files = listVaultFiles();
+		return files.map((path) => ({
+			display: path,
+			// No description — the path itself is the identifier.
+			onSelect: () => insertMention(path),
+		}));
 	});
 
-	// Filtered options via fuzzysort.
-	const filtered = createMemo((): SlashOption[] => {
-		if (!store.visible) return [];
+	function insertMention(path: string) {
+		const input = props.input();
+		if (!input) return;
+		const styleId = props.fileStyleId();
+		if (styleId === null) return; // Theme not ready; defensive.
+
+		const triggerIndex = store.triggerIndex;
+		const currentOffset = input.cursorOffset;
+
+		// Delete the in-progress `@query` (from trigger up to cursor)
+		// using logical cursor positions — `deleteRange` wants
+		// row/col, and going via `cursorOffset` = offset on an
+		// unwrapped single-line-ish buffer is the shape OpenCode uses
+		// (autocomplete.tsx:162-167).
+		input.cursorOffset = triggerIndex;
+		const startCursor = input.logicalCursor;
+		input.cursorOffset = currentOffset;
+		const endCursor = input.logicalCursor;
+		input.deleteRange(
+			startCursor.row,
+			startCursor.col,
+			endCursor.row,
+			endCursor.col,
+		);
+
+		// Insert `@path ` and create a virtual extmark over the `@path`
+		// slice (trailing space stays ordinary text so the cursor can
+		// exit the span naturally).
+		const virtualText = `@${path}`;
+		input.insertText(`${virtualText} `);
+
+		input.extmarks.create({
+			start: triggerIndex,
+			end: triggerIndex + virtualText.length,
+			virtual: true,
+			styleId,
+			typeId: props.promptPartTypeId(),
+			metadata: { path },
+		});
+	}
+
+	// ------------------------------------------------------------
+	// Active options + filter text, based on mode.
+	// ------------------------------------------------------------
+
+	const filterText = createMemo(() => {
+		if (store.mode === null) return "";
+		const t = props.text;
+		const start = store.triggerIndex + 1; // skip the trigger char
+		if (start > t.length) return "";
+		return t.slice(start);
+	});
+
+	const filtered = createMemo((): Option[] => {
+		if (store.mode === null) return [];
+		const all = store.mode === "slash" ? slashOptions() : mentionOptions();
 		const needle = filterText();
-		const all = slashOptions();
-		if (!needle) return all;
+		if (!needle) return all.slice(0, MAX_RESULTS);
 		return fuzzysort
 			.go(needle, all, {
 				keys: [(o) => o.display.trimEnd(), (o) => o.description ?? ""],
+				limit: MAX_RESULTS,
 			})
 			.map((r) => r.obj);
 	});
@@ -116,34 +221,95 @@ export function PromptAutocomplete(props: {
 		setStore("selected", 0);
 	});
 
-	// Visibility state machine: show when text starts with `/` and has
-	// no whitespace (column-0-only trigger, dismiss on space). Reads
-	// `store.visible` inside `untrack` to break the self-dependency —
-	// the effect should re-run only when `props.text` changes.
-	// Suspend/resume global keybind dispatch so Ctrl+N/Ctrl+P don't
-	// fire `session_list` / `command_list` while the dropdown is open.
+	// ------------------------------------------------------------
+	// Visibility state machine.
+	//
+	// Slash takes precedence — when slash mode is active, any `@`
+	// typed becomes part of the slash query, not a mention trigger.
+	// This matches success criterion #7 in the plan.
+	//
+	// Reads `store.mode` inside `untrack` to avoid a self-dependency.
+	// ------------------------------------------------------------
+
 	createEffect(() => {
 		const t = props.text;
-		const wasVisible = untrack(() => store.visible);
-		if (!wasVisible) {
-			// Open: `/` at position 0, no whitespace yet.
+		const mode = untrack(() => store.mode);
+
+		if (mode === null) {
+			// Nothing open — check for either trigger.
+			// Slash: `/` at column 0, no whitespace yet.
 			if (t.startsWith("/") && !/\s/.test(t)) {
-				setStore("visible", true);
-				command.suspend();
+				open("slash", 0);
+				return;
 			}
-		} else {
-			// Close: text no longer starts with `/`, or whitespace appeared,
-			// or text is empty.
+			// Mention: most recent `@` with no whitespace between it and
+			// cursor, where the preceding char is whitespace or undefined.
+			// `props.text` doesn't carry cursor state, so we scan the
+			// whole string — good enough for the common append-only typing
+			// path. Edge case (user moves cursor mid-string then types `@`)
+			// isn't handled for MVP; OpenCode's version uses input cursor
+			// directly via `input.cursorOffset`, but the simpler scan
+			// covers the 99% case.
+			const input = props.input();
+			const cursor = input ? input.cursorOffset : t.length;
+			const before = t.slice(0, cursor);
+			const idx = before.lastIndexOf("@");
+			if (idx === -1) return;
+			const between = before.slice(idx);
+			if (/\s/.test(between)) return;
+			const preceding = idx === 0 ? undefined : before[idx - 1];
+			if (preceding === undefined || /\s/.test(preceding)) {
+				open("mention", idx);
+			}
+			return;
+		}
+
+		if (mode === "slash") {
+			// Close on whitespace appearing, text no longer starting with
+			// `/`, or empty.
 			if (!t.startsWith("/") || /\s/.test(t) || t.length === 0) {
-				setStore("visible", false);
-				command.resume();
+				close();
+			}
+			return;
+		}
+
+		if (mode === "mention") {
+			// Close when: query contains whitespace, `@` no longer present
+			// at trigger index, or text shorter than trigger.
+			if (t.length <= store.triggerIndex) {
+				close();
+				return;
+			}
+			if (t[store.triggerIndex] !== "@") {
+				close();
+				return;
+			}
+			const query = t.slice(store.triggerIndex + 1);
+			// Only look at chars between trigger and cursor for whitespace;
+			// text after cursor is not part of the active mention.
+			const input = props.input();
+			const cursor = input ? input.cursorOffset : t.length;
+			const activeQuery = t.slice(store.triggerIndex + 1, cursor);
+			if (/\s/.test(activeQuery)) {
+				close();
+				return;
+			}
+			// If the whole trailing query has whitespace (user backed
+			// cursor over it), also close — safety net.
+			if (/\s/.test(query) && cursor >= t.length) {
+				close();
 			}
 		}
 	});
 
-	function hide() {
-		if (store.visible) {
-			setStore("visible", false);
+	function open(mode: Exclude<Mode, null>, triggerIndex: number) {
+		setStore({ mode, triggerIndex, selected: 0 });
+		command.suspend();
+	}
+
+	function close() {
+		if (store.mode !== null) {
+			setStore({ mode: null, selected: 0 });
 			command.resume();
 		}
 	}
@@ -157,59 +323,56 @@ export function PromptAutocomplete(props: {
 		setStore("selected", next);
 	}
 
+	// ------------------------------------------------------------
 	// Keyboard handler. Runs before the input's built-in Enter→submit
 	// because `useKeyboard` fires globally before the focused input
 	// processes the key. `preventDefault` stops the input from seeing
 	// the consumed key.
+	// ------------------------------------------------------------
+
 	useKeyboard((evt: any) => {
-		if (!store.visible) return;
+		if (store.mode === null) return;
 		if (dialog.stack.length > 0) return;
 
 		const name = evt.name?.toLowerCase();
 		const ctrlOnly = evt.ctrl && !evt.meta && !evt.shift;
 
-		// Up / Ctrl+P
 		if (name === "up" || (ctrlOnly && name === "p")) {
 			evt.preventDefault?.();
 			evt.stopPropagation?.();
 			move(-1);
 			return;
 		}
-		// Down / Ctrl+N
 		if (name === "down" || (ctrlOnly && name === "n")) {
 			evt.preventDefault?.();
 			evt.stopPropagation?.();
 			move(1);
 			return;
 		}
-		// Escape — dismiss dropdown
 		if (name === "escape") {
 			evt.preventDefault?.();
 			evt.stopPropagation?.();
-			hide();
+			close();
 			return;
 		}
-		// Enter / Tab — select if there's a match. `preventDefault` is
-		// called only after confirming the option exists so a stale
-		// `store.selected` doesn't swallow Enter without acting.
 		if (name === "return" || name === "tab") {
 			const opt = filtered()[store.selected];
 			if (opt) {
 				evt.preventDefault?.();
 				evt.stopPropagation?.();
-				hide();
+				close();
 				opt.onSelect();
 			}
-			// No match: let Enter fall through to handleSubmit (plain prompt).
+			// No match: let Enter fall through to handleSubmit.
 			return;
 		}
 	});
 
-	const height = createMemo(() => Math.min(10, filtered().length));
+	const height = createMemo(() => Math.min(MAX_RESULTS, filtered().length));
 
 	return (
 		<box
-			visible={store.visible && filtered().length > 0}
+			visible={store.mode !== null && filtered().length > 0}
 			position="absolute"
 			bottom={6}
 			left={0}
