@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-04-30 (tool-call one-liner polish + `update_sidebar` terminate)
+**Last updated**: 2026-05-01 (CodeRabbit review follow-up: doc sync + status reset after tool execution)
 
 ## Completed
 
@@ -122,6 +122,8 @@ _None._
 
 
 ## Known Issues
+
+- [ ] Store/DB drift window on reducer mutation paths that persist mid-turn. Three branches in `tui/context/agent.tsx` mutate the Solid store *before* calling `runInTransaction(finalize…)`: `message_end` (assistant bubble commit), `tool_execution_end` (tool-part state flip), and the `agent_end` sweep of residual pending tool parts. If the SQLite write throws, the store shows `completed`/`error`/stamped-footer while disk still has the pre-mutation state — a resume would regress the bubble. Toast fires via `reportPersistenceError` so the failure isn't silent, but the live view and the resumed view disagree. CodeRabbit flagged the two tool-side branches in PR #19; a fresh-context reviewer earlier in that same session flagged it too. Deferred: fixing only the tool branches while leaving `message_end` alone makes things *less* consistent, not more. Proper fix touches all three mutation sites: compute a transient copy, commit it via `runInTransaction`, then mirror into the store only on success. ~15-30 lines total, plus thinking about what to do when the store-in-memory view has already diverged from the failing write (retry? toast + offer `/resume`?). Not urgent — disk-full / permission-denied on SQLite on a local machine is rare and already surfaced.
 
 - [ ] Secondary page only renders markdown. `SecondaryPageState.content` is a string rendered through `<markdown>`. When a non-markdown use case arrives (subagent work output, plain text logs, structured data), expand `SecondaryPageState` with a `format` field (e.g. `"markdown" | "text"`) or a render callback, and branch in `SecondaryPage` accordingly. Inline TODOs in `context/secondary-page.ts` and `components/secondary-page.tsx`.
 

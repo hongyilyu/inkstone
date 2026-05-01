@@ -484,6 +484,18 @@ export function AgentProvider(props: ParentProps) {
 					// `finalizeDisplayMessageParts`. We update the store
 					// AND re-finalize the parts so the DB matches live
 					// state and survives resume.
+					//
+					// Also reset `status` from `"tool_executing"` back to
+					// `"streaming"` — `tool_execution_start` set it, and
+					// without this line it stays stuck for the remainder
+					// of the turn. For non-terminating tools (`read` /
+					// `edit` / `write`) the LLM will stream its follow-up
+					// assistant message next; any UI gated on
+					// `status === "streaming"` would read wrong otherwise.
+					// `agent_end` still resets to `"idle"` at turn close.
+					if (store.status === "tool_executing") {
+						setStore("status", "streaming");
+					}
 					const endEvt = event;
 					// Find the bubble + part index for this callId. Scan
 					// tail-first because the matching tool part is always
