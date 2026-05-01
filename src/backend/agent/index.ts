@@ -60,8 +60,17 @@ export interface Session {
 	 * the session can continue with the same agent. The TUI wrapper
 	 * additionally resets store-local state (messages, totals, session
 	 * row id).
+	 *
+	 * Async because a mid-stream clear must first `abort()` the active
+	 * run and wait for pi-agent-core's `agent_end` listeners to settle
+	 * before `reset()` clears runtime fields. Without the await, a still-
+	 * draining stream event can fire onto a wiped Agent, or leave
+	 * `activeRun`/`isStreaming` pointing at a half-cleared state (see
+	 * "Agent is already processing a prompt" on the next `prompt()`).
+	 * Idle-session callers pay ~nothing because `waitForIdle()` resolves
+	 * immediately when there's no active run.
 	 */
-	clearSession(): void;
+	clearSession(): Promise<void>;
 	/**
 	 * Seed the Agent's conversation with a previously-persisted message
 	 * list. Used by the resume-session path only.
@@ -316,8 +325,28 @@ export function createSession(params: {
 			agent.state.tools = composeTools(info);
 			saveConfig({ currentAgent: info.name });
 		},
-		clearSession() {
-			agent.state.messages = [];
+		async clearSession() {
+			// `messages = []` alone leaks pi-agent-core runtime state
+			// (`activeRun`, `isStreaming`, `streamingMessage`,
+			// `pendingToolCalls`) on a mid-stream clear — the next
+			// `prompt()` throws "Agent is already processing a prompt."
+			// Use the library's own primitives: `abort()` cancels the
+			// active run — the lifecycle's catch path runs
+			// `handleRunFailure`, which synthesizes an aborted assistant
+			// message and emits `agent_end` carrying it in `event.messages`
+			// (no final `message_end`). The reducer's `agent_end` branch
+			// already persists that message and sweeps pending tool
+			// parts into error state. `waitForIdle()` resolves after
+			// `agent_end` listeners settle so we don't stomp state
+			// mid-drain; `reset()` clears transcript + runtime fields +
+			// queued steering/follow-ups in one go. Idle-session path:
+			// `signal` is undefined, `waitForIdle()` returns
+			// `Promise.resolve()`, so the cost is one microtask.
+			if (agent.state.isStreaming || agent.signal) {
+				agent.abort();
+				await agent.waitForIdle();
+			}
+			agent.reset();
 		},
 		restoreMessages(messages: AgentMessage[]) {
 			agent.state.messages = messages;

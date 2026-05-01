@@ -181,7 +181,12 @@ function Layout() {
 				description: "Clear the current session",
 				slash: { name: "clear" },
 				onSelect: () => {
-					actions.clearSession();
+					// Fire-and-forget: `clearSession` is async to await a
+					// mid-stream `agent.abort()`, but callers in command
+					// palette/slash dispatch don't await. The Promise can't
+					// reject (pi-agent-core's `reset()` is synchronous and
+					// `waitForIdle()` never throws), so dropping it is safe.
+					void actions.clearSession();
 				},
 			},
 			// Keybind-only: Ctrl+N toggles the left session panel. Hidden

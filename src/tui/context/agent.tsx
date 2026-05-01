@@ -100,7 +100,7 @@ interface AgentContextValue {
 		 */
 		prompt(text: string, displayParts?: DisplayPart[]): Promise<void>;
 		selectAgent(name: string): void;
-		clearSession(): void;
+		clearSession(): Promise<void>;
 		resumeSession(sessionId: string): void;
 	};
 	/**
@@ -811,8 +811,17 @@ export function AgentProvider(props: ParentProps) {
 			agentSession.selectAgent(name);
 			setStore("currentAgent", agentSession.agentName);
 		},
-		clearSession() {
-			agentSession.clearSession();
+		async clearSession() {
+			// Await the backend clear first. Mid-stream path: it calls
+			// `agent.abort()` + `waitForIdle()` so pi-agent-core's final
+			// `message_end` + `agent_end` events fire through the reducer
+			// BEFORE we wipe the store here. That means the reducer's
+			// `isStreaming = false` and the pending-tool-part sweep both
+			// run against the still-populated store, then we clear it.
+			// Swapping the order (store-wipe then await) would mean the
+			// reducer's `setStore("messages", lastIdx, ...)` writes would
+			// race against an empty `messages` array.
+			await agentSession.clearSession();
 			// In-memory reset only. We no longer terminate the DB row —
 			// `ended_at` is gone, and the future `/resume` command will
 			// list past rows as-is. `currentSessionId = null` here just
@@ -861,7 +870,15 @@ export function AgentProvider(props: ParentProps) {
 				// constructs a fresh in-memory lifetime, so we rebind the
 				// live Session onto the stored session's agent rather than
 				// refusing.
-				agentSession.clearSession();
+				//
+				// `agentSession.clearSession()` is async (see its doc),
+				// but we've already guarded on `!store.isStreaming` above
+				// so pi-agent-core has no `activeRun`; `waitForIdle()`
+				// short-circuits and `reset()` is synchronous internally.
+				// The returned Promise resolves with no side effects —
+				// fire-and-forget is safe here because `batch()` can't
+				// contain awaits and the idle path can't fail.
+				void agentSession.clearSession();
 				if (loaded.session.agent !== agentSession.agentName) {
 					agentSession.selectAgent(loaded.session.agent);
 				}
