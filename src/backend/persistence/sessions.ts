@@ -10,6 +10,11 @@
  *   `runInTransaction`. One code path, no optional-tx branching, no
  *   casts. Forces every call site to state intent: "this is atomic /
  *   this runs in isolation."
+ * - Writers report-and-rethrow on failure. `reportPersistenceError` is
+ *   idempotent via a per-error sentinel flag, so re-reports of the same
+ *   rethrown error up the chain no-op. Callers that want "log and
+ *   continue" wrap in `safeRun`; callers that want "log then gate
+ *   follow-up work on success" use `persistThen` in the reducer.
  * - `loadSession`, `listSessions` run on the root client — reads don't
  *   take a tx.
  * - `createSession` is a session-scope mutator on a single row — it
@@ -33,7 +38,7 @@ import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { and, asc, count, desc, eq, inArray, min } from "drizzle-orm";
 import { getDb } from "./db/client";
 import { agentMessages, messages, parts, sessions } from "./db/schema";
-import { reportPersistenceError } from "./errors";
+import { REPORTED_SENTINEL, reportPersistenceError } from "./errors";
 
 export interface SessionRecord {
 	id: string;
@@ -73,10 +78,92 @@ export type Tx = Parameters<
  * single atomic write also call this (one-statement variant). All
  * writers in this module require a `tx` parameter — there is no
  * global-client write path, on purpose. See module docstring.
+ *
+ * Error contract: the tx body may throw (writers rethrow after reporting
+ * via `reportPersistenceError`, which tags the error with the
+ * `REPORTED_SENTINEL` flag so this outer catch can dedup). Failures
+ * BEFORE the tx body runs — `getDb()` throwing on first use, tx-acquire
+ * / SQLITE_BUSY — are caught here and reported as `action: "tx"` so
+ * they surface through the toast handler rather than the `console.error`
+ * fallback. Rethrows in both cases; callers that want "log and continue"
+ * wrap in `safeRun`, callers that want "log then gate follow-up work"
+ * use `persistThen` (in the reducer).
  */
 export function runInTransaction<T>(fn: (tx: Tx) => T): T {
-	const db = getDb();
-	return db.transaction((tx) => fn(tx));
+	try {
+		const db = getDb();
+		return db.transaction((tx) => fn(tx));
+	} catch (error) {
+		// Dedup: if a writer already reported this error and rethrew,
+		// the sentinel is set. Skip the tx-level report so the user
+		// sees one toast per failure, not two. Pre-writer failures
+		// (getDb throws, tx-open, SQLITE_BUSY before the body runs)
+		// reach here with no sentinel — those get the `action: "tx"`
+		// toast so they don't silently fall to `console.error`. Only
+		// this one call site reads the sentinel; `reportPersistenceError`
+		// itself remains oblivious.
+		const alreadyReported =
+			error !== null &&
+			typeof error === "object" &&
+			(error as Record<string, unknown>)[REPORTED_SENTINEL] === true;
+		if (!alreadyReported) {
+			reportPersistenceError({ kind: "session", action: "tx", error });
+			if (error !== null && typeof error === "object") {
+				try {
+					(error as Record<string, unknown>)[REPORTED_SENTINEL] = true;
+				} catch {
+					// Frozen / sealed errors (rare) — let the next hop through
+					// a future outer catch re-report rather than crashing the
+					// reporter.
+				}
+			}
+		}
+		throw error;
+	}
+}
+
+/**
+ * Swallow persistence failures after they've already been reported.
+ * Used at the 6 non-reducer persist sites (message_start shell,
+ * tool-result / user AgentMessage, synthesized-abort loop, synthetic
+ * error bubble, `displayMessage` command helper) where there is no
+ * in-memory state to keep in sync with the write — losing the write is
+ * a drift between store and disk, but that drift is either benign
+ * (ephemeral shell) or absorbed by load-time repair. The reducer sites
+ * that DO have store state to gate use `persistThen` in the TUI layer
+ * instead.
+ *
+ * `fn` is expected to wrap a `runInTransaction` call (or a writer call
+ * that throws). The throw has already produced a toast via
+ * `reportPersistenceError`.
+ */
+export function safeRun(fn: () => void): void {
+	try {
+		fn();
+	} catch {
+		// Already reported by the writer or by runInTransaction's outer
+		// catch. Swallow to preserve "log and continue" semantics.
+	}
+}
+
+/**
+ * Tag an error with the `REPORTED_SENTINEL` flag before rethrowing, so
+ * `runInTransaction`'s outer catch (and any higher-level tx catch) can
+ * dedup. Centralized here so all writer `catch` blocks stay one-liners
+ * and the tag-then-rethrow shape is identical across the module.
+ * Frozen / primitive errors silently fall through — we accept the
+ * occasional double-report rather than making the error reporter itself
+ * the new crash site.
+ */
+function tagReportedAndRethrow(error: unknown): never {
+	if (error !== null && typeof error === "object") {
+		try {
+			(error as Record<string, unknown>)[REPORTED_SENTINEL] = true;
+		} catch {
+			// noop — see docstring
+		}
+	}
+	throw error;
 }
 
 export function createSession(init: { agent: string }): SessionRecord {
@@ -92,7 +179,7 @@ export function createSession(init: { agent: string }): SessionRecord {
 		db.insert(sessions).values(row).run();
 	} catch (error) {
 		reportPersistenceError({ kind: "session", action: "create", error });
-		throw error;
+		tagReportedAndRethrow(error);
 	}
 	return {
 		id: row.id,
@@ -144,6 +231,7 @@ export function appendDisplayMessage(
 			action: `append-message (${shortId(msg.id)})`,
 			error,
 		});
+		tagReportedAndRethrow(error);
 	}
 }
 
@@ -169,6 +257,7 @@ export function updateDisplayMessageMeta(
 			action: `update-message (${shortId(msg.id)})`,
 			error,
 		});
+		tagReportedAndRethrow(error);
 	}
 }
 
@@ -196,6 +285,7 @@ export function finalizeDisplayMessageParts(
 			action: `finalize-parts (${shortId(msg.id)})`,
 			error,
 		});
+		tagReportedAndRethrow(error);
 	}
 }
 
@@ -282,6 +372,7 @@ export function appendAgentMessage(
 			action: "append-agent-message",
 			error,
 		});
+		tagReportedAndRethrow(error);
 	}
 }
 
