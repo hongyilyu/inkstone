@@ -64,7 +64,7 @@ export function toBottom() {
 	}, 50);
 }
 
-function Layout() {
+export function Layout() {
 	const renderer = useRenderer();
 	const dialog = useDialog();
 	const command = useCommand();
