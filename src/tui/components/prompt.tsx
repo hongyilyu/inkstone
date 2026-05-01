@@ -105,8 +105,8 @@ export function Prompt() {
 	// so the ESC keybind is live only while a turn is in flight. Mirrors
 	// OpenCode's `enabled: status().type !== "idle"`; returning `[]` when
 	// inactive removes both the (hidden) palette row and the global dispatch
-	// for the keybind. `CommandProvider` already skips when a dialog is on
-	// the stack, so ESC inside a dialog still closes the dialog.
+	// for the keybind. `CommandProvider`'s dispatch is suspended while any
+	// dialog is open, so ESC inside a dialog still closes the dialog.
 	command.register(() => {
 		if (!store.isStreaming) return [];
 		return [

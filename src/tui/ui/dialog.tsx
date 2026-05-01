@@ -90,6 +90,22 @@ function init() {
 
 	const renderer = useRenderer();
 
+	/**
+	 * Hook installed by `CommandProvider` so dialog push/pop can drive
+	 * global keybind suppression. Set to `null` when unwired (e.g. a
+	 * test harness mounts only `DialogProvider`) — in that case the
+	 * suspension calls are silent no-ops. Invariant: in the shipped app,
+	 * `CommandProvider` must be a descendant of `DialogProvider` and
+	 * install this handler at mount.
+	 *
+	 * Transition-edge contract: `suspend()` fires when the stack goes
+	 * from empty to non-empty; `resume()` fires when it goes from
+	 * non-empty to empty. This keeps the suspend count balanced even
+	 * if `replace()` is called on an already-occupied stack (still one
+	 * modal owning the keyboard).
+	 */
+	let suspendHandler: { suspend(): void; resume(): void } | null = null;
+
 	useKeyboard((evt: any) => {
 		if (store.stack.length === 0) return;
 		if (evt.defaultPrevented) return;
@@ -100,7 +116,9 @@ function init() {
 			// biome-ignore lint/style/noNonNullAssertion: guarded by store.stack.length === 0 check above
 			const current = store.stack.at(-1)!;
 			current.onClose?.();
-			setStore("stack", store.stack.slice(0, -1));
+			const next = store.stack.slice(0, -1);
+			setStore("stack", next);
+			if (next.length === 0) suspendHandler?.resume();
 			evt.preventDefault();
 			evt.stopPropagation();
 			refocus();
@@ -127,6 +145,7 @@ function init() {
 
 	return {
 		clear() {
+			const wasOccupied = store.stack.length > 0;
 			for (const item of store.stack) {
 				if (item.onClose) item.onClose();
 			}
@@ -134,10 +153,12 @@ function init() {
 				setStore("size", "medium");
 				setStore("stack", []);
 			});
+			if (wasOccupied) suspendHandler?.resume();
 			refocus();
 		},
 		replace(input: () => JSX.Element, onClose?: () => void) {
-			if (store.stack.length === 0) {
+			const wasEmpty = store.stack.length === 0;
+			if (wasEmpty) {
 				focus = renderer.currentFocusedRenderable;
 				focus?.blur();
 			}
@@ -151,6 +172,7 @@ function init() {
 					onClose,
 				},
 			]);
+			if (wasEmpty) suspendHandler?.suspend();
 		},
 		get stack() {
 			return store.stack;
@@ -160,6 +182,15 @@ function init() {
 		},
 		setSize(size: "medium" | "large" | "xlarge") {
 			setStore("size", size);
+		},
+		/**
+		 * Install a handler to receive suspend/resume calls on dialog
+		 * open/close transitions. Called once by `CommandProvider` at
+		 * mount. See the `suspendHandler` field docblock above for the
+		 * transition-edge contract.
+		 */
+		setSuspendHandler(handler: { suspend(): void; resume(): void } | null) {
+			suspendHandler = handler;
 		},
 	};
 }
