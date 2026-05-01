@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { reportPersistenceError } from "./errors";
-import { CONFIG_DIR, CONFIG_FILE } from "./paths";
+import { CONFIG_FILE, ensureConfigDir, writeFileAtomic } from "./paths";
 import { type Config, Config as Schema } from "./schema";
 
 /**
@@ -75,10 +75,8 @@ export function saveConfig(updates: Partial<Config>): void {
 		return;
 	}
 	try {
-		if (!existsSync(CONFIG_DIR)) {
-			mkdirSync(CONFIG_DIR, { recursive: true });
-		}
-		writeFileSync(CONFIG_FILE, JSON.stringify(parsed.data, null, 2), "utf-8");
+		ensureConfigDir();
+		writeFileAtomic(CONFIG_FILE, JSON.stringify(parsed.data, null, 2), 0o600);
 		cached = parsed.data;
 	} catch (error) {
 		// Keep the in-memory `cached` pointing at the old on-disk value so a
