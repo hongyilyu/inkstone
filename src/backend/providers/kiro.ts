@@ -1,5 +1,6 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { registerApiProvider } from "@mariozechner/pi-ai";
+import type { KiroCredentials } from "pi-kiro/core";
 import {
 	filterModelsByRegion,
 	kiroModels,
@@ -12,6 +13,7 @@ import {
 	loadKiroCreds,
 	saveKiroCreds,
 } from "../persistence/auth";
+import { reportPersistenceError } from "../persistence/errors";
 import type { ProviderInfo } from "./types";
 
 // Register the `kiro-api` with pi-ai's api-registry so pi-ai's
@@ -26,14 +28,36 @@ registerApiProvider({
 });
 
 /**
- * Lazy token refresh. Called from `getApiKey()` (and `listModels()` via
- * `loadKiroCreds`) — see `docs/ARCHITECTURE.md` § Kiro provider. Clears
- * creds and throws on hard refresh failure so the user is pushed back
- * through Connect instead of seeing opaque 403s mid-stream.
+ * In-flight refresh promise, shared across concurrent callers so that a
+ * burst of near-simultaneous `getApiKey()` calls (two streams, two tabs,
+ * post-sleep wake, etc.) issues exactly one refresh request to AWS SSO.
+ *
+ * Without dedup, both callers race the same refresh token against the
+ * OIDC endpoint; AWS rotates the token, the loser gets `invalid_grant`
+ * and hits the catch branch which clears creds — evicting the user
+ * mid-session for no reason. Cleared in `finally` so a failed refresh
+ * doesn't pin the slot forever.
  */
-async function refreshIfNeeded(): Promise<
-	ReturnType<typeof loadKiroCreds> | undefined
-> {
+let inflight: Promise<KiroCredentials | undefined> | null = null;
+
+/**
+ * Lazy token refresh. Called from `getApiKey()` only (not from
+ * `listModels()`, which needs `creds.region` and is stable across
+ * refreshes). Concurrent callers share one in-flight promise; on
+ * refresh failure clears creds and returns `undefined` so pi-agent-
+ * core's `getApiKey` contract (must not throw) is honored — the
+ * subsequent stream fails with a 401 and the user is surfaced a toast
+ * via `reportPersistenceError`, nudging them back through Connect.
+ */
+async function refreshIfNeeded(): Promise<KiroCredentials | undefined> {
+	if (inflight) return inflight;
+	inflight = doRefresh().finally(() => {
+		inflight = null;
+	});
+	return inflight;
+}
+
+async function doRefresh(): Promise<KiroCredentials | undefined> {
 	const creds = loadKiroCreds();
 	if (!creds) return undefined;
 	if (Date.now() <= creds.expires) return creds;
@@ -43,11 +67,18 @@ async function refreshIfNeeded(): Promise<
 		return fresh;
 	} catch (err) {
 		clearKiroCreds();
-		throw new Error(
-			`Kiro credentials expired and refresh failed (${
-				err instanceof Error ? err.message : String(err)
-			}). Run Connect → Amazon Kiro to sign in again.`,
-		);
+		reportPersistenceError({
+			kind: "auth",
+			action: "refresh",
+			error: new Error(
+				"Kiro credentials expired and refresh failed. Run Connect → Amazon Kiro to sign in again.",
+			),
+		});
+		// Log raw cause for debugging, but keep it out of the user-facing
+		// toast (pi-kiro's fetch error body could theoretically include
+		// token bytes in a future upstream change).
+		console.error("[inkstone] kiro refresh failed:", err);
+		return undefined;
 	}
 }
 
