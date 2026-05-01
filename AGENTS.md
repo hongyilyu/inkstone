@@ -34,6 +34,26 @@ If `bun run ci` fails on unrelated pre-existing issues, surface the failures to 
 Run `bun run audit` periodically (not on every commit) to surface any **critical**-severity dependency CVEs. Known upstream-blocked advisories (high/moderate/low) are tracked in `docs/TODO.md` Known Issues — those can't be fixed without breaking `@opentui/solid`'s `solid-js@1.9.11` exact-version peer, so the script pins `--audit-level=critical` to let the existing advisories pass (exit 0) while still flagging any future critical. For the full advisory list, run `bun audit` bare.
 
 
+## Test Protocol
+
+Tests are a first-class completion gate. Two rules:
+
+### On task completion — always check tests
+
+After finishing any non-trivial change, run `bun run ci` and confirm every test passes. Treat failures that your change caused as part of the task — they must be green before the task is considered done. Don't hand the task back with regressions claiming "unrelated"; verify the claim against `git diff` + a `git stash` toggle if unsure. If a failure is genuinely pre-existing, surface it to the user with evidence instead of ignoring it.
+
+### When creating new features — add new tests
+
+Every new user-visible feature or non-trivial reducer/routing branch ships with test coverage in the same change. Decide where based on the layer:
+
+- **Backend logic** (agent, persistence, permissions, providers, tools, pure utils): add to `test/` at the root. Existing files like `test/permissions.test.ts`, `test/persistence-failure.test.ts`, `test/mentions.test.ts`, `test/resume-repair.test.ts` are the pattern.
+- **TUI behavior** (components, reducer branches, keybinds, dialogs, rendering): add to `test/tui/` using the `renderApp()` harness (`test/tui/harness.tsx`) and `makeFakeSession()` factory (`test/tui/fake-session.ts`). Script synthetic `AgentEvent`s through the real reducer; assert against `captureCharFrame()` substrings (not snapshots). Examples: `test/tui/conversation.test.tsx`, `test/tui/prompt.test.tsx`, `test/tui/dialogs.test.tsx`.
+
+Exceptions go in the PR description, not silently. Acceptable reasons to skip: purely visual change (color, spacing) where char-frame can't assert; a branch already covered by an adjacent test; a seam change too invasive for the test weight (document and defer to TODO's Known Issues or Future Work). Every skipped test should name *why* it was skipped.
+
+Flake policy: for timing-sensitive cases (streaming, interrupt, autocomplete dropdowns), run the new test 3× back-to-back before committing. If it flakes, widen the `waitForFrame` timeout or poll loop — don't ship flaky tests.
+
+
 ## Plan Review Protocol
 
 Before presenting any multi-step plan or non-trivial code change to the user, invoke the `behavioral-guidelines` skill/agent to review the proposed approach. The reviewer checks for overcomplication, over-engineering, unnecessary abstractions, speculative features, and missing success criteria. Apply the reviewer's minimal fixes before presenting the plan to the user.
