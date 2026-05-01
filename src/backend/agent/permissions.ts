@@ -74,20 +74,42 @@ export function setConfirmFn(
 /**
  * Resolve the LLM-supplied path to the absolute path pi-coding-agent's
  * tool will actually touch. Mirrors `expandPath` + `resolveToCwd` from
- * `@mariozechner/pi-coding-agent/dist/core/tools/path-utils` (not a
- * public subpath — see `docs/ARCHITECTURE.md` § Permission Dispatcher
- * for why we inline the subset). The sandbox check is only meaningful
- * if it runs against the same bytes the tool ends up resolving to.
+ * `@mariozechner/pi-coding-agent/dist/core/tools/path-utils` (not
+ * exposed through the package's `exports` map, so we can't deep-import).
+ * The sandbox check is only meaningful if it runs against the same
+ * bytes the tool ends up resolving to.
+ *
+ * Byte-equality invariant: match every step pi-coding-agent performs
+ * before it calls `fs.readFileSync` / `fs.writeFileSync`. Upstream
+ * `expandPath` runs `@`-strip first, THEN Unicode-space normalize, then
+ * `~` expansion, then `resolveToCwd` joins against cwd. Inkstone
+ * mirrors the same order. (The `@`-vs-normalize step order doesn't
+ * matter for correctness — `@` is ASCII, disjoint from every codepoint
+ * in `UNICODE_SPACES` — but matching upstream's sequence keeps the
+ * docstring honest.)
+ *
+ * Not mirrored: `resolveReadPath`'s macOS NFD / curly-quote / AM-PM
+ * variant-hunt (pi-coding-agent's `path-utils.js:54-80`). That's only
+ * meaningful for agent-authored filenames on macOS; Inkstone's vault
+ * is user-owned, so mirroring it would expand the sandbox surface
+ * without closing a real hole.
  */
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+function normalizeUnicodeSpaces(s: string): string {
+	return s.replace(UNICODE_SPACES, " ");
+}
+
 function resolvePath(p: string): string {
 	const stripped = p.startsWith("@") ? p.slice(1) : p;
+	const normalized = normalizeUnicodeSpaces(stripped);
 	let expanded: string;
-	if (stripped === "~") {
+	if (normalized === "~") {
 		expanded = homedir();
-	} else if (stripped.startsWith("~/")) {
-		expanded = homedir() + stripped.slice(1);
+	} else if (normalized.startsWith("~/")) {
+		expanded = homedir() + normalized.slice(1);
 	} else {
-		expanded = stripped;
+		expanded = normalized;
 	}
 	return isAbsolute(expanded)
 		? resolve(expanded)
