@@ -1,7 +1,7 @@
 {
 	"$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
 	"files": {
-		"includes": ["src/**/*.{ts,tsx}"]
+		"includes": ["src/**/*.{ts,tsx}", "test/**/*.{ts,tsx}"]
 	},
 	"linter": {
 		"enabled": true,
@@ -113,6 +113,16 @@
 								]
 							}
 						}
+					}
+				}
+			}
+		},
+		{
+			"includes": ["test/**"],
+			"linter": {
+				"rules": {
+					"style": {
+						"noNonNullAssertion": "off"
 					}
 				}
 			}

@@ -23,9 +23,9 @@ import {
 	ev_thinkingDelta,
 	ev_thinkingEnd,
 	ev_thinkingStart,
+	ev_toolcallEnd,
 	ev_toolExecEnd,
 	ev_toolExecStart,
-	ev_toolcallEnd,
 	makeFakeSession,
 } from "./fake-session";
 import { renderApp, waitForFrame } from "./harness";

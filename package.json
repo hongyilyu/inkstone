@@ -7,11 +7,12 @@
   "scripts": {
     "dev": "bun run --watch src/index.tsx",
     "dev:log": "KIRO_LOG=debug KIRO_LOG_FILE=/tmp/inkstone-kiro.log bun run --watch src/index.tsx",
-    "format": "biome format --write ./src",
-    "lint": "biome lint ./src",
-    "check": "biome check --write ./src",
+    "format": "biome format --write",
+    "lint": "biome lint",
+    "check": "biome check --write",
     "test": "bun test --timeout 30000",
-    "ci": "biome check ./src && bun test --timeout 30000"
+    "audit": "bun audit --audit-level=critical",
+    "ci": "biome check && bun test --timeout 30000"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.12",

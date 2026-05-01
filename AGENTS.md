@@ -25,9 +25,13 @@ When starting or completing any task, update the relevant docs in `docs/`:
 
 Before creating any git commit, run `bun run check` (Biome format + safe lint auto-fixes) and then `bun run ci` (Biome check + `bun test`). The `ci` step must pass. This keeps the tree format-clean so review diffs stay focused on semantic changes, not whitespace churn.
 
+`bun run check` and `bun run ci` both lint the full `src/` + `test/` tree — `biome.json`'s `files.includes` is the single source of truth, so the `./src` argv is deliberately absent from the scripts. Adding `./src` argv back would silently re-scope lint to source-only and regress test-dir coverage.
+
 Order matters: `bun run check` writes fixes, so running it *before* `git add` catches format drift in the files you're about to stage. Running `bun run ci` after confirms the staged version lints clean.
 
 If `bun run ci` fails on unrelated pre-existing issues, surface the failures to the user rather than silently committing past them.
+
+Run `bun run audit` periodically (not on every commit) to surface any **critical**-severity dependency CVEs. Known upstream-blocked advisories (high/moderate/low) are tracked in `docs/TODO.md` Known Issues — those can't be fixed without breaking `@opentui/solid`'s `solid-js@1.9.11` exact-version peer, so the script pins `--audit-level=critical` to let the existing advisories pass (exit 0) while still flagging any future critical. For the full advisory list, run `bun audit` bare.
 
 
 ## Plan Review Protocol
