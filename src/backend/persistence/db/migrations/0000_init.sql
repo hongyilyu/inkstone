@@ -29,6 +29,8 @@ CREATE TABLE `parts` (
 	`text` text NOT NULL,
 	`mime` text,
 	`filename` text,
+	`call_id` text,
+	`tool_data` text,
 	PRIMARY KEY(`message_id`, `seq`),
 	FOREIGN KEY (`message_id`) REFERENCES `messages`(`id`) ON UPDATE no action ON DELETE cascade
 );

@@ -124,7 +124,7 @@ src/
         migrations/                 drizzle-kit-generated SQL migrations
 
   bridge/                           Pure TS — shared type contract
-    view-model.ts                   DisplayMessage, DisplayPart, SidebarSection, AgentStoreState
+    view-model.ts                   DisplayMessage, DisplayPart (text/thinking/file/tool), SidebarSection, AgentStoreState
 
   tui/                              Solid + OpenTUI
     app.tsx                         Provider stack + root layout + top-level commands
@@ -140,7 +140,7 @@ src/
       toast.tsx                     Toast notifications
     components/
       conversation.tsx              Scrollbox + message list routing
-      message.tsx                   Bubble rendering (UserMessage, AssistantMessage, parts)
+      message.tsx                   Bubble rendering (UserMessage, AssistantMessage, TextPart, ReasoningPart, ToolPart)
       user-part.tsx                 Single part inside a user bubble — text or clickable file chip (opens article reader page)
       article-page.tsx              Full-screen article reader page — renders article markdown from disk in a scrollable view
       prompt.tsx                    Textarea prompt with /command parsing + streaming indicator
@@ -237,7 +237,9 @@ The conversation renderer shows the footer whenever `msg.modelName` is present, 
 
 `AgentProvider` pushes a fresh empty assistant `DisplayMessage` on every pi-agent-core `message_start` event whose `message.role === "assistant"` (filtering out user/toolResult starts, which are handled elsewhere or not rendered). `message_update` deltas append to the last-pushed bubble, and `message_end` stamps `agentName` / `modelName` onto that same bubble.
 
-This mirrors pi-agent-core's own boundaries: a tool-using turn emits one assistant `message_start` / `message_end` pair before the tool call and another after the tool result. Each pair gets its own display bubble with its own per-message footer data, so saved sessions replay the original assistant boundaries and the per-message fields cannot leak between them. `<Show when={msg.parts.length > 0 || msg.error}>` in `conversation.tsx` hides bubbles that are neither visible content nor a failure (e.g., a pure tool-call assistant message with `stopReason === "toolUse"`), so empty bubbles don't clutter the conversation while errored bubbles (empty parts + populated `error`) still render. The actual bubble body and error panel live in `AssistantMessage` (`message.tsx`).
+This mirrors pi-agent-core's own boundaries: a tool-using turn emits one assistant `message_start` / `message_end` pair before the tool call and another after the tool result. Each pair gets its own display bubble with its own per-message footer data, so saved sessions replay the original assistant boundaries and the per-message fields cannot leak between them. The `<Show when={msg.parts.length > 0 || msg.error}>` gate in `conversation.tsx` hides bubbles that are neither visible content nor a failure; with tool-call rendering wired in, a pure-tool-call assistant bubble now has a `tool` part and renders normally (so the tool invocation is visible between the pre- and post-tool text bubbles). The actual bubble body, tool-call row, and error panel live in `AssistantMessage` (`message.tsx`).
+
+Tool calls are rendered inline on the assistant bubble that emitted them — `DisplayPart` has a `tool` variant carrying `{ callId, name, args, state, result?, error? }`. The reducer pushes it in `"pending"` state on pi-ai's `toolcall_end` event, then flips to `"completed"` / `"error"` on pi-agent-core's `tool_execution_end`. `ToolPart` renders a single muted line (`⚙ name args`) with a short result summary beneath — see the ToolPart section in `message.tsx` for the visual states.
 
 Sourcing the model from `event.message` (rather than the mutable `store.modelName`) means switching models mid-run via Ctrl+P does not relabel the in-flight assistant reply. `store.modelName` continues to reflect the currently-selected model for the sidebar and the next prompt.
 

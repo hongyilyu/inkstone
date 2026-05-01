@@ -49,19 +49,35 @@ export const parts = sqliteTable(
 			.notNull()
 			.references(() => messages.id, { onDelete: "cascade" }),
 		seq: integer("seq").notNull(),
-		type: text("type", { enum: ["text", "thinking", "file"] }).notNull(),
+		type: text("type", {
+			enum: ["text", "thinking", "file", "tool"],
+		}).notNull(),
 		// `text` is the body of text/thinking parts AND is unused for
-		// `file` parts — kept NOT NULL with an empty string on file
-		// rows rather than widening to nullable, because the invariant
-		// "text parts have a body" is easier to read as a NOT NULL
-		// column than as a per-type check. File parts carry their
-		// display metadata in `mime` + `filename` below.
+		// `file` / `tool` parts — kept NOT NULL with an empty string on
+		// those rows rather than widening to nullable, because the
+		// invariant "text parts have a body" is easier to read as a
+		// NOT NULL column than as a per-type check. File parts carry
+		// their display metadata in `mime` + `filename`; tool parts
+		// carry theirs in `call_id` + `tool_data`.
 		text: text("text").notNull(),
-		// File-part display metadata. NULL for text/thinking rows.
+		// File-part display metadata. NULL for text/thinking/tool rows.
 		// Two flat columns (not JSON) so the `listSessions` preview
 		// fallback can read `filename` in SQL without JSON extraction.
 		mime: text("mime"),
 		filename: text("filename"),
+		// Tool-part metadata. NULL for text/thinking/file rows.
+		// `call_id` is pi-ai's `ToolCall.id` — the join key between the
+		// `toolcall_end` stream event and the later `tool_execution_end`
+		// event that flips the part from pending → completed/error.
+		// `tool_data` holds `{ name, args, state, error? }` as JSON — no
+		// SQL reader needs the inner fields.
+		callId: text("call_id"),
+		toolData: text("tool_data", { mode: "json" }).$type<{
+			name: string;
+			args: unknown;
+			state: "pending" | "completed" | "error";
+			error?: string;
+		}>(),
 	},
 	(t) => [primaryKey({ columns: [t.messageId, t.seq] })],
 );

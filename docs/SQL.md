@@ -69,7 +69,7 @@ sessions ──┬── messages ── parts       (display-layer fanout)
 |---|---|
 | `sessions` | Conversation root. `agent` column scopes all reads. `/clear` ends the in-memory session; the row stays on disk untouched. |
 | `messages` | One row per `DisplayMessage` (bubble). UUIDv7 `id`. Per-message metadata (agent/model/duration/error) mirrors the bubble footer. |
-| `parts` | `DisplayPart` fanout. Composite PK `(message_id, seq)` — parts have no cross-session identity. `type ∈ {text, thinking, file}`; `text` is NOT NULL (stored as `""` on `file` rows, whose display data lives in the nullable `mime` + `filename` columns). Two flat columns instead of a JSON `meta` blob so `listSessions`'s preview fallback can read `filename` in SQL. |
+| `parts` | `DisplayPart` fanout. Composite PK `(message_id, seq)` — parts have no cross-session identity. `type ∈ {text, thinking, file, tool}`; `text` is NOT NULL (stored as `""` on `file` / `tool` rows, whose display data lives in dedicated nullable columns). File parts use `mime` + `filename` (two flat columns instead of a JSON `meta` blob so `listSessions`'s preview fallback can read `filename` in SQL). Tool parts use `call_id` (pi-ai `ToolCall.id`, the join key between `toolcall_end` stream events and `tool_execution_end`) plus a JSON `tool_data` blob holding `{ name, args, state, result?, error? }` — no SQL reader needs the inner fields. |
 | `agent_messages` | Raw pi-agent-core `AgentMessage` as JSON, for LLM-context restore on resume. `display_message_id` links back to the bubble this message produced (NULL for tool-result / user / custom messages). |
 
 ### Why `agent_messages` is a separate table

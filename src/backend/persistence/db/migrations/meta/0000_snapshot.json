@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "957b0fc1-b97e-472b-b236-2a4ecb482ea1",
+  "id": "baad0331-5adf-4b2c-a3be-29b8c936c79e",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "agent_messages": {
@@ -214,6 +214,20 @@
         },
         "filename": {
           "name": "filename",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "call_id": {
+          "name": "call_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "tool_data": {
+          "name": "tool_data",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

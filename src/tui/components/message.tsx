@@ -4,8 +4,8 @@
  * Each concern gets its own component so the top-level `Conversation`
  * stays a thin list + routing layer. Mirrors OpenCode's split in
  * `routes/session/index.tsx` (`UserMessage`, `AssistantMessage`,
- * `ReasoningPart`, `TextPart`) — trimmed to Inkstone's part types
- * (`text` / `thinking` / `file`; tool parts not rendered yet).
+ * `ReasoningPart`, `TextPart`, `ToolPart`) — trimmed to Inkstone's
+ * part types (`text` / `thinking` / `file` / `tool`).
  */
 
 import { getAgentInfo } from "@backend/agent";
@@ -14,6 +14,7 @@ import { For, Show } from "solid-js";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import { formatDuration } from "../util/format";
+import { summarizeToolArgs } from "../util/tool-summary";
 import { UserPart } from "./user-part";
 
 const EmptyBorder = {
@@ -187,6 +188,58 @@ export function ReasoningPart(props: {
 	);
 }
 
+/**
+ * Inline tool-call display. One muted line per tool invocation — mirrors
+ * OpenCode's `InlineTool` pattern (`routes/session/index.tsx`) trimmed
+ * to Inkstone's scope.
+ *
+ * State → visual:
+ *   - `pending`    : `~ tool args` (muted, no icon yet — result unknown)
+ *   - `completed`  : `⚙ tool args` (muted)
+ *   - `error`      : `⚙ tool args` in error color + red error line below
+ *
+ * The args summary is the whole story for today's tools — every
+ * `update_sidebar`/`read`/`edit`/`write` result is redundant with the
+ * args. Only failures get a second line. When a future tool's result
+ * carries information the args don't (e.g. `grep` match count), revisit.
+ */
+export function ToolPart(props: {
+	name: string;
+	args: unknown;
+	state: "pending" | "completed" | "error";
+	error?: string;
+	first: boolean;
+}) {
+	const { theme } = useTheme();
+	const argsSummary = () => summarizeToolArgs(props.name, props.args);
+	const icon = () => (props.state === "pending" ? "~" : "⚙");
+	const headerFg = () =>
+		props.state === "error" ? theme.error : theme.textMuted;
+	return (
+		<box
+			paddingLeft={3}
+			marginTop={props.first ? 0 : 1}
+			flexShrink={0}
+			flexDirection="column"
+		>
+			<text wrapMode="none">
+				<span style={{ fg: headerFg() }}>
+					{icon()} {props.name}
+				</span>
+				<Show when={argsSummary()}>
+					<span style={{ fg: theme.textMuted }}> {argsSummary()}</span>
+				</Show>
+			</text>
+			<Show when={props.state === "error" && props.error}>
+				<text fg={theme.error} wrapMode="none">
+					{"  "}
+					{props.error}
+				</text>
+			</Show>
+		</box>
+	);
+}
+
 // ---------------------------------------------------------------------------
 // Assistant bubble — parts loop + error panel + footer.
 // ---------------------------------------------------------------------------
@@ -230,6 +283,17 @@ export function AssistantMessage(props: {
 								text={part.text}
 								first={first}
 								streaming={streaming()}
+							/>
+						);
+					}
+					if (part.type === "tool") {
+						return (
+							<ToolPart
+								name={part.name}
+								args={part.args}
+								state={part.state}
+								error={part.error}
+								first={first}
 							/>
 						);
 					}

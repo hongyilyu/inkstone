@@ -7,10 +7,12 @@
  *                reader page when clicked.
  * - `thinking` → unreachable today (reducer only pushes thinking onto
  *                assistant messages); returns null defensively.
+ * - `tool`     → unreachable today (only assistant bubbles carry tool
+ *                parts); returns null defensively.
  *
- * Mirrors the `TextPart` / `ReasoningPart` split on the assistant side
- * so each part type has a dedicated component and the parent `UserMessage`
- * stays a thin layout wrapper.
+ * Mirrors the `TextPart` / `ReasoningPart` / `ToolPart` split on the
+ * assistant side so each part type has a dedicated component and the
+ * parent `UserMessage` stays a thin layout wrapper.
  */
 
 import { readFileSync } from "node:fs";
@@ -66,10 +68,7 @@ export function UserPart(props: {
 			}
 		};
 		return (
-			<box
-				marginTop={props.first ? 0 : 1}
-				onMouseDown={handleClick}
-			>
+			<box marginTop={props.first ? 0 : 1} onMouseDown={handleClick}>
 				<text wrapMode="none">
 					<span
 						style={{

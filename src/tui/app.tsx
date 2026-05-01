@@ -18,8 +18,8 @@ import { DialogProvider as DialogProviderSelect } from "./components/dialog-prov
 import { DialogTheme } from "./components/dialog-theme";
 import { DialogVariant } from "./components/dialog-variant";
 import { OpenPage } from "./components/open-page";
-import { SecondaryPage } from "./components/secondary-page";
 import { Prompt } from "./components/prompt";
+import { SecondaryPage } from "./components/secondary-page";
 import { SessionList } from "./components/session-list";
 import { Sidebar } from "./components/sidebar";
 import { AgentProvider, useAgent } from "./context/agent";
@@ -334,16 +334,12 @@ function Layout() {
 							}}
 						/>
 					</Show>
-				{/* Middle column: conversation + prompt (or secondary page) */}
+					{/* Middle column: conversation + prompt (or secondary page) */}
 					{/* Horizontal padding + bottom gap matches OpenCode session/index.tsx:1043 */}
 					<Show
 						when={!getSecondaryPage()}
 						fallback={
-							<box
-								flexDirection="column"
-								flexGrow={1}
-								paddingBottom={1}
-							>
+							<box flexDirection="column" flexGrow={1} paddingBottom={1}>
 								<SecondaryPage />
 							</box>
 						}

@@ -72,9 +72,10 @@ If mode is \`keeper\`:
 - do not tell the user which section matters most
 - after presenting the prompts, call the \`update_sidebar\` tool with:
   - \`operation\`: \`"upsert"\`
-  - \`id\`: \`"first-pass-prompts"\`
+  - \`id\`: \`"watch-for"\`
   - \`title\`: \`"Watch for"\`
   - \`content\`: the prompts as a bulleted markdown list (e.g. \`"- prompt 1\\n- prompt 2\\n- prompt 3"\`)
+- the \`update_sidebar\` call ends the turn. Do not emit any text after it \u2014 no "ready when you are", no confirmation, nothing. The user sees the prompts and the sidebar update; that's the whole Stage 2 output.
 
 ## Stage 3: Post-Read Recap
 
