@@ -2,9 +2,10 @@
  * Secondary page — local UI state for displaying a full-screen page
  * that replaces the conversation area.
  *
- * Generic: any agent or component can open a secondary page with
- * arbitrary markdown content. Use cases: file viewer, subagent
- * output, help pages, etc.
+ * Generic: any agent or component can open a secondary page. Today's
+ * callers pass markdown; `format: "text"` is available for plain-text
+ * content (future subagent output, logs, etc.) and renders without the
+ * markdown parser.
  *
  * Not agent/session state — purely a TUI navigation concern.
  *
@@ -14,20 +15,29 @@
 
 import { createSignal } from "solid-js";
 
+export type SecondaryPageFormat = "markdown" | "text";
+
 export interface SecondaryPageState {
-	/** Markdown content to render. */
-	// TODO: Currently only supports markdown rendering. Expand to support
-	// other formats (plain text, structured data, custom JSX) when needed
-	// — e.g. subagent work output, logs, or non-markdown file types.
+	/** Body content to render. Interpreted according to `format`. */
 	content: string;
 	/** Optional title shown in the sidebar. */
 	title?: string;
+	/**
+	 * How to render `content`. Defaults to `"markdown"` (today's behavior
+	 * for reader's `/article` and `@`-mention previews).
+	 *
+	 * `"text"` renders as raw text inside the scrollbox with word-wrap —
+	 * use this for non-markdown content (subagent work output, logs,
+	 * structured data) where the markdown parser would mangle the source.
+	 * Horizontal scroll is not supported today.
+	 */
+	format?: SecondaryPageFormat;
 }
 
 const [secondaryPage, setSecondaryPage] =
 	createSignal<SecondaryPageState | null>(null);
 
-/** Open a secondary page with the given markdown content. */
+/** Open a secondary page with the given content. */
 export function openSecondaryPage(state: SecondaryPageState) {
 	setSecondaryPage(state);
 }
