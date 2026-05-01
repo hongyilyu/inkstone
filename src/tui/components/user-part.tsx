@@ -15,14 +15,10 @@
  * parent `UserMessage` stays a thin layout wrapper.
  */
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { VAULT_DIR } from "@backend/agent/constants";
-import { isInsideDir } from "@backend/agent/permissions";
 import type { DisplayPart } from "@bridge/view-model";
 import type { RGBA } from "@opentui/core";
-import { openSecondaryPage } from "../context/secondary-page";
 import { useTheme } from "../context/theme";
+import { openVaultFilePart } from "../util/file-part-handler";
 
 /**
  * MIME → short badge label. Adding a new entry is a one-line change;
@@ -53,20 +49,8 @@ export function UserPart(props: {
 		);
 	}
 	if (props.part.type === "file") {
-		const filename = props.part.filename;
-		const handleClick = () => {
-			try {
-				const abs = resolve(VAULT_DIR, filename);
-				if (!isInsideDir(abs, VAULT_DIR) || abs === VAULT_DIR) {
-					openSecondaryPage({ content: `_Path outside vault: ${filename}_` });
-					return;
-				}
-				const content = readFileSync(abs, "utf-8");
-				openSecondaryPage({ content, title: filename });
-			} catch {
-				openSecondaryPage({ content: `_Could not read file: ${filename}_` });
-			}
-		};
+		const part = props.part;
+		const handleClick = () => openVaultFilePart(part);
 		return (
 			<box marginTop={props.first ? 0 : 1} onMouseDown={handleClick}>
 				<text wrapMode="none">
@@ -76,7 +60,7 @@ export function UserPart(props: {
 							fg: theme.background,
 						}}
 					>
-						{` ${mimeBadge(props.part.mime)} `}
+						{` ${mimeBadge(part.mime)} `}
 					</span>
 					<span
 						style={{
@@ -84,7 +68,7 @@ export function UserPart(props: {
 							fg: theme.textMuted,
 						}}
 					>
-						{` ${props.part.filename} `}
+						{` ${part.filename} `}
 					</span>
 				</text>
 			</box>
