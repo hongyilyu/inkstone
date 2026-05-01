@@ -189,4 +189,52 @@ describe("prompt submission", () => {
 		expect(f).not.toContain("first");
 		expect(f).not.toContain("second");
 	});
+
+	test("/clear wipes dynamic sidebar sections", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory, width: 120 });
+		await setup.renderOnce();
+
+		// Seed a turn that upserts a sidebar section.
+		await setup.mockInput.typeText("show notes");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(20);
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit({
+			type: "tool_execution_end",
+			toolCallId: "sb1",
+			toolName: "update_sidebar",
+			result: {
+				content: [{ type: "text", text: "ok" }],
+				details: {
+					operation: "upsert",
+					id: "notes",
+					title: "Notes",
+					content: "ephemeral content",
+				},
+			},
+			isError: false,
+		});
+		fake.emit(ev_messageEnd({ stopReason: "toolUse" }));
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "toolUse" })]));
+		await waitForFrame(setup, "ephemeral content");
+
+		// Submit /clear. wrappedActions.clearSession wipes
+		// `store.sidebarSections` alongside messages + counters.
+		await setup.mockInput.typeText("/clear");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(50);
+
+		// The section should be gone from the frame.
+		const start = Date.now();
+		while (Date.now() - start < 1000) {
+			await setup.renderOnce();
+			if (!setup.captureCharFrame().includes("ephemeral content")) break;
+			await Bun.sleep(30);
+		}
+		expect(setup.captureCharFrame()).not.toContain("ephemeral content");
+	});
 });

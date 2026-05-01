@@ -83,4 +83,37 @@ describe("secondary page", () => {
 		await setup.renderOnce();
 		expect(setup.captureCharFrame()).not.toContain("Second Page");
 	});
+
+	test("ESC with an open dialog over a secondary page closes the dialog, not the page", async () => {
+		// app.tsx's secondary_page_close handler is gated on
+		// `dialog.stack.length === 0` — so an open dialog wins the ESC.
+		// This pins that routing: dialog closes, secondary page stays.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		// Seed a turn so the conversation layout is active.
+		await setup.mockInput.typeText("prime");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(20);
+
+		// Open the secondary page.
+		openSecondaryPage({ content: "# Page Still Here" });
+		await waitForFrame(setup, "Page Still Here");
+
+		// Open the command palette on top.
+		setup.mockInput.pressKey("p", { ctrl: true });
+		await waitForFrame(setup, "Command Panel");
+
+		// ESC: dialog closes, page remains.
+		setup.mockInput.pressEscape();
+		await setup.renderOnce();
+		await Bun.sleep(30);
+		await setup.renderOnce();
+
+		const f = setup.captureCharFrame();
+		expect(f).not.toContain("Command Panel");
+		expect(f).toContain("Page Still Here");
+	});
 });

@@ -201,4 +201,87 @@ describe("streaming flow", () => {
 		expect(f).toContain("Notes");
 		expect(f).toContain("first pass ideas");
 	});
+
+	test("update_sidebar delete op removes the section", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory, width: 120 });
+		await setup.renderOnce();
+
+		await seedUserTurn(setup, "show then hide");
+
+		// First turn: upsert a section via update_sidebar.
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(
+			ev_toolcallEnd("sb-up", "update_sidebar", {
+				operation: "upsert",
+				id: "notes",
+				title: "Notes",
+				content: "first pass ideas",
+			}),
+		);
+		fake.emit(ev_messageEnd({ stopReason: "toolUse" }));
+		fake.emit(
+			ev_toolExecStart("sb-up", "update_sidebar", { operation: "upsert" }),
+		);
+		fake.emit({
+			type: "tool_execution_end",
+			toolCallId: "sb-up",
+			toolName: "update_sidebar",
+			result: {
+				content: [{ type: "text", text: "Sidebar section updated." }],
+				details: {
+					operation: "upsert",
+					id: "notes",
+					title: "Notes",
+					content: "first pass ideas",
+				},
+			},
+			isError: false,
+		});
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "toolUse" })]));
+
+		await waitForFrame(setup, "first pass ideas");
+
+		// Second turn: delete the section by id. The reducer path is a
+		// distinct branch — `sections.filter((s) => s.id !== d.id)`.
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(
+			ev_toolcallEnd("sb-del", "update_sidebar", {
+				operation: "delete",
+				id: "notes",
+			}),
+		);
+		fake.emit(ev_messageEnd({ stopReason: "toolUse" }));
+		fake.emit(
+			ev_toolExecStart("sb-del", "update_sidebar", { operation: "delete" }),
+		);
+		fake.emit({
+			type: "tool_execution_end",
+			toolCallId: "sb-del",
+			toolName: "update_sidebar",
+			result: {
+				content: [{ type: "text", text: "Sidebar section removed." }],
+				details: { operation: "delete", id: "notes" },
+			},
+			isError: false,
+		});
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "toolUse" })]));
+
+		// Give the reactive sidebar a chance to re-render, then assert
+		// the section title + content are gone.
+		const start = Date.now();
+		while (Date.now() - start < 1500) {
+			await setup.renderOnce();
+			if (!setup.captureCharFrame().includes("first pass ideas")) break;
+			await Bun.sleep(30);
+		}
+		const f2 = setup.captureCharFrame();
+		expect(f2).not.toContain("first pass ideas");
+		// The sidebar "Context" header is always shown; the section
+		// title "Notes" should no longer be rendered as a section
+		// header — but "Notes" is a common word, so we anchor on the
+		// content string which is unique.
+	});
 });
