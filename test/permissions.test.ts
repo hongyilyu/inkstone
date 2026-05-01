@@ -168,6 +168,36 @@ const dispatchCases: DispatchCase[] = [
 		expectedDecision: "allow",
 		expectedConfirms: 0,
 	},
+	// Unicode-space normalization — guards the H5 byte-equality invariant.
+	// pi-coding-agent runs `normalizeUnicodeSpaces` before the tool reads
+	// the file; the dispatcher must fold the same bytes or the sandbox
+	// decision won't match what the tool actually touches.
+	{
+		label: "NBSP (\\u00A0) in Articles path — still routed through the Articles zone (edit frontmatter → confirm)",
+		toolName: "edit",
+		args: {
+			// `010\u00A0RAW` in the caller's string; after normalization
+			// becomes `010 RAW` which is the real zone prefix.
+			path: `${VAULT}/010\u00A0RAW/013 Articles/foo.md`,
+			edits: [
+				{ oldText: "reading_intent: keeper", newText: "reading_intent: joy" },
+			],
+		},
+		expectedDecision: "allow",
+		expectedConfirms: 1,
+	},
+	{
+		label:
+			"narrow no-break space (\\u202F) outside vault — blocked by insideDirs baseline",
+		toolName: "write",
+		args: {
+			// Post-normalization: `/tmp foo/bar.md` — still outside VAULT.
+			path: "/tmp\u202Ffoo/bar.md",
+			content: "x",
+		},
+		expectedDecision: "block",
+		expectedConfirms: 0,
+	},
 ];
 
 describe("dispatchBeforeToolCall + reader overlay", () => {
