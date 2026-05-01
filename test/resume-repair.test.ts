@@ -226,4 +226,74 @@ describe("loadSession — tail repair", () => {
 			expect((msgs[3] as AssistantMessage).stopReason).toBe("stop");
 		},
 	);
+
+	test(
+		"tool-result row between users → repair triggers on last user/assistant role",
+		() => {
+			// Regression guard for the C2 finding: if only the direct
+			// neighbor is checked, a `toolResult` between two `user`s
+			// masks the alternation gap and repair is skipped. Here we
+			// seed `[user, toolResult, user]` and expect a synthesized
+			// assistant between the two users — the repair pass must
+			// look at the last *user|assistant* role, not the raw tail.
+			const toolResult: AgentMessage = {
+				role: "toolResult",
+				toolCallId: "call-1",
+				content: [{ type: "text", text: "tool output" }],
+				isError: false,
+				timestamp: Date.now(),
+			};
+			const sid = seedSession([
+				userMsg("first"),
+				toolResult,
+				userMsg("second (orphan)"),
+			]);
+			const loaded = loadSession(sid);
+			const msgs = loaded!.agentMessages;
+			// user, toolResult, assistant (synthesized), user, assistant
+			// (trailing synthesized for the second user's dangling tail).
+			expect(msgs.length).toBe(5);
+			expect(msgs[0]?.role).toBe("user");
+			expect(msgs[1]?.role).toBe("toolResult");
+			expect(msgs[2]?.role).toBe("assistant");
+			expect((msgs[2] as AssistantMessage).stopReason).toBe("aborted");
+			expect(msgs[3]?.role).toBe("user");
+			expect(msgs[4]?.role).toBe("assistant");
+			expect((msgs[4] as AssistantMessage).stopReason).toBe("aborted");
+		},
+	);
+
+	test(
+		"sequential dangling gaps → second placeholder doesn't inherit placeholder metadata",
+		() => {
+			// Without the `findLatestRealAssistant` skip, the second
+			// synthesized placeholder would inherit `model: "placeholder"`
+			// from the first. Guard: seed two `[user, user]` gaps with no
+			// real assistant between them, confirm both synthesized
+			// placeholders get the bland-default fallback — specifically,
+			// the second one does NOT copy the first's placeholder model
+			// back onto itself.
+			const sid = seedSession([
+				userMsg("first"),
+				userMsg("second"),
+				userMsg("third"),
+			]);
+			const loaded = loadSession(sid);
+			const msgs = loaded!.agentMessages;
+			// user, synthesized, user, synthesized, user, synthesized.
+			expect(msgs.length).toBe(6);
+			const placeholder1 = msgs[1] as AssistantMessage;
+			const placeholder2 = msgs[3] as AssistantMessage;
+			const placeholder3 = msgs[5] as AssistantMessage;
+			expect(placeholder1.stopReason).toBe("aborted");
+			expect(placeholder2.stopReason).toBe("aborted");
+			expect(placeholder3.stopReason).toBe("aborted");
+			// All three carry bland defaults because there's no REAL
+			// assistant to source from. The skip prevents the second and
+			// third from reading the first's "placeholder" string back.
+			expect(placeholder1.model).toBe("placeholder");
+			expect(placeholder2.model).toBe("placeholder");
+			expect(placeholder3.model).toBe("placeholder");
+		},
+	);
 });
