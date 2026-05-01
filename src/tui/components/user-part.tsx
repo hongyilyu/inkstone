@@ -25,13 +25,13 @@ import { openSecondaryPage } from "../context/secondary-page";
 import { useTheme } from "../context/theme";
 
 /**
- * MIME → short badge label. Minimal on purpose: today only reader's
- * `/article` produces file parts, and those are always markdown. An
- * unknown mime falls back to the raw string so adding a future entry
- * is a one-line change.
+ * MIME → short badge label. Adding a new entry is a one-line change;
+ * unknown mimes fall back to the raw string so unexpected shapes
+ * render visibly instead of silently dropping the badge.
  */
 const MIME_BADGE: Record<string, string> = {
 	"text/markdown": "md",
+	"text/plain": "txt",
 };
 
 function mimeBadge(mime: string): string {

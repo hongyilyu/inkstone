@@ -63,6 +63,8 @@ export function UserMessage(props: {
 					paddingTop={1}
 					paddingBottom={1}
 					paddingLeft={2}
+					paddingRight={2}
+					flexGrow={1}
 					backgroundColor={theme.backgroundPanel}
 					flexShrink={0}
 					flexDirection="column"
