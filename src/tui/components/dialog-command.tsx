@@ -26,8 +26,10 @@ import * as Keybind from "../util/keybind";
  *   - A single `useKeyboard` inside the provider handles both the palette-
  *     open key (`command_list`) and global dispatch of any registered
  *     command that has a `keybind`.
- *   - Dispatch is suspended while a dialog is on the stack, matching
- *     OpenCode's scoping rule: dialog-local handlers take precedence.
+ *   - Dispatch is suppressed via `suspendCount > 0`. The autocomplete
+ *     dropdown drives this directly; `DialogProvider` also drives it via
+ *     `setSuspendHandler` so any open dialog suspends global keybinds
+ *     without a second guard in this handler.
  */
 
 /**
@@ -135,9 +137,13 @@ function init() {
 		/** See `triggerSlash` above. */
 		triggerSlash,
 		/**
-		 * Suspend / resume global keybind dispatch. The autocomplete
-		 * dropdown calls `suspend()` while visible so Ctrl+N/Ctrl+P
-		 * don't fire `session_list` / `command_list` behind it.
+		 * Suspend / resume global keybind dispatch. Two callers:
+		 *   - The autocomplete dropdown calls `suspend()` while visible
+		 *     so Ctrl+N / Ctrl+P don't fire `session_list` /
+		 *     `command_list` behind it.
+		 *   - `DialogProvider` (via `setSuspendHandler`, wired below)
+		 *     calls these on dialog push/pop transitions so an open
+		 *     dialog blocks global keybinds without a second guard here.
 		 * Balanced: every `suspend()` must pair with a `resume()`.
 		 */
 		suspend() {
@@ -180,11 +186,11 @@ function init() {
 	};
 
 	// Global dispatch: palette-open key first, then any registered command.
-	// Skip entirely while a dialog is on the stack or while the autocomplete
-	// dropdown has suspended global keybind dispatch.
+	// Single gate: `suspendCount > 0`. The autocomplete dropdown drives it
+	// directly; `DialogProvider` drives it via `setSuspendHandler` below so
+	// any open dialog also suspends dispatch.
 	useKeyboard((evt: any) => {
 		if (suspendCount() > 0) return;
-		if (dialog.stack.length > 0) return;
 		if (evt.defaultPrevented) return;
 
 		if (Keybind.match("command_list", evt)) {
@@ -204,6 +210,14 @@ function init() {
 			}
 		}
 	});
+
+	// Wire dialog push/pop into the suspend counter so an open dialog
+	// suppresses global keybinds without a second guard on the handler.
+	// Invariant: `DialogProvider` is an ancestor of `CommandProvider`
+	// (see the provider tree in `app.tsx`). Unwire on cleanup so
+	// re-mounts don't install a stale handler.
+	dialog.setSuspendHandler({ suspend: api.suspend, resume: api.resume });
+	onCleanup(() => dialog.setSuspendHandler(null));
 
 	return api;
 }

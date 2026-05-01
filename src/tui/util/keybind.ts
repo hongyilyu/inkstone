@@ -30,12 +30,13 @@ export interface Info {
  *
  * Collisions (all intentional, resolved by dispatch order / scope guards):
  *   - `ctrl+p` is both `command_list` and one alternate of `select_up`.
- *     CommandProvider guards its dispatch with `dialog.stack.length === 0`,
- *     and dialog-select calls `evt.preventDefault()` on nav matches.
+ *     CommandProvider's dispatch is suspended while any dialog is open
+ *     (driven by `DialogProvider` via `setSuspendHandler`), and
+ *     dialog-select calls `evt.preventDefault()` on nav matches.
  *   - `escape` is both `session_interrupt` and `dialog_close`. Dialog's
  *     useKeyboard runs first and calls `preventDefault` when a dialog is
  *     on the stack, so CommandProvider's dispatch sees an already-handled
- *     event (and also short-circuits on `dialog.stack.length > 0`).
+ *     event (and is also suspended for the same reason).
  */
 export const KEYBINDS = {
 	app_exit: "ctrl+c",
