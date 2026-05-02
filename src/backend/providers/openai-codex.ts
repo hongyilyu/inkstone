@@ -115,6 +115,5 @@ export const openaiCodexProvider: ProviderInfo = {
 		return creds?.access;
 	},
 	isConnected: () => loadOpenAICodexCreds() !== undefined,
-	authInstructions:
-		"Run Connect → ChatGPT to sign in with your ChatGPT Plus or Pro account.",
+	clearCreds: () => clearOpenAICodexCreds(),
 };

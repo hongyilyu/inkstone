@@ -44,11 +44,5 @@ export const openrouterProvider: ProviderInfo = {
 	// return is safe.
 	getApiKey: () => loadOpenRouterKey(),
 	isConnected: () => loadOpenRouterKey() !== undefined,
-	authInstructions:
-		"Run Connect → OpenRouter and paste your API key from https://openrouter.ai/keys.",
+	clearCreds: () => clearOpenRouterKey(),
 };
-
-// Internal helper for `disconnect-openrouter.ts` to signal provider-
-// side cleanup without re-implementing the auth dance. Kept lean —
-// just re-exports the auth.ts clear.
-export { clearOpenRouterKey };

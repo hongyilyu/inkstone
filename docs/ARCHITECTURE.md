@@ -159,14 +159,13 @@ src/
         model.tsx                   Model selection dialog
         variant.tsx                 Reasoning-effort picker
         theme.tsx                   Theme selection dialog
-        provider/                   Provider dialog — list + Kiro manage/login flows
-          index.tsx                 DialogProvider list + row dispatch
-          manage-menu.tsx           Reconnect/Disconnect secondary menu for connected Kiro / ChatGPT / OpenRouter
-          disconnect-kiro.ts        Confirm → clearKiroCreds → active-provider rehome → toast
+        provider/                   Provider dialog — list + manage/login dispatch
+          index.tsx                 DialogProvider list + row dispatch (looks up LOGIN_FLOWS for disconnected rows)
+          manage-menu.tsx           Reconnect/Disconnect secondary menu for any connected provider
+          login-registry.ts         Provider-id → login-flow lookup table (TUI-side boundary wrapper)
+          confirm-and-disconnect.ts Shared Confirm → clearCreds → rehome → toast helper
           login-kiro.tsx            Drive pi-kiro's loginKiro callbacks against the dialog stack
-          disconnect-openai-codex.ts Confirm → clearOpenAICodexCreds → active-provider rehome → toast
           login-openai-codex.tsx    Drive pi-ai's loginOpenAICodex callbacks against the dialog stack
-          disconnect-openrouter.ts  Confirm → clearOpenRouterKey → active-provider rehome → toast
           set-openrouter-key.tsx    Single DialogPrompt to collect OpenRouter API key → save → scoped DialogModel
     util/
       format.ts                     Token/cost/duration/path formatting helpers
@@ -562,7 +561,7 @@ pi-ai already owns streaming for each API it ships (`bedrock-converse-stream`, `
 
 ### `ProviderInfo` shape
 
-See `src/backend/providers/types.ts` for the interface. Each provider declares `id`, `displayName`, `defaultModelId` (curated fallback when config is empty/stale), `listModels()`, `getApiKey()` (sync or async, may return `undefined`), `isConnected()`, and `authInstructions` (shown in the Connect dialog on a miss).
+See `src/backend/providers/types.ts` for the interface. Each provider declares `id`, `displayName`, `defaultModelId` (curated fallback when config is empty/stale), `listModels()`, `getApiKey()` (sync or async, may return `undefined`), `isConnected()`, and `clearCreds()` (synchronous credential wipe invoked by the shared `confirmAndDisconnect` helper).
 
 `defaultModelId` is required (not optional) so every provider declares its own curated fallback rather than depending on registry order. The agent module throws on boot if the declared default no longer resolves through `listModels()`, surfacing pi-ai registry drift loudly instead of silently relocating the user to an arbitrary model.
 
@@ -606,7 +605,7 @@ Kept separate from `config.json` because OAuth tokens are sensitive (pi-kiro's `
 |---|---|---|
 | **Models** | `DialogModel` | Flat list of models from every connected provider, `description` = provider display name. Empty placeholder when zero providers connected, directing the user to Connect. Auto-closes on select (backend `setModel` also auto-restores the per-model stored effort). |
 | **Effort** | `DialogVariant` | Standalone reasoning-effort picker for the currently-active model. Registered only when `store.modelReasoning === true` — non-reasoning models hide the entry to avoid palette noise. See "Effort variants" below. |
-| **Connect** | `DialogProvider` | All providers, sorted connected-first, `description` = `"✓ Connected"` / `"Not configured"`. Disconnected Kiro / ChatGPT → OAuth login flow; disconnected OpenRouter → key-paste prompt. Every shipped provider has a login flow — the old `authInstructions` fallback-toast branch is dead code (kept in this PR for compatibility with the ProviderInfo field; PR #2 deletes the field). Connected-provider select opens a Reconnect / Disconnect manage menu. |
+| **Connect** | `DialogProvider` | All providers, sorted connected-first. Connected row → Reconnect / Disconnect manage menu. Disconnected row → provider login flow resolved through the TUI-side `LOGIN_FLOWS` lookup table in `components/dialog/provider/login-registry.ts` (keeps `ProviderInfo` free of TUI dependencies). Every shipped provider has a login flow entry; a registry addition without a login flow is a programming error, not a user-facing path. |
 
 #### Kiro device-code login flow
 
@@ -663,13 +662,13 @@ The indicator is **ephemeral**: `codexTransport` is a store-only-no-persist fiel
 
 **Key entry.** `src/tui/components/dialog/provider/set-openrouter-key.tsx` is a single `DialogPrompt.show` with a description linking to `https://openrouter.ai/keys` and a placeholder `sk-or-v1-…`. On submit → `saveOpenRouterKey(trimmed)` → success toast → `DialogModel` scoped to OpenRouter's `moonshotai/kimi-k2.6` default. Empty/whitespace key → warning toast + early return (no disk write). ESC at any point → `dialog.clear()`.
 
-**Disconnect.** Mirrors the Codex / Kiro disconnect flow. `src/tui/components/dialog/provider/disconnect-openrouter.ts` — confirm → `clearOpenRouterKey` → active-session rehome onto the first other connected provider (via `findFirstConnectedProvider("openrouter")`), otherwise warning toast nudging `/models`.
+**Disconnect.** Handled uniformly by `confirmAndDisconnect` in `src/tui/components/dialog/provider/confirm-and-disconnect.ts`: DialogConfirm → `provider.clearCreds()` → active-session rehome via `findFirstConnectedProvider(provider.id)` (warning toast nudging `/models` when no fallback exists). OpenRouter-specific logic lives entirely in `openrouterProvider.clearCreds` (which calls `clearOpenRouterKey`) — the shared helper doesn't branch per provider.
 
 **No refresh cycle.** OpenRouter API keys don't expire and aren't rotated. `getApiKey()` is sync; no in-flight dedup memo; no `reportPersistenceError` call in a refresh-failure catch branch because there isn't one. If OpenRouter ever grows per-key metadata (routing preferences, org hints), `AuthFile.openrouter` migrates from `string` → `{ apiKey: string, ...metadata }` at that point.
 
 #### Disconnect / manage menu
 
-Kiro, OpenAI Codex, and OpenRouter are all owned-creds providers — their credentials live in `~/.config/inkstone/auth.json` and Inkstone can honestly clear them. `DialogProvider` opens the Reconnect / Disconnect manage menu for any connected row. Per-provider `confirmAndDisconnect…` helpers own the clear + rehome chain today; PR #2 collapses them into a single helper via `ProviderInfo.clearCreds()` + a shared `confirmAndDisconnect` function.
+Kiro, OpenAI Codex, and OpenRouter are all owned-creds providers — their credentials live in `~/.config/inkstone/auth.json` and Inkstone can honestly clear them via `ProviderInfo.clearCreds()`. `DialogProvider` opens the Reconnect / Disconnect manage menu for any connected row. The shared `confirmAndDisconnect` helper in `components/dialog/provider/confirm-and-disconnect.ts` owns the DialogConfirm → clearCreds → rehome → toast sequence; per-provider logic is confined to `clearCreds()` (credential wipe) and `displayName` (toast strings). Reconnect dispatches through the `LOGIN_FLOWS` lookup table in `login-registry.ts`.
 
 ### Effort variants (reasoning levels)
 

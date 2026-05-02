@@ -46,7 +46,15 @@ export interface ProviderInfo {
 	/** True when credentials are configured and the provider can be used. */
 	isConnected(): boolean;
 
-	/** Human-readable authentication instructions, shown when the user picks
-	 * a disconnected provider in the Connect dialog. */
-	authInstructions: string;
+	/**
+	 * Remove persisted credentials for this provider. Synchronous —
+	 * handles only credential removal, not UI or rehome. Intended to be
+	 * called from the UI layer's disconnect flow; do not clear creds
+	 * speculatively from other backend code. Errors should be routed
+	 * through `reportPersistenceError` internally where the underlying
+	 * storage layer has a convention (e.g. atomic-write path in
+	 * `persistence/auth.ts`); synchronous throws are caught defensively
+	 * by the UI caller.
+	 */
+	clearCreds(): void;
 }

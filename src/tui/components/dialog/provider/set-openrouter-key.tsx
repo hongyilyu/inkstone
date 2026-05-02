@@ -22,6 +22,12 @@ import { DialogModel } from "../model";
  * Cancellation: ESC on the prompt resolves `DialogPrompt.show` to
  * `null`. The flow returns without mutating state. No partial-save
  * path — the key is either fully stored or not stored at all.
+ *
+ * Signature matches the `LoginFlow` type in `./login-registry.ts` so
+ * the dispatcher calls it uniformly alongside Kiro / Codex login
+ * flows. The `primaryColor` arg is unused here (no themed URL in the
+ * description) but kept for signature parity — the registry's
+ * dispatcher doesn't branch per provider.
  */
 export async function setOpenRouterKey(
 	dialog: DialogContext,
