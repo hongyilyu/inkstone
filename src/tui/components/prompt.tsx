@@ -22,7 +22,7 @@ import {
 	type Mention,
 	readFileSafe,
 } from "../util/mentions";
-import { useCommand } from "./dialog-command";
+import { useCommand } from "./dialog/command";
 import { PromptAutocomplete } from "./prompt-autocomplete";
 import { SpinnerWave } from "./spinner-wave";
 

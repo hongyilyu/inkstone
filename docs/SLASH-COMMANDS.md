@@ -11,7 +11,7 @@ This doc captures the design exploration for a slash-command dropdown in the pro
 Historically the prompt had two disconnected command paths:
 
 - **Hardcoded `startsWith` checks** in `src/tui/components/prompt.tsx` for `/clear` and `/article <filename>`. Later superseded by a backend `AgentCommand` + `runAgentCommand` path.
-- **Palette registry** via `CommandProvider` in `src/tui/components/dialog-command.tsx` for `/agents`, `/models`, `/effort`, `/themes`, `/connect` — shown in Ctrl+P.
+- **Palette registry** via `CommandProvider` in `src/tui/components/dialog/command.tsx` for `/agents`, `/models`, `/effort`, `/themes`, `/connect` — shown in Ctrl+P.
 
 After the registry unification, both flows go through the same `CommandOption` registry. The remaining gap is UX: users still can't discover or invoke commands by typing `/` in the prompt textarea with dropdown autocompletion. OpenCode, Discord, Slack, and Claude Code all support a live slash-command dropdown; Inkstone should too.
 

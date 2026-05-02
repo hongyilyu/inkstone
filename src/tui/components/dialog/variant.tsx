@@ -2,8 +2,8 @@ import { availableThinkingLevels } from "@backend/agent";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { createMemo } from "solid-js";
-import type { DialogContext } from "../ui/dialog";
-import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select";
+import type { DialogContext } from "../../ui/dialog";
+import { DialogSelect, type DialogSelectOption } from "../../ui/dialog-select";
 
 /**
  * Display labels + short descriptions per ThinkingLevel. The descriptions

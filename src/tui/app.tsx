@@ -7,16 +7,16 @@ import {
 } from "@opentui/solid";
 import { createMemo, createSignal, Show } from "solid-js";
 import { Conversation } from "./components/conversation";
-import { DialogAgent } from "./components/dialog-agent";
+import { DialogAgent } from "./components/dialog/agent";
 import {
 	type CommandOption,
 	CommandProvider,
 	useCommand,
-} from "./components/dialog-command";
-import { DialogModel } from "./components/dialog-model";
-import { DialogProvider as DialogProviderSelect } from "./components/dialog-provider";
-import { DialogTheme } from "./components/dialog-theme";
-import { DialogVariant } from "./components/dialog-variant";
+} from "./components/dialog/command";
+import { DialogModel } from "./components/dialog/model";
+import { DialogProvider as DialogProviderSelect } from "./components/dialog/provider";
+import { DialogTheme } from "./components/dialog/theme";
+import { DialogVariant } from "./components/dialog/variant";
 import { OpenPage } from "./components/open-page";
 import { Prompt } from "./components/prompt";
 import { SecondaryPage } from "./components/secondary-page";

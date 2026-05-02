@@ -1,7 +1,7 @@
 import { listAgents } from "@backend/agent";
-import { useAgent } from "../context/agent";
-import type { DialogContext } from "../ui/dialog";
-import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select";
+import { useAgent } from "../../context/agent";
+import type { DialogContext } from "../../ui/dialog";
+import { DialogSelect, type DialogSelectOption } from "../../ui/dialog-select";
 
 interface AgentOption {
 	name: string;
