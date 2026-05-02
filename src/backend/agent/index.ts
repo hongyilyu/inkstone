@@ -4,7 +4,7 @@ import {
 	type AgentMessage,
 	type ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
-import { type Api, type Model, supportsXhigh } from "@mariozechner/pi-ai";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import { loadConfig, saveConfig } from "../persistence/config";
 import type { Config } from "../persistence/schema";
 import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
@@ -148,8 +148,11 @@ function resolveInitialAgentName(cfg: Config, requested?: string): string {
  *
  * Non-reasoning models have nothing to pick — the Effort palette entry is
  * hidden anyway. Reasoning models get the pi-agent-core set; `"xhigh"` is
- * gated on pi-ai's own `supportsXhigh()` capability helper (Opus 4.6/4.7,
- * GPT-5.2+).
+ * gated on the model's own `thinkingLevelMap` (pi-ai 0.72+): a model
+ * declares `xhigh: null` when it doesn't support the tier, any other value
+ * (incl. missing) means it does. Replaces pi-ai's pre-0.72
+ * `supportsXhigh()` helper, which was removed when the mapping moved from
+ * an internal capability check to a per-model declarative field.
  *
  * pi-ai may collapse some levels to the same wire value internally (e.g.
  * `"minimal"` → `effort: "low"` on adaptive Claude). That's intentional on
@@ -160,7 +163,10 @@ function resolveInitialAgentName(cfg: Config, requested?: string): string {
 export function availableThinkingLevels(model: Model<Api>): ThinkingLevel[] {
 	if (!model.reasoning) return ["off"];
 	const base: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
-	if (supportsXhigh(model)) base.push("xhigh");
+	// `thinkingLevelMap.xhigh === null` → model opts out of xhigh.
+	// Missing map, missing key, or any non-null value → xhigh is offered.
+	// Matches pi-ai's own collapse semantics for Opus 4.6 / 4.7, GPT-5.2+.
+	if (model.thinkingLevelMap?.xhigh !== null) base.push("xhigh");
 	return base;
 }
 
