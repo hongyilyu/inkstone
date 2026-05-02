@@ -166,9 +166,13 @@ export function Layout() {
 				title: "Connect",
 				description: "Manage providers",
 				onSelect: (d) => {
-					DialogProviderSelect.show(d, (model) => {
-						actions.setModel(model);
-					});
+					DialogProviderSelect.show(
+						d,
+						(model) => {
+							actions.setModel(model);
+						},
+						session.getProviderId(),
+					);
 				},
 			},
 			// Shell-level slash verb. Registered here (not on an agent) so
