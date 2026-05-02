@@ -727,7 +727,7 @@ A left-side panel mirroring the right-side metadata `Sidebar` pattern, toggled b
 
 1. Guards on `store.isStreaming` with a toast (blocks resume mid-turn — the user must press ESC first).
 2. `loadSession(id)` from SQLite.
-3. Inside a `batch()`, in this order: `agentSession.clearSession()` to wipe the live Agent's state; if `loaded.session.agent !== agentSession.agentName`, `agentSession.selectAgent(loaded.session.agent)` to rebind the live Session onto the stored session's agent; `agentSession.restoreMessages(loaded.agentMessages)` to seed the Agent with the persisted conversation; then store resets (`currentAgent`, `messages`, `totalTokens`, `totalCost`, `lastTurnStartedAt`).
+3. Inside a `batch()`, in this order: `agentSession.clearSession()` to wipe the live Agent's state; if `loaded.session.agent !== agentSession.agentName`, `agentSession.selectAgent(loaded.session.agent)` to rebind the live Session onto the stored session's agent; `agentSession.restoreMessages(loaded.agentMessages)` to seed the Agent with the persisted conversation; then store resets (`currentAgent`, `messages`, `totalTokens`, `totalCost`, `lastTurnStartedAt`). `totalTokens` and `totalCost` are seeded from `loaded.totals` rather than zeroed — `loadSession` sums per-turn `AssistantMessage.usage` across every real assistant row on disk, so the resumed session's sidebar reflects accumulated usage across app restarts. Synthesized alternation-repair placeholders have no `usage` and contribute 0; aborted turns with partial `usage` contribute their real tokens (paid for, not a leak).
 
 Ordering matters for the swap path: `Session.selectAgent` throws when the live Agent's `messages.length > 0`, so `clearSession` must precede it; `restoreMessages` must follow so the seeded history isn't wiped by the clear. The in-batch `currentAgent` write drives prompt accent color, sidebar header, and `CommandProvider`'s agent-scoped registrations to re-derive against the resumed agent.
 
@@ -735,7 +735,7 @@ Cross-agent resume is intentional. The "one agent per session" invariant (D13 in
 
 `Session.restoreMessages(messages: AgentMessage[])` is the minimal accessor for the load path. Implementation: `agent.state.messages = messages`. The backend `agent` instance is private to `createSession`'s closure, so the TUI needs an explicit entry point; naming it `restoreMessages` (rather than `setMessages`) signals "load-only, don't reach for it mid-turn."
 
-Token/cost counters reset to zero on resume because pi-ai's per-turn usage isn't reconstructed from raw `AgentMessage`s today. The right `Sidebar`'s existing `hasUsageData` memo hides the usage block when both are zero, so a resumed session doesn't misreport "0 spent" beside N prior turns — the counter re-accrues as soon as a new turn starts.
+Token/cost counters are seeded from `loaded.totals` on resume: `loadSession` sums `AssistantMessage.usage` across the stored `agent_messages` rows and returns `{ tokens, cost }`, so a reopened session displays its accumulated totals rather than starting from zero. Computed over the pre-repair list — synthesized alternation-repair placeholders have no `usage` and contribute 0. `clearSession` still zeroes both (a new in-memory session is unambiguously fresh).
 
 When the session panel is open, the right `Sidebar` is hidden regardless of width (single rule replacing an earlier two-threshold design). The panel itself refuses to open when `dimensions().width < 80` and surfaces a toast hint.
 

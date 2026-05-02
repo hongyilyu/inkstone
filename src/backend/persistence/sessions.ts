@@ -51,6 +51,18 @@ export interface LoadedSession {
 	session: SessionRecord;
 	displayMessages: DisplayMessage[];
 	agentMessages: AgentMessage[];
+	/**
+	 * Session-scope rollup of per-turn `AssistantMessage.usage`, summed
+	 * across every real (non-synthesized) assistant row on disk. Used to
+	 * seed the TUI's `totalTokens` / `totalCost` store on resume so a
+	 * reopened session doesn't reset its usage display to zero.
+	 *
+	 * Aborted turns written by pi-agent-core may carry partial `usage`;
+	 * those tokens were really paid for and are included (not a leak).
+	 * Synthesized placeholders from the alternation-repair path have no
+	 * `usage` field and contribute 0.
+	 */
+	totals: { tokens: number; cost: number };
 }
 
 /**
@@ -440,6 +452,23 @@ export function loadSession(sessionId: string): LoadedSession | null {
 
 	const agentMessagesOut = agentMsgRows.map((r) => r.data);
 
+	// Sum per-turn usage from real assistant rows on disk. The repair
+	// pass below synthesizes placeholders with no `usage` field; we
+	// fold over `agentMessagesOut` (pre-repair) so those can't
+	// contribute. `cost.total` is typed non-optional by pi-ai but the
+	// `?? 0` guards against a provider writing `usage` without a cost
+	// breakdown — otherwise `+ undefined` would poison the rollup with
+	// NaN. Mirrors the live accumulator in `tui/context/agent.tsx` so
+	// a resumed session matches what the original run would have shown.
+	let totalTokens = 0;
+	let totalCost = 0;
+	for (const m of agentMessagesOut) {
+		if (m.role === "assistant" && m.usage) {
+			totalTokens += m.usage.totalTokens;
+			totalCost += m.usage.cost?.total ?? 0;
+		}
+	}
+
 	// Load-time alternation repair. Two classes of corruption can end up
 	// on disk when a stream is killed mid-turn (Ctrl+C / process crash
 	// between `message_start` and `message_end`):
@@ -501,6 +530,7 @@ export function loadSession(sessionId: string): LoadedSession | null {
 		},
 		displayMessages,
 		agentMessages: repaired,
+		totals: { tokens: totalTokens, cost: totalCost },
 	};
 }
 
