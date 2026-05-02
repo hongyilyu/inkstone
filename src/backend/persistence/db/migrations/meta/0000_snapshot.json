@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "60496abc-05bd-4e12-9b5c-9800370e20ac",
+  "id": "c4ea266a-c692-4f6e-aef7-c0967335d4f8",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "agent_messages": {
@@ -126,6 +126,13 @@
         "duration_ms": {
           "name": "duration_ms",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "thinking_level": {
+          "name": "thinking_level",
+          "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

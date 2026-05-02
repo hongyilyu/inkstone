@@ -16,6 +16,7 @@ CREATE TABLE `messages` (
 	`agent_name` text,
 	`model_name` text,
 	`duration_ms` integer,
+	`thinking_level` text,
 	`error` text,
 	`interrupted` integer,
 	`created_at` integer NOT NULL,

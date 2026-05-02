@@ -33,7 +33,7 @@
  */
 
 import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { and, asc, count, desc, eq, inArray, min } from "drizzle-orm";
 import { getDb } from "./db/client";
@@ -211,6 +211,7 @@ export function appendDisplayMessage(
 				agentName: msg.agentName ?? null,
 				modelName: msg.modelName ?? null,
 				durationMs: msg.duration ?? null,
+				thinkingLevel: msg.thinkingLevel ?? null,
 				error: msg.error ?? null,
 				interrupted: msg.interrupted ?? null,
 				createdAt: Date.now(),
@@ -236,7 +237,7 @@ export function appendDisplayMessage(
 	}
 }
 
-/** Header-only update (agent/model/duration/error). No parts touch. */
+/** Header-only update (agent/model/duration/thinking-level/error/interrupted). No parts touch. */
 export function updateDisplayMessageMeta(
 	tx: Tx,
 	_sessionId: string,
@@ -248,6 +249,7 @@ export function updateDisplayMessageMeta(
 				agentName: msg.agentName ?? null,
 				modelName: msg.modelName ?? null,
 				durationMs: msg.duration ?? null,
+				thinkingLevel: msg.thinkingLevel ?? null,
 				error: msg.error ?? null,
 				interrupted: msg.interrupted ?? null,
 			})
@@ -421,6 +423,10 @@ export function loadSession(sessionId: string): LoadedSession | null {
 		agentName: m.agentName ?? undefined,
 		modelName: m.modelName ?? undefined,
 		duration: m.durationMs ?? undefined,
+		// Stored as opaque TEXT; trust the config-layer Zod validation at
+		// the write boundary. Pre-stamping rows load as undefined and
+		// render without the effort badge.
+		thinkingLevel: (m.thinkingLevel as ThinkingLevel | null) ?? undefined,
 		error: m.error ?? undefined,
 		interrupted: m.interrupted ?? undefined,
 	}));

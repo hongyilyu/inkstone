@@ -101,4 +101,55 @@ describe("display parts — file round-trip", () => {
 		expect(found).toBeDefined();
 		expect(found!.preview).toBe("Read this article.");
 	});
+
+	test("thinkingLevel round-trips through loadSession when set", () => {
+		// Pins the persistence read path for the per-turn reasoning-effort
+		// stamp. Writer: `appendDisplayMessage` carries
+		// `thinkingLevel: msg.thinkingLevel ?? null` into the row; reader:
+		// `loadSession` casts the opaque TEXT column through
+		// `ThinkingLevel | null` into the DisplayMessage. Without this
+		// pin, dropping either side would be invisible to the reducer/
+		// renderer tests in `test/tui/streaming.test.tsx`.
+		const rec = createSession({ agent: "reader" });
+		const msg: DisplayMessage = {
+			id: newId(),
+			role: "assistant",
+			parts: [{ type: "text", text: "ok" }],
+			agentName: "Reader",
+			modelName: "Claude Test",
+			duration: 1234,
+			thinkingLevel: "high",
+		};
+		runInTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
+
+		const loaded = loadSession(rec.id);
+		expect(loaded).not.toBeNull();
+		const got = loaded!.displayMessages[0];
+		expect(got).toBeDefined();
+		expect(got!.thinkingLevel).toBe("high");
+	});
+
+	test("absent thinkingLevel loads as undefined (pre-stamping bubble shape)", () => {
+		// Bubbles persisted before the per-message effort stamp existed
+		// have no `thinking_level` value. On load they must surface as
+		// `undefined`, so the renderer's `<Show when={msg().thinkingLevel
+		// && msg().thinkingLevel !== "off"}>` guard hides the badge
+		// without tripping on a null/undefined boundary.
+		const rec = createSession({ agent: "reader" });
+		const msg: DisplayMessage = {
+			id: newId(),
+			role: "assistant",
+			parts: [{ type: "text", text: "pre-stamp" }],
+			agentName: "Reader",
+			modelName: "Claude Test",
+			duration: 500,
+		};
+		runInTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
+
+		const loaded = loadSession(rec.id);
+		expect(loaded).not.toBeNull();
+		const got = loaded!.displayMessages[0];
+		expect(got).toBeDefined();
+		expect(got!.thinkingLevel).toBeUndefined();
+	});
 });

@@ -36,6 +36,13 @@ export const messages = sqliteTable(
 		agentName: text("agent_name"),
 		modelName: text("model_name"),
 		durationMs: integer("duration_ms"),
+		// Per-turn reasoning effort stamp. Stored as opaque TEXT (same
+		// posture as `agentName`/`modelName`) — the pi-agent-core
+		// `ThinkingLevel` enum is validated at the config write boundary,
+		// not here. NULL when the turn produced no effort (non-reasoning
+		// model or effort `"off"`); the renderer treats NULL and `"off"`
+		// identically.
+		thinkingLevel: text("thinking_level"),
 		error: text("error"),
 		// Mirrors `DisplayMessage.interrupted`. Split from `error` so
 		// resumed sessions can re-render the `· interrupted` footer
