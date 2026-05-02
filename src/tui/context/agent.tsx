@@ -465,14 +465,21 @@ export function AgentProvider(
 				}
 
 				case "message_end": {
-					// Accumulate token usage and cost from assistant messages
+					// Accumulate token usage and cost from assistant messages.
+					// `cost?.total ?? 0` mirrors the resume-time rollup in
+					// `loadSession` (`sessions.ts`) — pi-ai types `cost.total`
+					// as non-optional, but defending against a provider writing
+					// `usage` without a cost breakdown is cheap and keeps the
+					// two accumulators in lockstep; otherwise a sparse-usage
+					// stream would crash here (TypeError on `.total`) while
+					// loading the same session back would silently succeed.
 					const msg = (event as any).message as AgentMessage | undefined;
 					if (msg && msg.role === "assistant") {
 						const assistantMsg = msg as AssistantMessage;
 						const usage = assistantMsg.usage;
 						if (usage) {
 							setStore("totalTokens", (t) => t + usage.totalTokens);
-							setStore("totalCost", (c) => c + usage.cost.total);
+							setStore("totalCost", (c) => c + (usage.cost?.total ?? 0));
 						}
 						// Snapshot agent + model onto the assistant bubble that was
 						// pushed in the matching `message_start`. Sourcing provider/model
@@ -1118,14 +1125,13 @@ export function AgentProvider(
 				currentSessionId = loaded.session.id;
 				setStore("currentAgent", agentSession.agentName);
 				setStore("messages", loaded.displayMessages);
-				// Token / cost counters are session-local accumulators built
-				// from streaming events. They aren't persisted, so a resumed
-				// session starts from zero; the right Sidebar's `hasUsageData`
-				// memo already hides the usage block when both are zero, so
-				// the resumed view won't misreport "0 spent" next to N prior
-				// turns.
-				setStore("totalTokens", 0);
-				setStore("totalCost", 0);
+				// Token / cost counters are seeded from the sum of per-turn
+				// `AssistantMessage.usage` persisted on each assistant row in
+				// `agent_messages`. Synthesized alternation-repair placeholders
+				// have no `usage` and contribute 0; aborted turns with partial
+				// usage do contribute (those tokens were really paid for).
+				setStore("totalTokens", loaded.totals.tokens);
+				setStore("totalCost", loaded.totals.cost);
 				setStore("lastTurnStartedAt", 0);
 				// Ephemeral UI state — reset so the resumed session doesn't
 				// inherit stale sidebar sections or secondary page.
