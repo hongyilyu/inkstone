@@ -115,6 +115,39 @@ describe("slash autocomplete", () => {
 		expect(fake.calls.prompt[0]).toBe("/clear my cache");
 	});
 
+	test("leading whitespace before `/` falls through as plain prompt", async () => {
+		// Strict start-of-buffer gate: `rawText.startsWith("/")` in
+		// prompt.tsx handleSubmit. A buffer like `  /clear` no longer
+		// dispatches the slash — mirrors the autocomplete dropdown's
+		// open rule (`t.startsWith("/")` on untrimmed text) and the
+		// coaching-hint memo, so open / dispatch / hint agree on one
+		// rule. Guards against a pasted message that happens to contain
+		// `/clear` after whitespace from accidentally wiping a session.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		// Two leading spaces before the slash. Note: because the buffer
+		// starts with whitespace (not `/`), the slash dropdown never
+		// opens — prompt-autocomplete's open effect was already strict-
+		// SOF, so this test pins the submit-path parity with it.
+		await setup.mockInput.typeText("  /clear");
+		await setup.renderOnce();
+		await Bun.sleep(30);
+
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(50);
+
+		// clearSession must NOT fire.
+		expect(fake.calls.clearSession).toBe(0);
+		// The buffer fell through to the plain-prompt path with the raw
+		// text preserved (leading whitespace included — handleSubmit
+		// passes `rawText`, not the trimmed value, to buildMentionPayload).
+		expect(fake.calls.prompt.length).toBe(1);
+		expect(fake.calls.prompt[0]).toBe("  /clear");
+	});
+
 	test("ESC closes the dropdown", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });
