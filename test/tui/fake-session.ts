@@ -60,6 +60,7 @@ export interface FakeSessionHandle {
 		clearSession: number;
 		selectAgent: string[];
 		restoreMessages: AgentMessage[][];
+		setSessionId: string[];
 	};
 	/**
 	 * Force the next N `actions.prompt()` calls to reject with the given
@@ -104,6 +105,7 @@ export function makeFakeSession(
 		clearSession: 0,
 		selectAgent: [],
 		restoreMessages: [],
+		setSessionId: [],
 	};
 
 	let onEvent: (event: AgentEvent) => void = () => {};
@@ -142,6 +144,9 @@ export function makeFakeSession(
 			getProviderId: () => model.provider,
 			getModelId: () => model.id,
 			getThinkingLevel: () => thinkingLevel,
+			setSessionId(id: string) {
+				calls.setSessionId.push(id);
+			},
 			async clearSession() {
 				calls.clearSession += 1;
 				messageCount = 0;
