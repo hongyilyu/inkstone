@@ -117,3 +117,19 @@ export function clearOpenAICodexCreds(): void {
 	delete next.openaiCodex;
 	save(next);
 }
+
+export function loadOpenRouterKey(): string | undefined {
+	return load().openrouter;
+}
+
+export function saveOpenRouterKey(apiKey: string): void {
+	const current = load();
+	save({ ...current, openrouter: apiKey });
+}
+
+export function clearOpenRouterKey(): void {
+	const current = load();
+	const next = { ...current };
+	delete next.openrouter;
+	save(next);
+}
