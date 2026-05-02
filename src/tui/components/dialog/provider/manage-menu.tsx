@@ -8,25 +8,29 @@ import {
 } from "../../../ui/dialog-select";
 import type { ToastContext } from "../../../ui/toast";
 import { confirmAndDisconnectKiro } from "./disconnect-kiro";
+import { confirmAndDisconnectOpenAICodex } from "./disconnect-openai-codex";
 import { startKiroLogin } from "./login-kiro";
+import { startOpenAICodexLogin } from "./login-openai-codex";
 
 type ManageAction = "reconnect" | "disconnect";
 
 /**
- * Secondary menu for a connected Kiro provider: Reconnect or Disconnect.
+ * Secondary menu for a connected owned-creds provider: Reconnect or
+ * Disconnect. Today that's Kiro and ChatGPT (OpenAI Codex). Bedrock's
+ * creds live outside Inkstone (~/.aws/ + AWS_* env vars), so there's
+ * nothing for us to manage for that provider and it short-circuits
+ * back in `./index.tsx`.
  *
- * Reconnect delegates to the same `startKiroLogin` the disconnected-select
- * branch uses — no pre-clear, because `loginKiro` does not read existing
- * creds and `saveKiroCreds` overwrites atomically on success. If the user
- * ESCs mid-login, existing creds remain intact (non-surprising).
+ * Reconnect delegates to the same login helpers the disconnected-select
+ * branch uses — no pre-clear, because the login flows do not read
+ * existing creds and the save helpers overwrite atomically on success.
+ * If the user ESCs mid-login, existing creds remain intact
+ * (non-surprising).
  *
  * Disconnect confirms first (destructive guard), then clears creds and
- * rehomes the active session if Kiro was the one in use. See
- * `confirmAndDisconnectKiro` for the rehome logic.
- *
- * Kiro-specific on purpose: only Kiro's creds live in Inkstone storage
- * (`~/.config/inkstone/auth.json`). Bedrock creds are outside our remit
- * (~/.aws/ + AWS_* env vars), so no management menu for Bedrock.
+ * rehomes the active session if the disconnected provider was the one
+ * in use. See the respective `confirmAndDisconnect…` for the rehome
+ * logic.
  */
 export function showManageMenu(
 	dialog: DialogContext,
@@ -59,16 +63,35 @@ export function showManageMenu(
 			closeOnSelect={false}
 			onSelect={(option) => {
 				if (option.value === "reconnect") {
-					void startKiroLogin(dialog, toast, mutedColor, onModelSelected);
+					if (provider.id === "kiro") {
+						void startKiroLogin(dialog, toast, mutedColor, onModelSelected);
+					} else if (provider.id === "openai-codex") {
+						void startOpenAICodexLogin(
+							dialog,
+							toast,
+							mutedColor,
+							onModelSelected,
+						);
+					}
 					return;
 				}
-				void confirmAndDisconnectKiro(
-					dialog,
-					toast,
-					provider,
-					onModelSelected,
-					activeProviderId,
-				);
+				if (provider.id === "kiro") {
+					void confirmAndDisconnectKiro(
+						dialog,
+						toast,
+						provider,
+						onModelSelected,
+						activeProviderId,
+					);
+				} else if (provider.id === "openai-codex") {
+					void confirmAndDisconnectOpenAICodex(
+						dialog,
+						toast,
+						provider,
+						onModelSelected,
+						activeProviderId,
+					);
+				}
 			}}
 		/>
 	));

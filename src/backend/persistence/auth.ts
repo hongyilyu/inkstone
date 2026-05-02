@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import type { OAuthCredentials } from "@mariozechner/pi-ai/oauth";
 import type { KiroCredentials } from "pi-kiro/core";
 import { reportPersistenceError } from "./errors";
 import { AUTH_FILE, ensureConfigDir, writeFileAtomic } from "./paths";
@@ -98,5 +99,21 @@ export function clearKiroCreds(): void {
 	const current = load();
 	const next = { ...current };
 	delete next.kiro;
+	save(next);
+}
+
+export function loadOpenAICodexCreds(): OAuthCredentials | undefined {
+	return load().openaiCodex;
+}
+
+export function saveOpenAICodexCreds(creds: OAuthCredentials): void {
+	const current = load();
+	save({ ...current, openaiCodex: creds });
+}
+
+export function clearOpenAICodexCreds(): void {
+	const current = load();
+	const next = { ...current };
+	delete next.openaiCodex;
 	save(next);
 }

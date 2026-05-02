@@ -1,6 +1,7 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { bedrockProvider } from "./amazon-bedrock";
 import { kiroProvider } from "./kiro";
+import { openaiCodexProvider } from "./openai-codex";
 import type { ProviderInfo } from "./types";
 
 /**
@@ -11,7 +12,11 @@ import type { ProviderInfo } from "./types";
  * through the bridge. Only the *selected* provider id crosses the bridge as
  * reactive state (via `AgentStoreState.modelProvider`).
  */
-export const PROVIDERS: ProviderInfo[] = [bedrockProvider, kiroProvider];
+export const PROVIDERS: ProviderInfo[] = [
+	bedrockProvider,
+	kiroProvider,
+	openaiCodexProvider,
+];
 
 // Invariant: the registry is non-empty by construction, so `PROVIDERS[0]`
 // always exists. Non-null assertion keeps the return type narrow under

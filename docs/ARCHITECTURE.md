@@ -160,12 +160,15 @@ src/
         theme.tsx                   Theme selection dialog
         provider/                   Provider dialog — list + Kiro manage/login flows
           index.tsx                 DialogProvider list + row dispatch
-          manage-menu.tsx           Reconnect/Disconnect secondary menu for connected Kiro
+          manage-menu.tsx           Reconnect/Disconnect secondary menu for connected Kiro / ChatGPT
           disconnect-kiro.ts        Confirm → clearKiroCreds → active-provider rehome → toast
           login-kiro.tsx            Drive pi-kiro's loginKiro callbacks against the dialog stack
+          disconnect-openai-codex.ts Confirm → clearOpenAICodexCreds → active-provider rehome → toast
+          login-openai-codex.tsx    Drive pi-ai's loginOpenAICodex callbacks against the dialog stack
     util/
       format.ts                     Token/cost/duration/path formatting helpers
       keybind.ts                    Keybind action map + match/print helpers
+      clipboard.ts                  OSC 52 clipboard copy (SSH-safe, used by DialogAuthWait)
 ```
 
 ## Provider Stack
@@ -566,8 +569,9 @@ One provider ships today:
 |---|---|---|---|---|
 | `amazon-bedrock` | Amazon Bedrock | `us.anthropic.claude-opus-4-7` | pi-ai's `getEnvApiKey("amazon-bedrock")` (AWS_PROFILE / AWS_ACCESS_KEY_ID+SECRET / AWS_BEARER_TOKEN_BEDROCK / ECS/IRSA) **or** presence of `~/.aws/credentials` / `~/.aws/config` (honoring AWS_SHARED_CREDENTIALS_FILE / AWS_CONFIG_FILE overrides). IMDS-only EC2 is not probed. | `getModels("amazon-bedrock")` from pi-ai |
 | `kiro` | Amazon Kiro | `claude-opus-4-7` | Presence of saved OAuth creds in `~/.config/inkstone/auth.json` (mode 0600). Device-code login triggered from Connect dialog. | `kiroModels` from `pi-kiro/core`, region-filtered via `filterModelsByRegion` + `baseUrl` rewrite per `resolveApiRegion(creds.region)` |
+| `openai-codex` | ChatGPT | `gpt-5.4` | Presence of saved OAuth creds in `~/.config/inkstone/auth.json` (mode 0600) under the `openaiCodex` key. PKCE authorization-code login (browser callback on `127.0.0.1:1455`, falls back to paste prompt on port conflict) triggered from Connect dialog. Requires an active ChatGPT Plus / Pro subscription — the access-token JWT must carry a `chatgpt_account_id` claim or pi-ai's `loginOpenAICodex` throws. | `getModels("openai-codex")` from pi-ai (returns `[]` when signed out so `DialogModel` hides the entries) |
 
-`getApiKey()` returns `undefined` for Bedrock because pi-ai's Bedrock stream function reads AWS env vars directly via the AWS SDK chain — forwarding anything through pi-agent-core's `getApiKey` hook would be silently dropped. For Kiro, `getApiKey()` is async: it checks `creds.expires`, calls `refreshKiroToken()` if past-due, persists the refreshed pair, and returns the fresh `access` token. On refresh failure it clears stored creds and throws a "run Connect again" error — pi-agent-core surfaces this via the existing error-bubble path.
+`getApiKey()` returns `undefined` for Bedrock because pi-ai's Bedrock stream function reads AWS env vars directly via the AWS SDK chain — forwarding anything through pi-agent-core's `getApiKey` hook would be silently dropped. For Kiro, `getApiKey()` is async: it checks `creds.expires`, calls `refreshKiroToken()` if past-due, persists the refreshed pair, and returns the fresh `access` token. On refresh failure it clears stored creds and throws a "run Connect again" error — pi-agent-core surfaces this via the existing error-bubble path. For OpenAI Codex, `getApiKey()` is async and delegates to pi-ai's own `getOAuthApiKey("openai-codex", credsMap)` which handles the expiry check + rotation; the provider shim wraps pi-ai's throw-on-refresh-failure contract so the no-throw invariant is honored (matches Kiro's posture).
 
 ### Kiro provider — registration, region scoping, refresh
 
@@ -610,6 +614,32 @@ Kept separate from `config.json` because OAuth tokens are sensitive (pi-kiro's `
 - Failure (non-cancel): error toast with the pi-kiro error message.
 
 The Models dialog does not drill down through providers — with only connected providers in the list, flat is simpler. When a future provider adds an API-key auth flow, the two-step would land as: DialogProvider → api-key input → DialogModel scoped to the newly-connected provider. That scoped form can be re-added to `DialogModel` (via an optional `providerId` prop) when needed.
+
+#### OpenAI Codex (ChatGPT) login flow
+
+`startOpenAICodexLogin` in `components/dialog/provider/login-openai-codex.tsx` wires pi-ai's `loginOpenAICodex` callbacks against the dialog stack. The flow differs from Kiro's AWS SSO-OIDC device-code:
+
+- pi-ai binds a local HTTP server on `127.0.0.1:1455` to receive the OAuth redirect, opens the authorize URL via `DialogAuthWait` (user clicks or presses Enter to hand off to the system browser, or presses `c` to copy the URL to the clipboard — see `DialogAuthWait` below).
+- `onAuth({ url, instructions })` → `DialogAuthWait.show(...)` — primary-color URL, muted instructions, live progress line fed by `onProgress`.
+- `onPrompt({ message, placeholder, allowEmpty })` → `DialogPrompt.show(...)` — invoked **only as a post-failure fallback** when the callback server couldn't bind to 1455 (port busy / firewall) or the callback never came through. User pastes the `?code=…&state=…` URL or the bare code; pi-ai's `parseAuthorizationInput` handles both shapes. Intentional choice over pi-ai's `onManualCodeInput` racer — the paste lane would otherwise hide the primary URL on the DialogAuthWait screen for the healthy-network case.
+- Cancellation: ESC on either dialog triggers `onClose`, which closes the dialog stack. pi-ai's `loginOpenAICodex` does not take an `AbortSignal`; a cancelled `onPrompt` (user ESCd the paste fallback) throws a sentinel `"Login cancelled"` that the catch branch swallows silently.
+- Success: `saveOpenAICodexCreds(creds)` → toast → `DialogModel.show(...)` scoped to `{ providerId: "openai-codex", modelId: "gpt-5.4" }` so the user lands on the freshly-available catalog. Same post-login chain as Kiro.
+- Failure — subscription gating: pi-ai's `loginOpenAICodex` extracts `chatgpt_account_id` from the access JWT on both login and refresh, throwing `"Failed to extract accountId from token"` when the account lacks Codex entitlement. The catch branch detects this error substring (case-insensitive) and surfaces a targeted "ChatGPT Plus or Pro subscription required" toast instead of the raw message.
+
+#### DialogAuthWait — shared OAuth wait screen
+
+`src/tui/ui/dialog-auth-wait.tsx` owns the OAuth "waiting for authorization" screen both Kiro and Codex land on after `onAuth` fires. Trimmed port of OpenCode's `AutoMethod` block in `component/dialog-provider.tsx:157-207`:
+
+- Primary-color clickable URL (mouse click or Enter → `open(url)` via the `open` npm package).
+- Muted instructions (`onAuth({ instructions })` payload).
+- Live progress line fed by an `Accessor<string>` signal the caller drives from `onProgress`.
+- `c` copies the URL to the system clipboard via `src/tui/util/clipboard.ts`'s `copyToClipboardOSC52`. OSC 52 is the only clipboard path that works over SSH (terminal emulator writes to the local clipboard, not the remote host). Modern terminals (Alacritty, WezTerm, iTerm2, kitty, Windows Terminal, Ghostty, tmux with DCS passthrough) honor it; older terminals silently drop the sequence. Acceptable for a fallback path — the URL stays visible for manual retype.
+
+`copyToClipboardOSC52` is a single ~15-line function; OpenCode's full `util/clipboard.ts` (native subprocess + `clipboardy` fallback) is deliberately NOT ported — when a second copy use case (copy-tool-output, copy-error-details) hits a terminal that doesn't honor OSC 52, port the rest.
+
+#### Disconnect / manage menu
+
+Both Kiro and OpenAI Codex are "owned-creds" providers — their tokens live in `~/.config/inkstone/auth.json` and Inkstone can honestly clear them. `DialogProvider`'s `OWNED_CREDS_PROVIDERS` set gates the connected-row dispatch: selecting a connected owned-creds provider opens the Reconnect / Disconnect menu (`./manage-menu.tsx`), selecting Bedrock (creds in `~/.aws/` or AWS_* env vars — not ours to touch) dismisses silently. Per-provider `confirmAndDisconnect…` helpers own the clear + rehome chain. When a third owned-creds provider arrives, the per-provider dispatch in `manage-menu.tsx` and `index.tsx` is the right trigger to extract into a shared helper.
 
 ### Effort variants (reasoning levels)
 
