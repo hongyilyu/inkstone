@@ -9,13 +9,23 @@
  * `args` is typed `unknown` because pi-ai's `ToolCall.arguments` is
  * `Record<string, any>` — each case narrows locally with property
  * checks before rendering.
+ *
+ * Outputs are always passed through `stripAnsi` before truncation.
+ * The LLM is an untrusted source — it can emit args containing ANSI
+ * escape sequences that would otherwise be interpreted by the
+ * terminal when the ToolPart renderer writes them as plain `<text>`
+ * (not `<markdown>`, which neutralizes them). Closes the M4 hazard
+ * from the May 2026 audit.
  */
+
+import { stripAnsi } from "./ansi";
 
 const MAX_LEN = 80;
 
 function trunc(s: string, limit = MAX_LEN): string {
-	if (s.length <= limit) return s;
-	return `${s.slice(0, limit - 1)}…`;
+	const clean = stripAnsi(s);
+	if (clean.length <= limit) return clean;
+	return `${clean.slice(0, limit - 1)}…`;
 }
 
 function str(v: unknown): string | undefined {

@@ -18,7 +18,7 @@
  * a new `source` discriminator added to `DisplayPart.file`.
  */
 
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { VAULT_DIR } from "@backend/agent/constants";
 import { isInsideDir } from "@backend/agent/permissions";
@@ -28,21 +28,32 @@ import { openSecondaryPage } from "../context/secondary-page";
 type FilePart = Extract<DisplayPart, { type: "file" }>;
 
 /**
- * Resolve `part.filename` against `VAULT_DIR`, path-string sandbox-check
- * that the resolved path is inside the vault, read the file, and open
- * its content in the secondary page. On any failure (outside-vault,
- * missing file, I/O error), open the secondary page with a short error
- * note so the click is never silent.
+ * Resolve `part.filename` against `VAULT_DIR`, sandbox-check that the
+ * resolved path is inside the vault, confirm it's a regular file (not
+ * a symlink, directory, FIFO, socket, or device), read its contents,
+ * and open it in the secondary page.
  *
- * The sandbox is a string-level check — it does NOT follow symlinks, so
- * a symlink *inside* the vault that points outside would be followed by
- * `readFileSync`. `readFileSafe` in `mentions.ts` closes that hole on the
- * write-side (prompt expansion) via `lstatSync`. The asymmetry predates
- * this extraction; threat model justifies deferring a matching guard
- * here (file parts arrive from agent output or `@`-mention expansion,
- * both of which already apply the write-side guard before stamping a
- * `file` part). Revisit if a producer lands that emits `file` parts
- * pointing at paths it hasn't pre-validated.
+ * Symlink rejection closes the M3 hazard from the May 2026 audit: a
+ * persisted `file` part from a prior session could point at a path
+ * that wasn't a symlink at stamp time but became one later. Both
+ * current producers (`/article`, `@`-mentions) already `lstatSync`-
+ * reject symlinks at the write side, but the chip round-trips through
+ * SQLite, so the read-side guard has to be independent.
+ *
+ * Known narrow gap: `resolve(VAULT_DIR, filename)` does NOT resolve
+ * symlinks in *intermediate* path components. A symlinked DIRECTORY
+ * inside the vault (e.g. `VAULT/foo → /etc`) would let
+ * `isInsideDir(resolve(VAULT, "foo/passwd"), VAULT)` pass and the
+ * final lstat would return `isFile()=true` for the regular file
+ * `/etc/passwd`. Accepted for now: both current producers lstat at
+ * write time, so the malicious path wouldn't get stamped into a
+ * `file` part in the first place. Closing it requires
+ * `realpathSync` + re-`isInsideDir`-checking the real path; not
+ * worth the cost today.
+ *
+ * On any failure (outside-vault, symlink, non-file, missing, I/O),
+ * open the secondary page with a short error note so the click is
+ * never silent.
  */
 export function openVaultFilePart(part: FilePart): void {
 	const { filename } = part;
@@ -50,6 +61,15 @@ export function openVaultFilePart(part: FilePart): void {
 		const abs = resolve(VAULT_DIR, filename);
 		if (!isInsideDir(abs, VAULT_DIR) || abs === VAULT_DIR) {
 			openSecondaryPage({ content: `_Path outside vault: ${filename}_` });
+			return;
+		}
+		// `lstatSync` (not `statSync`) so the symlink itself is inspected
+		// rather than its target. A symlink inside the vault pointing at
+		// `/etc/hosts` would pass `isInsideDir` but fail `isFile()` iff
+		// we follow the link — we want the loud reject instead.
+		const st = lstatSync(abs);
+		if (st.isSymbolicLink() || !st.isFile()) {
+			openSecondaryPage({ content: `_Cannot open: ${filename}_` });
 			return;
 		}
 		const content = readFileSync(abs, "utf-8");
