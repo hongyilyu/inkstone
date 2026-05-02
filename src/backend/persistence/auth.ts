@@ -1,13 +1,7 @@
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { KiroCredentials } from "pi-kiro/core";
 import { reportPersistenceError } from "./errors";
-import { AUTH_FILE, CONFIG_DIR } from "./paths";
+import { AUTH_FILE, ensureConfigDir, writeFileAtomic } from "./paths";
 import { AuthFile, type AuthFile as AuthFileType } from "./schema";
 
 /**
@@ -78,21 +72,13 @@ function save(data: AuthFileType): void {
 		return;
 	}
 	try {
-		if (!existsSync(CONFIG_DIR)) {
-			mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
-		}
-		writeFileSync(AUTH_FILE, JSON.stringify(parsed.data, null, 2), {
-			encoding: "utf-8",
-			mode: 0o600,
-		});
-		// writeFileSync only honors `mode` on file creation; a subsequent write
-		// leaves the existing mode intact. chmod unconditionally so pre-existing
-		// world-readable files from earlier versions get tightened.
-		try {
-			chmodSync(AUTH_FILE, 0o600);
-		} catch {
-			// Best-effort — chmod can fail on Windows or exotic filesystems.
-		}
+		ensureConfigDir();
+		// writeFileAtomic creates the tmp file via `O_CREAT | O_EXCL |
+		// O_WRONLY` with mode 0o600 honored on creation, then renames
+		// atomically — the refresh token bytes never land on disk at a
+		// looser mode, and a SIGKILL between write and rename leaves
+		// the prior auth.json intact rather than truncated.
+		writeFileAtomic(AUTH_FILE, JSON.stringify(parsed.data, null, 2), 0o600);
 		cached = parsed.data;
 	} catch (error) {
 		reportPersistenceError({ kind: "auth", action: "save", error });
