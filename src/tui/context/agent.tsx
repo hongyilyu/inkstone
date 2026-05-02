@@ -50,6 +50,7 @@ import {
 	getModel,
 	type Model,
 } from "@mariozechner/pi-ai";
+import { getOpenAICodexWebSocketDebugStats } from "@mariozechner/pi-ai/openai-codex-responses";
 import { batch, createContext, type ParentProps, useContext } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { toBottom } from "../app";
@@ -193,6 +194,18 @@ export function AgentProvider(
 	// and we won't persist/render a badge.
 	let turnStartThinkingLevel: ThinkingLevel | undefined;
 
+	// Pre-turn snapshot of pi-ai's Codex WebSocket connection counter,
+	// used at `agent_end` to decide whether the just-completed turn ran
+	// on WebSocket (counter advanced) or fell back to SSE (counter
+	// unchanged). Populated in the `prompt` wrapper before
+	// `actions.prompt` fires; read in `agent_end`. Stats are keyed by
+	// sessionId and only mutate inside pi-ai's `processWebSocketStream`
+	// after body send (`openai-codex-responses.js:768-774`), so if
+	// `"auto"` transport aborted the WebSocket path before that point,
+	// the counters stay unchanged. Meaningful only when Codex is the
+	// active provider and the session id is set.
+	let preTurnCodexConnections: number | undefined;
+
 	const initialModel = agentSession.getModel();
 
 	const [store, setStore] = createStore<AgentStoreState>({
@@ -228,6 +241,14 @@ export function AgentProvider(
 			agent: store.currentAgent,
 		});
 		currentSessionId = rec.id;
+		// Forward the session id to pi-agent-core so providers that
+		// key behavior on it (Codex's `websocket-cached` / `"auto"`
+		// transport uses it as both the `prompt_cache_key` and the
+		// WebSocket connection cache) can thread requests through a
+		// single reusable context. Idempotent across turns; only the
+		// first call per session is load-bearing. Other providers
+		// ignore the field.
+		agentSession.setSessionId(rec.id);
 		return rec.id;
 	}
 
@@ -897,6 +918,46 @@ export function AgentProvider(
 					// re-captures; unrelated `agent_end` events (none exist in
 					// the current event model, but defensive) won't inherit.
 					turnStartThinkingLevel = undefined;
+
+					// Codex transport detection — decide whether this turn
+					// ran on WebSocket (pi-ai's `"auto"` transport happy
+					// path; `websocket-cached` continuation active for
+					// subsequent turns) or fell back to SSE. Signal:
+					// pi-ai's WebSocket debug counter
+					// (`connectionsCreated + connectionsReused`) advances
+					// only when `processWebSocketStream` reaches the body-
+					// request step (`openai-codex-responses.js:768-774`).
+					// If `"auto"` aborted the WebSocket path before that
+					// point, the counter stays at the pre-turn snapshot —
+					// that's the SSE-fallback signal. The outcome lands
+					// on `store.codexTransport` (`"ws"` / `"sse"`) and is
+					// rendered as a muted suffix on the prompt statusline
+					// next to the model name. Ephemeral — never persisted
+					// to SQLite or stamped onto `DisplayMessage`: transport
+					// is a network-state signal, not a historical property
+					// of a specific turn. The next Codex turn overwrites
+					// this field so the indicator always reflects the most
+					// recent real attempt. `/clear` and `resumeSession`
+					// reset it (same lifecycle as `sidebarSections`). No
+					// update when Codex isn't the active provider
+					// (`preTurnCodexConnections` undefined) — the previous
+					// value stays on screen until the user sends another
+					// Codex turn or clears.
+					if (
+						preTurnCodexConnections !== undefined &&
+						currentSessionId &&
+						store.modelProvider === "openai-codex"
+					) {
+						const sid = currentSessionId;
+						const post = getOpenAICodexWebSocketDebugStats(sid);
+						const postTotal =
+							(post?.connectionsCreated ?? 0) + (post?.connectionsReused ?? 0);
+						setStore(
+							"codexTransport",
+							postTotal === preTurnCodexConnections ? "sse" : "ws",
+						);
+					}
+					preTurnCodexConnections = undefined;
 					break;
 			}
 		});
@@ -942,6 +1003,26 @@ export function AgentProvider(
 					// the turn-closing bubble with the value that produced it,
 					// not whatever the store holds at event time.
 					turnStartThinkingLevel = store.thinkingLevel;
+					// Pre-turn snapshot of pi-ai's Codex WebSocket connection
+					// counter. Read in `agent_end` to decide whether this
+					// turn ran on WebSocket (counter advanced) or fell back
+					// to SSE (counter unchanged). `getOpenAICodexWebSocketDebugStats`
+					// returns `undefined` when no WebSocket has ever been
+					// opened for this sessionId — we normalize to 0 so the
+					// "no change" branch reads as "SSE used" on the first
+					// turn, which is the correct semantic for a brand-new
+					// session whose first turn couldn't open a WebSocket.
+					// Only meaningful when Codex is the active provider;
+					// other providers don't touch the counter, so the diff
+					// trivially reads 0 — benign.
+					if (store.modelProvider === "openai-codex") {
+						const stats = getOpenAICodexWebSocketDebugStats(sessionId);
+						preTurnCodexConnections =
+							(stats?.connectionsCreated ?? 0) +
+							(stats?.connectionsReused ?? 0);
+					} else {
+						preTurnCodexConnections = undefined;
+					}
 					toBottom();
 				},
 			);
@@ -1072,6 +1153,11 @@ export function AgentProvider(
 			setStore("totalTokens", 0);
 			setStore("totalCost", 0);
 			setStore("lastTurnStartedAt", 0);
+			// Reset the Codex transport indicator. A fresh session gets
+			// a fresh WebSocket cache key; no claim should carry over
+			// from the previous session's network state.
+			setStore("codexTransport", undefined);
+			preTurnCodexConnections = undefined;
 		},
 		resumeSession(sessionId: string) {
 			// Block during an in-flight turn. `isStreaming` is set on
@@ -1123,6 +1209,11 @@ export function AgentProvider(
 				}
 				agentSession.restoreMessages(loaded.agentMessages);
 				currentSessionId = loaded.session.id;
+				// Forward the resumed session id so pi-ai's Codex
+				// cache keys line up with this session's transcript
+				// on the first post-resume turn. See `ensureSession`
+				// above for the full rationale.
+				agentSession.setSessionId(loaded.session.id);
 				setStore("currentAgent", agentSession.agentName);
 				setStore("messages", loaded.displayMessages);
 				// Token / cost counters are seeded from the sum of per-turn
@@ -1134,9 +1225,12 @@ export function AgentProvider(
 				setStore("totalCost", loaded.totals.cost);
 				setStore("lastTurnStartedAt", 0);
 				// Ephemeral UI state — reset so the resumed session doesn't
-				// inherit stale sidebar sections or secondary page.
+				// inherit stale sidebar sections, secondary page, or a
+				// Codex transport label from a previous process.
 				setStore("sidebarSections", []);
 				closeSecondaryPage();
+				setStore("codexTransport", undefined);
+				preTurnCodexConnections = undefined;
 			});
 			toBottom();
 		},

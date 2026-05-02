@@ -501,6 +501,23 @@ export function Prompt() {
 									{store.thinkingLevel}
 								</text>
 							</Show>
+							{/* Codex transport indicator — ephemeral (live only,
+                                not persisted, not stamped onto DisplayMessage).
+                                Rendered as a muted suffix next to the model name
+                                so users know whether pi-ai's `"auto"` transport
+                                landed on WebSocket (ws; `websocket-cached`
+                                continuation is active) or fell back to SSE.
+                                The previous one-shot toast surface was pulled in
+                                favor of this always-visible badge — transport
+                                choice is a network-state signal that should
+                                reflect the current reality, not interrupt the
+                                user once and disappear. Hidden when the active
+                                provider isn't Codex or before the first Codex
+                                turn in the session has completed. */}
+							<Show when={store.codexTransport}>
+								<text fg={theme.textMuted}>·</text>
+								<text fg={theme.textMuted}>{store.codexTransport}</text>
+							</Show>
 						</box>
 					</box>
 				</box>

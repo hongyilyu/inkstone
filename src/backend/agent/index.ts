@@ -55,6 +55,22 @@ export interface Session {
 	getModelId(): string;
 	getThinkingLevel(): ThinkingLevel;
 	/**
+	 * Set the session id forwarded to providers for cache-aware
+	 * backends. Pi-agent-core stamps this onto every stream call as
+	 * `SimpleStreamOptions.sessionId`; the `openai-codex-responses`
+	 * provider uses it as both the `prompt_cache_key` (SSE) and the
+	 * WebSocket connection cache key. Reusing the same id across
+	 * turns in one Inkstone session lets pi-ai's `websocket-cached`
+	 * path (via the `"auto"` transport default) skip re-sending full
+	 * context after the first turn.
+	 *
+	 * Called lazily from the TUI's `ensureSession()` on first prompt,
+	 * since the SQLite session row id isn't known at `createSession`
+	 * time. Idempotent — assigning the same id repeatedly is a no-op.
+	 * Only the Codex provider reads it today; other providers ignore it.
+	 */
+	setSessionId(id: string): void;
+	/**
 	 * Wipe the in-memory conversation. Leaves the underlying `Agent`
 	 * instance, its system prompt, its tools, and its model alone —
 	 * the session can continue with the same agent. The TUI wrapper
@@ -235,6 +251,17 @@ export function createSession(params: {
 			thinkingLevel: resolveThinkingLevel(initialModel),
 			tools: composeTools(info),
 		},
+		// `transport: "auto"` is pi-ai 0.72.x's default for `openai-codex-
+		// responses` anyway (`providers/openai-codex-responses.js:92`);
+		// setting it explicitly pins the behavior against future pi-ai
+		// default flips and documents the choice at the Agent level.
+		// "auto" tries WebSocket first, silently falls back to SSE on
+		// connection failure — connectivity over cost, per the stack-
+		// plan decision. Non-Codex providers ignore the option. The
+		// one-shot "using SSE fallback" toast lives TUI-side (see
+		// `tui/context/agent.tsx`'s `agent_end` handler); detection
+		// reads `getOpenAICodexWebSocketDebugStats(sessionId)`.
+		transport: "auto",
 		getApiKey: async (provider) => {
 			return getProvider(provider).getApiKey();
 		},
@@ -291,6 +318,9 @@ export function createSession(params: {
 		},
 		get messageCount() {
 			return agent.state.messages.length;
+		},
+		setSessionId(id: string) {
+			agent.sessionId = id;
 		},
 		getModel() {
 			const m = resolveModel(providerSel.providerId, providerSel.modelId);

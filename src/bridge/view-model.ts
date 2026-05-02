@@ -170,4 +170,27 @@ export interface AgentStoreState {
 	 * only the selected agent crosses the bridge as reactive state.
 	 */
 	currentAgent: string;
+	/**
+	 * Transport actually used on the most recent Codex turn in this
+	 * session. `"ws"` when pi-ai's `auto` transport landed on WebSocket
+	 * (the expected happy path; `websocket-cached` continuation is
+	 * active for subsequent turns), `"sse"` when auto fell back to SSE.
+	 * `undefined` when no Codex turn has run in this session yet, or
+	 * when the active provider isn't Codex.
+	 *
+	 * Ephemeral — NOT persisted to SQLite. Cleared on `clearSession`
+	 * and `resumeSession` so a resumed session doesn't inherit a stale
+	 * indicator from a previous process. Detected via a pre/post-turn
+	 * diff of pi-ai's `getOpenAICodexWebSocketDebugStats(sessionId)`
+	 * counter in `tui/context/agent.tsx`'s `agent_end` handler —
+	 * rendered as a muted suffix (`· ws` / `· sse`) next to the model
+	 * name on the prompt statusline.
+	 *
+	 * Deliberately not stamped onto `DisplayMessage` like model / effort:
+	 * transport choice is a network-state signal, not something the user
+	 * should see pinned to a historical bubble. If they change networks
+	 * between turns, the next turn's label supersedes the previous one
+	 * and the old value is correctly forgotten.
+	 */
+	codexTransport?: "ws" | "sse";
 }
