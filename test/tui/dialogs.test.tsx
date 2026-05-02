@@ -197,4 +197,57 @@ describe("command palette", () => {
 		// Session list panel header not rendered.
 		expect(setup.captureCharFrame()).not.toContain("Sessions ");
 	});
+
+	test("Connect dialog renders ✓ for connected providers", async () => {
+		// test/preload.ts seeds an AWS env fixture, so `isConnected()`
+		// returns true for Bedrock in the test runner. That means the
+		// Connect dialog's first row carries a `✓` gutter and no
+		// `Not configured` description.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		setup.mockInput.pressKey("p", { ctrl: true });
+		await waitForFrame(setup, "Command Panel");
+		await Bun.sleep(30);
+
+		await setup.mockInput.typeText("Connect");
+		await waitForFrame(setup, "Connect");
+		await Bun.sleep(30);
+
+		setup.mockInput.pressEnter();
+		const f = await waitForFrame(setup, "Providers");
+		expect(f).toContain("✓");
+		expect(f).not.toContain("✓ Connected");
+		expect(f).not.toContain("Not configured");
+	});
+
+	test("Select Model groups rows under provider category header", async () => {
+		// DialogModel options carry `category: provider.displayName`,
+		// so DialogSelect's grouping pass renders "Amazon Bedrock" as
+		// a header line above the Bedrock model rows.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		setup.mockInput.pressKey("p", { ctrl: true });
+		await waitForFrame(setup, "Command Panel");
+		await Bun.sleep(30);
+
+		await setup.mockInput.typeText("Models");
+		await waitForFrame(setup, "Models");
+		await Bun.sleep(30);
+
+		setup.mockInput.pressEnter();
+		const f = await waitForFrame(setup, "Amazon Bedrock");
+		// Position check: the category header must land above the
+		// first model row. If grouping regressed (e.g. header dropped,
+		// or description column re-introduced so "Amazon Bedrock"
+		// appears to the right of each row), the substring order
+		// flips and this assertion fails.
+		const headerIdx = f.indexOf("Amazon Bedrock");
+		const firstModelIdx = f.indexOf("Nova");
+		expect(headerIdx).toBeGreaterThan(-1);
+		expect(firstModelIdx).toBeGreaterThan(headerIdx);
+	});
 });
