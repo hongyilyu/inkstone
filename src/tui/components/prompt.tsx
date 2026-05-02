@@ -197,10 +197,10 @@ export function Prompt() {
 				: [];
 
 		// Slash-command dispatch via the unified command registry.
-		// Splits on the first whitespace: `/name args...`. Matching
-		// OpenCode's prompt submit path, only entries whose `slash` field
-		// matches are intercepted; unknown slashes or commands missing
-		// required args fall through as plain prompts.
+		// Splits on the first space: `/name args...`. Matching OpenCode's
+		// prompt submit path, only entries whose `slash` field matches
+		// are intercepted; unknown slashes or commands missing required
+		// args fall through as plain prompts.
 		//
 		// Per SLASH-COMMANDS.md Path A, agent-declared commands and
 		// shell-level commands share the same registry; `triggerSlash`
@@ -208,26 +208,28 @@ export function Prompt() {
 		// first so agent-scoped slashes beat shell-scoped on name
 		// collision — preserves the D9 "agent overrides built-in" rule.
 		//
+		// Strict start-of-buffer gate: the raw textarea contents (NOT
+		// the trimmed `value`) must begin with `/` for the dispatch to
+		// fire. Buffers like `  /clear` or `\n/clear` fall through as
+		// plain prompts — mirrors the autocomplete dropdown's open rule
+		// (`t.startsWith("/")` in `prompt-autocomplete.tsx`) and the
+		// coaching-hint memo, so open / dispatch / hint agree on one
+		// rule. Narrows the dispatch surface so a user who pastes a
+		// leading-whitespace message that happens to contain `/clear`
+		// can't accidentally wipe a session.
+		//
 		// Mentions inside the args range are expanded to their absolute
 		// vault paths BEFORE the dispatch. Mentions entirely before the
-		// first whitespace (inside the verb `/name`) stay as literal
-		// text in the buffer — `canRunSlash` will fail to match the
-		// mangled name and the input falls through as a plain prompt.
-		// Trailing text after a mention (e.g. `/article @foo.md junk`)
-		// is passed through verbatim to the command; reader's error
-		// message is clear enough for a rare user-input bug.
-		//
-		// `rawText` may have leading whitespace (e.g. `  /article @foo.md`);
-		// `slashStart` anchors the `/` index so the name/args split reads
-		// from the right offset and mention-range filtering references
-		// the raw-buffer positions that extmarks carry.
-		if (value.startsWith("/")) {
-			const slashStart = rawText.indexOf("/");
-			const spaceAt = rawText.indexOf(" ", slashStart);
+		// first space (inside the verb `/name`) stay as literal text in
+		// the buffer — `canRunSlash` will fail to match the mangled name
+		// and the input falls through as a plain prompt. Trailing text
+		// after a mention (e.g. `/article @foo.md junk`) is passed
+		// through verbatim to the command; reader's error message is
+		// clear enough for a rare user-input bug.
+		if (rawText.startsWith("/")) {
+			const spaceAt = rawText.indexOf(" ");
 			const name =
-				spaceAt === -1
-					? rawText.slice(slashStart + 1).trim()
-					: rawText.slice(slashStart + 1, spaceAt);
+				spaceAt === -1 ? rawText.slice(1).trim() : rawText.slice(1, spaceAt);
 			if (spaceAt === -1) {
 				// Bare `/name` with no whitespace after — no mentions in args range.
 				if (command.triggerSlash(name, "")) {
