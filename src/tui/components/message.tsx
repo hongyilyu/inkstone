@@ -365,6 +365,18 @@ export function AssistantMessage(props: {
 								{durationSuffix(msg().duration)}
 							</span>
 						</Show>
+						{/* Effort badge — mirrors the prompt statusline shape
+						    (`· <level>` in theme.warning + bold). Hidden when
+						    the stamp is `"off"` or absent: historical bubbles
+						    from before this field was added have no stamp, and
+						    we deliberately don't persist `"off"` because it
+						    would render identically to the absent case. */}
+						<Show when={msg().thinkingLevel && msg().thinkingLevel !== "off"}>
+							<span style={{ fg: theme.textMuted }}>{" · "}</span>
+							<strong style={{ fg: theme.warning }}>
+								{msg().thinkingLevel}
+							</strong>
+						</Show>
 						<Show when={msg().interrupted}>
 							<span style={{ fg: theme.textMuted }}> · interrupted</span>
 						</Show>

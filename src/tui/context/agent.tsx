@@ -182,6 +182,17 @@ export function AgentProvider(
 	// avoid churning empty rows when the user boots without interacting.
 	let currentSessionId: string | null = null;
 
+	// Reasoning effort captured at the turn's user-prompt commit, used
+	// at `agent_end` to stamp the turn-closing bubble. Snapshotting at
+	// turn start (not reading `store.thinkingLevel` at event time)
+	// insulates the historical stamp from a mid-stream model/effort
+	// switch — if the user opens DialogModel + picks a new model while
+	// a reply is streaming, the bubble for the in-flight turn still
+	// reports the effort that actually produced it. `undefined` means
+	// no turn is in flight; `"off"` means a turn started with no effort
+	// and we won't persist/render a badge.
+	let turnStartThinkingLevel: ThinkingLevel | undefined;
+
 	const initialModel = agentSession.getModel();
 
 	const [store, setStore] = createStore<AgentStoreState>({
@@ -828,8 +839,23 @@ export function AgentProvider(
 					// next to the ` · interrupted` suffix, miscommunicating. Mirrors
 					// OpenCode's `MessageAbortedError` branch in
 					// `routes/session/index.tsx`.
+					//
+					// `thinkingLevel` joins `duration` as a per-turn stamp, sourced
+					// from the turn-start snapshot (`turnStartThinkingLevel`) so a
+					// mid-stream `setThinkingLevel` / `setModel` doesn't relabel the
+					// historical bubble. `"off"` (or `undefined` when the turn didn't
+					// pass through `wrappedActions.prompt`, e.g. synthetic flows) is
+					// deliberately NOT persisted — the renderer hides the badge for
+					// both, so NULL in the DB is lossless for display. Interrupted
+					// turns also skip the thinkingLevel stamp for the same reason the
+					// duration pip is skipped: the reply didn't complete, so "what
+					// effort produced this turn?" has no meaningful answer.
 					if (store.lastTurnStartedAt > 0) {
 						const duration = Date.now() - store.lastTurnStartedAt;
+						const stampedLevel =
+							turnStartThinkingLevel && turnStartThinkingLevel !== "off"
+								? turnStartThinkingLevel
+								: undefined;
 						const lastIdx = store.messages.length - 1;
 						const last = store.messages[lastIdx];
 						if (
@@ -839,13 +865,31 @@ export function AgentProvider(
 							currentSessionId
 						) {
 							const sid = currentSessionId;
-							const updated: DisplayMessage = { ...last, duration };
+							const updated: DisplayMessage = {
+								...last,
+								duration,
+								...(stampedLevel ? { thinkingLevel: stampedLevel } : {}),
+							};
 							persistThen(
 								(tx) => updateDisplayMessageMeta(tx, sid, updated),
-								() => setStore("messages", lastIdx, "duration", duration),
+								() => {
+									setStore("messages", lastIdx, "duration", duration);
+									if (stampedLevel) {
+										setStore(
+											"messages",
+											lastIdx,
+											"thinkingLevel",
+											stampedLevel,
+										);
+									}
+								},
 							);
 						}
 					}
+					// Reset the turn-scope snapshot. Next turn's prompt handler
+					// re-captures; unrelated `agent_end` events (none exist in
+					// the current event model, but defensive) won't inherit.
+					turnStartThinkingLevel = undefined;
 					break;
 			}
 		});
@@ -887,6 +931,10 @@ export function AgentProvider(
 						}),
 					);
 					setStore("lastTurnStartedAt", Date.now());
+					// Snapshot the effort at turn-start so agent_end can stamp
+					// the turn-closing bubble with the value that produced it,
+					// not whatever the store holds at event time.
+					turnStartThinkingLevel = store.thinkingLevel;
 					toBottom();
 				},
 			);

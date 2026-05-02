@@ -111,6 +111,20 @@ export interface DisplayMessage {
 	 * render.
 	 */
 	interrupted?: boolean;
+	/**
+	 * Reasoning effort that produced this turn, stamped in `agent_end`
+	 * on the turn-closing assistant bubble only (same scope as
+	 * `duration`). Snapshotted at turn start (captured in
+	 * `wrappedActions.prompt`'s `onSuccess` block) so a mid-stream
+	 * `setThinkingLevel` / `setModel` doesn't relabel an already-
+	 * generated reply. `"off"` is deliberately NOT persisted (NULL in
+	 * DB) — the renderer hides the badge for both NULL and `"off"`, so
+	 * the conflation is lossless for display. Bubbles persisted before
+	 * this field was added load with `undefined` and render without the
+	 * badge (matches `agentName`/`modelName` backfill posture, see
+	 * Known Issues in docs/TODO.md).
+	 */
+	thinkingLevel?: ThinkingLevel;
 }
 
 export interface AgentStoreState {

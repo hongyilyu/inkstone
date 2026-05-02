@@ -74,6 +74,14 @@ export interface FakeSessionHandle {
 	 * `emit` directly; exposed for escape hatches.
 	 */
 	getHandler: () => (event: AgentEvent) => void;
+	/**
+	 * Escape hatch for reducer-invariant tests that need to simulate
+	 * a mid-stream state change (e.g. a model switch that flips the
+	 * fake's backing thinkingLevel). Returns the live Session so tests
+	 * can call `setThinkingLevel` / `setModel` etc. directly — same
+	 * handle the provider uses.
+	 */
+	getSession: () => Session;
 }
 
 export function makeFakeSession(
@@ -99,6 +107,7 @@ export function makeFakeSession(
 	};
 
 	let onEvent: (event: AgentEvent) => void = () => {};
+	let createdSession: Session | null = null;
 	const pendingFailures: Error[] = [];
 
 	const factory: SessionFactory = (params) => {
@@ -150,6 +159,7 @@ export function makeFakeSession(
 				agentName = name;
 			},
 		};
+		createdSession = session;
 		return session;
 	};
 
@@ -159,6 +169,11 @@ export function makeFakeSession(
 		calls,
 		failNextPrompt: (err) => pendingFailures.push(err),
 		getHandler: () => onEvent,
+		getSession: () => {
+			if (!createdSession)
+				throw new Error("fake session: factory has not been called yet");
+			return createdSession;
+		},
 	};
 }
 
