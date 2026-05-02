@@ -9,6 +9,7 @@ import {
 } from "../../../ui/dialog-select";
 import { useToast } from "../../../ui/toast";
 import { startKiroLogin } from "./login-kiro";
+import { startOpenAICodexLogin } from "./login-openai-codex";
 import { showManageMenu } from "./manage-menu";
 
 interface ProviderValue {
@@ -16,16 +17,28 @@ interface ProviderValue {
 }
 
 /**
+ * Set of provider ids whose credentials Inkstone owns (stored in
+ * `~/.config/inkstone/auth.json`). Selecting a connected row for one of
+ * these providers opens the Reconnect/Disconnect manage menu; selecting
+ * a disconnected row routes to the provider's login flow. Bedrock is
+ * deliberately absent — its creds live in `~/.aws/` or AWS_* env vars,
+ * which Inkstone can neither manage nor clean up honestly.
+ */
+const OWNED_CREDS_PROVIDERS = new Set(["kiro", "openai-codex"]);
+
+/**
  * Provider connection-management dialog.
  *
  * Lists every registered provider with a connection status. Selecting a
- * *connected* provider that Inkstone owns credentials for (currently Kiro)
+ * *connected* provider that Inkstone owns credentials for (Kiro, ChatGPT)
  * opens a secondary Reconnect / Disconnect menu (see `./manage-menu`).
  * Selecting any other connected provider (Bedrock — creds live in
  * `~/.aws/` or AWS_* env vars, not ours to touch) is a no-op dismiss.
  *
  * Selecting a *disconnected* provider:
  *   - `kiro` → launches the OAuth device-code flow (see `./login-kiro`).
+ *   - `openai-codex` → launches the PKCE authorization-code flow (see
+ *     `./login-openai-codex`).
  *   - others (currently just Bedrock) → toast with `authInstructions`
  *     so the user knows which env vars to set.
  *
@@ -83,11 +96,11 @@ export function DialogProvider(props: {
 				const provider = listProviders().find((p) => p.id === option.value.id);
 				if (!provider) return;
 				if (provider.isConnected()) {
-					// Kiro creds live in `~/.config/inkstone/auth.json` so we
-					// can honestly disconnect / re-auth. Bedrock creds live
-					// outside Inkstone (~/.aws/, AWS_* env vars), so there's
-					// nothing here to manage — dismiss.
-					if (provider.id === "kiro") {
+					// Owned-creds providers (Kiro, ChatGPT) open the
+					// reconnect/disconnect menu. Bedrock creds live
+					// outside Inkstone, so there's nothing here to
+					// manage — dismiss.
+					if (OWNED_CREDS_PROVIDERS.has(provider.id)) {
 						showManageMenu(
 							dialog,
 							toast,
@@ -105,6 +118,15 @@ export function DialogProvider(props: {
 					// The login flow reuses the same dialog stack via `dialog.replace`,
 					// so only one dialog is on the stack at any time.
 					void startKiroLogin(
+						dialog,
+						toast,
+						theme.textMuted,
+						props.onModelSelected,
+					);
+					return;
+				}
+				if (provider.id === "openai-codex") {
+					void startOpenAICodexLogin(
 						dialog,
 						toast,
 						theme.textMuted,

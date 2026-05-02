@@ -1,4 +1,5 @@
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+import type { OAuthCredentials } from "@mariozechner/pi-ai/oauth";
 import type { KiroCredentials } from "pi-kiro/core";
 import { z } from "zod";
 
@@ -57,12 +58,22 @@ export type Config = z.infer<typeof Config>;
  * `isConnected()` (`loadKiroCreds() !== undefined`) would wrongly report
  * "connected" until the next refresh tried to read `creds.expires`.
  * The top-level `strictObject` additionally catches key typos.
+ *
+ * `openaiCodex` uses the same predicate against pi-ai's `OAuthCredentials`
+ * (plus a Codex-specific `accountId` field that pi-ai adds on login /
+ * refresh — treated as part of the opaque blob).
  */
 export const AuthFile = z.strictObject({
 	kiro: z
 		.custom<KiroCredentials>(
 			(v) => v !== null && typeof v === "object" && !Array.isArray(v),
 			{ error: "expected a KiroCredentials object" },
+		)
+		.optional(),
+	openaiCodex: z
+		.custom<OAuthCredentials>(
+			(v) => v !== null && typeof v === "object" && !Array.isArray(v),
+			{ error: "expected an OAuthCredentials object" },
 		)
 		.optional(),
 });
