@@ -115,6 +115,5 @@ export const kiroProvider: ProviderInfo = {
 		return creds?.access;
 	},
 	isConnected: () => loadKiroCreds() !== undefined,
-	authInstructions:
-		"Run Connect → Amazon Kiro to sign in with AWS Builder ID or IAM Identity Center.",
+	clearCreds: () => clearKiroCreds(),
 };

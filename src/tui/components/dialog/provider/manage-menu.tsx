@@ -7,12 +7,8 @@ import {
 	type DialogSelectOption,
 } from "../../../ui/dialog-select";
 import type { ToastContext } from "../../../ui/toast";
-import { confirmAndDisconnectKiro } from "./disconnect-kiro";
-import { confirmAndDisconnectOpenAICodex } from "./disconnect-openai-codex";
-import { confirmAndDisconnectOpenRouter } from "./disconnect-openrouter";
-import { startKiroLogin } from "./login-kiro";
-import { startOpenAICodexLogin } from "./login-openai-codex";
-import { setOpenRouterKey } from "./set-openrouter-key";
+import { confirmAndDisconnect } from "./confirm-and-disconnect";
+import { LOGIN_FLOWS } from "./login-registry";
 
 type ManageAction = "reconnect" | "disconnect";
 
@@ -21,20 +17,19 @@ type ManageAction = "reconnect" | "disconnect";
  * Disconnect. Every shipped provider qualifies today: Kiro (OAuth),
  * ChatGPT / OpenAI Codex (OAuth), and OpenRouter (API key). A future
  * provider whose credentials Inkstone can't honestly clean up (e.g.
- * env-var-sourced) would be excluded via `OWNED_CREDS_PROVIDERS` in
- * `./index.tsx` before reaching this menu — the short-circuit there
- * keeps this file's three-way dispatch free of honesty checks.
+ * env-var-sourced) would need to short-circuit in `./index.tsx`
+ * before reaching this menu — `DialogProvider` routes every connected
+ * row here unconditionally.
  *
- * Reconnect delegates to the same login helpers the disconnected-select
- * branch uses — no pre-clear, because the login flows do not read
- * existing creds and the save helpers overwrite atomically on success.
- * If the user ESCs mid-login, existing creds remain intact
- * (non-surprising).
+ * Reconnect delegates to the `LOGIN_FLOWS` lookup table — no pre-clear,
+ * because login flows do not read existing creds and the save helpers
+ * overwrite atomically on success. If the user ESCs mid-login, existing
+ * creds remain intact (non-surprising).
  *
- * Disconnect confirms first (destructive guard), then clears creds and
- * rehomes the active session if the disconnected provider was the one
- * in use. See the respective `confirmAndDisconnect…` for the rehome
- * logic.
+ * Disconnect routes through the shared `confirmAndDisconnect` helper:
+ * DialogConfirm → `provider.clearCreds()` → `findFirstConnectedProvider`
+ * rehome → toast. Per-provider logic is entirely in `clearCreds()`
+ * (credential wipe) + `displayName` (toast strings).
  */
 export function showManageMenu(
 	dialog: DialogContext,
@@ -67,19 +62,10 @@ export function showManageMenu(
 			// would `dialog.clear()` on select and race the replacement.
 			closeOnSelect={false}
 			onSelect={(option) => {
-				const providerId = provider.id;
 				if (option.value === "reconnect") {
-					if (providerId === "kiro") {
-						void startKiroLogin(dialog, toast, mutedColor, onModelSelected);
-					} else if (providerId === "openai-codex") {
-						void startOpenAICodexLogin(
-							dialog,
-							toast,
-							mutedColor,
-							onModelSelected,
-						);
-					} else if (providerId === "openrouter") {
-						void setOpenRouterKey(
+					const login = LOGIN_FLOWS[provider.id];
+					if (login) {
+						void login(
 							dialog,
 							toast,
 							mutedColor,
@@ -89,31 +75,13 @@ export function showManageMenu(
 					}
 					return;
 				}
-				if (providerId === "kiro") {
-					void confirmAndDisconnectKiro(
-						dialog,
-						toast,
-						provider,
-						onModelSelected,
-						activeProviderId,
-					);
-				} else if (providerId === "openai-codex") {
-					void confirmAndDisconnectOpenAICodex(
-						dialog,
-						toast,
-						provider,
-						onModelSelected,
-						activeProviderId,
-					);
-				} else if (providerId === "openrouter") {
-					void confirmAndDisconnectOpenRouter(
-						dialog,
-						toast,
-						provider,
-						onModelSelected,
-						activeProviderId,
-					);
-				}
+				void confirmAndDisconnect(
+					dialog,
+					toast,
+					provider,
+					onModelSelected,
+					activeProviderId,
+				);
 			}}
 		/>
 	));
