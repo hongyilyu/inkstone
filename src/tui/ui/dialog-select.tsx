@@ -6,7 +6,15 @@ import {
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import fuzzysort from "fuzzysort";
 import { isDeepEqual } from "remeda";
-import { batch, createEffect, createMemo, For, on, Show } from "solid-js";
+import {
+	batch,
+	createEffect,
+	createMemo,
+	For,
+	type JSX,
+	on,
+	Show,
+} from "solid-js";
 import { createStore } from "solid-js/store";
 import { useTheme } from "../context/theme";
 import * as Keybind from "../util/keybind";
@@ -17,6 +25,14 @@ export interface DialogSelectOption<T = any> {
 	value: T;
 	description?: string;
 	category?: string;
+	/**
+	 * Optional node rendered in the fixed-width slot to the left of the
+	 * title when this row is not the `current` one (the `current` indicator
+	 * `●` takes precedence and is mutually exclusive). Callers use this
+	 * for per-row status glyphs — e.g. DialogProvider renders a green `✓`
+	 * in the gutter for connected providers.
+	 */
+	gutter?: JSX.Element;
 }
 
 export interface DialogSelectProps<T> {
@@ -41,13 +57,12 @@ function truncate(str: string, max: number): string {
  * Ported from OpenCode's ui/dialog-select.tsx (minimal slice).
  *
  * TODO: Port remaining upstream features from opencode/src/cli/cmd/tui/ui/dialog-select.tsx:
- * - Grouped categories (groupBy category key, categoryView rendering)
  * - skipFilter option to disable filtering
  * - Per-option keybind actions (keybind[] prop with footer display)
  * - selectedForeground() for contrast-aware highlight text
  * - Scroll acceleration (getScrollAcceleration util)
  * - Disabled items (disabled flag + dimmed rendering)
- * - footer / gutter / margin slots per option
+ * - footer / margin / categoryView slots per option
  * - DialogSelectRef for external control (moveTo, getSelected)
  * - onMove / onFilter callbacks
  * - flat mode toggle
@@ -99,9 +114,50 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 
 	const flat = createMemo(() => filtered());
 
+	// Group filtered options by `category ?? ""`. A `Map` preserves
+	// insertion order, so options whose category key first appears
+	// earlier in `filtered()` lead their group — which matches how
+	// callers (e.g. DialogModel) already order contiguous runs of
+	// same-category rows, so grouping never reorders the visible list.
+	// Options without a `category` land in the empty-string bucket;
+	// the `<Show when={category}>` gate below hides the header for
+	// that bucket, so callers without categories render unchanged.
+	const grouped = createMemo<[string, DialogSelectOption<T>[]][]>(() => {
+		const buckets = new Map<string, DialogSelectOption<T>[]>();
+		for (const opt of flat()) {
+			const key = opt.category ?? "";
+			let bucket = buckets.get(key);
+			if (!bucket) {
+				bucket = [];
+				buckets.set(key, bucket);
+			}
+			bucket.push(opt);
+		}
+		return [...buckets];
+	});
+
+	// `rows()` is `flat().length` plus one line per non-empty header,
+	// plus one spacer line between consecutive non-empty groups
+	// (`paddingTop={1}` after index 0). Matches OpenCode's `rows()`
+	// so `height()` sizes the scrollbox to include headers.
+	//
+	// Dormant caveat: the accumulator and the JSX both key off the
+	// raw `grouped()` index. If a caller ever mixes uncategorized
+	// and categorized options (empty-string bucket at index 0, a
+	// non-empty header at index 1), the non-empty header gets
+	// `paddingTop={1}` even though it's visually the first header.
+	// No current caller mixes; fix alongside the first one that does.
+	const rows = createMemo(() => {
+		const headers = grouped().reduce((acc, [category], i) => {
+			if (!category) return acc;
+			return acc + (i > 0 ? 2 : 1);
+		}, 0);
+		return flat().length + headers;
+	});
+
 	const dimensions = useTerminalDimensions();
 	const height = createMemo(() =>
-		Math.min(flat().length, Math.floor(dimensions().height / 2) - 6),
+		Math.min(rows(), Math.floor(dimensions().height / 2) - 6),
 	);
 
 	const selected = createMemo(() => flat()[store.selected]);
@@ -263,88 +319,114 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 					ref={(r: ScrollBoxRenderable) => (scroll = r)}
 					maxHeight={height()}
 				>
-					<For each={flat()}>
-						{(option) => {
-							const active = createMemo(() =>
-								isDeepEqual(option.value, selected()?.value),
-							);
-							const current = createMemo(() =>
-								isDeepEqual(option.value, props.current),
-							);
-							return (
-								<box
-									id={JSON.stringify(option.value)}
-									flexDirection="row"
-									position="relative"
-									onMouseMove={() => {
-										setStore("input", "mouse");
-									}}
-									onMouseUp={() => {
-										props.onSelect?.(option);
-										if (props.closeOnSelect !== false) {
-											dialog.clear();
-										}
-									}}
-									onMouseOver={() => {
-										if (store.input !== "mouse") return;
-										const index = flat().findIndex((x) =>
-											isDeepEqual(x.value, option.value),
-										);
-										if (index === -1) return;
-										moveTo(index);
-									}}
-									onMouseDown={() => {
-										const index = flat().findIndex((x) =>
-											isDeepEqual(x.value, option.value),
-										);
-										if (index === -1) return;
-										moveTo(index);
-									}}
-									backgroundColor={
-										active() ? theme.primary : theme.backgroundPanel
-									}
-									paddingLeft={current() ? 1 : 3}
-									paddingRight={3}
-									gap={1}
-								>
-									<Show when={current()}>
-										<text
-											flexShrink={0}
-											fg={active() ? theme.selectedListItemText : theme.primary}
-											marginRight={0}
-										>
-											●
+					<For each={grouped()}>
+						{([category, options], index) => (
+							<>
+								<Show when={category}>
+									<box paddingTop={index() > 0 ? 1 : 0} paddingLeft={3}>
+										<text fg={theme.accent} attributes={TextAttributes.BOLD}>
+											{category}
 										</text>
-									</Show>
-									<text
-										flexGrow={1}
-										fg={
-											active()
-												? theme.selectedListItemText
-												: current()
-													? theme.primary
-													: theme.text
-										}
-										attributes={active() ? TextAttributes.BOLD : undefined}
-										overflow="hidden"
-										wrapMode="none"
-									>
-										{truncate(option.title, 61)}
-									</text>
-									<Show when={option.description}>
-										<text
-											flexShrink={0}
-											fg={
-												active() ? theme.selectedListItemText : theme.textMuted
-											}
-											wrapMode="none"
-										>
-											{option.description}
-										</text>
-									</Show>
-								</box>
-							);
-						}}
+									</box>
+								</Show>
+								<For each={options}>
+									{(option) => {
+										const active = createMemo(() =>
+											isDeepEqual(option.value, selected()?.value),
+										);
+										const current = createMemo(() =>
+											isDeepEqual(option.value, props.current),
+										);
+										return (
+											<box
+												id={JSON.stringify(option.value)}
+												flexDirection="row"
+												position="relative"
+												onMouseMove={() => {
+													setStore("input", "mouse");
+												}}
+												onMouseUp={() => {
+													props.onSelect?.(option);
+													if (props.closeOnSelect !== false) {
+														dialog.clear();
+													}
+												}}
+												onMouseOver={() => {
+													if (store.input !== "mouse") return;
+													const index = flat().findIndex((x) =>
+														isDeepEqual(x.value, option.value),
+													);
+													if (index === -1) return;
+													moveTo(index);
+												}}
+												onMouseDown={() => {
+													const index = flat().findIndex((x) =>
+														isDeepEqual(x.value, option.value),
+													);
+													if (index === -1) return;
+													moveTo(index);
+												}}
+												backgroundColor={
+													active() ? theme.primary : theme.backgroundPanel
+												}
+												paddingLeft={current() || option.gutter ? 1 : 3}
+												paddingRight={3}
+												gap={1}
+											>
+												<Show when={current()}>
+													<text
+														flexShrink={0}
+														fg={
+															active()
+																? theme.selectedListItemText
+																: theme.primary
+														}
+														marginRight={0}
+													>
+														●
+													</text>
+												</Show>
+												<Show when={!current() && option.gutter}>
+													<box flexShrink={0} marginRight={0}>
+														{option.gutter}
+													</box>
+												</Show>
+												<text
+													flexGrow={1}
+													fg={
+														active()
+															? theme.selectedListItemText
+															: current()
+																? theme.primary
+																: theme.text
+													}
+													attributes={
+														active() ? TextAttributes.BOLD : undefined
+													}
+													overflow="hidden"
+													wrapMode="none"
+												>
+													{truncate(option.title, 61)}
+												</text>
+												<Show when={option.description}>
+													<text
+														flexShrink={0}
+														fg={
+															active()
+																? theme.selectedListItemText
+																: theme.textMuted
+														}
+														wrapMode="none"
+													>
+														{option.description}
+													</text>
+												</Show>
+											</box>
+										);
+									}}
+								</For>
+							</>
+						)}
 					</For>
 				</scrollbox>
 			</Show>

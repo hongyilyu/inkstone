@@ -16,8 +16,10 @@ interface ModelValue {
  *
  * Lists models from every *connected* provider. Disconnected providers are
  * hidden — use the Connect dialog to set credentials and make them appear.
- * Options carry `category: provider.displayName` so DialogSelect can group
- * them once category rendering is ported from OpenCode.
+ * Options carry `category: provider.displayName`; DialogSelect renders that
+ * as a group header over the per-provider run, so the description column
+ * is left empty (the provider name would otherwise duplicate the header
+ * on every row).
  */
 export function DialogModel(props: {
 	current: ModelValue;
@@ -32,7 +34,6 @@ export function DialogModel(props: {
 			provider.listModels().map((m) => ({
 				title: m.name,
 				value: { providerId: provider.id, modelId: m.id },
-				description: provider.displayName,
 				category: provider.displayName,
 			})),
 		),

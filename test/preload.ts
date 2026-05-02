@@ -45,6 +45,15 @@ mkdirSync(VAULT, { recursive: true });
 process.env.XDG_CONFIG_HOME = CONFIG_HOME;
 process.env.XDG_STATE_HOME = STATE_HOME;
 
+// Hint to `backend/providers/amazon-bedrock.ts` that Bedrock is
+// connected — `isConnected()` reads `AWS_PROFILE` (via pi-ai's
+// `getEnvApiKey`) as one of its positive signals. Without this the
+// result depends on whether the dev machine has `~/.aws/` (via the
+// `hasAwsSharedConfig` fallback), which makes Connect/Model dialog
+// tests non-hermetic across CI and local. Explicit seeding removes
+// that drift.
+process.env.AWS_PROFILE = "default";
+
 // Write config.json pointing at the tmp vault. This has to happen
 // before `backend/persistence/config.ts` is loaded (it caches at
 // module-eval via `loadConfig()`).

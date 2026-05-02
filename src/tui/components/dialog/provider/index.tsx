@@ -63,7 +63,13 @@ export function DialogProvider(props: {
 		return all.map((p) => ({
 			title: p.displayName,
 			value: { id: p.id },
-			description: p.isConnected() ? "✓ Connected" : "Not configured",
+			// Connected providers surface their state via a green `✓`
+			// gutter; disconnected providers render with an empty
+			// gutter and no description text. Connection status is
+			// now glyph-plus-color — the muted `Not configured`
+			// string is redundant once the sort puts unconnected rows
+			// last.
+			gutter: p.isConnected() ? <text fg={theme.success}>✓</text> : undefined,
 		}));
 	});
 
