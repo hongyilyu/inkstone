@@ -19,7 +19,7 @@
         "drizzle-orm": "^0.45.2",
         "fuzzysort": "^3.1.0",
         "open": "^11.0.0",
-        "pi-kiro": "^0.1.2",
+        "pi-kiro": "^0.1.3",
         "remeda": "^2.33.7",
         "solid-js": "1.9.9",
         "zod": "^4",
@@ -820,7 +820,7 @@
 
     "pend": ["pend@1.2.0", "", {}, "sha512-F3asv42UuXchdzt+xXqfW1OGlVBe+mxa2mqI0pg5yAHZPvFmY3Y6drSf/GQ1A86WgWEN9Kzh/WrgKa6iGcHXLg=="],
 
-    "pi-kiro": ["pi-kiro@0.1.2", "", { "peerDependencies": { "@mariozechner/pi-ai": "*", "@mariozechner/pi-coding-agent": "^0.69.0", "typescript": "^5" }, "optionalPeers": ["@mariozechner/pi-coding-agent"] }, "sha512-G+rBfVZLs9ZoU+Qnho69fZJRtqwDu4Pc2THBiJ23Jg2ozsQ76vnCJtvfmtcLHw9dZnlimervXIy/P9oKz0OAGw=="],
+    "pi-kiro": ["pi-kiro@0.1.3", "", { "peerDependencies": { "@mariozechner/pi-ai": "*", "typescript": "^5" } }, "sha512-oK6Ol7HSY5h7M721gAE+Sucwj49mM3fah+GYTfQSjYkOZGtOu3z4jcYYDZDv7QlpY+RyWOUkIjYENBu/exKwhA=="],
 
     "picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
 

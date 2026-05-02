@@ -1,4 +1,4 @@
-import type { Api, Model, StreamFunction } from "@mariozechner/pi-ai";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import { registerApiProvider } from "@mariozechner/pi-ai";
 import type { KiroCredentials } from "pi-kiro/core";
 import {
@@ -21,25 +21,10 @@ import type { ProviderInfo } from "./types";
 // module load; `providers/index.ts` imports this module so registration
 // fires before the agent module resolves any model. See
 // `docs/ARCHITECTURE.md` § Kiro provider for the full flow.
-//
-// The cast bridges a structural-but-identity-different type mismatch:
-// pi-kiro@0.1.2 ships with its own bundled `@mariozechner/pi-ai@0.69.0`
-// under `node_modules/pi-kiro/node_modules/`, so `streamKiro`'s signature
-// references pi-kiro-bundled `pi-ai`'s `StreamFunction` / `Model` /
-// `AssistantMessageEventStream` types. Inkstone uses hoisted
-// `pi-ai@0.72.1`, whose `SimpleStreamOptions.transport` union widened
-// with `"websocket-cached"` — a value the bundled pi-ai's union doesn't
-// know about. Structurally the runtime shape is identical (same
-// `streamKiro` source), but TypeScript sees two `StreamFunction` brands
-// with incompatible `transport` unions. The cast acknowledges pi-ai's
-// ABI is stable across 0.69 → 0.72 for the Kiro integration surface.
-// Once pi-kiro publishes a release that peer-deps pi-ai (instead of
-// bundling), this cast becomes unnecessary.
-const streamKiroCompat = streamKiro as unknown as StreamFunction<"kiro-api">;
 registerApiProvider({
 	api: "kiro-api",
-	stream: streamKiroCompat,
-	streamSimple: streamKiroCompat,
+	stream: streamKiro,
+	streamSimple: streamKiro,
 });
 
 /**
