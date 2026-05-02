@@ -62,6 +62,12 @@ export type Config = z.infer<typeof Config>;
  * `openaiCodex` uses the same predicate against pi-ai's `OAuthCredentials`
  * (plus a Codex-specific `accountId` field that pi-ai adds on login /
  * refresh — treated as part of the opaque blob).
+ *
+ * `openrouter` is the only owned-shape entry: just a `string` API key.
+ * pi-ai's OpenRouter stream reads it verbatim from `options.apiKey`; no
+ * refresh, no expiration, no rotation. If OpenRouter ever grows per-key
+ * metadata (routing preferences, org hints) we migrate to
+ * `{ apiKey: string, preferences?: {...} }` at that point.
  */
 export const AuthFile = z.strictObject({
 	kiro: z
@@ -76,5 +82,6 @@ export const AuthFile = z.strictObject({
 			{ error: "expected an OAuthCredentials object" },
 		)
 		.optional(),
+	openrouter: z.string().min(1).optional(),
 });
 export type AuthFile = z.infer<typeof AuthFile>;

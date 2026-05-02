@@ -11,6 +11,7 @@ import { useToast } from "../../../ui/toast";
 import { startKiroLogin } from "./login-kiro";
 import { startOpenAICodexLogin } from "./login-openai-codex";
 import { showManageMenu } from "./manage-menu";
+import { setOpenRouterKey } from "./set-openrouter-key";
 
 interface ProviderValue {
 	id: string;
@@ -24,7 +25,7 @@ interface ProviderValue {
  * deliberately absent — its creds live in `~/.aws/` or AWS_* env vars,
  * which Inkstone can neither manage nor clean up honestly.
  */
-const OWNED_CREDS_PROVIDERS = new Set(["kiro", "openai-codex"]);
+const OWNED_CREDS_PROVIDERS = new Set(["kiro", "openai-codex", "openrouter"]);
 
 /**
  * Provider connection-management dialog.
@@ -96,15 +97,16 @@ export function DialogProvider(props: {
 				const provider = listProviders().find((p) => p.id === option.value.id);
 				if (!provider) return;
 				if (provider.isConnected()) {
-					// Owned-creds providers (Kiro, ChatGPT) open the
-					// reconnect/disconnect menu. Bedrock creds live
-					// outside Inkstone, so there's nothing here to
-					// manage — dismiss.
+					// Owned-creds providers (Kiro, ChatGPT, OpenRouter) open
+					// the reconnect/disconnect menu. Bedrock creds live
+					// outside Inkstone, so there's nothing here to manage —
+					// dismiss.
 					if (OWNED_CREDS_PROVIDERS.has(provider.id)) {
 						showManageMenu(
 							dialog,
 							toast,
 							theme.textMuted,
+							theme.primary,
 							provider,
 							props.onModelSelected,
 							props.activeProviderId,
@@ -130,6 +132,16 @@ export function DialogProvider(props: {
 						dialog,
 						toast,
 						theme.textMuted,
+						props.onModelSelected,
+					);
+					return;
+				}
+				if (provider.id === "openrouter") {
+					void setOpenRouterKey(
+						dialog,
+						toast,
+						theme.textMuted,
+						theme.primary,
 						props.onModelSelected,
 					);
 					return;

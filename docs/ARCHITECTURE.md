@@ -160,11 +160,13 @@ src/
         theme.tsx                   Theme selection dialog
         provider/                   Provider dialog — list + Kiro manage/login flows
           index.tsx                 DialogProvider list + row dispatch
-          manage-menu.tsx           Reconnect/Disconnect secondary menu for connected Kiro / ChatGPT
+          manage-menu.tsx           Reconnect/Disconnect secondary menu for connected Kiro / ChatGPT / OpenRouter
           disconnect-kiro.ts        Confirm → clearKiroCreds → active-provider rehome → toast
           login-kiro.tsx            Drive pi-kiro's loginKiro callbacks against the dialog stack
           disconnect-openai-codex.ts Confirm → clearOpenAICodexCreds → active-provider rehome → toast
           login-openai-codex.tsx    Drive pi-ai's loginOpenAICodex callbacks against the dialog stack
+          disconnect-openrouter.ts  Confirm → clearOpenRouterKey → active-provider rehome → toast
+          set-openrouter-key.tsx    Single DialogPrompt to collect OpenRouter API key → save → scoped DialogModel
     util/
       format.ts                     Token/cost/duration/path formatting helpers
       keybind.ts                    Keybind action map + match/print helpers
@@ -570,8 +572,9 @@ One provider ships today:
 | `amazon-bedrock` | Amazon Bedrock | `us.anthropic.claude-opus-4-7` | pi-ai's `getEnvApiKey("amazon-bedrock")` (AWS_PROFILE / AWS_ACCESS_KEY_ID+SECRET / AWS_BEARER_TOKEN_BEDROCK / ECS/IRSA) **or** presence of `~/.aws/credentials` / `~/.aws/config` (honoring AWS_SHARED_CREDENTIALS_FILE / AWS_CONFIG_FILE overrides). IMDS-only EC2 is not probed. | `getModels("amazon-bedrock")` from pi-ai |
 | `kiro` | Amazon Kiro | `claude-opus-4-7` | Presence of saved OAuth creds in `~/.config/inkstone/auth.json` (mode 0600). Device-code login triggered from Connect dialog. | `kiroModels` from `pi-kiro/core`, region-filtered via `filterModelsByRegion` + `baseUrl` rewrite per `resolveApiRegion(creds.region)` |
 | `openai-codex` | ChatGPT | `gpt-5.4` | Presence of saved OAuth creds in `~/.config/inkstone/auth.json` (mode 0600) under the `openaiCodex` key. PKCE authorization-code login (browser callback on `127.0.0.1:1455`, falls back to paste prompt on port conflict) triggered from Connect dialog. Requires an active ChatGPT Plus / Pro subscription — the access-token JWT must carry a `chatgpt_account_id` claim or pi-ai's `loginOpenAICodex` throws. | `getModels("openai-codex")` from pi-ai (returns `[]` when signed out so `DialogModel` hides the entries) |
+| `openrouter` | OpenRouter | `moonshotai/kimi-k2.6` | Presence of saved API key in `~/.config/inkstone/auth.json` (mode 0600) under the `openrouter` key. Single-step key-paste dialog triggered from Connect dialog; no OAuth, no refresh cycle. | `getModels("openrouter")` from pi-ai — 251 models across 20+ upstream providers, all variants (`:free`, `:beta`, `:nitro`) exposed unfiltered (user filters via DialogSelect fuzzy search). Returns `[]` when signed out. |
 
-`getApiKey()` returns `undefined` for Bedrock because pi-ai's Bedrock stream function reads AWS env vars directly via the AWS SDK chain — forwarding anything through pi-agent-core's `getApiKey` hook would be silently dropped. For Kiro, `getApiKey()` is async: it checks `creds.expires`, calls `refreshKiroToken()` if past-due, persists the refreshed pair, and returns the fresh `access` token. On refresh failure it clears stored creds and throws a "run Connect again" error — pi-agent-core surfaces this via the existing error-bubble path. For OpenAI Codex, `getApiKey()` is async and delegates to pi-ai's own `getOAuthApiKey("openai-codex", credsMap)` which handles the expiry check + rotation; the provider shim wraps pi-ai's throw-on-refresh-failure contract so the no-throw invariant is honored (matches Kiro's posture).
+`getApiKey()` returns `undefined` for Bedrock because pi-ai's Bedrock stream function reads AWS env vars directly via the AWS SDK chain — forwarding anything through pi-agent-core's `getApiKey` hook would be silently dropped. For Kiro, `getApiKey()` is async: it checks `creds.expires`, calls `refreshKiroToken()` if past-due, persists the refreshed pair, and returns the fresh `access` token. On refresh failure it clears stored creds and throws a "run Connect again" error — pi-agent-core surfaces this via the existing error-bubble path. For OpenAI Codex, `getApiKey()` is async and delegates to pi-ai's own `getOAuthApiKey("openai-codex", credsMap)` which handles the expiry check + rotation; the provider shim wraps pi-ai's throw-on-refresh-failure contract so the no-throw invariant is honored (matches Kiro's posture). For OpenRouter, `getApiKey()` is synchronous and returns the stored key verbatim — no refresh, no expiry, no rotation. pi-ai's `openai-completions` stream (auto-registered) reads it on every turn.
 
 ### Kiro provider — registration, region scoping, refresh
 
@@ -649,9 +652,21 @@ pi-ai 0.72.x's `openai-codex-responses` provider supports three transports via `
 
 The indicator is **ephemeral**: `codexTransport` is a store-only-no-persist field (like `sidebarSections`), never written to SQLite or stamped onto `DisplayMessage`. Transport choice is a network-state signal that should reflect current reality, so each Codex turn overwrites the field and `/clear` + `resumeSession` reset it. An earlier iteration used a one-shot toast — pulled in favor of the always-visible badge because network state can change between turns (VPN toggles, port-busy resolves), and a once-per-session toast can't track the updated reality.
 
+#### OpenRouter — API-key flat catalog
+
+`src/backend/providers/openrouter.ts` is the simplest `ProviderInfo` shim shipped. No OAuth, no refresh cycle, no `registerApiProvider` — pi-ai's `openai-completions` stream handles all 251 OpenRouter entries in its generated catalog (`providers/openai-completions.js`), and `baseUrl: "https://openrouter.ai/api/v1"` is baked into each model's registry entry. `getApiKey()` is synchronous and returns the stored key verbatim; `isConnected()` = key presence; `listModels()` = `getModels("openrouter")` unfiltered when connected, `[]` when signed out (so `DialogModel` hides the entries until the user authenticates).
+
+**Catalog surface.** All 251 models, all variants (`:free`, `:beta`, `:nitro`), exposed without curation. Users filter via DialogSelect's fuzzy search — 251 rows is a lot, but fuzzy-search on the model id typically narrows to the target in a few keystrokes. A curated subset (popular flagships, Anthropic/OpenAI/Google only, etc.) was considered and deferred: no principled curation line, and filtering surface already covers the UX gap. Future Work may grow a `recent-picks` memo if a real habit emerges.
+
+**Key entry.** `src/tui/components/dialog/provider/set-openrouter-key.tsx` is a single `DialogPrompt.show` with a description linking to `https://openrouter.ai/keys` and a placeholder `sk-or-v1-…`. On submit → `saveOpenRouterKey(trimmed)` → success toast → `DialogModel` scoped to OpenRouter's `moonshotai/kimi-k2.6` default. Empty/whitespace key → warning toast + early return (no disk write). ESC at any point → `dialog.clear()`.
+
+**Disconnect.** Mirrors the Codex / Kiro disconnect flow. `src/tui/components/dialog/provider/disconnect-openrouter.ts` — confirm → `clearOpenRouterKey` → active-session rehome onto `DEFAULT_PROVIDER` (Bedrock) if that fallback is connected, otherwise warning toast nudging `/models`.
+
+**No refresh cycle.** OpenRouter API keys don't expire and aren't rotated. `getApiKey()` is sync; no in-flight dedup memo; no `reportPersistenceError` call in a refresh-failure catch branch because there isn't one. If OpenRouter ever grows per-key metadata (routing preferences, org hints), `AuthFile.openrouter` migrates from `string` → `{ apiKey: string, ...metadata }` at that point.
+
 #### Disconnect / manage menu
 
-Both Kiro and OpenAI Codex are "owned-creds" providers — their tokens live in `~/.config/inkstone/auth.json` and Inkstone can honestly clear them. `DialogProvider`'s `OWNED_CREDS_PROVIDERS` set gates the connected-row dispatch: selecting a connected owned-creds provider opens the Reconnect / Disconnect menu (`./manage-menu.tsx`), selecting Bedrock (creds in `~/.aws/` or AWS_* env vars — not ours to touch) dismisses silently. Per-provider `confirmAndDisconnect…` helpers own the clear + rehome chain. When a third owned-creds provider arrives, the per-provider dispatch in `manage-menu.tsx` and `index.tsx` is the right trigger to extract into a shared helper.
+Kiro, OpenAI Codex, and OpenRouter are "owned-creds" providers — their credentials live in `~/.config/inkstone/auth.json` and Inkstone can honestly clear them. `DialogProvider`'s `OWNED_CREDS_PROVIDERS` set gates the connected-row dispatch: selecting a connected owned-creds provider opens the Reconnect / Disconnect menu (`./manage-menu.tsx`), selecting Bedrock (creds in `~/.aws/` or AWS_* env vars — not ours to touch) dismisses silently. Per-provider `confirmAndDisconnect…` helpers own the clear + rehome chain. With three parallel disconnect files now, a fourth owned-creds provider is the right trigger to extract the shared shape into a `ProviderInfo.clearCreds?()` hook. Today's three-way branching is still cheap; premature generalization has no payoff.
 
 ### Effort variants (reasoning levels)
 

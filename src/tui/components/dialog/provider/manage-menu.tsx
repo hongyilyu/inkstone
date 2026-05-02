@@ -9,17 +9,19 @@ import {
 import type { ToastContext } from "../../../ui/toast";
 import { confirmAndDisconnectKiro } from "./disconnect-kiro";
 import { confirmAndDisconnectOpenAICodex } from "./disconnect-openai-codex";
+import { confirmAndDisconnectOpenRouter } from "./disconnect-openrouter";
 import { startKiroLogin } from "./login-kiro";
 import { startOpenAICodexLogin } from "./login-openai-codex";
+import { setOpenRouterKey } from "./set-openrouter-key";
 
 type ManageAction = "reconnect" | "disconnect";
 
 /**
  * Secondary menu for a connected owned-creds provider: Reconnect or
- * Disconnect. Today that's Kiro and ChatGPT (OpenAI Codex). Bedrock's
- * creds live outside Inkstone (~/.aws/ + AWS_* env vars), so there's
- * nothing for us to manage for that provider and it short-circuits
- * back in `./index.tsx`.
+ * Disconnect. Today that's Kiro (OAuth), ChatGPT / OpenAI Codex (OAuth),
+ * and OpenRouter (API key). Bedrock's creds live outside Inkstone
+ * (~/.aws/ + AWS_* env vars), so there's nothing for us to manage for
+ * that provider and it short-circuits back in `./index.tsx`.
  *
  * Reconnect delegates to the same login helpers the disconnected-select
  * branch uses — no pre-clear, because the login flows do not read
@@ -36,6 +38,7 @@ export function showManageMenu(
 	dialog: DialogContext,
 	toast: ToastContext,
 	mutedColor: ReturnType<typeof useTheme>["theme"]["textMuted"],
+	primaryColor: ReturnType<typeof useTheme>["theme"]["primary"],
 	provider: ProviderInfo,
 	onModelSelected: (model: Model<Api>) => void,
 	activeProviderId: string | undefined,
@@ -62,20 +65,29 @@ export function showManageMenu(
 			// would `dialog.clear()` on select and race the replacement.
 			closeOnSelect={false}
 			onSelect={(option) => {
+				const providerId = provider.id;
 				if (option.value === "reconnect") {
-					if (provider.id === "kiro") {
+					if (providerId === "kiro") {
 						void startKiroLogin(dialog, toast, mutedColor, onModelSelected);
-					} else if (provider.id === "openai-codex") {
+					} else if (providerId === "openai-codex") {
 						void startOpenAICodexLogin(
 							dialog,
 							toast,
 							mutedColor,
 							onModelSelected,
 						);
+					} else if (providerId === "openrouter") {
+						void setOpenRouterKey(
+							dialog,
+							toast,
+							mutedColor,
+							primaryColor,
+							onModelSelected,
+						);
 					}
 					return;
 				}
-				if (provider.id === "kiro") {
+				if (providerId === "kiro") {
 					void confirmAndDisconnectKiro(
 						dialog,
 						toast,
@@ -83,8 +95,16 @@ export function showManageMenu(
 						onModelSelected,
 						activeProviderId,
 					);
-				} else if (provider.id === "openai-codex") {
+				} else if (providerId === "openai-codex") {
 					void confirmAndDisconnectOpenAICodex(
+						dialog,
+						toast,
+						provider,
+						onModelSelected,
+						activeProviderId,
+					);
+				} else if (providerId === "openrouter") {
+					void confirmAndDisconnectOpenRouter(
 						dialog,
 						toast,
 						provider,
