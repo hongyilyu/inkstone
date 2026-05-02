@@ -123,13 +123,28 @@ export async function startOpenAICodexLogin(
 			},
 		});
 
+		// Resolve the provider BEFORE announcing success. Impossible in
+		// practice today (the registry is static and always contains
+		// `openaiCodexProvider`), but if a future refactor drops the
+		// entry, failing before the toast keeps the user from seeing a
+		// false "connected" signal and then getting dropped back with
+		// no picker. Same ordering in the sibling login flows.
+		const codexProvider = getProvider("openai-codex");
+		if (!codexProvider) {
+			dialog.clear();
+			toast.show({
+				variant: "error",
+				message: "ChatGPT provider is unavailable.",
+			});
+			return;
+		}
+
 		saveOpenAICodexCreds(creds);
 		dialog.clear();
 		toast.show({
 			variant: "success",
 			message: "ChatGPT connected.",
 		});
-		const codexProvider = getProvider("openai-codex");
 		DialogModel.show(
 			dialog,
 			{

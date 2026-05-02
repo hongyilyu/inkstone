@@ -50,7 +50,9 @@ export function DialogModel(props: {
 			options={options()}
 			current={props.current}
 			onSelect={(option) => {
-				const models = getProvider(option.value.providerId).listModels();
+				const provider = getProvider(option.value.providerId);
+				if (!provider) return;
+				const models = provider.listModels();
 				const model = models.find((m) => m.id === option.value.modelId);
 				if (model) props.onSelect(model);
 			}}

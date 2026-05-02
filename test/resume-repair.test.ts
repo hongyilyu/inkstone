@@ -43,9 +43,9 @@ function assistantMsg(partial?: Partial<AssistantMessage>): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text: partial?.content ? "" : "ok" }],
-		api: "anthropic-messages",
-		provider: "amazon-bedrock",
-		model: "anthropic.claude-opus-4-7",
+		api: "openai-completions",
+		provider: "openrouter",
+		model: "anthropic/claude-opus-4.7",
 		usage: {
 			input: 10,
 			output: 20,
@@ -175,8 +175,8 @@ describe("loadSession — tail repair", () => {
 		// Bland-default fallback values. Never sent to a provider —
 		// they just satisfy the `AssistantMessage` type contract so
 		// pi-agent-core can round-trip through `convertToLlm`.
-		expect(tail.api).toBe("anthropic-messages");
-		expect(tail.provider).toBe("amazon-bedrock");
+		expect(tail.api).toBe("openai-completions");
+		expect(tail.provider).toBe("openrouter");
 		expect(tail.model).toBe("placeholder");
 	});
 

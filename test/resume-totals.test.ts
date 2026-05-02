@@ -60,9 +60,9 @@ function assistantMsg(partial?: Partial<AssistantMessage>): AssistantMessage {
 	return {
 		role: "assistant",
 		content: [{ type: "text", text: "ok" }],
-		api: "anthropic-messages",
-		provider: "amazon-bedrock",
-		model: "anthropic.claude-opus-4-7",
+		api: "openai-completions",
+		provider: "openrouter",
+		model: "anthropic/claude-opus-4.7",
 		usage: makeUsage(30, 0.001),
 		stopReason: "stop",
 		timestamp: Date.now(),

@@ -31,13 +31,21 @@ import type {
 } from "@mariozechner/pi-ai";
 import type { Session, SessionFactory } from "../../src/tui/context/agent";
 
-/** Minimal Model<Api> stub. The reducer only reads a few fields. */
+/**
+ * Minimal Model<Api> stub. The reducer only reads a few fields.
+ *
+ * Points at OpenRouter's `anthropic/claude-opus-4.7` entry — a real id
+ * in pi-ai 0.72.1's generated registry. Matches `test/preload.ts`'s
+ * OpenRouter key seed so `isConnected()` reports true and `getProvider`
+ * / `resolveModel` round-trip correctly in any reducer test that
+ * exercises provider display names or model lookup.
+ */
 export const FAKE_MODEL: Model<Api> = {
-	id: "claude-test",
-	name: "Claude Test",
-	api: "anthropic-messages",
-	provider: "amazon-bedrock",
-	baseUrl: "https://example.test",
+	id: "anthropic/claude-opus-4.7",
+	name: "Anthropic: Claude Opus 4.7",
+	api: "openai-completions",
+	provider: "openrouter",
+	baseUrl: "https://openrouter.ai/api/v1",
 	reasoning: false,
 	input: ["text"],
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },

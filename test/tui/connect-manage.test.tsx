@@ -4,18 +4,19 @@
  * Covers:
  *   - selecting a connected Kiro row opens a Reconnect / Disconnect menu
  *   - picking Disconnect → confirming clears creds, toasts, and rehomes
- *     the active session onto the Bedrock default when Bedrock is
- *     connected
- *   - Disconnect when Bedrock is ALSO disconnected: creds cleared, no
+ *     the active session onto the next connected provider (OpenRouter
+ *     via the preload seed)
+ *   - Disconnect when no other provider is connected: creds cleared, no
  *     rehome, warning toast tells the user to pick a new model manually
  *   - confirmed-disconnect when the disconnected provider is NOT the
  *     active one: no setModel call, toast uses the plain success variant
  *   - ESC on the manage menu (creds untouched)
  *   - `n` on the DialogConfirm (creds untouched — pins the guard)
  *
- * Bedrock credentials live outside Inkstone (~/.aws/, AWS_* env vars),
- * so a Bedrock-row manage menu is a deliberate non-feature. Only the
- * Kiro branch of `components/dialog/provider/` is exercised here.
+ * Kiro is the only owned-creds OAuth provider exercised here. OpenAI
+ * Codex and OpenRouter share the same disconnect shape via their
+ * respective `confirmAndDisconnect*` helpers; the Kiro paths are
+ * representative.
  */
 
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
@@ -23,7 +24,7 @@ import {
 	clearKiroCreds,
 	saveKiroCreds,
 } from "../../src/backend/persistence/auth";
-import { bedrockProvider } from "../../src/backend/providers/amazon-bedrock";
+import { openrouterProvider } from "../../src/backend/providers/openrouter";
 import { FAKE_MODEL, makeFakeSession } from "./fake-session";
 import { renderApp, waitForFrame } from "./harness";
 
@@ -114,66 +115,60 @@ describe("Connect dialog — manage actions", () => {
 		expect(f).toContain("Amazon Kiro");
 	});
 
-	test("Disconnect of active Kiro rehomes session onto Bedrock default", async () => {
-		// Stub Bedrock's `isConnected` to force the rehome branch to
-		// fire deterministically. Without this the test would depend on
-		// the host having a `~/.aws/` config or `AWS_*` env var.
-		const bedrockSpy = spyOn(bedrockProvider, "isConnected").mockReturnValue(
-			true,
+	test("Disconnect of active Kiro rehomes session onto OpenRouter default", async () => {
+		// OpenRouter is the preload's seeded connected provider (see
+		// `test/preload.ts`), so it's the expected rehome target when
+		// Kiro disconnects while Kiro is active. No spy needed — the
+		// seed makes OpenRouter's `isConnected()` deterministic.
+		seedKiroCreds();
+		// Fake session reports Kiro as the active provider.
+		const kiroModel = {
+			...FAKE_MODEL,
+			id: "claude-opus-4-7",
+			provider: "kiro",
+		};
+		const fake = makeFakeSession({ model: kiroModel });
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		await openManageMenu(setup);
+		await waitForFrame(setup, "Disconnect");
+
+		// Move from the first row (Reconnect) to the second (Disconnect)
+		// and commit.
+		setup.mockInput.pressArrow("down");
+		setup.mockInput.pressEnter();
+
+		// DialogConfirm title carries the provider displayName.
+		await waitForFrame(setup, "Disconnect Amazon Kiro?");
+
+		// Two-step confirm dialog — `y` commits the Confirm branch
+		// without arrow navigation (see dialog-confirm.tsx).
+		setup.mockInput.pressKey("y");
+		await waitForFrame(setup, "Amazon Kiro disconnected");
+
+		const { loadKiroCreds } = await import(
+			"../../src/backend/persistence/auth"
 		);
-
-		try {
-			seedKiroCreds();
-			// Fake session reports Kiro as the active provider.
-			const kiroModel = {
-				...FAKE_MODEL,
-				id: "claude-opus-4-7",
-				provider: "kiro",
-			};
-			const fake = makeFakeSession({ model: kiroModel });
-			setup = await renderApp({ session: fake.factory });
-			await setup.renderOnce();
-
-			await openManageMenu(setup);
-			await waitForFrame(setup, "Disconnect");
-
-			// Move from the first row (Reconnect) to the second (Disconnect)
-			// and commit.
-			setup.mockInput.pressArrow("down");
-			setup.mockInput.pressEnter();
-
-			// DialogConfirm title carries the provider displayName.
-			await waitForFrame(setup, "Disconnect Amazon Kiro?");
-
-			// Two-step confirm dialog — `y` commits the Confirm branch
-			// without arrow navigation (see dialog-confirm.tsx).
-			setup.mockInput.pressKey("y");
-			await waitForFrame(setup, "Amazon Kiro disconnected");
-
-			const { loadKiroCreds } = await import(
-				"../../src/backend/persistence/auth"
-			);
-			expect(loadKiroCreds()).toBeUndefined();
-			// Active-provider rehome: one setModel call with the bedrock
-			// default, sourced from `DEFAULT_PROVIDER`'s default model.
-			expect(fake.calls.setModel.length).toBe(1);
-			const rehomed = fake.calls.setModel[0];
-			expect(rehomed).toBeDefined();
-			if (!rehomed) throw new Error("rehomed model missing");
-			expect(rehomed.provider).toBe("amazon-bedrock");
-		} finally {
-			bedrockSpy.mockRestore();
-		}
+		expect(loadKiroCreds()).toBeUndefined();
+		// Active-provider rehome: one setModel call with the OpenRouter
+		// default, sourced from `findFirstConnectedProvider("kiro")`.
+		expect(fake.calls.setModel.length).toBe(1);
+		const rehomed = fake.calls.setModel[0];
+		expect(rehomed).toBeDefined();
+		if (!rehomed) throw new Error("rehomed model missing");
+		expect(rehomed.provider).toBe("openrouter");
 	});
 
-	test("Disconnect of active Kiro with Bedrock also disconnected warns without rehoming", async () => {
-		// Force both providers "disconnected" from Inkstone's point of
-		// view (Kiro just got its creds cleared mid-flow; Bedrock has no
-		// AWS config to fall back to). Pins the warning-toast branch
-		// that otherwise only fires on a bare host.
-		const bedrockSpy = spyOn(bedrockProvider, "isConnected").mockReturnValue(
-			false,
-		);
+	test("Disconnect of active Kiro with no other provider connected warns without rehoming", async () => {
+		// Force OpenRouter "disconnected" too so the rehome chain finds
+		// no fallback — pins the warning-toast branch. Without this
+		// spy the preload-seeded OpenRouter key would light up the
+		// rehome path.
+		const openrouterSpy = spyOn(
+			openrouterProvider,
+			"isConnected",
+		).mockReturnValue(false);
 
 		try {
 			seedKiroCreds();
@@ -215,17 +210,17 @@ describe("Connect dialog — manage actions", () => {
 				"../../src/backend/persistence/auth"
 			);
 			expect(loadKiroCreds()).toBeUndefined();
-			// No rehome — Bedrock is gated out by the stubbed isConnected.
+			// No rehome — OpenRouter is gated out by the stubbed isConnected.
 			expect(fake.calls.setModel.length).toBe(0);
 		} finally {
-			bedrockSpy.mockRestore();
+			openrouterSpy.mockRestore();
 		}
 	});
 
 	test("Disconnect of non-active Kiro clears creds without rehoming", async () => {
 		seedKiroCreds();
-		// Default FAKE_MODEL.provider === "amazon-bedrock", so Kiro is
-		// NOT the active provider — disconnect should clear creds but
+		// Default FAKE_MODEL.provider === "openrouter", so Kiro is NOT
+		// the active provider — disconnect should clear creds but
 		// leave the current model alone.
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });
@@ -245,7 +240,7 @@ describe("Connect dialog — manage actions", () => {
 			"../../src/backend/persistence/auth"
 		);
 		expect(loadKiroCreds()).toBeUndefined();
-		// No rehome — session's active provider was already Bedrock.
+		// No rehome — session's active provider was already OpenRouter.
 		expect(fake.calls.setModel.length).toBe(0);
 	});
 

@@ -1,7 +1,6 @@
 import { clearOpenRouterKey } from "@backend/persistence/auth";
 import {
-	DEFAULT_PROVIDER,
-	getProvider,
+	findFirstConnectedProvider,
 	type ProviderInfo,
 	resolveModel,
 } from "@backend/providers";
@@ -15,12 +14,12 @@ import type { ToastContext } from "../../../ui/toast";
  *
  * Mirrors `./disconnect-kiro.ts` and `./disconnect-openai-codex.ts` —
  * same rehome chain: if the active session is pointing at OpenRouter,
- * swap to `DEFAULT_PROVIDER`'s default model (when that fallback is
- * itself connected), otherwise emit a warning toast nudging `/models`.
+ * swap to the first other connected provider's default model,
+ * otherwise emit a warning toast nudging `/models`.
  *
- * When a fourth owned-creds provider arrives, extract the shared
- * shape into a helper — three parallel copies is the third-trigger
- * line.
+ * PR #2 collapses the three `confirmAndDisconnect*` files + their
+ * dispatchers into a single shared helper via
+ * `ProviderInfo.clearCreds()` + a provider-keyed lookup.
  */
 export async function confirmAndDisconnectOpenRouter(
 	dialog: DialogContext,
@@ -41,8 +40,8 @@ export async function confirmAndDisconnectOpenRouter(
 
 		let rehomed = false;
 		if (activeProviderId === provider.id) {
-			const fallback = getProvider(DEFAULT_PROVIDER);
-			if (fallback.id !== provider.id && fallback.isConnected()) {
+			const fallback = findFirstConnectedProvider(provider.id);
+			if (fallback) {
 				const model = resolveModel(fallback.id, fallback.defaultModelId);
 				if (model) {
 					onModelSelected(model);

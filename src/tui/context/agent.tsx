@@ -521,14 +521,15 @@ export function AgentProvider(
 							const agentName = getAgentInfo(store.currentAgent).displayName;
 							// Surface assistant-turn termination onto the bubble. pi-ai
 							// converts provider SDK exceptions into stream `error` events
-							// (see amazon-bedrock.js:164-167) which pi-agent-core forwards
-							// through message_end with `stopReason` set and `errorMessage`
-							// populated. We split the two cases so the UI can render
-							// differently: hard errors (`"error"`) keep the red-bordered
-							// panel with the raw provider message; aborts (`"aborted"`)
-							// only flip the `interrupted` flag so the footer can suffix
-							// ` · interrupted` and tint the agent glyph muted — no scary
-							// red panel when the user pressed ESC-ESC on purpose.
+							// (see e.g. `openai-codex-responses.js`) which pi-agent-core
+							// forwards through message_end with `stopReason` set and
+							// `errorMessage` populated. We split the two cases so the UI
+							// can render differently: hard errors (`"error"`) keep the
+							// red-bordered panel with the raw provider message; aborts
+							// (`"aborted"`) only flip the `interrupted` flag so the
+							// footer can suffix ` · interrupted` and tint the agent
+							// glyph muted — no scary red panel when the user pressed
+							// ESC-ESC on purpose.
 							const errorStr =
 								assistantMsg.stopReason === "error" && assistantMsg.errorMessage
 									? assistantMsg.errorMessage

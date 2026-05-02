@@ -137,7 +137,7 @@ export interface AgentStoreState {
 	sidebarSections: SidebarSection[];
 	modelName: string;
 	/**
-	 * Provider id (e.g. "amazon-bedrock"), not a display string. Frontends
+	 * Provider id (e.g. "openrouter"), not a display string. Frontends
 	 * resolve this through `backend/providers` when rendering so formatting
 	 * stays a pure UI concern.
 	 */

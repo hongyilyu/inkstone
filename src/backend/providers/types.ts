@@ -2,7 +2,7 @@ import type { Api, Model } from "@mariozechner/pi-ai";
 
 /**
  * Inkstone's provider abstraction. A `ProviderInfo` wraps one logical
- * model-hosting service (Amazon Bedrock, Amazon Kiro, …) with the
+ * model-hosting service (Amazon Kiro, ChatGPT, OpenRouter, …) with the
  * user-facing metadata Inkstone needs on top of pi-ai's per-API stream
  * registry. See `docs/ARCHITECTURE.md` § Provider registry for why the
  * registry sits above pi-ai, how custom `baseUrl` providers slot in,
@@ -34,8 +34,9 @@ export interface ProviderInfo {
 	listModels(): Model<Api>[];
 
 	/** Value forwarded to pi-agent-core's Agent `getApiKey` hook when this
-	 * provider is active. Returning `undefined` is valid for providers whose
-	 * SDK reads credentials from the environment directly (e.g. Bedrock).
+	 * provider is active. Returning `undefined` is valid for providers
+	 * whose SDK reads credentials from the environment directly (none
+	 * today, but the escape hatch stays open for future env-var providers).
 	 *
 	 * May return a Promise — pi-agent-core's hook awaits it (`agent-loop.js:156`).
 	 * OAuth providers use this to refresh expired access tokens lazily on the

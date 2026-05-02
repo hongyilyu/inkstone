@@ -643,9 +643,17 @@ function buildAbortedAssistant(
 	return {
 		role: "assistant",
 		content: [{ type: "text", text: "" }],
-		api: prior?.api ?? ("anthropic-messages" as AssistantMessage["api"]),
-		provider:
-			prior?.provider ?? ("amazon-bedrock" as AssistantMessage["provider"]),
+		// Bland-default api/provider values used only when there's no
+		// prior assistant message to inherit from (fresh session,
+		// dangling user at index 0). Never sent to a provider — the
+		// synthesized placeholder exists purely to satisfy the
+		// alternation invariant pi-agent-core's `convertToLlm`
+		// expects. Values match an existing shipped provider entry
+		// (OpenRouter's `openai-completions` API) so pi-ai's model
+		// registry round-trips cleanly if the placeholder ever
+		// reaches a conversion path.
+		api: prior?.api ?? ("openai-completions" as AssistantMessage["api"]),
+		provider: prior?.provider ?? ("openrouter" as AssistantMessage["provider"]),
 		model: prior?.model ?? "placeholder",
 		usage: {
 			input: 0,

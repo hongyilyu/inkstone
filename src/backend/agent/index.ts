@@ -7,7 +7,7 @@ import {
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { loadConfig, saveConfig } from "../persistence/config";
 import type { Config } from "../persistence/schema";
-import { DEFAULT_PROVIDER, getProvider, resolveModel } from "../providers";
+import { getProvider, resolveModel } from "../providers";
 import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
 import { composeSystemPrompt, composeTools } from "./compose";
 import { dispatchBeforeToolCall, setConfirmFn } from "./permissions";
@@ -115,40 +115,40 @@ export interface Session {
 }
 
 /**
- * Resolve the provider/model pair from config with the same fallback
- * chain as before the factory refactor:
+ * Resolve the provider/model pair from config:
  *   1. The stored `(providerId, modelId)` if it still resolves.
  *   2. The stored provider's curated default model.
- *   3. The default provider's default model (covers an OAuth provider
- *      whose creds have expired).
+ *   3. Throw — no provider is connected, user must open Connect.
  *
- * We intentionally do NOT persist step-3 back to config via
+ * We intentionally do NOT persist a fallback back to config via
  * `saveConfig` — the user's original pick stays on disk so a later
- * re-connect restores it without re-picking from DialogModel. The
- * in-memory flip is enough to boot against a working provider.
+ * re-connect restores it without re-picking from DialogModel.
+ *
+ * Before Amazon Bedrock was dropped, a third fallback case existed: if
+ * the stored provider's default didn't resolve, we'd jump to
+ * `DEFAULT_PROVIDER` (Bedrock). Bedrock would typically self-connect via
+ * `~/.aws/` credentials, so fresh boots "just worked." With every shipped
+ * provider now requiring explicit user credentials, that silent-fallback
+ * path is gone — a fresh install with no stored config throws, and the
+ * TUI surfaces the error nudging the user to Connect.
  */
 function resolveInitialProviderModel(cfg: Config): {
 	providerId: string;
 	modelId: string;
 } {
-	const providerId = cfg.providerId ?? DEFAULT_PROVIDER;
-	const stored = cfg.modelId;
-	if (stored && resolveModel(providerId, stored)) {
-		return { providerId, modelId: stored };
-	}
-	const info = getProvider(providerId);
-	if (resolveModel(info.id, info.defaultModelId)) {
-		return { providerId, modelId: info.defaultModelId };
-	}
-	if (providerId !== DEFAULT_PROVIDER) {
-		const fallback = getProvider(DEFAULT_PROVIDER);
-		if (resolveModel(fallback.id, fallback.defaultModelId)) {
-			return { providerId: DEFAULT_PROVIDER, modelId: fallback.defaultModelId };
+	const providerId = cfg.providerId;
+	if (providerId) {
+		const stored = cfg.modelId;
+		if (stored && resolveModel(providerId, stored)) {
+			return { providerId, modelId: stored };
+		}
+		const info = getProvider(providerId);
+		if (info && resolveModel(info.id, info.defaultModelId)) {
+			return { providerId, modelId: info.defaultModelId };
 		}
 	}
 	throw new Error(
-		`Default provider '${DEFAULT_PROVIDER}' default model is not available in the registry. ` +
-			`Update the provider's \`defaultModelId\` or ensure pi-ai's registry still ships that model.`,
+		"No provider is connected. Open Connect (Ctrl+P → /connect) to sign in to Kiro, ChatGPT, or OpenRouter.",
 	);
 }
 
@@ -263,7 +263,15 @@ export function createSession(params: {
 		// reads `getOpenAICodexWebSocketDebugStats(sessionId)`.
 		transport: "auto",
 		getApiKey: async (provider) => {
-			return getProvider(provider).getApiKey();
+			// pi-agent-core calls this hook with the provider id from the
+			// active `Model<Api>`. The model came from `resolveModel` →
+			// `getProvider`, so the provider is registered by construction;
+			// `undefined` here means someone handed us a model from a
+			// dropped provider (e.g. post-Bedrock-drop session restore
+			// against a stale config row), which is a clean
+			// no-creds-available signal. Returning undefined lets pi-ai
+			// surface the downstream error through the existing error path.
+			return getProvider(provider)?.getApiKey();
 		},
 		beforeToolCall: async (ctx) => {
 			// Delegate to the permission dispatcher. The overlay combines

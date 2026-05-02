@@ -1,5 +1,4 @@
 import type { Api, Model } from "@mariozechner/pi-ai";
-import { bedrockProvider } from "./amazon-bedrock";
 import { kiroProvider } from "./kiro";
 import { openaiCodexProvider } from "./openai-codex";
 import { openrouterProvider } from "./openrouter";
@@ -14,41 +13,63 @@ import type { ProviderInfo } from "./types";
  * reactive state (via `AgentStoreState.modelProvider`).
  */
 export const PROVIDERS: ProviderInfo[] = [
-	bedrockProvider,
 	kiroProvider,
 	openaiCodexProvider,
 	openrouterProvider,
 ];
 
-// Invariant: the registry is non-empty by construction, so `PROVIDERS[0]`
-// always exists. Non-null assertion keeps the return type narrow under
-// `noUncheckedIndexedAccess`.
-// biome-ignore lint/style/noNonNullAssertion: registry is non-empty by construction
-const DEFAULT_INFO = PROVIDERS[0]!;
-export const DEFAULT_PROVIDER = DEFAULT_INFO.id;
-
 export function listProviders(): ProviderInfo[] {
 	return PROVIDERS;
 }
 
-export function getProvider(id: string | undefined | null): ProviderInfo {
-	return PROVIDERS.find((p) => p.id === id) ?? DEFAULT_INFO;
+/**
+ * Look up a provider by id. Returns `undefined` when the id doesn't match
+ * any registered provider — callers that need a guaranteed provider must
+ * handle `undefined` explicitly (e.g. boot-time resolution in
+ * `backend/agent/index.ts` throws with a Connect nudge).
+ *
+ * Previously returned a DEFAULT_PROVIDER fallback; that concept is gone
+ * along with Amazon Bedrock — every shipped provider requires explicit
+ * user credentials, so there's no sensible "default" for a fresh install.
+ */
+export function getProvider(id: string): ProviderInfo | undefined {
+	return PROVIDERS.find((p) => p.id === id);
 }
 
 /**
- * Find a specific model within a provider. Returns the first model in the
- * provider's list when `modelId` doesn't match — the caller can compare
- * `returned.id === modelId` to detect a miss without a second lookup.
+ * Find the first connected provider, optionally excluding one by id. Used
+ * by the disconnect rehome chain: when the user disconnects the active
+ * provider, the dialog picks the next connected provider (if any) so the
+ * next prompt doesn't hit a 401 / no-provider error.
  *
- * This is a convenience over the pi-ai `getModel(provider, id)` helper
- * because Inkstone's provider registry may include custom providers not in
- * pi-ai's static `MODELS` map.
+ * Iteration order matches `PROVIDERS` declaration order, which mirrors
+ * the Connect dialog's visual ordering. Returns `undefined` when zero
+ * other connected providers exist — callers surface a warning toast
+ * nudging the user to `/models`.
+ */
+export function findFirstConnectedProvider(
+	excluding?: string,
+): ProviderInfo | undefined {
+	return PROVIDERS.find((p) => p.id !== excluding && p.isConnected());
+}
+
+/**
+ * Find a specific model within a provider. Returns `undefined` when
+ * either the providerId doesn't match any registered provider or the
+ * modelId doesn't match any of the provider's listed models. Every
+ * caller today treats `undefined` as terminal (boot-time resolution
+ * falls through to the next chain step or throws).
+ *
+ * This is a convenience over pi-ai's `getModel(provider, id)` helper
+ * because Inkstone's provider registry may include custom providers not
+ * in pi-ai's static `MODELS` map.
  */
 export function resolveModel(
 	providerId: string,
 	modelId: string,
 ): Model<Api> | undefined {
 	const provider = getProvider(providerId);
+	if (!provider) return undefined;
 	const models = provider.listModels();
 	return models.find((m) => m.id === modelId);
 }
