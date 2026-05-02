@@ -18,6 +18,7 @@
  * import `VAULT` / `ARTICLES_DIR` from here.
  */
 
+import { afterAll } from "bun:test";
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -27,7 +28,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll } from "bun:test";
 
 // Isolated tmp dir per test process. Keeps parallel runs from colliding.
 const ROOT = mkdtempSync(join(tmpdir(), "inkstone-test-"));
@@ -76,4 +76,4 @@ afterAll(() => {
 	rmSync(ROOT, { recursive: true, force: true });
 });
 
-export { ROOT, CONFIG_HOME, STATE_HOME, VAULT, ARTICLES_DIR };
+export { ARTICLES_DIR, CONFIG_HOME, ROOT, STATE_HOME, VAULT };

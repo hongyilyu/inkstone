@@ -258,9 +258,7 @@ describe("session list panel", () => {
 		const start = Date.now();
 		while (Date.now() - start < 1500) {
 			await setup.renderOnce();
-			if (
-				!setup.captureCharFrame().includes("should vanish on resume")
-			) {
+			if (!setup.captureCharFrame().includes("should vanish on resume")) {
 				break;
 			}
 			await Bun.sleep(30);

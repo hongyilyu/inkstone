@@ -20,8 +20,8 @@ import {
 	ev_messageStart,
 	ev_textDelta,
 	ev_textStart,
-	ev_toolExecStart,
 	ev_toolcallEnd,
+	ev_toolExecStart,
 	makeFakeSession,
 } from "./fake-session";
 import { renderApp, waitForFrame } from "./harness";

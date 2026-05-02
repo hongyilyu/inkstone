@@ -41,9 +41,7 @@ describe("buildMentionPayload", () => {
 			mentions,
 			makeReader({ "foo.md": "FOO BODY" }),
 		);
-		expect(llmText).toBe(
-			"look at Path: foo.md\n\nContent:\n\nFOO BODY please",
-		);
+		expect(llmText).toBe("look at Path: foo.md\n\nContent:\n\nFOO BODY please");
 		expect(displayParts).toEqual([
 			{ type: "text", text: "look at " },
 			{ type: "file", mime: "text/markdown", filename: "foo.md" },
@@ -54,9 +52,7 @@ describe("buildMentionPayload", () => {
 
 	test("single mention with failed read — literal fallback, no chip", () => {
 		const text = "look at @missing.md please";
-		const mentions: Mention[] = [
-			{ start: 8, end: 19, path: "missing.md" },
-		];
+		const mentions: Mention[] = [{ start: 8, end: 19, path: "missing.md" }];
 		const { llmText, displayParts, failed } = buildMentionPayload(
 			text,
 			mentions,
@@ -174,9 +170,7 @@ describe("buildMentionPayload", () => {
 			() => null,
 		);
 		expect(llmText).toBe("@a.md and @b.md");
-		expect(displayParts).toEqual([
-			{ type: "text", text: "@a.md and @b.md" },
-		]);
+		expect(displayParts).toEqual([{ type: "text", text: "@a.md and @b.md" }]);
 		expect(failed).toEqual(["a.md", "b.md"]);
 	});
 

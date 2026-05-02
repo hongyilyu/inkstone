@@ -16,6 +16,7 @@
  *      reducer (rejected as over-engineering — see plan revision 3).
  */
 
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	type PersistenceErrorContext,
 	reportPersistenceError,
@@ -34,7 +35,6 @@ import {
 } from "@backend/persistence/sessions";
 import type { DisplayMessage } from "@bridge/view-model";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 // Capture reports for assertion. Replaces the handler installed in
 // preload.ts (none today); restore `null` after each test so the

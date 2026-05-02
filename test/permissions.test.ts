@@ -173,7 +173,8 @@ const dispatchCases: DispatchCase[] = [
 	// the file; the dispatcher must fold the same bytes or the sandbox
 	// decision won't match what the tool actually touches.
 	{
-		label: "NBSP (\\u00A0) in Articles path — still routed through the Articles zone (edit frontmatter → confirm)",
+		label:
+			"NBSP (\\u00A0) in Articles path — still routed through the Articles zone (edit frontmatter → confirm)",
 		toolName: "edit",
 		args: {
 			// `010\u00A0RAW` in the caller's string; after normalization
@@ -207,7 +208,10 @@ describe("dispatchBeforeToolCall + reader overlay", () => {
 
 	test.each(dispatchCases)("$label", async (c) => {
 		const overlay = composeOverlay(readerAgent);
-		const result = await dispatchBeforeToolCall(makeCtx(c.toolName, c.args), overlay);
+		const result = await dispatchBeforeToolCall(
+			makeCtx(c.toolName, c.args),
+			overlay,
+		);
 		const actual = result?.block ? "block" : "allow";
 		expect(actual).toBe(c.expectedDecision);
 		expect(confirmCalls).toBe(c.expectedConfirms);
@@ -244,7 +248,9 @@ describe("recommendations — scoring helpers", () => {
 		// 3 days ago → new
 		expect(computeSavedBand(new Date("2026-04-26").getTime(), now)).toBe("new");
 		// 10 days ago → recent
-		expect(computeSavedBand(new Date("2026-04-19").getTime(), now)).toBe("recent");
+		expect(computeSavedBand(new Date("2026-04-19").getTime(), now)).toBe(
+			"recent",
+		);
 		// 30 days ago → old
 		expect(computeSavedBand(new Date("2026-03-30").getTime(), now)).toBe("old");
 	});
@@ -259,7 +265,9 @@ describe("recommendations — scoring helpers", () => {
 
 	test("computeReadingBucket — matches index.base formulas", () => {
 		expect(computeReadingBucket("new", "fresh")).toBe("🔥 Fresh catch");
-		expect(computeReadingBucket("old", "recent")).toBe("✅ Still worth reading");
+		expect(computeReadingBucket("old", "recent")).toBe(
+			"✅ Still worth reading",
+		);
 		expect(computeReadingBucket("old", "old")).toBe("🧊 Probably stale");
 		expect(computeReadingBucket("recent", "fresh")).toBe("📚 Active backlog");
 		expect(computeReadingBucket("new", "unknown")).toBe("❓ Missing published");
@@ -308,8 +316,14 @@ describe("recommendations — recommendArticles", () => {
 // ---------------------------------------------------------------------------
 
 describe("reader /article command", () => {
-	// biome-ignore lint/style/noNonNullAssertion: readerAgent.commands is declared in source
-	const articleCommand = readerAgent.commands!.find((c) => c.name === "article");
+	const articleCommand = (readerAgent.commands ?? []).find(
+		(c) => c.name === "article",
+	);
+	if (!articleCommand) {
+		throw new Error(
+			"readerAgent.commands must include `/article` — declared in source",
+		);
+	}
 
 	/** Build a minimal `AgentCommandHelpers` bag for testing. */
 	function makeHelpers(overrides?: {
@@ -338,8 +352,7 @@ describe("reader /article command", () => {
 				promptCalledWith = text;
 			},
 		});
-		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await articleCommand!.execute("foo.md", helpers);
+		await articleCommand.execute("foo.md", helpers);
 		expect(promptCalledWith).not.toBeNull();
 		// Narrow the type for subsequent assertions — we've just verified non-null.
 		const text = promptCalledWith as unknown as string;
@@ -348,15 +361,15 @@ describe("reader /article command", () => {
 	});
 
 	test("missing.md — throws 'Article not found'", async () => {
-		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await expect(articleCommand!.execute("missing.md", makeHelpers())).rejects.toThrow(/not found/i);
+		await expect(
+			articleCommand.execute("missing.md", makeHelpers()),
+		).rejects.toThrow(/not found/i);
 	});
 
 	test("../outside.md — throws (escape attempt)", async () => {
-		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await expect(articleCommand!.execute("../outside.md", makeHelpers())).rejects.toThrow(
-			/not a file inside|not found|not a regular file/i,
-		);
+		await expect(
+			articleCommand.execute("../outside.md", makeHelpers()),
+		).rejects.toThrow(/not a file inside|not found|not a regular file/i);
 	});
 
 	test("bare /article — calls pickFromList with recommendations", async () => {
@@ -367,8 +380,7 @@ describe("reader /article command", () => {
 				return undefined; // simulate cancel
 			},
 		});
-		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await articleCommand!.execute("", helpers);
+		await articleCommand.execute("", helpers);
 		// The picker should have been opened with at least one option.
 		// (test vault has foo.md and bar.md unread — no reading_completed)
 		expect(pickerOptions.length).toBeGreaterThan(0);
@@ -382,8 +394,7 @@ describe("reader /article command", () => {
 			},
 			pickFromList: async () => "bar.md",
 		});
-		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await articleCommand!.execute("", helpers);
+		await articleCommand.execute("", helpers);
 		expect(promptCalledWith).not.toBeNull();
 		const text = promptCalledWith as unknown as string;
 		expect(text).toContain("bar.md");
@@ -398,8 +409,7 @@ describe("reader /article command", () => {
 			},
 			pickFromList: async () => undefined, // simulate ESC
 		});
-		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await articleCommand!.execute("", helpers);
+		await articleCommand.execute("", helpers);
 		expect(promptCalled).toBe(false);
 	});
 
@@ -411,13 +421,13 @@ describe("reader /article command", () => {
 				return undefined;
 			},
 		});
-		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await articleCommand!.execute("   ", helpers);
+		await articleCommand.execute("   ", helpers);
 		expect(pickerOpened).toBe(true);
 	});
 
 	test("sneak.md (symlink) — throws (lstat reject)", async () => {
-		// biome-ignore lint/style/noNonNullAssertion: guarded by first test
-		await expect(articleCommand!.execute("sneak.md", makeHelpers())).rejects.toThrow(/symlink/i);
+		await expect(
+			articleCommand.execute("sneak.md", makeHelpers()),
+		).rejects.toThrow(/symlink/i);
 	});
 });
