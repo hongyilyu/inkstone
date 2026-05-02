@@ -73,6 +73,21 @@ export async function startKiroLogin(
 			signal: controller.signal,
 		});
 
+		// Resolve the provider BEFORE announcing success. Matches the
+		// ordering in sibling login flows (see login-openai-codex.tsx)
+		// so a hypothetical registry drift where "kiro" disappears
+		// fails loudly here instead of greeting the user with a success
+		// toast and then dropping them back with no picker.
+		const kiroProvider = getProvider("kiro");
+		if (!kiroProvider) {
+			dialog.clear();
+			toast.show({
+				variant: "error",
+				message: "Amazon Kiro provider is unavailable.",
+			});
+			return;
+		}
+
 		saveKiroCreds(creds);
 		dialog.clear();
 		toast.show({
@@ -82,7 +97,6 @@ export async function startKiroLogin(
 		// Drop the user straight into the Kiro model picker so they can
 		// immediately pick a model from the freshly-available catalog.
 		// Mirrors OpenCode's chain in `component/dialog-provider.tsx:183-184`.
-		const kiroProvider = getProvider("kiro");
 		DialogModel.show(
 			dialog,
 			{

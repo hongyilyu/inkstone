@@ -21,9 +21,14 @@ interface ProviderValue {
  * Set of provider ids whose credentials Inkstone owns (stored in
  * `~/.config/inkstone/auth.json`). Selecting a connected row for one of
  * these providers opens the Reconnect/Disconnect manage menu; selecting
- * a disconnected row routes to the provider's login flow. Bedrock is
- * deliberately absent — its creds live in `~/.aws/` or AWS_* env vars,
- * which Inkstone can neither manage nor clean up honestly.
+ * a disconnected row routes to the provider's login flow. Every provider
+ * in the registry is in this set today — the explicit allowlist is a
+ * defensive gate so a future non-owned-creds provider (e.g. one that
+ * reads creds from an env var Inkstone can't clean up) can be added to
+ * the registry without accidentally exposing a Disconnect action it
+ * can't honestly perform. PR #2 deletes this set along with the
+ * `authInstructions` fallback-toast branch when `ProviderInfo.login`
+ * becomes the uniform entry point.
  */
 const OWNED_CREDS_PROVIDERS = new Set(["kiro", "openai-codex", "openrouter"]);
 
@@ -31,17 +36,20 @@ const OWNED_CREDS_PROVIDERS = new Set(["kiro", "openai-codex", "openrouter"]);
  * Provider connection-management dialog.
  *
  * Lists every registered provider with a connection status. Selecting a
- * *connected* provider that Inkstone owns credentials for (Kiro, ChatGPT)
- * opens a secondary Reconnect / Disconnect menu (see `./manage-menu`).
- * Selecting any other connected provider (Bedrock — creds live in
- * `~/.aws/` or AWS_* env vars, not ours to touch) is a no-op dismiss.
+ * *connected* provider in `OWNED_CREDS_PROVIDERS` opens a secondary
+ * Reconnect / Disconnect menu (see `./manage-menu`). Any other connected
+ * provider is a no-op dismiss — today every shipped provider is in the
+ * set, so this branch is dead code that PR #2 removes.
  *
  * Selecting a *disconnected* provider:
  *   - `kiro` → launches the OAuth device-code flow (see `./login-kiro`).
  *   - `openai-codex` → launches the PKCE authorization-code flow (see
  *     `./login-openai-codex`).
- *   - others (currently just Bedrock) → toast with `authInstructions`
- *     so the user knows which env vars to set.
+ *   - `openrouter` → opens a single DialogPrompt for API-key paste
+ *     (see `./set-openrouter-key`).
+ *   - no match → toast with `authInstructions`. Dead branch today;
+ *     PR #2 deletes it when `authInstructions` is removed from the
+ *     `ProviderInfo` interface.
  *
  * The companion Models dialog lists only models from connected providers,
  * so this dialog is the gateway for making new providers usable.
@@ -51,9 +59,10 @@ export function DialogProvider(props: {
 	/**
 	 * Provider id of the session's currently-active model, if any. When the
 	 * user disconnects this exact provider, the dialog rehomes the session
-	 * onto `DEFAULT_PROVIDER`'s default model (if connected) so the next
-	 * prompt doesn't hit a 401. Optional so tests and any future caller
-	 * without a session handle can omit it — the rehome branch no-ops.
+	 * onto the first other connected provider's default model (via
+	 * `findFirstConnectedProvider`) so the next prompt doesn't hit a 401.
+	 * Optional so tests and any future caller without a session handle can
+	 * omit it — the rehome branch no-ops.
 	 *
 	 * Captured at dialog-open time, not re-read at disconnect-confirm time.
 	 * Sound today because every dialog blocks global keybinds while open
@@ -97,10 +106,11 @@ export function DialogProvider(props: {
 				const provider = listProviders().find((p) => p.id === option.value.id);
 				if (!provider) return;
 				if (provider.isConnected()) {
-					// Owned-creds providers (Kiro, ChatGPT, OpenRouter) open
-					// the reconnect/disconnect menu. Bedrock creds live
-					// outside Inkstone, so there's nothing here to manage —
-					// dismiss.
+					// Owned-creds providers (all three shipped today) open
+					// the reconnect/disconnect menu. Any provider outside
+					// `OWNED_CREDS_PROVIDERS` dismisses silently — dead
+					// branch today; PR #2 deletes the gate along with the
+					// set itself.
 					if (OWNED_CREDS_PROVIDERS.has(provider.id)) {
 						showManageMenu(
 							dialog,

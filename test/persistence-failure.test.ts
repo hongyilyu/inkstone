@@ -75,9 +75,9 @@ function makeAssistantMsg(): DisplayMessage {
 function makeRawAssistant(): AssistantMessage {
 	return {
 		role: "assistant",
-		provider: "amazon-bedrock",
-		api: "anthropic-messages",
-		model: "us.anthropic.claude-opus-4-7",
+		provider: "openrouter",
+		api: "openai-completions",
+		model: "anthropic/claude-opus-4.7",
 		content: [{ type: "text", text: "reply" }],
 		stopReason: "end",
 		usage: {

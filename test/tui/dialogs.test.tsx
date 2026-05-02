@@ -199,8 +199,8 @@ describe("command palette", () => {
 	});
 
 	test("Connect dialog renders ✓ for connected providers", async () => {
-		// test/preload.ts seeds an AWS env fixture, so `isConnected()`
-		// returns true for Bedrock in the test runner. That means the
+		// test/preload.ts seeds an OpenRouter API key, so `isConnected()`
+		// returns true for OpenRouter in the test runner. That means the
 		// Connect dialog's first row carries a `✓` gutter and no
 		// `Not configured` description.
 		const fake = makeFakeSession();
@@ -224,8 +224,8 @@ describe("command palette", () => {
 
 	test("Select Model groups rows under provider category header", async () => {
 		// DialogModel options carry `category: provider.displayName`,
-		// so DialogSelect's grouping pass renders "Amazon Bedrock" as
-		// a header line above the Bedrock model rows.
+		// so DialogSelect's grouping pass renders "OpenRouter" as
+		// a header line above the OpenRouter model rows.
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });
 		await setup.renderOnce();
@@ -239,14 +239,31 @@ describe("command palette", () => {
 		await Bun.sleep(30);
 
 		setup.mockInput.pressEnter();
-		const f = await waitForFrame(setup, "Amazon Bedrock");
+		const f = await waitForFrame(setup, "OpenRouter");
 		// Position check: the category header must land above the
 		// first model row. If grouping regressed (e.g. header dropped,
-		// or description column re-introduced so "Amazon Bedrock"
-		// appears to the right of each row), the substring order
-		// flips and this assertion fails.
-		const headerIdx = f.indexOf("Amazon Bedrock");
-		const firstModelIdx = f.indexOf("Nova");
+		// or description column re-introduced so "OpenRouter" appears
+		// to the right of each row), the substring order flips and
+		// this assertion fails. Pull the first-model anchor from
+		// pi-ai's live registry (not hardcoded) so a future registry
+		// reorder doesn't break a grouping test — only a real grouping
+		// regression does. Use the `name` field (what DialogSelect
+		// renders), not the `id`.
+		const { getModels } = await import("@mariozechner/pi-ai");
+		const firstModel = getModels("openrouter")[0];
+		expect(firstModel).toBeDefined();
+		if (!firstModel) throw new Error("registry empty");
+		// DialogSelect may truncate long names, so anchor on the first
+		// token (stable across truncation). Registry entries follow
+		// "Vendor: Model Name" shape — split on `:` / ` ` / `/` and
+		// take the first non-empty chunk.
+		const firstToken = firstModel.name
+			.split(/[\s:/]+/)
+			.find((t) => t.length > 0);
+		expect(firstToken).toBeDefined();
+		if (!firstToken) throw new Error("first model name has no tokens");
+		const headerIdx = f.indexOf("OpenRouter");
+		const firstModelIdx = f.indexOf(firstToken);
 		expect(headerIdx).toBeGreaterThan(-1);
 		expect(firstModelIdx).toBeGreaterThan(headerIdx);
 	});

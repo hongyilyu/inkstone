@@ -485,9 +485,16 @@ export function Prompt() {
 							<text flexShrink={0} fg={theme.text}>
 								{store.modelName}
 							</text>
-							<text fg={theme.textMuted}>
-								{getProvider(store.modelProvider).displayName}
-							</text>
+							{/* Show the provider display name only when a
+                                registered provider backs `modelProvider`.
+                                Under registry drift (session restored
+                                against a stale providerId after a provider
+                                drop) the lookup returns undefined and we
+                                render model-only — better than a trailing
+                                empty separator. */}
+							<Show when={getProvider(store.modelProvider)?.displayName}>
+								{(name) => <text fg={theme.textMuted}>{name() as string}</text>}
+							</Show>
 							{/* Reasoning effort badge, only when the user has
                                 opted into a non-off effort for the active
                                 model. Mirrors OpenCode's prompt statusline

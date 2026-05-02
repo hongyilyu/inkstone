@@ -1,7 +1,6 @@
 import { clearKiroCreds } from "@backend/persistence/auth";
 import {
-	DEFAULT_PROVIDER,
-	getProvider,
+	findFirstConnectedProvider,
 	type ProviderInfo,
 	resolveModel,
 } from "@backend/providers";
@@ -13,21 +12,20 @@ import type { ToastContext } from "../../../ui/toast";
 /**
  * Confirm-then-disconnect for Kiro.
  *
- * If the active session is pointing at Kiro, rehome it onto
- * `DEFAULT_PROVIDER`'s default model — but only when that provider is
- * itself connected. Mirrors the boot-time fallback in
- * `resolveInitialProviderModel` (`src/backend/agent/index.ts`): an
- * OAuth provider whose creds expired shouldn't wedge the app on a
- * 401-every-prompt path when a working alternative is one call away.
+ * If the active session is pointing at Kiro, rehome it onto the first
+ * other connected provider. Mirrors the same fallback posture as the
+ * boot-time resolver in `resolveInitialProviderModel`
+ * (`src/backend/agent/index.ts`): an OAuth provider whose creds
+ * expired shouldn't wedge the app on a 401-every-prompt path when a
+ * working alternative is one call away.
  *
  * Rehome goes through the same `onModelSelected` prop the connected-flow
  * calls, which is wired to `actions.setModel` at the palette caller. No
  * dedicated setModel handle needed here.
  *
- * Kiro-specific: calls `clearKiroCreds()` directly. When a second
- * owned-creds provider arrives, widen this to `provider.clearCreds?.()`
- * (after adding the optional hook to `ProviderInfo`) — deferred per the
- * no-speculative-capability-flag trade-off.
+ * Kiro-specific: calls `clearKiroCreds()` directly. When PR #2 extracts
+ * `ProviderInfo.clearCreds()`, this file collapses into a generic
+ * shared helper along with the OpenAI Codex and OpenRouter siblings.
  */
 export async function confirmAndDisconnectKiro(
 	dialog: DialogContext,
@@ -56,8 +54,8 @@ export async function confirmAndDisconnectKiro(
 
 		let rehomed = false;
 		if (activeProviderId === provider.id) {
-			const fallback = getProvider(DEFAULT_PROVIDER);
-			if (fallback.id !== provider.id && fallback.isConnected()) {
+			const fallback = findFirstConnectedProvider(provider.id);
+			if (fallback) {
 				const model = resolveModel(fallback.id, fallback.defaultModelId);
 				if (model) {
 					onModelSelected(model);

@@ -1,7 +1,6 @@
 import { clearOpenAICodexCreds } from "@backend/persistence/auth";
 import {
-	DEFAULT_PROVIDER,
-	getProvider,
+	findFirstConnectedProvider,
 	type ProviderInfo,
 	resolveModel,
 } from "@backend/providers";
@@ -14,13 +13,13 @@ import type { ToastContext } from "../../../ui/toast";
  * Confirm-then-disconnect for OpenAI Codex (ChatGPT).
  *
  * Mirrors `./disconnect-kiro.ts` — same rehome chain: if the active
- * session is pointing at this provider, swap to `DEFAULT_PROVIDER`'s
- * default model (when that fallback is itself connected), so the next
- * prompt doesn't hit a 401 against a provider whose creds we just wiped.
+ * session is pointing at this provider, swap to the first other
+ * connected provider's default model so the next prompt doesn't hit a
+ * 401 against a provider whose creds we just wiped.
  *
- * When a third owned-creds provider arrives, extract the shared shape
- * into a helper — today's two-provider duplication is small enough that
- * generalizing would be speculative.
+ * PR #2 collapses the three `confirmAndDisconnect*` files + their
+ * dispatchers into a single shared helper via
+ * `ProviderInfo.clearCreds()` + a provider-keyed lookup.
  */
 export async function confirmAndDisconnectOpenAICodex(
 	dialog: DialogContext,
@@ -41,8 +40,8 @@ export async function confirmAndDisconnectOpenAICodex(
 
 		let rehomed = false;
 		if (activeProviderId === provider.id) {
-			const fallback = getProvider(DEFAULT_PROVIDER);
-			if (fallback.id !== provider.id && fallback.isConnected()) {
+			const fallback = findFirstConnectedProvider(provider.id);
+			if (fallback) {
 				const model = resolveModel(fallback.id, fallback.defaultModelId);
 				if (model) {
 					onModelSelected(model);

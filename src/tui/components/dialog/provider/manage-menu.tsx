@@ -18,10 +18,12 @@ type ManageAction = "reconnect" | "disconnect";
 
 /**
  * Secondary menu for a connected owned-creds provider: Reconnect or
- * Disconnect. Today that's Kiro (OAuth), ChatGPT / OpenAI Codex (OAuth),
- * and OpenRouter (API key). Bedrock's creds live outside Inkstone
- * (~/.aws/ + AWS_* env vars), so there's nothing for us to manage for
- * that provider and it short-circuits back in `./index.tsx`.
+ * Disconnect. Every shipped provider qualifies today: Kiro (OAuth),
+ * ChatGPT / OpenAI Codex (OAuth), and OpenRouter (API key). A future
+ * provider whose credentials Inkstone can't honestly clean up (e.g.
+ * env-var-sourced) would be excluded via `OWNED_CREDS_PROVIDERS` in
+ * `./index.tsx` before reaching this menu — the short-circuit there
+ * keeps this file's three-way dispatch free of honesty checks.
  *
  * Reconnect delegates to the same login helpers the disconnected-select
  * branch uses — no pre-clear, because the login flows do not read

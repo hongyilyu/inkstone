@@ -7,7 +7,7 @@ A terminal UI application for guided article reading, built with OpenTUI (Solid)
 ## Constraints
 
 - File operations scoped to `VAULT_DIR` (`/home/hongyi/Documents/Obsidian/LifeOS`) only
-- Bedrock is the first provider; more drop in through `src/backend/providers/`
+- Three owned-creds providers ship today (Kiro, ChatGPT Codex, OpenRouter); more drop in through `src/backend/providers/`
 - No plugin system
 - No multi-session (one article per session)
 - No worker threads — agent runs in-process
@@ -50,7 +50,7 @@ A terminal UI application for guided article reading, built with OpenTUI (Solid)
 | 1 | Copy UI infra from OpenCode + build app shell | `bun run dev` renders themed shell with working input |
 | 2 | Agent integration (pi-agent-core + streaming) | Send message → streaming response renders |
 | 3 | File tools + quote_article + guard + `/article` | `/article file.md` → Stage 1, guards enforced |
-| 4 | Model selection dialog (Bedrock) | Switch model, next prompt uses it |
+| 4 | Model selection dialog | Switch model across Kiro / ChatGPT / OpenRouter, next prompt uses it |
 | 5 | Session persistence (JSON) | Quit + restart preserves conversation |
 | 6 | SQLite persistence via Drizzle | Session transcripts + raw AgentMessages persist agent-scoped; resume restores full LLM context; `memory` table scaffolded for summarization phase |
 | 7 | Agent architecture refactor — zones as declarative workspace | `AgentInfo.zones` feeds both the permission dispatcher and the system-prompt `<your workspace>` block; reader's directory-level `confirmDirs` rules collapse into zone data; verified against 15-case smoke test covering decision + confirm-count parity |

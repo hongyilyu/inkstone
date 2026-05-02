@@ -57,13 +57,27 @@ export async function setOpenRouterKey(
 		return;
 	}
 
+	// Resolve the provider BEFORE announcing success. Matches the
+	// ordering in sibling login flows so a hypothetical registry
+	// drift where "openrouter" disappears fails loudly here instead
+	// of greeting the user with a success toast and then dropping
+	// them back with no picker.
+	const openrouterProvider = getProvider("openrouter");
+	if (!openrouterProvider) {
+		dialog.clear();
+		toast.show({
+			variant: "error",
+			message: "OpenRouter provider is unavailable.",
+		});
+		return;
+	}
+
 	saveOpenRouterKey(trimmed);
 	dialog.clear();
 	toast.show({
 		variant: "success",
 		message: "OpenRouter connected.",
 	});
-	const openrouterProvider = getProvider("openrouter");
 	DialogModel.show(
 		dialog,
 		{

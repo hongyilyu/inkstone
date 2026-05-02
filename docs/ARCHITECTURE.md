@@ -74,7 +74,7 @@ User input (textarea)
   → executable slash-command lookup (/article, /clear; otherwise plain prompt)
   → agent.prompt(text)
     → pi-agent-core Agent loop
-      → LLM API call (provider from registry — Bedrock today)
+      → LLM API call (provider from registry — Kiro / ChatGPT / OpenRouter)
       → tool calls (read, edit, write)
         → beforeToolCall guard (block/confirm/allow)
       → streaming events
@@ -108,8 +108,9 @@ src/
           index.ts                  Example agent definition (minimal)
     providers/
       types.ts                      ProviderInfo interface
-      amazon-bedrock.ts             Bedrock provider
       kiro.ts                       Amazon Kiro provider (OAuth, region scoping)
+      openai-codex.ts               ChatGPT (OpenAI Codex) OAuth provider
+      openrouter.ts                 OpenRouter API-key provider
       index.ts                      Provider registry + helpers
     persistence/
       config.ts                     User preferences (JSON, Zod-validated)
@@ -556,7 +557,7 @@ pi-ai already owns streaming for each API it ships (`bedrock-converse-stream`, `
 
 - The registry owns the list of providers Inkstone actually exposes (pi-ai ships many; a given Inkstone build may surface a subset).
 - Each provider decides how its credentials resolve and reports a connected/disconnected status so the UI can gate on it.
-- Custom providers that pi-ai doesn't ship (e.g. Bedrock-Converse-compatible endpoints like Amazon Kiro) can return hand-built `Model<Api>` objects with a custom `baseUrl`, reusing pi-ai's existing stream function for that API. No change to pi-ai itself.
+- Custom providers that pi-ai doesn't ship (e.g. Amazon Kiro's Converse-compatible endpoint) can return hand-built `Model<Api>` objects with a custom `baseUrl`, reusing pi-ai's existing stream function for that API. No change to pi-ai itself.
 - The extension point for fundamentally-different custom providers (own `streamFn`) is intentionally *not* wired here. Add it when the first such provider lands; not speculatively.
 
 ### `ProviderInfo` shape
@@ -565,16 +566,17 @@ See `src/backend/providers/types.ts` for the interface. Each provider declares `
 
 `defaultModelId` is required (not optional) so every provider declares its own curated fallback rather than depending on registry order. The agent module throws on boot if the declared default no longer resolves through `listModels()`, surfacing pi-ai registry drift loudly instead of silently relocating the user to an arbitrary model.
 
-One provider ships today:
+Three providers ship today, all backed by credentials Inkstone owns (OAuth tokens or API keys in `~/.config/inkstone/auth.json`). Amazon Bedrock previously shipped as a fourth provider using the AWS SDK credential chain (env vars, `~/.aws/credentials`, SSO, IAM profiles) but was dropped — those sources live outside Inkstone's ownership, so a truthful Disconnect flow wasn't buildable against them. OpenRouter's catalog includes Anthropic's Claude Opus 4.7 + other flagships that covered Bedrock's primary use case.
 
 | id | displayName | Default | Auth detection | Models |
 |---|---|---|---|---|
-| `amazon-bedrock` | Amazon Bedrock | `us.anthropic.claude-opus-4-7` | pi-ai's `getEnvApiKey("amazon-bedrock")` (AWS_PROFILE / AWS_ACCESS_KEY_ID+SECRET / AWS_BEARER_TOKEN_BEDROCK / ECS/IRSA) **or** presence of `~/.aws/credentials` / `~/.aws/config` (honoring AWS_SHARED_CREDENTIALS_FILE / AWS_CONFIG_FILE overrides). IMDS-only EC2 is not probed. | `getModels("amazon-bedrock")` from pi-ai |
 | `kiro` | Amazon Kiro | `claude-opus-4-7` | Presence of saved OAuth creds in `~/.config/inkstone/auth.json` (mode 0600). Device-code login triggered from Connect dialog. | `kiroModels` from `pi-kiro/core`, region-filtered via `filterModelsByRegion` + `baseUrl` rewrite per `resolveApiRegion(creds.region)` |
 | `openai-codex` | ChatGPT | `gpt-5.4` | Presence of saved OAuth creds in `~/.config/inkstone/auth.json` (mode 0600) under the `openaiCodex` key. PKCE authorization-code login (browser callback on `127.0.0.1:1455`, falls back to paste prompt on port conflict) triggered from Connect dialog. Requires an active ChatGPT Plus / Pro subscription — the access-token JWT must carry a `chatgpt_account_id` claim or pi-ai's `loginOpenAICodex` throws. | `getModels("openai-codex")` from pi-ai (returns `[]` when signed out so `DialogModel` hides the entries) |
 | `openrouter` | OpenRouter | `moonshotai/kimi-k2.6` | Presence of saved API key in `~/.config/inkstone/auth.json` (mode 0600) under the `openrouter` key. Single-step key-paste dialog triggered from Connect dialog; no OAuth, no refresh cycle. | `getModels("openrouter")` from pi-ai — 251 models across 20+ upstream providers, all variants (`:free`, `:beta`, `:nitro`) exposed unfiltered (user filters via DialogSelect fuzzy search). Returns `[]` when signed out. |
 
-`getApiKey()` returns `undefined` for Bedrock because pi-ai's Bedrock stream function reads AWS env vars directly via the AWS SDK chain — forwarding anything through pi-agent-core's `getApiKey` hook would be silently dropped. For Kiro, `getApiKey()` is async: it checks `creds.expires`, calls `refreshKiroToken()` if past-due, persists the refreshed pair, and returns the fresh `access` token. On refresh failure it clears stored creds and throws a "run Connect again" error — pi-agent-core surfaces this via the existing error-bubble path. For OpenAI Codex, `getApiKey()` is async and delegates to pi-ai's own `getOAuthApiKey("openai-codex", credsMap)` which handles the expiry check + rotation; the provider shim wraps pi-ai's throw-on-refresh-failure contract so the no-throw invariant is honored (matches Kiro's posture). For OpenRouter, `getApiKey()` is synchronous and returns the stored key verbatim — no refresh, no expiry, no rotation. pi-ai's `openai-completions` stream (auto-registered) reads it on every turn.
+`getApiKey()` semantics per provider: **Kiro** is async — checks `creds.expires`, calls `refreshKiroToken()` if past-due, persists the refreshed pair, and returns the fresh `access` token. On refresh failure it clears stored creds and throws a "run Connect again" error — pi-agent-core surfaces this via the existing error-bubble path. **OpenAI Codex** is async and delegates to pi-ai's own `getOAuthApiKey("openai-codex", credsMap)` which handles the expiry check + rotation; the provider shim wraps pi-ai's throw-on-refresh-failure contract so the no-throw invariant is honored (matches Kiro's posture). **OpenRouter** is synchronous and returns the stored key verbatim — no refresh, no expiry, no rotation. pi-ai's `openai-completions` stream (auto-registered) reads it on every turn.
+
+First boot on a machine with no stored provider: `resolveInitialProviderModel` in `backend/agent/index.ts` throws with a "no provider connected, open Connect" message. The TUI surfaces the throw — the user must pick a provider and authenticate before the first prompt. Previously (while Bedrock shipped), a silent fallback to Bedrock's default model hid this case on machines with `aws configure` set up; the silent fallback is gone.
 
 ### Kiro provider — registration, region scoping, refresh
 
@@ -590,12 +592,13 @@ Kept separate from `config.json` because OAuth tokens are sensitive (pi-kiro's `
 
 ### Agent integration
 
-`backend/agent/index.ts` no longer hardcodes `"amazon-bedrock"`:
+`backend/agent/index.ts` resolves the active provider/model at session boot:
 
-- Active state is `(currentProviderId, currentModelId)` loaded from `config.json` (legacy configs with only `modelId` fall back to `DEFAULT_PROVIDER`).
-- `getApiKey` hook dispatches to `getProvider(provider).getApiKey()`.
+- Active state is `(currentProviderId, currentModelId)` loaded from `config.json`. Fresh installs with no stored config throw a "no provider connected, open Connect" error (the silent-fallback-to-Bedrock hop was removed when Bedrock was dropped — every shipped provider requires explicit user credentials).
+- `getApiKey` hook dispatches to `getProvider(provider)?.getApiKey()`. Returns `undefined` for unregistered provider ids (e.g. a stale config row from a dropped provider) so pi-ai surfaces the downstream error cleanly.
 - `setModel(model)` reads the incoming `Model<Api>`'s `.provider` + `.id` and persists both.
 - `resolveModel(providerId, modelId)` looks up the live `Model<Api>` object through the registry at each access, so a provider implementation can mint custom models dynamically.
+- `findFirstConnectedProvider(excluding?)` is the shared helper used by every `confirmAndDisconnect*` flow to pick the rehome target when the active provider is disconnected. Returns `undefined` when no other connected provider exists; the disconnect flow then emits a warning toast nudging `/models`.
 
 ### UI: three palette entries
 
@@ -603,7 +606,7 @@ Kept separate from `config.json` because OAuth tokens are sensitive (pi-kiro's `
 |---|---|---|
 | **Models** | `DialogModel` | Flat list of models from every connected provider, `description` = provider display name. Empty placeholder when zero providers connected, directing the user to Connect. Auto-closes on select (backend `setModel` also auto-restores the per-model stored effort). |
 | **Effort** | `DialogVariant` | Standalone reasoning-effort picker for the currently-active model. Registered only when `store.modelReasoning === true` — non-reasoning models hide the entry to avoid palette noise. See "Effort variants" below. |
-| **Connect** | `DialogProvider` | All providers, sorted connected-first, `description` = `"✓ Connected"` / `"Not configured"`. Disconnected Kiro → device-code login flow (prompts → auth-wait → save → DialogModel scoped to Kiro). Disconnected Bedrock → toast with `authInstructions`. Connected select is a no-op (reserved for future disconnect/manage). |
+| **Connect** | `DialogProvider` | All providers, sorted connected-first, `description` = `"✓ Connected"` / `"Not configured"`. Disconnected Kiro / ChatGPT → OAuth login flow; disconnected OpenRouter → key-paste prompt. Every shipped provider has a login flow — the old `authInstructions` fallback-toast branch is dead code (kept in this PR for compatibility with the ProviderInfo field; PR #2 deletes the field). Connected-provider select opens a Reconnect / Disconnect manage menu. |
 
 #### Kiro device-code login flow
 
@@ -660,13 +663,13 @@ The indicator is **ephemeral**: `codexTransport` is a store-only-no-persist fiel
 
 **Key entry.** `src/tui/components/dialog/provider/set-openrouter-key.tsx` is a single `DialogPrompt.show` with a description linking to `https://openrouter.ai/keys` and a placeholder `sk-or-v1-…`. On submit → `saveOpenRouterKey(trimmed)` → success toast → `DialogModel` scoped to OpenRouter's `moonshotai/kimi-k2.6` default. Empty/whitespace key → warning toast + early return (no disk write). ESC at any point → `dialog.clear()`.
 
-**Disconnect.** Mirrors the Codex / Kiro disconnect flow. `src/tui/components/dialog/provider/disconnect-openrouter.ts` — confirm → `clearOpenRouterKey` → active-session rehome onto `DEFAULT_PROVIDER` (Bedrock) if that fallback is connected, otherwise warning toast nudging `/models`.
+**Disconnect.** Mirrors the Codex / Kiro disconnect flow. `src/tui/components/dialog/provider/disconnect-openrouter.ts` — confirm → `clearOpenRouterKey` → active-session rehome onto the first other connected provider (via `findFirstConnectedProvider("openrouter")`), otherwise warning toast nudging `/models`.
 
 **No refresh cycle.** OpenRouter API keys don't expire and aren't rotated. `getApiKey()` is sync; no in-flight dedup memo; no `reportPersistenceError` call in a refresh-failure catch branch because there isn't one. If OpenRouter ever grows per-key metadata (routing preferences, org hints), `AuthFile.openrouter` migrates from `string` → `{ apiKey: string, ...metadata }` at that point.
 
 #### Disconnect / manage menu
 
-Kiro, OpenAI Codex, and OpenRouter are "owned-creds" providers — their credentials live in `~/.config/inkstone/auth.json` and Inkstone can honestly clear them. `DialogProvider`'s `OWNED_CREDS_PROVIDERS` set gates the connected-row dispatch: selecting a connected owned-creds provider opens the Reconnect / Disconnect menu (`./manage-menu.tsx`), selecting Bedrock (creds in `~/.aws/` or AWS_* env vars — not ours to touch) dismisses silently. Per-provider `confirmAndDisconnect…` helpers own the clear + rehome chain. With three parallel disconnect files now, a fourth owned-creds provider is the right trigger to extract the shared shape into a `ProviderInfo.clearCreds?()` hook. Today's three-way branching is still cheap; premature generalization has no payoff.
+Kiro, OpenAI Codex, and OpenRouter are all owned-creds providers — their credentials live in `~/.config/inkstone/auth.json` and Inkstone can honestly clear them. `DialogProvider` opens the Reconnect / Disconnect manage menu for any connected row. Per-provider `confirmAndDisconnect…` helpers own the clear + rehome chain today; PR #2 collapses them into a single helper via `ProviderInfo.clearCreds()` + a shared `confirmAndDisconnect` function.
 
 ### Effort variants (reasoning levels)
 
@@ -720,7 +723,7 @@ Ctrl+P → Effort
 
 ### modelProvider in AgentStoreState
 
-`AgentStoreState.modelProvider` holds the **provider id** (e.g. `"amazon-bedrock"`), not a display string. Frontends resolve to the display name through `getProvider(id).displayName` at render time (`components/prompt.tsx`). Keeping the store free of formatted strings means provider metadata changes propagate without a store update.
+`AgentStoreState.modelProvider` holds the **provider id** (e.g. `"openrouter"`), not a display string. Frontends resolve to the display name through `getProvider(id)?.displayName` at render time (`components/prompt.tsx`). Keeping the store free of formatted strings means provider metadata changes propagate without a store update.
 
 ## Keybinds + Commands
 
@@ -798,7 +801,7 @@ When the session panel is open, the right `Sidebar` is hidden regardless of widt
 
 `panel_close: "escape,ctrl+n"` is a second keybind that aliases ESC and Ctrl+N so the panel treats open-key and dismiss-key symmetrically. `ctrl+n` is also a `select_down` alternate inside dialogs and the panel checks `panel_close` **before** `select_down` in its key handler, so reopening-key-as-close wins. The global `session_list` dispatcher in `CommandProvider` is suspended while any dialog is open, so `ctrl+n` inside an open dialog still means "move selection down" and can't accidentally open a second panel layer.
 
-**Load-time alternation repair.** `loadSession` inspects `agent_messages` after loading and fills every `user`→`user` gap in the stream — both the trailing case (session killed mid-turn on the last turn — Ctrl+C / process crash between `message_start` and `message_end`) AND the interior case (the orphaned turn was followed by a successful later turn after resume, leaving two adjacent `user` rows with no assistant between them). Both shapes are repaired by synthesizing a closing `assistant` `AgentMessage` with `stopReason: "aborted"` and `errorMessage: "[Interrupted by user]"` in the right slot so `agent.state.messages` alternates cleanly. Without this, the next prompt on the resumed session would hand the provider consecutive user turns: Anthropic silently merges into one turn, Bedrock 400s. The repair is read-only — stored rows are never mutated. Placeholder metadata (`api`/`provider`/`model`) is sourced from the latest prior assistant in the same session; if the session was interrupted on its very first turn, bland defaults are used (never reach a provider — they only satisfy the `AssistantMessage` type contract so pi-agent-core can round-trip through `convertToLlm`). The display layer mirrors this via an `isDanglingUser` memo in `message.tsx` that renders a muted `[Interrupted by user]` marker beneath any user bubble with no assistant following and no in-flight stream.
+**Load-time alternation repair.** `loadSession` inspects `agent_messages` after loading and fills every `user`→`user` gap in the stream — both the trailing case (session killed mid-turn on the last turn — Ctrl+C / process crash between `message_start` and `message_end`) AND the interior case (the orphaned turn was followed by a successful later turn after resume, leaving two adjacent `user` rows with no assistant between them). Both shapes are repaired by synthesizing a closing `assistant` `AgentMessage` with `stopReason: "aborted"` and `errorMessage: "[Interrupted by user]"` in the right slot so `agent.state.messages` alternates cleanly. Without this, the next prompt on the resumed session would hand the provider consecutive user turns: Anthropic's Messages API silently merges into one turn, other provider APIs reject with a 400. The repair is read-only — stored rows are never mutated. Placeholder metadata (`api`/`provider`/`model`) is sourced from the latest prior assistant in the same session; if the session was interrupted on its very first turn, bland defaults are used (never reach a provider — they only satisfy the `AssistantMessage` type contract so pi-agent-core can round-trip through `convertToLlm`). The display layer mirrors this via an `isDanglingUser` memo in `message.tsx` that renders a muted `[Interrupted by user]` marker beneath any user bubble with no assistant following and no in-flight stream.
 
 The backend also catches the common case *prevention-side*: pi-agent-core's `handleRunFailure` synthesizes a closing assistant and emits **only** `agent_end` (no `message_end`) on abort/error paths, so the reducer's `agent_end` handler in `tui/context/agent.tsx` appends any such synthesized `AgentMessage` to `agent_messages` at runtime. Between the `agent_end` catch-up write (prevention) and the load-time repair (backstop), both Ctrl+C-between-events and pi-agent-core-abort paths round-trip cleanly. Research notes and alternatives considered (Claude Code sentinel pattern, OpenCode eager-write, pi-agent-core prevention-only) captured in the TODO entry.
 
