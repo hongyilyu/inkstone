@@ -5,30 +5,33 @@
  *   - selecting a connected Kiro row opens a Reconnect / Disconnect menu
  *   - picking Disconnect → confirming clears creds, toasts, and rehomes
  *     the active session onto the Bedrock default when Bedrock is
- *     connected (the CI sandbox is — `hasAwsSharedConfig` sees the
- *     developer's ~/.aws/config)
+ *     connected
+ *   - Disconnect when Bedrock is ALSO disconnected: creds cleared, no
+ *     rehome, warning toast tells the user to pick a new model manually
  *   - confirmed-disconnect when the disconnected provider is NOT the
  *     active one: no setModel call, toast uses the plain success variant
+ *   - ESC on the manage menu (creds untouched)
+ *   - `n` on the DialogConfirm (creds untouched — pins the guard)
  *
  * Bedrock credentials live outside Inkstone (~/.aws/, AWS_* env vars),
  * so a Bedrock-row manage menu is a deliberate non-feature. Only the
- * Kiro branch of `dialog-provider.tsx` is exercised here.
+ * Kiro branch of `components/dialog/provider/` is exercised here.
  */
 
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
 	clearKiroCreds,
 	saveKiroCreds,
 } from "../../src/backend/persistence/auth";
-import { getProvider } from "../../src/backend/providers";
+import { bedrockProvider } from "../../src/backend/providers/amazon-bedrock";
 import { FAKE_MODEL, makeFakeSession } from "./fake-session";
 import { renderApp, waitForFrame } from "./harness";
 
 let setup: Awaited<ReturnType<typeof renderApp>> | undefined;
 
-// Shape matches pi-kiro's `KiroCredentials` at runtime; the `as` assertion
-// is typed through a matching parameter-factory pattern (same approach used
-// by `test/kiro-refresh.test.ts:27`) so Biome's `noExplicitAny` rule doesn't
+// Shape matches pi-kiro's `KiroCredentials` at runtime; the cast is
+// scoped through a parameter-factory pattern (same approach used by
+// `test/kiro-refresh.test.ts:27`) so Biome's `noExplicitAny` rule doesn't
 // fire and TypeScript sees a precise shape.
 function makeCreds() {
 	return {
@@ -47,7 +50,15 @@ function seedKiroCreds(): void {
 
 /**
  * Navigate Ctrl+P → Connect → connected-Kiro row → opens the manage menu.
- * Shared setup used by all three tests below.
+ * Shared setup used by every test below.
+ *
+ * Uses `waitForFrame` for every state transition so a slow CI host polls
+ * longer rather than racing a fixed sleep. The single 30ms sleep between
+ * the Connect frame appearing and typing into the fuzzy filter is
+ * load-bearing: DialogSelect focuses its filter input inside a
+ * `setTimeout(1)` (see `ui/dialog-select.tsx`), so typing immediately
+ * lands on the prompt textarea behind the dialog instead. Matches the
+ * same 30ms idiom used in `test/tui/dialogs.test.tsx`.
  */
 async function openManageMenu(
 	s: Awaited<ReturnType<typeof renderApp>>,
@@ -58,7 +69,6 @@ async function openManageMenu(
 
 	await s.mockInput.typeText("Connect");
 	await waitForFrame(s, "Connect");
-	await Bun.sleep(30);
 
 	s.mockInput.pressEnter();
 	// "Providers" is the title of the DialogSelect opened by Connect.
@@ -70,9 +80,7 @@ async function openManageMenu(
 	// + Enter lands on the only Kiro entry.
 	await s.mockInput.typeText("Kiro");
 	await waitForFrame(s, "Amazon Kiro");
-	await Bun.sleep(30);
 	s.mockInput.pressEnter();
-	await Bun.sleep(30);
 }
 
 beforeEach(() => {
@@ -107,60 +115,111 @@ describe("Connect dialog — manage actions", () => {
 	});
 
 	test("Disconnect of active Kiro rehomes session onto Bedrock default", async () => {
-		// The rehome branch only fires when Bedrock is connected. This
-		// test depends on the developer / CI machine having either a
-		// `~/.aws/` config or an AWS_* env var. Assert that up front so
-		// a host without Bedrock fails with a clear message instead of
-		// "expected 1 setModel call, got 0".
-		if (!getProvider("amazon-bedrock").isConnected()) {
-			throw new Error(
-				"Test requires Bedrock to be connected (needs ~/.aws/config or AWS_* env vars)",
-			);
-		}
-		seedKiroCreds();
-		// Fake session reports Kiro as the active provider.
-		const kiroModel = {
-			...FAKE_MODEL,
-			id: "claude-opus-4-7",
-			provider: "kiro",
-		};
-		const fake = makeFakeSession({ model: kiroModel });
-		setup = await renderApp({ session: fake.factory });
-		await setup.renderOnce();
-
-		await openManageMenu(setup);
-		await waitForFrame(setup, "Disconnect");
-
-		// Move from the first row (Reconnect) to the second (Disconnect)
-		// and commit.
-		setup.mockInput.pressArrow("down");
-		await Bun.sleep(30);
-		setup.mockInput.pressEnter();
-
-		// DialogConfirm title carries the provider displayName.
-		await waitForFrame(setup, "Disconnect Amazon Kiro?");
-
-		// Two-step confirm dialog — `y` commits the Confirm branch
-		// without arrow navigation (see dialog-confirm.tsx).
-		setup.mockInput.pressKey("y");
-		await Bun.sleep(60);
-		await setup.renderOnce();
-
-		const { loadKiroCreds } = await import(
-			"../../src/backend/persistence/auth"
+		// Stub Bedrock's `isConnected` to force the rehome branch to
+		// fire deterministically. Without this the test would depend on
+		// the host having a `~/.aws/` config or `AWS_*` env var.
+		const bedrockSpy = spyOn(bedrockProvider, "isConnected").mockReturnValue(
+			true,
 		);
-		expect(loadKiroCreds()).toBeUndefined();
 
-		// Active-provider rehome: Bedrock's `isConnected()` is true in
-		// the test sandbox (preload.ts leaves ~/.aws discovery to the
-		// host; `hasAwsSharedConfig` returns true on any dev machine
-		// with a ~/.aws/config, which CI provides). One setModel call
-		// with the bedrock default.
-		expect(fake.calls.setModel.length).toBe(1);
-		const rehomed = fake.calls.setModel[0];
-		expect(rehomed).toBeDefined();
-		if (!rehomed) throw new Error("rehomed model missing");
-		expect(rehomed.provider).toBe("amazon-bedrock");
+		try {
+			seedKiroCreds();
+			// Fake session reports Kiro as the active provider.
+			const kiroModel = {
+				...FAKE_MODEL,
+				id: "claude-opus-4-7",
+				provider: "kiro",
+			};
+			const fake = makeFakeSession({ model: kiroModel });
+			setup = await renderApp({ session: fake.factory });
+			await setup.renderOnce();
+
+			await openManageMenu(setup);
+			await waitForFrame(setup, "Disconnect");
+
+			// Move from the first row (Reconnect) to the second (Disconnect)
+			// and commit.
+			setup.mockInput.pressArrow("down");
+			setup.mockInput.pressEnter();
+
+			// DialogConfirm title carries the provider displayName.
+			await waitForFrame(setup, "Disconnect Amazon Kiro?");
+
+			// Two-step confirm dialog — `y` commits the Confirm branch
+			// without arrow navigation (see dialog-confirm.tsx).
+			setup.mockInput.pressKey("y");
+			await waitForFrame(setup, "Amazon Kiro disconnected");
+
+			const { loadKiroCreds } = await import(
+				"../../src/backend/persistence/auth"
+			);
+			expect(loadKiroCreds()).toBeUndefined();
+			// Active-provider rehome: one setModel call with the bedrock
+			// default, sourced from `DEFAULT_PROVIDER`'s default model.
+			expect(fake.calls.setModel.length).toBe(1);
+			const rehomed = fake.calls.setModel[0];
+			expect(rehomed).toBeDefined();
+			if (!rehomed) throw new Error("rehomed model missing");
+			expect(rehomed.provider).toBe("amazon-bedrock");
+		} finally {
+			bedrockSpy.mockRestore();
+		}
+	});
+
+	test("Disconnect of active Kiro with Bedrock also disconnected warns without rehoming", async () => {
+		// Force both providers "disconnected" from Inkstone's point of
+		// view (Kiro just got its creds cleared mid-flow; Bedrock has no
+		// AWS config to fall back to). Pins the warning-toast branch
+		// that otherwise only fires on a bare host.
+		const bedrockSpy = spyOn(bedrockProvider, "isConnected").mockReturnValue(
+			false,
+		);
+
+		try {
+			seedKiroCreds();
+			const kiroModel = {
+				...FAKE_MODEL,
+				id: "claude-opus-4-7",
+				provider: "kiro",
+			};
+			const fake = makeFakeSession({ model: kiroModel });
+			setup = await renderApp({ session: fake.factory });
+			await setup.renderOnce();
+
+			await openManageMenu(setup);
+			const menuFrame = await waitForFrame(setup, "Disconnect");
+			expect(menuFrame).toContain("Reconnect");
+
+			setup.mockInput.pressArrow("down");
+			setup.mockInput.pressEnter();
+			const confirmFrame = await waitForFrame(setup, "Disconnect Amazon Kiro?");
+			expect(confirmFrame).toContain("Disconnect Amazon Kiro?");
+
+			setup.mockInput.pressKey("y");
+			// Poll for either the toast OR the dialog clearing. Toast
+			// body may be rendered on a follow-up frame so we give it
+			// render cycles.
+			let found = false;
+			for (let i = 0; i < 40; i++) {
+				await setup.renderOnce();
+				const f = setup.captureCharFrame();
+				if (f.includes("Pick a new model")) {
+					found = true;
+					break;
+				}
+				await Bun.sleep(25);
+			}
+			expect(found).toBe(true);
+
+			const { loadKiroCreds } = await import(
+				"../../src/backend/persistence/auth"
+			);
+			expect(loadKiroCreds()).toBeUndefined();
+			// No rehome — Bedrock is gated out by the stubbed isConnected.
+			expect(fake.calls.setModel.length).toBe(0);
+		} finally {
+			bedrockSpy.mockRestore();
+		}
 	});
 
 	test("Disconnect of non-active Kiro clears creds without rehoming", async () => {
@@ -176,13 +235,11 @@ describe("Connect dialog — manage actions", () => {
 		await waitForFrame(setup, "Disconnect");
 
 		setup.mockInput.pressArrow("down");
-		await Bun.sleep(30);
 		setup.mockInput.pressEnter();
 		await waitForFrame(setup, "Disconnect Amazon Kiro?");
 
 		setup.mockInput.pressKey("y");
-		await Bun.sleep(60);
-		await setup.renderOnce();
+		await waitForFrame(setup, "Amazon Kiro disconnected");
 
 		const { loadKiroCreds } = await import(
 			"../../src/backend/persistence/auth"
@@ -202,11 +259,16 @@ describe("Connect dialog — manage actions", () => {
 		await waitForFrame(setup, "Reconnect");
 
 		setup.mockInput.pressEscape();
-		await setup.renderOnce();
-		await Bun.sleep(50);
-		await setup.renderOnce();
+		// Poll until the manage-menu glyphs disappear rather than
+		// guessing a sleep duration for the dialog-close transition.
+		// ESC unwinds synchronously via the dialog's onClose, but the
+		// Solid rendering cycle still needs a tick or two.
+		for (let i = 0; i < 20; i++) {
+			await setup.renderOnce();
+			if (!setup.captureCharFrame().includes("Reconnect")) break;
+			await Bun.sleep(25);
+		}
 
-		// Dialog stack cleared — no Reconnect/Disconnect in the frame.
 		expect(setup.captureCharFrame()).not.toContain("Reconnect");
 		expect(setup.captureCharFrame()).not.toContain("Disconnect");
 
@@ -228,7 +290,6 @@ describe("Connect dialog — manage actions", () => {
 		await waitForFrame(setup, "Disconnect");
 
 		setup.mockInput.pressArrow("down");
-		await Bun.sleep(30);
 		setup.mockInput.pressEnter();
 		await waitForFrame(setup, "Disconnect Amazon Kiro?");
 
@@ -237,8 +298,14 @@ describe("Connect dialog — manage actions", () => {
 		// refactor that inverts the check (e.g. `!confirmed`) doesn't
 		// silently conflate cancel + ESC with confirm.
 		setup.mockInput.pressKey("n");
-		await Bun.sleep(60);
-		await setup.renderOnce();
+		// Poll for the confirm-dialog title to disappear rather than a
+		// fixed sleep — cancel resolves synchronously but the ToastProvider
+		// and dialog-stack unmount still need a tick.
+		for (let i = 0; i < 10; i++) {
+			await setup.renderOnce();
+			if (!setup.captureCharFrame().includes("Disconnect Amazon Kiro?")) break;
+			await Bun.sleep(25);
+		}
 
 		const { loadKiroCreds } = await import(
 			"../../src/backend/persistence/auth"

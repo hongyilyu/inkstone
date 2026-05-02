@@ -45,29 +45,45 @@ export async function confirmAndDisconnectKiro(
 	// `undefined` on ESC. Only proceed on explicit confirm.
 	if (confirmed !== true) return;
 
-	clearKiroCreds();
+	// Wrap the whole disconnect+rehome sequence. `clearKiroCreds` and
+	// `saveConfig` (driven by `setModel`) route I/O errors through
+	// `reportPersistenceError` internally, so they shouldn't throw; this
+	// is defense-in-depth for the fire-and-forget call site so an
+	// unexpected synchronous failure surfaces as a toast instead of an
+	// unhandled promise rejection.
+	try {
+		clearKiroCreds();
 
-	let rehomed = false;
-	if (activeProviderId === provider.id) {
-		const fallback = getProvider(DEFAULT_PROVIDER);
-		if (fallback.id !== provider.id && fallback.isConnected()) {
-			const model = resolveModel(fallback.id, fallback.defaultModelId);
-			if (model) {
-				onModelSelected(model);
-				rehomed = true;
+		let rehomed = false;
+		if (activeProviderId === provider.id) {
+			const fallback = getProvider(DEFAULT_PROVIDER);
+			if (fallback.id !== provider.id && fallback.isConnected()) {
+				const model = resolveModel(fallback.id, fallback.defaultModelId);
+				if (model) {
+					onModelSelected(model);
+					rehomed = true;
+				}
 			}
 		}
-	}
 
-	if (activeProviderId === provider.id && !rehomed) {
+		if (activeProviderId === provider.id && !rehomed) {
+			toast.show({
+				variant: "warning",
+				message: `${provider.displayName} disconnected. Pick a new model from /models before your next prompt.`,
+			});
+		} else {
+			toast.show({
+				variant: "success",
+				message: `${provider.displayName} disconnected.`,
+			});
+		}
+	} catch (err) {
+		console.error("[inkstone] disconnect failed:", err);
 		toast.show({
-			variant: "warning",
-			message: `${provider.displayName} disconnected. Pick a new model from /models before your next prompt.`,
-		});
-	} else {
-		toast.show({
-			variant: "success",
-			message: `${provider.displayName} disconnected.`,
+			variant: "error",
+			message: `${provider.displayName} disconnect failed: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
 		});
 	}
 }
