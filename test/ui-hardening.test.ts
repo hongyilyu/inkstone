@@ -16,8 +16,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stripAnsi } from "@tui/util/ansi";
-import { summarizeToolArgs } from "@tui/util/tool-summary";
+import { stripAnsi } from "@bridge/ansi";
+import { renderToolArgs } from "@bridge/tool-renderers";
 import { VAULT } from "./preload";
 
 describe("stripAnsi", () => {
@@ -63,9 +63,9 @@ describe("stripAnsi", () => {
 	});
 });
 
-describe("summarizeToolArgs — sanitizes ANSI before truncating", () => {
+describe("renderToolArgs — sanitizes ANSI before truncating", () => {
 	test("read tool with ANSI in path produces clean output", () => {
-		const summary = summarizeToolArgs("read", {
+		const summary = renderToolArgs("read", {
 			path: "\x1b[2Joverwritten/\x1b[31mred\x1b[0m/foo.md",
 		});
 		// All escape sequences gone — only the file path characters remain.
@@ -75,21 +75,21 @@ describe("summarizeToolArgs — sanitizes ANSI before truncating", () => {
 	});
 
 	test("update_sidebar with control bytes in id produces clean output", () => {
-		const summary = summarizeToolArgs("update_sidebar", {
+		const summary = renderToolArgs("update_sidebar", {
 			operation: "upsert",
 			id: "sec\x00\x07id",
 		});
 		expect(summary).toBe('upsert "secid"');
 	});
 
-	test("unknown tool JSON fallback also sanitized", () => {
-		// Args go through JSON.stringify; ANSI bytes survive that as
-		// literal `\u001b` escapes in the JSON output, NOT as actual
-		// ESC bytes. So the output stays harmless without sanitization.
-		const summary = summarizeToolArgs("unknown_tool", {
+	test("unknown tool renders as empty string (no args, no injection)", () => {
+		// Unknown tools fall through the TOOL_ARG_RENDERERS lookup and
+		// return "" — no args row in ToolPart, nothing for an attacker
+		// to inject ANSI bytes into.
+		const summary = renderToolArgs("unknown_tool", {
 			value: "\x1b[31mhi\x1b[0m",
 		});
-		expect(summary).not.toContain("\x1b");
+		expect(summary).toBe("");
 	});
 });
 

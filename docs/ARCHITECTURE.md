@@ -125,6 +125,7 @@ src/
 
   bridge/                           Pure TS — shared type contract
     view-model.ts                   DisplayMessage, DisplayPart (text/thinking/file/tool), SidebarSection, AgentStoreState
+    tool-renderers.ts               Tool-arg rendering contract (per-tool one-liner formatters for ToolPart)
 
   tui/                              Solid + OpenTUI
     app.tsx                         Provider stack + root layout + top-level commands

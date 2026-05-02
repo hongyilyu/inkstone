@@ -9,12 +9,12 @@
  */
 
 import { getAgentInfo } from "@backend/agent";
+import { renderToolArgs } from "@bridge/tool-renderers";
 import type { DisplayMessage } from "@bridge/view-model";
 import { For, Show } from "solid-js";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import { formatDuration } from "../util/format";
-import { summarizeToolArgs } from "../util/tool-summary";
 import { UserPart } from "./user-part";
 
 const EmptyBorder = {
@@ -213,7 +213,7 @@ export function ToolPart(props: {
 	first: boolean;
 }) {
 	const { theme } = useTheme();
-	const argsSummary = () => summarizeToolArgs(props.name, props.args);
+	const argsSummary = () => renderToolArgs(props.name, props.args);
 	const icon = () => (props.state === "pending" ? "~" : "⚙");
 	const headerFg = () =>
 		props.state === "error" ? theme.error : theme.textMuted;
