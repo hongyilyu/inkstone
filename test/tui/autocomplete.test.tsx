@@ -88,6 +88,33 @@ describe("slash autocomplete", () => {
 		expect(f).not.toContain("Clear the current session");
 	});
 
+	test("extra args on no-args command fall through as plain prompt", async () => {
+		// `/clear` has no `takesArgs` and no `argHint` — it should reject
+		// `/clear my cache` and let the input submit as a literal prompt
+		// instead of silently dropping " my cache" and firing clearSession.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		// Type the full `/clear my cache` into the buffer. The slash
+		// dropdown filters on `clear` but closes once the user types a
+		// space (handled by prompt-autocomplete's dismiss logic).
+		await setup.mockInput.typeText("/clear my cache");
+		await setup.renderOnce();
+		await Bun.sleep(30);
+
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(50);
+
+		// clearSession must NOT have been called — the extra-args guard
+		// in canRunSlash/triggerSlash rejects the dispatch.
+		expect(fake.calls.clearSession).toBe(0);
+		// The input fell through to the plain-prompt path.
+		expect(fake.calls.prompt.length).toBe(1);
+		expect(fake.calls.prompt[0]).toBe("/clear my cache");
+	});
+
 	test("ESC closes the dropdown", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });

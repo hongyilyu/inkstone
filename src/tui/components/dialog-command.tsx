@@ -128,11 +128,27 @@ function init() {
 		return entries().find((e) => e.slash?.name === name);
 	}
 
+	/**
+	 * Single source of truth for slash dispatch gating. Two rules:
+	 *   1. `takesArgs: true`, args empty → reject (required arg missing).
+	 *   2. `!takesArgs`, `!argHint`, args non-empty → reject (extra-args
+	 *      guard so `/clear my cache` falls through as a plain prompt
+	 *      instead of silently dropping " my cache").
+	 * `argHint`'s presence means the command accepts an optional arg, so
+	 * trailing text is legal and rule 2 doesn't fire.
+	 */
+	function canRunSlashEntry(entry: CommandOption, args: string): boolean {
+		const spec = entry.slash;
+		if (spec?.takesArgs && args.trim().length === 0) return false;
+		if (!spec?.takesArgs && !spec?.argHint && args.trim().length > 0)
+			return false;
+		return true;
+	}
+
 	function canRunSlash(name: string, args: string): boolean {
 		const entry = findSlash(name);
 		if (!entry) return false;
-		if (entry.slash?.takesArgs && args.trim().length === 0) return false;
-		return true;
+		return canRunSlashEntry(entry, args);
 	}
 
 	/**
@@ -143,7 +159,7 @@ function init() {
 	function triggerSlash(name: string, args: string): boolean {
 		const entry = findSlash(name);
 		if (!entry) return false;
-		if (entry.slash?.takesArgs && args.trim().length === 0) return false;
+		if (!canRunSlashEntry(entry, args)) return false;
 		entry.onSelect(dialog, args);
 		return true;
 	}
