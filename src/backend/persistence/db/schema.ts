@@ -37,6 +37,11 @@ export const messages = sqliteTable(
 		modelName: text("model_name"),
 		durationMs: integer("duration_ms"),
 		error: text("error"),
+		// Mirrors `DisplayMessage.interrupted`. Split from `error` so
+		// resumed sessions can re-render the `· interrupted` footer
+		// suffix on aborted turns (stopReason "aborted") instead of
+		// painting a red error panel. `0 | 1` via SQLite integer.
+		interrupted: integer("interrupted", { mode: "boolean" }),
 		createdAt: integer("created_at").notNull(),
 	},
 	(t) => [index("messages_session_id_idx").on(t.sessionId, t.id)],

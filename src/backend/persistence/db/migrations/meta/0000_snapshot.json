@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "baad0331-5adf-4b2c-a3be-29b8c936c79e",
+  "id": "60496abc-05bd-4e12-9b5c-9800370e20ac",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "agent_messages": {
@@ -133,6 +133,13 @@
         "error": {
           "name": "error",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "interrupted": {
+          "name": "interrupted",
+          "type": "integer",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false

@@ -25,7 +25,7 @@ export function Conversation() {
 			<box flexDirection="column" paddingTop={1} paddingRight={1} gap={1}>
 				<For each={store.messages}>
 					{(msg, index) => (
-						<Show when={msg.parts.length > 0 || msg.error}>
+						<Show when={msg.parts.length > 0 || msg.error || msg.interrupted}>
 							<Show
 								when={msg.role === "user"}
 								fallback={

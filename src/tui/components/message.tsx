@@ -125,7 +125,7 @@ function isDanglingUser(
 	if (index === -1) return false;
 	const next = messages[index + 1];
 	if (next && next.role === "assistant") {
-		const real = next.parts.length > 0 || !!next.error;
+		const real = next.parts.length > 0 || !!next.error || !!next.interrupted;
 		if (real) return false;
 		// Ghost assistant header (parts never flushed) — fall through.
 	}
@@ -311,8 +311,10 @@ export function AssistantMessage(props: {
 			{/* Assistant-turn error panel. Mirrors OpenCode's per-message
                 error box (`routes/session/index.tsx:1374-1387`) — left
                 border in theme.error, muted body text. `marginLeft={3}`
-                aligns the left edge with the markdown body above. Covers
-                both `stopReason === "error"` and `"aborted"`. */}
+                aligns the left edge with the markdown body above. ONLY
+                shown for hard errors (`stopReason === "error"`); user-
+                initiated aborts are signalled via the `interrupted`
+                flag and rendered as a muted footer suffix below. */}
 			<Show when={msg().error}>
 				<box
 					marginLeft={3}
@@ -333,18 +335,39 @@ export function AssistantMessage(props: {
 				</box>
 			</Show>
 
-			<Show when={msg().modelName}>
+			{/* Footer — agent + model + duration, plus a trailing
+			    ` · interrupted` suffix on aborted turns (the user hit
+			    ESC-ESC / Ctrl+C on purpose). On abort the glyph tints
+			    `textMuted` to visually differentiate from normal
+			    completion; the model / duration segment is only shown
+			    if stamped (a very fast abort may never reach
+			    `message_end`, leaving `modelName` unset — the footer
+			    still renders the bare `▣ Reader · interrupted` form so
+			    the interrupt is visible). Mirrors OpenCode's
+			    `MessageAbortedError` branch. */}
+			<Show when={msg().modelName || msg().interrupted}>
 				<box paddingLeft={3} paddingTop={1} flexShrink={0}>
 					<text wrapMode="none">
-						<span style={{ fg: agentColor() }}>{"▣ "}</span>
+						<span
+							style={{
+								fg: msg().interrupted ? theme.textMuted : agentColor(),
+							}}
+						>
+							{"▣ "}
+						</span>
 						<span style={{ fg: theme.text }}>
 							{msg().agentName ?? "Reader"}
 						</span>
-						<span style={{ fg: theme.textMuted }}>
-							{" · "}
-							{msg().modelName}
-							{durationSuffix(msg().duration)}
-						</span>
+						<Show when={msg().modelName}>
+							<span style={{ fg: theme.textMuted }}>
+								{" · "}
+								{msg().modelName}
+								{durationSuffix(msg().duration)}
+							</span>
+						</Show>
+						<Show when={msg().interrupted}>
+							<span style={{ fg: theme.textMuted }}> · interrupted</span>
+						</Show>
 					</text>
 				</box>
 			</Show>

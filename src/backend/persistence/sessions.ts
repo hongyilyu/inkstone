@@ -212,6 +212,7 @@ export function appendDisplayMessage(
 				modelName: msg.modelName ?? null,
 				durationMs: msg.duration ?? null,
 				error: msg.error ?? null,
+				interrupted: msg.interrupted ?? null,
 				createdAt: Date.now(),
 			})
 			.run();
@@ -248,6 +249,7 @@ export function updateDisplayMessageMeta(
 				modelName: msg.modelName ?? null,
 				durationMs: msg.duration ?? null,
 				error: msg.error ?? null,
+				interrupted: msg.interrupted ?? null,
 			})
 			.where(eq(messages.id, msg.id))
 			.run();
@@ -420,6 +422,7 @@ export function loadSession(sessionId: string): LoadedSession | null {
 		modelName: m.modelName ?? undefined,
 		duration: m.durationMs ?? undefined,
 		error: m.error ?? undefined,
+		interrupted: m.interrupted ?? undefined,
 	}));
 
 	const agentMsgRows = db

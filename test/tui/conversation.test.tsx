@@ -189,6 +189,51 @@ describe("conversation rendering", () => {
 		await waitForFrame(setup, "Provider returned 500");
 	});
 
+	test("assistant aborted turn renders `· interrupted` footer, no error panel", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await seedUserTurn(setup, "go");
+
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(ev_textStart());
+		fake.emit(ev_textDelta("partial reply"));
+		// pi-agent-core forwards user abort through `message_end` with
+		// `stopReason: "aborted"`. `errorMessage` happens to be populated
+		// by pi-ai (usually the literal "[Interrupted by user]") — we
+		// explicitly assert it does NOT appear in the frame, proving the
+		// error-panel path is suppressed.
+		fake.emit(
+			ev_messageEnd({
+				stopReason: "aborted",
+				errorMessage: "[Interrupted by user]",
+			}),
+		);
+		fake.emit(
+			ev_agentEnd([
+				assistantMessage({
+					stopReason: "aborted",
+					errorMessage: "[Interrupted by user]",
+				}),
+			]),
+		);
+
+		await waitForFrame(setup, "· interrupted");
+		const frame = setup.captureCharFrame();
+		// Error panel body text must not render — aborts don't produce
+		// the scary red-bordered panel.
+		expect(frame).not.toContain("[Interrupted by user]");
+		// Footer shape: `▣ <agent> · <model> · interrupted`. Confirms the
+		// suffix is part of the footer (not a stray string elsewhere) and
+		// the glyph is present. Duration pip is explicitly absent —
+		// aborted turns skip the `agent_end` duration stamp so a wall-
+		// clock-until-abort value doesn't read like a completed-turn
+		// duration next to `· interrupted`.
+		expect(frame).toMatch(/▣ \S+ · \S+.* · interrupted/);
+		expect(frame).not.toMatch(/· \d+(\.\d+)?\s*(ms|s) · interrupted/);
+	});
+
 	test("streaming interrupt hint appears during a turn and clears after", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });

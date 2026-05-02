@@ -17,6 +17,7 @@ CREATE TABLE `messages` (
 	`model_name` text,
 	`duration_ms` integer,
 	`error` text,
+	`interrupted` integer,
 	`created_at` integer NOT NULL,
 	FOREIGN KEY (`session_id`) REFERENCES `sessions`(`id`) ON UPDATE no action ON DELETE cascade
 );

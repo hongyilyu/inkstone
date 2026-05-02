@@ -89,11 +89,28 @@ export interface DisplayMessage {
 	modelName?: string;
 	duration?: number; // ms
 	/**
-	 * pi-ai's `AssistantMessage.errorMessage`, populated when the turn
-	 * ended with `stopReason === "error" | "aborted"`. Rendered as a
-	 * warning-bordered panel below the assistant body.
+	 * pi-ai's `AssistantMessage.errorMessage`, populated only when the
+	 * turn ended with `stopReason === "error"`. Rendered as a warning-
+	 * bordered panel below the assistant body. NOT set for aborts —
+	 * those are signalled via `interrupted` instead so the UI can
+	 * differentiate user-initiated cancellation from a hard provider
+	 * error. The split is enforced by the reducer at live `message_end`
+	 * time (`tui/context/agent.tsx`) and persisted in the `messages`
+	 * table's `error` column, round-tripped on resume.
 	 */
 	error?: string;
+	/**
+	 * Set when the turn ended with `stopReason === "aborted"` — user
+	 * pressed ESC twice, Ctrl+C, etc. The bubble footer suffix flips
+	 * to ` · interrupted` and the agent glyph tints to `textMuted`;
+	 * the red error panel is suppressed (the user knows the turn
+	 * didn't complete, no need for a scary-looking error panel).
+	 * Mirrors OpenCode's `MessageAbortedError` split in
+	 * `routes/session/index.tsx`. Persisted in the `messages` table's
+	 * `interrupted` column so resumed sessions replay the correct
+	 * render.
+	 */
+	interrupted?: boolean;
 }
 
 export interface AgentStoreState {
