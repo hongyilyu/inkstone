@@ -480,18 +480,22 @@ export function AgentProvider(
 							// page, so `store.currentAgent` at event time is
 							// guaranteed to be the agent that produced this reply.
 							const agentName = getAgentInfo(store.currentAgent).displayName;
-							// Surface any assistant-turn failure onto the bubble. pi-ai
+							// Surface assistant-turn termination onto the bubble. pi-ai
 							// converts provider SDK exceptions into stream `error` events
 							// (see amazon-bedrock.js:164-167) which pi-agent-core forwards
 							// through message_end with `stopReason` set and `errorMessage`
-							// populated. Without this stash the errored bubble renders as
-							// empty text with no user-facing hint that anything went wrong.
+							// populated. We split the two cases so the UI can render
+							// differently: hard errors (`"error"`) keep the red-bordered
+							// panel with the raw provider message; aborts (`"aborted"`)
+							// only flip the `interrupted` flag so the footer can suffix
+							// ` · interrupted` and tint the agent glyph muted — no scary
+							// red panel when the user pressed ESC-ESC on purpose.
 							const errorStr =
-								(assistantMsg.stopReason === "error" ||
-									assistantMsg.stopReason === "aborted") &&
-								assistantMsg.errorMessage
+								assistantMsg.stopReason === "error" && assistantMsg.errorMessage
 									? assistantMsg.errorMessage
 									: undefined;
+							const interruptedFlag =
+								assistantMsg.stopReason === "aborted" ? true : undefined;
 
 							// Persist-first: build the intended post-state as a
 							// plain object so the tx writes the new meta WITHOUT
@@ -517,6 +521,7 @@ export function AgentProvider(
 									agentName,
 									modelName: displayName,
 									...(errorStr ? { error: errorStr } : {}),
+									...(interruptedFlag ? { interrupted: true } : {}),
 								};
 								persistThen(
 									(tx) => {
@@ -531,6 +536,9 @@ export function AgentProvider(
 										setStore("messages", lastIdx, "modelName", displayName);
 										if (errorStr) {
 											setStore("messages", lastIdx, "error", errorStr);
+										}
+										if (interruptedFlag) {
+											setStore("messages", lastIdx, "interrupted", true);
 										}
 									},
 								);
@@ -814,11 +822,22 @@ export function AgentProvider(
 					// bubble gets the stamp; intermediate tool-call assistant messages
 					// in the same turn correctly do not. Persist-first: meta update is
 					// gated on tx success — store reflects disk.
+					//
+					// Interrupted turns skip the duration pip — the wall-clock-
+					// until-abort value would read like a completed-turn duration
+					// next to the ` · interrupted` suffix, miscommunicating. Mirrors
+					// OpenCode's `MessageAbortedError` branch in
+					// `routes/session/index.tsx`.
 					if (store.lastTurnStartedAt > 0) {
 						const duration = Date.now() - store.lastTurnStartedAt;
 						const lastIdx = store.messages.length - 1;
 						const last = store.messages[lastIdx];
-						if (last && last.role === "assistant" && currentSessionId) {
+						if (
+							last &&
+							last.role === "assistant" &&
+							!last.interrupted &&
+							currentSessionId
+						) {
 							const sid = currentSessionId;
 							const updated: DisplayMessage = { ...last, duration };
 							persistThen(
