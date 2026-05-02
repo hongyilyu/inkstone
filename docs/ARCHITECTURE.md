@@ -152,12 +152,17 @@ src/
       session-list.tsx              Left-side session history panel (Ctrl+N)
       session-list-item.tsx         Single row renderer for session list
       open-page.tsx                 Empty-state welcome page
-      dialog-command.tsx            CommandProvider + useCommand + palette
-      dialog-agent.tsx              Agent selection dialog
-      dialog-model.tsx              Model selection dialog
-      dialog-variant.tsx            Reasoning-effort picker
-      dialog-theme.tsx              Theme selection dialog
-      dialog-provider.tsx           Provider selection dialog
+      dialog/                       Feature dialogs (compositions of ui/dialog-* primitives)
+        command.tsx                 CommandProvider + useCommand + palette
+        agent.tsx                   Agent selection dialog
+        model.tsx                   Model selection dialog
+        variant.tsx                 Reasoning-effort picker
+        theme.tsx                   Theme selection dialog
+        provider/                   Provider dialog — list + Kiro manage/login flows
+          index.tsx                 DialogProvider list + row dispatch
+          manage-menu.tsx           Reconnect/Disconnect secondary menu for connected Kiro
+          disconnect-kiro.ts        Confirm → clearKiroCreds → active-provider rehome → toast
+          login-kiro.tsx            Drive pi-kiro's loginKiro callbacks against the dialog stack
     util/
       format.ts                     Token/cost/duration/path formatting helpers
       keybind.ts                    Keybind action map + match/print helpers
@@ -391,9 +396,9 @@ No changes to `types.ts`, `compose.ts`, `zones.ts`, `tools.ts`, `backend/agent/i
 
 Commands are user-invoked verbs, distinct from tools (which are LLM-invoked mid-turn). See [`AGENT-DESIGN.md` D9](./AGENT-DESIGN.md) for the rationale; this section documents the runtime.
 
-**Single unified registry.** Slash verbs (`/clear`, `/article`), palette-only commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`), and keybind-only actions (ESC interrupt, Tab agent-cycle) all live in the same TUI-side command registry (`src/tui/components/dialog-command.tsx`). Per [`SLASH-COMMANDS.md`](./SLASH-COMMANDS.md) Path A, the two previously-separate surfaces (backend `AgentCommand` + TUI `CommandOption`) now share one type. Agent-declared verbs stay data-only in `AgentInfo.commands`; the TUI bridges them into registry entries at mount time.
+**Single unified registry.** Slash verbs (`/clear`, `/article`), palette-only commands (`/models`, `/themes`, `/connect`, `/agents`, `/effort`), and keybind-only actions (ESC interrupt, Tab agent-cycle) all live in the same TUI-side command registry (`src/tui/components/dialog/command.tsx`). Backend `AgentCommand` (declared on `AgentInfo.commands`) and TUI `CommandOption` remain distinct types — the TUI bridges agent-declared verbs into registry entries at mount time, so the runtime registry is unified even though the static types are not. Per [`SLASH-COMMANDS.md`](./SLASH-COMMANDS.md) Path A.
 
-**Type shape.** See `src/tui/components/dialog-command.tsx` for `CommandOption` and `SlashSpec`. A `CommandOption` carries `id`, `title`, optional `description`, optional `keybind` (for global keybind dispatch), optional `slash: SlashSpec` (for typed `/name args` dispatch), `hidden` (to suppress palette display), and `onSelect(dialog, args?)`.
+**Type shape.** See `src/tui/components/dialog/command.tsx` for `CommandOption` and `SlashSpec`. A `CommandOption` carries `id`, `title`, optional `description`, optional `keybind` (for global keybind dispatch), optional `slash: SlashSpec` (for typed `/name args` dispatch), `hidden` (to suppress palette display), and `onSelect(dialog, args?)`.
 
 Agent-declared verbs live backend-side. See `src/backend/agent/types.ts` for `AgentCommand` and `AgentCommandHelpers`. A command declares `name`, optional `description` / `argHint` / `takesArgs`, and `execute(args, helpers)`. The helpers bag gives commands `prompt(text, displayParts?)` (always available), plus optional `displayMessage(text)` and `pickFromList({…})` that require an interactive frontend.
 
@@ -415,7 +420,7 @@ The optional helpers require an interactive frontend; headless callers omit them
 | Prompt-local keybinds | `Prompt()` in `src/tui/components/prompt.tsx` | ESC interrupt |
 | Agent-declared verbs | `BridgeAgentCommands` in `src/tui/context/agent.tsx`, reactive on `store.currentAgent` | reader's `/article <filename>` |
 
-**Slash dispatch** (`command.triggerSlash(name, args)` in `dialog-command.tsx`):
+**Slash dispatch** (`command.triggerSlash(name, args)` in `dialog/command.tsx`):
 
 ```
 user types "/article foo.md" + Enter
@@ -593,7 +598,7 @@ Kept separate from `config.json` because OAuth tokens are sensitive (pi-kiro's `
 
 #### Kiro device-code login flow
 
-`startKiroLogin` in `components/dialog-provider.tsx` wires pi-kiro's `loginKiro` callbacks against the existing dialog stack:
+`startKiroLogin` in `components/dialog/provider/login-kiro.tsx` wires pi-kiro's `loginKiro` callbacks against the existing dialog stack:
 
 - `onPrompt({ message, placeholder, allowEmpty })` → `DialogPrompt.show(...)` returns a promise. pi-kiro calls this up to twice (Builder ID vs IdC start URL, optional IdC region). Each call uses `dialog.replace`, so only one dialog is on the stack at any time — sidesteps pi-kiro's documented mirrored-cursor glitch (in `oauth.ts`), where two input widgets appended to the same container double-render typed characters.
 - `onAuth({ url, instructions })` → replaces the prompt with `DialogAuthWait` showing the verification URL (primary color), user code + expiry note, and a live progress line fed by `onProgress`.
@@ -606,7 +611,7 @@ The Models dialog does not drill down through providers — with only connected 
 
 ### Effort variants (reasoning levels)
 
-Reasoning-capable models expose a dedicated **Effort** palette entry that opens `DialogVariant` on the currently-active model and lets the user pick a pi-agent-core `ThinkingLevel`. Inkstone follows OpenCode's standalone-entry pattern (OpenCode's `variant.list` command + `/variants` slash, `dialog-variant.tsx`) trimmed to pi-ai's unified level enum — no per-SDK `variants()` switch is needed because pi-ai already owns the provider-specific mapping internally.
+Reasoning-capable models expose a dedicated **Effort** palette entry that opens `DialogVariant` on the currently-active model and lets the user pick a pi-agent-core `ThinkingLevel`. Inkstone follows OpenCode's standalone-entry pattern (OpenCode's `variant.list` command + `/variants` slash, `dialog-variant.tsx`) trimmed to pi-ai's unified level enum — no per-SDK `variants()` switch is needed because pi-ai already owns the provider-specific mapping internally. Our implementation lives at `components/dialog/variant.tsx`.
 
 The entry is **not** a cascade from the Models dialog. Picking a model via Models is a one-step action that sets the model and auto-restores its stored effort (see "setModel auto-restore" below); changing effort on the current model is a separate palette action. This mirrors how OpenCode separates model selection from variant selection in its palette and slash-command surface (see `opencode/src/cli/cmd/tui/app.tsx`).
 
@@ -660,7 +665,7 @@ Ctrl+P → Effort
 
 ## Keybinds + Commands
 
-Keyboard shortcuts are in two layers — a pure data map (actions → binding strings) plus a registry-based dispatcher — ported from OpenCode's `util/keybind.ts` + `component/dialog-command.tsx` pattern.
+Keyboard shortcuts are in two layers — a pure data map (actions → binding strings) plus a registry-based dispatcher — ported from OpenCode's `util/keybind.ts` + `component/dialog-command.tsx` pattern. Our dispatcher lives at `components/dialog/command.tsx`.
 
 ### Layer 1 — `src/tui/util/keybind.ts`
 
@@ -707,7 +712,7 @@ Inkstone additionally scopes the arm to the current turn via a `createEffect` on
 
 `ctrl+p` is both `command_list` (global) and one alternate of `select_up` (dialog-local). This is safe because:
 
-- CommandProvider's dispatcher is suspended while any dialog is open (driven by `DialogProvider` via `setSuspendHandler` — see `ui/dialog.tsx` + `components/dialog-command.tsx`).
+- CommandProvider's dispatcher is suspended while any dialog is open (driven by `DialogProvider` via `setSuspendHandler` — see `ui/dialog.tsx` + `components/dialog/command.tsx`).
 - DialogSelect calls `evt.preventDefault()` on nav matches, so even if handler order were reversed, the downstream CommandProvider would skip via its `defaultPrevented` check.
 
 `escape` is both `session_interrupt` (global, streaming-only) and `dialog_close` (dialog-local). Dialog's `useKeyboard` in `ui/dialog.tsx` returns early when `store.stack.length === 0`, and calls `preventDefault` + `stopPropagation` when closing. CommandProvider's dispatcher is additionally suspended while any dialog is open, for the same reason as `ctrl+p` above. So: dialog open ⇒ ESC closes the dialog, no interrupt; dialog closed + streaming ⇒ ESC runs the interrupt handler; dialog closed + idle ⇒ `session_interrupt` isn't registered, ESC is a no-op.

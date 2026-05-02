@@ -10,9 +10,9 @@ import {
 	runWithOwner,
 	useContext,
 } from "solid-js";
-import { type DialogContext, useDialog } from "../ui/dialog";
-import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select";
-import * as Keybind from "../util/keybind";
+import { type DialogContext, useDialog } from "../../ui/dialog";
+import { DialogSelect, type DialogSelectOption } from "../../ui/dialog-select";
+import * as Keybind from "../../util/keybind";
 
 /**
  * Command registry + palette, ported from OpenCode's

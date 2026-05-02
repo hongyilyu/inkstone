@@ -1,6 +1,6 @@
-import { themes, useTheme } from "../context/theme";
-import type { DialogContext } from "../ui/dialog";
-import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select";
+import { themes, useTheme } from "../../context/theme";
+import type { DialogContext } from "../../ui/dialog";
+import { DialogSelect, type DialogSelectOption } from "../../ui/dialog-select";
 
 interface ThemeOption {
 	id: string;

@@ -1,8 +1,8 @@
 import { getProvider, listProviders } from "@backend/providers";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { createMemo } from "solid-js";
-import type { DialogContext } from "../ui/dialog";
-import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select";
+import type { DialogContext } from "../../ui/dialog";
+import { DialogSelect, type DialogSelectOption } from "../../ui/dialog-select";
 
 type AnyModel = Model<Api>;
 

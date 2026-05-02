@@ -9,7 +9,7 @@
 
 import { testRender } from "@opentui/solid";
 import { Layout } from "../../src/tui/app";
-import { CommandProvider } from "../../src/tui/components/dialog-command";
+import { CommandProvider } from "../../src/tui/components/dialog/command";
 import type { SessionFactory } from "../../src/tui/context/agent";
 import { AgentProvider } from "../../src/tui/context/agent";
 import { ThemeProvider } from "../../src/tui/context/theme";

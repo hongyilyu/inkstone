@@ -13,7 +13,7 @@ import { createStore } from "solid-js/store";
 import { useTheme } from "../context/theme";
 import { useDialog } from "../ui/dialog";
 import { listVaultFiles } from "../util/vault-files";
-import { useCommand } from "./dialog-command";
+import { useCommand } from "./dialog/command";
 
 /**
  * Autocomplete dropdown for the prompt textarea.

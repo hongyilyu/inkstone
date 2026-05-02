@@ -1,96 +1,14 @@
 import { saveKiroCreds } from "@backend/persistence/auth";
-import { getProvider, listProviders } from "@backend/providers";
+import { getProvider } from "@backend/providers";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { loginKiro } from "pi-kiro/core";
-import { createMemo, createSignal } from "solid-js";
-import { useTheme } from "../context/theme";
-import { type DialogContext, useDialog } from "../ui/dialog";
-import { DialogAuthWait } from "../ui/dialog-auth-wait";
-import { DialogPrompt } from "../ui/dialog-prompt";
-import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select";
-import { type ToastContext, useToast } from "../ui/toast";
-import { DialogModel } from "./dialog-model";
-
-interface ProviderValue {
-	id: string;
-}
-
-/**
- * Provider connection-management dialog.
- *
- * Lists every registered provider with a connection status. Selecting a
- * *connected* provider is a no-op (closes the dialog) — manage/disconnect
- * actions land when a second provider exists and the flow can be exercised.
- *
- * Selecting a *disconnected* provider:
- *   - `kiro` → launches the OAuth device-code flow (see `startKiroLogin`).
- *   - others (currently just Bedrock) → toast with `authInstructions`
- *     so the user knows which env vars to set.
- *
- * The companion Models dialog lists only models from connected providers,
- * so this dialog is the gateway for making new providers usable.
- */
-export function DialogProvider(props: {
-	onModelSelected: (model: Model<Api>) => void;
-}) {
-	const toast = useToast();
-	const dialog = useDialog();
-	const { theme } = useTheme();
-
-	const options = createMemo<DialogSelectOption<ProviderValue>[]>(() => {
-		// Connected providers float to the top so the current state is
-		// obvious at a glance.
-		const all = [...listProviders()].sort(
-			(a, b) => Number(b.isConnected()) - Number(a.isConnected()),
-		);
-		return all.map((p) => ({
-			title: p.displayName,
-			value: { id: p.id },
-			description: p.isConnected() ? "✓ Connected" : "Not configured",
-		}));
-	});
-
-	return (
-		<DialogSelect
-			title="Providers"
-			placeholder="Search providers..."
-			options={options()}
-			closeOnSelect={false}
-			onSelect={(option) => {
-				const provider = listProviders().find((p) => p.id === option.value.id);
-				if (!provider) return;
-				if (provider.isConnected()) {
-					// No management actions yet — dismiss. Reserved for future
-					// disconnect / re-auth flows.
-					dialog.clear();
-					return;
-				}
-				if (provider.id === "kiro") {
-					// The login flow reuses the same dialog stack via `dialog.replace`,
-					// so only one dialog is on the stack at any time.
-					void startKiroLogin(
-						dialog,
-						toast,
-						theme.textMuted,
-						props.onModelSelected,
-					);
-					return;
-				}
-				toast.show({
-					variant: "warning",
-					message: `${provider.displayName}: ${provider.authInstructions}`,
-				});
-			}}
-		/>
-	);
-}
-
-DialogProvider.show = (
-	dialog: DialogContext,
-	onModelSelected: (model: Model<Api>) => void,
-) => {
-	dialog.replace(() => <DialogProvider onModelSelected={onModelSelected} />);
-};
+import { createSignal } from "solid-js";
+import type { useTheme } from "../../../context/theme";
+import type { DialogContext } from "../../../ui/dialog";
+import { DialogAuthWait } from "../../../ui/dialog-auth-wait";
+import { DialogPrompt } from "../../../ui/dialog-prompt";
+import type { ToastContext } from "../../../ui/toast";
+import { DialogModel } from "../model";
 
 /**
  * Drive pi-kiro's `loginKiro` callbacks against the dialog stack.
@@ -106,7 +24,7 @@ DialogProvider.show = (
  * passed to `loginKiro`. That unwinds `loginKiro` with "Login cancelled"
  * which we swallow silently.
  */
-async function startKiroLogin(
+export async function startKiroLogin(
 	dialog: DialogContext,
 	toast: ToastContext,
 	mutedColor: ReturnType<typeof useTheme>["theme"]["textMuted"],
