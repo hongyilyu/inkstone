@@ -84,6 +84,31 @@ describe("secondary page", () => {
 		expect(setup.captureCharFrame()).not.toContain("Second Page");
 	});
 
+	test("format: 'text' renders content verbatim without markdown parsing", async () => {
+		// Plain-text format bypasses the markdown renderer so content
+		// like `# not a heading` or raw log output appears literally.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		await setup.mockInput.typeText("prime");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(20);
+
+		openSecondaryPage({
+			content: "# not a heading\n* not a bullet",
+			format: "text",
+		});
+		await waitForFrame(setup, "# not a heading");
+
+		// Literal `#` survives — the markdown renderer would have
+		// consumed it as a heading marker and stripped the `#` glyph.
+		const f = setup.captureCharFrame();
+		expect(f).toContain("# not a heading");
+		expect(f).toContain("* not a bullet");
+	});
+
 	test("ESC with an open dialog over a secondary page closes the dialog, not the page", async () => {
 		// app.tsx's secondary_page_close handler is gated on
 		// `dialog.stack.length === 0` — so an open dialog wins the ESC.

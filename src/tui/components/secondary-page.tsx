@@ -2,21 +2,25 @@
  * Full-screen secondary page. Replaces the conversation area when
  * a secondary page is open. Renders content in a scrollable main area.
  *
- * Generic: content is provided by the caller via `openSecondaryPage()`.
- * Navigation: ESC/Ctrl+[ or the sidebar back button calls `closeSecondaryPage()`.
+ * Generic: content + format are provided by the caller via
+ * `openSecondaryPage()`. Markdown is the default (reader's `/article`
+ * and `@`-mention previews); `"text"` renders raw text for non-markdown
+ * content like subagent output or logs.
  *
- * TODO: Currently renders content as markdown only. Expand to support
- * other formats (plain text, structured data, custom renderers) when
- * needed — e.g. subagent work output, logs, or non-markdown content.
+ * Navigation: ESC/Ctrl+[ or the sidebar back button calls
+ * `closeSecondaryPage()`.
  */
 
+import { Show } from "solid-js";
 import { getSecondaryPage } from "../context/secondary-page";
 import { useTheme } from "../context/theme";
 
 export function SecondaryPage() {
 	const { theme, syntax } = useTheme();
 
-	const content = () => getSecondaryPage()?.content ?? "";
+	const state = () => getSecondaryPage();
+	const content = () => state()?.content ?? "";
+	const format = () => state()?.format ?? "markdown";
 
 	return (
 		<scrollbox
@@ -26,12 +30,21 @@ export function SecondaryPage() {
 			paddingTop={1}
 			paddingBottom={1}
 		>
-			<markdown
-				content={content()}
-				syntaxStyle={syntax()}
-				fg={theme.text}
-				bg={theme.background}
-			/>
+			<Show
+				when={format() === "text"}
+				fallback={
+					<markdown
+						content={content()}
+						syntaxStyle={syntax()}
+						fg={theme.text}
+						bg={theme.background}
+					/>
+				}
+			>
+				<text fg={theme.text} bg={theme.background} wrapMode="word">
+					{content()}
+				</text>
+			</Show>
 		</scrollbox>
 	);
 }
