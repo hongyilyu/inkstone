@@ -212,7 +212,18 @@ function startSessionTitleTask(
 			);
 		})
 		.catch((error) => {
-			console.error("[inkstone] session title generation failed:", error);
+			// Expected title-gen failures (completeSimple throws on
+			// primary and retry) are caught inside `generateSessionTitle`
+			// and logged there with the resolved model ids. This outer
+			// catch only fires on truly unexpected throws from
+			// orchestration steps NOT wrapped by the inner try/catch —
+			// e.g. `provider.getApiKey()` rejecting, or `loadConfig()`
+			// throwing inside `resolveTitleModel`. Log the active params
+			// so the next layer up has something to debug with.
+			console.error(
+				`[inkstone] session title task failed (active: ${params.activeProviderId}/${params.activeModelId}):`,
+				error,
+			);
 		});
 }
 
