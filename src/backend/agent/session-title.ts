@@ -59,13 +59,80 @@ export interface GenerateSessionTitleParams {
 export async function generateSessionTitle(
 	params: GenerateSessionTitleParams,
 ): Promise<string | null> {
-	const model = resolveTitleModel(params);
-	if (!model) return null;
+	const primary = resolveTitleModel(params);
+	if (!primary) return null;
 	const input = params.prompt.trim();
 	if (!input) return null;
 
-	const provider = getProvider(model.provider);
-	if (!provider) return null;
+	// Primary attempt. Wrap in try/catch so a provider error (model
+	// unavailable on the user's plan, auth blip, transient 5xx) doesn't
+	// silently poison the title. We only retry on throws, not on
+	// `cleanSessionTitle` returning `null` — a successful call that
+	// produced empty text is a valid "no title" signal (e.g. safety
+	// filter, refused short input), and retrying on the chat model
+	// would just burn tokens for the same answer.
+	try {
+		const raw = await runTitleCompletion(primary, input);
+		return cleanSessionTitle(raw);
+	} catch (err) {
+		console.error(
+			`[inkstone] session title generation failed (model: ${primary.provider}/${primary.id}):`,
+			err,
+		);
+	}
+
+	// Retry onto the active chat model. Guaranteed available — the user
+	// just successfully prompted with it one millisecond earlier. Skip
+	// when the primary attempt already used this model (avoids a
+	// pointless duplicate request that would fail identically). The
+	// guard compares (provider, id) rather than id alone so a
+	// `config.sessionTitleModel` override on a different provider that
+	// happens to share the chat model's id still retries correctly.
+	if (
+		primary.provider === params.activeProviderId &&
+		primary.id === params.activeModelId
+	) {
+		return null;
+	}
+	const fallback = resolveModel(params.activeProviderId, params.activeModelId);
+	if (!fallback) return null;
+
+	try {
+		const raw = await runTitleCompletion(fallback, input);
+		return cleanSessionTitle(raw);
+	} catch (err) {
+		console.error(
+			`[inkstone] session title retry also failed (model: ${fallback.provider}/${fallback.id}):`,
+			err,
+		);
+		return null;
+	}
+}
+
+/**
+ * Shared request body for title generation. Resolves the api key from
+ * `model.provider`'s registry entry internally so the primary and retry
+ * paths stay one-liners at the call site — both share the same
+ * "provider lookup → key fetch → request" shape.
+ *
+ * Non-null assertion on `getProvider(model.provider)`: every `Model<Api>`
+ * reaching this function flowed through `resolveModel` or
+ * `resolveTitleModel`, which call `getProvider(providerId).listModels()`
+ * to construct the returned model. So the provider is known to the
+ * registry by construction — reaching here with an unknown provider
+ * would require hand-building a `Model<Api>` outside that path, which
+ * no current caller does. The `!` documents the invariant; changing it
+ * to a guarded if would imply a recovery branch that can't fire.
+ *
+ * Any change (e.g. `maxTokens`, `reasoning` level) applies to both the
+ * primary and retry requests.
+ */
+async function runTitleCompletion(
+	model: Model<Api>,
+	input: string,
+): Promise<string> {
+	// biome-ignore lint/style/noNonNullAssertion: model.provider is guaranteed in PROVIDERS because every caller obtains `model` via `resolveModel`/`resolveTitleModel`, which already round-tripped through `getProvider`. See the function docstring for the full invariant.
+	const provider = getProvider(model.provider)!;
 	const apiKey = await provider.getApiKey();
 	const response = await completeSimple(
 		model,
@@ -92,14 +159,13 @@ export async function generateSessionTitle(
 			reasoning: "minimal",
 		},
 	);
-	const text = response.content
+	return response.content
 		.map((block) => {
 			if (block.type === "text") return block.text;
 			if (block.type === "thinking") return block.thinking;
 			return "";
 		})
 		.join("\n");
-	return cleanSessionTitle(text);
 }
 
 export function cleanSessionTitle(raw: string): string | null {
