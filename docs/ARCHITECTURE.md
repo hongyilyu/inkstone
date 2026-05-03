@@ -129,7 +129,11 @@ src/
     tool-renderers.ts               Tool-arg rendering contract (per-tool one-liner formatters for ToolPart)
 
   tui/                              Solid + OpenTUI
-    app.tsx                         Provider stack + root layout + top-level commands
+    app.tsx                         Provider stack + root layout + module-scoped scroll/input refs
+    commands/
+      layout-commands.ts            registerLayoutCommands — extracted Layout palette + keybind registrations
+    hooks/
+      use-layout-keybinds.ts        useLayoutKeybinds — extracted Layout keyboard handler (app_exit, scroll, secondary_page_close)
     context/
       agent.tsx                     Thin barrel re-exporting AgentProvider + useAgent + SessionFactory / Session
       agent/                        Agent provider split (7 modules; see below)
