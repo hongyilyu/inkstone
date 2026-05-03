@@ -2,15 +2,19 @@
  * Test harness for the Inkstone TUI.
  *
  * Mounts the same provider stack as `App` (ThemeProvider → ToastProvider
- * → DialogProvider → CommandProvider → AgentProvider → Layout), but
- * with an injected `session` factory so tests can script AgentEvents
- * without a real pi-agent-core loop.
+ * → DialogProvider → CommandProvider → ErrorBoundary → AgentProvider
+ * → Layout), but with an injected `session` factory so tests can script
+ * AgentEvents without a real pi-agent-core loop. The `ErrorBoundary`
+ * mirrors `src/tui/app.tsx` so the no-provider-fallback path is
+ * exercised end-to-end when a test injects a throwing factory.
  */
 
 import { testRender } from "@opentui/solid";
+import { ErrorBoundary } from "solid-js";
 import type { generateSessionTitle } from "../../src/backend/agent";
 import { Layout } from "../../src/tui/app";
 import { CommandProvider } from "../../src/tui/components/dialog/command";
+import { NoProviderFallback } from "../../src/tui/components/no-provider-fallback";
 import type { SessionFactory } from "../../src/tui/context/agent";
 import { AgentProvider } from "../../src/tui/context/agent";
 import { ThemeProvider } from "../../src/tui/context/theme";
@@ -33,14 +37,20 @@ export async function renderApp(opts: HarnessOptions) {
 				<ToastProvider>
 					<DialogProvider>
 						<CommandProvider>
-							<AgentProvider
-								session={opts.session}
-								sessionTitleGenerator={
-									opts.sessionTitleGenerator ?? (async () => null)
-								}
+							<ErrorBoundary
+								fallback={(error, reset) => (
+									<NoProviderFallback error={error} reset={reset} />
+								)}
 							>
-								<Layout />
-							</AgentProvider>
+								<AgentProvider
+									session={opts.session}
+									sessionTitleGenerator={
+										opts.sessionTitleGenerator ?? (async () => null)
+									}
+								>
+									<Layout />
+								</AgentProvider>
+							</ErrorBoundary>
 						</CommandProvider>
 					</DialogProvider>
 				</ToastProvider>
