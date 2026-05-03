@@ -10,8 +10,8 @@
 
 import { getAgentInfo } from "@backend/agent";
 import { renderToolArgs } from "@bridge/tool-renderers";
-import type { DisplayMessage } from "@bridge/view-model";
-import { For, Show } from "solid-js";
+import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
+import { For, Index, Match, Show, Switch } from "solid-js";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import { formatDuration } from "../util/format";
@@ -224,45 +224,71 @@ export function AssistantMessage(props: {
 	return (
 		<box flexDirection="column" flexShrink={0}>
 			<box flexDirection="column" flexShrink={0}>
-				{parts().map((part, i) => {
-					const first = i === 0;
-					const streaming = () => isStreaming() && i === parts().length - 1;
-					if (part.type === "thinking") {
+				{/* Parts list iterated via `<Index>` (not `<For>` and not
+				    `parts().map(...)`). During a streaming turn the
+				    reducer mutates existing parts in place — a text
+				    delta extends `parts[tail].text`, a tool result
+				    flips `parts[k].state` from `pending` to
+				    `completed`. `<For>` keys by identity and would
+				    tear down + recreate every child on each mutation;
+				    a plain `.map()` would do the same and also break
+				    Solid's reconciliation entirely. `<Index>` keeps
+				    each slot's component instance alive and updates
+				    only the child whose accessor fires, which is
+				    exactly what the streaming `<markdown>` render
+				    relies on for its incremental parse path. Parts
+				    are append-only within a message (index `i` always
+				    refers to the same logical part), so `<Index>`
+				    semantics match the data. */}
+				<Index each={parts()}>
+					{(part, i) => {
+						const first = i === 0;
+						const streaming = () => isStreaming() && i === parts().length - 1;
 						return (
-							<ReasoningPart
-								text={part.text}
-								first={first}
-								streaming={streaming()}
-							/>
+							<Switch>
+								<Match when={part().type === "thinking"}>
+									<ReasoningPart
+										text={
+											(part() as Extract<DisplayPart, { type: "thinking" }>)
+												.text
+										}
+										first={first}
+										streaming={streaming()}
+									/>
+								</Match>
+								<Match when={part().type === "text"}>
+									<TextPart
+										text={
+											(part() as Extract<DisplayPart, { type: "text" }>).text
+										}
+										first={first}
+										streaming={streaming()}
+									/>
+								</Match>
+								<Match when={part().type === "tool"}>
+									{(() => {
+										const t = part() as Extract<DisplayPart, { type: "tool" }>;
+										return (
+											<ToolPart
+												name={t.name}
+												args={t.args}
+												state={t.state}
+												error={t.error}
+												first={first}
+											/>
+										);
+									})()}
+								</Match>
+								{/* `file` parts only live on user bubbles (see
+								    `UserMessage`). Assistant bubbles never
+								    receive them from the reducer, but the
+								    part union covers the whole DisplayPart
+								    set — omit a `Match` for it and
+								    `<Switch>` renders nothing. */}
+							</Switch>
 						);
-					}
-					if (part.type === "text") {
-						return (
-							<TextPart
-								text={part.text}
-								first={first}
-								streaming={streaming()}
-							/>
-						);
-					}
-					if (part.type === "tool") {
-						return (
-							<ToolPart
-								name={part.name}
-								args={part.args}
-								state={part.state}
-								error={part.error}
-								first={first}
-							/>
-						);
-					}
-					// `file` parts only live on user bubbles (see
-					// `UserMessage`). Assistant bubbles never receive them
-					// from the reducer, but the part union covers the
-					// whole DisplayPart set — skip silently to keep the
-					// render total.
-					return null;
-				})}
+					}}
+				</Index>
 			</box>
 
 			{/* Assistant-turn error panel. Mirrors OpenCode's per-message

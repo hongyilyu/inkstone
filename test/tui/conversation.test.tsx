@@ -139,6 +139,58 @@ describe("conversation rendering", () => {
 		await waitForFrame(setup, /⚙\s*read/);
 	});
 
+	test("pending → completed flip preserves sibling text parts", async () => {
+		// Regression guard for the `<Index>` / `<Switch>` refactor in
+		// `AssistantMessage`. This test asserts the *user-visible*
+		// invariant that the fix aimed for — the streamed text is
+		// continuously visible as a sibling tool part transitions
+		// through pending → executing → completed without flicker.
+		//
+		// Honest limitation: the Solid reactivity harness renders
+		// frames on demand via `renderOnce()`, so we can't directly
+		// observe intermediate teardown-remount cycles. Both the
+		// pre-fix `.map()` and the post-fix `<Index>` converge to
+		// a final frame containing the full text — the pre-fix
+		// version just does O(parts × tokens) more work and loses
+		// markdown's incremental-parse state on every mutation. See
+		// `docs/TODO.md` (this entry) for why this is specifically
+		// a user-visible "flicker" regression rather than a dropped-
+		// content regression. This test locks in the "no dropped
+		// content across the tool transition" invariant as a floor;
+		// a more aggressive mount-counter test would require
+		// instrumenting `TextPart` via `mock.module`, which is
+		// heavier than the risk warrants today.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await seedUserTurn(setup, "list files");
+
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(ev_textStart());
+		fake.emit(ev_textDelta("Scanning the vault for matches"));
+		fake.emit(ev_toolcallEnd("s1", "read", { path: "notes/foo.md" }));
+		fake.emit(ev_messageEnd({ stopReason: "toolUse" }));
+
+		// Both the sibling text and the pending tool row visible.
+		await waitForFrame(setup, "Scanning the vault for matches");
+		await waitForFrame(setup, /~\s*read/);
+
+		// Flip pending → completed. The text part must still be there.
+		fake.emit(ev_toolExecStart("s1", "read", { path: "notes/foo.md" }));
+		fake.emit(
+			ev_toolExecEnd("s1", "read", {
+				result: { content: [{ type: "text", text: "ok" }] },
+			}),
+		);
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "toolUse" })]));
+
+		await waitForFrame(setup, /⚙\s*read/);
+		expect(setup.captureCharFrame()).toContain(
+			"Scanning the vault for matches",
+		);
+	});
+
 	test("tool error surfaces the error line", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });

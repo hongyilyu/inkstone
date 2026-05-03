@@ -3,13 +3,21 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-02 (theme module split: pure-data + syntax FFI isolated into `src/tui/theme/`)
+**Last updated**: 2026-05-02 (AssistantMessage streaming fix: .map → <Index> + <Switch>)
 
 ## In Progress
 
 None
 
+## Known Issues
+
+- `file` DisplayParts are user-bubble-only per the reducer today, but the `DisplayPart` union type does not encode that constraint. `AssistantMessage`'s `<Switch>` intentionally has no `<Match>` for `file` — `<Switch>` with no matching branch renders nothing. If a future reducer change starts pushing `file` parts onto an assistant bubble (e.g. a tool that returns a file attachment), those parts would silently disappear from the rendered frame with no type error or runtime warning. Options for hardening: (a) narrow `DisplayPart` at the assistant seam so `file` is statically unreachable, or (b) add a dev-only `console.warn` on the unhandled branch. Neither is implemented today; revisit when a reducer path for an assistant `file` part is actually needed.
+
 ## Completed
+
+- [x] Fix `AssistantMessage` streaming rerender behavior — `parts().map(...)` replaced with `<Index>` + `<Switch>`/`<Match>`. `parts` is a Solid store array and every streaming delta (text append, thinking append, tool-state flip) mutated existing fields. The old `.map()` + `if (part.type === ...)` chain re-ran on every tracked read, which broke Solid's reconciliation entirely: every child component was destroyed and recreated from scratch for each token. That defeated `<markdown streaming>`'s incremental parse path (stable node identity required), caused visible flicker when a tool flipped `pending → completed`, and did O(parts × tokens) work per turn. Replaced with `<Index each={parts()}>` — `<Index>` keeps the child instance alive at each slot and passes a signal the child reads reactively; parts are append-only at a given index, so `<Index>` semantics match the data. Inside each slot, `<Switch>`/`<Match>` routes on `part().type` with a narrowing cast per branch (Solid's `<Match>` doesn't carry type-narrowing through the `when` expression, so the existing `if`-chain pattern ports to `<Match when={...}>` + `as Extract<DisplayPart, ...>`). `file` parts correctly have no `<Match>` — they're user-bubble-only and `<Switch>` renders nothing when no branch matches.
+
+  New smoke test in `test/tui/conversation.test.tsx` — "pending → completed flip preserves sibling text parts" — seeds a text delta + pending tool + result in one turn and asserts the streamed text is still present after the tool state flip. **Honest limitation**: this test verifies the floor invariant (no dropped content across a transition) but cannot observe intermediate teardown-remount cycles through the harness — both the pre-fix `.map()` and the post-fix `<Index>` converge to a final frame containing the full text; the pre-fix version just does O(parts × tokens) more work and loses markdown's incremental-parse state on every mutation. A mount-counter test via `mock.module` on `TextPart` would be a stricter regression guard; deferred as heavier than the risk warrants. The fix itself is load-bearing for streaming perf even without the stricter test. `bun run ci` green at 214 pass / 0 fail; new test 3× flake-clean back-to-back.
 
 - [x] Split `src/tui/context/theme.tsx` (464 lines) into a pure-data theme module + thin provider. New `src/tui/theme/` folder owns: `types.ts` (`ThemeColors`, `ThemeDef`), `palettes.ts` (four built-in palettes + `themes[]` + `getThemeById`), `syntax.ts` (`generateSyntax` + `generateSubtleSyntax` + the 40-scope `getSyntaxRules` helper, including the `extmark.file` prompt scope and the SyntaxStyle FFI cleanup contract). `context/theme.tsx` shrinks to ~100 lines — just `ThemeProvider` (reactive `createStore` for the color bag, `createMemo` pair for `syntax()`/`subtleSyntax()` with `onCleanup(() => style.destroy())`) and `useTheme()`. Re-exports `ThemeColors`, `ThemeDef`, `themes`, `getThemeById` from the new modules so every existing `import { ... } from "../context/theme"` consumer keeps working — zero call-site churn across `src/` + `test/`. Motivation: ~200 lines of pure theme data sat inside a `.tsx` file; the split restores convention, makes the FFI lifecycle (Zig `SyntaxStyle` destroy) reviewable in isolation, and prepares the area for per-theme customization work later. No behavior change; `bun run ci` green at 213 pass / 0 fail.
 
