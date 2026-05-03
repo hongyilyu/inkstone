@@ -1,9 +1,10 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useTerminalDimensions } from "@opentui/solid";
-import { createMemo, createSignal, Show } from "solid-js";
+import { createMemo, createSignal, ErrorBoundary, Show } from "solid-js";
 import { registerLayoutCommands } from "./commands/layout-commands";
 import { Conversation } from "./components/conversation";
 import { CommandProvider } from "./components/dialog/command";
+import { NoProviderFallback } from "./components/no-provider-fallback";
 import { OpenPage } from "./components/open-page";
 import { Prompt } from "./components/prompt";
 import { SecondaryPage } from "./components/secondary-page";
@@ -186,9 +187,28 @@ export function App() {
 			<ToastProvider>
 				<DialogProvider>
 					<CommandProvider>
-						<AgentProvider>
-							<Layout />
-						</AgentProvider>
+						{/*
+						 * `ErrorBoundary` wraps `AgentProvider` specifically to
+						 * catch `resolveInitialProviderModel`'s first-boot
+						 * "No provider is connected" throw. Without it, a fresh
+						 * install crashes through `render()` before any UI mounts,
+						 * so the user can never reach the Connect dialog. The
+						 * fallback recognizes that error by message prefix and
+						 * surfaces a Ctrl+P → Connect hint; any other throw
+						 * renders a minimal crash line with the stack logged to
+						 * console (see `no-provider-fallback.tsx`). The boundary
+						 * is NOT a general-purpose error handler — component-
+						 * level error recovery should use its own try/catch.
+						 */}
+						<ErrorBoundary
+							fallback={(error, reset) => (
+								<NoProviderFallback error={error} reset={reset} />
+							)}
+						>
+							<AgentProvider>
+								<Layout />
+							</AgentProvider>
+						</ErrorBoundary>
 					</CommandProvider>
 				</DialogProvider>
 			</ToastProvider>

@@ -201,11 +201,14 @@ ThemeProvider
   ToastProvider
     DialogProvider
       CommandProvider
-        AgentProvider
-          Layout
+        ErrorBoundary
+          AgentProvider
+            Layout
 ```
 
 `CommandProvider` sits inside `DialogProvider` because its dispatch loop reads the dialog stack (to yield to open dialogs). `AgentProvider` runs inside `CommandProvider` so `Layout` can call both `useAgent()` and `useCommand()`.
+
+The `ErrorBoundary` between `CommandProvider` and `AgentProvider` exists specifically to catch `resolveInitialProviderModel`'s synchronous "No provider is connected" throw on first boot — without it, a fresh install crashed through `render()` before any UI mounted, so the user could never reach the Connect dialog. The fallback lives in `src/tui/components/no-provider-fallback.tsx`: it surfaces a Ctrl+P → Connect hint for that specific failure (using `useCommand()` to register a temporary palette entry since the layout-level registration in `layout-commands.ts` is unreachable while `AgentProvider` isn't mounted), and renders a minimal crash line for any other throw (with the raw error logged to `console.error` so dev still gets a stack). The boundary is NOT a general-purpose error handler — component-level error recovery uses its own try/catch.
 
 ## Agent Integration
 
@@ -913,7 +916,9 @@ TUI tests live in `test/tui/` and mount the full provider stack through
 OpenTUI Solid's `testRender`:
 
 - `test/tui/harness.tsx` — `renderApp({ session, width?, height? })`
-  mounts Theme → Toast → Dialog → Command → AgentProvider → Layout.
+  mounts Theme → Toast → Dialog → Command → ErrorBoundary → AgentProvider
+  → Layout (mirrors the real `App` tree so the no-provider fallback is
+  exercised end-to-end when a test injects a throwing factory).
   `waitForFrame(needle)` polls `renderOnce + captureCharFrame` because
   markdown rendering goes through a tree-sitter worker and isn't
   synchronous after store mutation.
