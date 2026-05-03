@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-02 (command palette split from registry + canRunSlashEntry export)
+**Last updated**: 2026-05-02 (agent context split into 7 modules + reactivity hygiene: dispose subscription, restore handler fns, createRoot secondary-page, drop createSignal wrapper)
 
 ## In Progress
 
@@ -15,7 +15,33 @@ None
 
 - `dialog-select-grouping.ts`'s `countRows` has a documented off-by-one when a caller mixes uncategorized + categorized options (empty-string bucket at index 0, a non-empty header at index 1). The non-empty header is at `index > 0` so the accumulator charges it the `+2` (header + spacer) even though it's visually the first header. No current caller mixes categories this way — fix alongside the first caller that does. Pinned by a test in `test/dialog-select-grouping.test.ts` so a future fix surfaces as a visible diff.
 
+- Snapshot reads across `await` in `wrappedActions.prompt` catch (`src/tui/context/agent/actions.ts:handlePreStreamError`). Narrow race: if `clearSession()` runs between the `await agentSession.actions.prompt(text)` and the catch, `store.messages.length - 1` becomes `-1` and the error-recovery branch synthesizes an error bubble into the fresh session. Today the race window is minuscule (the user would need to resume/clear mid-turn while the prompt wrapper is unwinding) and `currentSessionId` is already re-checked before the persistence write. 3-line snapshot fix (capture `sidAtStart` + `lenAtStart` before the await, bail on mismatch) when next in that method.
+
+- `startSessionTitleTask` `.then` callback (`src/tui/context/agent/actions.ts`) can resolve after `currentSessionId` has changed via `clearSession`/`resumeSession`. The guard `if (currentSessionId === params.sessionId)` correctly prevents a stale `setStore("sessionTitle", title)`. The SQL write via `updateSessionTitle(tx, params.sessionId, title)` targets the snapshot `sessionId` unconditionally — that's the intended behavior (the title is still correct for the row it was generated against), but the write happens even if the user resumed another session in the meantime. Documented here so a future contributor doesn't "fix" the guard asymmetry by adding the same check around the persist call.
+
 ## Completed
+
+- [x] Split `src/tui/context/agent.tsx` (1499 lines) into 7 modules under `src/tui/context/agent/` + a thin barrel. File ownership:
+  - `types.ts` — `SessionFactory`, `AgentContextValue`, `agentContext`.
+  - `helpers.ts` — pure: `REDACTED_THINKING_PLACEHOLDERS`, `extractErrorMessage`, `trimOneLine`.
+  - `session-state.ts` — `createSessionState` factory; owns the three session-lifetime `let` bindings (`currentSessionId`, `turnStartThinkingLevel`, `preTurnCodexConnections`) behind getter/setter pairs plus `ensureSession` + `persistThen` closures.
+  - `reducer.ts` — `createAgentEventHandler(deps)` returns the `batch() + switch` dispatcher. Each event case is a named helper; `agent_end` is further split into `sweepPendingTools`, `persistSynthesizedAbortMessage`, `stampTurnDurationAndThinkingLevel`, `stampInterruptedUser`, `detectCodexTransport` — the case body reads as 5 sequential intention-revealing calls instead of 260 lines of scrolling. `tool_execution_end` separates `findToolPart` (pure tail-scan), `applyToolResult`, `applySidebarMutation`. `message_update` routes through `pushEmptyPart` / `appendStreamingDelta` / `finalizeThinkingPart` / `appendToolCallPart`.
+  - `actions.ts` — `createWrappedActions(deps)` exposes the user verbs (`prompt`, `setModel`, `setThinkingLevel`, `selectAgent`, `clearSession`, `resumeSession`). `promptAction` + `handlePreStreamError` + `startSessionTitleTask` + `clearSessionAction` + `resumeSessionAction` are module-private helpers.
+  - `commands.tsx` — `BridgeAgentCommands` component + `buildCommandHelpers`. Bridges backend-declared `AgentCommand`s into the shared command registry.
+  - `provider.tsx` — `AgentProvider` shell + `useAgent`. Handles mount-time side effects (confirmFn, persistence error handler, subscription) and composes the four factories.
+
+  Barrel `context/agent.tsx` re-exports `AgentProvider`, `useAgent`, `SessionFactory`, `Session` so every existing `import { ... } from "../context/agent"` consumer works unchanged — zero call-site churn across 15+ sites in src/ and the test harness.
+
+  **Reactivity hygiene shipped alongside the split:**
+  - `agent.subscribe` return value is now captured in `createSession` (`src/backend/agent/index.ts`) and exposed as `Session.dispose`. `AgentProvider` calls `agentSession.dispose?.()` in `onCleanup` so the backend Agent stops holding a strong ref to the disposed event handler on provider unmount. Fixes a test-harness leak where re-mounts kept stale listeners pinned to disposed stores. Matching counter on the test fake (`makeFakeSession().calls.dispose`).
+  - `setConfirmFn` now accepts `null`; `getConfirmFn` added alongside. `getPersistenceErrorHandler` added. The provider captures the pre-install value on mount and restores it on `onCleanup` — prevents a disposed provider's closure from outliving a re-mount. Symmetric with `dialog.setSuspendHandler` in `command.tsx`.
+  - `AgentStoreState.isStreaming` gains a tripwire JSDoc in `@bridge/view-model`: don't gate permission/approval UI on `!isStreaming` or `status === "idle"`. The five current consumers are all correctly polarized (submit guard, interrupt enable, resume guard, coaching-hint gate, spinner); the comment is a concrete pointer at the skill's deadlock pattern so the next contributor who adds such a UI sees the rule before authoring one.
+  - `src/tui/context/secondary-page.ts` now wraps its module-global signal in `createRoot` so the signal has an explicit owner. Without the root, Solid emits a dev warning about computations outside a `createRoot` never being disposed, and (more importantly) the state leaks across back-to-back `renderApp()` calls in the test harness.
+  - `src/tui/components/session-list.tsx` drops the `createSignal` wrapper on `rows`. The setter was discarded and the snapshot is mount-time only — a plain `const rows: SessionSummary[] = listSessions();` is more honest and matches the comment's intent ("re-mount is the refresh mechanism").
+
+  **New test**: `test/tui/agent-lifecycle.test.tsx` (2 cases) pins the dispose + handler-restore contracts. After `renderer.destroy()`, the fake's `dispose` counter must flip from 0 to 1, and `getConfirmFn()` / `getPersistenceErrorHandler()` must return their pre-mount values.
+
+  `bun run ci` green at 236 pass / 0 fail, 3× flake-clean back-to-back.
 
 - [x] Split the command palette UI out of `src/tui/components/dialog/command.tsx` and export `canRunSlashEntry` for direct testing. New `src/tui/components/dialog/command-palette.tsx` owns the `DialogCommand` internal palette component + the private `formatDescription` helper (~55 lines total). `command.tsx` (~280 lines, down from 330) now reads as a pure registry + provider module: `SlashSpec` / `CommandOption` types, the exported `canRunSlashEntry` gating rule, the `init()` registry factory, `CommandProvider`, `useCommand`. Import cycle avoidance: `command-palette.tsx` imports `CommandOption` (type) from `command.tsx`; `command.tsx` imports the `DialogCommand` value from `command-palette.tsx`. Types flow one direction, JSX the other; the JSX import is resolved lazily inside the render closure for `showPalette`. `DialogCommand` is intentionally non-default exported so the name stays visible in Solid's devtools; it is not part of the public barrel from `./command` — consumers still get it indirectly through `useCommand().show()`.
 

@@ -10,7 +10,11 @@ import type { Config } from "../persistence/schema";
 import { getProvider, resolveModel } from "../providers";
 import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
 import { composeSystemPrompt, composeTools } from "./compose";
-import { dispatchBeforeToolCall, setConfirmFn } from "./permissions";
+import {
+	dispatchBeforeToolCall,
+	getConfirmFn,
+	setConfirmFn,
+} from "./permissions";
 import type { AgentCommand, AgentInfo, AgentZone } from "./types";
 import { composeOverlay } from "./zones";
 
@@ -112,6 +116,15 @@ export interface Session {
 	 * without exposing the raw Agent.
 	 */
 	readonly messageCount: number;
+	/**
+	 * Tear down the pi-agent-core subscription installed in
+	 * `createSession`. Call on provider unmount so the backend Agent
+	 * stops holding a strong reference to the (now-disposed) frontend
+	 * event handler. Without this, re-mounting `AgentProvider` (tests,
+	 * future HMR) would leak listeners + pin the disposed Solid owner
+	 * tree against GC.
+	 */
+	dispose(): void;
 }
 
 /**
@@ -288,7 +301,12 @@ export function createSession(params: {
 		},
 	});
 
-	agent.subscribe((event) => {
+	// Capture the subscribe dispose handle. pi-agent-core returns a
+	// unsubscribe fn from `agent.subscribe`; holding it here lets the
+	// frontend tear the wiring down on provider unmount so the Agent
+	// doesn't keep a strong ref to a disposed event handler. See
+	// `Session.dispose` below for the teardown call site.
+	const unsubscribe = agent.subscribe((event) => {
 		params.onEvent(event);
 	});
 
@@ -395,6 +413,9 @@ export function createSession(params: {
 		restoreMessages(messages: AgentMessage[]) {
 			agent.state.messages = messages;
 		},
+		dispose() {
+			unsubscribe();
+		},
 	};
 }
 
@@ -408,5 +429,6 @@ export {
 	type AgentInfo,
 	type AgentZone,
 	getAgentInfo,
+	getConfirmFn,
 	setConfirmFn,
 };

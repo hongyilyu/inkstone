@@ -66,9 +66,21 @@ let confirmFn: ((title: string, message: string) => Promise<boolean>) | null =
 	null;
 
 export function setConfirmFn(
-	fn: (title: string, message: string) => Promise<boolean>,
+	fn: ((title: string, message: string) => Promise<boolean>) | null,
 ): void {
 	confirmFn = fn;
+}
+
+/**
+ * Return the currently-installed confirm fn (or null). Exposed so the
+ * TUI provider can capture the pre-install value and restore it on
+ * unmount — prevents a disposed provider's closure from surviving a
+ * re-mount in tests / future HMR.
+ */
+export function getConfirmFn():
+	| ((title: string, message: string) => Promise<boolean>)
+	| null {
+	return confirmFn;
 }
 
 /**

@@ -129,6 +129,31 @@ export interface DisplayMessage {
 
 export interface AgentStoreState {
 	messages: DisplayMessage[];
+	/**
+	 * Turn-lifecycle flag: true from `agent_start` through `agent_end`.
+	 * Shared-read by several surfaces (prompt submit guard, interrupt
+	 * enable, resume guard, coaching-hint gate, spinner visibility) —
+	 * polarity matters:
+	 *
+	 *   ✓ Safe to READ: UI that should behave differently only while
+	 *     a turn is actually streaming (spinner, submit lockout).
+	 *
+	 *   ✓ Safe to ENABLE on `isStreaming`: the interrupt command is
+	 *     registered only while streaming, which is the correct
+	 *     polarity for an "allow action while turn is active" gate.
+	 *
+	 *   ✗ **DO NOT** gate permission/approval UI (tool-run confirm,
+	 *     model-switch confirm, quota prompt, etc.) on
+	 *     `!isStreaming` or `status === "idle"`. This creates the
+	 *     exact deadlock described in
+	 *     `.agents/skills/solidjs-patterns/SKILL.md` § "Scoped async
+	 *     actions": the turn is waiting on approval, but the approval
+	 *     UI is disabled because the turn is in flight. Use a
+	 *     per-action pending signal scoped to that specific
+	 *     permission/approval flow instead. No such UI exists today;
+	 *     this comment is a tripwire for the first contributor who
+	 *     adds one.
+	 */
 	isStreaming: boolean;
 	/**
 	 * Dynamic sidebar sections set by the `update_sidebar` tool.

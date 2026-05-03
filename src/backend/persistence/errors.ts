@@ -31,6 +31,18 @@ export function setPersistenceErrorHandler(
 }
 
 /**
+ * Return the currently-installed handler (or null). Exposed so
+ * frontends that install a handler on mount can restore the prior
+ * value on unmount instead of null-clearing the global. Matches the
+ * pattern `AgentProvider` uses for confirmFn lifecycle.
+ */
+export function getPersistenceErrorHandler():
+	| ((ctx: PersistenceErrorContext) => void)
+	| null {
+	return handler;
+}
+
+/**
  * Sentinel flag key used by `runInTransaction`'s outer catch in
  * `sessions.ts` to dedup reports of the same rethrown error up the
  * chain. Exported as a shared constant so the tx wrapper and this

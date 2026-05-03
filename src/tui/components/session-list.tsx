@@ -4,7 +4,7 @@ import {
 } from "@backend/persistence/sessions";
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
-import { createMemo, createSignal, For, onMount, Show } from "solid-js";
+import { createMemo, For, onMount, Show } from "solid-js";
 import { createStore } from "solid-js/store";
 import { blurInput } from "../app";
 import { useAgent } from "../context/agent";
@@ -47,8 +47,11 @@ export function SessionList(props: SessionListProps) {
 	// Snapshot taken on mount. The panel re-mounts on every open (see
 	// `<Show when={sessionListOpen()}>` in app.tsx), so a closed-then-
 	// reopened panel always sees a fresh listing without needing a
-	// subscription surface.
-	const [rows] = createSignal<SessionSummary[]>(listSessions());
+	// subscription surface. Plain `const` rather than `createSignal` —
+	// the list never mutates within a single mount (the only writer
+	// was the discarded setter), so wrapping as a signal would imply
+	// reactivity that doesn't exist.
+	const rows: SessionSummary[] = listSessions();
 
 	// Blur the prompt input while the panel is mounted so this component's
 	// `useKeyboard` has exclusive claim to nav keys. Without this, pressing
@@ -62,10 +65,10 @@ export function SessionList(props: SessionListProps) {
 
 	const [navStore, setNavStore] = createStore({ selected: 0 });
 
-	const selectedRow = createMemo(() => rows()[navStore.selected]);
+	const selectedRow = createMemo(() => rows[navStore.selected]);
 
 	function moveTo(idx: number) {
-		const list = rows();
+		const list = rows;
 		if (list.length === 0) return;
 		let next = idx;
 		if (next < 0) next = list.length - 1;
@@ -122,7 +125,7 @@ export function SessionList(props: SessionListProps) {
 		}
 		if (Keybind.match("select_last", evt)) {
 			evt.preventDefault?.();
-			moveTo(rows().length - 1);
+			moveTo(rows.length - 1);
 			return;
 		}
 		if (Keybind.match("select_submit", evt)) {
@@ -163,11 +166,11 @@ export function SessionList(props: SessionListProps) {
 			</box>
 
 			<Show
-				when={rows().length > 0}
+				when={rows.length > 0}
 				fallback={<text fg={theme.textMuted}>No past sessions</text>}
 			>
 				<scrollbox scrollbarOptions={{ visible: false }} flexGrow={1}>
-					<For each={rows()}>
+					<For each={rows}>
 						{(row, i) => (
 							<SessionListItem
 								row={row}

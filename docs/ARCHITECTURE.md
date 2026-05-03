@@ -131,7 +131,15 @@ src/
   tui/                              Solid + OpenTUI
     app.tsx                         Provider stack + root layout + top-level commands
     context/
-      agent.tsx                     AgentProvider + useAgent (store + event reducer)
+      agent.tsx                     Thin barrel re-exporting AgentProvider + useAgent + SessionFactory / Session
+      agent/                        Agent provider split (7 modules; see below)
+        types.ts                      SessionFactory, AgentContextValue, agentContext (createContext)
+        helpers.ts                    Pure helpers: REDACTED_THINKING_PLACEHOLDERS, extractErrorMessage, trimOneLine
+        session-state.ts              createSessionState — currentSessionId + turnStartThinkingLevel + preTurnCodexConnections bag + persistThen + ensureSession
+        reducer.ts                    createAgentEventHandler — event dispatch table; agent_end decomposed into 5 named helpers
+        actions.ts                    createWrappedActions — prompt / setModel / setThinkingLevel / selectAgent / clearSession / resumeSession
+        commands.tsx                  BridgeAgentCommands + buildCommandHelpers (agent-declared slash verbs into the palette)
+        provider.tsx                  AgentProvider shell + useAgent — composes the bag, installs side-effect handlers with restore-on-unmount, disposes subscription
       theme.tsx                     ThemeProvider + useTheme (re-exports ThemeColors/ThemeDef/themes/getThemeById for backward compat)
     theme/                          Pure-data theme module (no Solid, no JSX)
       types.ts                      ThemeColors + ThemeDef interfaces

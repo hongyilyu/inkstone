@@ -10,10 +10,17 @@
  * Not agent/session state — purely a TUI navigation concern.
  *
  * Module-level signal so deeply nested components (UserPart, Sidebar,
- * SecondaryPage) can read/write without prop drilling.
+ * SecondaryPage) can read/write without prop drilling. The signal is
+ * wrapped in `createRoot` so it has an owner even though no provider
+ * contains it — without the explicit root, Solid emits a dev warning
+ * about "computations created outside a createRoot will never be
+ * disposed" and (more importantly for the test harness) the state
+ * would leak across back-to-back `renderApp()` calls in the same
+ * process. The root lives for the process lifetime, which matches the
+ * intent: a module-global navigation signal.
  */
 
-import { createSignal } from "solid-js";
+import { createRoot, createSignal } from "solid-js";
 
 export type SecondaryPageFormat = "markdown" | "text";
 
@@ -34,8 +41,10 @@ export interface SecondaryPageState {
 	format?: SecondaryPageFormat;
 }
 
-const [secondaryPage, setSecondaryPage] =
-	createSignal<SecondaryPageState | null>(null);
+const { secondaryPage, setSecondaryPage } = createRoot(() => {
+	const [get, set] = createSignal<SecondaryPageState | null>(null);
+	return { secondaryPage: get, setSecondaryPage: set };
+});
 
 /** Open a secondary page with the given content. */
 export function openSecondaryPage(state: SecondaryPageState) {
