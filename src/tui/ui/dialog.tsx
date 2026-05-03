@@ -126,8 +126,17 @@ function init() {
 	});
 
 	let focus: Renderable | null = null;
+	// Focus-restore timer. Coalesced so a rapid `clear()` → `replace()`
+	// sequence in the same tick can't schedule two timers fighting over
+	// which renderable to focus — the newer call cancels the older. Stops
+	// a stale timer from re-focusing the input behind the freshly-mounted
+	// dialog (the symptom is the user typing into the prompt instead of
+	// the new dialog's filter on fast open/close/open navigation).
+	let refocusTimer: ReturnType<typeof setTimeout> | null = null;
 	function refocus() {
-		setTimeout(() => {
+		if (refocusTimer !== null) clearTimeout(refocusTimer);
+		refocusTimer = setTimeout(() => {
+			refocusTimer = null;
 			if (!focus) return;
 			if (focus.isDestroyed) return;
 			function find(item: Renderable): boolean {

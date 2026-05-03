@@ -140,7 +140,9 @@ src/
     ui/
       dialog.tsx                    Stack-based modal rendering
       dialog-confirm.tsx            Promise-based yes/no confirmation
-      dialog-select.tsx             Fuzzy filterable select list
+      dialog-select.tsx             Fuzzy filterable select list (composition: grouping + row + scroll sync + keyboard nav)
+      dialog-select-grouping.ts     Pure `groupByCategory` + `countRows` helpers (no JSX, unit-tested)
+      dialog-select-row.tsx         `DialogSelectRow` — presentational row with resolved `active` / `current` props
       dialog-prompt.tsx             Promise-based single-line input
       dialog-auth-wait.tsx          OAuth device-code flow screen
       toast.tsx                     Toast notifications
