@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-02 (AssistantMessage streaming fix: .map → <Index> + <Switch>)
+**Last updated**: 2026-05-02 (AssistantFooter extraction from AssistantMessage: pure cosmetic)
 
 ## In Progress
 
@@ -14,6 +14,8 @@ None
 - `file` DisplayParts are user-bubble-only per the reducer today, but the `DisplayPart` union type does not encode that constraint. `AssistantMessage`'s `<Switch>` intentionally has no `<Match>` for `file` — `<Switch>` with no matching branch renders nothing. If a future reducer change starts pushing `file` parts onto an assistant bubble (e.g. a tool that returns a file attachment), those parts would silently disappear from the rendered frame with no type error or runtime warning. Options for hardening: (a) narrow `DisplayPart` at the assistant seam so `file` is statically unreachable, or (b) add a dev-only `console.warn` on the unhandled branch. Neither is implemented today; revisit when a reducer path for an assistant `file` part is actually needed.
 
 ## Completed
+
+- [x] Extract `AssistantFooter` from `AssistantMessage` — pure cosmetic in-file split. The `▣ agent · model · duration · effort · interrupted` footer grew a fourth inline `<Show>` (interrupted-user marker moved into the footer in the fast-models PR) and was getting hard to read nested inside `AssistantMessage`. Moved to a private sibling component in the same file; `AssistantMessage` now calls `<AssistantFooter message={msg()} agentColor={agentColor()} />`. No state change, no new exports, no new files. Props are the resolved values so the footer is shape-checkable against `DisplayMessage`. Docblock on `AssistantFooter` documents the abort-vs-completion tint rule and the "skip the footer entirely when `modelName` and `interrupted` are both unset" invariant. Verified via existing `conversation.test.tsx` footer assertions (`"· interrupted"`, `/▣ \S+ · \S+.* · interrupted/`) + `streaming.test.tsx` duration + effort-badge assertions (`/▣[^▣\n]*·\s*high/`, `/▣[^▣\n]*·\s*medium/`, etc.) — all pass without modification. `bun run ci` green at 214 pass / 0 fail; char-frame output byte-identical across the extraction (existing tests wouldn't have passed otherwise given how strictly they anchor on footer shape).
 
 - [x] Fix `AssistantMessage` streaming rerender behavior — `parts().map(...)` replaced with `<Index>` + `<Switch>`/`<Match>`. `parts` is a Solid store array and every streaming delta (text append, thinking append, tool-state flip) mutated existing fields. The old `.map()` + `if (part.type === ...)` chain re-ran on every tracked read, which broke Solid's reconciliation entirely: every child component was destroyed and recreated from scratch for each token. That defeated `<markdown streaming>`'s incremental parse path (stable node identity required), caused visible flicker when a tool flipped `pending → completed`, and did O(parts × tokens) work per turn. Replaced with `<Index each={parts()}>` — `<Index>` keeps the child instance alive at each slot and passes a signal the child reads reactively; parts are append-only at a given index, so `<Index>` semantics match the data. Inside each slot, `<Switch>`/`<Match>` routes on `part().type` with a narrowing cast per branch (Solid's `<Match>` doesn't carry type-narrowing through the `when` expression, so the existing `if`-chain pattern ports to `<Match when={...}>` + `as Extract<DisplayPart, ...>`). `file` parts correctly have no `<Match>` — they're user-bubble-only and `<Switch>` renders nothing when no branch matches.
 

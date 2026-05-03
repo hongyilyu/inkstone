@@ -11,6 +11,7 @@
 import { getAgentInfo } from "@backend/agent";
 import { renderToolArgs } from "@bridge/tool-renderers";
 import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
+import type { RGBA } from "@opentui/core";
 import { For, Index, Match, Show, Switch } from "solid-js";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
@@ -319,54 +320,68 @@ export function AssistantMessage(props: {
 			</Show>
 
 			{/* Footer — agent + model + duration, plus a trailing
-			    ` · interrupted` suffix on aborted turns (the user hit
-			    ESC-ESC / Ctrl+C on purpose). On abort the glyph tints
-			    `textMuted` to visually differentiate from normal
-			    completion; the model / duration segment is only shown
-			    if stamped (a very fast abort may never reach
-			    `message_end`, leaving `modelName` unset — the footer
-			    still renders the bare `▣ Reader · interrupted` form so
-			    the interrupt is visible). Mirrors OpenCode's
-			    `MessageAbortedError` branch. */}
-			<Show when={msg().modelName || msg().interrupted}>
-				<box paddingLeft={3} paddingTop={1} flexShrink={0}>
-					<text wrapMode="none">
-						<span
-							style={{
-								fg: msg().interrupted ? theme.textMuted : agentColor(),
-							}}
-						>
-							{"▣ "}
-						</span>
-						<span style={{ fg: theme.text }}>
-							{msg().agentName ?? "Reader"}
-						</span>
-						<Show when={msg().modelName}>
-							<span style={{ fg: theme.textMuted }}>
-								{" · "}
-								{msg().modelName}
-								{durationSuffix(msg().duration)}
-							</span>
-						</Show>
-						{/* Effort badge — mirrors the prompt statusline shape
-						    (`· <level>` in theme.warning + bold). Hidden when
-						    the stamp is `"off"` or absent: historical bubbles
-						    from before this field was added have no stamp, and
-						    we deliberately don't persist `"off"` because it
-						    would render identically to the absent case. */}
-						<Show when={msg().thinkingLevel && msg().thinkingLevel !== "off"}>
-							<span style={{ fg: theme.textMuted }}>{" · "}</span>
-							<strong style={{ fg: theme.warning }}>
-								{msg().thinkingLevel}
-							</strong>
-						</Show>
-						<Show when={msg().interrupted}>
-							<span style={{ fg: theme.textMuted }}> · interrupted</span>
-						</Show>
-					</text>
-				</box>
-			</Show>
+			    ` · interrupted` suffix on aborted turns. See
+			    `AssistantFooter` below for full semantics. */}
+			<AssistantFooter message={msg()} agentColor={agentColor()} />
 		</box>
+	);
+}
+
+/**
+ * Footer row for an assistant bubble — agent glyph + name + optional
+ * model/duration/effort segment + optional `· interrupted` suffix when
+ * the user aborted the turn (ESC-ESC or Ctrl+C). On abort the glyph
+ * tints `textMuted` to visually differentiate from normal completion.
+ * The model/duration segment is only shown if `modelName` is stamped
+ * (a very fast abort may never reach `message_end`, leaving it unset —
+ * the footer still renders the bare `▣ Reader · interrupted` form so
+ * the interrupt is visible). Hidden entirely when the message has
+ * neither `modelName` nor `interrupted` set (the streaming shell
+ * before `message_end` lands).
+ *
+ * Mirrors OpenCode's `MessageAbortedError` branch. Extracted from
+ * `AssistantMessage` purely to keep the bubble body readable; stays
+ * co-located in this module because it reads the same `DisplayMessage`
+ * shape and shares no state with any other consumer.
+ */
+function AssistantFooter(props: { message: DisplayMessage; agentColor: RGBA }) {
+	const { theme } = useTheme();
+	const msg = () => props.message;
+	return (
+		<Show when={msg().modelName || msg().interrupted}>
+			<box paddingLeft={3} paddingTop={1} flexShrink={0}>
+				<text wrapMode="none">
+					<span
+						style={{
+							fg: msg().interrupted ? theme.textMuted : props.agentColor,
+						}}
+					>
+						{"▣ "}
+					</span>
+					<span style={{ fg: theme.text }}>{msg().agentName ?? "Reader"}</span>
+					<Show when={msg().modelName}>
+						<span style={{ fg: theme.textMuted }}>
+							{" · "}
+							{msg().modelName}
+							{durationSuffix(msg().duration)}
+						</span>
+					</Show>
+					{/* Effort badge — mirrors the prompt statusline shape
+					    (`· <level>` in theme.warning + bold). Hidden when
+					    the stamp is `"off"` or absent: historical bubbles
+					    from before this field was added have no stamp, and
+					    we deliberately don't persist `"off"` because it
+					    would render identically to the absent case. */}
+					<Show when={msg().thinkingLevel && msg().thinkingLevel !== "off"}>
+						<span style={{ fg: theme.textMuted }}>{" · "}</span>
+						<strong style={{ fg: theme.warning }}>{msg().thinkingLevel}</strong>
+					</Show>
+					<Show when={msg().interrupted}>
+						<span style={{ fg: theme.textMuted }}> · interrupted</span>
+					</Show>
+				</text>
+			</box>
+		</Show>
 	);
 }
 
