@@ -160,7 +160,8 @@ src/
       session-list-item.tsx         Single row renderer for session list
       open-page.tsx                 Empty-state welcome page
       dialog/                       Feature dialogs (compositions of ui/dialog-* primitives)
-        command.tsx                 CommandProvider + useCommand + palette
+        command.tsx                 CommandProvider + useCommand + registry (canRunSlashEntry exported for tests)
+        command-palette.tsx         `DialogCommand` palette UI — internal to the registry, renders CommandOption[] via DialogSelect
         agent.tsx                   Agent selection dialog
         model.tsx                   Model selection dialog
         variant.tsx                 Reasoning-effort picker

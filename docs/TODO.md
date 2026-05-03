@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-02 (dialog-select split + focus-timer coalescing)
+**Last updated**: 2026-05-02 (command palette split from registry + canRunSlashEntry export)
 
 ## In Progress
 
@@ -16,6 +16,10 @@ None
 - `dialog-select-grouping.ts`'s `countRows` has a documented off-by-one when a caller mixes uncategorized + categorized options (empty-string bucket at index 0, a non-empty header at index 1). The non-empty header is at `index > 0` so the accumulator charges it the `+2` (header + spacer) even though it's visually the first header. No current caller mixes categories this way — fix alongside the first caller that does. Pinned by a test in `test/dialog-select-grouping.test.ts` so a future fix surfaces as a visible diff.
 
 ## Completed
+
+- [x] Split the command palette UI out of `src/tui/components/dialog/command.tsx` and export `canRunSlashEntry` for direct testing. New `src/tui/components/dialog/command-palette.tsx` owns the `DialogCommand` internal palette component + the private `formatDescription` helper (~55 lines total). `command.tsx` (~280 lines, down from 330) now reads as a pure registry + provider module: `SlashSpec` / `CommandOption` types, the exported `canRunSlashEntry` gating rule, the `init()` registry factory, `CommandProvider`, `useCommand`. Import cycle avoidance: `command-palette.tsx` imports `CommandOption` (type) from `command.tsx`; `command.tsx` imports the `DialogCommand` value from `command-palette.tsx`. Types flow one direction, JSX the other; the JSX import is resolved lazily inside the render closure for `showPalette`. `DialogCommand` is intentionally non-default exported so the name stays visible in Solid's devtools; it is not part of the public barrel from `./command` — consumers still get it indirectly through `useCommand().show()`.
+
+  New tests in `test/command-slash.test.ts` (10 cases across 4 describe blocks) pin the two gating rules documented in `canRunSlashEntry`'s JSDoc: `takesArgs: true` + empty args → rejects; `takesArgs: false` + no `argHint` + trailing args → rejects (extra-args guard so `/clear my cache` falls through as a plain prompt); optional-arg commands (`argHint` set, `takesArgs` unset) accept both bare and trailing-arg invocations. Also pins the defensive "no slash spec at all" path (palette-only entries) so the function stays total across the registry's gating path. Prior to this PR the rules were documented in code comments only — the new tests turn them into executable invariants. `bun run ci` green at 234 pass / 0 fail.
 
 - [x] Split `DialogSelect` into composition + row presenter + grouping helpers, and coalesce focus-restore `setTimeout`s across dialog primitives. **Structural split**: `src/tui/ui/dialog-select.tsx` (was 435 lines, now ~320) keeps state + keyboard nav + scroll sync + the outer JSX frame. `src/tui/ui/dialog-select-row.tsx` (~100 lines) owns the per-row box/borders/gutter/current-indicator/description rendering as a presentational `<DialogSelectRow>` taking resolved booleans (`active`, `current`) so the parent keeps the `createMemo` reactivity layer. `src/tui/ui/dialog-select-grouping.ts` (~60 lines, pure) owns `groupByCategory` + `countRows` — the insertion-order bucket math and header/spacer accounting — now unit-tested in `test/dialog-select-grouping.test.ts` (10 cases including the documented dormant caveat around leading-uncategorized + trailing-categorized mixes). The inline 93-line `<For>` row body inside `DialogSelect` was the readability cost paid every time someone touched that file; extracting it drops a three-argument accessor closure + 4 mouse handlers + 4 nested `<Show>`s out of the main render path.
 

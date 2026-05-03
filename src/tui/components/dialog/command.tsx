@@ -11,13 +11,13 @@ import {
 	useContext,
 } from "solid-js";
 import { type DialogContext, useDialog } from "../../ui/dialog";
-import { DialogSelect, type DialogSelectOption } from "../../ui/dialog-select";
 import * as Keybind from "../../util/keybind";
+import { DialogCommand } from "./command-palette";
 
 /**
- * Command registry + palette, ported from OpenCode's
- * `component/dialog-command.tsx` (trimmed — no slash commands, no suggested
- * category, no plugin owner dance since we have no plugin API yet).
+ * Command registry + palette provider, ported from OpenCode's
+ * `component/dialog-command.tsx` (trimmed — no plugin owner dance since
+ * we have no plugin API yet).
  *
  * Pattern summary:
  *   - `CommandProvider` owns a signal of registration accessors. Each
@@ -30,6 +30,9 @@ import * as Keybind from "../../util/keybind";
  *     dropdown drives this directly; `DialogProvider` also drives it via
  *     `setSuspendHandler` so any open dialog suspends global keybinds
  *     without a second guard in this handler.
+ *
+ * Palette rendering lives in `./command-palette.tsx` — this file is the
+ * registry + provider shell.
  */
 
 /**
@@ -100,6 +103,27 @@ export interface CommandOption {
 	onSelect: (dialog: DialogContext, args?: string) => void;
 }
 
+/**
+ * Single source of truth for slash dispatch gating. Two rules:
+ *   1. `takesArgs: true`, args empty → reject (required arg missing).
+ *   2. `!takesArgs`, `!argHint`, args non-empty → reject (extra-args
+ *      guard so `/clear my cache` falls through as a plain prompt
+ *      instead of silently dropping " my cache").
+ * `argHint`'s presence means the command accepts an optional arg, so
+ * trailing text is legal and rule 2 doesn't fire.
+ *
+ * Exported for unit testing in `test/command-slash.test.ts` — pure
+ * function over `CommandOption` + `args`, no closure over registry
+ * state, so the gating rules can be pinned in isolation.
+ */
+export function canRunSlashEntry(entry: CommandOption, args: string): boolean {
+	const spec = entry.slash;
+	if (spec?.takesArgs && args.trim().length === 0) return false;
+	if (!spec?.takesArgs && !spec?.argHint && args.trim().length > 0)
+		return false;
+	return true;
+}
+
 type Registration = Accessor<CommandOption[]>;
 
 function init() {
@@ -126,23 +150,6 @@ function init() {
 	 */
 	function findSlash(name: string): CommandOption | undefined {
 		return entries().find((e) => e.slash?.name === name);
-	}
-
-	/**
-	 * Single source of truth for slash dispatch gating. Two rules:
-	 *   1. `takesArgs: true`, args empty → reject (required arg missing).
-	 *   2. `!takesArgs`, `!argHint`, args non-empty → reject (extra-args
-	 *      guard so `/clear my cache` falls through as a plain prompt
-	 *      instead of silently dropping " my cache").
-	 * `argHint`'s presence means the command accepts an optional arg, so
-	 * trailing text is legal and rule 2 doesn't fire.
-	 */
-	function canRunSlashEntry(entry: CommandOption, args: string): boolean {
-		const spec = entry.slash;
-		if (spec?.takesArgs && args.trim().length === 0) return false;
-		if (!spec?.takesArgs && !spec?.argHint && args.trim().length > 0)
-			return false;
-		return true;
 	}
 
 	function canRunSlash(name: string, args: string): boolean {
@@ -281,50 +288,4 @@ export function useCommand() {
 		throw new Error("useCommand must be used within a CommandProvider");
 	}
 	return value;
-}
-
-/**
- * Internal palette component. Not exported — opened exclusively by
- * `CommandProvider` in response to the `command_list` keybind. Consumers that
- * want to open it programmatically use `useCommand().show()`.
- */
-function DialogCommand(props: { visible: Accessor<CommandOption[]> }) {
-	const dialog = useDialog();
-
-	const options = createMemo<DialogSelectOption<string>[]>(() =>
-		props.visible().map((entry) => ({
-			title: entry.title,
-			value: entry.id,
-			description: formatDescription(entry),
-		})),
-	);
-
-	return (
-		<DialogSelect
-			title="Command Panel"
-			placeholder="Search commands..."
-			options={options()}
-			closeOnSelect={false}
-			onSelect={(option) => {
-				const entry = props.visible().find((e) => e.id === option.value);
-				if (!entry) return;
-				entry.onSelect(dialog);
-			}}
-		/>
-	);
-}
-
-/**
- * Combine description and keybind hint for display in the palette:
- *   - both:          `"Switch agent (tab)"`
- *   - keybind only:  `"tab"`
- *   - description:   `"Switch agent"`
- *   - neither:       `undefined`
- */
-function formatDescription(entry: CommandOption): string | undefined {
-	const hint = entry.keybind ? Keybind.print(entry.keybind) : "";
-	if (entry.description && hint) return `${entry.description} (${hint})`;
-	if (entry.description) return entry.description;
-	if (hint) return hint;
-	return undefined;
 }
