@@ -31,6 +31,7 @@ export const openrouterProvider: ProviderInfo = {
 	id: "openrouter",
 	displayName: "OpenRouter",
 	defaultModelId: "moonshotai/kimi-k2.6",
+	titleModelId: "moonshotai/kimi-k2.6",
 	// Return `[]` when no key is stored so `DialogModel` hides the 251
 	// rows until the user authenticates. Otherwise the picker would
 	// list every model and a pick would fail at stream time with

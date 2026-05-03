@@ -115,7 +115,9 @@ async function runTurn(fake: ReturnType<typeof makeFakeSession>) {
 describe("codex transport detection", () => {
 	test("SSE-path turn shows `sse` suffix on the statusline", async () => {
 		const fake = makeFakeSession({ model: CODEX_MODEL });
-		setup = await renderApp({ session: fake.factory });
+		setup = await renderApp({
+			session: fake.factory,
+		});
 		await setup.renderOnce();
 
 		// Stats never populated for this sessionId → pre- and post-turn
@@ -132,7 +134,9 @@ describe("codex transport detection", () => {
 
 	test("WebSocket-path turn shows `ws` suffix on the statusline", async () => {
 		const fake = makeFakeSession({ model: CODEX_MODEL });
-		setup = await renderApp({ session: fake.factory });
+		setup = await renderApp({
+			session: fake.factory,
+		});
 		await setup.renderOnce();
 
 		// Simulate a WebSocket success by advancing the counter between
@@ -168,7 +172,9 @@ describe("codex transport detection", () => {
 
 	test("second SSE-path turn overwrites the previous indicator (still `sse`)", async () => {
 		const fake = makeFakeSession({ model: CODEX_MODEL });
-		setup = await renderApp({ session: fake.factory });
+		setup = await renderApp({
+			session: fake.factory,
+		});
 		await setup.renderOnce();
 
 		await runTurn(fake);
@@ -181,9 +187,11 @@ describe("codex transport detection", () => {
 		expect(setup.captureCharFrame()).not.toContain(" ws");
 	});
 
-	test("non-Codex turn (Bedrock) never writes the indicator", async () => {
-		const fake = makeFakeSession(); // default model is Bedrock-shaped
-		setup = await renderApp({ session: fake.factory });
+	test("non-Codex turn (OpenRouter) never writes the indicator", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({
+			session: fake.factory,
+		});
 		await setup.renderOnce();
 
 		await runTurn(fake);

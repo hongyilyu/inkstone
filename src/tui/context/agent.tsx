@@ -1,6 +1,7 @@
 import {
 	type AgentActions,
 	createSession as createAgentSession,
+	generateSessionTitle,
 	getAgentInfo,
 	type Session,
 	setConfirmFn,
@@ -31,6 +32,7 @@ import {
 	safeRun,
 	type Tx,
 	updateDisplayMessageMeta,
+	updateSessionTitle,
 } from "@backend/persistence/sessions";
 import type {
 	AgentStoreState,
@@ -144,7 +146,10 @@ interface AgentContextValue {
 const ctx = createContext<AgentContextValue>();
 
 export function AgentProvider(
-	props: ParentProps<{ session?: SessionFactory }>,
+	props: ParentProps<{
+		session?: SessionFactory;
+		sessionTitleGenerator?: typeof generateSessionTitle;
+	}>,
 ) {
 	const dialog = useDialog();
 	const toast = useToast();
@@ -175,6 +180,7 @@ export function AgentProvider(
 	// future `/resume` command (not yet built). See D13 in
 	// `docs/AGENT-DESIGN.md`: agent is fixed for a session's lifetime.
 	const factory: SessionFactory = props.session ?? createAgentSession;
+	const titleGenerator = props.sessionTitleGenerator ?? generateSessionTitle;
 	const agentSession = factory({
 		onEvent: (event: AgentEvent) => onAgentEvent(event),
 	});
@@ -212,6 +218,7 @@ export function AgentProvider(
 		messages: [],
 		isStreaming: false,
 		sidebarSections: [],
+		sessionTitle: "inkstone",
 		modelName: initialModel.name,
 		modelProvider: initialModel.provider,
 		contextWindow: initialModel.contextWindow,
@@ -249,6 +256,7 @@ export function AgentProvider(
 		// first call per session is load-bearing. Other providers
 		// ignore the field.
 		agentSession.setSessionId(rec.id);
+		setStore("sessionTitle", rec.title);
 		return rec.id;
 	}
 
@@ -278,6 +286,29 @@ export function AgentProvider(
 			return;
 		}
 		onSuccess();
+	}
+
+	function startSessionTitleTask(params: {
+		sessionId: string;
+		activeProviderId: string;
+		activeModelId: string;
+		prompt: string;
+	}): void {
+		void titleGenerator(params)
+			.then((title) => {
+				if (!title) return;
+				persistThen(
+					(tx) => updateSessionTitle(tx, params.sessionId, title),
+					() => {
+						if (currentSessionId === params.sessionId) {
+							setStore("sessionTitle", title);
+						}
+					},
+				);
+			})
+			.catch((error) => {
+				console.error("[inkstone] session title generation failed:", error);
+			});
 	}
 
 	function onAgentEvent(event: AgentEvent) {
@@ -1016,6 +1047,9 @@ export function AgentProvider(
 		...agentSession.actions,
 		async prompt(text: string, displayParts?: DisplayPart[]) {
 			const sessionId = ensureSession();
+			const shouldGenerateTitle = store.messages.length === 0;
+			const titleProviderId = store.modelProvider;
+			const titleModelId = agentSession.getModelId();
 			// LLM text vs. bubble display split: when a command supplies
 			// `displayParts` (reader's `/article` does), use those verbatim
 			// so the bubble can render a file chip instead of the full
@@ -1067,6 +1101,14 @@ export function AgentProvider(
 							(stats?.connectionsReused ?? 0);
 					} else {
 						preTurnCodexConnections = undefined;
+					}
+					if (shouldGenerateTitle) {
+						startSessionTitleTask({
+							sessionId,
+							activeProviderId: titleProviderId,
+							activeModelId: titleModelId,
+							prompt: text,
+						});
 					}
 					toBottom();
 				},
@@ -1194,6 +1236,7 @@ export function AgentProvider(
 			currentSessionId = null;
 			setStore("messages", []);
 			setStore("sidebarSections", []);
+			setStore("sessionTitle", "inkstone");
 			closeSecondaryPage();
 			setStore("totalTokens", 0);
 			setStore("totalCost", 0);
@@ -1261,6 +1304,7 @@ export function AgentProvider(
 				agentSession.setSessionId(loaded.session.id);
 				setStore("currentAgent", agentSession.agentName);
 				setStore("messages", loaded.displayMessages);
+				setStore("sessionTitle", loaded.session.title);
 				// Token / cost counters are seeded from the sum of per-turn
 				// `AssistantMessage.usage` persisted on each assistant row in
 				// `agent_messages`. Synthesized alternation-repair placeholders

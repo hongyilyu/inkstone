@@ -67,7 +67,7 @@ sessions ──┬── messages ── parts       (display-layer fanout)
 
 | Table | Purpose |
 |---|---|
-| `sessions` | Conversation root. `agent` column scopes all reads. `/clear` ends the in-memory session; the row stays on disk untouched. |
+| `sessions` | Conversation root. `agent` column scopes all reads. `title` is `TEXT NOT NULL`: new rows start with a human-readable default (`"New session - <ISO timestamp>"`), then background title generation replaces it after the first user prompt. `/clear` ends the in-memory session; the row stays on disk untouched. |
 | `messages` | One row per `DisplayMessage` (bubble). UUIDv7 `id`. Per-message metadata (agent/model/duration/thinking-level/error/interrupted) mirrors the bubble footer. `error` carries pi-ai's `AssistantMessage.errorMessage` only on `stopReason === "error"` (hard provider failures → red-bordered panel on render). `interrupted` (`INTEGER` boolean) is set on `stopReason === "aborted"` so resumed sessions render the ` · interrupted` footer suffix; `error` and `interrupted` are mutually exclusive at write time. `thinking_level` is nullable TEXT carrying the pi-agent-core `ThinkingLevel` enum, stamped on the turn-closing bubble only (same scope as `duration_ms`); NULL when the turn produced no effort (non-reasoning model, effort `"off"`, or turn was interrupted) — both NULL and `"off"` render identically, so the conflation is lossless. |
 | `parts` | `DisplayPart` fanout. Composite PK `(message_id, seq)` — parts have no cross-session identity. `type ∈ {text, thinking, file, tool}`; `text` is NOT NULL (stored as `""` on `file` / `tool` rows, whose display data lives in dedicated nullable columns). File parts use `mime` + `filename` (two flat columns instead of a JSON `meta` blob so `listSessions`'s preview fallback can read `filename` in SQL). Tool parts use `call_id` (pi-ai `ToolCall.id`, the join key between `toolcall_end` stream events and `tool_execution_end`) plus a JSON `tool_data` blob holding `{ name, args, state, error? }` — no SQL reader needs the inner fields. |
 | `agent_messages` | Raw pi-agent-core `AgentMessage` as JSON, for LLM-context restore on resume. `display_message_id` links back to the bubble this message produced (NULL for tool-result / user / custom messages). `AssistantMessage.usage` lives inside the JSON and is the source of truth for the session-scope token/cost rollup — `loadSession` sums it to seed `store.totalTokens` / `store.totalCost` across app restarts (no separate cache column). |
@@ -146,8 +146,11 @@ Switching rules" and `docs/AGENT-DESIGN.md` D13).
 boot ─▶ createSession(agentName)            [in-memory Agent; no DB read]
       ─▶ openpage                           [messages: [] — no auto-resume]
 
-first user prompt ─▶ ensureSession()        [creates DB row if none]
+first user prompt ─▶ ensureSession()        [creates DB row if none;
+                                             title defaults to
+                                             "New session - <ISO>"]
                    ─▶ appendDisplayMessage(userMsg)
+                   ─▶ start title task      [non-blocking; update title]
 
 assistant turn    ─▶ message_start  ─▶ appendDisplayMessage(shell,
                                           { includeParts: false })
@@ -269,8 +272,9 @@ for the authoritative signatures. Quick reference:
   catch-up write (see § Crash-repair boundary) which prevents the
   common pi-agent-core-abort corruption from ever landing on disk.
 - `listSessions()` — newest-first summaries across every agent, with
-  `messageCount` (single `GROUP BY` query, no N+1). Each row carries
-  its own `agent` so the Ctrl+N panel can render a cross-agent list.
+  non-null `title`, preview, and `messageCount` (single `GROUP BY`
+  query, no N+1). Each row carries its own `agent` so the Ctrl+N panel
+  can render a cross-agent list.
 
 ### Writes — require `tx`
 
@@ -278,7 +282,9 @@ All writers take a required `tx: Tx` parameter. Wrap single writes in
 `runInTransaction` (see § Transactional boundary).
 
 - `createSession({ agent })` — new row. (No tx; single
-  statement.)
+  statement.) Initializes `title` to `"New session - <ISO timestamp>"`.
+- `updateSessionTitle(tx, id, title)` — replace the session title
+  after background generation completes.
 - `appendDisplayMessage(tx, id, msg, { includeParts? })` — insert
   header, optionally parts.
 - `updateDisplayMessageMeta(tx, id, msg)` — header-only update.
@@ -351,6 +357,11 @@ safeRun(() => runInTransaction((tx) => appendDisplayMessage(tx, sid, shell, { in
 ```
 
 ## Migrations
+
+Pre-1.0 reset note: the session-title change rewrites the base schema
+so `sessions.title` is `TEXT NOT NULL`. Existing development DBs from
+the nullable-title era must be removed once with
+`rm ~/.local/state/inkstone/inkstone.db*`.
 
 ### Generating a migration
 

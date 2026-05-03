@@ -8,6 +8,7 @@
  */
 
 import { testRender } from "@opentui/solid";
+import type { generateSessionTitle } from "../../src/backend/agent";
 import { Layout } from "../../src/tui/app";
 import { CommandProvider } from "../../src/tui/components/dialog/command";
 import type { SessionFactory } from "../../src/tui/context/agent";
@@ -18,6 +19,7 @@ import { ToastProvider } from "../../src/tui/ui/toast";
 
 export interface HarnessOptions {
 	session: SessionFactory;
+	sessionTitleGenerator?: typeof generateSessionTitle;
 	width?: number;
 	height?: number;
 }
@@ -31,7 +33,12 @@ export async function renderApp(opts: HarnessOptions) {
 				<ToastProvider>
 					<DialogProvider>
 						<CommandProvider>
-							<AgentProvider session={opts.session}>
+							<AgentProvider
+								session={opts.session}
+								sessionTitleGenerator={
+									opts.sessionTitleGenerator ?? (async () => null)
+								}
+							>
 								<Layout />
 							</AgentProvider>
 						</CommandProvider>

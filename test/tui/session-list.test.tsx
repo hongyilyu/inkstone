@@ -16,8 +16,10 @@ import {
 	createSession as createSessionRow,
 	newId,
 	runInTransaction,
+	updateSessionTitle,
 } from "@backend/persistence/sessions";
 import type { DisplayMessage } from "@bridge/view-model";
+import type { generateSessionTitle } from "../../src/backend/agent";
 import {
 	assistantMessage,
 	ev_agentEnd,
@@ -37,7 +39,7 @@ afterEach(() => {
 	}
 });
 
-function seedSession(preview: string): string {
+function seedSession(preview: string, title = preview): string {
 	const rec = createSessionRow({ agent: "reader" });
 	const msg: DisplayMessage = {
 		id: newId(),
@@ -55,6 +57,7 @@ function seedSession(preview: string): string {
 			content: preview,
 			timestamp: Date.now(),
 		});
+		updateSessionTitle(tx, rec.id, title);
 	});
 	return rec.id;
 }
@@ -181,6 +184,7 @@ describe("session list panel", () => {
 				content: ":q",
 				timestamp: Date.now(),
 			});
+			updateSessionTitle(tx, rec.id, ":q");
 		});
 
 		const fake = makeFakeSession();
@@ -213,6 +217,7 @@ describe("session list panel", () => {
 				content: "target session",
 				timestamp: Date.now(),
 			});
+			updateSessionTitle(tx, rec.id, "target session");
 		});
 
 		const fake = makeFakeSession();
@@ -266,5 +271,84 @@ describe("session list panel", () => {
 		expect(setup.captureCharFrame()).not.toContain("should vanish on resume");
 		// Sanity: the resume actually happened.
 		expect(fake.calls.restoreMessages.length).toBeGreaterThanOrEqual(1);
+	});
+});
+
+describe("session title generation", () => {
+	test("background title generation does not block prompt and updates sidebar", async () => {
+		let resolveTitle: (title: string) => void = () => {};
+		const titlePromise = new Promise<string>((resolve) => {
+			resolveTitle = resolve;
+		});
+		const titleGenerator: typeof generateSessionTitle = async () =>
+			titlePromise;
+
+		const fake = makeFakeSession();
+		setup = await renderApp({
+			session: fake.factory,
+			sessionTitleGenerator: titleGenerator,
+			width: 120,
+		});
+		await setup.renderOnce();
+
+		await setup.mockInput.typeText("please name this session");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+
+		expect(fake.calls.prompt).toEqual(["please name this session"]);
+
+		resolveTitle("Generated Sidebar Title");
+		const f = await waitForFrame(setup, "Generated Sidebar Title");
+		expect(f).toContain("Generated Sidebar Title");
+	});
+
+	test("resuming a titled session hydrates the sidebar title", async () => {
+		seedSession("resume preview", "Persisted Resume Title");
+
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory, width: 120 });
+		await setup.renderOnce();
+
+		setup.mockInput.pressKey("n", { ctrl: true });
+		await waitForFrame(setup, "Persisted Resume Title");
+		await Bun.sleep(30);
+
+		setup.mockInput.pressEnter();
+		const f = await waitForFrame(setup, "Persisted Resume Title");
+		expect(f).toContain("Persisted Resume Title");
+	});
+
+	test("stale title completion does not overwrite a cleared session", async () => {
+		let resolveTitle: (title: string) => void = () => {};
+		const titlePromise = new Promise<string>((resolve) => {
+			resolveTitle = resolve;
+		});
+		const titleGenerator: typeof generateSessionTitle = async () =>
+			titlePromise;
+
+		const fake = makeFakeSession();
+		setup = await renderApp({
+			session: fake.factory,
+			sessionTitleGenerator: titleGenerator,
+			width: 120,
+		});
+		await setup.renderOnce();
+
+		await setup.mockInput.typeText("old session prompt");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(20);
+
+		await setup.mockInput.typeText("/clear");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(50);
+
+		resolveTitle("Stale Title");
+		await Bun.sleep(50);
+		await setup.renderOnce();
+
+		expect(setup.captureCharFrame()).not.toContain("Stale Title");
+		expect(fake.calls.clearSession).toBeGreaterThanOrEqual(1);
 	});
 });

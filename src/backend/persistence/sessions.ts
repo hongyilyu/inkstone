@@ -44,7 +44,7 @@ export interface SessionRecord {
 	id: string;
 	agent: string;
 	startedAt: number;
-	title: string | null;
+	title: string;
 }
 
 export interface LoadedSession {
@@ -178,15 +178,15 @@ function tagReportedAndRethrow(error: unknown): never {
 	throw error;
 }
 
+export function createDefaultTitle(startedAt: number): string {
+	return `New session - ${new Date(startedAt).toISOString()}`;
+}
+
 export function createSession(init: { agent: string }): SessionRecord {
 	const db = getDb();
 	const now = Date.now();
-	const row = {
-		id: newId(),
-		startedAt: now,
-		agent: init.agent,
-		title: null,
-	};
+	const title = createDefaultTitle(now);
+	const row = { id: newId(), startedAt: now, agent: init.agent, title };
 	try {
 		db.insert(sessions).values(row).run();
 	} catch (error) {
@@ -199,6 +199,23 @@ export function createSession(init: { agent: string }): SessionRecord {
 		startedAt: row.startedAt,
 		title: row.title,
 	};
+}
+
+export function updateSessionTitle(
+	tx: Tx,
+	sessionId: string,
+	title: string,
+): void {
+	try {
+		tx.update(sessions).set({ title }).where(eq(sessions.id, sessionId)).run();
+	} catch (error) {
+		reportPersistenceError({
+			kind: "session",
+			action: `update-session-title (${shortId(sessionId)})`,
+			error,
+		});
+		tagReportedAndRethrow(error);
+	}
 }
 
 /**
@@ -698,13 +715,12 @@ export interface SessionSummary {
 	id: string;
 	agent: string;
 	startedAt: number;
-	title: string | null;
+	title: string;
 	messageCount: number;
 	/**
 	 * Single-line preview derived from the session's first user message.
 	 * Empty string when the session has no user message yet (it was
-	 * created but the prompt failed pre-stream, for example). Used by
-	 * the session list panel as a fallback label when `title` is null.
+	 * created but the prompt failed pre-stream, for example).
 	 */
 	preview: string;
 }

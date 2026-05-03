@@ -107,6 +107,8 @@ export const kiroProvider: ProviderInfo = {
 	// claude-opus-4-7 is in both us-east-1 and eu-central-1 allowlists in
 	// pi-kiro's MODELS_BY_REGION — safe default for any issuing region.
 	defaultModelId: "claude-opus-4-7",
+	// TODO: switch to Kimi K2.6 when pi-kiro exposes it.
+	titleModelId: "kimi-k2-5",
 	listModels: listKiroModels,
 	// Async because refresh may need a network round-trip. pi-agent-core
 	// awaits this (`agent-loop.js:156`).

@@ -39,6 +39,12 @@ const ThinkingLevelSchema = z.enum([
 export const Config = z.strictObject({
 	providerId: z.string().optional(),
 	modelId: z.string().optional(),
+	sessionTitleModel: z
+		.strictObject({
+			providerId: z.string().min(1),
+			modelId: z.string().min(1),
+		})
+		.optional(),
 	themeId: z.string().optional(),
 	currentAgent: z.string().optional(),
 	thinkingLevels: z.record(z.string(), ThinkingLevelSchema).optional(),

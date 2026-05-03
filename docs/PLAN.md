@@ -54,6 +54,7 @@ A terminal UI application for guided article reading, built with OpenTUI (Solid)
 | 5 | Session persistence (JSON) | Quit + restart preserves conversation |
 | 6 | SQLite persistence via Drizzle | Session transcripts + raw AgentMessages persist agent-scoped; resume restores full LLM context; `memory` table scaffolded for summarization phase |
 | 7 | Agent architecture refactor — zones as declarative workspace | `AgentInfo.zones` feeds both the permission dispatcher and the system-prompt `<your workspace>` block; reader's directory-level `confirmDirs` rules collapse into zone data; verified against 15-case smoke test covering decision + confirm-count parity |
+| 8 | Background session titles | First persisted user message starts a non-blocking title task; `sessions.title` is non-null, defaults to session id, and updates sidebar/session list/resume when generation completes |
 
 ## Agent Workflow (Article Reader)
 

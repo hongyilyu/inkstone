@@ -24,6 +24,9 @@ describe("openrouter default model", () => {
 		expect(models.some((m) => m.id === openrouterProvider.defaultModelId)).toBe(
 			true,
 		);
+		expect(models.some((m) => m.id === openrouterProvider.titleModelId)).toBe(
+			true,
+		);
 	});
 
 	test("listModels returns empty when signed out", async () => {
