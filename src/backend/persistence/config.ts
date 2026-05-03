@@ -54,7 +54,7 @@ export function loadConfig(): Config {
 	}
 }
 
-export function saveConfig(updates: Partial<Config>): void {
+export function saveConfig(updates: Partial<Config>): boolean {
 	const current = loadConfig();
 	const merged = { ...current, ...updates };
 	// Validate the merged result before writing. All current call sites pass
@@ -72,16 +72,30 @@ export function saveConfig(updates: Partial<Config>): void {
 			action: "save",
 			error: new Error(`refusing to save invalid config:\n${details}`),
 		});
-		return;
+		return false;
 	}
 	try {
 		ensureConfigDir();
 		writeFileAtomic(CONFIG_FILE, JSON.stringify(parsed.data, null, 2), 0o600);
 		cached = parsed.data;
+		return true;
 	} catch (error) {
 		// Keep the in-memory `cached` pointing at the old on-disk value so a
 		// failed save doesn't desync `loadConfig()` readers from what's
 		// actually persisted. The handler surfaces the failure to the user.
 		reportPersistenceError({ kind: "config", action: "save", error });
+		return false;
 	}
+}
+
+/**
+ * Drop the in-memory config cache so the next `loadConfig()` re-reads
+ * from disk. Exists for tests that seed `config.json` *after* a module
+ * import path has already triggered a `loadConfig()` read — without
+ * this, the cached value shadows the newly-written file. Not intended
+ * for production use: Inkstone reads config at startup and writes
+ * through `saveConfig`, which updates the cache in place.
+ */
+export function resetConfigCache(): void {
+	cached = null;
 }

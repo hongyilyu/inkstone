@@ -20,6 +20,7 @@ import { useTerminalDimensions } from "@opentui/solid";
 import type { Accessor, Setter } from "solid-js";
 import { DialogAgent } from "../components/dialog/agent";
 import { type CommandOption, useCommand } from "../components/dialog/command";
+import { DialogMiniModel } from "../components/dialog/mini-model";
 import { DialogModel } from "../components/dialog/model";
 import { DialogProvider as DialogProviderSelect } from "../components/dialog/provider";
 import { DialogTheme } from "../components/dialog/theme";
@@ -80,6 +81,25 @@ export function registerLayoutCommands(
 						actions.setModel(model);
 					},
 				);
+			},
+		});
+
+		// "Mini Model" palette entry + `/mini-model` slash verb —
+		// picks the small/cheap model used for background session
+		// title generation (and potentially other non-interactive
+		// work later). Writes through to `config.sessionTitleModel`;
+		// `resolveTitleModel` reads that override before the active
+		// provider's built-in `titleModelId`. Sits next to Models
+		// because both are model-selection prefs; kept separate so
+		// the interactive chat model and the background mini model
+		// are explicitly independent decisions.
+		list.push({
+			id: "mini-model",
+			title: "Mini Model",
+			description: "Small model for background title generation",
+			slash: { name: "mini-model", takesArgs: false },
+			onSelect: (d) => {
+				DialogMiniModel.show(d, session.getProviderId(), session.getModelId());
 			},
 		});
 

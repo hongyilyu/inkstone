@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { Config } from "@backend/persistence/schema";
 import {
 	appendDisplayMessage,
@@ -11,8 +13,8 @@ import {
 	updateSessionTitle,
 } from "@backend/persistence/sessions";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
-import "./preload";
 import { cleanSessionTitle } from "../src/backend/agent/session-title";
+import { CONFIG_HOME } from "./preload";
 
 // ────────────────────────────────────────────────────────────────────
 // Mocked `completeSimple` — scriptable per-test via `completeSimpleMock`.
@@ -239,5 +241,93 @@ describe("generateSessionTitle retry-on-throw", () => {
 
 		expect(title).toBeNull();
 		expect(completeSimpleCalls.length).toBe(1);
+	});
+});
+
+describe("resolveTitleModel precedence via generateSessionTitle", () => {
+	const CONFIG_FILE = join(CONFIG_HOME, "inkstone", "config.json");
+
+	function readCurrentConfig(): Record<string, unknown> {
+		try {
+			return JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+		} catch {
+			return {};
+		}
+	}
+
+	async function resetConfig(): Promise<void> {
+		const current = readCurrentConfig();
+		const next: Record<string, unknown> = {};
+		if (typeof current.vaultDir === "string") next.vaultDir = current.vaultDir;
+		writeFileSync(CONFIG_FILE, JSON.stringify(next, null, 2));
+		// Drop the module cache so a subsequent `loadConfig()` picks up
+		// the reset file, not the previous test's seeded override.
+		const { resetConfigCache } = await import(
+			"../src/backend/persistence/config"
+		);
+		resetConfigCache();
+	}
+
+	beforeEach(async () => {
+		completeSimpleCalls.length = 0;
+		completeSimpleMock = async () => {
+			throw new Error("completeSimpleMock not configured");
+		};
+		await resetConfig();
+	});
+
+	afterEach(async () => {
+		// Reset after each test too so an override set by this suite
+		// doesn't leak into later test files (mini-model.test.tsx
+		// depends on config.sessionTitleModel being undefined at
+		// dialog open).
+		await resetConfig();
+	});
+
+	test("config.sessionTitleModel beats provider titleModelId", async () => {
+		// Seed an explicit override. Override provider/model differs
+		// from the active chat provider (`openrouter`) and from
+		// OpenRouter's built-in `titleModelId` (`moonshotai/kimi-k2.6`)
+		// so the call site unambiguously pins precedence.
+		//
+		// The cache was already dropped in `beforeEach`'s `resetConfig`;
+		// after this writeFile, we need to drop it again because the
+		// `resetConfig` path re-primed `cached` to the baseline (empty
+		// + vaultDir) via its own `loadConfig` chain. Without this
+		// second reset, `loadConfig()` inside `resolveTitleModel`
+		// would return the pre-write baseline and the precedence
+		// assertion would fail for the wrong reason (missing override,
+		// not wrong precedence).
+		writeFileSync(
+			CONFIG_FILE,
+			JSON.stringify(
+				{
+					vaultDir: (readCurrentConfig().vaultDir as string | undefined) ?? "",
+					sessionTitleModel: {
+						providerId: "openrouter",
+						modelId: "deepseek/deepseek-chat-v3.1",
+					},
+				},
+				null,
+				2,
+			),
+		);
+		const { resetConfigCache } = await import(
+			"../src/backend/persistence/config"
+		);
+		resetConfigCache();
+
+		completeSimpleMock = async () => makeAssistantReply("Configured Title");
+
+		const title = await generateSessionTitle({
+			activeProviderId: "openrouter",
+			activeModelId: "anthropic/claude-haiku-4.5",
+			prompt: "anything",
+		});
+
+		expect(title).toBe("Configured Title");
+		expect(completeSimpleCalls.length).toBe(1);
+		expect(completeSimpleCalls[0]?.modelId).toBe("deepseek/deepseek-chat-v3.1");
+		expect(completeSimpleCalls[0]?.provider).toBe("openrouter");
 	});
 });
