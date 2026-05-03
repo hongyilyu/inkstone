@@ -41,6 +41,7 @@ const completeSimpleCalls: {
 	modelId: string;
 	provider: string;
 	apiKey: unknown;
+	temperature: unknown;
 }[] = [];
 
 const realPiAi = await import("@mariozechner/pi-ai");
@@ -55,6 +56,8 @@ mock.module("@mariozechner/pi-ai", () => ({
 			modelId: model.id,
 			provider: model.provider,
 			apiKey: (options as { apiKey?: unknown } | undefined)?.apiKey,
+			temperature: (options as { temperature?: unknown } | undefined)
+				?.temperature,
 		});
 		return completeSimpleMock(model, context, options);
 	},
@@ -268,6 +271,31 @@ describe("generateSessionTitle retry-on-throw", () => {
 
 		expect(title).toBeNull();
 		expect(completeSimpleCalls.length).toBe(1);
+	});
+
+	test("does not send temperature (rejected by Codex reasoning models)", async () => {
+		// Regression for the observed ChatGPT (OpenAI Codex) bug:
+		// every Codex model Inkstone ships with is `reasoning: true`,
+		// and OpenAI's Responses endpoint rejects non-default
+		// `temperature` on reasoning models with a 400. pi-ai's Codex
+		// provider forwards `temperature` unconditionally, so a stray
+		// `temperature: 0.5` in the options blew up both the primary
+		// (`gpt-5.4-mini`) and the active-chat-model retry (both
+		// reasoning models) and left the session on its default title
+		// forever. Fix: omit the field entirely. Pin the absence so a
+		// future contributor re-adding "temperature: …" for
+		// "determinism" finds this test first.
+		completeSimpleMock = async () => makeAssistantReply("Title");
+
+		const title = await generateSessionTitle({
+			activeProviderId: "openrouter",
+			activeModelId: "anthropic/claude-haiku-4.5",
+			prompt: "anything",
+		});
+
+		expect(title).toBe("Title");
+		expect(completeSimpleCalls.length).toBe(1);
+		expect(completeSimpleCalls[0]?.temperature).toBeUndefined();
 	});
 });
 
