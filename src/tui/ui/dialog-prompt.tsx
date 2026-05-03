@@ -5,6 +5,7 @@ import {
 	createSignal,
 	type JSX,
 	on,
+	onCleanup,
 	onMount,
 	Show,
 } from "solid-js";
@@ -45,6 +46,7 @@ export function DialogPrompt(props: DialogPromptProps) {
 	const dialog = useDialog();
 	const { theme } = useTheme();
 	let input: InputRenderable | undefined;
+	let focusTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// Track the current input text as a signal. Initialized from
 	// `props.value` and re-synced when the prop changes so a parent that
@@ -80,10 +82,19 @@ export function DialogPrompt(props: DialogPromptProps) {
 	});
 
 	onMount(() => {
-		setTimeout(() => {
+		// Focus after a tick so the <input> renderable is mounted.
+		// Coalesced so a rapid remount within the same tick doesn't
+		// leak a timer against a destroyed renderable; cleared on
+		// unmount via `onCleanup`.
+		if (focusTimer !== null) clearTimeout(focusTimer);
+		focusTimer = setTimeout(() => {
+			focusTimer = null;
 			if (!input || input.isDestroyed) return;
 			input.focus();
 		}, 1);
+	});
+	onCleanup(() => {
+		if (focusTimer !== null) clearTimeout(focusTimer);
 	});
 
 	return (

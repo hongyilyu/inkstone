@@ -13,12 +13,15 @@ import {
 	For,
 	type JSX,
 	on,
+	onCleanup,
 	Show,
 } from "solid-js";
 import { createStore } from "solid-js/store";
 import { useTheme } from "../context/theme";
 import * as Keybind from "../util/keybind";
 import { useDialog } from "./dialog";
+import { countRows, groupByCategory } from "./dialog-select-grouping";
+import { DialogSelectRow } from "./dialog-select-row";
 
 export interface DialogSelectOption<T = any> {
 	title: string;
@@ -45,16 +48,12 @@ export interface DialogSelectProps<T> {
 }
 
 /**
- * Truncate a string to a maximum length, adding "..." if truncated.
- */
-function truncate(str: string, max: number): string {
-	if (str.length <= max) return str;
-	return `${str.slice(0, max - 1)}…`;
-}
-
-/**
  * Fuzzy-searchable select dialog.
  * Ported from OpenCode's ui/dialog-select.tsx (minimal slice).
+ *
+ * Row rendering lives in `./dialog-select-row.tsx`; grouping + height
+ * math lives in `./dialog-select-grouping.ts`. This file owns the
+ * state store, keyboard nav, scroll sync, and composition.
  *
  * TODO: Port remaining upstream features from opencode/src/cli/cmd/tui/ui/dialog-select.tsx:
  * - skipFilter option to disable filtering
@@ -95,6 +94,12 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 	);
 
 	let input: InputRenderable;
+	// Focus-after-mount timer. Coalesced: if `ref` fires twice in quick
+	// succession (rare — only on rapid dialog open/close/open in one
+	// tick), clear the prior pending timer so only the latest ref's
+	// focus lands. Stops a stale timer from focusing a destroyed
+	// renderable or fighting a second timer on the same instance.
+	let focusTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const filtered = createMemo(() => {
 		const needle = store.filter.toLowerCase();
@@ -114,46 +119,9 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 
 	const flat = createMemo(() => filtered());
 
-	// Group filtered options by `category ?? ""`. A `Map` preserves
-	// insertion order, so options whose category key first appears
-	// earlier in `filtered()` lead their group — which matches how
-	// callers (e.g. DialogModel) already order contiguous runs of
-	// same-category rows, so grouping never reorders the visible list.
-	// Options without a `category` land in the empty-string bucket;
-	// the `<Show when={category}>` gate below hides the header for
-	// that bucket, so callers without categories render unchanged.
-	const grouped = createMemo<[string, DialogSelectOption<T>[]][]>(() => {
-		const buckets = new Map<string, DialogSelectOption<T>[]>();
-		for (const opt of flat()) {
-			const key = opt.category ?? "";
-			let bucket = buckets.get(key);
-			if (!bucket) {
-				bucket = [];
-				buckets.set(key, bucket);
-			}
-			bucket.push(opt);
-		}
-		return [...buckets];
-	});
+	const grouped = createMemo(() => groupByCategory(flat()));
 
-	// `rows()` is `flat().length` plus one line per non-empty header,
-	// plus one spacer line between consecutive non-empty groups
-	// (`paddingTop={1}` after index 0). Matches OpenCode's `rows()`
-	// so `height()` sizes the scrollbox to include headers.
-	//
-	// Dormant caveat: the accumulator and the JSX both key off the
-	// raw `grouped()` index. If a caller ever mixes uncategorized
-	// and categorized options (empty-string bucket at index 0, a
-	// non-empty header at index 1), the non-empty header gets
-	// `paddingTop={1}` even though it's visually the first header.
-	// No current caller mixes; fix alongside the first one that does.
-	const rows = createMemo(() => {
-		const headers = grouped().reduce((acc, [category], i) => {
-			if (!category) return acc;
-			return acc + (i > 0 ? 2 : 1);
-		}, 0);
-		return flat().length + headers;
-	});
+	const rows = createMemo(() => countRows(grouped()));
 
 	const dimensions = useTerminalDimensions();
 	const height = createMemo(() =>
@@ -162,10 +130,18 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 
 	const selected = createMemo(() => flat()[store.selected]);
 
-	// Reset selection when filter changes
+	// Reset selection when filter changes. The `setTimeout(0)` defers
+	// the scroll sync until after Solid's batch flushes so `moveTo`
+	// sees the freshly-rendered row ids. Coalesced: rapid filter
+	// keystrokes would otherwise queue N timers — with a shared slot
+	// only the most recent filter's move survives, which is what the
+	// user actually wants.
+	let moveTimer: ReturnType<typeof setTimeout> | null = null;
 	createEffect(
 		on([() => store.filter, () => props.current], ([filter, current]) => {
-			setTimeout(() => {
+			if (moveTimer !== null) clearTimeout(moveTimer);
+			moveTimer = setTimeout(() => {
+				moveTimer = null;
 				if (filter.length > 0) {
 					moveTo(0, true);
 				} else if (current) {
@@ -179,6 +155,10 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 			}, 0);
 		}),
 	);
+	onCleanup(() => {
+		if (moveTimer !== null) clearTimeout(moveTimer);
+		if (focusTimer !== null) clearTimeout(focusTimer);
+	});
 
 	function move(direction: number) {
 		if (flat().length === 0) return;
@@ -293,7 +273,9 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 						focusedTextColor={theme.text}
 						ref={(r: InputRenderable) => {
 							input = r;
-							setTimeout(() => {
+							if (focusTimer !== null) clearTimeout(focusTimer);
+							focusTimer = setTimeout(() => {
+								focusTimer = null;
 								if (!input) return;
 								if (input.isDestroyed) return;
 								input.focus();
@@ -338,10 +320,10 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 											isDeepEqual(option.value, props.current),
 										);
 										return (
-											<box
-												id={JSON.stringify(option.value)}
-												flexDirection="row"
-												position="relative"
+											<DialogSelectRow
+												option={option}
+												active={active()}
+												current={current()}
 												onMouseMove={() => {
 													setStore("input", "mouse");
 												}}
@@ -353,75 +335,20 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
 												}}
 												onMouseOver={() => {
 													if (store.input !== "mouse") return;
-													const index = flat().findIndex((x) =>
+													const idx = flat().findIndex((x) =>
 														isDeepEqual(x.value, option.value),
 													);
-													if (index === -1) return;
-													moveTo(index);
+													if (idx === -1) return;
+													moveTo(idx);
 												}}
 												onMouseDown={() => {
-													const index = flat().findIndex((x) =>
+													const idx = flat().findIndex((x) =>
 														isDeepEqual(x.value, option.value),
 													);
-													if (index === -1) return;
-													moveTo(index);
+													if (idx === -1) return;
+													moveTo(idx);
 												}}
-												backgroundColor={
-													active() ? theme.primary : theme.backgroundPanel
-												}
-												paddingLeft={current() || option.gutter ? 1 : 3}
-												paddingRight={3}
-												gap={1}
-											>
-												<Show when={current()}>
-													<text
-														flexShrink={0}
-														fg={
-															active()
-																? theme.selectedListItemText
-																: theme.primary
-														}
-														marginRight={0}
-													>
-														●
-													</text>
-												</Show>
-												<Show when={!current() && option.gutter}>
-													<box flexShrink={0} marginRight={0}>
-														{option.gutter}
-													</box>
-												</Show>
-												<text
-													flexGrow={1}
-													fg={
-														active()
-															? theme.selectedListItemText
-															: current()
-																? theme.primary
-																: theme.text
-													}
-													attributes={
-														active() ? TextAttributes.BOLD : undefined
-													}
-													overflow="hidden"
-													wrapMode="none"
-												>
-													{truncate(option.title, 61)}
-												</text>
-												<Show when={option.description}>
-													<text
-														flexShrink={0}
-														fg={
-															active()
-																? theme.selectedListItemText
-																: theme.textMuted
-														}
-														wrapMode="none"
-													>
-														{option.description}
-													</text>
-												</Show>
-											</box>
+											/>
 										);
 									}}
 								</For>
