@@ -17,7 +17,7 @@
  * `test/preload.ts`, so nothing touches the developer's real
  * `~/.config/inkstone/`.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 
 // Track refresh-call count on the mock so tests can assert dedup.
 let refreshCalls = 0;
@@ -81,6 +81,19 @@ describe("kiro refresh", () => {
 		refreshShouldThrow = false;
 		// Defensive: drop any creds leaked from a previous test so tests
 		// that rely on "signed-out" initial state aren't fragile.
+		clearKiroCreds();
+	});
+
+	// The final test seeds "connected" Kiro creds to exercise
+	// `listModels()`. Without explicit cleanup, those creds leak into
+	// every subsequent test file that shares this process — Kiro
+	// isConnected() starts returning true, DialogModel renders 20+
+	// Kiro rows above the OpenRouter category, and downstream tests
+	// that anchor on OpenRouter as the first provider category time
+	// out. `test/openai-codex-refresh.test.ts` pays a similar tax via
+	// per-test cleanup; we do it once at file exit since only the
+	// final test leaks.
+	afterAll(() => {
 		clearKiroCreds();
 	});
 
