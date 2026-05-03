@@ -163,7 +163,23 @@ async function runTitleCompletion(
 		{
 			apiKey,
 			maxTokens: 64,
-			temperature: 0.5,
+			// No `temperature` field. pi-ai's Codex provider
+			// (`openai-codex-responses.js:buildRequestBody`) forwards
+			// `temperature` into the OpenAI Responses request body
+			// unconditionally, and every Codex model Inkstone ships
+			// with (`gpt-5.4-mini`, `gpt-5.4`, `gpt-5.5`, …) is a
+			// reasoning model whose endpoint rejects non-default
+			// `temperature` with a 400 "Unsupported parameter". On a
+			// Codex-only user that 400 fires on both the primary
+			// (`titleModelId`) hop and the `activeModelId` retry hop
+			// (both are reasoning models), so the whole task silently
+			// returns null and the session keeps its
+			// `"New session - <ISO>"` default forever. Omitting the
+			// field lets each provider use its default; title quality
+			// is dominated by the system prompt + examples, not
+			// temperature jitter. The main chat path already sends
+			// no temperature (only this file did), which is why chat
+			// worked while titles didn't.
 			transport: "sse",
 			// Suppress reasoning for title calls. `completeSimple` delegates
 			// to `streamSimple` which maps `reasoning: "minimal"` to the
