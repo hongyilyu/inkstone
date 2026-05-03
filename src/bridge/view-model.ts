@@ -135,6 +135,13 @@ export interface AgentStoreState {
 	 * Ephemeral — cleared on `clearSession()`, not persisted.
 	 */
 	sidebarSections: SidebarSection[];
+	/**
+	 * Current session title. Pre-session placeholder is "inkstone";
+	 * once a SQLite row exists this becomes the row's non-null
+	 * `sessions.title` (initially "New session - <ISO timestamp>",
+	 * later replaced by background title generation).
+	 */
+	sessionTitle: string;
 	modelName: string;
 	/**
 	 * Provider id (e.g. "openrouter"), not a display string. Frontends

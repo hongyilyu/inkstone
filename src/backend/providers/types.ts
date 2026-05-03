@@ -29,6 +29,14 @@ export interface ProviderInfo {
 	 */
 	defaultModelId: string;
 
+	/**
+	 * Cheap, provider-local model used for background session title
+	 * generation. Optional only for third-party/custom providers that do
+	 * not yet choose one; title resolution falls back to the active chat
+	 * model when absent or unavailable.
+	 */
+	titleModelId?: string;
+
 	/** All models this provider exposes. May be static (pi-ai registry) or
 	 * dynamically constructed (custom endpoints). */
 	listModels(): Model<Api>[];

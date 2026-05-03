@@ -29,5 +29,8 @@ describe("openai-codex default model", () => {
 		expect(
 			models.some((m) => m.id === openaiCodexProvider.defaultModelId),
 		).toBe(true);
+		expect(models.some((m) => m.id === openaiCodexProvider.titleModelId)).toBe(
+			true,
+		);
 	});
 });

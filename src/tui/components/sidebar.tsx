@@ -9,9 +9,6 @@ import { useTheme } from "../context/theme";
 import { displayPath, formatCost, formatTokensFull } from "../util/format";
 
 const SIDEBAR_WIDTH = 30;
-// Inner content width = SIDEBAR_WIDTH - paddingLeft(2) - paddingRight(2)
-const TITLE_MAX_CHARS = SIDEBAR_WIDTH - 4;
-
 /**
  * Right-side session metadata panel.
  *
@@ -34,25 +31,7 @@ export function Sidebar(props: { inSecondaryPage?: boolean }) {
 	const vaultDisplay = displayPath(VAULT_DIR);
 
 	const title = createMemo(() => {
-		const firstUser = store.messages.find((m) => m.role === "user");
-		// Title mirrors the bubble's first-part semantics: whichever
-		// DisplayPart leads the user message is what identifies the
-		// session. A `text` lead → its flattened body; a `file` lead →
-		// the filename (tail-truncated so a deep vault path shows the
-		// leaf). This avoids disagreement between what the sidebar
-		// labels and what the bubble visually emphasizes. Commands that
-		// synthesize an order like `[file, text "caption"]` would title
-		// off the filename, which matches the renderer.
-		const firstPart = firstUser?.parts[0];
-		if (firstPart?.type === "text") {
-			// Strip newlines so a multiline prompt doesn't blow up the title.
-			const flat = firstPart.text.replace(/\s+/g, " ").trim();
-			if (flat) return flat.slice(0, TITLE_MAX_CHARS);
-		}
-		if (firstPart?.type === "file") {
-			return firstPart.filename.slice(-TITLE_MAX_CHARS);
-		}
-		return "inkstone";
+		return store.sessionTitle.trim() || "inkstone";
 	});
 
 	const contextPct = createMemo(() => {

@@ -32,6 +32,7 @@ function makeFreshCreds(expiresMs: number, seed: string) {
 		clientSecret: "csec",
 		expires: expiresMs,
 		region: "us-east-1",
+		authMethod: "builder-id" as const,
 	};
 }
 
@@ -120,5 +121,13 @@ describe("kiro refresh", () => {
 		// clearKiroCreds() was called in the catch branch, so the stored
 		// creds are gone and `isConnected()` should report accordingly.
 		expect(kiroProvider.isConnected()).toBe(false);
+	});
+
+	test("titleModelId resolves when credentials expose the Kiro model list", () => {
+		clearKiroCreds();
+		saveKiroCreds(makeFreshCreds(Date.now() + 60_000, "connected"));
+
+		const models = kiroProvider.listModels();
+		expect(models.some((m) => m.id === kiroProvider.titleModelId)).toBe(true);
 	});
 });

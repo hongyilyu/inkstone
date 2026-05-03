@@ -402,6 +402,7 @@ export function listAgents(): AgentInfo[] {
 	return AGENTS;
 }
 
+export { generateSessionTitle } from "./session-title";
 export {
 	type AgentCommand,
 	type AgentInfo,

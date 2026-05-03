@@ -107,6 +107,7 @@ export const openaiCodexProvider: ProviderInfo = {
 	// rename / removal surfaces there before the agent module's own
 	// "default no longer resolves" boot throw.
 	defaultModelId: "gpt-5.4",
+	titleModelId: "gpt-5.4-mini",
 	listModels: listOpenAICodexModels,
 	// Async because refresh may need a network round-trip. pi-agent-core
 	// awaits this (`agent-loop.js:156`).

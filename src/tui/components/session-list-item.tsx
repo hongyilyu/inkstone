@@ -97,10 +97,7 @@ export function SessionListItem(props: SessionListItemProps) {
 }
 
 function rowTitle(row: SessionSummary): string {
-	const t = row.title?.trim();
-	if (t) return t;
-	if (row.preview) return row.preview;
-	return "Untitled";
+	return row.title.trim() || row.id;
 }
 
 function truncate(s: string, max: number): string {
