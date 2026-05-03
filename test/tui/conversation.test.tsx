@@ -312,6 +312,60 @@ describe("conversation rendering", () => {
 		expect(f).toContain("010 RAW/013 Articles/bar.md");
 	});
 
+	test("user bubble gets [Interrupted by user] when agent_end fires with empty assistant shell", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await seedUserTurn(setup, "hello");
+
+		// Simulate the fast-model scenario: agent_start → message_start
+		// (pushes empty assistant shell) → agent_end fires before any
+		// text parts arrive. The reducer should stamp `interrupted` on
+		// the user bubble.
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		// No text deltas — the assistant shell stays empty.
+		fake.emit(
+			ev_agentEnd([
+				assistantMessage({
+					stopReason: "aborted",
+					errorMessage: "[Interrupted by user]",
+				}),
+			]),
+		);
+
+		await waitForFrame(setup, "[Interrupted by user]");
+		const frame = setup.captureCharFrame();
+		expect(frame).toContain("[Interrupted by user]");
+	});
+
+	test("user bubble does NOT flash [Interrupted by user] during normal streaming", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await seedUserTurn(setup, "hello");
+
+		// message_start pushes the empty assistant shell. Before any
+		// text arrives, the user bubble must NOT show the marker —
+		// the reducer hasn't stamped `interrupted` yet because
+		// `agent_end` hasn't fired.
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		await setup.renderOnce();
+		await Bun.sleep(20);
+		await setup.renderOnce();
+		expect(setup.captureCharFrame()).not.toContain("[Interrupted by user]");
+
+		// Text arrives, turn completes normally.
+		fake.emit(ev_textStart());
+		fake.emit(ev_textDelta("Hi there!"));
+		fake.emit(ev_messageEnd({ stopReason: "stop" }));
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
+
+		const f = await waitForFrame(setup, "Hi there!");
+		expect(f).not.toContain("[Interrupted by user]");
+	});
+
 	test("sidebar Context block renders token count and cost after a turn with usage", async () => {
 		const fake = makeFakeSession();
 		// Width 120 so the sidebar renders (gated on `dimensions.width >= 100`).

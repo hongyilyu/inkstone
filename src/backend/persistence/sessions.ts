@@ -443,6 +443,25 @@ export function loadSession(sessionId: string): LoadedSession | null {
 		interrupted: m.interrupted ?? undefined,
 	}));
 
+	// Load-time interrupted-user repair. If a user bubble has no real
+	// assistant reply following it (no parts, no error, no interrupted
+	// flag on the assistant), stamp `interrupted: true` so the renderer
+	// shows `[Interrupted by user]` without needing a render-time
+	// derivation. Covers sessions interrupted before this stamp was
+	// added, and crash-before-`agent_end`-persist scenarios.
+	for (let i = 0; i < displayMessages.length; i++) {
+		const dm = displayMessages[i];
+		if (!dm || dm.role !== "user" || dm.interrupted) continue;
+		const next = displayMessages[i + 1];
+		const hasRealReply =
+			next &&
+			next.role === "assistant" &&
+			(next.parts.length > 0 || !!next.error || !!next.interrupted);
+		if (!hasRealReply) {
+			dm.interrupted = true;
+		}
+	}
+
 	const agentMsgRows = db
 		.select()
 		.from(agentMessages)
@@ -604,7 +623,7 @@ function lastAlternationRole(
  * Marker on synthesized aborted placeholders so the metadata-source
  * search skips them. Exported so `buildAbortedAssistant` and
  * `findLatestRealAssistant` stay in sync. The literal is also
- * surfaced in the display layer (`isDanglingUser` in `message.tsx`),
+ * surfaced in the display layer (`DisplayMessage.interrupted` stamp),
  * which matches on the same string.
  */
 const INTERRUPTED_MARKER = "[Interrupted by user]";
