@@ -69,6 +69,7 @@ export interface FakeSessionHandle {
 		selectAgent: string[];
 		restoreMessages: AgentMessage[][];
 		setSessionId: string[];
+		dispose: number;
 	};
 	/**
 	 * Force the next N `actions.prompt()` calls to reject with the given
@@ -114,6 +115,7 @@ export function makeFakeSession(
 		selectAgent: [],
 		restoreMessages: [],
 		setSessionId: [],
+		dispose: 0,
 	};
 
 	let onEvent: (event: AgentEvent) => void = () => {};
@@ -170,6 +172,9 @@ export function makeFakeSession(
 				// `selectAgent`, so the fake must update too.
 				calls.selectAgent.push(name);
 				agentName = name;
+			},
+			dispose() {
+				calls.dispose += 1;
 			},
 		};
 		createdSession = session;
