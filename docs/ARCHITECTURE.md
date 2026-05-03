@@ -132,7 +132,11 @@ src/
     app.tsx                         Provider stack + root layout + top-level commands
     context/
       agent.tsx                     AgentProvider + useAgent (store + event reducer)
-      theme.tsx                     Theme loading, resolution, SyntaxStyle FFI
+      theme.tsx                     ThemeProvider + useTheme (re-exports ThemeColors/ThemeDef/themes/getThemeById for backward compat)
+    theme/                          Pure-data theme module (no Solid, no JSX)
+      types.ts                      ThemeColors + ThemeDef interfaces
+      palettes.ts                   Built-in palettes (Dark, Light, Catppuccin Mocha, Dracula), themes[], getThemeById
+      syntax.ts                     generateSyntax + generateSubtleSyntax (SyntaxStyle FFI wrappers)
     ui/
       dialog.tsx                    Stack-based modal rendering
       dialog-confirm.tsx            Promise-based yes/no confirmation
