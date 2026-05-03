@@ -86,6 +86,33 @@ function makeAssistantReply(text: string): AssistantMessage {
 	};
 }
 
+/**
+ * Build an `AssistantMessage` with a caller-specified content array so
+ * tests can exercise mixed block types (e.g. thinking + text). Shares
+ * the usage/metadata shape with `makeAssistantReply`.
+ */
+function makeAssistantReplyWithBlocks(
+	content: AssistantMessage["content"],
+): AssistantMessage {
+	return {
+		role: "assistant",
+		content,
+		api: "openai-completions",
+		provider: "openrouter",
+		model: "mock",
+		usage: {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+}
+
 describe("session titles", () => {
 	test("createSession initializes title to a human-readable default", () => {
 		const rec = createSession({ agent: "reader" });
@@ -329,5 +356,66 @@ describe("resolveTitleModel precedence via generateSessionTitle", () => {
 		expect(completeSimpleCalls.length).toBe(1);
 		expect(completeSimpleCalls[0]?.modelId).toBe("deepseek/deepseek-chat-v3.1");
 		expect(completeSimpleCalls[0]?.provider).toBe("openrouter");
+	});
+});
+
+describe("thinking content block filtering", () => {
+	beforeEach(() => {
+		completeSimpleCalls.length = 0;
+		completeSimpleMock = async () => {
+			throw new Error("completeSimpleMock not configured");
+		};
+	});
+
+	test("thinking block before text → text wins, thinking is filtered", async () => {
+		// Regression for the observed Kiro Claude Haiku 4.5 bug where
+		// structured `type: "thinking"` blocks were concatenated into
+		// the raw title ahead of `type: "text"` blocks. With the fold
+		// in `runTitleCompletion`, the thinking preamble won line 1
+		// and `cleanSessionTitle` returned its first 50 chars as the
+		// "title" (e.g. "The user is asking me to generate a thread
+		// title f"). Fix filters thinking at the content-block seam
+		// so only text blocks contribute to the raw title.
+		completeSimpleMock = async () =>
+			makeAssistantReplyWithBlocks([
+				{
+					type: "thinking",
+					thinking:
+						"The user is asking me to generate a thread title for this conversation. Let me think about what would be appropriate...",
+				},
+				{ type: "text", text: "Real Title" },
+			]);
+
+		const title = await generateSessionTitle({
+			activeProviderId: "openrouter",
+			activeModelId: "anthropic/claude-haiku-4.5",
+			prompt: "anything",
+		});
+
+		expect(title).toBe("Real Title");
+		expect(completeSimpleCalls.length).toBe(1);
+	});
+
+	test("thinking-only response, no text block → returns null without retry", async () => {
+		// Successful call but no text block means no title candidate.
+		// Matches the "empty cleaned output" contract: a valid
+		// "no title" signal, no retry. The thinking content is
+		// dropped even though it contains readable prose.
+		completeSimpleMock = async () =>
+			makeAssistantReplyWithBlocks([
+				{
+					type: "thinking",
+					thinking: "Some reasoning that would have become the title.",
+				},
+			]);
+
+		const title = await generateSessionTitle({
+			activeProviderId: "openrouter",
+			activeModelId: "anthropic/claude-haiku-4.5",
+			prompt: "anything",
+		});
+
+		expect(title).toBeNull();
+		expect(completeSimpleCalls.length).toBe(1);
 	});
 });
