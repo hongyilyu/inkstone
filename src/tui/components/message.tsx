@@ -48,9 +48,6 @@ export function UserMessage(props: {
 	const { store } = useAgent();
 	const agentColor = () => theme[getAgentInfo(store.currentAgent).colorKey];
 
-	const dangling = () =>
-		isDanglingUser(props.message, store.messages, store.isStreaming);
-
 	return (
 		<box flexDirection="column" flexShrink={0}>
 			<box
@@ -80,58 +77,18 @@ export function UserMessage(props: {
 					</For>
 				</box>
 			</box>
-			{/* Dangling-user marker — stream was killed mid-turn so no
-			    assistant reply followed. We considered OpenCode's
-			    `· interrupted` pattern (`routes/session/index.tsx:1420-
-			    1422`) but that's a SUFFIX on the assistant footer (agent
-			    / model / duration / · interrupted). We don't have real
-			    agent/model/duration for a turn that never completed —
-			    loadSession's placeholder fills pi-agent-core's slot for
-			    provider alternation, but its fields are bland defaults
-			    (see buildAbortedAssistant in sessions.ts), not data we'd
-			    want rendered. A bare muted line is the honest shape. */}
-			<Show when={dangling()}>
+			{/* Interrupted-user marker — the reducer stamps
+			    `interrupted: true` on the user bubble at `agent_end`
+			    when the turn ended without a real assistant reply
+			    (abort, crash, etc.). Driven by data, not render-time
+			    derivation, so there's no race window. */}
+			<Show when={props.message.interrupted}>
 				<box paddingLeft={3} paddingTop={1} flexShrink={0}>
 					<text fg={theme.textMuted}>[Interrupted by user]</text>
 				</box>
 			</Show>
 		</box>
 	);
-}
-
-/**
- * A user bubble is "dangling" when it has no real assistant reply
- * following it AND no stream is pending. "Real" means at least one
- * part OR an error — matches the outer `<Show>` gate in the list so
- * an orphan empty-parts assistant (a header row inserted on
- * `message_start` but parts never flushed because `message_end` never
- * fired — a Ctrl+C window) doesn't mask the marker.
- *
- * The `isTail && isStreaming` skip covers the window where
- * `message_start` pushed an assistant bubble but no parts have
- * streamed in yet — that's a pending reply, not an orphan.
- *
- * Pure function: determined entirely by the message + its surrounding
- * list, so it reads cleanly at the bubble level without needing the
- * list to pre-compute and pass the flag down.
- */
-function isDanglingUser(
-	msg: DisplayMessage,
-	messages: DisplayMessage[],
-	isStreaming: boolean,
-): boolean {
-	if (msg.role !== "user") return false;
-	const index = messages.indexOf(msg);
-	if (index === -1) return false;
-	const next = messages[index + 1];
-	if (next && next.role === "assistant") {
-		const real = next.parts.length > 0 || !!next.error || !!next.interrupted;
-		if (real) return false;
-		// Ghost assistant header (parts never flushed) — fall through.
-	}
-	const isTail = index === messages.length - 1;
-	if (isTail && isStreaming) return false;
-	return true;
 }
 
 // ---------------------------------------------------------------------------

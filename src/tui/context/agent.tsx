@@ -915,6 +915,50 @@ export function AgentProvider(
 							);
 						}
 					}
+					// Stamp `interrupted` on the user bubble when the turn
+					// ended without a real assistant reply. "Real" = at least
+					// one part, or an error, or the assistant itself already
+					// flagged interrupted. This replaces the old render-time
+					// `isDanglingUser` derivation that raced between
+					// `message_start` (empty shell pushed) and the first
+					// `message_update` (parts arrive), causing a flash of
+					// `[Interrupted by user]` on fast models (GPT 5.5 no-
+					// effort). Stamping here — at `agent_end`, the
+					// authoritative "stream is over" boundary — eliminates
+					// the race: the flag is never set during normal streaming.
+					{
+						let userIdx = -1;
+						for (let i = store.messages.length - 1; i >= 0; i--) {
+							if (store.messages[i]?.role === "user") {
+								userIdx = i;
+								break;
+							}
+						}
+						if (userIdx !== -1) {
+							const next = store.messages[userIdx + 1];
+							const hasRealReply =
+								next &&
+								next.role === "assistant" &&
+								(next.parts.length > 0 || !!next.error || !!next.interrupted);
+							if (!hasRealReply && currentSessionId) {
+								const sid = currentSessionId;
+								const userMsg = store.messages[userIdx];
+								if (userMsg) {
+									const updated: DisplayMessage = {
+										...userMsg,
+										parts: userMsg.parts.map((p) => ({ ...p })),
+										interrupted: true,
+									};
+									persistThen(
+										(tx) => updateDisplayMessageMeta(tx, sid, updated),
+										() => {
+											setStore("messages", userIdx, "interrupted", true);
+										},
+									);
+								}
+							}
+						}
+					}
 					// Reset the turn-scope snapshot. Next turn's prompt handler
 					// re-captures; unrelated `agent_end` events (none exist in
 					// the current event model, but defensive) won't inherit.
