@@ -124,6 +124,20 @@ export async function generateSessionTitle(
  * no current caller does. The `!` documents the invariant; changing it
  * to a guarded if would imply a recovery branch that can't fire.
  *
+ * Content-block filter: we only fold `type: "text"` blocks into the
+ * raw title. Structured `type: "thinking"` blocks are the native
+ * Anthropic/reasoning-model shape — concatenating them here used to
+ * pollute titles with reasoning preambles (observed: Kiro Claude
+ * Haiku 4.5 emitted "The user is asking me to generate a thread
+ * title f" as the first 50 chars of its thinking preamble, which
+ * became the stored title). pi-ai already typed them separately so
+ * consumers can filter; we do. The `<think>...</think>` regex in
+ * `cleanSessionTitle` is the orthogonal seam for pseudo-XML thinking
+ * disguised inside text blocks (some OpenRouter / local models).
+ * `reasoning: "minimal"` below is a request-side hint; providers
+ * don't uniformly honor it for Anthropic thinking, so the content
+ * filter here is the hard guarantee.
+ *
  * Any change (e.g. `maxTokens`, `reasoning` level) applies to both the
  * primary and retry requests.
  */
@@ -155,16 +169,13 @@ async function runTitleCompletion(
 			// to `streamSimple` which maps `reasoning: "minimal"` to the
 			// provider-appropriate knob (OpenAI `reasoningEffort`, Google
 			// `thinkingBudget`, OpenRouter `reasoning.effort`, etc.). Models
-			// that don't support reasoning ignore the field.
+			// that don't support reasoning ignore the field. Not a hard
+			// guarantee — see the content-block filter above.
 			reasoning: "minimal",
 		},
 	);
 	return response.content
-		.map((block) => {
-			if (block.type === "text") return block.text;
-			if (block.type === "thinking") return block.thinking;
-			return "";
-		})
+		.map((block) => (block.type === "text" ? block.text : ""))
 		.join("\n");
 }
 
