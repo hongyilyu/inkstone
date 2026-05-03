@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-02 (agent context split into 7 modules + reactivity hygiene: dispose subscription, restore handler fns, createRoot secondary-page, drop createSignal wrapper)
+**Last updated**: 2026-05-02 (Layout extracted commands/keybinds; defaultPrevented guard; ref cleanup)
 
 ## In Progress
 
@@ -13,13 +13,23 @@ None
 
 - `file` DisplayParts are user-bubble-only per the reducer today, but the `DisplayPart` union type does not encode that constraint. `AssistantMessage`'s `<Switch>` intentionally has no `<Match>` for `file` — `<Switch>` with no matching branch renders nothing. If a future reducer change starts pushing `file` parts onto an assistant bubble (e.g. a tool that returns a file attachment), those parts would silently disappear from the rendered frame with no type error or runtime warning. Options for hardening: (a) narrow `DisplayPart` at the assistant seam so `file` is statically unreachable, or (b) add a dev-only `console.warn` on the unhandled branch. Neither is implemented today; revisit when a reducer path for an assistant `file` part is actually needed.
 
-- `dialog-select-grouping.ts`'s `countRows` has a documented off-by-one when a caller mixes uncategorized + categorized options (empty-string bucket at index 0, a non-empty header at index 1). The non-empty header is at `index > 0` so the accumulator charges it the `+2` (header + spacer) even though it's visually the first header. No current caller mixes categories this way — fix alongside the first caller that does. Pinned by a test in `test/dialog-select-grouping.test.ts` so a future fix surfaces as a visible diff.
+- `dialog-select-grouping.ts`'s `countRows` has a documented off-by-one when a caller mixes uncategorized + categorized options (empty-string bucket at index 0, a non-empty header at index 1). The non-empty header is at `index > 0` so the accumulator charges it the `+2` (header + spacer) even though it's visually the first header. No current caller mixes categories this way — fix alongside the first caller that does. Pinned by a test in `test/dialog-select-grouping.test.tsx` so a future fix surfaces as a visible diff.
 
 - Snapshot reads across `await` in `wrappedActions.prompt` catch (`src/tui/context/agent/actions.ts:handlePreStreamError`). Narrow race: if `clearSession()` runs between the `await agentSession.actions.prompt(text)` and the catch, `store.messages.length - 1` becomes `-1` and the error-recovery branch synthesizes an error bubble into the fresh session. Today the race window is minuscule (the user would need to resume/clear mid-turn while the prompt wrapper is unwinding) and `currentSessionId` is already re-checked before the persistence write. 3-line snapshot fix (capture `sidAtStart` + `lenAtStart` before the await, bail on mismatch) when next in that method.
 
 - `startSessionTitleTask` `.then` callback (`src/tui/context/agent/actions.ts`) can resolve after `currentSessionId` has changed via `clearSession`/`resumeSession`. The guard `if (currentSessionId === params.sessionId)` correctly prevents a stale `setStore("sessionTitle", title)`. The SQL write via `updateSessionTitle(tx, params.sessionId, title)` targets the snapshot `sessionId` unconditionally — that's the intended behavior (the title is still correct for the row it was generated against), but the write happens even if the user resumed another session in the meantime. Documented here so a future contributor doesn't "fix" the guard asymmetry by adding the same check around the persist call.
 
 ## Completed
+
+- [x] Extract Layout's command registrations + keyboard handler from `src/tui/app.tsx` so the top-level `Layout` reads as composition, not a 170-line palette builder. New files:
+  - `src/tui/commands/layout-commands.ts` — `registerLayoutCommands({ sessionListOpen, setSessionListOpen, closeSessionList })`. Owns every palette entry + keybind the Layout registers (Agents, Models, Effort, Themes, Connect, Clear session, session-list toggle, Tab/Shift+Tab agent cycle). Preserves every reactivity dependency — registration is a `createMemo` inside the command registry, so gated entries (`canSwitchAgent`, `modelReasoning`) fire/hide atomically on store changes.
+  - `src/tui/hooks/use-layout-keybinds.ts` — `useLayoutKeybinds()`. Owns the `useKeyboard` handler for `app_exit`, `secondary_page_close`, and the scroll keys. Reads the scroll ref through `scrollRef()` accessor (added to `app.tsx`) instead of the old direct module-`let` read.
+
+  **Reactivity hygiene also shipped here:**
+  - `defaultPrevented` guard added at the top of `useLayoutKeybinds`. Matches the pattern in `dialog.tsx` and `command.tsx` — stops a nested consumer's `preventDefault` from cascading into Layout's scroll/exit handlers. The existing `dialog.stack.length > 0` guard lower down still covers the "dialog open" case; the new guard closes the narrower window where a non-dialog child consumed the event.
+  - Ref cleanup: `clearScrollRef(ref)` and `clearInputRef(ref)` helpers added to `app.tsx`. The scrollbox ref callback in `conversation.tsx` and the textarea ref callback in `prompt.tsx` now register `onCleanup` that nulls the module-scoped handle when the renderable unmounts. Identity check (`if (scroll === ref) scroll = null`) prevents a late cleanup from a previous mount clobbering a new mount's ref. Fixes a latent landmine where a re-mounted Layout could see `scrollRef()` pointing at a destroyed renderable; callers already `isDestroyed`-guard, but nulling eagerly is cleaner.
+
+  `bun run ci` green at 236 pass / 0 fail, 3× flake-clean back-to-back. No call-site churn outside the two ref callbacks; every other consumer of `refocusInput` / `blurInput` / `toBottom` / `setScrollRef` / `setInputRef` keeps its signature.
 
 - [x] Split `src/tui/context/agent.tsx` (1499 lines) into 7 modules under `src/tui/context/agent/` + a thin barrel. File ownership:
   - `types.ts` — `SessionFactory`, `AgentContextValue`, `agentContext`.

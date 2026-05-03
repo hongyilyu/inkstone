@@ -9,7 +9,7 @@ import {
 	onCleanup,
 	Show,
 } from "solid-js";
-import { setInputRef, toBottom } from "../app";
+import { clearInputRef, setInputRef, toBottom } from "../app";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import { useDialog } from "../ui/dialog";
@@ -413,6 +413,7 @@ export function Prompt() {
 									// mount. Returns a stable numeric id usable until
 									// the input is destroyed.
 									promptPartTypeId = r.extmarks.registerType("prompt-mention");
+									onCleanup(() => clearInputRef(r));
 								}}
 								minHeight={1}
 								maxHeight={6}

@@ -1,6 +1,6 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { For, Show } from "solid-js";
-import { refocusInput, setScrollRef } from "../app";
+import { For, onCleanup, Show } from "solid-js";
+import { clearScrollRef, refocusInput, setScrollRef } from "../app";
 import { useAgent } from "../context/agent";
 import { AssistantMessage, UserMessage } from "./message";
 
@@ -14,7 +14,10 @@ export function Conversation() {
 
 	return (
 		<scrollbox
-			ref={(r: ScrollBoxRenderable) => setScrollRef(r)}
+			ref={(r: ScrollBoxRenderable) => {
+				setScrollRef(r);
+				onCleanup(() => clearScrollRef(r));
+			}}
 			stickyScroll={true}
 			stickyStart="bottom"
 			flexGrow={1}
