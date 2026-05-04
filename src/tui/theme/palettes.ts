@@ -1,4 +1,5 @@
 import { RGBA } from "@opentui/core";
+import { deriveDiffTokens } from "./tint";
 import type { ThemeColors, ThemeDef } from "./types";
 
 /** Short-form hex parser to keep palette tables compact. */
@@ -6,7 +7,70 @@ function hex(color: string): RGBA {
 	return RGBA.fromHex(color);
 }
 
-const DARK: ThemeColors = {
+/**
+ * Base-palette shape every theme declares. The 11 diff tokens are
+ * derived from this shape + the theme's `mode` via `deriveDiffTokens`
+ * in `./tint.ts`, then spread into the final `ThemeColors` literal
+ * below. Keeping the base typed as `Omit<ThemeColors, keyof DiffTokens>`
+ * would force a circular import; using a structural subset is
+ * equivalent and simpler to read.
+ */
+type BasePalette = {
+	primary: RGBA;
+	secondary: RGBA;
+	accent: RGBA;
+	error: RGBA;
+	warning: RGBA;
+	success: RGBA;
+	info: RGBA;
+	text: RGBA;
+	textMuted: RGBA;
+	selectedListItemText: RGBA;
+	background: RGBA;
+	backgroundPanel: RGBA;
+	backgroundElement: RGBA;
+	backgroundMenu: RGBA;
+	border: RGBA;
+	borderActive: RGBA;
+	borderSubtle: RGBA;
+	thinkingOpacity: number;
+};
+
+/**
+ * Assemble the final `ThemeColors` for a theme by spreading the base
+ * palette + the derived diff tokens. Centralized so every theme goes
+ * through the same derivation path — if a theme wants to override a
+ * derived value (future scenario: a palette where the tinted green
+ * reads as too brown), declare it explicitly after the spread in the
+ * consumer site; the last-wins semantics of object-spread take care
+ * of it.
+ */
+function buildThemeColors(
+	base: BasePalette,
+	mode: "dark" | "light",
+): ThemeColors {
+	return {
+		...base,
+		...deriveDiffTokens(base, mode),
+	};
+}
+
+/**
+ * Theme factory — writes `mode` exactly once per theme so
+ * `ThemeDef.mode` can never drift from the mode used to derive
+ * `ThemeDef.colors`. The two-write spelling invited a footgun;
+ * this routes both through the same parameter.
+ */
+function theme(
+	id: string,
+	name: string,
+	mode: "dark" | "light",
+	base: BasePalette,
+): ThemeDef {
+	return { id, name, mode, colors: buildThemeColors(base, mode) };
+}
+
+const DARK_BASE: BasePalette = {
 	primary: hex("#fab283"),
 	secondary: hex("#5c9cf5"),
 	accent: hex("#9d7cd8"),
@@ -27,7 +91,7 @@ const DARK: ThemeColors = {
 	thinkingOpacity: 0.6,
 };
 
-const LIGHT: ThemeColors = {
+const LIGHT_BASE: BasePalette = {
 	primary: hex("#d75f00"),
 	secondary: hex("#0550ae"),
 	accent: hex("#8250df"),
@@ -48,7 +112,7 @@ const LIGHT: ThemeColors = {
 	thinkingOpacity: 0.6,
 };
 
-const CATPPUCCIN_MOCHA: ThemeColors = {
+const CATPPUCCIN_MOCHA_BASE: BasePalette = {
 	primary: hex("#89b4fa"),
 	secondary: hex("#cba6f7"),
 	accent: hex("#f5c2e7"),
@@ -69,7 +133,7 @@ const CATPPUCCIN_MOCHA: ThemeColors = {
 	thinkingOpacity: 0.6,
 };
 
-const DRACULA: ThemeColors = {
+const DRACULA_BASE: BasePalette = {
 	primary: hex("#bd93f9"),
 	secondary: hex("#ff79c6"),
 	accent: hex("#8be9fd"),
@@ -91,14 +155,10 @@ const DRACULA: ThemeColors = {
 };
 
 export const themes: ThemeDef[] = [
-	{ id: "dark", name: "Dark", colors: DARK },
-	{ id: "light", name: "Light", colors: LIGHT },
-	{
-		id: "catppuccin-mocha",
-		name: "Catppuccin Mocha",
-		colors: CATPPUCCIN_MOCHA,
-	},
-	{ id: "dracula", name: "Dracula", colors: DRACULA },
+	theme("dark", "Dark", "dark", DARK_BASE),
+	theme("light", "Light", "light", LIGHT_BASE),
+	theme("catppuccin-mocha", "Catppuccin Mocha", "dark", CATPPUCCIN_MOCHA_BASE),
+	theme("dracula", "Dracula", "dark", DRACULA_BASE),
 ];
 
 /**
