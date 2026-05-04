@@ -3,11 +3,18 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-03 (reader markdown — frontmatter strip + metadata header + heading differentiation + reader table options)
+**Last updated**: 2026-05-04 (phase 1 — diff theme foundation + tint helper)
 
 ## In Progress
 
-None
+- **OpenCode-style approval UI, 5-phase stacked PR.** Replace the blocking `DialogConfirm` popup for `confirmDirs` with an OpenCode-style bottom panel that occupies the `Prompt` cell while pending, keeping the conversation scrollbox fully interactive and showing the proposed edit as a diff inline above the panel. Stack:
+  1. **phase-1-diff-theme** — 11 diff tokens on `ThemeColors` + `tint()` helper + `mode` field on `ThemeDef`. Scaffolding; no consumers. **← current phase.**
+  2. phase-2-markdown-syntax-theme — port OpenCode's 10 `markdown*` + 9 `syntax*` tokens, rewire `src/tui/theme/syntax.ts`. H1-H6 graduated palette retained (Inkstone-specific, corpus-justified). Distinctness-check test added.
+  3. phase-3-confirm-payload — structured `ConfirmRequest` with `callId` + optional `preview`. Backend computes the unified diff via `createTwoFilesPatch`. UI behavior unchanged.
+  4. phase-4-pending-part — verification-first: confirm pending tool parts aren't serialized. Synthetic pending tool part with precomputed diff appended to last assistant message; `ToolPart` renders the diff inline via `<diff>`.
+  5. phase-5-bottom-panel — scoped `pendingApproval` signal replaces `DialogConfirm.show`; `PermissionPrompt` occupies `Prompt` cell; panel-local keyboard; abort/unmount resolve pending to `false`.
+
+  Scope of phases 3-5 is locked; file-level implementation details are drafts to be refined at each phase's start after verification-first steps run.
 
 ## Known Issues
 
@@ -327,3 +334,11 @@ _None._
 - [ ] User-configurable keybinds + leader-chord support (extend `src/tui/util/keybind.ts` with a Zod override schema merged from `config.json`, and port OpenCode's `<leader>X` chord machinery in `tui/context/keybind.tsx`).
 - [ ] KV persistence for settings (from OpenCode)
 - [ ] Config file for debug/dev settings (e.g. `KIRO_LOG`, `KIRO_LOG_FILE`) — currently these must be passed as env vars on the command line; a dedicated config file (or a `[dev]` section in `config.json`) would let contributors opt in without editing `package.json`.
+
+- [ ] **Port OpenCode's named theme roster.** OpenCode ships ayu, cursor, palenight, rosepine, vercel, kanagawa, etc. as JSON theme files with a color-reference resolver. Inkstone has `dark` / `light` / `catppuccin-mocha` / `dracula` as hand-declared palettes. Separate stack from the approval-UI work — uncoupled, can land anytime.
+
+- [ ] **Fenced code block container background.** Fenced code blocks render flat against `theme.background` because OpenTUI's `<markdown>` renderable applies per-scope `foreground` but doesn't paint a full-width block background. OpenCode has the same limitation. Options: (a) investigate whether OpenTUI supports per-block background via a `markup.raw.block` rule extension; (b) extract fenced blocks pre-render and wrap in a `<box backgroundColor={backgroundPanel}>` container. Separate concern from token colors; track when a real bake of the new `markdownCode` token lands in phase 2.
+
+- [ ] **`DialogConfirm` unification with the bottom approval panel.** After phase 5 lands, the provider-disconnect flow (`src/tui/components/dialog/provider/confirm-and-disconnect.ts`) still uses `DialogConfirm`. Migrate it onto the same `PermissionPrompt` / scoped-signal pattern so there's one confirmation surface, not two. Low priority — the provider-disconnect flow is rarely hit.
+
+- [ ] **"Allow always" for confirmDirs approvals.** Today the bottom panel (phase 5) exposes `Allow once` / `Reject`. OpenCode's panel also has `Allow always` that persists a pattern into the user's policy. Implementing this requires a policy-write path into the zone config — the permission dispatcher today reads zones as static data. Revisit if approval fatigue becomes real.

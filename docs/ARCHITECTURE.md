@@ -262,6 +262,12 @@ Ported verbatim from OpenCode's `generateSubtleSyntax` (in `context/theme.tsx`).
 
 `SyntaxStyle` wraps an FFI pointer into Zig-side allocations that JS GC cannot reclaim. The memo registers an `onCleanup(() => style.destroy())` so the previous instance is released on theme switch (recompute) and on provider disposal (app exit) — see `src/tui/context/theme.tsx`.
 
+### Diff color tokens
+
+`ThemeColors` carries 11 diff-family tokens (`diffAdded`, `diffRemoved`, `diffContext`, `diffAddedBg`, `diffRemovedBg`, `diffContextBg`, `diffHighlightAdded`, `diffHighlightRemoved`, `diffLineNumber`, `diffAddedLineNumberBg`, `diffRemovedLineNumberBg`) consumed by OpenTUI's `<diff>` renderable and by future inline diff-stat chips. Tokens are derived per-theme from the base palette + `ThemeDef.mode` via `deriveDiffTokens(base, mode)` in `src/tui/theme/tint.ts` — the `tint()` helper and `ansiColors` constants are ports of OpenCode's theme generator (`opencode/.../context/theme.tsx` lines 258-280 for `ansiColors`, 509 for `tint`, 546-595 for the derivation block). `diffAlpha` is `0.22` for dark themes and `0.14` for light. `ThemeDef.mode` is declared explicitly per theme (not inferred from luminance) to mirror OpenCode's `generateSystem(colors, mode)` shape — future themes ported from OpenCode's roster carry `mode` natively. Per-theme overrides are possible by spreading `deriveDiffTokens(...)` into a palette literal, then declaring overrides after the spread (last-wins).
+
+No consumer wires these tokens yet; scaffolding for the diff-aware approval UI tracked in `docs/TODO.md`.
+
 ## Per-Message Status Line
 
 Each completed assistant message renders its own status line directly below its markdown body in `src/tui/components/message.tsx` (inside `AssistantMessage`):
