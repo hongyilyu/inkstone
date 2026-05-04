@@ -98,9 +98,9 @@ describe("phase 4 — inline diff preview on pending tool part", () => {
 		expect(frame).toContain("new line");
 		expect(frame).toContain("old line");
 
-		// Resolve the pending confirmFn via DialogConfirm's `n`
-		// shortcut so the Promise resolves cleanly.
-		setup.mockInput.pressKey("n");
+		// Resolve the pending confirmFn via the Phase-5 panel's Esc
+		// keybind (rejects and resolves the Promise).
+		setup.mockInput.pressEscape();
 		await pending;
 	});
 
@@ -124,8 +124,8 @@ describe("phase 4 — inline diff preview on pending tool part", () => {
 		// Diff visible while pending.
 		await waitForFrame(setup, "new line");
 
-		// Reject via DialogConfirm's `n` shortcut.
-		setup.mockInput.pressKey("n");
+		// Reject via the panel's Esc keybind.
+		setup.mockInput.pressEscape();
 		await pending;
 
 		// Script tool_execution_end so the pending part promotes to
@@ -176,7 +176,7 @@ describe("phase 4 — inline diff preview on pending tool part", () => {
 		expect(frame).not.toContain("new line");
 		expect(frame).not.toContain("old line");
 
-		setup.mockInput.pressKey("n");
+		setup.mockInput.pressEscape();
 		await pending;
 	});
 });
