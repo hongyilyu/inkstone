@@ -127,6 +127,7 @@ src/
   bridge/                           Pure TS — shared type contract
     view-model.ts                   DisplayMessage, DisplayPart (text/thinking/file/tool), SidebarSection, AgentStoreState
     tool-renderers.ts               Tool-arg rendering contract (per-tool one-liner formatters for ToolPart)
+    frontmatter.ts                  Article YAML-lite frontmatter parser (parseFrontmatter + fmString/fmStringArray narrowing helpers) — shared by reader's scorer and the reader secondary-page metadata strip
 
   tui/                              Solid + OpenTUI
     app.tsx                         Provider stack + root layout + module-scoped scroll/input refs
@@ -228,7 +229,19 @@ Events from `agent.subscribe()` are batched via `batch()` and applied to the sto
 
 Assistant messages are rendered through OpenTUI's `<markdown>` component in `src/tui/components/message.tsx` (the bubble-rendering module; `conversation.tsx` is a thin list + routing layer that iterates `store.messages` and dispatches to `UserMessage` / `AssistantMessage`). The component takes a `SyntaxStyle` built by `generateSyntax(colors)` in `src/tui/context/theme.tsx`, which maps ~40 Tree-sitter scopes (markup.* for markdown structure, plus core code scopes for fenced blocks) onto the active theme's existing named colors. The style is exposed as a reactive accessor `useTheme().syntax()` and re-creates whenever the theme id changes, so switching themes re-paints already-rendered markdown.
 
+Heading hierarchy is corpus-tuned: H1 uses `primary` (document title; ~102 occurrences in the article corpus), H2 uses `accent` (dominant body heading; ~594 occurrences), H3 uses `secondary` (subsection; ~91), H4 uses `text`, H5 `text`, H6 `textMuted`. All levels render bold. The rule lives in `src/tui/theme/syntax.ts`'s `getSyntaxRules` and therefore applies uniformly to every `<markdown>` call site (assistant body, reasoning, sidebar, reader secondary page).
+
 Each assistant bubble iterates `msg.parts` and renders one `<markdown>` per block, so interleaved thinking/text from a single turn renders in emission order. The `streaming` prop is enabled only on the **tail block of the last bubble** while `store.isStreaming` is true, so the markdown parser keeps only that trailing block unstable during deltas and finalizes earlier blocks. Markdown syntax markers (`**`, `` ` ``, `#`, etc.) are concealed by default — users see rendered output, not source. User messages are plain `<text>` inside the left-border bubble, iterating `msg.parts` so commands that supply explicit `displayParts` (reader's `/article`: `[text, file]`) render a short prose line + a file chip instead of the full payload the LLM sees. Plain user prompts produce a single `text` part, matching the pre-displayParts shape.
+
+### Reader secondary-page affordances
+
+`src/tui/components/secondary-page.tsx` layers two reader-focused affordances on top of the base `<markdown>` render, active only when the caller passes `format: "markdown"` (the default):
+
+- **Frontmatter strip + metadata header.** The component parses leading YAML frontmatter via `parseFrontmatter` in `@bridge/frontmatter` and renders a compact 3-line strip above the body: title in `theme.primary` + bold (plain `<text>` with `TextAttributes.BOLD`, not routed through a markdown H1 — matches the color/weight of the H1 syntax rule but skips the parser), `by <author(s)> · <published>` in `theme.textMuted`, URL in `theme.info` (as plain text so users can copy it). Any subset of those four fields is optional — segments without a surfaced field drop cleanly. Content that doesn't begin with a `---` fence passes through the parser unchanged and skips the header entirely. `format: "text"` callers (raw logs, subagent dumps) bypass the parser so a content body that happens to start with `---` renders verbatim.
+
+- **Reader table options.** The markdown node passes `tableOptions={ style: "grid", wrapMode: "word", borders: true, cellPadding: 1 }` so the ~6 articles in the corpus with real GFM tables render with bordered cells and word wrap. Inline assistant / sidebar / reasoning markdown surfaces use OpenTUI's default compact borderless `"columns"` layout instead — the full-screen reader has the width to afford the extra visual weight, the conversation view doesn't.
+
+The frontmatter parser is a deliberately shallow YAML-lite subset matching the Obsidian Clipper export shape the corpus actually uses: `key: value` lines between `---` fences, optional surrounding single/double quotes on scalars, and block sequences of quoted strings (used for `author:` when articles are co-written). No nested maps, flow sequences, multi-line scalars, or anchors. The same parser also backs reader's recommendation scorer in `src/backend/agent/agents/reader/recommendations.ts` (which projects it onto a 4-key view: `title`, `published`, `description`, `reading_completed`).
 
 ### Thinking blocks
 

@@ -26,6 +26,16 @@ function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
 		},
 
 		// Markdown structure
+		//
+		// Heading hierarchy uses a graduated palette so document structure
+		// is visible at a glance in the reader. Corpus-justified: H2 is the
+		// dominant body heading (~594 occurrences across 74 captured
+		// articles) and H1 is typically reserved for the document title
+		// (~102 occurrences); H3 shows up as a subsection (~91); H4 is
+		// rare (~6); H5/H6 are unused. Each level gets a distinct hue from
+		// the active theme's existing named colors — no new theme fields
+		// required. The fallback `markup.heading` rule keeps a primary
+		// color for any parser that emits the unversioned scope.
 		{
 			scope: ["markup.heading"],
 			style: { foreground: colors.primary, bold: true },
@@ -36,23 +46,27 @@ function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
 		},
 		{
 			scope: ["markup.heading.2"],
-			style: { foreground: colors.primary, bold: true },
+			style: { foreground: colors.accent, bold: true },
 		},
 		{
 			scope: ["markup.heading.3"],
-			style: { foreground: colors.primary, bold: true },
+			style: { foreground: colors.secondary, bold: true },
 		},
 		{
 			scope: ["markup.heading.4"],
-			style: { foreground: colors.primary, bold: true },
+			style: { foreground: colors.text, bold: true },
 		},
+		// H5/H6 are unused in the captured-article corpus. H5 keeps the
+		// H4 weight so occasional long-tail usage still looks like a
+		// heading; H6 deprioritizes to `textMuted` so a deeply-nested
+		// heading doesn't compete with body text for attention.
 		{
 			scope: ["markup.heading.5"],
-			style: { foreground: colors.primary, bold: true },
+			style: { foreground: colors.text, bold: true },
 		},
 		{
 			scope: ["markup.heading.6"],
-			style: { foreground: colors.primary, bold: true },
+			style: { foreground: colors.textMuted, bold: true },
 		},
 		{
 			scope: ["markup.bold", "markup.strong"],
