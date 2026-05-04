@@ -383,6 +383,28 @@ A follow-up pass (the statelessness refactor) replaced reader's state-keyed rule
 2. Handle it in the `evaluateRule` switch. Return `{ block, reason }` to veto, `undefined` to pass. `evaluateRule` is async — a rule may await a user dialog (see `confirmDirs`).
 3. Update the Rule kinds table above if the rule has user-visible semantics.
 
+### ConfirmRequest payload
+
+The injected `confirmFn` receives a structured `ConfirmRequest` (not separate `title` / `message` arguments):
+
+```ts
+interface ConfirmRequest {
+  callId: string;        // pi-agent-core tool-call id, lets consumers correlate with toolcall_end
+  title: string;
+  message: string;
+  preview?: {
+    filepath: string;
+    oldText: string;     // current file contents, "" if file doesn't exist
+    newText: string;     // proposed contents after the tool runs
+    unifiedDiff: string; // from `createTwoFilesPatch` — "" when old/new are identical
+  };
+}
+```
+
+`preview` is populated only for `confirmDirs` evaluations against `write` / `edit` tools where `newText` can be reconstructed cheaply from `args`. `write` uses `args.content` as-is; `edit` applies `edits[]` via a literal-match helper (not pi-coding-agent's fuzzy match — the preview is advisory and a misleading diff is worse than no diff). Preview is omitted when any `oldText` isn't found verbatim, when matches overlap, or when the oldText appears more than once (matches pi-coding-agent's own ambiguity rejection). The unified-diff string is produced via the `diff` package's `createTwoFilesPatch`, using the resolved filepath on both sides of the header.
+
+Today's TUI closure extracts `title` + `message` and routes through `DialogConfirm` — the diff preview isn't rendered yet. Phases 4 and 5 (tracked in TODO) attach the diff to a synthetic pending tool part (phase 4) and swap the modal for a bottom panel (phase 5).
+
 ## Agent Registry
 
 Multi-agent support is a **flat registry with runtime composition** — no inheritance. Each agent is a self-contained folder under `src/backend/agent/agents/<name>/` that exports an `AgentInfo` literal (name, displayName, description, `colorKey`, `extraTools`, `zones`, `buildInstructions`, optionally `commands`, optionally `getPermissions`). `src/backend/agent/agents.ts` is a thin assembler that imports each agent's literal and exports them as `AGENTS: AgentInfo[]`. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
