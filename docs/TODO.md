@@ -3,15 +3,15 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-04 (phase 3 — structured ConfirmRequest with diff preview)
+**Last updated**: 2026-05-04 (phase 4 — inline diff preview on pending tool part)
 
 ## In Progress
 
 - **OpenCode-style approval UI, 5-phase stacked PR.** Replace the blocking `DialogConfirm` popup for `confirmDirs` with an OpenCode-style bottom panel that occupies the `Prompt` cell while pending, keeping the conversation scrollbox fully interactive and showing the proposed edit as a diff inline above the panel. Stack:
   1. phase-1-diff-theme — 11 diff tokens on `ThemeColors` + `tint()` helper + `mode` field on `ThemeDef`. Scaffolding; no consumers. ✓ shipped.
   2. phase-2-markdown-syntax-theme — 10 `markdown*` + 9 `syntax*` tokens, `syntax.ts` rewire. H1-H6 graduated palette retained. Distinctness-check test. ✓ shipped.
-  3. **phase-3-confirm-payload** — structured `ConfirmRequest` with `callId` + optional `preview`. Backend computes the unified diff via `createTwoFilesPatch`. UI behavior unchanged. **← current phase.**
-  4. phase-4-pending-part — verification-first: confirm pending tool parts aren't serialized. Synthetic pending tool part with precomputed diff appended to last assistant message; `ToolPart` renders the diff inline via `<diff>`.
+  3. phase-3-confirm-payload — structured `ConfirmRequest` with `callId` + optional `preview`. Backend computes the unified diff via `createTwoFilesPatch`. UI behavior unchanged. ✓ shipped.
+  4. **phase-4-pending-part** — per-`callId` preview registry in `AgentProvider` (ephemeral `Map`, no persistence reach); `ToolPart` renders the unified diff inline via `<diff>` while the approval is pending. `DialogConfirm` still owns the Approve/Reject keybinds. **← current phase.**
   5. phase-5-bottom-panel — scoped `pendingApproval` signal replaces `DialogConfirm.show`; `PermissionPrompt` occupies `Prompt` cell; panel-local keyboard; abort/unmount resolve pending to `false`.
 
   Scope of phases 3-5 is locked; file-level implementation details are drafts to be refined at each phase's start after verification-first steps run.

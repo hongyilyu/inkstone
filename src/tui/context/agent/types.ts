@@ -12,6 +12,7 @@ import type {
 } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { createContext } from "solid-js";
+import type { PreviewRegistry } from "./preview-registry";
 
 /**
  * Factory signature for `AgentProvider`'s underlying `Session`. The
@@ -61,6 +62,14 @@ export interface AgentContextValue {
 		 */
 		getCurrentSessionId(): string | null;
 	};
+	/**
+	 * Ephemeral per-`callId` diff preview registry. Populated when a
+	 * `confirmDirs` rule awaits the user's approval and carries a
+	 * `preview` in its `ConfirmRequest`; consumed by `ToolPart` to
+	 * render the unified diff inline below the args line. Not
+	 * persisted — see `preview-registry.ts` for rationale.
+	 */
+	previews: PreviewRegistry;
 }
 
 /**

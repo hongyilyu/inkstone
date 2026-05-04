@@ -162,8 +162,15 @@ export function ReasoningPart(props: {
  * `update_sidebar`/`read`/`edit`/`write` result is redundant with the
  * args. Only failures get a second line. When a future tool's result
  * carries information the args don't (e.g. `grep` match count), revisit.
+ *
+ * Phase 4: when a `confirmDirs` approval attaches a unified-diff
+ * preview to this call id in `previews`, render it below the args line
+ * via OpenTUI's `<diff>` renderable. The preview is ephemeral (lives
+ * for the approval modal's lifetime), so a completed / error tool part
+ * renders without the diff. Themed with the phase-1 diff tokens.
  */
 export function ToolPart(props: {
+	callId: string;
 	name: string;
 	args: unknown;
 	state: "pending" | "completed" | "error";
@@ -171,10 +178,12 @@ export function ToolPart(props: {
 	first: boolean;
 }) {
 	const { theme } = useTheme();
+	const { previews } = useAgent();
 	const argsSummary = () => renderToolArgs(props.name, props.args);
 	const icon = () => (props.state === "pending" ? "~" : "⚙");
 	const headerFg = () =>
 		props.state === "error" ? theme.error : theme.textMuted;
+	const preview = () => previews.get(props.callId);
 	return (
 		<box
 			paddingLeft={3}
@@ -195,6 +204,33 @@ export function ToolPart(props: {
 					{"  "}
 					{props.error}
 				</text>
+			</Show>
+			<Show when={preview()}>
+				{(p) => (
+					<box
+						marginTop={1}
+						maxHeight={15}
+						flexShrink={0}
+						flexDirection="column"
+					>
+						<diff
+							diff={p().unifiedDiff}
+							view="unified"
+							showLineNumbers={true}
+							wrapMode="word"
+							fg={theme.text}
+							addedBg={theme.diffAddedBg}
+							removedBg={theme.diffRemovedBg}
+							contextBg={theme.diffContextBg}
+							addedSignColor={theme.diffHighlightAdded}
+							removedSignColor={theme.diffHighlightRemoved}
+							lineNumberFg={theme.diffLineNumber}
+							lineNumberBg={theme.diffContextBg}
+							addedLineNumberBg={theme.diffAddedLineNumberBg}
+							removedLineNumberBg={theme.diffRemovedLineNumberBg}
+						/>
+					</box>
+				)}
 			</Show>
 		</box>
 	);
@@ -271,6 +307,7 @@ export function AssistantMessage(props: {
 										const t = part() as Extract<DisplayPart, { type: "tool" }>;
 										return (
 											<ToolPart
+												callId={t.callId}
 												name={t.name}
 												args={t.args}
 												state={t.state}

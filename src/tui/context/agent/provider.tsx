@@ -32,6 +32,7 @@ import { DialogConfirm } from "../../ui/dialog-confirm";
 import { useToast } from "../../ui/toast";
 import { createWrappedActions } from "./actions";
 import { BridgeAgentCommands } from "./commands";
+import { createPreviewRegistry } from "./preview-registry";
 import { createAgentEventHandler } from "./reducer";
 import { createSessionState } from "./session-state";
 import {
@@ -49,6 +50,15 @@ export function AgentProvider(
 	const dialog = useDialog();
 	const toast = useToast();
 
+	// Per-`callId` diff preview registry. Populated from the confirmFn
+	// closure below when an approval request carries a `preview`;
+	// consumed by `ToolPart` to render the diff inline. Ephemeral —
+	// cleared on provider unmount.
+	const previews = createPreviewRegistry();
+	onCleanup(() => {
+		previews.clearAll();
+	});
+
 	// Install backend side-effect handlers, capturing the prior
 	// values so a provider re-mount (tests, future HMR) can restore
 	// the previous installation rather than null-clearing the
@@ -56,15 +66,26 @@ export function AgentProvider(
 	// `dialog.setSuspendHandler` in `command.tsx`.
 	const prevConfirmFn = getConfirmFn();
 	setConfirmFn(async (req) => {
-		// Phase 3: structured ConfirmRequest carries callId + optional
-		// preview (filepath/oldText/newText/unifiedDiff). Phase 3 is a
-		// pure data-plumbing change — the UI still routes through
-		// DialogConfirm with just title + message. Phase 4 attaches a
-		// synthetic pending tool part carrying the diff; phase 5
-		// swaps DialogConfirm for a bottom panel. Extracting title +
-		// message here keeps today's modal visually unchanged.
-		const result = await DialogConfirm.show(dialog, req.title, req.message);
-		return result === true;
+		// Phase 4: attach the precomputed unified diff (if any) to the
+		// preview registry keyed by the tool-call id, so `ToolPart`
+		// can render it below the args line as soon as the matching
+		// `toolcall_end` event lands in the reducer. Clear on resolve
+		// regardless of approve/reject — the real `tool_execution_end`
+		// will promote the part to completed/error via the existing
+		// reducer path, and a stale diff would misrepresent the
+		// completed tool call.
+		if (req.preview?.unifiedDiff) {
+			previews.set(req.callId, {
+				filepath: req.preview.filepath,
+				unifiedDiff: req.preview.unifiedDiff,
+			});
+		}
+		try {
+			const result = await DialogConfirm.show(dialog, req.title, req.message);
+			return result === true;
+		} finally {
+			previews.clear(req.callId);
+		}
 	});
 	onCleanup(() => {
 		setConfirmFn(prevConfirmFn);
@@ -168,6 +189,7 @@ export function AgentProvider(
 			getThinkingLevel: () => agentSession.getThinkingLevel(),
 			getCurrentSessionId: () => sessionState.getCurrentSessionId(),
 		},
+		previews,
 	};
 
 	return (
