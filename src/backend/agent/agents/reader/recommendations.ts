@@ -1,5 +1,9 @@
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+	fmString,
+	parseFrontmatter as parseFrontmatterShared,
+} from "@bridge/frontmatter";
 import { ARTICLES_DIR } from "../../constants";
 
 // ---------------------------------------------------------------------------
@@ -20,12 +24,12 @@ export interface ArticleRecommendation {
 }
 
 // ---------------------------------------------------------------------------
-// Minimal frontmatter parser.
+// Article-specific frontmatter view.
 //
-// Reads `key: value` lines between the first pair of `---` delimiters.
-// Handles optional surrounding single/double quotes on values. Does NOT
-// handle multi-line values, arrays, or nested YAML — sufficient for the
-// four fields we need (title, published, description, reading_completed).
+// The underlying parser lives at `@bridge/frontmatter` so both backend
+// (scoring) and TUI (reader secondary-page metadata strip) share the
+// same parse rules. This wrapper keeps the typed 4-key view the
+// recommender needs and ignores every other field.
 // ---------------------------------------------------------------------------
 
 interface ArticleFrontmatter {
@@ -35,45 +39,23 @@ interface ArticleFrontmatter {
 	reading_completed?: string;
 }
 
-const FRONTMATTER_KEYS = new Set([
-	"title",
-	"published",
-	"description",
-	"reading_completed",
-]);
-
 /**
- * Parse the frontmatter block from a markdown file's content.
- * Returns only the keys we care about. Stops at the closing `---`.
+ * Parse the frontmatter block and project it onto the 4 keys the
+ * recommender cares about. Returns an empty object when the block is
+ * absent or malformed — matches the pre-bridge behavior.
  */
 export function parseFrontmatter(content: string): ArticleFrontmatter {
+	const { fields } = parseFrontmatterShared(content);
 	const result: ArticleFrontmatter = {};
-	const lines = content.split("\n");
-	if (lines.length === 0 || lines[0]?.trim() !== "---") return result;
-
-	for (let i = 1; i < lines.length; i++) {
-		// biome-ignore lint/style/noNonNullAssertion: loop bound guarantees index is valid
-		const line = lines[i]!;
-		if (line.trim() === "---") break;
-
-		const colonIdx = line.indexOf(":");
-		if (colonIdx === -1) continue;
-
-		const key = line.slice(0, colonIdx).trim();
-		if (!FRONTMATTER_KEYS.has(key)) continue;
-
-		let value = line.slice(colonIdx + 1).trim();
-		// Strip surrounding quotes (single or double).
-		if (
-			(value.startsWith('"') && value.endsWith('"')) ||
-			(value.startsWith("'") && value.endsWith("'"))
-		) {
-			value = value.slice(1, -1);
-		}
-		if (value) {
-			(result as Record<string, string>)[key] = value;
-		}
-	}
+	const title = fmString(fields.title);
+	if (title !== undefined) result.title = title;
+	const published = fmString(fields.published);
+	if (published !== undefined) result.published = published;
+	const description = fmString(fields.description);
+	if (description !== undefined) result.description = description;
+	const reading_completed = fmString(fields.reading_completed);
+	if (reading_completed !== undefined)
+		result.reading_completed = reading_completed;
 	return result;
 }
 
