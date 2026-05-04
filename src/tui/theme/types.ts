@@ -61,6 +61,59 @@ export interface ThemeColors {
 	diffAddedLineNumberBg: RGBA;
 	/** Removed-line number background inside `<diff>`. Tinted from `diffContextBg`. */
 	diffRemovedLineNumberBg: RGBA;
+	// -----------------------------------------------------------------
+	// Markdown family — ported from OpenCode's theme generator (see
+	// `opencode/.../context/theme.tsx` lines 597-611). Derived
+	// per-theme via `deriveMarkdownTokens(base)` from `./tint.ts`.
+	// Consumed by `src/tui/theme/syntax.ts` scope rules; H1-H6 heading
+	// hierarchy keeps Inkstone's graduated palette (see that file's
+	// docstring for the corpus justification).
+	// -----------------------------------------------------------------
+	/** Markdown body text foreground. */
+	markdownText: RGBA;
+	/** Generic heading foreground. H1-H6 scopes override with graduated colors. */
+	markdownHeading: RGBA;
+	/** Bold / strong emphasis foreground. */
+	markdownStrong: RGBA;
+	/** Italic emphasis foreground. */
+	markdownEmph: RGBA;
+	/** Blockquote foreground. */
+	markdownBlockQuote: RGBA;
+	/** List-item bullet / marker foreground. */
+	markdownListItem: RGBA;
+	/** Link URL foreground. */
+	markdownLink: RGBA;
+	/** Link label (visible text) foreground. */
+	markdownLinkText: RGBA;
+	/** Inline + fenced code foreground. Distinct "this is code" signal. */
+	markdownCode: RGBA;
+	/** Fenced code block container foreground (when no syntax highlight applies). */
+	markdownCodeBlock: RGBA;
+	// -----------------------------------------------------------------
+	// Syntax family — ported from OpenCode's theme generator (see
+	// `opencode/.../context/theme.tsx` lines 613-622). Derived
+	// per-theme via `deriveSyntaxTokens(base)` from `./tint.ts`.
+	// Consumed by `src/tui/theme/syntax.ts` fenced-code-block scope
+	// rules.
+	// -----------------------------------------------------------------
+	/** Comment foreground (`comment`, `comment.documentation`). */
+	syntaxComment: RGBA;
+	/** Keyword foreground (`keyword.*`). */
+	syntaxKeyword: RGBA;
+	/** Function foreground (`function.*`, `constructor`). */
+	syntaxFunction: RGBA;
+	/** Variable / parameter / property / field foreground. */
+	syntaxVariable: RGBA;
+	/** String / symbol / character foreground. */
+	syntaxString: RGBA;
+	/** Number / boolean / float / constant foreground. */
+	syntaxNumber: RGBA;
+	/** Type / module / class / namespace foreground. */
+	syntaxType: RGBA;
+	/** Operator foreground (`operator`, `keyword.operator`). */
+	syntaxOperator: RGBA;
+	/** Punctuation foreground (`punctuation.*`). */
+	syntaxPunctuation: RGBA;
 }
 
 /**

@@ -131,3 +131,88 @@ export function deriveDiffTokens(
 		diffRemovedLineNumberBg: tint(diffContextBg, ansiColors.red, diffAlpha),
 	};
 }
+
+/**
+ * Inputs the markdown + syntax derivations read. `text` is the
+ * theme's body foreground; both derivations fold it into slots where
+ * OpenCode's recipe uses `fg`.
+ */
+export interface MarkdownSyntaxDerivationBase {
+	text: RGBA;
+	textMuted: RGBA;
+}
+
+/**
+ * The 10 markdown-family tokens every theme gets. Port of OpenCode's
+ * assignment block at `context/theme.tsx:597-611`, trimmed to the
+ * scopes `src/tui/theme/syntax.ts` actually consumes today
+ * (`horizontalRule`, `listEnumeration`, `image`, `imageText` are
+ * OpenCode-only so far — add when an Inkstone consumer materializes).
+ *
+ * `markdownHeading = text` here is the token value; the H1-H6 scope
+ * rules in `syntax.ts` override with the graduated palette
+ * (`primary` / `accent` / `secondary` / `text` / `textMuted`) per the
+ * corpus analysis in that file's docstring.
+ */
+export interface MarkdownTokens {
+	markdownText: RGBA;
+	markdownHeading: RGBA;
+	markdownStrong: RGBA;
+	markdownEmph: RGBA;
+	markdownBlockQuote: RGBA;
+	markdownListItem: RGBA;
+	markdownLink: RGBA;
+	markdownLinkText: RGBA;
+	markdownCode: RGBA;
+	markdownCodeBlock: RGBA;
+}
+
+export function deriveMarkdownTokens(
+	base: MarkdownSyntaxDerivationBase,
+): MarkdownTokens {
+	return {
+		markdownText: base.text,
+		markdownHeading: base.text,
+		markdownStrong: base.text,
+		markdownEmph: ansiColors.yellow,
+		markdownBlockQuote: ansiColors.yellow,
+		markdownListItem: ansiColors.blue,
+		markdownLink: ansiColors.blue,
+		markdownLinkText: ansiColors.cyan,
+		markdownCode: ansiColors.green,
+		markdownCodeBlock: base.text,
+	};
+}
+
+/**
+ * The 9 syntax-family tokens every theme gets. Port of OpenCode's
+ * assignment block at `context/theme.tsx:613-622`. Consumed by
+ * fenced-code-block scope rules in `src/tui/theme/syntax.ts`.
+ */
+export interface SyntaxTokens {
+	syntaxComment: RGBA;
+	syntaxKeyword: RGBA;
+	syntaxFunction: RGBA;
+	syntaxVariable: RGBA;
+	syntaxString: RGBA;
+	syntaxNumber: RGBA;
+	syntaxType: RGBA;
+	syntaxOperator: RGBA;
+	syntaxPunctuation: RGBA;
+}
+
+export function deriveSyntaxTokens(
+	base: MarkdownSyntaxDerivationBase,
+): SyntaxTokens {
+	return {
+		syntaxComment: base.textMuted,
+		syntaxKeyword: ansiColors.magenta,
+		syntaxFunction: ansiColors.blue,
+		syntaxVariable: base.text,
+		syntaxString: ansiColors.green,
+		syntaxNumber: ansiColors.yellow,
+		syntaxType: ansiColors.cyan,
+		syntaxOperator: ansiColors.cyan,
+		syntaxPunctuation: base.text,
+	};
+}

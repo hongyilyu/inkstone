@@ -1,5 +1,9 @@
 import { RGBA } from "@opentui/core";
-import { deriveDiffTokens } from "./tint";
+import {
+	deriveDiffTokens,
+	deriveMarkdownTokens,
+	deriveSyntaxTokens,
+} from "./tint";
 import type { ThemeColors, ThemeDef } from "./types";
 
 /** Short-form hex parser to keep palette tables compact. */
@@ -52,6 +56,8 @@ function buildThemeColors(
 	return {
 		...base,
 		...deriveDiffTokens(base, mode),
+		...deriveMarkdownTokens(base),
+		...deriveSyntaxTokens(base),
 	};
 }
 

@@ -266,6 +266,14 @@ Ported verbatim from OpenCode's `generateSubtleSyntax` (in `context/theme.tsx`).
 
 `ThemeColors` carries 11 diff-family tokens (`diffAdded`, `diffRemoved`, `diffContext`, `diffAddedBg`, `diffRemovedBg`, `diffContextBg`, `diffHighlightAdded`, `diffHighlightRemoved`, `diffLineNumber`, `diffAddedLineNumberBg`, `diffRemovedLineNumberBg`) consumed by OpenTUI's `<diff>` renderable and by future inline diff-stat chips. Tokens are derived per-theme from the base palette + `ThemeDef.mode` via `deriveDiffTokens(base, mode)` in `src/tui/theme/tint.ts` — the `tint()` helper and `ansiColors` constants are ports of OpenCode's theme generator (`opencode/.../context/theme.tsx` lines 258-280 for `ansiColors`, 509 for `tint`, 546-595 for the derivation block). `diffAlpha` is `0.22` for dark themes and `0.14` for light. `ThemeDef.mode` is declared explicitly per theme (not inferred from luminance) to mirror OpenCode's `generateSystem(colors, mode)` shape — future themes ported from OpenCode's roster carry `mode` natively. Per-theme overrides are possible by spreading `deriveDiffTokens(...)` into a palette literal, then declaring overrides after the spread (last-wins).
 
+### Markdown + syntax color tokens
+
+`ThemeColors` also carries 10 markdown-family tokens (`markdownText`, `markdownHeading`, `markdownStrong`, `markdownEmph`, `markdownBlockQuote`, `markdownListItem`, `markdownLink`, `markdownLinkText`, `markdownCode`, `markdownCodeBlock`) and 9 syntax-family tokens (`syntaxComment`, `syntaxKeyword`, `syntaxFunction`, `syntaxVariable`, `syntaxString`, `syntaxNumber`, `syntaxType`, `syntaxOperator`, `syntaxPunctuation`). Derived per-theme via `deriveMarkdownTokens(base)` / `deriveSyntaxTokens(base)` in `src/tui/theme/tint.ts` — ports of OpenCode's assignment blocks at `context/theme.tsx:597-611` (markdown) and `613-622` (syntax). Fold `base.text` into slots where OpenCode uses `fg`; everything else reads `ansiColors.*` or `base.textMuted`.
+
+`src/tui/theme/syntax.ts` consumes these tokens in its rule set. Fenced code blocks now render in `markdownCode` instead of the pre-phase `success` (green), giving code a distinct "this is code" signal independent of the success/error semantic.
+
+**Inkstone-specific divergence from OpenCode:** OpenCode collapses every heading level onto a single `markdownHeading` token. Inkstone retains the graduated H1-H6 palette (H1 `primary`, H2 `accent`, H3 `secondary`, H4 `text`, H5 `text`, H6 `textMuted`) justified by the corpus analysis in `src/tui/theme/syntax.ts`. The `markdownHeading` token is declared (for consumers and future realignment) and backs the fallback `markup.heading` scope; H1-H6 override explicitly in the rule set.
+
 No consumer wires these tokens yet; scaffolding for the diff-aware approval UI tracked in `docs/TODO.md`.
 
 ## Per-Message Status Line
