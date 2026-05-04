@@ -3,13 +3,13 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-04 (phase 1 — diff theme foundation + tint helper)
+**Last updated**: 2026-05-04 (phase 2 — markdown + syntax token port, syntax.ts rewire)
 
 ## In Progress
 
 - **OpenCode-style approval UI, 5-phase stacked PR.** Replace the blocking `DialogConfirm` popup for `confirmDirs` with an OpenCode-style bottom panel that occupies the `Prompt` cell while pending, keeping the conversation scrollbox fully interactive and showing the proposed edit as a diff inline above the panel. Stack:
-  1. **phase-1-diff-theme** — 11 diff tokens on `ThemeColors` + `tint()` helper + `mode` field on `ThemeDef`. Scaffolding; no consumers. **← current phase.**
-  2. phase-2-markdown-syntax-theme — port OpenCode's 10 `markdown*` + 9 `syntax*` tokens, rewire `src/tui/theme/syntax.ts`. H1-H6 graduated palette retained (Inkstone-specific, corpus-justified). Distinctness-check test added.
+  1. phase-1-diff-theme — 11 diff tokens on `ThemeColors` + `tint()` helper + `mode` field on `ThemeDef`. Scaffolding; no consumers. ✓ shipped.
+  2. **phase-2-markdown-syntax-theme** — 10 `markdown*` + 9 `syntax*` tokens, `syntax.ts` rewire. H1-H6 graduated palette retained (Inkstone-specific, corpus-justified). Distinctness-check test. **← current phase.**
   3. phase-3-confirm-payload — structured `ConfirmRequest` with `callId` + optional `preview`. Backend computes the unified diff via `createTwoFilesPatch`. UI behavior unchanged.
   4. phase-4-pending-part — verification-first: confirm pending tool parts aren't serialized. Synthetic pending tool part with precomputed diff appended to last assistant message; `ToolPart` renders the diff inline via `<diff>`.
   5. phase-5-bottom-panel — scoped `pendingApproval` signal replaces `DialogConfirm.show`; `PermissionPrompt` occupies `Prompt` cell; panel-local keyboard; abort/unmount resolve pending to `false`.

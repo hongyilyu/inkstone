@@ -7,12 +7,19 @@ import {
 import type { ThemeColors } from "./types";
 
 /**
- * Build the syntax-style rule set for the markdown renderer + fenced code blocks.
- * Reads only fields that already exist on ThemeColors — no new theme fields required.
+ * Build the syntax-style rule set for the markdown renderer + fenced
+ * code blocks. Consumes the markdown* + syntax* tokens on
+ * `ThemeColors` (phase-2 port of OpenCode's `getStyle` rule set at
+ * `opencode/.../context/theme.tsx` lines 900-1210). Aligned to
+ * OpenCode's scope-to-token mapping byte-for-byte except for the
+ * H1-H6 graduated palette below, which is Inkstone-specific.
+ *
+ * Exported for tests — rule introspection is the cheapest way to
+ * verify scope-to-token wiring without rendering.
  */
-function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
+export function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
 	return [
-		{ scope: ["default"], style: { foreground: colors.text } },
+		{ scope: ["default"], style: { foreground: colors.markdownText } },
 
 		// Prompt extmark scopes. Lives in the shared rule set so the style id
 		// resolves against whichever `SyntaxStyle` instance is live — on
@@ -33,12 +40,19 @@ function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
 		// articles) and H1 is typically reserved for the document title
 		// (~102 occurrences); H3 shows up as a subsection (~91); H4 is
 		// rare (~6); H5/H6 are unused. Each level gets a distinct hue from
-		// the active theme's existing named colors — no new theme fields
-		// required. The fallback `markup.heading` rule keeps a primary
-		// color for any parser that emits the unversioned scope.
+		// the active theme's existing named colors.
+		//
+		// Inkstone-specific divergence from OpenCode: OpenCode collapses
+		// every heading level onto a single `markdownHeading` token.
+		// Inkstone retains the graduated palette because the corpus
+		// analysis above predates the token port and the visual
+		// distinction is load-bearing for reader scannability. The
+		// `markdownHeading` token is still declared on `ThemeColors` (for
+		// any future consumer) and backs the fallback `markup.heading`
+		// rule; H1-H6 override explicitly below.
 		{
 			scope: ["markup.heading"],
-			style: { foreground: colors.primary, bold: true },
+			style: { foreground: colors.markdownHeading, bold: true },
 		},
 		{
 			scope: ["markup.heading.1"],
@@ -70,11 +84,11 @@ function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
 		},
 		{
 			scope: ["markup.bold", "markup.strong"],
-			style: { foreground: colors.text, bold: true },
+			style: { foreground: colors.markdownStrong, bold: true },
 		},
 		{
 			scope: ["markup.italic"],
-			style: { foreground: colors.warning, italic: true },
+			style: { foreground: colors.markdownEmph, italic: true },
 		},
 		{
 			scope: ["markup.strikethrough"],
@@ -82,9 +96,9 @@ function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
 		},
 		{
 			scope: ["markup.underline"],
-			style: { foreground: colors.text, underline: true },
+			style: { foreground: colors.markdownText, underline: true },
 		},
-		{ scope: ["markup.list"], style: { foreground: colors.secondary } },
+		{ scope: ["markup.list"], style: { foreground: colors.markdownListItem } },
 		{ scope: ["markup.list.checked"], style: { foreground: colors.success } },
 		{
 			scope: ["markup.list.unchecked"],
@@ -92,75 +106,83 @@ function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
 		},
 		{
 			scope: ["markup.quote"],
-			style: { foreground: colors.warning, italic: true },
+			style: { foreground: colors.markdownBlockQuote, italic: true },
 		},
 		{
 			scope: ["markup.raw", "markup.raw.block"],
-			style: { foreground: colors.success },
+			style: { foreground: colors.markdownCode },
 		},
 		{
 			scope: ["markup.raw.inline"],
 			style: {
-				foreground: colors.success,
+				foreground: colors.markdownCode,
 				background: colors.backgroundElement,
 			},
 		},
 		{
 			scope: ["markup.link"],
-			style: { foreground: colors.info, underline: true },
+			style: { foreground: colors.markdownLink, underline: true },
 		},
 		{
 			scope: ["markup.link.label"],
-			style: { foreground: colors.accent, underline: true },
+			style: { foreground: colors.markdownLinkText, underline: true },
 		},
 		{
 			scope: ["markup.link.url"],
-			style: { foreground: colors.info, underline: true },
+			style: { foreground: colors.markdownLink, underline: true },
 		},
 		{ scope: ["conceal"], style: { foreground: colors.textMuted } },
 
-		// Core code scopes (for fenced code blocks)
+		// Core code scopes (fenced code blocks). Foregrounds come from
+		// the syntax* token family — italic / bold modifiers are
+		// Inkstone-specific emphasis choices kept from pre-port.
 		{
 			scope: ["comment"],
-			style: { foreground: colors.textMuted, italic: true },
+			style: { foreground: colors.syntaxComment, italic: true },
 		},
 		{
 			scope: ["comment.documentation"],
-			style: { foreground: colors.textMuted, italic: true },
+			style: { foreground: colors.syntaxComment, italic: true },
 		},
-		{ scope: ["keyword"], style: { foreground: colors.accent, italic: true } },
+		{
+			scope: ["keyword"],
+			style: { foreground: colors.syntaxKeyword, italic: true },
+		},
 		{
 			scope: ["keyword.return", "keyword.conditional", "keyword.repeat"],
-			style: { foreground: colors.accent, italic: true },
+			style: { foreground: colors.syntaxKeyword, italic: true },
 		},
-		{ scope: ["keyword.function"], style: { foreground: colors.secondary } },
+		{
+			scope: ["keyword.function"],
+			style: { foreground: colors.syntaxFunction },
+		},
 		{
 			scope: ["keyword.import", "keyword.export"],
-			style: { foreground: colors.accent },
+			style: { foreground: colors.syntaxKeyword },
 		},
 		{
 			scope: ["keyword.type"],
-			style: { foreground: colors.info, bold: true, italic: true },
+			style: { foreground: colors.syntaxType, bold: true, italic: true },
 		},
 		{
 			scope: ["keyword.modifier", "keyword.exception"],
-			style: { foreground: colors.accent, italic: true },
+			style: { foreground: colors.syntaxKeyword, italic: true },
 		},
 		{
 			scope: ["string", "symbol", "character"],
-			style: { foreground: colors.success },
+			style: { foreground: colors.syntaxString },
 		},
 		{
 			scope: ["string.escape", "string.regexp"],
-			style: { foreground: colors.accent },
+			style: { foreground: colors.syntaxKeyword },
 		},
 		{
 			scope: ["number", "boolean", "float", "constant"],
-			style: { foreground: colors.warning },
+			style: { foreground: colors.syntaxNumber },
 		},
 		{
 			scope: ["type", "module", "class", "namespace"],
-			style: { foreground: colors.info },
+			style: { foreground: colors.syntaxType },
 		},
 		{
 			scope: [
@@ -170,7 +192,7 @@ function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
 				"function.method.call",
 				"constructor",
 			],
-			style: { foreground: colors.secondary },
+			style: { foreground: colors.syntaxFunction },
 		},
 		{
 			scope: [
@@ -181,7 +203,7 @@ function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
 				"parameter",
 				"field",
 			],
-			style: { foreground: colors.text },
+			style: { foreground: colors.syntaxVariable },
 		},
 		{
 			scope: [
@@ -191,14 +213,14 @@ function getSyntaxRules(colors: ThemeColors): ThemeTokenStyle[] {
 				"punctuation.bracket",
 				"punctuation.delimiter",
 			],
-			style: { foreground: colors.text },
+			style: { foreground: colors.syntaxOperator },
 		},
 		{
 			scope: ["attribute", "annotation"],
 			style: { foreground: colors.warning },
 		},
 		{ scope: ["tag"], style: { foreground: colors.error } },
-		{ scope: ["tag.attribute"], style: { foreground: colors.accent } },
+		{ scope: ["tag.attribute"], style: { foreground: colors.syntaxKeyword } },
 		{
 			scope: [
 				"variable.builtin",
