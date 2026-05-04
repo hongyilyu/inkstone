@@ -55,8 +55,15 @@ export function AgentProvider(
 	// globals. Mirrors the symmetry pattern already used by
 	// `dialog.setSuspendHandler` in `command.tsx`.
 	const prevConfirmFn = getConfirmFn();
-	setConfirmFn(async (title, message) => {
-		const result = await DialogConfirm.show(dialog, title, message);
+	setConfirmFn(async (req) => {
+		// Phase 3: structured ConfirmRequest carries callId + optional
+		// preview (filepath/oldText/newText/unifiedDiff). Phase 3 is a
+		// pure data-plumbing change — the UI still routes through
+		// DialogConfirm with just title + message. Phase 4 attaches a
+		// synthetic pending tool part carrying the diff; phase 5
+		// swaps DialogConfirm for a bottom panel. Extracting title +
+		// message here keeps today's modal visually unchanged.
+		const result = await DialogConfirm.show(dialog, req.title, req.message);
 		return result === true;
 	});
 	onCleanup(() => {

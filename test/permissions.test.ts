@@ -26,6 +26,7 @@ import {
 	recommendArticles,
 } from "@backend/agent/agents/reader/recommendations";
 import {
+	type ConfirmRequest,
 	dispatchBeforeToolCall,
 	setConfirmFn,
 } from "@backend/agent/permissions";
@@ -41,15 +42,17 @@ import { VAULT } from "./preload";
 // accidental prompts).
 // ---------------------------------------------------------------------------
 let confirmCalls = 0;
-setConfirmFn(async () => {
+let lastConfirmRequest: ConfirmRequest | null = null;
+setConfirmFn(async (req) => {
 	confirmCalls++;
+	lastConfirmRequest = req;
 	return true;
 });
 
 function makeCtx(toolName: string, args: Record<string, unknown>) {
 	// pi-agent-core's `BeforeToolCallContext` is structurally typed; we only
-	// touch `toolCall.name` and `args` in the dispatcher, so a minimal
-	// stand-in is safer than importing the full runtime type.
+	// touch `toolCall.name` / `toolCall.id` and `args` in the dispatcher,
+	// so a minimal stand-in is safer than importing the full runtime type.
 	return {
 		toolCall: { name: toolName, id: "t1", args, description: "" },
 		args,
@@ -204,6 +207,7 @@ const dispatchCases: DispatchCase[] = [
 describe("dispatchBeforeToolCall + reader overlay", () => {
 	beforeEach(() => {
 		confirmCalls = 0;
+		lastConfirmRequest = null;
 	});
 
 	test.each(dispatchCases)("$label", async (c) => {
@@ -215,6 +219,87 @@ describe("dispatchBeforeToolCall + reader overlay", () => {
 		const actual = result?.block ? "block" : "allow";
 		expect(actual).toBe(c.expectedDecision);
 		expect(confirmCalls).toBe(c.expectedConfirms);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// ConfirmRequest payload shape tests — new in phase 3. Exercises the
+// structured `ConfirmRequest` with callId + optional preview for the
+// `confirmDirs` rule branch. These are scoped narrowly: no rule matrix,
+// just one real confirm for each tool shape.
+// ---------------------------------------------------------------------------
+
+describe("confirmFn payload — ConfirmRequest shape", () => {
+	beforeEach(() => {
+		confirmCalls = 0;
+		lastConfirmRequest = null;
+	});
+
+	test("write to Notes — ConfirmRequest carries callId, title, message, preview (from empty file)", async () => {
+		const overlay = composeOverlay(readerAgent);
+		const ctx = makeCtx("write", {
+			path: `${VAULT}/020 HUMAN/023 Notes/fresh.md`,
+			content: "hello from phase 3",
+		});
+		await dispatchBeforeToolCall(ctx, overlay);
+		expect(confirmCalls).toBe(1);
+		expect(lastConfirmRequest).not.toBeNull();
+		const req = lastConfirmRequest!;
+		expect(req.callId).toBe("t1");
+		expect(req.title).toBe("Write confirmation");
+		expect(req.message).toContain(`${VAULT}/020 HUMAN/023 Notes/fresh.md`);
+		expect(req.preview).toBeDefined();
+		expect(req.preview?.filepath).toBe(`${VAULT}/020 HUMAN/023 Notes/fresh.md`);
+		expect(req.preview?.oldText).toBe(""); // file doesn't exist yet
+		expect(req.preview?.newText).toBe("hello from phase 3");
+		expect(req.preview?.unifiedDiff).toContain("+hello from phase 3");
+	});
+
+	test("edit Articles frontmatter — preview.newText reflects applied edits", async () => {
+		const overlay = composeOverlay(readerAgent);
+		const ctx = makeCtx("edit", {
+			path: `${VAULT}/010 RAW/013 Articles/foo.md`,
+			edits: [
+				{ oldText: "reading_intent: keeper", newText: "reading_intent: joy" },
+			],
+		});
+		await dispatchBeforeToolCall(ctx, overlay);
+		expect(confirmCalls).toBe(1);
+		const req = lastConfirmRequest!;
+		expect(req.preview).toBeDefined();
+		expect(req.preview?.newText).toContain("reading_intent: joy");
+		expect(req.preview?.newText).not.toContain("reading_intent: keeper");
+		expect(req.preview?.unifiedDiff).toContain("-reading_intent: keeper");
+		expect(req.preview?.unifiedDiff).toContain("+reading_intent: joy");
+	});
+
+	test("edit in Notes zone with non-matching oldText — preview omitted, still confirms", async () => {
+		const overlay = composeOverlay(readerAgent);
+		const ctx = makeCtx("edit", {
+			path: `${VAULT}/020 HUMAN/023 Notes/x.md`,
+			edits: [{ oldText: "NOT_PRESENT_IN_FILE", newText: "x" }],
+		});
+		await dispatchBeforeToolCall(ctx, overlay);
+		expect(confirmCalls).toBe(1);
+		const req = lastConfirmRequest!;
+		expect(req.preview).toBeUndefined(); // literal apply failed → omit
+	});
+
+	test("write with identical content — preview present but unifiedDiff empty", async () => {
+		const overlay = composeOverlay(readerAgent);
+		// Nonexistent path + empty content → both old and new are empty
+		// strings, so `unifiedDiff` is empty.
+		const ctx = makeCtx("write", {
+			path: `${VAULT}/020 HUMAN/023 Notes/nonexistent.md`,
+			content: "",
+		});
+		await dispatchBeforeToolCall(ctx, overlay);
+		expect(confirmCalls).toBe(1);
+		const req = lastConfirmRequest!;
+		expect(req.preview).toBeDefined();
+		expect(req.preview?.oldText).toBe("");
+		expect(req.preview?.newText).toBe("");
+		expect(req.preview?.unifiedDiff).toBe("");
 	});
 });
 
