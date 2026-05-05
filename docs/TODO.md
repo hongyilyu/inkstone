@@ -3,13 +3,13 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-04 (agent-behavior PR1: commands block in system prompt)
+**Last updated**: 2026-05-04 (agent-behavior PR2: generic search + list_keys factories)
 
 ## In Progress
 
 - Agent behavior for non-command input (stack of 5 PRs).
   - [x] PR1 — commands block in `composeSystemPrompt`.
-  - [ ] PR2 — generic `search` + `list_keys` tool factories.
+  - [x] PR2 — generic `search` + `list_keys` tool factories.
   - [ ] PR3 — reader imports the factories scoped to `ARTICLES_DIR`; generalize-fallback prose.
   - [ ] PR4 — move reader's 6-stage workflow text out of the agent system prompt into `/article`'s opening user message.
   - [ ] PR5 — `suggest_command` tool + confirm panel (bottom-panel pattern mirroring approval) + post-turn-end replay.
