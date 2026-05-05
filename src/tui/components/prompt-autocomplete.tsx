@@ -148,12 +148,24 @@ export function PromptAutocomplete(props: {
 		// Insert `@path ` and create a virtual extmark over the `@path`
 		// slice (trailing space stays ordinary text so the cursor can
 		// exit the span naturally).
+		//
+		// **Display-width vs code-units.** OpenTUI extmark offsets are
+		// expressed in *display columns* (what `offsetExcludingNewlines`
+		// derives via `Bun.stringWidth`), not UTF-16 code units. For
+		// ASCII paths the two are equal and `.length` accidentally
+		// worked; for CJK / full-width chars (2 cols each) the
+		// code-unit length underestimates the span, so the extmark's
+		// `end` lands mid-name and the trailing half becomes plain
+		// editable text — visible as truncated mentions on screen and
+		// as mangled filenames on submit. Matches OpenCode's
+		// `autocomplete.tsx:172` (`extmarkEnd = extmarkStart +
+		// Bun.stringWidth(virtualText)`).
 		const virtualText = `@${path}`;
 		input.insertText(`${virtualText} `);
 
 		input.extmarks.create({
 			start: triggerIndex,
-			end: triggerIndex + virtualText.length,
+			end: triggerIndex + Bun.stringWidth(virtualText),
 			virtual: true,
 			styleId,
 			typeId: props.promptPartTypeId(),

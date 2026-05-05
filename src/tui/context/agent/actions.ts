@@ -9,7 +9,11 @@
  * `SessionState`.
  */
 
-import type { generateSessionTitle, Session } from "@backend/agent";
+import type {
+	generateSessionTitle,
+	Session,
+	SuggestCommandDecision,
+} from "@backend/agent";
 import {
 	appendDisplayMessage,
 	loadSession,
@@ -34,7 +38,11 @@ import type { useToast } from "../../ui/toast";
 import { closeSecondaryPage } from "../secondary-page";
 import type { PreviewRegistry } from "./preview-registry";
 import type { SessionState } from "./session-state";
-import type { AgentContextValue, PendingApproval } from "./types";
+import type {
+	AgentContextValue,
+	PendingApproval,
+	PendingSuggestion,
+} from "./types";
 
 export interface ActionDeps {
 	agentSession: Session;
@@ -57,6 +65,16 @@ export interface ActionDeps {
 	 */
 	pendingApproval: () => PendingApproval | null;
 	respondApproval: (ok: boolean) => void;
+	/**
+	 * Pending-suggestion accessor + resolver for `suggest_command`
+	 * tool calls. Same abort/clear shape as approvals: wrappers must
+	 * resolve the pending suggestion to `"cancelled"` before calling
+	 * into the backend, otherwise `agent.abort()` + `waitForIdle()`
+	 * deadlocks on the tool's parked promise (AbortController can't
+	 * wake a promise that's only resolvable by user input).
+	 */
+	pendingSuggestion: () => PendingSuggestion | null;
+	respondSuggestion: (decision: SuggestCommandDecision) => void;
 }
 
 export function createWrappedActions(
@@ -68,11 +86,13 @@ export function createWrappedActions(
 			await promptAction(text, displayParts, deps);
 		},
 		abort() {
-			// Resolve pending BEFORE backend abort — the run loop is
-			// parked on `await confirmFn(...)` and AbortController
-			// can't wake it. See `docs/APPROVAL-UI.md` § Abort / clear
-			// ordering.
+			// Resolve any pending TUI-side promise BEFORE backend abort.
+			// The run loop can be parked on `await confirmFn(...)` or
+			// `await suggestCommandFn(...)` — AbortController can't wake
+			// either. See `docs/APPROVAL-UI.md` § Abort / clear ordering;
+			// the suggestion path follows the same contract.
 			if (deps.pendingApproval()) deps.respondApproval(false);
+			if (deps.pendingSuggestion()) deps.respondSuggestion("cancelled");
 			deps.agentSession.actions.abort();
 		},
 		setModel(model: Model<Api>) {
@@ -311,9 +331,12 @@ function handlePreStreamError(err: unknown, deps: ActionDeps): void {
 // ────────────────────────────────────────────────────────────────────
 
 async function clearSessionAction(deps: ActionDeps): Promise<void> {
-	// Resolve pending approval before the backend call. See
-	// `docs/APPROVAL-UI.md` § Abort / clear ordering.
+	// Resolve any pending TUI-side promises before the backend call.
+	// Same deadlock shape as abort — the agent loop may be parked on
+	// `await confirmFn(...)` or `await suggestCommandFn(...)`.
+	// See `docs/APPROVAL-UI.md` § Abort / clear ordering.
 	if (deps.pendingApproval()) deps.respondApproval(false);
+	if (deps.pendingSuggestion()) deps.respondSuggestion("cancelled");
 	// Await the backend clear first. Mid-stream path: it calls
 	// `agent.abort()` + `waitForIdle()` so pi-agent-core's final
 	// `message_end` + `agent_end` events fire through the reducer

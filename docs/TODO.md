@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-05 (agent-behavior PR4: move reader workflow text into /article message)
+**Last updated**: 2026-05-07 (agent-behavior PR5: suggest_command Edit-path Known Issue documented)
 
 ## In Progress
 
@@ -12,9 +12,11 @@
   - [x] PR2 — generic `search` + `list_keys` tool factories.
   - [x] PR3 — reader imports the factories scoped to `ARTICLES_DIR`; generalize-fallback prose.
   - [x] PR4 — move reader's 6-stage workflow text out of the agent system prompt into `/article`'s opening user message.
-  - [ ] PR5 — `suggest_command` tool + confirm panel (bottom-panel pattern mirroring approval) + post-turn-end replay.
+  - [x] PR5 — `suggest_command` tool + confirm panel (bottom-panel pattern mirroring approval) + post-turn-end replay.
 
 ## Known Issues
+
+- **Edit-button pre-populates a bare filename, not a vault-relative path.** When the LLM calls `suggest_command({ command: "article", args: "<filename>.md", ... })` and the user picks Edit, `SuggestCommandPrompt.populateEditBuffer` writes `/article @<args> ` into the textarea with a mention-chip extmark. On submit, `expandMentionsToPaths` rewrites the mention to `resolve(VAULT_DIR, args)` — which resolves to `<VAULT>/<filename>.md` (missing the `010 RAW/013 Articles/` prefix). Reader's `/article` accepts either a bare filename (resolved against `ARTICLES_DIR`) or an absolute path inside `ARTICLES_DIR`, but NOT `<VAULT>/<filename>.md`, so the submit fails with "Not a file inside the Articles folder". Two candidate fixes: (a) teach the LLM via the `suggest_command` tool description / reader prompt to always supply vault-relative paths (e.g. `010 RAW/013 Articles/<filename>.md`) so mention expansion yields a vault-absolute path inside `ARTICLES_DIR`; (b) resolve the LLM's bare-filename `args` against `ARTICLES_DIR` at the backend (either inside `suggest_command`'s execute, or at the replay site in `respondSuggestion`) before it reaches the Edit prompt and the mention pipeline. Reproduce: any freeform "lets read the article about X" prompt → `suggest_command` panel → Edit → Enter. Confirm path works fine because it routes through `command.triggerSlash("article", <bare-filename>)` which reader resolves against `ARTICLES_DIR` directly (no mention pipeline). Only Edit breaks.
 
 - **Abort-unmount test gap for the approval panel.** The provider's `onCleanup` resolves any in-flight `confirmFn` to `false` (queued via `queueMicrotask`). Verified by code inspection + abort/clearSession test coverage. Direct test coverage via `renderer.destroy()` while pending triggers a Bun 1.3.4 segfault on macOS in the OpenTUI renderer teardown path when a Promise-holding owner is disposed — unrelated to the resolver, but it means we can't assert this specific path end-to-end today. Revisit when Bun / OpenTUI ship a fix.
 

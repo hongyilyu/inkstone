@@ -271,6 +271,74 @@ describe("mention autocomplete", () => {
 		expect(llm).toContain("Path: ");
 	});
 
+	test("CJK filename: mention extmark spans the full path and submit receives the exact filename", async () => {
+		// Regression guard for display-width vs code-unit drift.
+		// OpenTUI extmark offsets are display columns (via
+		// `Bun.stringWidth`), not UTF-16 code units. Before the fix
+		// both `insertMention` (autocomplete) and `populateEditBuffer`
+		// (suggest_command Edit) used `.length`, which under-counted
+		// the span for 2-cell glyphs — the extmark covered only the
+		// first half of a CJK filename and the tail became plain
+		// editable text. On submit the mangled tail would mutate the
+		// filename or get dropped entirely.
+		//
+		// The fixture file lives in `test/preload.ts` as:
+		//   罗福莉访谈里那几句关于 memory 的话，被几乎所有人忽略了.md
+		// — a real-world filename with CJK + full-width punctuation
+		// (each CJK char + `，` + Chinese space = 2 display cols).
+		const CJK_FILENAME =
+			"罗福莉访谈里那几句关于 memory 的话，被几乎所有人忽略了.md";
+
+		// The vault-files walker has a module-local cache populated by
+		// the first `@` trigger in any test that ran before this one.
+		// The CJK fixture was added to preload.ts alongside the existing
+		// fixtures, but earlier tests in this file opened `@` first and
+		// may have cached a pre-fixture view. Force a re-walk so the
+		// dropdown sees the fixture.
+		const { invalidateVaultFileCache } = await import(
+			"../../src/tui/util/vault-files"
+		);
+		invalidateVaultFileCache();
+
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		// Type the slash verb + `@` to open mention mode, then filter
+		// down to the CJK file by typing its first char (fuzzysort
+		// narrows to options containing `罗`).
+		await setup.mockInput.typeText("/article ");
+		await setup.renderOnce();
+		await setup.mockInput.typeText("@");
+		await waitForFrame(setup, "foo.md", { timeout: 3000 });
+		await setup.mockInput.typeText("罗");
+		// The dropdown row truncates the long filename to fit panel
+		// width, so we can't `waitForFrame` the whole name. Wait on
+		// the leading chars we know will render unambiguously.
+		await waitForFrame(setup, "罗福莉", { timeout: 3000 });
+
+		// Select the filtered option.
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(50);
+
+		// Submit — the mention must expand to the full filename, not
+		// a truncated substring. `Path:` line contains the absolute
+		// vault path with the exact CJK sequence.
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(50);
+
+		expect(fake.calls.prompt.length).toBeGreaterThanOrEqual(1);
+		const llm = fake.calls.prompt[0] ?? "";
+		// The exact filename appears in the LLM-facing text. Regressing
+		// to `.length`-based extmark span truncates the tail so
+		// anything after the first ~half of the filename disappears
+		// from the mention span — the `.md` extension, the full-width
+		// comma, and the trailing clause all vanish on submit.
+		expect(llm).toContain(CJK_FILENAME);
+	});
+
 	test("slash dropdown open suspends Ctrl+N (session list stays closed)", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory, width: 120 });

@@ -87,6 +87,20 @@ writeFileSync(
 	resolve(ARTICLES_DIR, "bar.md"),
 	`---\ntitle: bar\n---\n\nAnother article body.\n`,
 );
+// CJK filename with full-width punctuation. OpenTUI extmark offsets
+// are display columns (via `Bun.stringWidth`), not UTF-16 code units;
+// the autocomplete + suggest_command Edit paths must measure span
+// lengths with `stringWidth` so the extmark covers the whole
+// `@<path>` span. `.length` alone under-counts for 2-cell glyphs
+// and the trailing half becomes plain editable text. Regression test
+// in `test/tui/autocomplete.test.tsx`.
+writeFileSync(
+	resolve(
+		ARTICLES_DIR,
+		"罗福莉访谈里那几句关于 memory 的话，被几乎所有人忽略了.md",
+	),
+	`---\ntitle: 罗福莉访谈\n---\n\nBody.\n`,
+);
 
 // Symlink inside Articles pointing outside the vault — exercises the
 // `lstatSync` symlink-reject guard in reader's `/article` command.

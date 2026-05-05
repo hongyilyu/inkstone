@@ -11,6 +11,7 @@ import { Prompt } from "./components/prompt";
 import { SecondaryPage } from "./components/secondary-page";
 import { SessionList } from "./components/session-list";
 import { Sidebar } from "./components/sidebar";
+import { SuggestCommandPrompt } from "./components/suggest-command-prompt";
 import { AgentProvider, useAgent } from "./context/agent";
 import { getSecondaryPage } from "./context/secondary-page";
 import { ThemeProvider, useTheme } from "./context/theme";
@@ -27,6 +28,20 @@ import { Toast, ToastProvider } from "./ui/toast";
 // value to the layout-level keybind hook.
 let scroll: ScrollBoxRenderable | null = null;
 let inputRef: any = null;
+
+/**
+ * Extmark type id + `extmark.file` style id registered by the prompt
+ * textarea on mount. Exposed at module scope so surfaces outside
+ * `Prompt` (today: `SuggestCommandPrompt`'s Edit action) can create
+ * mention-style extmarks against the same input, getting the exact
+ * same chip rendering + submit-time mention detection that a typed
+ * `@` produces. Both are 0 / null until the textarea ref callback
+ * fires on mount. The style id is re-published on theme switch —
+ * `SyntaxStyle` (and its numeric style ids) rebuilds when the theme
+ * id changes.
+ */
+let inputPromptPartTypeId = 0;
+let inputFileStyleId: number | null = null;
 
 export function scrollRef(): ScrollBoxRenderable | null {
 	return scroll;
@@ -49,6 +64,32 @@ export function clearScrollRef(ref: ScrollBoxRenderable) {
 
 export function setInputRef(ref: any) {
 	inputRef = ref;
+}
+
+/**
+ * Read the current prompt textarea ref. Mirrors `scrollRef()` — used
+ * by surfaces that write into the prompt imperatively (e.g. the
+ * suggest-command panel's Edit action pre-populating the slash).
+ */
+export function getInputRef(): any {
+	return inputRef;
+}
+
+/**
+ * Read the active prompt-mention extmark ids. Both are 0 / null when
+ * the prompt hasn't mounted yet. See the `inputFileStyleId` docstring
+ * above for the lifecycle.
+ */
+export function getInputExtmarkIds(): {
+	typeId: number;
+	styleId: number | null;
+} {
+	return { typeId: inputPromptPartTypeId, styleId: inputFileStyleId };
+}
+
+export function setInputExtmarkIds(typeId: number, styleId: number | null) {
+	inputPromptPartTypeId = typeId;
+	inputFileStyleId = styleId;
 }
 
 /**
@@ -84,7 +125,7 @@ export function toBottom() {
 }
 
 export function Layout() {
-	const { actions, store, pendingApproval } = useAgent();
+	const { actions, store, pendingApproval, pendingSuggestion } = useAgent();
 	const { theme } = useTheme();
 	const dimensions = useTerminalDimensions();
 	const [sessionListOpen, setSessionListOpen] = createSignal(false);
@@ -179,7 +220,14 @@ export function Layout() {
 							 * the scrollbox at this level first.
 							 */}
 							<box paddingTop={1} flexShrink={0} zIndex={10}>
-								<Show when={pendingApproval()} fallback={<Prompt />}>
+								<Show
+									when={pendingApproval()}
+									fallback={
+										<Show when={pendingSuggestion()} fallback={<Prompt />}>
+											<SuggestCommandPrompt />
+										</Show>
+									}
+								>
 									<PermissionPrompt />
 								</Show>
 							</box>

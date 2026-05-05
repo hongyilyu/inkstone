@@ -371,10 +371,10 @@ describe("recommendations — scoring helpers", () => {
 describe("recommendations — recommendArticles", () => {
 	test("returns unread articles from test vault", () => {
 		const recs = recommendArticles(10);
-		// Test vault has foo.md (reading_intent: keeper, no reading_completed)
-		// and bar.md (no reading_completed). Both are unread.
-		// sneak.md is a symlink and should be excluded.
-		expect(recs.length).toBe(2);
+		// Test vault has foo.md, bar.md, and a CJK fixture used by the
+		// autocomplete display-width test. All three are unread.
+		// sneak.md is a symlink and is excluded.
+		expect(recs.length).toBe(3);
 		const filenames = recs.map((r) => r.filename);
 		expect(filenames).toContain("foo.md");
 		expect(filenames).toContain("bar.md");

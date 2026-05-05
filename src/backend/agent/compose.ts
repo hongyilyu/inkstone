@@ -1,5 +1,6 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { readTool, updateSidebarTool } from "./tools";
+import { makeSuggestCommandTool } from "./tools/suggest-command";
 import type { AgentInfo } from "./types";
 
 /**
@@ -18,8 +19,24 @@ export const BASE_TOOLS: readonly AgentTool<any>[] = Object.freeze([
  */
 export const BASE_PREAMBLE = "";
 
+/**
+ * Compose an agent's runtime tool set: base tools first, per-agent
+ * `extraTools` next, and — for agents that declare commands — a
+ * dynamically-built `suggest_command` tool whose schema enumerates
+ * the agent's command names. Agents with no commands omit the
+ * suggestion tool entirely (empty enum has no valid call shape).
+ *
+ * Composition order is intentional:
+ * - BASE_TOOLS first so built-ins appear in a predictable position.
+ * - extraTools second so agent-owned tools are adjacent in the list.
+ * - suggest_command last so it reads as the "escape hatch" after all
+ *   the concrete tools.
+ */
 export function composeTools(info: AgentInfo): AgentTool<any>[] {
-	return [...BASE_TOOLS, ...info.extraTools];
+	const tools: AgentTool<any>[] = [...BASE_TOOLS, ...info.extraTools];
+	const suggest = makeSuggestCommandTool(info.commands ?? []);
+	if (suggest) tools.push(suggest);
+	return tools;
 }
 
 /**

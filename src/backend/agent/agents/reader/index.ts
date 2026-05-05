@@ -1,5 +1,5 @@
 import { lstatSync, readFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { DisplayPart } from "@bridge/view-model";
 import { ARTICLES_DIR, VAULT_DIR } from "../../constants";
 import { type AgentOverlay, isInsideDir } from "../../permissions";
@@ -35,7 +35,14 @@ async function runArticle(
 	filename: string,
 	prompt: (text: string, displayParts?: DisplayPart[]) => Promise<void>,
 ): Promise<void> {
-	const articlePath = resolve(ARTICLES_DIR, filename);
+	// Accept either a bare filename (`foo.md`, `/article foo.md`) or
+	// an absolute path (what the `@`-autocomplete's mention expansion
+	// produces: `resolve(VAULT_DIR, chipFilename)`). Both paths must
+	// resolve INSIDE `ARTICLES_DIR` — that's the reader invariant.
+	// Other vault locations are someone else's concern.
+	const articlePath = isAbsolute(filename)
+		? filename
+		: resolve(ARTICLES_DIR, filename);
 	// `isInsideDir` is `path.sep`-boundary-safe and cross-platform;
 	// the equality short-circuit also means `articlePath === ARTICLES_DIR`
 	// slips through, so we reject the bare-dir case explicitly.
