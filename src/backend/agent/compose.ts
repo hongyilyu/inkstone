@@ -51,10 +51,51 @@ function composeZonesBlock(info: AgentInfo): string {
 	].join("\n");
 }
 
+/**
+ * Render the agent's declared user-facing commands so the LLM knows
+ * what verbs the user can invoke. Two audiences share one block:
+ *
+ * - The user reading the LLM's replies benefits when the LLM can
+ *   reference commands by exact name (e.g. "you can run /article to
+ *   open one").
+ * - The LLM itself benefits when deciding whether a freeform user
+ *   request ("let's read the article about X") matches a command and
+ *   should be routed there. PR5 adds a `suggest_command` tool that
+ *   closes that loop; until then the LLM can still name the command
+ *   in prose so the user knows what to type.
+ *
+ * Emits one line per command using `name + argHint` as the heading
+ * and `description` as the body, skipping commands without a
+ * description (no signal to show). Omitted entirely when the agent
+ * has no commands (example agent).
+ *
+ * Stays byte-stable for the session's lifetime because `info.commands`
+ * is declared data, not dynamic state. See D9 — the system prompt
+ * must not drift across turns or Anthropic / Bedrock cache prefixes
+ * invalidate.
+ */
+function composeCommandsBlock(info: AgentInfo): string {
+	const commands = info.commands ?? [];
+	if (commands.length === 0) return "";
+	const lines = commands.flatMap((c) => {
+		if (!c.description) return [];
+		const head = c.argHint ? `/${c.name} ${c.argHint}` : `/${c.name}`;
+		return [`  - ${head} — ${c.description}`];
+	});
+	if (lines.length === 0) return "";
+	return [
+		"<commands>",
+		"User-invoked commands available:",
+		...lines,
+		"</commands>",
+	].join("\n");
+}
+
 export function composeSystemPrompt(info: AgentInfo): string {
 	const zonesBlock = composeZonesBlock(info);
+	const commandsBlock = composeCommandsBlock(info);
 	const body = info.buildInstructions();
-	const sections = [zonesBlock, BASE_PREAMBLE, body].filter(
+	const sections = [zonesBlock, commandsBlock, BASE_PREAMBLE, body].filter(
 		(s) => s.length > 0,
 	);
 	return sections.join("\n\n");
