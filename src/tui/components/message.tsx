@@ -167,11 +167,16 @@ export function ReasoningPart(props: {
  * args. Only failures get a second line. When a future tool's result
  * carries information the args don't (e.g. `grep` match count), revisit.
  *
- * Phase 4: when a `confirmDirs` approval attaches a unified-diff
- * preview to this call id in `previews`, render it below the args line
- * via OpenTUI's `<diff>` renderable. The preview is ephemeral (lives
- * for the approval modal's lifetime), so a completed / error tool part
- * renders without the diff. Themed with the phase-1 diff tokens.
+ * Phase-4/Phase-2A diff preview: when a `confirmDirs` approval carries a
+ * unified-diff preview, the preview registry (`preview-registry.ts`)
+ * stores the diff keyed by `callId`. Auto-expanded while the approval
+ * is pending; collapsed when it resolves. For resolved tool calls
+ * that have an archived diff, a `▸` / `▾` chevron on the header
+ * toggles expansion. The whole header row is the click target — not
+ * just the chevron glyph — so users don't have to aim at a 1-cell
+ * bullseye in the terminal. When no archived preview exists, the
+ * chevron is omitted entirely and the header has no click handler.
+ * Themed with the phase-1 diff tokens.
  */
 export function ToolPart(props: {
 	callId: string;
@@ -187,7 +192,12 @@ export function ToolPart(props: {
 	const icon = () => (props.state === "pending" ? "~" : "⚙");
 	const headerFg = () =>
 		props.state === "error" ? theme.error : theme.textMuted;
-	const preview = () => previews.get(props.callId);
+	// One registry read per render. `showChevron` gates the
+	// disclosure glyph + click handler; `diff` gates the diff
+	// body. The two are independent: collapsed-but-archived is
+	// `{ diff: undefined, showChevron: true }`.
+	const state = () => previews.state(props.callId);
+	const chevron = () => (state().diff ? "▾" : "▸");
 	return (
 		<box
 			paddingLeft={3}
@@ -195,21 +205,32 @@ export function ToolPart(props: {
 			flexShrink={0}
 			flexDirection="column"
 		>
-			<text wrapMode="none">
-				<span style={{ fg: headerFg() }}>
-					{icon()} {props.name}
-				</span>
-				<Show when={argsSummary()}>
-					<span style={{ fg: theme.textMuted }}> {argsSummary()}</span>
-				</Show>
-			</text>
+			<box
+				flexDirection="row"
+				flexShrink={0}
+				onMouseUp={
+					state().showChevron ? () => previews.toggle(props.callId) : undefined
+				}
+			>
+				<text wrapMode="none">
+					<Show when={state().showChevron}>
+						<span style={{ fg: theme.textMuted }}>{chevron()} </span>
+					</Show>
+					<span style={{ fg: headerFg() }}>
+						{icon()} {props.name}
+					</span>
+					<Show when={argsSummary()}>
+						<span style={{ fg: theme.textMuted }}> {argsSummary()}</span>
+					</Show>
+				</text>
+			</box>
 			<Show when={props.state === "error" && props.error}>
 				<text fg={theme.error} wrapMode="none">
 					{"  "}
 					{props.error}
 				</text>
 			</Show>
-			<Show when={preview()}>
+			<Show when={state().diff}>
 				{(p) => (
 					<box
 						marginTop={1}

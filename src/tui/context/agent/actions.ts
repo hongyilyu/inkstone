@@ -32,6 +32,7 @@ import { produce, type SetStoreFunction } from "solid-js/store";
 import { toBottom } from "../../app";
 import type { useToast } from "../../ui/toast";
 import { closeSecondaryPage } from "../secondary-page";
+import type { PreviewRegistry } from "./preview-registry";
 import type { SessionState } from "./session-state";
 import type { AgentContextValue } from "./types";
 
@@ -42,6 +43,13 @@ export interface ActionDeps {
 	sessionState: SessionState;
 	toast: ReturnType<typeof useToast>;
 	titleGenerator: typeof generateSessionTitle;
+	/**
+	 * Phase-4 diff-preview registry. Session-boundary resets (clear /
+	 * resume / unmount) wipe the archive so stale diff entries don't
+	 * survive into a different session's tool parts. Provider wires
+	 * this in at mount.
+	 */
+	previews: PreviewRegistry;
 }
 
 export function createWrappedActions(
@@ -315,6 +323,12 @@ async function clearSessionAction(deps: ActionDeps): Promise<void> {
 	// the previous session's network state.
 	deps.setStore("codexTransport", undefined);
 	deps.sessionState.setPreTurnCodexConnections(undefined);
+	// Wipe the diff-preview archive so stale diffs from the
+	// previous session's tool calls don't linger into the fresh
+	// conversation. Pending entries should be empty by the time we
+	// get here (clearSession aborts an in-flight turn), but
+	// `clearAll()` is idempotent.
+	deps.previews.clearAll();
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -394,6 +408,11 @@ function resumeSessionAction(sessionId: string, deps: ActionDeps): void {
 		closeSecondaryPage();
 		deps.setStore("codexTransport", undefined);
 		deps.sessionState.setPreTurnCodexConnections(undefined);
+		// Wipe diff-preview archive. Loaded tool parts have no
+		// matching registry entries (diffs were never persisted), so
+		// their chevron won't render — but any entries from the
+		// pre-resume session must not bleed into resumed callIds.
+		deps.previews.clearAll();
 	});
 	toBottom();
 }

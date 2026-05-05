@@ -237,6 +237,7 @@ export function AgentProvider(
 		sessionState,
 		toast,
 		titleGenerator,
+		previews,
 	});
 
 	const value: AgentContextValue = {

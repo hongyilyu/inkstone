@@ -1,43 +1,71 @@
 /**
- * Ephemeral per-`callId` diff preview store.
+ * Per-`callId` diff preview state for the approval UI.
  *
- * Phase 4 attaches the unified-diff string produced by a `confirmDirs`
- * approval to the tool call it targets, so `ToolPart` can render the
- * diff inline below the args line. Two shapes were considered:
+ * Ephemeral overlay on top of persisted `DisplayPart`s: when a
+ * `confirmDirs` approval carries a unified-diff preview, `ToolPart`
+ * renders the diff inline below the tool header via OpenTUI's
+ * `<diff>` renderable. Three independent cells support
+ * auto-expand-while-pending plus user-driven toggle-to-re-expand:
  *
- *   1. Widen `DisplayPart` tool variant with `diff?: string`. Simpler
- *      at the render site, but `DisplayPart` is persisted verbatim to
- *      SQLite (`src/backend/persistence/sessions.ts` stores the tool
- *      part's `{ name, args, state, error? }` blob), so adding a
- *      `diff` field would either leak into persistence (stale diff
- *      after resume) or require persistence-layer carve-outs.
+ *   - `pending`: diffs actively awaiting approval. Set by the provider
+ *     closure before `setPendingApproval`; cleared when the approval
+ *     resolves. Auto-expands the diff without touching `expanded`.
  *
- *   2. Carry the diff in a parallel per-`callId` map, looked up by
- *      `ToolPart` at render time. Persistence is untouched; the diff
- *      is strictly a live-session overlay on top of what SQLite holds.
+ *   - `archive`: diffs retained after approval resolves so the user
+ *     can re-expand them via the chevron in `ToolPart`. Populated
+ *     alongside `pending` on `set`; never cleared on per-call resolve.
+ *     Wiped wholesale on session boundaries (`clearSession` /
+ *     `resumeSession`) and on provider unmount.
  *
- * We went with (2). The overlay is a Solid signal so subscribers
- * re-render when an entry lands or clears; the store itself is a
- * `Map<callId, PendingPreview>` captured in a signal cell. Ephemeral
- * by construction: provider unmount resets it.
+ *   - `expanded`: user-toggled set of call ids. When a call id is in
+ *     `expanded`, its archived diff renders even though the approval
+ *     has resolved. Starts empty; flips via `toggle`.
  *
- * Event ordering: pi-agent-core emits `toolcall_end` as an assistant
- * stream event *before* the `beforeToolCall` hook fires (the hook runs
- * after argument validation during the execution preflight, see
+ * Single-read API for the renderer — `state(callId)` returns a
+ * `ToolPartState` with both render decisions in one shot:
+ *
+ *   - `diff`: the preview body to render (pending auto-expand OR
+ *     user-toggled archive), OR `undefined` when nothing should
+ *     render.
+ *   - `showChevron`: whether to render the `▸` / `▾` chevron
+ *     affordance. True whenever the archive has an entry; the
+ *     chevron glyph itself is picked by the caller from `diff`
+ *     (present → `▾`, absent → `▸`).
+ *
+ * The two flags are independent: a completed tool call with an
+ * archived diff but no user toggle has `{ diff: undefined,
+ * showChevron: true }` — the collapsed-but-re-expandable state.
+ *
+ * Mutations are verb methods:
+ *
+ *   - `set(callId, preview)` → provider-closure helper. Writes to
+ *     `pending` + `archive`. Does NOT touch `expanded` (new approvals
+ *     auto-expand via the pending branch, not by flipping the user
+ *     toggle).
+ *   - `toggle(callId)` → flip `expanded` membership. No-op when no
+ *     archive entry exists (a future renderer race).
+ *   - `clear(callId)` → provider-closure cleanup on approval resolve.
+ *     Removes from `pending` only; archive + expanded stay.
+ *   - `clearAll()` → session-boundary reset. Wipes all three maps.
+ *
+ * Ordering: pi-agent-core emits `toolcall_end` as an assistant stream
+ * event *before* `beforeToolCall` fires (the hook runs after argument
+ * validation during execution preflight, see
  * `@mariozechner/pi-agent-core/dist/agent-loop.js`). So the reducer
- * pushes the pending `tool` DisplayPart first, `ToolPart` mounts with
- * `previews.get(callId) === undefined`, then `confirmFn` writes the
- * preview. That `setMap` re-triggers `ToolPart`'s reactive
- * `previews.get(...)` read and the `<diff>` slots in. The
- * order-independence is the whole point of keying by `callId` — a
- * swap to an event-ordering that fires `confirmFn` first would keep
- * working without changes.
+ * pushes the pending `tool` DisplayPart first; `ToolPart` mounts with
+ * `state(callId).diff === undefined`; then `confirmFn` writes the
+ * preview and the reactive `state()` read triggers a re-render that
+ * slots the `<diff>` in. The order-independence is the whole point
+ * of keying by `callId` — a swap to an event-ordering that fires
+ * `confirmFn` first would keep working without changes.
  *
- * Does NOT reset on `clearSession` today. A `confirmFn` in flight
- * blocks the Prompt cell, so `/clear` can't fire while a preview is
- * live; nothing in the registry survives past the approval resolve.
- * If phase 5 changes that gating, thread a `clearAll()` into the
- * session-lifecycle hooks.
+ * Each of the three cells is its own `createSignal`. Copy-on-write
+ * per mutation is still required (Solid signals identity-compare), so
+ * `set` / `toggle` / `clear` allocate a fresh Map or Set for the
+ * cells they touch. Splitting into three signals means a mutation
+ * only re-triggers subscribers of the cell it actually changed, and
+ * keeps the mutation helpers to one `setX(prev => ...)` call each —
+ * no outer `Cells` wrapper, no cloning of unrelated cells.
  */
 
 import { createSignal } from "solid-js";
@@ -47,52 +75,81 @@ export interface PendingPreview {
 	unifiedDiff: string;
 }
 
+/**
+ * Composite render-decision for one tool part. Bundles "should the
+ * diff body render?" (`diff`) with "should the chevron affordance
+ * render?" (`showChevron`) so the renderer does one read per part
+ * and picks both decisions from the result.
+ */
+export interface ToolPartState {
+	diff: PendingPreview | undefined;
+	showChevron: boolean;
+}
+
 export interface PreviewRegistry {
-	/** Read the current preview for a given tool-call id. */
-	get(callId: string): PendingPreview | undefined;
-	/** Attach (or replace) the preview for `callId`. */
+	/** Composite render state for a tool part. One read per render. */
+	state(callId: string): ToolPartState;
+	/** Flip user-toggle membership; no-op when no archive entry. */
+	toggle(callId: string): void;
+	/** Provider-closure: write to pending + archive. */
 	set(callId: string, preview: PendingPreview): void;
-	/** Drop the preview for `callId`. No-op if absent. */
+	/** Provider-closure: drop the pending entry on approval resolve. */
 	clear(callId: string): void;
-	/** Drop every entry. Used on `clearSession` / provider unmount. */
+	/** Session-boundary reset: wipe everything. */
 	clearAll(): void;
 }
 
 export function createPreviewRegistry(): PreviewRegistry {
-	// Wrapped in a signal cell so `get()` reads reactively — OpenTUI's
-	// Solid reconciler tracks the cell access in effects/memos that
-	// consume `preview` inside a render. Replacing the Map identity
-	// on every mutation would be heavier and no more correct; a
-	// single-signal cell + explicit `.notify()` via reassigning the
-	// same reference works because Solid compares by identity only
-	// for the *outer* cell value.
-	//
-	// We reassign a fresh Map on every write. That's fine: approval
-	// writes are rare (one per user confirmation), so the
-	// copy-on-write cost is invisible.
-	const [map, setMap] = createSignal(new Map<string, PendingPreview>());
+	const [pending, setPending] = createSignal(new Map<string, PendingPreview>());
+	const [archive, setArchive] = createSignal(new Map<string, PendingPreview>());
+	const [expanded, setExpanded] = createSignal(new Set<string>());
 
 	return {
-		get(callId) {
-			return map().get(callId);
+		state(callId) {
+			const p = pending().get(callId);
+			const a = archive().get(callId);
+			const diff = p ?? (expanded().has(callId) ? a : undefined);
+			return {
+				diff,
+				showChevron: a !== undefined,
+			};
+		},
+		toggle(callId) {
+			// Guard against the renderer racing: if the archive never
+			// had this id, there's no diff to toggle open — leave
+			// `expanded` alone rather than admit a ghost entry.
+			if (!archive().has(callId)) return;
+			setExpanded((prev) => {
+				const next = new Set(prev);
+				if (next.has(callId)) next.delete(callId);
+				else next.add(callId);
+				return next;
+			});
 		},
 		set(callId, preview) {
-			setMap((prev) => {
+			setPending((prev) => {
+				const next = new Map(prev);
+				next.set(callId, preview);
+				return next;
+			});
+			setArchive((prev) => {
 				const next = new Map(prev);
 				next.set(callId, preview);
 				return next;
 			});
 		},
 		clear(callId) {
-			setMap((prev) => {
-				if (!prev.has(callId)) return prev;
+			if (!pending().has(callId)) return;
+			setPending((prev) => {
 				const next = new Map(prev);
 				next.delete(callId);
 				return next;
 			});
 		},
 		clearAll() {
-			setMap((prev) => (prev.size === 0 ? prev : new Map()));
+			if (pending().size > 0) setPending(new Map());
+			if (archive().size > 0) setArchive(new Map());
+			if (expanded().size > 0) setExpanded(new Set());
 		},
 	};
 }
