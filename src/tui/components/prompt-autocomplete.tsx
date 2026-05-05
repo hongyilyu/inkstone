@@ -1,9 +1,10 @@
-import type { TextareaRenderable } from "@opentui/core";
-import { useKeyboard } from "@opentui/solid";
+import type { BoxRenderable, TextareaRenderable } from "@opentui/core";
+import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
 import fuzzysort from "fuzzysort";
 import {
 	createEffect,
 	createMemo,
+	createSignal,
 	For,
 	onCleanup,
 	Show,
@@ -63,6 +64,15 @@ export function PromptAutocomplete(props: {
 	promptPartTypeId: () => number;
 	/** Style id for `extmark.file` (re-resolved on theme switch). */
 	fileStyleId: () => number | null;
+	/**
+	 * Getter for the prompt wrapper box — the dropdown anchors its
+	 * bottom edge to this box's top edge. Port of OpenCode's
+	 * `anchor={() => anchor}` pattern (`prompt/index.tsx:956`,
+	 * `prompt/autocomplete.tsx:112-126`). Without a live anchor the
+	 * dropdown can't track textarea growth and ends up drifting into
+	 * the prompt bubble when the textarea wraps past 1 row.
+	 */
+	anchor: () => BoxRenderable | undefined;
 }) {
 	const { theme } = useTheme();
 	const command = useCommand();
@@ -397,60 +407,113 @@ export function PromptAutocomplete(props: {
 		}
 	});
 
-	const height = createMemo(() => Math.min(MAX_RESULTS, filtered().length));
+	// ------------------------------------------------------------
+	// Position tracking — ports OpenCode's anchor pattern
+	// (`prompt/autocomplete.tsx:97-126, 603-608`).
+	//
+	// The popup is absolutely positioned above the prompt bubble,
+	// which is a laid-out flex box. OpenTUI's layout coords aren't
+	// reactive on the renderable, so we poll `anchor.x/y/width`
+	// every 50ms and bump `positionTick` on change.
+	// `useTerminalDimensions()` covers the resize case so the popup
+	// doesn't wait a tick to reposition after a reflow.
+	//
+	// The returned geometry is anchor-relative (minus `parent.x/y`)
+	// so `position="absolute"` on the popup resolves in the parent's
+	// coordinate space. `height` is clamped to `anchor.y` headroom
+	// so a deep `/` + 10 matches can't paint above row 0.
+	// ------------------------------------------------------------
+
+	const [positionTick, setPositionTick] = createSignal(0);
+	const dimensions = useTerminalDimensions();
+
+	createEffect(() => {
+		if (store.mode === null || filtered().length === 0) return;
+		let last = { x: 0, y: 0, width: 0 };
+		const interval = setInterval(() => {
+			const a = props.anchor();
+			if (!a) return;
+			if (a.x !== last.x || a.y !== last.y || a.width !== last.width) {
+				last = { x: a.x, y: a.y, width: a.width };
+				setPositionTick((t) => t + 1);
+			}
+		}, 50);
+		onCleanup(() => clearInterval(interval));
+	});
+
+	const geometry = createMemo(() => {
+		dimensions();
+		positionTick();
+		const a = props.anchor();
+		if (store.mode === null || !a) {
+			return { x: 0, y: 0, width: 0, height: 0 };
+		}
+		const count = filtered().length;
+		const headroom = Math.max(1, a.y);
+		const height = Math.min(MAX_RESULTS, count, headroom);
+		// `+1` / `-1` offsets align the popup's opaque background
+		// with the bubble's inner content area, leaving the colorful
+		// `┃` left border visible as a continuous stroke.
+		return {
+			x: a.x - (a.parent?.x ?? 0) + 1,
+			y: a.y - (a.parent?.y ?? 0) - height,
+			width: Math.max(0, a.width - 1),
+			height,
+		};
+	});
 
 	return (
 		<box
 			visible={store.mode !== null && filtered().length > 0}
 			position="absolute"
-			bottom={6}
-			left={0}
-			right={0}
+			top={geometry().y}
+			left={geometry().x}
+			width={geometry().width}
+			height={geometry().height}
 			zIndex={100}
-			border={["top", "bottom"]}
-			borderColor={theme.border}
+			backgroundColor={theme.backgroundElement}
+			flexDirection="column"
 		>
-			<box
-				backgroundColor={theme.backgroundElement}
-				height={height()}
-				flexDirection="column"
-			>
-				<For each={filtered()}>
-					{(option, index) => (
-						<box
-							paddingLeft={1}
-							paddingRight={1}
-							backgroundColor={
-								index() === store.selected ? theme.primary : undefined
+			<For each={filtered()}>
+				{(option, index) => (
+					<box
+						// `paddingLeft={2}` matches the bubble's inner
+						// `paddingLeft={2}` (prompt.tsx) so entry `/` chars
+						// land at the same screen column as the textarea `/`.
+						paddingLeft={2}
+						paddingRight={2}
+						backgroundColor={
+							index() === store.selected
+								? theme.primary
+								: theme.backgroundElement
+						}
+						flexDirection="row"
+					>
+						<text
+							fg={
+								index() === store.selected
+									? theme.selectedListItemText
+									: theme.text
 							}
-							flexDirection="row"
+							flexShrink={0}
 						>
+							{option.display}
+						</text>
+						<Show when={option.description}>
 							<text
 								fg={
 									index() === store.selected
 										? theme.selectedListItemText
-										: theme.text
+										: theme.textMuted
 								}
-								flexShrink={0}
+								wrapMode="none"
 							>
-								{option.display}
+								{option.description}
 							</text>
-							<Show when={option.description}>
-								<text
-									fg={
-										index() === store.selected
-											? theme.selectedListItemText
-											: theme.textMuted
-									}
-									wrapMode="none"
-								>
-									{option.description}
-								</text>
-							</Show>
-						</box>
-					)}
-				</For>
-			</box>
+						</Show>
+					</box>
+				)}
+			</For>
 		</box>
 	);
 }
