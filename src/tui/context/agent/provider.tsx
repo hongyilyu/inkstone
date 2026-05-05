@@ -238,6 +238,8 @@ export function AgentProvider(
 		toast,
 		titleGenerator,
 		previews,
+		pendingApproval: () => pendingApproval()?.request ?? null,
+		respondApproval,
 	});
 
 	const value: AgentContextValue = {

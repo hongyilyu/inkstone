@@ -34,7 +34,7 @@ import type { useToast } from "../../ui/toast";
 import { closeSecondaryPage } from "../secondary-page";
 import type { PreviewRegistry } from "./preview-registry";
 import type { SessionState } from "./session-state";
-import type { AgentContextValue } from "./types";
+import type { AgentContextValue, PendingApproval } from "./types";
 
 export interface ActionDeps {
 	agentSession: Session;
@@ -50,6 +50,19 @@ export interface ActionDeps {
 	 * this in at mount.
 	 */
 	previews: PreviewRegistry;
+	/**
+	 * Phase-5 pending-approval accessor + resolver. When an approval
+	 * is in flight, `pendingApproval()` is non-null and
+	 * `respondApproval(ok)` fires the resolver the backend is awaiting
+	 * inside its `beforeToolCall` hook. Action wrappers for `abort`
+	 * and `clearSession` call `respondApproval(false)` when a pending
+	 * approval is in flight, before propagating to the backend, so
+	 * pi-agent-core's `await confirmFn(...)` unwinds cleanly instead
+	 * of leaving the agent loop blocked on a resolver that will
+	 * never fire.
+	 */
+	pendingApproval: () => PendingApproval | null;
+	respondApproval: (ok: boolean) => void;
 }
 
 export function createWrappedActions(
@@ -59,6 +72,19 @@ export function createWrappedActions(
 		...deps.agentSession.actions,
 		async prompt(text: string, displayParts?: DisplayPart[]) {
 			await promptAction(text, displayParts, deps);
+		},
+		abort() {
+			// Unwind any in-flight approval BEFORE the backend abort:
+			// pi-agent-core's run loop is parked on
+			// `await confirmFn(...)` inside `beforeToolCall`, and
+			// AbortController can't interrupt a Promise the loop
+			// isn't listening on. The resolver is the only primitive
+			// that wakes it. Resolving to `false` matches "user said
+			// no" semantics for an interrupted request; the
+			// reducer's `agent_end` sweep then flips the pending
+			// tool part to `error` via the existing path.
+			if (deps.pendingApproval()) deps.respondApproval(false);
+			deps.agentSession.actions.abort();
 		},
 		setModel(model: Model<Api>) {
 			deps.agentSession.actions.setModel(model);
@@ -296,6 +322,12 @@ function handlePreStreamError(err: unknown, deps: ActionDeps): void {
 // ────────────────────────────────────────────────────────────────────
 
 async function clearSessionAction(deps: ActionDeps): Promise<void> {
+	// Unwind any in-flight approval first. Same reason as `abort` in
+	// the wrapped actions: pi-agent-core's `beforeToolCall` is awaiting
+	// `confirmFn`; the backend abort that `clearSession` triggers
+	// internally can't wake that Promise. Resolving to `false` before
+	// the backend call lets the await unwind cleanly.
+	if (deps.pendingApproval()) deps.respondApproval(false);
 	// Await the backend clear first. Mid-stream path: it calls
 	// `agent.abort()` + `waitForIdle()` so pi-agent-core's final
 	// `message_end` + `agent_end` events fire through the reducer

@@ -10,13 +10,14 @@
  */
 
 import { testRender } from "@opentui/solid";
-import { ErrorBoundary } from "solid-js";
+import { createEffect, ErrorBoundary } from "solid-js";
 import type { generateSessionTitle } from "../../src/backend/agent";
 import { Layout } from "../../src/tui/app";
 import { CommandProvider } from "../../src/tui/components/dialog/command";
 import { NoProviderFallback } from "../../src/tui/components/no-provider-fallback";
 import type { SessionFactory } from "../../src/tui/context/agent";
-import { AgentProvider } from "../../src/tui/context/agent";
+import { AgentProvider, useAgent } from "../../src/tui/context/agent";
+import type { AgentContextValue } from "../../src/tui/context/agent/types";
 import { ThemeProvider } from "../../src/tui/context/theme";
 import { DialogProvider } from "../../src/tui/ui/dialog";
 import { ToastProvider } from "../../src/tui/ui/toast";
@@ -28,10 +29,31 @@ export interface HarnessOptions {
 	height?: number;
 }
 
+/**
+ * Sentinel component mounted inside `AgentProvider` that captures the
+ * live `AgentContextValue` into a closure the harness returns. Tests
+ * use `setup.getAgent()` to drive action wrappers (`abort`,
+ * `clearSession`, etc.) that aren't routable via a keybind while the
+ * permission panel has exclusive claim on Esc/Enter.
+ */
+function CaptureAgent(props: {
+	onCapture: (value: AgentContextValue) => void;
+}) {
+	const value = useAgent();
+	// `createEffect` defers the capture until after the provider has
+	// finished its synchronous mount, matching the natural order of
+	// Solid's ownership lifecycle.
+	createEffect(() => {
+		props.onCapture(value);
+	});
+	return null;
+}
+
 export async function renderApp(opts: HarnessOptions) {
 	const width = opts.width ?? 100;
 	const height = opts.height ?? 30;
-	return testRender(
+	let captured: AgentContextValue | null = null;
+	const rendered = await testRender(
 		() => (
 			<ThemeProvider>
 				<ToastProvider>
@@ -48,6 +70,11 @@ export async function renderApp(opts: HarnessOptions) {
 										opts.sessionTitleGenerator ?? (async () => null)
 									}
 								>
+									<CaptureAgent
+										onCapture={(v) => {
+											captured = v;
+										}}
+									/>
 									<Layout />
 								</AgentProvider>
 							</ErrorBoundary>
@@ -58,6 +85,23 @@ export async function renderApp(opts: HarnessOptions) {
 		),
 		{ width, height },
 	);
+	return {
+		...rendered,
+		/**
+		 * Live `AgentContextValue` snapshot captured from inside the
+		 * provider. Throws if the provider hasn't mounted yet (the
+		 * error-boundary fallback path). Tests that render a throwing
+		 * factory shouldn't call this.
+		 */
+		getAgent(): AgentContextValue {
+			if (!captured) {
+				throw new Error(
+					"getAgent: AgentProvider did not mount — likely hit the error-boundary fallback",
+				);
+			}
+			return captured;
+		},
+	};
 }
 
 /** Wait until `fn()` returns true, or throw after `timeout` ms. */
