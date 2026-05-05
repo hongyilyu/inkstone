@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-04 (agent-behavior PR4: move reader workflow text into /article message)
+**Last updated**: 2026-05-04 (agent-behavior PR5: suggest_command tool + confirm panel + replay)
 
 ## In Progress
 
@@ -12,7 +12,7 @@
   - [x] PR2 — generic `search` + `list_keys` tool factories.
   - [x] PR3 — reader imports the factories scoped to `ARTICLES_DIR`; generalize-fallback prose.
   - [x] PR4 — move reader's 6-stage workflow text out of the agent system prompt into `/article`'s opening user message.
-  - [ ] PR5 — `suggest_command` tool + confirm panel (bottom-panel pattern mirroring approval) + post-turn-end replay.
+  - [x] PR5 — `suggest_command` tool + confirm panel (bottom-panel pattern mirroring approval) + post-turn-end replay.
 
 ## Known Issues
 

@@ -4,7 +4,11 @@
  * modules can all import from one shared source of truth.
  */
 
-import type { AgentActions, Session } from "@backend/agent";
+import type {
+	AgentActions,
+	Session,
+	SuggestCommandDecision,
+} from "@backend/agent";
 import type { AgentStoreState, DisplayPart } from "@bridge/view-model";
 import type {
 	AgentEvent as AgentEventType,
@@ -82,6 +86,16 @@ export interface AgentContextValue {
 	 */
 	pendingApproval: Accessor<PendingApproval | null>;
 	respondApproval: (ok: boolean) => void;
+	/**
+	 * Pending-suggestion signal for `suggest_command` tool calls. When
+	 * non-null, the layout replaces the `Prompt` cell with
+	 * `SuggestCommandPrompt`, which owns Confirm / Edit / Cancel.
+	 * Resolved via `respondSuggestion`. On unmount the provider
+	 * resolves any in-flight entry to `"cancelled"` so the tool's
+	 * promise settles and the LLM turn can wind down.
+	 */
+	pendingSuggestion: Accessor<PendingSuggestion | null>;
+	respondSuggestion: (decision: SuggestCommandDecision) => void;
 }
 
 /**
@@ -96,6 +110,20 @@ export interface PendingApproval {
 	callId: string;
 	title: string;
 	message: string;
+}
+
+/**
+ * Snapshot of an in-flight `suggest_command` request, surfaced to
+ * `SuggestCommandPrompt`. `command` + `args` already reflect the
+ * agent-declared verb (schema-validated in the backend factory); the
+ * panel renders `/<command> [args]` verbatim alongside the LLM's
+ * rationale.
+ */
+export interface PendingSuggestion {
+	callId: string;
+	command: string;
+	args: string;
+	rationale: string;
 }
 
 /**

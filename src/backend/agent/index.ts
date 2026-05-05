@@ -15,6 +15,12 @@ import {
 	getConfirmFn,
 	setConfirmFn,
 } from "./permissions";
+import {
+	getSuggestCommandFn,
+	type SuggestCommandDecision,
+	type SuggestCommandRequest,
+	setSuggestCommandFn,
+} from "./tools/suggest-command";
 import type { AgentCommand, AgentInfo, AgentZone } from "./types";
 import { composeOverlay } from "./zones";
 
@@ -312,6 +318,38 @@ export function createSession(params: {
 
 	const actions: AgentActions = {
 		async prompt(text: string) {
+			// pi-agent-core rejects a second `prompt()` while a run is
+			// active. For concurrent user-turn requests (today: the
+			// post-confirm replay from `suggest_command`), route through
+			// the library's designed primitive — `followUp` enqueues
+			// the message and the agent-loop drains it via
+			// `getFollowUpMessages()` at the natural end of the current
+			// run (see `agent-loop.js:136-141`). The error pi-agent-core
+			// throws on the second `prompt()` literally instructs the
+			// caller to use `steer()` or `followUp()`; we're taking
+			// that path.
+			//
+			// `agent.signal` is a thin getter over `activeRun?.signal`
+			// — truthy iff `activeRun` is set. Tighter than
+			// `isStreaming`, which can be clear while `finishRun` is
+			// still running in the lifecycle's `finally`.
+			//
+			// The followUp branch is fire-and-forget on purpose:
+			// `agent.followUp` is synchronous (just enqueues); the drain
+			// + turn run happens inside the current loop's outer
+			// iteration, so there's no meaningful Promise to await here.
+			// The existing pre-stream-error catch in `promptAction`
+			// depends on `agent.prompt` rejecting synchronously on
+			// getApiKey failure etc; followUp errors surface through
+			// `message_end` / `agent_end` like any other loop error.
+			if (agent.signal) {
+				agent.followUp({
+					role: "user",
+					content: [{ type: "text", text }],
+					timestamp: Date.now(),
+				});
+				return;
+			}
 			await agent.prompt(text);
 		},
 		abort() {
@@ -430,5 +468,9 @@ export {
 	type AgentZone,
 	getAgentInfo,
 	getConfirmFn,
+	getSuggestCommandFn,
+	type SuggestCommandDecision,
+	type SuggestCommandRequest,
 	setConfirmFn,
+	setSuggestCommandFn,
 };

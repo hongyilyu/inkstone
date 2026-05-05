@@ -11,6 +11,7 @@ import { Prompt } from "./components/prompt";
 import { SecondaryPage } from "./components/secondary-page";
 import { SessionList } from "./components/session-list";
 import { Sidebar } from "./components/sidebar";
+import { SuggestCommandPrompt } from "./components/suggest-command-prompt";
 import { AgentProvider, useAgent } from "./context/agent";
 import { getSecondaryPage } from "./context/secondary-page";
 import { ThemeProvider, useTheme } from "./context/theme";
@@ -52,6 +53,15 @@ export function setInputRef(ref: any) {
 }
 
 /**
+ * Read the current prompt textarea ref. Mirrors `scrollRef()` — used
+ * by surfaces that write into the prompt imperatively (e.g. the
+ * suggest-command panel's Edit action pre-populating the slash).
+ */
+export function getInputRef(): any {
+	return inputRef;
+}
+
+/**
  * Null the module-scoped input ref if `ref` matches. Mirror of
  * `clearScrollRef` — called from the prompt textarea's ref cleanup.
  */
@@ -84,7 +94,7 @@ export function toBottom() {
 }
 
 export function Layout() {
-	const { actions, store, pendingApproval } = useAgent();
+	const { actions, store, pendingApproval, pendingSuggestion } = useAgent();
 	const { theme } = useTheme();
 	const dimensions = useTerminalDimensions();
 	const [sessionListOpen, setSessionListOpen] = createSignal(false);
@@ -167,7 +177,14 @@ export function Layout() {
 						>
 							<Conversation />
 							<box paddingTop={1} flexShrink={0}>
-								<Show when={pendingApproval()} fallback={<Prompt />}>
+								<Show
+									when={pendingApproval()}
+									fallback={
+										<Show when={pendingSuggestion()} fallback={<Prompt />}>
+											<SuggestCommandPrompt />
+										</Show>
+									}
+								>
 									<PermissionPrompt />
 								</Show>
 							</box>

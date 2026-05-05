@@ -494,6 +494,32 @@ Implementation posture (intentionally simple):
 - Corrupt frontmatter (e.g. unclosed `---` fence) → file surfaces with empty `fields` and matches only on body content; malformed export doesn't break search.
 - No permission baseline — the scanned `dir` is fixed at factory time (not user-controllable via the tool args), and the agent already has vault-wide read via the baseline.
 
+### `suggest_command` — LLM-driven command routing
+
+The LLM can propose a slash command on the user's behalf when a freeform request clearly maps to one of the agent's declared verbs. `makeSuggestCommandTool` in `src/backend/agent/tools/suggest-command.ts` builds a per-agent tool whose `command` parameter schema enumerates the agent's `info.commands[].name` — schema-level enforcement that the LLM can only suggest a command the agent actually ships. Agents with `commands: []` (example) get no tool at all (empty enums aren't constructible).
+
+`composeTools(info)` appends the tool after `BASE_TOOLS` + `extraTools` when the agent has commands. Schema:
+
+```ts
+{
+  command: <literal-union of info.commands[].name>,
+  args: string,              // optional; empty string for arg-less verbs
+  rationale: string          // one-line explanation rendered in the panel
+}
+```
+
+Same injected-resolver pattern as `permissions.ts`'s `confirmFn`: `setSuggestCommandFn(fn)` registers a TUI-side handler; tool execution awaits its promise and surfaces the user's decision (`"confirmed" | "edited" | "cancelled"`). The provider at `src/tui/context/agent/provider.tsx` installs the handler, captures the previous value, and restores it on unmount; in-flight resolvers resolve to `"cancelled"` via `queueMicrotask` during disposal (matches the permission approval unmount-safety pattern).
+
+UX surface — `src/tui/components/suggest-command-prompt.tsx`:
+
+- Panel replaces the `Prompt` cell while a suggestion is pending (same slot as `PermissionPrompt`, guarded by a nested `<Show>` so approvals still take precedence). Chrome mirrors the approval panel: bordered box, muted instruction line, three choice pills.
+- Keybinds: `←/h` `→/l` cycle Confirm / Edit / Cancel; Enter commits the active choice; Esc rejects (equivalent to Cancel).
+- **Confirm** resolves with `"confirmed"` and immediately dispatches the slash via `command.triggerSlash(command, args)` — same path a manually-typed `/article` takes. That eventually reaches `actions.prompt(text)` in the backend, which checks `agent.signal` (truthy while the suggest_command turn is still unwinding) and takes the `agent.followUp(...)` branch. pi-agent-core's agent-loop drains `getFollowUpMessages()` at the natural end of the current run (see `agent-loop.js:136-141`), so the replayed slash becomes a fresh user turn queued on the library's own primitive — no TUI-side `isStreaming` gate, no `waitForIdle` dance, no `createEffect` replay scheduler. The tool sets `terminate: true` so the LLM doesn't emit a follow-up reply before the replay fires. User bubble (built in `promptAction` via `displayParts`) is pushed to `store.messages` synchronously, so the visual feedback matches a manually-typed command exactly.
+- **Edit** resolves with `"edited"`, schedules `input.setText("/<command> <args>")` via `queueMicrotask` (so it runs after the panel unmounts and the Prompt remounts), and focuses the textarea. No replay — user drives next steps.
+- **Cancel** resolves with `"cancelled"`. No replay. Panel unmounts; Prompt reclaims the cell.
+
+Why two separate pending signals (`pendingApproval`, `pendingSuggestion`) rather than one shared "pendingPanel" abstraction: the two flows have subtly different unmount-rescue semantics (approvals resolve `false`; suggestions resolve `"cancelled"`) and different tool-invocation contracts. Mirroring the pattern (two instances of the same shape) is cheaper than unifying; a future polish PR can consolidate if a third pending panel lands.
+
 ### Commands
 
 Commands are user-invoked verbs, distinct from tools (which are LLM-invoked mid-turn). See [`AGENT-DESIGN.md` D9](./AGENT-DESIGN.md) for the rationale; this section documents the runtime.
