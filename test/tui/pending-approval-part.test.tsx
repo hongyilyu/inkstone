@@ -104,7 +104,7 @@ describe("phase 4 — inline diff preview on pending tool part", () => {
 		await pending;
 	});
 
-	test("preview clears when confirmFn resolves", async () => {
+	test("preview clears when confirmFn resolves, archive retains, chevron re-expands it", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory, width: 120 });
 
@@ -132,17 +132,52 @@ describe("phase 4 — inline diff preview on pending tool part", () => {
 		// error (since the backend rejected it) or completed.
 		fake.emit(ev_toolExecEnd("call-2", "write"));
 
-		// Pump a render so the Solid signal invalidation reaches the
-		// frame, then verify the diff body is gone.
+		// Diff auto-collapsed on resolve — pending entry wiped, but
+		// the archive retains. The header now shows a `▸` chevron
+		// next to the tool name.
 		await setup.renderOnce();
 		await Bun.sleep(50);
 		await setup.renderOnce();
-		const frame = setup.captureCharFrame();
-		expect(frame).not.toContain("new line");
-		expect(frame).not.toContain("old line");
+		const collapsed = setup.captureCharFrame();
+		expect(collapsed).not.toContain("new line");
+		expect(collapsed).not.toContain("old line");
+		expect(collapsed).toContain("▸");
+
+		// Click anywhere on the header row (chevron cell is small but
+		// the whole header is the target). Locate the row containing
+		// `~ write` — we know it's in the frame — and click roughly
+		// at the chevron column (paddingLeft={3} → column 3 in terms
+		// of renderable offset; the chevron sits at column 3 of the
+		// header row).
+		const rows = collapsed.split("\n");
+		const headerRow = rows.findIndex((row) => row.includes("~ write"));
+		expect(headerRow).toBeGreaterThanOrEqual(0);
+		await setup.mockMouse.click(5, headerRow);
+
+		await setup.renderOnce();
+		await Bun.sleep(50);
+		await setup.renderOnce();
+		const expanded = setup.captureCharFrame();
+		expect(expanded).toContain("new line");
+		expect(expanded).toContain("old line");
+		expect(expanded).toContain("▾");
+
+		// Click again to collapse.
+		const expandedRows = expanded.split("\n");
+		const reHeaderRow = expandedRows.findIndex((row) =>
+			row.includes("~ write"),
+		);
+		await setup.mockMouse.click(5, reHeaderRow);
+
+		await setup.renderOnce();
+		await Bun.sleep(50);
+		await setup.renderOnce();
+		const recollapsed = setup.captureCharFrame();
+		expect(recollapsed).not.toContain("new line");
+		expect(recollapsed).toContain("▸");
 	});
 
-	test("ConfirmRequest without preview does not render a diff", async () => {
+	test("ConfirmRequest without preview does not render a diff or chevron", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory, width: 120 });
 
@@ -175,6 +210,9 @@ describe("phase 4 — inline diff preview on pending tool part", () => {
 		// so a hunk-header absence would be tautological.
 		expect(frame).not.toContain("new line");
 		expect(frame).not.toContain("old line");
+		// No preview → no archive → no chevron.
+		expect(frame).not.toContain("▸");
+		expect(frame).not.toContain("▾");
 
 		setup.mockInput.pressEscape();
 		await pending;
