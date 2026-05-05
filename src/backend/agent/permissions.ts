@@ -75,10 +75,11 @@ export interface ConfirmRequestPreview {
  * Structured payload passed to the injected `confirmFn`. `callId`
  * lets consumers correlate the approval with the pi-agent-core tool
  * call that triggered it (same id the reducer sees on
- * `toolcall_end` / `tool_execution_end`); later phases use it to
- * attach a synthetic pending tool part carrying the diff. `preview`
- * is optional: confirm-dir approvals for non-write tools (or writes
- * where we can't cheaply reconstruct `newText`) omit it.
+ * `toolcall_end` / `tool_execution_end`); the TUI uses it to key
+ * its diff-preview registry so `ToolPart` can render the unified
+ * diff inline above the approval panel. `preview` is optional:
+ * confirm-dir approvals for non-write tools (or writes where we
+ * can't cheaply reconstruct `newText`) omit it.
  */
 export interface ConfirmRequest {
 	callId: string;

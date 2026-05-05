@@ -32,8 +32,8 @@ const EmptyBorder = {
 	rightT: "",
 };
 
-// Exported for panel components that want the same empty-border scaffold
-// with a custom vertical glyph (e.g. the Phase-5 PermissionPrompt).
+// Exported for panel components that want the same empty-border
+// scaffold with a custom vertical glyph (e.g. `PermissionPrompt`).
 export { EmptyBorder };
 
 export const SplitBorderChars = {
@@ -153,30 +153,18 @@ export function ReasoningPart(props: {
 }
 
 /**
- * Inline tool-call display. One muted line per tool invocation — mirrors
- * OpenCode's `InlineTool` pattern (`routes/session/index.tsx`) trimmed
- * to Inkstone's scope.
+ * Inline tool-call display. One muted line per invocation — icon +
+ * name + args summary — with an optional inline `<diff>` preview
+ * below when a `confirmDirs` approval attached one.
  *
  * State → visual:
- *   - `pending`    : `~ tool args` (muted, no icon yet — result unknown)
+ *   - `pending`    : `~ tool args` (muted)
  *   - `completed`  : `⚙ tool args` (muted)
  *   - `error`      : `⚙ tool args` in error color + red error line below
  *
- * The args summary is the whole story for today's tools — every
- * `update_sidebar`/`read`/`edit`/`write` result is redundant with the
- * args. Only failures get a second line. When a future tool's result
- * carries information the args don't (e.g. `grep` match count), revisit.
- *
- * Phase-4/Phase-2A diff preview: when a `confirmDirs` approval carries a
- * unified-diff preview, the preview registry (`preview-registry.ts`)
- * stores the diff keyed by `callId`. Auto-expanded while the approval
- * is pending; collapsed when it resolves. For resolved tool calls
- * that have an archived diff, a `▸` / `▾` chevron on the header
- * toggles expansion. The whole header row is the click target — not
- * just the chevron glyph — so users don't have to aim at a 1-cell
- * bullseye in the terminal. When no archived preview exists, the
- * chevron is omitted entirely and the header has no click handler.
- * Themed with the phase-1 diff tokens.
+ * Chevron / click-to-toggle rationale, archive semantics, and the
+ * whole-header click-target choice: see `docs/APPROVAL-UI.md` §
+ * Rendering. Themed with the `diff*` tokens on `ThemeColors`.
  */
 export function ToolPart(props: {
 	callId: string;
@@ -192,10 +180,8 @@ export function ToolPart(props: {
 	const icon = () => (props.state === "pending" ? "~" : "⚙");
 	const headerFg = () =>
 		props.state === "error" ? theme.error : theme.textMuted;
-	// One registry read per render. `showChevron` gates the
-	// disclosure glyph + click handler; `diff` gates the diff
-	// body. The two are independent: collapsed-but-archived is
-	// `{ diff: undefined, showChevron: true }`.
+	// One registry read per render — `showChevron` gates the glyph +
+	// click handler, `diff` gates the body. Independent.
 	const state = () => previews.state(props.callId);
 	const chevron = () => (state().diff ? "▾" : "▸");
 	return (

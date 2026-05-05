@@ -35,9 +35,10 @@ export interface ThemeColors {
 	// `opencode/.../context/theme.tsx` around lines 546-595). Derived
 	// per-theme via `deriveDiffTokens(base, mode)` from `./tint.ts`;
 	// each theme's palette literal spreads the derivation after its
-	// base fields. Consumed by OpenTUI's `<diff>` renderable and by
-	// inline diff-stat chips in the conversation view (consumers land
-	// in a later phase — these fields are scaffolding).
+	// base fields. Consumed by OpenTUI's `<diff>` renderable in
+	// `ToolPart`. The `diffAdded` / `diffRemoved` / `diffContext`
+	// foregrounds are declared for future inline diff-stat chips
+	// (no consumer today).
 	// -----------------------------------------------------------------
 	/** `+N` chip foreground in inline diff stats. */
 	diffAdded: RGBA;

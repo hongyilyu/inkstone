@@ -1,35 +1,10 @@
 /**
- * Phase-5 bottom approval panel — replaces the `Prompt` cell while a
- * `confirmDirs` approval is pending. Port of OpenCode's
- * `PermissionPrompt` (`opencode/.../routes/session/permission.tsx`)
- * trimmed to Inkstone's scope:
+ * Bottom approval panel — replaces `Prompt` while a `confirmDirs`
+ * approval is pending. See `docs/APPROVAL-UI.md` § Rendering for the
+ * chrome rationale, keybind table, and OpenCode divergences.
  *
- *   - Approve / Reject only. "Allow always" is tracked as Future Work
- *     in TODO — it needs a policy-write path into the zone config.
- *
- *   - The diff preview is NOT rendered inside the panel. Phase 4 wires
- *     it into `ToolPart` above, inside the conversation scrollbox, so
- *     the user can scroll it while the panel sits below. OpenCode
- *     renders the diff inside the panel itself; Inkstone doesn't need
- *     to because the conversation already has the diff.
- *
- *   - No ctrl+f fullscreen toggle. OpenCode uses it for large edit
- *     diffs; ours are inline above and always scrollable via the
- *     conversation's own scrollbox.
- *
- * Keybinds are panel-local (not registered in the shared keybind map).
- * This mirrors `DialogConfirm` which handles its own `y`/`n`/←→/enter
- * locally. Conversation scroll keys (`messages_page_up` etc.) stay
- * live — the panel doesn't suspend the global dispatcher, so users
- * can scroll the diff above without losing their place in the panel.
- *
- * Visual chrome is the same three-piece stack as `Prompt`
- * (`src/tui/components/prompt.tsx`): outer `┃` bar + padded inner box
- * with `theme.backgroundElement` fill, then a `╹`-cornered cap row
- * with a `▀` fill, then the hints row. Color is `theme.warning` to
- * signal "this needs attention" — matches the `△` affordance. The
- * shared bubble chrome makes the panel read as "the same cell as
- * Prompt, but warning-tinted" instead of floating disconnected.
+ * Tripwire: `useKeyboard` null-guards on `req()` against the one-frame
+ * window between `setPendingApproval(null)` and `<Show>` unmounting.
  */
 
 import { useKeyboard } from "@opentui/solid";
@@ -51,9 +26,6 @@ export function PermissionPrompt() {
 
 	useKeyboard((evt: { name: string; defaultPrevented?: boolean }) => {
 		if (evt.defaultPrevented) return;
-		// Panel is mounted only while `pendingApproval()` is non-null;
-		// if something races unmounting (Solid batching corner), bail
-		// out gracefully rather than calling the resolver on null.
 		if (!req()) return;
 
 		if (evt.name === "return") {
@@ -70,17 +42,13 @@ export function PermissionPrompt() {
 			evt.name === "right" ||
 			evt.name === "l"
 		) {
-			// Two-option toggle — both directions flip the selection.
 			setStore("active", store.active === "approve" ? "reject" : "approve");
 		}
 	});
 
 	return (
 		<box flexShrink={0}>
-			{/* Body: left `┃` bar in warning, padded inner box in
-			    backgroundElement — same shape as Prompt's input
-			    bubble. flexGrow={1} on both so the bar extends the
-			    full cell width. */}
+			{/* Body: ┃ bar + padded inner in backgroundElement. */}
 			<box
 				flexShrink={0}
 				flexGrow={1}
@@ -133,9 +101,7 @@ export function PermissionPrompt() {
 				</box>
 			</box>
 
-			{/* Cap row: ╹ corner on the left, ▀ fill across. Matches
-			    Prompt's cap (see src/tui/components/prompt.tsx around
-			    the "prompt/index.tsx:1226" comment). */}
+			{/* Cap row: ╹ corner + ▀ fill. */}
 			<box
 				height={1}
 				border={["left"]}
@@ -156,7 +122,6 @@ export function PermissionPrompt() {
 				/>
 			</box>
 
-			{/* Hints row, aligned with Prompt's hints row. */}
 			<box paddingLeft={3} flexDirection="row" gap={2}>
 				<text fg={theme.textMuted}>← → select</text>
 				<text fg={theme.textMuted}>enter confirm</text>

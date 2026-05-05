@@ -9,7 +9,7 @@ import type { ThemeColors } from "./types";
 /**
  * Build the syntax-style rule set for the markdown renderer + fenced
  * code blocks. Consumes the markdown* + syntax* tokens on
- * `ThemeColors` (phase-2 port of OpenCode's `getStyle` rule set at
+ * `ThemeColors` (port of OpenCode's `getStyle` rule set at
  * `opencode/.../context/theme.tsx` lines 900-1210). Aligned to
  * OpenCode's scope-to-token mapping byte-for-byte except for the
  * H1-H6 graduated palette below, which is Inkstone-specific.

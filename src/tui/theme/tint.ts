@@ -4,11 +4,10 @@
  * around the `tint` function at line 509 and the `ansiColors` block at
  * line 533). Inkstone doesn't load terminal palettes, so we ship a
  * fixed `ansiColors` table matching OpenCode's `col(i)` fallback
- * (`ansiToRgba`) for the same indices. These four indices (`red`,
- * `green`, `redBright`, `greenBright`) drive the diff derivation;
- * additional indices are here so follow-up phases that port
- * OpenCode's markdown / syntax token families don't need to re-open
- * this file.
+ * (`ansiToRgba`) for the same indices. `red` / `green` /
+ * `redBright` / `greenBright` drive the diff derivation;
+ * `yellow` / `blue` / `magenta` / `cyan` drive the markdown +
+ * syntax derivations.
  *
  * The derivation logic mirrors OpenCode byte-for-byte so that when
  * OpenCode's named theme roster is eventually ported (tracked in
@@ -52,10 +51,10 @@ export function tint(base: RGBA, overlay: RGBA, alpha: number): RGBA {
  * output for the same theme.
  *
  * Current derivations read `red` / `green` / `redBright` /
- * `greenBright` for the diff family; the remaining primaries are
- * included now because the upcoming markdown + syntax token port
- * (phase 2) reads them and widening this table in that phase would
- * be unrelated churn.
+ * `greenBright` for the diff family, and `yellow` / `blue` /
+ * `magenta` / `cyan` for the markdown + syntax families. All eight
+ * primaries are kept in one place so future derivations don't have
+ * to widen the table and touch unrelated call sites.
  */
 export const ansiColors = {
 	red: RGBA.fromHex("#800000"),

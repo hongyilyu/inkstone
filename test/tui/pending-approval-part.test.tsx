@@ -1,5 +1,5 @@
 /**
- * Phase 4 — inline diff preview on the pending tool part.
+ * Inline diff preview on the pending tool part + archive toggle.
  *
  * The real end-to-end flow (backend `beforeToolCall` → `confirmFn` →
  * `AgentProvider` closure → `previews` registry → `ToolPart` render)
@@ -59,7 +59,7 @@ function makeRequest(overrides: Partial<ConfirmRequest> = {}): ConfirmRequest {
 	};
 }
 
-describe("phase 4 — inline diff preview on pending tool part", () => {
+describe("inline diff preview on pending tool part", () => {
 	test("ToolPart renders the unified diff while confirmFn is pending", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory, width: 120 });
@@ -98,8 +98,8 @@ describe("phase 4 — inline diff preview on pending tool part", () => {
 		expect(frame).toContain("new line");
 		expect(frame).toContain("old line");
 
-		// Resolve the pending confirmFn via the Phase-5 panel's Esc
-		// keybind (rejects and resolves the Promise).
+		// Resolve the pending confirmFn via the panel's Esc keybind
+		// (rejects and resolves the Promise).
 		setup.mockInput.pressEscape();
 		await pending;
 	});

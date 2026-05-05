@@ -223,10 +223,10 @@ describe("dispatchBeforeToolCall + reader overlay", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ConfirmRequest payload shape tests — new in phase 3. Exercises the
-// structured `ConfirmRequest` with callId + optional preview for the
-// `confirmDirs` rule branch. These are scoped narrowly: no rule matrix,
-// just one real confirm for each tool shape.
+// ConfirmRequest payload shape tests. Exercises the structured
+// `ConfirmRequest` with callId + optional preview for the
+// `confirmDirs` rule branch. These are scoped narrowly: no rule
+// matrix, just one real confirm for each tool shape.
 // ---------------------------------------------------------------------------
 
 describe("confirmFn payload — ConfirmRequest shape", () => {
@@ -239,7 +239,7 @@ describe("confirmFn payload — ConfirmRequest shape", () => {
 		const overlay = composeOverlay(readerAgent);
 		const ctx = makeCtx("write", {
 			path: `${VAULT}/020 HUMAN/023 Notes/fresh.md`,
-			content: "hello from phase 3",
+			content: "hello world",
 		});
 		await dispatchBeforeToolCall(ctx, overlay);
 		expect(confirmCalls).toBe(1);
@@ -251,8 +251,8 @@ describe("confirmFn payload — ConfirmRequest shape", () => {
 		expect(req.preview).toBeDefined();
 		expect(req.preview?.filepath).toBe(`${VAULT}/020 HUMAN/023 Notes/fresh.md`);
 		expect(req.preview?.oldText).toBe(""); // file doesn't exist yet
-		expect(req.preview?.newText).toBe("hello from phase 3");
-		expect(req.preview?.unifiedDiff).toContain("+hello from phase 3");
+		expect(req.preview?.newText).toBe("hello world");
+		expect(req.preview?.unifiedDiff).toContain("+hello world");
 	});
 
 	test("edit Articles frontmatter — preview.newText reflects applied edits", async () => {

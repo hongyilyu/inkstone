@@ -315,6 +315,8 @@ Sourcing the model from `event.message` (rather than the mutable `store.modelNam
 
 Policy enforcement is declarative. The shell wires a single `beforeToolCall` hook that delegates to `dispatchBeforeToolCall` in `src/backend/agent/permissions.ts`. The dispatcher reads the active tool's baseline rules plus the active agent's overlay and evaluates them in order; the first rule that returns `{ block, reason }` short-circuits.
 
+The user-facing approval flow (bottom panel + inline diff preview) that `confirmDirs` drives is documented in [`APPROVAL-UI.md`](./APPROVAL-UI.md).
+
 ```
 [...baselineRules[toolName], ...overlay[toolName]] → evaluate in declaration order
 ```
@@ -385,31 +387,23 @@ A follow-up pass (the statelessness refactor) replaced reader's state-keyed rule
 
 ### ConfirmRequest payload
 
-The injected `confirmFn` receives a structured `ConfirmRequest` (not separate `title` / `message` arguments):
+The injected `confirmFn` receives a structured `ConfirmRequest`:
 
 ```ts
 interface ConfirmRequest {
-  callId: string;        // pi-agent-core tool-call id, lets consumers correlate with toolcall_end
+  callId: string;        // pi-agent-core tool-call id
   title: string;
   message: string;
   preview?: {
     filepath: string;
     oldText: string;     // current file contents, "" if file doesn't exist
     newText: string;     // proposed contents after the tool runs
-    unifiedDiff: string; // from `createTwoFilesPatch` — "" when old/new are identical
+    unifiedDiff: string; // from `createTwoFilesPatch` — "" when identical
   };
 }
 ```
 
-`preview` is populated only for `confirmDirs` evaluations against `write` / `edit` tools where `newText` can be reconstructed cheaply from `args`. `write` uses `args.content` as-is; `edit` applies `edits[]` via a literal-match helper (not pi-coding-agent's fuzzy match — the preview is advisory and a misleading diff is worse than no diff). Preview is omitted when any `oldText` isn't found verbatim, when matches overlap, or when the oldText appears more than once (matches pi-coding-agent's own ambiguity rejection). The unified-diff string is produced via the `diff` package's `createTwoFilesPatch`, using the resolved filepath on both sides of the header.
-
-Today's TUI closure wires the structured `ConfirmRequest` through a Phase-5 scoped signal — not `DialogConfirm`. When `confirmFn` fires, the provider (`src/tui/context/agent/provider.tsx`) captures the request's display fields (`title`, `message`, `callId`) into a local `createSignal<PendingApproval | null>`, surfaces both the accessor and a `respondApproval(ok)` verb on the agent context, and returns a Promise that resolves when `respondApproval` is called. The layout (`src/tui/app.tsx`) reads that signal and swaps the `Prompt` cell for `PermissionPrompt` (`src/tui/components/permission-prompt.tsx`) while non-null. `PermissionPrompt` owns its own `useKeyboard`: `←/h` / `→/l` cycle between Allow and Reject, `Enter` commits, `Esc` rejects. The conversation scrollbox above is untouched — its scroll keybinds (`messages_page_up` / `_down`) stay live, so users can page the inline diff while the panel is on screen.
-
-Phase-4's preview registry is layered on top. When a `ConfirmRequest.preview` carries a `unifiedDiff`, the provider writes it into a per-`callId` `Map` (`src/tui/context/agent/preview-registry.ts`) before resolving, so `ToolPart` renders the diff inline above the panel via OpenTUI's `<diff>` renderable. The registry is ephemeral (Solid signal cell, cleared on provider unmount and per-`callId` when the approval resolves), avoiding the need to widen `DisplayPart` with a field that would leak into SQLite persistence.
-
-Abort-safety: if the provider unmounts while an approval is pending, `onCleanup` resolves the in-flight Promise to `false` (queued via `queueMicrotask` to avoid re-entering the owner tree during teardown). This unwinds pi-agent-core's `await confirmFn(...)` cleanly; the reducer's existing `agent_end` sweep then flips the pending tool part to `"error"` via the same path as a normal abort.
-
-`DialogConfirm` itself is unchanged — still used by the provider-disconnect flow. Unifying that onto the same panel pattern is tracked as Future Work.
+`preview` is populated only for `confirmDirs` evaluations against `write` / `edit` tools where `newText` can be reconstructed cheaply from `args`. See [`APPROVAL-UI.md`](./APPROVAL-UI.md) for the full end-to-end flow: how the backend computes the diff, how the TUI's `PermissionPrompt` renders the panel + keyboard, how `ToolPart` renders the inline diff above it, and how abort / unmount unwind a pending approval.
 
 ## Agent Registry
 
