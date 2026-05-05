@@ -472,6 +472,28 @@ The folder-per-agent shape makes this a local change:
 
 No changes to `types.ts`, `compose.ts`, `zones.ts`, `tools.ts`, `backend/agent/index.ts`, the TUI, or config schemas are required.
 
+### Generic article-directory search tools
+
+`src/backend/agent/tools/search.ts` exposes two agent-tool factories that let any agent search a directory of markdown-with-frontmatter files without re-implementing the scanner:
+
+- **`makeSearchTool({ dir, name, description })`** — filter-based search. Schema: `{ filter?: { frontmatter?: Record<string,string>, content?: string }, limit?: number }`.
+  - `filter.frontmatter` substring-matches against the article's parsed frontmatter, case-insensitive, per key. Array-valued keys match if any element contains the substring. Multiple keys AND-join.
+  - `filter.content` substring-matches against the body (post-frontmatter), case-insensitive.
+  - `limit` defaults to 10, hard-capped at 25 at the schema layer.
+  - No filter at all → list by mtime desc, tiebroken on relative path for determinism.
+  - Return per hit: `{ filename }` always; `frontmatter: Record<string, FrontmatterValue>` iff frontmatter filter was supplied; `snippets: string[]` iff content filter was supplied. Snippet windows are word-aligned (~20 words before + 20 after, hard cap 50 words per snippet), overlapping windows merged, max 3 snippets per article.
+- **`makeListKeysTool({ dir, name, description })`** — enumerate observed frontmatter keys. No input. Returns `{ total, keys: [{ name, sample }] }` where `sample` is one representative value taken deterministically from the lexicographically-first article setting the key. No type inference, no frequency count — the LLM reads the sample and knows.
+
+Both factories require an explicit `name` + `description` — agents own their tool identity. Reader uses `"search"` + `"list_keys"` scoped to `ARTICLES_DIR`; a future notes agent can use `"search_notes"` + `"list_note_keys"` scoped to `NOTES_DIR` without collision.
+
+Implementation posture (intentionally simple):
+
+- Synchronous read-all on every tool call. No cache, no disk index, no mtime invalidation. Fine for vault sizes in the low hundreds of articles; if scan time ever becomes user-visible, a session-scoped cache is the least-invasive follow-up.
+- Walker skips leading-dot entries, `node_modules/`, and symlinks (matches `listVaultFiles` in `src/tui/util/vault-files.ts`).
+- Only `.md` / `.markdown` files are scanned — `.txt` isn't frontmatter-bearing in the corpus.
+- Corrupt frontmatter (e.g. unclosed `---` fence) → file surfaces with empty `fields` and matches only on body content; malformed export doesn't break search.
+- No permission baseline — the scanned `dir` is fixed at factory time (not user-controllable via the tool args), and the agent already has vault-wide read via the baseline.
+
 ### Commands
 
 Commands are user-invoked verbs, distinct from tools (which are LLM-invoked mid-turn). See [`AGENT-DESIGN.md` D9](./AGENT-DESIGN.md) for the rationale; this section documents the runtime.
