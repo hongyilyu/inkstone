@@ -16,8 +16,12 @@ import {
 	createSession as createAgentSession,
 	generateSessionTitle,
 	getConfirmFn,
+	getSuggestCommandFn,
 	type Session,
+	type SuggestCommandDecision,
+	type SuggestCommandRequest,
 	setConfirmFn,
+	setSuggestCommandFn,
 } from "@backend/agent";
 import {
 	getPersistenceErrorHandler,
@@ -32,6 +36,7 @@ import {
 	useContext,
 } from "solid-js";
 import { createStore } from "solid-js/store";
+import { useCommand } from "../../components/dialog/command";
 import { useDialog } from "../../ui/dialog";
 import { useToast } from "../../ui/toast";
 import { createWrappedActions } from "./actions";
@@ -43,6 +48,7 @@ import {
 	type AgentContextValue,
 	agentContext,
 	type PendingApproval,
+	type PendingSuggestion,
 	type SessionFactory,
 } from "./types";
 
@@ -54,6 +60,7 @@ export function AgentProvider(
 ) {
 	const dialog = useDialog();
 	const toast = useToast();
+	const command = useCommand();
 
 	// Per-`callId` diff preview registry. See `docs/APPROVAL-UI.md`
 	// § State shapes for the three-cell rationale. Ephemeral —
@@ -80,6 +87,54 @@ export function AgentProvider(
 		// chain races the unmount.
 		setPendingApproval(null);
 		entry.resolve(ok);
+	}
+
+	// Pending `suggest_command` signal. Parallel to `pendingApproval`
+	// above: the tool's execute() awaits the user's decision via the
+	// injected resolver, and the layout replaces the Prompt cell with
+	// `SuggestCommandPrompt` while an entry is set. Mirroring the
+	// approval pattern (two standalone signals rather than a shared
+	// abstraction) per the tripwire in `AgentStoreState.isStreaming`'s
+	// docstring — unifying them into a single "pendingPanel" signal
+	// would couple the two flows and make the unmount-resolve path
+	// harder to reason about.
+	const [pendingSuggestion, setPendingSuggestion] = createSignal<{
+		request: PendingSuggestion;
+		resolve: (decision: SuggestCommandDecision) => void;
+	} | null>(null);
+
+	function respondSuggestion(decision: SuggestCommandDecision): void {
+		const entry = pendingSuggestion();
+		if (!entry) return;
+		setPendingSuggestion(null);
+		entry.resolve(decision);
+		if (decision !== "confirmed") return;
+		// Replay the slash through the unified command registry — same
+		// path a manually-typed `/article` takes. The eventual
+		// `actions.prompt(text)` call hits `agent.signal` truthy (the
+		// suggest_command tool is still unwinding its own turn) and
+		// takes the `agent.followUp(...)` branch, so pi-agent-core's
+		// loop drains the queued user message at the natural end of the
+		// current run (see `agent-loop.js:136-141`). No TUI-side signal,
+		// effect, or `waitForIdle` needed — this uses pi-agent-core's
+		// designed post-run drain primitive.
+		const fired = command.triggerSlash(
+			entry.request.command,
+			entry.request.args,
+		);
+		if (!fired) {
+			// Registry couldn't dispatch (agent-scoped entry not
+			// registered, or the command was removed between the
+			// suggestion and the confirm). The user clicked Confirm and
+			// saw nothing happen — surface the failure via toast so it
+			// isn't silent.
+			toast.show({
+				variant: "error",
+				title: "Command replay failed",
+				message: `/${entry.request.command} ${entry.request.args}`.trim(),
+				duration: 6000,
+			});
+		}
 	}
 
 	// Install backend side-effect handlers. Restore on unmount so a
@@ -122,6 +177,41 @@ export function AgentProvider(
 			const resolver = inFlightResolver;
 			inFlightResolver = null;
 			queueMicrotask(() => resolver(false));
+		}
+	});
+
+	// Install the suggest_command resolver. Same shape as the confirm
+	// handler above: preserve the previous value, wrap the Promise so
+	// we can rescue it on unmount. Direct ref (not the Solid signal)
+	// because signal reads during owner disposal are fragile.
+	const prevSuggestCommandFn = getSuggestCommandFn();
+	let inFlightSuggestionResolver:
+		| ((decision: SuggestCommandDecision) => void)
+		| null = null;
+	setSuggestCommandFn(async (req: SuggestCommandRequest) => {
+		return new Promise<SuggestCommandDecision>((resolve) => {
+			const wrappedResolve = (decision: SuggestCommandDecision) => {
+				inFlightSuggestionResolver = null;
+				resolve(decision);
+			};
+			inFlightSuggestionResolver = wrappedResolve;
+			setPendingSuggestion({
+				request: {
+					callId: req.callId,
+					command: req.command,
+					args: req.args,
+					rationale: req.rationale,
+				},
+				resolve: wrappedResolve,
+			});
+		});
+	});
+	onCleanup(() => {
+		setSuggestCommandFn(prevSuggestCommandFn);
+		if (inFlightSuggestionResolver) {
+			const resolver = inFlightSuggestionResolver;
+			inFlightSuggestionResolver = null;
+			queueMicrotask(() => resolver("cancelled"));
 		}
 	});
 
@@ -214,6 +304,8 @@ export function AgentProvider(
 		previews,
 		pendingApproval: () => pendingApproval()?.request ?? null,
 		respondApproval,
+		pendingSuggestion: () => pendingSuggestion()?.request ?? null,
+		respondSuggestion,
 	});
 
 	const value: AgentContextValue = {
@@ -229,6 +321,8 @@ export function AgentProvider(
 		previews,
 		pendingApproval: () => pendingApproval()?.request ?? null,
 		respondApproval,
+		pendingSuggestion: () => pendingSuggestion()?.request ?? null,
+		respondSuggestion,
 	};
 
 	return (
