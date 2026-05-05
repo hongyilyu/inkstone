@@ -1,17 +1,17 @@
 /**
- * Phase-2 distinctness check for the markdown + syntax token port.
+ * Distinctness check for the markdown + syntax token wiring.
  *
  * `SyntaxStyle`'s FFI surface doesn't let a test introspect the
  * compiled style by scope, so we inspect the *rule set* built by
  * `getSyntaxRules(colors)` before compilation. The assertions pin
  * the scope-to-token wiring: a regression that accidentally points
- * `markup.raw` back at `success` (the pre-phase-2 value) or leaves
- * `keyword` on `accent` would flip one of these checks.
+ * `markup.raw` back at `success` or leaves `keyword` on `accent`
+ * would flip one of these checks.
  *
  * The test deliberately does *not* render a `<markdown>` tree — the
  * rule set is the contract; the renderer is OpenTUI's concern, and
  * asserting against rendered cell output would couple this test to
- * OpenTUI's layout which is outside the scope of the phase.
+ * OpenTUI's layout.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -33,7 +33,7 @@ function sameRGBA(a: RGBA | string, b: RGBA | string): boolean {
 	return a.r === b.r && a.g === b.g && a.b === b.b;
 }
 
-describe("phase 2 — markdown + syntax token wiring", () => {
+describe("markdown + syntax token wiring", () => {
 	for (const theme of themes) {
 		describe(theme.id, () => {
 			const colors: ThemeColors = theme.colors;

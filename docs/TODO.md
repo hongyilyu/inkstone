@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-04 (phase 5 — bottom permission panel replaces Prompt while pending)
+**Last updated**: 2026-05-04 (approval-UI polish: toggleable diff preview + abort/clear resolves pending + footer on turn-closing bubble only)
 
 ## In Progress
 
@@ -11,7 +11,7 @@ None
 
 ## Known Issues
 
-- **Phase-5 abort-unmount test gap.** The provider's `onCleanup` resolves any in-flight `confirmFn` to `false` (queued via `queueMicrotask`). Verified by code inspection + inline keybind tests. Direct test coverage via `renderer.destroy()` while pending triggers a Bun 1.3.4 segfault on macOS in the OpenTUI renderer teardown path when a Promise-holding owner is disposed — unrelated to the resolver, but it means we can't assert this path end-to-end today. Revisit when Bun / OpenTUI ship a fix.
+- **Abort-unmount test gap for the approval panel.** The provider's `onCleanup` resolves any in-flight `confirmFn` to `false` (queued via `queueMicrotask`). Verified by code inspection + abort/clearSession test coverage. Direct test coverage via `renderer.destroy()` while pending triggers a Bun 1.3.4 segfault on macOS in the OpenTUI renderer teardown path when a Promise-holding owner is disposed — unrelated to the resolver, but it means we can't assert this specific path end-to-end today. Revisit when Bun / OpenTUI ship a fix.
 
 - `file` DisplayParts are user-bubble-only per the reducer today, but the `DisplayPart` union type does not encode that constraint. `AssistantMessage`'s `<Switch>` intentionally has no `<Match>` for `file` — `<Switch>` with no matching branch renders nothing. If a future reducer change starts pushing `file` parts onto an assistant bubble (e.g. a tool that returns a file attachment), those parts would silently disappear from the rendered frame with no type error or runtime warning. Options for hardening: (a) narrow `DisplayPart` at the assistant seam so `file` is statically unreachable, or (b) add a dev-only `console.warn` on the unhandled branch. Neither is implemented today; revisit when a reducer path for an assistant `file` part is actually needed.
 

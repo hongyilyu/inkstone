@@ -44,22 +44,16 @@ export interface ActionDeps {
 	toast: ReturnType<typeof useToast>;
 	titleGenerator: typeof generateSessionTitle;
 	/**
-	 * Phase-4 diff-preview registry. Session-boundary resets (clear /
-	 * resume / unmount) wipe the archive so stale diff entries don't
-	 * survive into a different session's tool parts. Provider wires
-	 * this in at mount.
+	 * Diff-preview registry. Session-boundary resets (clear / resume
+	 * / unmount) wipe the archive so stale entries don't bleed into
+	 * a different session's tool parts.
 	 */
 	previews: PreviewRegistry;
 	/**
-	 * Phase-5 pending-approval accessor + resolver. When an approval
-	 * is in flight, `pendingApproval()` is non-null and
-	 * `respondApproval(ok)` fires the resolver the backend is awaiting
-	 * inside its `beforeToolCall` hook. Action wrappers for `abort`
-	 * and `clearSession` call `respondApproval(false)` when a pending
-	 * approval is in flight, before propagating to the backend, so
-	 * pi-agent-core's `await confirmFn(...)` unwinds cleanly instead
-	 * of leaving the agent loop blocked on a resolver that will
-	 * never fire.
+	 * Pending-approval accessor + resolver for `confirmDirs` flows.
+	 * `abort` and `clearSession` wrappers call `respondApproval(false)`
+	 * before propagating to the backend — see
+	 * `docs/APPROVAL-UI.md` § Abort / clear ordering.
 	 */
 	pendingApproval: () => PendingApproval | null;
 	respondApproval: (ok: boolean) => void;
@@ -74,15 +68,10 @@ export function createWrappedActions(
 			await promptAction(text, displayParts, deps);
 		},
 		abort() {
-			// Unwind any in-flight approval BEFORE the backend abort:
-			// pi-agent-core's run loop is parked on
-			// `await confirmFn(...)` inside `beforeToolCall`, and
-			// AbortController can't interrupt a Promise the loop
-			// isn't listening on. The resolver is the only primitive
-			// that wakes it. Resolving to `false` matches "user said
-			// no" semantics for an interrupted request; the
-			// reducer's `agent_end` sweep then flips the pending
-			// tool part to `error` via the existing path.
+			// Resolve pending BEFORE backend abort — the run loop is
+			// parked on `await confirmFn(...)` and AbortController
+			// can't wake it. See `docs/APPROVAL-UI.md` § Abort / clear
+			// ordering.
 			if (deps.pendingApproval()) deps.respondApproval(false);
 			deps.agentSession.actions.abort();
 		},
@@ -322,11 +311,8 @@ function handlePreStreamError(err: unknown, deps: ActionDeps): void {
 // ────────────────────────────────────────────────────────────────────
 
 async function clearSessionAction(deps: ActionDeps): Promise<void> {
-	// Unwind any in-flight approval first. Same reason as `abort` in
-	// the wrapped actions: pi-agent-core's `beforeToolCall` is awaiting
-	// `confirmFn`; the backend abort that `clearSession` triggers
-	// internally can't wake that Promise. Resolving to `false` before
-	// the backend call lets the await unwind cleanly.
+	// Resolve pending approval before the backend call. See
+	// `docs/APPROVAL-UI.md` § Abort / clear ordering.
 	if (deps.pendingApproval()) deps.respondApproval(false);
 	// Await the backend clear first. Mid-stream path: it calls
 	// `agent.abort()` + `waitForIdle()` so pi-agent-core's final
@@ -355,11 +341,6 @@ async function clearSessionAction(deps: ActionDeps): Promise<void> {
 	// the previous session's network state.
 	deps.setStore("codexTransport", undefined);
 	deps.sessionState.setPreTurnCodexConnections(undefined);
-	// Wipe the diff-preview archive so stale diffs from the
-	// previous session's tool calls don't linger into the fresh
-	// conversation. Pending entries should be empty by the time we
-	// get here (clearSession aborts an in-flight turn), but
-	// `clearAll()` is idempotent.
 	deps.previews.clearAll();
 }
 
@@ -440,10 +421,8 @@ function resumeSessionAction(sessionId: string, deps: ActionDeps): void {
 		closeSecondaryPage();
 		deps.setStore("codexTransport", undefined);
 		deps.sessionState.setPreTurnCodexConnections(undefined);
-		// Wipe diff-preview archive. Loaded tool parts have no
-		// matching registry entries (diffs were never persisted), so
-		// their chevron won't render — but any entries from the
-		// pre-resume session must not bleed into resumed callIds.
+		// Wipe diff-preview archive — entries are keyed by callId and
+		// must not bleed across resume boundaries.
 		deps.previews.clearAll();
 	});
 	toBottom();

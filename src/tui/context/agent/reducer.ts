@@ -342,25 +342,17 @@ function stampAssistantBubbleMeta(
 		deps.setStore("totalTokens", (t) => t + usage.totalTokens);
 		deps.setStore("totalCost", (c) => c + (usage.cost?.total ?? 0));
 	}
-	// Per-message meta: `error` and `interrupted`. `agentName` +
-	// `modelName` are stamped at `agent_end` on the turn-closing
-	// bubble only (see `stampTurnClosingBubble`) so intermediate
-	// tool-use bubbles in a multi-message turn don't render their
-	// own `▣ Reader · <model>` footer. OpenCode's `MessageFooter`
-	// uses the same placement.
+	// Per-message meta only: `error` + `interrupted`. Per-turn meta
+	// (agentName / modelName / duration / thinkingLevel) is stamped
+	// at `agent_end` on the turn-closing bubble — see
+	// `stampTurnClosingBubble` and `docs/APPROVAL-UI.md` § Rendering.
 	const lastIdx = deps.store.messages.length - 1;
 	const last = deps.store.messages[lastIdx];
 	if (!last || last.role !== "assistant") return;
-	// Surface assistant-turn termination onto the bubble. pi-ai
-	// converts provider SDK exceptions into stream `error` events
-	// (see e.g. `openai-codex-responses.js`) which pi-agent-core
-	// forwards through message_end with `stopReason` set and
-	// `errorMessage` populated. We split the two cases so the UI
-	// can render differently: hard errors (`"error"`) keep the red-
-	// bordered panel with the raw provider message; aborts
-	// (`"aborted"`) only flip the `interrupted` flag so the footer
-	// can suffix ` · interrupted` and tint the agent glyph muted —
-	// no scary red panel when the user pressed ESC-ESC on purpose.
+	// Error vs interrupted split: hard errors (stopReason "error")
+	// get the red-bordered panel with the provider message; aborts
+	// (stopReason "aborted") flip `interrupted` only — the footer
+	// suffixes ` · interrupted` and tints the agent glyph muted.
 	const errorStr =
 		assistantMsg.stopReason === "error" && assistantMsg.errorMessage
 			? assistantMsg.errorMessage
@@ -371,20 +363,9 @@ function stampAssistantBubbleMeta(
 	const sid = deps.sessionState.getCurrentSessionId();
 	if (!sid) return;
 
-	// Persist-first: build the intended post-state as a plain object
-	// so the tx writes the new meta WITHOUT mutating the store. On
-	// success, mirror the meta fields into the store. On failure,
-	// `persistThen` swallows the rethrown error (already reported via
-	// `reportPersistenceError`'s dedup sentinel) and the store stays
-	// at its pre-mutation value — no red error panel, no interrupted
-	// suffix. The per-turn footer meta is separately stamped at
-	// `agent_end` (see `stampTurnClosingBubble`).
-	//
-	// Parts are shallow-cloned so `updated` is fully decoupled from
-	// the live Solid proxy. Matches the shape at the other persistThen
-	// sites (tool_execution_end, agent_end sweep) and removes reliance
-	// on the implicit "reducer is synchronous" invariant that kept a
-	// live-proxy splat safe.
+	// Persist-first: store mutations land only on tx success so
+	// disk and store stay in lockstep. Parts are shallow-cloned so
+	// `updated` is decoupled from the live Solid proxy.
 	const updated: DisplayMessage = {
 		...last,
 		parts: last.parts.map((p) => ({ ...p })),
@@ -692,37 +673,11 @@ function persistSynthesizedAbortMessage(
 }
 
 function stampTurnClosingBubble(event: AgentEvent, deps: ReducerDeps): void {
-	// Per-turn stamps: `duration`, `thinkingLevel`, `agentName`,
-	// `modelName`. All apply to the turn-closing assistant bubble
-	// only — `agent_end` fires immediately after the turn-closing
-	// assistant `message_end`, and tool results are not rendered as
-	// display bubbles, so `messages[length - 1]` at this point is
-	// guaranteed to be the turn-closing assistant bubble.
-	// Intermediate tool-call assistant messages in the same turn do
-	// not get these stamps, so their `AssistantFooter` stays hidden
-	// (the footer gates on `modelName || interrupted`). Mirrors
-	// OpenCode's `MessageFooter` placement.
-	//
-	// Interrupted turns skip the duration + thinkingLevel pip — the
-	// wall-clock-until-abort value would read like a completed-turn
-	// duration next to the ` · interrupted` suffix, and "what effort
-	// produced this turn?" has no meaningful answer when the reply
-	// didn't complete. `agentName` + `modelName` still stamp on
-	// interrupted turns so the bubble shows `▣ Reader · <model> ·
-	// interrupted` rather than a bare `▣ Reader · interrupted`.
-	//
-	// Provider + model come from the `agent_end` event's
-	// `messages[last]` when that's an assistant message. Sourcing
-	// from the event (not `store.modelName`) means mid-run Ctrl+P
-	// model switches don't relabel an already-generated reply.
-	//
-	// `thinkingLevel` is sourced from the turn-start snapshot
-	// (`turnStartThinkingLevel`) so a mid-stream `setThinkingLevel` /
-	// `setModel` doesn't relabel the historical bubble. `"off"` (or
-	// `undefined` when the turn didn't pass through
-	// `wrappedActions.prompt`, e.g. synthetic flows) is deliberately
-	// NOT persisted — the renderer hides the badge for both, so
-	// NULL in the DB is lossless for display.
+	// Per-turn stamps (`agentName`, `modelName`, `duration`,
+	// `thinkingLevel`) land on `messages[length - 1]` — always the
+	// turn-closing assistant bubble because tool results don't
+	// render as display bubbles. See `docs/APPROVAL-UI.md` §
+	// Rendering for the footer-placement rationale.
 	if (deps.store.lastTurnStartedAt <= 0) return;
 	const lastIdx = deps.store.messages.length - 1;
 	const last = deps.store.messages[lastIdx];
@@ -735,20 +690,14 @@ function stampTurnClosingBubble(event: AgentEvent, deps: ReducerDeps): void {
 		closingAgent && closingAgent.role === "assistant"
 			? (closingAgent as AssistantMessage)
 			: undefined;
-	// If pi-agent-core's `event.messages` doesn't end with an
-	// assistant (e.g. a trailing toolResult from a terminated run),
-	// `displayName` stays `undefined` and the spread below omits
-	// `modelName` — `AssistantFooter` then hides entirely for that
-	// turn (its gate is `modelName || interrupted`). That's the
-	// safer fallback: better to suppress the footer than render
-	// `▣ Reader` with no model.
+	// Fallback: if event.messages doesn't end with an assistant
+	// (e.g. a trailing toolResult from a terminated run),
+	// `displayName` stays undefined and AssistantFooter hides —
+	// safer than rendering a bare `▣ Reader` with no model.
 	const displayName = closingAssistant
 		? (getModel(closingAssistant.provider as any, closingAssistant.model as any)
 				?.name ?? closingAssistant.model)
 		: undefined;
-	// Switching agents is locked to the empty-session open page, so
-	// `store.currentAgent` at event time is guaranteed to be the
-	// agent that produced this reply.
 	const agentName = getAgentInfo(deps.store.currentAgent).displayName;
 
 	const interrupted =

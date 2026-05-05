@@ -1,9 +1,9 @@
 /**
- * Phase 5 — bottom approval panel replaces Prompt while pending.
+ * Bottom approval panel replaces Prompt while pending.
  *
  * Covers the replacement contract, the panel-local keyboard, and the
- * abort-safety invariants (unmount resolves pending to `false`). The
- * diff-preview rendering itself is covered by
+ * abort-safety invariants (abort / clearSession resolve pending to
+ * `false`). The diff-preview rendering itself is covered by
  * `pending-approval-part.test.tsx`; we don't repeat those assertions.
  */
 
@@ -51,7 +51,7 @@ function primeConversation(fake: ReturnType<typeof makeFakeSession>) {
 	});
 }
 
-describe("phase 5 — bottom permission panel", () => {
+describe("bottom permission panel", () => {
 	test("panel replaces Prompt while an approval is pending", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory, width: 120 });
