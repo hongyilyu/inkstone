@@ -12,7 +12,7 @@
  *
  * `agent_end` has five independent concerns — each is a named helper
  * (`sweepPendingTools`, `persistSynthesizedAbortMessage`,
- * `stampTurnDurationAndThinkingLevel`, `stampInterruptedUser`,
+ * `stampTurnClosingBubble`, `stampInterruptedUser`,
  * `detectCodexTransport`) so the case body reads as a sequence of
  * intention-revealing calls instead of 260 lines of scrolling.
  */
@@ -342,23 +342,15 @@ function stampAssistantBubbleMeta(
 		deps.setStore("totalTokens", (t) => t + usage.totalTokens);
 		deps.setStore("totalCost", (c) => c + (usage.cost?.total ?? 0));
 	}
-	// Snapshot agent + model onto the assistant bubble that was
-	// pushed in the matching `message_start`. Sourcing provider/model
-	// from the event (not `store.modelName`) means mid-run Ctrl+P
-	// model switches don't relabel an already-generated reply, and
-	// tool-driven turns with multiple assistant messages get their
-	// own correct per-bubble footer.
+	// Per-message meta: `error` and `interrupted`. `agentName` +
+	// `modelName` are stamped at `agent_end` on the turn-closing
+	// bubble only (see `stampTurnClosingBubble`) so intermediate
+	// tool-use bubbles in a multi-message turn don't render their
+	// own `▣ Reader · <model>` footer. OpenCode's `MessageFooter`
+	// uses the same placement.
 	const lastIdx = deps.store.messages.length - 1;
 	const last = deps.store.messages[lastIdx];
 	if (!last || last.role !== "assistant") return;
-	const provider = assistantMsg.provider;
-	const modelId = assistantMsg.model;
-	const displayName =
-		getModel(provider as any, modelId as any)?.name ?? modelId;
-	// Switching agents is locked to the empty-session open page, so
-	// `store.currentAgent` at event time is guaranteed to be the
-	// agent that produced this reply.
-	const agentName = getAgentInfo(deps.store.currentAgent).displayName;
 	// Surface assistant-turn termination onto the bubble. pi-ai
 	// converts provider SDK exceptions into stream `error` events
 	// (see e.g. `openai-codex-responses.js`) which pi-agent-core
@@ -384,8 +376,9 @@ function stampAssistantBubbleMeta(
 	// success, mirror the meta fields into the store. On failure,
 	// `persistThen` swallows the rethrown error (already reported via
 	// `reportPersistenceError`'s dedup sentinel) and the store stays
-	// at its pre-mutation value — the bubble renders without a footer,
-	// matching what `/resume` would reconstruct.
+	// at its pre-mutation value — no red error panel, no interrupted
+	// suffix. The per-turn footer meta is separately stamped at
+	// `agent_end` (see `stampTurnClosingBubble`).
 	//
 	// Parts are shallow-cloned so `updated` is fully decoupled from
 	// the live Solid proxy. Matches the shape at the other persistThen
@@ -395,8 +388,6 @@ function stampAssistantBubbleMeta(
 	const updated: DisplayMessage = {
 		...last,
 		parts: last.parts.map((p) => ({ ...p })),
-		agentName,
-		modelName: displayName,
 		...(errorStr ? { error: errorStr } : {}),
 		...(interruptedFlag ? { interrupted: true } : {}),
 	};
@@ -409,8 +400,6 @@ function stampAssistantBubbleMeta(
 			});
 		},
 		() => {
-			deps.setStore("messages", lastIdx, "agentName", agentName);
-			deps.setStore("messages", lastIdx, "modelName", displayName);
 			if (errorStr) {
 				deps.setStore("messages", lastIdx, "error", errorStr);
 			}
@@ -589,7 +578,7 @@ function handleAgentEnd(event: AgentEvent, deps: ReducerDeps): void {
 	deps.setStore("status", "idle");
 	sweepPendingTools(deps);
 	persistSynthesizedAbortMessage(event, deps);
-	stampTurnDurationAndThinkingLevel(deps);
+	stampTurnClosingBubble(event, deps);
 	stampInterruptedUser(deps);
 	// Reset the turn-scope snapshot. Next turn's prompt handler
 	// re-captures; unrelated `agent_end` events (none exist in the
@@ -702,50 +691,94 @@ function persistSynthesizedAbortMessage(
 	);
 }
 
-function stampTurnDurationAndThinkingLevel(deps: ReducerDeps): void {
-	// `duration` is a per-turn value. `agent_end` fires immediately
-	// after the turn-closing assistant `message_end`, and tool
-	// results are not rendered as display bubbles, so
-	// `messages[length - 1]` at this point is guaranteed to be the
-	// turn-closing assistant bubble. That bubble gets the stamp;
-	// intermediate tool-call assistant messages in the same turn
-	// correctly do not. Persist-first: meta update is gated on tx
-	// success — store reflects disk.
+function stampTurnClosingBubble(event: AgentEvent, deps: ReducerDeps): void {
+	// Per-turn stamps: `duration`, `thinkingLevel`, `agentName`,
+	// `modelName`. All apply to the turn-closing assistant bubble
+	// only — `agent_end` fires immediately after the turn-closing
+	// assistant `message_end`, and tool results are not rendered as
+	// display bubbles, so `messages[length - 1]` at this point is
+	// guaranteed to be the turn-closing assistant bubble.
+	// Intermediate tool-call assistant messages in the same turn do
+	// not get these stamps, so their `AssistantFooter` stays hidden
+	// (the footer gates on `modelName || interrupted`). Mirrors
+	// OpenCode's `MessageFooter` placement.
 	//
-	// Interrupted turns skip the duration pip — the wall-clock-
-	// until-abort value would read like a completed-turn duration
-	// next to the ` · interrupted` suffix, miscommunicating.
-	// Mirrors OpenCode's `MessageAbortedError` branch in
-	// `routes/session/index.tsx`.
+	// Interrupted turns skip the duration + thinkingLevel pip — the
+	// wall-clock-until-abort value would read like a completed-turn
+	// duration next to the ` · interrupted` suffix, and "what effort
+	// produced this turn?" has no meaningful answer when the reply
+	// didn't complete. `agentName` + `modelName` still stamp on
+	// interrupted turns so the bubble shows `▣ Reader · <model> ·
+	// interrupted` rather than a bare `▣ Reader · interrupted`.
 	//
-	// `thinkingLevel` joins `duration` as a per-turn stamp, sourced
-	// from the turn-start snapshot (`turnStartThinkingLevel`) so a
-	// mid-stream `setThinkingLevel` / `setModel` doesn't relabel
-	// the historical bubble. `"off"` (or `undefined` when the turn
-	// didn't pass through `wrappedActions.prompt`, e.g. synthetic
-	// flows) is deliberately NOT persisted — the renderer hides
-	// the badge for both, so NULL in the DB is lossless for display.
-	// Interrupted turns also skip the thinkingLevel stamp for the
-	// same reason the duration pip is skipped: the reply didn't
-	// complete, so "what effort produced this turn?" has no
-	// meaningful answer.
+	// Provider + model come from the `agent_end` event's
+	// `messages[last]` when that's an assistant message. Sourcing
+	// from the event (not `store.modelName`) means mid-run Ctrl+P
+	// model switches don't relabel an already-generated reply.
+	//
+	// `thinkingLevel` is sourced from the turn-start snapshot
+	// (`turnStartThinkingLevel`) so a mid-stream `setThinkingLevel` /
+	// `setModel` doesn't relabel the historical bubble. `"off"` (or
+	// `undefined` when the turn didn't pass through
+	// `wrappedActions.prompt`, e.g. synthetic flows) is deliberately
+	// NOT persisted — the renderer hides the badge for both, so
+	// NULL in the DB is lossless for display.
 	if (deps.store.lastTurnStartedAt <= 0) return;
-	const duration = Date.now() - deps.store.lastTurnStartedAt;
-	const turnLevel = deps.sessionState.getTurnStartThinkingLevel();
-	const stampedLevel = turnLevel && turnLevel !== "off" ? turnLevel : undefined;
 	const lastIdx = deps.store.messages.length - 1;
 	const last = deps.store.messages[lastIdx];
 	const sid = deps.sessionState.getCurrentSessionId();
-	if (!last || last.role !== "assistant" || last.interrupted || !sid) return;
+	if (!last || last.role !== "assistant" || !sid) return;
+
+	const endMessages = (event as { messages?: AgentMessage[] }).messages;
+	const closingAgent = endMessages?.[endMessages.length - 1];
+	const closingAssistant =
+		closingAgent && closingAgent.role === "assistant"
+			? (closingAgent as AssistantMessage)
+			: undefined;
+	// If pi-agent-core's `event.messages` doesn't end with an
+	// assistant (e.g. a trailing toolResult from a terminated run),
+	// `displayName` stays `undefined` and the spread below omits
+	// `modelName` — `AssistantFooter` then hides entirely for that
+	// turn (its gate is `modelName || interrupted`). That's the
+	// safer fallback: better to suppress the footer than render
+	// `▣ Reader` with no model.
+	const displayName = closingAssistant
+		? (getModel(closingAssistant.provider as any, closingAssistant.model as any)
+				?.name ?? closingAssistant.model)
+		: undefined;
+	// Switching agents is locked to the empty-session open page, so
+	// `store.currentAgent` at event time is guaranteed to be the
+	// agent that produced this reply.
+	const agentName = getAgentInfo(deps.store.currentAgent).displayName;
+
+	const interrupted =
+		last.interrupted ||
+		closingAssistant?.stopReason === "aborted" ||
+		closingAssistant?.stopReason === "error";
+	const duration = interrupted
+		? undefined
+		: Date.now() - deps.store.lastTurnStartedAt;
+	const turnLevel = deps.sessionState.getTurnStartThinkingLevel();
+	const stampedLevel =
+		!interrupted && turnLevel && turnLevel !== "off" ? turnLevel : undefined;
+
 	const updated: DisplayMessage = {
 		...last,
-		duration,
+		agentName,
+		...(displayName ? { modelName: displayName } : {}),
+		...(duration !== undefined ? { duration } : {}),
 		...(stampedLevel ? { thinkingLevel: stampedLevel } : {}),
 	};
 	deps.sessionState.persistThen(
 		(tx) => updateDisplayMessageMeta(tx, sid, updated),
 		() => {
-			deps.setStore("messages", lastIdx, "duration", duration);
+			deps.setStore("messages", lastIdx, "agentName", agentName);
+			if (displayName) {
+				deps.setStore("messages", lastIdx, "modelName", displayName);
+			}
+			if (duration !== undefined) {
+				deps.setStore("messages", lastIdx, "duration", duration);
+			}
 			if (stampedLevel) {
 				deps.setStore("messages", lastIdx, "thinkingLevel", stampedLevel);
 			}
