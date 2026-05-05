@@ -109,6 +109,18 @@ describe("composeSystemPrompt — byte-stability", () => {
 	});
 });
 
+describe("composeSystemPrompt — reader freeform-request guidance", () => {
+	test("reader's persona teaches the list_keys → search → suggest flow", () => {
+		const prompt = composeSystemPrompt(readerAgent);
+		// The generalize-fallback paragraph has to reach the LLM —
+		// without it, plain-chat prompts get swallowed into the Stage
+		// 1 rails and the search tools go unused.
+		expect(prompt).toContain("Handling Freeform Requests");
+		expect(prompt).toContain("list_keys");
+		expect(prompt).toContain("search");
+	});
+});
+
 describe("composeSystemPrompt — section order", () => {
 	test("zones block precedes commands block precedes body", () => {
 		const prompt = composeSystemPrompt(readerAgent);

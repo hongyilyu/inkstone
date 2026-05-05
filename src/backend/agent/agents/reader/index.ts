@@ -4,6 +4,7 @@ import type { DisplayPart } from "@bridge/view-model";
 import { ARTICLES_DIR, VAULT_DIR } from "../../constants";
 import { type AgentOverlay, isInsideDir } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
+import { makeListKeysTool, makeSearchTool } from "../../tools/search";
 import type { AgentCommand, AgentInfo, AgentZone } from "../../types";
 import { buildReaderInstructions } from "./instructions";
 import { recommendArticles } from "./recommendations";
@@ -120,6 +121,52 @@ const articleCommand: AgentCommand = {
 };
 
 /**
+ * Reader's search surface over ARTICLES_DIR.
+ *
+ * Two tools, same scanner, load-on-demand (no prompt-time scan):
+ *
+ * - `search` — filter articles by frontmatter (author / tags / date /
+ *   whatever keys the corpus uses) and/or body content. Returns
+ *   filenames; attaches frontmatter or content snippets depending on
+ *   which filter was supplied.
+ * - `list_keys` — enumerate observed frontmatter keys with one sample
+ *   each so the LLM knows what fields to filter on before calling
+ *   `search`. Call this first for any non-trivial query.
+ *
+ * Descriptions teach the call sequence explicitly so the LLM doesn't
+ * burn a turn on an empty `{ frontmatter: { authors: ... } }` result
+ * when the actual key is `author`. Factories live in
+ * `backend/agent/tools/search.ts`; the factory approach keeps these
+ * vault-agnostic so a future notes-agent / book-agent can use the
+ * same primitive scoped to its own directory.
+ */
+const readerSearchTool = makeSearchTool({
+	dir: ARTICLES_DIR,
+	name: "search",
+	description:
+		"Search the user's article library by frontmatter fields and/or body content. " +
+		"Use `filter.frontmatter` (a { key: value } map) for structured queries like " +
+		"author, tags, or dates — values are substrings, case-insensitive, and array " +
+		"values match if any element contains the substring. Use `filter.content` for " +
+		"a keyword search over article bodies; matching articles come back with up to " +
+		"3 snippets of surrounding context. Combine both filters when you know the " +
+		"topic and something structural (e.g. author). If you're not sure which keys " +
+		"exist, call `list_keys` first — guessing `authors` when the corpus uses " +
+		"`author` returns empty results.",
+});
+
+const readerListKeysTool = makeListKeysTool({
+	dir: ARTICLES_DIR,
+	name: "list_keys",
+	description:
+		"List the frontmatter keys present across the user's article library, with one " +
+		"sample value per key. Call this before constructing a `search` filter when you " +
+		"don't already know the corpus's frontmatter shape — it's one cheap round-trip " +
+		"that keeps the subsequent `search` call from missing articles because of a " +
+		"key name mismatch (e.g. `author` vs `authors`, `tags` vs `keywords`).",
+});
+
+/**
  * Reader's workspace — three zones, all confirm-before-write.
  */
 const readerZones: AgentZone[] = [
@@ -161,19 +208,22 @@ function getReaderPermissions(): AgentOverlay {
 }
 
 /**
- * Reader — the Obsidian reading guide. Walks the user through the
- * 6-stage reading workflow (see `./instructions.ts`) and manages
- * article frontmatter edits, scraps, and notes inside the vault.
+ * Reader — the reading guide. Walks the user through the 6-stage
+ * reading workflow (see `./instructions.ts`) and manages article
+ * frontmatter edits, scraps, and notes inside the vault.
  *
  * Tools: `read` comes from `BASE_TOOLS`; `edit` + `write` are pulled
- * from the shared pool in `backend/agent/tools.ts`.
+ * from the shared pool in `backend/agent/tools.ts`; `search` +
+ * `list_keys` are factory-produced from `backend/agent/tools/search.ts`
+ * scoped to `ARTICLES_DIR` so the LLM can locate articles for freeform
+ * "find me the one about X" prompts.
  */
 export const readerAgent: AgentInfo = {
 	name: "reader",
 	displayName: "Reader",
 	description: "Obsidian reading guide",
 	colorKey: "secondary",
-	extraTools: [editTool, writeTool],
+	extraTools: [editTool, writeTool, readerSearchTool, readerListKeysTool],
 	zones: readerZones,
 	buildInstructions: () => buildReaderInstructions(),
 	commands: [articleCommand],
