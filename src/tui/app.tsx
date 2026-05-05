@@ -6,6 +6,7 @@ import { Conversation } from "./components/conversation";
 import { CommandProvider } from "./components/dialog/command";
 import { NoProviderFallback } from "./components/no-provider-fallback";
 import { OpenPage } from "./components/open-page";
+import { PermissionPrompt } from "./components/permission-prompt";
 import { Prompt } from "./components/prompt";
 import { SecondaryPage } from "./components/secondary-page";
 import { SessionList } from "./components/session-list";
@@ -83,7 +84,7 @@ export function toBottom() {
 }
 
 export function Layout() {
-	const { actions, store } = useAgent();
+	const { actions, store, pendingApproval } = useAgent();
 	const { theme } = useTheme();
 	const dimensions = useTerminalDimensions();
 	const [sessionListOpen, setSessionListOpen] = createSignal(false);
@@ -166,7 +167,9 @@ export function Layout() {
 						>
 							<Conversation />
 							<box paddingTop={1} flexShrink={0}>
-								<Prompt />
+								<Show when={pendingApproval()} fallback={<Prompt />}>
+									<PermissionPrompt />
+								</Show>
 							</box>
 						</box>
 					</Show>

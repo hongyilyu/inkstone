@@ -25,10 +25,14 @@ import {
 } from "@backend/persistence/errors";
 import type { AgentStoreState } from "@bridge/view-model";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
-import { onCleanup, type ParentProps, useContext } from "solid-js";
+import {
+	createSignal,
+	onCleanup,
+	type ParentProps,
+	useContext,
+} from "solid-js";
 import { createStore } from "solid-js/store";
 import { useDialog } from "../../ui/dialog";
-import { DialogConfirm } from "../../ui/dialog-confirm";
 import { useToast } from "../../ui/toast";
 import { createWrappedActions } from "./actions";
 import { BridgeAgentCommands } from "./commands";
@@ -38,6 +42,7 @@ import { createSessionState } from "./session-state";
 import {
 	type AgentContextValue,
 	agentContext,
+	type PendingApproval,
 	type SessionFactory,
 } from "./types";
 
@@ -59,36 +64,91 @@ export function AgentProvider(
 		previews.clearAll();
 	});
 
+	// Phase-5: scoped pending-approval signal. When set, the layout
+	// swaps the `Prompt` cell for `PermissionPrompt` and the panel's
+	// local `useKeyboard` owns Approve/Reject. We store the resolver
+	// alongside the display payload so `respondApproval(ok)` can
+	// resolve the in-flight Promise returned by `confirmFn`. A
+	// standalone `createSignal` (not a store field) honors the
+	// view-model tripwire: don't gate approval UI on `isStreaming`;
+	// use a per-action pending signal.
+	const [pendingApproval, setPendingApproval] = createSignal<{
+		request: PendingApproval;
+		resolve: (ok: boolean) => void;
+	} | null>(null);
+
+	function respondApproval(ok: boolean): void {
+		const entry = pendingApproval();
+		if (!entry) return;
+		// Clear FIRST so the layout unmounts `PermissionPrompt` and
+		// re-mounts `Prompt` before the backend's beforeToolCall hook
+		// returns and any follow-up turn starts emitting events —
+		// otherwise a fast tool chain would race the unmount.
+		setPendingApproval(null);
+		entry.resolve(ok);
+	}
+
 	// Install backend side-effect handlers, capturing the prior
 	// values so a provider re-mount (tests, future HMR) can restore
 	// the previous installation rather than null-clearing the
 	// globals. Mirrors the symmetry pattern already used by
 	// `dialog.setSuspendHandler` in `command.tsx`.
 	const prevConfirmFn = getConfirmFn();
-	setConfirmFn(async (req) => {
-		// Phase 4: attach the precomputed unified diff (if any) to the
-		// preview registry keyed by the tool-call id, so `ToolPart`
-		// can render it below the args line as soon as the matching
-		// `toolcall_end` event lands in the reducer. Clear on resolve
-		// regardless of approve/reject — the real `tool_execution_end`
-		// will promote the part to completed/error via the existing
-		// reducer path, and a stale diff would misrepresent the
-		// completed tool call.
+	// Hold a direct ref to the in-flight resolver so the unmount path
+	// can unwind it without re-reading the Solid signal inside an
+	// `onCleanup` (the signal's tracked context is gone by then and
+	// reads would return whatever it was last cached as, which is
+	// correct here but feels fragile). Direct-ref is simpler and
+	// identical in behavior.
+	let inFlightResolver: ((ok: boolean) => void) | null = null;
+	setConfirmFn((req) => {
+		// Phase-4 preview wiring: attach the precomputed unified diff
+		// (if any) to the preview registry keyed by the tool-call id,
+		// so `ToolPart` can render it above the panel as soon as the
+		// matching `toolcall_end` event lands in the reducer. Clear
+		// on resolve regardless of approve/reject — the real
+		// `tool_execution_end` will promote the part to
+		// completed/error via the existing reducer path, and a stale
+		// diff would misrepresent the completed tool call.
 		if (req.preview?.unifiedDiff) {
 			previews.set(req.callId, {
 				filepath: req.preview.filepath,
 				unifiedDiff: req.preview.unifiedDiff,
 			});
 		}
-		try {
-			const result = await DialogConfirm.show(dialog, req.title, req.message);
-			return result === true;
-		} finally {
-			previews.clear(req.callId);
-		}
+		return new Promise<boolean>((resolve) => {
+			const wrappedResolve = (ok: boolean) => {
+				previews.clear(req.callId);
+				inFlightResolver = null;
+				resolve(ok);
+			};
+			inFlightResolver = wrappedResolve;
+			setPendingApproval({
+				request: {
+					callId: req.callId,
+					title: req.title,
+					message: req.message,
+				},
+				resolve: wrappedResolve,
+			});
+		});
 	});
 	onCleanup(() => {
 		setConfirmFn(prevConfirmFn);
+		// Unmount while an approval is pending → resolve to `false`
+		// so the agent loop's `await confirmFn(...)` unwinds instead
+		// of hanging. Defer via microtask: `onCleanup` runs inside
+		// the Solid owner-tree disposal, and synchronously waking a
+		// Promise resolver here can race render-tree teardown in
+		// OpenTUI's renderer (observed Bun segfault on macOS when
+		// the Promise consumer re-reads DOM refs). Queue-Microtask
+		// yields to the next tick so the resolver fires AFTER
+		// cleanup completes.
+		if (inFlightResolver) {
+			const resolver = inFlightResolver;
+			inFlightResolver = null;
+			queueMicrotask(() => resolver(false));
+		}
 	});
 
 	// Route backend persistence write failures (disk-full, permission-
@@ -190,6 +250,8 @@ export function AgentProvider(
 			getCurrentSessionId: () => sessionState.getCurrentSessionId(),
 		},
 		previews,
+		pendingApproval: () => pendingApproval()?.request ?? null,
+		respondApproval,
 	};
 
 	return (

@@ -11,6 +11,7 @@ import type {
 	ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
+import type { Accessor } from "solid-js";
 import { createContext } from "solid-js";
 import type { PreviewRegistry } from "./preview-registry";
 
@@ -70,6 +71,31 @@ export interface AgentContextValue {
 	 * persisted — see `preview-registry.ts` for rationale.
 	 */
 	previews: PreviewRegistry;
+	/**
+	 * Phase-5 pending-approval signal. When non-null, an approval is
+	 * awaiting user response; the layout replaces the `Prompt` cell
+	 * with `PermissionPrompt` and the panel's panel-local keyboard
+	 * owns the Approve/Reject keys. Resolves to `true` / `false` via
+	 * `respondApproval`. On provider unmount and session abort the
+	 * provider resolves any in-flight entry to `false` so the agent
+	 * loop unwinds cleanly.
+	 */
+	pendingApproval: Accessor<PendingApproval | null>;
+	respondApproval: (ok: boolean) => void;
+}
+
+/**
+ * Snapshot of an in-flight approval request, surfaced to
+ * `PermissionPrompt` via `AgentContextValue.pendingApproval`. Carries
+ * the display strings the panel renders and the `callId` the Phase-4
+ * preview registry keys by (so a consumer can explicitly cross-reference
+ * the diff in the conversation if it wants, though today the diff
+ * continues to render via `ToolPart` above the panel, not inside it).
+ */
+export interface PendingApproval {
+	callId: string;
+	title: string;
+	message: string;
 }
 
 /**

@@ -32,6 +32,10 @@ const EmptyBorder = {
 	rightT: "",
 };
 
+// Exported for panel components that want the same empty-border scaffold
+// with a custom vertical glyph (e.g. the Phase-5 PermissionPrompt).
+export { EmptyBorder };
+
 export const SplitBorderChars = {
 	...EmptyBorder,
 	vertical: "┃",

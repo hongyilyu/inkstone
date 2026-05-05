@@ -3,20 +3,15 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-04 (phase 4 — inline diff preview on pending tool part)
+**Last updated**: 2026-05-04 (phase 5 — bottom permission panel replaces Prompt while pending)
 
 ## In Progress
 
-- **OpenCode-style approval UI, 5-phase stacked PR.** Replace the blocking `DialogConfirm` popup for `confirmDirs` with an OpenCode-style bottom panel that occupies the `Prompt` cell while pending, keeping the conversation scrollbox fully interactive and showing the proposed edit as a diff inline above the panel. Stack:
-  1. phase-1-diff-theme — 11 diff tokens on `ThemeColors` + `tint()` helper + `mode` field on `ThemeDef`. Scaffolding; no consumers. ✓ shipped.
-  2. phase-2-markdown-syntax-theme — 10 `markdown*` + 9 `syntax*` tokens, `syntax.ts` rewire. H1-H6 graduated palette retained. Distinctness-check test. ✓ shipped.
-  3. phase-3-confirm-payload — structured `ConfirmRequest` with `callId` + optional `preview`. Backend computes the unified diff via `createTwoFilesPatch`. UI behavior unchanged. ✓ shipped.
-  4. **phase-4-pending-part** — per-`callId` preview registry in `AgentProvider` (ephemeral `Map`, no persistence reach); `ToolPart` renders the unified diff inline via `<diff>` while the approval is pending. `DialogConfirm` still owns the Approve/Reject keybinds. **← current phase.**
-  5. phase-5-bottom-panel — scoped `pendingApproval` signal replaces `DialogConfirm.show`; `PermissionPrompt` occupies `Prompt` cell; panel-local keyboard; abort/unmount resolve pending to `false`.
-
-  Scope of phases 3-5 is locked; file-level implementation details are drafts to be refined at each phase's start after verification-first steps run.
+None
 
 ## Known Issues
+
+- **Phase-5 abort-unmount test gap.** The provider's `onCleanup` resolves any in-flight `confirmFn` to `false` (queued via `queueMicrotask`). Verified by code inspection + inline keybind tests. Direct test coverage via `renderer.destroy()` while pending triggers a Bun 1.3.4 segfault on macOS in the OpenTUI renderer teardown path when a Promise-holding owner is disposed — unrelated to the resolver, but it means we can't assert this path end-to-end today. Revisit when Bun / OpenTUI ship a fix.
 
 - `file` DisplayParts are user-bubble-only per the reducer today, but the `DisplayPart` union type does not encode that constraint. `AssistantMessage`'s `<Switch>` intentionally has no `<Match>` for `file` — `<Switch>` with no matching branch renders nothing. If a future reducer change starts pushing `file` parts onto an assistant bubble (e.g. a tool that returns a file attachment), those parts would silently disappear from the rendered frame with no type error or runtime warning. Options for hardening: (a) narrow `DisplayPart` at the assistant seam so `file` is statically unreachable, or (b) add a dev-only `console.warn` on the unhandled branch. Neither is implemented today; revisit when a reducer path for an assistant `file` part is actually needed.
 
