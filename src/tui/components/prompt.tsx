@@ -1,6 +1,6 @@
 import { getAgentInfo } from "@backend/agent";
 import { getProvider } from "@backend/providers";
-import type { TextareaRenderable } from "@opentui/core";
+import type { BoxRenderable, TextareaRenderable } from "@opentui/core";
 import { TextAttributes } from "@opentui/core";
 import {
 	createEffect,
@@ -338,40 +338,60 @@ export function Prompt() {
 	// sent a message the agent is locked for the rest of the session.
 	const canCycleAgent = createMemo(() => store.messages.length === 0);
 
+	// Anchor ref for the autocomplete dropdown. The dropdown anchors
+	// its bottom edge to `anchor.y` (the top of this box) so it tracks
+	// the prompt as the textarea grows. Structure matches OpenCode's
+	// fragment pattern (`prompt/index.tsx:948-973`) — the dropdown and
+	// the anchor are flex siblings inside the Prompt's containing box
+	// (`app.tsx:169` — `<box paddingTop={1} flexShrink={0}>`), not
+	// parent/child, so the dropdown's `position="absolute"` resolves
+	// against the Prompt's containing block rather than the anchor
+	// itself.
+	let anchorRef: BoxRenderable | undefined;
+
 	return (
-		<box flexShrink={0} position="relative">
+		<>
 			<PromptAutocomplete
 				text={text()}
 				setText={setText}
 				input={() => inputRef}
 				promptPartTypeId={() => promptPartTypeId}
 				fileStyleId={() => fileStyleId() ?? null}
+				anchor={() => anchorRef}
 			/>
-			{/* prompt/index.tsx:974-1225 — input area with left border accent.
+			<box
+				ref={(r: BoxRenderable) => {
+					anchorRef = r;
+				}}
+				flexShrink={0}
+				flexGrow={1}
+				flexDirection="column"
+			>
+				{/* prompt/index.tsx:974-1225 — input area with left border accent.
           The closing ╹ corner lives on the cap row below, not on this box.
           `flexGrow={1}` on both boxes (outer border + inner padded) so the
           bubble fills available width — otherwise the background hugs
           the text and the right side reads as empty terminal. Matches
           OpenCode prompt/index.tsx:988. */}
-			<box
-				flexShrink={0}
-				flexGrow={1}
-				border={["left"]}
-				borderColor={theme[agentInfo().colorKey]}
-				customBorderChars={{
-					...EmptyBorder,
-					vertical: "┃",
-				}}
-			>
 				<box
-					paddingLeft={2}
-					paddingRight={2}
-					paddingTop={1}
 					flexShrink={0}
 					flexGrow={1}
-					backgroundColor={theme.backgroundElement}
+					border={["left"]}
+					borderColor={theme[agentInfo().colorKey]}
+					customBorderChars={{
+						...EmptyBorder,
+						vertical: "┃",
+					}}
 				>
-					{/* `<textarea>` not `<input>` so overflowing text wraps
+					<box
+						paddingLeft={2}
+						paddingRight={2}
+						paddingTop={1}
+						flexShrink={0}
+						flexGrow={1}
+						backgroundColor={theme.backgroundElement}
+					>
+						{/* `<textarea>` not `<input>` so overflowing text wraps
 					    to the next line instead of horizontally scrolling
 					    inside a single-line viewport. OpenCode uses the
 					    same shape (`prompt/index.tsx:990` — textarea with
@@ -392,7 +412,7 @@ export function Prompt() {
 					    and relying on the fact that the renderable
 					    merges user bindings with its own — so we only
 					    need to name the submit triggers here. */}
-					{/* Textarea + inline coaching hint on the same row.
+						{/* Textarea + inline coaching hint on the same row.
 					    The hint is a muted trailing annotation (right of the
 					    textarea) shown when the buffer is exactly `/<name> `
 					    and the command sets `argGuide`. `flexDirection="row"`
@@ -403,113 +423,116 @@ export function Prompt() {
 					    appears while the buffer is a single verb + space (one
 					    row of content). Reader's `/article` uses this to point
 					    at the `@`-mention flow + bare-picker fallback. */}
-					<box flexDirection="row" flexShrink={0} flexGrow={1}>
-						<box flexShrink={1} flexGrow={1}>
-							<textarea
-								ref={(r: TextareaRenderable) => {
-									inputRef = r;
-									setInputRef(r);
-									// Register the prompt-mention extmark type once per
-									// mount. Returns a stable numeric id usable until
-									// the input is destroyed.
-									promptPartTypeId = r.extmarks.registerType("prompt-mention");
-									onCleanup(() => clearInputRef(r));
-								}}
-								minHeight={1}
-								maxHeight={6}
-								wrapMode="word"
-								keyBindings={[
-									// Plain Enter submits. Every other Enter variant
-									// and Ctrl+J inserts a newline — mirrors OpenCode's
-									// `input_newline: shift+return, ctrl+return,
-									// alt+return, ctrl+j` config. OpenTUI parses Ctrl+J
-									// as the `linefeed` key, so we do NOT bind
-									// `linefeed → submit` (as `<input>` does by default)
-									// — that'd hijack Ctrl+J and collide with the
-									// explicit newline binding below.
-									{ name: "return", action: "submit" },
-									{ name: "return", shift: true, action: "newline" },
-									{ name: "return", ctrl: true, action: "newline" },
-									{ name: "return", meta: true, action: "newline" },
-									{ name: "j", ctrl: true, action: "newline" },
-								]}
-								onContentChange={() => {
-									if (inputRef) setText(inputRef.plainText);
-								}}
-								onSubmit={handleSubmit}
-								placeholder={
-									store.isStreaming
-										? "Waiting for response..."
-										: "Type a message or /article <filename>..."
-								}
-								focused
-								// Syntax style drives extmark highlighting — without it,
-								// `styleId`s on extmarks have no palette to resolve
-								// against and spans render in the default text color.
-								// Same `SyntaxStyle` instance used by the markdown
-								// renderer; the shared `extmark.file` rule in
-								// `getSyntaxRules` is what paints the `@path` span.
-								syntaxStyle={syntax()}
-								backgroundColor={theme.backgroundElement}
-								focusedBackgroundColor={theme.backgroundElement}
-								textColor={theme.text}
-								focusedTextColor={theme.text}
-								cursorColor={
-									store.isStreaming ? theme.backgroundElement : theme.primary
-								}
-								placeholderColor={theme.textMuted}
-							/>
+						<box flexDirection="row" flexShrink={0} flexGrow={1}>
+							<box flexShrink={1} flexGrow={1}>
+								<textarea
+									ref={(r: TextareaRenderable) => {
+										inputRef = r;
+										setInputRef(r);
+										// Register the prompt-mention extmark type once per
+										// mount. Returns a stable numeric id usable until
+										// the input is destroyed.
+										promptPartTypeId =
+											r.extmarks.registerType("prompt-mention");
+										onCleanup(() => clearInputRef(r));
+									}}
+									minHeight={1}
+									maxHeight={6}
+									wrapMode="word"
+									keyBindings={[
+										// Plain Enter submits. Every other Enter variant
+										// and Ctrl+J inserts a newline — mirrors OpenCode's
+										// `input_newline: shift+return, ctrl+return,
+										// alt+return, ctrl+j` config. OpenTUI parses Ctrl+J
+										// as the `linefeed` key, so we do NOT bind
+										// `linefeed → submit` (as `<input>` does by default)
+										// — that'd hijack Ctrl+J and collide with the
+										// explicit newline binding below.
+										{ name: "return", action: "submit" },
+										{ name: "return", shift: true, action: "newline" },
+										{ name: "return", ctrl: true, action: "newline" },
+										{ name: "return", meta: true, action: "newline" },
+										{ name: "j", ctrl: true, action: "newline" },
+									]}
+									onContentChange={() => {
+										if (inputRef) setText(inputRef.plainText);
+									}}
+									onSubmit={handleSubmit}
+									placeholder={
+										store.isStreaming
+											? "Waiting for response..."
+											: "Type a message or /article <filename>..."
+									}
+									focused
+									// Syntax style drives extmark highlighting — without it,
+									// `styleId`s on extmarks have no palette to resolve
+									// against and spans render in the default text color.
+									// Same `SyntaxStyle` instance used by the markdown
+									// renderer; the shared `extmark.file` rule in
+									// `getSyntaxRules` is what paints the `@path` span.
+									syntaxStyle={syntax()}
+									backgroundColor={theme.backgroundElement}
+									focusedBackgroundColor={theme.backgroundElement}
+									textColor={theme.text}
+									focusedTextColor={theme.text}
+									cursorColor={
+										store.isStreaming ? theme.backgroundElement : theme.primary
+									}
+									placeholderColor={theme.textMuted}
+								/>
+							</box>
+							<Show when={guideInfo()}>
+								{(guide: () => string) => (
+									<box flexShrink={0} paddingLeft={2}>
+										<text fg={theme.textMuted} wrapMode="none">
+											{guide()}
+										</text>
+									</box>
+								)}
+							</Show>
 						</box>
-						<Show when={guideInfo()}>
-							{(guide: () => string) => (
-								<box flexShrink={0} paddingLeft={2}>
-									<text fg={theme.textMuted} wrapMode="none">
-										{guide()}
-									</text>
-								</box>
-							)}
-						</Show>
-					</box>
-					{/* prompt/index.tsx:1186-1223 — agent/model metadata */}
-					<box
-						flexDirection="row"
-						flexShrink={0}
-						paddingTop={1}
-						gap={1}
-						justifyContent="space-between"
-					>
-						<box flexDirection="row" gap={1}>
-							<text fg={theme[agentInfo().colorKey]}>
-								{agentInfo().displayName}
-							</text>
-							<text fg={theme.textMuted}>·</text>
-							<text flexShrink={0} fg={theme.text}>
-								{store.modelName}
-							</text>
-							{/* Show the provider display name only when a
+						{/* prompt/index.tsx:1186-1223 — agent/model metadata */}
+						<box
+							flexDirection="row"
+							flexShrink={0}
+							paddingTop={1}
+							gap={1}
+							justifyContent="space-between"
+						>
+							<box flexDirection="row" gap={1}>
+								<text fg={theme[agentInfo().colorKey]}>
+									{agentInfo().displayName}
+								</text>
+								<text fg={theme.textMuted}>·</text>
+								<text flexShrink={0} fg={theme.text}>
+									{store.modelName}
+								</text>
+								{/* Show the provider display name only when a
                                 registered provider backs `modelProvider`.
                                 Under registry drift (session restored
                                 against a stale providerId after a provider
                                 drop) the lookup returns undefined and we
                                 render model-only — better than a trailing
                                 empty separator. */}
-							<Show when={getProvider(store.modelProvider)?.displayName}>
-								{(name) => <text fg={theme.textMuted}>{name() as string}</text>}
-							</Show>
-							{/* Reasoning effort badge, only when the user has
+								<Show when={getProvider(store.modelProvider)?.displayName}>
+									{(name) => (
+										<text fg={theme.textMuted}>{name() as string}</text>
+									)}
+								</Show>
+								{/* Reasoning effort badge, only when the user has
                                 opted into a non-off effort for the active
                                 model. Mirrors OpenCode's prompt statusline
                                 variant indicator (`prompt/index.tsx:901-906,
                                 1204-1211`) — bold + warning-tinted so it
                                 reads as a state annotation rather than part
                                 of the model name. */}
-							<Show when={store.thinkingLevel !== "off"}>
-								<text fg={theme.textMuted}>·</text>
-								<text fg={theme.warning} attributes={TextAttributes.BOLD}>
-									{store.thinkingLevel}
-								</text>
-							</Show>
-							{/* Codex transport indicator — ephemeral (live only,
+								<Show when={store.thinkingLevel !== "off"}>
+									<text fg={theme.textMuted}>·</text>
+									<text fg={theme.warning} attributes={TextAttributes.BOLD}>
+										{store.thinkingLevel}
+									</text>
+								</Show>
+								{/* Codex transport indicator — ephemeral (live only,
                                 not persisted, not stamped onto DisplayMessage).
                                 Rendered as a muted suffix next to the model name
                                 so users know whether pi-ai's `"auto"` transport
@@ -522,84 +545,85 @@ export function Prompt() {
                                 user once and disappear. Hidden when the active
                                 provider isn't Codex or before the first Codex
                                 turn in the session has completed. */}
-							<Show when={store.codexTransport}>
-								<text fg={theme.textMuted}>·</text>
-								<text fg={theme.textMuted}>{store.codexTransport}</text>
-							</Show>
+								<Show when={store.codexTransport}>
+									<text fg={theme.textMuted}>·</text>
+									<text fg={theme.textMuted}>{store.codexTransport}</text>
+								</Show>
+							</box>
 						</box>
 					</box>
 				</box>
-			</box>
 
-			{/* prompt/index.tsx:1226-1251 — 1-row cap: ╹ corner on the left, ▀ fill
+				{/* prompt/index.tsx:1226-1251 — 1-row cap: ╹ corner on the left, ▀ fill
           across the rest. The ▀ (upper half block) in backgroundElement extends
           the input box's visual bottom by half a row and provides the gap to
           the hints row below. Inkstone's theme backgrounds are always opaque
           (RGBA.fromHex), so we skip OpenCode's alpha-channel conditional. */}
-			<box
-				height={1}
-				border={["left"]}
-				borderColor={theme[agentInfo().colorKey]}
-				customBorderChars={{
-					...EmptyBorder,
-					vertical: "╹",
-				}}
-			>
 				<box
 					height={1}
-					border={["bottom"]}
-					borderColor={theme.backgroundElement}
+					border={["left"]}
+					borderColor={theme[agentInfo().colorKey]}
 					customBorderChars={{
 						...EmptyBorder,
-						horizontal: "▀",
+						vertical: "╹",
 					}}
-				/>
-			</box>
-
-			{/* prompt/index.tsx:1252-1363 — hints/status row */}
-			<box width="100%" flexDirection="row" justifyContent="space-between">
-				<Show when={store.isStreaming} fallback={<text />}>
+				>
 					<box
-						flexDirection="row"
-						gap={1}
-						flexGrow={1}
-						justifyContent="flex-start"
-					>
-						<box flexShrink={0} flexDirection="row" gap={1}>
-							<box marginLeft={1}>
-								<SpinnerWave color={theme[agentInfo().colorKey]} />
+						height={1}
+						border={["bottom"]}
+						borderColor={theme.backgroundElement}
+						customBorderChars={{
+							...EmptyBorder,
+							horizontal: "▀",
+						}}
+					/>
+				</box>
+
+				{/* prompt/index.tsx:1252-1363 — hints/status row */}
+				<box width="100%" flexDirection="row" justifyContent="space-between">
+					<Show when={store.isStreaming} fallback={<text />}>
+						<box
+							flexDirection="row"
+							gap={1}
+							flexGrow={1}
+							justifyContent="flex-start"
+						>
+							<box flexShrink={0} flexDirection="row" gap={1}>
+								<box marginLeft={1}>
+									<SpinnerWave color={theme[agentInfo().colorKey]} />
+								</box>
 							</box>
+							<text fg={interrupt() > 0 ? theme.primary : theme.text}>
+								esc{" "}
+								<span
+									style={{
+										fg: interrupt() > 0 ? theme.primary : theme.textMuted,
+									}}
+								>
+									{interrupt() > 0 ? "again to interrupt" : "interrupt"}
+								</span>
+							</text>
 						</box>
-						<text fg={interrupt() > 0 ? theme.primary : theme.text}>
-							esc{" "}
-							<span
-								style={{
-									fg: interrupt() > 0 ? theme.primary : theme.textMuted,
-								}}
-							>
-								{interrupt() > 0 ? "again to interrupt" : "interrupt"}
-							</span>
+					</Show>
+					<box gap={2} flexDirection="row">
+						<Show when={usageText()}>
+							<text fg={theme.textMuted} wrapMode="none">
+								{usageText()}
+							</text>
+						</Show>
+						<Show when={canCycleAgent()}>
+							<text fg={theme.text}>
+								{Keybind.print("agent_cycle")}{" "}
+								<span style={{ fg: theme.textMuted }}>agents</span>
+							</text>
+						</Show>
+						<text fg={theme.text}>
+							{Keybind.print("command_list")}{" "}
+							<span style={{ fg: theme.textMuted }}>commands</span>
 						</text>
 					</box>
-				</Show>
-				<box gap={2} flexDirection="row">
-					<Show when={usageText()}>
-						<text fg={theme.textMuted} wrapMode="none">
-							{usageText()}
-						</text>
-					</Show>
-					<Show when={canCycleAgent()}>
-						<text fg={theme.text}>
-							{Keybind.print("agent_cycle")}{" "}
-							<span style={{ fg: theme.textMuted }}>agents</span>
-						</text>
-					</Show>
-					<text fg={theme.text}>
-						{Keybind.print("command_list")}{" "}
-						<span style={{ fg: theme.textMuted }}>commands</span>
-					</text>
 				</box>
 			</box>
-		</box>
+		</>
 	);
 }

@@ -166,7 +166,19 @@ export function Layout() {
 							paddingBottom={1}
 						>
 							<Conversation />
-							<box paddingTop={1} flexShrink={0}>
+							{/*
+							 * `zIndex={10}` lifts the prompt wrapper above
+							 * the conversation scrollbox so the prompt's
+							 * autocomplete dropdown (absolute, zIndex=100
+							 * within this wrapper) wins against anything
+							 * the conversation paints at the same screen
+							 * cells. OpenTUI zIndex only orders SIBLINGS,
+							 * so the dropdown's own zIndex doesn't by
+							 * itself beat a Conversation that's two
+							 * parents away — the wrapper has to outrank
+							 * the scrollbox at this level first.
+							 */}
+							<box paddingTop={1} flexShrink={0} zIndex={10}>
 								<Show when={pendingApproval()} fallback={<Prompt />}>
 									<PermissionPrompt />
 								</Show>

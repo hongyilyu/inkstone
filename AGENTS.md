@@ -58,6 +58,10 @@ Flake policy: for timing-sensitive cases (streaming, interrupt, autocomplete dro
 
 Before presenting any multi-step plan or non-trivial code change to the user, invoke the `behavioral-guidelines` skill/agent to review the proposed approach. The reviewer checks for overcomplication, over-engineering, unnecessary abstractions, speculative features, and missing success criteria. Apply the reviewer's minimal fixes before presenting the plan to the user.
 
+Invocation is **mandatory** whenever the estimated real code change exceeds 50 lines (tests and docs excluded from the count; counted as added + removed lines of source code). For smaller changes it is optional but encouraged when the change touches multiple files or introduces new patterns.
+
+Always prefer the long-term proper fix over a short-term smaller diff, unless the proper fix requires speculative infrastructure for needs that don't yet exist. A smaller diff is not a valid justification on its own — only right-sizing the solution to the actual problem is. When in doubt, port the upstream OpenCode pattern in full (per UI Reference Protocol) rather than a trimmed local variant.
+
 
 ## Post-Implementation Review Protocol
 
