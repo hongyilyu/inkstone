@@ -6,7 +6,10 @@ import { type AgentOverlay, isInsideDir } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
 import { makeListKeysTool, makeSearchTool } from "../../tools/search";
 import type { AgentCommand, AgentInfo, AgentZone } from "../../types";
-import { buildReaderInstructions } from "./instructions";
+import {
+	buildArticleWorkflowPrelude,
+	buildReaderInstructions,
+} from "./instructions";
 import { recommendArticles } from "./recommendations";
 
 /**
@@ -15,12 +18,18 @@ import { recommendArticles } from "./recommendations";
  * `ARTICLES_DIR`, validates, reads, and sends the opening user message.
  *
  * Splits the display and LLM payloads: `prompt` receives the full
- * `Path: + Content:` blob as `text` (what pi-agent-core hands to pi-ai)
- * and a compact `[short prose, file chip]` array as `displayParts` (what
- * the user bubble renders). See `wrappedActions.prompt` in
- * `src/tui/context/agent.tsx` for the split — pi-agent-core only ever
- * sees `text`, so the LLM gets the full article while the bubble stays
- * scannable.
+ * `[workflow prelude] + Path: + Content:` blob as `text` (what
+ * pi-agent-core hands to pi-ai) and a compact `[short prose, file
+ * chip]` array as `displayParts` (what the user bubble renders). See
+ * `wrappedActions.prompt` in `src/tui/context/agent.tsx` for the
+ * split — pi-agent-core only ever sees `text`, so the LLM gets the
+ * full workflow + article while the bubble stays scannable.
+ *
+ * The workflow prelude (stages, file rules, preservation logic,
+ * storage destinations) is prepended here rather than baked into
+ * reader's agent system prompt so plain-chat sessions don't pay for
+ * it. See `buildArticleWorkflowPrelude` in `./instructions.ts` for
+ * the rationale.
  */
 async function runArticle(
 	filename: string,
@@ -53,8 +62,9 @@ async function runArticle(
 	// and unambiguous inside the vault. The absolute path still goes
 	// into the LLM text so tools resolve the same file later.
 	const relPath = relative(VAULT_DIR, articlePath);
+	const prelude = buildArticleWorkflowPrelude();
 	await prompt(
-		`Read this article and begin the reading workflow.\n\nPath: ${articlePath}\n\nContent:\n\n${content}`,
+		`${prelude}\nRead this article and begin the reading workflow.\n\nPath: ${articlePath}\n\nContent:\n\n${content}`,
 		[
 			{ type: "text", text: "Read this article." },
 			{ type: "file", mime: "text/markdown", filename: relPath },

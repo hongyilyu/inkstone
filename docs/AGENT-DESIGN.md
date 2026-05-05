@@ -215,6 +215,23 @@ Persisted sessions are replayable into any agent context: the Ctrl+N resume path
 
 **Consequence for future `/resume`:** a restored session knows its agent (from the `sessions.agent` column). `createSession({ agentName })` takes an explicit agent name, so `/resume` passes it through and hydrates under the correct agent — no mid-session swap, no reconciliation, no ordering hole.
 
+### D14 — Command workflow text lives in the command's user message, not the agent prompt
+
+**Chosen:** reader's 6-stage reading workflow (stages, file rules, preservation logic, storage destinations) moved out of `buildReaderInstructions()` and into a constant prelude that `/article`'s opening user message prepends. The agent system prompt retains persona, style, attribution, and a short "freeform-request" paragraph teaching the `list_keys` → `search` flow.
+
+**Why:**
+
+- **Scope alignment.** The 6-stage workflow is only meaningful once `/article` has fired. Shipping it in the agent system prompt made reader feel workflow-bound even for plain chat ("just browsing the library", "what did I save yesterday") — the LLM would default to Stage 1 mode-selection behavior when the user hadn't opted in.
+- **Baseline token cost.** Plain-chat reader sessions paid the full workflow's token cost on every turn even when `/article` never fired. Moving the workflow into `/article`'s user message means sessions that never invoke the command pay nothing for it.
+- **Steady-state cost stays comparable.** Inside a reading session, Anthropic's `cache_control` and Bedrock's `cachePoint` pin the user-message prefix after the first turn, so the per-turn cost on turns 2+ is approximately equivalent to a system-prompt-resident version. The first turn of a reading session is slightly more expensive (workflow is uncached on the initial request) but that cost was always going to be paid somewhere — the first `/article` turn sends the full article content regardless.
+- **Persona stability.** Reader's *voice* (calm, low-friction, attribution-labeling) is general and survives across any turn, workflow or not. Separating persona from workflow lets reader stay in-character during freeform Q&A without the workflow's prescriptive stage language leaking into casual responses.
+
+**Invariant preserved:** both `buildReaderInstructions()` and `buildArticleWorkflowPrelude()` return constant strings per invocation. `/article`'s opening user message is byte-stable for a given `articlePath` + `content`, so pi-agent-core's read of `state.systemPrompt` remains cache-hitting and the first-user-message prefix is cacheable from turn 2 onward. The stability invariant from D9 extends to command-injected user-message prefaces.
+
+**Rejected alternative — keep the workflow in the system prompt:** simpler on paper but carries the scope-misalignment cost above. The plain-chat UX regression was real enough to justify the relocation.
+
+**Rejected alternative — rewrite `state.systemPrompt` when `/article` fires:** this would swap in the workflow for the turn where the user opts in. Rejected because it violates the D9 stability invariant — every `/article` invocation would invalidate the cached prefix, turning every reading session into a cold start on turn N+1.
+
 ## Rejected alternatives
 
 | Alternative | Why rejected |

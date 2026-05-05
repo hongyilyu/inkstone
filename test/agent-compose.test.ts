@@ -119,6 +119,20 @@ describe("composeSystemPrompt — reader freeform-request guidance", () => {
 		expect(prompt).toContain("list_keys");
 		expect(prompt).toContain("search");
 	});
+
+	test("reader's agent prompt no longer carries the 6-stage workflow", () => {
+		// Workflow moved out of the agent system prompt into `/article`'s
+		// opening user message — guard against a regression where it
+		// gets re-merged into the agent prompt. See PR4 rationale in
+		// `docs/AGENT-DESIGN.md`.
+		const prompt = composeSystemPrompt(readerAgent);
+		expect(prompt).not.toContain("Stage 1: Mode Selection");
+		expect(prompt).not.toContain(
+			"Stage 5: Preserve at the Smallest Useful Size",
+		);
+		expect(prompt).not.toContain("SCRAP_FILE");
+		expect(prompt).not.toContain("File Rules");
+	});
 });
 
 describe("composeSystemPrompt — section order", () => {
