@@ -19,7 +19,7 @@ import {
 	ev_toolcallEnd,
 	makeFakeSession,
 } from "./fake-session";
-import { renderApp, waitForFrame } from "./harness";
+import { renderApp, waitForFrame, waitUntil } from "./harness";
 
 let setup: Awaited<ReturnType<typeof renderApp>> | undefined;
 
@@ -133,6 +133,69 @@ describe("phase 5 — bottom permission panel", () => {
 		setup.mockInput.pressEscape();
 		const result = await pending;
 		expect(result).toBe(false);
+	});
+
+	test("actions.abort() while pending resolves to false and unmounts panel", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory, width: 120 });
+		primeConversation(fake);
+		await waitForFrame(setup, "ctrl+p commands");
+
+		const confirm = getConfirmFn();
+		if (!confirm) throw new Error("confirmFn not installed");
+		const pending = confirm(simpleRequest("call-e"));
+		fake.emit(ev_toolcallEnd("call-e", "write", { path: "/tmp/x.md" }));
+
+		await waitForFrame(setup, "Permission required");
+		expect(fake.calls.abort).toBe(0);
+
+		// Call the wrapped abort action via the harness accessor.
+		// Without the wrapper's respondApproval(false) call, this
+		// await would hang — pi-agent-core's beforeToolCall holds the
+		// Promise and the backend abort can't wake it.
+		setup.getAgent().actions.abort();
+		const result = await pending;
+		expect(result).toBe(false);
+		expect(fake.calls.abort).toBe(1);
+
+		// Panel unmounted; Prompt restored.
+		await waitForFrame(setup, "ctrl+p commands");
+	});
+
+	test("actions.clearSession() while pending resolves to false and unmounts panel", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory, width: 120 });
+		primeConversation(fake);
+		await waitForFrame(setup, "ctrl+p commands");
+
+		const confirm = getConfirmFn();
+		if (!confirm) throw new Error("confirmFn not installed");
+		const pending = confirm(simpleRequest("call-f"));
+		fake.emit(ev_toolcallEnd("call-f", "write", { path: "/tmp/x.md" }));
+
+		await waitForFrame(setup, "Permission required");
+		expect(fake.calls.clearSession).toBe(0);
+
+		// clearSession is async; don't await it — the pending approval
+		// must resolve synchronously (via the wrapper's pre-backend
+		// respondApproval(false)) so the reducer can process
+		// agent_end when the backend subsequently aborts and emits.
+		void setup.getAgent().actions.clearSession();
+		const result = await pending;
+		expect(result).toBe(false);
+
+		// Bounded wait: a regression where the wrapper fires
+		// respondApproval but fails to propagate to the backend
+		// would hang here indefinitely without a timeout.
+		await waitUntil(() => fake.calls.clearSession === 1, {
+			timeout: 2000,
+			message: "clearSession never propagated to backend",
+		});
+
+		// Panel unmounted: clearSession empties messages, so the
+		// layout swaps back to OpenPage. Verify via the logo text
+		// that only OpenPage renders.
+		await waitForFrame(setup, "inkstone");
 	});
 
 	// Unmount-while-pending invariant (provider's `onCleanup` resolves
