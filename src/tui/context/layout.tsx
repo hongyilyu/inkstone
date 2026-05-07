@@ -1,7 +1,7 @@
 /**
  * `LayoutContext` — central registry for layout-level handles
- * (scroll container, prompt textarea, extmark ids) that consumers
- * outside the JSX tree need to drive imperatively.
+ * (scroll container, prompt textarea) that consumers outside the JSX
+ * tree need to drive imperatively.
  *
  * Why a context instead of module-scoped lets in `app.tsx`?
  *
@@ -20,8 +20,8 @@
  *     (`scrollRef`, `setScrollRef`, `clearScrollRef`, `toBottom`)
  *     but they now proxy through `activeLayout` so existing imports
  *     work unchanged.
- *   - C2: extend the context with input refs + extmark ids; migrate
- *     all component-level call sites to `useLayout()`. Shims remain.
+ *   - C2: extend the context with input refs; migrate all
+ *     component-level call sites to `useLayout()`. Shims remain.
  *   - C3: delete the shims. Lint catches any straggling import.
  */
 
@@ -32,6 +32,14 @@ import {
 	type ParentProps,
 	useContext,
 } from "solid-js";
+
+/**
+ * Type alias for the prompt textarea ref. OpenTUI's `InputRenderable`
+ * isn't exported on the type surface we use elsewhere, so this stays
+ * `any` and consumers narrow at the call site (every existing caller
+ * already does — `input.isDestroyed`, `input.focus()`, etc.).
+ */
+type InputRef = any;
 
 export interface LayoutContextValue {
 	/** Register the conversation scrollbox (called from its ref callback). */
@@ -54,6 +62,26 @@ export interface LayoutContextValue {
 	 * No-op when there's no live scrollbox (pre-mount, post-unmount).
 	 */
 	scrollToBottom(): void;
+
+	// ── Input surface ────────────────────────────────────────
+	/** Register the prompt textarea (called from its ref callback). */
+	setInputRef(ref: InputRef): void;
+	/** Clear the registered input if `ref` matches (identity-guarded). */
+	clearInputRef(ref: InputRef): void;
+	/** Read the current input handle. */
+	getInputRef(): InputRef;
+	/**
+	 * Focus the prompt if it's mounted, alive, and not already focused.
+	 * Used after dialog/panel dismiss so keyboard input lands in the
+	 * textarea again.
+	 */
+	focusInput(): void;
+	/**
+	 * Blur the prompt if it's mounted, alive, and currently focused.
+	 * Paired with `focusInput()` — the session list panel calls this
+	 * on open so arrows/Enter route to the panel, not the textarea.
+	 */
+	blurInput(): void;
 }
 
 const layoutContext = createContext<LayoutContextValue | null>(null);
@@ -72,6 +100,7 @@ export function getActiveLayout(): LayoutContextValue | null {
 
 export function LayoutProvider(props: ParentProps): unknown {
 	let scroll: ScrollBoxRenderable | null = null;
+	let input: InputRef = null;
 
 	const value: LayoutContextValue = {
 		setScrollRef(ref) {
@@ -88,6 +117,21 @@ export function LayoutProvider(props: ParentProps): unknown {
 				if (!scroll || scroll.isDestroyed) return;
 				scroll.scrollTo(scroll.scrollHeight);
 			}, 50);
+		},
+		setInputRef(ref) {
+			input = ref;
+		},
+		clearInputRef(ref) {
+			if (input === ref) input = null;
+		},
+		getInputRef() {
+			return input;
+		},
+		focusInput() {
+			if (input && !input.isDestroyed && !input.focused) input.focus();
+		},
+		blurInput() {
+			if (input && !input.isDestroyed && input.focused) input.blur();
 		},
 	};
 

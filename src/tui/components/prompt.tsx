@@ -9,13 +9,9 @@ import {
 	onCleanup,
 	Show,
 } from "solid-js";
-import {
-	clearInputRef,
-	setInputRef,
-	setPromptCtrlCBridge,
-	toBottom,
-} from "../app";
+import { setPromptCtrlCBridge } from "../app";
 import { useAgent } from "../context/agent";
+import { useLayout } from "../context/layout";
 import { useTheme } from "../context/theme";
 import { useDialog } from "../ui/dialog";
 import { useToast } from "../ui/toast";
@@ -44,6 +40,7 @@ export function Prompt() {
 	const dialog = useDialog();
 	const command = useCommand();
 	const toast = useToast();
+	const layout = useLayout();
 	const [text, setText] = createSignal("");
 
 	// Double-tap ESC to interrupt. Matches OpenCode's pattern
@@ -251,7 +248,7 @@ export function Prompt() {
 		}
 
 		clearInput();
-		toBottom();
+		layout.scrollToBottom();
 	}
 
 	/**
@@ -405,14 +402,14 @@ export function Prompt() {
 								<textarea
 									ref={(r: TextareaRenderable) => {
 										inputRef = r;
-										setInputRef(r);
+										layout.setInputRef(r);
 										// Register the prompt-mention extmark type once per
 										// mount. Returns a stable numeric id usable until
 										// the input is destroyed.
 										promptPartTypeId =
 											r.extmarks.registerType("prompt-mention");
 										onCleanup(() => {
-											clearInputRef(r);
+											layout.clearInputRef(r);
 										});
 									}}
 									minHeight={1}

@@ -6,8 +6,8 @@ import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import { createMemo, For, onMount, Show } from "solid-js";
 import { createStore } from "solid-js/store";
-import { blurInput } from "../app";
 import { useAgent } from "../context/agent";
+import { useLayout } from "../context/layout";
 import { useTheme } from "../context/theme";
 import * as Keybind from "../util/keybind";
 import { SessionListItem } from "./session-list-item";
@@ -43,6 +43,7 @@ export interface SessionListProps {
 export function SessionList(props: SessionListProps) {
 	const { theme } = useTheme();
 	const { session } = useAgent();
+	const layout = useLayout();
 
 	// Snapshot taken on mount. The panel re-mounts on every open (see
 	// `<Show when={sessionListOpen()}>` in app.tsx), so a closed-then-
@@ -60,7 +61,7 @@ export function SessionList(props: SessionListProps) {
 	// panel selection simultaneously. The parent's `closeSessionList` calls
 	// `refocusInput()` on dismiss, so focus round-trips cleanly.
 	onMount(() => {
-		blurInput();
+		layout.blurInput();
 	});
 
 	const [navStore, setNavStore] = createStore({ selected: 0 });
