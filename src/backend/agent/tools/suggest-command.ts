@@ -1,54 +1,33 @@
 /**
- * `suggest_command` tool factory.
+ * `suggest_command` tool — lets the LLM propose a slash verb the agent
+ * declares (see `docs/AGENT-DESIGN.md` D15). The tool blocks on a
+ * TUI-side resolver; on confirm the host replays the slash via
+ * `command.triggerSlash`, which bottoms out in `actions.prompt`'s
+ * `agent.followUp` branch so pi-agent-core drains the fresh turn at
+ * the natural end of the current run.
  *
- * Lets the LLM propose a slash command on the user's behalf when a
- * freeform request matches one of the agent's declared verbs. The tool
- * blocks until the user responds via a TUI-side panel; the host then
- * replays the confirmed slash as if the user had typed it.
+ * Resolver pattern mirrors `permissions.ts`'s `confirmFn`: TUI-injected
+ * callback, fail-closed `"cancelled"` when unset so headless callers
+ * don't hang.
  *
- * Resolver pattern mirrors `permissions.ts`'s `confirmFn` — a TUI-
- * injected callback consumed on every tool call, fail-closed default
- * when unset so headless callers see a clear "cancelled" result
- * rather than the tool hanging.
- *
- * Schema enumerates each agent's command names so the LLM picks from a
- * fixed set at schema-validation time. Agents without any commands get
- * no tool at all — `makeSuggestCommandTool` returns `null` and
- * `composeTools` filters it out.
- *
- * The tool does NOT dispatch the slash itself. It returns a structured
- * result describing the user's decision; the host reads the result
- * post-turn-end and fires the replay. Keeping dispatch out of the
- * tool's execute path preserves pi-agent-core's one-turn-at-a-time
- * invariant: starting a fresh user turn from inside a running turn's
- * tool call would re-enter the Agent state machine.
+ * Schema enumerates the agent's command names so the LLM can only
+ * name a verb that actually exists. Empty commands → no tool
+ * (`composeTools` filters the `null` out).
  */
 
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "typebox";
 import type { AgentCommand } from "../types";
 
-/**
- * User decision captured by the TUI-side panel. Mirrors the three
- * buttons in `SuggestCommandPrompt`.
- *
- * - `confirmed` — user accepted; the host should replay
- *   `/<command> <args>` as a fresh user turn after the current turn
- *   ends.
- * - `edited` — user asked to edit; the host pre-populates the prompt
- *   textarea with the slash and lets the user adjust it. No replay.
- * - `cancelled` — user rejected, escaped, or the panel unmounted
- *   while the tool was in-flight. No replay.
- */
+/** User decision from the confirm panel; `edited` does not replay. */
 export type SuggestCommandDecision = "confirmed" | "edited" | "cancelled";
 
 export interface SuggestCommandRequest {
 	callId: string;
-	/** Slash command name without leading `/`. Always one of the agent's declared commands. */
+	/** Command name without leading `/`. */
 	command: string;
-	/** Argument payload the LLM wants to pass. May be empty when the command takes no args. */
+	/** May be empty for arg-less verbs. */
 	args: string;
-	/** LLM-authored rationale rendered in the panel body. */
 	rationale: string;
 }
 
@@ -58,12 +37,8 @@ export type SuggestCommandFn = (
 
 let suggestCommandFn: SuggestCommandFn | null = null;
 
-/**
- * Install the TUI-side resolver. Parallel to `setConfirmFn` in
- * `permissions.ts` — the provider captures the previous value and
- * restores it on unmount so re-mounts (tests, future HMR) don't pin a
- * disposed closure.
- */
+/** Install the TUI-side resolver. Provider captures/restores on
+ * unmount, same pattern as `setConfirmFn`. */
 export function setSuggestCommandFn(fn: SuggestCommandFn | null): void {
 	suggestCommandFn = fn;
 }
@@ -72,14 +47,6 @@ export function getSuggestCommandFn(): SuggestCommandFn | null {
 	return suggestCommandFn;
 }
 
-/**
- * Structured details attached to the `AgentToolResult` so the TUI
- * reducer can render a specific `ToolPart` state for the suggestion.
- * Today the reducer treats it the same as any other tool result; this
- * field exists so a future polish pass can swap the one-line args
- * rendering for a richer "suggested /article foo.md — user accepted"
- * row without changing the tool's return shape.
- */
 export interface SuggestCommandDetails {
 	command: string;
 	args: string;
@@ -87,12 +54,8 @@ export interface SuggestCommandDetails {
 	decision: SuggestCommandDecision;
 }
 
-/**
- * Build the tool for a given agent's command list. Returns `null` when
- * the agent has no commands — schema-wise we can't build an empty
- * enum, and a suggest tool with no targets is user-confusing rather
- * than no-op.
- */
+/** Returns `null` when the agent has no commands (empty enum is not
+ * a valid schema). */
 export function makeSuggestCommandTool(
 	commands: readonly AgentCommand[],
 ): AgentTool<ReturnType<typeof buildSchema>, SuggestCommandDetails> | null {
@@ -135,12 +98,7 @@ export function makeSuggestCommandTool(
 			return {
 				content: [{ type: "text", text: summary }],
 				details,
-				// End the turn after a suggestion. A confirmed suggestion
-				// triggers a fresh user turn (host-side post-turn replay);
-				// anything the LLM would say after "user confirmed" races
-				// that replay. Edited/cancelled decisions leave the user
-				// to drive next steps. Either way, the LLM has no useful
-				// follow-up to add mid-turn.
+				// Cut the loop short — any LLM follow-up would race the post-turn replay.
 				terminate: true,
 			};
 		},
@@ -148,11 +106,8 @@ export function makeSuggestCommandTool(
 }
 
 function buildSchema(commands: readonly AgentCommand[]) {
-	// typebox's `Type.Union` of `Type.Literal` produces an enum schema
-	// that schema-validates the LLM's `command` against the agent's
-	// exact command names. Single-command agents still need a union
-	// (typebox rejects `Type.Union([x])` with one member — use the
-	// literal directly instead).
+	// `Type.Union([x])` rejects a single member; use the literal
+	// directly when there's one command.
 	const names = commands.map((c) => Type.Literal(c.name));
 	// biome-ignore lint/style/noNonNullAssertion: guarded by caller (commands.length >= 1)
 	const commandField = names.length === 1 ? names[0]! : Type.Union(names);
