@@ -36,8 +36,8 @@ import {
 	useContext,
 } from "solid-js";
 import { createStore } from "solid-js/store";
-import { getInputRef } from "../../app";
 import { useCommand } from "../../components/dialog/command";
+import { getActiveLayout } from "../../context/layout";
 import { useDialog } from "../../ui/dialog";
 import { useToast } from "../../ui/toast";
 import { createWrappedActions } from "./actions";
@@ -134,7 +134,7 @@ export function AgentProvider(
 			const { command: cmd, args } = entry.request;
 			const text = args.length === 0 ? `/${cmd} ` : `/${cmd} ${args} `;
 			queueMicrotask(() => {
-				const input = getInputRef();
+				const input = getActiveLayout()?.getInputRef();
 				if (!input || input.isDestroyed) return;
 				input.setText(text);
 				input.cursorOffset = input.plainText.length;

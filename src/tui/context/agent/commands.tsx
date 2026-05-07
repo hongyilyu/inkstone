@@ -23,11 +23,11 @@ import type {
 	DisplayPart,
 } from "@bridge/view-model";
 import { produce, type SetStoreFunction } from "solid-js/store";
-import { toBottom } from "../../app";
 import {
 	type CommandOption,
 	useCommand,
 } from "../../components/dialog/command";
+import { getActiveLayout } from "../../context/layout";
 import type { DialogContext } from "../../ui/dialog";
 import { DialogSelect } from "../../ui/dialog-select";
 import type { useToast } from "../../ui/toast";
@@ -80,7 +80,7 @@ function buildCommandHelpers(deps: CommandsDeps): AgentCommandHelpers {
 			safeRun(() =>
 				runInTransaction((tx) => appendDisplayMessage(tx, sessionId, userMsg)),
 			);
-			toBottom();
+			getActiveLayout()?.scrollToBottom();
 		},
 		pickFromList({ title, size, options }) {
 			let settled = false;
