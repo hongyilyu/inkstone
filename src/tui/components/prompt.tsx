@@ -16,33 +16,12 @@ import { useDialog } from "../ui/dialog";
 import { useToast } from "../ui/toast";
 import { formatCost, formatTokens } from "../util/format";
 import * as Keybind from "../util/keybind";
-import {
-	buildMentionPayload,
-	expandMentionsToPaths,
-	type Mention,
-	readFileSafe,
-} from "../util/mentions";
+import { type Mention, readFileSafe } from "../util/mentions";
+import { buildSubmission } from "../util/submit-prompt";
 import { useCommand } from "./dialog/command";
+import { EmptyBorder } from "./message";
 import { PromptAutocomplete } from "./prompt-autocomplete";
 import { SpinnerWave } from "./spinner-wave";
-
-/**
- * Border chars matching OpenCode's EmptyBorder pattern.
- * All slots empty except horizontal (space) so borders render only where we want.
- */
-const EmptyBorder = {
-	topLeft: "",
-	bottomLeft: "",
-	vertical: "",
-	topRight: "",
-	bottomRight: "",
-	horizontal: " ",
-	bottomT: "",
-	topT: "",
-	cross: "",
-	leftT: "",
-	rightT: "",
-};
 
 /**
  * Unified prompt component used by both the open page and the session view.
@@ -169,19 +148,13 @@ export function Prompt() {
 	});
 
 	function handleSubmit() {
-		const value = text().trim();
-		if (!value) return;
 		if (store.isStreaming) return;
 
-		// Read mention extmarks once, up front. Both the slash-dispatch
-		// branch and the plain-prompt branch consume them — slash expands
-		// `@path` spans to absolute paths so a command like `/article
-		// @foo.md` sees its args as `/abs/vault/foo.md` instead of the
-		// literal `@foo.md` that would fail downstream. Extmarks come
-		// back in INSERTION order, not position order, so the sort is
-		// load-bearing.
 		const rawText = text();
 		const input = inputRef;
+
+		// Extmarks come back in INSERTION order, not position order, so
+		// the sort is load-bearing.
 		const mentions: Mention[] =
 			input && promptPartTypeId
 				? input.extmarks
@@ -196,83 +169,25 @@ export function Prompt() {
 						.sort((a: Mention, b: Mention) => a.start - b.start)
 				: [];
 
-		// Slash-command dispatch via the unified command registry.
-		// Splits on the first space: `/name args...`. Matching OpenCode's
-		// prompt submit path, only entries whose `slash` field matches
-		// are intercepted; unknown slashes or commands missing required
-		// args fall through as plain prompts.
-		//
-		// Per SLASH-COMMANDS.md Path A, agent-declared commands and
-		// shell-level commands share the same registry; `triggerSlash`
-		// resolves them uniformly. Agent-bridge registrations register
-		// first so agent-scoped slashes beat shell-scoped on name
-		// collision — preserves the D9 "agent overrides built-in" rule.
-		//
-		// Strict start-of-buffer gate: the raw textarea contents (NOT
-		// the trimmed `value`) must begin with `/` for the dispatch to
-		// fire. Buffers like `  /clear` or `\n/clear` fall through as
-		// plain prompts — mirrors the autocomplete dropdown's open rule
-		// (`t.startsWith("/")` in `prompt-autocomplete.tsx`) and the
-		// coaching-hint memo, so open / dispatch / hint agree on one
-		// rule. Narrows the dispatch surface so a user who pastes a
-		// leading-whitespace message that happens to contain `/clear`
-		// can't accidentally wipe a session.
-		//
-		// Mentions inside the args range are expanded to their absolute
-		// vault paths BEFORE the dispatch. Mentions entirely before the
-		// first space (inside the verb `/name`) stay as literal text in
-		// the buffer — `canRunSlash` will fail to match the mangled name
-		// and the input falls through as a plain prompt. Trailing text
-		// after a mention (e.g. `/article @foo.md junk`) is passed
-		// through verbatim to the command; reader's error message is
-		// clear enough for a rare user-input bug.
-		if (rawText.startsWith("/")) {
-			const spaceAt = rawText.indexOf(" ");
-			const name =
-				spaceAt === -1 ? rawText.slice(1).trim() : rawText.slice(1, spaceAt);
-			if (spaceAt === -1) {
-				// Bare `/name` with no whitespace after — no mentions in args range.
-				if (command.triggerSlash(name, "")) {
-					clearInput();
-					toBottom();
-					return;
-				}
-			} else {
-				const argsStart = spaceAt + 1;
-				const argsText = rawText.slice(argsStart);
-				const argsMentions: Mention[] = mentions
-					.filter((m) => m.start >= argsStart)
-					.map((m) => ({
-						start: m.start - argsStart,
-						end: m.end - argsStart,
-						path: m.path,
-					}));
-				const expanded = expandMentionsToPaths(argsText, argsMentions).trim();
-				if (command.triggerSlash(name, expanded)) {
-					clearInput();
-					toBottom();
-					return;
-				}
+		// Slash vs plain-prompt decision lives in `buildSubmission` so
+		// the rule is testable without a harness. See `submit-prompt.ts`.
+		const result = buildSubmission(rawText, mentions, {
+			triggerSlash: (name, args) => command.triggerSlash(name, args),
+			readFile: readFileSafe,
+		});
+
+		if (result.kind === "noop") return;
+
+		if (result.kind === "prompt") {
+			if (result.failed.length > 0) {
+				toast.show({
+					variant: "warning",
+					message: `Could not read ${result.failed.length} file${result.failed.length === 1 ? "" : "s"}`,
+				});
 			}
+			void actions.prompt(result.llmText, result.displayParts);
 		}
 
-		// Plain-prompt path: inline mention content via `buildMentionPayload`
-		// (same format as reader's `/article` for LLM-facing text; the user
-		// bubble gets compact `[md] path` chips via `displayParts`).
-		const { llmText, displayParts, failed } = buildMentionPayload(
-			rawText,
-			mentions,
-			readFileSafe,
-		);
-
-		if (failed.length > 0) {
-			toast.show({
-				variant: "warning",
-				message: `Could not read ${failed.length} file${failed.length === 1 ? "" : "s"}`,
-			});
-		}
-
-		void actions.prompt(llmText, displayParts);
 		clearInput();
 		toBottom();
 	}
