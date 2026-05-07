@@ -1,10 +1,9 @@
 import type { BoxRenderable, TextareaRenderable } from "@opentui/core";
-import { useKeyboard, useTerminalDimensions } from "@opentui/solid";
+import { useKeyboard } from "@opentui/solid";
 import fuzzysort from "fuzzysort";
 import {
 	createEffect,
 	createMemo,
-	createSignal,
 	For,
 	onCleanup,
 	Show,
@@ -12,9 +11,11 @@ import {
 } from "solid-js";
 import { createStore } from "solid-js/store";
 import { useTheme } from "../context/theme";
-import { useDialog } from "../ui/dialog";
+import { useAnchorGeometry } from "../hooks/use-anchor-geometry";
+import { type DialogContext, useDialog } from "../ui/dialog";
 import { listVaultFiles } from "../util/vault-files";
-import { useCommand } from "./dialog/command";
+import { deriveNextMode } from "./autocomplete/mode-state";
+import { type CommandOption, useCommand } from "./dialog/command";
 
 /**
  * Autocomplete dropdown for the prompt textarea.
@@ -101,56 +102,13 @@ export function PromptAutocomplete(props: {
 	// Slash mode — option list from the command registry.
 	// ------------------------------------------------------------
 
-	const slashOptions = createMemo((): Option[] => {
-		const entries = command.visible();
-		const raw: { name: string; description: string; onSelect: () => void }[] =
-			[];
-		for (const e of entries) {
-			if (!e.slash) continue;
-			raw.push({
-				name: `/${e.slash.name}`,
-				description: e.description ?? e.title,
-				onSelect: () => {
-					const input = props.input();
-					// Dropdown UX keys on `argHint` presence, not `takesArgs`.
-					// `argHint` means "this command accepts an argument"
-					// (required OR optional) — `takesArgs` only answers the
-					// narrower "is an arg required for dispatch" question used
-					// by `canRunSlash`/`triggerSlash`. `/article` sets
-					// `argHint: "[filename]"` + `takesArgs: false` (bare is
-					// valid, opens a picker); keying on `takesArgs` here would
-					// fire the picker on dropdown-select instead of letting
-					// the user optionally type a filename.
-					if (e.slash?.argHint) {
-						// Argful: insert `/name ` and let the user type the arg.
-						// Textarea is uncontrolled (no `value=` prop), so write
-						// goes through the renderable directly. `onContentChange`
-						// will mirror `plainText` into the parent's `text()`
-						// signal on the next tick.
-						if (input) {
-							input.setText(`/${e.slash.name} `);
-							input.cursorOffset = input.plainText.length;
-						}
-						props.setText(`/${e.slash.name} `);
-					} else {
-						// Argless: clear buffer, fire the command.
-						if (input) input.setText("");
-						props.setText("");
-						e.onSelect(dialog);
-					}
-				},
-			});
-		}
-		raw.sort((a, b) => a.name.localeCompare(b.name));
-
-		// Pad display strings so descriptions align (OpenCode pattern).
-		const max = raw.reduce((m, o) => Math.max(m, o.name.length), 0);
-		return raw.map((o) => ({
-			display: max > 0 ? o.name.padEnd(max + 2) : o.name,
-			description: o.description,
-			onSelect: o.onSelect,
-		}));
-	});
+	const slashOptions = createMemo((): Option[] =>
+		buildSlashOptions(command.visible(), {
+			input: props.input,
+			setText: props.setText,
+			dialog,
+		}),
+	);
 
 	// ------------------------------------------------------------
 	// Mention mode — option list from the vault file scanner.
@@ -160,12 +118,7 @@ export function PromptAutocomplete(props: {
 
 	const mentionOptions = createMemo((): Option[] => {
 		if (store.mode !== "mention") return [];
-		const files = listVaultFiles();
-		return files.map((path) => ({
-			display: path,
-			// No description — the path itself is the identifier.
-			onSelect: () => insertMention(path),
-		}));
+		return buildMentionOptions(listVaultFiles(), (path) => insertMention(path));
 	});
 
 	function insertMention(path: string) {
@@ -178,10 +131,9 @@ export function PromptAutocomplete(props: {
 		const currentOffset = input.cursorOffset;
 
 		// Delete the in-progress `@query` (from trigger up to cursor)
-		// using logical cursor positions — `deleteRange` wants
-		// row/col, and going via `cursorOffset` = offset on an
-		// unwrapped single-line-ish buffer is the shape OpenCode uses
-		// (autocomplete.tsx:162-167).
+		// using logical cursor positions — `deleteRange` wants row/col,
+		// going via `cursorOffset` = offset on an unwrapped single-line-
+		// ish buffer is the shape OpenCode uses (autocomplete.tsx:162).
 		input.cursorOffset = triggerIndex;
 		const startCursor = input.logicalCursor;
 		input.cursorOffset = currentOffset;
@@ -254,81 +206,34 @@ export function PromptAutocomplete(props: {
 	// ------------------------------------------------------------
 	// Visibility state machine.
 	//
-	// Slash takes precedence — when slash mode is active, any `@`
-	// typed becomes part of the slash query, not a mention trigger.
-	// This matches success criterion #7 in the plan.
+	// Rule set (slash precedence, mention trigger gating, close
+	// conditions) lives in the pure `deriveNextMode` function — see
+	// `./autocomplete/mode-state.ts`. This effect just re-runs the
+	// derivation on text changes and applies the resulting
+	// transition.
 	//
-	// Reads `store.mode` inside `untrack` to avoid a self-dependency.
+	// Reads `store.mode` and `store.triggerIndex` inside `untrack`
+	// so the effect only re-fires when `props.text` changes (not on
+	// every mode flip, which would cause a self-dependency loop).
 	// ------------------------------------------------------------
 
 	createEffect(() => {
 		const t = props.text;
-		const mode = untrack(() => store.mode);
-
-		if (mode === null) {
-			// Nothing open — check for either trigger.
-			// Slash: `/` at column 0, no whitespace yet.
-			if (t.startsWith("/") && !/\s/.test(t)) {
-				open("slash", 0);
-				return;
-			}
-			// Mention: most recent `@` with no whitespace between it and
-			// cursor, where the preceding char is whitespace or undefined.
-			// `props.text` doesn't carry cursor state, so we scan the
-			// whole string — good enough for the common append-only typing
-			// path. Edge case (user moves cursor mid-string then types `@`)
-			// isn't handled for MVP; OpenCode's version uses input cursor
-			// directly via `input.cursorOffset`, but the simpler scan
-			// covers the 99% case.
-			const input = props.input();
-			const cursor = input ? input.cursorOffset : t.length;
-			const before = t.slice(0, cursor);
-			const idx = before.lastIndexOf("@");
-			if (idx === -1) return;
-			const between = before.slice(idx);
-			if (/\s/.test(between)) return;
-			const preceding = idx === 0 ? undefined : before[idx - 1];
-			if (preceding === undefined || /\s/.test(preceding)) {
-				open("mention", idx);
-			}
-			return;
-		}
-
-		if (mode === "slash") {
-			// Close on whitespace appearing, text no longer starting with
-			// `/`, or empty.
-			if (!t.startsWith("/") || /\s/.test(t) || t.length === 0) {
-				close();
-			}
-			return;
-		}
-
-		if (mode === "mention") {
-			// Close when: query contains whitespace, `@` no longer present
-			// at trigger index, or text shorter than trigger.
-			if (t.length <= store.triggerIndex) {
-				close();
-				return;
-			}
-			if (t[store.triggerIndex] !== "@") {
-				close();
-				return;
-			}
-			const query = t.slice(store.triggerIndex + 1);
-			// Only look at chars between trigger and cursor for whitespace;
-			// text after cursor is not part of the active mention.
-			const input = props.input();
-			const cursor = input ? input.cursorOffset : t.length;
-			const activeQuery = t.slice(store.triggerIndex + 1, cursor);
-			if (/\s/.test(activeQuery)) {
-				close();
-				return;
-			}
-			// If the whole trailing query has whitespace (user backed
-			// cursor over it), also close — safety net.
-			if (/\s/.test(query) && cursor >= t.length) {
-				close();
-			}
+		const input = props.input();
+		const cursor = input ? input.cursorOffset : t.length;
+		const snapshot = untrack(() => ({
+			currentMode: store.mode,
+			currentTriggerIndex: store.triggerIndex,
+		}));
+		const transition = deriveNextMode({
+			text: t,
+			cursor,
+			...snapshot,
+		});
+		if (transition.action === "open") {
+			open(transition.mode, transition.triggerIndex);
+		} else if (transition.action === "close") {
+			close();
 		}
 	});
 
@@ -407,59 +312,11 @@ export function PromptAutocomplete(props: {
 		}
 	});
 
-	// ------------------------------------------------------------
-	// Position tracking — ports OpenCode's anchor pattern
-	// (`prompt/autocomplete.tsx:97-126, 603-608`).
-	//
-	// The popup is absolutely positioned above the prompt bubble,
-	// which is a laid-out flex box. OpenTUI's layout coords aren't
-	// reactive on the renderable, so we poll `anchor.x/y/width`
-	// every 50ms and bump `positionTick` on change.
-	// `useTerminalDimensions()` covers the resize case so the popup
-	// doesn't wait a tick to reposition after a reflow.
-	//
-	// The returned geometry is anchor-relative (minus `parent.x/y`)
-	// so `position="absolute"` on the popup resolves in the parent's
-	// coordinate space. `height` is clamped to `anchor.y` headroom
-	// so a deep `/` + 10 matches can't paint above row 0.
-	// ------------------------------------------------------------
-
-	const [positionTick, setPositionTick] = createSignal(0);
-	const dimensions = useTerminalDimensions();
-
-	createEffect(() => {
-		if (store.mode === null || filtered().length === 0) return;
-		let last = { x: 0, y: 0, width: 0 };
-		const interval = setInterval(() => {
-			const a = props.anchor();
-			if (!a) return;
-			if (a.x !== last.x || a.y !== last.y || a.width !== last.width) {
-				last = { x: a.x, y: a.y, width: a.width };
-				setPositionTick((t) => t + 1);
-			}
-		}, 50);
-		onCleanup(() => clearInterval(interval));
-	});
-
-	const geometry = createMemo(() => {
-		dimensions();
-		positionTick();
-		const a = props.anchor();
-		if (store.mode === null || !a) {
-			return { x: 0, y: 0, width: 0, height: 0 };
-		}
-		const count = filtered().length;
-		const headroom = Math.max(1, a.y);
-		const height = Math.min(MAX_RESULTS, count, headroom);
-		// `+1` / `-1` offsets align the popup's opaque background
-		// with the bubble's inner content area, leaving the colorful
-		// `┃` left border visible as a continuous stroke.
-		return {
-			x: a.x - (a.parent?.x ?? 0) + 1,
-			y: a.y - (a.parent?.y ?? 0) - height,
-			width: Math.max(0, a.width - 1),
-			height,
-		};
+	const geometry = useAnchorGeometry({
+		anchor: () => props.anchor(),
+		visible: () => store.mode !== null && filtered().length > 0,
+		itemCount: () => filtered().length,
+		maxItems: MAX_RESULTS,
 	});
 
 	return (
@@ -516,4 +373,86 @@ export function PromptAutocomplete(props: {
 			</For>
 		</box>
 	);
+}
+
+// ---------------------------------------------------------------------------
+// Option builders — pulled out of the component body so the mode-
+// specific logic is readable without a 50-line `createMemo` per mode.
+// ---------------------------------------------------------------------------
+
+interface SlashSelectors {
+	input: () => TextareaRenderable | undefined;
+	setText: (v: string) => void;
+	dialog: DialogContext;
+}
+
+/**
+ * Build the slash-mode option list from the command registry's
+ * visible entries. Each `onSelect` is a closure over the provided
+ * selectors; the registry itself is pure data.
+ *
+ * Dropdown UX keys on `argHint` presence, not `takesArgs`.
+ * `argHint` means "this command accepts an argument" (required OR
+ * optional); `takesArgs` only answers the narrower "is an arg
+ * required for dispatch" question used by `canRunSlash` /
+ * `triggerSlash`. `/article` sets `argHint: "[filename]"` +
+ * `takesArgs: false` (bare is valid, opens a picker); keying on
+ * `takesArgs` here would fire the picker on dropdown-select
+ * instead of letting the user optionally type a filename.
+ */
+function buildSlashOptions(
+	entries: readonly CommandOption[],
+	sel: SlashSelectors,
+): Option[] {
+	const raw: { name: string; description: string; onSelect: () => void }[] = [];
+	for (const e of entries) {
+		if (!e.slash) continue;
+		raw.push({
+			name: `/${e.slash.name}`,
+			description: e.description ?? e.title,
+			onSelect: () => {
+				const input = sel.input();
+				if (e.slash?.argHint) {
+					// Argful: insert `/name ` and let the user type the arg.
+					// Textarea is uncontrolled (no `value=` prop), so write
+					// goes through the renderable directly. `onContentChange`
+					// will mirror `plainText` into the parent's `text()`
+					// signal on the next tick.
+					if (input) {
+						input.setText(`/${e.slash.name} `);
+						input.cursorOffset = input.plainText.length;
+					}
+					sel.setText(`/${e.slash.name} `);
+				} else {
+					// Argless: clear buffer, fire the command.
+					if (input) input.setText("");
+					sel.setText("");
+					e.onSelect(sel.dialog);
+				}
+			},
+		});
+	}
+	raw.sort((a, b) => a.name.localeCompare(b.name));
+
+	// Pad display strings so descriptions align (OpenCode pattern).
+	const max = raw.reduce((m, o) => Math.max(m, o.name.length), 0);
+	return raw.map((o) => ({
+		display: max > 0 ? o.name.padEnd(max + 2) : o.name,
+		description: o.description,
+		onSelect: o.onSelect,
+	}));
+}
+
+/**
+ * Build the mention-mode option list from a vault path list. No
+ * description — the path itself is the identifier.
+ */
+function buildMentionOptions(
+	files: readonly string[],
+	onSelect: (path: string) => void,
+): Option[] {
+	return files.map((path) => ({
+		display: path,
+		onSelect: () => onSelect(path),
+	}));
 }
