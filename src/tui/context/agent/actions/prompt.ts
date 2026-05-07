@@ -102,6 +102,11 @@ export async function promptAction(
 		},
 	);
 	if (!persisted) return;
+	// Snapshot session id + message-length before the await so the
+	// catch can detect a `clearSession()` / `resumeSession()` mid-flight
+	// and bail without poisoning the fresh session's bubble list.
+	const sidAtStart = deps.sessionState.getCurrentSessionId();
+	const lenAtStart = deps.store.messages.length;
 	// Guard against a pre-stream throw from `actions.prompt()`.
 	// pi-agent-core funnels most provider errors through `message_end`
 	// with `stopReason === "error"`, which the reducer already surfaces
@@ -114,7 +119,7 @@ export async function promptAction(
 	try {
 		await deps.agentSession.actions.prompt(text);
 	} catch (err) {
-		handlePreStreamError(err, deps);
+		handlePreStreamError(err, deps, { sidAtStart, lenAtStart });
 	}
 }
 
@@ -156,8 +161,30 @@ function startSessionTitleTask(
 		});
 }
 
-function handlePreStreamError(err: unknown, deps: ActionDeps): void {
+function handlePreStreamError(
+	err: unknown,
+	deps: ActionDeps,
+	snap: { sidAtStart: string | null; lenAtStart: number },
+): void {
 	const msg = err instanceof Error ? err.message : String(err);
+	const sidNow = deps.sessionState.getCurrentSessionId();
+	if (
+		sidNow !== snap.sidAtStart ||
+		deps.store.messages.length < snap.lenAtStart
+	) {
+		// Session swapped mid-await — surface via toast only. Reset
+		// the turn-lifecycle flags too in case the throw beat the
+		// backend's `agent_end` event for the now-defunct turn.
+		deps.setStore("isStreaming", false);
+		deps.setStore("status", "idle");
+		deps.toast.show({
+			variant: "error",
+			title: "Agent error",
+			message: msg,
+			duration: 6000,
+		});
+		return;
+	}
 	batch(() => {
 		deps.setStore("isStreaming", false);
 		deps.setStore("status", "idle");
