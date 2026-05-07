@@ -443,6 +443,13 @@ describe("reader /article command", () => {
 		const text = promptCalledWith as unknown as string;
 		expect(text).toContain(`${VAULT}/010 RAW/013 Articles/foo.md`);
 		expect(text).toContain("Body paragraph.");
+		// Workflow prelude (stages / file rules / preservation logic) is
+		// prepended here instead of living in the agent system prompt, so
+		// /article gets the full rules while plain-chat sessions don't
+		// pay their token cost.
+		expect(text).toContain("Reading Workflow");
+		expect(text).toContain("Stage 1: Mode Selection");
+		expect(text).toContain("File Rules");
 	});
 
 	test("missing.md — throws 'Article not found'", async () => {
