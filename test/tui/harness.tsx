@@ -3,7 +3,8 @@
  *
  * Mounts the same provider stack as `App` (ThemeProvider → ToastProvider
  * → DialogProvider → CommandProvider → ErrorBoundary → AgentProvider
- * → Layout), but with an injected `session` factory so tests can script
+ * → LayoutProvider → Layout), but with an injected `session` factory so
+ * tests can script
  * AgentEvents without a real pi-agent-core loop. The `ErrorBoundary`
  * mirrors `src/tui/app.tsx` so the no-provider-fallback path is
  * exercised end-to-end when a test injects a throwing factory.
@@ -18,6 +19,7 @@ import { NoProviderFallback } from "../../src/tui/components/no-provider-fallbac
 import type { SessionFactory } from "../../src/tui/context/agent";
 import { AgentProvider, useAgent } from "../../src/tui/context/agent";
 import type { AgentContextValue } from "../../src/tui/context/agent/types";
+import { LayoutProvider } from "../../src/tui/context/layout";
 import { ThemeProvider } from "../../src/tui/context/theme";
 import { DialogProvider } from "../../src/tui/ui/dialog";
 import { ToastProvider } from "../../src/tui/ui/toast";
@@ -75,7 +77,9 @@ export async function renderApp(opts: HarnessOptions) {
 											captured = v;
 										}}
 									/>
-									<Layout />
+									<LayoutProvider>
+										<Layout />
+									</LayoutProvider>
 								</AgentProvider>
 							</ErrorBoundary>
 						</CommandProvider>

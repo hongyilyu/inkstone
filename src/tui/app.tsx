@@ -13,39 +13,35 @@ import { SessionList } from "./components/session-list";
 import { Sidebar } from "./components/sidebar";
 import { SuggestCommandPrompt } from "./components/suggest-command-prompt";
 import { AgentProvider, useAgent } from "./context/agent";
+import { getActiveLayout, LayoutProvider } from "./context/layout";
 import { getSecondaryPage } from "./context/secondary-page";
 import { ThemeProvider, useTheme } from "./context/theme";
 import { useLayoutKeybinds } from "./hooks/use-layout-keybinds";
 import { DialogProvider } from "./ui/dialog";
 import { Toast, ToastProvider } from "./ui/toast";
 
-// Module-scoped refs for the scroll container and prompt input. Both
-// are set via `ref=` callbacks from Layout's JSX; the ref callbacks
-// register `onCleanup` to null these back out on unmount so a stale
-// ref can't survive the owner that created it (e.g. a re-mounted
-// Layout's `toBottom()` would otherwise dispatch to a destroyed
-// renderable). `scrollRef` / `inputRef` accessors expose the current
-// value to the layout-level keybind hook.
-let scroll: ScrollBoxRenderable | null = null;
+// Module-scoped ref for the prompt input. Set via `ref=` callback
+// from Layout's JSX; the ref callback registers `onCleanup` to null
+// this back out on unmount. Stack C is migrating scroll out to
+// `LayoutContext` first; input refs follow in C2. Until C2 lands,
+// the shim accessors below proxy scroll through `getActiveLayout()`
+// while input ones still read the module-local `inputRef`.
 let inputRef: any = null;
 
 export function scrollRef(): ScrollBoxRenderable | null {
-	return scroll;
+	return getActiveLayout()?.getScroll() ?? null;
 }
 
 export function setScrollRef(ref: ScrollBoxRenderable) {
-	scroll = ref;
+	getActiveLayout()?.setScrollRef(ref);
 }
 
 /**
- * Null the module-scoped scroll ref if `ref` matches. Called from the
- * ref callback's `onCleanup` in `conversation.tsx` so unmounting the
- * scrollbox doesn't leave a dangling handle module-wide. Identity
- * check prevents a late cleanup from a previous mount from clobbering
- * a new mount's ref.
+ * Null the registered scroll ref if `ref` matches. Shim during the
+ * Stack-C migration window — see `scrollRef` above.
  */
 export function clearScrollRef(ref: ScrollBoxRenderable) {
-	if (scroll === ref) scroll = null;
+	getActiveLayout()?.clearScrollRef(ref);
 }
 
 export function setInputRef(ref: any) {
@@ -87,10 +83,7 @@ export function blurInput() {
 }
 
 export function toBottom() {
-	setTimeout(() => {
-		if (!scroll || scroll.isDestroyed) return;
-		scroll.scrollTo(scroll.scrollHeight);
-	}, 50);
+	getActiveLayout()?.scrollToBottom();
 }
 
 /**
@@ -267,7 +260,9 @@ export function App() {
 							)}
 						>
 							<AgentProvider>
-								<Layout />
+								<LayoutProvider>
+									<Layout />
+								</LayoutProvider>
 							</AgentProvider>
 						</ErrorBoundary>
 					</CommandProvider>
