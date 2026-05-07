@@ -1,7 +1,7 @@
 /**
  * `LayoutContext` — central registry for layout-level handles
- * (scroll container, prompt textarea) that consumers outside the JSX
- * tree need to drive imperatively.
+ * (scroll container, prompt textarea, Ctrl+C bridge) that consumers
+ * outside the JSX tree need to drive imperatively.
  *
  * Why a context instead of module-scoped lets in `app.tsx`?
  *
@@ -40,6 +40,25 @@ import {
  * already does — `input.isDestroyed`, `input.focus()`, etc.).
  */
 type InputRef = any;
+
+/**
+ * Bridge for the prompt's two-stage Ctrl+C behavior. The single
+ * `useKeyboard` registration for `app_exit` lives in
+ * `useLayoutKeybinds` (a parent of `<Prompt>`); since EventEmitter
+ * dispatches global listeners in registration order and the parent's
+ * onMount fires first, only one handler can own Ctrl+C. The Prompt
+ * component publishes its decision callbacks here on mount and clears
+ * them on unmount; the layout handler consults the bridge to decide
+ * between clear / arm / exit. When the prompt isn't mounted (boot
+ * fallback, approval / suggestion panels) the bridge is null and the
+ * layout handler falls back to immediate exit.
+ */
+export interface PromptCtrlCBridge {
+	decide: () => "clear" | "arm" | "fall_through";
+	clear: () => void;
+	arm: () => void;
+	disarm: () => void;
+}
 
 export interface LayoutContextValue {
 	/** Register the conversation scrollbox (called from its ref callback). */
@@ -82,6 +101,20 @@ export interface LayoutContextValue {
 	 * on open so arrows/Enter route to the panel, not the textarea.
 	 */
 	blurInput(): void;
+
+	// ── Ctrl+C bridge ────────────────────────────────────────
+	/**
+	 * Publish the prompt's Ctrl+C decision callbacks. Called from
+	 * `Prompt`'s setup; the matching `setCtrlCBridge(null)` lives in
+	 * its `onCleanup`.
+	 */
+	setCtrlCBridge(bridge: PromptCtrlCBridge | null): void;
+	/**
+	 * Read the current Ctrl+C bridge. Returns null when the prompt
+	 * isn't mounted — the layout handler then falls back to immediate
+	 * exit (boot fallback, approval / suggestion panel surfaces).
+	 */
+	getCtrlCBridge(): PromptCtrlCBridge | null;
 }
 
 const layoutContext = createContext<LayoutContextValue | null>(null);
@@ -101,6 +134,7 @@ export function getActiveLayout(): LayoutContextValue | null {
 export function LayoutProvider(props: ParentProps): unknown {
 	let scroll: ScrollBoxRenderable | null = null;
 	let input: InputRef = null;
+	let ctrlCBridge: PromptCtrlCBridge | null = null;
 
 	const value: LayoutContextValue = {
 		setScrollRef(ref) {
@@ -132,6 +166,12 @@ export function LayoutProvider(props: ParentProps): unknown {
 		},
 		blurInput() {
 			if (input && !input.isDestroyed && input.focused) input.blur();
+		},
+		setCtrlCBridge(bridge) {
+			ctrlCBridge = bridge;
+		},
+		getCtrlCBridge() {
+			return ctrlCBridge;
 		},
 	};
 

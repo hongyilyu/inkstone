@@ -19,35 +19,6 @@ import { useLayoutKeybinds } from "./hooks/use-layout-keybinds";
 import { DialogProvider } from "./ui/dialog";
 import { Toast, ToastProvider } from "./ui/toast";
 
-/**
- * Bridge for the prompt's two-stage Ctrl+C behavior. The single
- * `useKeyboard` registration for `app_exit` lives in
- * `useLayoutKeybinds` (a parent of `<Prompt>`); since EventEmitter
- * dispatches global listeners in registration order and the parent's
- * onMount fires first, only one handler can own Ctrl+C. The Prompt
- * component publishes its decision callbacks here on mount and nulls
- * them on unmount; the layout handler consults `getPromptCtrlCBridge`
- * to decide between clear/arm/exit. When the prompt isn't mounted
- * (boot fallback, approval / suggestion panels) the bridge is null
- * and the layout handler falls back to immediate exit.
- */
-export interface PromptCtrlCBridge {
-	decide: () => "clear" | "arm" | "fall_through";
-	clear: () => void;
-	arm: () => void;
-	disarm: () => void;
-}
-
-let promptCtrlCBridge: PromptCtrlCBridge | null = null;
-
-export function setPromptCtrlCBridge(bridge: PromptCtrlCBridge | null) {
-	promptCtrlCBridge = bridge;
-}
-
-export function getPromptCtrlCBridge(): PromptCtrlCBridge | null {
-	return promptCtrlCBridge;
-}
-
 export function Layout() {
 	const { actions, store, pendingApproval, pendingSuggestion } = useAgent();
 	const { theme } = useTheme();

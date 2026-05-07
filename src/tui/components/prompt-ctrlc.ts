@@ -1,6 +1,6 @@
 /**
  * Pure state machine for the layout's Ctrl+C handler when the prompt
- * is mounted. Consulted via `app.ts`'s `getPromptCtrlCBridge()` from
+ * is mounted. Consulted via `LayoutContext`'s `getCtrlCBridge()` from
  * `useLayoutKeybinds`.
  *
  * Mirrors OpenCode's clear-on-text behavior (`prompt/index.tsx:1025-1042`)

@@ -19,7 +19,6 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/solid";
-import { getPromptCtrlCBridge } from "../app";
 import { useLayout } from "../context/layout";
 import {
 	closeSecondaryPage,
@@ -57,7 +56,7 @@ export function useLayoutKeybinds(): void {
 			// single `useKeyboard` registration for `app_exit` because
 			// OpenTUI dispatches global listeners in registration order
 			// and any prompt-level handler would fire after this one.
-			const bridge = getPromptCtrlCBridge();
+			const bridge = layout.getCtrlCBridge();
 			if (bridge) {
 				const action = bridge.decide();
 				if (action === "clear") {
