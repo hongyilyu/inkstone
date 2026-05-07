@@ -132,26 +132,53 @@ export function deriveDiffTokens(
 }
 
 /**
- * Inputs the markdown + syntax derivations read. `text` is the
- * theme's body foreground; both derivations fold it into slots where
- * OpenCode's recipe uses `fg`.
+ * Inputs the markdown + syntax derivations read. Mirrors the semantic
+ * palette slots OpenCode's JSON theme files (e.g.
+ * `opencode/.../context/theme/opencode.json`) map each markdown/syntax
+ * token onto.
  */
 export interface MarkdownSyntaxDerivationBase {
+	primary: RGBA;
+	accent: RGBA;
+	info: RGBA;
+	warning: RGBA;
+	success: RGBA;
+	error: RGBA;
 	text: RGBA;
 	textMuted: RGBA;
 }
 
 /**
- * The 10 markdown-family tokens every theme gets. Port of OpenCode's
- * assignment block at `context/theme.tsx:597-611`, trimmed to the
- * scopes `src/tui/theme/syntax.ts` actually consumes today
- * (`horizontalRule`, `listEnumeration`, `image`, `imageText` are
- * OpenCode-only so far — add when an Inkstone consumer materializes).
+ * The 10 markdown-family tokens every theme gets. Mirrors the
+ * markdown-token assignments in OpenCode's JSON theme files — see
+ * `opencode/.../context/theme/opencode.json` (dark section) for the
+ * upstream mapping, which routes every token through a semantic
+ * palette slot (`darkStep9 → primary`, `darkAccent → accent`,
+ * `darkGreen → success`, etc.).
  *
- * `markdownHeading = text` here is the token value; the H1-H6 scope
- * rules in `syntax.ts` override with the graduated palette
- * (`primary` / `accent` / `secondary` / `text` / `textMuted`) per the
- * corpus analysis in that file's docstring.
+ * An earlier version of this function read `ansiColors.*` (VGA
+ * primaries like `#000080`), which is what OpenCode's `generateSystem()`
+ * path does — but that path is a fallback for when the user picks the
+ * `"system"` theme and we only have a raw 16-color terminal palette
+ * to work from. For curated themes, OpenCode uses the JSON mapping
+ * modeled below. Reading VGA primaries against a near-black theme
+ * background rendered bullets and links as effectively invisible.
+ *
+ * Trimmed to the scopes `src/tui/theme/syntax.ts` actually consumes
+ * today (`horizontalRule`, `listEnumeration`, `image`, `imageText`
+ * are OpenCode-only so far — add when an Inkstone consumer
+ * materializes).
+ *
+ * `markdownHeading` now resolves to `accent` (matching OpenCode). The
+ * H1-H6 scope rules in `syntax.ts` override with Inkstone's graduated
+ * palette per the corpus analysis in that file's docstring; this
+ * change only affects any bare `markup.heading` scope without a level
+ * digit, which is rare.
+ *
+ * `markdownEmph`, `markdownBlockQuote`, and `syntaxType` fold onto
+ * `warning` because Inkstone has no dedicated `yellow` slot distinct
+ * from `warning`. OpenCode keeps them on a separate `darkYellow`.
+ * Accepted cosmetic divergence.
  */
 export interface MarkdownTokens {
 	markdownText: RGBA;
@@ -171,22 +198,27 @@ export function deriveMarkdownTokens(
 ): MarkdownTokens {
 	return {
 		markdownText: base.text,
-		markdownHeading: base.text,
-		markdownStrong: base.text,
-		markdownEmph: ansiColors.yellow,
-		markdownBlockQuote: ansiColors.yellow,
-		markdownListItem: ansiColors.blue,
-		markdownLink: ansiColors.blue,
-		markdownLinkText: ansiColors.cyan,
-		markdownCode: ansiColors.green,
+		markdownHeading: base.accent,
+		markdownStrong: base.warning,
+		markdownEmph: base.warning,
+		markdownBlockQuote: base.warning,
+		markdownListItem: base.primary,
+		markdownLink: base.primary,
+		markdownLinkText: base.info,
+		markdownCode: base.success,
 		markdownCodeBlock: base.text,
 	};
 }
 
 /**
- * The 9 syntax-family tokens every theme gets. Port of OpenCode's
- * assignment block at `context/theme.tsx:613-622`. Consumed by
- * fenced-code-block scope rules in `src/tui/theme/syntax.ts`.
+ * The 9 syntax-family tokens every theme gets. Mirrors the
+ * syntax-token assignments in OpenCode's JSON theme files — see
+ * `opencode/.../context/theme/opencode.json` (dark section) for the
+ * upstream mapping. Same reasoning as `deriveMarkdownTokens` above
+ * for why this reads semantic slots instead of `ansiColors`.
+ *
+ * Consumed by fenced-code-block scope rules in
+ * `src/tui/theme/syntax.ts`.
  */
 export interface SyntaxTokens {
 	syntaxComment: RGBA;
@@ -205,13 +237,13 @@ export function deriveSyntaxTokens(
 ): SyntaxTokens {
 	return {
 		syntaxComment: base.textMuted,
-		syntaxKeyword: ansiColors.magenta,
-		syntaxFunction: ansiColors.blue,
-		syntaxVariable: base.text,
-		syntaxString: ansiColors.green,
-		syntaxNumber: ansiColors.yellow,
-		syntaxType: ansiColors.cyan,
-		syntaxOperator: ansiColors.cyan,
+		syntaxKeyword: base.accent,
+		syntaxFunction: base.primary,
+		syntaxVariable: base.error,
+		syntaxString: base.success,
+		syntaxNumber: base.warning,
+		syntaxType: base.warning,
+		syntaxOperator: base.info,
 		syntaxPunctuation: base.text,
 	};
 }

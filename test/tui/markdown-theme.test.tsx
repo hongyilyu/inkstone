@@ -108,6 +108,13 @@ describe("markdown + syntax token wiring", () => {
 				).toBe(true);
 			});
 
+			// Pins the visibility-bug fix: list bullets must render in the
+			// theme's `primary` slot (visible against the theme background),
+			// not the VGA ANSI blue (`#000080`) an earlier derivation used.
+			test("markdownListItem resolves to primary (not a background-adjacent ANSI primary)", () => {
+				expect(sameRGBA(colors.markdownListItem, colors.primary)).toBe(true);
+			});
+
 			test("markup.link consumes markdownLink", () => {
 				expect(sameRGBA(fgFor(rules, "markup.link"), colors.markdownLink)).toBe(
 					true,
