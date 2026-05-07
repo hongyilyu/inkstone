@@ -1,7 +1,7 @@
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { For, onCleanup, Show } from "solid-js";
-import { clearScrollRef, refocusInput, setScrollRef } from "../app";
 import { useAgent } from "../context/agent";
+import { useLayout } from "../context/layout";
 import { AssistantMessage, UserMessage } from "./message";
 
 /**
@@ -11,18 +11,19 @@ import { AssistantMessage, UserMessage } from "./message";
  */
 export function Conversation() {
 	const { store } = useAgent();
+	const layout = useLayout();
 
 	return (
 		<scrollbox
 			ref={(r: ScrollBoxRenderable) => {
-				setScrollRef(r);
-				onCleanup(() => clearScrollRef(r));
+				layout.setScrollRef(r);
+				onCleanup(() => layout.clearScrollRef(r));
 			}}
 			stickyScroll={true}
 			stickyStart="bottom"
 			flexGrow={1}
 			onMouseUp={() => {
-				setTimeout(() => refocusInput(), 1);
+				setTimeout(() => layout.focusInput(), 1);
 			}}
 		>
 			<box flexDirection="column" paddingTop={1} paddingRight={1} gap={1}>

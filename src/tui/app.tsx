@@ -13,75 +13,60 @@ import { SessionList } from "./components/session-list";
 import { Sidebar } from "./components/sidebar";
 import { SuggestCommandPrompt } from "./components/suggest-command-prompt";
 import { AgentProvider, useAgent } from "./context/agent";
-import { getActiveLayout, LayoutProvider } from "./context/layout";
+import { getActiveLayout, LayoutProvider, useLayout } from "./context/layout";
 import { getSecondaryPage } from "./context/secondary-page";
 import { ThemeProvider, useTheme } from "./context/theme";
 import { useLayoutKeybinds } from "./hooks/use-layout-keybinds";
 import { DialogProvider } from "./ui/dialog";
 import { Toast, ToastProvider } from "./ui/toast";
 
-// Module-scoped ref for the prompt input. Set via `ref=` callback
-// from Layout's JSX; the ref callback registers `onCleanup` to null
-// this back out on unmount. Stack C is migrating scroll out to
-// `LayoutContext` first; input refs follow in C2. Until C2 lands,
-// the shim accessors below proxy scroll through `getActiveLayout()`
-// while input ones still read the module-local `inputRef`.
-let inputRef: any = null;
+// Stack-C migration shims. Every layout-level handle (scroll, input)
+// lives in `LayoutContext` now; these exports proxy through
+// `getActiveLayout()` so callers that still import from `@tui/app`
+// keep working until C3 deletes them. Each function below is a
+// one-liner — they have no business logic, only delegation.
 
+/** @deprecated Use `useLayout().getScroll()`. Removed in C3. */
 export function scrollRef(): ScrollBoxRenderable | null {
 	return getActiveLayout()?.getScroll() ?? null;
 }
 
+/** @deprecated Use `useLayout().setScrollRef`. Removed in C3. */
 export function setScrollRef(ref: ScrollBoxRenderable) {
 	getActiveLayout()?.setScrollRef(ref);
 }
 
-/**
- * Null the registered scroll ref if `ref` matches. Shim during the
- * Stack-C migration window — see `scrollRef` above.
- */
+/** @deprecated Use `useLayout().clearScrollRef`. Removed in C3. */
 export function clearScrollRef(ref: ScrollBoxRenderable) {
 	getActiveLayout()?.clearScrollRef(ref);
 }
 
+/** @deprecated Use `useLayout().setInputRef`. Removed in C3. */
 export function setInputRef(ref: any) {
-	inputRef = ref;
+	getActiveLayout()?.setInputRef(ref);
 }
 
-/**
- * Read the current prompt textarea ref. Mirrors `scrollRef()` — used
- * by surfaces that write into the prompt imperatively (e.g. the
- * suggest-command panel's Edit action pre-populating the slash).
- */
+/** @deprecated Use `useLayout().getInputRef()`. Removed in C3. */
 export function getInputRef(): any {
-	return inputRef;
+	return getActiveLayout()?.getInputRef() ?? null;
 }
 
-/**
- * Null the module-scoped input ref if `ref` matches. Mirror of
- * `clearScrollRef` — called from the prompt textarea's ref cleanup.
- */
+/** @deprecated Use `useLayout().clearInputRef`. Removed in C3. */
 export function clearInputRef(ref: any) {
-	if (inputRef === ref) inputRef = null;
+	getActiveLayout()?.clearInputRef(ref);
 }
 
+/** @deprecated Use `useLayout().focusInput()`. Removed in C3. */
 export function refocusInput() {
-	if (inputRef && !inputRef.isDestroyed && !inputRef.focused) {
-		inputRef.focus();
-	}
+	getActiveLayout()?.focusInput();
 }
 
-/**
- * Blur the prompt so the session panel can take over keyboard input
- * without double-dispatching keys (arrows, Enter) through both surfaces.
- * Paired with `refocusInput()` on panel close.
- */
+/** @deprecated Use `useLayout().blurInput()`. Removed in C3. */
 export function blurInput() {
-	if (inputRef && !inputRef.isDestroyed && inputRef.focused) {
-		inputRef.blur();
-	}
+	getActiveLayout()?.blurInput();
 }
 
+/** @deprecated Use `useLayout().scrollToBottom()`. Removed in C3. */
 export function toBottom() {
 	getActiveLayout()?.scrollToBottom();
 }
@@ -118,6 +103,7 @@ export function getPromptCtrlCBridge(): PromptCtrlCBridge | null {
 export function Layout() {
 	const { actions, store, pendingApproval, pendingSuggestion } = useAgent();
 	const { theme } = useTheme();
+	const layout = useLayout();
 	const dimensions = useTerminalDimensions();
 	const [sessionListOpen, setSessionListOpen] = createSignal(false);
 	// Hide the right metadata sidebar either because the terminal is
@@ -129,7 +115,7 @@ export function Layout() {
 
 	function closeSessionList() {
 		setSessionListOpen(false);
-		refocusInput();
+		layout.focusInput();
 	}
 
 	registerLayoutCommands({

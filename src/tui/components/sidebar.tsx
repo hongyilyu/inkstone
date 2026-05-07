@@ -2,8 +2,8 @@ import { VAULT_DIR } from "@backend/agent/constants";
 import { TextAttributes } from "@opentui/core";
 import { createMemo, For, Show } from "solid-js";
 import pkg from "../../../package.json";
-import { refocusInput } from "../app";
 import { useAgent } from "../context/agent";
+import { useLayout } from "../context/layout";
 import { closeSecondaryPage } from "../context/secondary-page";
 import { useTheme } from "../context/theme";
 import { displayPath, formatCost, formatTokensFull } from "../util/format";
@@ -25,6 +25,7 @@ const SIDEBAR_WIDTH = 30;
 export function Sidebar(props: { inSecondaryPage?: boolean }) {
 	const { theme, syntax } = useTheme();
 	const { store } = useAgent();
+	const layout = useLayout();
 
 	// Display vault path with ~ for home dir (platform-neutral helper,
 	// shared with the open-page footer).
@@ -55,7 +56,7 @@ export function Sidebar(props: { inSecondaryPage?: boolean }) {
 			paddingRight={2}
 			paddingTop={1}
 			paddingBottom={1}
-			onMouseUp={() => setTimeout(() => refocusInput(), 1)}
+			onMouseUp={() => setTimeout(() => layout.focusInput(), 1)}
 		>
 			{/* Top section — grows to fill, footer stays anchored below */}
 			<box flexDirection="column" flexGrow={1} gap={1}>
