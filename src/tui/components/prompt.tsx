@@ -106,11 +106,10 @@ export function Prompt() {
 		if (interruptTimer) clearTimeout(interruptTimer);
 	});
 
-	// Two-stage Ctrl+C. Mirrors OpenCode's clear-on-text behavior
-	// (`prompt/index.tsx:1025-1042`) but layers Inkstone's existing
-	// double-tap idiom over the empty-prompt branch so a stray keystroke
-	// can't drop the session. State machine extracted to
-	// `prompt-ctrlc.ts` for unit testing.
+	// Two-stage Ctrl+C — clear on first press with text, arm "again to
+	// exit" on first press with empty buffer, exit on second. State
+	// machine in `prompt-ctrlc.ts`; bridge contract in
+	// `docs/LAYOUT-CONTEXT.md` § PromptCtrlCBridge.
 	const [exitArmed, setExitArmed] = createSignal(false);
 	let exitTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -132,14 +131,6 @@ export function Prompt() {
 		if (exitTimer) clearTimeout(exitTimer);
 	});
 
-	// Bridge the prompt's Ctrl+C state to `useLayoutKeybinds`, which
-	// owns the single `useKeyboard` registration for `app_exit`. We
-	// can't run a second `useKeyboard` here because OpenTUI's
-	// EventEmitter dispatches global listeners in registration order
-	// and the layout's onMount fires first (parent before child) —
-	// any prompt-level handler would only see Ctrl+C events the
-	// layout chose to skip. Pushing the decision up to the single
-	// layout handler keeps dispatch order irrelevant.
 	layout.setCtrlCBridge({
 		decide: () =>
 			deriveCtrlCAction({

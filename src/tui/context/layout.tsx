@@ -1,28 +1,10 @@
 /**
- * `LayoutContext` — central registry for layout-level handles
- * (scroll container, prompt textarea, Ctrl+C bridge) that consumers
- * outside the JSX tree need to drive imperatively.
+ * `LayoutContext` — central registry for layout-level imperative
+ * handles (scroll container, prompt textarea, Ctrl+C bridge) that
+ * consumers outside the JSX tree need to drive.
  *
- * Why a context instead of module-scoped lets in `app.tsx`?
- *
- *   - Solid's lifecycle owns mount/unmount; module-scoped state
- *     forces every ref callback to do an `onCleanup` identity-check
- *     to avoid leaking handles past their owner.
- *   - Tests want a clean reset boundary — re-rendering the harness
- *     should not retain the previous render's refs.
- *   - The action / reducer layer should not import layout primitives
- *     directly. Threading via context turns "TUI app module exports
- *     a side effect" into "the provider exposes a typed surface."
- *
- * Migration plan (Stack C):
- *   - C1: this file lands, `LayoutProvider` becomes the source of
- *     truth for scroll. `app.tsx` keeps the module-level shims
- *     (`scrollRef`, `setScrollRef`, `clearScrollRef`, `toBottom`)
- *     but they now proxy through `activeLayout` so existing imports
- *     work unchanged.
- *   - C2: extend the context with input refs; migrate all
- *     component-level call sites to `useLayout()`. Shims remain.
- *   - C3: delete the shims. Lint catches any straggling import.
+ * Design rationale + cross-tree escape hatch + Ctrl+C bridge contract
+ * are documented in `docs/LAYOUT-CONTEXT.md`.
  */
 
 import type { ScrollBoxRenderable } from "@opentui/core";
@@ -33,25 +15,14 @@ import {
 	useContext,
 } from "solid-js";
 
-/**
- * Type alias for the prompt textarea ref. OpenTUI's `InputRenderable`
- * isn't exported on the type surface we use elsewhere, so this stays
- * `any` and consumers narrow at the call site (every existing caller
- * already does — `input.isDestroyed`, `input.focus()`, etc.).
- */
+// `any` because OpenTUI's `InputRenderable` isn't exported on the type
+// surface we use elsewhere; consumers narrow at the call site.
 type InputRef = any;
 
 /**
- * Bridge for the prompt's two-stage Ctrl+C behavior. The single
- * `useKeyboard` registration for `app_exit` lives in
- * `useLayoutKeybinds` (a parent of `<Prompt>`); since EventEmitter
- * dispatches global listeners in registration order and the parent's
- * onMount fires first, only one handler can own Ctrl+C. The Prompt
- * component publishes its decision callbacks here on mount and clears
- * them on unmount; the layout handler consults the bridge to decide
- * between clear / arm / exit. When the prompt isn't mounted (boot
- * fallback, approval / suggestion panels) the bridge is null and the
- * layout handler falls back to immediate exit.
+ * Two-stage Ctrl+C decision callbacks the Prompt publishes on mount.
+ * See `docs/LAYOUT-CONTEXT.md` § PromptCtrlCBridge for why the bridge
+ * pattern is required (mount-order coupling with `useLayoutKeybinds`).
  */
 export interface PromptCtrlCBridge {
 	decide: () => "clear" | "arm" | "fall_through";
@@ -120,10 +91,12 @@ export interface LayoutContextValue {
 const layoutContext = createContext<LayoutContextValue | null>(null);
 
 /**
- * Module-scoped pointer to the currently-mounted `LayoutProvider`.
- * Used ONLY by the deprecated `app.tsx` shim functions during the
- * Stack C migration. Components and reducers should call
- * `useLayout()` instead.
+ * Cross-tree escape hatch for callers outside the `LayoutProvider` JSX
+ * subtree (action / reducer modules under `tui/context/agent/*`,
+ * which run inside `AgentProvider` — a *parent* of `LayoutProvider`).
+ * Components in the subtree should use `useLayout()` instead.
+ *
+ * See `docs/LAYOUT-CONTEXT.md` § getActiveLayout for the rationale.
  */
 let activeLayout: LayoutContextValue | null = null;
 
