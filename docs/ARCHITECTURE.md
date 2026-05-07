@@ -1,5 +1,23 @@
 # Inkstone — Architecture
 
+## Contents
+
+- [Overview](#overview)
+- [Layer boundaries](#layer-boundaries)
+- [Data Flow](#data-flow)
+- [File Structure](#file-structure)
+- [Provider Stack](#provider-stack)
+- [Agent Integration](#agent-integration)
+- [Markdown Rendering](#markdown-rendering)
+- [Per-Message Status Line](#per-message-status-line)
+- [Permission Dispatcher](#permission-dispatcher)
+- [Agent Registry](#agent-registry)
+- [Provider Registry](#provider-registry)
+- [Keybinds + Commands](#keybinds--commands)
+- [Key Patterns (from OpenCode)](#key-patterns-from-opencode)
+- [Persistence](#persistence)
+- [Testing](#testing)
+
 ## Overview
 
 Inkstone is a terminal UI application built with OpenTUI (Solid reconciler) that uses pi-agent-core as a headless LLM agent backend. The agent runs in-process — no server, no worker threads, no network boundary.
