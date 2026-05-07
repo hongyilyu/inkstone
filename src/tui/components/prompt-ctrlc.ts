@@ -1,15 +1,16 @@
 /**
- * Pure state machine for the prompt's Ctrl+C handler.
+ * Pure state machine for the layout's Ctrl+C handler when the prompt
+ * is mounted. Consulted via `app.ts`'s `getPromptCtrlCBridge()` from
+ * `useLayoutKeybinds`.
  *
  * Mirrors OpenCode's clear-on-text behavior (`prompt/index.tsx:1025-1042`)
  * with Inkstone's double-tap safety on the empty-prompt branch.
  *
  * Three transitions, named by their effect at the UI seam:
  *
- *   - `clear`  : non-empty buffer + Ctrl+C → wipe input, do NOT exit
- *   - `arm`    : empty buffer + Ctrl+C, not yet armed → show "again to exit"
- *   - `fall_through` : empty buffer + Ctrl+C, already armed → let the
- *                      layout-level `app_exit` handler perform the exit
+ *   - `clear`        : non-empty buffer + Ctrl+C → wipe input, do NOT exit
+ *   - `arm`          : empty buffer + Ctrl+C, not yet armed → show "again to exit"
+ *   - `fall_through` : empty buffer + Ctrl+C, already armed → caller exits
  *
  * Pulling this out of the component lets us pin the table without
  * paying the OpenTUI test-renderer cost (which segfaults under Bun
@@ -17,7 +18,7 @@
  *
  * Callers also handle: Ctrl+C inside a dialog → not our problem
  * (consumer must early-return before calling this), and the 5s
- * disarm timer (consumer owns the timer + `disarmExit` reset).
+ * disarm timer (consumer owns the timer + reset).
  */
 export type CtrlCAction = "clear" | "arm" | "fall_through";
 

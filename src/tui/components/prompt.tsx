@@ -2,7 +2,6 @@ import { getAgentInfo } from "@backend/agent";
 import { getProvider } from "@backend/providers";
 import type { BoxRenderable, TextareaRenderable } from "@opentui/core";
 import { TextAttributes } from "@opentui/core";
-import { useKeyboard } from "@opentui/solid";
 import {
 	createEffect,
 	createMemo,
@@ -14,6 +13,7 @@ import {
 	clearInputRef,
 	setInputExtmarkIds,
 	setInputRef,
+	setPromptCtrlCBridge,
 	toBottom,
 } from "../app";
 import { useAgent } from "../context/agent";
@@ -137,36 +137,34 @@ export function Prompt() {
 		if (exitTimer) clearTimeout(exitTimer);
 	});
 
-	useKeyboard((evt: any) => {
-		if (evt.defaultPrevented) return;
-		// Dialog open → `dialog_close` (escape,ctrl+c) handles it; stay
-		// out of the way so the dialog handler runs unaffected.
-		if (dialog.stack.length > 0) return;
-		if (!Keybind.match("app_exit", evt)) return;
+	// Bridge the prompt's Ctrl+C state to `useLayoutKeybinds`, which
+	// owns the single `useKeyboard` registration for `app_exit`. We
+	// can't run a second `useKeyboard` here because OpenTUI's
+	// EventEmitter dispatches global listeners in registration order
+	// and the layout's onMount fires first (parent before child) —
+	// any prompt-level handler would only see Ctrl+C events the
+	// layout chose to skip. Pushing the decision up to the single
+	// layout handler keeps dispatch order irrelevant.
+	setPromptCtrlCBridge({
+		decide: () =>
+			deriveCtrlCAction({
+				hasText: text().length > 0,
+				armed: exitArmed(),
+			}),
+		clear: () => clearInput(),
+		arm: () => {
+			setExitArmed(true);
+			if (exitTimer) clearTimeout(exitTimer);
+			exitTimer = setTimeout(() => {
+				setExitArmed(false);
+				exitTimer = undefined;
+			}, 5000);
+		},
+		disarm: disarmExit,
+	});
 
-		const action = deriveCtrlCAction({
-			hasText: text().length > 0,
-			armed: exitArmed(),
-		});
-		if (action === "clear") {
-			clearInput();
-			evt.preventDefault();
-			return;
-		}
-		if (action === "fall_through") {
-			// 2nd press: do NOT preventDefault. Layout's `app_exit` handler
-			// runs next and performs the exit. Single source of truth for
-			// `renderer.destroy() + process.exit(0)`.
-			disarmExit();
-			return;
-		}
-		// arm
-		setExitArmed(true);
-		exitTimer = setTimeout(() => {
-			setExitArmed(false);
-			exitTimer = undefined;
-		}, 5000);
-		evt.preventDefault();
+	onCleanup(() => {
+		setPromptCtrlCBridge(null);
 	});
 
 	let inputRef: TextareaRenderable | undefined;
