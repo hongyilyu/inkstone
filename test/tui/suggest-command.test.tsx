@@ -14,9 +14,11 @@ import {
 	getSuggestCommandFn,
 	type SuggestCommandRequest,
 } from "@backend/agent";
-import { getInputRef } from "../../src/tui/app";
+import { getActiveLayout } from "../../src/tui/context/layout";
 import { makeFakeSession } from "./fake-session";
 import { renderApp, waitForFrame, waitUntil } from "./harness";
+
+const getInputRef = () => getActiveLayout()?.getInputRef() ?? null;
 
 async function seedUserMessage(
 	setup: Awaited<ReturnType<typeof renderApp>>,

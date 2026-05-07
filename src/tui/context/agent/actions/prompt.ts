@@ -23,7 +23,7 @@ import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
 import { getOpenAICodexWebSocketDebugStats } from "@mariozechner/pi-ai/openai-codex-responses";
 import { batch } from "solid-js";
 import { produce } from "solid-js/store";
-import { toBottom } from "../../../app";
+import { getActiveLayout } from "../../../context/layout";
 import type { ActionDeps } from "../actions";
 
 export async function promptAction(
@@ -98,7 +98,7 @@ export async function promptAction(
 					deps,
 				);
 			}
-			toBottom();
+			getActiveLayout()?.scrollToBottom();
 		},
 	);
 	if (!persisted) return;

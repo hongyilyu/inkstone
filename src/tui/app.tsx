@@ -1,4 +1,3 @@
-import type { ScrollBoxRenderable } from "@opentui/core";
 import { useTerminalDimensions } from "@opentui/solid";
 import { createMemo, createSignal, ErrorBoundary, Show } from "solid-js";
 import { registerLayoutCommands } from "./commands/layout-commands";
@@ -13,63 +12,12 @@ import { SessionList } from "./components/session-list";
 import { Sidebar } from "./components/sidebar";
 import { SuggestCommandPrompt } from "./components/suggest-command-prompt";
 import { AgentProvider, useAgent } from "./context/agent";
-import { getActiveLayout, LayoutProvider, useLayout } from "./context/layout";
+import { LayoutProvider, useLayout } from "./context/layout";
 import { getSecondaryPage } from "./context/secondary-page";
 import { ThemeProvider, useTheme } from "./context/theme";
 import { useLayoutKeybinds } from "./hooks/use-layout-keybinds";
 import { DialogProvider } from "./ui/dialog";
 import { Toast, ToastProvider } from "./ui/toast";
-
-// Stack-C migration shims. Every layout-level handle (scroll, input)
-// lives in `LayoutContext` now; these exports proxy through
-// `getActiveLayout()` so callers that still import from `@tui/app`
-// keep working until C3 deletes them. Each function below is a
-// one-liner — they have no business logic, only delegation.
-
-/** @deprecated Use `useLayout().getScroll()`. Removed in C3. */
-export function scrollRef(): ScrollBoxRenderable | null {
-	return getActiveLayout()?.getScroll() ?? null;
-}
-
-/** @deprecated Use `useLayout().setScrollRef`. Removed in C3. */
-export function setScrollRef(ref: ScrollBoxRenderable) {
-	getActiveLayout()?.setScrollRef(ref);
-}
-
-/** @deprecated Use `useLayout().clearScrollRef`. Removed in C3. */
-export function clearScrollRef(ref: ScrollBoxRenderable) {
-	getActiveLayout()?.clearScrollRef(ref);
-}
-
-/** @deprecated Use `useLayout().setInputRef`. Removed in C3. */
-export function setInputRef(ref: any) {
-	getActiveLayout()?.setInputRef(ref);
-}
-
-/** @deprecated Use `useLayout().getInputRef()`. Removed in C3. */
-export function getInputRef(): any {
-	return getActiveLayout()?.getInputRef() ?? null;
-}
-
-/** @deprecated Use `useLayout().clearInputRef`. Removed in C3. */
-export function clearInputRef(ref: any) {
-	getActiveLayout()?.clearInputRef(ref);
-}
-
-/** @deprecated Use `useLayout().focusInput()`. Removed in C3. */
-export function refocusInput() {
-	getActiveLayout()?.focusInput();
-}
-
-/** @deprecated Use `useLayout().blurInput()`. Removed in C3. */
-export function blurInput() {
-	getActiveLayout()?.blurInput();
-}
-
-/** @deprecated Use `useLayout().scrollToBottom()`. Removed in C3. */
-export function toBottom() {
-	getActiveLayout()?.scrollToBottom();
-}
 
 /**
  * Bridge for the prompt's two-stage Ctrl+C behavior. The single
