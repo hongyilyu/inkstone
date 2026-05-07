@@ -9,7 +9,6 @@ import {
 	onCleanup,
 	Show,
 } from "solid-js";
-import { setPromptCtrlCBridge } from "../app";
 import { useAgent } from "../context/agent";
 import { useLayout } from "../context/layout";
 import { useTheme } from "../context/theme";
@@ -141,7 +140,7 @@ export function Prompt() {
 	// any prompt-level handler would only see Ctrl+C events the
 	// layout chose to skip. Pushing the decision up to the single
 	// layout handler keeps dispatch order irrelevant.
-	setPromptCtrlCBridge({
+	layout.setCtrlCBridge({
 		decide: () =>
 			deriveCtrlCAction({
 				hasText: text().length > 0,
@@ -160,7 +159,7 @@ export function Prompt() {
 	});
 
 	onCleanup(() => {
-		setPromptCtrlCBridge(null);
+		layout.setCtrlCBridge(null);
 	});
 
 	let inputRef: TextareaRenderable | undefined;
