@@ -19,7 +19,8 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/solid";
-import { getPromptCtrlCBridge, scrollRef } from "../app";
+import { getPromptCtrlCBridge } from "../app";
+import { useLayout } from "../context/layout";
 import {
 	closeSecondaryPage,
 	getSecondaryPage,
@@ -30,6 +31,7 @@ import * as Keybind from "../util/keybind";
 export function useLayoutKeybinds(): void {
 	const renderer = useRenderer();
 	const dialog = useDialog();
+	const layout = useLayout();
 
 	function exitNow() {
 		renderer.destroy();
@@ -87,7 +89,7 @@ export function useLayoutKeybinds(): void {
 			return;
 		}
 
-		const scroll = scrollRef();
+		const scroll = layout.getScroll();
 		if (!scroll || scroll.isDestroyed) return;
 		if (dialog.stack.length > 0) return;
 
