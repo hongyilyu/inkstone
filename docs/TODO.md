@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-07 (reader persona generalized — Obsidian / `/article` refs removed; zones-per-command deferred to Future Work)
+**Last updated**: 2026-05-07 (two-stage Ctrl+C in the prompt — clear non-empty input on first press, arm "ctrl+c again to exit" on empty, fall through to layout exit on second)
 
 ## In Progress
 
@@ -31,6 +31,8 @@
 - pi-ai's Codex provider (`openai-codex-responses.js:buildRequestBody`) forwards `options.temperature` into the OpenAI Responses request body unconditionally, even for reasoning models (every Codex model Inkstone ships with is `reasoning: true`). OpenAI rejects non-default `temperature` on those endpoints with a 400 "Unsupported parameter". `session-title.ts` works around this by omitting `temperature` entirely. If a future caller of `completeSimple` against a Codex reasoning model needs a custom temperature, the right fix is an upstream pi-ai capability check — not a `stripTemperatureForReasoning` wrapper in this repo.
 
 ## Completed
+
+- [x] Two-stage Ctrl+C in the prompt. Mirrors OpenCode's clear-on-text behavior (`prompt/index.tsx:1025-1042`) layered with Inkstone's existing Esc-double-tap idiom on the empty-prompt branch. Press 1 with text → clear input + extmarks. Press 1 on empty → arm a 5s "ctrl+c again to exit" hint in the prompt hints row (rendered in `theme.primary`). Typing during the armed window disarms. Press 2 within 5s → fall through (no `preventDefault`); layout-level `app_exit` performs `renderer.destroy() + process.exit(0)`. Esc-Esc remains the only agent-abort path; Ctrl+C never interrupts a streaming turn. Dialogs continue to consume Ctrl+C via `dialog_close` (untouched). State machine extracted to `src/tui/components/prompt-ctrlc.ts` and unit-tested in `test/tui/prompt-ctrlc.test.ts` — integration tests via OpenTUI MockInput were skipped because `\x03` through the test renderer + a Solid-owned setTimeout triggers the documented Bun 1.3.4 segfault path. End-to-end behavior validated by manual smoke per the plan file.
 
 - [x] Simplify `prompt-autocomplete.tsx` — extract anchor-geometry hook, pure visibility state machine, inline option builders. Three seams pulled out of the 458-line monolith: (1) `src/tui/hooks/use-anchor-geometry.ts` wraps the 50ms poll + `useTerminalDimensions()` + parent-offset math behind a `useAnchorGeometry({ anchor, visible, itemCount, maxItems })` hook returning an `Accessor<{ x, y, width, height }>`. (2) `src/tui/components/autocomplete/mode-state.ts` owns the pure `deriveNextMode(state) → Transition` function that decides when to open/close slash vs mention mode. 11 rules pinned by new unit tests in `test/tui/mode-state.test.ts` (17 test cases, no TUI harness needed). (3) Inline `buildSlashOptions` and `buildMentionOptions` helpers at the bottom of `prompt-autocomplete.tsx` replace the 40-line `createMemo` bodies. Net: component shrinks from 519 → 376 lines (body), plus two new files (~186 lines) and one test file (~211 lines). All behavior preserved; `bun run ci` green at 377/377 (up from 360 with the new mode-state tests), autocomplete overlap tests 3× flake-clean.
 

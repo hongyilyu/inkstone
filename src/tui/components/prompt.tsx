@@ -2,6 +2,7 @@ import { getAgentInfo } from "@backend/agent";
 import { getProvider } from "@backend/providers";
 import type { BoxRenderable, TextareaRenderable } from "@opentui/core";
 import { TextAttributes } from "@opentui/core";
+import { useKeyboard } from "@opentui/solid";
 import {
 	createEffect,
 	createMemo,
@@ -26,6 +27,7 @@ import { buildSubmission } from "../util/submit-prompt";
 import { useCommand } from "./dialog/command";
 import { EmptyBorder } from "./message";
 import { PromptAutocomplete } from "./prompt-autocomplete";
+import { deriveCtrlCAction } from "./prompt-ctrlc";
 import { SpinnerWave } from "./spinner-wave";
 
 /**
@@ -107,6 +109,64 @@ export function Prompt() {
 
 	onCleanup(() => {
 		if (interruptTimer) clearTimeout(interruptTimer);
+	});
+
+	// Two-stage Ctrl+C. Mirrors OpenCode's clear-on-text behavior
+	// (`prompt/index.tsx:1025-1042`) but layers Inkstone's existing
+	// double-tap idiom over the empty-prompt branch so a stray keystroke
+	// can't drop the session. State machine extracted to
+	// `prompt-ctrlc.ts` for unit testing.
+	const [exitArmed, setExitArmed] = createSignal(false);
+	let exitTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function disarmExit() {
+		if (exitTimer) {
+			clearTimeout(exitTimer);
+			exitTimer = undefined;
+		}
+		setExitArmed(false);
+	}
+
+	// Typing after the first press disarms — the "again" prompt only
+	// makes sense for two consecutive Ctrl+C presses on an empty buffer.
+	createEffect(() => {
+		if (text().length > 0) disarmExit();
+	});
+
+	onCleanup(() => {
+		if (exitTimer) clearTimeout(exitTimer);
+	});
+
+	useKeyboard((evt: any) => {
+		if (evt.defaultPrevented) return;
+		// Dialog open → `dialog_close` (escape,ctrl+c) handles it; stay
+		// out of the way so the dialog handler runs unaffected.
+		if (dialog.stack.length > 0) return;
+		if (!Keybind.match("app_exit", evt)) return;
+
+		const action = deriveCtrlCAction({
+			hasText: text().length > 0,
+			armed: exitArmed(),
+		});
+		if (action === "clear") {
+			clearInput();
+			evt.preventDefault();
+			return;
+		}
+		if (action === "fall_through") {
+			// 2nd press: do NOT preventDefault. Layout's `app_exit` handler
+			// runs next and performs the exit. Single source of truth for
+			// `renderer.destroy() + process.exit(0)`.
+			disarmExit();
+			return;
+		}
+		// arm
+		setExitArmed(true);
+		exitTimer = setTimeout(() => {
+			setExitArmed(false);
+			exitTimer = undefined;
+		}, 5000);
+		evt.preventDefault();
 	});
 
 	let inputRef: TextareaRenderable | undefined;
@@ -521,7 +581,19 @@ export function Prompt() {
 
 				{/* prompt/index.tsx:1252-1363 — hints/status row */}
 				<box width="100%" flexDirection="row" justifyContent="space-between">
-					<Show when={store.isStreaming} fallback={<text />}>
+					<Show
+						when={store.isStreaming}
+						fallback={
+							<Show when={exitArmed()} fallback={<text />}>
+								<box flexShrink={0} flexDirection="row" gap={1} marginLeft={1}>
+									<text fg={theme.primary}>
+										{Keybind.print("app_exit")}{" "}
+										<span style={{ fg: theme.primary }}>again to exit</span>
+									</text>
+								</box>
+							</Show>
+						}
+					>
 						<box
 							flexDirection="row"
 							gap={1}
