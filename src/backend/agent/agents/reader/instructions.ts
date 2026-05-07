@@ -1,26 +1,14 @@
 import { NOTES_DIR, SCRAPS_DIR, TEMPLATES_DIR } from "../../constants";
 
 /**
- * Reader's agent-level system prompt. Owns the stable, always-on pieces:
- * persona, freeform-request guidance, style, attribution.
+ * Reader's agent-level system prompt — persona, freeform-request
+ * guidance, style, attribution. Always-on pieces.
  *
- * The 6-stage reading workflow lives in `buildArticleWorkflowPrelude`
- * and is prepended to `/article`'s opening user message. Rationale:
- * stages, file rules, preservation logic, and storage destinations are
- * only relevant once the user has brought in an article — shipping them
- * in the agent prompt made reader feel workflow-bound even for plain
- * chat, and cost baseline tokens for sessions that never invoke
- * `/article`. Moving the workflow into the command's user message keeps
- * reader's persona general while still giving the LLM the full rules
- * the moment `/article` fires.
- *
- * Cache stability: both this function AND `buildArticleWorkflowPrelude`
- * return constant strings per invocation (no per-turn state). After the
- * first turn of a `/article` session, the workflow text is cached as
- * part of the user-message prefix by Anthropic's `cache_control` and
- * Bedrock's `cachePoint` — same steady-state token cost as the
- * system-prompt-resident version, plus a savings on sessions that never
- * invoke `/article`.
+ * The 6-stage workflow lives in `buildArticleWorkflowPrelude` and is
+ * prepended to `/article`'s opening user message. See
+ * `docs/AGENT-DESIGN.md` D14 for the rationale (plain-chat sessions
+ * don't pay for workflow tokens; steady-state cost matches via
+ * cache_control on the user-message prefix).
  */
 export function buildReaderInstructions(): string {
 	return `## Reading Guide Persona
@@ -73,11 +61,11 @@ When the user's question is underspecified or could be interpreted in multiple w
 }
 
 /**
- * Reading workflow prelude prepended to `/article`'s opening user
- * message. Owns the full 6-stage workflow, file rules, and preservation
- * logic — everything that's only relevant while a reading session is
- * active. Kept as a constant string so `/article` invocations stay
- * byte-stable for Anthropic / Bedrock prefix caching.
+ * 6-stage workflow prelude prepended to `/article`'s opening user
+ * message — file rules, preservation logic, storage destinations,
+ * everything that's only relevant while a reading session is active.
+ * Constant string per call so `/article` user-message prefixes stay
+ * cache-hitting (see `docs/AGENT-DESIGN.md` D14).
  */
 export function buildArticleWorkflowPrelude(): string {
 	return `## Reading Workflow

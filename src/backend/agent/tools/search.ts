@@ -1,47 +1,23 @@
 /**
- * Generic article-directory search tools.
+ * Generic search + list-keys tool factories for a directory of
+ * markdown-with-frontmatter files.
  *
- * Two agent-tool factories share one scanner helper:
+ * - `makeSearchTool({ dir, name, description })` — filter by
+ *   frontmatter KV (substring, AND) and/or body content (substring).
+ *   Returns `{ filename, frontmatter?, snippets? }[]`, attaching
+ *   `frontmatter` iff the frontmatter filter was used and `snippets`
+ *   iff the content filter was used.
+ * - `makeListKeysTool({ dir, name, description })` — enumerate
+ *   observed frontmatter keys with one deterministic sample per key.
  *
- * - `makeSearchTool({ dir, name, description })` — filter-based search
- *   over a directory of markdown files. Matches against YAML
- *   frontmatter values (`filter.frontmatter`, case-insensitive
- *   substring per key, AND across keys) and/or body content
- *   (`filter.content`, case-insensitive substring). Returns
- *   `{ filename, frontmatter?, snippets? }[]` — `frontmatter` only
- *   when the frontmatter filter was used; `snippets` only when the
- *   content filter was used.
+ * Implementation posture: sync read-all per call, no cache, `.md` /
+ * `.markdown` only, corrupt frontmatter surfaces as empty fields. No
+ * permission baseline (dir is fixed at factory time, not
+ * user-controllable).
  *
- * - `makeListKeysTool({ dir, name, description })` — surface the
- *   frontmatter keys actually present in the directory's articles
- *   so the LLM can name real fields when building a `search` call.
- *   Returns `{ total, keys: [{ name, sample }] }` — no type
- *   inference, no frequency count, just key + one representative
- *   sample value.
- *
- * Both factories take an explicit `name` + `description` so agents
- * pick their own tool identity (reader uses `"search"` + `"list_keys"`
- * scoped to ARTICLES_DIR; a future notes agent could use
- * `"search_notes"` + `"list_note_keys"` scoped to NOTES_DIR without
- * collision). No `cwd` inference, no directory-basename magic.
- *
- * Implementation posture (intentionally simple):
- *
- * - Synchronous read-all on every tool call. No in-memory cache, no
- *   mtime invalidation, no disk index. Fine for vault sizes in the
- *   low hundreds of articles. If profiling ever shows scan time is
- *   user-visible, add a session-scoped cache — tracked under Known
- *   Issues when that happens.
- * - Skips leading-dot entries, `node_modules/`, and symlinks
- *   (matches `listVaultFiles` in `src/tui/util/vault-files.ts`).
- * - Only `.md` / `.markdown` files — `.txt` isn't frontmatter-bearing
- *   in the corpus, so including it would dilute `list_keys` output.
- * - Corrupt frontmatter on a specific file → skip that file; don't
- *   throw (one malformed export shouldn't take down search).
- *
- * No permission baseline — both tools only *read* from a directory
- * the agent already has `read` access to via the vault baseline, and
- * the `dir` arg is fixed at factory time (not user-controllable).
+ * Factories take an explicit `name` + `description` so callers pick
+ * their own identity (reader: `"search"` + `"list_keys"` scoped to
+ * ARTICLES_DIR; a future notes agent could scope to NOTES_DIR).
  */
 
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
@@ -53,41 +29,32 @@ import { type Static, Type } from "typebox";
 const ALLOWED_EXTENSIONS = new Set([".md", ".markdown"]);
 const IGNORED_DIRS = new Set(["node_modules"]);
 
-// ---------------------------------------------------------------------------
-// Shared scanner. Returns one entry per markdown file under `dir` along with
-// parsed frontmatter + body. Both tools reuse this; neither needs to cache
-// intermediate state.
-// ---------------------------------------------------------------------------
+// Shared scanner shared by both factories.
 
-interface ScannedArticle {
-	/** Absolute filesystem path. Used internally by callers needing disk reads. */
+interface ScannedFile {
 	absPath: string;
-	/** Path relative to the scanned `dir`, forward-slash normalized. */
+	/** Forward-slash normalized, relative to the scanned `dir`. */
 	relPath: string;
-	/** mtime in ms since epoch, captured during scan. 0 on stat failure. */
 	mtime: number;
 	frontmatter: Record<string, FrontmatterValue>;
 	body: string;
 }
 
-function scanDirectory(dir: string): ScannedArticle[] {
-	const out: ScannedArticle[] = [];
+function scanDirectory(dir: string): ScannedFile[] {
+	const out: ScannedFile[] = [];
 	walk(dir, dir, out);
 	return out;
 }
 
-function walk(root: string, current: string, out: ScannedArticle[]): void {
+function walk(root: string, current: string, out: ScannedFile[]): void {
 	let entries: string[];
 	try {
 		entries = readdirSync(current);
 	} catch {
 		return;
 	}
-	// Sort entries so traversal order is deterministic across
-	// filesystems. `readdirSync` order is filesystem-dependent on
-	// Linux / macOS, and downstream sorts in `search` / `list_keys`
-	// assume stable input; without this, same-mtime siblings would
-	// swap positions across test runs on different machines.
+	// Sort so downstream mtime-tiebreak / key-sample order is
+	// filesystem-independent.
 	entries.sort();
 	for (const entry of entries) {
 		if (entry.startsWith(".")) continue;
@@ -115,10 +82,7 @@ function walk(root: string, current: string, out: ScannedArticle[]): void {
 		} catch {
 			continue;
 		}
-		// Corrupt frontmatter just surfaces as an empty `fields` record —
-		// `parseFrontmatter` returns `{ fields: {}, body: input }` on any
-		// malformed shape, which is what we want: the file still appears
-		// in content-only searches but matches no frontmatter filter.
+		// Corrupt frontmatter → empty fields; file still searchable on body.
 		const { fields, body } = parseFrontmatter(text);
 		out.push({
 			absPath: abs,
@@ -134,9 +98,7 @@ function normalizeSep(p: string): string {
 	return p.includes("\\") ? p.replace(/\\/g, "/") : p;
 }
 
-// ---------------------------------------------------------------------------
-// search — filter + snippet
-// ---------------------------------------------------------------------------
+// search — filter + snippet ───────────────────────────────────────────
 
 const searchSchema = Type.Object({
 	filter: Type.Optional(
@@ -144,13 +106,13 @@ const searchSchema = Type.Object({
 			frontmatter: Type.Optional(
 				Type.Record(Type.String(), Type.String(), {
 					description:
-						"Match articles whose frontmatter contains the given key/value pairs. Values are substrings (case-insensitive). Multiple keys are AND-joined. For list-valued keys (e.g. tags, authors), any element containing the substring matches.",
+						"Match files whose frontmatter contains the given key/value pairs. Values are substrings (case-insensitive). Multiple keys are AND-joined. For list-valued keys (e.g. tags, authors), any element containing the substring matches.",
 				}),
 			),
 			content: Type.Optional(
 				Type.String({
 					description:
-						"Substring to search for in the article body (case-insensitive). Matching articles return one snippet per match, up to 3 per article.",
+						"Substring to search for in the file body (case-insensitive). Matching files return one snippet per match, up to 3 per file.",
 				}),
 			),
 		}),
@@ -160,7 +122,7 @@ const searchSchema = Type.Object({
 			minimum: 1,
 			maximum: 25,
 			description:
-				"Maximum number of articles to return. Default 10, hard cap 25.",
+				"Maximum number of files to return. Default 10, hard cap 25.",
 		}),
 	),
 });
@@ -168,7 +130,7 @@ const searchSchema = Type.Object({
 export type SearchInput = Static<typeof searchSchema>;
 
 export interface SearchHit {
-	/** Directory-relative article path. */
+	/** Directory-relative file path. */
 	filename: string;
 	/** Full parsed frontmatter — present iff `filter.frontmatter` was supplied. */
 	frontmatter?: Record<string, FrontmatterValue>;
@@ -183,28 +145,23 @@ interface SnippetMatch {
 
 const DEFAULT_LIMIT = 10;
 const HARD_CAP = 25;
-const MAX_SNIPPETS_PER_ARTICLE = 3;
+const MAX_SNIPPETS_PER_FILE = 3;
 const SNIPPET_WORDS_BEFORE = 20;
 const SNIPPET_WORDS_AFTER = 20;
 const SNIPPET_WORDS_MAX = 50;
 
 /**
- * Case-insensitive substring match for a frontmatter filter KV against one
- * article's parsed frontmatter. Arrays match if any element contains the
- * substring. Missing keys fail the filter.
+ * Case-insensitive substring match. Arrays match if any element
+ * contains the substring; missing keys fail. Empty-string values
+ * skipped (`"".includes("")` would otherwise match every file).
  */
 function matchesFrontmatterFilter(
-	articleFm: Record<string, FrontmatterValue>,
+	fm: Record<string, FrontmatterValue>,
 	filter: Record<string, string>,
 ): boolean {
 	for (const [key, needle] of Object.entries(filter)) {
-		// Skip empty-string filter values — `"".includes("")` is always
-		// true, which would otherwise let an LLM-supplied `{ author: "" }`
-		// match every article with *any* author. Typebox validates the
-		// value as `Type.String()` (non-empty isn't a schema constraint),
-		// so we guard at runtime.
 		if (needle.length === 0) continue;
-		const haystack = articleFm[key];
+		const haystack = fm[key];
 		if (haystack === undefined) return false;
 		const needleLower = needle.toLowerCase();
 		if (Array.isArray(haystack)) {
@@ -220,23 +177,18 @@ function matchesFrontmatterFilter(
 }
 
 /**
- * Build up to N windowed snippets around `needle` occurrences in `body`.
- * Windows are word-aligned (~20 before / ~20 after, capped at 50 total).
- * Overlapping or adjacent windows are merged so one large match-cluster
- * doesn't crowd out match-clusters elsewhere in the article.
- *
- * Returns the rendered snippet strings (already joined with spaces); the
- * caller tracks only the count of snippets, not the underlying match
- * total — the LLM can widen the filter if coverage feels thin.
+ * Word-windowed snippets (~20 before / 20 after, hard-capped at 50
+ * words per merged region). Overlapping windows merge so one match
+ * cluster doesn't crowd out clusters elsewhere in the file. Returns
+ * at most `MAX_SNIPPETS_PER_FILE` distinct regions.
  */
 function buildSnippets(body: string, needle: string): string[] {
 	if (!needle) return [];
 	const needleLower = needle.toLowerCase();
 	const bodyLower = body.toLowerCase();
 
-	// Tokenize the body into words keeping their original character
-	// positions so snippet bounds can be reconstructed against the
-	// original body text (not a lossy re-split).
+	// Tokenize keeping original char positions so the final slice
+	// reads from the untouched body.
 	const words: { text: string; start: number; end: number }[] = [];
 	const wordRe = /\S+/g;
 	let wm: RegExpExecArray | null = wordRe.exec(body);
@@ -246,25 +198,18 @@ function buildSnippets(body: string, needle: string): string[] {
 	}
 	if (words.length === 0) return [];
 
-	// Map each match's char index to the word index it falls in. A
-	// match inside whitespace (impossible for non-empty needles that
-	// contain non-space chars, but guarded) is mapped to the next word.
 	const matchWordIdxs: number[] = [];
 	let searchFrom = 0;
 	while (searchFrom < bodyLower.length) {
 		const hit = bodyLower.indexOf(needleLower, searchFrom);
 		if (hit === -1) break;
-		// Find the word containing `hit`. Words are sorted, so linear
-		// walk with a moving cursor is O(n+m) total across the outer
-		// loop — cheap for body sizes in practice.
 		const wordIdx = findWordIndex(words, hit);
 		if (wordIdx !== -1) matchWordIdxs.push(wordIdx);
 		searchFrom = hit + Math.max(needleLower.length, 1);
 	}
 	if (matchWordIdxs.length === 0) return [];
 
-	// Expand each match into a window and merge overlapping windows.
-	// Sort + sweep gives us deduplicated coverage regions.
+	// Expand → sort → merge overlapping windows.
 	const windows: SnippetMatch[] = matchWordIdxs
 		.map((w) => ({
 			startWord: Math.max(0, w - SNIPPET_WORDS_BEFORE),
@@ -282,10 +227,7 @@ function buildSnippets(body: string, needle: string): string[] {
 		}
 	}
 
-	// Clamp any merged window that grew past SNIPPET_WORDS_MAX. This
-	// happens when several near-adjacent matches merge into a window
-	// that would otherwise balloon. Truncate symmetrically around the
-	// midpoint so context on both sides is preserved.
+	// Trim oversize merged windows symmetrically (preserves context both sides).
 	for (const w of merged) {
 		const span = w.endWord - w.startWord + 1;
 		if (span > SNIPPET_WORDS_MAX) {
@@ -297,10 +239,8 @@ function buildSnippets(body: string, needle: string): string[] {
 		}
 	}
 
-	// Cap total snippets per article after merging. Post-merge cap is
-	// the right moment: we want the cap to count "distinct regions of
-	// the article," not raw match positions.
-	const capped = merged.slice(0, MAX_SNIPPETS_PER_ARTICLE);
+	// Cap after merging so the cap counts distinct regions, not raw matches.
+	const capped = merged.slice(0, MAX_SNIPPETS_PER_FILE);
 
 	return capped.flatMap((w) => {
 		const startWord = words[w.startWord];
@@ -327,20 +267,14 @@ function findWordIndex(
 		else if (charIdx > w.end) lo = mid + 1;
 		else return mid;
 	}
-	// `charIdx` is between words — map to the next word after it.
+	// Between words → map to the next word after the cursor.
 	return lo < words.length ? lo : -1;
 }
 
 export interface SearchToolOptions {
-	/** Absolute path to the directory scanned on every tool call. */
 	dir: string;
-	/** Tool name the LLM sees (e.g. `"search"`). */
 	name: string;
-	/**
-	 * Tool description the LLM sees. Should teach the call sequence
-	 * (when to combine frontmatter + content filters, when to pair
-	 * with a `list_keys` call first).
-	 */
+	/** Should teach when to pair with a `list_keys` call first. */
 	description: string;
 }
 
@@ -363,57 +297,49 @@ export function makeSearchTool(
 			const usedContentFilter = !!contentFilter && contentFilter.length > 0;
 			const limit = Math.min(params.limit ?? DEFAULT_LIMIT, HARD_CAP);
 
-			const articles = scanDirectory(dir);
+			const files = scanDirectory(dir);
 
-			let filtered: ScannedArticle[] = articles;
+			let filtered: ScannedFile[] = files;
 			if (fmFilter && usedFmFilter) {
-				filtered = filtered.filter((a) =>
-					matchesFrontmatterFilter(a.frontmatter, fmFilter),
+				filtered = filtered.filter((f) =>
+					matchesFrontmatterFilter(f.frontmatter, fmFilter),
 				);
 			}
 
-			// Track snippets alongside the article so we can drop
-			// zero-match articles when a content filter is active.
-			const withSnippets = filtered.map((a) => {
+			// Track snippets alongside each file so we can drop
+			// zero-match files when a content filter is active.
+			const withSnippets = filtered.map((f) => {
 				if (!contentFilter || !usedContentFilter) {
-					return { article: a, snippets: undefined };
+					return { file: f, snippets: undefined };
 				}
-				const snippets = buildSnippets(a.body, contentFilter);
-				return { article: a, snippets };
+				const snippets = buildSnippets(f.body, contentFilter);
+				return { file: f, snippets };
 			});
 
 			const matched = usedContentFilter
 				? withSnippets.filter((x) => x.snippets && x.snippets.length > 0)
 				: withSnippets;
 
-			// Sort ALL results deterministically (filtered OR not).
-			// `readdirSync` order is filesystem-dependent, and a
-			// cross-platform `slice(0, limit)` would otherwise drop
-			// different articles on different machines. mtime-desc
-			// with relPath tiebreak gives "most recently modified first"
-			// across every call path — matches the no-filter "list
-			// recent" semantic and keeps filtered queries stable across
-			// platforms. mtime is captured once per article during
-			// scan (see `ScannedArticle.mtime`), so this comparator
-			// is O(1) per call.
+			// Sort deterministically (mtime desc, relPath tiebreak) so
+			// `slice(0, limit)` is cross-platform stable.
 			const ordered = [...matched].sort((a, b) => {
-				if (b.article.mtime !== a.article.mtime) {
-					return b.article.mtime - a.article.mtime;
+				if (b.file.mtime !== a.file.mtime) {
+					return b.file.mtime - a.file.mtime;
 				}
-				return a.article.relPath.localeCompare(b.article.relPath);
+				return a.file.relPath.localeCompare(b.file.relPath);
 			});
 
 			const hits: SearchHit[] = ordered.slice(0, limit).map((x) => {
-				const hit: SearchHit = { filename: x.article.relPath };
-				if (usedFmFilter) hit.frontmatter = x.article.frontmatter;
+				const hit: SearchHit = { filename: x.file.relPath };
+				if (usedFmFilter) hit.frontmatter = x.file.frontmatter;
 				if (usedContentFilter) hit.snippets = x.snippets;
 				return hit;
 			});
 
 			const summary =
 				hits.length === 0
-					? "No matching articles."
-					: `Found ${hits.length} article${hits.length === 1 ? "" : "s"}.`;
+					? "No matching files."
+					: `Found ${hits.length} file${hits.length === 1 ? "" : "s"}.`;
 
 			return {
 				content: [
@@ -431,22 +357,17 @@ export function makeSearchTool(
 	};
 }
 
-// ---------------------------------------------------------------------------
-// list_keys — enumerate observed frontmatter keys with one sample each
-// ---------------------------------------------------------------------------
+// list_keys — enumerate observed frontmatter keys ────────────────────
 
 const listKeysSchema = Type.Object({});
 
 export type ListKeysInput = Static<typeof listKeysSchema>;
 
 export interface ListKeysKey {
-	/** Frontmatter key name as written in the articles. */
 	name: string;
-	/**
-	 * One representative sample value. String for scalars, first
-	 * element for arrays. Deterministic across runs: taken from the
-	 * lexicographically-first article that sets the key.
-	 */
+	/** Representative sample — scalar or first array element. Taken
+	 * deterministically from the lexicographically-first file that
+	 * sets the key. */
 	sample: string;
 }
 
@@ -476,15 +397,14 @@ export function makeListKeysTool(
 			_callId: string,
 			_params: ListKeysInput,
 		): Promise<AgentToolResult<ListKeysResult>> {
-			const articles = scanDirectory(dir);
-			// Iterate in sorted order so "first article to set key X"
-			// is deterministic (lexicographic on relPath).
-			const sorted = [...articles].sort((a, b) =>
+			const files = scanDirectory(dir);
+			// Iterate lexicographically so "first file to set key X" is deterministic.
+			const sorted = [...files].sort((a, b) =>
 				a.relPath.localeCompare(b.relPath),
 			);
 			const samples: Record<string, string> = {};
-			for (const a of sorted) {
-				for (const [key, value] of Object.entries(a.frontmatter)) {
+			for (const f of sorted) {
+				for (const [key, value] of Object.entries(f.frontmatter)) {
 					if (samples[key] !== undefined) continue;
 					const sample = Array.isArray(value) ? (value[0] ?? "") : value;
 					if (typeof sample !== "string" || sample.length === 0) continue;
@@ -498,7 +418,7 @@ export function makeListKeysTool(
 					return sample !== undefined ? [{ name: k, sample }] : [];
 				});
 
-			const result: ListKeysResult = { total: articles.length, keys };
+			const result: ListKeysResult = { total: files.length, keys };
 			return {
 				content: [
 					{

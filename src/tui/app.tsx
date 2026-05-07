@@ -30,15 +30,11 @@ let scroll: ScrollBoxRenderable | null = null;
 let inputRef: any = null;
 
 /**
- * Extmark type id + `extmark.file` style id registered by the prompt
- * textarea on mount. Exposed at module scope so surfaces outside
- * `Prompt` (today: `SuggestCommandPrompt`'s Edit action) can create
- * mention-style extmarks against the same input, getting the exact
- * same chip rendering + submit-time mention detection that a typed
- * `@` produces. Both are 0 / null until the textarea ref callback
- * fires on mount. The style id is re-published on theme switch —
- * `SyntaxStyle` (and its numeric style ids) rebuilds when the theme
- * id changes.
+ * Prompt textarea's extmark type id + `extmark.file` style id,
+ * exposed at module scope so `SuggestCommandPrompt`'s Edit action can
+ * create the same chip-style mentions the `@`-autocomplete produces.
+ * Both are 0 / null until the textarea ref callback fires on mount;
+ * the style id re-publishes on theme switch.
  */
 let inputPromptPartTypeId = 0;
 let inputFileStyleId: number | null = null;
@@ -75,11 +71,8 @@ export function getInputRef(): any {
 	return inputRef;
 }
 
-/**
- * Read the active prompt-mention extmark ids. Both are 0 / null when
- * the prompt hasn't mounted yet. See the `inputFileStyleId` docstring
- * above for the lifecycle.
- */
+/** Accessors for the prompt extmark ids — see
+ * `inputFileStyleId` above for lifecycle. */
 export function getInputExtmarkIds(): {
 	typeId: number;
 	styleId: number | null;

@@ -87,12 +87,10 @@ export interface AgentContextValue {
 	pendingApproval: Accessor<PendingApproval | null>;
 	respondApproval: (ok: boolean) => void;
 	/**
-	 * Pending-suggestion signal for `suggest_command` tool calls. When
-	 * non-null, the layout replaces the `Prompt` cell with
-	 * `SuggestCommandPrompt`, which owns Confirm / Edit / Cancel.
-	 * Resolved via `respondSuggestion`. On unmount the provider
-	 * resolves any in-flight entry to `"cancelled"` so the tool's
-	 * promise settles and the LLM turn can wind down.
+	 * Pending-suggestion signal for `suggest_command` tool calls.
+	 * Layout swaps `Prompt` → `SuggestCommandPrompt` while set.
+	 * Unmount resolves in-flight to `"cancelled"` so the tool promise
+	 * settles cleanly. See `docs/AGENT-DESIGN.md` D15.
 	 */
 	pendingSuggestion: Accessor<PendingSuggestion | null>;
 	respondSuggestion: (decision: SuggestCommandDecision) => void;
@@ -113,11 +111,9 @@ export interface PendingApproval {
 }
 
 /**
- * Snapshot of an in-flight `suggest_command` request, surfaced to
- * `SuggestCommandPrompt`. `command` + `args` already reflect the
- * agent-declared verb (schema-validated in the backend factory); the
- * panel renders `/<command> [args]` verbatim alongside the LLM's
- * rationale.
+ * In-flight `suggest_command` snapshot rendered by
+ * `SuggestCommandPrompt`. `command` / `args` are schema-validated by
+ * the backend factory.
  */
 export interface PendingSuggestion {
 	callId: string;

@@ -66,12 +66,10 @@ export interface ActionDeps {
 	pendingApproval: () => PendingApproval | null;
 	respondApproval: (ok: boolean) => void;
 	/**
-	 * Pending-suggestion accessor + resolver for `suggest_command`
-	 * tool calls. Same abort/clear shape as approvals: wrappers must
-	 * resolve the pending suggestion to `"cancelled"` before calling
-	 * into the backend, otherwise `agent.abort()` + `waitForIdle()`
-	 * deadlocks on the tool's parked promise (AbortController can't
-	 * wake a promise that's only resolvable by user input).
+	 * Pending-suggestion accessor + resolver for `suggest_command`.
+	 * `abort` / `clearSession` must resolve to `"cancelled"` before
+	 * the backend call — the tool's promise isn't wake-able by
+	 * AbortController. See `docs/AGENT-DESIGN.md` D15.
 	 */
 	pendingSuggestion: () => PendingSuggestion | null;
 	respondSuggestion: (decision: SuggestCommandDecision) => void;
@@ -86,11 +84,11 @@ export function createWrappedActions(
 			await promptAction(text, displayParts, deps);
 		},
 		abort() {
-			// Resolve any pending TUI-side promise BEFORE backend abort.
-			// The run loop can be parked on `await confirmFn(...)` or
-			// `await suggestCommandFn(...)` — AbortController can't wake
-			// either. See `docs/APPROVAL-UI.md` § Abort / clear ordering;
-			// the suggestion path follows the same contract.
+			// Resolve pending TUI promises BEFORE backend abort — the
+			// loop may be parked on `await confirmFn(...)` or
+			// `await suggestCommandFn(...)` which AbortController
+			// can't wake. See `docs/AGENT-DESIGN.md` D15 + approval
+			// path.
 			if (deps.pendingApproval()) deps.respondApproval(false);
 			if (deps.pendingSuggestion()) deps.respondSuggestion("cancelled");
 			deps.agentSession.actions.abort();
@@ -331,10 +329,8 @@ function handlePreStreamError(err: unknown, deps: ActionDeps): void {
 // ────────────────────────────────────────────────────────────────────
 
 async function clearSessionAction(deps: ActionDeps): Promise<void> {
-	// Resolve any pending TUI-side promises before the backend call.
-	// Same deadlock shape as abort — the agent loop may be parked on
-	// `await confirmFn(...)` or `await suggestCommandFn(...)`.
-	// See `docs/APPROVAL-UI.md` § Abort / clear ordering.
+	// Resolve pending TUI promises before backend clear — same
+	// deadlock shape as abort (see `docs/AGENT-DESIGN.md` D15).
 	if (deps.pendingApproval()) deps.respondApproval(false);
 	if (deps.pendingSuggestion()) deps.respondSuggestion("cancelled");
 	// Await the backend clear first. Mid-stream path: it calls

@@ -13,45 +13,31 @@ import {
 import { recommendArticles } from "./recommendations";
 
 /**
- * Core article-loading logic shared by the bare-case (picker) and the
- * arg-case (direct filename). Resolves the filename inside
- * `ARTICLES_DIR`, validates, reads, and sends the opening user message.
+ * Shared loader for `/article`'s two invocation modes (picker / direct
+ * filename).
  *
- * Splits the display and LLM payloads: `prompt` receives the full
- * `[workflow prelude] + Path: + Content:` blob as `text` (what
- * pi-agent-core hands to pi-ai) and a compact `[short prose, file
- * chip]` array as `displayParts` (what the user bubble renders). See
+ * Accepts either a bare filename (`foo.md`) or an absolute path inside
+ * `ARTICLES_DIR` (what `@`-autocomplete's mention expansion produces).
+ * Both must resolve inside `ARTICLES_DIR`.
+ *
+ * LLM-facing `text` carries `[workflow prelude] + Path: + Content:`;
+ * bubble `displayParts` is just a short prose line + file chip. See
  * `wrappedActions.prompt` in `src/tui/context/agent.tsx` for the
- * split — pi-agent-core only ever sees `text`, so the LLM gets the
- * full workflow + article while the bubble stays scannable.
- *
- * The workflow prelude (stages, file rules, preservation logic,
- * storage destinations) is prepended here rather than baked into
- * reader's agent system prompt so plain-chat sessions don't pay for
- * it. See `buildArticleWorkflowPrelude` in `./instructions.ts` for
- * the rationale.
+ * split and `docs/AGENT-DESIGN.md` D14 for the workflow-in-message
+ * rationale.
  */
 async function runArticle(
 	filename: string,
 	prompt: (text: string, displayParts?: DisplayPart[]) => Promise<void>,
 ): Promise<void> {
-	// Accept either a bare filename (`foo.md`, `/article foo.md`) or
-	// an absolute path (what the `@`-autocomplete's mention expansion
-	// produces: `resolve(VAULT_DIR, chipFilename)`). Both paths must
-	// resolve INSIDE `ARTICLES_DIR` — that's the reader invariant.
-	// Other vault locations are someone else's concern.
 	const articlePath = isAbsolute(filename)
 		? filename
 		: resolve(ARTICLES_DIR, filename);
-	// `isInsideDir` is `path.sep`-boundary-safe and cross-platform;
-	// the equality short-circuit also means `articlePath === ARTICLES_DIR`
-	// slips through, so we reject the bare-dir case explicitly.
+	// `isInsideDir` is path.sep-boundary-safe; also reject the bare-dir case.
 	if (!isInsideDir(articlePath, ARTICLES_DIR) || articlePath === ARTICLES_DIR) {
 		throw new Error(`Not a file inside the Articles folder: '${filename}'`);
 	}
-	// `lstatSync` doesn't follow symlinks; combined with the
-	// `isSymbolicLink()` reject, this closes the symlink-out-of-vault
-	// hole (a link inside Articles that points at an arbitrary file).
+	// lstatSync + isSymbolicLink close the symlink-out-of-vault hole.
 	let stat: ReturnType<typeof lstatSync>;
 	try {
 		stat = lstatSync(articlePath);
@@ -65,9 +51,8 @@ async function runArticle(
 		throw new Error(`Not a regular file: ${filename}`);
 	}
 	const content = readFileSync(articlePath, "utf-8");
-	// Chip filename is vault-relative — shorter than the absolute path
-	// and unambiguous inside the vault. The absolute path still goes
-	// into the LLM text so tools resolve the same file later.
+	// Chip shows vault-relative path (shorter, unambiguous); LLM text
+	// carries the absolute form so tools resolve the same file later.
 	const relPath = relative(VAULT_DIR, articlePath);
 	const prelude = buildArticleWorkflowPrelude();
 	await prompt(
@@ -80,29 +65,11 @@ async function runArticle(
 }
 
 /**
- * `/article [filename]` — reader's canonical verb.
+ * `/article [filename]` — reader's canonical verb. Bare → picker from
+ * recommended unread articles; with filename → load directly.
  *
- * Two modes:
- *
- * 1. **Bare** (`/article` with no argument or whitespace-only):
- *    Scans `ARTICLES_DIR`, scores unread articles using the `index.base`
- *    ranking logic, pushes a numbered recommendation list into the
- *    conversation as a user bubble, then opens a `DialogSelect` picker.
- *    Selecting an article runs the normal loading path. Cancelling (ESC)
- *    leaves the list in the conversation without starting a turn.
- *
- * 2. **With filename** (`/article foo.md`):
- *    Resolves the filename inside `ARTICLES_DIR` only. Rejects paths
- *    that escape the Articles folder, point at the folder itself, don't
- *    exist, resolve through a symlink, or don't resolve to a regular
- *    file. On success, reads the file and hands the path + content to
- *    the LLM as the opening user message, kicking off the 6-stage
- *    reading workflow.
- *
- * `takesArgs: false` so the bare invocation is dispatched by the slash
- * gate (previously `true` caused bare `/article` to fall through as a
- * plain prompt). The command also appears in the Ctrl+P palette —
- * clicking it opens the picker.
+ * `takesArgs: false` so the bare form is slash-dispatched (not falling
+ * through as a plain prompt).
  */
 const articleCommand: AgentCommand = {
 	name: "article",
@@ -113,7 +80,6 @@ const articleCommand: AgentCommand = {
 	execute: async (args, helpers) => {
 		const filename = args.trim();
 		if (!filename) {
-			// Bare invocation — show a picker dialog with recommended articles.
 			const recs = recommendArticles(10);
 			if (recs.length === 0) {
 				throw new Error("No unread articles found in the Articles folder");
@@ -130,7 +96,7 @@ const articleCommand: AgentCommand = {
 					description: r.bucket,
 				})),
 			});
-			if (!picked) return; // User cancelled — no turn started.
+			if (!picked) return;
 			return runArticle(picked, helpers.prompt);
 		}
 		return runArticle(filename, helpers.prompt);
@@ -138,24 +104,13 @@ const articleCommand: AgentCommand = {
 };
 
 /**
- * Reader's search surface over ARTICLES_DIR.
+ * Reader's search surface over ARTICLES_DIR. `search` + `list_keys`
+ * are generic factories (see `backend/agent/tools/search.ts`) kept
+ * vault-agnostic so a future notes/book agent can reuse the primitive
+ * scoped to its own directory.
  *
- * Two tools, same scanner, load-on-demand (no prompt-time scan):
- *
- * - `search` — filter articles by frontmatter (author / tags / date /
- *   whatever keys the corpus uses) and/or body content. Returns
- *   filenames; attaches frontmatter or content snippets depending on
- *   which filter was supplied.
- * - `list_keys` — enumerate observed frontmatter keys with one sample
- *   each so the LLM knows what fields to filter on before calling
- *   `search`. Call this first for any non-trivial query.
- *
- * Descriptions teach the call sequence explicitly so the LLM doesn't
- * burn a turn on an empty `{ frontmatter: { authors: ... } }` result
- * when the actual key is `author`. Factories live in
- * `backend/agent/tools/search.ts`; the factory approach keeps these
- * vault-agnostic so a future notes-agent / book-agent can use the
- * same primitive scoped to its own directory.
+ * Tool descriptions teach the call sequence (`list_keys` first when
+ * the LLM doesn't know the corpus's frontmatter shape).
  */
 const readerSearchTool = makeSearchTool({
 	dir: ARTICLES_DIR,
@@ -183,9 +138,7 @@ const readerListKeysTool = makeListKeysTool({
 		"key name mismatch (e.g. `author` vs `authors`, `tags` vs `keywords`).",
 });
 
-/**
- * Reader's workspace — three zones, all confirm-before-write.
- */
+/** Reader's workspace — three zones, all confirm-before-write. */
 const readerZones: AgentZone[] = [
 	{ path: "010 RAW/013 Articles", write: "confirm" },
 	{ path: "020 HUMAN/022 Scraps", write: "confirm" },
@@ -193,22 +146,11 @@ const readerZones: AgentZone[] = [
 ];
 
 /**
- * Reader's permission overlay — static rules on the Articles zone.
- *
- * - `write` anywhere inside Articles is blocked (articles are treated
- *   as read-only source material; use `edit` for frontmatter updates).
- * - `edit` inside Articles is restricted to frontmatter hunks via
- *   `frontmatterOnlyInDirs`.
- *
- * Non-article paths aren't matched by either rule (`blockInsideDirs`
- * and `frontmatterOnlyInDirs` both gate on prefix).
- *
- * Previously this overlay keyed on the currently-active article path,
- * which required module-level `activeArticle` state plumbed through
- * command context, store, persistence, and sidebar. Moving to
- * zone-wide static rules applies the protection to every article — a
- * deliberate behavior broadening (tracked in TODO) that trades
- * per-file precision for a stateless reader.
+ * Static Articles-zone rules: `write` blocked outright (articles are
+ * read-only source material; `edit` handles frontmatter updates),
+ * `edit` restricted to frontmatter hunks. Zone-wide (not per-file) so
+ * the reader stays stateless — see `docs/AGENT-DESIGN.md` →
+ * "Reader-specific vocabulary leaks" for the history.
  */
 function getReaderPermissions(): AgentOverlay {
 	return {
@@ -225,15 +167,9 @@ function getReaderPermissions(): AgentOverlay {
 }
 
 /**
- * Reader — the reading guide. Walks the user through the 6-stage
- * reading workflow (see `./instructions.ts`) and manages article
- * frontmatter edits, scraps, and notes inside the vault.
- *
- * Tools: `read` comes from `BASE_TOOLS`; `edit` + `write` are pulled
- * from the shared pool in `backend/agent/tools.ts`; `search` +
- * `list_keys` are factory-produced from `backend/agent/tools/search.ts`
- * scoped to `ARTICLES_DIR` so the LLM can locate articles for freeform
- * "find me the one about X" prompts.
+ * Reader — the reading guide. Persona in `./instructions.ts`; the
+ * 6-stage workflow lives in `buildArticleWorkflowPrelude` and is
+ * prepended to `/article`'s opening user message (D14).
  */
 export const readerAgent: AgentInfo = {
 	name: "reader",

@@ -1,21 +1,10 @@
 /**
  * Bottom suggestion panel — replaces `Prompt` while a `suggest_command`
- * tool call is awaiting the user's decision. Mirrors
- * `PermissionPrompt`'s chrome and keybind pattern so both "agent is
- * waiting on you" panels read the same.
+ * tool call awaits the user's decision. See `docs/AGENT-DESIGN.md`
+ * D15 for the confirm/edit/cancel contract and replay flow.
  *
- * Three actions, `←/h` `→/l` to cycle and Enter to commit:
- *   - Confirm: resolves the tool with `"confirmed"`. The provider
- *     replays the slash through the command registry, which reaches
- *     `actions.prompt` and takes the `agent.followUp` branch so
- *     pi-agent-core drains it at the natural end of the current run.
- *   - Edit: resolves with `"edited"` and pre-populates the prompt
- *     textarea with `/<command> @<arg>`, where the arg is inserted as
- *     a styled mention extmark (same shape the `@`-autocomplete
- *     produces). The mention renders as a chip and the submit path
- *     expands it to an absolute vault path, so the user can't
- *     accidentally mangle the filename while editing.
- *   - Cancel: resolves with `"cancelled"`. Same as Esc.
+ * Keybinds: `←/h` `→/l` cycle Confirm / Edit / Cancel, Enter commits,
+ * Esc cancels. Mirrors `PermissionPrompt`'s chrome.
  *
  * Tripwire: `useKeyboard` null-guards on `req()` against the one-frame
  * window between `setPendingSuggestion(null)` and `<Show>` unmounting.
@@ -45,21 +34,15 @@ function label(choice: PanelChoice): string {
 }
 
 /**
- * Populate the prompt textarea with `/<command> @<arg>`, inserting the
- * arg as a styled mention extmark so it renders as a chip (same visual
- * contract as an `@`-autocomplete selection). On submit, the existing
- * `expandMentionsToPaths` pipeline rewrites the mention to
- * `resolve(VAULT_DIR, path)`; reader's `/article` accepts absolute
- * paths inside `ARTICLES_DIR`, so the dispatch succeeds exactly as
- * `@`-autocomplete-then-submit does for that command today.
+ * Populate the prompt textarea with `/<command> @<arg>` and wrap
+ * `@<arg>` in a mention extmark (chip rendering, cursor skips whole
+ * span, submit expands via `expandMentionsToPaths`).
  *
- * Without the extmark the arg would be plain editable text — a user
- * who backspaced a few characters would silently break the filename
- * and reader's `/article` would reject the mangled path.
- *
- * Fallback: when no extmark ids are registered (e.g. prompt hasn't
- * mounted yet — shouldn't happen because the panel can't render
- * without the session view, but guarded), we fall back to plain text.
+ * Extmark offsets are display columns (via `Bun.stringWidth`), not
+ * UTF-16 code units — CJK / full-width chars are 2 cols each.
+ * Fallback to plain text if the prompt hasn't registered ids yet
+ * (shouldn't happen in practice — panel only renders inside the
+ * session view).
  */
 function populateEditBuffer(command: string, args: string): void {
 	const input = getInputRef();
@@ -74,17 +57,7 @@ function populateEditBuffer(command: string, args: string): void {
 	}
 
 	const { typeId, styleId } = getInputExtmarkIds();
-	// `setText` clears extmarks; insert the base text first, then
-	// create the extmark over the `@<arg>` span.
-	//
-	// **Display-width vs code-units.** OpenTUI extmark offsets are
-	// display columns (what `offsetExcludingNewlines` derives via
-	// `Bun.stringWidth`), not UTF-16 code units. For ASCII-only args
-	// the two match and `.length` works; for CJK / full-width
-	// characters the code-unit length underestimates and the extmark
-	// covers only half the filename. Same fix as
-	// `prompt-autocomplete.tsx:insertMention` — matches OpenCode's
-	// `autocomplete.tsx:172`.
+	// setText clears extmarks; lay text first, then mark the @arg span.
 	const virtualText = `@${args}`;
 	input.setText(`${verbPrefix}${virtualText} `);
 	input.cursorOffset = input.plainText.length;
@@ -117,10 +90,8 @@ export function SuggestCommandPrompt() {
 		const entry = req();
 		if (!entry) return;
 		if (choice === "edit") {
-			// Resolve the tool first so the Prompt remounts in the cell,
-			// then populate the textarea in the next microtask —
-			// `getInputRef()` returns null during the panel→prompt
-			// transition until the ref callback fires.
+			// Resolve first so `<Show>` flips back to `Prompt`; then
+			// populate in a microtask once the textarea ref is live.
 			const { command, args } = entry;
 			respondSuggestion("edited");
 			queueMicrotask(() => populateEditBuffer(command, args));
