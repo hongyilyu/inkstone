@@ -29,16 +29,6 @@ import { Toast, ToastProvider } from "./ui/toast";
 let scroll: ScrollBoxRenderable | null = null;
 let inputRef: any = null;
 
-/**
- * Prompt textarea's extmark type id + `extmark.file` style id,
- * exposed at module scope so `SuggestCommandPrompt`'s Edit action can
- * create the same chip-style mentions the `@`-autocomplete produces.
- * Both are 0 / null until the textarea ref callback fires on mount;
- * the style id re-publishes on theme switch.
- */
-let inputPromptPartTypeId = 0;
-let inputFileStyleId: number | null = null;
-
 export function scrollRef(): ScrollBoxRenderable | null {
 	return scroll;
 }
@@ -69,20 +59,6 @@ export function setInputRef(ref: any) {
  */
 export function getInputRef(): any {
 	return inputRef;
-}
-
-/** Accessors for the prompt extmark ids — see
- * `inputFileStyleId` above for lifecycle. */
-export function getInputExtmarkIds(): {
-	typeId: number;
-	styleId: number | null;
-} {
-	return { typeId: inputPromptPartTypeId, styleId: inputFileStyleId };
-}
-
-export function setInputExtmarkIds(typeId: number, styleId: number | null) {
-	inputPromptPartTypeId = typeId;
-	inputFileStyleId = styleId;
 }
 
 /**

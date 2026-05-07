@@ -275,12 +275,11 @@ describe("mention autocomplete", () => {
 		// Regression guard for display-width vs code-unit drift.
 		// OpenTUI extmark offsets are display columns (via
 		// `Bun.stringWidth`), not UTF-16 code units. Before the fix
-		// both `insertMention` (autocomplete) and `populateEditBuffer`
-		// (suggest_command Edit) used `.length`, which under-counted
-		// the span for 2-cell glyphs — the extmark covered only the
-		// first half of a CJK filename and the tail became plain
-		// editable text. On submit the mangled tail would mutate the
-		// filename or get dropped entirely.
+		// `insertMention` (autocomplete) used `.length`, which
+		// under-counted the span for 2-cell glyphs — the extmark
+		// covered only the first half of a CJK filename and the tail
+		// became plain editable text. On submit the mangled tail would
+		// mutate the filename or get dropped entirely.
 		//
 		// The fixture file lives in `test/preload.ts` as:
 		//   罗福莉访谈里那几句关于 memory 的话，被几乎所有人忽略了.md
