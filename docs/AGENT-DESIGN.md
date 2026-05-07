@@ -232,6 +232,25 @@ Persisted sessions are replayable into any agent context: the Ctrl+N resume path
 
 **Rejected alternative — rewrite `state.systemPrompt` when `/article` fires:** this would swap in the workflow for the turn where the user opts in. Rejected because it violates the D9 stability invariant — every `/article` invocation would invalidate the cached prefix, turning every reading session into a cold start on turn N+1.
 
+### D15 — LLM-driven command routing via `suggest_command`
+
+**Chosen:** a base tool `suggest_command` that lets the LLM propose a slash command on the user's behalf when a freeform request clearly maps to one of the agent's declared verbs. The tool's schema enumerates the agent's `info.commands[].name` so the LLM can only ever name a command the agent actually ships. When the user confirms, the host replays the slash as if the user had typed it — a fresh user turn, not a re-entry into the in-flight one.
+
+**Why:**
+
+- **Closes the routing loop.** PR1 (commands block) tells the LLM *what commands exist*; PR3 (reader tools) lets the LLM *locate the target*; PR5 gives the LLM a way to *suggest invoking the command* without the user needing to remember to type it. The three pieces form the freeform → workflow path end to end.
+- **Consent over delegation.** The user always sees the proposed slash, the LLM's rationale, and explicit Confirm / Edit / Cancel buttons before anything runs. Auto-dispatch (LLM calls the command without asking) would make the TUI feel like it's taking over the user's terminal; the explicit confirmation keeps agency with the user.
+- **Preserves pi-agent-core's one-turn invariant by using its designed primitive.** The tool blocks until the user decides, then returns. On Confirm, the replay dispatches via the normal slash path, which bottoms out in `actions.prompt(text)`. That method checks `agent.signal` and routes busy-path calls to `agent.followUp(...)` — pi-agent-core's designed "queue a message that drains after the current run ends" mechanism. The agent-loop's outer iteration (`agent-loop.js:136-141`) drains `getFollowUpMessages()` at the natural run boundary and processes the queued user message as a fresh turn. No TUI-side `isStreaming` gate, no `waitForIdle` dance, no `createEffect` replay scheduler. The error pi-agent-core throws on a second `prompt()` during an active run literally instructs the caller to `use steer() or followUp()`; we're taking the library's instruction.
+- **Matches existing resolver pattern.** `setSuggestCommandFn` mirrors `setConfirmFn` in `permissions.ts`: a TUI-side resolver, previous-value capture + restore on unmount, `queueMicrotask`-scheduled rescue resolves on disposal. Reuses the shape that's already been hardened for approval.
+
+**Rejected alternative — auto-dispatch without confirmation:** LLM calls a hypothetical `run_command` tool that immediately fires the verb. Rejected for the consent-over-delegation reason above, and because the user has no way to correct a bad LLM pick (wrong article, misread intent) short of abort.
+
+**Rejected alternative — gate replay on `store.isStreaming` via a `createEffect`:** the initial implementation used a `pendingReplay` signal and an effect that fired `triggerSlash` when `isStreaming` flipped false. Rejected after hitting "Agent is already processing a prompt" in practice — pi-agent-core clears `isStreaming` and fires `agent_end` from inside `runWithLifecycle`'s try, before `finishRun` (which clears the internal `activeRun`) executes in the finally. A `prompt()` queued off the signal races the cleanup and throws. Adding `waitForIdle` on top of the effect closed the race but built a second gate on top of a wrong primary signal; `followUp` is the designed answer and has no race to close.
+
+**Rejected alternative — re-enter the Agent mid-tool-call to start the replay turn:** structurally cleanest in the sense that the replay wouldn't need any post-turn plumbing, but pi-agent-core's `Agent` runs one turn at a time. `followUp` is the library's intended path for "queue a fresh turn from inside the current one."
+
+**Rejected alternative — unify `pendingApproval` and `pendingSuggestion` into a single "pendingPanel" abstraction:** premature. The two panels have subtly different unmount-rescue semantics (approvals resolve `false`; suggestions resolve `"cancelled"`) and different tool contracts. Parallel signals are cheaper to reason about until a third pending-panel case lands.
+
 ## Rejected alternatives
 
 | Alternative | Why rejected |
