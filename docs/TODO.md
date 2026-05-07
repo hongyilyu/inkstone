@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-05 (simplify prompt.tsx: extract submit decision logic)
+**Last updated**: 2026-05-05 (simplify prompt-autocomplete.tsx: extract geometry hook + mode-state pure function + inline option builders)
 
 ## In Progress
 
@@ -25,7 +25,8 @@ None
 
 ## Completed
 
-- [x] Simplify `prompt.tsx` — dedup `EmptyBorder`, extract `handleSubmit` decision logic. `prompt.tsx` had a local `EmptyBorder` struct identical to the one already exported from `message.tsx`; imported from there and deleted the local copy. The bigger win: `handleSubmit`'s 107-line body mixed three concerns (extmark extraction, slash-vs-plain decision with mention-arg expansion, plain-prompt payload build + toast). Pulled the slash-vs-plain decision into a new pure `buildSubmission(rawText, mentions, { triggerSlash, readFile })` function in `src/tui/util/submit-prompt.ts` returning a discriminated union (`noop` | `dispatched` | `prompt`). `handleSubmit` is now 42 lines reading as: extract mentions → call `buildSubmission` → branch on `kind` for toast/`actions.prompt`/`clearInput`/`toBottom`. Net: `prompt.tsx` 629 → 544, +99 lines in `submit-prompt.ts`, all behavior preserved. Existing tests (`test/tui/prompt.test.tsx` + `test/tui/autocomplete.test.tsx`) pin every regression path already.
+- [x] Simplify `prompt-autocomplete.tsx` — extract anchor-geometry hook, pure visibility state machine, inline option builders. Three seams pulled out of the 458-line monolith: (1) `src/tui/hooks/use-anchor-geometry.ts` wraps the 50ms poll + `useTerminalDimensions()` + parent-offset math behind a `useAnchorGeometry({ anchor, visible, itemCount, maxItems })` hook returning an `Accessor<{ x, y, width, height }>`. (2) `src/tui/components/autocomplete/mode-state.ts` owns the pure `deriveNextMode(state) → Transition` function that decides when to open/close slash vs mention mode. 11 rules pinned by new unit tests in `test/tui/mode-state.test.ts` (17 test cases, no TUI harness needed). (3) Inline `buildSlashOptions` and `buildMentionOptions` helpers at the bottom of `prompt-autocomplete.tsx` replace the 40-line `createMemo` bodies. Net: component shrinks from 519 → 376 lines (body), plus two new files (~186 lines) and one test file (~211 lines). All behavior preserved; `bun run ci` green at 377/377 (up from 360 with the new mode-state tests), autocomplete overlap tests 3× flake-clean.
+
 
 
 
