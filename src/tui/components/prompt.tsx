@@ -13,6 +13,7 @@ import {
 	clearInputRef,
 	setInputExtmarkIds,
 	setInputRef,
+	setPromptCtrlCBridge,
 	toBottom,
 } from "../app";
 import { useAgent } from "../context/agent";
@@ -26,6 +27,7 @@ import { buildSubmission } from "../util/submit-prompt";
 import { useCommand } from "./dialog/command";
 import { EmptyBorder } from "./message";
 import { PromptAutocomplete } from "./prompt-autocomplete";
+import { deriveCtrlCAction } from "./prompt-ctrlc";
 import { SpinnerWave } from "./spinner-wave";
 
 /**
@@ -107,6 +109,62 @@ export function Prompt() {
 
 	onCleanup(() => {
 		if (interruptTimer) clearTimeout(interruptTimer);
+	});
+
+	// Two-stage Ctrl+C. Mirrors OpenCode's clear-on-text behavior
+	// (`prompt/index.tsx:1025-1042`) but layers Inkstone's existing
+	// double-tap idiom over the empty-prompt branch so a stray keystroke
+	// can't drop the session. State machine extracted to
+	// `prompt-ctrlc.ts` for unit testing.
+	const [exitArmed, setExitArmed] = createSignal(false);
+	let exitTimer: ReturnType<typeof setTimeout> | undefined;
+
+	function disarmExit() {
+		if (exitTimer) {
+			clearTimeout(exitTimer);
+			exitTimer = undefined;
+		}
+		setExitArmed(false);
+	}
+
+	// Typing after the first press disarms — the "again" prompt only
+	// makes sense for two consecutive Ctrl+C presses on an empty buffer.
+	createEffect(() => {
+		if (text().length > 0) disarmExit();
+	});
+
+	onCleanup(() => {
+		if (exitTimer) clearTimeout(exitTimer);
+	});
+
+	// Bridge the prompt's Ctrl+C state to `useLayoutKeybinds`, which
+	// owns the single `useKeyboard` registration for `app_exit`. We
+	// can't run a second `useKeyboard` here because OpenTUI's
+	// EventEmitter dispatches global listeners in registration order
+	// and the layout's onMount fires first (parent before child) —
+	// any prompt-level handler would only see Ctrl+C events the
+	// layout chose to skip. Pushing the decision up to the single
+	// layout handler keeps dispatch order irrelevant.
+	setPromptCtrlCBridge({
+		decide: () =>
+			deriveCtrlCAction({
+				hasText: text().length > 0,
+				armed: exitArmed(),
+			}),
+		clear: () => clearInput(),
+		arm: () => {
+			setExitArmed(true);
+			if (exitTimer) clearTimeout(exitTimer);
+			exitTimer = setTimeout(() => {
+				setExitArmed(false);
+				exitTimer = undefined;
+			}, 5000);
+		},
+		disarm: disarmExit,
+	});
+
+	onCleanup(() => {
+		setPromptCtrlCBridge(null);
 	});
 
 	let inputRef: TextareaRenderable | undefined;
@@ -521,7 +579,19 @@ export function Prompt() {
 
 				{/* prompt/index.tsx:1252-1363 — hints/status row */}
 				<box width="100%" flexDirection="row" justifyContent="space-between">
-					<Show when={store.isStreaming} fallback={<text />}>
+					<Show
+						when={store.isStreaming}
+						fallback={
+							<Show when={exitArmed()} fallback={<text />}>
+								<box flexShrink={0} flexDirection="row" gap={1} marginLeft={1}>
+									<text fg={theme.primary}>
+										{Keybind.print("app_exit")}{" "}
+										<span style={{ fg: theme.primary }}>again to exit</span>
+									</text>
+								</box>
+							</Show>
+						}
+					>
 						<box
 							flexDirection="row"
 							gap={1}

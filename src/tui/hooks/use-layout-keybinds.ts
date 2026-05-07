@@ -19,7 +19,7 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/solid";
-import { scrollRef } from "../app";
+import { getPromptCtrlCBridge, scrollRef } from "../app";
 import {
 	closeSecondaryPage,
 	getSecondaryPage,
@@ -31,6 +31,13 @@ export function useLayoutKeybinds(): void {
 	const renderer = useRenderer();
 	const dialog = useDialog();
 
+	function exitNow() {
+		renderer.destroy();
+		// renderer.destroy() restores terminal state; exit the
+		// process since pi-agent-core keeps handles alive.
+		setTimeout(() => process.exit(0), 100);
+	}
+
 	useKeyboard((evt: any) => {
 		if (evt.defaultPrevented) return;
 
@@ -39,10 +46,31 @@ export function useLayoutKeybinds(): void {
 			// stack's handler in `ui/dialog.tsx` treats ctrl+c as "close
 			// dialog".
 			if (dialog.stack.length > 0) return;
-			renderer.destroy();
-			// renderer.destroy() restores terminal state; exit the
-			// process since pi-agent-core keeps handles alive.
-			setTimeout(() => process.exit(0), 100);
+			// Two-stage Ctrl+C when the prompt is mounted: press 1 with
+			// text clears; press 1 on empty arms a 5s "again to exit"
+			// hint; press 2 within the window exits. When the prompt
+			// isn't mounted (no-provider boot, approval / suggestion
+			// panels) the bridge is null and we exit immediately —
+			// matches today's behavior on those surfaces. Owns the
+			// single `useKeyboard` registration for `app_exit` because
+			// OpenTUI dispatches global listeners in registration order
+			// and any prompt-level handler would fire after this one.
+			const bridge = getPromptCtrlCBridge();
+			if (bridge) {
+				const action = bridge.decide();
+				if (action === "clear") {
+					bridge.clear();
+					evt.preventDefault();
+					return;
+				}
+				if (action === "arm") {
+					bridge.arm();
+					evt.preventDefault();
+					return;
+				}
+				bridge.disarm();
+			}
+			exitNow();
 			return;
 		}
 
