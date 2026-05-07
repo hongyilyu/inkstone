@@ -36,6 +36,7 @@ import {
 	useContext,
 } from "solid-js";
 import { createStore } from "solid-js/store";
+import { getInputRef } from "../../app";
 import { useCommand } from "../../components/dialog/command";
 import { useDialog } from "../../ui/dialog";
 import { useToast } from "../../ui/toast";
@@ -102,22 +103,42 @@ export function AgentProvider(
 		if (!entry) return;
 		setPendingSuggestion(null);
 		entry.resolve(decision);
-		if (decision !== "confirmed") return;
-		// Replay through the unified command registry. The eventual
-		// `actions.prompt(text)` takes `agent.followUp` because the
-		// suggest_command tool is still unwinding; pi-agent-core drains
-		// the queued message at run boundary (`agent-loop.js:136-141`).
-		// See `docs/AGENT-DESIGN.md` D15.
-		const fired = command.triggerSlash(
-			entry.request.command,
-			entry.request.args,
-		);
-		if (!fired) {
-			toast.show({
-				variant: "error",
-				title: "Command replay failed",
-				message: `/${entry.request.command} ${entry.request.args}`.trim(),
-				duration: 6000,
+		if (decision === "confirmed") {
+			// Replay through the unified command registry. The eventual
+			// `actions.prompt(text)` takes `agent.followUp` because the
+			// suggest_command tool is still unwinding; pi-agent-core drains
+			// the queued message at run boundary (`agent-loop.js:136-141`).
+			// See `docs/AGENT-DESIGN.md` D15.
+			const fired = command.triggerSlash(
+				entry.request.command,
+				entry.request.args,
+			);
+			if (!fired) {
+				toast.show({
+					variant: "error",
+					title: "Command replay failed",
+					message: `/${entry.request.command} ${entry.request.args}`.trim(),
+					duration: 6000,
+				});
+			}
+			return;
+		}
+		if (decision === "edited") {
+			// Symmetric with the Confirm branch: prefill the textarea with
+			// the proposed slash so the user can tweak before submitting.
+			// Plain text — no mention chip — so submit routes through
+			// `buildSubmission`'s no-mentions slash-dispatch path,
+			// byte-identical to Confirm. queueMicrotask defers until
+			// `<Show>` swaps the suggestion panel out and Prompt remounts
+			// the textarea ref.
+			const { command: cmd, args } = entry.request;
+			const text = args.length === 0 ? `/${cmd} ` : `/${cmd} ${args} `;
+			queueMicrotask(() => {
+				const input = getInputRef();
+				if (!input || input.isDestroyed) return;
+				input.setText(text);
+				input.cursorOffset = input.plainText.length;
+				if (!input.focused) input.focus();
 			});
 		}
 	}

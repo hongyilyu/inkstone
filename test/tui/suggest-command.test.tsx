@@ -14,6 +14,7 @@ import {
 	getSuggestCommandFn,
 	type SuggestCommandRequest,
 } from "@backend/agent";
+import { getInputRef } from "../../src/tui/app";
 import { makeFakeSession } from "./fake-session";
 import { renderApp, waitForFrame, waitUntil } from "./harness";
 
@@ -26,6 +27,30 @@ async function seedUserMessage(
 	// suggestions never fire from OpenPage since both require an
 	// in-flight LLM turn, which requires a prior user message).
 	await setup.getAgent().actions.prompt("find me something to read");
+}
+
+/**
+ * Poll `getInputRef().plainText` after `renderOnce()` flushes the Solid
+ * effect that swaps the suggestion panel → Prompt cell. `waitUntil`
+ * alone never re-renders, so the `<Show>` swap that creates the new
+ * textarea ref never happens — `getInputRef()` would stay null forever.
+ */
+async function waitForBuffer(
+	setup: Awaited<ReturnType<typeof renderApp>>,
+	expected: string,
+	opts: { timeout?: number } = {},
+): Promise<void> {
+	const timeout = opts.timeout ?? 2000;
+	const start = Date.now();
+	while (Date.now() - start < timeout) {
+		await setup.renderOnce();
+		const actual = getInputRef()?.plainText;
+		if (actual === expected) return;
+		await Bun.sleep(10);
+	}
+	throw new Error(
+		`waitForBuffer: expected ${JSON.stringify(expected)}, last seen ${JSON.stringify(getInputRef()?.plainText ?? null)}`,
+	);
 }
 
 describe("suggest_command", () => {
@@ -163,6 +188,85 @@ describe("suggest_command", () => {
 		// The resolver must settle without user intervention.
 		const decision = await pending;
 		expect(decision).toBe("cancelled");
+	});
+
+	test("edit (with args) populates `/<command> <args> ` and submit replays the slash", async () => {
+		// Pin the fix: Edit produces plain text — no mention chip — so
+		// submit routes through `triggerSlash(command, args)` byte-
+		// identical to the Confirm path. The pre-fix shape was
+		// `/article @<args> ` with a vault-rooted mention extmark; on
+		// submit `expandMentionsToPaths` resolved the bare filename
+		// against `VAULT_DIR` instead of `ARTICLES_DIR` and the article
+		// load failed with "Not a file inside the Articles folder".
+		const fake = makeFakeSession();
+		const setup = await renderApp({ session: fake.factory });
+		await setup.getAgent().actions.prompt("find me something to read");
+
+		const fn = getSuggestCommandFn();
+		if (!fn) throw new Error("suggest-command resolver not installed");
+		const pending = fn({
+			callId: "call-edit-args",
+			command: "article",
+			args: "foo.md",
+			rationale: "User wants to read foo.md.",
+		});
+
+		await waitForFrame(setup, "Suggested command");
+		const seedPrompts = fake.calls.prompt.length;
+
+		const agent = setup.getAgent();
+		agent.respondSuggestion("edited");
+		expect(await pending).toBe("edited");
+
+		// `populateEditBuffer` runs in a microtask after respondSuggestion
+		// so `<Show>` flips back to `Prompt` (and re-mounts the textarea
+		// ref) before we write into it. Drive renderOnce() in the wait
+		// loop so the Solid effect that swaps panel → Prompt actually
+		// flushes (otherwise `getInputRef()` keeps returning the panel-era
+		// null ref forever).
+		await waitForBuffer(setup, "/article foo.md ");
+
+		// Submit the populated buffer. `buildSubmission` sees no mentions
+		// and slash-dispatches `/article foo.md` → reader's articleCommand
+		// → runArticle resolves "foo.md" against ARTICLES_DIR.
+		setup.mockInput.pressEnter();
+		await waitUntil(() => fake.calls.prompt.length > seedPrompts, {
+			timeout: 2000,
+			message: "prompt never called after edit-submit",
+		});
+		const replayPrompt = fake.calls.prompt[seedPrompts];
+		expect(replayPrompt).toBeDefined();
+		expect(replayPrompt!).toContain("foo.md");
+		expect(replayPrompt!).toContain("Reading Workflow");
+	});
+
+	test("edit (empty args) populates `/<command> ` with single trailing space", async () => {
+		// The args-empty branch in `populateEditBuffer`. Pre-fix this
+		// also produced a bare `/article ` (correct for empty args), but
+		// the test pins it as an invariant alongside the args-filled case
+		// so a future refactor can't silently introduce a double-space or
+		// drop the trailing space (which would defeat the dropdown's
+		// argful-command UX).
+		const fake = makeFakeSession();
+		const setup = await renderApp({ session: fake.factory });
+		await setup.getAgent().actions.prompt("find me something to read");
+
+		const fn = getSuggestCommandFn();
+		if (!fn) throw new Error("suggest-command resolver not installed");
+		const pending = fn({
+			callId: "call-edit-empty",
+			command: "article",
+			args: "",
+			rationale: "Surface the recommendation picker.",
+		});
+
+		await waitForFrame(setup, "Suggested command");
+
+		const agent = setup.getAgent();
+		agent.respondSuggestion("edited");
+		expect(await pending).toBe("edited");
+
+		await waitForBuffer(setup, "/article ");
 	});
 
 	test("clearSession resolves an in-flight suggestion to cancelled", async () => {

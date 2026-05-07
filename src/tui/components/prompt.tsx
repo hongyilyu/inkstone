@@ -11,7 +11,6 @@ import {
 } from "solid-js";
 import {
 	clearInputRef,
-	setInputExtmarkIds,
 	setInputRef,
 	setPromptCtrlCBridge,
 	toBottom,
@@ -208,19 +207,6 @@ export function Prompt() {
 			return;
 		}
 		if (!el.focused) el.focus();
-	});
-
-	// Re-publish the `extmark.file` style id at module scope when the
-	// theme changes. `fileStyleId()` is a memo over `syntax()`, which
-	// rebuilds the `SyntaxStyle` (and its numeric style ids) on theme
-	// switch. Without this, an external surface calling
-	// `getInputExtmarkIds()` after a theme switch would get a stale id
-	// that no longer matches the active `SyntaxStyle`.
-	// `promptPartTypeId` is mount-stable so this effect re-exposes it
-	// alongside.
-	createEffect(() => {
-		if (promptPartTypeId === 0) return;
-		setInputExtmarkIds(promptPartTypeId, fileStyleId() ?? null);
 	});
 
 	function handleSubmit() {
@@ -425,13 +411,8 @@ export function Prompt() {
 										// the input is destroyed.
 										promptPartTypeId =
 											r.extmarks.registerType("prompt-mention");
-										// Expose the mount-time ids at module scope so
-										// `SuggestCommandPrompt`'s Edit action can create
-										// mention-style extmarks against the same input.
-										setInputExtmarkIds(promptPartTypeId, fileStyleId() ?? null);
 										onCleanup(() => {
 											clearInputRef(r);
-											setInputExtmarkIds(0, null);
 										});
 									}}
 									minHeight={1}

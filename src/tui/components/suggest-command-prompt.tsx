@@ -12,7 +12,6 @@
 
 import { useKeyboard } from "@opentui/solid";
 import { createStore } from "solid-js/store";
-import { getInputExtmarkIds, getInputRef } from "../app";
 import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import { EmptyBorder } from "./message";
@@ -33,50 +32,6 @@ function label(choice: PanelChoice): string {
 	return "Cancel";
 }
 
-/**
- * Populate the prompt textarea with `/<command> @<arg>` and wrap
- * `@<arg>` in a mention extmark (chip rendering, cursor skips whole
- * span, submit expands via `expandMentionsToPaths`).
- *
- * Extmark offsets are display columns (via `Bun.stringWidth`), not
- * UTF-16 code units — CJK / full-width chars are 2 cols each.
- * Fallback to plain text if the prompt hasn't registered ids yet
- * (shouldn't happen in practice — panel only renders inside the
- * session view).
- */
-function populateEditBuffer(command: string, args: string): void {
-	const input = getInputRef();
-	if (!input || input.isDestroyed) return;
-
-	const verbPrefix = `/${command} `;
-	if (args.length === 0) {
-		input.setText(verbPrefix);
-		input.cursorOffset = input.plainText.length;
-		if (!input.focused) input.focus();
-		return;
-	}
-
-	const { typeId, styleId } = getInputExtmarkIds();
-	// setText clears extmarks; lay text first, then mark the @arg span.
-	const virtualText = `@${args}`;
-	input.setText(`${verbPrefix}${virtualText} `);
-	input.cursorOffset = input.plainText.length;
-
-	if (typeId !== 0 && styleId !== null) {
-		const verbWidth = Bun.stringWidth(verbPrefix);
-		input.extmarks.create({
-			start: verbWidth,
-			end: verbWidth + Bun.stringWidth(virtualText),
-			virtual: true,
-			styleId,
-			typeId,
-			metadata: { path: args },
-		});
-	}
-
-	if (!input.focused) input.focus();
-}
-
 export function SuggestCommandPrompt() {
 	const { theme } = useTheme();
 	const { pendingSuggestion, respondSuggestion } = useAgent();
@@ -89,15 +44,13 @@ export function SuggestCommandPrompt() {
 	function commit(choice: PanelChoice): void {
 		const entry = req();
 		if (!entry) return;
-		if (choice === "edit") {
-			// Resolve first so `<Show>` flips back to `Prompt`; then
-			// populate in a microtask once the textarea ref is live.
-			const { command, args } = entry;
-			respondSuggestion("edited");
-			queueMicrotask(() => populateEditBuffer(command, args));
-			return;
-		}
-		respondSuggestion(choice === "confirm" ? "confirmed" : "cancelled");
+		const decision =
+			choice === "confirm"
+				? "confirmed"
+				: choice === "edit"
+					? "edited"
+					: "cancelled";
+		respondSuggestion(decision);
 	}
 
 	useKeyboard((evt: { name: string; defaultPrevented?: boolean }) => {
