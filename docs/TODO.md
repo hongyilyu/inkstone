@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-07 (agent-behavior PR5: suggest_command Edit-path Known Issue documented)
+**Last updated**: 2026-05-07 (reader persona generalized — Obsidian / `/article` refs removed; zones-per-command deferred to Future Work)
 
 ## In Progress
 
@@ -307,6 +307,8 @@ _None._
 - [ ] DB migrations folder ships with the source tree but isn't yet bundled for a packaged binary — `migrate()` reads files off disk at `import.meta.dir/migrations`. Fine for `bun run dev`; needs a bundler trick (opencode inlines via `OPENCODE_MIGRATIONS` global) when Inkstone ships as a single executable.
 
 ## Future Work (Post-MVP)
+
+- [ ] Reader zones-per-command when a second reader command lands. Today `readerAgent.zones` declares workspace paths (`010 RAW/013 Articles`, `020 HUMAN/022 Scraps`, `020 HUMAN/023 Notes`) that happen to match `/article`'s write targets. The zones render in the system prompt via `composeZonesBlock` before command-specific workflow text arrives from `/article`'s opening user message, so when reader grows a second command (e.g. `/book` with different write zones), the static agent-level zones list will over-grant writes for `/book` and under-grant them for `/article`. Likely fix: let `AgentCommand` declare its own `zones: AgentZone[]` and merge them into the prompt + permission overlay when that command's workflow prelude is injected. Deferred per D8 — no second reader command exists yet.
 
 - [ ] Move tool-arg summary format from the UI to the tool definition. **Partly done** — the per-tool renderers moved from `src/tui/util/tool-summary.ts` to `src/bridge/tool-renderers.ts` as `TOOL_ARG_RENDERERS: Record<string, (args) => string>`, so the UI no longer owns the catalog. The remaining step — attaching `renderArgs?: (args) => string` to each `AgentTool` object directly (so third-party agents supply their own format without editing the central map) — is still open. Complication: pi-coding-agent's `readTool`/`writeTool`/`editTool` are factory outputs Inkstone doesn't own; a cast-at-import intersection type (or upstream PR to pi-coding-agent) is needed to attach the field. Inkstone-owned tools (`updateSidebarTool`) would just grow a field. Revisit when (a) a second agent lands with its own tools, or (b) we need external agent authors to ship tool-specific renderers.
 

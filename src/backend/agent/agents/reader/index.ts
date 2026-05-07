@@ -174,7 +174,7 @@ function getReaderPermissions(): AgentOverlay {
 export const readerAgent: AgentInfo = {
 	name: "reader",
 	displayName: "Reader",
-	description: "Obsidian reading guide",
+	description: "Reading guide",
 	colorKey: "secondary",
 	extraTools: [editTool, writeTool, readerSearchTool, readerListKeysTool],
 	zones: readerZones,

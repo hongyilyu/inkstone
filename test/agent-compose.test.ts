@@ -13,6 +13,7 @@
 import { describe, expect, test } from "bun:test";
 import { exampleAgent } from "@backend/agent/agents/example";
 import { readerAgent } from "@backend/agent/agents/reader";
+import { buildReaderInstructions } from "@backend/agent/agents/reader/instructions";
 import { composeSystemPrompt } from "@backend/agent/compose";
 import type { AgentCommand, AgentInfo } from "@backend/agent/types";
 
@@ -118,6 +119,23 @@ describe("composeSystemPrompt — reader freeform-request guidance", () => {
 		expect(prompt).toContain("Handling Freeform Requests");
 		expect(prompt).toContain("list_keys");
 		expect(prompt).toContain("search");
+		// Step 3 must route through suggest_command, not tell the user
+		// to type the slash themselves (regressing to the pre-cleanup
+		// prose left the LLM with a dead-end and it answered in prose
+		// instead of reaching for the tool).
+		expect(prompt).toContain("suggest_command");
+	});
+
+	test("reader's persona is generic — no Obsidian, no command-specific /article refs", () => {
+		// Assert against the persona helper directly, not the composed
+		// prompt: the commands block injected by `composeCommandsBlock`
+		// legitimately surfaces `/article` in the system prompt. The
+		// invariant being guarded here is that the *persona text* stays
+		// editor-agnostic so it's reusable across future reader
+		// commands (e.g. `/book`) — see AGENT-DESIGN.md D12.
+		const persona = buildReaderInstructions();
+		expect(persona).not.toMatch(/obsidian/i);
+		expect(persona).not.toContain("/article");
 	});
 
 	test("reader's agent prompt no longer carries the 6-stage workflow", () => {
