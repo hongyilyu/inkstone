@@ -106,6 +106,14 @@ writeFileSync(
 // `lstatSync` symlink-reject guard in reader's `/article` command.
 symlinkSync("/etc/hosts", resolve(ARTICLES_DIR, "sneak.md"));
 
+// Empty directory inside Articles — exercises reader `/article`'s
+// `!stat.isFile()` reject branch (a path that's inside ARTICLES_DIR
+// but resolves to a directory, not a file). Without this fixture the
+// only way to reach the branch in tests is via a path that resolves
+// back to ARTICLES_DIR itself, which trips the *prior* guard
+// (`articlePath === ARTICLES_DIR`) and never reaches the lstat.
+mkdirSync(resolve(ARTICLES_DIR, "subfolder"), { recursive: true });
+
 afterAll(() => {
 	rmSync(ROOT, { recursive: true, force: true });
 });
