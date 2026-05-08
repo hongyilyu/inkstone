@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-08 (closed streaming-flash Known Issue with regression test)
+**Last updated**: 2026-05-08 (provider-disconnect migrated to PermissionPrompt panel)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -19,6 +19,8 @@
 ## Completed
 
 - Implemented architecture simplification: zone write allowlist, layout dependency injection, and tool permission coverage. Design rationale lives in `docs/AGENT-DESIGN.md` D12 and `docs/LAYOUT-CONTEXT.md`.
+
+- **`DialogConfirm` unification with the bottom approval panel.** Provider-disconnect now mounts the same `PermissionPrompt` panel as agent-tool approvals via a sibling `pendingDisconnect` module signal (`src/tui/components/disconnect-confirmation.ts`). The `DialogConfirm` modal primitive was deleted in the same change — `confirm-and-disconnect.ts` was its sole caller. See `docs/APPROVAL-UI.md` § "Confirmations beyond tool approval" for the per-action signal rationale.
 
 ## Known Issues
 
@@ -113,7 +115,5 @@
 - **Port OpenCode's named theme roster.** OpenCode ships ayu, cursor, palenight, rosepine, vercel, kanagawa, etc. as JSON theme files with a color-reference resolver. Inkstone has `dark` / `light` / `catppuccin-mocha` / `dracula` as hand-declared palettes. Separate stack from the approval-UI work — uncoupled, can land anytime.
 
 - **Fenced code block container background.** Fenced code blocks render flat against `theme.background` because OpenTUI's `<markdown>` renderable applies per-scope `foreground` but doesn't paint a full-width block background. OpenCode has the same limitation. Options: (a) investigate whether OpenTUI supports per-block background via a `markup.raw.block` rule extension; (b) extract fenced blocks pre-render and wrap in a `<box backgroundColor={backgroundPanel}>` container. Separate concern from token colors; track when a real bake of the new `markdownCode` token lands in phase 2.
-
-- **`DialogConfirm` unification with the bottom approval panel.** After phase 5 lands, the provider-disconnect flow (`src/tui/components/dialog/provider/confirm-and-disconnect.ts`) still uses `DialogConfirm`. Migrate it onto the same `PermissionPrompt` / scoped-signal pattern so there's one confirmation surface, not two. Low priority — the provider-disconnect flow is rarely hit.
 
 - **"Allow always" for confirmDirs approvals.** Today the bottom panel (phase 5) exposes `Allow once` / `Reject`. OpenCode's panel also has `Allow always` that persists a pattern into the user's policy. Implementing this requires a policy-write path into the zone config — the permission dispatcher today reads zones as static data. Revisit if approval fatigue becomes real.

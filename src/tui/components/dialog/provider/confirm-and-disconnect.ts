@@ -5,8 +5,8 @@ import {
 } from "@backend/providers";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { DialogContext } from "../../../ui/dialog";
-import { DialogConfirm } from "../../../ui/dialog-confirm";
 import type { ToastContext } from "../../../ui/toast";
+import { requestDisconnectConfirmation } from "../../disconnect-confirmation";
 
 /**
  * Shared confirm-then-disconnect helper.
@@ -14,11 +14,16 @@ import type { ToastContext } from "../../../ui/toast";
  * Replaces the three parallel `confirmAndDisconnect{Kiro,OpenAICodex,
  * OpenRouter}` files that carried ~75 lines each of near-identical
  * confirm → clear → rehome → toast logic. The per-provider credential
- * wipe lives on `ProviderInfo.clearCreds()`; the UI flow (DialogConfirm,
- * rehome via `findFirstConnectedProvider`, toast variants) is generic.
+ * wipe lives on `ProviderInfo.clearCreds()`; the UI flow (panel
+ * confirmation, rehome via `findFirstConnectedProvider`, toast
+ * variants) is generic.
  *
  * Flow:
- *   1. DialogConfirm.show with `Disconnect ${displayName}?`.
+ *   1. Close the manage-providers dialog (via `dialog.clear()`) so the
+ *      bottom `PermissionPrompt` panel owns keyboard input
+ *      unambiguously, then await `requestDisconnectConfirmation`. The
+ *      panel resolves `true` on Enter, `false` on Esc — there is no
+ *      `undefined` case (matches the agent-tool approval flow).
  *   2. On confirm, call `provider.clearCreds()`.
  *   3. If the disconnected provider was the session's active provider,
  *      rehome via `findFirstConnectedProvider(provider.id)`. First
@@ -44,14 +49,13 @@ export async function confirmAndDisconnect(
 	onModelSelected: (model: Model<Api>) => void,
 	activeProviderId: string | undefined,
 ): Promise<void> {
-	const confirmed = await DialogConfirm.show(
-		dialog,
-		`Disconnect ${provider.displayName}?`,
-		"Stored credentials will be removed from this device. You can reconnect anytime from this dialog.",
-	);
-	// `DialogConfirm.show` resolves `true` on confirm, `false` on
-	// cancel, `undefined` on ESC. Only proceed on explicit confirm.
-	if (confirmed !== true) return;
+	dialog.clear();
+	const confirmed = await requestDisconnectConfirmation({
+		title: `Disconnect ${provider.displayName}?`,
+		message:
+			"Stored credentials will be removed from this device. You can reconnect anytime from this dialog.",
+	});
+	if (!confirmed) return;
 
 	try {
 		provider.clearCreds();
