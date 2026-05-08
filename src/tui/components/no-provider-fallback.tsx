@@ -1,9 +1,9 @@
 /**
  * Fallback rendered by the `ErrorBoundary` around `<AgentProvider>`
  * (see `app.tsx`). The boundary exists specifically to catch
- * `resolveInitialProviderModel`'s "No provider is connected" throw on
- * first boot — without it, a fresh install crashes before the TUI ever
- * mounts, so the user can never reach the Connect dialog.
+ * `resolveModelRef`'s "No provider is connected" throw on first boot
+ * — without it, a fresh install crashes before the TUI ever mounts,
+ * so the user can never reach the Connect dialog.
  *
  * Two branches keyed on the error message:
  *
@@ -42,8 +42,8 @@ import { DialogProvider as DialogProviderSelect } from "./dialog/provider";
 // String-prefix check instead of a typed-error subclass. The prefix is
 // stable (it's the "signed-in" marker for this specific failure mode);
 // an unrelated error with the same prefix would be a coincidence, and
-// the only caller who throws this message is `resolveInitialProviderModel`
-// in `src/backend/agent/index.ts`.
+// the only caller who throws this message is `resolveModelRef` in
+// `src/backend/agent/index.ts`.
 const NO_PROVIDER_PREFIX = "No provider is connected";
 
 export function NoProviderFallback(props: {
@@ -79,11 +79,16 @@ function ConnectPrompt(props: { reset: () => void }) {
 
 	const onModelSelected = (model: Model<Api>) => {
 		// Persist the user's pick first — the next mount's `loadConfig()`
-		// must see providerId/modelId for `resolveInitialProviderModel` to
-		// succeed. `saveConfig` handles its own I/O errors via the
-		// persistence error handler (falls back to `console.error` here
-		// since `AgentProvider`'s toast wiring isn't mounted yet).
-		saveConfig({ providerId: model.provider, modelId: model.id });
+		// must see a top-level `model` so `createSession`'s
+		// `resolveAgentModel`/`resolveModelRef` chain can succeed
+		// without per-agent overrides. We write the *top-level* default
+		// (not a per-agent block) here because the user has not yet
+		// chosen an agent at the welcome screen; per-agent overrides
+		// happen later via the `/models` dialog. `saveConfig` handles
+		// its own I/O errors via the persistence error handler (falls
+		// back to `console.error` here since `AgentProvider`'s toast
+		// wiring isn't mounted yet).
+		saveConfig({ model: { providerId: model.provider, modelId: model.id } });
 		props.reset();
 	};
 

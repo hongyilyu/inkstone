@@ -181,4 +181,37 @@ describe("saveConfig → atomic on disk", () => {
 		expect(statSync(CONFIG_DIR).mode & 0o777).toBe(0o700);
 		expect(statSync(seededConfigPath).mode & 0o777).toBe(0o600);
 	});
+
+	test("setAgentModel + saveConfig round-trips through disk", async () => {
+		// Exercises the persistence path used by `actions.setModel` in
+		// `src/backend/agent/index.ts` after the unified-config refactor.
+		// A reader pick must NOT clobber an existing knowledge-base pick
+		// — per-agent isolation is the load-bearing invariant.
+		const { loadConfig, resetConfigCache, saveConfig } = await import(
+			"@backend/persistence/config"
+		);
+		const { setAgentModel } = await import("@backend/persistence/agent-config");
+
+		const KB_REF = { providerId: "openrouter", modelId: "kb-model" };
+		const READER_REF = { providerId: "kiro", modelId: "reader-model" };
+
+		// Preload's config has only `vaultDir`; start by writing a KB
+		// override, then a reader override.
+		resetConfigCache();
+		saveConfig(setAgentModel(loadConfig(), "knowledge-base", KB_REF));
+		saveConfig(setAgentModel(loadConfig(), "reader", READER_REF));
+
+		// Re-read from disk to confirm both survived.
+		resetConfigCache();
+		const cfg = loadConfig();
+		expect(cfg.agents?.reader?.model).toEqual(READER_REF);
+		expect(cfg.agents?.["knowledge-base"]?.model).toEqual(KB_REF);
+
+		// Clearing reader's override leaves KB untouched.
+		saveConfig(setAgentModel(loadConfig(), "reader", null));
+		resetConfigCache();
+		const after = loadConfig();
+		expect(after.agents?.reader?.model).toBeUndefined();
+		expect(after.agents?.["knowledge-base"]?.model).toEqual(KB_REF);
+	});
 });

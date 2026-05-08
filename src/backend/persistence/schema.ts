@@ -30,15 +30,59 @@ const ThinkingLevelSchema = z.enum([
 ]) satisfies z.ZodType<ThinkingLevel>;
 
 /**
+ * `(providerId, modelId)` pair. Used at the top level as the binary-wide
+ * default and inside per-agent `agents.<name>.model` overrides. Both
+ * positions share this exact shape so a single resolver type works for
+ * both.
+ */
+const ModelRefSchema = z.strictObject({
+	providerId: z.string().min(1),
+	modelId: z.string().min(1),
+});
+export type ModelRef = z.infer<typeof ModelRefSchema>;
+
+/**
+ * Per-agent override block. Every field is optional — an absent field
+ * falls through to the top-level value at use-site (see
+ * `resolveAgentModel` / `resolveAgentThinkingLevel` in
+ * `./agent-config.ts`). The whole block is also optional in the parent
+ * schema, so a user who hasn't customized any agent has no `agents` key
+ * at all.
+ *
+ * `thinkingLevels` here mirrors the top-level shape (a `modelKey ->
+ * level` map, where `modelKey` is `"providerId/modelId"`). Per-agent
+ * granularity matches today's per-model thinking memory: switching
+ * models on an agent restores the previously-picked effort for that
+ * model under that agent.
+ */
+const AgentBlockSchema = z.strictObject({
+	model: ModelRefSchema.optional(),
+	thinkingLevels: z.record(z.string(), ThinkingLevelSchema).optional(),
+});
+export type AgentBlock = z.infer<typeof AgentBlockSchema>;
+
+/**
  * `~/.config/inkstone/config.json` shape.
  *
  * `strictObject` so unknown top-level keys produce a named validation issue
  * (e.g. `Unrecognized key: "themId"`) instead of silently disappearing when
  * the user has a typo in a hand-edited config.
+ *
+ * `vaultDir` is the only required field. The binary cannot run without
+ * a vault — there is one binary per vault (see plan D1) — so leaving
+ * this field optional would only delay the failure. A clear "missing
+ * vaultDir" error at boot is friendlier than a sequence of downstream
+ * "ENOENT" errors when tools try to open paths under an undefined root.
+ *
+ * Top-level `model` and `thinkingLevels` are defaults: agents that
+ * don't declare their own override inherit from here. Both are
+ * optional — first launch with no `model` falls through to the
+ * connected provider's `defaultModelId` via `resolveModelRef` in
+ * `agent/index.ts`.
  */
 export const Config = z.strictObject({
-	providerId: z.string().optional(),
-	modelId: z.string().optional(),
+	vaultDir: z.string().min(1),
+	model: ModelRefSchema.optional(),
 	sessionTitleModel: z
 		.strictObject({
 			providerId: z.string().min(1),
@@ -46,9 +90,8 @@ export const Config = z.strictObject({
 		})
 		.optional(),
 	themeId: z.string().optional(),
-	currentAgent: z.string().optional(),
 	thinkingLevels: z.record(z.string(), ThinkingLevelSchema).optional(),
-	vaultDir: z.string().optional(),
+	agents: z.record(z.string(), AgentBlockSchema).optional(),
 });
 export type Config = z.infer<typeof Config>;
 

@@ -112,6 +112,17 @@ export function createWrappedActions(
 			}
 			deps.agentSession.selectAgent(name);
 			deps.setStore("currentAgent", deps.agentSession.agentName);
+			// Backend `selectAgent` also flips the bound model + thinking
+			// level to the destination agent's resolved values (per-agent
+			// override → top-level → provider default). Surface those
+			// into the store so sidebar / status-line / `/effort` reflect
+			// the active agent's pick without waiting for the next turn.
+			const m = deps.agentSession.getModel();
+			deps.setStore("modelName", m.name);
+			deps.setStore("modelProvider", m.provider);
+			deps.setStore("contextWindow", m.contextWindow);
+			deps.setStore("modelReasoning", m.reasoning);
+			deps.setStore("thinkingLevel", deps.agentSession.getThinkingLevel());
 		},
 		async clearSession() {
 			await clearSessionAction(deps);

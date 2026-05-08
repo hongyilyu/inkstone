@@ -99,11 +99,23 @@ export function makeFakeSession(
 		agentName?: string;
 		model?: Model<Api>;
 		thinkingLevel?: ThinkingLevel;
+		/**
+		 * Optional per-agent model map. Mirrors the real backend's
+		 * `selectAgent` behavior: switching the bound agent also flips
+		 * the resolved (provider, model) pair to that agent's
+		 * per-agent override (or the top-level default when an agent
+		 * has no entry). Tests that exercise the per-agent model
+		 * isolation invariant pass a map keyed by agent name.
+		 */
+		agentModels?: Record<string, Model<Api>>;
+		/** Per-agent thinking level. Same semantics as `agentModels`. */
+		agentThinkingLevels?: Record<string, ThinkingLevel>;
 	} = {},
 ): FakeSessionHandle {
 	let agentName = opts.agentName ?? "reader";
-	let model = opts.model ?? FAKE_MODEL;
-	let thinkingLevel: ThinkingLevel = opts.thinkingLevel ?? "off";
+	let model = opts.agentModels?.[agentName] ?? opts.model ?? FAKE_MODEL;
+	let thinkingLevel: ThinkingLevel =
+		opts.agentThinkingLevels?.[agentName] ?? opts.thinkingLevel ?? "off";
 	let messageCount = 0;
 
 	const calls: FakeSessionHandle["calls"] = {
@@ -169,9 +181,18 @@ export function makeFakeSession(
 				// Track *and* reflect — the real Session mutates its bound
 				// agent; the TUI wrapper reads `agentSession.agentName`
 				// back into `store.currentAgent` immediately after calling
-				// `selectAgent`, so the fake must update too.
+				// `selectAgent`, so the fake must update too. Also flip
+				// model + thinking level when the test supplies a
+				// per-agent map (matches real backend behavior introduced
+				// alongside per-agent model overrides).
 				calls.selectAgent.push(name);
 				agentName = name;
+				if (opts.agentModels?.[name]) {
+					model = opts.agentModels[name];
+				}
+				if (opts.agentThinkingLevels?.[name]) {
+					thinkingLevel = opts.agentThinkingLevels[name];
+				}
 			},
 			dispose() {
 				calls.dispose += 1;

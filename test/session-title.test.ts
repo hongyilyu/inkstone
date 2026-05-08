@@ -165,18 +165,24 @@ describe("session titles", () => {
 	});
 
 	test("config schema validates sessionTitleModel shape", () => {
+		// `vaultDir` is required by the schema (one binary, one vault).
+		// Each case carries a stub vaultDir so the assertion isolates
+		// the sessionTitleModel validation under test.
 		expect(
 			Config.safeParse({
+				vaultDir: "/tmp/vault",
 				sessionTitleModel: { providerId: "openrouter", modelId: "kimi" },
 			}).success,
 		).toBe(true);
 		expect(
 			Config.safeParse({
+				vaultDir: "/tmp/vault",
 				sessionTitleModel: { providerId: "", modelId: "kimi" },
 			}).success,
 		).toBe(false);
 		expect(
 			Config.safeParse({
+				vaultDir: "/tmp/vault",
 				sessionTitleModel: { providerId: "openrouter" },
 			}).success,
 		).toBe(false);
