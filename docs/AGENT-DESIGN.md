@@ -12,7 +12,7 @@ Shipped in PR #1 (branch `refactor/agent-shell-base-layer`). The base layer + fo
 2. **Shared behavior lives in one place.** Things every agent needs — a foundation tool, a shared prompt fragment, a memory-read at session boot — live in `backend/agent/base/`, not duplicated across agent folders.
 3. **Agents are self-contained units.** Each agent's system prompt, agent-specific tools, and (eventually) session state live inside `agents/<name>/`. A contributor can find everything about an agent in one place; `rm -rf agents/<name>/` is a clean delete.
 4. **Shape absorbs future features without restructuring.** Skills, memory, per-agent permissions, per-agent session actions — all land as new optional fields on `AgentInfo` or new entries in the base layer, not structural rewrites.
-5. **Headroom beyond the current two agents.** Planned next: Researcher, Knowledge Base. Long-tail: unknown. The shape must scale to ~5+ agents cleanly.
+5. **Headroom beyond the current three agents.** Reader, Example, and Knowledge Base ship today. Planned next: Researcher. Long-tail: unknown. The shape must scale to ~5+ agents cleanly.
 
 ## Non-goals (today)
 
