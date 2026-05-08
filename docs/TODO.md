@@ -9,6 +9,8 @@
 
 ## In Progress
 
+- E2E test coverage expansion (3 graphite-stacked PRs, plan in `~/.claude/plans/and-identify-e2e-misty-castle.md`). Stack A — agent command E2E (`reader-article` + `kb-commands` + directory-reject unit). Stack B — permission deny propagation + resume totals sidebar. Stack C — mid-conversation model-switch footer invariant + Bun-segfault unmount retry (still hangs on Bun 1.3.4, scaffold skipped) + docs swap (replaced obsolete `E2E-PLAN.md` with `E2E-TESTING.md` reference doc).
+
 - Architecture cleanup stacks (graphite-stacked PRs landing 2026-05-07).
   - Stack A — `sessions.ts` split (#86 alternation repair → #87 listSessions).
   - Stack B — `actions.ts` split (#88 resume → #89 clear → #90 prompt).
@@ -24,7 +26,7 @@
 
 ## Known Issues
 
-- **Abort-unmount test gap for the approval panel.** The provider's `onCleanup` resolves any in-flight `confirmFn` to `false` (queued via `queueMicrotask`). Verified by code inspection + abort/clearSession test coverage. Direct test coverage via `renderer.destroy()` while pending triggers a Bun 1.3.4 segfault on macOS in the OpenTUI renderer teardown path when a Promise-holding owner is disposed — unrelated to the resolver, but it means we can't assert this specific path end-to-end today. Revisit when Bun / OpenTUI ship a fix.
+- **Abort-unmount test gap for the approval panel.** The provider's `onCleanup` resolves any in-flight `confirmFn` to `false` (queued via `queueMicrotask`). Verified by code inspection + abort/clearSession test coverage. Direct test coverage via `renderer.destroy()` while pending triggers a Bun 1.3.4 segfault on macOS in the OpenTUI renderer teardown path when a Promise-holding owner is disposed — unrelated to the resolver, but it means we can't assert this specific path end-to-end today. **2026-05-08 retry on Bun 1.3.4**: hangs indefinitely (no longer segfaults outright but doesn't terminate either) — the test runner stalls without a stack trace. Skipped scaffold lives in `test/tui/permission-prompt.test.tsx` (`test.skip("renderer.destroy() while pending...")`) so future Bun bumps can be re-attempted by toggling `.skip` → `()`. Revisit when Bun / OpenTUI ship a fix.
 
 - `file` DisplayParts are user-bubble-only per the reducer today, but the `DisplayPart` union type does not encode that constraint. `AssistantMessage`'s `<Switch>` intentionally has no `<Match>` for `file` — `<Switch>` with no matching branch renders nothing. If a future reducer change starts pushing `file` parts onto an assistant bubble (e.g. a tool that returns a file attachment), those parts would silently disappear from the rendered frame with no type error or runtime warning. Options for hardening: (a) narrow `DisplayPart` at the assistant seam so `file` is statically unreachable, or (b) add a dev-only `console.warn` on the unhandled branch. Neither is implemented today; revisit when a reducer path for an assistant `file` part is actually needed.
 
@@ -81,6 +83,8 @@
 - **Concurrency — double-launch protection.** Two Inkstone processes can attach to the same active session and interleave writes. Documented in `docs/SQL.md` § Known limitations. Fix options: advisory flock on `DB_FILE`, or `sessions.owner_pid` checked on attach. Not urgent — no fix until this bites someone.
 
 - **Migration bundling for packaged builds.** `migrate()` reads from `import.meta.dir/migrations` at runtime; bundling to a single executable requires inlining (opencode's `OPENCODE_MIGRATIONS` global is the reference pattern). Not relevant until Inkstone ships outside `bun run dev`.
+
+- **Process-level smoke test.** Spawn the real `bun start` binary in a PTY, assert the open page renders, then SIGTERM. Defer until Inkstone gains a server boundary, an embedded shell, or a detached runtime that differs materially from in-process `testRender` mounting (rationale captured in `docs/E2E-TESTING.md` § Deferred layers). Until then a PTY harness would catch nothing the existing in-process suite doesn't already.
 
 - Per-agent UI beyond prompt color (e.g., agent-specific sidebar info, icons).
 

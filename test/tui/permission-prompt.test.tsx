@@ -198,13 +198,38 @@ describe("bottom permission panel", () => {
 		await waitForFrame(setup, "inkstone");
 	});
 
-	// Unmount-while-pending invariant (provider's `onCleanup` resolves
-	// the in-flight confirmFn to `false`) is NOT exercised here
-	// because calling `renderer.destroy()` while a Promise consumer
-	// is still attached to the owner tree tickles a Bun 1.3.4
-	// segfault on macOS in the OpenTUI renderer teardown path. The
-	// resolver itself is wired in provider.tsx's outer `onCleanup`
-	// (with a `queueMicrotask` deferral to defend against re-entry
-	// during owner disposal). Documented in `docs/TODO.md` Known
-	// Issues; revisit when Bun + OpenTUI ship a fix.
+	// Unmount-while-pending invariant: provider's `onCleanup` must
+	// resolve any in-flight `confirmFn` Promise to `false` so the
+	// agent loop unwinds cleanly. The resolver lives in
+	// `provider.tsx`'s outer `onCleanup` and uses `queueMicrotask` to
+	// defer the resolve past owner disposal — without that deferral,
+	// the Promise consumer waking inside `renderer.destroy()` tickles
+	// a Bun 1.3.4 segfault on macOS (documented in `docs/TODO.md`
+	// Known Issues).
+	//
+	// 2026-05-08 retry on Bun 1.3.4: skipping by default. Toggle the
+	// `test.skip` to `test` locally to re-attempt; if green on a newer
+	// Bun, ship un-skipped and remove the matching TODO entry.
+	test.skip("renderer.destroy() while pending resolves the Promise to false", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory, width: 120 });
+		primeConversation(fake);
+		await waitForFrame(setup, "ctrl+p commands");
+
+		const confirm = getConfirmFn();
+		if (!confirm) throw new Error("confirmFn not installed");
+		const pending = confirm(simpleRequest("call-unmount"));
+		fake.emit(ev_toolcallEnd("call-unmount", "write", { path: "/tmp/x.md" }));
+		await waitForFrame(setup, "Permission required");
+
+		// Tear the renderer down with the Promise still pending.
+		// `onCleanup` in provider.tsx's confirmFn install closes the
+		// in-flight resolver via `queueMicrotask(() => resolver(false))`.
+		setup.renderer.destroy();
+		setup = undefined;
+
+		// Promise should resolve to false within the microtask tick.
+		const result = await pending;
+		expect(result).toBe(false);
+	});
 });
