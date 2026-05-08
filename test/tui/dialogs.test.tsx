@@ -179,6 +179,42 @@ describe("command palette", () => {
 		expect(fake.calls.setThinkingLevel).toEqual([]);
 	});
 
+	test("/config palette entry with no $EDITOR/$VISUAL toasts the path", async () => {
+		// Without $EDITOR or $VISUAL set, runEditConfig falls back to
+		// "copy path to clipboard + toast the path so the user can
+		// open it in any editor." We assert the toast carries the
+		// config-file path — the exact tmp path comes from the
+		// preload's XDG_CONFIG_HOME setup.
+		const prevEditor = process.env.EDITOR;
+		const prevVisual = process.env.VISUAL;
+		delete process.env.EDITOR;
+		delete process.env.VISUAL;
+		try {
+			const fake = makeFakeSession();
+			setup = await renderApp({ session: fake.factory });
+			await setup.renderOnce();
+
+			setup.mockInput.pressKey("p", { ctrl: true });
+			await waitForFrame(setup, "Command Panel");
+			await Bun.sleep(30);
+			await setup.mockInput.typeText("Config");
+			await waitForFrame(setup, "Config");
+			await Bun.sleep(30);
+			setup.mockInput.pressEnter();
+
+			// Toast carries the config-file path. The preload places
+			// inkstone's config under a tmp dir whose suffix begins
+			// with "inkstone-test-"; the toast body includes the full
+			// CONFIG_FILE path, so a match on that prefix is enough.
+			const f = await waitForFrame(setup, "inkstone-test-");
+			expect(f).toContain("Config path copied");
+			expect(f).toContain("config.json");
+		} finally {
+			if (prevEditor !== undefined) process.env.EDITOR = prevEditor;
+			if (prevVisual !== undefined) process.env.VISUAL = prevVisual;
+		}
+	});
+
 	test("open palette suspends Ctrl+N (session list stays closed)", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory, width: 120 });
@@ -266,5 +302,74 @@ describe("command palette", () => {
 		const firstModelIdx = f.indexOf(firstToken);
 		expect(headerIdx).toBeGreaterThan(-1);
 		expect(firstModelIdx).toBeGreaterThan(headerIdx);
+	});
+
+	test("Select Model omits the 'Use default' row when active agent has no override", async () => {
+		// Preload's config is `{ vaultDir: VAULT }` only — no per-agent
+		// model override. The clear-row should NOT render in this case
+		// (it would be a dead UI element with nothing to clear).
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		setup.mockInput.pressKey("p", { ctrl: true });
+		await waitForFrame(setup, "Command Panel");
+		await Bun.sleep(30);
+		await setup.mockInput.typeText("Models");
+		await waitForFrame(setup, "Models");
+		await Bun.sleep(30);
+		setup.mockInput.pressEnter();
+		const f = await waitForFrame(setup, "Select Model");
+
+		expect(f).not.toContain("Use default");
+	});
+
+	test("Select Model renders 'Use default' row when active agent has a model override", async () => {
+		// Seed a per-agent model override on disk before mounting so
+		// DialogModel's `loadConfig()` reads it. We restore the
+		// preload's config in afterEach to keep downstream tests
+		// hermetic.
+		const { writeFileSync, readFileSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const { CONFIG_HOME } = await import("./../preload");
+		const cfgPath = join(CONFIG_HOME, "inkstone", "config.json");
+		const original = readFileSync(cfgPath, "utf-8");
+		const seeded = JSON.parse(original);
+		seeded.agents = {
+			reader: {
+				model: { providerId: "openrouter", modelId: "fake-override" },
+			},
+		};
+		writeFileSync(cfgPath, JSON.stringify(seeded, null, 2));
+
+		// Drop the in-memory cache so the dialog's `loadConfig()` re-reads
+		// the freshly-written file. Otherwise the seeded shape stays
+		// invisible until the next process boot.
+		const { resetConfigCache } = await import("@backend/persistence/config");
+		resetConfigCache();
+
+		try {
+			const fake = makeFakeSession();
+			setup = await renderApp({ session: fake.factory });
+			await setup.renderOnce();
+
+			setup.mockInput.pressKey("p", { ctrl: true });
+			await waitForFrame(setup, "Command Panel");
+			await Bun.sleep(30);
+			await setup.mockInput.typeText("Models");
+			await waitForFrame(setup, "Models");
+			await Bun.sleep(30);
+			setup.mockInput.pressEnter();
+			const f = await waitForFrame(setup, "Use default");
+
+			// "Use default" row must be present (override exists). The
+			// label format is "Use default (<provider>: <model>)" — we
+			// match the prefix only since the resolved-default label
+			// depends on what `cfg.model` is at dialog-open time.
+			expect(f).toContain("Use default");
+		} finally {
+			writeFileSync(cfgPath, original);
+			resetConfigCache();
+		}
 	});
 });

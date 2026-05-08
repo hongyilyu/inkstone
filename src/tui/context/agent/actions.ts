@@ -97,6 +97,24 @@ export function createWrappedActions(
 			deps.agentSession.actions.setThinkingLevel(level);
 			deps.setStore("thinkingLevel", level);
 		},
+		clearAgentModel() {
+			// Backend re-resolves the effective model (top-level →
+			// provider default) and applies it to the live agent
+			// state. Mirror the resolved values into the store so the
+			// sidebar / status line update without waiting for the
+			// next turn — same shape as `setModel` above.
+			deps.agentSession.actions.clearAgentModel();
+			const m = deps.agentSession.getModel();
+			deps.setStore("modelName", m.name);
+			deps.setStore("modelProvider", m.provider);
+			deps.setStore("contextWindow", m.contextWindow);
+			deps.setStore("modelReasoning", m.reasoning);
+			deps.setStore("thinkingLevel", deps.agentSession.getThinkingLevel());
+		},
+		clearAgentThinkingLevel() {
+			deps.agentSession.actions.clearAgentThinkingLevel();
+			deps.setStore("thinkingLevel", deps.agentSession.getThinkingLevel());
+		},
 		selectAgent(name: string) {
 			// Agent-for-life invariant: swapping with messages in flight
 			// would silently break prompt-cache stability (systemPrompt +

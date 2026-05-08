@@ -97,14 +97,14 @@ export async function startKiroLogin(
 		// Drop the user straight into the Kiro model picker so they can
 		// immediately pick a model from the freshly-available catalog.
 		// Mirrors OpenCode's chain in `component/dialog-provider.tsx:183-184`.
-		DialogModel.show(
-			dialog,
-			{
-				providerId: "kiro",
-				modelId: kiroProvider.defaultModelId,
-			},
-			onModelSelected,
-		);
+		// `agentName: ""` suppresses the per-agent "Use default" row —
+		// there is no active agent context yet (this fires inside the
+		// no-provider fallback, before AgentProvider has mounted).
+		DialogModel.show(dialog, {
+			current: { providerId: "kiro", modelId: kiroProvider.defaultModelId },
+			agentName: "",
+			onSelect: onModelSelected,
+		});
 	} catch (err) {
 		if (controller.signal.aborted) {
 			// Silent cancel. This branch specifically covers user-initiated

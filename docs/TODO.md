@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-08 (slash-command parser hardening)
+**Last updated**: 2026-05-08 (unified config + per-agent overrides)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -20,6 +20,7 @@
 
 ## Completed
 
+- **Unified config + per-agent model/thinkingLevels overrides** (2026-05-08, graphite-stacked PRs `feat/unified-config-pr1` + `feat/unified-config-pr2`). Each agent can carry its own `model` and per-(provider, model) `thinkingLevels` map under `config.agents.<name>` in `~/.config/inkstone/config.json`; missing fields fall back to top-level `model` / `thinkingLevels`, and an unset top-level `model` falls back to the first connected provider's default. The model + effort dialogs write their picks to the active agent's block (not top-level) and offer a "Use default" entry to clear the override and re-inherit. `/config` slash command opens the file in `$EDITOR` / `$VISUAL` (or copies the path via OSC 52 when neither is set). Top-level `(providerId, modelId)` flat pair restructured into `model: { providerId, modelId }`; `currentAgent` removed from JSON (fresh launches start at `DEFAULT_AGENT`, resume reads the agent name from the SQLite session row). Pre-1.0 schema break: legacy flat keys are rejected by Zod strict mode — zero existing users.
 - Hardened the slash-command parser with an optional `canExecute(args)` predicate on `AgentCommand` (rule 3 in `canRunSlashEntry`). Reader's `/article` uses it to reject unresolvable args (prose, typos, paths outside the Articles dir, symlinks, non-regular files) at the gate so the prompt falls through to the plain-prompt path with the literal `/`-prefixed text intact. KB commands unchanged. Side effect: a typo'd filename also falls through to plain prompt instead of toasting "Article not found" — Discord/Slack convention.
 - **`DialogConfirm` unification with the bottom approval panel.** Provider-disconnect now mounts the same `PermissionPrompt` panel as agent-tool approvals via a sibling `pendingDisconnect` module signal (`src/tui/components/disconnect-confirmation.ts`). The `DialogConfirm` modal primitive was deleted in the same change — `confirm-and-disconnect.ts` was its sole caller. See `docs/APPROVAL-UI.md` § "Confirmations beyond tool approval" for the per-action signal rationale.
 - Implemented architecture simplification: zone write allowlist, layout dependency injection, and tool permission coverage. Design rationale lives in `docs/AGENT-DESIGN.md` D12 and `docs/LAYOUT-CONTEXT.md`.
@@ -72,7 +73,7 @@
 
 - `write: "deny"` zone policy — the matching rule kind (`blockInsideDirs`) shipped with the reader statelessness refactor and reader uses it today via `getPermissions`. A declarative `deny` zone would map to `blockInsideDirs` in `composeZonesOverlay`; would let agents express read-only-zones as data instead of writing a custom overlay. Small ergonomics win. Deferred per D8 until a second agent wants it.
 
-- Move hard-coded vault paths to user configuration. Today `constants.ts` defines `ARTICLES_DIR`, `SCRAPS_DIR`, `NOTES_DIR`, `TEMPLATES_DIR` as `${VAULT_DIR}/<hard-coded path>`, and agent zone declarations hard-code the same vault-relative paths. Users with non-default vault layouts (different folder names, different numbering schemes) must edit code. Migration: make each agent's zones configurable via `$VAULT/InkStone/agents/<name>.json` (or similar), and derive `constants.ts` values from the same source. D7 (vault ≠ runtime state, amended) committed `$VAULT/InkStone/` as the convention root for this configuration.
+- Move hard-coded vault paths to user configuration. **Partially done by the unified-config refactor (2026-05-08).** `vaultDir` is now a required, user-configurable field in `~/.config/inkstone/config.json`, but `ARTICLES_DIR`, `SCRAPS_DIR`, `NOTES_DIR`, `TEMPLATES_DIR` and the agent `zones` arrays still hard-code vault-relative paths in TS. Users with non-default vault layouts (different folder names, different numbering schemes) must edit code. Next step: surface per-path overrides in the unified config (likely under `agents.<name>.zones` or a `paths:` block), since the schema + dialog plumbing is now in place. Permission rules in JSON are tracked separately below.
 
 - Memory files system — design exploration captured in `docs/MEMORY.md`. `user.md` + `memory.md` under `~/.config/inkstone/`, inlined by `composeSystemPrompt` after `BASE_PREAMBLE`. Read path is low-risk, ship when there's content that wants to live there; write path has real design questions (explicit vs auto, confirmation, overwrite semantics, review flow, per-agent gating) that want lived read-path experience to resolve.
 
@@ -113,6 +114,18 @@
 - User-configurable keybinds + leader-chord support (extend `src/tui/util/keybind.ts` with a Zod override schema merged from `config.json`, and port OpenCode's `<leader>X` chord machinery in `tui/context/keybind.tsx`).
 
 - KV persistence for settings (from OpenCode).
+
+- **Permission rules in unified config.** The unified-config refactor (2026-05-08) deliberately scoped permissions out — reader's `frontmatterOnlyInDirs` + KB's `blockInsideDirs` overlays plus the four rule kinds in `src/backend/agent/permissions.ts` are unchanged from pre-refactor. Adding a `permissions:` field under `config.agents.<name>` would let users grant/narrow per-agent rules without code edits. Schema-design notes from the original plan: prefer mirroring the existing `Rule[]` shape verbatim (no translation layer) since all four rule kinds are already declarative. Vault-relative paths resolve at config load.
+
+- **User-defined markdown agents.** Drop `<vault>/.inkstone/agents/<name>.md` files (YAML frontmatter + body) to register additional agents alongside the built-ins. Needs: gray-matter parser, agent-loader scanning the dir at boot, prompt-from-body wiring, tool-allowlist resolution against a registry. Built-ins stay TS. Defer until a real second-party agent need surfaces (today reader + KB cover the shipped workflows).
+
+- **"Remember last-used agent" persistence.** The unified-config refactor (2026-05-08) deliberately dropped `currentAgent` from the JSON schema. Every fresh launch starts at `DEFAULT_AGENT` (reader); resume reads the agent name from the SQLite session row, so resumed sessions keep their original agent. If users start asking for the launch to remember last-used, persist via a new `lastAgent` field — but consider if it should live in the SQLite state DB rather than the JSON config (more like UI state than user preference).
+
+- **General-purpose router agent.** Multi-agent orchestration via a top-level "router" agent that delegates to reader / KB / future agents based on the user's intent. Builds on the per-agent model overrides from the unified-config refactor. Real prerequisites are mid-session agent switching (already in Future Work above) and a routing-decision UX (defer/auto/explicit).
+
+- **Settings TUI dialog.** Replace the `/config` `$EDITOR` flow with an in-process settings dialog. Bigger surface change (fields, validation, save UX) — the `$EDITOR` shape ships v1 since it's adequate while the audience is contributors comfortable hand-editing JSON.
+
+- **Hot-reload via file watcher.** Watch `~/.config/inkstone/config.json` for external edits, invalidate the in-memory cache, and re-resolve the active agent's model + effort. Requires reactive plumbing around `loadConfig()` (today's cache is non-reactive) and care around mid-stream config changes. Defer until "edit, save, restart" friction becomes real.
 
 - Config file for debug/dev settings (e.g. `KIRO_LOG`, `KIRO_LOG_FILE`) — currently these must be passed as env vars on the command line; a dedicated config file (or a `[dev]` section in `config.json`) would let contributors opt in without editing `package.json`.
 

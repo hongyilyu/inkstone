@@ -1032,6 +1032,83 @@ failure modes are handled elsewhere (resume is out of scope for tool-
 result persist; load-time alternation repair absorbs synthesized-abort
 persist failures).
 
+## Agent Config Layer
+
+Per-agent overrides for `model` and per-(provider, model)
+`thinkingLevels` live under `config.agents.<name>` in
+`~/.config/inkstone/config.json`. Top-level `model` and
+`thinkingLevels` are the binary-wide defaults; an agent that doesn't
+declare an override inherits from the top level. When the top level
+also has no preference, `resolveModelRef` (in
+`src/backend/agent/index.ts`) falls through to the first connected
+provider's curated default. `vaultDir` is the only required field —
+the binary serves one vault, so leaving it optional would just delay
+the failure.
+
+Schema (`src/backend/persistence/schema.ts`):
+
+```ts
+{
+  vaultDir: string,                    // required
+  themeId?: string,
+  model?: { providerId, modelId },     // top-level default
+  sessionTitleModel?: { providerId, modelId },
+  thinkingLevels?: Record<key, level>, // top-level default map
+  agents?: {
+    [agentName]: {
+      model?: { providerId, modelId },
+      thinkingLevels?: Record<key, level>,
+    }
+  }
+}
+```
+
+Resolution chain (single hop, no further fallbacks):
+
+```
+effective.model         = agents[name].model         ?? top.model         ?? first-connected-provider-default
+effective.thinkingLevel = agents[name].thinkingLevels[key] ?? top.thinkingLevels[key] ?? "off"
+```
+
+Both resolvers are pure functions in
+`src/backend/persistence/agent-config.ts` (`resolveAgentModel`,
+`resolveAgentThinkingLevel`); same module exports `setAgentModel` /
+`setAgentThinkingLevel` which return a new `Config` with the
+override added or removed. Setters are sparse-by-default (a per-agent
+block is only created when a field is being set; fields are removed
+by passing `null`).
+
+Dialog write paths (`/models`, `/effort`) write to the active
+agent's block via the actions in `src/tui/context/agent/actions.ts`.
+Both dialogs offer a "Use default" entry that calls the matching
+`clearAgent*` action — without it, an agent that ever had a value
+picked is permanently pinned unless the user hand-edits the JSON.
+The clear-row only renders when the active agent actually has an
+override (otherwise it would be a no-op affordance). On agent swap
+via `selectAgent`, the bound model + thinking level are re-resolved
+to the destination agent's effective values atomically (resolve →
+mutate, so a mid-swap throw can't leave the session in a torn
+state).
+
+`currentAgent` is **not** persisted in the JSON (plan D8). Fresh
+launches start at `DEFAULT_AGENT`; resume reads the agent name from
+the SQLite session row, so resumed sessions retain their original
+agent.
+
+Permissions, agent-defined zones, and agent system prompts stay
+TS-only in v1 — none of them need user-overridable config today.
+Future-work entries in `docs/TODO.md` track the natural extensions
+(permission rules in JSON, user-defined markdown agents,
+"remember last-used agent" persistence, hot-reload).
+
+The `/config` slash command in `src/tui/commands/layout-commands.ts`
+opens the JSON file in `$EDITOR` / `$VISUAL` (suspends the OpenTUI
+renderer, awaits the editor, resumes), or copies the path via OSC 52
+when neither env var is set. Any change requires a restart — the
+in-memory cache + the `VAULT_DIR` module constant are non-reactive
+(see `loadConfig` in `src/backend/persistence/config.ts`). The toast
+on close carries that hint.
+
 ## Testing
 
 Tests live in `test/` and run via `bun test` (wired through `bun run ci`).

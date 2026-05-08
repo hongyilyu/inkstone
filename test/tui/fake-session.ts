@@ -65,6 +65,8 @@ export interface FakeSessionHandle {
 		abort: number;
 		setModel: Model<Api>[];
 		setThinkingLevel: ThinkingLevel[];
+		clearAgentModel: number;
+		clearAgentThinkingLevel: number;
 		clearSession: number;
 		selectAgent: string[];
 		restoreMessages: AgentMessage[][];
@@ -123,6 +125,8 @@ export function makeFakeSession(
 		abort: 0,
 		setModel: [],
 		setThinkingLevel: [],
+		clearAgentModel: 0,
+		clearAgentThinkingLevel: 0,
 		clearSession: 0,
 		selectAgent: [],
 		restoreMessages: [],
@@ -154,6 +158,19 @@ export function makeFakeSession(
 				setThinkingLevel(level: ThinkingLevel) {
 					thinkingLevel = level;
 					calls.setThinkingLevel.push(level);
+				},
+				clearAgentModel() {
+					// Mirror the real backend: drop the override + revert
+					// to whatever the test seeded as the "top-level"
+					// model (the fake's `model` opt). Tests asserting
+					// the clear-row UX pass `model` and `agentModels`
+					// separately so this can show the difference.
+					calls.clearAgentModel += 1;
+					model = opts.model ?? FAKE_MODEL;
+				},
+				clearAgentThinkingLevel() {
+					calls.clearAgentThinkingLevel += 1;
+					thinkingLevel = opts.thinkingLevel ?? "off";
 				},
 			},
 			get agentName() {
