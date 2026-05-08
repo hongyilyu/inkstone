@@ -25,6 +25,7 @@ import { join, relative } from "node:path";
 import { type FrontmatterValue, parseFrontmatter } from "@bridge/frontmatter";
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "typebox";
+import { registerBaselineFree } from "../permissions";
 
 const ALLOWED_EXTENSIONS = new Set([".md", ".markdown"]);
 const IGNORED_DIRS = new Set(["node_modules"]);
@@ -282,6 +283,10 @@ export function makeSearchTool(
 	opts: SearchToolOptions,
 ): AgentTool<typeof searchSchema, SearchHit[]> {
 	const { dir, name, description } = opts;
+	registerBaselineFree(
+		name,
+		"Read-only directory scan; dir is fixed at factory time, not user-controllable.",
+	);
 	return {
 		name,
 		label: name,
@@ -388,6 +393,10 @@ export function makeListKeysTool(
 	opts: ListKeysToolOptions,
 ): AgentTool<typeof listKeysSchema, ListKeysResult> {
 	const { dir, name, description } = opts;
+	registerBaselineFree(
+		name,
+		"Read-only frontmatter-key enumeration; dir is fixed at factory time.",
+	);
 	return {
 		name,
 		label: name,

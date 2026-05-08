@@ -57,6 +57,26 @@ export function hasBaseline(toolName: string): boolean {
 }
 
 /**
+ * Tools intentionally registered as baseline-free by their defining
+ * factory. Stored as `name → reason` so the *why* lives next to the
+ * registration site instead of in a hard-coded list inside
+ * `compose.ts`. Last-write-wins on re-registration — matches
+ * `registerBaseline`'s overwrite shape, so a second call with the
+ * same name (e.g. two agents instantiating
+ * `makeSearchTool({ name: "search", ... })`) cleanly replaces the
+ * prior reason.
+ */
+const baselineFreeRules: Record<string, string> = {};
+
+export function registerBaselineFree(toolName: string, reason: string): void {
+	baselineFreeRules[toolName] = reason;
+}
+
+export function isBaselineFree(toolName: string): boolean {
+	return toolName in baselineFreeRules;
+}
+
+/**
  * Optional diff preview attached to a `ConfirmRequest`. Populated only
  * for `confirmDirs` evaluations against write/edit tools where we can
  * compute the proposed `newText` cheaply from `args`. Consumers render

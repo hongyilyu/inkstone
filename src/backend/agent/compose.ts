@@ -1,5 +1,5 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { hasBaseline } from "./permissions";
+import { hasBaseline, isBaselineFree } from "./permissions";
 import { editTool, readTool, updateSidebarTool, writeTool } from "./tools";
 import { makeSuggestCommandTool } from "./tools/suggest-command";
 import type { AgentInfo } from "./types";
@@ -9,20 +9,6 @@ export const BASE_TOOLS: readonly AgentTool<any>[] = Object.freeze([
 	readTool,
 	updateSidebarTool,
 ]);
-
-/**
- * Tools that are intentionally baseline-free because they do not touch
- * filesystem paths. Everything else composed into an agent must
- * register a permission baseline in `permissions.ts`.
- */
-const GLOBAL_BASELINE_FREE_TOOLS: ReadonlySet<string> = new Set([
-	updateSidebarTool.name,
-	"suggest_command",
-]);
-
-const AGENT_BASELINE_FREE_TOOLS: Readonly<Record<string, readonly string[]>> = {
-	reader: ["search", "list_keys"],
-};
 
 /** Shared system-prompt prefix. Empty today — see `docs/AGENT-DESIGN.md` D5. */
 export const BASE_PREAMBLE = "";
@@ -46,20 +32,18 @@ function assertToolPermissionCoverage(
 	tools: AgentTool<any>[],
 ): void {
 	for (const tool of tools) {
-		if (hasBaseline(tool.name) || isBaselineFreeForAgent(info, tool.name)) {
-			continue;
-		}
+		if (hasBaseline(tool.name) || isBaselineFree(tool.name)) continue;
 		throw new Error(
 			`Tool '${tool.name}' on agent '${info.name}' has no permission baseline or baseline-free review entry.`,
 		);
 	}
 }
 
-function isBaselineFreeForAgent(info: AgentInfo, toolName: string): boolean {
-	if (GLOBAL_BASELINE_FREE_TOOLS.has(toolName)) return true;
-	return AGENT_BASELINE_FREE_TOOLS[info.name]?.includes(toolName) ?? false;
-}
-
+// Catches the common path where an agent composes the shared
+// `writeTool` / `editTool` re-exports without declaring zones. A
+// future agent that calls `createWriteTool(VAULT_DIR)` directly
+// (bypassing the shared pool) would slip past this check — the
+// `tools.ts` convention is the safety net, not this assertion.
 function assertMutatingToolsHaveZones(
 	info: AgentInfo,
 	tools: AgentTool<any>[],

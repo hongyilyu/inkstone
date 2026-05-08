@@ -14,6 +14,7 @@ import { describe, expect, test } from "bun:test";
 import { readerAgent } from "@backend/agent/agents/reader";
 import { buildReaderInstructions } from "@backend/agent/agents/reader/instructions";
 import { composeSystemPrompt, composeTools } from "@backend/agent/compose";
+import { registerBaselineFree } from "@backend/agent/permissions";
 import { writeTool } from "@backend/agent/tools";
 import type { AgentCommand, AgentInfo } from "@backend/agent/types";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
@@ -201,5 +202,25 @@ describe("composeTools — permission coverage", () => {
 		expect(() => composeTools(agent)).toThrow(
 			"Agent 'test' composes mutating file tools but declares no write zones.",
 		);
+	});
+
+	test("registerBaselineFree opt-in unblocks an otherwise-unknown tool", () => {
+		// Pins the registry contract: a direct `registerBaselineFree`
+		// call is enough for `composeTools` to accept the tool, without
+		// coupling the test to whether a specific factory does the
+		// registering.
+		registerBaselineFree(
+			"test_only_no_fs_tool",
+			"Test fixture — no real implementation.",
+		);
+		const fixtureTool = {
+			name: "test_only_no_fs_tool",
+			label: "Test",
+			description: "fixture",
+			parameters: {},
+			execute: async () => ({ type: "text", content: "ok" }),
+		} as unknown as AgentTool<any>;
+		const agent = makeAgent({ extraTools: [fixtureTool] });
+		expect(() => composeTools(agent)).not.toThrow();
 	});
 });
