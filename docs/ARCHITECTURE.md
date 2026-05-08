@@ -172,7 +172,6 @@ src/
       syntax.ts                     generateSyntax + generateSubtleSyntax (SyntaxStyle FFI wrappers)
     ui/
       dialog.tsx                    Stack-based modal rendering
-      dialog-confirm.tsx            Promise-based yes/no confirmation
       dialog-select.tsx             Fuzzy filterable select list (composition: grouping + row + scroll sync + keyboard nav)
       dialog-select-grouping.ts     Pure `groupByCategory` + `countRows` helpers (no JSX, unit-tested)
       dialog-select-row.tsx         `DialogSelectRow` — presentational row with resolved `active` / `current` props
@@ -802,13 +801,13 @@ The indicator is **ephemeral**: `codexTransport` is a store-only-no-persist fiel
 
 **Key entry.** `src/tui/components/dialog/provider/set-openrouter-key.tsx` is a single `DialogPrompt.show` with a description linking to `https://openrouter.ai/keys` and a placeholder `sk-or-v1-…`. On submit → `saveOpenRouterKey(trimmed)` → success toast → `DialogModel` scoped to OpenRouter's `moonshotai/kimi-k2.6` default. Empty/whitespace key → warning toast + early return (no disk write). ESC at any point → `dialog.clear()`.
 
-**Disconnect.** Handled uniformly by `confirmAndDisconnect` in `src/tui/components/dialog/provider/confirm-and-disconnect.ts`: DialogConfirm → `provider.clearCreds()` → active-session rehome via `findFirstConnectedProvider(provider.id)` (warning toast nudging `/models` when no fallback exists). OpenRouter-specific logic lives entirely in `openrouterProvider.clearCreds` (which calls `clearOpenRouterKey`) — the shared helper doesn't branch per provider.
+**Disconnect.** Handled uniformly by `confirmAndDisconnect` in `src/tui/components/dialog/provider/confirm-and-disconnect.ts`: close manage dialog → `PermissionPrompt` panel confirms (via the `pendingDisconnect` signal in `components/disconnect-confirmation.ts`) → `provider.clearCreds()` → active-session rehome via `findFirstConnectedProvider(provider.id)` (warning toast nudging `/models` when no fallback exists). OpenRouter-specific logic lives entirely in `openrouterProvider.clearCreds` (which calls `clearOpenRouterKey`) — the shared helper doesn't branch per provider. See `docs/APPROVAL-UI.md` § "Confirmations beyond tool approval" for the panel-sharing rationale.
 
 **No refresh cycle.** OpenRouter API keys don't expire and aren't rotated. `getApiKey()` is sync; no in-flight dedup memo; no `reportPersistenceError` call in a refresh-failure catch branch because there isn't one. If OpenRouter ever grows per-key metadata (routing preferences, org hints), `AuthFile.openrouter` migrates from `string` → `{ apiKey: string, ...metadata }` at that point.
 
 #### Disconnect / manage menu
 
-Kiro, OpenAI Codex, and OpenRouter are all owned-creds providers — their credentials live in `~/.config/inkstone/auth.json` and Inkstone can honestly clear them via `ProviderInfo.clearCreds()`. `DialogProvider` opens the Reconnect / Disconnect manage menu for any connected row. The shared `confirmAndDisconnect` helper in `components/dialog/provider/confirm-and-disconnect.ts` owns the DialogConfirm → clearCreds → rehome → toast sequence; per-provider logic is confined to `clearCreds()` (credential wipe) and `displayName` (toast strings). Reconnect dispatches through the `LOGIN_FLOWS` lookup table in `login-registry.ts`.
+Kiro, OpenAI Codex, and OpenRouter are all owned-creds providers — their credentials live in `~/.config/inkstone/auth.json` and Inkstone can honestly clear them via `ProviderInfo.clearCreds()`. `DialogProvider` opens the Reconnect / Disconnect manage menu for any connected row. The shared `confirmAndDisconnect` helper in `components/dialog/provider/confirm-and-disconnect.ts` owns the close-dialog → panel-confirm → clearCreds → rehome → toast sequence; per-provider logic is confined to `clearCreds()` (credential wipe) and `displayName` (toast strings). Reconnect dispatches through the `LOGIN_FLOWS` lookup table in `login-registry.ts`.
 
 ### Effort variants (reasoning levels)
 
@@ -893,7 +892,7 @@ Action naming groups by scope:
 | `panel_close` | `components/session-list.tsx` — closes the session panel (ESC or Ctrl+N) |
 | `select_*` | `ui/dialog-select.tsx` — local nav (arrow keys + emacs `ctrl+n`/`ctrl+p`) |
 
-`dialog-confirm.tsx` uses its own inline `y`/`n`/`left`/`right`/`return` checks — those keys are dialog-local and don't belong in the shared map.
+`PermissionPrompt` (`components/permission-prompt.tsx`) uses its own inline `left`/`right`/`h`/`l`/`return`/`escape` checks for the bottom approval/confirmation panel — those keys are panel-local and don't belong in the shared map.
 
 ### Session interrupt (double-tap ESC)
 

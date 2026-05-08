@@ -11,7 +11,7 @@
  *   - confirmed-disconnect when the disconnected provider is NOT the
  *     active one: no setModel call, toast uses the plain success variant
  *   - ESC on the manage menu (creds untouched)
- *   - `n` on the DialogConfirm (creds untouched — pins the guard)
+ *   - ESC on the disconnect panel (creds untouched — pins the guard)
  *
  * Kiro is the only owned-creds OAuth provider exercised here. OpenAI
  * Codex and OpenRouter share the same disconnect shape via their
@@ -139,12 +139,17 @@ describe("Connect dialog — manage actions", () => {
 		setup.mockInput.pressArrow("down");
 		setup.mockInput.pressEnter();
 
-		// DialogConfirm title carries the provider displayName.
-		await waitForFrame(setup, "Disconnect Amazon Kiro?");
+		// Panel renders with the disconnect-specific header + provider
+		// displayName. The manage-providers dialog has been cleared
+		// (confirm-and-disconnect calls `dialog.clear()` first), so
+		// "Reconnect" should no longer appear in the frame.
+		const panelFrame = await waitForFrame(setup, "Disconnect Amazon Kiro?");
+		expect(panelFrame).toContain("△ Confirm disconnect");
+		expect(panelFrame).not.toContain("Reconnect");
 
-		// Two-step confirm dialog — `y` commits the Confirm branch
-		// without arrow navigation (see dialog-confirm.tsx).
-		setup.mockInput.pressKey("y");
+		// Panel default selection is "approve" (Disconnect side); Enter
+		// commits without arrow navigation.
+		setup.mockInput.pressEnter();
 		await waitForFrame(setup, "Amazon Kiro disconnected");
 
 		const { loadKiroCreds } = await import(
@@ -189,8 +194,9 @@ describe("Connect dialog — manage actions", () => {
 			setup.mockInput.pressEnter();
 			const confirmFrame = await waitForFrame(setup, "Disconnect Amazon Kiro?");
 			expect(confirmFrame).toContain("Disconnect Amazon Kiro?");
+			expect(confirmFrame).toContain("△ Confirm disconnect");
 
-			setup.mockInput.pressKey("y");
+			setup.mockInput.pressEnter();
 			// Poll for either the toast OR the dialog clearing. Toast
 			// body may be rendered on a follow-up frame so we give it
 			// render cycles.
@@ -233,7 +239,7 @@ describe("Connect dialog — manage actions", () => {
 		setup.mockInput.pressEnter();
 		await waitForFrame(setup, "Disconnect Amazon Kiro?");
 
-		setup.mockInput.pressKey("y");
+		setup.mockInput.pressEnter();
 		await waitForFrame(setup, "Amazon Kiro disconnected");
 
 		const { loadKiroCreds } = await import(
@@ -275,7 +281,7 @@ describe("Connect dialog — manage actions", () => {
 		expect(fake.calls.setModel.length).toBe(0);
 	});
 
-	test("`n` on Disconnect confirm leaves creds intact", async () => {
+	test("Esc on disconnect panel leaves creds intact", async () => {
 		seedKiroCreds();
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });
@@ -288,14 +294,14 @@ describe("Connect dialog — manage actions", () => {
 		setup.mockInput.pressEnter();
 		await waitForFrame(setup, "Disconnect Amazon Kiro?");
 
-		// `n` maps to onCancel → DialogConfirm promise resolves `false`
-		// → `confirmed !== true` early return. Pins the guard so a
-		// refactor that inverts the check (e.g. `!confirmed`) doesn't
-		// silently conflate cancel + ESC with confirm.
-		setup.mockInput.pressKey("n");
-		// Poll for the confirm-dialog title to disappear rather than a
-		// fixed sleep — cancel resolves synchronously but the ToastProvider
-		// and dialog-stack unmount still need a tick.
+		// Esc on the panel → respondDisconnect(false) → `!confirmed`
+		// early return in confirm-and-disconnect.ts. Pins the guard so
+		// a refactor that inverts the check doesn't silently turn
+		// cancel into confirm.
+		setup.mockInput.pressEscape();
+		// Poll for the panel title to disappear rather than a fixed
+		// sleep — cancel resolves synchronously but the panel unmount
+		// still needs a Solid render tick.
 		for (let i = 0; i < 10; i++) {
 			await setup.renderOnce();
 			if (!setup.captureCharFrame().includes("Disconnect Amazon Kiro?")) break;

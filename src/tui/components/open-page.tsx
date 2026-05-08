@@ -1,7 +1,13 @@
 import { VAULT_DIR } from "@backend/agent/constants";
+import { Show } from "solid-js";
 import pkg from "../../../package.json";
 import { useTheme } from "../context/theme";
 import { displayPath } from "../util/format";
+import {
+	pendingDisconnect,
+	respondDisconnect,
+} from "./disconnect-confirmation";
+import { PermissionPrompt } from "./permission-prompt";
 import { Prompt } from "./prompt";
 
 /**
@@ -9,14 +15,14 @@ import { Prompt } from "./prompt";
  * Centered layout with logo, prompt, and footer.
  * Matches OpenCode's routes/home.tsx:55-89 structure.
  *
- * NOTE: We do NOT swap the Prompt for `PermissionPrompt` here.
- * Approvals can only fire inside a tool call, which requires an
- * assistant `message_start` that follows a user-turn `prompt()` —
- * and `actions.ts` pushes the user message to `store.messages`
- * before the backend runs, so `Layout` has already switched to the
- * conversation branch (see `app.tsx`'s `store.messages.length > 0`
- * gate) by the time any approval could surface. `OpenPage` is
- * unreachable once a pending approval exists.
+ * NOTE: Agent approvals (`pendingApproval`) and command suggestions
+ * (`pendingSuggestion`) can never fire here — they require a
+ * user-turn `prompt()` which pushes a user message before the backend
+ * runs, so `Layout` has already swapped to the conversation branch by
+ * then. Disconnect (`pendingDisconnect`) is the exception: it fires
+ * from `Ctrl+P` → Connect → Manage → Disconnect, which is reachable
+ * from `OpenPage` (no messages yet). That branch swaps the centered
+ * `Prompt` for `PermissionPrompt` so the user can confirm in place.
  */
 export function OpenPage() {
 	const { theme } = useTheme();
@@ -42,7 +48,17 @@ export function OpenPage() {
 
 				{/* Prompt input area — max width 75, matches OpenCode home.tsx:66 */}
 				<box width="100%" maxWidth={75} paddingTop={1} flexShrink={0}>
-					<Prompt />
+					<Show when={pendingDisconnect()} fallback={<Prompt />}>
+						<PermissionPrompt
+							header="△ Confirm disconnect"
+							title={pendingDisconnect()?.title ?? ""}
+							message={pendingDisconnect()?.message ?? ""}
+							approveLabel="Disconnect"
+							rejectLabel="Cancel"
+							onRespond={respondDisconnect}
+							pending={pendingDisconnect}
+						/>
+					</Show>
 				</box>
 
 				<box flexGrow={1} minHeight={0} />

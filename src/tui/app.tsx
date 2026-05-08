@@ -3,6 +3,10 @@ import { createMemo, createSignal, ErrorBoundary, Show } from "solid-js";
 import { registerLayoutCommands } from "./commands/layout-commands";
 import { Conversation } from "./components/conversation";
 import { CommandProvider } from "./components/dialog/command";
+import {
+	pendingDisconnect,
+	respondDisconnect,
+} from "./components/disconnect-confirmation";
 import { NoProviderFallback } from "./components/no-provider-fallback";
 import { OpenPage } from "./components/open-page";
 import { PermissionPrompt } from "./components/permission-prompt";
@@ -125,7 +129,22 @@ export function Layout() {
 								<Show
 									when={pendingApproval()}
 									fallback={
-										<Show when={pendingSuggestion()} fallback={<Prompt />}>
+										<Show
+											when={pendingSuggestion()}
+											fallback={
+												<Show when={pendingDisconnect()} fallback={<Prompt />}>
+													<PermissionPrompt
+														header="△ Confirm disconnect"
+														title={pendingDisconnect()?.title ?? ""}
+														message={pendingDisconnect()?.message ?? ""}
+														approveLabel="Disconnect"
+														rejectLabel="Cancel"
+														onRespond={respondDisconnect}
+														pending={pendingDisconnect}
+													/>
+												</Show>
+											}
+										>
 											<SuggestCommandPrompt />
 										</Show>
 									}

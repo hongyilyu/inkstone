@@ -110,9 +110,20 @@ Wrapped `actions.abort()` and `clearSessionAction` both check `pendingApproval()
 
 Provider `onCleanup` resolves any in-flight pending approval to `false` via `queueMicrotask` — direct resolution during Solid owner disposal tripped a Bun 1.3.4 segfault in OpenTUI's teardown path.
 
+## Confirmations beyond tool approval
+
+The same `PermissionPrompt` panel serves the provider-disconnect flow (`src/tui/components/dialog/provider/confirm-and-disconnect.ts`) via a sibling per-action signal in `src/tui/components/disconnect-confirmation.ts`. The signal is a module-scoped `createSignal<PendingEntry | null>(null)` with `requestDisconnectConfirmation` / `pendingDisconnect` / `respondDisconnect` exports — parallel shape to `pendingApproval` in the agent provider, but owned at module scope because disconnect runs outside any agent turn (no `isStreaming` deadlock concern, no need for provider-lifecycle ownership of the resolver).
+
+`PermissionPrompt` is presentational: callers pass `{ header, title, message, approveLabel, rejectLabel, onRespond, pending }`. Agent approvals pass "△ Permission required" / "Allow" / "Reject"; disconnect passes "△ Confirm disconnect" / "Disconnect" / "Cancel". The keyboard handler, chrome, and one-frame null-guard tripwire are shared.
+
+`Layout` (`app.tsx`) and `OpenPage` (`open-page.tsx`) both swap their `Prompt` cell for `PermissionPrompt` when `pendingDisconnect()` is non-null. Both swap sites exist because `Ctrl+P` → Connect → Manage → Disconnect is reachable from the no-messages-yet `OpenPage`, which `Layout`'s conversation branch never renders.
+
+When disconnect fires, `confirmAndDisconnect` calls `dialog.clear()` before awaiting the panel — closing the manage-providers dialog so keyboard ownership is unambiguous (no modal stacked above the panel). Matches the prior `DialogConfirm.show` semantics, which used `dialog.replace()` and ended the manage flow on resolve regardless.
+
+There is no generalized "confirmation surface." Two scoped signals + one shared component is intentional: per-action signals match the view-model tripwire idiom (`docs/AGENT-DESIGN.md` D15), and a generalized signal would have to either subsume the agent's owner-lifecycle semantics or cleave them off into a special case.
+
 ## Known limitations
 
 - **Abort-unmount test gap.** The provider's `onCleanup` resolves any in-flight `confirmFn` to `false` (verified by code inspection + abort/clearSession test coverage). Direct end-to-end coverage via `renderer.destroy()` while pending triggers a Bun 1.3.4 segfault in OpenTUI's teardown path when a Promise-holding owner is disposed. Revisit when Bun / OpenTUI ship a fix.
-- **`DialogConfirm` still used by provider-disconnect.** The `confirm-and-disconnect` flow in `src/tui/components/dialog/provider/` uses the old modal. Unifying onto `PermissionPrompt` is deferred.
 - **"Allow always" not implemented.** OpenCode has a third option that persists a pattern into policy. Requires a policy-write path into zone config; deferred.
 - **Resumed sessions have no diff archive.** Tool parts loaded from SQLite don't carry diffs (never persisted), so the chevron doesn't render for historical tool calls. Acceptable — the archive is a live-session overlay.

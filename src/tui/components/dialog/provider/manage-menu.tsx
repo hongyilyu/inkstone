@@ -27,9 +27,10 @@ type ManageAction = "reconnect" | "disconnect";
  * creds remain intact (non-surprising).
  *
  * Disconnect routes through the shared `confirmAndDisconnect` helper:
- * DialogConfirm → `provider.clearCreds()` → `findFirstConnectedProvider`
- * rehome → toast. Per-provider logic is entirely in `clearCreds()`
- * (credential wipe) + `displayName` (toast strings).
+ * close manage dialog → `PermissionPrompt` panel confirms →
+ * `provider.clearCreds()` → `findFirstConnectedProvider` rehome →
+ * toast. Per-provider logic is entirely in `clearCreds()` (credential
+ * wipe) + `displayName` (toast strings).
  */
 export function showManageMenu(
 	dialog: DialogContext,
