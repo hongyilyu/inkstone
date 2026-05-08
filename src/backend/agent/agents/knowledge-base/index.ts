@@ -1,7 +1,8 @@
 import type { AgentOverlay } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
 import type { AgentInfo, AgentZone } from "../../types";
-import { KB_HUMAN_DIR, KB_RAW_DIR } from "./paths";
+import { buildKnowledgeBaseInstructions } from "./instructions";
+import { KB_FORGE, KB_HUMAN_DIR, KB_RAW_DIR, KB_SYSTEM } from "./paths";
 
 /**
  * Workspace zones — the LifeOS policy maps `040 FORGE/` to the agent's
@@ -11,8 +12,8 @@ import { KB_HUMAN_DIR, KB_RAW_DIR } from "./paths";
  * `readTool`; zones only constrain writes.
  */
 const knowledgeBaseZones: AgentZone[] = [
-	{ path: "040 FORGE", write: "auto" },
-	{ path: "090 SYSTEM/099 LLM Wiki", write: "confirm" },
+	{ path: KB_FORGE, write: "auto" },
+	{ path: KB_SYSTEM, write: "confirm" },
 ];
 
 /**
@@ -36,10 +37,11 @@ function getKnowledgeBasePermissions(): AgentOverlay {
 }
 
 /**
- * Knowledge-base agent — manages a personal knowledge base. PR 1
- * scaffold: zones, permission overlay, and a placeholder persona. PR 2
- * will replace `buildInstructions` with the full
- * persona + workflow body. PR 3 will add `commands`.
+ * Knowledge-base agent — manages a personal knowledge base. The
+ * persona, freeform-routing guidance, and all three workflow bodies
+ * (ingest/query/lint) are preloaded into the system prompt; slash
+ * commands (added in the next PR of this stack) just trigger the
+ * matching workflow already in context.
  */
 export const knowledgeBaseAgent: AgentInfo = {
 	name: "knowledge-base",
@@ -48,7 +50,6 @@ export const knowledgeBaseAgent: AgentInfo = {
 	colorKey: "info",
 	extraTools: [editTool, writeTool],
 	zones: knowledgeBaseZones,
-	buildInstructions: () =>
-		"You manage a personal knowledge base. Be calm, concise, low-friction.",
+	buildInstructions: () => buildKnowledgeBaseInstructions(),
 	getPermissions: getKnowledgeBasePermissions,
 };
