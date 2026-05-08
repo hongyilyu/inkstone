@@ -43,7 +43,7 @@ describe("agent cycle", () => {
 		await waitForFrame(setup, "Reader");
 
 		setup.mockInput.pressTab();
-		await waitForFrame(setup, "Example");
+		await waitForFrame(setup, "Knowledge Base");
 	});
 
 	test("Shift+Tab cycles in reverse", async () => {
@@ -54,8 +54,8 @@ describe("agent cycle", () => {
 		await waitForFrame(setup, "Reader");
 
 		setup.mockInput.pressTab({ shift: true });
-		// Shift+Tab from Reader (index 0) wraps backwards to the last
-		// registered agent — currently Knowledge Base.
+		// Two-agent registry → Shift+Tab from Reader also lands on
+		// Knowledge Base (the only other agent).
 		await waitForFrame(setup, "Knowledge Base");
 	});
 
@@ -81,13 +81,13 @@ describe("agent cycle", () => {
 		// `store.messages.length > 0`. The prompt bar still shows
 		// "Reader" (the agent stamp on the prompt bar is hidden once
 		// messages exist — the bar shows agent · model · provider).
-		// We assert by checking the agent hasn't flipped to Example.
+		// We assert by checking the agent hasn't flipped to Knowledge Base.
 		setup.mockInput.pressTab();
 		await setup.renderOnce();
 		await Bun.sleep(30);
 		await setup.renderOnce();
 		const f = setup.captureCharFrame();
-		expect(f).not.toContain("Example ");
+		expect(f).not.toContain("Knowledge Base ");
 	});
 
 	test("/article falls through as plain prompt on a non-reader agent", async () => {
@@ -95,13 +95,13 @@ describe("agent cycle", () => {
 		setup = await renderApp({ session: fake.factory });
 		await setup.renderOnce();
 
-		// Cycle to Example.
+		// Cycle to Knowledge Base.
 		setup.mockInput.pressTab();
-		await waitForFrame(setup, "Example");
+		await waitForFrame(setup, "Knowledge Base");
 
-		// Type `/article foo.md` and submit. Example doesn't declare
-		// `/article`, so `triggerSlash` returns false and the text
-		// falls through to the plain-prompt path. The fake records
+		// Type `/article foo.md` and submit. Knowledge Base doesn't
+		// declare `/article`, so `triggerSlash` returns false and the
+		// text falls through to the plain-prompt path. The fake records
 		// `actions.prompt` with the literal `/article foo.md`.
 		await setup.mockInput.typeText("/article foo.md");
 		setup.mockInput.pressEnter();

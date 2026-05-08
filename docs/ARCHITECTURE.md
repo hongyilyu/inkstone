@@ -122,8 +122,10 @@ src/
           index.ts                  Reader agent definition (zones, extraTools, permissions)
           instructions.ts           Reader system-prompt body + 6-stage workflow
           recommendations.ts        Article scoring + recommendation list
-        example/
-          index.ts                  Example agent definition (minimal)
+        knowledge-base/
+          index.ts                  KB agent definition (zones, commands, permissions)
+          instructions.ts           Persona + freeform routing + 3 workflow bodies
+          paths.ts                  KB folder constants (vault-relative + absolute)
     providers/
       types.ts                      ProviderInfo interface
       kiro.ts                       Amazon Kiro provider (OAuth, region scoping)
@@ -457,11 +459,9 @@ Single source of truth prevents drift between what the LLM is told and what the 
 
 A `deny` policy (read-only zone inside a workspace) was considered and cut in D12. The matching rule kind (`blockInsideDirs`) later shipped for reader's Articles restriction, so zones could now grow a `"deny"` → `blockInsideDirs` mapping cheaply. Deferred per D8 until a real agent wants it — see TODO.md.
 
-Example — reader's zones:
-
 Example — reader's zones (see `src/backend/agent/agents/reader/index.ts`): three `confirm` zones under Articles, Scraps, and Notes.
 
-Example — the example agent (see `src/backend/agent/agents/example/index.ts`): `zones: []`.
+Example — knowledge-base's zones (see `src/backend/agent/agents/knowledge-base/index.ts`): `040 FORGE` auto-write + `090 SYSTEM/099 LLM Wiki` confirm-write, plus a `getPermissions` overlay that hard-blocks writes under `010 RAW/` and `020 HUMAN/` (rules zones can't express alone).
 
 Tool implementations come from `@mariozechner/pi-coding-agent` via the shared pool in `backend/agent/tools.ts` — Inkstone does not re-implement read/write/edit. Each factory is called with `VAULT_DIR` as the `cwd` so vault-relative paths resolve inside the vault; absolute paths are honored by the tool and sandboxed by the guard. pi-coding-agent's tool source transitively imports `@mariozechner/pi-tui`, but `wrapToolDefinition` strips the render hooks — the tools are pure `AgentTool<any>` at runtime, and pi-tui is inert code-path-wise (Inkstone renders through OpenTUI in `src/tui/**`).
 
@@ -472,10 +472,9 @@ Tool implementations come from `@mariozechner/pi-coding-agent` via the shared po
 | Name | extraTools | Composed tools | Zones | Commands | Prompt behavior | Color |
 |------|------------|----------------|-------|----------|-----------------|-------|
 | `reader` | `edit`, `write`, `search`, `list_keys` | `read`, `update_sidebar` + the extras | `010 RAW/013 Articles` + `020 HUMAN/022 Scraps` + `020 HUMAN/023 Notes`, all confirm | `/article [filename]` | `<your workspace>` block + persona + a freeform-request paragraph teaching the `list_keys` → `search` flow for "find me the one about X from Y" style prompts. The 6-stage reading workflow lives in `buildArticleWorkflowPrelude` (in `./instructions.ts`) and is prepended to `/article`'s opening user message rather than baked into the agent system prompt — plain-chat sessions don't pay for it, and Anthropic / Bedrock prefix caching keeps the per-turn cost comparable to a system-prompt-resident version after the first turn of a reading session. `/article <filename>` reads the file and sends workflow prelude + path + full content as the LLM-facing prompt text, while passing the TUI compact `displayParts = [text "Read this article.", file text/markdown <vault-relative>]` so the bubble renders a short prose line + a clickable file chip (opens the article reader page) instead of the full article body. `/article` (bare) scans ARTICLES_DIR, displays a numbered recommendation list as a user bubble, and opens a DialogSelect picker; selecting an article runs the same compact-bubble loading path. In Stage 2 (keeper mode), the LLM calls `update_sidebar` to pin the first-pass prompts in the sidebar. | `theme.secondary` |
-| `example` | — | `read`, `update_sidebar` only | — | — | Short static "general-purpose assistant" prompt, no workspace block | `theme.accent` |
 | `knowledge-base` | `edit`, `write` | `read`, `update_sidebar`, `suggest_command` + the extras | `040 FORGE` (auto) + `090 SYSTEM/099 LLM Wiki` (confirm) | `/ingest`, `/query <question>`, `/lint` | `<your workspace>` block + persona + freeform-routing guidance + all three workflow bodies (ingest, query, lint) preloaded into the system prompt. Each slash command is a minimal trigger (`helpers.prompt("Run the X workflow.")`); the procedure is already in context. `/query <question>` interpolates the user's question. The persona teaches the LLM to call `suggest_command` when the user phrases an intent in prose ("audit the vault" → `lint`, "what did I save about X" → `query`). A `getPermissions` overlay hard-blocks writes inside `010 RAW/` and `020 HUMAN/` per the LifeOS policy, beyond what the zones express. | `theme.info` |
 
-All three agents inherit the shell-level `/clear` verb via the unified command registry (see Commands below) — no per-agent declaration needed.
+Both agents inherit the shell-level `/clear` verb via the unified command registry (see Commands below) — no per-agent declaration needed.
 
 ### Adding a new agent
 

@@ -4,7 +4,7 @@ This doc captures the **why** behind Inkstone's agent system. Implementation det
 
 ## Status
 
-Shipped in PR #1 (branch `refactor/agent-shell-base-layer`). The base layer + folder-per-agent structure is in place. Two agents ship today: Reader and Example. Skills, memory, per-agent permissions, subagents, and user-defined agents are intentionally not built yet — see "Extension points" for how they are designed to land without restructuring.
+Shipped in PR #1 (branch `refactor/agent-shell-base-layer`). The base layer + folder-per-agent structure is in place. Two agents ship today: Reader and Knowledge Base. Skills, memory, per-agent permissions, subagents, and user-defined agents are intentionally not built yet — see "Extension points" for how they are designed to land without restructuring.
 
 ## Goals
 
@@ -12,7 +12,7 @@ Shipped in PR #1 (branch `refactor/agent-shell-base-layer`). The base layer + fo
 2. **Shared behavior lives in one place.** Things every agent needs — a foundation tool, a shared prompt fragment, a memory-read at session boot — live in `backend/agent/base/`, not duplicated across agent folders.
 3. **Agents are self-contained units.** Each agent's system prompt, agent-specific tools, and (eventually) session state live inside `agents/<name>/`. A contributor can find everything about an agent in one place; `rm -rf agents/<name>/` is a clean delete.
 4. **Shape absorbs future features without restructuring.** Skills, memory, per-agent permissions, per-agent session actions — all land as new optional fields on `AgentInfo` or new entries in the base layer, not structural rewrites.
-5. **Headroom beyond the current three agents.** Reader, Example, and Knowledge Base ship today. Planned next: Researcher. Long-tail: unknown. The shape must scale to ~5+ agents cleanly.
+5. **Headroom beyond the current two agents.** Reader and Knowledge Base ship today. Planned next: Researcher. Long-tail: unknown. The shape must scale to ~5+ agents cleanly.
 
 ## Non-goals (today)
 
@@ -37,7 +37,7 @@ Shipped in PR #1 (branch `refactor/agent-shell-base-layer`). The base layer + fo
 
 **Chosen:** each custom agent lives in `src/backend/agent/agents/<name>/` with its own `index.ts`, optional `instructions.ts`, and optional `tools/` subdirectory for **state-coupled** tools only. Agent-neutral tools live in the shared pool at `src/backend/agent/tools.ts` and are pulled into an agent's `extraTools` by import.
 
-**Why:** self-contained units scale. `agents/reader/` is the canonical place for everything reader-specific; `agents/example/` likewise. When Researcher lands, it drops into `agents/researcher/` as a peer, touching nothing else. Deletion is `rm -rf`. Portability is copy-a-folder.
+**Why:** self-contained units scale. `agents/reader/` is the canonical place for everything reader-specific; `agents/knowledge-base/` likewise. When Researcher lands, it drops into `agents/researcher/` as a peer, touching nothing else. Deletion is `rm -rf`. Portability is copy-a-folder.
 
 **Trade-off:** "where does a tool live?" has a categorical answer, not a positional one. If the tool is agent-neutral (no per-agent state), it goes in the shared pool (`agent/tools.ts`). If it's coupled to one agent's module-level state (e.g. a hypothetical `quote_active_article` that reads reader's in-memory active article), it goes under `agents/<agent>/tools/` and the agent's `index.ts` re-exports any state helpers the shell needs. The shell's boundary rule (`biome.json`) blocks deep imports of `agents/*/tools/*` to keep that contract honest.
 
@@ -62,13 +62,13 @@ The base layer is split across three files in `backend/agent/` — `types.ts` (p
 
 ### D4 — No opt-out on BASE_TOOLS
 
-**Considered:** an `AgentInfo.foundationTools?: boolean` (default `true`) opt-out field. The Example agent would set it to `false` to stay truly tool-less.
+**Considered:** an `AgentInfo.foundationTools?: boolean` (default `true`) opt-out field, so a hypothetical "tool-less" agent could declare itself truly tool-less.
 
 **Chosen:** no opt-out. Every agent gets `BASE_TOOLS` unconditionally.
 
-**Why:** simpler. Claiming an agent has "no tools" while its tool list contains one is worse than letting the Example agent have `read`. If "base" genuinely means "universal", the type should reflect that. Adding an opt-out lane now, speculatively, to support one agent's "minimal" aesthetic, would be the wrong trade-off — the Example prompt just drops the stale "You have no tools available" sentence.
+**Why:** simpler. Claiming an agent has "no tools" while its tool list contains one is worse than letting an agent have `read`. If "base" genuinely means "universal", the type should reflect that. Adding an opt-out lane speculatively, for an aesthetic, would be the wrong trade-off.
 
-**Consequence:** the Example agent has exactly the `BASE_TOOLS` set. It's still a useful smoke-test target ("agent with nothing extra"), just not "agent with zero tools".
+**Consequence:** every agent receives the full `BASE_TOOLS` set. Tool-less agents (if one ever ships) get exactly that set, no more.
 
 ### D5 — Ship mechanism, defer content
 
@@ -310,9 +310,9 @@ If a real split emerges (e.g. Researcher can read outside `ARTICLES_DIR` but Rea
 
 ## Terminology
 
-- **Agent** — the persona the user is chatting with. `readerAgent` / `exampleAgent` / future `researcherAgent`. A literal conforming to `AgentInfo`.
+- **Agent** — the persona the user is chatting with. `readerAgent` / `knowledgeBaseAgent` / future `researcherAgent`. A literal conforming to `AgentInfo`.
 - **Base agent** — the shared foundation layer, conceptually. Not an instance, not a class. Everything exported from `backend/agent/{types,compose,zones}.ts`, with tool implementations pulled in from `backend/agent/tools.ts`.
-- **Custom agent** — any agent under `backend/agent/agents/`. Reader and Example today.
+- **Custom agent** — any agent under `backend/agent/agents/`. Reader and Knowledge Base today.
 - **extraTools** — tools specific to a custom agent, composed with `BASE_TOOLS` at runtime by `composeTools`.
 - **BASE_TOOLS / BASE_PREAMBLE / composeTools / composeSystemPrompt** — the four canonical exports that define the base layer's public contract.
 - **Foundation tools** — informal synonym for `BASE_TOOLS`. Used interchangeably in discussion; code uses `BASE_TOOLS`.
