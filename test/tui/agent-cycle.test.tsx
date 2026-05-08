@@ -54,8 +54,9 @@ describe("agent cycle", () => {
 		await waitForFrame(setup, "Reader");
 
 		setup.mockInput.pressTab({ shift: true });
-		// Two-agent registry → Shift+Tab from Reader also lands on Example.
-		await waitForFrame(setup, "Example");
+		// Shift+Tab from Reader (index 0) wraps backwards to the last
+		// registered agent — currently Knowledge Base.
+		await waitForFrame(setup, "Knowledge Base");
 	});
 
 	test("agent cycle is disabled once the session has messages", async () => {
