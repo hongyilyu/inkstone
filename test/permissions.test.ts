@@ -595,4 +595,15 @@ describe("reader /article command", () => {
 			articleCommand.execute("sneak.md", makeHelpers()),
 		).rejects.toThrow(/symlink/i);
 	});
+
+	test("directory arg — throws 'not a regular file'", async () => {
+		// `articleCommand` rejects directories at `!stat.isFile()` (after
+		// the symlink check). Preload seeds an empty `subfolder/` inside
+		// ARTICLES_DIR so the path resolves *inside* the zone (passing
+		// the `articlePath === ARTICLES_DIR` guard) and lstat returns a
+		// directory — pinning the `isFile` branch specifically.
+		await expect(
+			articleCommand.execute("subfolder", makeHelpers()),
+		).rejects.toThrow(/not a regular file/i);
+	});
 });
