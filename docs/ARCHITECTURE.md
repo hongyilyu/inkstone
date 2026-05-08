@@ -1073,10 +1073,14 @@ effective.thinkingLevel = agents[name].thinkingLevels[key] ?? top.thinkingLevels
 Both resolvers are pure functions in
 `src/backend/persistence/agent-config.ts` (`resolveAgentModel`,
 `resolveAgentThinkingLevel`); same module exports `setAgentModel` /
-`setAgentThinkingLevel` which return a new `Config` with the
-override added or removed. Setters are sparse-by-default (a per-agent
-block is only created when a field is being set; fields are removed
-by passing `null`).
+`setAgentThinkingLevel` which return a new `Config` with the override
+added or removed. Setters lazily create a per-agent block when a
+field is being set, and remove a single field by passing `null` —
+they intentionally do **not** prune empty agent blocks or empty
+`thinkingLevels` maps after a clear. The schema accepts both shapes;
+pruning would buy zero runtime behavior and add cleanup branches to
+every setter. JSON-tidiness is a separate concern handled (if ever)
+by a one-shot tidy command.
 
 Dialog write paths (`/models`, `/effort`) write to the active
 agent's block via the actions in `src/tui/context/agent/actions.ts`.

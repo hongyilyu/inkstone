@@ -62,6 +62,11 @@ export function DialogModel(props: {
 		listProviders().filter((p) => p.isConnected()),
 	);
 
+	// Snapshot at component construction. The dialog stack remounts on
+	// every `dialog.replace(...)`, so each open re-evaluates `cfg`; a
+	// concurrent `saveConfig` write inside this same dialog instance
+	// (none today — the dialog only reads config, doesn't write) would
+	// not be observed. Mirrors `DialogMiniModel`'s pattern.
 	const cfg = loadConfig();
 	const hasOverride = !!cfg.agents?.[props.agentName]?.model;
 	const topLevel = cfg.model;

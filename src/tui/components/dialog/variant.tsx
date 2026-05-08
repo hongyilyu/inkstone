@@ -63,6 +63,8 @@ export function DialogVariant(props: {
 	onSelect: (level: ThinkingLevel) => void;
 	onClear?: () => void;
 }) {
+	// Snapshot at component construction; same remount-on-replace
+	// invariant as `DialogModel` (see comment there).
 	const cfg = loadConfig();
 	const overrideKey = `${props.model.provider}/${props.model.id}`;
 	const hasOverride =

@@ -49,6 +49,10 @@
 
 - ~~Streaming text may still flash at top on first response (needs live testing).~~ **Closed 2026-05-08.** No structural surface for the hypothesized race remains: prior fixes (`9ac7683` `produce`-based in-place growth, `618fc93` `stampInterruptedUser`) plus the `parts.length > 0` render gate in `conversation.tsx:32` keep the empty assistant shell invisible until the first part arrives. Locked in by `test/tui/conversation.test.tsx` "empty assistant shell does not render before first part arrives, and first text lands below the user bubble" (3× passing). Re-open only with new live-repro evidence.
 
+- `/config` command parses `$EDITOR` / `$VISUAL` via `editor.split(" ")`, which handles `EDITOR="code -w"` but breaks for quoted args (e.g. `EDITOR='nvim --cmd "set noswapfile"'`). The first user-reported bug after ship will likely be this. Fix by switching to a proper shell-style argv split (or invoking via `bash -c "$editor 'config-path'"` on POSIX). Defer until reported.
+
+- `/config` slash command is only test-covered for the no-`$EDITOR`/`$VISUAL` toast-fallback path. The spawn-an-editor branch is uncovered because subprocess interactions are hard to assert through the OpenTUI test harness without a stub editor binary. Mitigation: the spawn shape ports OpenCode's well-trodden pattern in `util/editor.ts`; the `try`/`finally` correctly resumes the renderer on spawn failure.
+
 - Click-to-refocus may not work in all terminal emulators.
 
 - pi-ai Usage type doesn't separate thinking tokens from output tokens.

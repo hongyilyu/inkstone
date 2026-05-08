@@ -163,8 +163,23 @@ function resolveModelRef(ref: ModelRef | null): {
 		}
 		const info = getProvider(ref.providerId);
 		if (info && resolveModel(info.id, info.defaultModelId)) {
+			// Stored ref's model id no longer resolves (e.g. pi-ai
+			// dropped it from the registry, or the provider's catalog
+			// changed). Fall back to the same provider's curated
+			// default. Quiet warning so a user who notices their
+			// model "switched" has a breadcrumb in stderr.
+			console.warn(
+				`[inkstone] config model '${ref.providerId}/${ref.modelId}' did not resolve; using provider default '${info.defaultModelId}'`,
+			);
 			return { providerId: info.id, modelId: info.defaultModelId };
 		}
+		// Stored ref pointed at a provider that's currently disconnected
+		// (or unknown to the registry). Fall through to the
+		// first-connected loop below; warn so the silent-switch isn't
+		// completely opaque.
+		console.warn(
+			`[inkstone] config provider '${ref.providerId}' is not connected; falling back to first connected provider`,
+		);
 	}
 	for (const info of listProviders()) {
 		if (info.isConnected() && resolveModel(info.id, info.defaultModelId)) {
