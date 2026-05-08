@@ -1,8 +1,8 @@
 /**
  * First-boot no-provider fallback tests.
  *
- * When `resolveInitialProviderModel` throws "No provider is connected"
- * on a fresh install, the `ErrorBoundary` around `<AgentProvider>` in
+ * When `resolveModelRef` throws "No provider is connected" on a fresh
+ * install, the `ErrorBoundary` around `<AgentProvider>` in
  * `src/tui/app.tsx` should catch it and render `NoProviderFallback`
  * instead of crashing the TUI. These tests use a throwing session
  * factory to simulate the failure without touching the real config —
@@ -40,10 +40,10 @@ afterEach(() => {
 });
 
 /**
- * Factory that mirrors what `resolveInitialProviderModel` throws in
- * `src/backend/agent/index.ts:163-165` when no provider is configured.
- * Message prefix `"No provider is connected"` drives the fallback's
- * branch selection.
+ * Factory that mirrors what `resolveModelRef` throws in
+ * `src/backend/agent/index.ts` when no provider is configured. Message
+ * prefix `"No provider is connected"` drives the fallback's branch
+ * selection.
  */
 function throwingNoProviderFactory(): SessionFactory {
 	return () => {

@@ -12,6 +12,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import {
 	assistantMessage,
 	ev_agentEnd,
@@ -26,6 +27,7 @@ import {
 	ev_toolcallEnd,
 	ev_toolExecEnd,
 	ev_toolExecStart,
+	FAKE_MODEL,
 	makeFakeSession,
 } from "./fake-session";
 import { renderApp, waitForFrame } from "./harness";
@@ -471,6 +473,46 @@ describe("conversation rendering", () => {
 		const assistantIdx = f.indexOf("Hi");
 		expect(userIdx).toBeGreaterThanOrEqual(0);
 		expect(assistantIdx).toBeGreaterThan(userIdx);
+	});
+
+	test("agent switch flips active model when destination agent has a per-agent override", async () => {
+		// Per-agent model isolation: with reader mapped to model A and KB
+		// mapped to model B, cycling agents must update the store fields
+		// the sidebar/status-line read (`modelName`, `modelProvider`,
+		// `contextWindow`, `modelReasoning`). Without this, the TUI would
+		// keep showing the previously-active agent's model after a
+		// cycle even though the backend has bound the new agent's model.
+		// The fake-session honors per-agent maps in `selectAgent`,
+		// matching the real backend's behavior.
+		const READER_MODEL: Model<Api> = {
+			...FAKE_MODEL,
+			id: "reader-only-model",
+			name: "Reader Only Model",
+			contextWindow: 99_999,
+		};
+		const KB_MODEL: Model<Api> = {
+			...FAKE_MODEL,
+			id: "kb-only-model",
+			name: "KB Only Model",
+			contextWindow: 12_345,
+		};
+		const fake = makeFakeSession({
+			model: READER_MODEL,
+			agentModels: { reader: READER_MODEL, "knowledge-base": KB_MODEL },
+		});
+		setup = await renderApp({ session: fake.factory, width: 120 });
+		await setup.renderOnce();
+		await waitForFrame(setup, "Reader Only Model");
+
+		// Tab to KB → fake.selectAgent("knowledge-base") flips its
+		// internal model to KB_MODEL; AgentProvider's `selectAgent`
+		// action reads `getModel()` and updates the store.
+		setup.mockInput.pressTab();
+		await waitForFrame(setup, "KB Only Model");
+
+		// Cycling back to reader restores the reader model.
+		setup.mockInput.pressTab();
+		await waitForFrame(setup, "Reader Only Model");
 	});
 
 	test("sidebar Context block renders token count and cost after a turn with usage", async () => {

@@ -1,4 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { reportPersistenceError } from "./errors";
 import { CONFIG_FILE, ensureConfigDir, writeFileAtomic } from "./paths";
 import { type Config, Config as Schema } from "./schema";
@@ -11,18 +13,34 @@ import { type Config, Config as Schema } from "./schema";
  *   - `thinkingLevels` values are validated against pi-agent-core's enum
  *   - the user gets a field-level error message on bad input
  *
- * Every field is optional, so an empty object is always a valid Config and
- * makes a safe fallback when validation or JSON parse fails. Module-level
- * cache is intentional: config is read everywhere, writes are rare, and a
- * restart is the expected way to pick up external edits.
+ * `vaultDir` is required by the schema (one binary serves one vault).
+ * When the file is missing or unparseable, `loadConfig` returns a
+ * minimal-but-valid Config (`{ vaultDir: DEFAULT_VAULT_DIR }`) so the
+ * TUI can still mount and surface the error via the toast layer
+ * (`reportPersistenceError`). Throwing from this function would crash
+ * `ThemeProvider` (which calls `loadConfig` at App mount, outside the
+ * `ErrorBoundary` that wraps `AgentProvider`), leaving the user with
+ * no UI to fix the problem.
+ *
+ * Module-level cache is intentional: config is read everywhere, writes
+ * are rare, and a restart is the expected way to pick up external edits.
  */
+
+const DEFAULT_VAULT_DIR = join(homedir(), "Documents/Obsidian/LifeOS");
+
+function fallbackConfig(): Config {
+	return { vaultDir: DEFAULT_VAULT_DIR };
+}
 
 let cached: Config | null = null;
 
 export function loadConfig(): Config {
 	if (cached) return cached;
 	if (!existsSync(CONFIG_FILE)) {
-		cached = {};
+		// First run: synthesize a default config in memory. We do NOT
+		// write it to disk here — `saveConfig` is the single write seam
+		// and runs lazily on the user's first preference change.
+		cached = fallbackConfig();
 		return cached;
 	}
 	try {
@@ -32,9 +50,10 @@ export function loadConfig(): Config {
 			cached = parsed.data;
 			return cached;
 		}
-		// Zod validation failed — format each issue as `path: message` so the
-		// user can see exactly which field is wrong. Falls back to defaults
-		// so the app still boots; the user can fix the file and restart.
+		// Zod validation failed — format each issue as `path: message` so
+		// the user can see exactly which field is wrong. Fall back to the
+		// default Config so the app still boots; the user can fix the
+		// file and restart.
 		const details = parsed.error.issues
 			.map((i) => `  ${i.path.join(".") || "<root>"}: ${i.message}`)
 			.join("\n");
@@ -43,13 +62,13 @@ export function loadConfig(): Config {
 			action: "load",
 			error: new Error(`invalid config.json:\n${details}`),
 		});
-		cached = {};
+		cached = fallbackConfig();
 		return cached;
 	} catch (error) {
 		// JSON.parse threw or readFileSync threw. Same fallback — surface
 		// the underlying error and boot with defaults.
 		reportPersistenceError({ kind: "config", action: "load", error });
-		cached = {};
+		cached = fallbackConfig();
 		return cached;
 	}
 }
