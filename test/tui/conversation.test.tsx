@@ -418,6 +418,61 @@ describe("conversation rendering", () => {
 		expect(f).not.toContain("[Interrupted by user]");
 	});
 
+	test("empty assistant shell does not render before first part arrives, and first text lands below the user bubble", async () => {
+		// Regression guard for the dormant Known Issue: "Streaming text
+		// may still flash at top on first response". The hypothesis was a
+		// race between `message_start` (empty assistant shell pushed) and
+		// the first `text_delta` — the empty bubble could briefly render
+		// at the top of the scrollbox before being sticky-scrolled into
+		// place. Two prior fixes neutralized the structural conditions
+		// (`9ac7683` use `produce` for in-place growth; `618fc93`
+		// `stampInterruptedUser`), and the bubble-shape refactor added a
+		// `parts.length > 0` render gate in `conversation.tsx` so the
+		// empty shell renders nothing at all. This test locks that
+		// invariant in.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await seedUserTurn(setup, "hello there");
+
+		// `message_start` pushes the empty assistant shell. Frame must
+		// not yet show any assistant decorative chrome — the conversation
+		// gate (`parts.length > 0 || error || interrupted`) keeps the
+		// shell invisible.
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		await setup.renderOnce();
+		await Bun.sleep(50);
+		await setup.renderOnce();
+		const afterStart = setup.captureCharFrame();
+		expect(afterStart).toContain("hello there");
+		// The assistant footer glyph (`▣`) is the simplest tail-only
+		// marker — visible if the bubble somehow rendered chrome with no
+		// parts. Absent here.
+		expect(afterStart).not.toContain("▣");
+
+		// `text_start` adds an empty `text` part. Still invisible — the
+		// markdown body of `text: ""` is zero-height with no chrome.
+		fake.emit(ev_textStart());
+		await setup.renderOnce();
+		await Bun.sleep(20);
+		await setup.renderOnce();
+		const afterTextStart = setup.captureCharFrame();
+		expect(afterTextStart).not.toContain("▣");
+
+		// First delta arrives. Assistant text must land BELOW the user
+		// bubble in the rendered frame. `captureCharFrame()` serializes
+		// the screen grid top-to-bottom, so substring index ordering
+		// reflects vertical layout — `"hello there"` (user bubble) must
+		// appear before `"Hi"` (assistant text).
+		fake.emit(ev_textDelta("Hi"));
+		const f = await waitForFrame(setup, "Hi");
+		const userIdx = f.indexOf("hello there");
+		const assistantIdx = f.indexOf("Hi");
+		expect(userIdx).toBeGreaterThanOrEqual(0);
+		expect(assistantIdx).toBeGreaterThan(userIdx);
+	});
+
 	test("sidebar Context block renders token count and cost after a turn with usage", async () => {
 		const fake = makeFakeSession();
 		// Width 120 so the sidebar renders (gated on `dimensions.width >= 100`).
