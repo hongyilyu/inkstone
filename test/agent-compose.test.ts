@@ -13,8 +13,10 @@
 import { describe, expect, test } from "bun:test";
 import { readerAgent } from "@backend/agent/agents/reader";
 import { buildReaderInstructions } from "@backend/agent/agents/reader/instructions";
-import { composeSystemPrompt } from "@backend/agent/compose";
+import { composeSystemPrompt, composeTools } from "@backend/agent/compose";
+import { writeTool } from "@backend/agent/tools";
 import type { AgentCommand, AgentInfo } from "@backend/agent/types";
+import type { AgentTool } from "@mariozechner/pi-agent-core";
 
 import "./preload";
 
@@ -172,5 +174,32 @@ describe("composeSystemPrompt — section order", () => {
 		const prompt = composeSystemPrompt(readerAgent);
 		// Zones block closes, blank line, commands block opens.
 		expect(prompt).toContain("</your workspace>\n\n<commands>");
+	});
+});
+
+describe("composeTools — permission coverage", () => {
+	test("known shipped tools compose without a baseline coverage error", () => {
+		expect(composeTools(readerAgent).map((t) => t.name)).toContain("read");
+	});
+
+	test("unknown baseline-free extra tool fails loudly", () => {
+		const unsafeTool = {
+			name: "unsafe_extra",
+			label: "Unsafe",
+			description: "fixture",
+			parameters: {},
+			execute: async () => ({ type: "text", content: "ok" }),
+		} as unknown as AgentTool<any>;
+		const agent = makeAgent({ extraTools: [unsafeTool] });
+		expect(() => composeTools(agent)).toThrow(
+			"Tool 'unsafe_extra' on agent 'test' has no permission baseline",
+		);
+	});
+
+	test("shared mutating file tools require declared write zones", () => {
+		const agent = makeAgent({ extraTools: [writeTool], zones: [] });
+		expect(() => composeTools(agent)).toThrow(
+			"Agent 'test' composes mutating file tools but declares no write zones.",
+		);
 	});
 });

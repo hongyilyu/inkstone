@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-07 (knowledge-base agent stack added; TODO consolidated; pre-MVP Completed graveyard archived)
+**Last updated**: 2026-05-07 (architecture simplification implemented)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -15,6 +15,12 @@
   - Stack C — `LayoutContext` migration (#93 scroll → #94 input refs → #95 delete shims).
   - Stack D — docs hygiene (this archive + ARCHITECTURE.md ToC).
   - Stack E — knowledge-base agent (graphite-stacked, landing 2026-05-07): scaffold → port LifeOS workflow bodies → wire `/ingest` `/query` `/lint` slash commands → docs. Third agent on ship (alongside reader and example), workspace under `040 FORGE/` with `010 RAW/` + `020 HUMAN/` write-blocked per LifeOS policy. All three workflow bodies preloaded into the system prompt; commands are minimal triggers.
+
+## Completed
+
+- Implemented architecture simplification: zone write allowlist, layout dependency injection, and tool permission coverage.
+
+- Wrote architecture simplification review plan to `docs/ARCHITECTURE-REVIEW-PLAN.md`.
 
 ## Known Issues
 

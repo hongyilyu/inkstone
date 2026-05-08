@@ -13,7 +13,6 @@
 
 import { loadSession } from "@backend/persistence/sessions";
 import { batch } from "solid-js";
-import { getActiveLayout } from "../../../context/layout";
 import { closeSecondaryPage } from "../../secondary-page";
 import type { ActionDeps } from "../actions";
 
@@ -86,5 +85,5 @@ export function resumeSessionAction(sessionId: string, deps: ActionDeps): void {
 		// must not bleed across resume boundaries.
 		deps.previews.clearAll();
 	});
-	getActiveLayout()?.scrollToBottom();
+	deps.layout.scrollToBottom();
 }

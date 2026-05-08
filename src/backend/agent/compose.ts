@@ -1,5 +1,6 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { readTool, updateSidebarTool } from "./tools";
+import { hasBaseline } from "./permissions";
+import { editTool, readTool, updateSidebarTool, writeTool } from "./tools";
 import { makeSuggestCommandTool } from "./tools/suggest-command";
 import type { AgentInfo } from "./types";
 
@@ -8,6 +9,20 @@ export const BASE_TOOLS: readonly AgentTool<any>[] = Object.freeze([
 	readTool,
 	updateSidebarTool,
 ]);
+
+/**
+ * Tools that are intentionally baseline-free because they do not touch
+ * filesystem paths. Everything else composed into an agent must
+ * register a permission baseline in `permissions.ts`.
+ */
+const GLOBAL_BASELINE_FREE_TOOLS: ReadonlySet<string> = new Set([
+	updateSidebarTool.name,
+	"suggest_command",
+]);
+
+const AGENT_BASELINE_FREE_TOOLS: Readonly<Record<string, readonly string[]>> = {
+	reader: ["search", "list_keys"],
+};
 
 /** Shared system-prompt prefix. Empty today — see `docs/AGENT-DESIGN.md` D5. */
 export const BASE_PREAMBLE = "";
@@ -21,7 +36,42 @@ export function composeTools(info: AgentInfo): AgentTool<any>[] {
 	const tools: AgentTool<any>[] = [...BASE_TOOLS, ...info.extraTools];
 	const suggest = makeSuggestCommandTool(info.commands ?? []);
 	if (suggest) tools.push(suggest);
+	assertToolPermissionCoverage(info, tools);
+	assertMutatingToolsHaveZones(info, tools);
 	return tools;
+}
+
+function assertToolPermissionCoverage(
+	info: AgentInfo,
+	tools: AgentTool<any>[],
+): void {
+	for (const tool of tools) {
+		if (hasBaseline(tool.name) || isBaselineFreeForAgent(info, tool.name)) {
+			continue;
+		}
+		throw new Error(
+			`Tool '${tool.name}' on agent '${info.name}' has no permission baseline or baseline-free review entry.`,
+		);
+	}
+}
+
+function isBaselineFreeForAgent(info: AgentInfo, toolName: string): boolean {
+	if (GLOBAL_BASELINE_FREE_TOOLS.has(toolName)) return true;
+	return AGENT_BASELINE_FREE_TOOLS[info.name]?.includes(toolName) ?? false;
+}
+
+function assertMutatingToolsHaveZones(
+	info: AgentInfo,
+	tools: AgentTool<any>[],
+): void {
+	if (info.zones.length > 0) return;
+	const hasSharedMutatingTool = tools.some(
+		(tool) => tool.name === writeTool.name || tool.name === editTool.name,
+	);
+	if (!hasSharedMutatingTool) return;
+	throw new Error(
+		`Agent '${info.name}' composes mutating file tools but declares no write zones.`,
+	);
 }
 
 // Render `info.zones` as a `<your workspace>` block. Pairs with

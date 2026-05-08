@@ -27,7 +27,7 @@ import {
 	type CommandOption,
 	useCommand,
 } from "../../components/dialog/command";
-import { getActiveLayout } from "../../context/layout";
+import type { LayoutContextValue } from "../../context/layout";
 import type { DialogContext } from "../../ui/dialog";
 import { DialogSelect } from "../../ui/dialog-select";
 import type { useToast } from "../../ui/toast";
@@ -39,6 +39,7 @@ export interface CommandsDeps {
 	store: AgentStoreState;
 	setStore: SetStoreFunction<AgentStoreState>;
 	sessionState: SessionState;
+	layout: LayoutContextValue;
 	dialog: DialogContext;
 	toast: ReturnType<typeof useToast>;
 }
@@ -80,7 +81,7 @@ function buildCommandHelpers(deps: CommandsDeps): AgentCommandHelpers {
 			safeRun(() =>
 				runInTransaction((tx) => appendDisplayMessage(tx, sessionId, userMsg)),
 			);
-			getActiveLayout()?.scrollToBottom();
+			deps.layout.scrollToBottom();
 		},
 		pickFromList({ title, size, options }) {
 			let settled = false;

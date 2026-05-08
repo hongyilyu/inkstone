@@ -42,14 +42,18 @@ export type AgentOverlay = Partial<Record<string, Rule[]>>;
 /**
  * Baseline rules per tool, populated at module-load by `tools.ts`. The
  * dispatcher reads this when a tool fires. Tools without an entry here
- * run unsandboxed (matches pi-coding-agent's own default) — by
- * convention every tool Inkstone composes into `BASE_TOOLS` or
- * `extraTools` registers its baseline.
+ * run unsandboxed (matches pi-coding-agent's own default), so the
+ * composer asserts that any baseline-free tool is explicitly reviewed
+ * before it can be exposed to an agent.
  */
 const baselineRules: Record<string, Rule[]> = {};
 
 export function registerBaseline(toolName: string, rules: Rule[]): void {
 	baselineRules[toolName] = rules;
+}
+
+export function hasBaseline(toolName: string): boolean {
+	return toolName in baselineRules;
 }
 
 /**

@@ -16,6 +16,11 @@
  */
 
 import { beforeEach, describe, expect, test } from "bun:test";
+import { knowledgeBaseAgent } from "@backend/agent/agents/knowledge-base";
+import {
+	KB_FORGE,
+	KB_SYSTEM,
+} from "@backend/agent/agents/knowledge-base/paths";
 import { readerAgent } from "@backend/agent/agents/reader";
 import {
 	computePublishedBand,
@@ -148,10 +153,10 @@ const dispatchCases: DispatchCase[] = [
 		expectedConfirms: 1,
 	},
 	{
-		label: "write to unzoned vault path — allow, no confirm",
+		label: "write to unzoned vault path — block (outside reader workspace)",
 		toolName: "write",
 		args: { path: `${VAULT}/040 FORGE/x.md`, content: "x" },
-		expectedDecision: "allow",
+		expectedDecision: "block",
 		expectedConfirms: 0,
 	},
 	{
@@ -162,13 +167,14 @@ const dispatchCases: DispatchCase[] = [
 		expectedConfirms: 0,
 	},
 	{
-		label: "prefix-attack sibling of Articles — allow (not in zone)",
+		label:
+			"prefix-attack sibling of Articles — block (outside reader workspace)",
 		toolName: "write",
 		args: {
 			path: `${VAULT}/010 RAW/013 Articles-stash/x.md`,
 			content: "x",
 		},
-		expectedDecision: "allow",
+		expectedDecision: "block",
 		expectedConfirms: 0,
 	},
 	// Unicode-space normalization — guards the H5 byte-equality invariant.
@@ -212,6 +218,73 @@ describe("dispatchBeforeToolCall + reader overlay", () => {
 
 	test.each(dispatchCases)("$label", async (c) => {
 		const overlay = composeOverlay(readerAgent);
+		const result = await dispatchBeforeToolCall(
+			makeCtx(c.toolName, c.args),
+			overlay,
+		);
+		const actual = result?.block ? "block" : "allow";
+		expect(actual).toBe(c.expectedDecision);
+		expect(confirmCalls).toBe(c.expectedConfirms);
+	});
+});
+
+describe("dispatchBeforeToolCall + knowledge-base overlay", () => {
+	beforeEach(() => {
+		confirmCalls = 0;
+		lastConfirmRequest = null;
+	});
+
+	test.each([
+		{
+			label: "write to Forge — allow, no confirm",
+			toolName: "write",
+			args: { path: `${VAULT}/${KB_FORGE}/x.md`, content: "x" },
+			expectedDecision: "allow",
+			expectedConfirms: 0,
+		},
+		{
+			label: "edit in Forge — allow, no confirm",
+			toolName: "edit",
+			args: {
+				path: `${VAULT}/${KB_FORGE}/x.md`,
+				edits: [{ oldText: "x", newText: "y" }],
+			},
+			expectedDecision: "allow",
+			expectedConfirms: 0,
+		},
+		{
+			label: "write to system wiki — confirm once, allow",
+			toolName: "write",
+			args: { path: `${VAULT}/${KB_SYSTEM}/tags-guidance.md`, content: "x" },
+			expectedDecision: "allow",
+			expectedConfirms: 1,
+		},
+		{
+			label: "write to RAW — block, no confirm",
+			toolName: "write",
+			args: { path: `${VAULT}/010 RAW/source.md`, content: "x" },
+			expectedDecision: "block",
+			expectedConfirms: 0,
+		},
+		{
+			label: "edit in HUMAN — block, no confirm",
+			toolName: "edit",
+			args: {
+				path: `${VAULT}/020 HUMAN/023 Notes/note.md`,
+				edits: [{ oldText: "x", newText: "y" }],
+			},
+			expectedDecision: "block",
+			expectedConfirms: 0,
+		},
+		{
+			label: "write to unrelated vault folder — block by zone allowlist",
+			toolName: "write",
+			args: { path: `${VAULT}/050 OTHER/x.md`, content: "x" },
+			expectedDecision: "block",
+			expectedConfirms: 0,
+		},
+	] satisfies DispatchCase[])("$label", async (c) => {
+		const overlay = composeOverlay(knowledgeBaseAgent);
 		const result = await dispatchBeforeToolCall(
 			makeCtx(c.toolName, c.args),
 			overlay,

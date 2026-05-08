@@ -14,11 +14,8 @@ import {
 	getSuggestCommandFn,
 	type SuggestCommandRequest,
 } from "@backend/agent";
-import { getActiveLayout } from "../../src/tui/context/layout";
 import { makeFakeSession } from "./fake-session";
 import { renderApp, waitForFrame, waitUntil } from "./harness";
-
-const getInputRef = () => getActiveLayout()?.getInputRef() ?? null;
 
 async function seedUserMessage(
 	setup: Awaited<ReturnType<typeof renderApp>>,
@@ -44,6 +41,7 @@ async function waitForBuffer(
 ): Promise<void> {
 	const timeout = opts.timeout ?? 2000;
 	const start = Date.now();
+	const getInputRef = () => setup.getLayout().getInputRef();
 	while (Date.now() - start < timeout) {
 		await setup.renderOnce();
 		const actual = getInputRef()?.plainText;

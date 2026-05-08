@@ -37,7 +37,7 @@ import {
 } from "solid-js";
 import { createStore } from "solid-js/store";
 import { useCommand } from "../../components/dialog/command";
-import { getActiveLayout } from "../../context/layout";
+import { useLayout } from "../../context/layout";
 import { useDialog } from "../../ui/dialog";
 import { useToast } from "../../ui/toast";
 import { createWrappedActions } from "./actions";
@@ -62,6 +62,7 @@ export function AgentProvider(
 	const dialog = useDialog();
 	const toast = useToast();
 	const command = useCommand();
+	const layout = useLayout();
 
 	// Per-`callId` diff preview registry. See `docs/APPROVAL-UI.md`
 	// § State shapes for the three-cell rationale. Ephemeral —
@@ -134,7 +135,7 @@ export function AgentProvider(
 			const { command: cmd, args } = entry.request;
 			const text = args.length === 0 ? `/${cmd} ` : `/${cmd} ${args} `;
 			queueMicrotask(() => {
-				const input = getActiveLayout()?.getInputRef();
+				const input = layout.getInputRef();
 				if (!input || input.isDestroyed) return;
 				input.setText(text);
 				input.cursorOffset = input.plainText.length;
@@ -296,6 +297,7 @@ export function AgentProvider(
 		setStore,
 		sessionState,
 		agentSession,
+		layout,
 	});
 
 	const wrappedActions = createWrappedActions({
@@ -303,6 +305,7 @@ export function AgentProvider(
 		store,
 		setStore,
 		sessionState,
+		layout,
 		toast,
 		titleGenerator,
 		previews,
@@ -337,6 +340,7 @@ export function AgentProvider(
 					store,
 					setStore,
 					sessionState,
+					layout,
 					dialog,
 					toast,
 				}}

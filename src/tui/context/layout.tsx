@@ -1,19 +1,14 @@
 /**
  * `LayoutContext` — central registry for layout-level imperative
  * handles (scroll container, prompt textarea, Ctrl+C bridge) that
- * consumers outside the JSX tree need to drive.
+ * components and provider-scoped action handlers need to drive.
  *
- * Design rationale + cross-tree escape hatch + Ctrl+C bridge contract
- * are documented in `docs/LAYOUT-CONTEXT.md`.
+ * Design rationale + provider ordering + Ctrl+C bridge contract are
+ * documented in `docs/LAYOUT-CONTEXT.md`.
  */
 
 import type { ScrollBoxRenderable } from "@opentui/core";
-import {
-	createContext,
-	onCleanup,
-	type ParentProps,
-	useContext,
-} from "solid-js";
+import { createContext, type ParentProps, useContext } from "solid-js";
 
 // `any` because OpenTUI's `InputRenderable` isn't exported on the type
 // surface we use elsewhere; consumers narrow at the call site.
@@ -90,20 +85,6 @@ export interface LayoutContextValue {
 
 const layoutContext = createContext<LayoutContextValue | null>(null);
 
-/**
- * Cross-tree escape hatch for callers outside the `LayoutProvider` JSX
- * subtree (action / reducer modules under `tui/context/agent/*`,
- * which run inside `AgentProvider` — a *parent* of `LayoutProvider`).
- * Components in the subtree should use `useLayout()` instead.
- *
- * See `docs/LAYOUT-CONTEXT.md` § getActiveLayout for the rationale.
- */
-let activeLayout: LayoutContextValue | null = null;
-
-export function getActiveLayout(): LayoutContextValue | null {
-	return activeLayout;
-}
-
 export function LayoutProvider(props: ParentProps): unknown {
 	let scroll: ScrollBoxRenderable | null = null;
 	let input: InputRef = null;
@@ -147,11 +128,6 @@ export function LayoutProvider(props: ParentProps): unknown {
 			return ctrlCBridge;
 		},
 	};
-
-	activeLayout = value;
-	onCleanup(() => {
-		if (activeLayout === value) activeLayout = null;
-	});
 
 	return (
 		<layoutContext.Provider value={value}>

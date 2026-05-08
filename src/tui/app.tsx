@@ -164,11 +164,11 @@ export function App() {
 								<NoProviderFallback error={error} reset={reset} />
 							)}
 						>
-							<AgentProvider>
-								<LayoutProvider>
+							<LayoutProvider>
+								<AgentProvider>
 									<Layout />
-								</LayoutProvider>
-							</AgentProvider>
+								</AgentProvider>
+							</LayoutProvider>
 						</ErrorBoundary>
 					</CommandProvider>
 				</DialogProvider>
