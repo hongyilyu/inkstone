@@ -55,6 +55,59 @@ describe("knowledge-base agent — permission overlay", () => {
 	});
 });
 
+describe("knowledge-base agent — commands", () => {
+	test("registers /ingest, /query, /lint", () => {
+		const names = (knowledgeBaseAgent.commands ?? []).map((c) => c.name);
+		expect(names).toEqual(["ingest", "query", "lint"]);
+	});
+
+	test("/ingest triggers the ingest workflow with no args", async () => {
+		const calls: string[] = [];
+		const cmd = knowledgeBaseAgent.commands?.find((c) => c.name === "ingest");
+		expect(cmd).toBeDefined();
+		await cmd?.execute("", {
+			prompt: async (text) => {
+				calls.push(text);
+			},
+		});
+		expect(calls).toEqual(["Run the ingest workflow."]);
+	});
+
+	test("/query interpolates the user question into the trigger", async () => {
+		const calls: string[] = [];
+		const cmd = knowledgeBaseAgent.commands?.find((c) => c.name === "query");
+		expect(cmd?.takesArgs).toBe(true);
+		await cmd?.execute("what did I save about LLMs?", {
+			prompt: async (text) => {
+				calls.push(text);
+			},
+		});
+		expect(calls).toEqual([
+			"Run the query workflow.\n\nQuestion: what did I save about LLMs?",
+		]);
+	});
+
+	test("/lint triggers the lint workflow with no args", async () => {
+		const calls: string[] = [];
+		const cmd = knowledgeBaseAgent.commands?.find((c) => c.name === "lint");
+		expect(cmd?.takesArgs).toBeFalsy();
+		await cmd?.execute("", {
+			prompt: async (text) => {
+				calls.push(text);
+			},
+		});
+		expect(calls).toEqual(["Run the lint workflow."]);
+	});
+
+	test("composed system prompt advertises all three commands in the <commands> block", () => {
+		const prompt = composeSystemPrompt(knowledgeBaseAgent);
+		expect(prompt).toContain("<commands>");
+		expect(prompt).toContain("/ingest — Process new 010 RAW/ sources");
+		expect(prompt).toContain("/query <question>");
+		expect(prompt).toContain("/lint — Audit the vault");
+	});
+});
+
 describe("knowledge-base agent — preloaded workflow bodies", () => {
 	test("buildInstructions carries persona + freeform routing + all three workflow sections", () => {
 		// This is the regression-critical assertion: if any workflow
