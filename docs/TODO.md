@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-07 (TODO consolidated; pre-MVP Completed graveyard archived)
+**Last updated**: 2026-05-07 (knowledge-base agent stack added; TODO consolidated; pre-MVP Completed graveyard archived)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -14,6 +14,7 @@
   - Stack B — `actions.ts` split (#88 resume → #89 clear → #90 prompt).
   - Stack C — `LayoutContext` migration (#93 scroll → #94 input refs → #95 delete shims).
   - Stack D — docs hygiene (this archive + ARCHITECTURE.md ToC).
+  - Stack E — knowledge-base agent (graphite-stacked, landing 2026-05-07): scaffold → port LifeOS workflow bodies → wire `/ingest` `/query` `/lint` slash commands → docs. Third agent on ship (alongside reader and example), workspace under `040 FORGE/` with `010 RAW/` + `020 HUMAN/` write-blocked per LifeOS policy. All three workflow bodies preloaded into the system prompt; commands are minimal triggers.
 
 ## Known Issues
 
@@ -59,7 +60,7 @@
 
 - Skills system — per-agent markdown bundles loaded from the vault. Layout: `$VAULT/InkStone/skills/<agent>/<skill>/SKILL.md`, YAML frontmatter `{ name, description }` + body. System prompt injects an `<available_skills>` block (name + description + location, composer pattern matches OpenCode / pi-coding-agent). Bodies read on demand via the existing `read` tool — no dedicated `skill` tool. `AgentInfo` grows `skills?: string[]`; composer emits block when non-empty. Deferred intentionally: no real skill content exists yet, and shaping the loader against zero candidates risks landing the wrong filtering model. Revisit when the first 2 real skill bundles exist (either a reader-side skill or the first KB skill).
 
-- `AgentInfo.references?: string[]` — declarative doc-pointer list the composer turns into a "consult these files first" prompt fragment. Today agents hard-code doc paths in `buildInstructions()` strings (reader does this; KB would need `090 SYSTEM/099 LLM Wiki/{schema,policy,workflows/*}.md` when it lands). Revisit when KB arrives — three concrete use cases will validate the shape.
+- `AgentInfo.references?: string[]` — declarative doc-pointer list the composer turns into a "consult these files first" prompt fragment. Today agents hard-code doc paths in `buildInstructions()` strings (reader does this). KB shipped without external references — its workflows and persona are fully self-contained in TS, so no doc-pointer fragment is needed today. Revisit when a third concrete use case (likely Researcher) wants to pin doc references.
 
 - `write: "deny"` zone policy — the matching rule kind (`blockInsideDirs`) shipped with the reader statelessness refactor and reader uses it today via `getPermissions`. A declarative `deny` zone would map to `blockInsideDirs` in `composeZonesOverlay`; would let agents express read-only-zones as data instead of writing a custom overlay. Small ergonomics win. Deferred per D8 until a second agent wants it.
 
