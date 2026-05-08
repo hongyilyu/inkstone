@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-07 (architecture simplification implemented)
+**Last updated**: 2026-05-08 (closed streaming-flash Known Issue with regression test)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -42,7 +42,7 @@
 
 - Reader permission shift — with the `activeArticle`-less refactor, reader's permission rules are now static on the whole Articles zone (any article edit → frontmatter-only, any article write → blocked). Previously rules applied only to the *currently-active* article; other articles were effectively edit-free. Re-evaluate if reader ever needs bulk-editing historical articles — today's shape is stricter by default, which fits the primary reading workflow.
 
-- Streaming text may still flash at top on first response (needs live testing).
+- ~~Streaming text may still flash at top on first response (needs live testing).~~ **Closed 2026-05-08.** No structural surface for the hypothesized race remains: prior fixes (`9ac7683` `produce`-based in-place growth, `618fc93` `stampInterruptedUser`) plus the `parts.length > 0` render gate in `conversation.tsx:32` keep the empty assistant shell invisible until the first part arrives. Locked in by `test/tui/conversation.test.tsx` "empty assistant shell does not render before first part arrives, and first text lands below the user bubble" (3× passing). Re-open only with new live-repro evidence.
 
 - Click-to-refocus may not work in all terminal emulators.
 
