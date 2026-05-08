@@ -1,6 +1,6 @@
 import type { AgentOverlay } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
-import type { AgentInfo, AgentZone } from "../../types";
+import type { AgentCommand, AgentInfo, AgentZone } from "../../types";
 import { buildKnowledgeBaseInstructions } from "./instructions";
 import { KB_FORGE, KB_HUMAN_DIR, KB_RAW_DIR, KB_SYSTEM } from "./paths";
 
@@ -37,11 +37,40 @@ function getKnowledgeBasePermissions(): AgentOverlay {
 }
 
 /**
+ * Slash commands. The workflow bodies are already in the system prompt
+ * (see `instructions.ts`), so each command's job is just to name which
+ * workflow the LLM should run. `/query` interpolates the user's
+ * question; the others are bare triggers.
+ */
+const ingestCommand: AgentCommand = {
+	name: "ingest",
+	description: "Process new 010 RAW/ sources into 040 FORGE/",
+	takesArgs: false,
+	execute: (_args, helpers) => helpers.prompt("Run the ingest workflow."),
+};
+
+const queryCommand: AgentCommand = {
+	name: "query",
+	description: "Answer a question using the knowledge base",
+	argHint: "<question>",
+	argGuide: "type your question after /query",
+	takesArgs: true,
+	execute: (args, helpers) =>
+		helpers.prompt(`Run the query workflow.\n\nQuestion: ${args}`),
+};
+
+const lintCommand: AgentCommand = {
+	name: "lint",
+	description: "Audit the vault and unify tags",
+	takesArgs: false,
+	execute: (_args, helpers) => helpers.prompt("Run the lint workflow."),
+};
+
+/**
  * Knowledge-base agent — manages a personal knowledge base. The
  * persona, freeform-routing guidance, and all three workflow bodies
- * (ingest/query/lint) are preloaded into the system prompt; slash
- * commands (added in the next PR of this stack) just trigger the
- * matching workflow already in context.
+ * (ingest/query/lint) are preloaded into the system prompt; the slash
+ * commands here just trigger the matching workflow already in context.
  */
 export const knowledgeBaseAgent: AgentInfo = {
 	name: "knowledge-base",
@@ -51,5 +80,6 @@ export const knowledgeBaseAgent: AgentInfo = {
 	extraTools: [editTool, writeTool],
 	zones: knowledgeBaseZones,
 	buildInstructions: () => buildKnowledgeBaseInstructions(),
+	commands: [ingestCommand, queryCommand, lintCommand],
 	getPermissions: getKnowledgeBasePermissions,
 };
