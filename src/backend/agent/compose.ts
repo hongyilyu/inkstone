@@ -24,13 +24,10 @@ export function composeTools(info: AgentInfo): AgentTool<any>[] {
 	return tools;
 }
 
-/**
- * Render `info.zones` as a `<your workspace>` block. Single source of
- * truth with `composeZonesOverlay` (see `docs/AGENT-DESIGN.md` D12):
- * one declaration drives both the prompt text and the permission
- * rules. Omitted when `info.zones` is empty. Policy verbs: `auto` →
- * "write freely", `confirm` → "confirm before write".
- */
+// Render `info.zones` as a `<your workspace>` block. Pairs with
+// `composeZonesOverlay` (one declaration drives prompt + permissions);
+// see `docs/AGENT-DESIGN.md` D12. Policy verb mapping: `auto` → "write
+// freely", `confirm` → "confirm before write".
 function composeZonesBlock(info: AgentInfo): string {
 	if (info.zones.length === 0) return "";
 	const lines = info.zones.map((z) => {
@@ -46,14 +43,9 @@ function composeZonesBlock(info: AgentInfo): string {
 	].join("\n");
 }
 
-/**
- * Render `info.commands` as a `<commands>` block so the LLM can name
- * user-facing verbs and route freeform requests through
- * `suggest_command`. Skips entries without a description; omitted
- * entirely when no described command exists. See
- * `docs/AGENT-DESIGN.md` D9 for the stability invariant (block must
- * stay byte-stable per session for prompt-cache hits).
- */
+// Render `info.commands` as a `<commands>` block. Skips entries
+// without a description; omitted entirely when none have one. Cache-
+// stability invariant: see `docs/AGENT-DESIGN.md` D9.
 function composeCommandsBlock(info: AgentInfo): string {
 	const commands = info.commands ?? [];
 	if (commands.length === 0) return "";
