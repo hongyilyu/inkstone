@@ -1,39 +1,59 @@
 /**
- * Bottom approval panel — replaces `Prompt` while a `confirmDirs`
- * approval is pending. See `docs/APPROVAL-UI.md` § Rendering for the
- * chrome rationale, keybind table, and OpenCode divergences.
+ * Bottom approval panel — replaces `Prompt` while a confirmation is
+ * pending. See `docs/APPROVAL-UI.md` § Rendering for the chrome
+ * rationale, keybind table, and OpenCode divergences.
  *
- * Tripwire: `useKeyboard` null-guards on `req()` against the one-frame
- * window between `setPendingApproval(null)` and `<Show>` unmounting.
+ * Presentational: callers pass the request text, the labels, the
+ * pending accessor (for the keyboard null-guard), and the responder.
+ * Two callsites today — agent-tool approvals and provider-disconnect
+ * confirmations — share this panel via per-action scoped signals.
+ *
+ * The selection state (`store.active`) IS the boolean that
+ * `onRespond` receives — there's no internal "approve"/"reject"
+ * identifier mapped to a value. Keep it that way: the choices array
+ * pairs each label with its boolean directly.
+ *
+ * Tripwire: `useKeyboard` null-guards on `pending()` against the
+ * one-frame window between the caller clearing its signal and
+ * `<Show>` unmounting the subtree.
  */
 
 import { useKeyboard } from "@opentui/solid";
+import type { Accessor } from "solid-js";
+import { For } from "solid-js";
 import { createStore } from "solid-js/store";
-import { useAgent } from "../context/agent";
 import { useTheme } from "../context/theme";
 import { EmptyBorder } from "./message";
 
-type PanelChoice = "approve" | "reject";
+export interface PermissionPromptProps {
+	header: string;
+	title: string;
+	message: string;
+	approveLabel: string;
+	rejectLabel: string;
+	onRespond: (ok: boolean) => void;
+	pending: Accessor<unknown>;
+}
 
-export function PermissionPrompt() {
+export function PermissionPrompt(props: PermissionPromptProps) {
 	const { theme } = useTheme();
-	const { pendingApproval, respondApproval } = useAgent();
-	const [store, setStore] = createStore({
-		active: "approve" as PanelChoice,
-	});
+	const [store, setStore] = createStore({ active: true });
 
-	const req = () => pendingApproval();
+	const choices = (): readonly { label: string; value: boolean }[] => [
+		{ label: props.approveLabel, value: true },
+		{ label: props.rejectLabel, value: false },
+	];
 
 	useKeyboard((evt: { name: string; defaultPrevented?: boolean }) => {
 		if (evt.defaultPrevented) return;
-		if (!req()) return;
+		if (!props.pending()) return;
 
 		if (evt.name === "return") {
-			respondApproval(store.active === "approve");
+			props.onRespond(store.active);
 			return;
 		}
 		if (evt.name === "escape") {
-			respondApproval(false);
+			props.onRespond(false);
 			return;
 		}
 		if (
@@ -42,7 +62,7 @@ export function PermissionPrompt() {
 			evt.name === "right" ||
 			evt.name === "l"
 		) {
-			setStore("active", store.active === "approve" ? "reject" : "approve");
+			setStore("active", !store.active);
 		}
 	});
 
@@ -71,32 +91,34 @@ export function PermissionPrompt() {
 					gap={1}
 				>
 					<box flexDirection="column">
-						<text fg={theme.warning}>△ Permission required</text>
-						<text fg={theme.text}>{req()?.title ?? ""}</text>
-						<text fg={theme.textMuted}>{req()?.message ?? ""}</text>
+						<text fg={theme.warning}>{props.header}</text>
+						<text fg={theme.text}>{props.title}</text>
+						<text fg={theme.textMuted}>{props.message}</text>
 					</box>
 
 					<box flexDirection="row" gap={2}>
-						{(["approve", "reject"] as const).map((key) => (
-							<box
-								paddingLeft={1}
-								paddingRight={1}
-								backgroundColor={
-									key === store.active ? theme.warning : undefined
-								}
-								onMouseUp={() => respondApproval(key === "approve")}
-							>
-								<text
-									fg={
-										key === store.active
-											? theme.selectedListItemText
-											: theme.textMuted
+						<For each={choices()}>
+							{(choice) => (
+								<box
+									paddingLeft={1}
+									paddingRight={1}
+									backgroundColor={
+										choice.value === store.active ? theme.warning : undefined
 									}
+									onMouseUp={() => props.onRespond(choice.value)}
 								>
-									{key === "approve" ? "Allow" : "Reject"}
-								</text>
-							</box>
-						))}
+									<text
+										fg={
+											choice.value === store.active
+												? theme.selectedListItemText
+												: theme.textMuted
+										}
+									>
+										{choice.label}
+									</text>
+								</box>
+							)}
+						</For>
 					</box>
 				</box>
 			</box>
