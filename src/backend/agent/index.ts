@@ -38,6 +38,26 @@ export interface AgentActions {
 	abort(): void;
 	setModel(model: Model<Api>): void;
 	setThinkingLevel(level: ThinkingLevel): void;
+	/**
+	 * Remove the active agent's per-agent model override so the agent
+	 * re-inherits the top-level default. Resolves the new effective
+	 * model immediately and applies it to the live agent state — same
+	 * shape as `setModel`, just with `null` as the persisted value.
+	 *
+	 * Used by `DialogModel`'s "Use default" entry (see plan D7a). When
+	 * the active agent has no per-agent override to begin with, this
+	 * is a no-op-equivalent — the resolution chain falls through to
+	 * the top-level value either way.
+	 */
+	clearAgentModel(): void;
+	/**
+	 * Remove the active agent's per-agent thinking-level override for
+	 * the *currently active model only*. Other models the agent has
+	 * customized retain their per-agent values. The agent's effective
+	 * level for the active model falls back to the top-level
+	 * `thinkingLevels` map, then to "off".
+	 */
+	clearAgentThinkingLevel(): void;
 }
 
 // Live session façade. Wraps a pi-agent-core `Agent` bound to one
@@ -143,8 +163,23 @@ function resolveModelRef(ref: ModelRef | null): {
 		}
 		const info = getProvider(ref.providerId);
 		if (info && resolveModel(info.id, info.defaultModelId)) {
+			// Stored ref's model id no longer resolves (e.g. pi-ai
+			// dropped it from the registry, or the provider's catalog
+			// changed). Fall back to the same provider's curated
+			// default. Quiet warning so a user who notices their
+			// model "switched" has a breadcrumb in stderr.
+			console.warn(
+				`[inkstone] config model '${ref.providerId}/${ref.modelId}' did not resolve; using provider default '${info.defaultModelId}'`,
+			);
 			return { providerId: info.id, modelId: info.defaultModelId };
 		}
+		// Stored ref pointed at a provider that's currently disconnected
+		// (or unknown to the registry). Fall through to the
+		// first-connected loop below; warn so the silent-switch isn't
+		// completely opaque.
+		console.warn(
+			`[inkstone] config provider '${ref.providerId}' is not connected; falling back to first connected provider`,
+		);
 	}
 	for (const info of listProviders()) {
 		if (info.isConnected() && resolveModel(info.id, info.defaultModelId)) {
@@ -365,6 +400,48 @@ export function createSession(params: {
 					providerSel.modelId,
 					level,
 				),
+			);
+		},
+		clearAgentModel() {
+			// Drop the per-agent override and re-resolve the effective
+			// model. Resolution falls through to top-level `cfg.model`,
+			// then to the first connected provider's default. The live
+			// agent state is updated to match so the next turn runs on
+			// the new pair without an extra pick.
+			const nextCfg = setAgentModel(loadConfig(), info.name, null);
+			saveConfig(nextCfg);
+			const ref = resolveAgentModel(nextCfg, info.name);
+			const next = resolveModelRef(ref);
+			const nextModel = resolveModel(next.providerId, next.modelId);
+			if (!nextModel) {
+				throw new Error(
+					`Model '${next.modelId}' is not available from provider '${next.providerId}'.`,
+				);
+			}
+			providerSel = next;
+			agent.state.model = nextModel;
+			agent.state.thinkingLevel = resolveThinkingLevelFor(nextModel);
+		},
+		clearAgentThinkingLevel() {
+			// Per-model granularity: drop only the (active provider,
+			// active model) entry from this agent's thinkingLevels.
+			// Other (provider,model) overrides this agent has set stay
+			// intact. The live agent state is updated to whatever the
+			// resolution chain resolves to (top-level entry for this
+			// (provider,model) key, else "off").
+			const nextCfg = setAgentThinkingLevel(
+				loadConfig(),
+				info.name,
+				providerSel.providerId,
+				providerSel.modelId,
+				null,
+			);
+			saveConfig(nextCfg);
+			agent.state.thinkingLevel = resolveAgentThinkingLevel(
+				nextCfg,
+				info.name,
+				providerSel.providerId,
+				providerSel.modelId,
 			);
 		},
 	};

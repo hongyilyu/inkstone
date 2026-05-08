@@ -16,7 +16,8 @@
  */
 
 import { listAgents } from "@backend/agent";
-import { useTerminalDimensions } from "@opentui/solid";
+import { CONFIG_FILE } from "@backend/persistence/paths";
+import { useRenderer, useTerminalDimensions } from "@opentui/solid";
 import type { Accessor, Setter } from "solid-js";
 import { DialogAgent } from "../components/dialog/agent";
 import { type CommandOption, useCommand } from "../components/dialog/command";
@@ -29,6 +30,7 @@ import { useAgent } from "../context/agent";
 import { getSecondaryPage } from "../context/secondary-page";
 import { useTheme } from "../context/theme";
 import { useToast } from "../ui/toast";
+import { copyToClipboardOSC52 } from "../util/clipboard";
 
 export interface RegisterLayoutCommandsParams {
 	sessionListOpen: Accessor<boolean>;
@@ -50,6 +52,7 @@ export function registerLayoutCommands(
 	const { actions, store, session } = useAgent();
 	const { themeId } = useTheme();
 	const dimensions = useTerminalDimensions();
+	const renderer = useRenderer();
 
 	command.register(() => {
 		const canSwitchAgent = store.messages.length === 0;
@@ -71,16 +74,19 @@ export function registerLayoutCommands(
 			title: "Models",
 			description: "Switch model",
 			onSelect: (d) => {
-				DialogModel.show(
-					d,
-					{
+				DialogModel.show(d, {
+					current: {
 						providerId: session.getProviderId(),
 						modelId: session.getModelId(),
 					},
-					(model) => {
+					agentName: store.currentAgent,
+					onSelect: (model) => {
 						actions.setModel(model);
 					},
-				);
+					onClear: () => {
+						actions.clearAgentModel();
+					},
+				});
 			},
 		});
 
@@ -120,14 +126,17 @@ export function registerLayoutCommands(
 				title: "Effort",
 				description: "Reasoning effort",
 				onSelect: (d) => {
-					DialogVariant.show(
-						d,
-						session.getModel(),
-						session.getThinkingLevel(),
-						(level) => {
+					DialogVariant.show(d, {
+						model: session.getModel(),
+						current: session.getThinkingLevel(),
+						agentName: store.currentAgent,
+						onSelect: (level) => {
 							actions.setThinkingLevel(level);
 						},
-					);
+						onClear: () => {
+							actions.clearAgentThinkingLevel();
+						},
+					});
 				},
 			});
 		}
@@ -172,6 +181,24 @@ export function registerLayoutCommands(
 					// synchronous and `waitForIdle()` never throws), so
 					// dropping it is safe.
 					void actions.clearSession();
+				},
+			},
+			// `/config` — open the user config file in $EDITOR (or
+			// $VISUAL), or fall back to copying the path to the
+			// clipboard via OSC 52. Pre-1.0 there is no hot reload, so
+			// any change requires a restart; the toast carries that
+			// hint. Mirrors OpenCode's `editor.open` suspend/resume
+			// dance: pause the renderer, run the editor inheriting
+			// stdio, then resume + repaint. Safe to fire-and-forget the
+			// async wrapper — every error path inside `runEditor`
+			// surfaces a toast and resumes the renderer.
+			{
+				id: "config",
+				title: "Config",
+				description: "Edit ~/.config/inkstone/config.json",
+				slash: { name: "config" },
+				onSelect: () => {
+					void runEditConfig({ renderer, toast });
 				},
 			},
 			// Keybind-only: Ctrl+N toggles the left session panel.
@@ -234,5 +261,78 @@ export function registerLayoutCommands(
 		}
 
 		return list;
+	});
+}
+
+/**
+ * `/config` handler. Spawns the user's editor on `CONFIG_FILE`,
+ * suspending the OpenTUI renderer so the editor owns the terminal.
+ * On `$EDITOR` / `$VISUAL` unset, falls back to copying the path
+ * via OSC 52 (terminal-side clipboard) and toasting it.
+ *
+ * Editor-spawn flow ports OpenCode's `util/editor.ts` shape: read
+ * env, suspend renderer, spawn child with inherited stdio, await
+ * exit, resume renderer + repaint. Inkstone does not write any
+ * file — the user edits `CONFIG_FILE` in place and `loadConfig`
+ * picks the change up on the next launch (no hot reload in v1).
+ *
+ * The toast on successful close intentionally points the user at a
+ * restart: the in-process module-level cache + `VAULT_DIR` constant
+ * mean a live process keeps using the pre-edit values until restart.
+ *
+ * Errors are caught and surfaced as a toast so a malformed `$EDITOR`
+ * value (`/usr/bin/missing`) doesn't leave the renderer suspended.
+ */
+async function runEditConfig(deps: {
+	renderer: ReturnType<typeof useRenderer>;
+	toast: ReturnType<typeof useToast>;
+}): Promise<void> {
+	const editor = process.env.VISUAL ?? process.env.EDITOR;
+	if (!editor) {
+		// Path-only fallback. OSC 52 lands the path in the system
+		// clipboard so the user can paste it into their editor of
+		// choice without us guessing. Older terminals silently drop
+		// the sequence — the toast still shows the path itself, so
+		// the affordance degrades gracefully.
+		copyToClipboardOSC52(CONFIG_FILE);
+		deps.toast.show({
+			variant: "info",
+			title: "Config path copied",
+			message: `${CONFIG_FILE}\nSet $EDITOR or $VISUAL to open in-place. Restart to apply changes.`,
+			duration: 6000,
+		});
+		return;
+	}
+
+	deps.renderer.suspend();
+	try {
+		const parts = editor.split(" ");
+		const proc = Bun.spawn([...parts, CONFIG_FILE], {
+			stdin: "inherit",
+			stdout: "inherit",
+			stderr: "inherit",
+		});
+		await proc.exited;
+	} catch (err) {
+		// Editor failed to spawn (binary not found, permission, etc.).
+		// Surface to the user; the renderer is restored in the finally
+		// block so the TUI is still usable.
+		console.error("[inkstone] /config editor failed:", err);
+		deps.toast.show({
+			variant: "error",
+			title: "Editor failed",
+			message: err instanceof Error ? err.message : String(err),
+			duration: 6000,
+		});
+		return;
+	} finally {
+		deps.renderer.resume();
+		deps.renderer.requestRender();
+	}
+
+	deps.toast.show({
+		variant: "info",
+		message: "Restart Inkstone to apply config changes.",
+		duration: 4000,
 	});
 }

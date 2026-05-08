@@ -84,12 +84,12 @@ export async function setOpenRouterKey(
 		variant: "success",
 		message: "OpenRouter connected.",
 	});
-	DialogModel.show(
-		dialog,
-		{
+	DialogModel.show(dialog, {
+		current: {
 			providerId: "openrouter",
 			modelId: openrouterProvider.defaultModelId,
 		},
-		onModelSelected,
-	);
+		agentName: "",
+		onSelect: onModelSelected,
+	});
 }

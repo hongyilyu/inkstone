@@ -145,14 +145,14 @@ export async function startOpenAICodexLogin(
 			variant: "success",
 			message: "ChatGPT connected.",
 		});
-		DialogModel.show(
-			dialog,
-			{
+		DialogModel.show(dialog, {
+			current: {
 				providerId: "openai-codex",
 				modelId: codexProvider.defaultModelId,
 			},
-			onModelSelected,
-		);
+			agentName: "",
+			onSelect: onModelSelected,
+		});
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		if (message === "Login cancelled") {
