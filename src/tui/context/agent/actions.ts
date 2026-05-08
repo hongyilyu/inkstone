@@ -18,6 +18,7 @@ import type { AgentStoreState, DisplayPart } from "@bridge/view-model";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { SetStoreFunction } from "solid-js/store";
+import type { LayoutContextValue } from "../../context/layout";
 import type { useToast } from "../../ui/toast";
 import { clearSessionAction } from "./actions/clear";
 import { promptAction } from "./actions/prompt";
@@ -35,6 +36,7 @@ export interface ActionDeps {
 	store: AgentStoreState;
 	setStore: SetStoreFunction<AgentStoreState>;
 	sessionState: SessionState;
+	layout: LayoutContextValue;
 	toast: ReturnType<typeof useToast>;
 	titleGenerator: typeof generateSessionTitle;
 	/**

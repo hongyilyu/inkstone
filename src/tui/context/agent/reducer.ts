@@ -43,7 +43,7 @@ import { type AssistantMessage, getModel } from "@mariozechner/pi-ai";
 import { getOpenAICodexWebSocketDebugStats } from "@mariozechner/pi-ai/openai-codex-responses";
 import { batch } from "solid-js";
 import { produce, type SetStoreFunction } from "solid-js/store";
-import { getActiveLayout } from "../../context/layout";
+import type { LayoutContextValue } from "../../context/layout";
 import { extractErrorMessage, REDACTED_THINKING_PLACEHOLDERS } from "./helpers";
 import type { SessionState } from "./session-state";
 
@@ -52,6 +52,7 @@ export interface ReducerDeps {
 	setStore: SetStoreFunction<AgentStoreState>;
 	sessionState: SessionState;
 	agentSession: Session;
+	layout: LayoutContextValue;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -102,7 +103,7 @@ function handleAgentStart(deps: ReducerDeps): void {
 	// A fresh assistant display bubble is pushed per-boundary on
 	// `message_start` so tool-driven turns with multiple assistant
 	// messages keep their footer metadata separate.
-	getActiveLayout()?.scrollToBottom();
+	deps.layout.scrollToBottom();
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -152,7 +153,7 @@ function handleMessageStart(event: AgentEvent, deps: ReducerDeps): void {
 			),
 		);
 	}
-	getActiveLayout()?.scrollToBottom();
+	deps.layout.scrollToBottom();
 }
 
 // ────────────────────────────────────────────────────────────────────

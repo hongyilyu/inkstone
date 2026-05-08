@@ -2,8 +2,8 @@
  * Test harness for the Inkstone TUI.
  *
  * Mounts the same provider stack as `App` (ThemeProvider → ToastProvider
- * → DialogProvider → CommandProvider → ErrorBoundary → AgentProvider
- * → LayoutProvider → Layout), but with an injected `session` factory so
+ * → DialogProvider → CommandProvider → ErrorBoundary → LayoutProvider
+ * → AgentProvider → Layout), but with an injected `session` factory so
  * tests can script
  * AgentEvents without a real pi-agent-core loop. The `ErrorBoundary`
  * mirrors `src/tui/app.tsx` so the no-provider-fallback path is
@@ -19,7 +19,11 @@ import { NoProviderFallback } from "../../src/tui/components/no-provider-fallbac
 import type { SessionFactory } from "../../src/tui/context/agent";
 import { AgentProvider, useAgent } from "../../src/tui/context/agent";
 import type { AgentContextValue } from "../../src/tui/context/agent/types";
-import { LayoutProvider } from "../../src/tui/context/layout";
+import {
+	type LayoutContextValue,
+	LayoutProvider,
+	useLayout,
+} from "../../src/tui/context/layout";
 import { ThemeProvider } from "../../src/tui/context/theme";
 import { DialogProvider } from "../../src/tui/ui/dialog";
 import { ToastProvider } from "../../src/tui/ui/toast";
@@ -51,10 +55,21 @@ function CaptureAgent(props: {
 	return null;
 }
 
+function CaptureLayout(props: {
+	onCapture: (value: LayoutContextValue) => void;
+}) {
+	const value = useLayout();
+	createEffect(() => {
+		props.onCapture(value);
+	});
+	return null;
+}
+
 export async function renderApp(opts: HarnessOptions) {
 	const width = opts.width ?? 100;
 	const height = opts.height ?? 30;
 	let captured: AgentContextValue | null = null;
+	let capturedLayout: LayoutContextValue | null = null;
 	const rendered = await testRender(
 		() => (
 			<ThemeProvider>
@@ -66,21 +81,26 @@ export async function renderApp(opts: HarnessOptions) {
 									<NoProviderFallback error={error} reset={reset} />
 								)}
 							>
-								<AgentProvider
-									session={opts.session}
-									sessionTitleGenerator={
-										opts.sessionTitleGenerator ?? (async () => null)
-									}
-								>
-									<CaptureAgent
+								<LayoutProvider>
+									<CaptureLayout
 										onCapture={(v) => {
-											captured = v;
+											capturedLayout = v;
 										}}
 									/>
-									<LayoutProvider>
+									<AgentProvider
+										session={opts.session}
+										sessionTitleGenerator={
+											opts.sessionTitleGenerator ?? (async () => null)
+										}
+									>
+										<CaptureAgent
+											onCapture={(v) => {
+												captured = v;
+											}}
+										/>
 										<Layout />
-									</LayoutProvider>
-								</AgentProvider>
+									</AgentProvider>
+								</LayoutProvider>
 							</ErrorBoundary>
 						</CommandProvider>
 					</DialogProvider>
@@ -104,6 +124,14 @@ export async function renderApp(opts: HarnessOptions) {
 				);
 			}
 			return captured;
+		},
+		getLayout(): LayoutContextValue {
+			if (!capturedLayout) {
+				throw new Error(
+					"getLayout: LayoutProvider did not mount — likely hit the error-boundary fallback",
+				);
+			}
+			return capturedLayout;
 		},
 	};
 }

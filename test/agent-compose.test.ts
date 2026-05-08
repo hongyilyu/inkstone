@@ -13,8 +13,11 @@
 import { describe, expect, test } from "bun:test";
 import { readerAgent } from "@backend/agent/agents/reader";
 import { buildReaderInstructions } from "@backend/agent/agents/reader/instructions";
-import { composeSystemPrompt } from "@backend/agent/compose";
+import { composeSystemPrompt, composeTools } from "@backend/agent/compose";
+import { registerBaselineFree } from "@backend/agent/permissions";
+import { writeTool } from "@backend/agent/tools";
 import type { AgentCommand, AgentInfo } from "@backend/agent/types";
+import type { AgentTool } from "@mariozechner/pi-agent-core";
 
 import "./preload";
 
@@ -172,5 +175,52 @@ describe("composeSystemPrompt — section order", () => {
 		const prompt = composeSystemPrompt(readerAgent);
 		// Zones block closes, blank line, commands block opens.
 		expect(prompt).toContain("</your workspace>\n\n<commands>");
+	});
+});
+
+describe("composeTools — permission coverage", () => {
+	test("known shipped tools compose without a baseline coverage error", () => {
+		expect(composeTools(readerAgent).map((t) => t.name)).toContain("read");
+	});
+
+	test("unknown baseline-free extra tool fails loudly", () => {
+		const unsafeTool = {
+			name: "unsafe_extra",
+			label: "Unsafe",
+			description: "fixture",
+			parameters: {},
+			execute: async () => ({ type: "text", content: "ok" }),
+		} as unknown as AgentTool<any>;
+		const agent = makeAgent({ extraTools: [unsafeTool] });
+		expect(() => composeTools(agent)).toThrow(
+			"Tool 'unsafe_extra' on agent 'test' has no permission baseline",
+		);
+	});
+
+	test("shared mutating file tools require declared write zones", () => {
+		const agent = makeAgent({ extraTools: [writeTool], zones: [] });
+		expect(() => composeTools(agent)).toThrow(
+			"Agent 'test' composes mutating file tools but declares no write zones.",
+		);
+	});
+
+	test("registerBaselineFree opt-in unblocks an otherwise-unknown tool", () => {
+		// Pins the registry contract: a direct `registerBaselineFree`
+		// call is enough for `composeTools` to accept the tool, without
+		// coupling the test to whether a specific factory does the
+		// registering.
+		registerBaselineFree(
+			"test_only_no_fs_tool",
+			"Test fixture — no real implementation.",
+		);
+		const fixtureTool = {
+			name: "test_only_no_fs_tool",
+			label: "Test",
+			description: "fixture",
+			parameters: {},
+			execute: async () => ({ type: "text", content: "ok" }),
+		} as unknown as AgentTool<any>;
+		const agent = makeAgent({ extraTools: [fixtureTool] });
+		expect(() => composeTools(agent)).not.toThrow();
 	});
 });

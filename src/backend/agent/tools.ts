@@ -6,7 +6,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { VAULT_DIR } from "./constants";
-import { registerBaseline } from "./permissions";
+import { registerBaseline, registerBaselineFree } from "./permissions";
 
 /**
  * Shared tool pool. Agents pick entries via `extraTools`; `compose.ts`
@@ -118,3 +118,8 @@ export const updateSidebarTool: AgentTool<
 		};
 	},
 };
+
+registerBaselineFree(
+	updateSidebarTool.name,
+	"No filesystem access — only mutates UI state via the TUI reducer.",
+);

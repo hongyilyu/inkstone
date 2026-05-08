@@ -5,15 +5,17 @@ import { editTool, writeTool } from "./tools";
 import type { AgentInfo } from "./types";
 
 /**
- * Derive a permission overlay from an agent's zones. Produces rules
- * for the two mutating tools (`edit`, `write`) that the reader cares
- * about today; if a future agent composes additional mutating tools,
- * extend the key set.
+ * Derive a permission overlay from an agent's zones. Zones are the
+ * agent's positive write workspace for the two mutating file tools
+ * (`edit`, `write`).
  *
  * Policy by `AgentZone.write`:
- *   - `auto`    — no rule needed; writes inside this zone pass through
- *                 the vault baseline unchanged.
+ *   - `auto`    — allow writes inside this zone without prompting.
  *   - `confirm` — emit a `confirmDirs` rule listing the zone path.
+ *
+ * All declared zones also feed a single `insideDirs` rule, so writes
+ * outside the agent's workspace are blocked even when they are still
+ * inside the vault baseline.
  *
  * Zone paths are joined with `VAULT_DIR` via `node:path.join` so
  * leading/trailing slashes normalize. Absolute paths and paths containing
@@ -28,6 +30,7 @@ import type { AgentInfo } from "./types";
 export function composeZonesOverlay(info: AgentInfo): AgentOverlay {
 	if (info.zones.length === 0) return {};
 
+	const zonePaths: string[] = [];
 	const confirmPaths: string[] = [];
 	for (const zone of info.zones) {
 		// Reject absolute paths cross-platform. `isAbsolute` covers POSIX
@@ -46,29 +49,29 @@ export function composeZonesOverlay(info: AgentInfo): AgentOverlay {
 				`Zone path must not escape the vault via '..' segments: '${zone.path}' on agent '${info.name}'.`,
 			);
 		}
-		if (zone.write === "confirm") {
-			confirmPaths.push(join(VAULT_DIR, zone.path));
-		}
+		const resolved = join(VAULT_DIR, zone.path);
+		zonePaths.push(resolved);
+		if (zone.write === "confirm") confirmPaths.push(resolved);
 	}
 
-	const overlay: AgentOverlay = {};
+	const rules: Rule[] = [{ kind: "insideDirs", dirs: zonePaths }];
 	if (confirmPaths.length > 0) {
-		const rule: Rule = { kind: "confirmDirs", dirs: confirmPaths };
-		overlay[writeTool.name] = [rule];
-		overlay[editTool.name] = [rule];
+		rules.push({ kind: "confirmDirs", dirs: confirmPaths });
 	}
-	return overlay;
+	return {
+		[writeTool.name]: rules,
+		[editTool.name]: rules,
+	};
 }
 
 /**
  * Merge the agent's optional custom overlay with the zones-derived
  * overlay. Custom rules come first, zones come second.
  *
- * Rationale: zones emit lenient, directory-scoped `confirmDirs` that
- * cover whole workspaces. Custom rules (from `getPermissions`) are
- * typically stricter and file- or shape-specific. With first-block-wins
- * in the dispatcher, the stricter rules must evaluate first for two
- * reasons:
+ * Rationale: zones emit workspace-scoped `insideDirs` / `confirmDirs`
+ * rules. Custom rules (from `getPermissions`) are typically stricter
+ * and file- or shape-specific. With first-block-wins in the dispatcher,
+ * the stricter rules must evaluate first for two reasons:
  *
  *   1. For legitimate calls that both rules would let through, the
  *      custom rule returns `undefined` (pass) and the zone's

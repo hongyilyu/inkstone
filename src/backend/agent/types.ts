@@ -23,8 +23,8 @@ export type AgentColorKey =
  * `VAULT_DIR` at compose time; absolute paths are rejected).
  *
  * `write` policy:
- *   - `auto`    — write without prompting
- *   - `confirm` — prompt the user before each write
+ *   - `auto`    — write inside this zone without prompting
+ *   - `confirm` — prompt the user before each write inside this zone
  */
 export interface AgentZone {
 	path: string;

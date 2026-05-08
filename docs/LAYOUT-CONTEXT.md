@@ -18,19 +18,13 @@ Earlier iterations of Inkstone kept these handles as `let scroll: ... = null` et
 
 The provider-scoped closure in `LayoutProvider` solves all three: handles live in the closure, the closure dies with the provider on unmount, and consumers read through `useLayout()` — a typed surface that's mockable in tests.
 
-## `getActiveLayout()` — the cross-tree escape hatch
+## Provider ordering
 
 `useLayout()` requires a `LayoutProvider` ancestor. It works for components inside the JSX subtree (`Conversation`, `Prompt`, `Sidebar`, etc.) and hooks called by those components (`useLayoutKeybinds`).
 
-It *doesn't* work for callers outside the subtree. The action layer (`tui/context/agent/actions/*.ts`) and reducer (`tui/context/agent/reducer.ts`) are invoked from inside `AgentProvider`, which is a *parent* of `LayoutProvider`. They have no `useLayout()` call site that wouldn't violate Solid's owner contract.
+The app mounts `LayoutProvider` above `AgentProvider`, so provider-scoped action / reducer code can consume `useLayout()` once during `AgentProvider` setup and pass the layout handle through its dependency bags. That keeps layout side effects explicit without reintroducing module-scoped state.
 
-`getActiveLayout()` is the bridge. It's a module-scoped pointer the provider sets on mount and clears on cleanup — only ever readable when a provider is mounted, returns `null` otherwise. Callers null-check and fall through:
-
-```ts
-getActiveLayout()?.scrollToBottom();
-```
-
-This isn't a workaround for a missing feature; it's the deliberate escape hatch for "I need the layout primitive but I don't run inside its tree." The downside (only one provider can be active at a time) is fine because there's only ever one `LayoutProvider` instance in the app — and would still be enforced even if there weren't, since the latest `LayoutProvider`'s mount overwrites the pointer.
+The no-provider fallback is the `ErrorBoundary` fallback, so it renders outside the `LayoutProvider` / `Layout` child subtree. That path does not use layout handles; it registers only the Connect command through the still-mounted `CommandProvider`.
 
 ## `PromptCtrlCBridge` — why a bridge, not a second `useKeyboard`
 
@@ -44,4 +38,4 @@ The state machine itself lives in `src/tui/components/prompt-ctrlc.ts` (a pure f
 
 ## Adding a new layout-level handle
 
-If a future feature needs another imperative handle (mouse position, an overlay ref, etc.), add it to `LayoutContextValue` with the same shape: a setter called from the owning component's ref callback, an identity-checked clearer in `onCleanup`, a getter for read sites. If callers outside the JSX subtree need it too, expose them through `getActiveLayout()` rather than a new module-scoped pair.
+If a future feature needs another imperative handle (mouse position, an overlay ref, etc.), add it to `LayoutContextValue` with the same shape: a setter called from the owning component's ref callback, an identity-checked clearer in `onCleanup`, and a getter for read sites. Provider-level callers should receive the handle through dependency injection from a component that can call `useLayout()`.

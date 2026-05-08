@@ -364,9 +364,9 @@ Each tool in the shared pool registers baseline rules at module load (`src/backe
 | `write` | `insideDirs: [VAULT_DIR]` |
 | `edit` | `insideDirs: [VAULT_DIR]` |
 
-Baselines own only the hard vault boundary — writes outside `VAULT_DIR` are blocked regardless of agent declarations. Directory-level confirmation lives on zones (per-agent), not on the baseline (global), since D12: having both a baseline `confirmDirs` and a zones-derived `confirmDirs` for the same directory produced double-prompts.
+Baselines own only the hard vault boundary — writes outside `VAULT_DIR` are blocked regardless of agent declarations. Workspace allowlisting and directory-level confirmation live on zones (per-agent), not on the baseline (global).
 
-Tools without a registered baseline run unsandboxed (pi-coding-agent's own default). By convention every tool Inkstone composes into `BASE_TOOLS` or an agent's `extraTools` registers its baseline.
+Tools without a registered baseline run unsandboxed (pi-coding-agent's own default), so `composeTools(info)` asserts that every composed tool either has a baseline or is registered as baseline-free by its defining factory (via `registerBaselineFree(name, reason)` in `permissions.ts`). The reason string lives next to the registration site so the *why* is findable without comment-archaeology.
 
 ### Agent overlays
 
@@ -380,8 +380,9 @@ composeOverlay(info) = info.getPermissions?.() ⊕ composeZonesOverlay(info)
 
 **`composeZonesOverlay(info)`** derives permission rules from `AgentInfo.zones` (see Agent Registry → Zones):
 
+- All zone paths → combined into one `insideDirs` allowlist rule keyed under both `write` and `edit`.
 - Each zone with `write: "confirm"` → combined into one `confirmDirs` rule keyed under both `write` and `edit`.
-- Each zone with `write: "auto"` → no rule emitted (writes inside the zone pass through the vault baseline unchanged).
+- Each zone with `write: "auto"` → no confirmation rule; writes inside the zone pass through after the allowlist.
 
 Zone paths are joined with `VAULT_DIR` via `node:path.join` so leading/trailing slashes normalize. Absolute zone paths (POSIX `/`, Windows drive-letter, UNC) and paths containing `..` segments throw at compose time (misconfiguration should be loud).
 
@@ -395,7 +396,7 @@ Overlay rules run AFTER tool baselines — an overlay can add restrictions but c
 
 The pre-dispatcher guard was a single procedural function in `backend/agent/guard.ts` that pattern-matched tool names and encoded reader's article rule directly. Reader-specific vocabulary leaked into the shell and the shell mutated `ctx.args._articlePath` as a side channel. Both are gone: the dispatcher has no reader knowledge, and reader's `getPermissions` owns its own data.
 
-The zones refactor (D12) further split reader's policy: directory-level confirmation rules now live in declarative `zones` data (which the prompt also reads — see Agent Registry → Zones), while article-specific rules stay in `getPermissions`. The zones refactor also trimmed tool baselines to the hard vault boundary (`insideDirs: [VAULT_DIR]` only); directory-level confirmation moved entirely to zones so agents opt into it per-zone rather than inheriting it globally.
+The zones refactor (D12) further split reader's policy: workspace allowlisting and directory-level confirmation rules now live in declarative `zones` data (which the prompt also reads — see Agent Registry → Zones), while article-specific rules stay in `getPermissions`. Tool baselines stay trimmed to the hard vault boundary (`insideDirs: [VAULT_DIR]` only); per-agent write scope is enforced by the zones overlay.
 
 A follow-up pass (the statelessness refactor) replaced reader's state-keyed rules (`blockPath` + `frontmatterOnlyFor`, both keyed on the currently-active article) with static zone-wide rules (`blockInsideDirs` + `frontmatterOnlyInDirs` covering all of Articles). `activeArticle` state is gone — the `/article` command reads the file and inlines it as the opening user message, and the permission rules apply uniformly to every article. Broader protection surface, simpler reader. Tracked as a behavioral shift in TODO.md.
 
@@ -443,7 +444,7 @@ Shared constants and helpers:
 
 - `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today: `read` (from the shared pool, scoped to `VAULT_DIR`) and `update_sidebar` (generic sidebar section management — upsert/delete sections by id; no filesystem access, no permission baseline). Frozen at module load so external modules can't mutate.
 - `BASE_PREAMBLE: string` — a shared system-prompt prefix. **Empty today** — the mechanism is the point. Future PRs will grow this into a composed block that includes persona guidance, tool-use discipline, and memory-file contents (`user.md`, `memory.md` from `~/.config/inkstone/`).
-- `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]`. Every agent gets the base set unconditionally; there is no opt-out flag.
+- `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]` plus an agent-scoped `suggest_command` tool when commands exist. Every agent gets the base set unconditionally; there is no opt-out flag. Compose-time permission coverage rejects tools that have neither a baseline nor a `registerBaselineFree` registration from their defining factory, and rejects shared mutating file tools (`write`, `edit`) on agents with no declared zones.
 - `composeSystemPrompt(info)` — builds the full system prompt as four non-empty sections joined by blank lines, in order: the zones block (when `info.zones.length > 0`), the commands block (when `info.commands` has any entry with a `description`), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. `buildInstructions` is nullary. Called once at `createSession` and again on `Session.selectAgent` (empty-session agent swap); not on every turn — `state.systemPrompt` stays byte-stable for the session's lifetime so Anthropic `cache_control` / Bedrock `cachePoint` prefixes hit. See D9's stability invariant.
 
   The commands block renders each `info.commands[]` entry with a `description` as `- /name [argHint] — description`, omitting entries without a description. Two audiences share the block: the LLM can reference commands by exact name when explaining options to the user, and (once PR5's `suggest_command` tool lands) the LLM can route freeform requests to the matching command. The block is derived from `info.commands` declared data, so it's byte-stable per session and does not break the cache invariant.
@@ -453,15 +454,15 @@ Shared constants and helpers:
 `AgentInfo.zones: AgentZone[]` declares an agent's write workspace. Each zone is `{ path: string, write: "auto" | "confirm" }` where `path` is vault-relative. The same data drives two places:
 
 - **Prompt**: `composeSystemPrompt` prepends a `<your workspace>` block listing each zone's path and policy verbally (`"write freely"` / `"confirm before write"`). Omitted for agents with empty zones.
-- **Permissions**: `composeZonesOverlay` produces the matching D11 rules — all `confirm` zone paths combine into one `confirmDirs` rule under both `write` and `edit`; `auto` emits nothing (the baseline already permits writes inside the vault). Merged with `getPermissions?.()` via `composeOverlay`.
+- **Permissions**: `composeZonesOverlay` produces the matching rules — all zone paths combine into one `insideDirs` write allowlist under both `write` and `edit`, and all `confirm` zone paths combine into one `confirmDirs` rule. Merged with `getPermissions?.()` via `composeOverlay`.
 
-Single source of truth prevents drift between what the LLM is told and what the dispatcher enforces. Read is always vault-wide (bounded only by the tool baseline `insideDirs: [VAULT_DIR]`); zones only constrain writes.
+Single source of truth prevents drift between what the LLM is told and what the dispatcher enforces. Read is always vault-wide (bounded only by the tool baseline `insideDirs: [VAULT_DIR]`); writes are constrained to declared zones.
 
 A `deny` policy (read-only zone inside a workspace) was considered and cut in D12. The matching rule kind (`blockInsideDirs`) later shipped for reader's Articles restriction, so zones could now grow a `"deny"` → `blockInsideDirs` mapping cheaply. Deferred per D8 until a real agent wants it — see TODO.md.
 
 Example — reader's zones (see `src/backend/agent/agents/reader/index.ts`): three `confirm` zones under Articles, Scraps, and Notes.
 
-Example — knowledge-base's zones (see `src/backend/agent/agents/knowledge-base/index.ts`): `040 FORGE` auto-write + `090 SYSTEM/099 LLM Wiki` confirm-write, plus a `getPermissions` overlay that hard-blocks writes under `010 RAW/` and `020 HUMAN/` (rules zones can't express alone).
+Example — knowledge-base's zones (see `src/backend/agent/agents/knowledge-base/index.ts`): `040 FORGE` auto-write + `090 SYSTEM/099 LLM Wiki` confirm-write. Its `getPermissions` overlay also hard-blocks writes under `010 RAW/` and `020 HUMAN/` so those policy failures get a specific read-only reason before the broader zone allowlist block would fire.
 
 Tool implementations come from `@mariozechner/pi-coding-agent` via the shared pool in `backend/agent/tools.ts` — Inkstone does not re-implement read/write/edit. Each factory is called with `VAULT_DIR` as the `cwd` so vault-relative paths resolve inside the vault; absolute paths are honored by the tool and sandboxed by the guard. pi-coding-agent's tool source transitively imports `@mariozechner/pi-tui`, but `wrapToolDefinition` strips the render hooks — the tools are pure `AgentTool<any>` at runtime, and pi-tui is inert code-path-wise (Inkstone renders through OpenTUI in `src/tui/**`).
 

@@ -42,14 +42,38 @@ export type AgentOverlay = Partial<Record<string, Rule[]>>;
 /**
  * Baseline rules per tool, populated at module-load by `tools.ts`. The
  * dispatcher reads this when a tool fires. Tools without an entry here
- * run unsandboxed (matches pi-coding-agent's own default) — by
- * convention every tool Inkstone composes into `BASE_TOOLS` or
- * `extraTools` registers its baseline.
+ * run unsandboxed (matches pi-coding-agent's own default), so the
+ * composer asserts that any baseline-free tool is explicitly reviewed
+ * before it can be exposed to an agent.
  */
 const baselineRules: Record<string, Rule[]> = {};
 
 export function registerBaseline(toolName: string, rules: Rule[]): void {
 	baselineRules[toolName] = rules;
+}
+
+export function hasBaseline(toolName: string): boolean {
+	return toolName in baselineRules;
+}
+
+/**
+ * Tools intentionally registered as baseline-free by their defining
+ * factory. Stored as `name → reason` so the *why* lives next to the
+ * registration site instead of in a hard-coded list inside
+ * `compose.ts`. Last-write-wins on re-registration — matches
+ * `registerBaseline`'s overwrite shape, so a second call with the
+ * same name (e.g. two agents instantiating
+ * `makeSearchTool({ name: "search", ... })`) cleanly replaces the
+ * prior reason.
+ */
+const baselineFreeRules: Record<string, string> = {};
+
+export function registerBaselineFree(toolName: string, reason: string): void {
+	baselineFreeRules[toolName] = reason;
+}
+
+export function isBaselineFree(toolName: string): boolean {
+	return toolName in baselineFreeRules;
 }
 
 /**

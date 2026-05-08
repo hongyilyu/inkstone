@@ -1,5 +1,6 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { readTool, updateSidebarTool } from "./tools";
+import { hasBaseline, isBaselineFree } from "./permissions";
+import { editTool, readTool, updateSidebarTool, writeTool } from "./tools";
 import { makeSuggestCommandTool } from "./tools/suggest-command";
 import type { AgentInfo } from "./types";
 
@@ -21,7 +22,40 @@ export function composeTools(info: AgentInfo): AgentTool<any>[] {
 	const tools: AgentTool<any>[] = [...BASE_TOOLS, ...info.extraTools];
 	const suggest = makeSuggestCommandTool(info.commands ?? []);
 	if (suggest) tools.push(suggest);
+	assertToolPermissionCoverage(info, tools);
+	assertMutatingToolsHaveZones(info, tools);
 	return tools;
+}
+
+function assertToolPermissionCoverage(
+	info: AgentInfo,
+	tools: AgentTool<any>[],
+): void {
+	for (const tool of tools) {
+		if (hasBaseline(tool.name) || isBaselineFree(tool.name)) continue;
+		throw new Error(
+			`Tool '${tool.name}' on agent '${info.name}' has no permission baseline or baseline-free review entry.`,
+		);
+	}
+}
+
+// Catches the common path where an agent composes the shared
+// `writeTool` / `editTool` re-exports without declaring zones. A
+// future agent that calls `createWriteTool(VAULT_DIR)` directly
+// (bypassing the shared pool) would slip past this check — the
+// `tools.ts` convention is the safety net, not this assertion.
+function assertMutatingToolsHaveZones(
+	info: AgentInfo,
+	tools: AgentTool<any>[],
+): void {
+	if (info.zones.length > 0) return;
+	const hasSharedMutatingTool = tools.some(
+		(tool) => tool.name === writeTool.name || tool.name === editTool.name,
+	);
+	if (!hasSharedMutatingTool) return;
+	throw new Error(
+		`Agent '${info.name}' composes mutating file tools but declares no write zones.`,
+	);
 }
 
 // Render `info.zones` as a `<your workspace>` block. Pairs with
