@@ -70,6 +70,15 @@ export interface SlashSpec {
 	takesArgs?: boolean;
 	argHint?: string;
 	argGuide?: string;
+	/**
+	 * Pre-dispatch predicate, consulted by `canRunSlashEntry` AFTER the
+	 * shape rules. Returning `false` rejects dispatch so the caller falls
+	 * through to the plain-prompt path. Used by optional-arg commands
+	 * (`argHint` set, `takesArgs: false`) where the shape rules can't
+	 * separate prose-after-verb from a real arg — e.g. reader's
+	 * `/article`. Cheap, sync, side-effect-free.
+	 */
+	canExecute?: (args: string) => boolean;
 }
 
 export interface CommandOption {
@@ -104,11 +113,15 @@ export interface CommandOption {
 }
 
 /**
- * Single source of truth for slash dispatch gating. Two rules:
+ * Single source of truth for slash dispatch gating. Three rules:
  *   1. `takesArgs: true`, args empty → reject (required arg missing).
  *   2. `!takesArgs`, `!argHint`, args non-empty → reject (extra-args
  *      guard so `/clear my cache` falls through as a plain prompt
  *      instead of silently dropping " my cache").
+ *   3. `canExecute(args) === false` → reject (per-command predicate
+ *      after the shape rules pass; lets optional-arg commands
+ *      distinguish prose-after-verb from a real arg without changing
+ *      the shape contract — see reader's `/article`).
  * `argHint`'s presence means the command accepts an optional arg, so
  * trailing text is legal and rule 2 doesn't fire.
  *
@@ -121,6 +134,7 @@ export function canRunSlashEntry(entry: CommandOption, args: string): boolean {
 	if (spec?.takesArgs && args.trim().length === 0) return false;
 	if (!spec?.takesArgs && !spec?.argHint && args.trim().length > 0)
 		return false;
+	if (spec?.canExecute && !spec.canExecute(args)) return false;
 	return true;
 }
 

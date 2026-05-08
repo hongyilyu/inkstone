@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-08 (provider-disconnect migrated to PermissionPrompt panel)
+**Last updated**: 2026-05-08 (slash-command parser hardening)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -18,9 +18,9 @@
 
 ## Completed
 
-- Implemented architecture simplification: zone write allowlist, layout dependency injection, and tool permission coverage. Design rationale lives in `docs/AGENT-DESIGN.md` D12 and `docs/LAYOUT-CONTEXT.md`.
-
+- Hardened the slash-command parser with an optional `canExecute(args)` predicate on `AgentCommand` (rule 3 in `canRunSlashEntry`). Reader's `/article` uses it to reject unresolvable args (prose, typos, paths outside the Articles dir, symlinks, non-regular files) at the gate so the prompt falls through to the plain-prompt path with the literal `/`-prefixed text intact. KB commands unchanged. Side effect: a typo'd filename also falls through to plain prompt instead of toasting "Article not found" — Discord/Slack convention.
 - **`DialogConfirm` unification with the bottom approval panel.** Provider-disconnect now mounts the same `PermissionPrompt` panel as agent-tool approvals via a sibling `pendingDisconnect` module signal (`src/tui/components/disconnect-confirmation.ts`). The `DialogConfirm` modal primitive was deleted in the same change — `confirm-and-disconnect.ts` was its sole caller. See `docs/APPROVAL-UI.md` § "Confirmations beyond tool approval" for the per-action signal rationale.
+- Implemented architecture simplification: zone write allowlist, layout dependency injection, and tool permission coverage. Design rationale lives in `docs/AGENT-DESIGN.md` D12 and `docs/LAYOUT-CONTEXT.md`.
 
 ## Known Issues
 
@@ -52,8 +52,6 @@
 
 - Assistant messages persisted before the per-message footer change will render without a footer (no backfill).
 
-- Slash-command parser is naive — see "Robust slash-command parsing" in Future Work. Messages that happen to start with `/article ` will still be consumed as commands under the reader agent, even when that wasn't the user's intent.
-
 - `DialogSelect`'s `rows()` memo has a dormant off-by-one: it keys the "is this the first header?" check on the raw `grouped()` index, so a dialog that mixes an uncategorized bucket (empty-string key, index 0) with a categorized group (index ≥1) gets one extra spacer row in the scrollbox height calculation. No caller mixes today (DialogModel always-categorized; DialogProvider / DialogCommand / DialogTheme / DialogAgent / DialogVariant / reader's `pickFromList` never-categorized). Fix alongside the first caller that needs to mix — filtering empty buckets out of the accumulator is a 2-line change.
 
 - DB migrations folder ships with the source tree but isn't yet bundled for a packaged binary — `migrate()` reads files off disk at `import.meta.dir/migrations`. Fine for `bun run dev`; needs a bundler trick (opencode inlines via `OPENCODE_MIGRATIONS` global) when Inkstone ships as a single executable.
@@ -61,6 +59,8 @@
 ## Future Work (Post-MVP)
 
 - Reader zones-per-command when a second reader command lands. Today `readerAgent.zones` declares workspace paths (`010 RAW/013 Articles`, `020 HUMAN/022 Scraps`, `020 HUMAN/023 Notes`) that happen to match `/article`'s write targets. The zones render in the system prompt via `composeZonesBlock` before command-specific workflow text arrives from `/article`'s opening user message, so when reader grows a second command (e.g. `/book` with different write zones), the static agent-level zones list will over-grant writes for `/book` and under-grant them for `/article`. Likely fix: let `AgentCommand` declare its own `zones: AgentZone[]` and merge them into the prompt + permission overlay when that command's workflow prelude is injected. Deferred per D8 — no second reader command exists yet.
+
+- `AgentCommand.canExecute` — generalize to a second consumer. The predicate (rule 3 in `canRunSlashEntry`) is a generic optional field on `AgentCommand`, but only reader's `/article` populates it today because `/article` is the only command with the optional-arg shape (`takesArgs: false` + `argHint` set) — the only shape where rule 2's "extra args reject" is suppressed and prose-after-verb can otherwise leak through as a real arg. Other shapes (required-args, no-args) are already covered by rules 1 + 2. When a second optional-arg command lands (e.g. a hypothetical KB `/query [topic]` where topic optionally filters a saved-question list, or a reader `/book [filename]`), it will likely want its own `canExecute` body following the `resolveArticlePath`-style pattern: a shared resolver that both the gate and `execute` consume so the "would dispatch succeed?" check and the actual success criteria can't drift. The framework seam is in place; revisit the recipe (or extract a small helper) when the second consumer arrives.
 
 - Move tool-arg summary format from the UI to the tool definition. **Partly done** — the per-tool renderers moved from `src/tui/util/tool-summary.ts` to `src/bridge/tool-renderers.ts` as `TOOL_ARG_RENDERERS: Record<string, (args) => string>`, so the UI no longer owns the catalog. The remaining step — attaching `renderArgs?: (args) => string` to each `AgentTool` object directly (so third-party agents supply their own format without editing the central map) — is still open. Complication: pi-coding-agent's `readTool`/`writeTool`/`editTool` are factory outputs Inkstone doesn't own; a cast-at-import intersection type (or upstream PR to pi-coding-agent) is needed to attach the field. Inkstone-owned tools (`updateSidebarTool`) would just grow a field. Revisit when (a) a second agent lands with its own tools, or (b) we need external agent authors to ship tool-specific renderers.
 

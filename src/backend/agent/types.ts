@@ -52,6 +52,17 @@ export interface AgentZone {
  *   - `argGuide`    one-liner shown beneath the textarea after the
  *                   user types `/name ` (verb + space, no args yet).
  *                   No fallback to `argHint`.
+ *   - `canExecute`  optional pre-dispatch predicate. Consulted by the
+ *                   slash gate AFTER `takesArgs` / `argHint` shape rules
+ *                   have accepted. Returning `false` rejects dispatch
+ *                   and the prompt falls through to the plain-prompt
+ *                   path with the literal `/`-prefixed text intact.
+ *                   Used by optional-arg commands (`argHint` set,
+ *                   `takesArgs: false`) where the shape rules can't
+ *                   tell prose-after-verb from a real arg — see
+ *                   reader's `/article`. Pure boolean, no async, no
+ *                   side effects (gate is hit on every keystroke-ish
+ *                   submit decision; do cheap checks only).
  *   - `execute`     receives the raw arg string + `AgentCommandHelpers`.
  *                   Typically composes a user message and calls
  *                   `helpers.prompt(text)` to start a turn.
@@ -62,6 +73,7 @@ export interface AgentCommand {
 	argHint?: string;
 	argGuide?: string;
 	takesArgs?: boolean;
+	canExecute?(args: string): boolean;
 	execute(args: string, helpers: AgentCommandHelpers): void | Promise<void>;
 }
 

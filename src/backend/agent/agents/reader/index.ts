@@ -12,6 +12,44 @@ import {
 } from "./instructions";
 import { recommendArticles } from "./recommendations";
 
+type ArticleResolveError =
+	| "not-inside-articles"
+	| "missing"
+	| "symlink"
+	| "not-regular-file";
+
+type ArticleResolveResult =
+	| { ok: true; path: string }
+	| { ok: false; reason: ArticleResolveError };
+
+/**
+ * Resolve a `/article` argument to an absolute path that points at a
+ * regular file inside `ARTICLES_DIR`, or a discriminated error reason.
+ *
+ * Shared by `runArticle` (translates the reason to a specific thrown
+ * error message) and `articleCommand.canExecute` (consumes the boolean
+ * `ok` flag). Keeping a single resolver guarantees the gate's "would
+ * dispatch succeed?" check and `runArticle`'s success criteria can't
+ * drift.
+ */
+function resolveArticlePath(filename: string): ArticleResolveResult {
+	const articlePath = isAbsolute(filename)
+		? filename
+		: resolve(ARTICLES_DIR, filename);
+	if (!isInsideDir(articlePath, ARTICLES_DIR) || articlePath === ARTICLES_DIR) {
+		return { ok: false, reason: "not-inside-articles" };
+	}
+	let stat: ReturnType<typeof lstatSync>;
+	try {
+		stat = lstatSync(articlePath);
+	} catch {
+		return { ok: false, reason: "missing" };
+	}
+	if (stat.isSymbolicLink()) return { ok: false, reason: "symlink" };
+	if (!stat.isFile()) return { ok: false, reason: "not-regular-file" };
+	return { ok: true, path: articlePath };
+}
+
 /**
  * Shared loader for `/article`'s two invocation modes (picker / direct
  * filename).
@@ -30,26 +68,22 @@ async function runArticle(
 	filename: string,
 	prompt: (text: string, displayParts?: DisplayPart[]) => Promise<void>,
 ): Promise<void> {
-	const articlePath = isAbsolute(filename)
-		? filename
-		: resolve(ARTICLES_DIR, filename);
-	// `isInsideDir` is path.sep-boundary-safe; also reject the bare-dir case.
-	if (!isInsideDir(articlePath, ARTICLES_DIR) || articlePath === ARTICLES_DIR) {
-		throw new Error(`Not a file inside the Articles folder: '${filename}'`);
+	const result = resolveArticlePath(filename);
+	if (!result.ok) {
+		switch (result.reason) {
+			case "not-inside-articles":
+				throw new Error(`Not a file inside the Articles folder: '${filename}'`);
+			case "missing":
+				throw new Error(`Article not found: ${filename}`);
+			case "symlink":
+				throw new Error(
+					`Symlinks are not supported for /article: '${filename}'`,
+				);
+			case "not-regular-file":
+				throw new Error(`Not a regular file: ${filename}`);
+		}
 	}
-	// lstatSync + isSymbolicLink close the symlink-out-of-vault hole.
-	let stat: ReturnType<typeof lstatSync>;
-	try {
-		stat = lstatSync(articlePath);
-	} catch {
-		throw new Error(`Article not found: ${filename}`);
-	}
-	if (stat.isSymbolicLink()) {
-		throw new Error(`Symlinks are not supported for /article: '${filename}'`);
-	}
-	if (!stat.isFile()) {
-		throw new Error(`Not a regular file: ${filename}`);
-	}
+	const articlePath = result.path;
 	const content = readFileSync(articlePath, "utf-8");
 	// Chip shows vault-relative path (shorter, unambiguous); LLM text
 	// carries the absolute form so tools resolve the same file later.
@@ -70,6 +104,16 @@ async function runArticle(
  *
  * `takesArgs: false` so the bare form is slash-dispatched (not falling
  * through as a plain prompt).
+ *
+ * `canExecute` (rule 3 in `canRunSlashEntry`) gates the optional-arg
+ * shape: bare invocation always dispatches (picker path); a non-bare
+ * arg dispatches only if it resolves to a regular file inside the
+ * Articles dir. Otherwise the prompt falls through to a plain prompt
+ * with the literal `/article …` text intact — so accidental
+ * `/article is a misleading title…` reaches the model as prose
+ * instead of toasting "Article not found." Side effect: a typo'd
+ * filename also falls through to plain prompt rather than toasting;
+ * matches the Discord/Slack convention.
  */
 const articleCommand: AgentCommand = {
 	name: "article",
@@ -77,6 +121,11 @@ const articleCommand: AgentCommand = {
 	argHint: "[filename]",
 	argGuide: "use @ to pick a file, or leave empty for recommendations",
 	takesArgs: false,
+	canExecute: (args) => {
+		const filename = args.trim();
+		if (!filename) return true;
+		return resolveArticlePath(filename).ok;
+	},
 	execute: async (args, helpers) => {
 		const filename = args.trim();
 		if (!filename) {
