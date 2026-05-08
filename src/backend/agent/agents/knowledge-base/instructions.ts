@@ -1,16 +1,8 @@
-/**
- * Knowledge-base agent system-prompt body.
- *
- * The whole prompt — persona, freeform routing, and all three workflow
- * bodies — is preloaded so the LLM has the full procedure for whichever
- * verb the user invokes (`/ingest`, `/query`, `/lint`). Slash commands
- * are minimal triggers; the procedures live here. See the agent's plan
- * file for the design rationale (Inkstone owns the prompt; no runtime
- * vault `.md` reads).
- *
- * Folder paths are interpolated from `./paths.ts` so this file does not
- * hard-code the LifeOS layout.
- */
+// Knowledge-base system-prompt body. Persona + freeform routing + all
+// three workflow procedures are preloaded; commands are just triggers.
+// Folder paths are interpolated from `./paths.ts` so this file does not
+// hard-code the LifeOS layout. See `docs/ARCHITECTURE.md` § Agents on
+// ship for the prompt-shape rationale.
 import {
 	KB_FORGE,
 	KB_FORGE_INDEX,

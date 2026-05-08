@@ -24,14 +24,9 @@ import {
 import type { AgentCommand, AgentInfo, AgentZone } from "./types";
 import { composeOverlay } from "./zones";
 
-/**
- * Actions exposed on a {@link Session}. Narrow on purpose: only
- * per-turn operations live here. Session lifecycle (`clearSession`,
- * `selectAgent`) lives on `Session` itself. Agent selection is NOT
- * here — the agent is fixed for a session's lifetime (see D13 in
- * `docs/AGENT-DESIGN.md`). To change agents, the TUI builds a new
- * session via `createSession`.
- */
+// Per-turn operations the TUI drives. Lifecycle (`clearSession`,
+// `selectAgent`) lives on `Session` itself — see `docs/AGENT-DESIGN.md`
+// D13 for why agent selection isn't a runtime action.
 export interface AgentActions {
 	prompt(text: string): Promise<void>;
 	abort(): void;
@@ -39,24 +34,9 @@ export interface AgentActions {
 	setThinkingLevel(level: ThinkingLevel): void;
 }
 
-/**
- * A live session — an `Agent` instance bound to a single agent name
- * for its whole lifetime, plus the actions the TUI drives.
- *
- * The raw `Agent` is deliberately NOT exposed on this shape. Callers
- * read model/thinking-level via the accessor methods; per-turn
- * operations go through `actions`; session lifecycle goes through
- * `clearSession` and `selectAgent`. Keeping the Agent encapsulated
- * matches D13 ("one agent per session") — there is no legitimate
- * caller-owned mutation of `agent.state.*` besides the ones this
- * façade performs.
- *
- * `selectAgent(name)` is an explicit escape hatch for the TUI's
- * empty-session agent picker (Tab / Ctrl+P → Agents / DialogAgent).
- * It throws when the session has any messages — swapping mid-flight
- * would silently break prompt-cache stability (systemPrompt + tools
- * change) and scramble per-bubble agent stamps. See D13.
- */
+// Live session façade. Wraps a pi-agent-core `Agent` bound to one
+// agent name for its lifetime; raw `Agent` deliberately not exposed.
+// `selectAgent(name)` only works on empty sessions (D13).
 export interface Session {
 	readonly actions: AgentActions;
 	readonly agentName: string;
