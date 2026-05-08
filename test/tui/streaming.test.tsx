@@ -12,6 +12,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import type { Api, Model } from "@mariozechner/pi-ai";
 import {
 	assistantMessage,
 	ev_agentEnd,
@@ -347,6 +348,101 @@ describe("streaming flow", () => {
 		const f = await waitForFrame(setup, "first pass ideas");
 		expect(f).toContain("Notes");
 		expect(f).toContain("first pass ideas");
+	});
+
+	test("next-turn footer reflects new model after mid-conversation setModel", async () => {
+		// `streaming.test.tsx:207` pins the snapshot-at-turn-start
+		// invariant (mid-stream `setThinkingLevel` does not relabel the
+		// in-flight bubble). The complementary invariant is on the
+		// *next* turn: after `wrappedActions.setModel(B)`, turn N+1's
+		// footer must display B's name + provider, not the prior
+		// model's. The wrapper writes `modelName` / `modelProvider`
+		// into the store synchronously (see `agent/actions.ts:84-95`)
+		// and the assistant footer reads them at agent_end time, so
+		// the right time to check is after turn 2 closes.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		// Turn 1: closes with the seeded `FAKE_MODEL` ("Anthropic:
+		// Claude Opus 4.7" on OpenRouter). The bubble footer carries
+		// the model name from the store at agent_end time.
+		await seedUserTurn(setup, "first");
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(ev_textStart());
+		fake.emit(ev_textDelta("turn-1"));
+		fake.emit(ev_messageEnd({ stopReason: "stop" }));
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
+		await waitForFrame(setup, "turn-1");
+
+		// Mid-conversation switch through the wrapper. Use a real
+		// pi-ai-registered model id so `stampTurnClosingBubble`'s
+		// `getModel(provider, model)` lookup resolves a non-undefined
+		// `displayName` (otherwise the closing bubble's `modelName`
+		// stamp falls through to the raw id, which is hard to anchor
+		// distinctly from Opus's id in regex).
+		const switchedModel: Model<Api> = {
+			id: "anthropic/claude-3-haiku",
+			name: "Anthropic: Claude 3 Haiku",
+			api: "openai-completions",
+			provider: "openrouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+			reasoning: false,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 4_096,
+		} as Model<Api>;
+		setup.getAgent().actions.setModel(switchedModel);
+		await setup.renderOnce();
+		await Bun.sleep(20);
+
+		// Turn 2: closes after the switch. The closing bubble's
+		// `modelName` is read from the AGENT_END event's
+		// AssistantMessage (`closingAssistant.provider/model` →
+		// `getModel(...)?.name`), so the synthetic assistantMessage
+		// for this turn must carry the switched model identity.
+		await seedUserTurn(setup, "second");
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit(ev_textStart());
+		fake.emit(ev_textDelta("turn-2"));
+		fake.emit(
+			ev_messageEnd({
+				stopReason: "stop",
+				provider: "openrouter",
+				model: "anthropic/claude-3-haiku",
+			}),
+		);
+		fake.emit(
+			ev_agentEnd([
+				assistantMessage({
+					stopReason: "stop",
+					provider: "openrouter",
+					model: "anthropic/claude-3-haiku",
+				}),
+			]),
+		);
+
+		// Turn 2's closing bubble carries "Claude 3 Haiku". Anchor on
+		// the assistant footer glyph `▣` so we don't pick up the
+		// prompt-bar's own model display (which also reads modelName).
+		const f = await waitForFrame(setup, /▣[^▣]*Claude 3 Haiku/);
+		expect(f).toMatch(/▣[^▣]*Claude 3 Haiku/);
+		// Turn 1's footer is FROZEN: `stampTurnClosingBubble` writes
+		// to `messages[length - 1]` only, so once turn 1 closed and
+		// turn 2 is now the tail, turn 1's footer can't be relabeled.
+		// Both bubbles co-exist; assert exactly one of each.
+		expect(f).toMatch(/▣[^▣]*Claude Opus/);
+		const opusMatches = f.match(/▣[^▣\n]*Claude Opus/g) ?? [];
+		const haikuMatches = f.match(/▣[^▣\n]*Claude 3 Haiku/g) ?? [];
+		expect(opusMatches.length).toBe(1);
+		expect(haikuMatches.length).toBe(1);
+
+		// Backend setModel was called once, with the switched model.
+		expect(fake.calls.setModel.length).toBe(1);
+		expect(fake.calls.setModel[0]?.id).toBe("anthropic/claude-3-haiku");
 	});
 
 	test("update_sidebar delete op removes the section", async () => {
