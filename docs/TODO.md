@@ -18,9 +18,7 @@
 
 ## Completed
 
-- Implemented architecture simplification: zone write allowlist, layout dependency injection, and tool permission coverage.
-
-- Wrote architecture simplification review plan to `docs/ARCHITECTURE-REVIEW-PLAN.md`.
+- Implemented architecture simplification: zone write allowlist, layout dependency injection, and tool permission coverage. Design rationale lives in `docs/AGENT-DESIGN.md` D12 and `docs/LAYOUT-CONTEXT.md`.
 
 ## Known Issues
 
