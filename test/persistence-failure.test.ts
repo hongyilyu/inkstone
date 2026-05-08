@@ -233,7 +233,7 @@ function persistThen(writes: (tx: Tx) => void, onSuccess: () => void): void {
 
 describe("persistThen gates store mutation on tx success", () => {
 	test("onSuccess fires when tx commits", () => {
-		const sess = createSession({ agent: "example" });
+		const sess = createSession({ agent: "reader" });
 		let mutated = false;
 		persistThen(
 			(tx) => appendDisplayMessage(tx, sess.id, makeUserMsg()),
@@ -263,7 +263,7 @@ describe("persistThen gates store mutation on tx success", () => {
 		// parts + raw AgentMessage. If appendAgentMessage fails, the
 		// earlier updates must roll back and the store mutation must
 		// not fire.
-		const sess = createSession({ agent: "example" });
+		const sess = createSession({ agent: "reader" });
 		const assistantMsg = makeAssistantMsg();
 		// Seed the row first so `updateDisplayMessageMeta` +
 		// `finalizeDisplayMessageParts` targets exist.
@@ -311,7 +311,7 @@ describe("safeRun swallows after reporting", () => {
 	});
 
 	test("safeRun still runs the body on happy path", () => {
-		const sess = createSession({ agent: "example" });
+		const sess = createSession({ agent: "reader" });
 		let ran = false;
 		safeRun(() =>
 			runInTransaction((tx) => {

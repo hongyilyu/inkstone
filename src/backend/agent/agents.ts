@@ -1,4 +1,3 @@
-import { exampleAgent } from "./agents/example";
 import { knowledgeBaseAgent } from "./agents/knowledge-base";
 import { readerAgent } from "./agents/reader";
 import type { AgentInfo } from "./types";
@@ -14,11 +13,7 @@ import type { AgentInfo } from "./types";
  * directly rather than going through the bridge — only the *selected*
  * agent name crosses as reactive state (`AgentStoreState.currentAgent`).
  */
-export const AGENTS: AgentInfo[] = [
-	readerAgent,
-	exampleAgent,
-	knowledgeBaseAgent,
-];
+export const AGENTS: AgentInfo[] = [readerAgent, knowledgeBaseAgent];
 
 // Invariant: the registry literal above is non-empty, so `AGENTS[0]`
 // exists. The non-null assertion keeps `DEFAULT_AGENT` / `getAgentInfo`

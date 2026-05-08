@@ -11,7 +11,6 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { exampleAgent } from "@backend/agent/agents/example";
 import { readerAgent } from "@backend/agent/agents/reader";
 import { buildReaderInstructions } from "@backend/agent/agents/reader/instructions";
 import { composeSystemPrompt } from "@backend/agent/compose";
@@ -45,8 +44,12 @@ describe("composeSystemPrompt — commands block", () => {
 		expect(prompt).toContain("Open an article for guided reading");
 	});
 
-	test("example (no commands) omits the block entirely", () => {
-		const prompt = composeSystemPrompt(exampleAgent);
+	test("agent without commands omits the block entirely", () => {
+		// Use the inline `makeAgent` helper as a minimal-agent fixture
+		// instead of pulling in a real shipped agent — the assertion
+		// pins composer behavior, not any specific agent.
+		const agent = makeAgent({});
+		const prompt = composeSystemPrompt(agent);
 		expect(prompt).not.toContain("<commands>");
 		expect(prompt).not.toContain("</commands>");
 	});
@@ -103,9 +106,10 @@ describe("composeSystemPrompt — byte-stability", () => {
 		expect(a).toBe(b);
 	});
 
-	test("example prompt is identical across back-to-back composes", () => {
-		const a = composeSystemPrompt(exampleAgent);
-		const b = composeSystemPrompt(exampleAgent);
+	test("minimal-agent prompt is identical across back-to-back composes", () => {
+		const minimal = makeAgent({});
+		const a = composeSystemPrompt(minimal);
+		const b = composeSystemPrompt(minimal);
 		expect(a).toBe(b);
 	});
 });
