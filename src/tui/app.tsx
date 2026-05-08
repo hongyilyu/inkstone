@@ -20,7 +20,13 @@ import { DialogProvider } from "./ui/dialog";
 import { Toast, ToastProvider } from "./ui/toast";
 
 export function Layout() {
-	const { actions, store, pendingApproval, pendingSuggestion } = useAgent();
+	const {
+		actions,
+		store,
+		pendingApproval,
+		respondApproval,
+		pendingSuggestion,
+	} = useAgent();
 	const { theme } = useTheme();
 	const layout = useLayout();
 	const dimensions = useTerminalDimensions();
@@ -124,7 +130,15 @@ export function Layout() {
 										</Show>
 									}
 								>
-									<PermissionPrompt />
+									<PermissionPrompt
+										header="△ Permission required"
+										title={pendingApproval()?.title ?? ""}
+										message={pendingApproval()?.message ?? ""}
+										approveLabel="Allow"
+										rejectLabel="Reject"
+										onRespond={respondApproval}
+										pending={pendingApproval}
+									/>
 								</Show>
 							</box>
 						</box>
