@@ -74,6 +74,27 @@ describe("prompt submission", () => {
 		expect(fake.calls.prompt).not.toContain("/clear");
 	});
 
+	test("/article + prose falls through as plain prompt (canExecute reject)", async () => {
+		// Reader is the default agent; `/article` declares
+		// `canExecute(args)` that returns false when the arg can't
+		// resolve to a regular file inside the Articles dir. Typing
+		// `/article is a misleading title …` therefore rejects at the
+		// gate and the literal `/`-prefixed text submits as a plain
+		// prompt instead of toasting "Article not found." Pin so future
+		// parser regressions surface here.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		await setup.mockInput.typeText("/article is a misleading title");
+		await setup.renderOnce();
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(20);
+
+		expect(fake.calls.prompt).toEqual(["/article is a misleading title"]);
+	});
+
 	test("unknown slash falls through as plain prompt", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });

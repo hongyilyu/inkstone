@@ -92,4 +92,56 @@ describe("canRunSlashEntry", () => {
 			expect(canRunSlashEntry(entry, "stuff")).toBe(false);
 		});
 	});
+
+	describe("rule 3 — canExecute predicate", () => {
+		// Optional-arg shape (`argHint` set, `takesArgs: false`) — the
+		// only shape where rule 2 doesn't reject trailing prose, so this
+		// is where rule 3 actually earns its keep. Pinned because the
+		// reader-shaped bug it addresses is the original motivation.
+		test("returns false → reject (optional-arg shape, prose-after-verb)", () => {
+			const entry = makeEntry({
+				name: "article",
+				argHint: "[filename]",
+				canExecute: (args) =>
+					args.trim().length === 0 || args.trim() === "real.md",
+			});
+			expect(canRunSlashEntry(entry, "is a misleading title")).toBe(false);
+		});
+
+		test("returns true → accept", () => {
+			const entry = makeEntry({
+				name: "article",
+				argHint: "[filename]",
+				canExecute: () => true,
+			});
+			expect(canRunSlashEntry(entry, "real.md")).toBe(true);
+		});
+
+		test("does not bypass rule 1 (takesArgs + empty args)", () => {
+			// Even a permissive predicate must not let rule 1 fire on
+			// empty required args. canExecute is consulted AFTER shape.
+			const entry = makeEntry({
+				name: "query",
+				takesArgs: true,
+				canExecute: () => true,
+			});
+			expect(canRunSlashEntry(entry, "")).toBe(false);
+		});
+
+		test("does not bypass rule 2 (no-args command + trailing args)", () => {
+			const entry = makeEntry({
+				name: "clear",
+				canExecute: () => true,
+			});
+			expect(canRunSlashEntry(entry, "my cache")).toBe(false);
+		});
+
+		test("undefined canExecute preserves today's behavior", () => {
+			// Regression guard: omitting the predicate must not change
+			// the existing two-rule decision for any caller.
+			const entry = makeEntry({ name: "article", argHint: "[filename]" });
+			expect(canRunSlashEntry(entry, "")).toBe(true);
+			expect(canRunSlashEntry(entry, "anything")).toBe(true);
+		});
+	});
 });

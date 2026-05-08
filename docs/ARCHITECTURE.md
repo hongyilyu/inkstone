@@ -546,7 +546,9 @@ Commands are user-invoked verbs, distinct from tools (which are LLM-invoked mid-
 
 **Type shape.** See `src/tui/components/dialog/command.tsx` for `CommandOption` and `SlashSpec`. A `CommandOption` carries `id`, `title`, optional `description`, optional `keybind` (for global keybind dispatch), optional `slash: SlashSpec` (for typed `/name args` dispatch), `hidden` (to suppress palette display), and `onSelect(dialog, args?)`.
 
-Agent-declared verbs live backend-side. See `src/backend/agent/types.ts` for `AgentCommand` and `AgentCommandHelpers`. A command declares `name`, optional `description` / `argHint` / `takesArgs`, and `execute(args, helpers)`. The helpers bag gives commands `prompt(text, displayParts?)` (always available), plus optional `displayMessage(text)` and `pickFromList({…})` that require an interactive frontend.
+Agent-declared verbs live backend-side. See `src/backend/agent/types.ts` for `AgentCommand` and `AgentCommandHelpers`. A command declares `name`, optional `description` / `argHint` / `takesArgs` / `canExecute(args)`, and `execute(args, helpers)`. The helpers bag gives commands `prompt(text, displayParts?)` (always available), plus optional `displayMessage(text)` and `pickFromList({…})` that require an interactive frontend.
+
+`canExecute(args)` is the third gate clause in `canRunSlashEntry` (after the two shape rules — required-args and extra-args guards). Returning `false` rejects dispatch so the prompt falls through to a plain prompt with the literal `/`-prefixed text intact. Used by optional-arg commands (`argHint` set, `takesArgs: false`) where the shape rules can't separate prose-after-verb from a real arg — reader's `/article` is the reference: bare always passes; non-bare passes only if the arg resolves to a regular file inside the Articles dir. Side effect: typo'd or out-of-sandbox filenames also fall through to plain prompt rather than toasting; matches the Discord/Slack convention.
 
 `execute` takes an `AgentCommandHelpers` bag the TUI bridge injects:
 
@@ -629,6 +631,14 @@ user types "/xyz" + Enter
   → handleSubmit
     → command.triggerSlash("xyz", "") === false
     → actions.prompt("/xyz")                     (plain prompt)
+
+user types "/article is a misleading title" + Enter
+  → handleSubmit
+    → command.triggerSlash("article", "is a misleading title") === false
+      (shape rules pass — argHint is set, so trailing args are legal —
+       but rule 3 fires: articleCommand.canExecute rejects because the
+       arg doesn't resolve to a regular file inside the Articles dir)
+    → actions.prompt("/article is a misleading title")   (plain prompt)
 ```
 
 **Precedence on slash-name collision**: first-match wins. `AgentProvider` mounts inside `CommandProvider` (see `src/tui/app.tsx` tree), and `command.register` prepends to the internal registration list — so `BridgeAgentCommands` entries sit ahead of `Layout`'s entries. An agent that declares a verb with the same name as a shell-level verb overrides the shell version for that agent only. This preserves D9's "agent overrides built-in" rule; it's theoretical today (no agent redefines `clear`).

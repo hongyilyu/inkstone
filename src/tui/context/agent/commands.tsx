@@ -157,6 +157,7 @@ export function BridgeAgentCommands(props: { deps: CommandsDeps }) {
 				takesArgs: c.takesArgs,
 				argHint: c.argHint,
 				argGuide: c.argGuide,
+				canExecute: c.canExecute,
 			},
 			onSelect: (_d, args) => {
 				// Fire-and-forget. Errors thrown before `prompt(...)` runs
