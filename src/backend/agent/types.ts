@@ -164,4 +164,18 @@ export interface AgentInfo {
 	buildInstructions(): string;
 	commands?: AgentCommand[];
 	getPermissions?(): AgentOverlay;
+	/**
+	 * Opt out of `BASE_TOOLS` (`read` + `update_sidebar`) at compose
+	 * time. Default `false` preserves ADR 0002's "every agent gets the
+	 * base set" shape; only the router sets this `true` because per
+	 * ADR 0007 it's a one-shot classifier with exactly one tool
+	 * (`dispatch`). Without the opt-out, the router would carry `read`
+	 * with the vault baseline — a misbehaving model could inspect vault
+	 * files before dispatching, contradicting the classifier-only
+	 * design and adding privacy/latency surface for no functional gain.
+	 *
+	 * Future agents that genuinely need a sandboxed prompt-only shape
+	 * can reuse this flag rather than re-deriving the workaround.
+	 */
+	omitBaseTools?: boolean;
 }

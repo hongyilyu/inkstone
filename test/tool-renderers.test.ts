@@ -85,8 +85,9 @@ describe("renderToolArgs", () => {
 		expect(renderToolArgs("edit", undefined)).toBe(" (1 edit)");
 	});
 
-	test("TOOL_ARG_RENDERERS has the four known tools", () => {
+	test("TOOL_ARG_RENDERERS has the five known tools", () => {
 		expect(Object.keys(TOOL_ARG_RENDERERS).sort()).toEqual([
+			"dispatch",
 			"edit",
 			"read",
 			"update_sidebar",

@@ -44,6 +44,20 @@ export interface SessionState {
 	getPreTurnCodexConnections(): number | undefined;
 	setPreTurnCodexConnections(n: number | undefined): void;
 	/**
+	 * Routing-seam handoff. Set by the reducer's `applyDispatchResult`
+	 * after `forkSession()` succeeds. Read by `handleAgentEnd` — when
+	 * the router's natural turn-close fires, pi-agent-core's loop is
+	 * actually idle (`agent_end` is the loop's last event), at which
+	 * point `clearSession`'s `agent.reset()` can run synchronously
+	 * without racing against in-flight loop state. `handleAgentEnd`
+	 * triggers the resume into the child session, then clears this
+	 * field. Until cleared, the prompt stays locked (`isStreaming`
+	 * is not reset) so a fast user can't submit on the about-to-be-
+	 * abandoned router session.
+	 */
+	getPendingDispatchChildId(): string | null;
+	setPendingDispatchChildId(id: string | null): void;
+	/**
 	 * Ensure we have a session row to write to. Called from inside the
 	 * user-prompt path (before we push the user bubble) so only actually
 	 * active sessions get rows. Also forwards the id to pi-agent-core
@@ -60,6 +74,7 @@ export function createSessionState(params: {
 	let currentSessionId: string | null = null;
 	let turnStartThinkingLevel: ThinkingLevel | undefined;
 	let preTurnCodexConnections: number | undefined;
+	let pendingDispatchChildId: string | null = null;
 
 	function ensureSession(): string {
 		if (currentSessionId) return currentSessionId;
@@ -91,6 +106,10 @@ export function createSessionState(params: {
 		getPreTurnCodexConnections: () => preTurnCodexConnections,
 		setPreTurnCodexConnections: (n) => {
 			preTurnCodexConnections = n;
+		},
+		getPendingDispatchChildId: () => pendingDispatchChildId,
+		setPendingDispatchChildId: (id) => {
+			pendingDispatchChildId = id;
 		},
 		ensureSession,
 	};

@@ -317,6 +317,16 @@ export function AgentProvider(
 	const sessionState = createSessionState({ agentSession, store, setStore });
 	const messageLog = createMessageLog({ store, setStore, sessionState });
 
+	// Forward-reference: the reducer needs `resumeSession` to fire the
+	// routing seam after a `dispatch` tool result, but `wrappedActions`
+	// is constructed AFTER the reducer (events arrive on the agent loop
+	// from `agentSession`). Wire the ref through a holder that the
+	// reducer reads at event time, set the holder right after wrapped
+	// actions exist. Throws if the seam fires before init — that would
+	// mean the agent loop emitted dispatch before the provider mounted
+	// fully, which is structurally impossible.
+	let resumeRef: ((sessionId: string) => void) | null = null;
+
 	handlerRef = createAgentEventHandler({
 		store,
 		setStore,
@@ -324,6 +334,14 @@ export function AgentProvider(
 		agentSession,
 		layout,
 		messageLog,
+		resumeSession: (sid) => {
+			if (!resumeRef) {
+				throw new Error(
+					"routing seam fired before wrappedActions was constructed",
+				);
+			}
+			resumeRef(sid);
+		},
 	});
 
 	const wrappedActions = createWrappedActions({
@@ -341,6 +359,7 @@ export function AgentProvider(
 		respondSuggestion,
 		messageLog,
 	});
+	resumeRef = wrappedActions.resumeSession;
 
 	const value: AgentContextValue = {
 		store,

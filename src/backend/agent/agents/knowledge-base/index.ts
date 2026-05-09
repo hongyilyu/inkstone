@@ -57,7 +57,12 @@ const lintCommand: AgentCommand = {
 export const knowledgeBaseAgent: AgentInfo = {
 	name: "knowledge-base",
 	displayName: "Knowledge Base",
-	description: "Manage a personal knowledge base",
+	description:
+		"A workflow-driven agent for knowledge-base maintenance. Use for " +
+		"explicit actions on the vault: ingesting new RAW sources, linting/" +
+		"unifying tags across the vault, or answering structured questions " +
+		"against the KB. No plain-chat mode — every session is one of those " +
+		"three workflows.",
 	colorKey: "info",
 	extraTools: [editTool, writeTool],
 	zones: knowledgeBaseZones,

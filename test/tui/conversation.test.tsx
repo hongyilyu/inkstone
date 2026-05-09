@@ -510,7 +510,11 @@ describe("conversation rendering", () => {
 		setup.mockInput.pressTab();
 		await waitForFrame(setup, "KB Only Model");
 
-		// Cycling back to reader restores the reader model.
+		// Registry [router, reader, knowledge-base]: Tab from KB wraps
+		// to router (no per-agent map entry → fake leaves model
+		// unchanged, frame still shows the KB model). Tab again lands
+		// on Reader and the per-agent override flips it back.
+		setup.mockInput.pressTab();
 		setup.mockInput.pressTab();
 		await waitForFrame(setup, "Reader Only Model");
 	});
