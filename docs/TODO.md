@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-09 (suggest_command slash invocation contract)
+**Last updated**: 2026-05-09 (router agent + fork primitive)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -19,6 +19,8 @@
   - Stack E — knowledge-base agent (graphite-stacked, landing 2026-05-07): scaffold → port LifeOS workflow bodies → wire `/ingest` `/query` `/lint` slash commands → docs. Third agent on ship (alongside reader and example), workspace under `040 FORGE/` with `010 RAW/` + `020 HUMAN/` write-blocked per LifeOS policy. All three workflow bodies preloaded into the system prompt; commands are minimal triggers.
 
 ## Completed
+
+- **Router agent + fork primitive** (2026-05-09, 7-PR Graphite stack `feat/router-fork-pr1` … `pr7`). Freeform open-page text now lands on a new `routerAgent` whose only tool is `dispatch({ agent })`. The TUI seam (`applyDispatchResult` in the reducer) observes `tool_execution_end`, calls `forkSession()` to create a child session bound to the chosen target (Reader or KB), then `queueMicrotask`s into the existing resume flow so the user perceives one continuous timeline. Persistence-layer additions: `parts.type` enum widened with `"fork"` discriminant per ADR 0015; `sessions.parent_session_id` self-FK column per ADR 0014; `forkSession()` transactional verb composing both. Child sessions render the `forked-from` marker as an inline `↳ Routed from Router` divider above the seeded user message. Router sessions are filtered out of `listSessions` per ADR 0007 / grilling Q16 — they exist on disk so the FK target lives somewhere, but the user only ever navigates to children. Migration regenerated in place per the pre-1.0 reset policy (`docs/SQL.md:7-12`); anyone pulling needs `rm ~/.local/state/inkstone/inkstone.db*` once. Open-page default agent is now named (`DEFAULT_AGENT_NAME = "router"`) instead of positional (`AGENTS[0]`). See `CONTEXT.md` for domain language and ADRs 0007 (revised), 0014, 0015 for design.
 
 - **`suggest_command` slash invocation contract** (2026-05-09). The LLM-facing tool schema now accepts the exact slash text the user will confirm (`invocation: "/article foo.md"`) instead of the internal `{ command, args }` split. Validation constrains the verb to the active agent's declared commands and mirrors basic slash arg shape; execution parses to the existing normalized resolver request so the TUI confirm/edit/cancel panel and `triggerSlash(command, args)` replay path stay unchanged. Regression coverage lives in `test/suggest-command-tool.test.ts`; no new Known Issues.
 
