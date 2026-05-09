@@ -11,9 +11,9 @@
  *   observed frontmatter keys with one deterministic sample per key.
  *
  * Implementation posture: sync read-all per call, no cache, `.md` /
- * `.markdown` only, corrupt frontmatter surfaces as empty fields. No
- * permission baseline (dir is fixed at factory time, not
- * user-controllable).
+ * `.markdown` only, corrupt frontmatter surfaces as empty fields. Empty
+ * `baseline: []` declared on the returned tool — `dir` is fixed at
+ * factory time and not user-controllable, so no path-keyed rules apply.
  *
  * Factories take an explicit `name` + `description` so callers pick
  * their own identity (reader: `"search"` + `"list_keys"` scoped to
@@ -23,9 +23,10 @@
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { type FrontmatterValue, parseFrontmatter } from "@bridge/frontmatter";
-import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { registerBaselineFree } from "../permissions";
+import type { InkstoneTool } from "../types";
 
 const ALLOWED_EXTENSIONS = new Set([".md", ".markdown"]);
 const IGNORED_DIRS = new Set(["node_modules"]);
@@ -281,7 +282,7 @@ export interface SearchToolOptions {
 
 export function makeSearchTool(
 	opts: SearchToolOptions,
-): AgentTool<typeof searchSchema, SearchHit[]> {
+): InkstoneTool<typeof searchSchema, SearchHit[]> {
 	const { dir, name, description } = opts;
 	registerBaselineFree(
 		name,
@@ -292,6 +293,10 @@ export function makeSearchTool(
 		label: name,
 		description,
 		parameters: searchSchema,
+		// Read-only directory scan; `dir` is fixed at factory time, not
+		// user-controllable. Empty baseline is the explicit "no rules
+		// apply" declaration.
+		baseline: [],
 		async execute(
 			_callId: string,
 			params: SearchInput,
@@ -391,7 +396,7 @@ export interface ListKeysToolOptions {
 
 export function makeListKeysTool(
 	opts: ListKeysToolOptions,
-): AgentTool<typeof listKeysSchema, ListKeysResult> {
+): InkstoneTool<typeof listKeysSchema, ListKeysResult> {
 	const { dir, name, description } = opts;
 	registerBaselineFree(
 		name,
@@ -402,6 +407,10 @@ export function makeListKeysTool(
 		label: name,
 		description,
 		parameters: listKeysSchema,
+		// Read-only frontmatter-key enumeration; `dir` is fixed at
+		// factory time. Empty baseline is the explicit "no rules apply"
+		// declaration.
+		baseline: [],
 		async execute(
 			_callId: string,
 			_params: ListKeysInput,

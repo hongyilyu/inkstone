@@ -1,4 +1,4 @@
-import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import {
 	createEditTool,
 	createReadTool,
@@ -6,7 +6,18 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { VAULT_DIR } from "./constants";
-import { registerBaseline, registerBaselineFree } from "./permissions";
+import {
+	type Rule,
+	registerBaseline,
+	registerBaselineFree,
+} from "./permissions";
+import type { InkstoneTool } from "./types";
+
+// Shared baseline applied to read/write/edit: every call must resolve
+// to a path inside the vault. Co-located here with the tool exports so
+// the contract is local + grep-able. (Will fully replace the
+// `registerBaseline(...)` calls below in Stack 3.)
+const VAULT_INSIDE_DIRS: Rule[] = [{ kind: "insideDirs", dirs: [VAULT_DIR] }];
 
 /**
  * Shared tool pool. Agents pick entries via `extraTools`; `compose.ts`
@@ -26,9 +37,18 @@ import { registerBaseline, registerBaselineFree } from "./permissions";
  * tool name in `ToolPart`. Missing renderer → just the tool name
  * shows, no args row.
  */
-export const readTool = createReadTool(VAULT_DIR);
-export const writeTool = createWriteTool(VAULT_DIR);
-export const editTool = createEditTool(VAULT_DIR);
+export const readTool: InkstoneTool = {
+	...createReadTool(VAULT_DIR),
+	baseline: VAULT_INSIDE_DIRS,
+};
+export const writeTool: InkstoneTool = {
+	...createWriteTool(VAULT_DIR),
+	baseline: VAULT_INSIDE_DIRS,
+};
+export const editTool: InkstoneTool = {
+	...createEditTool(VAULT_DIR),
+	baseline: VAULT_INSIDE_DIRS,
+};
 
 /**
  * Baseline permission rules registered at module load — the hard vault
@@ -76,11 +96,14 @@ export interface UpdateSidebarDetails {
  *
  * No filesystem access — no permission baseline needed.
  */
-export const updateSidebarTool: AgentTool<
+export const updateSidebarTool: InkstoneTool<
 	typeof updateSidebarSchema,
 	UpdateSidebarDetails
 > = {
 	name: "update_sidebar",
+	// No filesystem access — only mutates UI state via the TUI reducer.
+	// Empty baseline is the explicit "no rules apply" declaration.
+	baseline: [],
 	label: "Update Sidebar",
 	description:
 		"Add, update, or remove a section in the user's sidebar panel. " +
