@@ -12,7 +12,7 @@
  * post-processing; no `withTransaction`.
  */
 
-import { and, asc, count, desc, eq, inArray, min } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, min, ne } from "drizzle-orm";
 import { getDb } from "../db/client";
 import { messages, parts, sessions } from "../db/schema";
 
@@ -32,7 +32,18 @@ export interface SessionSummary {
 
 export function listSessions(): SessionSummary[] {
 	const db = getDb();
-	const rows = db.select().from(sessions).orderBy(desc(sessions.id)).all();
+	// Hide router sessions per ADR 0007 / grilling Q16. Router sessions
+	// are backend infrastructure (their existence gives the child's
+	// `parent_session_id` FK a target and the dispatch tool-call
+	// somewhere to live), but the user only ever navigates to the child
+	// reader/kb session. The fork-divider in the child carries the
+	// routing breadcrumb; the parent row is never user-facing.
+	const rows = db
+		.select()
+		.from(sessions)
+		.where(ne(sessions.agent, "router"))
+		.orderBy(desc(sessions.id))
+		.all();
 	if (rows.length === 0) return [];
 
 	const counts = db
