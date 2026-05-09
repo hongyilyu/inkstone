@@ -30,6 +30,7 @@ import {
 	parseFrontmatter,
 	recommendArticles,
 } from "@backend/agent/agents/reader/recommendations";
+import { composeTools } from "@backend/agent/compose";
 import {
 	type ConfirmRequest,
 	dispatchBeforeToolCall,
@@ -37,6 +38,13 @@ import {
 } from "@backend/agent/permissions";
 import { composeOverlay } from "@backend/agent/zones";
 import { VAULT } from "./preload";
+
+// Composed tool lists for the agents these tests dispatch against.
+// Built once per file because `composeTools` is pure given an agent
+// definition and Stack 2's dispatcher reads `tool.baseline` from the
+// passed-in list (not a registry).
+const readerTools = composeTools(readerAgent);
+const kbTools = composeTools(knowledgeBaseAgent);
 
 // ---------------------------------------------------------------------------
 // Shared confirm-function harness.
@@ -220,6 +228,7 @@ describe("dispatchBeforeToolCall + reader overlay", () => {
 		const overlay = composeOverlay(readerAgent);
 		const result = await dispatchBeforeToolCall(
 			makeCtx(c.toolName, c.args),
+			readerTools,
 			overlay,
 		);
 		const actual = result?.block ? "block" : "allow";
@@ -287,6 +296,7 @@ describe("dispatchBeforeToolCall + knowledge-base overlay", () => {
 		const overlay = composeOverlay(knowledgeBaseAgent);
 		const result = await dispatchBeforeToolCall(
 			makeCtx(c.toolName, c.args),
+			kbTools,
 			overlay,
 		);
 		const actual = result?.block ? "block" : "allow";
@@ -314,7 +324,7 @@ describe("confirmFn payload — ConfirmRequest shape", () => {
 			path: `${VAULT}/020 HUMAN/023 Notes/fresh.md`,
 			content: "hello world",
 		});
-		await dispatchBeforeToolCall(ctx, overlay);
+		await dispatchBeforeToolCall(ctx, readerTools, overlay);
 		expect(confirmCalls).toBe(1);
 		expect(lastConfirmRequest).not.toBeNull();
 		const req = lastConfirmRequest!;
@@ -336,7 +346,7 @@ describe("confirmFn payload — ConfirmRequest shape", () => {
 				{ oldText: "reading_intent: keeper", newText: "reading_intent: joy" },
 			],
 		});
-		await dispatchBeforeToolCall(ctx, overlay);
+		await dispatchBeforeToolCall(ctx, readerTools, overlay);
 		expect(confirmCalls).toBe(1);
 		const req = lastConfirmRequest!;
 		expect(req.preview).toBeDefined();
@@ -352,7 +362,7 @@ describe("confirmFn payload — ConfirmRequest shape", () => {
 			path: `${VAULT}/020 HUMAN/023 Notes/x.md`,
 			edits: [{ oldText: "NOT_PRESENT_IN_FILE", newText: "x" }],
 		});
-		await dispatchBeforeToolCall(ctx, overlay);
+		await dispatchBeforeToolCall(ctx, readerTools, overlay);
 		expect(confirmCalls).toBe(1);
 		const req = lastConfirmRequest!;
 		expect(req.preview).toBeUndefined(); // literal apply failed → omit
@@ -366,7 +376,7 @@ describe("confirmFn payload — ConfirmRequest shape", () => {
 			path: `${VAULT}/020 HUMAN/023 Notes/nonexistent.md`,
 			content: "",
 		});
-		await dispatchBeforeToolCall(ctx, overlay);
+		await dispatchBeforeToolCall(ctx, readerTools, overlay);
 		expect(confirmCalls).toBe(1);
 		const req = lastConfirmRequest!;
 		expect(req.preview).toBeDefined();

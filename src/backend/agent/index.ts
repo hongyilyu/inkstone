@@ -317,12 +317,19 @@ export function createSession(params: {
 	}
 	// ────────────────────────────────────────────────────────
 
+	// Hoist the composed tool list so the same array is handed to
+	// pi-agent-core AND captured by the `beforeToolCall` closure
+	// below — single source of truth for "what tools this session has."
+	// `let` because `selectAgent` rebinds on agent swap (the Agent's
+	// `state.tools` is reassigned alongside).
+	let tools = composeTools(info);
+
 	const agent = new Agent({
 		initialState: {
 			systemPrompt: composeSystemPrompt(info),
 			model: initialModel,
 			thinkingLevel: resolveThinkingLevelFor(initialModel),
-			tools: composeTools(info),
+			tools,
 		},
 		// `transport: "auto"` is pi-ai 0.72.x's default for `openai-codex-
 		// responses` anyway (`providers/openai-codex-responses.js:92`);
@@ -347,17 +354,20 @@ export function createSession(params: {
 			return getProvider(provider)?.getApiKey();
 		},
 		beforeToolCall: async (ctx) => {
-			// Delegate to the permission dispatcher. The overlay combines
-			// the zones-derived rules (directory write policies declared
-			// on `AgentInfo.zones`) with the agent's optional `getPermissions`
-			// escape hatch (rules zones can't express, e.g. reader's
-			// `frontmatterOnlyInDirs` on the Articles zone).
+			// Delegate to the permission dispatcher. `tools` is captured
+			// once at session construction and rebound by `selectAgent`
+			// on agent swap — baselines are static data on the tool, so
+			// a per-call rebuild is unnecessary. `composeOverlay(info)`
+			// re-evaluates per call so `getPermissions()` can return
+			// state-dependent rules fresh for each dispatch.
 			//
-			// Reads the live `info` closure — after `selectAgent`, the
-			// overlay reflects the new agent without needing to
-			// reconstruct the Agent.
+			// The overlay combines the zones-derived rules (directory
+			// write policies declared on `AgentInfo.zones`) with the
+			// agent's optional `getPermissions` escape hatch (rules
+			// zones can't express, e.g. reader's `frontmatterOnlyInDirs`
+			// on the Articles zone).
 			const overlay = composeOverlay(info);
-			return dispatchBeforeToolCall(ctx, overlay);
+			return dispatchBeforeToolCall(ctx, tools, overlay);
 		},
 	});
 
@@ -561,7 +571,11 @@ export function createSession(params: {
 			info = nextInfo;
 			providerSel = nextProviderSel;
 			agent.state.systemPrompt = composeSystemPrompt(info);
-			agent.state.tools = composeTools(info);
+			// Rebind the closure-captured `tools` alongside the Agent's
+			// own `state.tools` so the `beforeToolCall` dispatcher
+			// resolves baselines against the new agent's tool set.
+			tools = composeTools(info);
+			agent.state.tools = tools;
 			agent.state.model = nextModel;
 			agent.state.thinkingLevel = resolveThinkingLevelFor(nextModel);
 			notify();
