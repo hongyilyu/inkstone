@@ -33,7 +33,9 @@ describe("fork part round-trip", () => {
 		const forkMarker: DisplayMessage = {
 			id: Bun.randomUUIDv7(),
 			role: "assistant",
-			parts: [{ type: "fork", parentSessionId: parent.id }],
+			parts: [
+				{ type: "fork", parentSessionId: parent.id, targetAgent: "reader" },
+			],
 		};
 
 		withTransaction((tx) => {
@@ -45,7 +47,11 @@ describe("fork part round-trip", () => {
 		expect(loaded?.displayMessages.length).toBe(1);
 
 		const part = loaded?.displayMessages[0]?.parts[0];
-		expect(part).toEqual({ type: "fork", parentSessionId: parent.id });
+		expect(part).toEqual({
+			type: "fork",
+			parentSessionId: parent.id,
+			targetAgent: "reader",
+		});
 	});
 
 	test.each([

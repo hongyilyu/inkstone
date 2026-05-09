@@ -490,6 +490,13 @@ function applyDispatchResult(endEvt: any, deps: ReducerDeps): void {
 	try {
 		child = forkSession({
 			parentId: parentSid,
+			// `currentAgent` is still the router at this point — the
+			// store swap to the child agent happens later, inside
+			// `resumeSession`. Capture it here so the seeded user
+			// message carries the parent agent's name in its bubble
+			// footer (per the routing UX: user typed this while bound
+			// to the router).
+			parentAgent: deps.store.currentAgent,
 			targetAgent: target,
 			seedMessages: [
 				{

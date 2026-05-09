@@ -239,10 +239,15 @@ export interface ForkSeed {
 
 /**
  * Create a child `Session` bound to `targetAgent`, with `parent_session_id`
- * pointing at `parentId`, plus a forked-from marker as the child's first
- * display row and any seed messages replayed afterwards. All writes happen
- * under one transaction per ADR 0012 — a mid-tx throw rolls back the
- * child row, the marker, and every seed atomically.
+ * pointing at `parentId`. The child's display rows are written in this
+ * order: each seed message FIRST, then a forked-from marker — the
+ * routing UX renders the user message at the top of the child timeline
+ * (the parent agent received it), and the marker below it as the
+ * "→ Routing to <Target>" divider announcing the transition into the
+ * child agent. UUIDv7's chronological prefix gives that ordering as a
+ * side effect of allocation order. All writes happen under one
+ * transaction per ADR 0012 — a mid-tx throw rolls back every row
+ * atomically.
  *
  * Per ADR 0014 this is the session primitive. Routing fork (the only
  * caller in this work) calls it with the user's first message as a seed;
@@ -251,6 +256,15 @@ export interface ForkSeed {
  */
 export function forkSession(init: {
 	parentId: string;
+	/**
+	 * Agent the fork originated from — stamped on each seed display
+	 * message's `agentName` so the user bubble in the child session
+	 * shows the originating-agent's footer (e.g. "Router") instead of
+	 * the new (child) agent's footer. Per ADR 0007's UX shape: the
+	 * user typed their freeform message while bound to the parent
+	 * agent; the child takes over AFTER the routing seam.
+	 */
+	parentAgent: string;
 	targetAgent: string;
 	seedMessages: ForkSeed[];
 }): SessionRecord {
@@ -276,35 +290,37 @@ export function forkSession(init: {
 			tagReportedAndRethrow(error);
 		}
 
-		// Forked-from marker — synthetic assistant message, parts.type =
-		// "fork", no `agent_messages` counterpart. Per ADR 0015 the
-		// child agent's LLM context stays naive to this row. Allocated
-		// FIRST so its UUIDv7 timestamp prefix orders before any seed
-		// row — `loadSession` orders by `messages.id` (chronological
-		// UUIDv7 prefix), so the marker reliably renders above seeded
-		// content.
-		const markerMsg: DisplayMessage = {
-			id: newId(),
-			role: "assistant",
-			parts: [{ type: "fork", parentSessionId: init.parentId }],
-		};
-		appendDisplayMessage(tx, childRow.id, markerMsg);
-
-		// Seed messages: display always, agent_messages when caller
-		// provided one. Each seed gets a fresh display id allocated
-		// here — the caller's `seed.display.id` is informational only.
-		// Two reasons: (a) the child's seeded row is a *new* row in
-		// this session, not the same row as whatever the seed mirrors
-		// in the parent (each session owns its messages); (b) allocating
-		// after the marker guarantees marker.id < seed.id ordering for
-		// chronological-by-UUIDv7-prefix loadSession reads.
+		// Seed messages FIRST. Per the routing UX, the user's message
+		// renders at the top of the child timeline (the parent agent
+		// received it), then the fork-marker divider sits BELOW it
+		// announcing the routing transition, and the child agent's
+		// reply streams under the divider. UUIDv7's chronological
+		// prefix gives us this ordering for free as long as we
+		// allocate ids in display order.
+		//
+		// Each seed gets a fresh display id allocated here — the
+		// caller's `seed.display.id` is informational only. Two
+		// reasons: (a) the child's seeded row is a *new* row in this
+		// session, not the same row as whatever the seed mirrors in
+		// the parent (each session owns its messages); (b) allocating
+		// in display order keeps loadSession's `ORDER BY messages.id`
+		// chronological.
+		//
+		// `agentName` on the seeded user message is stamped to the
+		// PARENT agent — the user typed this while bound to the parent
+		// (e.g. router), so the user-bubble footer reflects that
+		// origin even after the live agent has swapped to the child.
 		//
 		// `displayMessageId` links the agent_message to the display row
 		// it produced — required by docs/SQL.md when the agent_message
 		// HAS a corresponding bubble (which seeds always do; the seed
 		// IS a user bubble, not a tool-result/custom no-bubble row).
 		for (const seed of init.seedMessages) {
-			const seededDisplay = { ...seed.display, id: newId() };
+			const seededDisplay = {
+				...seed.display,
+				id: newId(),
+				agentName: init.parentAgent,
+			};
 			appendDisplayMessage(tx, childRow.id, seededDisplay);
 			if (seed.agentMessage) {
 				appendAgentMessage(tx, childRow.id, seed.agentMessage, {
@@ -312,6 +328,26 @@ export function forkSession(init: {
 				});
 			}
 		}
+
+		// Forked-from marker — synthetic assistant message, parts.type
+		// = "fork", no `agent_messages` counterpart. Per ADR 0015 the
+		// child agent's LLM context stays naive to this row.
+		// Allocated AFTER seeds so its UUIDv7 prefix sorts last among
+		// the pre-turn rows; the renderer paints "→ Routing to <Target>"
+		// directly below the user message and above the child agent's
+		// first response.
+		const markerMsg: DisplayMessage = {
+			id: newId(),
+			role: "assistant",
+			parts: [
+				{
+					type: "fork",
+					parentSessionId: init.parentId,
+					targetAgent: init.targetAgent,
+				},
+			],
+		};
+		appendDisplayMessage(tx, childRow.id, markerMsg);
 	});
 
 	return {
@@ -503,7 +539,10 @@ function serializePart(
 			mime: null,
 			filename: null,
 			callId: null,
-			toolData: { parentSessionId: p.parentSessionId },
+			toolData: {
+				parentSessionId: p.parentSessionId,
+				targetAgent: p.targetAgent,
+			},
 		};
 	}
 	return {
@@ -723,18 +762,23 @@ function deserializePart(row: typeof parts.$inferSelect): DisplayPart {
 	if (row.type === "fork") {
 		if (
 			!isToolDataObject(row.toolData) ||
-			!("parentSessionId" in row.toolData)
+			!("parentSessionId" in row.toolData) ||
+			!("targetAgent" in row.toolData)
 		) {
 			reportPersistenceError({
 				kind: "session",
 				action: `deserialize-part (${shortId(row.messageId)}#${row.seq})`,
 				error: new Error(
-					`fork part missing tool_data.parentSessionId on row (${row.messageId}, ${row.seq})`,
+					`fork part missing tool_data.parentSessionId/targetAgent on row (${row.messageId}, ${row.seq})`,
 				),
 			});
 			return { type: "text", text: "" };
 		}
-		return { type: "fork", parentSessionId: row.toolData.parentSessionId };
+		return {
+			type: "fork",
+			parentSessionId: row.toolData.parentSessionId,
+			targetAgent: row.toolData.targetAgent,
+		};
 	}
 	return { type: row.type, text: row.text };
 }

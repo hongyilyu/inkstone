@@ -36,11 +36,15 @@ export function Conversation() {
 						// seam, not content. Detected here at the routing
 						// layer so the divider lives outside the
 						// AssistantMessage frame entirely.
-						const isForkMarker =
+						const forkPart =
 							msg.role === "assistant" &&
 							msg.parts.length === 1 &&
-							msg.parts[0]?.type === "fork";
-						if (isForkMarker) return <ForkDivider />;
+							msg.parts[0]?.type === "fork"
+								? msg.parts[0]
+								: null;
+						if (forkPart) {
+							return <ForkDivider targetAgent={forkPart.targetAgent} />;
+						}
 						return (
 							<Show when={msg.parts.length > 0 || msg.error || msg.interrupted}>
 								<Show

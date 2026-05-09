@@ -41,6 +41,7 @@ describe("forkSession", () => {
 
 		const child = forkSession({
 			parentId: parent.id,
+			parentAgent: "router",
 			targetAgent: "reader",
 			seedMessages: [
 				{
@@ -64,17 +65,25 @@ describe("forkSession", () => {
 		expect(loaded).not.toBeNull();
 		expect(loaded?.session.parentSessionId).toBe(parent.id);
 
-		// Display rows: [forkMarker, userMsg].
+		// Display rows: [userMsg, forkMarker]. User on top (parent
+		// agent received it), divider below (announcing the routing
+		// transition), child agent's reply will stream under the
+		// divider when the seam fires.
 		expect(loaded?.displayMessages.length).toBe(2);
-		const marker = loaded?.displayMessages[0];
+		const userMsg = loaded?.displayMessages[0];
+		expect(userMsg?.role).toBe("user");
+		expect(userMsg?.parts[0]).toEqual({ type: "text", text: userText });
+		// User message stamped with the parent agent's name — the
+		// bubble footer reflects the originating agent (router) even
+		// after the live agent has swapped to the child (reader).
+		expect(userMsg?.agentName).toBe("router");
+		const marker = loaded?.displayMessages[1];
 		expect(marker?.role).toBe("assistant");
 		expect(marker?.parts[0]).toEqual({
 			type: "fork",
 			parentSessionId: parent.id,
+			targetAgent: "reader",
 		});
-		const userMsg = loaded?.displayMessages[1];
-		expect(userMsg?.role).toBe("user");
-		expect(userMsg?.parts[0]).toEqual({ type: "text", text: userText });
 
 		// agent_messages: turn 1 is the user message — the LLM-facing
 		// stream is naive to the fork marker (per ADR 0015). loadSession
@@ -107,6 +116,7 @@ describe("forkSession", () => {
 		const parent = createSession({ agent: "router" });
 		const child = forkSession({
 			parentId: parent.id,
+			parentAgent: "router",
 			targetAgent: "reader",
 			seedMessages: [
 				{
@@ -150,6 +160,7 @@ describe("forkSession", () => {
 		expect(() =>
 			forkSession({
 				parentId: parent.id,
+				parentAgent: "router",
 				targetAgent: "reader",
 				seedMessages: [
 					{
