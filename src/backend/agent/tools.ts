@@ -6,17 +6,12 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { VAULT_DIR } from "./constants";
-import {
-	type Rule,
-	registerBaseline,
-	registerBaselineFree,
-} from "./permissions";
+import type { Rule } from "./permissions";
 import type { InkstoneTool } from "./types";
 
 // Shared baseline applied to read/write/edit: every call must resolve
-// to a path inside the vault. Co-located here with the tool exports so
-// the contract is local + grep-able. (Will fully replace the
-// `registerBaseline(...)` calls below in Stack 3.)
+// to a path inside the vault. Co-located with the tool exports so the
+// contract is local + grep-able.
 const VAULT_INSIDE_DIRS: Rule[] = [{ kind: "insideDirs", dirs: [VAULT_DIR] }];
 
 /**
@@ -49,15 +44,6 @@ export const editTool: InkstoneTool = {
 	...createEditTool(VAULT_DIR),
 	baseline: VAULT_INSIDE_DIRS,
 };
-
-/**
- * Baseline permission rules registered at module load — the hard vault
- * boundary. Agents layer additional policy via `zones` and
- * `getPermissions`. See `docs/ARCHITECTURE.md` § Tool baselines.
- */
-registerBaseline(readTool.name, [{ kind: "insideDirs", dirs: [VAULT_DIR] }]);
-registerBaseline(writeTool.name, [{ kind: "insideDirs", dirs: [VAULT_DIR] }]);
-registerBaseline(editTool.name, [{ kind: "insideDirs", dirs: [VAULT_DIR] }]);
 
 // ---------------------------------------------------------------------------
 // update_sidebar — generic sidebar section management tool
@@ -141,8 +127,3 @@ export const updateSidebarTool: InkstoneTool<
 		};
 	},
 };
-
-registerBaselineFree(
-	updateSidebarTool.name,
-	"No filesystem access — only mutates UI state via the TUI reducer.",
-);

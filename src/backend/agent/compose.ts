@@ -1,4 +1,3 @@
-import { hasBaseline, isBaselineFree } from "./permissions";
 import { editTool, readTool, updateSidebarTool, writeTool } from "./tools";
 import { makeSuggestCommandTool } from "./tools/suggest-command";
 import type { AgentInfo, InkstoneTool } from "./types";
@@ -21,21 +20,8 @@ export function composeTools(info: AgentInfo): InkstoneTool<any>[] {
 	const tools: InkstoneTool<any>[] = [...BASE_TOOLS, ...info.extraTools];
 	const suggest = makeSuggestCommandTool(info.commands ?? []);
 	if (suggest) tools.push(suggest);
-	assertToolPermissionCoverage(info, tools);
 	assertMutatingToolsHaveZones(info, tools);
 	return tools;
-}
-
-function assertToolPermissionCoverage(
-	info: AgentInfo,
-	tools: InkstoneTool<any>[],
-): void {
-	for (const tool of tools) {
-		if (hasBaseline(tool.name) || isBaselineFree(tool.name)) continue;
-		throw new Error(
-			`Tool '${tool.name}' on agent '${info.name}' has no permission baseline or baseline-free review entry.`,
-		);
-	}
 }
 
 // Catches the common path where an agent composes the shared
