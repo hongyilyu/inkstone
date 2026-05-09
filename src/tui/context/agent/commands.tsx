@@ -31,6 +31,7 @@ import type { LayoutContextValue } from "../../context/layout";
 import type { DialogContext } from "../../ui/dialog";
 import { DialogSelect } from "../../ui/dialog-select";
 import type { useToast } from "../../ui/toast";
+import type { MessageLog } from "./message-log";
 import type { SessionState } from "./session-state";
 import type { AgentContextValue } from "./types";
 
@@ -42,6 +43,8 @@ export interface CommandsDeps {
 	layout: LayoutContextValue;
 	dialog: DialogContext;
 	toast: ReturnType<typeof useToast>;
+	/** See `ReducerDeps.messageLog`. */
+	messageLog: MessageLog;
 }
 
 /**

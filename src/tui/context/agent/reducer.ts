@@ -45,6 +45,7 @@ import { batch } from "solid-js";
 import { produce, type SetStoreFunction } from "solid-js/store";
 import type { LayoutContextValue } from "../../context/layout";
 import { extractErrorMessage, REDACTED_THINKING_PLACEHOLDERS } from "./helpers";
+import type { MessageLog } from "./message-log";
 import type { SessionState } from "./session-state";
 
 export interface ReducerDeps {
@@ -53,6 +54,14 @@ export interface ReducerDeps {
 	sessionState: SessionState;
 	agentSession: Session;
 	layout: LayoutContextValue;
+	/**
+	 * Store-↔-disk mirror for `store.messages`. Wired through here so
+	 * the migration to event-shaped methods can land call-site-by-call-
+	 * site without re-threading the dep bag. See `message-log.ts` for
+	 * the full surface and the two-tier (persist-first vs best-effort)
+	 * invariant.
+	 */
+	messageLog: MessageLog;
 }
 
 // ────────────────────────────────────────────────────────────────────

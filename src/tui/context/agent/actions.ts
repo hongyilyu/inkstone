@@ -23,6 +23,7 @@ import type { useToast } from "../../ui/toast";
 import { clearSessionAction } from "./actions/clear";
 import { promptAction } from "./actions/prompt";
 import { resumeSessionAction } from "./actions/resume";
+import type { MessageLog } from "./message-log";
 import type { PreviewRegistry } from "./preview-registry";
 import type { SessionState } from "./session-state";
 import type {
@@ -61,6 +62,8 @@ export interface ActionDeps {
 	 */
 	pendingSuggestion: () => PendingSuggestion | null;
 	respondSuggestion: (decision: SuggestCommandDecision) => void;
+	/** See `ReducerDeps.messageLog`. */
+	messageLog: MessageLog;
 }
 
 export function createWrappedActions(
