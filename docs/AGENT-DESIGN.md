@@ -234,7 +234,7 @@ Persisted sessions are replayable into any agent context: the Ctrl+N resume path
 
 ### D15 — LLM-driven command routing via `suggest_command`
 
-**Chosen:** a base tool `suggest_command` that lets the LLM propose a slash command on the user's behalf when a freeform request clearly maps to one of the agent's declared verbs. The tool's schema enumerates the agent's `info.commands[].name` so the LLM can only ever name a command the agent actually ships. When the user confirms, the host replays the slash as if the user had typed it — a fresh user turn, not a re-entry into the in-flight one.
+**Chosen:** a base tool `suggest_command` that lets the LLM propose a slash command on the user's behalf when a freeform request clearly maps to one of the agent's declared verbs. The tool accepts the exact user-facing slash invocation (`/name args...`) and constrains the verb to the agent's `info.commands[].name`, with basic arg-shape validation derived from `takesArgs` / `argHint`. Tool execution parses that invocation back into the normalized `{ command, args }` request the TUI resolver already uses. When the user confirms, the host replays the slash as if the user had typed it — a fresh user turn, not a re-entry into the in-flight one.
 
 **Why:**
 
