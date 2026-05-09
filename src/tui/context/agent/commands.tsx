@@ -11,17 +11,8 @@
 
 import { getAgentInfo } from "@backend/agent";
 import type { AgentCommandHelpers } from "@backend/agent/types";
-import {
-	appendDisplayMessage,
-	newId,
-	persist,
-} from "@backend/persistence/sessions";
-import type {
-	AgentStoreState,
-	DisplayMessage,
-	DisplayPart,
-} from "@bridge/view-model";
-import { produce, type SetStoreFunction } from "solid-js/store";
+import type { AgentStoreState, DisplayPart } from "@bridge/view-model";
+import type { SetStoreFunction } from "solid-js/store";
 import {
 	type CommandOption,
 	useCommand,
@@ -63,24 +54,13 @@ function buildCommandHelpers(deps: CommandsDeps): AgentCommandHelpers {
 		prompt: (text: string, displayParts?: DisplayPart[]) =>
 			deps.actions.prompt(text, displayParts),
 		displayMessage(text: string) {
-			const sessionId = deps.sessionState.ensureSession();
-			const userMsg: DisplayMessage = {
-				id: newId(),
-				role: "user",
-				parts: [{ type: "text", text }],
-			};
-			deps.setStore(
-				"messages",
-				produce((msgs: DisplayMessage[]) => {
-					msgs.push(userMsg);
-				}),
-			);
-			// Log-and-continue: `displayMessage` is a command helper
-			// that pushes a user-authored line into the conversation as
-			// a bubble (e.g. reader's `/article` recommendation list).
-			// Failure is benign at runtime — the bubble still shows
-			// in-memory; resume would miss it.
-			persist((tx) => appendDisplayMessage(tx, sessionId, userMsg));
+			// Best-effort: pushes a command-authored user line as a
+			// bubble (e.g. reader's `/article` recommendation list).
+			// Disk-write failure is logged-and-swallowed — the bubble
+			// still shows in-memory; resume would miss it. Matches the
+			// pre-MessageLog behavior.
+			deps.sessionState.ensureSession();
+			deps.messageLog.appendBubbleBestEffort([{ type: "text", text }]);
 			deps.layout.scrollToBottom();
 		},
 		pickFromList({ title, size, options }) {
