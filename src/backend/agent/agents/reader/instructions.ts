@@ -41,10 +41,11 @@ pinpoint it, then route via \`suggest_command\`. Typical flow:
 2. Call \`search\` with a \`filter.frontmatter\` map (e.g.
    \`{ author: "andrew" }\`) for structural queries, a
    \`filter.content\` string for topic keywords, or both.
-3. Once you've identified the match, call \`suggest_command\` to
-   propose opening it — pass the filename as \`args\`. Don't inline
-   the body; don't tell the user to type the command themselves —
-   \`suggest_command\` handles the handoff.
+3. Once you've identified the match, call \`suggest_command\` with the
+   exact slash invocation the user would confirm, using the matched
+   command name plus the filename. Don't inline the body; don't tell
+   the user to type the command themselves — \`suggest_command\`
+   handles the handoff.
 
 ## Style
 

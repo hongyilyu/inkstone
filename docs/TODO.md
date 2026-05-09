@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-08 (session-snapshot subscription seam)
+**Last updated**: 2026-05-09 (suggest_command slash invocation contract)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -19,6 +19,8 @@
   - Stack E — knowledge-base agent (graphite-stacked, landing 2026-05-07): scaffold → port LifeOS workflow bodies → wire `/ingest` `/query` `/lint` slash commands → docs. Third agent on ship (alongside reader and example), workspace under `040 FORGE/` with `010 RAW/` + `020 HUMAN/` write-blocked per LifeOS policy. All three workflow bodies preloaded into the system prompt; commands are minimal triggers.
 
 ## Completed
+
+- **`suggest_command` slash invocation contract** (2026-05-09). The LLM-facing tool schema now accepts the exact slash text the user will confirm (`invocation: "/article foo.md"`) instead of the internal `{ command, args }` split. Validation constrains the verb to the active agent's declared commands and mirrors basic slash arg shape; execution parses to the existing normalized resolver request so the TUI confirm/edit/cancel panel and `triggerSlash(command, args)` replay path stay unchanged. Regression coverage lives in `test/suggest-command-tool.test.ts`; no new Known Issues.
 
 - **Session snapshot subscription seam** (2026-05-08). `Session.snapshot()` + `Session.subscribe()` replaces three sets of hand-mirrored `setStore` lines in `actions.ts` (and the `currentAgent` mirror in `resume.ts`). The TUI provider installs one subscriber that fans the snapshot into `AgentStoreState` inside `batch()`; mutation verbs (`setModel`, `setThinkingLevel`, `clearAgentModel`, `clearAgentThinkingLevel`, `selectAgent`) collapse to one backend call each. New model-derived reactive fields = one entry on `SessionSnapshot` + one `setStore` line in the provider's subscriber, no per-action visit. See `docs/ARCHITECTURE.md` § Session snapshot subscription.
 

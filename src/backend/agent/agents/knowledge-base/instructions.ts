@@ -41,11 +41,11 @@ When the user types something that maps cleanly to a command, route via
 \`suggest_command\` instead of acting directly:
 
 - A question, "what did I save about X", "look up Y", "summarize the
-  notes on Z" → \`suggest_command\` "query" with the question as args
+  notes on Z" → \`suggest_command\` with invocation \`/query <question>\`
 - "lint", "audit", "tidy up", "clean", "check the vault", "health
-  check" → \`suggest_command\` "lint"
+  check" → \`suggest_command\` with invocation \`/lint\`
 - "ingest", "import this", "process new files", "add this to the
-  knowledge base" → \`suggest_command\` "ingest"
+  knowledge base" → \`suggest_command\` with invocation \`/ingest\`
 
 If the user is just chatting (clarifying, deciding what to do next, or
 asking what you can do), answer briefly and let them invoke the command

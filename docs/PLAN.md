@@ -56,6 +56,7 @@ A terminal UI application for guided article reading, built with OpenTUI (Solid)
 | 7 | Agent architecture refactor — zones as declarative workspace | `AgentInfo.zones` feeds both the permission dispatcher and the system-prompt `<your workspace>` block; reader's directory-level `confirmDirs` rules collapse into zone data; verified against 15-case smoke test covering decision + confirm-count parity |
 | 8 | Background session titles | First persisted user message starts a non-blocking title task; `sessions.title` is non-null, defaults to session id, and updates sidebar/session list/resume when generation completes |
 | 9 | Unified config + per-agent overrides | `~/.config/inkstone/config.json` carries top-level `model`/`thinkingLevels` defaults plus per-agent `agents.<name>` overrides; the model + effort dialogs write to the active agent's block and offer "Use default" to clear; `/config` slash opens the file in `$EDITOR`; permissions and zones stay TS-only in v1 |
+| 10 | LLM-driven slash command suggestions | `suggest_command` proposes the exact user-facing slash invocation (`/article file.md`) for confirmation, while the TUI continues to replay confirmed suggestions through the normal slash registry |
 
 ## Agent Workflow (Article Reader)
 

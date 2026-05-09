@@ -520,19 +520,18 @@ Implementation posture (intentionally simple):
 
 ### `suggest_command` — LLM-driven command routing
 
-The LLM can propose a slash command on the user's behalf when a freeform request clearly maps to one of the agent's declared verbs. `makeSuggestCommandTool` in `src/backend/agent/tools/suggest-command.ts` builds a per-agent tool whose `command` parameter schema enumerates the agent's `info.commands[].name` — schema-level enforcement that the LLM can only suggest a command the agent actually ships. Agents with `commands: []` (example) get no tool at all (empty enums aren't constructible).
+The LLM can propose a slash command on the user's behalf when a freeform request clearly maps to one of the agent's declared verbs. `makeSuggestCommandTool` in `src/backend/agent/tools/suggest-command.ts` builds a per-agent tool whose `invocation` parameter is the exact slash text the user will see (for example, `/article Collaborative Intelligence.md`). The schema constrains that invocation to `info.commands[].name` and mirrors basic command arg shape (`takesArgs` requires args, no-arg commands reject trailing args, optional-arg commands allow either), so the LLM can only suggest a command the agent actually ships. Agents with `commands: []` get no tool at all.
 
 `composeTools(info)` appends the tool after `BASE_TOOLS` + `extraTools` when the agent has commands. Schema:
 
 ```ts
 {
-  command: <literal-union of info.commands[].name>,
-  args: string,              // optional; empty string for arg-less verbs
-  rationale: string          // one-line explanation rendered in the panel
+  invocation: string,  // exact slash text, e.g. "/article foo.md"
+  rationale: string    // one-line explanation rendered in the panel
 }
 ```
 
-Same injected-resolver pattern as `permissions.ts`'s `confirmFn`: `setSuggestCommandFn(fn)` registers a TUI-side handler; tool execution awaits its promise and surfaces the user's decision (`"confirmed" | "edited" | "cancelled"`). The provider at `src/tui/context/agent/provider.tsx` installs the handler, captures the previous value, and restores it on unmount; in-flight resolvers resolve to `"cancelled"` via `queueMicrotask` during disposal (matches the permission approval unmount-safety pattern).
+Tool execution parses the invocation back to the normalized internal request `{ command, args, rationale }` before calling the TUI resolver. Same injected-resolver pattern as `permissions.ts`'s `confirmFn`: `setSuggestCommandFn(fn)` registers a TUI-side handler; tool execution awaits its promise and surfaces the user's decision (`"confirmed" | "edited" | "cancelled"`). The provider at `src/tui/context/agent/provider.tsx` installs the handler, captures the previous value, and restores it on unmount; in-flight resolvers resolve to `"cancelled"` via `queueMicrotask` during disposal (matches the permission approval unmount-safety pattern).
 
 UX surface — `src/tui/components/suggest-command-prompt.tsx`:
 
