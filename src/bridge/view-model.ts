@@ -53,7 +53,19 @@ export type DisplayPart =
 			args: unknown;
 			state: "pending" | "completed" | "error";
 			error?: string;
-	  };
+	  }
+	/**
+	 * Display-only marker written by `forkSession()` to a child session's
+	 * first message row. Has no `agent_messages` counterpart — the child
+	 * agent's LLM context is naive to it. Renderer paints an inline
+	 * divider ("↳ Routed from Router") above the seeded user message so
+	 * the user sees the fork seam without cross-session fetches at render
+	 * time. Per ADR 0015, this is a discriminant distinct from `tool` —
+	 * a fork artifact is *not* an LLM-invoked capability mid-turn, so
+	 * code that walks parts looking for `type === "tool"` cannot
+	 * accidentally sweep up routing markers.
+	 */
+	| { type: "fork"; parentSessionId: string };
 
 /**
  * A dynamic sidebar section set by an agent tool (`update_sidebar`).

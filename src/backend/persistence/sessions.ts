@@ -375,6 +375,23 @@ function serializePart(
 			},
 		};
 	}
+	if (p.type === "fork") {
+		// Fork-marker payload reuses `tool_data` as a generic JSON sidecar.
+		// `text` stays empty (fork rows have no body); `call_id` stays NULL
+		// (no LLM tool-call ID — this is a synthetic display row per
+		// ADR 0015). Anything walking `parts` filtering on
+		// `type === "tool"` skips this row by discriminant.
+		return {
+			messageId,
+			seq,
+			type: p.type,
+			text: "",
+			mime: null,
+			filename: null,
+			callId: null,
+			toolData: { parentSessionId: p.parentSessionId },
+		};
+	}
 	return {
 		messageId,
 		seq,
@@ -559,7 +576,17 @@ function deserializePart(row: typeof parts.$inferSelect): DisplayPart {
 		return { type: "file", mime: row.mime, filename: row.filename };
 	}
 	if (row.type === "tool") {
-		if (row.callId == null || row.toolData == null) {
+		// `tool_data` is a JSON column with no runtime validation, so a
+		// corrupted row could hold a primitive (string, number) where
+		// the schema expects an object. The `in` operator throws
+		// TypeError on primitives — gate behind an object-shape check
+		// so a single bad row reports + degrades to an empty text part
+		// instead of crashing the whole `loadSession` call.
+		if (
+			row.callId == null ||
+			!isToolDataObject(row.toolData) ||
+			!("name" in row.toolData)
+		) {
 			reportPersistenceError({
 				kind: "session",
 				action: `deserialize-part (${shortId(row.messageId)}#${row.seq})`,
@@ -578,7 +605,37 @@ function deserializePart(row: typeof parts.$inferSelect): DisplayPart {
 			error: row.toolData.error,
 		};
 	}
+	if (row.type === "fork") {
+		if (
+			!isToolDataObject(row.toolData) ||
+			!("parentSessionId" in row.toolData)
+		) {
+			reportPersistenceError({
+				kind: "session",
+				action: `deserialize-part (${shortId(row.messageId)}#${row.seq})`,
+				error: new Error(
+					`fork part missing tool_data.parentSessionId on row (${row.messageId}, ${row.seq})`,
+				),
+			});
+			return { type: "text", text: "" };
+		}
+		return { type: "fork", parentSessionId: row.toolData.parentSessionId };
+	}
 	return { type: row.type, text: row.text };
+}
+
+/**
+ * Object-shape guard for the `tool_data` JSON column. `tool_data` is
+ * stored as opaque TEXT and parsed via Drizzle's `mode: "json"` — there's
+ * no runtime schema validation, so a malformed row could hold a primitive
+ * (`null`, `42`, `"oops"`) or an array. The `in` operator we use to
+ * narrow the union throws `TypeError: Cannot use 'in' operator to search
+ * for 'X' in <primitive>`, which would surface as a `loadSession` crash
+ * instead of the loud-but-non-fatal report path. Excluding arrays too
+ * because `parts.toolData` is documented as a record-shaped sidecar.
+ */
+function isToolDataObject(data: unknown): data is Record<string, unknown> {
+	return typeof data === "object" && data !== null && !Array.isArray(data);
 }
 
 export { listSessions, type SessionSummary } from "./sessions/list";
