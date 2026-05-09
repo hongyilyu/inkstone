@@ -47,10 +47,10 @@ import {
 	appendDisplayMessage,
 	finalizeDisplayMessageParts,
 	newId,
-	runInTransaction,
-	safeRun,
+	persist,
 	type Tx,
 	updateDisplayMessageMeta,
+	withTransaction,
 } from "@backend/persistence/sessions";
 import type {
 	AgentStoreState,
@@ -180,9 +180,9 @@ export function createMessageLog(deps: {
 		onSuccess: () => void,
 	): boolean {
 		try {
-			runInTransaction(writes);
+			withTransaction(writes);
 		} catch {
-			// Already reported by the writer or by runInTransaction's
+			// Already reported by the writer or by withTransaction's
 			// outer catch. Skip onSuccess so the store stays at its
 			// pre-mutation value.
 			return false;
@@ -437,11 +437,11 @@ export function createMessageLog(deps: {
 		);
 		const sid = sessionState.getCurrentSessionId();
 		if (!sid) return;
-		safeRun(() =>
-			runInTransaction((tx) =>
-				appendDisplayMessage(tx, sid, msg, { includeParts }),
-			),
-		);
+		// Best-effort: store mutation already happened above; this
+		// disk write is post-hoc. `persist` without `onSuccess` is the
+		// log-and-continue shape — failure is reported via the toast
+		// surface but doesn't propagate.
+		persist((tx) => appendDisplayMessage(tx, sid, msg, { includeParts }));
 	}
 
 	function appendBubbleBestEffort(parts: DisplayPart[]): void {

@@ -19,17 +19,9 @@
 
 import type { Session } from "@backend/agent";
 import { getAgentInfo } from "@backend/agent";
-import {
-	appendAgentMessage,
-	appendDisplayMessage,
-	finalizeDisplayMessageParts,
-	newId,
-	persist,
-	updateDisplayMessageMeta,
-} from "@backend/persistence/sessions";
+import { appendAgentMessage, persist } from "@backend/persistence/sessions";
 import type {
 	AgentStoreState,
-	DisplayMessage,
 	DisplayPart,
 	SidebarSection,
 } from "@bridge/view-model";
@@ -43,7 +35,7 @@ import { getOpenAICodexWebSocketDebugStats } from "@mariozechner/pi-ai/openai-co
 import { batch } from "solid-js";
 import { produce, type SetStoreFunction } from "solid-js/store";
 import type { LayoutContextValue } from "../../context/layout";
-import { extractErrorMessage, REDACTED_THINKING_PLACEHOLDERS } from "./helpers";
+import { REDACTED_THINKING_PLACEHOLDERS } from "./helpers";
 import type { MessageLog } from "./message-log";
 import type { SessionState } from "./session-state";
 
@@ -121,44 +113,12 @@ function handleAgentStart(deps: ReducerDeps): void {
 function handleMessageStart(event: AgentEvent, deps: ReducerDeps): void {
 	const msg = (event as any).message;
 	if (!msg || msg.role !== "assistant") return;
-	const newMsg: DisplayMessage = {
-		id: newId(),
-		role: "assistant",
-		parts: [],
-	};
-	deps.setStore(
-		"messages",
-		produce((msgs: DisplayMessage[]) => {
-			msgs.push(newMsg);
-		}),
-	);
-	// Insert the header row only — parts stream in and get flushed as
-	// a batch on `message_end` via `finalizeDisplayMessageParts`.
-	// Avoids the old DELETE+re-INSERT thrash that ran on every end
-	// event.
-	//
-	// `currentSessionId` is guaranteed non-null: this branch only
-	// fires during a turn, and turns only start via
-	// `wrappedActions.prompt` which called `ensureSession()`.
-	//
-	// Log-and-continue: pre-stream append. A failed insert means the
-	// shell row is missing from disk but present in the store;
-	// `message_end`'s persist-first call later uses
-	// `updateDisplayMessageMeta` + `finalizeDisplayMessageParts` which
-	// are UPDATE + DELETE/INSERT by `msg.id`, so the UPDATE is a no-op
-	// and the INSERTs create parts with a dangling FK — drizzle would
-	// fail. Acceptable because the outer tx rolls back and the
-	// `onSuccess` is skipped, leaving the store meta un-stamped. The
-	// transient assistant bubble stays in memory for the rest of the
-	// session; resume rebuilds cleanly (the shell is gone, so no orphan).
-	const sid = deps.sessionState.getCurrentSessionId();
-	if (sid) {
-		persist((tx) =>
-			appendDisplayMessage(tx, sid, newMsg, {
-				includeParts: false,
-			}),
-		);
-	}
+	// Best-effort header insert — parts stream in and get flushed at
+	// `message_end` via `stampAssistantOnMessageEnd`. A failed shell
+	// insert leaves the bubble in the store but missing from disk;
+	// `message_end`'s persist-first trio rolls back as a unit, so the
+	// in-memory bubble stays un-stamped and resume rebuilds cleanly.
+	deps.messageLog.appendAssistantShell();
 	deps.layout.scrollToBottom();
 }
 
@@ -322,82 +282,28 @@ function appendToolCallPart(
 // ────────────────────────────────────────────────────────────────────
 
 function handleMessageEnd(event: AgentEvent, deps: ReducerDeps): void {
-	// Accumulate token usage and cost from assistant messages.
-	// `cost?.total ?? 0` mirrors the resume-time rollup in
-	// `loadSession` (`sessions.ts`) — pi-ai types `cost.total` as
-	// non-optional, but defending against a provider writing `usage`
-	// without a cost breakdown is cheap and keeps the two accumulators
-	// in lockstep; otherwise a sparse-usage stream would crash here
-	// (TypeError on `.total`) while loading the same session back
-	// would silently succeed.
 	const msg = (event as any).message as AgentMessage | undefined;
 	if (msg && msg.role === "assistant") {
-		stampAssistantBubbleMeta(msg as AssistantMessage, deps);
+		// Accumulate token usage and cost from assistant messages.
+		// `cost?.total ?? 0` mirrors the resume-time rollup in
+		// `loadSession` (`sessions.ts`) — pi-ai types `cost.total` as
+		// non-optional, but defending against a provider writing `usage`
+		// without a cost breakdown is cheap and keeps the two accumulators
+		// in lockstep; otherwise a sparse-usage stream would crash here
+		// (TypeError on `.total`) while loading the same session back
+		// would silently succeed. Ungated on tx success — these are
+		// running totals, recomputed from disk on resume.
+		const usage = (msg as AssistantMessage).usage;
+		if (usage) {
+			deps.setStore("totalTokens", (t) => t + usage.totalTokens);
+			deps.setStore("totalCost", (c) => c + (usage.cost?.total ?? 0));
+		}
+		deps.messageLog.stampAssistantOnMessageEnd(msg as AssistantMessage);
 		return;
 	}
 	if (msg) {
 		persistNonAssistantMessage(msg, deps);
 	}
-}
-
-function stampAssistantBubbleMeta(
-	assistantMsg: AssistantMessage,
-	deps: ReducerDeps,
-): void {
-	const usage = assistantMsg.usage;
-	if (usage) {
-		deps.setStore("totalTokens", (t) => t + usage.totalTokens);
-		deps.setStore("totalCost", (c) => c + (usage.cost?.total ?? 0));
-	}
-	// Per-message meta only: `error` + `interrupted`. Per-turn meta
-	// (agentName / modelName / duration / thinkingLevel) is stamped
-	// at `agent_end` on the turn-closing bubble — see
-	// `stampTurnClosingBubble` and `docs/APPROVAL-UI.md` § Rendering.
-	const lastIdx = deps.store.messages.length - 1;
-	const last = deps.store.messages[lastIdx];
-	if (!last || last.role !== "assistant") return;
-	// Error vs interrupted split: hard errors (stopReason "error")
-	// get the red-bordered panel with the provider message; aborts
-	// (stopReason "aborted") flip `interrupted` only — the footer
-	// suffixes ` · interrupted` and tints the agent glyph muted.
-	const errorStr =
-		assistantMsg.stopReason === "error" && assistantMsg.errorMessage
-			? assistantMsg.errorMessage
-			: undefined;
-	const interruptedFlag =
-		assistantMsg.stopReason === "aborted" ? true : undefined;
-
-	const sid = deps.sessionState.getCurrentSessionId();
-	if (!sid) return;
-
-	// Persist-first: store mutations land only on tx success so
-	// disk and store stay in lockstep. Parts are shallow-cloned so
-	// `updated` is decoupled from the live Solid proxy.
-	const updated: DisplayMessage = {
-		...last,
-		parts: last.parts.map((p) => ({ ...p })),
-		...(errorStr ? { error: errorStr } : {}),
-		...(interruptedFlag ? { interrupted: true } : {}),
-	};
-	persist(
-		(tx) => {
-			updateDisplayMessageMeta(tx, sid, updated);
-			finalizeDisplayMessageParts(tx, sid, updated);
-			appendAgentMessage(tx, sid, assistantMsg as AgentMessage, {
-				displayMessageId: updated.id,
-			});
-		},
-		{
-			onSuccess: () => {
-				if (errorStr) {
-					deps.setStore("messages", lastIdx, "error", errorStr);
-				}
-				if (interruptedFlag) {
-					deps.setStore("messages", lastIdx, "interrupted", true);
-				}
-			},
-		},
-	);
 }
 
 function persistNonAssistantMessage(
@@ -436,81 +342,12 @@ function handleToolExecutionEnd(event: AgentEvent, deps: ReducerDeps): void {
 		deps.setStore("status", "streaming");
 	}
 	const endEvt = event as any;
-	const found = findToolPart(deps.store.messages, endEvt.toolCallId);
-	if (found) {
-		applyToolResult(found.msgIdx, found.partIdx, endEvt, deps);
-	}
+	deps.messageLog.applyToolResult(
+		endEvt.toolCallId,
+		endEvt.result,
+		!!endEvt.isError,
+	);
 	applySidebarMutation(endEvt, deps);
-}
-
-function findToolPart(
-	messages: AgentStoreState["messages"],
-	callId: string,
-): { msgIdx: number; partIdx: number } | undefined {
-	// Scan tail-first because the matching tool part is always on
-	// one of the most recent assistant bubbles (pi-agent-core emits
-	// `message_end` for the assistant immediately before
-	// `tool_execution_*`).
-	for (let mi = messages.length - 1; mi >= 0; mi--) {
-		const m = messages[mi];
-		if (!m || m.role !== "assistant") continue;
-		for (let pi = m.parts.length - 1; pi >= 0; pi--) {
-			const p = m.parts[pi];
-			if (p?.type === "tool" && p.callId === callId) {
-				return { msgIdx: mi, partIdx: pi };
-			}
-		}
-	}
-	return undefined;
-}
-
-function applyToolResult(
-	foundMsgIdx: number,
-	foundPartIdx: number,
-	endEvt: any,
-	deps: ReducerDeps,
-): void {
-	const state: "completed" | "error" = endEvt.isError ? "error" : "completed";
-	const errorMsg = endEvt.isError
-		? extractErrorMessage(endEvt.result)
-		: undefined;
-	// Persist-first: build the post-mutation parts array locally,
-	// write it to disk, then apply the single-part produce mutation
-	// to the store on success. The cloned `nextParts` leaves the
-	// store proxies untouched — only the clone at `foundPartIdx`
-	// carries the new state. On failure the bubble keeps rendering
-	// `pending`, matching what `/resume` would load.
-	const msgAtIdx = deps.store.messages[foundMsgIdx];
-	const sid = deps.sessionState.getCurrentSessionId();
-	if (!sid || !msgAtIdx) return;
-	const nextParts = msgAtIdx.parts.map((p, i) => {
-		if (i !== foundPartIdx || p.type !== "tool") return p;
-		const updatedPart: DisplayPart = {
-			...p,
-			state,
-			...(errorMsg !== undefined ? { error: errorMsg } : {}),
-		};
-		return updatedPart;
-	});
-	const updated: DisplayMessage = {
-		...msgAtIdx,
-		parts: nextParts,
-	};
-	persist((tx) => finalizeDisplayMessageParts(tx, sid, updated), {
-		onSuccess: () => {
-			deps.setStore(
-				"messages",
-				foundMsgIdx,
-				"parts",
-				foundPartIdx,
-				produce((p: DisplayPart) => {
-					if (p.type !== "tool") return;
-					p.state = state;
-					if (errorMsg !== undefined) p.error = errorMsg;
-				}),
-			);
-		},
-	});
 }
 
 function applySidebarMutation(endEvt: any, deps: ReducerDeps): void {
@@ -565,79 +402,16 @@ function applySidebarMutation(endEvt: any, deps: ReducerDeps): void {
 function handleAgentEnd(event: AgentEvent, deps: ReducerDeps): void {
 	deps.setStore("isStreaming", false);
 	deps.setStore("status", "idle");
-	sweepPendingTools(deps);
+	deps.messageLog.sweepPendingTools();
 	persistSynthesizedAbortMessage(event, deps);
 	stampTurnClosingBubble(event, deps);
-	stampInterruptedUser(deps);
+	deps.messageLog.markInterruptedUser();
 	// Reset the turn-scope snapshot. Next turn's prompt handler
 	// re-captures; unrelated `agent_end` events (none exist in the
 	// current event model, but defensive) won't inherit.
 	deps.sessionState.setTurnStartThinkingLevel(undefined);
 	detectCodexTransport(deps);
 	deps.sessionState.setPreTurnCodexConnections(undefined);
-}
-
-function sweepPendingTools(deps: ReducerDeps): void {
-	// Sweep any `pending` tool parts on assistant bubbles from this
-	// session. pi-agent-core emits `agent_end` for both normal
-	// completion and `handleRunFailure` paths; in the failure path
-	// (user abort mid-tool, provider crash in `afterToolCall`, hook
-	// exception), no `tool_execution_end` fires, so the matching
-	// tool part would otherwise render `~ tool …` forever — live
-	// and on resume. Flip to `"error"` with a generic marker. Scan
-	// all assistant bubbles because a multi-tool turn can leave >1
-	// pending (rare; safe to sweep all). Persist-first: build cloned
-	// post-state messages, write them atomically, then apply the in-
-	// place produce walk to the store on success.
-	const touched: DisplayMessage[] = [];
-	for (const m of deps.store.messages) {
-		if (m.role !== "assistant") continue;
-		const hasPending = m.parts.some(
-			(p) => p.type === "tool" && p.state === "pending",
-		);
-		if (!hasPending) continue;
-		touched.push({
-			...m,
-			parts: m.parts.map((p) => {
-				if (p.type !== "tool" || p.state !== "pending") return p;
-				const cloned: DisplayPart = {
-					...p,
-					state: "error" as const,
-					error: p.error ?? "Tool execution interrupted",
-				};
-				return cloned;
-			}),
-		});
-	}
-	const sid = deps.sessionState.getCurrentSessionId();
-	if (!sid || touched.length === 0) return;
-	persist(
-		(tx) => {
-			for (const m of touched) {
-				finalizeDisplayMessageParts(tx, sid, m);
-			}
-		},
-		{
-			onSuccess: () => {
-				deps.setStore(
-					"messages",
-					produce((msgs: DisplayMessage[]) => {
-						for (const m of msgs) {
-							if (m.role !== "assistant") continue;
-							for (const p of m.parts) {
-								if (p.type === "tool" && p.state === "pending") {
-									p.state = "error";
-									if (!p.error) {
-										p.error = "Tool execution interrupted";
-									}
-								}
-							}
-						}
-					}),
-				);
-			},
-		},
-	);
 }
 
 function persistSynthesizedAbortMessage(
@@ -683,15 +457,16 @@ function persistSynthesizedAbortMessage(
 
 function stampTurnClosingBubble(event: AgentEvent, deps: ReducerDeps): void {
 	// Per-turn stamps (`agentName`, `modelName`, `duration`,
-	// `thinkingLevel`) land on `messages[length - 1]` — always the
-	// turn-closing assistant bubble because tool results don't
-	// render as display bubbles. See `docs/APPROVAL-UI.md` §
-	// Rendering for the footer-placement rationale.
+	// `thinkingLevel`). The mirror write itself is the
+	// `messageLog.stampTurnClose` call below; this function still
+	// computes the turn-derived values (whether the turn was
+	// interrupted, the closing model name, the snapshotted thinking
+	// level) because those depend on caller-only state
+	// (`lastTurnStartedAt`, `turnStartThinkingLevel`,
+	// `event.messages`).
 	if (deps.store.lastTurnStartedAt <= 0) return;
-	const lastIdx = deps.store.messages.length - 1;
-	const last = deps.store.messages[lastIdx];
-	const sid = deps.sessionState.getCurrentSessionId();
-	if (!last || last.role !== "assistant" || !sid) return;
+	const last = deps.store.messages[deps.store.messages.length - 1];
+	if (!last || last.role !== "assistant") return;
 
 	const endMessages = (event as { messages?: AgentMessage[] }).messages;
 	const closingAgent = endMessages?.[endMessages.length - 1];
@@ -720,66 +495,11 @@ function stampTurnClosingBubble(event: AgentEvent, deps: ReducerDeps): void {
 	const stampedLevel =
 		!interrupted && turnLevel && turnLevel !== "off" ? turnLevel : undefined;
 
-	const updated: DisplayMessage = {
-		...last,
+	deps.messageLog.stampTurnClose({
 		agentName,
-		...(displayName ? { modelName: displayName } : {}),
-		...(duration !== undefined ? { duration } : {}),
-		...(stampedLevel ? { thinkingLevel: stampedLevel } : {}),
-	};
-	persist((tx) => updateDisplayMessageMeta(tx, sid, updated), {
-		onSuccess: () => {
-			deps.setStore("messages", lastIdx, "agentName", agentName);
-			if (displayName) {
-				deps.setStore("messages", lastIdx, "modelName", displayName);
-			}
-			if (duration !== undefined) {
-				deps.setStore("messages", lastIdx, "duration", duration);
-			}
-			if (stampedLevel) {
-				deps.setStore("messages", lastIdx, "thinkingLevel", stampedLevel);
-			}
-		},
-	});
-}
-
-function stampInterruptedUser(deps: ReducerDeps): void {
-	// Stamp `interrupted` on the user bubble when the turn ended
-	// without a real assistant reply. "Real" = at least one part, or
-	// an error, or the assistant itself already flagged interrupted.
-	// This replaces the old render-time `isDanglingUser` derivation
-	// that raced between `message_start` (empty shell pushed) and
-	// the first `message_update` (parts arrive), causing a flash of
-	// `[Interrupted by user]` on fast models (GPT 5.5 no-effort).
-	// Stamping here — at `agent_end`, the authoritative "stream is
-	// over" boundary — eliminates the race: the flag is never set
-	// during normal streaming.
-	let userIdx = -1;
-	for (let i = deps.store.messages.length - 1; i >= 0; i--) {
-		if (deps.store.messages[i]?.role === "user") {
-			userIdx = i;
-			break;
-		}
-	}
-	if (userIdx === -1) return;
-	const next = deps.store.messages[userIdx + 1];
-	const hasRealReply =
-		next &&
-		next.role === "assistant" &&
-		(next.parts.length > 0 || !!next.error || !!next.interrupted);
-	if (hasRealReply) return;
-	const sid = deps.sessionState.getCurrentSessionId();
-	const userMsg = deps.store.messages[userIdx];
-	if (!sid || !userMsg) return;
-	const updated: DisplayMessage = {
-		...userMsg,
-		parts: userMsg.parts.map((p) => ({ ...p })),
-		interrupted: true,
-	};
-	persist((tx) => updateDisplayMessageMeta(tx, sid, updated), {
-		onSuccess: () => {
-			deps.setStore("messages", userIdx, "interrupted", true);
-		},
+		modelName: displayName,
+		duration,
+		thinkingLevel: stampedLevel,
 	});
 }
 

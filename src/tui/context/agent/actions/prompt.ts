@@ -39,66 +39,51 @@ export async function promptAction(
 	// content; otherwise fall back to the one-text-part shape that
 	// covers plain prompts. pi-agent-core only ever sees `text`, so
 	// whatever the LLM needs must be in `text`.
-	const userMsg: DisplayMessage = {
-		id: newId(),
-		role: "user",
-		parts: displayParts ?? [{ type: "text", text }],
-	};
-	// Persist-first: push the user bubble, stamp the turn clock, and
+	//
+	// Persist-first: push the user bubble; stamp the turn clock and
 	// start the LLM turn only if the insert committed. On failure,
 	// `reportPersistenceError` has already toasted and `prompt.tsx`
 	// has already cleared the input — the user retypes. Short-
 	// circuiting here keeps store/disk in sync.
-	let persisted = false;
-	persist((tx) => appendDisplayMessage(tx, sessionId, userMsg), {
-		onSuccess: () => {
-			persisted = true;
-			deps.setStore(
-				"messages",
-				produce((msgs: DisplayMessage[]) => {
-					msgs.push(userMsg);
-				}),
-			);
-			deps.setStore("lastTurnStartedAt", Date.now());
-			// Snapshot the effort at turn-start so agent_end can stamp
-			// the turn-closing bubble with the value that produced it,
-			// not whatever the store holds at event time.
-			deps.sessionState.setTurnStartThinkingLevel(deps.store.thinkingLevel);
-			// Pre-turn snapshot of pi-ai's Codex WebSocket connection
-			// counter. Read in `agent_end` to decide whether this turn
-			// ran on WebSocket (counter advanced) or fell back to SSE
-			// (counter unchanged). `getOpenAICodexWebSocketDebugStats`
-			// returns `undefined` when no WebSocket has ever been
-			// opened for this sessionId — we normalize to 0 so the
-			// "no change" branch reads as "SSE used" on the first turn,
-			// which is the correct semantic for a brand-new session
-			// whose first turn couldn't open a WebSocket. Only
-			// meaningful when Codex is the active provider; other
-			// providers don't touch the counter, so the diff trivially
-			// reads 0 — benign.
-			if (deps.store.modelProvider === "openai-codex") {
-				const stats = getOpenAICodexWebSocketDebugStats(sessionId);
-				deps.sessionState.setPreTurnCodexConnections(
-					(stats?.connectionsCreated ?? 0) + (stats?.connectionsReused ?? 0),
-				);
-			} else {
-				deps.sessionState.setPreTurnCodexConnections(undefined);
-			}
-			if (shouldGenerateTitle) {
-				startSessionTitleTask(
-					{
-						sessionId,
-						activeProviderId: titleProviderId,
-						activeModelId: titleModelId,
-						prompt: text,
-					},
-					deps,
-				);
-			}
-			deps.layout.scrollToBottom();
-		},
-	});
+	const persisted = deps.messageLog.appendUserBubble(
+		displayParts ?? [{ type: "text", text }],
+	);
 	if (!persisted) return;
+	deps.setStore("lastTurnStartedAt", Date.now());
+	// Snapshot the effort at turn-start so agent_end can stamp the
+	// turn-closing bubble with the value that produced it, not
+	// whatever the store holds at event time.
+	deps.sessionState.setTurnStartThinkingLevel(deps.store.thinkingLevel);
+	// Pre-turn snapshot of pi-ai's Codex WebSocket connection counter.
+	// Read in `agent_end` to decide whether this turn ran on WebSocket
+	// (counter advanced) or fell back to SSE (counter unchanged).
+	// `getOpenAICodexWebSocketDebugStats` returns `undefined` when no
+	// WebSocket has ever been opened for this sessionId — we normalize
+	// to 0 so the "no change" branch reads as "SSE used" on the first
+	// turn, which is the correct semantic for a brand-new session
+	// whose first turn couldn't open a WebSocket. Only meaningful when
+	// Codex is the active provider; other providers don't touch the
+	// counter, so the diff trivially reads 0 — benign.
+	if (deps.store.modelProvider === "openai-codex") {
+		const stats = getOpenAICodexWebSocketDebugStats(sessionId);
+		deps.sessionState.setPreTurnCodexConnections(
+			(stats?.connectionsCreated ?? 0) + (stats?.connectionsReused ?? 0),
+		);
+	} else {
+		deps.sessionState.setPreTurnCodexConnections(undefined);
+	}
+	if (shouldGenerateTitle) {
+		startSessionTitleTask(
+			{
+				sessionId,
+				activeProviderId: titleProviderId,
+				activeModelId: titleModelId,
+				prompt: text,
+			},
+			deps,
+		);
+	}
+	deps.layout.scrollToBottom();
 	// Snapshot session id + message-length before the await so the
 	// catch can detect a `clearSession()` / `resumeSession()` mid-flight
 	// and bail without poisoning the fresh session's bubble list.

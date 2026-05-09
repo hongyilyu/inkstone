@@ -162,7 +162,7 @@ function makeRawAssistant(
 import {
 	appendDisplayMessage,
 	finalizeDisplayMessageParts,
-	runInTransaction,
+	withTransaction,
 } from "@backend/persistence/sessions";
 
 /**
@@ -177,7 +177,7 @@ function seedAssistantShell(
 ): DisplayMessage {
 	const msg: DisplayMessage = { id: newId(), role: "assistant", parts };
 	setStore("messages", (prev) => [...prev, msg]);
-	runInTransaction((tx) =>
+	withTransaction((tx) =>
 		appendDisplayMessage(tx, sid, msg, { includeParts: false }),
 	);
 	return msg;
@@ -260,7 +260,7 @@ describe("applyToolResult", () => {
 		// finalizeDisplayMessageParts the seeded parts so the disk row
 		// has the pending tool to start with — mirrors what the reducer
 		// would have run after the parts streamed in.
-		runInTransaction((tx) =>
+		withTransaction((tx) =>
 			finalizeDisplayMessageParts(tx, sid, store.messages[0]!),
 		);
 
@@ -285,7 +285,7 @@ describe("applyToolResult", () => {
 				state: "pending",
 			},
 		]);
-		runInTransaction((tx) =>
+		withTransaction((tx) =>
 			finalizeDisplayMessageParts(tx, sid, store.messages[0]!),
 		);
 
@@ -326,7 +326,7 @@ describe("applyToolResult", () => {
 				state: "pending",
 			},
 		]);
-		runInTransaction((tx) => {
+		withTransaction((tx) => {
 			finalizeDisplayMessageParts(tx, sid, store.messages[0]!);
 			finalizeDisplayMessageParts(tx, sid, store.messages[1]!);
 		});
@@ -365,7 +365,7 @@ describe("sweepPendingTools", () => {
 			{ type: "text", text: "ok" },
 			{ type: "tool", callId: "b", name: "edit", args: {}, state: "pending" },
 		]);
-		runInTransaction((tx) => {
+		withTransaction((tx) => {
 			finalizeDisplayMessageParts(tx, sid, store.messages[0]!);
 			finalizeDisplayMessageParts(tx, sid, store.messages[1]!);
 		});
@@ -403,7 +403,7 @@ describe("sweepPendingTools", () => {
 				error: "User denied write",
 			},
 		]);
-		runInTransaction((tx) =>
+		withTransaction((tx) =>
 			finalizeDisplayMessageParts(tx, sid, store.messages[0]!),
 		);
 
@@ -420,7 +420,7 @@ describe("sweepPendingTools", () => {
 		const { sid, store, setStore, log } = makeHarness();
 		if (!sid) throw new Error("expected session");
 		seedAssistantShell(sid, setStore, [{ type: "text", text: "done" }]);
-		runInTransaction((tx) =>
+		withTransaction((tx) =>
 			finalizeDisplayMessageParts(tx, sid, store.messages[0]!),
 		);
 
@@ -646,7 +646,7 @@ describe("persist-first rollback gate", () => {
 		seedAssistantShell(sid, setStore, [
 			{ type: "tool", callId: "c1", name: "read", args: {}, state: "pending" },
 		]);
-		runInTransaction((tx) =>
+		withTransaction((tx) =>
 			finalizeDisplayMessageParts(tx, sid, store.messages[0]!),
 		);
 		// Mid-test, drop the messages row so the parts re-INSERT FK-
@@ -669,7 +669,7 @@ describe("persist-first rollback gate", () => {
 		seedAssistantShell(sid, setStore, [
 			{ type: "tool", callId: "c1", name: "read", args: {}, state: "pending" },
 		]);
-		runInTransaction((tx) =>
+		withTransaction((tx) =>
 			finalizeDisplayMessageParts(tx, sid, store.messages[0]!),
 		);
 		const { getDb } = await import("@backend/persistence/db/client");
