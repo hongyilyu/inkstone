@@ -17,7 +17,6 @@
 
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "typebox";
-import { registerBaselineFree } from "../permissions";
 import type { AgentCommand, InkstoneTool } from "../types";
 
 /** User decision from the confirm panel; `edited` does not replay. */
@@ -61,10 +60,6 @@ export function makeSuggestCommandTool(
 	commands: readonly AgentCommand[],
 ): InkstoneTool<ReturnType<typeof buildSchema>, SuggestCommandDetails> | null {
 	if (commands.length === 0) return null;
-	registerBaselineFree(
-		"suggest_command",
-		"Slash-command proposal — no filesystem access; resolves through the TUI confirm panel.",
-	);
 	const parameters = buildSchema(commands);
 
 	return {

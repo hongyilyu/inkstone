@@ -15,7 +15,6 @@ import { readerAgent } from "@backend/agent/agents/reader";
 import { buildReaderInstructions } from "@backend/agent/agents/reader/instructions";
 import { composeSystemPrompt, composeTools } from "@backend/agent/compose";
 import { VAULT_DIR } from "@backend/agent/constants";
-import { registerBaselineFree } from "@backend/agent/permissions";
 import {
 	editTool,
 	readTool,
@@ -25,7 +24,6 @@ import {
 import { makeListKeysTool, makeSearchTool } from "@backend/agent/tools/search";
 import { makeSuggestCommandTool } from "@backend/agent/tools/suggest-command";
 import type { AgentCommand, AgentInfo } from "@backend/agent/types";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
 
 import "./preload";
 
@@ -191,52 +189,17 @@ describe("composeTools — permission coverage", () => {
 		expect(composeTools(readerAgent).map((t) => t.name)).toContain("read");
 	});
 
-	test("unknown baseline-free extra tool fails loudly", () => {
-		const unsafeTool = {
-			name: "unsafe_extra",
-			label: "Unsafe",
-			description: "fixture",
-			parameters: {},
-			execute: async () => ({ type: "text", content: "ok" }),
-		} as unknown as AgentTool<any>;
-		const agent = makeAgent({ extraTools: [unsafeTool] });
-		expect(() => composeTools(agent)).toThrow(
-			"Tool 'unsafe_extra' on agent 'test' has no permission baseline",
-		);
-	});
-
 	test("shared mutating file tools require declared write zones", () => {
 		const agent = makeAgent({ extraTools: [writeTool], zones: [] });
 		expect(() => composeTools(agent)).toThrow(
 			"Agent 'test' composes mutating file tools but declares no write zones.",
 		);
 	});
-
-	test("registerBaselineFree opt-in unblocks an otherwise-unknown tool", () => {
-		// Pins the registry contract: a direct `registerBaselineFree`
-		// call is enough for `composeTools` to accept the tool, without
-		// coupling the test to whether a specific factory does the
-		// registering.
-		registerBaselineFree(
-			"test_only_no_fs_tool",
-			"Test fixture — no real implementation.",
-		);
-		const fixtureTool = {
-			name: "test_only_no_fs_tool",
-			label: "Test",
-			description: "fixture",
-			parameters: {},
-			execute: async () => ({ type: "text", content: "ok" }),
-		} as unknown as AgentTool<any>;
-		const agent = makeAgent({ extraTools: [fixtureTool] });
-		expect(() => composeTools(agent)).not.toThrow();
-	});
 });
 
-// Pins the per-tool baseline data on the InkstoneTool shape — the
-// dispatcher will read these directly in Stack 2 (replacing the
-// module-load registry). Asserting against the tool definition
-// (not the registry) makes the contract local + grep-able.
+// Pins the per-tool baseline data on the InkstoneTool shape. Asserts
+// against the tool definition (not a registry) so the contract stays
+// local + grep-able.
 describe("InkstoneTool baseline declarations", () => {
 	test("readTool declares insideDirs[VAULT_DIR] baseline", () => {
 		expect(readTool.baseline).toBeDefined();
