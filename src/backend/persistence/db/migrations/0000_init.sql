@@ -41,5 +41,6 @@ CREATE TABLE `sessions` (
 	`id` text PRIMARY KEY NOT NULL,
 	`started_at` integer NOT NULL,
 	`agent` text NOT NULL,
-	`title` text NOT NULL
+	`title` text NOT NULL,
+	`parent_session_id` text
 );
