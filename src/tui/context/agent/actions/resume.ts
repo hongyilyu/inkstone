@@ -63,7 +63,11 @@ export function resumeSessionAction(sessionId: string, deps: ActionDeps): void {
 		// line up with this session's transcript on the first post-
 		// resume turn. See `ensureSession` for the full rationale.
 		deps.agentSession.setSessionId(loaded.session.id);
-		deps.setStore("currentAgent", deps.agentSession.agentName);
+		// `currentAgent` is fanned in via the snapshot subscription —
+		// `selectAgent` (when stored agent differs) triggers `notify()`,
+		// and the cross-agent case is the only one where the value
+		// actually changes. The same-agent resume path leaves the
+		// snapshot unchanged, which is correct.
 		deps.setStore("messages", loaded.displayMessages);
 		deps.setStore("sessionTitle", loaded.session.title);
 		// Token / cost counters are seeded from the sum of per-turn

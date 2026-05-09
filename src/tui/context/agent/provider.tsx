@@ -30,6 +30,7 @@ import {
 import type { AgentStoreState } from "@bridge/view-model";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import {
+	batch,
 	createSignal,
 	onCleanup,
 	type ParentProps,
@@ -271,23 +272,45 @@ export function AgentProvider(
 		agentSession.dispose?.();
 	});
 
-	const initialModel = agentSession.getModel();
+	const initialSnapshot = agentSession.snapshot();
 
 	const [store, setStore] = createStore<AgentStoreState>({
 		messages: [],
 		isStreaming: false,
 		sidebarSections: [],
 		sessionTitle: "inkstone",
-		modelName: initialModel.name,
-		modelProvider: initialModel.provider,
-		contextWindow: initialModel.contextWindow,
-		modelReasoning: initialModel.reasoning,
-		thinkingLevel: agentSession.getThinkingLevel(),
+		modelName: initialSnapshot.modelName,
+		modelProvider: initialSnapshot.modelProvider,
+		contextWindow: initialSnapshot.contextWindow,
+		modelReasoning: initialSnapshot.modelReasoning,
+		thinkingLevel: initialSnapshot.thinkingLevel,
 		status: "idle",
 		totalTokens: 0,
 		totalCost: 0,
 		lastTurnStartedAt: 0,
-		currentAgent: agentSession.agentName,
+		currentAgent: initialSnapshot.agentName,
+	});
+
+	// Single fan-out from `Session.snapshot()` into the store.
+	// Replaces the five-line `setStore(...)` mirror that used to live
+	// in `setModel` / `clearAgentModel` / `selectAgent` action bodies
+	// (plus the lone `thinkingLevel` mirror in `setThinkingLevel` /
+	// `clearAgentThinkingLevel`, plus the `currentAgent` mirror in
+	// `selectAgent`). Adding a sixth model-derived field that needs to
+	// be reactive = one new entry in `SessionSnapshot` + one line
+	// here, no per-action visit.
+	const unsubscribeSnapshot = agentSession.subscribe((snap) => {
+		batch(() => {
+			setStore("currentAgent", snap.agentName);
+			setStore("modelName", snap.modelName);
+			setStore("modelProvider", snap.modelProvider);
+			setStore("contextWindow", snap.contextWindow);
+			setStore("modelReasoning", snap.modelReasoning);
+			setStore("thinkingLevel", snap.thinkingLevel);
+		});
+	});
+	onCleanup(() => {
+		unsubscribeSnapshot();
 	});
 
 	const sessionState = createSessionState({ agentSession, store, setStore });

@@ -244,6 +244,12 @@ Events from `agent.subscribe()` are batched via `batch()` and applied to the sto
 
 > Design note: the event → view-state reducer is intentionally kept inline in the TUI's `AgentProvider` (not extracted to a shared `bridge/` module). If a second non-TUI frontend arrives, factor it out then. Avoids speculative abstraction for a single-consumer project.
 
+### Session snapshot subscription
+
+The model + agent fields on `AgentStoreState` (`modelName`, `modelProvider`, `contextWindow`, `modelReasoning`, `thinkingLevel`, `currentAgent`) are projected reactively from the backend via `Session.subscribe()`. The TUI provider holds one subscriber that calls `setStore(...)` for each snapshot field inside a `batch()`; action bodies (`setModel`, `setThinkingLevel`, `clearAgentModel`, `clearAgentThinkingLevel`, `selectAgent`) call only the backend verb and let the snapshot fan-out update the store.
+
+`SessionSnapshot` lives in `src/bridge/view-model.ts` next to `AgentStoreState`. The backend builds it inside `createSession` in `src/backend/agent/index.ts` and emits via a private `notify()` after each mutation. Adding a new model-derived field that the UI must react to = one new entry on `SessionSnapshot` + one matching `setStore` line in the provider's subscriber, with no per-action visit.
+
 ## Markdown Rendering
 
 Assistant messages are rendered through OpenTUI's `<markdown>` component in `src/tui/components/message.tsx` (the bubble-rendering module; `conversation.tsx` is a thin list + routing layer that iterates `store.messages` and dispatches to `UserMessage` / `AssistantMessage`). The component takes a `SyntaxStyle` built by `generateSyntax(colors)` in `src/tui/context/theme.tsx`, which maps ~40 Tree-sitter scopes (markup.* for markdown structure, plus core code scopes for fenced blocks) onto the active theme's existing named colors. The style is exposed as a reactive accessor `useTheme().syntax()` and re-creates whenever the theme id changes, so switching themes re-paints already-rendered markdown.

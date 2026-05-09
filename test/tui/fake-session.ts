@@ -29,6 +29,7 @@ import type {
 	AssistantMessageEvent,
 	Model,
 } from "@mariozechner/pi-ai";
+import type { SessionSnapshot } from "../../src/bridge/view-model";
 import type { Session, SessionFactory } from "../../src/tui/context/agent";
 
 /**
@@ -137,6 +138,21 @@ export function makeFakeSession(
 	let onEvent: (event: AgentEvent) => void = () => {};
 	let createdSession: Session | null = null;
 	const pendingFailures: Error[] = [];
+	const subscribers = new Set<(snap: SessionSnapshot) => void>();
+	function buildSnapshot(): SessionSnapshot {
+		return {
+			agentName,
+			modelName: model.name,
+			modelProvider: model.provider,
+			contextWindow: model.contextWindow,
+			modelReasoning: model.reasoning,
+			thinkingLevel,
+		};
+	}
+	function notify(): void {
+		const snap = buildSnapshot();
+		for (const cb of subscribers) cb(snap);
+	}
 
 	const factory: SessionFactory = (params) => {
 		onEvent = params.onEvent;
@@ -154,10 +170,12 @@ export function makeFakeSession(
 				setModel(m: Model<Api>) {
 					model = m;
 					calls.setModel.push(m);
+					notify();
 				},
 				setThinkingLevel(level: ThinkingLevel) {
 					thinkingLevel = level;
 					calls.setThinkingLevel.push(level);
+					notify();
 				},
 				clearAgentModel() {
 					// Mirror the real backend: drop the override + revert
@@ -167,10 +185,12 @@ export function makeFakeSession(
 					// separately so this can show the difference.
 					calls.clearAgentModel += 1;
 					model = opts.model ?? FAKE_MODEL;
+					notify();
 				},
 				clearAgentThinkingLevel() {
 					calls.clearAgentThinkingLevel += 1;
 					thinkingLevel = opts.thinkingLevel ?? "off";
+					notify();
 				},
 			},
 			get agentName() {
@@ -210,6 +230,14 @@ export function makeFakeSession(
 				if (opts.agentThinkingLevels?.[name]) {
 					thinkingLevel = opts.agentThinkingLevels[name];
 				}
+				notify();
+			},
+			snapshot: buildSnapshot,
+			subscribe(cb) {
+				subscribers.add(cb);
+				return () => {
+					subscribers.delete(cb);
+				};
 			},
 			dispose() {
 				calls.dispose += 1;
