@@ -86,9 +86,6 @@ function makeHarness(opts?: { sessionId?: string | null }) {
 		getPreTurnCodexConnections: () => undefined,
 		setPreTurnCodexConnections: () => {},
 		ensureSession: () => sid ?? "",
-		persistThen: () => {
-			throw new Error("persistThen on sessionState not used by MessageLog");
-		},
 	};
 	const log = createMessageLog({ store, setStore, sessionState });
 	return { sid, store, setStore, log, sessionState };
@@ -739,9 +736,6 @@ function makeBadSessionState(): SessionState {
 		getPreTurnCodexConnections: () => undefined,
 		setPreTurnCodexConnections: () => {},
 		ensureSession: () => "does-not-exist",
-		persistThen: () => {
-			throw new Error("not used by MessageLog");
-		},
 	};
 }
 

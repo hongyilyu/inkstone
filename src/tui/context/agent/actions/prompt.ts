@@ -118,6 +118,12 @@ function startSessionTitleTask(
 		.titleGenerator(params)
 		.then((title) => {
 			if (!title) return;
+			// Persist-first: only update the in-store title if the disk
+			// write committed. Inlined here (rather than via a shared
+			// helper) because this is the only non-MessageLog
+			// persist-first site — the rest of the persist-first pattern
+			// lives in `MessageLog` so it can sit next to the writers it
+			// gates.
 			persist((tx) => updateSessionTitle(tx, params.sessionId, title), {
 				onSuccess: () => {
 					if (deps.sessionState.getCurrentSessionId() === params.sessionId) {
