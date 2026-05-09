@@ -9,7 +9,7 @@
  *
  * Lives in its own module so the read path doesn't sit alongside the
  * transactional writers in `sessions.ts`. Pure SQL + in-memory
- * post-processing; no `runInTransaction`.
+ * post-processing; no `withTransaction`.
  */
 
 import { and, asc, count, desc, eq, inArray, min } from "drizzle-orm";

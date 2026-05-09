@@ -5,16 +5,19 @@
  *
  * API contract:
  *
- * - All writers require a transaction handle (`tx`). Callers that don't
- *   need atomicity across multiple writes wrap a single call in
- *   `runInTransaction`. One code path, no optional-tx branching, no
- *   casts. Forces every call site to state intent: "this is atomic /
- *   this runs in isolation."
+ * - All writers require a transaction handle (`tx`). Production callers
+ *   wrap their writes in `persist(writes, opts?)`, which opens a tx via
+ *   `withTransaction` and applies one of two error policies depending on
+ *   `opts`:
+ *     - **No opts** → log-and-continue. Failure is already reported by
+ *       the writer; the throw is swallowed so the caller proceeds.
+ *     - **`opts.onSuccess`** → persist-first. The follow-up store
+ *       mutation only fires on commit, so a failed write leaves the
+ *       store at its pre-mutation value.
+ *   Tests call `withTransaction` directly to seed fixtures.
  * - Writers report-and-rethrow on failure. `reportPersistenceError` is
  *   idempotent via a per-error sentinel flag, so re-reports of the same
- *   rethrown error up the chain no-op. Callers that want "log and
- *   continue" wrap in `safeRun`; callers that want "log then gate
- *   follow-up work on success" use `persistThen` in the reducer.
+ *   rethrown error up the chain no-op.
  * - `loadSession`, `listSessions` run on the root client — reads don't
  *   take a tx.
  * - `createSession` is a session-scope mutator on a single row — it
@@ -85,11 +88,10 @@ export type Tx = Parameters<
 >[0];
 
 /**
- * Run a synchronous fn inside a single SQLite transaction. Callers that
- * want atomicity across multiple writes call this; callers that want a
- * single atomic write also call this (one-statement variant). All
- * writers in this module require a `tx` parameter — there is no
- * global-client write path, on purpose. See module docstring.
+ * Run a synchronous fn inside a single SQLite transaction. The
+ * primitive that `persist` wraps. Production code calls `persist`;
+ * `withTransaction` is exposed so tests can seed fixtures and assert
+ * on the throws-y path directly.
  *
  * Error contract: the tx body may throw (writers rethrow after reporting
  * via `reportPersistenceError`, which tags the error with the
@@ -97,11 +99,10 @@ export type Tx = Parameters<
  * BEFORE the tx body runs — `getDb()` throwing on first use, tx-acquire
  * / SQLITE_BUSY — are caught here and reported as `action: "tx"` so
  * they surface through the toast handler rather than the `console.error`
- * fallback. Rethrows in both cases; callers that want "log and continue"
- * wrap in `safeRun`, callers that want "log then gate follow-up work"
- * use `persistThen` (in the reducer).
+ * fallback. Rethrows in both cases; callers wrap in `persist` for
+ * either log-and-continue or persist-first semantics.
  */
-export function runInTransaction<T>(fn: (tx: Tx) => T): T {
+export function withTransaction<T>(fn: (tx: Tx) => T): T {
 	try {
 		const db = getDb();
 		return db.transaction((tx) => fn(tx));
@@ -135,32 +136,39 @@ export function runInTransaction<T>(fn: (tx: Tx) => T): T {
 }
 
 /**
- * Swallow persistence failures after they've already been reported.
- * Used at the 6 non-reducer persist sites (message_start shell,
- * tool-result / user AgentMessage, synthesized-abort loop, synthetic
- * error bubble, `displayMessage` command helper) where there is no
- * in-memory state to keep in sync with the write — losing the write is
- * a drift between store and disk, but that drift is either benign
- * (ephemeral shell) or absorbed by load-time repair. The reducer sites
- * that DO have store state to gate use `persistThen` in the TUI layer
- * instead.
+ * Persist `writes` inside a tx. Two policies, picked by `opts`:
  *
- * `fn` is expected to wrap a `runInTransaction` call (or a writer call
- * that throws). The throw has already produced a toast via
- * `reportPersistenceError`.
+ * - **No `opts`** → log-and-continue. Failure is already reported by
+ *   the writer (or by `withTransaction`'s outer catch); the throw is
+ *   swallowed so the caller proceeds. Used at pre-stream / best-effort
+ *   sites (`message_start` shell, tool-result / user AgentMessage,
+ *   synthesized-abort loop, synthetic error bubble, `displayMessage`
+ *   command helper) where the write is either ephemeral or any drift
+ *   is absorbed by load-time repair.
+ * - **`opts.onSuccess` present** → persist-first. The follow-up store
+ *   mutation only fires on commit — a failed write leaves the store
+ *   at its pre-mutation value and matches what `/resume` would
+ *   reconstruct from disk. Used at reducer sites that mutate already-
+ *   persisted state.
+ *
+ * Note: `opts` lives at this outer error-policy layer, not on writer
+ * signatures — writers still take a required `tx: Tx` per ADR 0012.
  */
-export function safeRun(fn: () => void): void {
+export function persist(
+	writes: (tx: Tx) => void,
+	opts?: { onSuccess?: () => void },
+): void {
 	try {
-		fn();
+		withTransaction(writes);
 	} catch {
-		// Already reported by the writer or by runInTransaction's outer
-		// catch. Swallow to preserve "log and continue" semantics.
+		return;
 	}
+	opts?.onSuccess?.();
 }
 
 /**
  * Tag an error with the `REPORTED_SENTINEL` flag before rethrowing, so
- * `runInTransaction`'s outer catch (and any higher-level tx catch) can
+ * `withTransaction`'s outer catch (and any higher-level tx catch) can
  * dedup. Centralized here so all writer `catch` blocks stay one-liners
  * and the tag-then-rethrow shape is identical across the module.
  * Frozen / primitive errors silently fall through — we accept the

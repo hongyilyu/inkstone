@@ -15,8 +15,8 @@ import {
 	appendDisplayMessage,
 	createSession as createSessionRow,
 	newId,
-	runInTransaction,
 	updateSessionTitle,
+	withTransaction,
 } from "@backend/persistence/sessions";
 import type { DisplayMessage } from "@bridge/view-model";
 import type { generateSessionTitle } from "../../src/backend/agent";
@@ -46,7 +46,7 @@ function seedSession(preview: string, title = preview): string {
 		role: "user",
 		parts: [{ type: "text", text: preview }],
 	};
-	runInTransaction((tx) => {
+	withTransaction((tx) => {
 		appendDisplayMessage(tx, rec.id, msg);
 		// Also seed a raw agent_message so `loaded.agentMessages` is
 		// non-empty. Otherwise resume calls `restoreMessages([])`
@@ -177,7 +177,7 @@ describe("session list panel", () => {
 			role: "user",
 			parts: [{ type: "text", text: ":q" }],
 		};
-		runInTransaction((tx) => {
+		withTransaction((tx) => {
 			appendDisplayMessage(tx, rec.id, userMsg);
 			appendAgentMessage(tx, rec.id, {
 				role: "user",
@@ -210,7 +210,7 @@ describe("session list panel", () => {
 			role: "user",
 			parts: [{ type: "text", text: "target session" }],
 		};
-		runInTransaction((tx) => {
+		withTransaction((tx) => {
 			appendDisplayMessage(tx, rec.id, seededMsg);
 			appendAgentMessage(tx, rec.id, {
 				role: "user",

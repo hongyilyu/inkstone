@@ -5,15 +5,16 @@
  * reducer sites that mutate already-persisted state write to SQLite
  * first and update the store only on tx success.
  *
- * Tests are organized in three layers:
+ * Tests are organized in four layers:
  *   1. Writer throw-propagation + `reportPersistenceError` dedup.
- *   2. `runInTransaction` outer-catch for pre-writer failures
+ *   2. `withTransaction` outer-catch for pre-writer failures
  *      (db-acquire / tx-open / SQLITE_BUSY before the body runs).
- *   3. `safeRun` swallows; a caller-level try/catch shape — which is
- *      the exact pattern `persistThen` uses in `tui/context/agent.tsx`
- *      — aborts the follow-up mutation on throw. Covers all 5 reducer
- *      sites by exercising the pattern, not by driving the full
- *      reducer (rejected as over-engineering — see plan revision 3).
+ *   3. `persist(writes, { onSuccess })` gates the follow-up store
+ *      mutation on tx success — the persist-first pattern used at
+ *      every reducer site that mutates already-persisted state.
+ *   4. `persist(writes)` (no opts) preserves log-and-continue —
+ *      pre-stream / best-effort sites where drift is benign or
+ *      absorbed by load-time repair.
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -28,10 +29,10 @@ import {
 	createSession,
 	finalizeDisplayMessageParts,
 	newId,
-	runInTransaction,
-	safeRun,
+	persist,
 	type Tx,
 	updateDisplayMessageMeta,
+	withTransaction,
 } from "@backend/persistence/sessions";
 import type { DisplayMessage } from "@bridge/view-model";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
@@ -98,12 +99,12 @@ function makeRawAssistant(): AssistantMessage {
 describe("writers rethrow after reporting", () => {
 	test("appendDisplayMessage throws on FK violation (non-existent session)", () => {
 		expect(() =>
-			runInTransaction((tx: Tx) =>
+			withTransaction((tx: Tx) =>
 				appendDisplayMessage(tx, "does-not-exist", makeUserMsg()),
 			),
 		).toThrow();
 
-		// Writer reported once (FK violation), runInTransaction's outer
+		// Writer reported once (FK violation), withTransaction's outer
 		// catch saw the same rethrown error and was deduped by the
 		// sentinel flag — so exactly ONE report, not two.
 		expect(reports.length).toBe(1);
@@ -118,7 +119,7 @@ describe("writers rethrow after reporting", () => {
 		// row existence would flip this expectation.
 		const msg = makeUserMsg();
 		expect(() =>
-			runInTransaction((tx: Tx) =>
+			withTransaction((tx: Tx) =>
 				updateDisplayMessageMeta(tx, "does-not-exist", msg),
 			),
 		).not.toThrow();
@@ -131,7 +132,7 @@ describe("writers rethrow after reporting", () => {
 		// row, the INSERT fails. DELETE of zero rows is silent, so the
 		// throw only fires when we try to INSERT the first part.
 		expect(() =>
-			runInTransaction((tx: Tx) =>
+			withTransaction((tx: Tx) =>
 				finalizeDisplayMessageParts(tx, "does-not-exist", msg),
 			),
 		).toThrow();
@@ -141,7 +142,7 @@ describe("writers rethrow after reporting", () => {
 
 	test("appendAgentMessage throws on FK violation", () => {
 		expect(() =>
-			runInTransaction((tx: Tx) =>
+			withTransaction((tx: Tx) =>
 				appendAgentMessage(tx, "does-not-exist", makeRawAssistant()),
 			),
 		).toThrow();
@@ -151,7 +152,7 @@ describe("writers rethrow after reporting", () => {
 });
 
 // ---------------------------------------------------------------
-// Layer 2 — dedup sentinel is scoped to runInTransaction's outer catch
+// Layer 2 — dedup sentinel is scoped to withTransaction's outer catch
 // ---------------------------------------------------------------
 
 describe("dedup sentinel is tx-scoped, not global", () => {
@@ -159,10 +160,10 @@ describe("dedup sentinel is tx-scoped, not global", () => {
 		// This is the only case the dedup machinery actually defends.
 		// The writer reports via reportPersistenceError, then rethrows
 		// through tagReportedAndRethrow which sets REPORTED_SENTINEL.
-		// runInTransaction's outer catch sees the same error, reads the
+		// withTransaction's outer catch sees the same error, reads the
 		// flag, and skips its own report — so one toast per failure.
 		expect(() =>
-			runInTransaction((tx: Tx) =>
+			withTransaction((tx: Tx) =>
 				appendDisplayMessage(tx, "does-not-exist", makeUserMsg()),
 			),
 		).toThrow();
@@ -172,7 +173,7 @@ describe("dedup sentinel is tx-scoped, not global", () => {
 
 	test("same error reported twice through bare reportPersistenceError still fires twice", () => {
 		// reportPersistenceError itself is NOT globally idempotent —
-		// the sentinel only lives where runInTransaction's outer catch
+		// the sentinel only lives where withTransaction's outer catch
 		// reads it. This keeps the flag out of the module's error-
 		// carrying surface (config/auth load paths, external loggers
 		// enumerating own properties).
@@ -199,11 +200,11 @@ describe("dedup sentinel is tx-scoped, not global", () => {
 	test("pre-writer tx failure is reported as action: 'tx'", () => {
 		// Simulate a tx throw that didn't come through a writer's
 		// report-and-tag path by throwing inside the tx body ourselves.
-		// The sentinel isn't set, so runInTransaction's outer catch
+		// The sentinel isn't set, so withTransaction's outer catch
 		// reports as `tx`.
 		const err = new Error("mid-tx boom");
 		expect(() =>
-			runInTransaction(() => {
+			withTransaction(() => {
 				throw err;
 			}),
 		).toThrow();
@@ -213,48 +214,31 @@ describe("dedup sentinel is tx-scoped, not global", () => {
 });
 
 // ---------------------------------------------------------------
-// Layer 3 — persistThen pattern: store mutation is gated on tx success
+// Layer 3 — persist({ onSuccess }) gates store mutation on tx success
 // ---------------------------------------------------------------
 
-/**
- * Mirror of the helper defined in `tui/context/agent.tsx`. Duplicated
- * here rather than extracted because the TUI version closes over
- * `runInTransaction`; testing the pattern is what matters, not the
- * literal function.
- */
-function persistThen(writes: (tx: Tx) => void, onSuccess: () => void): void {
-	try {
-		runInTransaction(writes);
-	} catch {
-		return;
-	}
-	onSuccess();
-}
-
-describe("persistThen gates store mutation on tx success", () => {
+describe("persist with onSuccess gates store mutation on tx success", () => {
 	test("onSuccess fires when tx commits", () => {
 		const sess = createSession({ agent: "reader" });
 		let mutated = false;
-		persistThen(
-			(tx) => appendDisplayMessage(tx, sess.id, makeUserMsg()),
-			() => {
+		persist((tx) => appendDisplayMessage(tx, sess.id, makeUserMsg()), {
+			onSuccess: () => {
 				mutated = true;
 			},
-		);
+		});
 		expect(mutated).toBe(true);
 		expect(reports.length).toBe(0);
 	});
 
 	test("onSuccess is skipped when tx body throws", () => {
 		let mutated = false;
-		persistThen(
-			(tx) => appendDisplayMessage(tx, "does-not-exist", makeUserMsg()),
-			() => {
+		persist((tx) => appendDisplayMessage(tx, "does-not-exist", makeUserMsg()), {
+			onSuccess: () => {
 				mutated = true;
 			},
-		);
+		});
 		expect(mutated).toBe(false);
-		// Writer reported once, runInTransaction's outer catch deduped.
+		// Writer reported once, withTransaction's outer catch deduped.
 		expect(reports.length).toBe(1);
 	});
 
@@ -267,10 +251,10 @@ describe("persistThen gates store mutation on tx success", () => {
 		const assistantMsg = makeAssistantMsg();
 		// Seed the row first so `updateDisplayMessageMeta` +
 		// `finalizeDisplayMessageParts` targets exist.
-		runInTransaction((tx) => appendDisplayMessage(tx, sess.id, assistantMsg));
+		withTransaction((tx) => appendDisplayMessage(tx, sess.id, assistantMsg));
 
 		let mutated = false;
-		persistThen(
+		persist(
 			(tx) => {
 				updateDisplayMessageMeta(tx, sess.id, {
 					...assistantMsg,
@@ -284,8 +268,10 @@ describe("persistThen gates store mutation on tx success", () => {
 					displayMessageId: assistantMsg.id,
 				});
 			},
-			() => {
-				mutated = true;
+			{
+				onSuccess: () => {
+					mutated = true;
+				},
 			},
 		);
 		expect(mutated).toBe(false);
@@ -295,30 +281,26 @@ describe("persistThen gates store mutation on tx success", () => {
 });
 
 // ---------------------------------------------------------------
-// Layer 4 — safeRun preserves log-and-continue
+// Layer 4 — persist (no opts) preserves log-and-continue
 // ---------------------------------------------------------------
 
-describe("safeRun swallows after reporting", () => {
-	test("safeRun does not throw even when writer throws", () => {
+describe("persist without opts swallows after reporting", () => {
+	test("persist does not throw even when writer throws", () => {
 		expect(() =>
-			safeRun(() =>
-				runInTransaction((tx) =>
-					appendDisplayMessage(tx, "does-not-exist", makeUserMsg()),
-				),
+			persist((tx) =>
+				appendDisplayMessage(tx, "does-not-exist", makeUserMsg()),
 			),
 		).not.toThrow();
 		expect(reports.length).toBe(1);
 	});
 
-	test("safeRun still runs the body on happy path", () => {
+	test("persist still runs the body on happy path", () => {
 		const sess = createSession({ agent: "reader" });
 		let ran = false;
-		safeRun(() =>
-			runInTransaction((tx) => {
-				appendDisplayMessage(tx, sess.id, makeUserMsg());
-				ran = true;
-			}),
-		);
+		persist((tx) => {
+			appendDisplayMessage(tx, sess.id, makeUserMsg());
+			ran = true;
+		});
 		expect(ran).toBe(true);
 		expect(reports.length).toBe(0);
 	});

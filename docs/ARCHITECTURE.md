@@ -160,7 +160,7 @@ src/
       agent/                        Agent provider split (7 modules; see below)
         types.ts                      SessionFactory, AgentContextValue, agentContext (createContext)
         helpers.ts                    Pure helpers: REDACTED_THINKING_PLACEHOLDERS, extractErrorMessage, trimOneLine
-        session-state.ts              createSessionState — currentSessionId + turnStartThinkingLevel + preTurnCodexConnections bag + persistThen + ensureSession
+        session-state.ts              createSessionState — currentSessionId + turnStartThinkingLevel + preTurnCodexConnections bag + ensureSession
         reducer.ts                    createAgentEventHandler — event dispatch table; agent_end decomposed into 5 named helpers
         actions.ts                    createWrappedActions — prompt / setModel / setThinkingLevel / selectAgent / clearSession / resumeSession
         commands.tsx                  BridgeAgentCommands + buildCommandHelpers (agent-declared slash verbs into the palette)
@@ -1009,28 +1009,29 @@ are created lazily on first user prompt; `/clear` drops the in-memory
 session id so the next prompt creates a fresh row (past rows stay on disk
 for a future `/resume`). Boot does not auto-resume — the openpage always
 greets the user. `message_end` commits meta + parts + raw AgentMessage in
-a single transaction via `runInTransaction`, so crashes can't leave
-half-written state. Config + auth stay in JSON under `~/.config/inkstone/`.
+a single transaction (opened by `persist`, which wraps `withTransaction`),
+so crashes can't leave half-written state. Config + auth stay in JSON
+under `~/.config/inkstone/`.
 
 **Persist-first ordering (store/DB drift invariant).** Reducer branches
 that mutate **already-persisted state** write to SQLite first; the Solid
-store updates only on tx success. Implemented via a `persistThen(writes,
-onSuccess)` helper in `tui/context/agent.tsx` at 5 sites: `message_end`
-(assistant commit), `tool_execution_end` (tool-state flip), `agent_end`
-(pending-tool sweep + duration stamp), `wrappedActions.prompt` (user
-bubble). On tx failure the error toast already fired by
-`reportPersistenceError` — deduplicated via a `__inkstoneReported`
-sentinel on the error object — is the only user-visible signal; the
-store stays at its pre-mutation value so what's on screen matches what
-`/resume` reconstructs. Pre-stream appends (new bubble / new shell /
-tool-result persist / synthesized-abort persist — 6 call sites) use
-`safeRun(() => runInTransaction(…))` instead; they have no already-
-persisted state to regress from, and two of them (tool-result persist on
-line 538; synthesized-abort persist on line 760) have explicit rationale
-comments marking them "do not harden into persistThen" because their
-failure modes are handled elsewhere (resume is out of scope for tool-
-result persist; load-time alternation repair absorbs synthesized-abort
-persist failures).
+store updates only on tx success. Implemented via `persist(writes,
+{ onSuccess })` (defined in `src/backend/persistence/sessions.ts`) at the
+reducer + prompt-action sites that mutate already-persisted state
+(`message_end` assistant commit, `tool_execution_end` tool-state flip,
+`agent_end` pending-tool sweep + turn-closing-bubble stamp + interrupted-
+user stamp, `wrappedActions.prompt` user bubble, session-title task). On
+tx failure the error toast already fired by `reportPersistenceError` —
+deduplicated via a `__inkstoneReported` sentinel on the error object —
+is the only user-visible signal; the store stays at its pre-mutation
+value so what's on screen matches what `/resume` reconstructs. Pre-stream
+appends (new bubble / new shell / tool-result persist / synthesized-abort
+persist) use `persist(writes)` (no opts) instead; they have no already-
+persisted state to regress from, and two of them (tool-result persist;
+synthesized-abort persist) have explicit rationale comments marking them
+"do not harden into persist-first" because their failure modes are
+handled elsewhere (resume is out of scope for tool-result persist; load-
+time alternation repair absorbs synthesized-abort persist failures).
 
 ## Agent Config Layer
 

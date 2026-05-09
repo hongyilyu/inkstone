@@ -1,5 +1,5 @@
 /**
- * Session-lifetime mutable state + the two small helpers that wrap it.
+ * Session-lifetime mutable state + `ensureSession` that wraps it.
  *
  * The reducer and `wrappedActions` both need to read/write:
  *   - `currentSessionId` — the SQLite row id for the active session,
@@ -14,17 +14,13 @@
  *     infer `ws` vs `sse` transport. Populated only when Codex is the
  *     active provider.
  *
- * `persistThen` and `ensureSession` live here too because they close
- * over `currentSessionId`. Exposing the bag as getter/setter pairs keeps
- * the other modules free of top-level `let`s.
+ * `ensureSession` lives here because it closes over `currentSessionId`.
+ * Exposing the bag as getter/setter pairs keeps the other modules free
+ * of top-level `let`s.
  */
 
 import type { Session } from "@backend/agent";
-import {
-	createSession,
-	runInTransaction,
-	type Tx,
-} from "@backend/persistence/sessions";
+import { createSession } from "@backend/persistence/sessions";
 import type { AgentStoreState } from "@bridge/view-model";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { SetStoreFunction } from "solid-js/store";
@@ -45,23 +41,6 @@ export interface SessionState {
 	 * and seeds `store.sessionTitle` to the newly-created row's title.
 	 */
 	ensureSession(): string;
-	/**
-	 * Persist-first helper: run a tx body and apply a follow-up store
-	 * mutation only if the tx succeeded. Used at reducer sites that
-	 * mutate already-persisted state — inverts the old mutate-then-
-	 * persist ordering so a failed write leaves the store at its
-	 * pre-mutation value. The user-visible signal on failure is the
-	 * toast already fired by `reportPersistenceError` inside the
-	 * writer (or `runInTransaction`'s outer catch for pre-writer
-	 * tx-open failures); the dedup sentinel on the error object stops
-	 * the rethrow from double-toasting up the chain.
-	 *
-	 * Pre-stream sites (new bubble / new shell / tool-result persist /
-	 * synthesized-abort persist) have no store state to gate — they
-	 * use `safeRun` instead, which preserves today's "log and continue"
-	 * behavior.
-	 */
-	persistThen(writes: (tx: Tx) => void, onSuccess: () => void): void;
 }
 
 export function createSessionState(params: {
@@ -91,18 +70,6 @@ export function createSessionState(params: {
 		return rec.id;
 	}
 
-	function persistThen(writes: (tx: Tx) => void, onSuccess: () => void): void {
-		try {
-			runInTransaction(writes);
-		} catch {
-			// Already reported by the writer or by runInTransaction's
-			// outer catch. Skip onSuccess so the store stays at its
-			// pre-mutation value.
-			return;
-		}
-		onSuccess();
-	}
-
 	return {
 		getCurrentSessionId: () => currentSessionId,
 		setCurrentSessionId: (id) => {
@@ -117,6 +84,5 @@ export function createSessionState(params: {
 			preTurnCodexConnections = n;
 		},
 		ensureSession,
-		persistThen,
 	};
 }

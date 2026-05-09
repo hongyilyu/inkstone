@@ -9,8 +9,8 @@ import {
 	listSessions,
 	loadSession,
 	newId,
-	runInTransaction,
 	updateSessionTitle,
+	withTransaction,
 } from "@backend/persistence/sessions";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { cleanSessionTitle } from "../src/backend/agent/session-title";
@@ -135,7 +135,7 @@ describe("session titles", () => {
 	test("updateSessionTitle replaces the stored session title", () => {
 		const rec = createSession({ agent: "reader" });
 
-		runInTransaction((tx) => updateSessionTitle(tx, rec.id, "Reading Notes"));
+		withTransaction((tx) => updateSessionTitle(tx, rec.id, "Reading Notes"));
 
 		const loaded = loadSession(rec.id);
 		expect(loaded?.session.title).toBe("Reading Notes");
@@ -143,7 +143,7 @@ describe("session titles", () => {
 
 	test("listSessions returns title and still computes preview", () => {
 		const rec = createSession({ agent: "reader" });
-		runInTransaction((tx) => {
+		withTransaction((tx) => {
 			appendDisplayMessage(tx, rec.id, {
 				id: newId(),
 				role: "user",
