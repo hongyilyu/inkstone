@@ -1,3 +1,4 @@
+import type { SessionSnapshot } from "@bridge/view-model";
 import {
 	Agent,
 	type AgentEvent,
@@ -70,6 +71,22 @@ export interface Session {
 	getProviderId(): string;
 	getModelId(): string;
 	getThinkingLevel(): ThinkingLevel;
+	/**
+	 * Reactive projection consumed by the TUI provider. Produces the
+	 * single shape the store mirrors so action bodies don't hand-fan
+	 * five `setStore(...)` lines per mutation — see `SessionSnapshot`
+	 * in `@bridge/view-model` for the field-by-field rationale.
+	 */
+	snapshot(): SessionSnapshot;
+	/**
+	 * Register `cb` to fire after every snapshot mutation
+	 * (`setModel` / `setThinkingLevel` / `clearAgentModel` /
+	 * `clearAgentThinkingLevel` / `selectAgent`). Returns the
+	 * unsubscribe handle. Initial state is NOT delivered through
+	 * subscribe; the caller seeds from `snapshot()` at construction
+	 * time, mirroring pi-agent-core's `Agent.subscribe` shape.
+	 */
+	subscribe(cb: (next: SessionSnapshot) => void): () => void;
 	/**
 	 * Set the session id forwarded to providers for cache-aware
 	 * backends. Pi-agent-core stamps this onto every stream call as
@@ -277,6 +294,27 @@ export function createSession(params: {
 			model.id,
 		);
 	}
+
+	// Snapshot subscribers. Action bodies call `notify()` after the
+	// `(agent.state.*, providerSel, info)` triple is coherent so the
+	// TUI provider sees one consistent fan-out per mutation rather
+	// than the previous five hand-mirrored `setStore` calls.
+	const subscribers = new Set<(next: SessionSnapshot) => void>();
+	function buildSnapshot(): SessionSnapshot {
+		const m = agent.state.model;
+		return {
+			agentName: info.name,
+			modelName: m.name,
+			modelProvider: m.provider,
+			contextWindow: m.contextWindow,
+			modelReasoning: m.reasoning,
+			thinkingLevel: agent.state.thinkingLevel,
+		};
+	}
+	function notify(): void {
+		const snap = buildSnapshot();
+		for (const cb of subscribers) cb(snap);
+	}
 	// ────────────────────────────────────────────────────────
 
 	const agent = new Agent({
@@ -388,6 +426,7 @@ export function createSession(params: {
 					modelId: model.id,
 				}),
 			);
+			notify();
 		},
 		setThinkingLevel(level: ThinkingLevel) {
 			agent.state.thinkingLevel = level;
@@ -401,6 +440,7 @@ export function createSession(params: {
 					level,
 				),
 			);
+			notify();
 		},
 		clearAgentModel() {
 			// Drop the per-agent override and re-resolve the effective
@@ -421,6 +461,7 @@ export function createSession(params: {
 			providerSel = next;
 			agent.state.model = nextModel;
 			agent.state.thinkingLevel = resolveThinkingLevelFor(nextModel);
+			notify();
 		},
 		clearAgentThinkingLevel() {
 			// Per-model granularity: drop only the (active provider,
@@ -443,6 +484,7 @@ export function createSession(params: {
 				providerSel.providerId,
 				providerSel.modelId,
 			);
+			notify();
 		},
 	};
 
@@ -522,6 +564,7 @@ export function createSession(params: {
 			agent.state.tools = composeTools(info);
 			agent.state.model = nextModel;
 			agent.state.thinkingLevel = resolveThinkingLevelFor(nextModel);
+			notify();
 		},
 		async clearSession() {
 			// `messages = []` alone leaks pi-agent-core runtime state
@@ -548,6 +591,15 @@ export function createSession(params: {
 		},
 		restoreMessages(messages: AgentMessage[]) {
 			agent.state.messages = messages;
+		},
+		snapshot() {
+			return buildSnapshot();
+		},
+		subscribe(cb) {
+			subscribers.add(cb);
+			return () => {
+				subscribers.delete(cb);
+			};
 		},
 		dispose() {
 			unsubscribe();

@@ -127,6 +127,27 @@ export interface DisplayMessage {
 	thinkingLevel?: ThinkingLevel;
 }
 
+/**
+ * Reactive projection of the agent-session state the TUI mirrors into the
+ * Solid store. Produced by `Session.snapshot()`; emitted on every mutation
+ * via `Session.subscribe()`. Field names match `AgentStoreState` keys
+ * exactly except `agentName` → `currentAgent` (snapshot uses `agentName` to
+ * match `Session.agentName`; the TUI fan-out maps it to `store.currentAgent`).
+ *
+ * Single source of truth for the model + agent state the prompt status line,
+ * sidebar, and palette gates render from. Any new model-derived field that
+ * needs to be reactive belongs here, not as a hand-mirrored `setStore` line
+ * in `actions.ts`.
+ */
+export interface SessionSnapshot {
+	agentName: string;
+	modelName: string;
+	modelProvider: string;
+	contextWindow: number;
+	modelReasoning: boolean;
+	thinkingLevel: ThinkingLevel;
+}
+
 export interface AgentStoreState {
 	messages: DisplayMessage[];
 	/**

@@ -15,8 +15,6 @@ import type {
 	SuggestCommandDecision,
 } from "@backend/agent";
 import type { AgentStoreState, DisplayPart } from "@bridge/view-model";
-import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { Api, Model } from "@mariozechner/pi-ai";
 import type { SetStoreFunction } from "solid-js/store";
 import type { LayoutContextValue } from "../../context/layout";
 import type { useToast } from "../../ui/toast";
@@ -81,40 +79,6 @@ export function createWrappedActions(
 			if (deps.pendingSuggestion()) deps.respondSuggestion("cancelled");
 			deps.agentSession.actions.abort();
 		},
-		setModel(model: Model<Api>) {
-			deps.agentSession.actions.setModel(model);
-			deps.setStore("modelName", model.name);
-			deps.setStore("modelProvider", model.provider);
-			deps.setStore("contextWindow", model.contextWindow);
-			deps.setStore("modelReasoning", model.reasoning);
-			// Backend `setModel` also re-applies the per-model stored
-			// thinkingLevel (or "off") onto the agent state, so surface that
-			// into the store at the same time — otherwise the status-line
-			// suffix would lag a model switch by one interaction.
-			deps.setStore("thinkingLevel", deps.agentSession.getThinkingLevel());
-		},
-		setThinkingLevel(level: ThinkingLevel) {
-			deps.agentSession.actions.setThinkingLevel(level);
-			deps.setStore("thinkingLevel", level);
-		},
-		clearAgentModel() {
-			// Backend re-resolves the effective model (top-level →
-			// provider default) and applies it to the live agent
-			// state. Mirror the resolved values into the store so the
-			// sidebar / status line update without waiting for the
-			// next turn — same shape as `setModel` above.
-			deps.agentSession.actions.clearAgentModel();
-			const m = deps.agentSession.getModel();
-			deps.setStore("modelName", m.name);
-			deps.setStore("modelProvider", m.provider);
-			deps.setStore("contextWindow", m.contextWindow);
-			deps.setStore("modelReasoning", m.reasoning);
-			deps.setStore("thinkingLevel", deps.agentSession.getThinkingLevel());
-		},
-		clearAgentThinkingLevel() {
-			deps.agentSession.actions.clearAgentThinkingLevel();
-			deps.setStore("thinkingLevel", deps.agentSession.getThinkingLevel());
-		},
 		selectAgent(name: string) {
 			// Agent-for-life invariant: swapping with messages in flight
 			// would silently break prompt-cache stability (systemPrompt +
@@ -129,18 +93,6 @@ export function createWrappedActions(
 				);
 			}
 			deps.agentSession.selectAgent(name);
-			deps.setStore("currentAgent", deps.agentSession.agentName);
-			// Backend `selectAgent` also flips the bound model + thinking
-			// level to the destination agent's resolved values (per-agent
-			// override → top-level → provider default). Surface those
-			// into the store so sidebar / status-line / `/effort` reflect
-			// the active agent's pick without waiting for the next turn.
-			const m = deps.agentSession.getModel();
-			deps.setStore("modelName", m.name);
-			deps.setStore("modelProvider", m.provider);
-			deps.setStore("contextWindow", m.contextWindow);
-			deps.setStore("modelReasoning", m.reasoning);
-			deps.setStore("thinkingLevel", deps.agentSession.getThinkingLevel());
 		},
 		async clearSession() {
 			await clearSessionAction(deps);
