@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-08 (unified config + per-agent overrides)
+**Last updated**: 2026-05-08 (persist wrapper collapse)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -19,6 +19,8 @@
   - Stack E — knowledge-base agent (graphite-stacked, landing 2026-05-07): scaffold → port LifeOS workflow bodies → wire `/ingest` `/query` `/lint` slash commands → docs. Third agent on ship (alongside reader and example), workspace under `040 FORGE/` with `010 RAW/` + `020 HUMAN/` write-blocked per LifeOS policy. All three workflow bodies preloaded into the system prompt; commands are minimal triggers.
 
 ## Completed
+
+- **Collapsed `safeRun` + `persistThen` into unified `persist(writes, opts?)`** (2026-05-08). Three persistence-write helpers reduced to two: primitive `withTransaction` (was `runInTransaction`; test-only direct callers) and user-facing `persist(writes, opts?)` where `opts.onSuccess` (when present) opts into persist-first / rollback semantics. 14 production call sites migrated across `reducer.ts`, `prompt.ts`, `commands.tsx`. Mechanical wrapper-collapse — every invariant (REPORTED_SENTINEL dedup, pre-tx `action: "tx"`, onSuccess gating, multi-writer rollback, log-and-continue swallow) pinned by `test/persistence-failure.test.ts`. ADR 0012's writer `tx: Tx` requirement is unchanged: `persist`'s `opts` lives at the outer error-policy layer, not on writer signatures.
 
 - **Unified config + per-agent model/thinkingLevels overrides** (2026-05-08, graphite-stacked PRs `feat/unified-config-pr1` + `feat/unified-config-pr2`). Each agent can carry its own `model` and per-(provider, model) `thinkingLevels` map under `config.agents.<name>` in `~/.config/inkstone/config.json`; missing fields fall back to top-level `model` / `thinkingLevels`, and an unset top-level `model` falls back to the first connected provider's default. The model + effort dialogs write their picks to the active agent's block (not top-level) and offer a "Use default" entry to clear the override and re-inherit. `/config` slash command opens the file in `$EDITOR` / `$VISUAL` (or copies the path via OSC 52 when neither is set). Top-level `(providerId, modelId)` flat pair restructured into `model: { providerId, modelId }`; `currentAgent` removed from JSON (fresh launches start at `DEFAULT_AGENT`, resume reads the agent name from the SQLite session row). Pre-1.0 schema break: legacy flat keys are rejected by Zod strict mode — zero existing users.
 - Hardened the slash-command parser with an optional `canExecute(args)` predicate on `AgentCommand` (rule 3 in `canRunSlashEntry`). Reader's `/article` uses it to reject unresolvable args (prose, typos, paths outside the Articles dir, symlinks, non-regular files) at the gate so the prompt falls through to the plain-prompt path with the literal `/`-prefixed text intact. KB commands unchanged. Side effect: a typo'd filename also falls through to plain prompt instead of toasting "Article not found" — Discord/Slack convention.

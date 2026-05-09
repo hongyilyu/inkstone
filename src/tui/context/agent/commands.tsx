@@ -14,8 +14,7 @@ import type { AgentCommandHelpers } from "@backend/agent/types";
 import {
 	appendDisplayMessage,
 	newId,
-	runInTransaction,
-	safeRun,
+	persist,
 } from "@backend/persistence/sessions";
 import type {
 	AgentStoreState,
@@ -73,14 +72,12 @@ function buildCommandHelpers(deps: CommandsDeps): AgentCommandHelpers {
 					msgs.push(userMsg);
 				}),
 			);
-			// safeRun: `displayMessage` is a command helper that pushes
-			// a user-authored line into the conversation as a bubble
-			// (e.g. reader's `/article` recommendation list). Failure
-			// is benign at runtime — the bubble still shows in-memory;
-			// resume would miss it. Matches the pre-fix behavior.
-			safeRun(() =>
-				runInTransaction((tx) => appendDisplayMessage(tx, sessionId, userMsg)),
-			);
+			// Log-and-continue: `displayMessage` is a command helper
+			// that pushes a user-authored line into the conversation as
+			// a bubble (e.g. reader's `/article` recommendation list).
+			// Failure is benign at runtime — the bubble still shows
+			// in-memory; resume would miss it.
+			persist((tx) => appendDisplayMessage(tx, sessionId, userMsg));
 			deps.layout.scrollToBottom();
 		},
 		pickFromList({ title, size, options }) {

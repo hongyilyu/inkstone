@@ -14,8 +14,7 @@
 import {
 	appendDisplayMessage,
 	newId,
-	runInTransaction,
-	safeRun,
+	persist,
 	updateDisplayMessageMeta,
 	updateSessionTitle,
 } from "@backend/persistence/sessions";
@@ -51,9 +50,8 @@ export async function promptAction(
 	// has already cleared the input — the user retypes. Short-
 	// circuiting here keeps store/disk in sync.
 	let persisted = false;
-	deps.sessionState.persistThen(
-		(tx) => appendDisplayMessage(tx, sessionId, userMsg),
-		() => {
+	persist((tx) => appendDisplayMessage(tx, sessionId, userMsg), {
+		onSuccess: () => {
 			persisted = true;
 			deps.setStore(
 				"messages",
@@ -99,7 +97,7 @@ export async function promptAction(
 			}
 			deps.layout.scrollToBottom();
 		},
-	);
+	});
 	if (!persisted) return;
 	// Snapshot session id + message-length before the await so the
 	// catch can detect a `clearSession()` / `resumeSession()` mid-flight
@@ -135,14 +133,13 @@ function startSessionTitleTask(
 		.titleGenerator(params)
 		.then((title) => {
 			if (!title) return;
-			deps.sessionState.persistThen(
-				(tx) => updateSessionTitle(tx, params.sessionId, title),
-				() => {
+			persist((tx) => updateSessionTitle(tx, params.sessionId, title), {
+				onSuccess: () => {
 					if (deps.sessionState.getCurrentSessionId() === params.sessionId) {
 						deps.setStore("sessionTitle", title);
 					}
 				},
-			);
+			});
 		})
 		.catch((error) => {
 			// Expected title-gen failures (completeSimple throws on
@@ -194,13 +191,13 @@ function handlePreStreamError(
 			const updated = deps.store.messages[lastIdx];
 			const sid = deps.sessionState.getCurrentSessionId();
 			if (sid && updated) {
-				// safeRun: no store state to gate. The in-memory bubble
-				// already shows the error; a persistence failure here
+				// Store mutation already happened above (line 190); this
+				// persist is post-hoc and best-effort. A failure here
 				// just means the error won't appear on resume, which is
-				// acceptable since the agent turn already failed.
-				safeRun(() =>
-					runInTransaction((tx) => updateDisplayMessageMeta(tx, sid, updated)),
-				);
+				// acceptable since the agent turn already failed. Do not
+				// invert into persist-first — the error must show
+				// in-memory regardless of whether the write commits.
+				persist((tx) => updateDisplayMessageMeta(tx, sid, updated));
 			}
 		} else {
 			// No assistant bubble was ever pushed (failure happened
@@ -220,13 +217,12 @@ function handlePreStreamError(
 			);
 			const sid = deps.sessionState.getCurrentSessionId();
 			if (sid) {
-				// safeRun: synthetic bubble is best-effort. If the insert
-				// fails, the in-memory view still shows the error — resume
-				// will miss this particular failure marker but the
-				// session timeline stays valid.
-				safeRun(() =>
-					runInTransaction((tx) => appendDisplayMessage(tx, sid, synthetic)),
-				);
+				// Store push already happened above (line 213); this
+				// persist is post-hoc and best-effort. If the insert
+				// fails, the in-memory view still shows the error —
+				// resume will miss this particular failure marker but
+				// the session timeline stays valid.
+				persist((tx) => appendDisplayMessage(tx, sid, synthetic));
 			}
 		}
 	});

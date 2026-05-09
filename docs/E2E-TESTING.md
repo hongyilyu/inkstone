@@ -278,7 +278,7 @@ describe("my feature", () => {
 Things to remember:
 
 - **Width 120 for sidebar tests.** The sidebar gates on `dimensions.width >= 100`.
-- **`Bun.sleep(20-40ms)` after submission.** Slash dispatch and `actions.prompt` go through async `persistThen`; give the microtask queue a tick before checking `fake.calls.prompt`.
+- **`Bun.sleep(20-40ms)` after submission.** Slash dispatch and `actions.prompt` go through async `persist`; give the microtask queue a tick before checking `fake.calls.prompt`.
 - **Anchor on stable substrings.** Footer glyph `▣` to skip the prompt statusline; tool icon `⚙` for completed/error tool parts; `~` for pending. Avoid asserting on truncated labels — use the suffix that survives clipping.
 - **For tool-state assertions, drive a real `actions.prompt()` first.** `applyToolResult` and `sweepPendingTools` gate on a non-null sessionId. Without a real prompt to satisfy `ensureSession()`, tool mutations silently no-op. See `permission-deny-flow.test.tsx`'s `seedSessionForToolStateMutation` helper.
 

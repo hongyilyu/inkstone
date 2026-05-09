@@ -25,8 +25,8 @@ import {
 	appendDisplayMessage,
 	createSession as createSessionRow,
 	newId,
-	runInTransaction,
 	updateSessionTitle,
+	withTransaction,
 } from "@backend/persistence/sessions";
 import type { DisplayMessage } from "@bridge/view-model";
 import type { AssistantMessage, Usage } from "@mariozechner/pi-ai";
@@ -87,7 +87,7 @@ function seedSessionWithUsage(
 		stopReason: "stop",
 		timestamp: Date.now(),
 	};
-	runInTransaction((tx) => {
+	withTransaction((tx) => {
 		appendDisplayMessage(tx, rec.id, userMsg);
 		appendAgentMessage(tx, rec.id, {
 			role: "user",

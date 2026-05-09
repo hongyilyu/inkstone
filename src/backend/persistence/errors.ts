@@ -43,7 +43,7 @@ export function getPersistenceErrorHandler():
 }
 
 /**
- * Sentinel flag key used by `runInTransaction`'s outer catch in
+ * Sentinel flag key used by `withTransaction`'s outer catch in
  * `sessions.ts` to dedup reports of the same rethrown error up the
  * chain. Exported as a shared constant so the tx wrapper and this
  * module stay in sync. Scoped narrowly on purpose: only the writer-

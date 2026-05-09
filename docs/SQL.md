@@ -155,11 +155,11 @@ first user prompt ─▶ ensureSession()        [creates DB row if none;
 assistant turn    ─▶ message_start  ─▶ appendDisplayMessage(shell,
                                           { includeParts: false })
                    ─▶ message_update ─▶ [store-only; no DB writes]
-                   ─▶ message_end    ─▶ runInTransaction(tx => {
+                   ─▶ message_end    ─▶ persist((tx) => {
                                           updateDisplayMessageMeta(…, { tx })
                                           finalizeDisplayMessageParts(…, { tx })
                                           appendAgentMessage(…, { tx })
-                                        })
+                                        }, { onSuccess: stampStore })
                    ─▶ agent_end      ─▶ updateDisplayMessageMeta (duration)
 
 /clear           ─▶ drop in-memory sessionId (row stays on disk untouched)
@@ -183,7 +183,7 @@ previous session. Past session rows stay on disk as-is; a future
 replace, and the raw `AgentMessage` — in one transaction:
 
 ```ts
-runInTransaction((tx) => {
+withTransaction((tx) => {
   updateDisplayMessageMeta(tx, sid, msg);
   finalizeDisplayMessageParts(tx, sid, msg);
   appendAgentMessage(tx, sid, rawMsg, { displayMessageId: msg.id });
@@ -197,11 +197,11 @@ as separate implicit transactions and a mid-trio kill left orphans.
 
 All writers (`appendDisplayMessage`, `updateDisplayMessageMeta`,
 `finalizeDisplayMessageParts`, `appendAgentMessage`) take a **required**
-`tx: Tx` parameter. There is no auto-wrap fallback — callers that only
-need a single write wrap explicitly:
+`tx: Tx` parameter. There is no auto-wrap fallback — production callers
+wrap their writes in `persist`, which opens a tx via `withTransaction`:
 
 ```ts
-runInTransaction((tx) => appendDisplayMessage(tx, sid, userMsg));
+persist((tx) => appendDisplayMessage(tx, sid, userMsg));
 ```
 
 This is intentional ergonomic friction:
@@ -278,8 +278,9 @@ for the authoritative signatures. Quick reference:
 
 ### Writes — require `tx`
 
-All writers take a required `tx: Tx` parameter. Wrap single writes in
-`runInTransaction` (see § Transactional boundary).
+All writers take a required `tx: Tx` parameter. Production callers wrap
+writes in `persist`; tests can use `withTransaction` directly to seed
+fixtures (see § Transactional boundary).
 
 - `createSession({ agent })` — new row. (No tx; single
   statement.) Initializes `title` to `"New session - <ISO timestamp>"`.
@@ -295,19 +296,25 @@ All writers take a required `tx: Tx` parameter. Wrap single writes in
 
 ### Utility
 
-- `runInTransaction(fn)` — wrap multiple writes in one tx. Wraps its
-  body in a try/catch that reports pre-writer failures (db-acquire,
-  SQLITE_BUSY, tx-open) as `action: "tx"` and rethrows. Writer-
-  originated failures are reported by the writer first; the outer
-  catch sees the same rethrown error and is a no-op thanks to the
-  dedup sentinel in `reportPersistenceError`.
-- `safeRun(fn)` — swallow after reporting. Wraps a `runInTransaction`
-  call at the 6 pre-stream / best-effort persist sites in the reducer
-  (`message_start` shell insert, `message_end` non-assistant branch,
-  `agent_end` synthesized-abort loop, synthetic error bubble,
-  `displayMessage` command helper) where there's no already-persisted
-  state to roll back to. The toast has already fired; the body's
-  throw is swallowed to preserve "log and continue" semantics.
+- `persist(writes, opts?)` — production write wrapper. Opens a tx via
+  `withTransaction`, then picks one of two error policies based on
+  `opts`:
+  - **No `opts`** → log-and-continue. The throw is swallowed after the
+    writer reports. Used at pre-stream / best-effort sites
+    (`message_start` shell insert, `message_end` non-assistant branch,
+    `agent_end` synthesized-abort loop, pre-stream synthetic error
+    bubble, `displayMessage` command helper) where drift is benign or
+    absorbed by load-time repair.
+  - **`opts.onSuccess`** → persist-first. The follow-up store mutation
+    only fires on commit, so a failed write leaves the store at its
+    pre-mutation value. Used at reducer sites that mutate already-
+    persisted state.
+- `withTransaction(fn)` — primitive that `persist` wraps. Reports
+  pre-writer failures (db-acquire, SQLITE_BUSY, tx-open) as
+  `action: "tx"` and rethrows. Writer-originated failures are reported
+  by the writer first; the outer catch sees the same rethrown error
+  and is a no-op thanks to the dedup sentinel in
+  `reportPersistenceError`. Tests call this directly to seed fixtures.
 - `newId()` — fresh UUIDv7.
 
 ### Writer error contract
@@ -317,35 +324,36 @@ Writers report-and-rethrow on failure (each `catch` calls
 hook is idempotent via a `__inkstoneReported` sentinel attached to the
 error object on first report, so re-reports of the same rethrown error
 up the chain no-op — no duplicate toasts when a writer throws and
-`runInTransaction`'s outer catch sees it.
+`withTransaction`'s outer catch sees it.
 
-Two caller-side shapes on top of the throw contract:
+`persist` exposes two policies on top of the throw contract:
 
-- **`safeRun(() => runInTransaction(…))`** — preserves the old
-  log-and-continue behavior. Use at pre-stream appends and any site
-  where persistence failure is benign at runtime (disk mismatch
-  absorbed by resume-time repair or by being ephemeral).
-- **`persistThen(writes, onSuccess)`** (defined in
-  `tui/context/agent.tsx`) — gates a follow-up store mutation on tx
-  success. Use at reducer sites that mutate already-persisted state,
-  so that on tx throw the live view stays at its pre-mutation value
-  and matches what `/resume` would reconstruct. Eliminates the
-  store/DB drift window that let bubbles render `completed` while
-  disk still had `pending`.
+- **`persist(writes)`** (no opts) — **log-and-continue**. Use at pre-
+  stream appends and any site where persistence failure is benign at
+  runtime (disk mismatch absorbed by resume-time repair or by being
+  ephemeral).
+- **`persist(writes, { onSuccess })`** — **persist-first**. Gates a
+  follow-up store mutation on tx success. Use at reducer sites that
+  mutate already-persisted state, so that on tx throw the live view
+  stays at its pre-mutation value and matches what `/resume` would
+  reconstruct. Eliminates the store/DB drift window that let bubbles
+  render `completed` while disk still had `pending`.
 
 Recipe — reducer site (persist-first):
 
 ```ts
 const updated: DisplayMessage = { ...store.messages[lastIdx]!, agentName, modelName };
-persistThen(
+persist(
   (tx) => {
     updateDisplayMessageMeta(tx, sid, updated);
     finalizeDisplayMessageParts(tx, sid, updated);
     appendAgentMessage(tx, sid, rawMsg, { displayMessageId: updated.id });
   },
-  () => {
-    setStore("messages", lastIdx, "agentName", agentName);
-    setStore("messages", lastIdx, "modelName", modelName);
+  {
+    onSuccess: () => {
+      setStore("messages", lastIdx, "agentName", agentName);
+      setStore("messages", lastIdx, "modelName", modelName);
+    },
   },
 );
 ```
@@ -353,7 +361,7 @@ persistThen(
 Recipe — pre-stream / best-effort site:
 
 ```ts
-safeRun(() => runInTransaction((tx) => appendDisplayMessage(tx, sid, shell, { includeParts: false })));
+persist((tx) => appendDisplayMessage(tx, sid, shell, { includeParts: false }));
 ```
 
 ## Migrations
@@ -395,7 +403,7 @@ grep-friendly `action` string (embeds `shortId(msg.id)` — last 8 hex
 chars of the UUIDv7 random tail — plus the event type for appends),
 and an `error: unknown`. Reports are deduplicated via a
 `__inkstoneReported` sentinel attached to the error value on first
-call, so writer-then-`runInTransaction`-outer-catch chains toast once
+call, so writer-then-`withTransaction`-outer-catch chains toast once
 per failure, not twice.
 
 `AgentProvider` installs a handler that turns these into toasts.
@@ -522,7 +530,7 @@ rm ~/.config/inkstone/config.json
 | `src/backend/persistence/db/schema.ts` | Drizzle table definitions — source of truth for columns |
 | `src/backend/persistence/db/client.ts` | Lazy `bun:sqlite` singleton, PRAGMAs, migrator |
 | `src/backend/persistence/db/migrations/` | `drizzle-kit`-generated SQL |
-| `src/backend/persistence/sessions.ts` | Public API (`newId`, reads, writes, `runInTransaction`, `safeRun`). `shortId` is an internal helper — not exported. |
+| `src/backend/persistence/sessions.ts` | Public API (`newId`, reads, writes, `persist`, `withTransaction`). `shortId` is an internal helper — not exported. |
 | `src/backend/persistence/errors.ts` | `reportPersistenceError` hook + dedup sentinel |
 | `src/backend/persistence/paths.ts` | XDG path resolution |
 | `src/tui/context/agent.tsx` | Frontend consumer — reducer, `ensureSession`, wiring |

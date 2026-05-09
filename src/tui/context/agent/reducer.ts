@@ -24,8 +24,7 @@ import {
 	appendDisplayMessage,
 	finalizeDisplayMessageParts,
 	newId,
-	runInTransaction,
-	safeRun,
+	persist,
 	updateDisplayMessageMeta,
 } from "@backend/persistence/sessions";
 import type {
@@ -133,24 +132,22 @@ function handleMessageStart(event: AgentEvent, deps: ReducerDeps): void {
 	// fires during a turn, and turns only start via
 	// `wrappedActions.prompt` which called `ensureSession()`.
 	//
-	// `safeRun`: pre-stream append. A failed insert means the shell
-	// row is missing from disk but present in the store; `message_end`'s
-	// `persistThen` later uses `updateDisplayMessageMeta` +
-	// `finalizeDisplayMessageParts` which are UPDATE + DELETE/INSERT
-	// by `msg.id`, so the UPDATE is a no-op and the INSERTs create
-	// parts with a dangling FK — drizzle would fail. Acceptable
-	// because the outer tx rolls back and `persistThen` skips its
-	// `onSuccess`, leaving the store meta un-stamped. The transient
-	// assistant bubble stays in memory for the rest of the session;
-	// resume rebuilds cleanly (the shell is gone, so no orphan).
+	// Log-and-continue: pre-stream append. A failed insert means the
+	// shell row is missing from disk but present in the store;
+	// `message_end`'s persist-first call later uses
+	// `updateDisplayMessageMeta` + `finalizeDisplayMessageParts` which
+	// are UPDATE + DELETE/INSERT by `msg.id`, so the UPDATE is a no-op
+	// and the INSERTs create parts with a dangling FK — drizzle would
+	// fail. Acceptable because the outer tx rolls back and the
+	// `onSuccess` is skipped, leaving the store meta un-stamped. The
+	// transient assistant bubble stays in memory for the rest of the
+	// session; resume rebuilds cleanly (the shell is gone, so no orphan).
 	const sid = deps.sessionState.getCurrentSessionId();
 	if (sid) {
-		safeRun(() =>
-			runInTransaction((tx) =>
-				appendDisplayMessage(tx, sid, newMsg, {
-					includeParts: false,
-				}),
-			),
+		persist((tx) =>
+			appendDisplayMessage(tx, sid, newMsg, {
+				includeParts: false,
+			}),
 		);
 	}
 	deps.layout.scrollToBottom();
@@ -373,7 +370,7 @@ function stampAssistantBubbleMeta(
 		...(errorStr ? { error: errorStr } : {}),
 		...(interruptedFlag ? { interrupted: true } : {}),
 	};
-	deps.sessionState.persistThen(
+	persist(
 		(tx) => {
 			updateDisplayMessageMeta(tx, sid, updated);
 			finalizeDisplayMessageParts(tx, sid, updated);
@@ -381,13 +378,15 @@ function stampAssistantBubbleMeta(
 				displayMessageId: updated.id,
 			});
 		},
-		() => {
-			if (errorStr) {
-				deps.setStore("messages", lastIdx, "error", errorStr);
-			}
-			if (interruptedFlag) {
-				deps.setStore("messages", lastIdx, "interrupted", true);
-			}
+		{
+			onSuccess: () => {
+				if (errorStr) {
+					deps.setStore("messages", lastIdx, "error", errorStr);
+				}
+				if (interruptedFlag) {
+					deps.setStore("messages", lastIdx, "interrupted", true);
+				}
+			},
 		},
 	);
 }
@@ -400,16 +399,16 @@ function persistNonAssistantMessage(
 	// message timeline is complete for resume. No display bubble, so
 	// `displayMessageId` stays NULL.
 	//
-	// `safeRun`: no store state to gate. Persistence failure here is
-	// benign at runtime (pi-agent-core's in-memory timeline stays
-	// valid for the active session) but causes a missing tool-result
-	// row on resume — out of scope for the drift fix because there's
-	// no store mirror to roll back to. Fixing requires either queued
-	// retry or surfacing failure into the turn-failure path; see
-	// docs/TODO.md Known Issues.
+	// Log-and-continue: no store state to gate. Persistence failure
+	// here is benign at runtime (pi-agent-core's in-memory timeline
+	// stays valid for the active session) but causes a missing tool-
+	// result row on resume — out of scope for the drift fix because
+	// there's no store mirror to roll back to. Fixing requires either
+	// queued retry or surfacing failure into the turn-failure path;
+	// see docs/TODO.md Known Issues.
 	const sid = deps.sessionState.getCurrentSessionId();
 	if (!sid) return;
-	safeRun(() => runInTransaction((tx) => appendAgentMessage(tx, sid, msg)));
+	persist((tx) => appendAgentMessage(tx, sid, msg));
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -488,9 +487,8 @@ function applyToolResult(
 		...msgAtIdx,
 		parts: nextParts,
 	};
-	deps.sessionState.persistThen(
-		(tx) => finalizeDisplayMessageParts(tx, sid, updated),
-		() => {
+	persist((tx) => finalizeDisplayMessageParts(tx, sid, updated), {
+		onSuccess: () => {
 			deps.setStore(
 				"messages",
 				foundMsgIdx,
@@ -503,7 +501,7 @@ function applyToolResult(
 				}),
 			);
 		},
-	);
+	});
 }
 
 function applySidebarMutation(endEvt: any, deps: ReducerDeps): void {
@@ -604,29 +602,31 @@ function sweepPendingTools(deps: ReducerDeps): void {
 	}
 	const sid = deps.sessionState.getCurrentSessionId();
 	if (!sid || touched.length === 0) return;
-	deps.sessionState.persistThen(
+	persist(
 		(tx) => {
 			for (const m of touched) {
 				finalizeDisplayMessageParts(tx, sid, m);
 			}
 		},
-		() => {
-			deps.setStore(
-				"messages",
-				produce((msgs: DisplayMessage[]) => {
-					for (const m of msgs) {
-						if (m.role !== "assistant") continue;
-						for (const p of m.parts) {
-							if (p.type === "tool" && p.state === "pending") {
-								p.state = "error";
-								if (!p.error) {
-									p.error = "Tool execution interrupted";
+		{
+			onSuccess: () => {
+				deps.setStore(
+					"messages",
+					produce((msgs: DisplayMessage[]) => {
+						for (const m of msgs) {
+							if (m.role !== "assistant") continue;
+							for (const p of m.parts) {
+								if (p.type === "tool" && p.state === "pending") {
+									p.state = "error";
+									if (!p.error) {
+										p.error = "Tool execution interrupted";
+									}
 								}
 							}
 						}
-					}
-				}),
-			);
+					}),
+				);
+			},
 		},
 	);
 }
@@ -650,27 +650,26 @@ function persistSynthesizedAbortMessage(
 	// from that array that wasn't already persisted via the normal
 	// `message_end` path.
 	//
-	// `safeRun`: persistence failure here is absorbed by load-time
-	// alternation repair in sessions.ts (`TAIL ORPHAN` / `INTERIOR
-	// GAP` logic). Don't "harden" this into `persistThen` — the
-	// repair path exists precisely because this synthesized-abort
-	// write can legitimately fail or be pre-empted by process kill.
+	// Log-and-continue: persistence failure here is absorbed by load-
+	// time alternation repair in sessions.ts (`TAIL ORPHAN` /
+	// `INTERIOR GAP` logic). Don't "harden" this into a persist-first
+	// `onSuccess` — the repair path exists precisely because this
+	// synthesized-abort write can legitimately fail or be pre-empted
+	// by process kill.
 	const endedMsgs = (event as { messages?: AgentMessage[] }).messages;
 	const sid = deps.sessionState.getCurrentSessionId();
 	if (!endedMsgs || endedMsgs.length === 0 || !sid) return;
-	safeRun(() =>
-		runInTransaction((tx) => {
-			for (const m of endedMsgs) {
-				if (!m) continue;
-				if (
-					m.role === "assistant" &&
-					(m.stopReason === "aborted" || m.stopReason === "error")
-				) {
-					appendAgentMessage(tx, sid, m);
-				}
+	persist((tx) => {
+		for (const m of endedMsgs) {
+			if (!m) continue;
+			if (
+				m.role === "assistant" &&
+				(m.stopReason === "aborted" || m.stopReason === "error")
+			) {
+				appendAgentMessage(tx, sid, m);
 			}
-		}),
-	);
+		}
+	});
 }
 
 function stampTurnClosingBubble(event: AgentEvent, deps: ReducerDeps): void {
@@ -719,9 +718,8 @@ function stampTurnClosingBubble(event: AgentEvent, deps: ReducerDeps): void {
 		...(duration !== undefined ? { duration } : {}),
 		...(stampedLevel ? { thinkingLevel: stampedLevel } : {}),
 	};
-	deps.sessionState.persistThen(
-		(tx) => updateDisplayMessageMeta(tx, sid, updated),
-		() => {
+	persist((tx) => updateDisplayMessageMeta(tx, sid, updated), {
+		onSuccess: () => {
 			deps.setStore("messages", lastIdx, "agentName", agentName);
 			if (displayName) {
 				deps.setStore("messages", lastIdx, "modelName", displayName);
@@ -733,7 +731,7 @@ function stampTurnClosingBubble(event: AgentEvent, deps: ReducerDeps): void {
 				deps.setStore("messages", lastIdx, "thinkingLevel", stampedLevel);
 			}
 		},
-	);
+	});
 }
 
 function stampInterruptedUser(deps: ReducerDeps): void {
@@ -769,12 +767,11 @@ function stampInterruptedUser(deps: ReducerDeps): void {
 		parts: userMsg.parts.map((p) => ({ ...p })),
 		interrupted: true,
 	};
-	deps.sessionState.persistThen(
-		(tx) => updateDisplayMessageMeta(tx, sid, updated),
-		() => {
+	persist((tx) => updateDisplayMessageMeta(tx, sid, updated), {
+		onSuccess: () => {
 			deps.setStore("messages", userIdx, "interrupted", true);
 		},
-	);
+	});
 }
 
 function detectCodexTransport(deps: ReducerDeps): void {

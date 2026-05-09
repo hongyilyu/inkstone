@@ -26,7 +26,7 @@ import {
 	listSessions,
 	loadSession,
 	newId,
-	runInTransaction,
+	withTransaction,
 } from "@backend/persistence/sessions";
 import type { DisplayMessage } from "@bridge/view-model";
 import "./preload";
@@ -46,7 +46,7 @@ describe("display parts — file round-trip", () => {
 				},
 			],
 		};
-		runInTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
+		withTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
 
 		const loaded = loadSession(rec.id);
 		expect(loaded).not.toBeNull();
@@ -72,7 +72,7 @@ describe("display parts — file round-trip", () => {
 				},
 			],
 		};
-		runInTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
+		withTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
 
 		const summaries = listSessions();
 		const found = summaries.find((s) => s.id === rec.id);
@@ -94,7 +94,7 @@ describe("display parts — file round-trip", () => {
 				},
 			],
 		};
-		runInTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
+		withTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
 
 		const summaries = listSessions();
 		const found = summaries.find((s) => s.id === rec.id);
@@ -120,7 +120,7 @@ describe("display parts — file round-trip", () => {
 			duration: 1234,
 			thinkingLevel: "high",
 		};
-		runInTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
+		withTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
 
 		const loaded = loadSession(rec.id);
 		expect(loaded).not.toBeNull();
@@ -144,7 +144,7 @@ describe("display parts — file round-trip", () => {
 			modelName: "Claude Test",
 			duration: 500,
 		};
-		runInTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
+		withTransaction((tx) => appendDisplayMessage(tx, rec.id, msg));
 
 		const loaded = loadSession(rec.id);
 		expect(loaded).not.toBeNull();
