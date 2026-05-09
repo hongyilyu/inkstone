@@ -26,7 +26,7 @@ Inlining all skills an agent might need into every system prompt is wasteful whe
 From the design discussion:
 
 - **Skill bundles** — `SKILL.md` files with YAML/TOML front-matter (name, description, optionally `agents:` allowlist) + markdown body. One file per skill.
-- **Storage** — under `~/.config/inkstone/skills/<name>/SKILL.md`. Explicitly not inside the vault (per AGENT-DESIGN.md D7 — vault is knowledge content, config dir is Inkstone state).
+- **Storage** — per-agent under `~/.config/inkstone/memory/<agent>/skills/<skill>/SKILL.md`. Path layout: `memory/` is the persisted-context root; each agent gets its own folder; skills nest under the agent. Aligned with the memory-files layout (`memory/user.md` for cross-agent identity, `memory/<agent>/memory.md` for per-agent memory). Explicitly not inside the vault — vault is user knowledge content; persisted Inkstone state lives under `~/.config/inkstone/`. Vault-bundled agents (and their skills) are deferred per `docs/adr/0004-xdg-runtime-state-v1.md`.
 - **Lazy loading** — summary (name + description) surfaced in the system prompt at compose time, full body fetched on demand when the agent invokes a skill-loading tool. Avoids token bloat.
 - **Agent-created skills** — part of the design intent. Agents should be able to author new SKILL.md bundles at runtime (e.g. KB agent writing a skill for a newly-ingested domain). Exact mechanism TBD (see §5).
 
@@ -82,7 +82,7 @@ Any one of the above is sufficient. Two or three at once is strong signal.
 Minimum viable path:
 
 1. **Define** `Skill = { name: string; description: string; body: string; agents?: string[] }` in `backend/skills/`.
-2. **Loader** — `loadSkills(): Skill[]` reads all `~/.config/inkstone/skills/*/SKILL.md`, parses front-matter, returns array. Cached module-level. Re-run on explicit refresh or app restart.
+2. **Loader** — `loadSkillsForAgent(name): Skill[]` reads all `~/.config/inkstone/memory/<name>/skills/*/SKILL.md`, parses front-matter, returns array. Cached module-level per agent. Re-run on explicit refresh or app restart.
 3. **Filter** — `availableSkillsForAgent(agentName: string): Skill[]` applies either agent-driven or skill-driven filtering (decide at implementation time).
 4. **Summary injection** — `composeSystemPrompt` grows: after `BASE_PREAMBLE`, insert a `## Available Skills\n\n<name>: <description>\n...` block listing visible skills for the current agent.
 5. **Loading tool** — `skillTool` in `BASE_TOOLS`. Takes `{ name: string }`, returns the skill's full body as tool result content. The LLM invokes when it decides the task matches a skill.

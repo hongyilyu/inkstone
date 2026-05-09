@@ -33,3 +33,6 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Finder (MacOS) folder config
 .DS_Store
 .codex
+
+# Per-user Claude Code permissions
+.claude/settings.local.json

@@ -21,22 +21,22 @@ Every session starts from scratch. The system prompt is the same for a brand-new
 
 ## 3. Known shape (read path)
 
-Two files under `~/.config/inkstone/` — **not** inside the vault (per AGENT-DESIGN.md D7):
+Two scopes of memory file under `~/.config/inkstone/memory/` — **not** inside the vault (per `docs/adr/0004-xdg-runtime-state-v1.md`):
 
-- **`user.md`** — user preferences. User-written. Communication style, domain interests, persona preferences.
-- **`memory.md`** — durable facts the agent has learned. Agent-written (via a future write tool). Environment details, project conventions, discovered workarounds.
+- **`memory/user.md`** — program-level user identity. User-written. Cross-agent. Communication style, domain interests, persona preferences. Inlined into **every** agent's system prompt, including the router (per `docs/adr/0007-routing-agent.md`).
+- **`memory/<agent>/memory.md`** — per-agent durable facts. Agent-written (via a future write tool). Tool-calling gotchas, project conventions discovered while operating as that agent, summaries of past interactions. Inlined ONLY into the owning agent's system prompt — Reader's `memory.md` does not appear in KB's prompt. The per-agent split honors the context-isolation rationale of `docs/adr/0005-agent-command-tool.md`.
 
 Both inlined by `composeSystemPrompt` into the system prompt, after `BASE_PREAMBLE`:
 
 ```
 BASE_PREAMBLE
-+ user.md contents            ← "who the user is"
-+ memory.md contents          ← "what I know about this context"
-+ agent's buildInstructions() ← persona + workflow
-+ skills summary              ← see docs/SKILLS.md
++ memory/user.md                       ← cross-agent, "who the user is"
++ memory/<agent>/memory.md             ← per-agent, "what THIS agent has learned"
++ agent's buildInstructions()          ← persona + workflow
++ skills summary                       ← see docs/SKILLS.md
 ```
 
-Likely a **universal read** — every agent benefits from knowing user preferences and durable context. No per-agent gating for the read path.
+`user.md` is the **universal read** (every agent including the router benefits from knowing user preferences). `memory.md` is **per-agent** (each agent's durable context is scoped to its own workflow; cross-agent leakage would defeat the context-isolation that justifies separate agents).
 
 ## 4. Write path — separate design problem
 

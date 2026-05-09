@@ -65,7 +65,7 @@
 
 ## Future Work (Post-MVP)
 
-- Reader zones-per-command when a second reader command lands. Today `readerAgent.zones` declares workspace paths (`010 RAW/013 Articles`, `020 HUMAN/022 Scraps`, `020 HUMAN/023 Notes`) that happen to match `/article`'s write targets. The zones render in the system prompt via `composeZonesBlock` before command-specific workflow text arrives from `/article`'s opening user message, so when reader grows a second command (e.g. `/book` with different write zones), the static agent-level zones list will over-grant writes for `/book` and under-grant them for `/article`. Likely fix: let `AgentCommand` declare its own `zones: AgentZone[]` and merge them into the prompt + permission overlay when that command's workflow prelude is injected. Deferred per D8 — no second reader command exists yet.
+- Eliminate zones; derive workspace prompt from permissions (#124). `AgentInfo.zones` is redundant with `getPermissions()` — both declare directory-level workspace policy. Permissions become the single source of truth and the `<your workspace>` system-prompt block is derived from permission rules, not from a separate `zones` field.
 
 - `AgentCommand.canExecute` — generalize to a second consumer. The predicate (rule 3 in `canRunSlashEntry`) is a generic optional field on `AgentCommand`, but only reader's `/article` populates it today because `/article` is the only command with the optional-arg shape (`takesArgs: false` + `argHint` set) — the only shape where rule 2's "extra args reject" is suppressed and prose-after-verb can otherwise leak through as a real arg. Other shapes (required-args, no-args) are already covered by rules 1 + 2. When a second optional-arg command lands (e.g. a hypothetical KB `/query [topic]` where topic optionally filters a saved-question list, or a reader `/book [filename]`), it will likely want its own `canExecute` body following the `resolveArticlePath`-style pattern: a shared resolver that both the gate and `execute` consume so the "would dispatch succeed?" check and the actual success criteria can't drift. The framework seam is in place; revisit the recipe (or extract a small helper) when the second consumer arrives.
 
@@ -92,8 +92,6 @@
 - **Process-level smoke test.** Spawn the real `bun start` binary in a PTY, assert the open page renders, then SIGTERM. Defer until Inkstone gains a server boundary, an embedded shell, or a detached runtime that differs materially from in-process `testRender` mounting (rationale captured in `docs/E2E-TESTING.md` § Deferred layers). Until then a PTY harness would catch nothing the existing in-process suite doesn't already.
 
 - Per-agent UI beyond prompt color (e.g., agent-specific sidebar info, icons).
-
-- Mid-session agent switching (requires per-message agent stamping on user bubbles and tool-result routing rules — intentionally deferred).
 
 - Effort-variant cycle keybind + slash command (OpenCode uses `ctrl+t` + `/variants`). Palette-only access ships; add when effort becomes a frequently-toggled setting.
 
@@ -125,7 +123,7 @@
 
 - **"Remember last-used agent" persistence.** The unified-config refactor (2026-05-08) deliberately dropped `currentAgent` from the JSON schema. Every fresh launch starts at `DEFAULT_AGENT` (reader); resume reads the agent name from the SQLite session row, so resumed sessions keep their original agent. If users start asking for the launch to remember last-used, persist via a new `lastAgent` field — but consider if it should live in the SQLite state DB rather than the JSON config (more like UI state than user preference).
 
-- **General-purpose router agent.** Multi-agent orchestration via a top-level "router" agent that delegates to reader / KB / future agents based on the user's intent. Builds on the per-agent model overrides from the unified-config refactor. Real prerequisites are mid-session agent switching (already in Future Work above) and a routing-decision UX (defer/auto/explicit).
+- **Routing agent — first-message classifier.** Design locked in `docs/adr/0007-routing-agent.md`: a normal `AgentInfo` registry entry whose only job is to classify the user's first freeform open-page message and dispatch to the appropriate downstream agent. Stateless, first-message-only, included in the Tab cycle, emits a visible dispatch bubble. Slash commands and explicit Tab picks bypass it. No mid-session switching prerequisite — fork (below) covers that need.
 
 - **Settings TUI dialog.** Replace the `/config` `$EDITOR` flow with an in-process settings dialog. Bigger surface change (fields, validation, save UX) — the `$EDITOR` shape ships v1 since it's adequate while the audience is contributors comfortable hand-editing JSON.
 
