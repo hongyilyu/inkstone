@@ -14,8 +14,16 @@ import { describe, expect, test } from "bun:test";
 import { readerAgent } from "@backend/agent/agents/reader";
 import { buildReaderInstructions } from "@backend/agent/agents/reader/instructions";
 import { composeSystemPrompt, composeTools } from "@backend/agent/compose";
+import { VAULT_DIR } from "@backend/agent/constants";
 import { registerBaselineFree } from "@backend/agent/permissions";
-import { writeTool } from "@backend/agent/tools";
+import {
+	editTool,
+	readTool,
+	updateSidebarTool,
+	writeTool,
+} from "@backend/agent/tools";
+import { makeListKeysTool, makeSearchTool } from "@backend/agent/tools/search";
+import { makeSuggestCommandTool } from "@backend/agent/tools/suggest-command";
 import type { AgentCommand, AgentInfo } from "@backend/agent/types";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 
@@ -222,5 +230,76 @@ describe("composeTools — permission coverage", () => {
 		} as unknown as AgentTool<any>;
 		const agent = makeAgent({ extraTools: [fixtureTool] });
 		expect(() => composeTools(agent)).not.toThrow();
+	});
+});
+
+// Pins the per-tool baseline data on the InkstoneTool shape — the
+// dispatcher will read these directly in Stack 2 (replacing the
+// module-load registry). Asserting against the tool definition
+// (not the registry) makes the contract local + grep-able.
+describe("InkstoneTool baseline declarations", () => {
+	test("readTool declares insideDirs[VAULT_DIR] baseline", () => {
+		expect(readTool.baseline).toBeDefined();
+		expect(readTool.baseline).toHaveLength(1);
+		const rule = readTool.baseline[0];
+		expect(rule?.kind).toBe("insideDirs");
+		if (rule?.kind === "insideDirs") {
+			expect(rule.dirs).toEqual([VAULT_DIR]);
+		}
+	});
+
+	test("writeTool declares insideDirs[VAULT_DIR] baseline", () => {
+		expect(writeTool.baseline).toBeDefined();
+		expect(writeTool.baseline).toHaveLength(1);
+		const rule = writeTool.baseline[0];
+		expect(rule?.kind).toBe("insideDirs");
+		if (rule?.kind === "insideDirs") {
+			expect(rule.dirs).toEqual([VAULT_DIR]);
+		}
+	});
+
+	test("editTool declares insideDirs[VAULT_DIR] baseline", () => {
+		expect(editTool.baseline).toBeDefined();
+		expect(editTool.baseline).toHaveLength(1);
+		const rule = editTool.baseline[0];
+		expect(rule?.kind).toBe("insideDirs");
+		if (rule?.kind === "insideDirs") {
+			expect(rule.dirs).toEqual([VAULT_DIR]);
+		}
+	});
+
+	test("updateSidebarTool declares empty baseline (no FS access)", () => {
+		expect(Array.isArray(updateSidebarTool.baseline)).toBe(true);
+		expect(updateSidebarTool.baseline).toHaveLength(0);
+	});
+
+	test("makeSearchTool returns InkstoneTool with empty baseline", () => {
+		const tool = makeSearchTool({
+			dir: VAULT_DIR,
+			name: "search_test",
+			description: "fixture",
+		});
+		expect(Array.isArray(tool.baseline)).toBe(true);
+		expect(tool.baseline).toHaveLength(0);
+	});
+
+	test("makeListKeysTool returns InkstoneTool with empty baseline", () => {
+		const tool = makeListKeysTool({
+			dir: VAULT_DIR,
+			name: "list_keys_test",
+			description: "fixture",
+		});
+		expect(Array.isArray(tool.baseline)).toBe(true);
+		expect(tool.baseline).toHaveLength(0);
+	});
+
+	test("makeSuggestCommandTool returns InkstoneTool with empty baseline", () => {
+		const fakeCommand: AgentCommand = { name: "ping", execute: () => {} };
+		// Factory returns `null` for an empty command list — pass a
+		// fixture command so we get a tool back.
+		const tool = makeSuggestCommandTool([fakeCommand]);
+		if (tool === null) throw new Error("expected non-null tool");
+		expect(Array.isArray(tool.baseline)).toBe(true);
+		expect(tool.baseline).toHaveLength(0);
 	});
 });

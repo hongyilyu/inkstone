@@ -15,10 +15,10 @@
  * (`composeTools` filters the `null` out).
  */
 
-import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
+import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, Type } from "typebox";
 import { registerBaselineFree } from "../permissions";
-import type { AgentCommand } from "../types";
+import type { AgentCommand, InkstoneTool } from "../types";
 
 /** User decision from the confirm panel; `edited` does not replay. */
 export type SuggestCommandDecision = "confirmed" | "edited" | "cancelled";
@@ -59,7 +59,7 @@ export interface SuggestCommandDetails {
  * a valid schema). */
 export function makeSuggestCommandTool(
 	commands: readonly AgentCommand[],
-): AgentTool<ReturnType<typeof buildSchema>, SuggestCommandDetails> | null {
+): InkstoneTool<ReturnType<typeof buildSchema>, SuggestCommandDetails> | null {
 	if (commands.length === 0) return null;
 	registerBaselineFree(
 		"suggest_command",
@@ -70,6 +70,10 @@ export function makeSuggestCommandTool(
 	return {
 		name: "suggest_command",
 		label: "Suggest Command",
+		// Slash-command proposal — no filesystem access; resolves
+		// through the TUI confirm panel. Empty baseline is the
+		// explicit "no rules apply" declaration.
+		baseline: [],
 		description:
 			"Propose a slash command on the user's behalf when their request clearly maps to one of the agent's verbs. " +
 			"The user sees a panel with the proposed command and your rationale, and can accept, edit, or cancel. " +

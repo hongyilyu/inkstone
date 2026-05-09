@@ -1,11 +1,10 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { hasBaseline, isBaselineFree } from "./permissions";
 import { editTool, readTool, updateSidebarTool, writeTool } from "./tools";
 import { makeSuggestCommandTool } from "./tools/suggest-command";
-import type { AgentInfo } from "./types";
+import type { AgentInfo, InkstoneTool } from "./types";
 
 /** Tools every agent receives. Frozen at load. See `docs/AGENT-DESIGN.md` D4 + D5. */
-export const BASE_TOOLS: readonly AgentTool<any>[] = Object.freeze([
+export const BASE_TOOLS: readonly InkstoneTool<any>[] = Object.freeze([
 	readTool,
 	updateSidebarTool,
 ]);
@@ -18,8 +17,8 @@ export const BASE_PREAMBLE = "";
  * an agent-scoped `suggest_command` tool (omitted when `info.commands`
  * is empty; empty enum has no valid call shape).
  */
-export function composeTools(info: AgentInfo): AgentTool<any>[] {
-	const tools: AgentTool<any>[] = [...BASE_TOOLS, ...info.extraTools];
+export function composeTools(info: AgentInfo): InkstoneTool<any>[] {
+	const tools: InkstoneTool<any>[] = [...BASE_TOOLS, ...info.extraTools];
 	const suggest = makeSuggestCommandTool(info.commands ?? []);
 	if (suggest) tools.push(suggest);
 	assertToolPermissionCoverage(info, tools);
@@ -29,7 +28,7 @@ export function composeTools(info: AgentInfo): AgentTool<any>[] {
 
 function assertToolPermissionCoverage(
 	info: AgentInfo,
-	tools: AgentTool<any>[],
+	tools: InkstoneTool<any>[],
 ): void {
 	for (const tool of tools) {
 		if (hasBaseline(tool.name) || isBaselineFree(tool.name)) continue;
@@ -46,7 +45,7 @@ function assertToolPermissionCoverage(
 // `tools.ts` convention is the safety net, not this assertion.
 function assertMutatingToolsHaveZones(
 	info: AgentInfo,
-	tools: AgentTool<any>[],
+	tools: InkstoneTool<any>[],
 ): void {
 	if (info.zones.length > 0) return;
 	const hasSharedMutatingTool = tools.some(

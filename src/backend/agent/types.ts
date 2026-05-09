@@ -1,6 +1,32 @@
 import type { DisplayPart } from "@bridge/view-model";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import type { AgentOverlay } from "./permissions";
+import type { TSchema } from "typebox";
+import type { AgentOverlay, Rule } from "./permissions";
+
+/**
+ * Inkstone-shipped tool definition: a pi-agent-core `AgentTool` plus a
+ * required `baseline: Rule[]` field that declares the permission rules
+ * applied to every call of this tool, regardless of agent.
+ *
+ * Empty `[]` is an explicit "no baseline rules" declaration — required
+ * so the contract is local to the tool definition and grep-able. A
+ * missing field is a TS compile error, replacing the old runtime
+ * registry coverage check.
+ *
+ * Refines ADR-0009: rules are data, and baselines now live on the tool
+ * (not in a module-load registry). Per-agent overlays still come from
+ * `AgentInfo.getPermissions?()`.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: matches pi-agent-core's
+// `AgentTool<P, D = any>` default so `AgentTool<S>` and `InkstoneTool<S>`
+// resolve to the same `D` and stay structurally assignable.
+export interface InkstoneTool<
+	TParameters extends TSchema = TSchema,
+	// biome-ignore lint/suspicious/noExplicitAny: see comment above.
+	TDetails = any,
+> extends AgentTool<TParameters, TDetails> {
+	baseline: Rule[];
+}
 
 // Theme keys used for per-agent accents. Must match keys on `ThemeColors`
 // (`src/tui/context/theme.tsx`) — bad keys fail at compile time.
@@ -133,7 +159,7 @@ export interface AgentInfo {
 	displayName: string;
 	description: string;
 	colorKey: AgentColorKey;
-	extraTools: AgentTool<any>[];
+	extraTools: InkstoneTool<any>[];
 	zones: AgentZone[];
 	buildInstructions(): string;
 	commands?: AgentCommand[];
