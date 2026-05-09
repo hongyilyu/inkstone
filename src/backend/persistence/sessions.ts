@@ -223,6 +223,106 @@ export function createSession(init: { agent: string }): SessionRecord {
 	};
 }
 
+/**
+ * A seed entry replayed into a freshly-forked child session. `display`
+ * is required (the visible bubble). `agentMessage` is optional —
+ * present when the LLM-facing stream needs the same content as turn 1
+ * (routing fork, where the user's open-page message is replayed into
+ * the child agent's `agent_messages`); absent for display-only seeding
+ * (a future user-initiated fork might want a "[forked from Reader]"
+ * preamble bubble with no LLM-context counterpart).
+ */
+export interface ForkSeed {
+	display: DisplayMessage;
+	agentMessage?: AgentMessage;
+}
+
+/**
+ * Create a child `Session` bound to `targetAgent`, with `parent_session_id`
+ * pointing at `parentId`, plus a forked-from marker as the child's first
+ * display row and any seed messages replayed afterwards. All writes happen
+ * under one transaction per ADR 0012 — a mid-tx throw rolls back the
+ * child row, the marker, and every seed atomically.
+ *
+ * Per ADR 0014 this is the session primitive. Routing fork (the only
+ * caller in this work) calls it with the user's first message as a seed;
+ * future user-initiated fork calls it with a different seed shape using
+ * the same verb.
+ */
+export function forkSession(init: {
+	parentId: string;
+	targetAgent: string;
+	seedMessages: ForkSeed[];
+}): SessionRecord {
+	const now = Date.now();
+	const title = createDefaultTitle(now);
+	const childRow = {
+		id: newId(),
+		startedAt: now,
+		agent: init.targetAgent,
+		title,
+		parentSessionId: init.parentId,
+	};
+
+	withTransaction((tx) => {
+		try {
+			tx.insert(sessions).values(childRow).run();
+		} catch (error) {
+			reportPersistenceError({
+				kind: "session",
+				action: `fork-session (${shortId(childRow.id)})`,
+				error,
+			});
+			tagReportedAndRethrow(error);
+		}
+
+		// Forked-from marker — synthetic assistant message, parts.type =
+		// "fork", no `agent_messages` counterpart. Per ADR 0015 the
+		// child agent's LLM context stays naive to this row. Allocated
+		// FIRST so its UUIDv7 timestamp prefix orders before any seed
+		// row — `loadSession` orders by `messages.id` (chronological
+		// UUIDv7 prefix), so the marker reliably renders above seeded
+		// content.
+		const markerMsg: DisplayMessage = {
+			id: newId(),
+			role: "assistant",
+			parts: [{ type: "fork", parentSessionId: init.parentId }],
+		};
+		appendDisplayMessage(tx, childRow.id, markerMsg);
+
+		// Seed messages: display always, agent_messages when caller
+		// provided one. Each seed gets a fresh display id allocated
+		// here — the caller's `seed.display.id` is informational only.
+		// Two reasons: (a) the child's seeded row is a *new* row in
+		// this session, not the same row as whatever the seed mirrors
+		// in the parent (each session owns its messages); (b) allocating
+		// after the marker guarantees marker.id < seed.id ordering for
+		// chronological-by-UUIDv7-prefix loadSession reads.
+		//
+		// `displayMessageId` links the agent_message to the display row
+		// it produced — required by docs/SQL.md when the agent_message
+		// HAS a corresponding bubble (which seeds always do; the seed
+		// IS a user bubble, not a tool-result/custom no-bubble row).
+		for (const seed of init.seedMessages) {
+			const seededDisplay = { ...seed.display, id: newId() };
+			appendDisplayMessage(tx, childRow.id, seededDisplay);
+			if (seed.agentMessage) {
+				appendAgentMessage(tx, childRow.id, seed.agentMessage, {
+					displayMessageId: seededDisplay.id,
+				});
+			}
+		}
+	});
+
+	return {
+		id: childRow.id,
+		agent: childRow.agent,
+		startedAt: childRow.startedAt,
+		title: childRow.title,
+		parentSessionId: childRow.parentSessionId,
+	};
+}
+
 export function updateSessionTitle(
 	tx: Tx,
 	sessionId: string,
