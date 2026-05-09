@@ -1,5 +1,5 @@
 /**
- * Session-lifetime mutable state + `ensureSession` that wraps it.
+ * Session-lifetime mutable state + `ensureSession` lazy-init helper.
  *
  * The reducer and `wrappedActions` both need to read/write:
  *   - `currentSessionId` — the SQLite row id for the active session,
@@ -17,6 +17,15 @@
  * `ensureSession` lives here because it closes over `currentSessionId`.
  * Exposing the bag as getter/setter pairs keeps the other modules free
  * of top-level `let`s.
+ *
+ * The persist-first gate (formerly `persistThen` here) now lives inside
+ * `MessageLog` — see `message-log.ts`. Every persist-first call site
+ * that mutates `store.messages` is a `MessageLog` method, so the gate
+ * sits next to the writers it gates instead of split across two
+ * modules. The lone non-message persist-first site
+ * (`startSessionTitleTask` in `actions/prompt.ts`) uses
+ * `persist(writes, { onSuccess })` directly — three lines, single
+ * caller, no abstraction earned.
  */
 
 import type { Session } from "@backend/agent";
