@@ -43,6 +43,7 @@ import { useDialog } from "../../ui/dialog";
 import { useToast } from "../../ui/toast";
 import { createWrappedActions } from "./actions";
 import { BridgeAgentCommands } from "./commands";
+import { createMessageLog } from "./message-log";
 import { createPreviewRegistry } from "./preview-registry";
 import { createAgentEventHandler } from "./reducer";
 import { createSessionState } from "./session-state";
@@ -314,6 +315,7 @@ export function AgentProvider(
 	});
 
 	const sessionState = createSessionState({ agentSession, store, setStore });
+	const messageLog = createMessageLog({ store, setStore, sessionState });
 
 	handlerRef = createAgentEventHandler({
 		store,
@@ -321,6 +323,7 @@ export function AgentProvider(
 		sessionState,
 		agentSession,
 		layout,
+		messageLog,
 	});
 
 	const wrappedActions = createWrappedActions({
@@ -336,6 +339,7 @@ export function AgentProvider(
 		respondApproval,
 		pendingSuggestion: () => pendingSuggestion()?.request ?? null,
 		respondSuggestion,
+		messageLog,
 	});
 
 	const value: AgentContextValue = {
@@ -366,6 +370,7 @@ export function AgentProvider(
 					layout,
 					dialog,
 					toast,
+					messageLog,
 				}}
 			/>
 			{props.children}
