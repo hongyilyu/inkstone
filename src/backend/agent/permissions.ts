@@ -7,6 +7,7 @@ import type {
 } from "@mariozechner/pi-agent-core";
 import { createTwoFilesPatch } from "diff";
 import { VAULT_DIR } from "./constants";
+import type { InkstoneTool } from "./types";
 
 /**
  * Declarative permission rules evaluated by `dispatchBeforeToolCall`.
@@ -406,29 +407,37 @@ async function evaluateRule(
 
 /**
  * The `beforeToolCall` hook Inkstone registers on pi-agent-core's Agent.
- * Pulls the active tool's baseline rules and the active agent's overlay
- * (if any), concatenates, evaluates in order, short-circuits on first
- * block.
+ * Looks the active tool up in the composed tool list, pulls its
+ * declared `baseline`, concatenates the agent overlay (if any), and
+ * evaluates in order — short-circuits on first block.
  *
  * Rule order:
- *   [...registerBaseline(toolName), ...overlay[toolName]]
+ *   [...tool.baseline, ...overlay[toolName]]
  *
  * So agent overlays run AFTER baselines — they can add restrictions but
- * can't relax them. No tool today registers a "permissive" baseline
- * that an overlay would want to tighten; if that situation arises, the
+ * can't relax them. No tool today carries a "permissive" baseline that
+ * an overlay would want to tighten; if that situation arises, the
  * agent owns whichever tool variant it exposes in `extraTools`.
  */
 export async function dispatchBeforeToolCall(
 	ctx: BeforeToolCallContext,
+	tools: readonly InkstoneTool<any>[],
 	overlay?: AgentOverlay,
 ): Promise<BeforeToolCallResult | undefined> {
 	const toolName = ctx.toolCall.name;
+	const tool = tools.find((t) => t.name === toolName);
+	// pi-agent-core only fires this hook for tools in the dispatch
+	// table we passed it. A miss here means the table drifted from
+	// `tools` — surface a clear error instead of crashing on
+	// `.baseline` of undefined.
+	if (!tool) {
+		throw new Error(
+			`dispatchBeforeToolCall: tool '${toolName}' not in composed tool list`,
+		);
+	}
 	const args = ctx.args as Record<string, unknown>;
 
-	const rules: Rule[] = [
-		...(baselineRules[toolName] ?? []),
-		...(overlay?.[toolName] ?? []),
-	];
+	const rules: Rule[] = [...tool.baseline, ...(overlay?.[toolName] ?? [])];
 
 	for (const rule of rules) {
 		const result = await evaluateRule(rule, ctx, args);
