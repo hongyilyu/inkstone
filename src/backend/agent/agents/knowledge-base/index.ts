@@ -65,7 +65,6 @@ export const knowledgeBaseAgent: AgentInfo = {
 		"three workflows.",
 	colorKey: "info",
 	extraTools: [editTool, writeTool],
-	zones: [],
 	buildInstructions: () => buildKnowledgeBaseInstructions(),
 	commands: [ingestCommand, queryCommand, lintCommand],
 	getPermissions: getKnowledgeBasePermissions,

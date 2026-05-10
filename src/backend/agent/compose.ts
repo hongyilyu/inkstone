@@ -1,10 +1,10 @@
 import { relative } from "node:path";
 import { VAULT_DIR } from "./constants";
+import { composeOverlay } from "./overlay";
 import type { Rule } from "./permissions";
 import { editTool, readTool, updateSidebarTool, writeTool } from "./tools";
 import { makeSuggestCommandTool } from "./tools/suggest-command";
 import type { AgentInfo, InkstoneTool } from "./types";
-import { composeOverlay } from "./zones";
 
 /** Tools every agent receives. Frozen at load. See `docs/AGENT-DESIGN.md` D4 + D5. */
 export const BASE_TOOLS: readonly InkstoneTool<any>[] = Object.freeze([
@@ -54,7 +54,7 @@ function assertMutatingToolsHaveWorkspace(
 	);
 	if (!hasSharedMutatingTool) return;
 	const overlay = composeOverlay(info);
-	const writeRules = overlay[writeTool.name] ?? [];
+	const writeRules: Rule[] = overlay[writeTool.name] ?? [];
 	const hasWritable = writeRules.some(
 		(r) => r.kind === "insideDirs" && r.dirs.length > 0,
 	);
@@ -73,32 +73,17 @@ function assertMutatingToolsHaveWorkspace(
 //                           path is implicitly denied by the dispatcher)
 //   confirmDirs           → "(confirm before each write)" suffix on the
 //                           writable line for matching dirs
-//   blockInsideDirs       → "Writes blocked in:" with the rule's reason
-//                           (carve-out from the allowlist OR a
-//                           domain-specific reason override; see the
-//                           `Rule` docstring in permissions.ts)
 //   frontmatterOnlyInDirs → "Edits restricted to frontmatter in:"
 function composeWorkspaceBlock(info: AgentInfo): string {
 	const overlay = composeOverlay(info);
 	const writeRules = overlay[writeTool.name] ?? [];
 	const editRules = overlay[editTool.name] ?? [];
 
-	const allWritable = collectDirs(writeRules, "insideDirs");
+	const writableDirs = collectDirs(writeRules, "insideDirs");
 	const confirmDirs = new Set(collectDirs(writeRules, "confirmDirs"));
-	const blocks = collectBlocks(writeRules);
-	// A dir present in both `insideDirs` and `blockInsideDirs` is enforced
-	// as blocked (first-block-wins per the dispatcher). Hide it from the
-	// writable list so the prompt matches enforcement; it will still appear
-	// under "Writes blocked in:" with the rule's reason.
-	const blockedDirs = new Set(blocks.map((b) => b.dir));
-	const writableDirs = allWritable.filter((d) => !blockedDirs.has(d));
 	const frontmatterOnly = collectDirs(editRules, "frontmatterOnlyInDirs");
 
-	if (
-		writableDirs.length === 0 &&
-		blocks.length === 0 &&
-		frontmatterOnly.length === 0
-	) {
+	if (writableDirs.length === 0 && frontmatterOnly.length === 0) {
 		return "";
 	}
 
@@ -110,12 +95,6 @@ function composeWorkspaceBlock(info: AgentInfo): string {
 				? "confirm before each write"
 				: "write freely";
 			lines.push(`  - ${rel(dir)} (${policy})`);
-		}
-	}
-	if (blocks.length > 0) {
-		lines.push("Writes blocked in:");
-		for (const { dir, reason } of blocks) {
-			lines.push(`  - ${rel(dir)} — ${reason}`);
 		}
 	}
 	if (frontmatterOnly.length > 0) {
@@ -137,26 +116,11 @@ function collectDirs(rules: Rule[], kind: Rule["kind"]): string[] {
 	const seen = new Set<string>();
 	for (const r of rules) {
 		if (r.kind !== kind) continue;
-		const dirs = "dirs" in r ? r.dirs : [];
-		for (const d of dirs) {
+		for (const d of r.dirs) {
 			if (!seen.has(d)) {
 				seen.add(d);
 				out.push(d);
 			}
-		}
-	}
-	return out;
-}
-
-function collectBlocks(rules: Rule[]): Array<{ dir: string; reason: string }> {
-	const out: Array<{ dir: string; reason: string }> = [];
-	const seen = new Set<string>();
-	for (const r of rules) {
-		if (r.kind !== "blockInsideDirs") continue;
-		for (const d of r.dirs) {
-			if (seen.has(d)) continue;
-			seen.add(d);
-			out.push({ dir: d, reason: r.reason });
 		}
 	}
 	return out;

@@ -74,7 +74,7 @@ Conversation scroll keybinds stay live — the panel doesn't suspend the global 
 
 Divergences from OpenCode's panel:
 
-- **No "Allow always".** Tracked as Future Work; requires a policy-write path into the zone config.
+- **No "Allow always".** Tracked as Future Work; requires a policy-write path into the agent's permission overlay.
 - **No diff inside the panel.** `ToolPart` renders the diff in the conversation scrollbox above. OpenCode renders it inside the panel; we don't need to because the conversation already has it.
 - **No `ctrl+f` fullscreen toggle.** Not useful for Inkstone — the diff lives in the always-scrollable conversation.
 
@@ -125,5 +125,5 @@ There is no generalized "confirmation surface." Two scoped signals + one shared 
 ## Known limitations
 
 - **Abort-unmount test gap.** The provider's `onCleanup` resolves any in-flight `confirmFn` to `false` (verified by code inspection + abort/clearSession test coverage). Direct end-to-end coverage via `renderer.destroy()` while pending triggers a Bun 1.3.4 segfault in OpenTUI's teardown path when a Promise-holding owner is disposed. Revisit when Bun / OpenTUI ship a fix.
-- **"Allow always" not implemented.** OpenCode has a third option that persists a pattern into policy. Requires a policy-write path into zone config; deferred.
+- **"Allow always" not implemented.** OpenCode has a third option that persists a pattern into policy. Requires a policy-write path into the agent's permission overlay; deferred.
 - **Resumed sessions have no diff archive.** Tool parts loaded from SQLite don't carry diffs (never persisted), so the chevron doesn't render for historical tool calls. Acceptable — the archive is a live-session overlay.

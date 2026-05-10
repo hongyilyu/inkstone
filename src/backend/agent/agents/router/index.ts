@@ -12,7 +12,7 @@
  * NEW freeform message (which spawns a new router session), not a
  * follow-up turn on the original router session.
  *
- * The router has no zones (no filesystem access) and no commands (slash
+ * The router has no permissions (no filesystem access) and no commands (slash
  * verbs bypass the router by definition — they ARE the classification).
  * `omitBaseTools: true` skips the shared `BASE_TOOLS` (`read` +
  * `update_sidebar`) at compose time, so the router's runtime tool set
@@ -91,7 +91,6 @@ export const routerAgent: AgentInfo = {
 	description: ROUTER_DESCRIPTION,
 	colorKey: "accent",
 	extraTools: [dispatchTool],
-	zones: [],
 	buildInstructions: buildRouterInstructions,
 	// One-shot classifier — exactly one tool. See agent docstring above.
 	omitBaseTools: true,

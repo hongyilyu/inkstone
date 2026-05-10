@@ -31,12 +31,12 @@ import {
 	recommendArticles,
 } from "@backend/agent/agents/reader/recommendations";
 import { composeTools } from "@backend/agent/compose";
+import { composeOverlay } from "@backend/agent/overlay";
 import {
 	type ConfirmRequest,
 	dispatchBeforeToolCall,
 	setConfirmFn,
 } from "@backend/agent/permissions";
-import { composeOverlay } from "@backend/agent/zones";
 import { VAULT } from "./preload";
 
 // Composed tool lists for the agents these tests dispatch against.

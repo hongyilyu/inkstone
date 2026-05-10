@@ -40,24 +40,6 @@ export type AgentColorKey =
 	| "info";
 
 /**
- * A declared write zone on an agent's workspace.
- * See `docs/ARCHITECTURE.md` § Zones for what zones do, why read is
- * always vault-wide, and how `composeZonesOverlay` derives permission
- * rules from this data.
- *
- * `path` is vault-relative (resolved via `path.join` against
- * `VAULT_DIR` at compose time; absolute paths are rejected).
- *
- * `write` policy:
- *   - `auto`    — write inside this zone without prompting
- *   - `confirm` — prompt the user before each write inside this zone
- */
-export interface AgentZone {
-	path: string;
-	write: "auto" | "confirm";
-}
-
-/**
  * User-facing verb an agent declares (typed slash, palette, keybind).
  * Distinct from a tool: tools are model-invoked mid-turn; commands are
  * user-invoked at turn boundaries. See `docs/SLASH-COMMANDS.md` for
@@ -146,13 +128,14 @@ export interface AgentCommandHelpers {
  *   - `extraTools`        appended to `BASE_TOOLS`; no opt-out (D4).
  *   - `buildInstructions` nullary; called once per session/agent-swap,
  *                         not per turn (cache-stability invariant D9).
- *                         Composer prepends the zones + commands blocks.
- *   - `zones`             empty array = no declared workspace.
- *   - `getPermissions`    escape hatch for rules zones can't express
- *                         (e.g. reader's `frontmatterOnlyInDirs`,
- *                         knowledge-base's `blockInsideDirs` over RAW
- *                         + HUMAN). Called once per tool call so
- *                         state-dependent rules can inline fresh values.
+ *                         Composer prepends the workspace + commands blocks.
+ *   - `getPermissions`    declarative permission overlay for the agent.
+ *                         Per ADR 0009, this is the single source of
+ *                         truth for both the dispatcher and the
+ *                         system prompt's `<your workspace>` block —
+ *                         same `Rule[]`, same bytes, no drift. Called
+ *                         once per tool call so state-dependent rules
+ *                         can inline fresh values.
  */
 export interface AgentInfo {
 	name: string;
@@ -160,7 +143,6 @@ export interface AgentInfo {
 	description: string;
 	colorKey: AgentColorKey;
 	extraTools: InkstoneTool<any>[];
-	zones: AgentZone[];
 	buildInstructions(): string;
 	commands?: AgentCommand[];
 	getPermissions?(): AgentOverlay;

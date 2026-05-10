@@ -111,9 +111,9 @@ src/
     agent/
       index.ts                      Session factory + public API surface
       agents.ts                     Registry assembler — imports each agent's AgentInfo
-      types.ts                      Foundation types (AgentInfo, AgentZone, AgentCommand, etc.)
+      types.ts                      Foundation types (AgentInfo, AgentCommand, etc.)
       compose.ts                    BASE_TOOLS, BASE_PREAMBLE, composeTools, composeSystemPrompt
-      zones.ts                      Zone-to-permission rule derivation
+      overlay.ts                    composeOverlay — per-agent permission overlay (single source of truth for prompt + dispatcher)
       tools.ts                      Shared tool pool (read, write, edit via pi-coding-agent; updateSidebarTool for generic sidebar section management)
       permissions.ts                Declarative permission dispatcher
       constants.ts                  Vault and directory path constants
@@ -354,7 +354,6 @@ The user-facing approval flow (bottom panel + inline diff preview) that `confirm
 |---|---|---|
 | `insideDirs` | `{ dirs: string[] }` | Resolved path must be inside ANY listed dir. Multiple rules AND-join. |
 | `confirmDirs` | `{ dirs: string[] }` | If resolved path is in any listed dir, await `confirmFn`; decline → block. |
-| `blockInsideDirs` | `{ dirs: string[]; reason: string }` | Block when resolved path is inside any listed dir. Used for "this whole directory tree is read-only for this agent." |
 | `frontmatterOnlyInDirs` | `{ dirs: string[] }` | On `edit` when resolved path is inside any listed dir, every `args.edits[].oldText` must appear inside the file's `---`-delimited frontmatter. |
 
 Path resolution mirrors pi-coding-agent (`~` / `~/` expansion, `@` prefix strip, absolute passes through, relative resolves against `VAULT_DIR`) so the sandbox check operates on the same bytes the tool will touch. pi-coding-agent doesn't re-export those helpers from its package index; the subset is inlined. The `isInsideDir` helper (exported from `permissions.ts`) is the single source of truth for "is this path inside that directory?" — used by the dispatcher and by agent-internal callers like reader's `/article` escape check.
@@ -375,25 +374,21 @@ Tools without a registered baseline run unsandboxed (pi-coding-agent's own defau
 
 ### Agent overlays
 
-The dispatcher accepts a combined overlay built by `composeOverlay(info)` in `src/backend/agent/zones.ts`:
+The dispatcher accepts a per-agent overlay built by `composeOverlay(info)` in `src/backend/agent/overlay.ts`:
 
 ```
-composeOverlay(info) = info.getPermissions?.() ⊕ composeZonesOverlay(info)
+composeOverlay(info) = info.getPermissions?.() ?? {}
 ```
 
-**Custom rules come first**, zones come second. Keys with entries in both are concatenated; within a concatenated list, custom rules evaluate before zone rules. First-block-wins means the stricter (file-level) custom rules short-circuit before the looser (directory-level) zone rules fire. Concretely: reader's custom `blockInsideDirs` on Articles rejects a `write` against any article outright, without the zone's confirm prompt firing for a call that would be rejected anyway.
+Per ADR 0009, the overlay is also the source of truth for the system prompt's `<your workspace>` block — `composeWorkspaceBlock` in `src/backend/agent/compose.ts` reads the same `composeOverlay(info)` output. The LLM's stated workspace and the dispatcher's enforced workspace are literally the same `Rule[]`; drift is impossible.
 
-**`composeZonesOverlay(info)`** derives permission rules from `AgentInfo.zones` (see Agent Registry → Zones):
+Each agent declares its full permission overlay in `getPermissions()`. Concretely the rule kinds in use are:
 
-- All zone paths → combined into one `insideDirs` allowlist rule keyed under both `write` and `edit`.
-- Each zone with `write: "confirm"` → combined into one `confirmDirs` rule keyed under both `write` and `edit`.
-- Each zone with `write: "auto"` → no confirmation rule; writes inside the zone pass through after the allowlist.
+- `insideDirs` on `write`/`edit` — the allowlist of write/edit destinations. Rendered in the prompt as "You can write to: …". Paths outside the allowlist are rejected by the dispatcher with a generic "Path must be within …" reason.
+- `confirmDirs` on `write`/`edit` — paths inside these dirs prompt before each write. Rendered as "(confirm before each write)" alongside the dir.
+- `frontmatterOnlyInDirs` on `edit` — edit targets in these dirs must hit `---`-delimited frontmatter. Rendered under "Edits restricted to frontmatter in:". Listed before the broader `insideDirs`/`confirmDirs` rules so a doomed body edit short-circuits before the confirm prompt fires.
 
-Zone paths are joined with `VAULT_DIR` via `node:path.join` so leading/trailing slashes normalize. Absolute zone paths (POSIX `/`, Windows drive-letter, UNC) and paths containing `..` segments throw at compose time (misconfiguration should be loud).
-
-Zones cover directory-level write policies. The `getPermissions?()` callback is the escape hatch for rules zones can't express — reader declares a static overlay on the Articles zone (see `getReaderPermissions` in `src/backend/agent/agents/reader/index.ts`): `blockInsideDirs` on `write` (any article overwrite blocked) and `frontmatterOnlyInDirs` on `edit` (any article edit must target frontmatter).
-
-Reader's directory-level confirm rules (`confirmDirs` on Articles/Notes/Scraps) live in the `zones` declaration. What's in `getPermissions` is the article-specific policy zones can't express: *any* write to Articles is blocked; *any* edit to Articles must touch only frontmatter. The rules are static (they reference `ARTICLES_DIR` directly), so no per-turn state flows through `getPermissions`.
+Reader: `write` allowlist is Scraps + Notes only (Articles is excluded so writes against articles fail `insideDirs`); `edit` allows Articles + Scraps + Notes with `frontmatterOnlyInDirs(Articles)` carving out body edits. Knowledge-base: Forge + System are the `write`/`edit` allowlist, with `confirmDirs(System)` for the confirm-before-write surface; RAW + HUMAN are not in the allowlist and are rejected by the dispatcher.
 
 Overlay rules run AFTER tool baselines — an overlay can add restrictions but can't relax them (a later rule can't un-block an earlier block because first-block-wins). No tool today declares a permissive baseline that an overlay would want to tighten.
 
@@ -401,9 +396,9 @@ Overlay rules run AFTER tool baselines — an overlay can add restrictions but c
 
 The pre-dispatcher guard was a single procedural function in `backend/agent/guard.ts` that pattern-matched tool names and encoded reader's article rule directly. Reader-specific vocabulary leaked into the shell and the shell mutated `ctx.args._articlePath` as a side channel. Both are gone: the dispatcher has no reader knowledge, and reader's `getPermissions` owns its own data.
 
-The zones refactor (D12) further split reader's policy: workspace allowlisting and directory-level confirmation rules now live in declarative `zones` data (which the prompt also reads — see Agent Registry → Zones), while article-specific rules stay in `getPermissions`. Tool baselines stay trimmed to the hard vault boundary (`insideDirs: [VAULT_DIR]` only); per-agent write scope is enforced by the zones overlay.
+A follow-up pass (the statelessness refactor) replaced reader's state-keyed rules (`blockPath` + `frontmatterOnlyFor`, both keyed on the currently-active article) with static directory-wide rules covering all of Articles. `activeArticle` state is gone — the `/article` command reads the file and inlines it as the opening user message, and the permission rules apply uniformly to every article. Broader protection surface, simpler reader. Tracked as a behavioral shift in TODO.md.
 
-A follow-up pass (the statelessness refactor) replaced reader's state-keyed rules (`blockPath` + `frontmatterOnlyFor`, both keyed on the currently-active article) with static zone-wide rules (`blockInsideDirs` + `frontmatterOnlyInDirs` covering all of Articles). `activeArticle` state is gone — the `/article` command reads the file and inlines it as the opening user message, and the permission rules apply uniformly to every article. Broader protection surface, simpler reader. Tracked as a behavioral shift in TODO.md.
+The "eliminate zones" refactor (closes #124) finished the consolidation: the separate `AgentInfo.zones` field is gone; every directory-level write policy lives in `getPermissions()` and the system prompt projects that overlay directly. ADR 0009's "literally the same bytes" promise now holds in the code, not just the docstring.
 
 ### Adding a rule kind
 
@@ -435,39 +430,40 @@ interface ConfirmRequest {
 
 Multi-agent support is a **flat registry with runtime composition** — no inheritance. Each agent is a self-contained folder under `src/backend/agent/agents/<name>/` that exports an `AgentInfo` literal (name, displayName, description, `colorKey`, `extraTools`, `zones`, `buildInstructions`, optionally `commands`, optionally `getPermissions`). `src/backend/agent/agents.ts` is a thin assembler that imports each agent's literal and exports them as `AGENTS: AgentInfo[]`. The registry is a plain array — it never changes at runtime — so frontends that need the agent list import it directly rather than going through the bridge. Only the *selected* agent name crosses the bridge as reactive state (`AgentStoreState.currentAgent`).
 
-> **Design rationale:** see [`AGENT-DESIGN.md`](./AGENT-DESIGN.md) for why the system is shaped this way (composition over inheritance, folder-per-agent, base layer, no opt-out on `BASE_TOOLS`, vault ≠ runtime state, commands vs tools, zones as declarative workspace), what alternatives were rejected, and how future features (skills, memory) are designed to plug in without restructuring.
+> **Design rationale:** see [`AGENT-DESIGN.md`](./AGENT-DESIGN.md) for why the system is shaped this way (composition over inheritance, folder-per-agent, base layer, no opt-out on `BASE_TOOLS`, vault ≠ runtime state, commands vs tools, permissions as declarative workspace), what alternatives were rejected, and how future features (skills, memory) are designed to plug in without restructuring.
 
 ### Base layer (the "base agent")
 
 The foundation layer is split across three files:
 
-- `src/backend/agent/types.ts` — `AgentInfo`, `AgentZone`, `AgentColorKey`, `AgentCommand`. Pure types, no runtime.
-- `src/backend/agent/compose.ts` — `BASE_TOOLS`, `BASE_PREAMBLE`, `composeTools(info)`, `composeSystemPrompt(info)`.
-- `src/backend/agent/zones.ts` — `composeZonesOverlay(info)`, `composeOverlay(info)`.
+- `src/backend/agent/types.ts` — `AgentInfo`, `AgentColorKey`, `AgentCommand`. Pure types, no runtime.
+- `src/backend/agent/compose.ts` — `BASE_TOOLS`, `BASE_PREAMBLE`, `composeTools(info)`, `composeSystemPrompt(info)`, `composeWorkspaceBlock(info)`.
+- `src/backend/agent/overlay.ts` — `composeOverlay(info)`. Single source of truth for both the dispatcher and the prompt's `<your workspace>` block.
 
 Shared constants and helpers:
 
 - `BASE_TOOLS: readonly AgentTool[]` — tools every agent receives. Today: `read` (from the shared pool, scoped to `VAULT_DIR`) and `update_sidebar` (generic sidebar section management — upsert/delete sections by id; no filesystem access, no permission baseline). Frozen at module load so external modules can't mutate.
 - `BASE_PREAMBLE: string` — a shared system-prompt prefix. **Empty today** — the mechanism is the point. Future PRs will grow this into a composed block that includes persona guidance, tool-use discipline, and memory-file contents (`user.md`, `memory.md` from `~/.config/inkstone/`).
 - `composeTools(info)` — returns `[...BASE_TOOLS, ...info.extraTools]` plus an agent-scoped `suggest_command` tool when commands exist. Every agent gets the base set unconditionally; there is no opt-out flag. Compose-time permission coverage rejects tools that have neither a baseline nor a `registerBaselineFree` registration from their defining factory, and rejects shared mutating file tools (`write`, `edit`) on agents with no declared zones.
-- `composeSystemPrompt(info)` — builds the full system prompt as four non-empty sections joined by blank lines, in order: the zones block (when `info.zones.length > 0`), the commands block (when `info.commands` has any entry with a `description`), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. `buildInstructions` is nullary. Called once at `createSession` and again on `Session.selectAgent` (empty-session agent swap); not on every turn — `state.systemPrompt` stays byte-stable for the session's lifetime so Anthropic `cache_control` / Bedrock `cachePoint` prefixes hit. See D9's stability invariant.
+- `composeSystemPrompt(info)` — builds the full system prompt as four non-empty sections joined by blank lines, in order: the workspace block (`composeWorkspaceBlock` — non-empty when the agent's overlay has any write/edit rule), the commands block (when `info.commands` has any entry with a `description`), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. `buildInstructions` is nullary. Called once at `createSession` and again on `Session.selectAgent` (empty-session agent swap); not on every turn — `state.systemPrompt` stays byte-stable for the session's lifetime so Anthropic `cache_control` / Bedrock `cachePoint` prefixes hit. See D9's stability invariant.
 
   The commands block renders each `info.commands[]` entry with a `description` as `- /name [argHint] — description`, omitting entries without a description. Two audiences share the block: the LLM can reference commands by exact name when explaining options to the user, and (once PR5's `suggest_command` tool lands) the LLM can route freeform requests to the matching command. The block is derived from `info.commands` declared data, so it's byte-stable per session and does not break the cache invariant.
 
-### Zones
+### Workspace (permissions overlay)
 
-`AgentInfo.zones: AgentZone[]` declares an agent's write workspace. Each zone is `{ path: string, write: "auto" | "confirm" }` where `path` is vault-relative. The same data drives two places:
+An agent's write workspace is declared by its `getPermissions(): AgentOverlay` callback. The overlay is a per-tool `Rule[]` (see Permission Dispatcher → Rule kinds). The same overlay drives two places:
 
-- **Prompt**: `composeSystemPrompt` prepends a `<your workspace>` block listing each zone's path and policy verbally (`"write freely"` / `"confirm before write"`). Omitted for agents with empty zones.
-- **Permissions**: `composeZonesOverlay` produces the matching rules — all zone paths combine into one `insideDirs` write allowlist under both `write` and `edit`, and all `confirm` zone paths combine into one `confirmDirs` rule. Merged with `getPermissions?.()` via `composeOverlay`.
+- **Prompt**: `composeWorkspaceBlock` (in `src/backend/agent/compose.ts`) reads `composeOverlay(info)` and projects each rule kind into the `<your workspace>` block: `insideDirs` → "You can write to:", `confirmDirs` → "(confirm before each write)" suffix, `frontmatterOnlyInDirs` → "Edits restricted to frontmatter in:". Omitted entirely when no overlay rules apply.
+- **Permissions**: `dispatchBeforeToolCall` evaluates the same `composeOverlay(info)` output as overlay rules after the tool's baseline.
 
-Single source of truth prevents drift between what the LLM is told and what the dispatcher enforces. Read is always vault-wide (bounded only by the tool baseline `insideDirs: [VAULT_DIR]`); writes are constrained to declared zones.
+Per ADR 0009, this is "literally the same bytes" — the prompt and the dispatcher consume one `Rule[]`, so what the LLM is told matches what the dispatcher enforces. Read is always vault-wide (bounded only by the tool baseline `insideDirs: [VAULT_DIR]`); the workspace overlay constrains writes only.
 
-A `deny` policy (read-only zone inside a workspace) was considered and cut in D12. The matching rule kind (`blockInsideDirs`) later shipped for reader's Articles restriction, so zones could now grow a `"deny"` → `blockInsideDirs` mapping cheaply. Deferred per D8 until a real agent wants it — see TODO.md.
+Example — reader (see `src/backend/agent/agents/reader/index.ts`):
 
-Example — reader's zones (see `src/backend/agent/agents/reader/index.ts`): three `confirm` zones under Articles, Scraps, and Notes.
+- `write` overlay: `insideDirs(Scraps + Notes)` + `confirmDirs(Scraps + Notes)`. Articles is not in the `write` allowlist, so any write to an article is rejected by the dispatcher.
+- `edit` overlay: `frontmatterOnlyInDirs(Articles)` then `insideDirs(Articles + Scraps + Notes)` + `confirmDirs(Articles + Scraps + Notes)`. The frontmatter-only rule comes first so a doomed body edit short-circuits before the confirm prompt fires.
 
-Example — knowledge-base's zones (see `src/backend/agent/agents/knowledge-base/index.ts`): `040 FORGE` auto-write + `090 SYSTEM/099 LLM Wiki` confirm-write. Its `getPermissions` overlay also hard-blocks writes under `010 RAW/` and `020 HUMAN/` so those policy failures get a specific read-only reason before the broader zone allowlist block would fire.
+Example — knowledge-base (see `src/backend/agent/agents/knowledge-base/index.ts`): `insideDirs(040 FORGE + 090 SYSTEM/099 LLM Wiki)` + `confirmDirs(System)` on both `write` and `edit`. Forge is auto-write; System is confirm-write; RAW + HUMAN are not in the allowlist and are rejected by the dispatcher.
 
 Tool implementations come from `@mariozechner/pi-coding-agent` via the shared pool in `backend/agent/tools.ts` — Inkstone does not re-implement read/write/edit. Each factory is called with `VAULT_DIR` as the `cwd` so vault-relative paths resolve inside the vault; absolute paths are honored by the tool and sandboxed by the guard. pi-coding-agent's tool source transitively imports `@mariozechner/pi-tui`, but `wrapToolDefinition` strips the render hooks — the tools are pure `AgentTool<any>` at runtime, and pi-tui is inert code-path-wise (Inkstone renders through OpenTUI in `src/tui/**`).
 
@@ -475,10 +471,10 @@ Tool implementations come from `@mariozechner/pi-coding-agent` via the shared po
 
 ### Agents on ship
 
-| Name | extraTools | Composed tools | Zones | Commands | Prompt behavior | Color |
-|------|------------|----------------|-------|----------|-----------------|-------|
-| `reader` | `edit`, `write`, `search`, `list_keys` | `read`, `update_sidebar` + the extras | `010 RAW/013 Articles` + `020 HUMAN/022 Scraps` + `020 HUMAN/023 Notes`, all confirm | `/article [filename]` | `<your workspace>` block + persona + a freeform-request paragraph teaching the `list_keys` → `search` flow for "find me the one about X from Y" style prompts. The 6-stage reading workflow lives in `buildArticleWorkflowPrelude` (in `./instructions.ts`) and is prepended to `/article`'s opening user message rather than baked into the agent system prompt — plain-chat sessions don't pay for it, and Anthropic / Bedrock prefix caching keeps the per-turn cost comparable to a system-prompt-resident version after the first turn of a reading session. `/article <filename>` reads the file and sends workflow prelude + path + full content as the LLM-facing prompt text, while passing the TUI compact `displayParts = [text "Read this article.", file text/markdown <vault-relative>]` so the bubble renders a short prose line + a clickable file chip (opens the article reader page) instead of the full article body. `/article` (bare) scans ARTICLES_DIR, displays a numbered recommendation list as a user bubble, and opens a DialogSelect picker; selecting an article runs the same compact-bubble loading path. In Stage 2 (keeper mode), the LLM calls `update_sidebar` to pin the first-pass prompts in the sidebar. | `theme.secondary` |
-| `knowledge-base` | `edit`, `write` | `read`, `update_sidebar`, `suggest_command` + the extras | `040 FORGE` (auto) + `090 SYSTEM/099 LLM Wiki` (confirm) | `/ingest`, `/query <question>`, `/lint` | `<your workspace>` block + persona + freeform-routing guidance + all three workflow bodies (ingest, query, lint) preloaded into the system prompt. Each slash command is a minimal trigger (`helpers.prompt("Run the X workflow.")`); the procedure is already in context. `/query <question>` interpolates the user's question. The persona teaches the LLM to call `suggest_command` when the user phrases an intent in prose ("audit the vault" → `lint`, "what did I save about X" → `query`). A `getPermissions` overlay hard-blocks writes inside `010 RAW/` and `020 HUMAN/` per the LifeOS policy, beyond what the zones express. | `theme.info` |
+| Name | extraTools | Composed tools | Workspace | Commands | Prompt behavior | Color |
+|------|------------|----------------|-----------|----------|-----------------|-------|
+| `reader` | `edit`, `write`, `search`, `list_keys` | `read`, `update_sidebar` + the extras | `Articles` blocked on `write` + frontmatter-only on `edit`; `Articles + Scraps + Notes` confirm-write | `/article [filename]` | `<your workspace>` block + persona + a freeform-request paragraph teaching the `list_keys` → `search` flow for "find me the one about X from Y" style prompts. The 6-stage reading workflow lives in `buildArticleWorkflowPrelude` (in `./instructions.ts`) and is prepended to `/article`'s opening user message rather than baked into the agent system prompt — plain-chat sessions don't pay for it, and Anthropic / Bedrock prefix caching keeps the per-turn cost comparable to a system-prompt-resident version after the first turn of a reading session. `/article <filename>` reads the file and sends workflow prelude + path + full content as the LLM-facing prompt text, while passing the TUI compact `displayParts = [text "Read this article.", file text/markdown <vault-relative>]` so the bubble renders a short prose line + a clickable file chip (opens the article reader page) instead of the full article body. `/article` (bare) scans ARTICLES_DIR, displays a numbered recommendation list as a user bubble, and opens a DialogSelect picker; selecting an article runs the same compact-bubble loading path. In Stage 2 (keeper mode), the LLM calls `update_sidebar` to pin the first-pass prompts in the sidebar. | `theme.secondary` |
+| `knowledge-base` | `edit`, `write` | `read`, `update_sidebar`, `suggest_command` + the extras | `040 FORGE` auto-write + `090 SYSTEM/099 LLM Wiki` confirm-write; `010 RAW + 020 HUMAN` blocked per the LifeOS policy | `/ingest`, `/query <question>`, `/lint` | `<your workspace>` block + persona + freeform-routing guidance + all three workflow bodies (ingest, query, lint) preloaded into the system prompt. Each slash command is a minimal trigger (`helpers.prompt("Run the X workflow.")`); the procedure is already in context. `/query <question>` interpolates the user's question. The persona teaches the LLM to call `suggest_command` when the user phrases an intent in prose ("audit the vault" → `lint`, "what did I save about X" → `query`). | `theme.info` |
 | `router` | `dispatch` | `read`, `update_sidebar`, `dispatch` | none | none | One-shot first-message classifier per ADR 0007. System prompt enumerates each non-router agent's `description` and instructs the LLM to call `dispatch({ agent })` exactly once. The dispatch tool returns `{ agent }` and sets `terminate: true`; the actual fork happens TUI-side in `applyDispatchResult` (see Routing fork below). Router sessions are filtered out of `listSessions` per ADR 0007 / grilling Q16 — they exist only so child sessions have a parent FK target. | `theme.accent` |
 
 All three agents inherit the shell-level `/clear` verb via the unified command registry (see Commands below) — no per-agent declaration needed.
@@ -501,10 +497,9 @@ The folder-per-agent shape makes this a local change:
 
 1. Create `src/backend/agent/agents/<name>/index.ts` exporting `<name>Agent: AgentInfo`.
 2. If the agent needs an agent-specific system prompt, add `instructions.ts` next to it and import it from `index.ts`.
-3. Declare `zones: AgentZone[]` for write targets inside the vault (or `zones: []` if the agent has no workspace).
+3. If the agent uses the shared `write` / `edit` tools, declare `getPermissions(): AgentOverlay` listing the rule kinds for its workspace — typically `insideDirs` (allowlist) + `confirmDirs` (per-write prompts) + `blockInsideDirs` (read-only carve-outs) + `frontmatterOnlyInDirs` (edit-shape restrictions). The same overlay drives the system prompt's `<your workspace>` block, so what the LLM sees and what the dispatcher enforces are byte-equal (ADR 0009). Block / frontmatter-only rules should come before the broader `insideDirs` / `confirmDirs` so first-block-wins short-circuits before a doomed call triggers a confirm prompt.
 4. If it wants tools from the shared pool, import them from `backend/agent/tools.ts` and list them in `extraTools`. If it owns a state-coupled tool that no other agent uses, add it under `agents/<name>/tools/` and re-export any public state helpers from the agent's `index.ts` (so the shell can stay out of deep imports per the boundary rule above).
 5. If it has user-facing verbs, declare them as `AgentCommand[]` and set `commands: [...]` on the `AgentInfo`. The TUI's `BridgeAgentCommands` (see Commands below) picks them up automatically.
-6. If zones can't express the full policy (e.g. reader's `frontmatterOnlyInDirs` rule on the Articles zone), declare `getPermissions?(): AgentOverlay` on the `AgentInfo`.
 7. Add one import + one entry in `backend/agent/agents.ts`.
 
 No changes to `types.ts`, `compose.ts`, `zones.ts`, `tools.ts`, `backend/agent/index.ts`, the TUI, or config schemas are required.
@@ -722,7 +717,7 @@ selectAgent(name)                                 [only legal on empty session]
       → prompt label, input border, user-bubble border, assistant ▣ glyph all re-theme via `theme[getAgentInfo(store.currentAgent).colorKey]`
 ```
 
-The mid-session agent swap is rejected both by the UI (Tab/palette gates on empty sessions) and by the backend (throws on non-empty). See D13 for the rationale. The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/compose.ts`. `composeSystemPrompt(info)` joins up to three non-empty sections: a `<your workspace>` zones block (present when `info.zones` is non-empty — e.g. reader), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. For agents with no zones and an empty preamble, the result is just the agent's instructions.
+The mid-session agent swap is rejected both by the UI (Tab/palette gates on empty sessions) and by the backend (throws on non-empty). See D13 for the rationale. The composers (`composeSystemPrompt`, `composeTools`) are defined in `backend/agent/compose.ts`. `composeSystemPrompt(info)` joins up to three non-empty sections: a `<your workspace>` block (present when the agent's overlay declares any write/edit rule — e.g. reader, KB), `BASE_PREAMBLE` (empty today), and `info.buildInstructions()`. For agents with no workspace overlay and an empty preamble (e.g. router), the result is just the agent's instructions.
 
 The assistant `message_end` handler stamps `agentName` onto the new bubble using `getAgentInfo(store.currentAgent).displayName`. Because switching is locked mid-session, the stamped name is guaranteed to be the agent that actually produced the reply.
 

@@ -22,6 +22,7 @@ import {
 	getAgentInfo,
 } from "./agents";
 import { composeSystemPrompt, composeTools } from "./compose";
+import { composeOverlay } from "./overlay";
 import {
 	dispatchBeforeToolCall,
 	getConfirmFn,
@@ -33,8 +34,7 @@ import {
 	type SuggestCommandRequest,
 	setSuggestCommandFn,
 } from "./tools/suggest-command";
-import type { AgentCommand, AgentInfo, AgentZone } from "./types";
-import { composeOverlay } from "./zones";
+import type { AgentCommand, AgentInfo } from "./types";
 
 // Per-turn operations the TUI drives. Lifecycle (`clearSession`,
 // `selectAgent`) lives on `Session` itself — see `docs/AGENT-DESIGN.md`
@@ -262,7 +262,7 @@ export function availableThinkingLevels(model: Model<Api>): ThinkingLevel[] {
  * + `createAgentActions` + `getCurrent*` surface.
  *
  * Parameters:
- *   - `agentName` — which agent's instructions/tools/zones to load. When
+ *   - `agentName` — which agent's instructions/tools/permissions to load. When
  *     omitted, falls back to `DEFAULT_AGENT`. An unknown name also
  *     coerces to `DEFAULT_AGENT`. Resume callers pass the recorded
  *     agent name from the session row directly.
@@ -281,7 +281,7 @@ export function createSession(params: {
 	const cfg = loadConfig();
 	const initialInfo = getAgentInfo(resolveInitialAgentName(params.agentName));
 	// `info` drifts on `selectAgent`; everything after construction reads
-	// this ref to pick up the current agent's zones/tools/instructions.
+	// this ref to pick up the current agent's permissions/tools/instructions.
 	let info: AgentInfo = initialInfo;
 
 	// ── Model + thinking state ─────────────────────────────
@@ -375,11 +375,10 @@ export function createSession(params: {
 			// re-evaluates per call so `getPermissions()` can return
 			// state-dependent rules fresh for each dispatch.
 			//
-			// The overlay combines the zones-derived rules (directory
-			// write policies declared on `AgentInfo.zones`) with the
-			// agent's optional `getPermissions` escape hatch (rules
-			// zones can't express, e.g. reader's `frontmatterOnlyInDirs`
-			// on the Articles zone).
+			// The overlay is the agent's full declarative permission set
+			// (`AgentInfo.getPermissions`). Per ADR 0009 it's also what
+			// drives the system prompt's `<your workspace>` block — same
+			// `Rule[]`, same bytes.
 			const overlay = composeOverlay(info);
 			return dispatchBeforeToolCall(ctx, tools, overlay);
 		},
@@ -650,7 +649,6 @@ export { generateSessionTitle } from "./session-title";
 export {
 	type AgentCommand,
 	type AgentInfo,
-	type AgentZone,
 	DEFAULT_AGENT_NAME,
 	getAgentInfo,
 	getConfirmFn,

@@ -2,10 +2,12 @@
  * Agent system-prompt composition tests.
  *
  * Pins the shape of `composeSystemPrompt` against the shipped agents:
- * zones block, commands block, body order + join, and byte-stability
- * across back-to-back calls (required so Anthropic `cache_control` /
- * Bedrock `cachePoint` prefixes don't invalidate between turns —
- * see D9 in `docs/AGENT-DESIGN.md`).
+ * `<your workspace>` projection from the permission overlay, commands
+ * block, body order + join, and byte-stability across back-to-back
+ * calls (required so Anthropic `cache_control` / Bedrock `cachePoint`
+ * prefixes don't invalidate between turns — see D9 in
+ * `docs/AGENT-DESIGN.md`). The workspace projection contract is the
+ * "literally the same bytes" promise from ADR 0009.
  *
  * Vault fixture is seeded by `test/preload.ts`.
  */
@@ -35,7 +37,6 @@ function makeAgent(overrides: Partial<AgentInfo>): AgentInfo {
 		description: "test agent",
 		colorKey: "accent",
 		extraTools: [],
-		zones: [],
 		buildInstructions: () => "body",
 		...overrides,
 	};
@@ -173,7 +174,7 @@ describe("composeSystemPrompt — <your workspace> from permission rules", () =>
 	// truth, no drift. Each test here pins one rule-kind → prose mapping;
 	// integration with shipped agents is covered by separate cases.
 
-	test("agent with no zones and no getPermissions: no <your workspace> block", () => {
+	test("agent with no getPermissions: no <your workspace> block", () => {
 		const agent = makeAgent({});
 		const prompt = composeSystemPrompt(agent);
 		expect(prompt).not.toContain("<your workspace>");
@@ -212,26 +213,6 @@ describe("composeSystemPrompt — <your workspace> from permission rules", () =>
 		const prompt = composeSystemPrompt(agent);
 		expect(prompt).toContain("- 090 SYSTEM (confirm before each write)");
 		expect(prompt).not.toContain("- 090 SYSTEM (write freely)");
-	});
-
-	test("blockInsideDirs renders under 'Writes blocked in:' with the rule's reason", () => {
-		const reason = "LifeOS read-only";
-		const agent = makeAgent({
-			extraTools: [writeTool],
-			getPermissions: () => ({
-				[writeTool.name]: [
-					{ kind: "insideDirs", dirs: [`${VAULT_DIR}/040 FORGE`] },
-					{
-						kind: "blockInsideDirs",
-						dirs: [`${VAULT_DIR}/010 RAW`],
-						reason,
-					},
-				],
-			}),
-		});
-		const prompt = composeSystemPrompt(agent);
-		expect(prompt).toContain("Writes blocked in:");
-		expect(prompt).toContain(`  - 010 RAW — ${reason}`);
 	});
 
 	test("frontmatterOnlyInDirs (edit tool) renders under 'Edits restricted to frontmatter in:'", () => {
@@ -288,53 +269,22 @@ describe("composeSystemPrompt — <your workspace> from permission rules", () =>
 		expect(prompt).toContain("Edits restricted to frontmatter in:");
 		expect(prompt).toContain("  - 010 RAW/013 Articles");
 	});
-
-	test("dir present in BOTH insideDirs and blockInsideDirs is hidden from writable", () => {
-		// Reader's real shape: a single insideDirs covers Articles + Scraps +
-		// Notes; a blockInsideDirs carves Articles out. The prompt must NOT
-		// claim Articles is writable — the dispatcher will block every write.
-		const articles = `${VAULT_DIR}/010 RAW/013 Articles`;
-		const scraps = `${VAULT_DIR}/020 HUMAN/022 Scraps`;
-		const reason = "Articles are read-only source material.";
-		const agent = makeAgent({
-			extraTools: [writeTool],
-			getPermissions: () => ({
-				[writeTool.name]: [
-					{ kind: "blockInsideDirs", dirs: [articles], reason },
-					{ kind: "insideDirs", dirs: [articles, scraps] },
-					{ kind: "confirmDirs", dirs: [articles, scraps] },
-				],
-			}),
-		});
-		const prompt = composeSystemPrompt(agent);
-		// Scraps still appears as confirm-write.
-		expect(prompt).toContain(
-			"  - 020 HUMAN/022 Scraps (confirm before each write)",
-		);
-		// Articles must NOT appear in either writable line variant.
-		expect(prompt).not.toContain(
-			"010 RAW/013 Articles (confirm before each write)",
-		);
-		expect(prompt).not.toContain("010 RAW/013 Articles (write freely)");
-		// Articles DOES appear under the blocked section with its reason.
-		expect(prompt).toContain(`  - 010 RAW/013 Articles — ${reason}`);
-	});
 });
 
 describe("composeSystemPrompt — section order", () => {
-	test("zones block precedes commands block precedes body", () => {
+	test("workspace block precedes commands block precedes body", () => {
 		const prompt = composeSystemPrompt(readerAgent);
-		const zonesIdx = prompt.indexOf("<your workspace>");
+		const workspaceIdx = prompt.indexOf("<your workspace>");
 		const commandsIdx = prompt.indexOf("<commands>");
 		const bodyIdx = prompt.indexOf("Reading Guide Persona");
-		expect(zonesIdx).toBeGreaterThanOrEqual(0);
-		expect(commandsIdx).toBeGreaterThan(zonesIdx);
+		expect(workspaceIdx).toBeGreaterThanOrEqual(0);
+		expect(commandsIdx).toBeGreaterThan(workspaceIdx);
 		expect(bodyIdx).toBeGreaterThan(commandsIdx);
 	});
 
 	test("sections separated by blank lines", () => {
 		const prompt = composeSystemPrompt(readerAgent);
-		// Zones block closes, blank line, commands block opens.
+		// Workspace block closes, blank line, commands block opens.
 		expect(prompt).toContain("</your workspace>\n\n<commands>");
 	});
 });
@@ -345,7 +295,7 @@ describe("composeTools — permission coverage", () => {
 	});
 
 	test("shared mutating file tools require an insideDirs workspace rule", () => {
-		const agent = makeAgent({ extraTools: [writeTool], zones: [] });
+		const agent = makeAgent({ extraTools: [writeTool] });
 		expect(() => composeTools(agent)).toThrow(
 			"Agent 'test' composes mutating file tools but declares no writable workspace",
 		);
