@@ -24,8 +24,17 @@ export type Rule =
 	 *  injected `confirmFn`. Decline → block. */
 	| { kind: "confirmDirs"; dirs: string[] }
 	/** Block when the resolved path is inside any listed dir (prefix match
-	 *  with path-separator boundary). Used for "this whole directory tree
-	 *  is read-only for this agent" rules. */
+	 *  with path-separator boundary), with a custom `reason` surfaced to
+	 *  the LLM/user. Two distinct uses:
+	 *    1. Carve out a read-only subdir from a broader `insideDirs`
+	 *       allowlist (reader's Articles is inside its workspace
+	 *       allowlist; this rule is what makes it read-only).
+	 *    2. Replace the dispatcher's generic "Path must be within …"
+	 *       reason with a domain-specific one for paths that would have
+	 *       failed `insideDirs` anyway (KB's RAW + HUMAN are not in the
+	 *       Forge/System allowlist; this rule just supplies the LifeOS
+	 *       policy reason). Also short-circuits before `insideDirs` runs.
+	 *  Behaviorally redundant in case 2; kept for the reason. */
 	| { kind: "blockInsideDirs"; dirs: string[]; reason: string }
 	/** On tools with an `edits` array (pi-coding-agent's `edit`), when the
 	 *  resolved `args.path` is inside any listed dir, every

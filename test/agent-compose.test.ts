@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { knowledgeBaseAgent } from "@backend/agent/agents/knowledge-base";
 import { readerAgent } from "@backend/agent/agents/reader";
 import { buildReaderInstructions } from "@backend/agent/agents/reader/instructions";
 import { composeSystemPrompt, composeTools } from "@backend/agent/compose";
@@ -163,6 +164,163 @@ describe("composeSystemPrompt — reader freeform-request guidance", () => {
 		);
 		expect(prompt).not.toContain("SCRAP_FILE");
 		expect(prompt).not.toContain("File Rules");
+	});
+});
+
+describe("composeSystemPrompt — <your workspace> from permission rules", () => {
+	// Per ADR 0009, the <your workspace> block is projected from the same
+	// merged permission overlay the dispatcher evaluates — single source of
+	// truth, no drift. Each test here pins one rule-kind → prose mapping;
+	// integration with shipped agents is covered by separate cases.
+
+	test("agent with no zones and no getPermissions: no <your workspace> block", () => {
+		const agent = makeAgent({});
+		const prompt = composeSystemPrompt(agent);
+		expect(prompt).not.toContain("<your workspace>");
+		expect(prompt).not.toContain("</your workspace>");
+	});
+
+	test("insideDirs (write tool) renders under 'You can write to:' as 'write freely'", () => {
+		const agent = makeAgent({
+			extraTools: [writeTool],
+			getPermissions: () => ({
+				[writeTool.name]: [
+					{
+						kind: "insideDirs",
+						dirs: [`${VAULT_DIR}/040 FORGE`],
+					},
+				],
+			}),
+		});
+		const prompt = composeSystemPrompt(agent);
+		expect(prompt).toContain("<your workspace>");
+		expect(prompt).toContain("You can write to:");
+		expect(prompt).toContain("- 040 FORGE (write freely)");
+	});
+
+	test("confirmDirs replaces '(write freely)' with '(confirm before each write)'", () => {
+		const dir = `${VAULT_DIR}/090 SYSTEM`;
+		const agent = makeAgent({
+			extraTools: [writeTool],
+			getPermissions: () => ({
+				[writeTool.name]: [
+					{ kind: "insideDirs", dirs: [dir] },
+					{ kind: "confirmDirs", dirs: [dir] },
+				],
+			}),
+		});
+		const prompt = composeSystemPrompt(agent);
+		expect(prompt).toContain("- 090 SYSTEM (confirm before each write)");
+		expect(prompt).not.toContain("- 090 SYSTEM (write freely)");
+	});
+
+	test("blockInsideDirs renders under 'Writes blocked in:' with the rule's reason", () => {
+		const reason = "LifeOS read-only";
+		const agent = makeAgent({
+			extraTools: [writeTool],
+			getPermissions: () => ({
+				[writeTool.name]: [
+					{ kind: "insideDirs", dirs: [`${VAULT_DIR}/040 FORGE`] },
+					{
+						kind: "blockInsideDirs",
+						dirs: [`${VAULT_DIR}/010 RAW`],
+						reason,
+					},
+				],
+			}),
+		});
+		const prompt = composeSystemPrompt(agent);
+		expect(prompt).toContain("Writes blocked in:");
+		expect(prompt).toContain(`  - 010 RAW — ${reason}`);
+	});
+
+	test("frontmatterOnlyInDirs (edit tool) renders under 'Edits restricted to frontmatter in:'", () => {
+		const articles = `${VAULT_DIR}/010 RAW/013 Articles`;
+		const agent = makeAgent({
+			extraTools: [writeTool, editTool],
+			getPermissions: () => ({
+				[writeTool.name]: [
+					{ kind: "insideDirs", dirs: [`${VAULT_DIR}/040 FORGE`] },
+				],
+				[editTool.name]: [{ kind: "frontmatterOnlyInDirs", dirs: [articles] }],
+			}),
+		});
+		const prompt = composeSystemPrompt(agent);
+		expect(prompt).toContain("Edits restricted to frontmatter in:");
+		expect(prompt).toContain("  - 010 RAW/013 Articles");
+	});
+
+	test("knowledgeBaseAgent: Forge is auto, System is confirm, RAW + HUMAN are blocked", () => {
+		const prompt = composeSystemPrompt(knowledgeBaseAgent);
+		expect(prompt).toContain("<your workspace>");
+		expect(prompt).toContain("  - 040 FORGE (write freely)");
+		expect(prompt).toContain(
+			"  - 090 SYSTEM/099 LLM Wiki (confirm before each write)",
+		);
+		expect(prompt).toContain("Writes blocked in:");
+		expect(prompt).toContain(
+			"  - 010 RAW — This folder is read-only per the LifeOS policy. Writes go to 040 FORGE/.",
+		);
+		expect(prompt).toContain(
+			"  - 020 HUMAN — This folder is read-only per the LifeOS policy. Writes go to 040 FORGE/.",
+		);
+	});
+
+	test("readerAgent: Articles is blocked + frontmatter-only, Scraps/Notes are confirm-write", () => {
+		// End-to-end against the shipped reader. Pins the user-visible fix:
+		// Articles must NOT show as writable (the dispatcher blocks every
+		// write); Articles must appear under blocked + frontmatter-only;
+		// Scraps and Notes remain confirm-write.
+		const prompt = composeSystemPrompt(readerAgent);
+		expect(prompt).toContain("<your workspace>");
+		expect(prompt).toContain("You can write to:");
+		expect(prompt).toContain(
+			"  - 020 HUMAN/022 Scraps (confirm before each write)",
+		);
+		expect(prompt).toContain(
+			"  - 020 HUMAN/023 Notes (confirm before each write)",
+		);
+		// Pre-fix bug: Articles was rendered as writable. Guard against regression.
+		expect(prompt).not.toContain(
+			"010 RAW/013 Articles (confirm before each write)",
+		);
+		expect(prompt).not.toContain("010 RAW/013 Articles (write freely)");
+		expect(prompt).toContain("Writes blocked in:");
+		expect(prompt).toContain(
+			"  - 010 RAW/013 Articles — Articles are read-only source material. Use edit to modify frontmatter only.",
+		);
+		expect(prompt).toContain("Edits restricted to frontmatter in:");
+	});
+
+	test("dir present in BOTH insideDirs and blockInsideDirs is hidden from writable", () => {
+		// Reader's real shape: a single insideDirs covers Articles + Scraps +
+		// Notes; a blockInsideDirs carves Articles out. The prompt must NOT
+		// claim Articles is writable — the dispatcher will block every write.
+		const articles = `${VAULT_DIR}/010 RAW/013 Articles`;
+		const scraps = `${VAULT_DIR}/020 HUMAN/022 Scraps`;
+		const reason = "Articles are read-only source material.";
+		const agent = makeAgent({
+			extraTools: [writeTool],
+			getPermissions: () => ({
+				[writeTool.name]: [
+					{ kind: "blockInsideDirs", dirs: [articles], reason },
+					{ kind: "insideDirs", dirs: [articles, scraps] },
+					{ kind: "confirmDirs", dirs: [articles, scraps] },
+				],
+			}),
+		});
+		const prompt = composeSystemPrompt(agent);
+		// Scraps still appears as confirm-write.
+		expect(prompt).toContain(
+			"  - 020 HUMAN/022 Scraps (confirm before each write)",
+		);
+		// Articles must NOT appear in either writable line variant.
+		expect(prompt).not.toContain(
+			"010 RAW/013 Articles (confirm before each write)",
+		);
+		expect(prompt).not.toContain("010 RAW/013 Articles (write freely)");
+		// Articles DOES appear under the blocked section with its reason.
+		expect(prompt).toContain(`  - 010 RAW/013 Articles — ${reason}`);
 	});
 });
 
