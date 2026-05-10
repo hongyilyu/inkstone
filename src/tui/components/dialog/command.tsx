@@ -150,6 +150,15 @@ function init() {
 
 	const entries = createMemo(() => registrations().flatMap((x) => x()));
 	const visible = createMemo(() => entries().filter((e) => !e.hidden));
+	// Slash dropdown source. Diverges from `visible` so a command can
+	// be hidden from the Ctrl+P palette (per ADR 0006 the palette is
+	// program-config-scoped) while still being slash-discoverable in
+	// the autocomplete dropdown — argful agent verbs like KB's `/query`
+	// are the canonical case (palette-click can't supply args, but the
+	// dropdown can insert `/name ` and let the user type).
+	const slashVisible = createMemo(() =>
+		entries().filter((e) => e.slash !== undefined),
+	);
 
 	function showPalette() {
 		dialog.replace(() => <DialogCommand visible={visible} />);
@@ -188,6 +197,8 @@ function init() {
 	const api = {
 		/** Reactive list of visible commands (for the palette). */
 		visible,
+		/** Reactive list of slash-bearing commands (for the dropdown). */
+		slashVisible,
 		/** Open the command palette programmatically. */
 		show: showPalette,
 		/** See `canRunSlash` above. */

@@ -103,7 +103,7 @@ export function PromptAutocomplete(props: {
 	// ------------------------------------------------------------
 
 	const slashOptions = createMemo((): Option[] =>
-		buildSlashOptions(command.visible(), {
+		buildSlashOptions(command.slashVisible(), {
 			input: props.input,
 			setText: props.setText,
 			dialog,

@@ -36,6 +36,23 @@ describe("slash autocomplete", () => {
 		expect(f).toContain("/article");
 	});
 
+	test("argful (hidden) command appears in the slash dropdown", async () => {
+		// Pins the slash-source / palette-source split: a `hidden:true`
+		// command with a `slash` field (e.g. KB's `/query`, marked
+		// hidden because palette-click can't supply its required
+		// argument) is still slash-discoverable. Cycle to KB so the
+		// argful command is in the registry, then filter it.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		setup.mockInput.pressTab();
+		await waitForFrame(setup, "Knowledge Base");
+
+		await setup.mockInput.typeText("/qu");
+		const f = await waitForFrame(setup, "/query");
+		expect(f).toContain("/query");
+	});
+
 	test("filter narrows the list", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });
