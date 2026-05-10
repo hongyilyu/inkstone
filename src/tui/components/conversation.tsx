@@ -2,6 +2,7 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { For, onCleanup, Show } from "solid-js";
 import { useAgent } from "../context/agent";
 import { useLayout } from "../context/layout";
+import { ForkDivider } from "./fork-divider";
 import { AssistantMessage, UserMessage } from "./message";
 
 /**
@@ -28,21 +29,34 @@ export function Conversation() {
 		>
 			<box flexDirection="column" paddingTop={1} paddingRight={1} gap={1}>
 				<For each={store.messages}>
-					{(msg, index) => (
-						<Show when={msg.parts.length > 0 || msg.error || msg.interrupted}>
-							<Show
-								when={msg.role === "user"}
-								fallback={
-									<AssistantMessage
-										message={msg}
-										isTailTurn={index() === store.messages.length - 1}
-									/>
-								}
-							>
-								<UserMessage message={msg} first={index() === 0} />
+					{(msg, index) => {
+						// Fork marker: assistant message whose only part is a
+						// `fork` discriminant (per ADR 0015). Render an
+						// inline divider instead of a bubble — structural
+						// seam, not content. Detected here at the routing
+						// layer so the divider lives outside the
+						// AssistantMessage frame entirely.
+						const isForkMarker =
+							msg.role === "assistant" &&
+							msg.parts.length === 1 &&
+							msg.parts[0]?.type === "fork";
+						if (isForkMarker) return <ForkDivider />;
+						return (
+							<Show when={msg.parts.length > 0 || msg.error || msg.interrupted}>
+								<Show
+									when={msg.role === "user"}
+									fallback={
+										<AssistantMessage
+											message={msg}
+											isTailTurn={index() === store.messages.length - 1}
+										/>
+									}
+								>
+									<UserMessage message={msg} first={index() === 0} />
+								</Show>
 							</Show>
-						</Show>
-					)}
+						);
+					}}
 				</For>
 			</box>
 		</scrollbox>
