@@ -148,6 +148,23 @@ export function BridgeAgentCommands(props: { deps: CommandsDeps }) {
 					canExecute: c.canExecute,
 				},
 				onSelect: (_d, args) => {
+					// Per ADR 0007, slash dispatch IS the classification —
+					// commit the session to the owning agent before
+					// `execute` so `helpers.prompt` runs through the right
+					// agent's pi-agent-core context. Without this, a fan-out
+					// pick from the router-default open page would dispatch
+					// `helpers.prompt` against the router agent and land
+					// the workflow message on the wrong system prompt.
+					// Guard against needless thrash on the bound-agent path
+					// (Tab-pick or in-session): backend `selectAgent` rebuilds
+					// systemPrompt + tools + model unconditionally
+					// (`src/backend/agent/index.ts` selectAgent body). The
+					// empty-session invariant inside `selectAgent` already
+					// holds here because fan-out registration only runs
+					// when `messages.length === 0`.
+					if (info.name !== props.deps.store.currentAgent) {
+						props.deps.actions.selectAgent(info.name);
+					}
 					// Fire-and-forget. Errors thrown before `prompt(...)` runs
 					// (e.g. reader's `/article missing.md` throws during file
 					// validation, before any agent turn starts) bypass the
