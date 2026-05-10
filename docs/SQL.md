@@ -67,9 +67,9 @@ sessions ──┬── messages ── parts       (display-layer fanout)
 
 | Table | Purpose |
 |---|---|
-| `sessions` | Conversation root. `agent` column scopes all reads. `title` is `TEXT NOT NULL`: new rows start with a human-readable default (`"New session - <ISO timestamp>"`), then background title generation replaces it after the first user prompt. `/clear` ends the in-memory session; the row stays on disk untouched. |
+| `sessions` | Conversation root. `agent` column scopes all reads. `title` is `TEXT NOT NULL`: new rows start with a human-readable default (`"New session - <ISO timestamp>"`), then background title generation replaces it after the first user prompt. `/clear` ends the in-memory session; the row stays on disk untouched. `parent_session_id` is a nullable self-FK set by `forkSession()` only — see ADR 0014. |
 | `messages` | One row per `DisplayMessage` (bubble). UUIDv7 `id`. Per-message metadata (agent/model/duration/thinking-level/error/interrupted) mirrors the bubble footer. `error` carries pi-ai's `AssistantMessage.errorMessage` only on `stopReason === "error"` (hard provider failures → red-bordered panel on render). `interrupted` (`INTEGER` boolean) is set on `stopReason === "aborted"` so resumed sessions render the ` · interrupted` footer suffix; `error` and `interrupted` are mutually exclusive at write time. `thinking_level` is nullable TEXT carrying the pi-agent-core `ThinkingLevel` enum, stamped on the turn-closing bubble only (same scope as `duration_ms`); NULL when the turn produced no effort (non-reasoning model, effort `"off"`, or turn was interrupted) — both NULL and `"off"` render identically, so the conflation is lossless. |
-| `parts` | `DisplayPart` fanout. Composite PK `(message_id, seq)` — parts have no cross-session identity. `type ∈ {text, thinking, file, tool}`; `text` is NOT NULL (stored as `""` on `file` / `tool` rows, whose display data lives in dedicated nullable columns). File parts use `mime` + `filename` (two flat columns instead of a JSON `meta` blob so `listSessions`'s preview fallback can read `filename` in SQL). Tool parts use `call_id` (pi-ai `ToolCall.id`, the join key between `toolcall_end` stream events and `tool_execution_end`) plus a JSON `tool_data` blob holding `{ name, args, state, error? }` — no SQL reader needs the inner fields. |
+| `parts` | `DisplayPart` fanout. Composite PK `(message_id, seq)` — parts have no cross-session identity. `type ∈ {text, thinking, file, tool, fork}`; `text` is NOT NULL (stored as `""` on `file` / `tool` / `fork` rows, whose display data lives in dedicated nullable columns). File parts use `mime` + `filename` (two flat columns instead of a JSON `meta` blob so `listSessions`'s preview fallback can read `filename` in SQL). Tool parts use `call_id` (pi-ai `ToolCall.id`, the join key between `toolcall_end` stream events and `tool_execution_end`) plus a JSON `tool_data` blob holding `{ name, args, state, error? }`. Fork parts (per ADR 0015) reuse the `tool_data` JSON column as a generic sidecar with shape `{ parentSessionId }` — no SQL reader needs the inner fields, so the same JSON column carries two shapes selected by `parts.type` (TS-side: a `$type` union with one variant per discriminant value). Discrimination lives at the schema level (the `parts.type` column), not inside the JSON blob. The `fork` discriminant is intentionally distinct from `tool` so anything walking parts looking for tool calls cannot accidentally sweep up routing markers. |
 | `agent_messages` | Raw pi-agent-core `AgentMessage` as JSON, for LLM-context restore on resume. `display_message_id` links back to the bubble this message produced (NULL for tool-result / user / custom messages). `AssistantMessage.usage` lives inside the JSON and is the source of truth for the session-scope token/cost rollup — `loadSession` sums it to seed `store.totalTokens` / `store.totalCost` across app restarts (no separate cache column). |
 
 ### Why `agent_messages` is a separate table
@@ -284,6 +284,15 @@ fixtures (see § Transactional boundary).
 
 - `createSession({ agent })` — new row. (No tx; single
   statement.) Initializes `title` to `"New session - <ISO timestamp>"`.
+  Leaves `parent_session_id` NULL.
+- `forkSession({ parentId, targetAgent, seedMessages })` — atomic
+  multi-write under one `withTransaction` per ADR 0014: child session
+  row with `parent_session_id` set, a forked-from marker
+  (`parts.type = "fork"`) on a synthetic assistant message, and each
+  seed (`{ display, agentMessage? }`) replayed into both `messages`
+  and (when present) `agent_messages`. Seed display ids are
+  re-allocated inside the tx so the marker's UUIDv7 prefix orders
+  before any seed and so each session owns its own message rows.
 - `updateSessionTitle(tx, id, title)` — replace the session title
   after background generation completes.
 - `appendDisplayMessage(tx, id, msg, { includeParts? })` — insert
