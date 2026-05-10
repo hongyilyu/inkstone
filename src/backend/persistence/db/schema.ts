@@ -23,6 +23,19 @@ export const sessions = sqliteTable("sessions", {
 	startedAt: integer("started_at").notNull(),
 	agent: text("agent").notNull(),
 	title: text("title").notNull(),
+	// Set by `forkSession()` only — `createSession()` leaves NULL. Per
+	// ADR 0014, fork is the session primitive and this column is the
+	// schema-level expression of the child-of relationship. **No
+	// SQLite FK constraint** is declared — the column is a plain
+	// nullable TEXT lineage pointer, not an enforced foreign key.
+	// (Drizzle's self-reference syntax broke at runtime in some
+	// versions; see PR #135 commit comment.) `forkSession()` is the
+	// only writer that sets this column, and it always passes a
+	// `parentId` from the same DB; cascade-delete on parent removal
+	// is therefore not enforced — deleting a parent with children
+	// leaves orphan children with a stale pointer, treated as a bug
+	// rather than a supported operation.
+	parentSessionId: text("parent_session_id"),
 });
 
 export const messages = sqliteTable(

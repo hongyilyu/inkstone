@@ -48,6 +48,19 @@ export interface SessionRecord {
 	agent: string;
 	startedAt: number;
 	title: string;
+	/**
+	 * Lineage pointer to a parent session. Set when this session was
+	 * born from a `forkSession()` call (per ADR 0014); NULL for sessions
+	 * created via `createSession()`. Note: stored as plain nullable
+	 * TEXT — there is **no SQLite FK constraint** — see
+	 * `db/schema.ts:parentSessionId` for the rationale. `forkSession()`
+	 * is the sole writer and always passes ids from the same DB.
+	 *
+	 * The TUI uses NULL-vs-set in two places: the sessions-list filter
+	 * (router parents are hidden) and the fork-marker renderer (child
+	 * sessions show "→ Routing to <Target>" inline).
+	 */
+	parentSessionId: string | null;
 }
 
 export interface LoadedSession {
@@ -206,6 +219,7 @@ export function createSession(init: { agent: string }): SessionRecord {
 		agent: row.agent,
 		startedAt: row.startedAt,
 		title: row.title,
+		parentSessionId: null,
 	};
 }
 
@@ -541,6 +555,7 @@ export function loadSession(sessionId: string): LoadedSession | null {
 			agent: sess.agent,
 			startedAt: sess.startedAt,
 			title: sess.title,
+			parentSessionId: sess.parentSessionId,
 		},
 		displayMessages,
 		agentMessages: repaired,
