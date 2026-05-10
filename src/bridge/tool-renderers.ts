@@ -80,6 +80,11 @@ export const TOOL_ARG_RENDERERS: Record<string, ToolArgRenderer> = {
 		const id = str(o.id) ?? "";
 		return trunc(`${op} "${id}"`);
 	},
+	dispatch(args) {
+		const o = asObj(args) ?? {};
+		const agent = str(o.agent) ?? "";
+		return trunc(`→ ${agent}`);
+	},
 };
 
 /**

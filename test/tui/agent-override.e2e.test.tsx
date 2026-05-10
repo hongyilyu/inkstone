@@ -63,7 +63,10 @@ describe("per-agent model override flow", () => {
 		setup.mockInput.pressTab();
 		await waitForFrame(setup, "KB Only Model");
 
-		// Cycle back to reader → reader's model returns.
+		// Registry [router, reader, knowledge-base]: Tab from KB wraps
+		// to router (no per-agent model → top-level FAKE_MODEL applies).
+		// Tab once more lands on Reader and restores its override.
+		setup.mockInput.pressTab();
 		setup.mockInput.pressTab();
 		await waitForFrame(setup, "Reader Only Model");
 

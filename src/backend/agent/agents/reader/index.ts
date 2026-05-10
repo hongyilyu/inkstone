@@ -223,7 +223,11 @@ function getReaderPermissions(): AgentOverlay {
 export const readerAgent: AgentInfo = {
 	name: "reader",
 	displayName: "Reader",
-	description: "Reading guide",
+	description:
+		"A reading-focused agent for the user's article corpus. Use for any " +
+		"request about reading, exploring, or asking questions about saved " +
+		'articles — including freeform browsing ("what did I save yesterday") ' +
+		'and direct file references ("read foo.md"). Has plain-chat capability.',
 	colorKey: "secondary",
 	extraTools: [editTool, writeTool, readerSearchTool, readerListKeysTool],
 	zones: readerZones,

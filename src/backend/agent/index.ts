@@ -36,6 +36,15 @@ import { composeOverlay } from "./zones";
 // D13 for why agent selection isn't a runtime action.
 export interface AgentActions {
 	prompt(text: string): Promise<void>;
+	/**
+	 * Run the agent loop from the current transcript without pushing a
+	 * new user message. The last message in `state.messages` must be
+	 * `user` or `tool-result`. Used by the routing-fork seam to fire
+	 * the child agent's first turn after `restoreMessages` seeded the
+	 * user message. Throws if called on an empty transcript or with a
+	 * non-user/tool-result tail.
+	 */
+	continue(): Promise<void>;
 	abort(): void;
 	setModel(model: Model<Api>): void;
 	setThinkingLevel(level: ThinkingLevel): void;
@@ -415,6 +424,13 @@ export function createSession(params: {
 				return;
 			}
 			await agent.prompt(text);
+		},
+		async continue() {
+			// Routing-fork seam: after the resume restored the seeded
+			// user message into `state.messages`, fire the agent loop
+			// from there. pi-agent-core's `continue()` validates the
+			// tail role and runs without pushing a new message.
+			await agent.continue();
 		},
 		abort() {
 			agent.abort();

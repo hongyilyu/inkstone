@@ -19,9 +19,14 @@
 
 import type { Session } from "@backend/agent";
 import { getAgentInfo } from "@backend/agent";
-import { appendAgentMessage, persist } from "@backend/persistence/sessions";
+import {
+	appendAgentMessage,
+	forkSession,
+	persist,
+} from "@backend/persistence/sessions";
 import type {
 	AgentStoreState,
+	DisplayMessage,
 	DisplayPart,
 	SidebarSection,
 } from "@bridge/view-model";
@@ -53,6 +58,22 @@ export interface ReducerDeps {
 	 * invariant.
 	 */
 	messageLog: MessageLog;
+	/**
+	 * Routing seam: called from inside `handleAgentEnd`'s `setTimeout(0)`
+	 * macrotask after the router's `dispatch` tool resolved and the
+	 * fork was written. The provider wires this to the wrapped
+	 * `resumeSession` action, which loads the freshly-forked child
+	 * session and rebinds the live Agent onto its target. Forward-
+	 * referenced because `wrappedActions` is constructed AFTER the
+	 * reducer (which observes events on the agent loop). The macrotask
+	 * defer is load-bearing: pi-agent-core's `finishRun()` clears its
+	 * `activeRun` only AFTER `agent_end` listeners settle, so a
+	 * microtask would still see `signal` truthy and `clearSession`
+	 * would take the async-abort branch (the void caller can't await,
+	 * messages stay populated, `selectAgent` throws). See
+	 * `applyDispatchResult` for the full timing rationale.
+	 */
+	resumeSession: (sessionId: string) => void;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -348,6 +369,7 @@ function handleToolExecutionEnd(event: AgentEvent, deps: ReducerDeps): void {
 		!!endEvt.isError,
 	);
 	applySidebarMutation(endEvt, deps);
+	applyDispatchResult(endEvt, deps);
 }
 
 function applySidebarMutation(endEvt: any, deps: ReducerDeps): void {
@@ -395,11 +417,226 @@ function applySidebarMutation(endEvt: any, deps: ReducerDeps): void {
 	}
 }
 
+/**
+ * Routing seam — the `dispatch` tool's result handler.
+ *
+ * Per ADR 0007 + grilling Q11 (C'.iii), when the router's `dispatch`
+ * tool resolves with a chosen target agent, the TUI:
+ *   1. Synchronously forks the router's session into a child bound to
+ *      the target, seeding the user's first message into both the
+ *      child's display + agent_messages tables.
+ *   2. Stashes the child sid on `sessionState.pendingDispatchChildId`.
+ *      `handleAgentEnd` reads this stash and triggers `resumeSession`
+ *      from there — pi-agent-core's loop has fully unwound by the time
+ *      `agent_end` fires (it's the loop's last event), so
+ *      `clearSession`'s `agent.reset()` runs without racing in-flight
+ *      loop state.
+ *
+ * Why not run the resume here directly? Because `resumeSession` calls
+ * `clearSession` → `agent.reset()` which clears `agent.state.messages`.
+ * If the loop is still mid-step (e.g. the assistant message that emitted
+ * the dispatch hasn't finalized), the reset's effect can be undone by
+ * pi-agent-core's still-running message-finalization step, leaving the
+ * Agent with messages.length > 0 right when `selectAgent` (called next
+ * inside the resume flow's `batch()`) checks the empty-session
+ * invariant. Deferring to `agent_end` guarantees the loop is idle.
+ *
+ * Why not `queueMicrotask`? Because microtasks can run BEFORE the next
+ * scheduled `agent_end` (they drain whenever the JS stack empties, even
+ * inside pi-agent-core's promise chain). `agent_end` is the only signal
+ * that says "loop is fully idle." Use it.
+ *
+ * Errors:
+ *   - Bad/missing `target`, `parentSid`, or user message: silent skip.
+ *     Misroute correction is a fresh open-page submit per Q5.
+ *   - LLM-emitted dispatch failure (`isError === true`): treated as a
+ *     misroute. Same silent skip; user re-submits.
+ *   - `forkSession()` throws (DB write failure): caught here. Without
+ *     the catch, the throw propagates through Solid `batch()` and
+ *     corrupts reducer state.
+ */
+function applyDispatchResult(endEvt: any, deps: ReducerDeps): void {
+	if (endEvt.toolName !== "dispatch") return;
+	if (endEvt.isError) return;
+	const target = endEvt.result?.details?.agent;
+	if (typeof target !== "string" || target.length === 0) return;
+
+	const parentSid = deps.sessionState.getCurrentSessionId();
+	if (!parentSid) return;
+
+	// The user's first message lives in store.messages — it was
+	// persisted by `appendUserBubble` when the open-page submit fired.
+	// Find by role so a synthetic assistant shell (appended on
+	// `message_start`) doesn't get picked.
+	const userDisplay = deps.store.messages.find((m) => m.role === "user");
+	if (!userDisplay) return;
+	// Build the LLM-facing message content from the display parts.
+	// Today the open page only accepts plain-text typing (slash + Tab
+	// paths bypass the router), so this is always `[{ type: "text" }]`
+	// in production. The map preserves every text part and skips
+	// non-text parts (file/thinking/tool/fork) — `text` is the only
+	// type pi-ai's `UserMessage.content` accepts that we currently
+	// produce. A future open-page enhancement (image paste, attached
+	// files) should extend this map rather than continue to drop
+	// silently.
+	const agentContent = userDisplay.parts.flatMap((p) =>
+		p.type === "text" && p.text.length > 0
+			? [{ type: "text" as const, text: p.text }]
+			: [],
+	);
+	if (agentContent.length === 0) return;
+
+	let child: ReturnType<typeof forkSession>;
+	try {
+		child = forkSession({
+			parentId: parentSid,
+			targetAgent: target,
+			seedMessages: [
+				{
+					display: userDisplay,
+					agentMessage: {
+						role: "user",
+						content: agentContent,
+						timestamp: Date.now(),
+					},
+				},
+			],
+		});
+	} catch {
+		// `forkSession` already reported via `reportPersistenceError`
+		// and rethrew. Return here so the throw doesn't propagate
+		// through Solid's `batch()` and corrupt reducer state.
+		return;
+	}
+
+	// Hand off to handleAgentEnd. Until it runs, the prompt stays
+	// locked (handleAgentEnd skips its `isStreaming = false` reset
+	// when the stash is set, so the user can't submit on the
+	// about-to-be-abandoned router session).
+	deps.sessionState.setPendingDispatchChildId(child.id);
+}
+
 // ────────────────────────────────────────────────────────────────────
 // agent_end — 5 independent concerns
 // ────────────────────────────────────────────────────────────────────
 
 function handleAgentEnd(event: AgentEvent, deps: ReducerDeps): void {
+	// Routing-seam handoff: a `dispatch` tool result this turn stashed
+	// the child session id (see `applyDispatchResult`). Skip the normal
+	// turn-close concerns (`isStreaming` reset, closing-bubble stamp,
+	// synthesized-abort persist, interrupted-user mark) — those operate
+	// on the router session which is hidden from listSessions per
+	// ADR 0007 / grilling Q16. The resume-flow's `clearSession` owns
+	// the `isStreaming = false` reset for the new active session.
+	//
+	// Defer the resume via `setTimeout(0)` (macrotask, not microtask):
+	// `agent_end` event delivery happens INSIDE pi-agent-core's
+	// `processEvents` while `activeRun` is still set, so `signal`
+	// (read by `clearSession`) is still truthy — `clearSession` would
+	// take its async-abort branch and the `void` discards the await,
+	// leaving `agent.state.messages` non-empty when `selectAgent`
+	// checks the empty-session invariant inside the resume's `batch()`.
+	// Pi-agent-core's `finishRun()` clears `activeRun` AFTER all
+	// `agent_end` listeners settle. A microtask runs while listeners
+	// are still being awaited (inside `for...of` await chain), so it's
+	// too early. A macrotask runs after `finishRun()` completes —
+	// `signal` is undefined, `clearSession` takes the sync branch,
+	// `agent.reset()` actually clears messages.
+	const pendingChildId = deps.sessionState.getPendingDispatchChildId();
+	if (pendingChildId) {
+		deps.sessionState.setPendingDispatchChildId(null);
+		setTimeout(() => {
+			// Wrap in `batch()` to coalesce store mutations across the
+			// whole sequence. The macrotask runs OUTSIDE the
+			// dispatcher's `batch()` (setTimeout defers past it), so
+			// without this wrap the four+ `setStore` calls below
+			// (status, isStreaming, plus everything `resumeSession`
+			// and the interrupted-clear touch) each trigger a separate
+			// Solid scheduler pass — visible flicker between
+			// "isStreaming = false but parent messages still showing"
+			// and "messages swapped to child". `continue()` stays
+			// outside the batch — it's an async call into pi-agent-core,
+			// not a store mutation.
+			batch(() => {
+				// Clear status fields so resumeSession's busy-guard
+				// (`if (deps.store.isStreaming) return`) lets the call
+				// through. We own this reset because `agent_end` skipped
+				// it.
+				deps.setStore("isStreaming", false);
+				deps.setStore("status", "idle");
+				deps.resumeSession(pendingChildId);
+				// resumeSession runs `loadSession` which applies
+				// `repairAlternation` — for a freshly-forked child whose
+				// `agent_messages` is just `[user]`, repair appends a
+				// synthesized aborted assistant to satisfy the
+				// alternation invariant. That's right for resume
+				// semantics, but wrong for the seam: we want to RUN the
+				// child's first turn now, and pi-agent-core's
+				// `continue()` rejects a transcript whose tail is
+				// `assistant`. Re-seed the live Agent with just the user
+				// message so `continue()` sees it as the tail and runs
+				// from there. The synthesized assistant stays out of the
+				// LLM-facing context (and out of disk — repair is
+				// read-time only).
+				const seeded = deps.store.messages.flatMap((m) => {
+					// Skip the fork-marker (display-only — has no
+					// agent_messages counterpart and no LLM-facing
+					// shape). Skip the synthesized assistant tail.
+					// Keep the seeded user message — preserve every
+					// text part (multi-text user messages are rare
+					// today but represent the same data the original
+					// agent_message content array carried at fork
+					// time).
+					if (m.role === "user") {
+						const content = m.parts.flatMap((p) =>
+							p.type === "text" && p.text.length > 0
+								? [{ type: "text" as const, text: p.text }]
+								: [],
+						);
+						if (content.length === 0) return [];
+						return [
+							{
+								role: "user" as const,
+								content,
+								timestamp: Date.now(),
+							},
+						];
+					}
+					return [];
+				});
+				deps.agentSession.restoreMessages(seeded);
+				// Clear the `interrupted` flag that loadSession's
+				// repair stamped on the seeded user message. The
+				// repair logic reads "user message with no following
+				// real assistant" as "this turn was interrupted" —
+				// correct for resumed sessions where the user truly
+				// lost their reply, wrong for a freshly-forked child
+				// where the reply is about to stream in. Without this
+				// clear, the user sees "[Interrupted by user]" under
+				// their message right when Reader starts answering.
+				deps.setStore(
+					"messages",
+					produce((msgs: DisplayMessage[]) => {
+						for (const m of msgs) {
+							if (m.role === "user" && m.interrupted) {
+								m.interrupted = undefined;
+							}
+						}
+					}),
+				);
+			});
+			// Fire the child agent's first turn. The seeded transcript
+			// ends with the user's freeform message; `continue()` runs
+			// the loop from the current tail without pushing a new
+			// user message. Outside the `batch()` because it's an
+			// async pi-agent-core call, not a store mutation.
+			deps.agentSession.actions.continue().catch((err) => {
+				console.error("[routing-seam] continue() failed:", err);
+			});
+		}, 0);
+		return;
+	}
+
 	deps.setStore("isStreaming", false);
 	deps.setStore("status", "idle");
 	deps.messageLog.sweepPendingTools();

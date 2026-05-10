@@ -15,9 +15,16 @@ export const BASE_PREAMBLE = "";
  * Compose an agent's runtime tool set: `BASE_TOOLS` + `info.extraTools` +
  * an agent-scoped `suggest_command` tool (omitted when `info.commands`
  * is empty; empty enum has no valid call shape).
+ *
+ * `info.omitBaseTools` skips `BASE_TOOLS` entirely. Today only the
+ * router opts out — per ADR 0007 it's a one-shot classifier with
+ * exactly one tool (`dispatch`). Default behavior is unchanged for
+ * every other agent (ADR 0002's "every agent gets the base set" still
+ * holds wherever the flag isn't set).
  */
 export function composeTools(info: AgentInfo): InkstoneTool<any>[] {
-	const tools: InkstoneTool<any>[] = [...BASE_TOOLS, ...info.extraTools];
+	const base = info.omitBaseTools ? [] : BASE_TOOLS;
+	const tools: InkstoneTool<any>[] = [...base, ...info.extraTools];
 	const suggest = makeSuggestCommandTool(info.commands ?? []);
 	if (suggest) tools.push(suggest);
 	assertMutatingToolsHaveZones(info, tools);

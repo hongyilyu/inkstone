@@ -6,9 +6,12 @@
  * the keybind registration short-circuits.
  *
  * We verify the switch via the prompt-bar status line — it renders
- * `agentInfo().displayName` next to the model/provider, so when the
- * active agent changes from `reader` (displayName "Reader") to
- * `example` (displayName "Example"), the frame updates accordingly.
+ * `agentInfo().displayName` next to the model/provider.
+ *
+ * Registry order is [router, reader, knowledge-base] (per ADR 0007 the
+ * router is included in the Tab cycle). The fake session here starts
+ * the live agent on `reader` (its default); the seam doesn't fire
+ * because no `dispatch` tool result is emitted in these tests.
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
@@ -54,9 +57,9 @@ describe("agent cycle", () => {
 		await waitForFrame(setup, "Reader");
 
 		setup.mockInput.pressTab({ shift: true });
-		// Two-agent registry → Shift+Tab from Reader also lands on
-		// Knowledge Base (the only other agent).
-		await waitForFrame(setup, "Knowledge Base");
+		// Registry [router, reader, knowledge-base] → Shift+Tab from
+		// Reader (index 1) wraps to Router (index 0).
+		await waitForFrame(setup, "Router");
 	});
 
 	test("agent cycle is disabled once the session has messages", async () => {

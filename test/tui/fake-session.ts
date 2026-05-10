@@ -63,6 +63,7 @@ export interface FakeSessionHandle {
 	/** Recorded actions.* calls. */
 	calls: {
 		prompt: string[];
+		continue: number;
 		abort: number;
 		setModel: Model<Api>[];
 		setThinkingLevel: ThinkingLevel[];
@@ -120,9 +121,21 @@ export function makeFakeSession(
 	let thinkingLevel: ThinkingLevel =
 		opts.agentThinkingLevels?.[agentName] ?? opts.thinkingLevel ?? "off";
 	let messageCount = 0;
+	// Mirror pi-agent-core's `activeRun` lifecycle. Set to `true` on
+	// `agent_start`; stays `true` through `agent_end` event delivery
+	// (matching pi-agent-core's `processEvents` shape — the run isn't
+	// "finished" until AFTER all `agent_end` listeners resolve). The
+	// reducer's `agent_end` handler runs synchronously inside our
+	// `emit(...)` call and reads this as still-active; the fake clears
+	// it after `emit(agent_end)` returns. Listeners that read
+	// `clearSession` during `agent_end` see the still-active branch
+	// (matching the real backend's `agent.signal` truthy state at the
+	// same point) — which is what surfaces the routing-seam timing bug.
+	let activeRun = false;
 
 	const calls: FakeSessionHandle["calls"] = {
 		prompt: [],
+		continue: 0,
 		abort: 0,
 		setModel: [],
 		setThinkingLevel: [],
@@ -161,8 +174,23 @@ export function makeFakeSession(
 			actions: {
 				async prompt(text: string) {
 					calls.prompt.push(text);
+					// Mirror the real backend: `agent.prompt(text)` pushes
+					// a user message onto `_state.messages` before the
+					// stream loop starts. Without this, `selectAgent`'s
+					// empty-session invariant in the fake never sees a
+					// populated state and silently passes when it
+					// shouldn't.
+					messageCount += 1;
 					const fail = pendingFailures.shift();
 					if (fail) throw fail;
+				},
+				async continue() {
+					// Routing-fork seam: fires after `restoreMessages`
+					// has seeded the user message; pi-agent-core's
+					// `continue()` runs the loop from that tail. The
+					// fake just records the call so tests can assert
+					// the seam fired the child agent's turn.
+					calls.continue += 1;
 				},
 				abort() {
 					calls.abort += 1;
@@ -208,6 +236,24 @@ export function makeFakeSession(
 			},
 			async clearSession() {
 				calls.clearSession += 1;
+				// Mirror the real backend's two-branch shape: when the run
+				// is active, abort + waitForIdle, then reset. When idle,
+				// reset synchronously. The bug we're guarding against is:
+				// `void clearSession()` (sync caller, can't await) drops
+				// the await, leaving `messageCount > 0` when `selectAgent`
+				// runs next. Without the active-run branch, the fake would
+				// always reset synchronously and the bug stays hidden.
+				if (activeRun) {
+					// Schedule the reset on a microtask. The sync caller
+					// (resumeSessionAction inside batch()) does NOT await.
+					// `messageCount` stays > 0 across the synchronous
+					// `selectAgent` call, which throws the empty-session
+					// error — exactly the failure mode reported from the
+					// running app.
+					await Promise.resolve();
+					messageCount = 0;
+					return;
+				}
 				messageCount = 0;
 			},
 			restoreMessages(msgs: AgentMessage[]) {
@@ -215,6 +261,18 @@ export function makeFakeSession(
 				messageCount = msgs.length;
 			},
 			selectAgent(name: string) {
+				// Empty-session invariant matches the real backend
+				// (`src/backend/agent/index.ts` `selectAgent`): swapping
+				// the bound agent on a non-empty session is forbidden
+				// (D13). Without this check the fake silently accepts
+				// the swap and the routing-seam timing bug stays
+				// hidden behind a green test.
+				if (messageCount > 0) {
+					throw new Error(
+						"Agent is fixed for the lifetime of a session. " +
+							"Clear the session before selecting a different agent.",
+					);
+				}
 				// Track *and* reflect — the real Session mutates its bound
 				// agent; the TUI wrapper reads `agentSession.agentName`
 				// back into `store.currentAgent` immediately after calling
@@ -249,7 +307,43 @@ export function makeFakeSession(
 
 	return {
 		factory,
-		emit: (event) => onEvent(event),
+		emit: (event) => {
+			// Mirror pi-agent-core's `processEvents` shape: state
+			// updates happen BEFORE listener delivery so listeners
+			// (our reducer) see a populated `messages` count + a
+			// truthy `activeRun` during `agent_end`. Crucially,
+			// `activeRun` stays `true` across any microtasks that
+			// the listener schedules (pi-agent-core's `finishRun()`
+			// runs only AFTER all `agent_end` listeners' awaited
+			// promises resolve, which means after their entire
+			// microtask chain drains). We model this with
+			// `queueMicrotask(activeRun = false)` AFTER the listener
+			// returns: microtasks queued by the listener BEFORE this
+			// one (e.g. a `queueMicrotask(resumeSession)`) run first
+			// and observe `activeRun === true` — matching real
+			// pi-agent-core timing and surfacing the seam bug. A
+			// macrotask defer (e.g. `setTimeout(0)` in the seam) yields
+			// past this clear and observes `activeRun === false`,
+			// matching the real fix.
+			switch (event.type) {
+				case "agent_start":
+					activeRun = true;
+					break;
+				case "message_end":
+					// Pi-agent-core pushes the assistant message to
+					// `_state.messages` BEFORE awaiting listeners.
+					messageCount += 1;
+					break;
+				default:
+					break;
+			}
+			onEvent(event);
+			if (event.type === "agent_end") {
+				queueMicrotask(() => {
+					activeRun = false;
+				});
+			}
+		},
 		calls,
 		failNextPrompt: (err) => pendingFailures.push(err),
 		getHandler: () => onEvent,
