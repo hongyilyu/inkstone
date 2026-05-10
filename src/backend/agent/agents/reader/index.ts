@@ -1,11 +1,11 @@
 import { lstatSync, readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import type { DisplayPart } from "@bridge/view-model";
 import { ARTICLES_DIR, VAULT_DIR } from "../../constants";
 import { type AgentOverlay, isInsideDir } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
 import { makeListKeysTool, makeSearchTool } from "../../tools/search";
-import type { AgentCommand, AgentInfo, AgentZone } from "../../types";
+import type { AgentCommand, AgentInfo } from "../../types";
 import {
 	buildArticleWorkflowPrelude,
 	buildReaderInstructions,
@@ -187,31 +187,34 @@ const readerListKeysTool = makeListKeysTool({
 		"key name mismatch (e.g. `author` vs `authors`, `tags` vs `keywords`).",
 });
 
-/** Reader's workspace — three zones, all confirm-before-write. */
-const readerZones: AgentZone[] = [
-	{ path: "010 RAW/013 Articles", write: "confirm" },
-	{ path: "020 HUMAN/022 Scraps", write: "confirm" },
-	{ path: "020 HUMAN/023 Notes", write: "confirm" },
-];
-
 /**
- * Static Articles-zone rules: `write` blocked outright (articles are
- * read-only source material; `edit` handles frontmatter updates),
- * `edit` restricted to frontmatter hunks. Zone-wide (not per-file) so
- * the reader stays stateless — see `docs/AGENT-DESIGN.md` →
- * "Reader-specific vocabulary leaks" for the history.
+ * Reader's permission overlay.
+ *
+ * `write` allowlist is Scraps + Notes only — Articles is excluded so
+ * any write to an article is rejected by `insideDirs`. Articles are
+ * read-only source material; `edit` handles frontmatter updates.
+ *
+ * `edit` allowlist is Articles + Scraps + Notes. The
+ * `frontmatterOnlyInDirs` rule comes first so a doomed body edit
+ * short-circuits before the `confirmDirs` prompt fires.
+ *
+ * Directory-wide (not per-file) so the reader stays stateless — see
+ * `docs/AGENT-DESIGN.md` → "Reader-specific vocabulary leaks" for the
+ * history.
  */
 function getReaderPermissions(): AgentOverlay {
+	const scrapsDir = join(VAULT_DIR, "020 HUMAN/022 Scraps");
+	const notesDir = join(VAULT_DIR, "020 HUMAN/023 Notes");
 	return {
 		[writeTool.name]: [
-			{
-				kind: "blockInsideDirs",
-				dirs: [ARTICLES_DIR],
-				reason:
-					"Articles are read-only source material. Use edit to modify frontmatter only.",
-			},
+			{ kind: "insideDirs", dirs: [scrapsDir, notesDir] },
+			{ kind: "confirmDirs", dirs: [scrapsDir, notesDir] },
 		],
-		[editTool.name]: [{ kind: "frontmatterOnlyInDirs", dirs: [ARTICLES_DIR] }],
+		[editTool.name]: [
+			{ kind: "frontmatterOnlyInDirs", dirs: [ARTICLES_DIR] },
+			{ kind: "insideDirs", dirs: [ARTICLES_DIR, scrapsDir, notesDir] },
+			{ kind: "confirmDirs", dirs: [ARTICLES_DIR, scrapsDir, notesDir] },
+		],
 	};
 }
 
@@ -230,7 +233,7 @@ export const readerAgent: AgentInfo = {
 		'and direct file references ("read foo.md"). Has plain-chat capability.',
 	colorKey: "secondary",
 	extraTools: [editTool, writeTool, readerSearchTool, readerListKeysTool],
-	zones: readerZones,
+	zones: [],
 	buildInstructions: () => buildReaderInstructions(),
 	commands: [articleCommand],
 	getPermissions: getReaderPermissions,

@@ -31,26 +31,37 @@ export function composeTools(info: AgentInfo): InkstoneTool<any>[] {
 	const tools: InkstoneTool<any>[] = [...base, ...info.extraTools];
 	const suggest = makeSuggestCommandTool(info.commands ?? []);
 	if (suggest) tools.push(suggest);
-	assertMutatingToolsHaveZones(info, tools);
+	assertMutatingToolsHaveWorkspace(info, tools);
 	return tools;
 }
 
 // Catches the common path where an agent composes the shared
-// `writeTool` / `editTool` re-exports without declaring zones. A
-// future agent that calls `createWriteTool(VAULT_DIR)` directly
-// (bypassing the shared pool) would slip past this check — the
-// `tools.ts` convention is the safety net, not this assertion.
-function assertMutatingToolsHaveZones(
+// `writeTool` / `editTool` re-exports without declaring a writable
+// workspace. A future agent that calls `createWriteTool(VAULT_DIR)`
+// directly (bypassing the shared pool) would slip past this check —
+// the `tools.ts` convention is the safety net, not this assertion.
+//
+// Reads from `composeOverlay(info)` so the contract follows whatever
+// declaration shape an agent uses. An `insideDirs` rule with a
+// non-empty `dirs` array on the write tool's overlay is the formal
+// "agent has a writable workspace" signal.
+function assertMutatingToolsHaveWorkspace(
 	info: AgentInfo,
 	tools: InkstoneTool<any>[],
 ): void {
-	if (info.zones.length > 0) return;
 	const hasSharedMutatingTool = tools.some(
 		(tool) => tool.name === writeTool.name || tool.name === editTool.name,
 	);
 	if (!hasSharedMutatingTool) return;
+	const overlay = composeOverlay(info);
+	const writeRules = overlay[writeTool.name] ?? [];
+	const hasWritable = writeRules.some(
+		(r) => r.kind === "insideDirs" && r.dirs.length > 0,
+	);
+	if (hasWritable) return;
 	throw new Error(
-		`Agent '${info.name}' composes mutating file tools but declares no write zones.`,
+		`Agent '${info.name}' composes mutating file tools but declares no writable workspace ` +
+			`(getPermissions must include an insideDirs rule for '${writeTool.name}').`,
 	);
 }
 
