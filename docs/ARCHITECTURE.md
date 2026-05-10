@@ -597,6 +597,12 @@ user types "/article foo.md" + Enter
         → entries().find(e => e.slash?.name === "article")
           → BridgeAgentCommands' reader entry (agent-scoped registers first)
           → entry.onSelect(dialog, "foo.md")
+            → if (info.name !== store.currentAgent) actions.selectAgent(info.name)
+              (auto-commit per ADR 0007: slash dispatch IS the classification,
+              so a fan-out pick from the router-default open page commits the
+              session to Reader before invoking execute. The empty-session
+              invariant inside `selectAgent` already holds — fan-out
+              registration only runs while `messages.length === 0`.)
             → helpers = buildCommandHelpers()
             → cmd.execute("foo.md", helpers)
               → runArticle("foo.md", helpers.prompt)

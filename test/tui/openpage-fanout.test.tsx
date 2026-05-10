@@ -44,6 +44,37 @@ describe("open-page slash fan-out", () => {
 		expect(f).toContain("/clear");
 	});
 
+	test("slash-pick from router auto-commits to the owning agent", async () => {
+		// Per ADR 0007 ("slash commands and explicit Tab picks bypass
+		// the router entirely because they ARE the classification"),
+		// typing `/article foo.md` while bound to the router must
+		// commit the session to Reader BEFORE running the verb — not
+		// fall through to a plain prompt that the router then LLM-
+		// classifies. This is the contract that's broken in isolation
+		// at the end of PR 2.
+		const fake = makeFakeSession({ agentName: "router" });
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		await waitForFrame(setup, "Router");
+
+		// `/article` is reader's verb; `foo.md` is preloaded under
+		// `010 RAW/013 Articles/` (see test/preload.ts).
+		await setup.mockInput.typeText("/article foo.md");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(40);
+
+		// The bridge auto-committed to Reader before invoking execute.
+		expect(fake.calls.selectAgent).toContain("reader");
+		// And the command actually ran — prompt carries the article
+		// workflow text, not the literal `/article foo.md`.
+		expect(fake.calls.prompt.length).toBe(1);
+		expect(fake.calls.prompt[0]).toContain(
+			"Read this article and begin the reading workflow.",
+		);
+		expect(fake.calls.prompt[0]).toContain("foo.md");
+	});
+
 	test("after Tab to Reader the dropdown collapses to Reader's verbs", async () => {
 		const fake = makeFakeSession({ agentName: "router" });
 		setup = await renderApp({ session: fake.factory });
