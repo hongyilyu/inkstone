@@ -163,7 +163,7 @@ src/
         session-state.ts              createSessionState — currentSessionId + turnStartThinkingLevel + preTurnCodexConnections bag + ensureSession
         reducer.ts                    createAgentEventHandler — event dispatch table; agent_end decomposed into 5 named helpers
         actions.ts                    createWrappedActions — prompt / setModel / setThinkingLevel / selectAgent / clearSession / resumeSession
-        commands.tsx                  BridgeAgentCommands + buildCommandHelpers (agent-declared slash verbs into the palette)
+        commands.tsx                  BridgeAgentCommands + buildCommandHelpers (agent-declared slash verbs into the dropdown-only `registerAgentSlash` channel; palette stays program-config-scoped)
         provider.tsx                  AgentProvider shell + useAgent — composes the bag, installs side-effect handlers with restore-on-unmount, disposes subscription
       theme.tsx                     ThemeProvider + useTheme (re-exports ThemeColors/ThemeDef/themes/getThemeById for backward compat)
     theme/                          Pure-data theme module (no Solid, no JSX)
@@ -584,7 +584,7 @@ The optional helpers require an interactive frontend; headless callers omit them
 |--------|---------------|----------|
 | Shell palette entries | `Layout()` in `src/tui/app.tsx` | `/agents`, `/models`, `/effort`, `/themes`, `/connect`, `/clear`, Tab agent-cycle |
 | Prompt-local keybinds | `Prompt()` in `src/tui/components/prompt.tsx` | ESC interrupt |
-| Agent-declared verbs | `BridgeAgentCommands` in `src/tui/context/agent.tsx`, reactive on `store.currentAgent` | reader's `/article <filename>` |
+| Agent-declared verbs | `BridgeAgentCommands` in `src/tui/context/agent/commands.tsx`, reactive on `store.currentAgent`. Registers via `command.registerAgentSlash(...)` (dropdown-only channel; never feeds the palette) | reader's `/article <filename>` |
 
 **Slash dispatch** (`command.triggerSlash(name, args)` in `dialog/command.tsx`):
 
@@ -659,11 +659,18 @@ user types "/article is a misleading title" + Enter
     → actions.prompt("/article is a misleading title")   (plain prompt)
 ```
 
-**Precedence on slash-name collision**: first-match wins. `AgentProvider` mounts inside `CommandProvider` (see `src/tui/app.tsx` tree), and `command.register` prepends to the internal registration list — so `BridgeAgentCommands` entries sit ahead of `Layout`'s entries. An agent that declares a verb with the same name as a shell-level verb overrides the shell version for that agent only. This preserves D9's "agent overrides built-in" rule; it's theoretical today (no agent redefines `clear`).
+**Two registration channels** (per ADR 0006 — palette is program-config-scoped, agent verbs are dropdown-only):
+
+| Channel | API | Surfaces fed | Used by |
+|---------|-----|--------------|---------|
+| Palette commands | `command.register(...)` returning `CommandOption[]` | Ctrl+P palette + slash dropdown (when `slash` is set) | `Layout` shell verbs (`/clear`, `/agents`, `/models`, …) |
+| Agent slashes | `command.registerAgentSlash(...)` returning `AgentSlashOption[]` | Slash dropdown only | `BridgeAgentCommands` |
+
+`command.slashOptions()` returns `[...agentSlashEntries(), ...paletteEntries().filter(slash)]` — agent verbs first so they win on slash-name collision (preserves D9's "agent overrides built-in" rule). `command.visible()` is the palette source and excludes agent verbs by construction.
 
 **Slash-command dropdown** (`src/tui/components/prompt-autocomplete.tsx`):
 
-Typing `/` at column 0 in the prompt opens a dropdown above the textarea listing all registered commands with a `slash` field. The dropdown reads `command.visible()` from the unified registry and filters via `fuzzysort` against the text after the leading `/`. Keyboard: Up/Down (+ Ctrl+P/Ctrl+N) navigate, Enter/Tab select, Esc dismiss. When the dropdown is visible with matches, Enter selects the highlighted entry; when no matches remain (user typed past all options), Enter falls through to the existing `handleSubmit` path (plain prompt or `triggerSlash`). Argless commands (e.g. `/clear`) fire immediately on selection; argful commands (e.g. `/article`) insert `/name ` into the textarea and close the dropdown so the user can type the argument. The dropdown dismisses on: Esc, space (whitespace in the text), backspace past the `/`, or explicit selection. Positioned via `position="absolute" bottom={6}` inside the prompt's outer `<box position="relative">`. Ported from OpenCode's `prompt/autocomplete.tsx` (slash-command subset; see also the `@` mention mode below — same component, single mode state machine).
+Typing `/` at column 0 in the prompt opens a dropdown above the textarea listing all registered commands with a `slash` field. The dropdown reads `command.slashOptions()` (the merged agent-slash + palette-with-slash list) and filters via `fuzzysort` against the text after the leading `/`. Keyboard: Up/Down (+ Ctrl+P/Ctrl+N) navigate, Enter/Tab select, Esc dismiss. When the dropdown is visible with matches, Enter selects the highlighted entry; when no matches remain (user typed past all options), Enter falls through to the existing `handleSubmit` path (plain prompt or `triggerSlash`). Argless commands (e.g. `/clear`) fire immediately on selection; argful commands (e.g. `/article`) insert `/name ` into the textarea and close the dropdown so the user can type the argument. The dropdown dismisses on: Esc, space (whitespace in the text), backspace past the `/`, or explicit selection. Positioned via `position="absolute" bottom={6}` inside the prompt's outer `<box position="relative">`. Ported from OpenCode's `prompt/autocomplete.tsx` (slash-command subset; see also the `@` mention mode below — same component, single mode state machine).
 
 **`@` file mentions** (`src/tui/components/prompt-autocomplete.tsx` mention mode + `src/tui/util/vault-files.ts` + `src/tui/util/mentions.ts`):
 

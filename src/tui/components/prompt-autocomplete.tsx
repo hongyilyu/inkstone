@@ -15,7 +15,11 @@ import { useAnchorGeometry } from "../hooks/use-anchor-geometry";
 import { type DialogContext, useDialog } from "../ui/dialog";
 import { listVaultFiles } from "../util/vault-files";
 import { deriveNextMode } from "./autocomplete/mode-state";
-import { type CommandOption, useCommand } from "./dialog/command";
+import {
+	type AgentSlashOption,
+	type CommandOption,
+	useCommand,
+} from "./dialog/command";
 
 /**
  * Autocomplete dropdown for the prompt textarea.
@@ -103,7 +107,7 @@ export function PromptAutocomplete(props: {
 	// ------------------------------------------------------------
 
 	const slashOptions = createMemo((): Option[] =>
-		buildSlashOptions(command.visible(), {
+		buildSlashOptions(command.slashOptions(), {
 			input: props.input,
 			setText: props.setText,
 			dialog,
@@ -413,7 +417,7 @@ interface SlashSelectors {
  * instead of letting the user optionally type a filename.
  */
 function buildSlashOptions(
-	entries: readonly CommandOption[],
+	entries: readonly (CommandOption | AgentSlashOption)[],
 	sel: SlashSelectors,
 ): Option[] {
 	const raw: { name: string; description: string; onSelect: () => void }[] = [];
