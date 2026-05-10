@@ -28,13 +28,14 @@ export const sessions = sqliteTable("sessions", {
 	// schema-level expression of the child-of relationship. **No
 	// SQLite FK constraint** is declared — the column is a plain
 	// nullable TEXT lineage pointer, not an enforced foreign key.
-	// (Drizzle's self-reference syntax broke at runtime in some
-	// versions; see PR #135 commit comment.) `forkSession()` is the
-	// only writer that sets this column, and it always passes a
-	// `parentId` from the same DB; cascade-delete on parent removal
-	// is therefore not enforced — deleting a parent with children
-	// leaves orphan children with a stale pointer, treated as a bug
-	// rather than a supported operation.
+	// Drizzle's `.references((): any => sessions.id)` self-reference
+	// triggers `RuntimeError: not a function` at table-init in some
+	// Drizzle versions, so the formal constraint is omitted.
+	// `forkSession()` is the only writer that sets this column and it
+	// only ever passes a `parentId` from the same DB; cascade-delete
+	// on parent removal is therefore NOT enforced — deleting a parent
+	// with children leaves orphans with a stale pointer, treated as a
+	// bug rather than a supported operation.
 	parentSessionId: text("parent_session_id"),
 });
 
