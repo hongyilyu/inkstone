@@ -1,16 +1,11 @@
-import { VAULT_DIR } from "../../constants";
-
 /**
  * LifeOS folder layout — single source of truth for the knowledge-base
  * agent. The workflow text in `instructions.ts`, the agent's `zones`,
  * and the permission overlay all read from here, so adjusting the
  * vault layout (or testing against a different one) is one file.
  *
- * Two flavors:
- *   - Vault-relative (`KB_*`): used in prompt text and `AgentZone.path`
- *     (which is itself vault-relative).
- *   - Absolute (`KB_*_DIR`): used by the permission overlay's
- *     `blockInsideDirs` rules, which compare resolved absolute paths.
+ * Paths are vault-relative; callers `join(VAULT_DIR, …)` when they
+ * need absolute paths (e.g. for the permission overlay).
  */
 
 // Top-level folders.
@@ -41,7 +36,3 @@ export const KB_RAW_ARTICLES = `${KB_RAW}/013 Articles`;
 // System files lint may write to.
 export const KB_TEMPLATES = `${KB_SYSTEM}/Templates`;
 export const KB_TAGS_GUIDANCE = `${KB_SYSTEM}/tags-guidance.md`;
-
-// Absolute forms — for the permission overlay's `blockInsideDirs` rules.
-export const KB_RAW_DIR = `${VAULT_DIR}/${KB_RAW}`;
-export const KB_HUMAN_DIR = `${VAULT_DIR}/${KB_HUMAN}`;

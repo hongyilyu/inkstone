@@ -250,20 +250,18 @@ describe("composeSystemPrompt — <your workspace> from permission rules", () =>
 		expect(prompt).toContain("  - 010 RAW/013 Articles");
 	});
 
-	test("knowledgeBaseAgent: Forge is auto, System is confirm, RAW + HUMAN are blocked", () => {
+	test("knowledgeBaseAgent: Forge is auto, System is confirm, no other prompt sections", () => {
 		const prompt = composeSystemPrompt(knowledgeBaseAgent);
 		expect(prompt).toContain("<your workspace>");
 		expect(prompt).toContain("  - 040 FORGE (write freely)");
 		expect(prompt).toContain(
 			"  - 090 SYSTEM/099 LLM Wiki (confirm before each write)",
 		);
-		expect(prompt).toContain("Writes blocked in:");
-		expect(prompt).toContain(
-			"  - 010 RAW — This folder is read-only per the LifeOS policy. Writes go to 040 FORGE/.",
-		);
-		expect(prompt).toContain(
-			"  - 020 HUMAN — This folder is read-only per the LifeOS policy. Writes go to 040 FORGE/.",
-		);
+		// RAW + HUMAN are not in the allowlist, so the dispatcher rejects
+		// writes against them with the generic insideDirs reason. The
+		// LifeOS read-only policy is documented in the agent's workflow
+		// instructions, not as a workspace-block clause.
+		expect(prompt).not.toContain("Writes blocked in:");
 	});
 
 	test("readerAgent: Articles is blocked + frontmatter-only, Scraps/Notes are confirm-write", () => {
