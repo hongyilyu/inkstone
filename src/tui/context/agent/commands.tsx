@@ -9,8 +9,8 @@
  * `CommandProvider` at the app root).
  */
 
-import { getAgentInfo } from "@backend/agent";
-import type { AgentCommandHelpers } from "@backend/agent/types";
+import { DEFAULT_AGENT_NAME, getAgentInfo, listAgents } from "@backend/agent";
+import type { AgentCommandHelpers, AgentInfo } from "@backend/agent/types";
 import type { AgentStoreState, DisplayPart } from "@bridge/view-model";
 import type { SetStoreFunction } from "solid-js/store";
 import {
@@ -113,51 +113,66 @@ function buildCommandHelpers(deps: CommandsDeps): AgentCommandHelpers {
  * feeds the dropdown but never the palette; this bridge writes to
  * that channel so we don't need a per-entry "hide from palette" flag.
  *
- * Reactive on `store.currentAgent`: the registration callback re-runs
- * when the user switches agents, so an agent's slash verbs only
- * match while that agent is active.
+ * Reactive on `store.currentAgent` AND `store.messages.length`: the
+ * registration callback re-runs when the user switches agents or
+ * commits the session via the first turn.
+ *
+ * Verb-set rules:
+ *   - Open page bound to the default router with no messages →
+ *     **fan out**: register every non-router agent's verbs (per ADR
+ *     0006 the open-page autocomplete shows every agent's verbs
+ *     before commitment, so the user can invoke any verb without
+ *     pre-picking the agent).
+ *   - Otherwise → register only the bound agent's verbs.
  */
 export function BridgeAgentCommands(props: { deps: CommandsDeps }) {
 	const command = useCommand();
 	command.registerAgentSlash((): AgentSlashOption[] => {
-		const info = getAgentInfo(props.deps.store.currentAgent);
-		if (!info.commands || info.commands.length === 0) return [];
-		return info.commands.map((c) => ({
-			id: `agent.${info.name}.${c.name}`,
-			title: `/${c.name}${c.argHint ? ` ${c.argHint}` : ""}`,
-			description: c.description,
-			slash: {
-				name: c.name,
-				takesArgs: c.takesArgs,
-				argHint: c.argHint,
-				argGuide: c.argGuide,
-				canExecute: c.canExecute,
-			},
-			onSelect: (_d, args) => {
-				// Fire-and-forget. Errors thrown before `prompt(...)` runs
-				// (e.g. reader's `/article missing.md` throws during file
-				// validation, before any agent turn starts) bypass the
-				// prompt wrapper's catch — so we handle rejections here
-				// directly and surface a toast. Errors raised *during* a
-				// streaming turn still flow through
-				// `wrappedActions.prompt` and land on the in-flight
-				// bubble as usual. `execute` may return `void` (sync
-				// commands); wrap in Promise.resolve so `.catch` is
-				// always available.
-				const helpers = buildCommandHelpers(props.deps);
-				Promise.resolve(c.execute(args ?? "", helpers)).catch(
-					(err: unknown) => {
-						const msg = err instanceof Error ? err.message : String(err);
-						props.deps.toast.show({
-							variant: "error",
-							title: "Command error",
-							message: msg,
-							duration: 6000,
-						});
-					},
-				);
-			},
-		}));
+		const fanOut =
+			props.deps.store.messages.length === 0 &&
+			props.deps.store.currentAgent === DEFAULT_AGENT_NAME;
+		const targets: AgentInfo[] = fanOut
+			? listAgents().filter((a) => a.name !== DEFAULT_AGENT_NAME)
+			: [getAgentInfo(props.deps.store.currentAgent)];
+		return targets.flatMap((info) => {
+			if (!info.commands || info.commands.length === 0) return [];
+			return info.commands.map((c) => ({
+				id: `agent.${info.name}.${c.name}`,
+				title: `/${c.name}${c.argHint ? ` ${c.argHint}` : ""}`,
+				description: c.description,
+				slash: {
+					name: c.name,
+					takesArgs: c.takesArgs,
+					argHint: c.argHint,
+					argGuide: c.argGuide,
+					canExecute: c.canExecute,
+				},
+				onSelect: (_d, args) => {
+					// Fire-and-forget. Errors thrown before `prompt(...)` runs
+					// (e.g. reader's `/article missing.md` throws during file
+					// validation, before any agent turn starts) bypass the
+					// prompt wrapper's catch — so we handle rejections here
+					// directly and surface a toast. Errors raised *during* a
+					// streaming turn still flow through
+					// `wrappedActions.prompt` and land on the in-flight
+					// bubble as usual. `execute` may return `void` (sync
+					// commands); wrap in Promise.resolve so `.catch` is
+					// always available.
+					const helpers = buildCommandHelpers(props.deps);
+					Promise.resolve(c.execute(args ?? "", helpers)).catch(
+						(err: unknown) => {
+							const msg = err instanceof Error ? err.message : String(err);
+							props.deps.toast.show({
+								variant: "error",
+								title: "Command error",
+								message: msg,
+								duration: 6000,
+							});
+						},
+					);
+				},
+			}));
+		});
 	});
 	return null;
 }

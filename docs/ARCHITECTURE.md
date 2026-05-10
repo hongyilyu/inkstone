@@ -584,7 +584,7 @@ The optional helpers require an interactive frontend; headless callers omit them
 |--------|---------------|----------|
 | Shell palette entries | `Layout()` in `src/tui/app.tsx` | `/agents`, `/models`, `/effort`, `/themes`, `/connect`, `/clear`, Tab agent-cycle |
 | Prompt-local keybinds | `Prompt()` in `src/tui/components/prompt.tsx` | ESC interrupt |
-| Agent-declared verbs | `BridgeAgentCommands` in `src/tui/context/agent/commands.tsx`, reactive on `store.currentAgent`. Registers via `command.registerAgentSlash(...)` (dropdown-only channel; never feeds the palette) | reader's `/article <filename>` |
+| Agent-declared verbs | `BridgeAgentCommands` in `src/tui/context/agent/commands.tsx`, reactive on `store.currentAgent` AND `store.messages.length`. Registers via `command.registerAgentSlash(...)` (dropdown-only channel; never feeds the palette). Fans out across every non-router agent's verbs while the open page is bound to the default router with no messages — per ADR 0006; otherwise registers the bound agent's verbs only. | reader's `/article <filename>` |
 
 **Slash dispatch** (`command.triggerSlash(name, args)` in `dialog/command.tsx`):
 
