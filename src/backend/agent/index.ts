@@ -15,7 +15,12 @@ import {
 import { loadConfig, saveConfig } from "../persistence/config";
 import type { ModelRef } from "../persistence/schema";
 import { getProvider, listProviders, resolveModel } from "../providers";
-import { AGENTS, DEFAULT_AGENT, getAgentInfo } from "./agents";
+import {
+	AGENTS,
+	DEFAULT_AGENT,
+	DEFAULT_AGENT_NAME,
+	getAgentInfo,
+} from "./agents";
 import { composeSystemPrompt, composeTools } from "./compose";
 import {
 	dispatchBeforeToolCall,
@@ -646,6 +651,7 @@ export {
 	type AgentCommand,
 	type AgentInfo,
 	type AgentZone,
+	DEFAULT_AGENT_NAME,
 	getAgentInfo,
 	getConfirmFn,
 	getSuggestCommandFn,
