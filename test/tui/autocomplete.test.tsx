@@ -36,6 +36,24 @@ describe("slash autocomplete", () => {
 		expect(f).toContain("/article");
 	});
 
+	test("argful agent verb appears in the slash dropdown", async () => {
+		// Per ADR 0006 the slash dropdown is the discovery surface for
+		// every agent verb, including argful ones (palette can't supply
+		// args, dropdown can — selection inserts `/name ` into the
+		// buffer). KB's `/query <question>` is the canonical case;
+		// pin it here so a regression to a dropdown-source that
+		// excludes argful agent verbs fails loudly.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+		setup.mockInput.pressTab();
+		await waitForFrame(setup, "Knowledge Base");
+
+		await setup.mockInput.typeText("/qu");
+		const f = await waitForFrame(setup, "/query");
+		expect(f).toContain("/query");
+	});
+
 	test("filter narrows the list", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });

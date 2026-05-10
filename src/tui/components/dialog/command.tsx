@@ -8,6 +8,7 @@ import {
 	onCleanup,
 	type ParentProps,
 	runWithOwner,
+	type Setter,
 	useContext,
 } from "solid-js";
 import { type DialogContext, useDialog } from "../../ui/dialog";
@@ -81,6 +82,16 @@ export interface SlashSpec {
 	canExecute?: (args: string) => boolean;
 }
 
+/**
+ * Palette command. Appears in the Ctrl+P palette AND the slash
+ * dropdown when `slash` is set. Used for program-level verbs:
+ * `/clear`, model picker, theme picker, `/agents`, etc.
+ *
+ * Agent-declared verbs (Reader's `/article`, KB's `/ingest`) use a
+ * separate channel — see `AgentSlashOption` and `registerAgentSlash`.
+ * Per ADR 0006 the palette is program-config-scoped, so agent verbs
+ * never live in the palette source.
+ */
 export interface CommandOption {
 	/** Unique identifier; also serves as the DialogSelect value. */
 	id: string;
@@ -98,10 +109,7 @@ export interface CommandOption {
 	/**
 	 * If true, the command does not appear in the palette. Useful for
 	 * keybind-only actions like `agent_cycle` / `agent_cycle_reverse`
-	 * that should fire the binding but not clutter the list. Also used
-	 * for argful slash commands (`/article <filename>`) that make no
-	 * sense without an argument — palette-click can't provide one, so
-	 * they're slash-only.
+	 * that should fire the binding but not clutter the list.
 	 */
 	hidden?: boolean;
 	/**
@@ -109,6 +117,27 @@ export interface CommandOption {
 	 * (unset), or slash dispatch (set to the text after the verb, which
 	 * may be empty when no args were typed).
 	 */
+	onSelect: (dialog: DialogContext, args?: string) => void;
+}
+
+/**
+ * Agent-declared slash command. Dropdown-only — agent verbs never
+ * surface in the Ctrl+P palette per ADR 0006.
+ *
+ * `slash` is required (the channel is for slash dispatch by definition).
+ * No `keybind` (agent verbs aren't keybind-bound) and no `hidden`
+ * (the bucket itself is dropdown-only, no palette to hide from).
+ */
+export interface AgentSlashOption {
+	/** Unique identifier. */
+	id: string;
+	/** Display title in the dropdown (e.g. `/article [filename]`). */
+	title: string;
+	/** Optional one-line description shown next to the title. */
+	description?: string;
+	/** Required slash-command metadata — agent verbs are slash-only. */
+	slash: SlashSpec;
+	/** Invoked by slash dispatch with the text after the verb. */
 	onSelect: (dialog: DialogContext, args?: string) => void;
 }
 
@@ -129,7 +158,10 @@ export interface CommandOption {
  * function over `CommandOption` + `args`, no closure over registry
  * state, so the gating rules can be pinned in isolation.
  */
-export function canRunSlashEntry(entry: CommandOption, args: string): boolean {
+export function canRunSlashEntry(
+	entry: CommandOption | AgentSlashOption,
+	args: string,
+): boolean {
 	const spec = entry.slash;
 	if (spec?.takesArgs && args.trim().length === 0) return false;
 	if (!spec?.takesArgs && !spec?.argHint && args.trim().length > 0)
@@ -138,32 +170,48 @@ export function canRunSlashEntry(entry: CommandOption, args: string): boolean {
 	return true;
 }
 
-type Registration = Accessor<CommandOption[]>;
+type PaletteRegistration = Accessor<CommandOption[]>;
+type AgentSlashRegistration = Accessor<AgentSlashOption[]>;
 
 function init() {
 	// Capture the provider's owner so registrations made from async callers
 	// (e.g. any future plugin surface) still get a reactive scope.
 	const root = getOwner();
-	const [registrations, setRegistrations] = createSignal<Registration[]>([]);
+	// Two channels (per ADR 0006):
+	//   - `paletteRegs`     → palette commands. Visible in palette
+	//                          AND dropdown when their `slash` is set.
+	//   - `agentSlashRegs`  → agent verbs. Dropdown-only.
+	// The two reactive lists are concatenated for slash dispatch with
+	// agent verbs first so they win on name collision (AGENT-DESIGN.md
+	// D9 "agent overrides built-in").
+	const [paletteRegs, setPaletteRegs] = createSignal<PaletteRegistration[]>([]);
+	const [agentSlashRegs, setAgentSlashRegs] = createSignal<
+		AgentSlashRegistration[]
+	>([]);
 	const [suspendCount, setSuspendCount] = createSignal(0);
 	const dialog = useDialog();
 
-	const entries = createMemo(() => registrations().flatMap((x) => x()));
-	const visible = createMemo(() => entries().filter((e) => !e.hidden));
+	const paletteEntries = createMemo(() => paletteRegs().flatMap((x) => x()));
+	const agentSlashEntries = createMemo(() =>
+		agentSlashRegs().flatMap((x) => x()),
+	);
+	const visible = createMemo(() => paletteEntries().filter((e) => !e.hidden));
+	// Dropdown reads agent verbs first so a name collision resolves
+	// to the agent entry (preserves D9). The palette source contributes
+	// any palette command that has a `slash` field (e.g. `/clear`).
+	const slashOptions = createMemo(() => [
+		...agentSlashEntries(),
+		...paletteEntries().filter((e) => e.slash),
+	]);
 
 	function showPalette() {
 		dialog.replace(() => <DialogCommand visible={visible} />);
 	}
 
-	/**
-	 * First slash match for `name`. First-match precedence means agent-
-	 * scoped registrations (registered earlier in the registration list
-	 * via `AgentProvider` mounting inside `CommandProvider`) beat shell-
-	 * scoped ones on name collision — preserves the "agent overrides
-	 * built-in" rule from AGENT-DESIGN.md D9.
-	 */
-	function findSlash(name: string): CommandOption | undefined {
-		return entries().find((e) => e.slash?.name === name);
+	function findSlash(
+		name: string,
+	): CommandOption | AgentSlashOption | undefined {
+		return slashOptions().find((e) => e.slash?.name === name);
 	}
 
 	function canRunSlash(name: string, args: string): boolean {
@@ -186,8 +234,10 @@ function init() {
 	}
 
 	const api = {
-		/** Reactive list of visible commands (for the palette). */
+		/** Reactive list of visible palette commands (for Ctrl+P). */
 		visible,
+		/** Reactive list of all slash-dispatchable entries (for the dropdown). */
+		slashOptions,
 		/** Open the command palette programmatically. */
 		show: showPalette,
 		/** See `canRunSlash` above. */
@@ -195,7 +245,7 @@ function init() {
 		/** See `triggerSlash` above. */
 		triggerSlash,
 		/**
-		 * Lookup a command by slash name. Returns entries whether visible
+		 * Lookup a slash entry by name. Returns entries whether visible
 		 * or hidden — the caller decides what to do with the result (e.g.
 		 * the post-select hint row in `prompt.tsx` uses this to read
 		 * `argGuide` regardless of palette-visibility).
@@ -226,29 +276,49 @@ function init() {
 		 * `onCleanup`.
 		 */
 		register(cb: () => CommandOption[]): () => void {
-			const owner = getOwner() ?? root;
-			if (!owner) return () => {};
-
-			let list: Registration | undefined;
-			runWithOwner(owner, () => {
-				list = createMemo(cb);
-				const ref = list;
-				setRegistrations((arr) => [ref, ...arr]);
-				onCleanup(() => {
-					setRegistrations((arr) => arr.filter((x) => x !== ref));
-				});
-			});
-
-			let disposed = false;
-			return () => {
-				if (disposed) return;
-				disposed = true;
-				const ref = list;
-				if (!ref) return;
-				setRegistrations((arr) => arr.filter((x) => x !== ref));
-			};
+			return registerInto(cb, setPaletteRegs);
+		},
+		/**
+		 * Register agent-declared slash verbs (dropdown-only). Same
+		 * reactive memo semantics as `register` — the callback re-runs
+		 * when its tracked signals change, so an agent bridge can
+		 * return `[]` while inactive.
+		 */
+		registerAgentSlash(cb: () => AgentSlashOption[]): () => void {
+			return registerInto(cb, setAgentSlashRegs);
 		},
 	};
+
+	// Shared registration helper. Same memoize-and-prepend shape for
+	// both channels — newest registrations (e.g. an agent bridge that
+	// just mounted) sit at the head of the list, which preserves the
+	// D9 "agent overrides built-in" precedence on slash-name collision.
+	function registerInto<T>(
+		cb: () => T[],
+		setRegs: Setter<Accessor<T[]>[]>,
+	): () => void {
+		const owner = getOwner() ?? root;
+		if (!owner) return () => {};
+
+		let list: Accessor<T[]> | undefined;
+		runWithOwner(owner, () => {
+			list = createMemo(cb);
+			const ref = list;
+			setRegs((arr) => [ref, ...arr]);
+			onCleanup(() => {
+				setRegs((arr) => arr.filter((x) => x !== ref));
+			});
+		});
+
+		let disposed = false;
+		return () => {
+			if (disposed) return;
+			disposed = true;
+			const ref = list;
+			if (!ref) return;
+			setRegs((arr) => arr.filter((x) => x !== ref));
+		};
+	}
 
 	// Global dispatch: palette-open key first, then any registered command.
 	// Single gate: `suspendCount > 0`. The autocomplete dropdown drives it
@@ -265,7 +335,9 @@ function init() {
 			return;
 		}
 
-		for (const entry of entries()) {
+		// Keybinds live on palette commands only (agent verbs are
+		// dropdown-only and don't carry `keybind`).
+		for (const entry of paletteEntries()) {
 			if (!entry.keybind) continue;
 			if (Keybind.match(entry.keybind, evt)) {
 				evt.preventDefault?.();

@@ -37,6 +37,23 @@ describe("command palette", () => {
 		expect(f).toContain("Connect");
 	});
 
+	test("agent-declared verbs do not appear in the palette", async () => {
+		// Per ADR 0006 the palette is program-config-scoped. Agent
+		// verbs (Reader's `/article`, KB's `/ingest` / `/lint`) live
+		// in the slash dropdown only — they require the user to be
+		// in (or commit to) the owning agent, which makes palette
+		// browsing irrelevant.
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		setup.mockInput.pressKey("p", { ctrl: true });
+		const f = await waitForFrame(setup, "Command Panel");
+		expect(f).not.toContain("/article");
+		expect(f).not.toContain("/ingest");
+		expect(f).not.toContain("/lint");
+	});
+
 	test("ESC closes the palette without aborting anything", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });

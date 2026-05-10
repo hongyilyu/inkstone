@@ -14,7 +14,7 @@ import type { AgentCommandHelpers } from "@backend/agent/types";
 import type { AgentStoreState, DisplayPart } from "@bridge/view-model";
 import type { SetStoreFunction } from "solid-js/store";
 import {
-	type CommandOption,
+	type AgentSlashOption,
 	useCommand,
 } from "../../components/dialog/command";
 import type { LayoutContextValue } from "../../context/layout";
@@ -104,34 +104,28 @@ function buildCommandHelpers(deps: CommandsDeps): AgentCommandHelpers {
 }
 
 /**
- * Bridge backend-declared `AgentCommand`s into the unified command
- * registry.
+ * Bridge backend-declared `AgentCommand`s into the agent-slash
+ * channel of the unified command registry.
+ *
+ * Per ADR 0006 the Ctrl+P palette is program-config-scoped (model,
+ * effort, themes, …) — agent verbs live in the slash dropdown only.
+ * The registry exposes a separate `registerAgentSlash` channel that
+ * feeds the dropdown but never the palette; this bridge writes to
+ * that channel so we don't need a per-entry "hide from palette" flag.
  *
  * Reactive on `store.currentAgent`: the registration callback re-runs
  * when the user switches agents, so an agent's slash verbs only
  * match while that agent is active.
- *
- * Argful commands (`takesArgs`) register with `hidden: true` so they
- * don't appear in the Ctrl+P palette — palette-click can't supply
- * arguments, so showing them would be misleading. They're still
- * slash-dispatched through the prompt.
- *
- * Agent-bridge registrations sit ahead of shell registrations in the
- * registry's `entries` list (AgentProvider mounts inside
- * CommandProvider, and `register` prepends to the list), so on slash-
- * name collision the agent-scoped entry wins — preserves D9's
- * "agent overrides built-in" rule.
  */
 export function BridgeAgentCommands(props: { deps: CommandsDeps }) {
 	const command = useCommand();
-	command.register((): CommandOption[] => {
+	command.registerAgentSlash((): AgentSlashOption[] => {
 		const info = getAgentInfo(props.deps.store.currentAgent);
 		if (!info.commands || info.commands.length === 0) return [];
 		return info.commands.map((c) => ({
 			id: `agent.${info.name}.${c.name}`,
 			title: `/${c.name}${c.argHint ? ` ${c.argHint}` : ""}`,
 			description: c.description,
-			hidden: !!c.takesArgs,
 			slash: {
 				name: c.name,
 				takesArgs: c.takesArgs,

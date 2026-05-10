@@ -3,11 +3,13 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-09 (router agent + fork primitive)
+**Last updated**: 2026-05-10 (open-page autocomplete fan-out across agent verbs — in progress)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
 ## In Progress
+
+- **Open-page autocomplete fan-out across agent verbs** (3-PR Graphite stack, plan in `~/.claude/plans/users-lyuhongy-dev-worktrees-inkstone-o-glowing-galaxy.md`). Realizes ADR 0006/0007 contracts that broke when the router landed in PR 5/7 (`804ad5d`): the open-page slash dropdown must list every agent's verbs before commitment, and slash-pick must auto-commit to the owning agent so the router LLM-classification path is bypassed. PR 1 — split agent verbs into a dedicated `registerAgentSlash` channel so the palette stays program-config-scoped without per-entry hide flags. PR 2 — fan out agent verbs across the registry on the open page when bound to router with empty messages. PR 3 — auto-commit via `actions.selectAgent(owningAgent)` before `execute(...)` on slash-pick.
 
 - E2E test coverage expansion (3 graphite-stacked PRs, plan in `~/.claude/plans/and-identify-e2e-misty-castle.md`). Stack A — agent command E2E (`reader-article` + `kb-commands` + directory-reject unit). Stack B — permission deny propagation + resume totals sidebar. Stack C — mid-conversation model-switch footer invariant + Bun-segfault unmount retry (still hangs on Bun 1.3.4, scaffold skipped) + docs swap (replaced obsolete `E2E-PLAN.md` with `E2E-TESTING.md` reference doc).
 
