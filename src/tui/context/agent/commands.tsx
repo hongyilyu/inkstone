@@ -111,10 +111,11 @@ function buildCommandHelpers(deps: CommandsDeps): AgentCommandHelpers {
  * when the user switches agents, so an agent's slash verbs only
  * match while that agent is active.
  *
- * Argful commands (`takesArgs`) register with `hidden: true` so they
- * don't appear in the Ctrl+P palette — palette-click can't supply
- * arguments, so showing them would be misleading. They're still
- * slash-dispatched through the prompt.
+ * Every emitted entry is `hidden: true` so agent verbs never reach
+ * the Ctrl+P palette — per ADR 0006 the palette is program-config-
+ * scoped. The slash dropdown reads `command.slashVisible()` which
+ * includes `hidden:true` entries with a `slash` field, so verbs
+ * stay slash-discoverable.
  *
  * Agent-bridge registrations sit ahead of shell registrations in the
  * registry's `entries` list (AgentProvider mounts inside
@@ -131,7 +132,7 @@ export function BridgeAgentCommands(props: { deps: CommandsDeps }) {
 			id: `agent.${info.name}.${c.name}`,
 			title: `/${c.name}${c.argHint ? ` ${c.argHint}` : ""}`,
 			description: c.description,
-			hidden: !!c.takesArgs,
+			hidden: true,
 			slash: {
 				name: c.name,
 				takesArgs: c.takesArgs,

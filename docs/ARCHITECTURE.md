@@ -163,7 +163,7 @@ src/
         session-state.ts              createSessionState — currentSessionId + turnStartThinkingLevel + preTurnCodexConnections bag + ensureSession
         reducer.ts                    createAgentEventHandler — event dispatch table; agent_end decomposed into 5 named helpers
         actions.ts                    createWrappedActions — prompt / setModel / setThinkingLevel / selectAgent / clearSession / resumeSession
-        commands.tsx                  BridgeAgentCommands + buildCommandHelpers (agent-declared slash verbs into the palette)
+        commands.tsx                  BridgeAgentCommands + buildCommandHelpers (agent-declared slash verbs into the slash dropdown; palette stays program-config-scoped)
         provider.tsx                  AgentProvider shell + useAgent — composes the bag, installs side-effect handlers with restore-on-unmount, disposes subscription
       theme.tsx                     ThemeProvider + useTheme (re-exports ThemeColors/ThemeDef/themes/getThemeById for backward compat)
     theme/                          Pure-data theme module (no Solid, no JSX)
