@@ -18,7 +18,7 @@
  *   - `forkSession` ran (a child session row exists with `parent_session_id`
  *     pointing at the router session).
  *   - `selectAgent("reader")` and `restoreMessages` fired on the fake.
- *   - Post-frame contains the fork-divider needle ("Routed from Router")
+ *   - Post-frame contains the fork-divider needle ("Routing to Reader")
  *     above the seeded user message.
  */
 
@@ -90,9 +90,19 @@ describe("routing seam", () => {
 		// The seam fires asynchronously (queueMicrotask) so the resume
 		// happens after the reducer batch completes. Wait for the
 		// divider — that needle only appears post-resume.
-		const f = await waitForFrame(setup, "Routed from Router");
-		expect(f).toContain("Routed from Router");
+		const f = await waitForFrame(setup, "Routing to Reader");
+		expect(f).toContain("Routing to Reader");
 		expect(f).toContain(userText);
+
+		// Layout: user message renders ABOVE the divider — the parent
+		// agent (router) received it; the divider sits below
+		// announcing the transition into the target agent. Index of
+		// the needle in the captured frame string is a proxy for
+		// vertical position.
+		const userIdx = f.indexOf(userText);
+		const dividerIdx = f.indexOf("Routing to Reader");
+		expect(userIdx).toBeGreaterThan(0);
+		expect(dividerIdx).toBeGreaterThan(userIdx);
 
 		// selectAgent fired with the right target.
 		expect(fake.calls.selectAgent).toContain("reader");
@@ -238,7 +248,7 @@ describe("routing seam", () => {
 		// Now agent_end fires — the resume runs synchronously inside
 		// the same handler, swapping us into the child session.
 		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
-		await waitForFrame(setup, "Routed from Router");
+		await waitForFrame(setup, "Routing to Reader");
 		expect(setup.getAgent().store.isStreaming).toBe(false);
 	});
 });

@@ -39,13 +39,14 @@ function userAgentMsg(text: string): AgentMessage {
 }
 
 describe("fork-divider", () => {
-	test("renders inline divider above seeded user message in child session", async () => {
-		// Build the parent (router) + child (reader) shape that PR 3's
-		// forkSession produces.
+	test("renders inline divider below seeded user message in child session", async () => {
+		// Build the parent (router) + child (reader) shape that
+		// `forkSession` produces.
 		const parent = createSessionRow({ agent: "router" });
 		const userText = "whats in foo divider needle";
 		const child = forkSession({
 			parentId: parent.id,
+			parentAgent: "router",
 			targetAgent: "reader",
 			seedMessages: [
 				{
@@ -68,7 +69,6 @@ describe("fork-divider", () => {
 		// (`createDefaultTitle`); we won't search for it, we just hit
 		// Enter on the top row (the most recent — the child itself).
 		setup.mockInput.pressKey("n", { ctrl: true });
-		// Wait for the panel to open. Title prefix is "New session - ".
 		await waitForFrame(setup, "New session");
 		await Bun.sleep(30);
 		setup.mockInput.pressEnter();
@@ -77,16 +77,24 @@ describe("fork-divider", () => {
 		// the resume batch landed.
 		await waitForFrame(setup, userText);
 
-		// The divider needle. Per ADR 0015, content is "↳ Routed from Router".
-		const f = await waitForFrame(setup, "Routed from Router");
-		expect(f).toContain("Routed from Router");
+		// The divider needle. The new wording reads "→ Routing to
+		// Reader" (forward-looking; sits below the user message,
+		// announcing the transition into the target agent).
+		const f = await waitForFrame(setup, "Routing to Reader");
+		expect(f).toContain("Routing to Reader");
 		expect(f).toContain(userText);
 
-		// Sanity: resume actually dispatched messages — without this,
-		// a regression where loadSession returns nothing but the sidebar
-		// happens to print the needle elsewhere would silently pass.
+		// Layout: user message must render ABOVE the divider in the
+		// captured frame (parent agent received it; child takes over
+		// after the divider). Index of needle in the frame string is a
+		// proxy for vertical position.
+		const userIdx = f.indexOf(userText);
+		const dividerIdx = f.indexOf("Routing to Reader");
+		expect(userIdx).toBeGreaterThan(0);
+		expect(dividerIdx).toBeGreaterThan(userIdx);
+
+		// Sanity: resume actually dispatched messages.
 		expect(fake.calls.restoreMessages.length).toBeGreaterThanOrEqual(1);
-		// Reference child session id so the test is keyed on the right row.
 		expect(child.parentSessionId).toBe(parent.id);
 	});
 });

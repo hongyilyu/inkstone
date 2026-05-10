@@ -97,9 +97,9 @@ export const parts = sqliteTable(
 		// `toolcall_end` stream event and the later `tool_execution_end`
 		// event that flips the part from pending → completed/error.
 		// `tool_data` holds `{ name, args, state, error? }` for tool rows
-		// and `{ parentSessionId }` for fork rows (per ADR 0015) — no
-		// SQL reader needs the inner fields, so the same JSON column
-		// serves both shapes via a discriminated union.
+		// and `{ parentSessionId, targetAgent }` for fork rows (per
+		// ADR 0015) — no SQL reader needs the inner fields, so the same
+		// JSON column serves both shapes via a discriminated union.
 		callId: text("call_id"),
 		toolData: text("tool_data", { mode: "json" }).$type<
 			| {
@@ -108,7 +108,7 @@ export const parts = sqliteTable(
 					state: "pending" | "completed" | "error";
 					error?: string;
 			  }
-			| { parentSessionId: string }
+			| { parentSessionId: string; targetAgent: string }
 		>(),
 	},
 	(t) => [primaryKey({ columns: [t.messageId, t.seq] })],

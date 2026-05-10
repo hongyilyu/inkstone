@@ -51,7 +51,14 @@ export function UserMessage(props: {
 }) {
 	const { theme } = useTheme();
 	const { store } = useAgent();
-	const agentColor = () => theme[getAgentInfo(store.currentAgent).colorKey];
+	// Prefer the per-message `agentName` stamp when present (set by
+	// `forkSession` for routing-fork seeds — the user typed this while
+	// bound to the parent agent, so the bubble accent reflects that
+	// origin even after the live agent has swapped to the child). Falls
+	// back to `currentAgent` for ordinary user messages where no
+	// stamp exists.
+	const agentColor = () =>
+		theme[getAgentInfo(props.message.agentName ?? store.currentAgent).colorKey];
 
 	return (
 		<box flexDirection="column" flexShrink={0}>
