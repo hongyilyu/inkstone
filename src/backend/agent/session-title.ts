@@ -1,6 +1,9 @@
 import { type Api, completeSimple, type Model } from "@mariozechner/pi-ai";
+import { logger } from "../logger";
 import { loadConfig } from "../persistence/config";
 import { getProvider, resolveModel } from "../providers";
+
+const log = logger.child("agent.title");
 
 const MAX_INPUT_CHARS = 4000;
 const MAX_TITLE_CHARS = 50;
@@ -75,10 +78,14 @@ export async function generateSessionTitle(
 		const raw = await runTitleCompletion(primary, input);
 		return cleanSessionTitle(raw);
 	} catch (err) {
-		console.error(
-			`[inkstone] session title generation failed (model: ${primary.provider}/${primary.id}):`,
-			err,
+		log.warn(
+			"primary attempt failed",
+			err instanceof Error ? err : new Error(String(err)),
 		);
+		log.debug("primary model context", {
+			providerId: primary.provider,
+			modelId: primary.id,
+		});
 	}
 
 	// Retry onto the active chat model. Guaranteed available — the user
@@ -101,10 +108,14 @@ export async function generateSessionTitle(
 		const raw = await runTitleCompletion(fallback, input);
 		return cleanSessionTitle(raw);
 	} catch (err) {
-		console.error(
-			`[inkstone] session title retry also failed (model: ${fallback.provider}/${fallback.id}):`,
-			err,
+		log.warn(
+			"retry also failed",
+			err instanceof Error ? err : new Error(String(err)),
 		);
+		log.debug("retry model context", {
+			providerId: fallback.provider,
+			modelId: fallback.id,
+		});
 		return null;
 	}
 }

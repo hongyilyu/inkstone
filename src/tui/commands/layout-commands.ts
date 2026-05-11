@@ -16,6 +16,7 @@
  */
 
 import { listAgents } from "@backend/agent";
+import { logger } from "@backend/logger";
 import { CONFIG_FILE } from "@backend/persistence/paths";
 import { useRenderer, useTerminalDimensions } from "@opentui/solid";
 import type { Accessor, Setter } from "solid-js";
@@ -31,6 +32,8 @@ import { getSecondaryPage } from "../context/secondary-page";
 import { useTheme } from "../context/theme";
 import { useToast } from "../ui/toast";
 import { copyToClipboardOSC52 } from "../util/clipboard";
+
+const log = logger.child("tui.config");
 
 export interface RegisterLayoutCommandsParams {
 	sessionListOpen: Accessor<boolean>;
@@ -317,7 +320,10 @@ async function runEditConfig(deps: {
 		// Editor failed to spawn (binary not found, permission, etc.).
 		// Surface to the user; the renderer is restored in the finally
 		// block so the TUI is still usable.
-		console.error("[inkstone] /config editor failed:", err);
+		log.warn(
+			"editor failed",
+			err instanceof Error ? err : new Error(String(err)),
+		);
 		deps.toast.show({
 			variant: "error",
 			title: "Editor failed",

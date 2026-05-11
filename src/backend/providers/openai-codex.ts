@@ -4,6 +4,7 @@ import {
 	getOAuthApiKey,
 	type OAuthCredentials,
 } from "@mariozechner/pi-ai/oauth";
+import { logger } from "../logger";
 import {
 	clearOpenAICodexCreds,
 	loadOpenAICodexCreds,
@@ -11,6 +12,8 @@ import {
 } from "../persistence/auth";
 import { reportPersistenceError } from "../persistence/errors";
 import type { ProviderInfo } from "./types";
+
+const log = logger.child("openai-codex");
 
 /**
  * OpenAI Codex — the ChatGPT Plus/Pro OAuth provider.
@@ -86,7 +89,10 @@ async function doRefresh(): Promise<OAuthCredentials | undefined> {
 		// Raw cause stays in console for debug, out of the toast: a
 		// future pi-ai fetch error could theoretically include token
 		// bytes in the message. Matches Kiro's posture.
-		console.error("[inkstone] openai-codex refresh failed:", err);
+		log.warn(
+			"refresh failed",
+			err instanceof Error ? err : new Error(String(err)),
+		);
 		return undefined;
 	}
 }

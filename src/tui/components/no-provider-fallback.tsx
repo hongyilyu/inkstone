@@ -30,6 +30,7 @@
  * palette never ends up with stacked duplicate entries.
  */
 
+import { logger } from "@backend/logger";
 import { saveConfig } from "@backend/persistence/config";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import { createMemo, Show } from "solid-js";
@@ -38,6 +39,8 @@ import { useCommand } from "./dialog/command";
 // Aliased to avoid a name collision with `../ui/dialog`'s `DialogProvider`
 // (the dialog-stack context). This file only needs the provider-picker.
 import { DialogProvider as DialogProviderSelect } from "./dialog/provider";
+
+const log = logger.child("tui.fatal");
 
 // String-prefix check instead of a typed-error subclass. The prefix is
 // stable (it's the "signed-in" marker for this specific failure mode);
@@ -142,9 +145,15 @@ function ConnectPrompt(props: { reset: () => void }) {
  * No retry: auto-retrying an unknown error tends to loop.
  */
 function FatalError(props: { message: string; error: unknown }) {
-	// Preserve dev-time stack: the `ErrorBoundary` otherwise swallows
-	// unexpected errors, so a console log is the only trace left.
+	// Preserve dev-time stack via stderr (the `ErrorBoundary` otherwise
+	// swallows unexpected errors, so console.error is the only trace
+	// left in `bun run dev`'s terminal). Additionally route through the
+	// file logger so production bug reports have the trail too.
 	console.error("[inkstone] fatal error in AgentProvider:", props.error);
+	log.error(
+		"fatal error in AgentProvider",
+		props.error instanceof Error ? props.error : new Error(String(props.error)),
+	);
 	const { theme } = useTheme();
 	return (
 		<box

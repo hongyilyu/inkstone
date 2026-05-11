@@ -7,7 +7,15 @@
  * fire at module init, before the frontend wires a handler — those hit
  * the `console.error` fallback, which is the intended user-visible
  * surface on startup.
+ *
+ * Every report ALSO routes through the logger so the file at
+ * `~/.local/state/inkstone/logs/inkstone.log` carries the trail
+ * regardless of whether a toast handler is installed.
  */
+
+import { logger } from "../logger";
+
+const log = logger.child("persistence");
 
 export interface PersistenceErrorContext {
 	/**
@@ -55,6 +63,12 @@ export function getPersistenceErrorHandler():
 export const REPORTED_SENTINEL = "__inkstoneReported";
 
 export function reportPersistenceError(ctx: PersistenceErrorContext): void {
+	// Always log to the file sink — toast or not, this is a forensic
+	// breadcrumb for bug reports.
+	log.warn(
+		`${ctx.kind} ${ctx.action} failed`,
+		ctx.error instanceof Error ? ctx.error : new Error(String(ctx.error)),
+	);
 	if (handler) {
 		try {
 			handler(ctx);
