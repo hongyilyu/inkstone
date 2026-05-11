@@ -1,6 +1,10 @@
+import { relative } from "node:path";
+import { VAULT_DIR } from "./constants";
+import type { Rule } from "./permissions";
 import { editTool, readTool, updateSidebarTool, writeTool } from "./tools";
 import { makeSuggestCommandTool } from "./tools/suggest-command";
 import type { AgentInfo, InkstoneTool } from "./types";
+import { composeOverlay } from "./zones";
 
 /** Tools every agent receives. Frozen at load. See `docs/AGENT-DESIGN.md` D4 + D5. */
 export const BASE_TOOLS: readonly InkstoneTool<any>[] = Object.freeze([
@@ -50,23 +54,105 @@ function assertMutatingToolsHaveZones(
 	);
 }
 
-// Render `info.zones` as a `<your workspace>` block. Pairs with
-// `composeZonesOverlay` (one declaration drives prompt + permissions);
-// see `docs/AGENT-DESIGN.md` D12. Policy verb mapping: `auto` → "write
-// freely", `confirm` → "confirm before write".
-function composeZonesBlock(info: AgentInfo): string {
-	if (info.zones.length === 0) return "";
-	const lines = info.zones.map((z) => {
-		const policy = z.write === "auto" ? "write freely" : "confirm before write";
-		return `  - ${z.path} (${policy})`;
-	});
-	return [
-		"<your workspace>",
-		"Primary write zones:",
-		...lines,
-		"You may read anywhere in the vault.",
-		"</your workspace>",
-	].join("\n");
+// Render `<your workspace>` from the same merged overlay the dispatcher
+// evaluates. Per ADR 0009, the LLM-facing block and the enforcement path
+// derive from one declarative `Rule[]` — same bytes, no drift. Each rule
+// kind projects to a labelled list:
+//   insideDirs            → "You can write to:" (allowlist; every other
+//                           path is implicitly denied by the dispatcher)
+//   confirmDirs           → "(confirm before each write)" suffix on the
+//                           writable line for matching dirs
+//   blockInsideDirs       → "Writes blocked in:" with the rule's reason
+//                           (carve-out from the allowlist OR a
+//                           domain-specific reason override; see the
+//                           `Rule` docstring in permissions.ts)
+//   frontmatterOnlyInDirs → "Edits restricted to frontmatter in:"
+function composeWorkspaceBlock(info: AgentInfo): string {
+	const overlay = composeOverlay(info);
+	const writeRules = overlay[writeTool.name] ?? [];
+	const editRules = overlay[editTool.name] ?? [];
+
+	const allWritable = collectDirs(writeRules, "insideDirs");
+	const confirmDirs = new Set(collectDirs(writeRules, "confirmDirs"));
+	const blocks = collectBlocks(writeRules);
+	// A dir present in both `insideDirs` and `blockInsideDirs` is enforced
+	// as blocked (first-block-wins per the dispatcher). Hide it from the
+	// writable list so the prompt matches enforcement; it will still appear
+	// under "Writes blocked in:" with the rule's reason.
+	const blockedDirs = new Set(blocks.map((b) => b.dir));
+	const writableDirs = allWritable.filter((d) => !blockedDirs.has(d));
+	const frontmatterOnly = collectDirs(editRules, "frontmatterOnlyInDirs");
+
+	if (
+		writableDirs.length === 0 &&
+		blocks.length === 0 &&
+		frontmatterOnly.length === 0
+	) {
+		return "";
+	}
+
+	const lines: string[] = ["<your workspace>"];
+	if (writableDirs.length > 0) {
+		lines.push("You can write to:");
+		for (const dir of writableDirs) {
+			const policy = confirmDirs.has(dir)
+				? "confirm before each write"
+				: "write freely";
+			lines.push(`  - ${rel(dir)} (${policy})`);
+		}
+	}
+	if (blocks.length > 0) {
+		lines.push("Writes blocked in:");
+		for (const { dir, reason } of blocks) {
+			lines.push(`  - ${rel(dir)} — ${reason}`);
+		}
+	}
+	if (frontmatterOnly.length > 0) {
+		lines.push("Edits restricted to frontmatter in:");
+		for (const dir of frontmatterOnly) {
+			lines.push(`  - ${rel(dir)}`);
+		}
+	}
+	// Read is always vault-wide per AGENT-DESIGN D12 — projected as a fixed
+	// invariant line, not derived from rules. If agent-scoped read fences
+	// ever ship, project them from `overlay[readTool.name]` above.
+	lines.push("You may read anywhere in the vault.");
+	lines.push("</your workspace>");
+	return lines.join("\n");
+}
+
+function collectDirs(rules: Rule[], kind: Rule["kind"]): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	for (const r of rules) {
+		if (r.kind !== kind) continue;
+		const dirs = "dirs" in r ? r.dirs : [];
+		for (const d of dirs) {
+			if (!seen.has(d)) {
+				seen.add(d);
+				out.push(d);
+			}
+		}
+	}
+	return out;
+}
+
+function collectBlocks(rules: Rule[]): Array<{ dir: string; reason: string }> {
+	const out: Array<{ dir: string; reason: string }> = [];
+	const seen = new Set<string>();
+	for (const r of rules) {
+		if (r.kind !== "blockInsideDirs") continue;
+		for (const d of r.dirs) {
+			if (seen.has(d)) continue;
+			seen.add(d);
+			out.push({ dir: d, reason: r.reason });
+		}
+	}
+	return out;
+}
+
+function rel(absDir: string): string {
+	return relative(VAULT_DIR, absDir) || ".";
 }
 
 // Render `info.commands` as a `<commands>` block. Skips entries
@@ -90,10 +176,10 @@ function composeCommandsBlock(info: AgentInfo): string {
 }
 
 export function composeSystemPrompt(info: AgentInfo): string {
-	const zonesBlock = composeZonesBlock(info);
+	const workspaceBlock = composeWorkspaceBlock(info);
 	const commandsBlock = composeCommandsBlock(info);
 	const body = info.buildInstructions();
-	const sections = [zonesBlock, commandsBlock, BASE_PREAMBLE, body].filter(
+	const sections = [workspaceBlock, commandsBlock, BASE_PREAMBLE, body].filter(
 		(s) => s.length > 0,
 	);
 	return sections.join("\n\n");
