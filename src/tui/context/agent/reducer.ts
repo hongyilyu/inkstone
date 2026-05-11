@@ -538,6 +538,11 @@ function applyDispatchResult(endEvt: any, deps: ReducerDeps): void {
 	// when the stash is set, so the user can't submit on the
 	// about-to-be-abandoned router session).
 	deps.sessionState.setPendingDispatchChildId(child.id);
+	log.info("dispatch routed", {
+		parentSessionId: parentSid,
+		childId: child.id,
+		target,
+	});
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -569,98 +574,106 @@ function handleAgentEnd(event: AgentEvent, deps: ReducerDeps): void {
 	const pendingChildId = deps.sessionState.getPendingDispatchChildId();
 	if (pendingChildId) {
 		deps.sessionState.setPendingDispatchChildId(null);
-		setTimeout(() => {
-			// Wrap in `batch()` to coalesce store mutations across the
-			// whole sequence. The macrotask runs OUTSIDE the
-			// dispatcher's `batch()` (setTimeout defers past it), so
-			// without this wrap the four+ `setStore` calls below
-			// (status, isStreaming, plus everything `resumeSession`
-			// and the interrupted-clear touch) each trigger a separate
-			// Solid scheduler pass — visible flicker between
-			// "isStreaming = false but parent messages still showing"
-			// and "messages swapped to child". `continue()` stays
-			// outside the batch — it's an async call into pi-agent-core,
-			// not a store mutation.
-			batch(() => {
-				// Clear status fields so resumeSession's busy-guard
-				// (`if (deps.store.isStreaming) return`) lets the call
-				// through. We own this reset because `agent_end` skipped
-				// it.
-				deps.setStore("isStreaming", false);
-				deps.setStore("status", "idle");
-				deps.resumeSession(pendingChildId);
-				// resumeSession runs `loadSession` which applies
-				// `repairAlternation` — for a freshly-forked child whose
-				// `agent_messages` is just `[user]`, repair appends a
-				// synthesized aborted assistant to satisfy the
-				// alternation invariant. That's right for resume
-				// semantics, but wrong for the seam: we want to RUN the
-				// child's first turn now, and pi-agent-core's
-				// `continue()` rejects a transcript whose tail is
-				// `assistant`. Re-seed the live Agent with just the user
-				// message so `continue()` sees it as the tail and runs
-				// from there. The synthesized assistant stays out of the
-				// LLM-facing context (and out of disk — repair is
-				// read-time only).
-				const seeded = deps.store.messages.flatMap((m) => {
-					// Skip the fork-marker (display-only — has no
-					// agent_messages counterpart and no LLM-facing
-					// shape). Skip the synthesized assistant tail.
-					// Keep the seeded user message — preserve every
-					// text part (multi-text user messages are rare
-					// today but represent the same data the original
-					// agent_message content array carried at fork
-					// time).
-					if (m.role === "user") {
-						const content = m.parts.flatMap((p) =>
-							p.type === "text" && p.text.length > 0
-								? [{ type: "text" as const, text: p.text }]
-								: [],
-						);
-						if (content.length === 0) return [];
-						return [
-							{
-								role: "user" as const,
-								content,
-								timestamp: Date.now(),
-							},
-						];
-					}
-					return [];
-				});
-				deps.agentSession.restoreMessages(seeded);
-				// Clear the `interrupted` flag that loadSession's
-				// repair stamped on the seeded user message. The
-				// repair logic reads "user message with no following
-				// real assistant" as "this turn was interrupted" —
-				// correct for resumed sessions where the user truly
-				// lost their reply, wrong for a freshly-forked child
-				// where the reply is about to stream in. Without this
-				// clear, the user sees "[Interrupted by user]" under
-				// their message right when Reader starts answering.
-				deps.setStore(
-					"messages",
-					produce((msgs: DisplayMessage[]) => {
-						for (const m of msgs) {
-							if (m.role === "user" && m.interrupted) {
-								m.interrupted = undefined;
-							}
+		// Bridge ALS context across the setTimeout(0) boundary so log
+		// lines from the deferred resume + continue() inherit the
+		// parent agent.turn span's fields. AsyncLocalStorage propagates
+		// through native setTimeout; the bind() is defensive in case
+		// the runtime semantics change. See ADR-0016.
+		setTimeout(
+			logger.bind(() => {
+				// Wrap in `batch()` to coalesce store mutations across the
+				// whole sequence. The macrotask runs OUTSIDE the
+				// dispatcher's `batch()` (setTimeout defers past it), so
+				// without this wrap the four+ `setStore` calls below
+				// (status, isStreaming, plus everything `resumeSession`
+				// and the interrupted-clear touch) each trigger a separate
+				// Solid scheduler pass — visible flicker between
+				// "isStreaming = false but parent messages still showing"
+				// and "messages swapped to child". `continue()` stays
+				// outside the batch — it's an async call into pi-agent-core,
+				// not a store mutation.
+				batch(() => {
+					// Clear status fields so resumeSession's busy-guard
+					// (`if (deps.store.isStreaming) return`) lets the call
+					// through. We own this reset because `agent_end` skipped
+					// it.
+					deps.setStore("isStreaming", false);
+					deps.setStore("status", "idle");
+					deps.resumeSession(pendingChildId);
+					// resumeSession runs `loadSession` which applies
+					// `repairAlternation` — for a freshly-forked child whose
+					// `agent_messages` is just `[user]`, repair appends a
+					// synthesized aborted assistant to satisfy the
+					// alternation invariant. That's right for resume
+					// semantics, but wrong for the seam: we want to RUN the
+					// child's first turn now, and pi-agent-core's
+					// `continue()` rejects a transcript whose tail is
+					// `assistant`. Re-seed the live Agent with just the user
+					// message so `continue()` sees it as the tail and runs
+					// from there. The synthesized assistant stays out of the
+					// LLM-facing context (and out of disk — repair is
+					// read-time only).
+					const seeded = deps.store.messages.flatMap((m) => {
+						// Skip the fork-marker (display-only — has no
+						// agent_messages counterpart and no LLM-facing
+						// shape). Skip the synthesized assistant tail.
+						// Keep the seeded user message — preserve every
+						// text part (multi-text user messages are rare
+						// today but represent the same data the original
+						// agent_message content array carried at fork
+						// time).
+						if (m.role === "user") {
+							const content = m.parts.flatMap((p) =>
+								p.type === "text" && p.text.length > 0
+									? [{ type: "text" as const, text: p.text }]
+									: [],
+							);
+							if (content.length === 0) return [];
+							return [
+								{
+									role: "user" as const,
+									content,
+									timestamp: Date.now(),
+								},
+							];
 						}
-					}),
-				);
-			});
-			// Fire the child agent's first turn. The seeded transcript
-			// ends with the user's freeform message; `continue()` runs
-			// the loop from the current tail without pushing a new
-			// user message. Outside the `batch()` because it's an
-			// async pi-agent-core call, not a store mutation.
-			deps.agentSession.actions.continue().catch((err) => {
-				log.warn(
-					"continue() failed",
-					err instanceof Error ? err : new Error(String(err)),
-				);
-			});
-		}, 0);
+						return [];
+					});
+					deps.agentSession.restoreMessages(seeded);
+					// Clear the `interrupted` flag that loadSession's
+					// repair stamped on the seeded user message. The
+					// repair logic reads "user message with no following
+					// real assistant" as "this turn was interrupted" —
+					// correct for resumed sessions where the user truly
+					// lost their reply, wrong for a freshly-forked child
+					// where the reply is about to stream in. Without this
+					// clear, the user sees "[Interrupted by user]" under
+					// their message right when Reader starts answering.
+					deps.setStore(
+						"messages",
+						produce((msgs: DisplayMessage[]) => {
+							for (const m of msgs) {
+								if (m.role === "user" && m.interrupted) {
+									m.interrupted = undefined;
+								}
+							}
+						}),
+					);
+				});
+				// Fire the child agent's first turn. The seeded transcript
+				// ends with the user's freeform message; `continue()` runs
+				// the loop from the current tail without pushing a new
+				// user message. Outside the `batch()` because it's an
+				// async pi-agent-core call, not a store mutation.
+				deps.agentSession.actions.continue().catch((err) => {
+					log.warn(
+						"continue() failed",
+						err instanceof Error ? err : new Error(String(err)),
+					);
+				});
+			}),
+			0,
+		);
 		return;
 	}
 

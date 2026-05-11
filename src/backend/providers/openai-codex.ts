@@ -64,37 +64,43 @@ async function doRefresh(): Promise<OAuthCredentials | undefined> {
 	// so the atomic-write rename-dance would fire once per turn for
 	// no content change.
 	if (Date.now() < creds.expires) return creds;
-	try {
-		const result = await getOAuthApiKey("openai-codex", {
-			"openai-codex": creds,
-		});
-		if (!result) return undefined;
-		// Only reached on actual refresh (the early-return above
-		// filters out the no-op case). Persist rotated creds through
-		// the atomic-write path.
-		saveOpenAICodexCreds(result.newCredentials);
-		return result.newCredentials;
-	} catch (err) {
-		// Clear so `isConnected()` reports correctly and the Connect
-		// dialog's disconnected branch routes the next click to
-		// re-login, not manage-menu.
-		clearOpenAICodexCreds();
-		reportPersistenceError({
-			kind: "auth",
-			action: "refresh",
-			error: new Error(
-				"ChatGPT credentials expired and refresh failed. Run Connect → ChatGPT to sign in again.",
-			),
-		});
-		// Raw cause stays in console for debug, out of the toast: a
-		// future pi-ai fetch error could theoretically include token
-		// bytes in the message. Matches Kiro's posture.
-		log.warn(
-			"refresh failed",
-			err instanceof Error ? err : new Error(String(err)),
-		);
-		return undefined;
-	}
+	return logger.span(
+		"provider.refresh",
+		{ provider: "openai-codex" },
+		async () => {
+			try {
+				const result = await getOAuthApiKey("openai-codex", {
+					"openai-codex": creds,
+				});
+				if (!result) return undefined;
+				// Only reached on actual refresh (the early-return above
+				// filters out the no-op case). Persist rotated creds through
+				// the atomic-write path.
+				saveOpenAICodexCreds(result.newCredentials);
+				return result.newCredentials;
+			} catch (err) {
+				// Clear so `isConnected()` reports correctly and the Connect
+				// dialog's disconnected branch routes the next click to
+				// re-login, not manage-menu.
+				clearOpenAICodexCreds();
+				reportPersistenceError({
+					kind: "auth",
+					action: "refresh",
+					error: new Error(
+						"ChatGPT credentials expired and refresh failed. Run Connect → ChatGPT to sign in again.",
+					),
+				});
+				// Raw cause stays in console for debug, out of the toast: a
+				// future pi-ai fetch error could theoretically include token
+				// bytes in the message. Matches Kiro's posture.
+				log.warn(
+					"refresh failed",
+					err instanceof Error ? err : new Error(String(err)),
+				);
+				return undefined;
+			}
+		},
+	);
 }
 
 function listOpenAICodexModels(): Model<Api>[] {
