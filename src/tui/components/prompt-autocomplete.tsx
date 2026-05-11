@@ -14,12 +14,12 @@ import { useTheme } from "../context/theme";
 import { useAnchorGeometry } from "../hooks/use-anchor-geometry";
 import { type DialogContext, useDialog } from "../ui/dialog";
 import { listVaultFiles } from "../util/vault-files";
-import { deriveNextMode } from "./autocomplete/mode-state";
 import {
 	type AgentSlashOption,
 	type CommandOption,
 	useCommand,
 } from "./dialog/command";
+import { deriveNextMode } from "./prompt-autocomplete-mode";
 
 /**
  * Autocomplete dropdown for the prompt textarea.
@@ -224,7 +224,7 @@ export function PromptAutocomplete(props: {
 	//
 	// Rule set (slash precedence, mention trigger gating, close
 	// conditions) lives in the pure `deriveNextMode` function — see
-	// `./autocomplete/mode-state.ts`. This effect just re-runs the
+	// `./prompt-autocomplete-mode.ts`. This effect just re-runs the
 	// derivation on text changes and applies the resulting
 	// transition.
 	//

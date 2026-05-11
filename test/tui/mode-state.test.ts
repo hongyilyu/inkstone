@@ -3,13 +3,13 @@
  * that drives the autocomplete popup's open/close decisions.
  *
  * Pins the 11 transitions listed in the JSDoc of
- * `src/tui/components/autocomplete/mode-state.ts`. These are the
+ * `src/tui/components/prompt-autocomplete-mode.ts`. These are the
  * rules the pre-refactor inline effect enforced; preserving them
  * across the extraction is the contract.
  */
 
 import { describe, expect, test } from "bun:test";
-import { deriveNextMode } from "../../src/tui/components/autocomplete/mode-state";
+import { deriveNextMode } from "../../src/tui/components/prompt-autocomplete-mode";
 
 describe("deriveNextMode — null current mode", () => {
 	test("opens slash mode on `/` at column 0", () => {
