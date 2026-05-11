@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-10 (eliminate zones — permissions become single source of truth)
+**Last updated**: 2026-05-10 (dissolve shallow modules; normalize LoginFlow contract)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -19,6 +19,8 @@
   - Stack E — knowledge-base agent (graphite-stacked, landing 2026-05-07): scaffold → port LifeOS workflow bodies → wire `/ingest` `/query` `/lint` slash commands → docs. Third agent on ship (alongside reader and example), workspace under `040 FORGE/` with `010 RAW/` + `020 HUMAN/` write-blocked per LifeOS policy. All three workflow bodies preloaded into the system prompt; commands are minimal triggers.
 
 ## Completed
+
+- **Dissolve shallow modules; normalize LoginFlow** (2026-05-10, 5-PR Graphite stack `chore/dissolve-helpers-pr1` → `chore/inline-bridge-ansi-pr2` → `chore/flatten-autocomplete-pr3` → `chore/narrow-agent-types-pr4` → `chore/normalize-login-flow-pr5`). Five module dissolutions surfaced by the architecture review. PR 1 dissolves `tui/context/agent/helpers.ts` (3 single-consumer exports re-homed at their callers). PR 2 inlines `bridge/ansi.ts` into `tool-renderers.ts` (single-consumer sanitizer; ANSI test relocates to assert through the `renderToolArgs` public seam, the actual M4 hardening surface). PR 3 flattens `tui/components/autocomplete/` (single-file folder → sibling of its sole caller, `prompt-autocomplete-mode.ts`). PR 4 narrows `tui/context/agent/types.ts` to the context-shape contract by moving `SessionFactory` into `provider.tsx` (its sole constructor); barrel re-exports `Session` directly from `@backend/agent` instead of round-tripping. PR 5 normalizes the `LoginFlow` contract: widens `startKiroLogin` and `startOpenAICodexLogin` to the canonical 5-arg signature with `_primaryColor`; drops the registry's arg-eating shims so `LOGIN_FLOWS` is a direct map of three real adapters across one real seam. No behaviour change anywhere; total LOC drops by ~110.
 
 - **Eliminate zones; derive `<your workspace>` from permissions** (2026-05-10, 4-PR Graphite stack `feat/eliminate-zones-pr1-compose-from-overlay` … `pr4-delete-zones`, closes #124). `AgentInfo.zones`, the `AgentZone` type, and `composeZonesOverlay` are deleted. Each agent's full directory-level workspace policy now lives in `getPermissions(): AgentOverlay`; `composeWorkspaceBlock` projects the merged overlay into the system prompt's `<your workspace>` block by reading the same `composeOverlay(info)` call the dispatcher consumes — ADR 0009's "literally the same bytes" promise now holds in code, not just the docstring. Reader's prompt no longer claims `Articles (confirm before write)` while the dispatcher would block every Articles write; reader's `write` allowlist now excludes Articles entirely and the prompt lists Articles only under "Edits restricted to frontmatter in:". The `blockInsideDirs` rule kind was deleted along with this work — its only remaining behavioral value over "exclude from `insideDirs`" was a custom reason string, and that's not worth a dedicated rule kind. `src/backend/agent/zones.ts` renamed to `overlay.ts`. The composer guardrail tightened from "any zones declared" to "an `insideDirs` rule with non-empty dirs on the write tool's overlay". All `permissions.test.ts` cases pass unchanged — behavior parity gate.
 

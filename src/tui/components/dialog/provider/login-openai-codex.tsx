@@ -60,6 +60,7 @@ export async function startOpenAICodexLogin(
 	dialog: DialogContext,
 	toast: ToastContext,
 	mutedColor: ReturnType<typeof useTheme>["theme"]["textMuted"],
+	_primaryColor: ReturnType<typeof useTheme>["theme"]["primary"],
 	onModelSelected: (model: Model<Api>) => void,
 ): Promise<void> {
 	const [progress, setProgress] = createSignal("");

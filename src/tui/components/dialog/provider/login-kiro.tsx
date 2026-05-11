@@ -28,6 +28,7 @@ export async function startKiroLogin(
 	dialog: DialogContext,
 	toast: ToastContext,
 	mutedColor: ReturnType<typeof useTheme>["theme"]["textMuted"],
+	_primaryColor: ReturnType<typeof useTheme>["theme"]["primary"],
 	onModelSelected: (model: Model<Api>) => void,
 ): Promise<void> {
 	const controller = new AbortController();

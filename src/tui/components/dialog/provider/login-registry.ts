@@ -24,14 +24,13 @@ import { setOpenRouterKey } from "./set-openrouter-key";
  * path, because today every registered provider needs explicit
  * credentials.
  *
- * All three flows share the same 5-arg signature so the dispatcher
- * doesn't need a per-provider branch. `primaryColor` is ignored by
- * `startKiroLogin` and `startOpenAICodexLogin` today — their
- * descriptions theme inline via `DialogAuthWait`'s own theme lookup.
- * `setOpenRouterKey` also ignores it today (the description uses
- * only `mutedColor`), but accepts the arg for signature parity. If
- * a future flow wants to theme an inline link, threading the color
- * through is one fewer context lookup deep in the call chain.
+ * All three flows declare the canonical 5-arg `LoginFlow` signature
+ * directly. `primaryColor` is unused in every flow today (each
+ * description themes inline via `DialogAuthWait`'s own theme lookup
+ * or only reads `mutedColor`), so each flow names the parameter
+ * `_primaryColor` to satisfy Biome's `noUnusedVariables`. Threading
+ * the color through is one fewer context lookup deep in the call
+ * chain when a future flow does want to theme an inline link.
  */
 export type LoginFlow = (
 	dialog: DialogContext,
@@ -41,30 +40,8 @@ export type LoginFlow = (
 	onModelSelected: (model: Model<Api>) => void,
 ) => void | Promise<void>;
 
-/**
- * Adapt 4-arg Kiro / Codex flows to the shared 5-arg signature by
- * dropping the unused primaryColor arg. Cheaper than changing the
- * login-flow signatures to match — those flows have stable, well-
- * reviewed call paths and the wrapper costs nothing at runtime.
- */
-const kiroLogin: LoginFlow = (
-	dialog,
-	toast,
-	mutedColor,
-	_primaryColor,
-	onModelSelected,
-) => startKiroLogin(dialog, toast, mutedColor, onModelSelected);
-
-const codexLogin: LoginFlow = (
-	dialog,
-	toast,
-	mutedColor,
-	_primaryColor,
-	onModelSelected,
-) => startOpenAICodexLogin(dialog, toast, mutedColor, onModelSelected);
-
 export const LOGIN_FLOWS: Record<string, LoginFlow> = {
-	kiro: kiroLogin,
-	"openai-codex": codexLogin,
+	kiro: startKiroLogin,
+	"openai-codex": startOpenAICodexLogin,
 	openrouter: setOpenRouterKey,
 };
