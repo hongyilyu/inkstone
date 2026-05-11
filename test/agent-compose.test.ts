@@ -280,16 +280,15 @@ describe("composeSystemPrompt — <your workspace> from permission rules", () =>
 		expect(prompt).toContain(
 			"  - 020 HUMAN/023 Notes (confirm before each write)",
 		);
-		// Pre-fix bug: Articles was rendered as writable. Guard against regression.
+		// Articles is excluded from `write`'s allowlist (any write is rejected
+		// by `insideDirs`) and present only under "Edits restricted to
+		// frontmatter in:".
 		expect(prompt).not.toContain(
 			"010 RAW/013 Articles (confirm before each write)",
 		);
 		expect(prompt).not.toContain("010 RAW/013 Articles (write freely)");
-		expect(prompt).toContain("Writes blocked in:");
-		expect(prompt).toContain(
-			"  - 010 RAW/013 Articles — Articles are read-only source material. Use edit to modify frontmatter only.",
-		);
 		expect(prompt).toContain("Edits restricted to frontmatter in:");
+		expect(prompt).toContain("  - 010 RAW/013 Articles");
 	});
 
 	test("dir present in BOTH insideDirs and blockInsideDirs is hidden from writable", () => {
@@ -347,10 +346,10 @@ describe("composeTools — permission coverage", () => {
 		expect(composeTools(readerAgent).map((t) => t.name)).toContain("read");
 	});
 
-	test("shared mutating file tools require declared write zones", () => {
+	test("shared mutating file tools require an insideDirs workspace rule", () => {
 		const agent = makeAgent({ extraTools: [writeTool], zones: [] });
 		expect(() => composeTools(agent)).toThrow(
-			"Agent 'test' composes mutating file tools but declares no write zones.",
+			"Agent 'test' composes mutating file tools but declares no writable workspace",
 		);
 	});
 });
