@@ -36,3 +36,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Per-user Claude Code permissions
 .claude/settings.local.json
+.artifacts
