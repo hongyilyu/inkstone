@@ -1,30 +1,30 @@
+import { join } from "node:path";
+import { VAULT_DIR } from "../../constants";
 import type { AgentOverlay } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
-import type { AgentCommand, AgentInfo, AgentZone } from "../../types";
+import type { AgentCommand, AgentInfo } from "../../types";
 import { buildKnowledgeBaseInstructions } from "./instructions";
-import { KB_FORGE, KB_HUMAN_DIR, KB_RAW_DIR, KB_SYSTEM } from "./paths";
+import { KB_FORGE, KB_SYSTEM } from "./paths";
 
-// Forge is the default write surface; the LLM Wiki system folder is
-// confirm-write because lint's tag-unification step writes
-// `tags-guidance.md` there.
-const knowledgeBaseZones: AgentZone[] = [
-	{ path: KB_FORGE, write: "auto" },
-	{ path: KB_SYSTEM, write: "confirm" },
-];
-
-// LifeOS policy: `010 RAW/` and `020 HUMAN/` are read-only. Zones
-// declare positive write locations; this overlay closes the negative
-// case so it isn't silently inferred from "not zoned, still in vault".
+// Knowledge-base permission overlay.
+//
+// `write` and `edit` are allowed in Forge (auto) and the LLM Wiki
+// system folder (confirm — lint's tag-unification step writes
+// `tags-guidance.md` there). Everything else in the vault, including
+// RAW and HUMAN, falls outside `insideDirs` and is rejected by the
+// dispatcher. The LifeOS read-only policy on RAW/HUMAN is documented
+// in the agent's workflow instructions, not as a per-rule reason.
 function getKnowledgeBasePermissions(): AgentOverlay {
-	const reason =
-		"This folder is read-only per the LifeOS policy. Writes go to 040 FORGE/.";
+	const forgeDir = join(VAULT_DIR, KB_FORGE);
+	const systemDir = join(VAULT_DIR, KB_SYSTEM);
+	const inside = {
+		kind: "insideDirs" as const,
+		dirs: [forgeDir, systemDir],
+	};
+	const confirm = { kind: "confirmDirs" as const, dirs: [systemDir] };
 	return {
-		[writeTool.name]: [
-			{ kind: "blockInsideDirs", dirs: [KB_RAW_DIR, KB_HUMAN_DIR], reason },
-		],
-		[editTool.name]: [
-			{ kind: "blockInsideDirs", dirs: [KB_RAW_DIR, KB_HUMAN_DIR], reason },
-		],
+		[writeTool.name]: [inside, confirm],
+		[editTool.name]: [inside, confirm],
 	};
 }
 
@@ -65,7 +65,7 @@ export const knowledgeBaseAgent: AgentInfo = {
 		"three workflows.",
 	colorKey: "info",
 	extraTools: [editTool, writeTool],
-	zones: knowledgeBaseZones,
+	zones: [],
 	buildInstructions: () => buildKnowledgeBaseInstructions(),
 	commands: [ingestCommand, queryCommand, lintCommand],
 	getPermissions: getKnowledgeBasePermissions,

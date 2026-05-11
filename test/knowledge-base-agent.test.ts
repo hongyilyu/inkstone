@@ -13,11 +13,10 @@ import { knowledgeBaseAgent } from "@backend/agent/agents/knowledge-base";
 import { buildKnowledgeBaseInstructions } from "@backend/agent/agents/knowledge-base/instructions";
 import {
 	KB_FORGE,
-	KB_HUMAN_DIR,
-	KB_RAW_DIR,
 	KB_SYSTEM,
 } from "@backend/agent/agents/knowledge-base/paths";
 import { composeSystemPrompt } from "@backend/agent/compose";
+import { VAULT_DIR } from "@backend/agent/constants";
 
 import "./preload";
 
@@ -28,30 +27,22 @@ describe("knowledge-base agent — registry", () => {
 	});
 });
 
-describe("knowledge-base agent — zones", () => {
-	test("declares Forge as auto-write and the LLM Wiki system folder as confirm-write", () => {
-		expect(knowledgeBaseAgent.zones).toEqual([
-			{ path: KB_FORGE, write: "auto" },
-			{ path: KB_SYSTEM, write: "confirm" },
-		]);
-	});
-});
-
 describe("knowledge-base agent — permission overlay", () => {
-	test("blocks writes inside 010 RAW/ and 020 HUMAN/ on both write and edit", () => {
+	test("write/edit overlays carry insideDirs + confirmDirs", () => {
+		// Forge is auto-write and the LLM Wiki system folder is confirm-write
+		// (so lint's tag-unification step can write `tags-guidance.md`).
+		// Everything outside the allowlist (including RAW + HUMAN) falls
+		// through to the dispatcher's generic deny.
 		const overlay = knowledgeBaseAgent.getPermissions?.();
 		expect(overlay).toBeDefined();
-		// Both `write` and `edit` carry a single `blockInsideDirs` rule
-		// whose `dirs` array covers RAW + HUMAN. The shape is asserted
-		// (not just keys-present) so a future overlay change has to
-		// re-justify the policy block.
-		const expectedRule = {
-			kind: "blockInsideDirs",
-			dirs: [KB_RAW_DIR, KB_HUMAN_DIR],
-			reason: expect.stringContaining("read-only"),
-		};
-		expect(overlay?.write).toEqual([expectedRule]);
-		expect(overlay?.edit).toEqual([expectedRule]);
+		const forgeDir = `${VAULT_DIR}/${KB_FORGE}`;
+		const systemDir = `${VAULT_DIR}/${KB_SYSTEM}`;
+		const expected = [
+			{ kind: "insideDirs", dirs: [forgeDir, systemDir] },
+			{ kind: "confirmDirs", dirs: [systemDir] },
+		];
+		expect(overlay?.write).toEqual(expected);
+		expect(overlay?.edit).toEqual(expected);
 	});
 });
 
