@@ -5,5 +5,6 @@
  * consumer and the test harness.
  */
 
+export type { Session } from "@backend/agent";
+export type { SessionFactory } from "./agent/provider";
 export { AgentProvider, useAgent } from "./agent/provider";
-export type { Session, SessionFactory } from "./agent/types";

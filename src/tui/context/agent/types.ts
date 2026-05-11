@@ -1,36 +1,20 @@
 /**
- * Types + Solid context shape for `AgentProvider`. Split out of the
- * monolithic `agent.tsx` so the actions / reducer / commands / provider
- * modules can all import from one shared source of truth.
+ * Solid context contract for `AgentProvider`. The context value's
+ * shape (`AgentContextValue`) is what every TUI consumer sees through
+ * `useAgent()`. The pending-state DTOs (`PendingApproval`,
+ * `PendingSuggestion`) are shared with `actions.ts`'s deps bag.
+ *
+ * `SessionFactory` lives next to its sole constructor in
+ * `provider.tsx` — it's not part of the consumer-facing context shape.
  */
 
-import type {
-	AgentActions,
-	Session,
-	SuggestCommandDecision,
-} from "@backend/agent";
+import type { AgentActions, SuggestCommandDecision } from "@backend/agent";
 import type { AgentStoreState, DisplayPart } from "@bridge/view-model";
-import type {
-	AgentEvent as AgentEventType,
-	ThinkingLevel,
-} from "@mariozechner/pi-agent-core";
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { Accessor } from "solid-js";
 import { createContext } from "solid-js";
 import type { PreviewRegistry } from "./preview-registry";
-
-/**
- * Factory signature for `AgentProvider`'s underlying `Session`. The
- * default value is `createAgentSession` from `@backend/agent`; tests
- * inject a fake that captures `onEvent` so synthetic `AgentEvent`s can
- * be emitted without a real pi-agent-core loop.
- */
-export type SessionFactory = (params: {
-	agentName?: string;
-	onEvent: (event: AgentEventType) => void;
-}) => Session;
-
-export type { Session };
 
 export interface AgentContextValue {
 	store: AgentStoreState;

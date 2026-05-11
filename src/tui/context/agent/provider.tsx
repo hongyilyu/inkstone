@@ -52,8 +52,18 @@ import {
 	agentContext,
 	type PendingApproval,
 	type PendingSuggestion,
-	type SessionFactory,
 } from "./types";
+
+/**
+ * Factory signature for `AgentProvider`'s underlying `Session`. The
+ * default value is `createAgentSession` from `@backend/agent`; tests
+ * inject a fake that captures `onEvent` so synthetic `AgentEvent`s can
+ * be emitted without a real pi-agent-core loop.
+ */
+export type SessionFactory = (params: {
+	agentName?: string;
+	onEvent: (event: AgentEvent) => void;
+}) => Session;
 
 export function AgentProvider(
 	props: ParentProps<{
