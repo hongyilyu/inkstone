@@ -64,28 +64,34 @@ async function doRefresh(): Promise<KiroCredentials | undefined> {
 	const creds = loadKiroCreds();
 	if (!creds) return undefined;
 	if (Date.now() <= creds.expires) return creds;
-	try {
-		const fresh = await refreshKiroToken(creds);
-		saveKiroCreds(fresh);
-		return fresh;
-	} catch (err) {
-		clearKiroCreds();
-		reportPersistenceError({
-			kind: "auth",
-			action: "refresh",
-			error: new Error(
-				"Kiro credentials expired and refresh failed. Run Connect → Amazon Kiro to sign in again.",
-			),
-		});
-		// Log raw cause for debugging, but keep it out of the user-facing
-		// toast (pi-kiro's fetch error body could theoretically include
-		// token bytes in a future upstream change).
-		log.warn(
-			"refresh failed",
-			err instanceof Error ? err : new Error(String(err)),
-		);
-		return undefined;
-	}
+	return logger.span(
+		"provider.refresh",
+		{ provider: "kiro", region: creds.region },
+		async () => {
+			try {
+				const fresh = await refreshKiroToken(creds);
+				saveKiroCreds(fresh);
+				return fresh;
+			} catch (err) {
+				clearKiroCreds();
+				reportPersistenceError({
+					kind: "auth",
+					action: "refresh",
+					error: new Error(
+						"Kiro credentials expired and refresh failed. Run Connect → Amazon Kiro to sign in again.",
+					),
+				});
+				// Log raw cause for debugging, but keep it out of the user-facing
+				// toast (pi-kiro's fetch error body could theoretically include
+				// token bytes in a future upstream change).
+				log.warn(
+					"refresh failed",
+					err instanceof Error ? err : new Error(String(err)),
+				);
+				return undefined;
+			}
+		},
+	);
 }
 
 /**

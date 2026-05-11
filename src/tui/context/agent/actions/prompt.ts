@@ -33,6 +33,24 @@ export async function promptAction(
 	deps: ActionDeps,
 ): Promise<void> {
 	const sessionId = deps.sessionState.ensureSession();
+	return logger.span(
+		"agent.turn",
+		{
+			sessionId,
+			agent: deps.store.currentAgent,
+			provider: deps.store.modelProvider,
+			modelId: deps.agentSession.getModelId(),
+		},
+		() => promptActionBody(text, displayParts, deps, sessionId),
+	);
+}
+
+async function promptActionBody(
+	text: string,
+	displayParts: DisplayPart[] | undefined,
+	deps: ActionDeps,
+	sessionId: string,
+): Promise<void> {
 	const shouldGenerateTitle = deps.store.messages.length === 0;
 	const titleProviderId = deps.store.modelProvider;
 	const titleModelId = deps.agentSession.getModelId();
