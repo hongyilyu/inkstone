@@ -60,8 +60,34 @@ import type {
 import type { AgentMessage, ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage } from "@mariozechner/pi-ai";
 import { produce, type SetStoreFunction } from "solid-js/store";
-import { extractErrorMessage } from "./helpers";
 import type { SessionState } from "./session-state";
+
+/**
+ * Pull a short error line out of a failed tool result. pi-agent-core
+ * wraps tool execution in a try/catch and constructs an error-shaped
+ * result — `content[0].text` holds the Error message. Falls through to
+ * `undefined` so the renderer shows a generic error state.
+ *
+ * Success results are deliberately not summarized: today's tools
+ * (`read`/`edit`/`write`/`update_sidebar`) all carry their user-visible
+ * information in the args, so a second "result" line would just restate
+ * what the header already said. If a future tool's result carries info
+ * the args don't (e.g. `grep` match count), reintroduce a summary path.
+ */
+function extractErrorMessage(result: any): string | undefined {
+	if (!result) return undefined;
+	const first = Array.isArray(result.content) ? result.content[0] : undefined;
+	if (first && first.type === "text" && typeof first.text === "string") {
+		return trimOneLine(first.text);
+	}
+	return undefined;
+}
+
+function trimOneLine(s: string, limit = 120): string {
+	const flat = s.replace(/\s+/g, " ").trim();
+	if (flat.length <= limit) return flat;
+	return `${flat.slice(0, limit - 1)}…`;
+}
 
 export interface MessageLog {
 	/**
