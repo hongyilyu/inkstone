@@ -18,7 +18,7 @@ Shipped in PR #1 (branch `refactor/agent-shell-base-layer`). The base layer + fo
 
 - User-defined agents (markdown-authored, config-file-authored, etc.). Dev-registered only for now.
 - Subagents, task-tool delegation, mid-session agent switching.
-- Full per-agent permission ruleset. The current permission dispatcher (see `docs/ARCHITECTURE.md` → Permission Dispatcher) covers vault scoping, per-agent zone confirmations, and reader's article-specific rules through the baseline + zones + overlay split — sufficient at 2–3 agents.
+- Full per-agent permission ruleset. The current permission dispatcher (see `docs/ARCHITECTURE.md` → Permission Dispatcher) covers vault scoping, per-agent confirmations, and reader's article-specific rules through the tool baseline + per-agent overlay split — sufficient at 2–3 agents.
 - Provider-pluggable or plugin-extensible agent frameworks.
 
 ## Key decisions
@@ -43,7 +43,7 @@ Shipped in PR #1 (branch `refactor/agent-shell-base-layer`). The base layer + fo
 
 ### D3 — Base layer bundle
 
-The base layer is split across three files in `backend/agent/` — `types.ts` (pure types), `compose.ts` (BASE_TOOLS, composers), `zones.ts` (zone-to-permission rule derivation). Together they export:
+The base layer is split across three files in `backend/agent/` — `types.ts` (pure types), `compose.ts` (BASE_TOOLS, composers, workspace block projection), `overlay.ts` (per-agent permission overlay assembly). Together they export:
 
 | Symbol | Purpose |
 |---|---|
@@ -159,41 +159,39 @@ This is D5 ("ship mechanism, defer content") extended to cover the future-work d
 **Trade-offs accepted:**
 
 - **`getPermissions` is a function.** Pure data is the goal; rule *production* remains a factory callback so state-dependent values (reader's article path) can be inlined fresh each call. The rules themselves are still pure data — only the producer is a function. A push model (reader calls `setPermissions(rules)` on every state change) was considered but adds coordination cost for no readability gain.
-- **Speculative rule kinds.** The rule-kind union is sized to current needs + one. Today reader uses `blockInsideDirs` and `frontmatterOnlyInDirs`; both originated as reader-specific shapes but are generic enough that a future agent with read-only directories or frontmatter-only zones can reuse them. Earlier per-file variants (`blockPath`, `frontmatterOnlyFor`) existed during the active-article phase and were deleted when reader went stateless — the union is now smaller than it was, not larger.
+- **Speculative rule kinds.** The rule-kind union is sized to current needs + one. Today reader uses `blockInsideDirs` and `frontmatterOnlyInDirs`; both originated as reader-specific shapes but are generic enough that a future agent with read-only directories or frontmatter-only directories can reuse them. Earlier per-file variants (`blockPath`, `frontmatterOnlyFor`) existed during the active-article phase and were deleted when reader went stateless — the union is now smaller than it was, not larger.
 - **No enforcement that every tool has a baseline.** A tool registered in `composeTools` without a matching `registerBaseline(tool.name, ...)` call runs unsandboxed. Convention suffices today (fixed tool set); enforcement (e.g. throw at compose time) can be added when plugin tools arrive.
 
 **Function escape hatch not built.** A rule kind whose predicate is `(params) => boolean` was considered but deferred — every current need fits a named rule kind. Add if a real case doesn't.
 
 **What this resolves:** the "shell knows reader's business" pressure point. The dispatcher has no reader knowledge. Session restore stops caring about `_articlePath`. A future Researcher or Knowledge-Base agent declares its own overlay (or doesn't) without modifying the dispatcher or the shell.
 
-### D12 — Zones: declarative workspace
+### D12 — Permissions: declarative workspace
 
-**Chosen:** each agent declares a `zones: AgentZone[]` field on `AgentInfo`. A zone is `{ path: string, write: "auto" | "confirm" }` where `path` is vault-relative. Zones feed two composers from one declaration:
+**Chosen:** each agent declares its full workspace policy through `getPermissions(): AgentOverlay` on `AgentInfo`. The same `Rule[]` drives two consumers:
 
-- `composeZonesOverlay(info)` produces the matching permission rules (`insideDirs` for the declared write workspace, plus `confirmDirs` for `confirm` zones). Merged with `AgentInfo.getPermissions?.()` by `composeOverlay`.
-- `composeSystemPrompt(info)` prepends a `<your workspace>` block at the top of the system prompt listing each zone's path and policy so the LLM knows where it may write.
+- `composeWorkspaceBlock(info)` (in `compose.ts`) prepends a `<your workspace>` block at the top of the system prompt by reading `composeOverlay(info)` and projecting each rule kind: `insideDirs` → "You can write to:", `confirmDirs` → `(confirm before each write)` suffix, `frontmatterOnlyInDirs` → "Edits restricted to frontmatter in:".
+- `dispatchBeforeToolCall` evaluates the same `composeOverlay(info)` output as overlay rules after the tool's baseline.
 
-**Why:** the prior shape had two independent declarations of the same rule — reader's workspace was described in prose inside `buildInstructions` *and* enforced by rules inside `getPermissions`. They had to agree by hand. With zones, the LLM's stated workspace and the dispatcher's enforced workspace derive from the same data; drift between prompt and dispatcher is impossible.
+**Why:** ADR 0009's promise is that the LLM's stated workspace and the dispatcher's enforced workspace are *literally the same bytes*. Earlier shapes had two declaration vectors — workspace prose inside `buildInstructions` *and* enforcement rules inside `getPermissions`, or a `zones` field projected to prose AND a separate `getPermissions` overlay merged for enforcement. Each split required hand-syncing; reader's prompt at one point claimed `Articles (confirm before write)` while the dispatcher would block every Articles write. Collapsing onto one overlay makes drift structurally impossible.
 
-**Merge order: custom rules first, then zones.** `composeOverlay(info) = info.getPermissions?.() ⊕ composeZonesOverlay(info)` (custom first). The dispatcher is first-block-wins, so the stricter rule must come first to short-circuit before a broader zone rule fires. Concretely: reader's custom `blockInsideDirs` rejects `write` against any article outright; the zone's `confirmDirs` on the same Articles path would otherwise prompt for a write that's guaranteed to fail. Custom-first lets the block win without a wasted prompt.
+**Read-only enforcement is implicit, not declared.** Paths an agent shouldn't write are simply absent from the `insideDirs` allowlist; the dispatcher rejects them with a generic "Path must be within …" reason. Reader excludes Articles from `write`'s allowlist (writes are rejected); KB excludes RAW + HUMAN. There used to be a `blockInsideDirs` rule kind whose only real value was a custom reason string for already-implicitly-denied paths; it was removed for being behaviorally redundant. `frontmatterOnlyInDirs` survives because it does add real constraint on top of `insideDirs` — listed first in the rule array so a doomed body edit short-circuits before the broader `confirmDirs` prompt fires.
 
-**Tool baselines trimmed to the hard vault boundary.** Before D12, the `write`/`edit` tool baselines carried `confirmDirs: [NOTES_DIR, SCRAPS_DIR]` as a global guardrail. That produced double-confirms once zones also covered Notes/Scraps. Fix: directory-level confirmation moved entirely to zones. The baseline still owns `insideDirs: [VAULT_DIR]` — the hard boundary every agent must respect — but no directory-level confirmation. Agents that compose the shared mutating tools must declare zones as their positive write workspace.
+**Tool baselines own the hard vault boundary.** The `write`/`edit` baselines declare `insideDirs: [VAULT_DIR]` — every agent must respect that. Per-agent workspace policy is overlay-only.
 
-**Read stays vault-wide.** Zones constrain writes only. Any agent can read anywhere in the vault (subject to the tool baseline `insideDirs: [VAULT_DIR]`). The ambient-context pattern — agent reads `090 SYSTEM/` or similar on demand to discover workflows, schemas, templates — depends on vault-wide read. Zones are the right line because "where I work" != "where I look up references."
+**Read stays vault-wide.** The overlay constrains writes only. Any agent can read anywhere in the vault (subject to the tool baseline `insideDirs: [VAULT_DIR]`). The ambient-context pattern — agent reads `090 SYSTEM/` or similar on demand to discover workflows, schemas, templates — depends on vault-wide read. The fixed `"You may read anywhere in the vault."` line in the prompt projects this invariant; if agent-scoped read fences ever ship, the projection extends to render `overlay[readTool.name]`.
 
-**`getPermissions` stays as an escape hatch.** Zones are the declarative baseline; `getPermissions` handles rules zones can't express — today's example is reader's `frontmatterOnlyInDirs` rule on the Articles zone. Directory-scoped but not a zone policy (it constrains edit *shape*, not just whether writes are allowed). The escape hatch being function-shaped (not data) is the same D8 trade-off as D11: rule *production* can stay dynamic while rule *data* stays pure.
+**`getPermissions` is a function.** Pure data is the goal; rule *production* remains a factory callback so state-dependent values can be inlined fresh each call. The rules themselves are still pure data — only the producer is a function. Same D8 trade-off as D11.
 
-**Path matching stays `startsWith`-based.** Zones are folder paths today. Composer uses `node:path.join(VAULT_DIR, zone.path)` so leading/trailing slashes normalize; absolute zone paths throw at compose time. Glob support (for targeting a specific file inside a zone, for example) is a deferred decision pending a real use case.
+**Policy verbs are phrased, not named, in the prompt.** `insideDirs` without a matching `confirmDirs` renders as "write freely"; with a confirm match it renders as "confirm before each write". The LLM reasons about consequences, not internal rule-kind labels.
 
-**Policy verbs are phrased, not named, in the prompt.** `auto` renders as "write freely", `confirm` as "confirm before write". The LLM reasons about consequences, not internal labels.
+**Consequence:** adding a write-capable agent is a data-only change. The agent declares one `getPermissions()` callback; the composer renders the workspace block and the dispatcher enforces it from the same `Rule[]`. No zones field, no separate prose, no merge order to remember.
 
-**`deny` zone policy not yet shipped.** A third policy for read-only zones was considered. The matching rule kind (`blockInsideDirs`) now exists as a standalone primitive — reader uses it via `getPermissions` to make the Articles zone read-only-except-frontmatter. Adding `write: "deny"` on `AgentZone` that maps to `blockInsideDirs` is a small ergonomics win for agents that want declarative read-only zones. Deferred per D8 until a real agent asks.
+**Rejected alternative:** per-tool *read* policy. "Read is always vault-wide" was a user call — agents need broad reads for cross-zone references and ambient context. An agent that wants to read outside its write zone is the normal case, not the exception. If a future agent needs a read fence (e.g. privacy-scoped assistant that must not see financial notes), the overlay supports a `read`-keyed entry already; the projection just doesn't render it today.
 
-**Consequence:** adding a zone-declaring agent is a data-only change. Reader's workspace paragraphs in the instruction prose are gone — the composer renders them from `zones` — so a new agent copy-pasting reader's shape gets the right prompt block + the right permission rules from a single field.
+**History:** the original shape had `AgentInfo.zones: AgentZone[]` (vault-relative path + `auto`/`confirm` policy) feeding `composeZonesOverlay`, merged with the agent's custom `getPermissions` overlay. That shape worked but had two declaration sites and a non-trivial merge order. Issue #124 collapsed both onto `getPermissions`; the `zones` field, the `AgentZone` type, and `composeZonesOverlay` are gone.
 
-**Rejected alternative:** per-zone *read* policy. "Read is always vault-wide" was a user call — agents need broad reads for cross-zone references and ambient context. An agent that wants to read outside its write zone is the normal case, not the exception. If a future agent needs a read fence (e.g. privacy-scoped assistant that must not see financial notes), extend the type then.
-
-**Open pressure point**: all hard-coded vault paths in code (zone declarations, `constants.ts`) should eventually move to user configuration so non-default vault layouts work without code changes. Tracked in TODO.md.
+**Open pressure point**: all hard-coded vault paths in code (workspace dirs in `getPermissions`, `constants.ts`) should eventually move to user configuration so non-default vault layouts work without code changes. Tracked in TODO.md.
 
 ### D13 — Session-agent binding
 
@@ -205,7 +203,7 @@ Persisted sessions are replayable into any agent context: the Ctrl+N resume path
 
 - **Cache stability.** Swapping agent mid-session rewrites `systemPrompt` + `tools`, both of which Anthropic's `cache_control` and Bedrock's `cachePoint` pin as the byte-exact prefix. Every swap would invalidate the cache for the rest of the conversation. See D9's stability invariant.
 - **Bubble provenance.** Each assistant bubble is stamped with the agent that produced it (`displayMessage.agentName`). With a mid-session swap, earlier bubbles claim the new agent's name unless we reach back and re-stamp, which duplicates bookkeeping OpenCode needed (per-message `agent` on user bubbles, tool-result routing). Inkstone's "one agent per session" model dodges this entirely.
-- **Permission model clarity.** Zones and custom rules are agent-scoped. A mid-session swap means previously-sent tool calls ran under one set of rules and future ones run under another — surprising if the user expects "the session's policy" to be stable.
+- **Permission model clarity.** The overlay is agent-scoped. A mid-session swap means previously-sent tool calls ran under one set of rules and future ones run under another — surprising if the user expects "the session's policy" to be stable.
 
 **UI consequence:** Tab / Shift+Tab, the Agents dialog, and the palette entry are all visible only on the empty open page (`store.messages.length === 0`). Reaching `selectAgent` with messages present is a bug, so the backend throws. The UI gates prevent users from seeing the error in normal use.
 
@@ -256,7 +254,7 @@ Persisted sessions are replayable into any agent context: the Ctrl+N resume path
 | Alternative | Why rejected |
 |---|---|
 | Class hierarchy (`BaseAgent` → `ReaderAgent`) | See D1. Industry pattern is flat + composition; inheritance fights divergence. |
-| OpenCode-style permission ruleset per agent | Overkill at 2–3 agents. The current permission dispatcher (baseline + zones + overlay) covers vault scoping + per-agent confirmations. Revisit when an agent needs truly different tool access from its peers. |
+| OpenCode-style permission ruleset per agent | Overkill at 2–3 agents. The current permission dispatcher (tool baseline + per-agent overlay) covers vault scoping + per-agent confirmations. Revisit when an agent needs truly different tool access from its peers. |
 | Global tool registry + per-agent allow/deny rules | Same reasoning as above — pattern-driven permissions are the power answer; we don't have the demand yet. |
 | User-defined agents via `.md` files | Out of scope for the dev-facing redesign. Revisit if an end-user path becomes relevant. |
 | Eager-load all skills at session boot | When skills land, we'll use lazy loading (summaries in the system prompt, full bodies fetched on demand) — OpenCode's pattern. Eager loading inflates tokens on every turn even when a skill is never used. |
@@ -304,14 +302,14 @@ Decide whether a web-search tool lives in `BASE_TOOLS` or per-agent `extraTools`
 
 ### Per-agent permissions (probably never)
 
-No concrete case exists yet where two Inkstone agents need different tool access under the same set of tools. The permission dispatcher (baseline + zones + overlay) covers vault scoping uniformly and per-agent confirmations via zones, and that may continue to suffice.
+No concrete case exists yet where two Inkstone agents need different tool access under the same set of tools. The permission dispatcher (tool baseline + per-agent overlay) covers vault scoping uniformly and per-agent confirmations via each agent's `getPermissions()`, and that may continue to suffice.
 
 If a real split emerges (e.g. Researcher can read outside `ARTICLES_DIR` but Reader cannot), design the ruleset against Inkstone's actual tools and guard shape — don't port OpenCode's `Permission.Ruleset`. Porting without a driving case would pre-commit to pattern matching, `ask/allow/deny` tri-state, and rule-merge semantics that Inkstone has shown no need for.
 
 ## Terminology
 
 - **Agent** — the persona the user is chatting with. `readerAgent` / `knowledgeBaseAgent` / future `researcherAgent`. A literal conforming to `AgentInfo`.
-- **Base agent** — the shared foundation layer, conceptually. Not an instance, not a class. Everything exported from `backend/agent/{types,compose,zones}.ts`, with tool implementations pulled in from `backend/agent/tools.ts`.
+- **Base agent** — the shared foundation layer, conceptually. Not an instance, not a class. Everything exported from `backend/agent/{types,compose,overlay}.ts`, with tool implementations pulled in from `backend/agent/tools.ts`.
 - **Custom agent** — any agent under `backend/agent/agents/`. Reader and Knowledge Base today.
 - **extraTools** — tools specific to a custom agent, composed with `BASE_TOOLS` at runtime by `composeTools`.
 - **BASE_TOOLS / BASE_PREAMBLE / composeTools / composeSystemPrompt** — the four canonical exports that define the base layer's public contract.

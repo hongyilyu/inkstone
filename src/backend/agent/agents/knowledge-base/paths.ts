@@ -1,8 +1,8 @@
 /**
  * LifeOS folder layout — single source of truth for the knowledge-base
- * agent. The workflow text in `instructions.ts`, the agent's `zones`,
- * and the permission overlay all read from here, so adjusting the
- * vault layout (or testing against a different one) is one file.
+ * agent. The workflow text in `instructions.ts` and the permission
+ * overlay both read from here, so adjusting the vault layout (or
+ * testing against a different one) is one file.
  *
  * Paths are vault-relative; callers `join(VAULT_DIR, …)` when they
  * need absolute paths (e.g. for the permission overlay).

@@ -233,7 +233,6 @@ export const readerAgent: AgentInfo = {
 		'and direct file references ("read foo.md"). Has plain-chat capability.',
 	colorKey: "secondary",
 	extraTools: [editTool, writeTool, readerSearchTool, readerListKeysTool],
-	zones: [],
 	buildInstructions: () => buildReaderInstructions(),
 	commands: [articleCommand],
 	getPermissions: getReaderPermissions,

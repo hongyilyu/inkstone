@@ -114,9 +114,10 @@ describe("knowledge-base agent — preloaded workflow bodies", () => {
 		expect(body).toContain("## Lint Workflow");
 	});
 
-	test("composed system prompt preserves zones, commands wrapper, and workflow bodies", () => {
-		// Pin the composition: zones block is auto-emitted from
-		// `info.zones`, the body is appended after, and the workflow
+	test("composed system prompt preserves workspace, commands wrapper, and workflow bodies", () => {
+		// Pin the composition: `<your workspace>` block is projected from
+		// the agent's permission overlay (Forge auto / System confirm / RAW
+		// + HUMAN blocked), the body is appended after, and the workflow
 		// content survives intact.
 		const prompt = composeSystemPrompt(knowledgeBaseAgent);
 		expect(prompt).toContain("<your workspace>");
