@@ -29,13 +29,99 @@
 
 import { fmString, fmStringArray, parseFrontmatter } from "@bridge/frontmatter";
 import { TextAttributes } from "@opentui/core";
-import { createMemo, Show } from "solid-js";
+import { useRenderer } from "@opentui/solid";
+import {
+	createEffect,
+	createMemo,
+	createSignal,
+	on,
+	onCleanup,
+	Show,
+} from "solid-js";
 import { getSecondaryPage } from "../context/secondary-page";
 import { useTheme } from "../context/theme";
 import type { ThemeColors } from "../theme/types";
+import { splitWikilinks } from "../util/wikilink";
+import { KittyImageRenderable } from "./kitty-image";
+
+/**
+ * Mount a `KittyImageRenderable` as a child of a Solid `<box>` host.
+ *
+ * OpenTUI's Solid bindings only know how to spawn renderables registered
+ * in the component catalogue (`box`, `text`, `markdown`, …). Our image
+ * renderable lives outside that catalogue, so we attach it manually as
+ * a child of the host `<box>` after mount.
+ *
+ * Solid reuses `ImageBlock` instances across `.map` re-renders when the
+ * unkeyed segment array reshuffles, so we tear the old image renderable
+ * down and rebuild it via `createEffect` keyed on `props.href`. Without
+ * that, an `href` change would leave the previous renderable attached
+ * to the host with no path to ever destroy it (Ghostty-side image bytes
+ * survive the process anyway, but the orphaned render command would
+ * keep painting placeholder cells over the new image).
+ */
+interface ImageBlockProps {
+	href: string;
+	renderer: ReturnType<typeof useRenderer>;
+}
+
+function ImageBlock(props: ImageBlockProps) {
+	// The host `<box>` defaults to `auto` height, which Yoga collapses
+	// to 0 unless we explicitly tell it. The image renderable knows its
+	// own row count once `onResize` runs, but the host box doesn't
+	// observe that — so we mirror the renderable's `height` into a
+	// Solid signal that drives the host box's `height` prop.
+	const [rows, setRows] = createSignal(1);
+	let host: unknown = null;
+	let imageNode: KittyImageRenderable | null = null;
+
+	const captureHost = (h: unknown) => {
+		host = h;
+	};
+
+	createEffect(
+		on(
+			() => props.href,
+			(href) => {
+				if (imageNode) {
+					imageNode.destroy();
+					imageNode = null;
+				}
+				if (!host) return;
+				setRows(1);
+				const node = new KittyImageRenderable(props.renderer, {
+					href,
+					onLayout: (n) => setRows(n),
+				});
+				imageNode = node;
+				(host as { add: (child: unknown) => void }).add(node);
+			},
+		),
+	);
+
+	onCleanup(() => {
+		imageNode?.destroy();
+		imageNode = null;
+	});
+
+	// `marginTop`/`marginBottom` give visual breathing room around the
+	// image; the host's `height` is driven by the image's row count
+	// (1 for fallback text; intrinsic-aspect rows for an image upload).
+	return (
+		<box
+			ref={captureHost}
+			flexDirection="column"
+			height={rows()}
+			flexShrink={0}
+			marginTop={1}
+			marginBottom={1}
+		/>
+	);
+}
 
 export function SecondaryPage() {
 	const { theme, syntax } = useTheme();
+	const renderer = useRenderer();
 
 	const state = () => getSecondaryPage();
 	const rawContent = () => state()?.content ?? "";
@@ -62,6 +148,17 @@ export function SecondaryPage() {
 		const p = parsed();
 		if (!p) return rawContent();
 		return p.body.startsWith("\n") ? p.body.slice(1) : p.body;
+	});
+
+	// For markdown format, split the body into a stream of text + image
+	// segments. Each text segment renders through `<markdown>`; each
+	// image segment mounts a `KittyImageRenderable` via `ImageBlock`. We
+	// don't try to use OpenTUI's `MarkdownRenderable.renderNode` hook
+	// because its lifecycle destroys custom children on the second
+	// `updateBlocks` pass (rationale in `util/wikilink.ts`).
+	const segments = createMemo(() => {
+		if (format() !== "markdown") return [];
+		return splitWikilinks(body());
 	});
 
 	// Memoized so `<Show when={frontmatter()}>` sees a stable reference
@@ -98,18 +195,25 @@ export function SecondaryPage() {
 						<Show when={frontmatter()}>
 							{(fm) => <ArticleHeader frontmatter={fm()} colors={theme} />}
 						</Show>
-						<markdown
-							content={body()}
-							syntaxStyle={syntax()}
-							fg={theme.text}
-							bg={theme.background}
-							tableOptions={{
-								style: "grid",
-								wrapMode: "word",
-								borders: true,
-								cellPadding: 1,
-							}}
-						/>
+						{segments().map((seg) =>
+							seg.kind === "text" ? (
+								<markdown
+									content={seg.content}
+									syntaxStyle={syntax()}
+									fg={theme.text}
+									bg={theme.background}
+									flexShrink={0}
+									tableOptions={{
+										style: "grid",
+										wrapMode: "word",
+										borders: true,
+										cellPadding: 1,
+									}}
+								/>
+							) : (
+								<ImageBlock href={seg.href} renderer={renderer} />
+							),
+						)}
 					</box>
 				}
 			>
