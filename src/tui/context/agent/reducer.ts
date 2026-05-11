@@ -40,9 +40,23 @@ import { getOpenAICodexWebSocketDebugStats } from "@mariozechner/pi-ai/openai-co
 import { batch } from "solid-js";
 import { produce, type SetStoreFunction } from "solid-js/store";
 import type { LayoutContextValue } from "../../context/layout";
-import { REDACTED_THINKING_PLACEHOLDERS } from "./helpers";
 import type { MessageLog } from "./message-log";
 import type { SessionState } from "./session-state";
+
+/**
+ * Placeholder strings that providers inject into redacted thinking blocks.
+ * When a `thinking_end` arrives and the accumulated text consists solely of
+ * one of these placeholders (possibly with surrounding whitespace), the
+ * thinking part is dropped from the message — it carries no user-visible
+ * information and would otherwise persist as a dead breadcrumb.
+ *
+ * - `[REDACTED]`                    — OpenRouter literal (all providers)
+ * - `Reasoning hidden by provider`  — pi-kiro slow-path marker (conformance §26a)
+ */
+const REDACTED_THINKING_PLACEHOLDERS = [
+	"[REDACTED]",
+	"Reasoning hidden by provider",
+] as const;
 
 export interface ReducerDeps {
 	store: AgentStoreState;
