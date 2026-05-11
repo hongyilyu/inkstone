@@ -15,25 +15,12 @@ import type { ProviderInfo } from "./types";
 
 const log = logger.child("openai-codex");
 
-/**
- * OpenAI Codex — the ChatGPT Plus/Pro OAuth provider.
- *
- * pi-ai's `openai-codex-responses` API and `openaiCodexOAuthProvider` are
- * auto-registered at module load (`pi-ai/utils/oauth/index.js:30-36` +
- * `providers/register-builtins`), so this shim only has to (a) handle
- * credential persistence, (b) dedup concurrent refresh, and (c) report
- * connection state to `DialogModel` / `DialogProvider`. No
- * `registerApiProvider` call — contrast with `./kiro.ts`, which does
- * register `kiro-api` because pi-kiro isn't a pi-ai built-in.
- *
- * pi-ai's `getOAuthApiKey("openai-codex", credsMap)` handles the
- * expiry check and rotation in one call — `credsMap` is keyed by
- * provider id (`utils/oauth/index.js:115`), returns
- * `{ newCredentials, apiKey }` on success or `null` when creds are
- * missing, **throws** on refresh failure (`index.js:121-126`). We wrap
- * the throw so Inkstone's `getApiKey()` contract ("must not throw",
- * per `pi-agent-core/dist/types.d.ts`) is honored.
- */
+// OpenAI Codex — ChatGPT Plus/Pro OAuth provider. No
+// `registerApiProvider` call (pi-ai auto-registers
+// `openai-codex-responses`); we only own creds persistence, refresh
+// dedup, and connection state. `getOAuthApiKey` throws on refresh
+// failure; we wrap the throw so the must-not-throw `getApiKey()`
+// contract is honored. See `docs/ARCHITECTURE.md` § Provider Registry.
 
 /**
  * In-flight refresh promise, shared across concurrent callers. Same
