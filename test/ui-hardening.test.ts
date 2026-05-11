@@ -1,9 +1,12 @@
 /**
- * Tests for `stripAnsi` + `openVaultFilePart` symlink reject.
+ * Tests for `renderToolArgs` ANSI sanitization + `openVaultFilePart`
+ * symlink reject.
  *
  * Covers M3 (symlink escape via file-chip click) and M4 (ANSI
  * escape-code injection via tool-arg rendering) from the May 2026
- * audit.
+ * audit. The sanitization tests assert through the public seam
+ * (`renderToolArgs`) — what `ToolPart` actually calls — rather than
+ * the previously-exported internal `stripAnsi` helper.
  */
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import {
@@ -16,55 +19,67 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stripAnsi } from "@bridge/ansi";
 import { renderToolArgs } from "@bridge/tool-renderers";
 import { VAULT } from "./preload";
 
-describe("stripAnsi", () => {
-	test("strips CSI sequences (cursor moves, SGR, clears)", () => {
-		expect(stripAnsi("hello\x1b[2Jworld")).toBe("helloworld");
-		expect(stripAnsi("\x1b[31mred\x1b[0m")).toBe("red");
-		expect(stripAnsi("\x1b[1;32mbold-green\x1b[m")).toBe("bold-green");
+describe("renderToolArgs — ANSI + control-byte sanitization", () => {
+	// Each case asserts through the public seam ToolPart calls. The
+	// `read` tool's renderer returns the path verbatim (truncated to
+	// MAX_LEN), so testing against `read` exercises stripAnsi without
+	// any per-tool transformation interfering.
+
+	test("strips CSI sequences (cursor moves, SGR, clears) from tool args", () => {
+		expect(renderToolArgs("read", { path: "hello\x1b[2Jworld" })).toBe(
+			"helloworld",
+		);
+		expect(renderToolArgs("read", { path: "\x1b[31mred\x1b[0m" })).toBe("red");
+		expect(renderToolArgs("read", { path: "\x1b[1;32mbold-green\x1b[m" })).toBe(
+			"bold-green",
+		);
 	});
 
-	test("strips C0 control bytes except TAB/LF/CR", () => {
+	test("strips C0 control bytes except TAB/LF/CR from tool args", () => {
 		// \x00 (NUL), \x07 (BEL), \x08 (BS), \x0B (VT), \x7F (DEL) go;
 		// \x09 (TAB), \x0A (LF), \x0D (CR) stay.
-		expect(stripAnsi("a\x00b\x07c\x08d\x7Fe")).toBe("abcde");
-		expect(stripAnsi("line1\nline2\tindented\rreturn")).toBe(
-			"line1\nline2\tindented\rreturn",
+		expect(renderToolArgs("read", { path: "a\x00b\x07c\x08d\x7Fe" })).toBe(
+			"abcde",
 		);
+		expect(
+			renderToolArgs("read", { path: "line1\nline2\tindented\rreturn" }),
+		).toBe("line1\nline2\tindented\rreturn");
 	});
 
 	test("strips 8-bit CSI (single-byte 0x9B in place of ESC [)", () => {
 		// Some terminals in 8-bit mode accept 0x9B as a CSI intro. It
-		// lives in the C1 range which our CONTROL_BYTES regex now
+		// lives in the C1 range which the C0/C1 control-byte regex
 		// scrubs. The `2J` residue survives as visible text, not a
 		// terminal command.
-		expect(stripAnsi("hi\x9B2Jthere")).toBe("hi2Jthere");
+		expect(renderToolArgs("read", { path: "hi\x9B2Jthere" })).toBe("hi2Jthere");
 	});
 
 	test("strips bare ESC (0x1b) not followed by a CSI intro", () => {
 		// A bare ESC without the `[` intro byte is still a control — the
 		// C0 pass catches it even if the CSI regex doesn't match.
-		expect(stripAnsi("x\x1by")).toBe("xy");
+		expect(renderToolArgs("read", { path: "x\x1by" })).toBe("xy");
 	});
 
 	test("passes through plain text unchanged", () => {
-		expect(stripAnsi("plain text — no escapes")).toBe(
+		expect(renderToolArgs("read", { path: "plain text — no escapes" })).toBe(
 			"plain text — no escapes",
 		);
-		expect(stripAnsi("")).toBe("");
+		expect(renderToolArgs("read", { path: "" })).toBe("");
 	});
 
 	test("idempotent on already-clean input", () => {
+		// Re-rendering an already-sanitized string is a no-op. Indirect
+		// stripAnsi idempotency check through the renderToolArgs seam.
 		const clean = "no escapes here";
-		expect(stripAnsi(stripAnsi(clean))).toBe(clean);
+		const once = renderToolArgs("read", { path: clean });
+		expect(once).toBe(clean);
+		expect(renderToolArgs("read", { path: once })).toBe(clean);
 	});
-});
 
-describe("renderToolArgs — sanitizes ANSI before truncating", () => {
-	test("read tool with ANSI in path produces clean output", () => {
+	test("read tool with mixed ANSI in path produces clean output", () => {
 		const summary = renderToolArgs("read", {
 			path: "\x1b[2Joverwritten/\x1b[31mred\x1b[0m/foo.md",
 		});
