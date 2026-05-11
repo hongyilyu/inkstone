@@ -6,6 +6,7 @@ import {
 	type ThinkingLevel,
 } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
+import { logger } from "../logger";
 import {
 	resolveAgentModel,
 	resolveAgentThinkingLevel,
@@ -35,6 +36,8 @@ import {
 	setSuggestCommandFn,
 } from "./tools/suggest-command";
 import type { AgentCommand, AgentInfo } from "./types";
+
+const log = logger.child("agent");
 
 // Per-turn operations the TUI drives. Lifecycle (`clearSession`,
 // `selectAgent`) lives on `Session` itself — see `docs/AGENT-DESIGN.md`
@@ -197,20 +200,22 @@ function resolveModelRef(ref: ModelRef | null): {
 			// Stored ref's model id no longer resolves (e.g. pi-ai
 			// dropped it from the registry, or the provider's catalog
 			// changed). Fall back to the same provider's curated
-			// default. Quiet warning so a user who notices their
-			// model "switched" has a breadcrumb in stderr.
-			console.warn(
-				`[inkstone] config model '${ref.providerId}/${ref.modelId}' did not resolve; using provider default '${info.defaultModelId}'`,
-			);
+			// default. Breadcrumb so a user who notices their model
+			// "switched" can read the log.
+			log.warn("model ref did not resolve; using provider default", {
+				providerId: ref.providerId,
+				modelId: ref.modelId,
+				fallbackModelId: info.defaultModelId,
+			});
 			return { providerId: info.id, modelId: info.defaultModelId };
 		}
 		// Stored ref pointed at a provider that's currently disconnected
 		// (or unknown to the registry). Fall through to the
 		// first-connected loop below; warn so the silent-switch isn't
 		// completely opaque.
-		console.warn(
-			`[inkstone] config provider '${ref.providerId}' is not connected; falling back to first connected provider`,
-		);
+		log.warn("provider not connected; falling back to first connected", {
+			providerId: ref.providerId,
+		});
 	}
 	for (const info of listProviders()) {
 		if (info.isConnected() && resolveModel(info.id, info.defaultModelId)) {

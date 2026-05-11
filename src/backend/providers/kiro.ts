@@ -8,6 +8,7 @@ import {
 	resolveApiRegion,
 	streamKiro,
 } from "pi-kiro/core";
+import { logger } from "../logger";
 import {
 	clearKiroCreds,
 	loadKiroCreds,
@@ -15,6 +16,8 @@ import {
 } from "../persistence/auth";
 import { reportPersistenceError } from "../persistence/errors";
 import type { ProviderInfo } from "./types";
+
+const log = logger.child("kiro");
 
 // Register the `kiro-api` with pi-ai's api-registry so pi-ai's
 // `streamSimple(model, ...)` can dispatch to pi-kiro. Side-effect at
@@ -77,7 +80,10 @@ async function doRefresh(): Promise<KiroCredentials | undefined> {
 		// Log raw cause for debugging, but keep it out of the user-facing
 		// toast (pi-kiro's fetch error body could theoretically include
 		// token bytes in a future upstream change).
-		console.error("[inkstone] kiro refresh failed:", err);
+		log.warn(
+			"refresh failed",
+			err instanceof Error ? err : new Error(String(err)),
+		);
 		return undefined;
 	}
 }

@@ -11,6 +11,7 @@
  * room for its own helpers without bloating the verb router.
  */
 
+import { logger } from "@backend/logger";
 import {
 	appendDisplayMessage,
 	newId,
@@ -23,6 +24,8 @@ import { getOpenAICodexWebSocketDebugStats } from "@mariozechner/pi-ai/openai-co
 import { batch } from "solid-js";
 import { produce } from "solid-js/store";
 import type { ActionDeps } from "../actions";
+
+const log = logger.child("tui.title-task");
 
 export async function promptAction(
 	text: string,
@@ -141,10 +144,14 @@ function startSessionTitleTask(
 			// e.g. `provider.getApiKey()` rejecting, or `loadConfig()`
 			// throwing inside `resolveTitleModel`. Log the active params
 			// so the next layer up has something to debug with.
-			console.error(
-				`[inkstone] session title task failed (active: ${params.activeProviderId}/${params.activeModelId}):`,
-				error,
+			log.warn(
+				"task failed",
+				error instanceof Error ? error : new Error(String(error)),
 			);
+			log.debug("active model context", {
+				providerId: params.activeProviderId,
+				modelId: params.activeModelId,
+			});
 		});
 }
 

@@ -19,6 +19,7 @@
 
 import type { Session } from "@backend/agent";
 import { getAgentInfo } from "@backend/agent";
+import { logger } from "@backend/logger";
 import {
 	appendAgentMessage,
 	forkSession,
@@ -42,6 +43,8 @@ import { produce, type SetStoreFunction } from "solid-js/store";
 import type { LayoutContextValue } from "../../context/layout";
 import type { MessageLog } from "./message-log";
 import type { SessionState } from "./session-state";
+
+const log = logger.child("routing-seam");
 
 /**
  * Placeholder strings that providers inject into redacted thinking blocks.
@@ -652,7 +655,10 @@ function handleAgentEnd(event: AgentEvent, deps: ReducerDeps): void {
 			// user message. Outside the `batch()` because it's an
 			// async pi-agent-core call, not a store mutation.
 			deps.agentSession.actions.continue().catch((err) => {
-				console.error("[routing-seam] continue() failed:", err);
+				log.warn(
+					"continue() failed",
+					err instanceof Error ? err : new Error(String(err)),
+				);
 			});
 		}, 0);
 		return;

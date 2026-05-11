@@ -1,3 +1,4 @@
+import { logger } from "@backend/logger";
 import {
 	findFirstConnectedProvider,
 	type ProviderInfo,
@@ -7,6 +8,8 @@ import type { Api, Model } from "@mariozechner/pi-ai";
 import type { DialogContext } from "../../../ui/dialog";
 import type { ToastContext } from "../../../ui/toast";
 import { requestDisconnectConfirmation } from "../../disconnect-confirmation";
+
+const log = logger.child("tui.disconnect");
 
 /**
  * Shared confirm-then-disconnect helper.
@@ -84,7 +87,10 @@ export async function confirmAndDisconnect(
 			});
 		}
 	} catch (err) {
-		console.error("[inkstone] disconnect failed:", err);
+		log.warn(
+			"disconnect failed",
+			err instanceof Error ? err : new Error(String(err)),
+		);
 		toast.show({
 			variant: "error",
 			message: `${provider.displayName} disconnect failed: ${
