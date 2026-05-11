@@ -16,6 +16,7 @@
 - [Keybinds + Commands](#keybinds--commands)
 - [Key Patterns (from OpenCode)](#key-patterns-from-opencode)
 - [Persistence](#persistence)
+- [Logging](#logging)
 - [Testing](#testing)
 
 ## Overview
@@ -1139,6 +1140,44 @@ when neither env var is set. Any change requires a restart — the
 in-memory cache + the `VAULT_DIR` module constant are non-reactive
 (see `loadConfig` in `src/backend/persistence/config.ts`). The toast
 on close carries that hint.
+
+## Logging
+
+Lives at `src/backend/logger/`. Tracing-style: child loggers for
+namespaces, structured fields, async-local spans (`enter` → `exit ok|err`
++ `dur=Nms`). One human-readable line per event:
+
+```
+2026-05-11T10:42:13.123Z DEBUG [agent.turn>tool] enter sessionId=abc tool=read
+2026-05-11T10:42:13.456Z DEBUG [agent.turn>tool] exit ok dur=333ms sessionId=abc tool=read
+2026-05-11T10:42:13.789Z WARN  [agent.turn] tool denied sessionId=abc reason=outside-vault
+```
+
+File sink at `~/.local/state/inkstone/logs/inkstone.log` (override with
+`INKSTONE_LOG_FILE`). Wired once from `src/index.tsx:initLogger()`.
+Threshold defaults to `warn`; `bun run dev` raises to `debug` via
+`INKSTONE_LOG=debug` in the script. Users override per-run with the
+same env var; `INKSTONE_LOG=silent` disables file I/O entirely.
+
+Tests inject a memory sink via `setSink(...)`; they do not call
+`initLogger()`. Bun's test runner does not auto-set `NODE_ENV=test`, so
+the logger does not infer "are we in a test" from globals — DI is the
+contract.
+
+`AsyncLocalStorage` propagates span fields through `await`,
+`Promise.then`, `setTimeout`, and `setImmediate` natively. It does
+**not** propagate across native `EventEmitter.emit` (the listener runs
+in the emitter's async context, not the registration's). Wrap such
+listeners with `logger.bind(callback)`. v1 wraps the two boundaries
+inside emitted spans: `Session.subscribe` / `tool_execution_*` reducer
+handlers and the routing-fork `setTimeout(0)` continuation. See
+`docs/adr/0016-tracing-style-logger.md` for the build-custom decision
+and the alternatives ruled out.
+
+`reportPersistenceError` (`backend/persistence/errors.ts`) keeps its
+`console.error` fallback (last-ditch user-visible signal during the
+pre-toast startup window) AND additionally calls the logger so the file
+always has the trail.
 
 ## Testing
 

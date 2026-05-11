@@ -3,11 +3,13 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-10 (dissolve shallow modules; normalize LoginFlow contract)
+**Last updated**: 2026-05-11 (tracing-style logger module landed; PR1 of 4-PR stack)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
 ## In Progress
+
+- **Tracing-style logger + comment cleanup** (4-PR Graphite stack, in progress 2026-05-11). PR1 lands the `src/backend/logger/` module: child loggers for namespaces, structured fields, `AsyncLocalStorage`-scoped spans (enter/exit/duration), `logger.bind()` for event-emitter boundaries, and a file sink at `~/.local/state/inkstone/logs/inkstone.log`. Threshold defaults to `warn`; `bun run dev` raises to `debug` via `INKSTONE_LOG=debug` in the script. Built TDD vertical slices (13 RED→GREEN cycles, 27 tests). New ADR-0016 documents the build-custom + ALS choice; ARCHITECTURE.md gains a § Logging section. PR2 migrates 20 ad-hoc `console.{error,warn}` call sites; PR3 adds spans at the 5 v1 boundaries (`agent.turn`, `agent.turn.tool`, `routing.fork`, `permission.dispatch`, `provider.refresh`) and wraps the 2 in-span event-emitter boundaries with `logger.bind()`; PR4 compresses rationale comments where the structured log line now carries them and adds doc-pointers where ARCHITECTURE/ADR already covers the design call. Plan in `~/.claude/plans/ultrathink-lets-add-logs-noble-wreath.md`.
 
 - E2E test coverage expansion (3 graphite-stacked PRs, plan in `~/.claude/plans/and-identify-e2e-misty-castle.md`). Stack A — agent command E2E (`reader-article` + `kb-commands` + directory-reject unit). Stack B — permission deny propagation + resume totals sidebar. Stack C — mid-conversation model-switch footer invariant + Bun-segfault unmount retry (still hangs on Bun 1.3.4, scaffold skipped) + docs swap (replaced obsolete `E2E-PLAN.md` with `E2E-TESTING.md` reference doc).
 
