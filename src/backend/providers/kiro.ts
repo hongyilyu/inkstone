@@ -43,15 +43,9 @@ registerApiProvider({
  */
 let inflight: Promise<KiroCredentials | undefined> | null = null;
 
-/**
- * Lazy token refresh. Called from `getApiKey()` only (not from
- * `listModels()`, which needs `creds.region` and is stable across
- * refreshes). Concurrent callers share one in-flight promise; on
- * refresh failure clears creds and returns `undefined` so pi-agent-
- * core's `getApiKey` contract (must not throw) is honored — the
- * subsequent stream fails with a 401 and the user is surfaced a toast
- * via `reportPersistenceError`, nudging them back through Connect.
- */
+// Lazy token refresh. Concurrent callers share one in-flight promise.
+// Refresh failure → clear creds, return `undefined` (pi-agent-core's
+// must-not-throw contract). See `docs/ARCHITECTURE.md` § Kiro provider.
 async function refreshIfNeeded(): Promise<KiroCredentials | undefined> {
 	if (inflight) return inflight;
 	inflight = doRefresh().finally(() => {
