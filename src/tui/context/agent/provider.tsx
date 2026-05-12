@@ -380,6 +380,7 @@ export function AgentProvider(
 			getModelId: () => agentSession.getModelId(),
 			getThinkingLevel: () => agentSession.getThinkingLevel(),
 			getCurrentSessionId: () => sessionState.getCurrentSessionId(),
+			subscribeSessionId: () => sessionState.subscribeSessionId(),
 		},
 		previews,
 		pendingApproval: () => pendingApproval()?.request ?? null,
