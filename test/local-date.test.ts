@@ -23,5 +23,4 @@ describe("todayLocalDate", () => {
 			`${String(d.getDate()).padStart(2, "0")}`;
 		expect(out).toBe(expected);
 	});
-
 });

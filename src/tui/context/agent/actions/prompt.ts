@@ -11,6 +11,7 @@
  * room for its own helpers without bloating the verb router.
  */
 
+import type { PromptOptions } from "@backend/agent";
 import { logger } from "@backend/logger";
 import {
 	appendDisplayMessage,
@@ -27,9 +28,19 @@ import type { ActionDeps } from "../actions";
 
 const log = logger.child("tui.title-task");
 
+/**
+ * Length bound matching `MAX_TITLE_CHARS` in
+ * `backend/agent/session-title.ts`. Long article filenames (a vault
+ * has full-prose stems like "Most Companies Aren't Anywhere Near
+ * Ready for AI") get the same truncation the LLM path enforces, so
+ * the sidebar / session list / row-render contracts that assume a
+ * bounded title stay valid.
+ */
+const EXPLICIT_TITLE_MAX_CHARS = 50;
+
 export async function promptAction(
 	text: string,
-	displayParts: DisplayPart[] | undefined,
+	opts: PromptOptions | undefined,
 	deps: ActionDeps,
 ): Promise<void> {
 	const sessionId = deps.sessionState.ensureSession();
@@ -41,16 +52,17 @@ export async function promptAction(
 			provider: deps.store.modelProvider,
 			modelId: deps.agentSession.getModelId(),
 		},
-		() => promptActionBody(text, displayParts, deps, sessionId),
+		() => promptActionBody(text, opts, deps, sessionId),
 	);
 }
 
 async function promptActionBody(
 	text: string,
-	displayParts: DisplayPart[] | undefined,
+	opts: PromptOptions | undefined,
 	deps: ActionDeps,
 	sessionId: string,
 ): Promise<void> {
+	const displayParts = opts?.displayParts;
 	const shouldGenerateTitle = deps.store.messages.length === 0;
 	const titleProviderId = deps.store.modelProvider;
 	const titleModelId = deps.agentSession.getModelId();
@@ -94,15 +106,25 @@ async function promptActionBody(
 		deps.sessionState.setPreTurnCodexConnections(undefined);
 	}
 	if (shouldGenerateTitle) {
-		startSessionTitleTask(
-			{
-				sessionId,
-				activeProviderId: titleProviderId,
-				activeModelId: titleModelId,
-				prompt: text,
-			},
-			deps,
-		);
+		const explicitTitle = opts?.title?.trim();
+		if (explicitTitle) {
+			// Caller knows the session's identity at dispatch time
+			// (reader's `/article` passes the article's frontmatter
+			// title or filename stem). Persist it directly — no LLM
+			// round-trip — so the session list shows that identity
+			// verbatim instead of a paraphrased approximation.
+			applyExplicitSessionTitle(sessionId, explicitTitle, deps);
+		} else {
+			startSessionTitleTask(
+				{
+					sessionId,
+					activeProviderId: titleProviderId,
+					activeModelId: titleModelId,
+					prompt: buildTitlePrompt(text, displayParts),
+				},
+				deps,
+			);
+		}
 	}
 	deps.layout.scrollToBottom();
 	// Snapshot session id + message-length before the await so the
@@ -124,6 +146,76 @@ async function promptActionBody(
 	} catch (err) {
 		handlePreStreamError(err, deps, { sidAtStart, lenAtStart });
 	}
+}
+
+/**
+ * Persist an explicit title declared by a command at dispatch time.
+ * Mirrors `startSessionTitleTask`'s persist-first shape — only update
+ * the in-store title if the row write commits — but synchronous
+ * because the title is already known.
+ */
+function applyExplicitSessionTitle(
+	sessionId: string,
+	title: string,
+	deps: ActionDeps,
+): void {
+	const trimmed =
+		title.length <= EXPLICIT_TITLE_MAX_CHARS
+			? title
+			: title.slice(0, EXPLICIT_TITLE_MAX_CHARS);
+	persist((tx) => updateSessionTitle(tx, sessionId, trimmed), {
+		onSuccess: () => {
+			if (deps.sessionState.getCurrentSessionId() === sessionId) {
+				deps.setStore("sessionTitle", trimmed);
+			}
+		},
+	});
+}
+
+/**
+ * Build the input the LLM title generator sees on the no-explicit-title
+ * path.
+ *
+ * Plain prompts carry their full content in `text` and have no
+ * `displayParts` — `text` is the right title input.
+ *
+ * `@`-mention prompts pack `text` with `Path:` + body blocks per
+ * mention, then truncate at 4 KB inside `generateSessionTitle` —
+ * losing the prompt's actual question. The `displayParts` the bubble
+ * renders ARE the user-facing shape (text + file chips), so we
+ * flatten those into a short "text + filename-stem" string for the
+ * title model.
+ *
+ * Commands that supply `opts.title` short-circuit before reaching
+ * here (see `applyExplicitSessionTitle`).
+ *
+ * File parts contribute the basename without extension; the directory
+ * prefix is structure noise and `.md` is uniform across the vault.
+ */
+function buildTitlePrompt(
+	text: string,
+	displayParts: DisplayPart[] | undefined,
+): string {
+	if (!displayParts) return text;
+	const pieces: string[] = [];
+	for (const part of displayParts) {
+		if (part.type === "text") {
+			const t = part.text.trim();
+			if (t) pieces.push(t);
+		} else if (part.type === "file") {
+			const stem = filenameStem(part.filename);
+			if (stem) pieces.push(stem);
+		}
+	}
+	const joined = pieces.join(" ").trim();
+	return joined || text;
+}
+
+function filenameStem(path: string): string {
+	const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+	const base = slash === -1 ? path : path.slice(slash + 1);
+	const dot = base.lastIndexOf(".");
+	return dot <= 0 ? base : base.slice(0, dot);
 }
 
 function startSessionTitleTask(

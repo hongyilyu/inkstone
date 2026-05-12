@@ -35,7 +35,7 @@ import {
 	type SuggestCommandRequest,
 	setSuggestCommandFn,
 } from "./tools/suggest-command";
-import type { AgentCommand, AgentInfo } from "./types";
+import type { AgentCommand, AgentInfo, PromptOptions } from "./types";
 
 const log = logger.child("agent");
 
@@ -658,6 +658,7 @@ export {
 	getAgentInfo,
 	getConfirmFn,
 	getSuggestCommandFn,
+	type PromptOptions,
 	type SuggestCommandDecision,
 	type SuggestCommandRequest,
 	setConfirmFn,

@@ -24,6 +24,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import type { generateSessionTitle } from "../../src/backend/agent";
 import { makeFakeSession } from "./fake-session";
 import { renderApp, waitForFrame } from "./harness";
 
@@ -130,6 +131,42 @@ describe("/article command", () => {
 		const f = setup.captureCharFrame();
 		expect(f).not.toContain("Command error");
 		expect(f).not.toContain("Symlinks are not supported");
+	});
+
+	test("title is set from frontmatter; LLM title generator is bypassed", async () => {
+		// `/article` knows the article identity at dispatch time
+		// (frontmatter `title:` or filename stem) and passes it through
+		// `helpers.prompt`'s `opts.title`. The LLM title task short-
+		// circuits — better than any model paraphrase for finding the
+		// session in the list later. Pin: the LLM generator is NOT
+		// called, and `store.sessionTitle` reflects the frontmatter
+		// title (`foo` for the seeded `foo.md` fixture). Companion to
+		// the bigger regression note: `/article`'s LLM-facing text
+		// begins with a ~6.5KB workflow prelude; feeding that to the
+		// LLM title generator (which truncates input to 4KB) emits
+		// titles like "Title generator" — summarizing the prelude.
+		// Skipping the LLM avoids both the prelude bug and the
+		// paraphrase drift.
+		let titleGeneratorCalls = 0;
+		const titleGenerator: typeof generateSessionTitle = async () => {
+			titleGeneratorCalls += 1;
+			return null;
+		};
+
+		const fake = makeFakeSession();
+		setup = await renderApp({
+			session: fake.factory,
+			sessionTitleGenerator: titleGenerator,
+		});
+		await setup.renderOnce();
+
+		await setup.mockInput.typeText("/article foo.md");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(40);
+
+		expect(titleGeneratorCalls).toBe(0);
+		expect(setup.getAgent().store.sessionTitle).toBe("foo");
 	});
 
 	test("bare `/article ` opens picker; selecting first row dispatches", async () => {

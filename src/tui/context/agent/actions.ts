@@ -11,10 +11,11 @@
 
 import type {
 	generateSessionTitle,
+	PromptOptions,
 	Session,
 	SuggestCommandDecision,
 } from "@backend/agent";
-import type { AgentStoreState, DisplayPart } from "@bridge/view-model";
+import type { AgentStoreState } from "@bridge/view-model";
 import type { SetStoreFunction } from "solid-js/store";
 import type { LayoutContextValue } from "../../context/layout";
 import type { useToast } from "../../ui/toast";
@@ -69,8 +70,8 @@ export function createWrappedActions(
 ): AgentContextValue["actions"] {
 	return {
 		...deps.agentSession.actions,
-		async prompt(text: string, displayParts?: DisplayPart[]) {
-			await promptAction(text, displayParts, deps);
+		async prompt(text: string, opts?: PromptOptions) {
+			await promptAction(text, opts, deps);
 		},
 		abort() {
 			// Resolve pending TUI promises BEFORE backend abort — the
