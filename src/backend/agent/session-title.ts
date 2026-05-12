@@ -6,7 +6,15 @@ import { getProvider, resolveModel } from "../providers";
 const log = logger.child("agent.title");
 
 const MAX_INPUT_CHARS = 4000;
-const MAX_TITLE_CHARS = 50;
+/**
+ * Length cap on every persisted session title — both the LLM-cleaned
+ * output here and the explicit `opts.title` path the TUI takes when a
+ * command declares its own title (`actions/prompt.ts:applyExplicitSessionTitle`).
+ * Single source so the LLM and explicit paths can't drift; the
+ * sidebar / session list / row-render contracts assume the bound
+ * holds for both.
+ */
+export const MAX_TITLE_CHARS = 50;
 
 /**
  * System prompt for title generation. Ported from OpenCode's `title.txt`

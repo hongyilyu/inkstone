@@ -11,7 +11,7 @@
  * room for its own helpers without bloating the verb router.
  */
 
-import type { PromptOptions } from "@backend/agent";
+import { MAX_TITLE_CHARS, type PromptOptions } from "@backend/agent";
 import { logger } from "@backend/logger";
 import {
 	appendDisplayMessage,
@@ -27,16 +27,6 @@ import { produce } from "solid-js/store";
 import type { ActionDeps } from "../actions";
 
 const log = logger.child("tui.title-task");
-
-/**
- * Length bound matching `MAX_TITLE_CHARS` in
- * `backend/agent/session-title.ts`. Long article filenames (a vault
- * has full-prose stems like "Most Companies Aren't Anywhere Near
- * Ready for AI") get the same truncation the LLM path enforces, so
- * the sidebar / session list / row-render contracts that assume a
- * bounded title stay valid.
- */
-const EXPLICIT_TITLE_MAX_CHARS = 50;
 
 export async function promptAction(
 	text: string,
@@ -160,9 +150,7 @@ function applyExplicitSessionTitle(
 	deps: ActionDeps,
 ): void {
 	const trimmed =
-		title.length <= EXPLICIT_TITLE_MAX_CHARS
-			? title
-			: title.slice(0, EXPLICIT_TITLE_MAX_CHARS);
+		title.length <= MAX_TITLE_CHARS ? title : title.slice(0, MAX_TITLE_CHARS);
 	persist((tx) => updateSessionTitle(tx, sessionId, trimmed), {
 		onSuccess: () => {
 			if (deps.sessionState.getCurrentSessionId() === sessionId) {

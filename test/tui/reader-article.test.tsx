@@ -24,7 +24,13 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import type { generateSessionTitle } from "../../src/backend/agent";
+import { unlinkSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+	type generateSessionTitle,
+	MAX_TITLE_CHARS,
+} from "../../src/backend/agent";
+import { ARTICLES_DIR } from "../preload";
 import { makeFakeSession } from "./fake-session";
 import { renderApp, waitForFrame } from "./harness";
 
@@ -167,6 +173,40 @@ describe("/article command", () => {
 
 		expect(titleGeneratorCalls).toBe(0);
 		expect(setup.getAgent().store.sessionTitle).toBe("foo");
+	});
+
+	test("frontmatter title longer than MAX_TITLE_CHARS is truncated", async () => {
+		// `applyExplicitSessionTitle` shares the persisted-title length
+		// cap with the LLM-cleaned path (`MAX_TITLE_CHARS` in
+		// `backend/agent/session-title.ts`). A future contributor who
+		// bumps the LLM-side cap must also widen the explicit-title
+		// path or the two paths will silently drift — long article
+		// titles would clip while LLM paraphrases render at the new
+		// width. Pin the cap here with a fixture whose frontmatter
+		// title is comfortably over the bound.
+		const longTitle = "A".repeat(MAX_TITLE_CHARS + 25); // 75 chars
+		const fixturePath = resolve(ARTICLES_DIR, "long-title.md");
+		writeFileSync(fixturePath, `---\ntitle: ${longTitle}\n---\n\nBody.\n`);
+
+		try {
+			const fake = makeFakeSession();
+			setup = await renderApp({
+				session: fake.factory,
+				sessionTitleGenerator: async () => null,
+			});
+			await setup.renderOnce();
+
+			await setup.mockInput.typeText("/article long-title.md");
+			setup.mockInput.pressEnter();
+			await setup.renderOnce();
+			await Bun.sleep(40);
+
+			const stored = setup.getAgent().store.sessionTitle;
+			expect(stored.length).toBe(MAX_TITLE_CHARS);
+			expect(stored).toBe(longTitle.slice(0, MAX_TITLE_CHARS));
+		} finally {
+			unlinkSync(fixturePath);
+		}
 	});
 
 	test("bare `/article ` opens picker; selecting first row dispatches", async () => {

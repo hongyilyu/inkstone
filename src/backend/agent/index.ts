@@ -650,7 +650,7 @@ export function listAgents(): AgentInfo[] {
 	return AGENTS;
 }
 
-export { generateSessionTitle } from "./session-title";
+export { generateSessionTitle, MAX_TITLE_CHARS } from "./session-title";
 export {
 	type AgentCommand,
 	type AgentInfo,

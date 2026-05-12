@@ -102,7 +102,8 @@ export interface AgentCommand {
  * any model paraphrase for finding the session in the list later.
  * Only honored on the first turn of a session (when there's a title
  * task to skip); ignored on subsequent turns. Trimmed and capped to
- * `EXPLICIT_TITLE_MAX_CHARS` (50) by the receiver.
+ * `MAX_TITLE_CHARS` by the receiver — same bound the LLM-cleaned
+ * title path enforces, so both shapes share one invariant.
  */
 export interface PromptOptions {
 	displayParts?: DisplayPart[];
