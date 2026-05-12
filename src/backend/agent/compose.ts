@@ -130,6 +130,27 @@ function rel(absDir: string): string {
 	return relative(VAULT_DIR, absDir) || ".";
 }
 
+// Render an `<env>` block fixing today's date for the LLM. Without
+// this, the model infers "today" from filenames or content and
+// guesses wrong (frontmatter dates were the trigger). Local time,
+// YYYY-MM-DD — unambiguous, locale-free, parseable. OpenCode emits
+// the same block from `session/system.ts`.
+//
+// Captured once per `composeSystemPrompt` call. Since the prompt is
+// composed at session creation and only re-composed on agent swap
+// (`selectAgent`), the date stays byte-stable for the session and
+// preserves D9's cache-prefix invariant. Sessions that survive past
+// local midnight retain the original date — acceptable trade-off vs.
+// invalidating the cache_control prefix every day.
+function composeEnvBlock(): string {
+	const d = new Date();
+	const today =
+		`${d.getFullYear()}-` +
+		`${String(d.getMonth() + 1).padStart(2, "0")}-` +
+		`${String(d.getDate()).padStart(2, "0")}`;
+	return ["<env>", `Today's date: ${today}`, "</env>"].join("\n");
+}
+
 // Render `info.commands` as a `<commands>` block. Skips entries
 // without a description; omitted entirely when none have one. Cache-
 // stability invariant: see `docs/AGENT-DESIGN.md` D9.
@@ -151,11 +172,16 @@ function composeCommandsBlock(info: AgentInfo): string {
 }
 
 export function composeSystemPrompt(info: AgentInfo): string {
+	const envBlock = composeEnvBlock();
 	const workspaceBlock = composeWorkspaceBlock(info);
 	const commandsBlock = composeCommandsBlock(info);
 	const body = info.buildInstructions();
-	const sections = [workspaceBlock, commandsBlock, BASE_PREAMBLE, body].filter(
-		(s) => s.length > 0,
-	);
+	const sections = [
+		envBlock,
+		workspaceBlock,
+		commandsBlock,
+		BASE_PREAMBLE,
+		body,
+	].filter((s) => s.length > 0);
 	return sections.join("\n\n");
 }

@@ -42,6 +42,38 @@ function makeAgent(overrides: Partial<AgentInfo>): AgentInfo {
 	};
 }
 
+describe("composeSystemPrompt — <env> block", () => {
+	test("emits a leading <env> block with today's date in YYYY-MM-DD", () => {
+		const prompt = composeSystemPrompt(readerAgent);
+		expect(prompt.startsWith("<env>\n")).toBe(true);
+		expect(prompt).toContain("</env>");
+		// Local-time ISO date — match the format, not a fixed string,
+		// so the test stays stable across days.
+		expect(prompt).toMatch(/Today's date: \d{4}-\d{2}-\d{2}/);
+	});
+
+	test("env block is present even on a minimal agent (no workspace, no commands)", () => {
+		// Pins that the env block stands alone — earlier "leading section"
+		// assertions only fire on agents with a workspace block. A
+		// minimal agent must still receive the date.
+		const minimal = makeAgent({});
+		const prompt = composeSystemPrompt(minimal);
+		expect(prompt.startsWith("<env>\n")).toBe(true);
+		expect(prompt).toMatch(/Today's date: \d{4}-\d{2}-\d{2}/);
+	});
+
+	test("env date matches the system clock at compose time", () => {
+		// The date the LLM reads must be the date the host says it is.
+		const d = new Date();
+		const expected =
+			`${d.getFullYear()}-` +
+			`${String(d.getMonth() + 1).padStart(2, "0")}-` +
+			`${String(d.getDate()).padStart(2, "0")}`;
+		const prompt = composeSystemPrompt(makeAgent({}));
+		expect(prompt).toContain(`Today's date: ${expected}`);
+	});
+});
+
 describe("composeSystemPrompt — commands block", () => {
 	test("reader includes a <commands> block listing /article", () => {
 		const prompt = composeSystemPrompt(readerAgent);
@@ -272,18 +304,22 @@ describe("composeSystemPrompt — <your workspace> from permission rules", () =>
 });
 
 describe("composeSystemPrompt — section order", () => {
-	test("workspace block precedes commands block precedes body", () => {
+	test("env precedes workspace precedes commands precedes body", () => {
 		const prompt = composeSystemPrompt(readerAgent);
+		const envIdx = prompt.indexOf("<env>");
 		const workspaceIdx = prompt.indexOf("<your workspace>");
 		const commandsIdx = prompt.indexOf("<commands>");
 		const bodyIdx = prompt.indexOf("Reading Guide Persona");
-		expect(workspaceIdx).toBeGreaterThanOrEqual(0);
+		expect(envIdx).toBe(0);
+		expect(workspaceIdx).toBeGreaterThan(envIdx);
 		expect(commandsIdx).toBeGreaterThan(workspaceIdx);
 		expect(bodyIdx).toBeGreaterThan(commandsIdx);
 	});
 
 	test("sections separated by blank lines", () => {
 		const prompt = composeSystemPrompt(readerAgent);
+		// Env block closes, blank line, workspace block opens.
+		expect(prompt).toContain("</env>\n\n<your workspace>");
 		// Workspace block closes, blank line, commands block opens.
 		expect(prompt).toContain("</your workspace>\n\n<commands>");
 	});
