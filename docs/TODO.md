@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-12 (opt-in command-declared session titles — 3-PR Graphite stack)
+**Last updated**: 2026-05-12 (reducer dispatcher narrowed to typed `AgentEvent` variants; soft-spot `getModel` cast surfaced)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -45,6 +45,8 @@
 - Implemented architecture simplification: declarative permission overlay, layout dependency injection, and tool permission coverage. Design rationale lives in `docs/AGENT-DESIGN.md` D12 and `docs/LAYOUT-CONTEXT.md`.
 
 ## Known Issues
+
+- **Loosely-typed `getModel` lookup at the turn-close stamp.** `stampTurnClosingBubble` (`src/tui/context/agent/reducer.ts`) calls `getModel(closingAssistant.provider as any, closingAssistant.model as any)` to render the closing bubble's model name. pi-ai's `getModel<P extends KnownProvider, M extends keyof MODELS[P]>` requires literal-typed args; the persisted `provider` / `model` strings on `AssistantMessage` aren't literal, hence the cast. Runtime hazard: a resumed session whose original provider is no longer registered yields whatever `getModel` does for an unknown combo (likely `undefined`, masked by the `?.name ??` chain — but a future pi-ai version that throws on unknown combos would crash the turn-close path). Fix is a `lookupModel(provider: string, modelId: string): Model \| undefined` wrapper that owns the one cast and returns `undefined` for unknown combos. Single-site today; defer until a second caller needs it.
 
 - **Abort-unmount test gap for the approval panel.** The provider's `onCleanup` resolves any in-flight `confirmFn` to `false` (queued via `queueMicrotask`). Verified by code inspection + abort/clearSession test coverage. Direct test coverage via `renderer.destroy()` while pending triggers a Bun 1.3.4 segfault on macOS in the OpenTUI renderer teardown path when a Promise-holding owner is disposed — unrelated to the resolver, but it means we can't assert this specific path end-to-end today. **2026-05-08 retry on Bun 1.3.4**: hangs indefinitely (no longer segfaults outright but doesn't terminate either) — the test runner stalls without a stack trace. Skipped scaffold lives in `test/tui/permission-prompt.test.tsx` (`test.skip("renderer.destroy() while pending...")`) so future Bun bumps can be re-attempted by toggling `.skip` → `()`. Revisit when Bun / OpenTUI ship a fix.
 
