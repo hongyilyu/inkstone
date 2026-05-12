@@ -187,7 +187,7 @@ export function Prompt() {
 	// when non-reactive locals change, so "focus when the ref finally
 	// populates" must happen inside the ref callback.
 	createEffect(() => {
-		const el = inputRef as any;
+		const el = inputRef;
 		if (!el || el.isDestroyed) return;
 		if (dialog.stack.length > 0) {
 			if (el.focused) el.blur();
