@@ -51,6 +51,8 @@ Skips named in PR: pure visual (char-frame can't assert), branch covered by adja
 
 Prefer long-term proper fix over short-term smaller diff — unless proper fix needs speculative infra. Smaller diff alone ≠ justification. When in doubt, port upstream OpenCode pattern in full over trimmed local variant.
 
+**Bug fixes — proper fix over patch.** When a bug exposes missing structure (state hoisted to wrong scope, wrong reactivity boundary, missing per-session keying), fix the structure, not the symptom. Patching around wrong shape (e.g. "always-mount the Prompt and hide it" to dodge a state hoist) creates layering inversions that bite later. If the proper fix needs speculative infrastructure, say so explicitly and propose the smallest correct interim — never silently land the patch.
+
 **After non-trivial impl** — spawn fresh-context subagent before declaring done:
 
 1. No main-agent context → reviewer forms opinion from diff + code alone. Bias reduction = the point.
