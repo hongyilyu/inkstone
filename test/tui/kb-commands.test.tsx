@@ -80,6 +80,10 @@ describe("knowledge-base slash commands", () => {
 		await setup.renderOnce();
 		await cycleToKnowledgeBase(setup);
 
+		// Snapshot the date BEFORE submitting so a wall-clock midnight
+		// crossing during the ~40ms async window doesn't drift the
+		// assertion past production's stamped value.
+		const expectedDate = todayLocalDate();
 		await setup.mockInput.typeText("/ingest ");
 		setup.mockInput.pressEnter();
 		await setup.renderOnce();
@@ -87,7 +91,7 @@ describe("knowledge-base slash commands", () => {
 
 		expect(titleGeneratorCalls).toBe(0);
 		expect(setup.getAgent().store.sessionTitle).toBe(
-			`Ingest · ${todayLocalDate()}`,
+			`Ingest · ${expectedDate}`,
 		);
 	});
 
@@ -123,15 +127,14 @@ describe("knowledge-base slash commands", () => {
 		await setup.renderOnce();
 		await cycleToKnowledgeBase(setup);
 
+		const expectedDate = todayLocalDate();
 		await setup.mockInput.typeText("/lint ");
 		setup.mockInput.pressEnter();
 		await setup.renderOnce();
 		await Bun.sleep(40);
 
 		expect(titleGeneratorCalls).toBe(0);
-		expect(setup.getAgent().store.sessionTitle).toBe(
-			`Lint · ${todayLocalDate()}`,
-		);
+		expect(setup.getAgent().store.sessionTitle).toBe(`Lint · ${expectedDate}`);
 	});
 
 	test("/query falls through to the LLM title generator (no explicit title)", async () => {
