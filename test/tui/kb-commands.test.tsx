@@ -16,6 +16,8 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import type { generateSessionTitle } from "../../src/backend/agent";
+import { todayLocalDate } from "../../src/backend/agent/util/local-date";
 import { makeFakeSession } from "./fake-session";
 import { renderApp, waitForFrame } from "./harness";
 
@@ -61,6 +63,34 @@ describe("knowledge-base slash commands", () => {
 		expect(fake.calls.prompt[0]).toBe("Run the ingest workflow.");
 	});
 
+	test("/ingest sets a deterministic title (Ingest · <today>) and bypasses the LLM", async () => {
+		// `/ingest` declares its title via `opts.title` — see the
+		// rationale block above `ingestCommand` in `index.ts`.
+		let titleGeneratorCalls = 0;
+		const titleGenerator: typeof generateSessionTitle = async () => {
+			titleGeneratorCalls += 1;
+			return null;
+		};
+
+		const fake = makeFakeSession();
+		setup = await renderApp({
+			session: fake.factory,
+			sessionTitleGenerator: titleGenerator,
+		});
+		await setup.renderOnce();
+		await cycleToKnowledgeBase(setup);
+
+		await setup.mockInput.typeText("/ingest ");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(40);
+
+		expect(titleGeneratorCalls).toBe(0);
+		expect(setup.getAgent().store.sessionTitle).toBe(
+			`Ingest · ${todayLocalDate()}`,
+		);
+	});
+
 	test("/lint dispatches the lint workflow prompt", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });
@@ -74,6 +104,63 @@ describe("knowledge-base slash commands", () => {
 
 		expect(fake.calls.prompt.length).toBe(1);
 		expect(fake.calls.prompt[0]).toBe("Run the lint workflow.");
+	});
+
+	test("/lint sets a deterministic title (Lint · <today>) and bypasses the LLM", async () => {
+		// Same shape as the `/ingest` title pin — `/lint` is also a
+		// content-less workflow run. See that test for full rationale.
+		let titleGeneratorCalls = 0;
+		const titleGenerator: typeof generateSessionTitle = async () => {
+			titleGeneratorCalls += 1;
+			return null;
+		};
+
+		const fake = makeFakeSession();
+		setup = await renderApp({
+			session: fake.factory,
+			sessionTitleGenerator: titleGenerator,
+		});
+		await setup.renderOnce();
+		await cycleToKnowledgeBase(setup);
+
+		await setup.mockInput.typeText("/lint ");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(40);
+
+		expect(titleGeneratorCalls).toBe(0);
+		expect(setup.getAgent().store.sessionTitle).toBe(
+			`Lint · ${todayLocalDate()}`,
+		);
+	});
+
+	test("/query falls through to the LLM title generator (no explicit title)", async () => {
+		// `/query`'s session content IS per-session — the question.
+		// The LLM gets a sub-4KB prompt ("Run the query workflow.\n\n
+		// Question: <args>") and produces a sensible content-derived
+		// title. Pinning the negative case so a future "every command
+		// declares a title" refactor would surface here and force a
+		// conscious decision about /query's title shape.
+		let titleGeneratorCalls = 0;
+		const titleGenerator: typeof generateSessionTitle = async () => {
+			titleGeneratorCalls += 1;
+			return "What is foo question";
+		};
+
+		const fake = makeFakeSession();
+		setup = await renderApp({
+			session: fake.factory,
+			sessionTitleGenerator: titleGenerator,
+		});
+		await setup.renderOnce();
+		await cycleToKnowledgeBase(setup);
+
+		await setup.mockInput.typeText("/query what is foo");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(40);
+
+		expect(titleGeneratorCalls).toBe(1);
 	});
 
 	test("/query <question> embeds the args into the workflow prompt", async () => {
