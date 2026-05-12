@@ -81,8 +81,7 @@ describe("routing seam", () => {
 				details: { agent: "reader" },
 			},
 			isError: false,
-			// biome-ignore lint/suspicious/noExplicitAny: minimal stub for the reducer's `endEvt` shape
-		} as any;
+		};
 		fake.emit(dispatchEvent);
 		fake.emit(ev_messageEnd({ stopReason: "stop" }));
 		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
@@ -183,8 +182,7 @@ describe("routing seam", () => {
 				],
 			},
 			isError: true,
-			// biome-ignore lint/suspicious/noExplicitAny: minimal stub
-		} as any;
+		};
 		fake.emit(errorEvent);
 		fake.emit(ev_messageEnd({ stopReason: "stop" }));
 		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
@@ -235,8 +233,7 @@ describe("routing seam", () => {
 				details: { agent: "reader" },
 			},
 			isError: false,
-			// biome-ignore lint/suspicious/noExplicitAny: minimal stub for the reducer's `endEvt` shape
-		} as any;
+		};
 		fake.emit(dispatchEvent);
 		fake.emit(ev_messageEnd({ stopReason: "stop" }));
 

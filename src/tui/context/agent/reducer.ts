@@ -36,7 +36,7 @@ import type {
 	AgentMessage,
 	AssistantMessageEvent,
 } from "@mariozechner/pi-agent-core";
-import { type AssistantMessage, getModel } from "@mariozechner/pi-ai";
+import { getModel } from "@mariozechner/pi-ai";
 import { getOpenAICodexWebSocketDebugStats } from "@mariozechner/pi-ai/openai-codex-responses";
 import { batch } from "solid-js";
 import { produce, type SetStoreFunction } from "solid-js/store";
@@ -45,6 +45,14 @@ import type { MessageLog } from "./message-log";
 import type { SessionState } from "./session-state";
 
 const log = logger.child("routing-seam");
+
+/**
+ * Narrow a discriminated `AgentEvent` to the variant matching `T`. The
+ * outer dispatcher's `switch (event.type)` already narrows; handlers
+ * declare which variant they take so their bodies can read variant-only
+ * fields (`message`, `messages`, `toolCallId`, …) without `as any`.
+ */
+type EventOf<T extends AgentEvent["type"]> = Extract<AgentEvent, { type: T }>;
 
 /**
  * Placeholder strings that providers inject into redacted thinking blocks.
@@ -148,9 +156,12 @@ function handleAgentStart(deps: ReducerDeps): void {
 // message_start
 // ────────────────────────────────────────────────────────────────────
 
-function handleMessageStart(event: AgentEvent, deps: ReducerDeps): void {
-	const msg = (event as any).message;
-	if (!msg || msg.role !== "assistant") return;
+function handleMessageStart(
+	event: EventOf<"message_start">,
+	deps: ReducerDeps,
+): void {
+	const msg = event.message;
+	if (msg.role !== "assistant") return;
 	// Best-effort header insert — parts stream in and get flushed at
 	// `message_end` via `stampAssistantOnMessageEnd`. A failed shell
 	// insert leaves the bubble in the store but missing from disk;
@@ -164,7 +175,10 @@ function handleMessageStart(event: AgentEvent, deps: ReducerDeps): void {
 // message_update (inner switch on AssistantMessageEvent.type)
 // ────────────────────────────────────────────────────────────────────
 
-function handleMessageUpdate(event: AgentEvent, deps: ReducerDeps): void {
+function handleMessageUpdate(
+	event: EventOf<"message_update">,
+	deps: ReducerDeps,
+): void {
 	// pi-ai's `AssistantMessageEvent` union fires `text_start` /
 	// `thinking_start` deterministically before the first matching
 	// delta (see pi-agent-core `agent-loop.js:175-190`). We still
@@ -172,10 +186,7 @@ function handleMessageUpdate(event: AgentEvent, deps: ReducerDeps): void {
 	// insurance against future upstream reordering, and it's the
 	// single failure mode that would silently cross-append text into
 	// a thinking block (or vice versa).
-	if (!("assistantMessageEvent" in event)) return;
-	const ame = (event as { assistantMessageEvent?: AssistantMessageEvent })
-		.assistantMessageEvent;
-	if (!ame) return;
+	const ame = event.assistantMessageEvent;
 	const lastMsgIdx = deps.store.messages.length - 1;
 	if (lastMsgIdx < 0) return;
 
@@ -319,9 +330,12 @@ function appendToolCallPart(
 // message_end
 // ────────────────────────────────────────────────────────────────────
 
-function handleMessageEnd(event: AgentEvent, deps: ReducerDeps): void {
-	const msg = (event as any).message as AgentMessage | undefined;
-	if (msg && msg.role === "assistant") {
+function handleMessageEnd(
+	event: EventOf<"message_end">,
+	deps: ReducerDeps,
+): void {
+	const msg = event.message;
+	if (msg.role === "assistant") {
 		// Accumulate token usage and cost from assistant messages.
 		// `cost?.total ?? 0` mirrors the resume-time rollup in
 		// `loadSession` (`sessions.ts`) — pi-ai types `cost.total` as
@@ -331,17 +345,15 @@ function handleMessageEnd(event: AgentEvent, deps: ReducerDeps): void {
 		// (TypeError on `.total`) while loading the same session back
 		// would silently succeed. Ungated on tx success — these are
 		// running totals, recomputed from disk on resume.
-		const usage = (msg as AssistantMessage).usage;
+		const usage = msg.usage;
 		if (usage) {
 			deps.setStore("totalTokens", (t) => t + usage.totalTokens);
 			deps.setStore("totalCost", (c) => c + (usage.cost?.total ?? 0));
 		}
-		deps.messageLog.stampAssistantOnMessageEnd(msg as AssistantMessage);
+		deps.messageLog.stampAssistantOnMessageEnd(msg);
 		return;
 	}
-	if (msg) {
-		persistNonAssistantMessage(msg, deps);
-	}
+	persistNonAssistantMessage(msg, deps);
 }
 
 function persistNonAssistantMessage(
@@ -368,7 +380,10 @@ function persistNonAssistantMessage(
 // tool_execution_end
 // ────────────────────────────────────────────────────────────────────
 
-function handleToolExecutionEnd(event: AgentEvent, deps: ReducerDeps): void {
+function handleToolExecutionEnd(
+	event: EventOf<"tool_execution_end">,
+	deps: ReducerDeps,
+): void {
 	// Reset `status` from `"tool_executing"` back to `"streaming"` —
 	// `tool_execution_start` set it, and without this line it stays
 	// stuck for the remainder of the turn. For non-terminating tools
@@ -379,17 +394,19 @@ function handleToolExecutionEnd(event: AgentEvent, deps: ReducerDeps): void {
 	if (deps.store.status === "tool_executing") {
 		deps.setStore("status", "streaming");
 	}
-	const endEvt = event as any;
 	deps.messageLog.applyToolResult(
-		endEvt.toolCallId,
-		endEvt.result,
-		!!endEvt.isError,
+		event.toolCallId,
+		event.result,
+		event.isError,
 	);
-	applySidebarMutation(endEvt, deps);
-	applyDispatchResult(endEvt, deps);
+	applySidebarMutation(event, deps);
+	applyDispatchResult(event, deps);
 }
 
-function applySidebarMutation(endEvt: any, deps: ReducerDeps): void {
+function applySidebarMutation(
+	event: EventOf<"tool_execution_end">,
+	deps: ReducerDeps,
+): void {
 	// `update_sidebar` sidebar mutation. Independent of the tool-part
 	// lookup above — the sidebar should update whether or not we find
 	// the matching display part (e.g. a session restored mid-turn
@@ -399,8 +416,8 @@ function applySidebarMutation(endEvt: any, deps: ReducerDeps): void {
 	// store-state (cleared on `clearSession` / `resumeSession`), not
 	// persisted to disk. There's no disk state to keep in sync with,
 	// so the persist-then-mutate invariant doesn't apply.
-	if (endEvt.toolName !== "update_sidebar" || !endEvt.result?.details) return;
-	const d = endEvt.result.details as {
+	if (event.toolName !== "update_sidebar" || !event.result?.details) return;
+	const d = event.result.details as {
 		operation: "upsert" | "delete";
 		id: string;
 		title?: string;
@@ -472,10 +489,13 @@ function applySidebarMutation(endEvt: any, deps: ReducerDeps): void {
  *     the catch, the throw propagates through Solid `batch()` and
  *     corrupts reducer state.
  */
-function applyDispatchResult(endEvt: any, deps: ReducerDeps): void {
-	if (endEvt.toolName !== "dispatch") return;
-	if (endEvt.isError) return;
-	const target = endEvt.result?.details?.agent;
+function applyDispatchResult(
+	event: EventOf<"tool_execution_end">,
+	deps: ReducerDeps,
+): void {
+	if (event.toolName !== "dispatch") return;
+	if (event.isError) return;
+	const target = event.result?.details?.agent;
 	if (typeof target !== "string" || target.length === 0) return;
 
 	const parentSid = deps.sessionState.getCurrentSessionId();
@@ -549,7 +569,7 @@ function applyDispatchResult(endEvt: any, deps: ReducerDeps): void {
 // agent_end — 5 independent concerns
 // ────────────────────────────────────────────────────────────────────
 
-function handleAgentEnd(event: AgentEvent, deps: ReducerDeps): void {
+function handleAgentEnd(event: EventOf<"agent_end">, deps: ReducerDeps): void {
 	// Routing-seam handoff: a `dispatch` tool result this turn stashed
 	// the child session id (see `applyDispatchResult`). Skip the normal
 	// turn-close concerns (`isStreaming` reset, closing-bubble stamp,
@@ -692,7 +712,7 @@ function handleAgentEnd(event: AgentEvent, deps: ReducerDeps): void {
 }
 
 function persistSynthesizedAbortMessage(
-	event: AgentEvent,
+	event: EventOf<"agent_end">,
 	deps: ReducerDeps,
 ): void {
 	// Persist any closing assistant AgentMessage that
@@ -716,12 +736,11 @@ function persistSynthesizedAbortMessage(
 	// `onSuccess` — the repair path exists precisely because this
 	// synthesized-abort write can legitimately fail or be pre-empted
 	// by process kill.
-	const endedMsgs = (event as { messages?: AgentMessage[] }).messages;
+	const endedMsgs = event.messages;
 	const sid = deps.sessionState.getCurrentSessionId();
-	if (!endedMsgs || endedMsgs.length === 0 || !sid) return;
+	if (endedMsgs.length === 0 || !sid) return;
 	persist((tx) => {
 		for (const m of endedMsgs) {
-			if (!m) continue;
 			if (
 				m.role === "assistant" &&
 				(m.stopReason === "aborted" || m.stopReason === "error")
@@ -732,7 +751,10 @@ function persistSynthesizedAbortMessage(
 	});
 }
 
-function stampTurnClosingBubble(event: AgentEvent, deps: ReducerDeps): void {
+function stampTurnClosingBubble(
+	event: EventOf<"agent_end">,
+	deps: ReducerDeps,
+): void {
 	// Per-turn stamps (`agentName`, `modelName`, `duration`,
 	// `thinkingLevel`). The mirror write itself is the
 	// `messageLog.stampTurnClose` call below; this function still
@@ -745,16 +767,22 @@ function stampTurnClosingBubble(event: AgentEvent, deps: ReducerDeps): void {
 	const last = deps.store.messages[deps.store.messages.length - 1];
 	if (!last || last.role !== "assistant") return;
 
-	const endMessages = (event as { messages?: AgentMessage[] }).messages;
-	const closingAgent = endMessages?.[endMessages.length - 1];
+	const endMessages = event.messages;
+	const closingAgent = endMessages[endMessages.length - 1];
 	const closingAssistant =
 		closingAgent && closingAgent.role === "assistant"
-			? (closingAgent as AssistantMessage)
+			? closingAgent
 			: undefined;
 	// Fallback: if event.messages doesn't end with an assistant
 	// (e.g. a trailing toolResult from a terminated run),
 	// `displayName` stays undefined and AssistantFooter hides —
 	// safer than rendering a bare `▣ Reader` with no model.
+	//
+	// `getModel`'s generics require the provider + modelId to be
+	// literal-typed members of pi-ai's `MODELS` table; the persisted
+	// values are plain `string`. Cast is the documented soft spot —
+	// see `docs/TODO.md` Known Issues "Loosely-typed `getModel` lookup
+	// at the turn-close stamp".
 	const displayName = closingAssistant
 		? (getModel(closingAssistant.provider as any, closingAssistant.model as any)
 				?.name ?? closingAssistant.model)
