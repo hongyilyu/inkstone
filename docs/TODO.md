@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-11 (tracing-style logger module landed; PR1 of 4-PR stack)
+**Last updated**: 2026-05-11 (added `<env>` block with today's date to `composeSystemPrompt`)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -19,6 +19,8 @@
   - Stack E — knowledge-base agent (graphite-stacked, landing 2026-05-07): scaffold → port LifeOS workflow bodies → wire `/ingest` `/query` `/lint` slash commands → docs. Third agent on ship (alongside reader and example), workspace under `040 FORGE/` with `010 RAW/` + `020 HUMAN/` write-blocked per LifeOS policy. All three workflow bodies preloaded into the system prompt; commands are minimal triggers.
 
 ## Completed
+
+- **`<env>` block with today's date in the system prompt** (2026-05-11). `composeSystemPrompt` now emits `<env>\nToday's date: YYYY-MM-DD\n</env>` as the leading section. Without it the LLM was inferring "today" from filenames and frontmatter dates and guessing wrong (reader's `reading_completed: today's date` flow was the trigger — the model spent a paragraph reasoning about a scraps filename before asking the user). Local-time ISO date, captured at compose time so D9's cache-prefix invariant is preserved within a session (date stays byte-stable; sessions that survive past local midnight retain the original date — same trade-off OpenCode makes in `session/system.ts`). Six new tests in `test/agent-compose.test.ts` pin the format, leading position, and that the rendered date matches the system clock.
 
 - **Tracing-style logger + comment cleanup** (2026-05-11, 4-PR Graphite stack `feat/logger-pr1-module` → `feat/logger-pr2-migrate-callsites` → `feat/logger-pr3-spans` → `chore/logger-pr4-comment-cleanup`). PR1 lands `src/backend/logger/`: child loggers for namespaces, structured fields, `AsyncLocalStorage`-scoped spans (enter/exit/duration), `logger.bind()` for event-emitter boundaries, file sink at `~/.local/state/inkstone/logs/inkstone.log`. Threshold defaults to `warn`; `bun run dev` raises to `debug` via `INKSTONE_LOG=debug` in the script. Built TDD via 13 vertical RED→GREEN cycles (27 tests). PR2 migrates 20 ad-hoc `console.{error,warn}` call sites across 9 files to `logger.child(name).warn(...)`; `reportPersistenceError` additionally calls the logger alongside its existing `console.error` fallback. PR3 wraps three v1 spans: `agent.turn` around `promptAction`'s body (sessionId/agent/provider/modelId fields), `provider.refresh` around `doRefresh` in kiro + openai-codex (provider/region fields), plus an info-level `dispatch routed` event at `applyDispatchResult`. The routing-fork `setTimeout(0)` continuation is wrapped with `logger.bind()` to bridge ALS context defensively. New integration test under `test/tui/logger-spans.test.tsx`. PR4 compresses two rationale comments in the providers (Kiro `refreshIfNeeded`, openai-codex header) — replaced with doc-pointers to `ARCHITECTURE.md` § Provider Registry / Kiro provider — while load-bearing gotchas (token-byte leak risk, mid-session eviction race) stay in code per the cleanup filter. New ADR-0016 documents the build-custom + ALS choice and alternatives ruled out (OTel footprint, pino-without-spans). ARCHITECTURE.md gains a § Logging section.
 
