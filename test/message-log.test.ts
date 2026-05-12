@@ -81,10 +81,13 @@ function makeHarness(opts?: { sessionId?: string | null }) {
 	const sessionState: SessionState = {
 		getCurrentSessionId: () => sid,
 		setCurrentSessionId: () => {},
+		subscribeSessionId: () => () => sid,
 		getTurnStartThinkingLevel: () => undefined,
 		setTurnStartThinkingLevel: () => {},
 		getPreTurnCodexConnections: () => undefined,
 		setPreTurnCodexConnections: () => {},
+		getPendingDispatchChildId: () => null,
+		setPendingDispatchChildId: () => {},
 		ensureSession: () => sid ?? "",
 	};
 	const log = createMessageLog({ store, setStore, sessionState });

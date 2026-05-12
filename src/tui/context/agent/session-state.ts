@@ -32,6 +32,7 @@ import type { Session } from "@backend/agent";
 import { createSession } from "@backend/persistence/sessions";
 import type { AgentStoreState } from "@bridge/view-model";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+import { type Accessor, createRoot, createSignal } from "solid-js";
 import type { SetStoreFunction } from "solid-js/store";
 
 export interface SessionState {
@@ -39,6 +40,20 @@ export interface SessionState {
 	getCurrentSessionId(): string | null;
 	/** Overwrite the session id (e.g. `clearSession` sets `null`, `resumeSession` sets the loaded id). */
 	setCurrentSessionId(id: string | null): void;
+	/**
+	 * Reactive accessor for the session id. Reading this inside a Solid
+	 * effect or memo registers a dependency so consumers re-run when the
+	 * id changes (e.g. resume into a different session). The imperative
+	 * `getCurrentSessionId()` returns the same value but does not track
+	 * — preferred for event handlers and one-shot reads.
+	 *
+	 * Currently the only consumer is `<PromptDraftBridge />`, which
+	 * needs reactive switch detection because resume mutates the id
+	 * underneath the bridge without unmounting it. Other readers (the
+	 * reducer, `message-log`, `commands`) all read imperatively from
+	 * outside reactive contexts and continue to use `getCurrentSessionId`.
+	 */
+	subscribeSessionId(): Accessor<string | null>;
 	getTurnStartThinkingLevel(): ThinkingLevel | undefined;
 	setTurnStartThinkingLevel(level: ThinkingLevel | undefined): void;
 	getPreTurnCodexConnections(): number | undefined;
@@ -71,17 +86,34 @@ export function createSessionState(params: {
 	store: AgentStoreState;
 	setStore: SetStoreFunction<AgentStoreState>;
 }): SessionState {
-	let currentSessionId: string | null = null;
+	// `currentSessionId` is the SQLite row id, lazy-allocated on first
+	// prompt by `ensureSession()`. We back it with a Solid signal (not a
+	// plain `let`) so the bridge component can subscribe to changes
+	// reactively for the resume-into-different-session case (resume
+	// mutates the id without unmounting the bridge). `createRoot` gives
+	// the signal an owner outside of any component lifetime; the root
+	// matches the `SessionState`'s lifetime, which is the
+	// `AgentProvider`'s lifetime — see precedent in
+	// `src/tui/context/secondary-page.ts`. The signal is read both
+	// imperatively (the existing reducer / message-log / commands call
+	// sites use `getCurrentSessionId()`, which calls the signal getter
+	// outside any reactive context — no tracking) and reactively (the
+	// bridge calls `subscribeSessionId()()` inside an effect).
+	const { sessionIdAccessor, setSessionId } = createRoot(() => {
+		const [get, set] = createSignal<string | null>(null);
+		return { sessionIdAccessor: get, setSessionId: set };
+	});
 	let turnStartThinkingLevel: ThinkingLevel | undefined;
 	let preTurnCodexConnections: number | undefined;
 	let pendingDispatchChildId: string | null = null;
 
 	function ensureSession(): string {
-		if (currentSessionId) return currentSessionId;
+		const existing = sessionIdAccessor();
+		if (existing) return existing;
 		const rec = createSession({
 			agent: params.store.currentAgent,
 		});
-		currentSessionId = rec.id;
+		setSessionId(rec.id);
 		// Forward the session id to pi-agent-core so providers that
 		// key behavior on it (Codex's `websocket-cached` / `"auto"`
 		// transport uses it as both the `prompt_cache_key` and the
@@ -95,10 +127,11 @@ export function createSessionState(params: {
 	}
 
 	return {
-		getCurrentSessionId: () => currentSessionId,
+		getCurrentSessionId: () => sessionIdAccessor(),
 		setCurrentSessionId: (id) => {
-			currentSessionId = id;
+			setSessionId(id);
 		},
+		subscribeSessionId: () => sessionIdAccessor,
 		getTurnStartThinkingLevel: () => turnStartThinkingLevel,
 		setTurnStartThinkingLevel: (level) => {
 			turnStartThinkingLevel = level;

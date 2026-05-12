@@ -51,6 +51,15 @@ export interface AgentContextValue {
 		 * marker.
 		 */
 		getCurrentSessionId(): string | null;
+		/**
+		 * Reactive accessor for the session id, for consumers that need
+		 * to react to session-switch events (e.g. the prompt-draft
+		 * bridge needs to swap its slot when `resumeSession` mutates the
+		 * id without unmounting the bridge). Non-tracking readers use
+		 * `getCurrentSessionId()` instead — see `SessionState`'s JSDoc
+		 * for the read-style trade-off.
+		 */
+		subscribeSessionId(): Accessor<string | null>;
 	};
 	/**
 	 * Ephemeral per-`callId` diff preview registry. Populated when a
