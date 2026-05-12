@@ -5,6 +5,7 @@ import {
 	parseFrontmatter as parseFrontmatterShared,
 } from "@bridge/frontmatter";
 import { ARTICLES_DIR } from "../../constants";
+import { todayLocalDate } from "../../util/local-date";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,6 +147,7 @@ export function recommendArticles(limit = 10): ArticleRecommendation[] {
 	}
 
 	const now = new Date();
+	const today = todayLocalDate();
 	const candidates: (ArticleRecommendation & {
 		published: string | undefined;
 	})[] = [];
@@ -176,8 +178,7 @@ export function recommendArticles(limit = 10): ArticleRecommendation[] {
 		const fm = parseFrontmatter(content);
 
 		// Status: "Read" if reading_completed exists and <= today.
-		const isRead =
-			!!fm.reading_completed && fm.reading_completed <= formatDate(now);
+		const isRead = !!fm.reading_completed && fm.reading_completed <= today;
 		if (isRead) continue; // Only recommend unread articles.
 
 		const savedBand = computeSavedBand(stat.mtimeMs, now);
@@ -230,15 +231,4 @@ export function formatRecommendationList(
 		lines.push(`${num} ${r.title}  ${r.bucket}`);
 	}
 	return lines.join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function formatDate(d: Date): string {
-	const y = d.getFullYear();
-	const m = String(d.getMonth() + 1).padStart(2, "0");
-	const day = String(d.getDate()).padStart(2, "0");
-	return `${y}-${m}-${day}`;
 }

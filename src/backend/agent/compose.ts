@@ -5,6 +5,7 @@ import type { Rule } from "./permissions";
 import { editTool, readTool, updateSidebarTool, writeTool } from "./tools";
 import { makeSuggestCommandTool } from "./tools/suggest-command";
 import type { AgentInfo, InkstoneTool } from "./types";
+import { todayLocalDate } from "./util/local-date";
 
 /** Tools every agent receives. Frozen at load. See `docs/AGENT-DESIGN.md` D4 + D5. */
 export const BASE_TOOLS: readonly InkstoneTool<any>[] = Object.freeze([
@@ -141,14 +142,11 @@ function rel(absDir: string): string {
 // (`selectAgent`), the date stays byte-stable for the session and
 // preserves D9's cache-prefix invariant. Sessions that survive past
 // local midnight retain the original date — acceptable trade-off vs.
-// invalidating the cache_control prefix every day.
+// invalidating the cache_control prefix every day. See
+// `util/local-date.ts` for the shared formatter; local-time choice is
+// load-bearing for this cache invariant.
 function composeEnvBlock(): string {
-	const d = new Date();
-	const today =
-		`${d.getFullYear()}-` +
-		`${String(d.getMonth() + 1).padStart(2, "0")}-` +
-		`${String(d.getDate()).padStart(2, "0")}`;
-	return ["<env>", `Today's date: ${today}`, "</env>"].join("\n");
+	return ["<env>", `Today's date: ${todayLocalDate()}`, "</env>"].join("\n");
 }
 
 // Render `info.commands` as a `<commands>` block. Skips entries
