@@ -1,16 +1,15 @@
 import { lstatSync, readFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
-import type { DisplayPart } from "@bridge/view-model";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 import { ARTICLES_DIR, VAULT_DIR } from "../../constants";
 import { type AgentOverlay, isInsideDir } from "../../permissions";
 import { editTool, writeTool } from "../../tools";
 import { makeListKeysTool, makeSearchTool } from "../../tools/search";
-import type { AgentCommand, AgentInfo } from "../../types";
+import type { AgentCommand, AgentInfo, PromptOptions } from "../../types";
 import {
 	buildArticleWorkflowPrelude,
 	buildReaderInstructions,
 } from "./instructions";
-import { recommendArticles } from "./recommendations";
+import { parseFrontmatter, recommendArticles } from "./recommendations";
 
 type ArticleResolveError =
 	| "not-inside-articles"
@@ -60,13 +59,19 @@ function resolveArticlePath(filename: string): ArticleResolveResult {
  *
  * LLM-facing `text` carries `[workflow prelude] + Path: + Content:`;
  * bubble `displayParts` is just a short prose line + file chip. See
- * `wrappedActions.prompt` in `src/tui/context/agent.tsx` for the
- * split and `docs/AGENT-DESIGN.md` D14 for the workflow-in-message
- * rationale.
+ * `PromptOptions` in `../../types.ts` for the split and
+ * `docs/AGENT-DESIGN.md` D14 for the workflow-in-message rationale.
+ *
+ * Session title: the article's frontmatter `title:` (or filename stem
+ * when frontmatter is absent) is passed through `opts.title` so the
+ * session list shows the article's identity verbatim. Bypasses the
+ * LLM title generator entirely — the article title IS the identity in
+ * this vault, no paraphrase needed. Mirrors the `frontmatter.title ||
+ * stem` fallback `recommendArticles` already uses for picker rows.
  */
 async function runArticle(
 	filename: string,
-	prompt: (text: string, displayParts?: DisplayPart[]) => Promise<void>,
+	prompt: (text: string, opts?: PromptOptions) => Promise<void>,
 ): Promise<void> {
 	const result = resolveArticlePath(filename);
 	if (!result.ok) {
@@ -89,12 +94,17 @@ async function runArticle(
 	// carries the absolute form so tools resolve the same file later.
 	const relPath = relative(VAULT_DIR, articlePath);
 	const prelude = buildArticleWorkflowPrelude();
+	const sessionTitle =
+		parseFrontmatter(content).title || basename(articlePath, ".md");
 	await prompt(
 		`${prelude}\nRead this article and begin the reading workflow.\n\nPath: ${articlePath}\n\nContent:\n\n${content}`,
-		[
-			{ type: "text", text: "Read this article." },
-			{ type: "file", mime: "text/markdown", filename: relPath },
-		],
+		{
+			displayParts: [
+				{ type: "text", text: "Read this article." },
+				{ type: "file", mime: "text/markdown", filename: relPath },
+			],
+			title: sessionTitle,
+		},
 	);
 }
 

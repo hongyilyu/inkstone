@@ -234,7 +234,9 @@ export function Prompt() {
 					message: `Could not read ${result.failed.length} file${result.failed.length === 1 ? "" : "s"}`,
 				});
 			}
-			void actions.prompt(result.llmText, result.displayParts);
+			void actions.prompt(result.llmText, {
+				displayParts: result.displayParts,
+			});
 		}
 
 		clearInput();

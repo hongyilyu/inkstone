@@ -8,8 +8,12 @@
  * `provider.tsx` — it's not part of the consumer-facing context shape.
  */
 
-import type { AgentActions, SuggestCommandDecision } from "@backend/agent";
-import type { AgentStoreState, DisplayPart } from "@bridge/view-model";
+import type {
+	AgentActions,
+	PromptOptions,
+	SuggestCommandDecision,
+} from "@backend/agent";
+import type { AgentStoreState } from "@bridge/view-model";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import type { Api, Model } from "@mariozechner/pi-ai";
 import type { Accessor } from "solid-js";
@@ -21,14 +25,11 @@ export interface AgentContextValue {
 	actions: Omit<AgentActions, "prompt"> & {
 		/**
 		 * Send a user turn. `text` is the full payload pi-agent-core hands
-		 * to pi-ai (and in turn to the LLM). `displayParts`, when supplied,
-		 * replaces the default single-text-part rendering of the user
-		 * bubble — used by commands like reader's `/article` that inline a
-		 * large payload in `text` but want a compact bubble (short prose +
-		 * file chip). When omitted, the bubble renders as `[{ type:
-		 * "text", text }]`, matching the pre-displayParts shape.
+		 * to pi-ai (and in turn to the LLM). `opts` shapes the bubble
+		 * (`displayParts`) and the session title (`title`); see
+		 * `PromptOptions` in `@backend/agent` for full semantics.
 		 */
-		prompt(text: string, displayParts?: DisplayPart[]): Promise<void>;
+		prompt(text: string, opts?: PromptOptions): Promise<void>;
 		selectAgent(name: string): void;
 		clearSession(): Promise<void>;
 		resumeSession(sessionId: string): void;

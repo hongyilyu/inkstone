@@ -86,6 +86,31 @@ export interface AgentCommand {
 }
 
 /**
+ * Per-turn options on `AgentCommandHelpers.prompt` /
+ * `AgentContextValue.actions.prompt`.
+ *
+ * `displayParts` — replaces the user bubble's rendered parts without
+ * changing what reaches the model. Reader's `/article` uses this to
+ * inline full article content in `text` while rendering a compact
+ * "prose + file chip" bubble. When omitted, the bubble renders as a
+ * single text part containing `text`.
+ *
+ * `title` — declares the session title at dispatch time. Persisted
+ * verbatim and the LLM title task is skipped. Used when the caller
+ * already knows the session's identity (reader's `/article` passes
+ * the article's frontmatter `title` or filename stem) — better than
+ * any model paraphrase for finding the session in the list later.
+ * Only honored on the first turn of a session (when there's a title
+ * task to skip); ignored on subsequent turns. Trimmed and capped to
+ * `MAX_TITLE_CHARS` by the receiver — same bound the LLM-cleaned
+ * title path enforces, so both shapes share one invariant.
+ */
+export interface PromptOptions {
+	displayParts?: DisplayPart[];
+	title?: string;
+}
+
+/**
  * Helpers injected into `AgentCommand.execute`. `prompt` is always
  * available; the optional helpers require an interactive frontend
  * (headless callers may omit them, and commands that need them should
@@ -94,12 +119,10 @@ export interface AgentCommand {
 export interface AgentCommandHelpers {
 	/**
 	 * Send a user message and start an LLM turn. `text` is what the LLM
-	 * receives. Optional `displayParts` replace the user bubble's
-	 * rendered parts without changing what reaches the model — reader's
-	 * `/article` uses this to inline full article content in `text`
-	 * while rendering a compact "prose + file chip" bubble.
+	 * receives; `opts` controls the bubble's display shape and the
+	 * session title — see `PromptOptions`.
 	 */
-	prompt(text: string, displayParts?: DisplayPart[]): Promise<void>;
+	prompt(text: string, opts?: PromptOptions): Promise<void>;
 	/**
 	 * Push a user-role bubble into the conversation (persisted) without
 	 * starting an turn. Useful for informational content the user can

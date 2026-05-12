@@ -35,7 +35,7 @@ import {
 	type SuggestCommandRequest,
 	setSuggestCommandFn,
 } from "./tools/suggest-command";
-import type { AgentCommand, AgentInfo } from "./types";
+import type { AgentCommand, AgentInfo, PromptOptions } from "./types";
 
 const log = logger.child("agent");
 
@@ -650,7 +650,7 @@ export function listAgents(): AgentInfo[] {
 	return AGENTS;
 }
 
-export { generateSessionTitle } from "./session-title";
+export { generateSessionTitle, MAX_TITLE_CHARS } from "./session-title";
 export {
 	type AgentCommand,
 	type AgentInfo,
@@ -658,6 +658,7 @@ export {
 	getAgentInfo,
 	getConfirmFn,
 	getSuggestCommandFn,
+	type PromptOptions,
 	type SuggestCommandDecision,
 	type SuggestCommandRequest,
 	setConfirmFn,

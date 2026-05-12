@@ -24,6 +24,13 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { unlinkSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import {
+	type generateSessionTitle,
+	MAX_TITLE_CHARS,
+} from "../../src/backend/agent";
+import { ARTICLES_DIR } from "../preload";
 import { makeFakeSession } from "./fake-session";
 import { renderApp, waitForFrame } from "./harness";
 
@@ -130,6 +137,110 @@ describe("/article command", () => {
 		const f = setup.captureCharFrame();
 		expect(f).not.toContain("Command error");
 		expect(f).not.toContain("Symlinks are not supported");
+	});
+
+	test("title is set from frontmatter; LLM title generator is bypassed", async () => {
+		// `/article` knows the article identity at dispatch time
+		// (frontmatter `title:` or filename stem) and passes it through
+		// `helpers.prompt`'s `opts.title`. The LLM title task short-
+		// circuits — better than any model paraphrase for finding the
+		// session in the list later. Pin: the LLM generator is NOT
+		// called, and `store.sessionTitle` reflects the frontmatter
+		// title (`foo` for the seeded `foo.md` fixture). Companion to
+		// the bigger regression note: `/article`'s LLM-facing text
+		// begins with a ~6.5KB workflow prelude; feeding that to the
+		// LLM title generator (which truncates input to 4KB) emits
+		// titles like "Title generator" — summarizing the prelude.
+		// Skipping the LLM avoids both the prelude bug and the
+		// paraphrase drift.
+		let titleGeneratorCalls = 0;
+		const titleGenerator: typeof generateSessionTitle = async () => {
+			titleGeneratorCalls += 1;
+			return null;
+		};
+
+		const fake = makeFakeSession();
+		setup = await renderApp({
+			session: fake.factory,
+			sessionTitleGenerator: titleGenerator,
+		});
+		await setup.renderOnce();
+
+		await setup.mockInput.typeText("/article foo.md");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(40);
+
+		expect(titleGeneratorCalls).toBe(0);
+		expect(setup.getAgent().store.sessionTitle).toBe("foo");
+	});
+
+	test("frontmatter title longer than MAX_TITLE_CHARS is truncated", async () => {
+		// `applyExplicitSessionTitle` shares the persisted-title length
+		// cap with the LLM-cleaned path (`MAX_TITLE_CHARS` in
+		// `backend/agent/session-title.ts`). A future contributor who
+		// bumps the LLM-side cap must also widen the explicit-title
+		// path or the two paths will silently drift — long article
+		// titles would clip while LLM paraphrases render at the new
+		// width. Pin the cap here with a fixture whose frontmatter
+		// title is comfortably over the bound.
+		const longTitle = "A".repeat(MAX_TITLE_CHARS + 25); // 75 chars
+		const fixturePath = resolve(ARTICLES_DIR, "long-title.md");
+		writeFileSync(fixturePath, `---\ntitle: ${longTitle}\n---\n\nBody.\n`);
+
+		try {
+			const fake = makeFakeSession();
+			setup = await renderApp({
+				session: fake.factory,
+				sessionTitleGenerator: async () => null,
+			});
+			await setup.renderOnce();
+
+			await setup.mockInput.typeText("/article long-title.md");
+			setup.mockInput.pressEnter();
+			await setup.renderOnce();
+			await Bun.sleep(40);
+
+			const stored = setup.getAgent().store.sessionTitle;
+			expect(stored.length).toBe(MAX_TITLE_CHARS);
+			expect(stored).toBe(longTitle.slice(0, MAX_TITLE_CHARS));
+		} finally {
+			unlinkSync(fixturePath);
+		}
+	});
+
+	test("explicit title whitespace runs collapse to single spaces before persist", async () => {
+		// `applyExplicitSessionTitle` normalizes any run of whitespace
+		// (spaces, tabs, newlines) to a single space and trims the ends
+		// before persisting. Today's callers all hand it single-line
+		// strings by construction; this is defense for future callers
+		// (a freeform user-typed title, an unusual frontmatter scalar)
+		// so the sidebar / session-list rows render cleanly. Pin with
+		// a fixture whose frontmatter title contains an unrealistic-
+		// but-permissible run of internal whitespace (the YAML-lite
+		// parser preserves spaces and tabs verbatim within a scalar).
+		const messyTitle = "Lots\t  of   weird   whitespace";
+		const expected = "Lots of weird whitespace";
+		const fixturePath = resolve(ARTICLES_DIR, "messy-title.md");
+		writeFileSync(fixturePath, `---\ntitle: "${messyTitle}"\n---\n\nBody.\n`);
+
+		try {
+			const fake = makeFakeSession();
+			setup = await renderApp({
+				session: fake.factory,
+				sessionTitleGenerator: async () => null,
+			});
+			await setup.renderOnce();
+
+			await setup.mockInput.typeText("/article messy-title.md");
+			setup.mockInput.pressEnter();
+			await setup.renderOnce();
+			await Bun.sleep(40);
+
+			expect(setup.getAgent().store.sessionTitle).toBe(expected);
+		} finally {
+			unlinkSync(fixturePath);
+		}
 	});
 
 	test("bare `/article ` opens picker; selecting first row dispatches", async () => {

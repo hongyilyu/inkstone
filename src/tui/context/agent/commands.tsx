@@ -9,9 +9,14 @@
  * `CommandProvider` at the app root).
  */
 
-import { DEFAULT_AGENT_NAME, getAgentInfo, listAgents } from "@backend/agent";
+import {
+	DEFAULT_AGENT_NAME,
+	getAgentInfo,
+	listAgents,
+	type PromptOptions,
+} from "@backend/agent";
 import type { AgentCommandHelpers, AgentInfo } from "@backend/agent/types";
-import type { AgentStoreState, DisplayPart } from "@bridge/view-model";
+import type { AgentStoreState } from "@bridge/view-model";
 import type { SetStoreFunction } from "solid-js/store";
 import {
 	type AgentSlashOption,
@@ -45,14 +50,13 @@ export interface CommandsDeps {
  */
 function buildCommandHelpers(deps: CommandsDeps): AgentCommandHelpers {
 	return {
-		// Forward the optional `displayParts` so commands like reader's
-		// `/article` can render a compact bubble while pi-agent-core
-		// still receives the full-content `text`. See
-		// `wrappedActions.prompt` for the split; pi-agent-core is blind
-		// to `displayParts` by construction — it lives entirely in the
-		// Solid store.
-		prompt: (text: string, displayParts?: DisplayPart[]) =>
-			deps.actions.prompt(text, displayParts),
+		// Forward `opts` straight through to `actions.prompt`. The bag
+		// carries `displayParts` (compact bubble rendering — pi-agent-
+		// core is blind to it, only the Solid store sees it) and `title`
+		// (skip the LLM title task, persist verbatim). See `PromptOptions`
+		// in `@backend/agent` and `wrappedActions.prompt` for the split.
+		prompt: (text: string, opts?: PromptOptions) =>
+			deps.actions.prompt(text, opts),
 		displayMessage(text: string) {
 			// Best-effort: pushes a command-authored user line as a
 			// bubble (e.g. reader's `/article` recommendation list).
