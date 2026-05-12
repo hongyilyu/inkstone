@@ -3,11 +3,13 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-11 (added `<env>` block with today's date to `composeSystemPrompt`)
+**Last updated**: 2026-05-12 (opt-in command-declared session titles — 3-PR Graphite stack)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
 ## In Progress
+
+- **Opt-in command-declared session titles** (3-PR Graphite stack, opens 2026-05-12). PR 1 (#164) extracts `todayLocalDate(): string` from two duplicate sites (`compose.ts` env block + `agents/reader/recommendations.ts`) into `src/backend/agent/util/local-date.ts`. PR 2 (#167) flips `helpers.prompt(text, displayParts?)` → `helpers.prompt(text, opts?: { displayParts?, title? })` end-to-end, threads `opts.title` through `promptAction` so commands can short-circuit the LLM title task at dispatch, and makes reader's `/article` the first consumer (passes `frontmatter.title || basename(path, ".md")`). Also hoists `MAX_TITLE_CHARS` from a private backend constant to a `@backend/agent`-exported single source so the LLM-cleaned and explicit-title paths share one bound. PR 3 (#168) wires KB `/ingest` → `Ingest · YYYY-MM-DD` and `/lint` → `Lint · YYYY-MM-DD`; `/query` keeps the LLM path (its question IS the per-session content). Motivating bug: `/article` was producing titles like "Title generator" because the LLM title generator received the LLM-facing 6.5KB workflow prelude truncated to 4KB by `MAX_INPUT_CHARS` — never seeing the article. Fix: any command that knows the session identity at dispatch declares it via `opts.title`; freeform prompts keep the LLM path.
 
 - E2E test coverage expansion (3 graphite-stacked PRs, plan in `~/.claude/plans/and-identify-e2e-misty-castle.md`). Stack A — agent command E2E (`reader-article` + `kb-commands` + directory-reject unit). Stack B — permission deny propagation + resume totals sidebar. Stack C — mid-conversation model-switch footer invariant + Bun-segfault unmount retry (still hangs on Bun 1.3.4, scaffold skipped) + docs swap (replaced obsolete `E2E-PLAN.md` with `E2E-TESTING.md` reference doc).
 
