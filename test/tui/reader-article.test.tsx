@@ -209,6 +209,40 @@ describe("/article command", () => {
 		}
 	});
 
+	test("explicit title whitespace runs collapse to single spaces before persist", async () => {
+		// `applyExplicitSessionTitle` normalizes any run of whitespace
+		// (spaces, tabs, newlines) to a single space and trims the ends
+		// before persisting. Today's callers all hand it single-line
+		// strings by construction; this is defense for future callers
+		// (a freeform user-typed title, an unusual frontmatter scalar)
+		// so the sidebar / session-list rows render cleanly. Pin with
+		// a fixture whose frontmatter title contains an unrealistic-
+		// but-permissible run of internal whitespace (the YAML-lite
+		// parser preserves spaces and tabs verbatim within a scalar).
+		const messyTitle = "Lots\t  of   weird   whitespace";
+		const expected = "Lots of weird whitespace";
+		const fixturePath = resolve(ARTICLES_DIR, "messy-title.md");
+		writeFileSync(fixturePath, `---\ntitle: "${messyTitle}"\n---\n\nBody.\n`);
+
+		try {
+			const fake = makeFakeSession();
+			setup = await renderApp({
+				session: fake.factory,
+				sessionTitleGenerator: async () => null,
+			});
+			await setup.renderOnce();
+
+			await setup.mockInput.typeText("/article messy-title.md");
+			setup.mockInput.pressEnter();
+			await setup.renderOnce();
+			await Bun.sleep(40);
+
+			expect(setup.getAgent().store.sessionTitle).toBe(expected);
+		} finally {
+			unlinkSync(fixturePath);
+		}
+	});
+
 	test("bare `/article ` opens picker; selecting first row dispatches", async () => {
 		const fake = makeFakeSession();
 		// Wider terminal so the picker title + row text don't wrap.

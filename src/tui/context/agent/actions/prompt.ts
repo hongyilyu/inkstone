@@ -143,18 +143,29 @@ async function promptActionBody(
  * Mirrors `startSessionTitleTask`'s persist-first shape — only update
  * the in-store title if the row write commits — but synchronous
  * because the title is already known.
+ *
+ * Whitespace-normalizes before truncation: collapses any run of
+ * whitespace (spaces, tabs, newlines) to a single space and trims the
+ * ends. Today's callers (`/article`'s frontmatter title, KB's `Verb ·
+ * YYYY-MM-DD`) all produce single-line strings by construction — the
+ * normalization is defense for future callers (a freeform user-typed
+ * title, a multi-line frontmatter scalar that slips past the parser)
+ * so the sidebar / session-list rows render cleanly.
  */
 function applyExplicitSessionTitle(
 	sessionId: string,
 	title: string,
 	deps: ActionDeps,
 ): void {
-	const trimmed =
-		title.length <= MAX_TITLE_CHARS ? title : title.slice(0, MAX_TITLE_CHARS);
-	persist((tx) => updateSessionTitle(tx, sessionId, trimmed), {
+	const normalized = title.replace(/\s+/g, " ").trim();
+	const bounded =
+		normalized.length <= MAX_TITLE_CHARS
+			? normalized
+			: normalized.slice(0, MAX_TITLE_CHARS);
+	persist((tx) => updateSessionTitle(tx, sessionId, bounded), {
 		onSuccess: () => {
 			if (deps.sessionState.getCurrentSessionId() === sessionId) {
-				deps.setStore("sessionTitle", trimmed);
+				deps.setStore("sessionTitle", bounded);
 			}
 		},
 	});
