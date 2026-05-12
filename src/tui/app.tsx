@@ -11,6 +11,7 @@ import { NoProviderFallback } from "./components/no-provider-fallback";
 import { OpenPage } from "./components/open-page";
 import { PermissionPrompt } from "./components/permission-prompt";
 import { Prompt } from "./components/prompt";
+import { PromptDraftBridge } from "./components/prompt-draft-bridge";
 import { SecondaryPage } from "./components/secondary-page";
 import { SessionList } from "./components/session-list";
 import { Sidebar } from "./components/sidebar";
@@ -85,6 +86,22 @@ export function Layout() {
 					flexGrow={1}
 					backgroundColor={theme.background}
 				>
+					{/*
+					 * Per-session prompt-draft bridge. Mounts only when the
+					 * conversation view is visible — `messages.length > 0`
+					 * (this branch) AND no secondary page open (the inner
+					 * `<Show>`). Unmounting on secondary-page open is what
+					 * triggers the snapshot for the round-trip case; the
+					 * bridge re-mounts on close and restores from the
+					 * slot. Mounted at row level (returns null) so it
+					 * doesn't participate in the column flex layout —
+					 * placing it inside the column changes the dropdown's
+					 * z-stacking against the conversation. See
+					 * `prompt-draft-bridge.tsx` for the full lifecycle.
+					 */}
+					<Show when={!getSecondaryPage()}>
+						<PromptDraftBridge />
+					</Show>
 					{/* Left column: session list panel (Ctrl+N toggle) */}
 					<Show when={sessionListOpen()}>
 						<SessionList

@@ -251,6 +251,26 @@ The model + agent fields on `AgentStoreState` (`modelName`, `modelProvider`, `co
 
 `SessionSnapshot` lives in `src/bridge/view-model.ts` next to `AgentStoreState`. The backend builds it inside `createSession` in `src/backend/agent/index.ts` and emits via a private `notify()` after each mutation. Adding a new model-derived field that the UI must react to = one new entry on `SessionSnapshot` + one matching `setStore` line in the provider's subscriber, with no per-action visit.
 
+`currentSessionId` lives entirely in the TUI's `sessionState` (the SQLite row id is created lazily by `ensureSession()`, not by the backend `Session` constructor). It is **not** projected onto `AgentStoreState` — that would leak the `string | null` lifecycle (open page = no row yet) into a contract used by every store consumer when only the prompt-draft bridge needs reactivity. Instead, `sessionState` exposes both `getCurrentSessionId(): string | null` (imperative; used by the reducer, message-log, and commands) and `subscribeSessionId(): Accessor<string | null>` (reactive; used by the prompt-draft bridge). Both read from the same Solid signal — single source of truth, two read styles.
+
+### Prompt drafts
+
+Per-session prompt-draft state lives in a module-level signal at `src/tui/context/prompt-draft.ts` — `Map<sessionId, { text, mentions: { start, end, path }[] }>` wrapped in `createRoot` (precedent: `secondary-page.ts`). The Prompt component's `text` signal and the textarea's mention extmarks die when the component unmounts (e.g. opening a secondary page replaces the Prompt subtree); hoisting the data above the component lifetime is the only structural way to round-trip it.
+
+The `usePromptDraft` hook (`src/tui/hooks/use-prompt-draft.ts`) owns the lifecycle and is hosted by `<PromptDraftBridge />` (`src/tui/components/prompt-draft-bridge.tsx`), which mounts as a sibling of `<Conversation />` inside the conversation-view branch of `app.tsx`. Hosting the hook in a bridge — rather than inside the shared `<Prompt />` component (which is reused on the open page where no session is bound) — is what lets the hook's `sessionId` accessor be non-nullable: by the time the bridge mounts, `messages.length > 0` is true and `ensureSession` has run.
+
+Lifecycle:
+
+- **Mount** — once `inputRef` and `promptPartTypeId` are both populated, replay text + mentions for the current sessionId into the textarea.
+- **Session-switch (while mounted)** — `resumeSession` mutates the id underneath without unmounting the bridge; the hook snapshots the previous slot, then restores the next session's (or clears the buffer if none).
+- **Unmount** — write the live state to the slot keyed by `lastSeenSid` (a hook-internal closure-tracked field, NOT a live `sessionId()` read at cleanup time — `clearSession` writes `setStore("messages", [])` and `setCurrentSessionId(null)` inside the same `batch()`, so depending on Solid's batch-internal ordering at the unmount boundary would be fragile). This is the secondary-page round-trip surface and the `clearSession` boundary.
+
+Submit-clear is **not** the hook's concern. `Prompt.clearInput()` calls `clearDraft(session.getCurrentSessionId())` directly. Submit doesn't unmount the component, so `onCleanup` wouldn't fire; and the call from the conversation-view Prompt is structurally guaranteed to land on a non-null sid. The truthy guard on the call handles the open-page Prompt's `clearInput` (Ctrl+C empty buffer), which is a no-op against the slot map.
+
+Reads inside the hook's effect (`getDraft`, `fileStyleId`) are wrapped in `untrack()` so the effect's dependency set is exactly `{inputRef, promptPartTypeId, sessionId}`. Without `untrack`, the snapshot branch's own `setDraft`/`clearDraft` writes would re-trigger the effect and a destination slot with mentions would get applied twice (duplicate extmarks); a theme switch would also clobber the live buffer with the stored draft.
+
+Process-lifetime only — no disk persistence. Open-page drafts are intentionally not preserved because the open page has no round-trip surface that doesn't commit the draft via router-fork.
+
 ## Markdown Rendering
 
 Assistant messages are rendered through OpenTUI's `<markdown>` component in `src/tui/components/message.tsx` (the bubble-rendering module; `conversation.tsx` is a thin list + routing layer that iterates `store.messages` and dispatches to `UserMessage` / `AssistantMessage`). The component takes a `SyntaxStyle` built by `generateSyntax(colors)` in `src/tui/context/theme.tsx`, which maps ~40 Tree-sitter scopes (markup.* for markdown structure, plus core code scopes for fenced blocks) onto the active theme's existing named colors. The style is exposed as a reactive accessor `useTheme().syntax()` and re-creates whenever the theme id changes, so switching themes re-paints already-rendered markdown.

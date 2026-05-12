@@ -8,7 +8,13 @@
  */
 
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { createContext, type ParentProps, useContext } from "solid-js";
+import {
+	createContext,
+	createSignal,
+	type ParentProps,
+	untrack,
+	useContext,
+} from "solid-js";
 
 // `any` because OpenTUI's `InputRenderable` isn't exported on the type
 // surface we use elsewhere; consumers narrow at the call site.
@@ -87,7 +93,13 @@ const layoutContext = createContext<LayoutContextValue | null>(null);
 
 export function LayoutProvider(props: ParentProps): unknown {
 	let scroll: ScrollBoxRenderable | null = null;
-	let input: InputRef = null;
+	// `input` is signal-backed so reactive consumers (today: the
+	// `<PromptDraftBridge />` effect) can subscribe to mount/unmount
+	// of the prompt's textarea. The signal updates from the same
+	// `setInputRef`/`clearInputRef` calls Prompt already makes;
+	// imperative callers (`getInputRef`, `focusInput`, `blurInput`)
+	// read the signal getter outside reactive contexts and don't track.
+	const [input, setInput] = createSignal<InputRef>(null);
 	let ctrlCBridge: PromptCtrlCBridge | null = null;
 
 	const value: LayoutContextValue = {
@@ -107,19 +119,25 @@ export function LayoutProvider(props: ParentProps): unknown {
 			}, 50);
 		},
 		setInputRef(ref) {
-			input = ref;
+			setInput(ref);
 		},
 		clearInputRef(ref) {
-			if (input === ref) input = null;
+			// `untrack` so calling this from an effect (today: not done,
+			// but reserved against future refactor) doesn't register a
+			// reactive cycle on `input` — `clearInputRef` only fires
+			// from Prompt's `onCleanup`, which is non-reactive.
+			if (untrack(input) === ref) setInput(null);
 		},
 		getInputRef() {
-			return input;
+			return input();
 		},
 		focusInput() {
-			if (input && !input.isDestroyed && !input.focused) input.focus();
+			const i = input();
+			if (i && !i.isDestroyed && !i.focused) i.focus();
 		},
 		blurInput() {
-			if (input && !input.isDestroyed && input.focused) input.blur();
+			const i = input();
+			if (i && !i.isDestroyed && i.focused) i.blur();
 		},
 		setCtrlCBridge(bridge) {
 			ctrlCBridge = bridge;

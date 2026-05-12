@@ -11,6 +11,7 @@ import {
 } from "solid-js";
 import { useAgent } from "../context/agent";
 import { useLayout } from "../context/layout";
+import { clearDraft } from "../context/prompt-draft";
 import { useTheme } from "../context/theme";
 import { useDialog } from "../ui/dialog";
 import { useToast } from "../ui/toast";
@@ -35,7 +36,7 @@ import { SpinnerWave } from "./spinner-wave";
  */
 export function Prompt() {
 	const { theme, syntax } = useTheme();
-	const { actions, store } = useAgent();
+	const { actions, store, session } = useAgent();
 	const dialog = useDialog();
 	const command = useCommand();
 	const toast = useToast();
@@ -251,10 +252,24 @@ export function Prompt() {
 	 * textarea is uncontrolled — `onContentChange` would fire
 	 * eventually, but handleSubmit's subsequent re-renders read `text()`
 	 * so we sync it now to keep them consistent.
+	 *
+	 * Also drops the per-session draft slot when called against a bound
+	 * session — submit (the only Ctrl+C-emptyable `clearInput` site
+	 * that fires from the conversation-view Prompt) has consumed the
+	 * draft, so the slot should be gone before the bridge's next snapshot
+	 * could re-pick it up. The truthy guard handles the open-page Prompt
+	 * (no session bound, no slot to clear); the structural invariant in
+	 * the conversation branch is that submit only fires after
+	 * `ensureSession` has run, so `getCurrentSessionId()` is non-null
+	 * there. The bridge's snapshot/restore lifetime is separate (it
+	 * mounts only in the conversation branch and never sees the
+	 * post-submit empty buffer because `clearInput` doesn't unmount it).
 	 */
 	function clearInput() {
 		if (inputRef) inputRef.setText("");
 		setText("");
+		const sid = session.getCurrentSessionId();
+		if (sid) clearDraft(sid);
 	}
 
 	// Usage display: "68.7K (7%) · $2.25"
