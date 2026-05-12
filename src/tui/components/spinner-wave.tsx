@@ -1,5 +1,6 @@
 import { RGBA } from "@opentui/core";
-import { createMemo, createSignal, Index, onCleanup, onMount } from "solid-js";
+import { createMemo, createSignal, Index } from "solid-js";
+import { createInterval } from "../util/timers";
 
 /**
  * 8-cell bidirectional Knight Rider wave spinner.
@@ -226,12 +227,10 @@ export function SpinnerWave(props: { color: RGBA }) {
 		Array.from(FRAMES[frameIdx() % TOTAL_FRAMES]!),
 	);
 
-	onMount(() => {
-		const id = setInterval(() => {
-			setFrameIdx((f) => (f + 1) % TOTAL_FRAMES);
-		}, FRAME_INTERVAL_MS);
-		onCleanup(() => clearInterval(id));
-	});
+	createInterval(
+		() => setFrameIdx((f) => (f + 1) % TOTAL_FRAMES),
+		FRAME_INTERVAL_MS,
+	);
 
 	return (
 		<box flexDirection="row">

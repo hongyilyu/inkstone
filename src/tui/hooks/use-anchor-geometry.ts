@@ -37,8 +37,8 @@ import {
 	createEffect,
 	createMemo,
 	createSignal,
-	onCleanup,
 } from "solid-js";
+import { createInterval } from "../util/timers";
 
 export interface AnchorGeometry {
 	/** Anchor-relative `top` for absolute positioning (row offset). */
@@ -68,7 +68,7 @@ export function useAnchorGeometry(
 	createEffect(() => {
 		if (!opts.visible()) return;
 		let last = { x: 0, y: 0, width: 0 };
-		const interval = setInterval(() => {
+		createInterval(() => {
 			const a = opts.anchor();
 			if (!a) return;
 			if (a.x !== last.x || a.y !== last.y || a.width !== last.width) {
@@ -76,7 +76,6 @@ export function useAnchorGeometry(
 				setPositionTick((t) => t + 1);
 			}
 		}, 50);
-		onCleanup(() => clearInterval(interval));
 	});
 
 	return createMemo<AnchorGeometry>(() => {
