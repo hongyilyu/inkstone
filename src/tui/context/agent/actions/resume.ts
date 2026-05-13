@@ -13,7 +13,6 @@
 
 import { loadSession } from "@backend/persistence/sessions";
 import { batch } from "solid-js";
-import { closeSecondaryPage } from "../../secondary-page";
 import type { ActionDeps } from "../actions";
 
 export function resumeSessionAction(sessionId: string, deps: ActionDeps): void {
@@ -79,10 +78,11 @@ export function resumeSessionAction(sessionId: string, deps: ActionDeps): void {
 		deps.setStore("totalCost", loaded.totals.cost);
 		deps.setStore("lastTurnStartedAt", 0);
 		// Ephemeral UI state — reset so the resumed session doesn't
-		// inherit stale sidebar sections, secondary page, or a Codex
-		// transport label from a previous process.
+		// inherit stale sidebar sections or a Codex transport label
+		// from a previous process. The secondary-page view follows
+		// `currentSessionId` via the bridge in `use-layout-keybinds.ts`
+		// (see `docs/ARCHITECTURE.md` § Per-session secondary page).
 		deps.setStore("sidebarSections", []);
-		closeSecondaryPage();
 		deps.setStore("codexTransport", undefined);
 		deps.sessionState.setPreTurnCodexConnections(undefined);
 		// Wipe diff-preview archive — entries are keyed by callId and

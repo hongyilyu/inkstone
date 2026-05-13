@@ -155,7 +155,7 @@ src/
     commands/
       layout-commands.ts            registerLayoutCommands — extracted Layout palette + keybind registrations
     hooks/
-      use-layout-keybinds.ts        useLayoutKeybinds — extracted Layout keyboard handler (app_exit, scroll, secondary_page_close)
+      use-layout-keybinds.ts        useLayoutKeybinds — extracted Layout keyboard handler (app_exit, scroll, secondary_page_close + session-id → secondary-page bridge)
     context/
       agent.tsx                     Thin barrel re-exporting AgentProvider + useAgent + SessionFactory / Session
       agent/                        Agent provider split (7 modules; see below)
@@ -270,6 +270,16 @@ Submit-clear is **not** the hook's concern. `Prompt.clearInput()` calls `clearDr
 Reads inside the hook's effect (`getDraft`, `fileStyleId`) are wrapped in `untrack()` so the effect's dependency set is exactly `{inputRef, promptPartTypeId, sessionId}`. Without `untrack`, the snapshot branch's own `setDraft`/`clearDraft` writes would re-trigger the effect and a destination slot with mentions would get applied twice (duplicate extmarks); a theme switch would also clobber the live buffer with the stored draft.
 
 Process-lifetime only — no disk persistence. Open-page drafts are intentionally not preserved because the open page has no round-trip surface that doesn't commit the draft via router-fork.
+
+### Per-session secondary page
+
+The secondary-page overlay (file-chip preview, `@`-mention preview) is per-session: each session keeps its own currently-rendered page in a `Map<sessionId, SecondaryPageState>` inside `src/tui/context/secondary-page.ts`, with a derived `view` signal mirroring `pages.get(sid) ?? null`. Switching session A → B → A within one process re-displays whatever page A had open without any keystroke (browser-tab semantics).
+
+The session-id bridge that swaps the view on session change lives in `useLayoutKeybinds` (`src/tui/hooks/use-layout-keybinds.ts`) — it reads `session.subscribeSessionId()` inside a `createEffect` and forwards each change into `setActiveSession(sid)`. The bridge inherits the layout's lifetime (same as the AgentProvider's), so resume / `/clear` / first-prompt all flow through it. `setActiveSession` wraps its body in `untrack()` because the effect's tracked dependency is the session-id accessor; without `untrack`, every `openSecondaryPage` / `closeSecondaryPage` write would re-fire the effect (no-op via the early return on same-sid, but Solid's batched scheduler surfaces the cycle as a stack overflow under load) — same `untrack`-on-internal-read pattern as `prompt-draft-bridge.tsx`.
+
+`/resume` no longer calls `closeSecondaryPage()` directly — the session-id effect swaps the rendered page automatically. `/clear` continues to call `closeSecondaryPage()` since clearing the in-memory session means its open page must go with it.
+
+Process-lifetime only, mirrors prompt-draft. Disk persistence is a separable additive feature.
 
 ## Markdown Rendering
 

@@ -34,6 +34,7 @@ import {
 import type { DisplayMessage } from "@bridge/view-model";
 import { __resetDraftsForTesting } from "../../src/tui/context/prompt-draft";
 import {
+	__resetSecondaryPageForTesting,
 	closeSecondaryPage,
 	openSecondaryPage,
 } from "../../src/tui/context/secondary-page";
@@ -43,7 +44,7 @@ import { renderApp } from "./harness";
 let setup: Awaited<ReturnType<typeof renderApp>> | undefined;
 
 afterEach(() => {
-	closeSecondaryPage();
+	__resetSecondaryPageForTesting();
 	if (setup) {
 		setup.renderer.destroy();
 		setup = undefined;

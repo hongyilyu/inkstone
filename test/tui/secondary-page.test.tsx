@@ -15,7 +15,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-	closeSecondaryPage,
+	__resetSecondaryPageForTesting,
 	openSecondaryPage,
 } from "../../src/tui/context/secondary-page";
 import { makeFakeSession } from "./fake-session";
@@ -24,9 +24,9 @@ import { renderApp, waitForFrame } from "./harness";
 let setup: Awaited<ReturnType<typeof renderApp>> | undefined;
 
 afterEach(() => {
-	// Always close any secondary page left open by a failing test so
-	// the module-level signal doesn't leak across cases.
-	closeSecondaryPage();
+	// Reset the module-level signals so a page or per-session entry
+	// left behind by a failing test doesn't leak into the next case.
+	__resetSecondaryPageForTesting();
 	if (setup) {
 		setup.renderer.destroy();
 		setup = undefined;

@@ -8,6 +8,9 @@
  *   - scroll keys target a layout-local ref (`scroll`) that's only
  *     meaningful when the session view is mounted.
  *
+ * Also hosts the `setActiveSession(sid)` bridge for the secondary
+ * page; see `docs/ARCHITECTURE.md` § Per-session secondary page.
+ *
  * Gains a `defaultPrevented` guard at the top that matches the
  * patterns in `dialog.tsx` and `command.tsx` — stops nested consumers
  * that already handled the event from cascading into the Layout's
@@ -19,10 +22,13 @@
  */
 
 import { useKeyboard, useRenderer } from "@opentui/solid";
+import { createEffect } from "solid-js";
+import { useAgent } from "../context/agent";
 import { useLayout } from "../context/layout";
 import {
 	closeSecondaryPage,
 	getSecondaryPage,
+	setActiveSession,
 } from "../context/secondary-page";
 import { useDialog } from "../ui/dialog";
 import * as Keybind from "../util/keybind";
@@ -31,6 +37,12 @@ export function useLayoutKeybinds(): void {
 	const renderer = useRenderer();
 	const dialog = useDialog();
 	const layout = useLayout();
+	const { session } = useAgent();
+
+	const sessionIdAccessor = session.subscribeSessionId();
+	createEffect(() => {
+		setActiveSession(sessionIdAccessor());
+	});
 
 	function exitNow() {
 		renderer.destroy();
