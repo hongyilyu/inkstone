@@ -17,7 +17,7 @@
  * intention-revealing calls instead of 260 lines of scrolling.
  */
 
-import type { Session } from "@backend/agent";
+import type { generateSessionTitle, Session } from "@backend/agent";
 import { getAgentInfo } from "@backend/agent";
 import { logger } from "@backend/logger";
 import {
@@ -41,6 +41,10 @@ import { getOpenAICodexWebSocketDebugStats } from "@mariozechner/pi-ai/openai-co
 import { batch } from "solid-js";
 import { produce, type SetStoreFunction } from "solid-js/store";
 import type { LayoutContextValue } from "../../context/layout";
+import {
+	buildTitlePrompt,
+	scheduleSessionTitleTask,
+} from "./actions/session-title";
 import type { MessageLog } from "./message-log";
 import type { SessionState } from "./session-state";
 
@@ -99,6 +103,12 @@ export interface ReducerDeps {
 	 * `applyDispatchResult` for the full timing rationale.
 	 */
 	resumeSession: (sessionId: string) => void;
+	/**
+	 * Same `generateSessionTitle` reference the provider wires into
+	 * `wrappedActions` — one stub covers both the plain-chat and
+	 * routing-seam title call sites in tests.
+	 */
+	titleGenerator: typeof generateSessionTitle;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -679,6 +689,35 @@ function handleAgentEnd(event: EventOf<"agent_end">, deps: ReducerDeps): void {
 							}
 						}),
 					);
+					// Title kickoff for the routed child — `promptAction`
+					// owns the plain-chat path, the seam owns this one.
+					// Provider/model come from the live `Session`
+					// (`providerSel` is rewritten unconditionally by
+					// `selectAgent`) rather than `store.modelProvider`,
+					// which only updates when `selectAgent` actually
+					// fires `notify()` — skipped on a same-agent fork.
+					// `buildTitlePrompt("", parts)` reuses the plain-
+					// chat flattening so `@`-mention stems land in the
+					// title input on both paths.
+					const seededUser = deps.store.messages.find((m) => m.role === "user");
+					if (seededUser) {
+						const titlePrompt = buildTitlePrompt("", seededUser.parts);
+						if (titlePrompt) {
+							scheduleSessionTitleTask(
+								{
+									sessionId: pendingChildId,
+									activeProviderId: deps.agentSession.getProviderId(),
+									activeModelId: deps.agentSession.getModelId(),
+									prompt: titlePrompt,
+								},
+								{
+									titleGenerator: deps.titleGenerator,
+									getCurrentSessionId: deps.sessionState.getCurrentSessionId,
+									setStore: deps.setStore,
+								},
+							);
+						}
+					}
 				});
 				// Fire the child agent's first turn. The seeded transcript
 				// ends with the user's freeform message; `continue()` runs
