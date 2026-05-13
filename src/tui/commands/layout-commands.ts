@@ -175,7 +175,7 @@ export function registerLayoutCommands(
 				id: "session.clear",
 				title: "Clear session",
 				description: "Clear the current session",
-				slash: { name: "clear" },
+				slash: { name: "clear", aliases: ["new"] },
 				onSelect: () => {
 					// Fire-and-forget: `clearSession` is async to await a
 					// mid-stream `agent.abort()`, but callers in command

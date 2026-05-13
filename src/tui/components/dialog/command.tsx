@@ -68,6 +68,8 @@ import { DialogCommand } from "./command-palette";
  */
 export interface SlashSpec {
 	name: string;
+	/** Alternate verbs (without leading `/`). See `docs/SLASH-COMMANDS.md`. */
+	aliases?: string[];
 	takesArgs?: boolean;
 	argHint?: string;
 	argGuide?: string;
@@ -170,6 +172,20 @@ export function canRunSlashEntry(
 	return true;
 }
 
+/**
+ * Resolve a typed slash name to its registry entry. Canonical `name`
+ * matches win over `aliases` matches. See `docs/SLASH-COMMANDS.md`.
+ */
+export function findSlashEntry<T extends { slash?: SlashSpec }>(
+	entries: readonly T[],
+	name: string,
+): T | undefined {
+	return (
+		entries.find((e) => e.slash?.name === name) ??
+		entries.find((e) => e.slash?.aliases?.includes(name))
+	);
+}
+
 type PaletteRegistration = Accessor<CommandOption[]>;
 type AgentSlashRegistration = Accessor<AgentSlashOption[]>;
 
@@ -211,7 +227,7 @@ function init() {
 	function findSlash(
 		name: string,
 	): CommandOption | AgentSlashOption | undefined {
-		return slashOptions().find((e) => e.slash?.name === name);
+		return findSlashEntry(slashOptions(), name);
 	}
 
 	function canRunSlash(name: string, args: string): boolean {

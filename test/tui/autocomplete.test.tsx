@@ -166,6 +166,31 @@ describe("slash autocomplete", () => {
 		expect(fake.calls.prompt[0]).toBe("  /clear");
 	});
 
+	test("aliased verb (`/new`) surfaces the canonical row (`/clear`)", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		await setup.mockInput.typeText("/new");
+		const f = await waitForFrame(setup, "/clear");
+		expect(f).toContain("/clear");
+		expect(f).toContain("Clear the current session");
+	});
+
+	test("Enter on an aliased verb fires the canonical command", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		await setup.mockInput.typeText("/new");
+		await waitForFrame(setup, "/clear");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(20);
+
+		expect(fake.calls.clearSession).toBeGreaterThanOrEqual(1);
+	});
+
 	test("ESC closes the dropdown", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });
