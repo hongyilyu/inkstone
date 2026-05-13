@@ -1,7 +1,8 @@
 /**
- * Secondary page — local UI state for displaying a full-screen page
- * that replaces the conversation area. Per-session storage; see
- * `docs/ARCHITECTURE.md` § Per-session secondary page.
+ * Secondary page — per-session, browser-style back/forward navigation
+ * for the full-screen overlay that replaces the conversation. See ADR
+ * 0017 and `docs/ARCHITECTURE.md` § Secondary-page back/forward
+ * history.
  */
 
 import { createRoot, createSignal, untrack } from "solid-js";
@@ -15,13 +16,19 @@ export interface SecondaryPageState {
 	format?: SecondaryPageFormat;
 }
 
-interface RootState {
-	pages: Map<string, SecondaryPageState>;
+interface SessionNav {
+	back: SecondaryPageState[];
+	current: SecondaryPageState | null;
+	forward: SecondaryPageState[];
+}
+
+interface NavRoot {
+	map: Map<string, SessionNav>;
 	sid: string | null;
 }
 
 const { state, setState, view, setView } = createRoot(() => {
-	const [s, setS] = createSignal<RootState>({ pages: new Map(), sid: null });
+	const [s, setS] = createSignal<NavRoot>({ map: new Map(), sid: null });
 	const [v, setV] = createSignal<SecondaryPageState | null>(null);
 	return { state: s, setState: setS, view: v, setView: setV };
 });
@@ -32,42 +39,119 @@ export function getSecondaryPage(): SecondaryPageState | null {
 
 export function setActiveSession(sid: string | null): void {
 	// `untrack` breaks the read/write cycle with the caller's
-	// `createEffect` — see `docs/ARCHITECTURE.md` § Per-session
-	// secondary page. Same pattern as `prompt-draft-bridge.tsx`.
+	// `createEffect` (whose tracked dep is the session-id accessor).
+	// Same pattern as `prompt-draft-bridge.tsx`.
 	untrack(() => {
 		const s = state();
 		if (s.sid === sid) return;
 		setState({ ...s, sid });
-		const next = sid !== null ? (s.pages.get(sid) ?? null) : null;
-		setView(next);
+		const nav = sid !== null ? s.map.get(sid) : undefined;
+		setView(nav?.current ?? null);
 	});
 }
 
-export function openSecondaryPage(page: SecondaryPageState): void {
+function navigateTo(page: SecondaryPageState): void {
 	const s = state();
 	if (s.sid === null) {
-		// Pre-first-prompt / open-page surface: render directly
-		// without per-session storage.
+		// Pre-first-prompt / open-page surface: render directly,
+		// no per-session storage.
 		setView(page);
 		return;
 	}
-	const pages = new Map(s.pages);
-	pages.set(s.sid, page);
-	setState({ ...s, pages });
+	const cur = s.map.get(s.sid) ?? { back: [], current: null, forward: [] };
+	const nextNav: SessionNav = {
+		// Conversation (current === null) is the implicit floor of
+		// `back`, not a stack entry. Pushing null would let `goBack`
+		// pop a phantom entry. See ADR 0017.
+		back: cur.current != null ? [...cur.back, cur.current] : [...cur.back],
+		current: page,
+		forward: [],
+	};
+	const nextMap = new Map(s.map);
+	nextMap.set(s.sid, nextNav);
+	setState({ ...s, map: nextMap });
 	setView(page);
 }
 
+export function goBack(): void {
+	const s = state();
+	if (s.sid === null) {
+		setView(null);
+		return;
+	}
+	const cur = s.map.get(s.sid);
+	if (!cur || (cur.current == null && cur.back.length === 0)) return;
+	const newCurrent: SecondaryPageState | null = cur.back.at(-1) ?? null;
+	const newBack = cur.back.slice(0, -1);
+	const newForward =
+		cur.current != null ? [...cur.forward, cur.current] : [...cur.forward];
+	const nextNav: SessionNav = {
+		back: newBack,
+		current: newCurrent,
+		forward: newForward,
+	};
+	const nextMap = new Map(s.map);
+	nextMap.set(s.sid, nextNav);
+	setState({ ...s, map: nextMap });
+	setView(newCurrent);
+}
+
+export function goForward(): void {
+	const s = state();
+	if (s.sid === null) return;
+	const cur = s.map.get(s.sid);
+	if (!cur || cur.forward.length === 0) return;
+	const newCurrent: SecondaryPageState | null = cur.forward.at(-1) ?? null;
+	const newForward = cur.forward.slice(0, -1);
+	const newBack =
+		cur.current != null ? [...cur.back, cur.current] : [...cur.back];
+	const nextNav: SessionNav = {
+		back: newBack,
+		current: newCurrent,
+		forward: newForward,
+	};
+	const nextMap = new Map(s.map);
+	nextMap.set(s.sid, nextNav);
+	setState({ ...s, map: nextMap });
+	setView(newCurrent);
+}
+
+export function canGoBack(): boolean {
+	const s = state();
+	if (s.sid === null) return false;
+	const nav = s.map.get(s.sid);
+	if (!nav) return false;
+	return nav.back.length > 0 || nav.current != null;
+}
+
+export function canGoForward(): boolean {
+	const s = state();
+	if (s.sid === null) return false;
+	const nav = s.map.get(s.sid);
+	return nav ? nav.forward.length > 0 : false;
+}
+
+export function openSecondaryPage(page: SecondaryPageState): void {
+	navigateTo(page);
+}
+
+/**
+ * Close the page AND wipe the current session's history. For `/clear`
+ * (session destroyed → nav graph goes with it) and the test-harness
+ * `afterEach`. Resume does NOT call this — the bridge handles view-
+ * sync on session change.
+ */
 export function closeSecondaryPage(): void {
 	const s = state();
-	if (s.sid !== null && s.pages.has(s.sid)) {
-		const pages = new Map(s.pages);
-		pages.delete(s.sid);
-		setState({ ...s, pages });
+	if (s.sid !== null && s.map.has(s.sid)) {
+		const nextMap = new Map(s.map);
+		nextMap.delete(s.sid);
+		setState({ ...s, map: nextMap });
 	}
 	setView(null);
 }
 
 export function __resetSecondaryPageForTesting(): void {
-	setState({ pages: new Map(), sid: null });
+	setState({ map: new Map(), sid: null });
 	setView(null);
 }

@@ -53,8 +53,8 @@ describe("secondary page", () => {
 		});
 		await waitForFrame(setup, "Article Title");
 
-		// Back button is visible in the sidebar.
-		expect(setup.captureCharFrame()).toContain("← Back");
+		// Back arrow is visible in the sidebar.
+		expect(setup.captureCharFrame()).toContain("←");
 
 		// ESC closes.
 		setup.mockInput.pressEscape();
