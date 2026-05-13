@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-13 (slash-command alias support — `/clear` ↔ `/new`)
+**Last updated**: 2026-05-13 (slash-command alias support + fuzzysort key narrowing)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -21,6 +21,8 @@
   - Stack E — knowledge-base agent (graphite-stacked, landing 2026-05-07): scaffold → port LifeOS workflow bodies → wire `/ingest` `/query` `/lint` slash commands → docs. Third agent on ship (alongside reader and example), workspace under `040 FORGE/` with `010 RAW/` + `020 HUMAN/` write-blocked per LifeOS policy. All three workflow bodies preloaded into the system prompt; commands are minimal triggers.
 
 ## Completed
+
+- **Narrow slash-mode fuzzysort keys to `display` + `aliases`** (2026-05-13, PR 2 of the slash-aliases stack). Description text is no longer a fuzzy-match key in the slash dropdown. Surfaced when typing `/new` (an alias of `/clear`) also lit up `/ingest` ("Process **new** 010 RAW/ sources...") and `/query` (description fuzzy-subsequences `new` via "**A**ns**w**er ... k**n**owledge"), drowning the canonical row. Diverges from OpenCode's three-key shape (display + description + aliases) — Inkstone's smaller registry doesn't need description-keying for discoverability now that aliases are a first-class field. Mention mode unaffected (its rows have no description anyway). Pinned by a new "description text does not pollute slash search results" case in `test/tui/autocomplete.test.tsx`.
 
 - **Slash-command aliases (TUI)** (2026-05-13). `SlashSpec` gains optional `aliases?: string[]` so a single registry entry resolves from multiple typed verbs. New pure helper `findSlashEntry(entries, name)` in `src/tui/components/dialog/command.tsx` does a two-pass match: canonical `name` first, then `aliases` — canonical always wins on collision, regardless of registration order. The closure `findSlash` (used by `triggerSlash` / `canRunSlash` / the prompt's `argGuide` coaching-hint memo) delegates to it, so all four call sites share one resolver. Dropdown stays a single canonical row per entry — aliases widen fuzzysort match keys (third key in `prompt-autocomplete.tsx`, `/`-prefixed to mirror `display` formatting) but never add extra rows. `/clear` opts in with `aliases: ["new"]`; other entries opt in on-demand. Backend `AgentCommand` does NOT carry `aliases` — shell-level only by design (narrower agent surface; can opt in later if needed). 8 new `findSlashEntry` tests in `test/command-slash.test.ts` pin: empty registry, canonical-only, alias-only, canonical-beats-alias precedence, registration-order tiebreaker on shared aliases, slash-less entries skipped, unknown name, and the `/clear` ↔ `/new` round-trip regression guard. Plan: `~/.claude/plans/for-slash-commands-when-elegant-forest.md`.
 
