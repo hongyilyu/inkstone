@@ -339,9 +339,52 @@ export function createSession(params: {
 	// Hoist the composed tool list so the same array is handed to
 	// pi-agent-core AND captured by the `beforeToolCall` closure
 	// below — single source of truth for "what tools this session has."
-	// `let` because `selectAgent` rebinds on agent swap (the Agent's
+	// `let` because `bindAgent` rebinds on agent swap (the Agent's
 	// `state.tools` is reassigned alongside).
 	let tools = composeTools(info);
+
+	/**
+	 * Re-bind the live `Agent` to `name`, flipping `info`, `providerSel`,
+	 * `tools`, `systemPrompt`, model, and `thinkingLevel` to the target
+	 * agent's resolved values, then `notify()` so the snapshot
+	 * subscription fans the new state into the TUI store.
+	 *
+	 * Pre-resolves the (provider, model) pair before mutating any
+	 * state — if `resolveModelRef` throws (provider disconnected
+	 * mid-session), the session stays bound to the old agent rather
+	 * than landing in a torn "info points at new agent but model is
+	 * still the old one" state.
+	 *
+	 * Shared by `selectAgent` (empty-session swap) and `clearSession`
+	 * (post-reset reset-to-default). Caller is responsible for the
+	 * empty-session invariant — `reset()` satisfies it inside
+	 * `clearSession`; `selectAgent` checks it explicitly.
+	 */
+	function bindAgent(name: string): void {
+		const nextInfo = getAgentInfo(name);
+		const ref = resolveAgentModel(loadConfig(), nextInfo.name);
+		const nextProviderSel = resolveModelRef(ref);
+		const nextModel = resolveModel(
+			nextProviderSel.providerId,
+			nextProviderSel.modelId,
+		);
+		if (!nextModel) {
+			throw new Error(
+				`Model '${nextProviderSel.modelId}' is not available from provider '${nextProviderSel.providerId}'.`,
+			);
+		}
+		info = nextInfo;
+		providerSel = nextProviderSel;
+		agent.state.systemPrompt = composeSystemPrompt(info);
+		// Rebind the closure-captured `tools` alongside the Agent's
+		// own `state.tools` so the `beforeToolCall` dispatcher
+		// resolves baselines against the new agent's tool set.
+		tools = composeTools(info);
+		agent.state.tools = tools;
+		agent.state.model = nextModel;
+		agent.state.thinkingLevel = resolveThinkingLevelFor(nextModel);
+		notify();
+	}
 
 	const agent = new Agent({
 		initialState: {
@@ -562,12 +605,6 @@ export function createSession(params: {
 		},
 		selectAgent(name: string) {
 			// Empty-session invariant. See D13 in `docs/AGENT-DESIGN.md`.
-			if (agent.state.messages.length > 0) {
-				throw new Error(
-					"Agent is fixed for the lifetime of a session. " +
-						"Clear the session before selecting a different agent.",
-				);
-			}
 			// Agent selection is not persisted (plan D8). Fresh launches
 			// start at DEFAULT_AGENT; resume reads the agent name from
 			// the SQLite session row. Switching the bound agent also
@@ -575,35 +612,13 @@ export function createSession(params: {
 			// destination agent's resolved values, so subsequent turns
 			// run with the right (provider, model, effort) tuple
 			// without an extra round-trip through the dialogs.
-			//
-			// Resolve everything BEFORE mutating any state. If
-			// `resolveModelRef` throws (e.g. provider got disconnected
-			// mid-session), the session stays bound to the old agent
-			// rather than landing in a torn "info points at new agent
-			// but model is still the old one" state.
-			const nextInfo = getAgentInfo(name);
-			const ref = resolveAgentModel(loadConfig(), nextInfo.name);
-			const nextProviderSel = resolveModelRef(ref);
-			const nextModel = resolveModel(
-				nextProviderSel.providerId,
-				nextProviderSel.modelId,
-			);
-			if (!nextModel) {
+			if (agent.state.messages.length > 0) {
 				throw new Error(
-					`Model '${nextProviderSel.modelId}' is not available from provider '${nextProviderSel.providerId}'.`,
+					"Agent is fixed for the lifetime of a session. " +
+						"Clear the session before selecting a different agent.",
 				);
 			}
-			info = nextInfo;
-			providerSel = nextProviderSel;
-			agent.state.systemPrompt = composeSystemPrompt(info);
-			// Rebind the closure-captured `tools` alongside the Agent's
-			// own `state.tools` so the `beforeToolCall` dispatcher
-			// resolves baselines against the new agent's tool set.
-			tools = composeTools(info);
-			agent.state.tools = tools;
-			agent.state.model = nextModel;
-			agent.state.thinkingLevel = resolveThinkingLevelFor(nextModel);
-			notify();
+			bindAgent(name);
 		},
 		async clearSession() {
 			// `messages = []` alone leaks pi-agent-core runtime state
@@ -627,6 +642,18 @@ export function createSession(params: {
 				await agent.waitForIdle();
 			}
 			agent.reset();
+			// `clearSession` ends an in-memory lifetime and starts a
+			// fresh one (ADR 0008). A fresh lifetime is bound to the
+			// router by definition (ADR 0007 / `resolveInitialAgentName`),
+			// so rebinding here mirrors what construction does. Resume
+			// runs `clearSession()` then `selectAgent(stored.agent)`
+			// inside a `batch()` — the rebind to default is invisible
+			// because the override flips the same fan-out before the
+			// TUI re-renders. Skip the call when already bound to the
+			// default to avoid a no-op `notify()` round-trip.
+			if (info.name !== DEFAULT_AGENT_NAME) {
+				bindAgent(DEFAULT_AGENT_NAME);
+			}
 		},
 		restoreMessages(messages: AgentMessage[]) {
 			agent.state.messages = messages;
