@@ -7,6 +7,7 @@
  * is co-located with the code it constrains.
  */
 
+import { DEFAULT_AGENT_NAME } from "@backend/agent";
 import { closeSecondaryPage } from "../../secondary-page";
 import type { ActionDeps } from "../actions";
 
@@ -43,4 +44,15 @@ export async function clearSessionAction(deps: ActionDeps): Promise<void> {
 	deps.setStore("codexTransport", undefined);
 	deps.sessionState.setPreTurnCodexConnections(undefined);
 	deps.previews.clearAll();
+	// Re-bind to the routing agent so the next freeform open-page submit
+	// classifies via the router (ADR 0007). `/clear` should look like a
+	// fresh launch; `resolveInitialAgentName` already starts launches on
+	// `DEFAULT_AGENT_NAME`. The empty-session invariant for `selectAgent`
+	// is satisfied: backend `clearSession()` ran `agent.reset()` which
+	// emptied `agent.state.messages`, and we wiped `store.messages`
+	// above. Skip the call when already on the router so we don't fan a
+	// no-op snapshot through the subscription.
+	if (deps.agentSession.agentName !== DEFAULT_AGENT_NAME) {
+		deps.agentSession.selectAgent(DEFAULT_AGENT_NAME);
+	}
 }
