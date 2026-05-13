@@ -166,6 +166,18 @@ describe("slash autocomplete", () => {
 		expect(fake.calls.prompt[0]).toBe("  /clear");
 	});
 
+	test("description text does not pollute slash search results", async () => {
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory });
+		await setup.renderOnce();
+
+		await setup.mockInput.typeText("/new");
+		const f = await waitForFrame(setup, "/clear");
+		expect(f).toContain("/clear");
+		expect(f).not.toContain("/ingest");
+		expect(f).not.toContain("/query");
+	});
+
 	test("aliased verb (`/new`) surfaces the canonical row (`/clear`)", async () => {
 		const fake = makeFakeSession();
 		setup = await renderApp({ session: fake.factory });

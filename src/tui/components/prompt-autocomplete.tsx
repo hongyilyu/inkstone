@@ -211,7 +211,6 @@ export function PromptAutocomplete(props: {
 			.go(needle, all, {
 				keys: [
 					(o) => o.display.trimEnd(),
-					(o) => o.description ?? "",
 					// `/`-prefixed to match `display` formatting.
 					(o) => o.aliases?.map((a) => `/${a}`).join(" ") ?? "",
 				],
