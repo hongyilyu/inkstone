@@ -14,6 +14,7 @@ import {
 	appendAgentMessage,
 	appendDisplayMessage,
 	createSession as createSessionRow,
+	listSessions,
 	newId,
 	updateSessionTitle,
 	withTransaction,
@@ -125,6 +126,54 @@ describe("session list panel", () => {
 		await Bun.sleep(30);
 
 		expect(fake.calls.setSessionId).toContain(firstId);
+	});
+
+	test("End past the viewport scrolls the panel to keep selection visible", async () => {
+		// Seed enough rows to overflow any plausible viewport. Each
+		// SessionListItem renders ~3 visual rows; panel chrome eats ~3
+		// more. Harness default height is 30 (~9 visible rows). 50 seeds
+		// × ~3 visual ≈ 150 rows — comfortably overflows.
+		//
+		// The test process's SQLite DB is shared across the whole `bun
+		// test` run (preload sets up one tmp dir per process; no
+		// per-test cleanup), so other tests' sessions may also exist
+		// when this runs. The assertion is leftover-resilient: we read
+		// `listSessions()` to find the absolute top row at panel-open
+		// time and assert it has scrolled OFF-screen after End. Pre-fix
+		// (no scroll-follow), End moves selection but the scrollbox
+		// stays at the top, so the top row remains visible — assertion
+		// fails.
+		for (let i = 0; i < 50; i++) {
+			seedSession(`session-${String(i).padStart(2, "0")}`);
+		}
+
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory, width: 120 });
+		await setup.renderOnce();
+
+		setup.mockInput.pressKey("n", { ctrl: true });
+		// Confirm the panel mounted with our seeds. `session-49` is the
+		// newest seeded title, so it sits at or near index 0.
+		await waitForFrame(setup, "session-49");
+
+		// First row at panel-open = the newest session in the DB. After
+		// End scrolls the viewport past it, this title (truncated to
+		// fit) should no longer appear in the frame. Our 50 seeds are
+		// the newest sessions in the DB at this point in the test run,
+		// so `firstRowTitle` is one of `session-NN` — distinct enough
+		// from leftover-test titles that a substring collision is
+		// negligible.
+		const all = listSessions();
+		const firstRowTitle = all[0]?.title;
+		expect(firstRowTitle).toBeTruthy();
+
+		// `"END"` is the KeyCodes key (mock-keys.d.ts); a lowercase
+		// `"end"` would send the literal three-letter string.
+		setup.mockInput.pressKey("END");
+		await setup.renderOnce();
+		await Bun.sleep(30);
+
+		expect(setup.captureCharFrame()).not.toContain(firstRowTitle as string);
 	});
 
 	test("ESC closes the panel", async () => {

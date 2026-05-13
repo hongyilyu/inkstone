@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-13 (session list panel: emacs-style nav consistency — Ctrl+N navigates, Esc closes)
+**Last updated**: 2026-05-13 (session list panel: scroll viewport follows keyboard selection)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -21,6 +21,8 @@
   - Stack E — knowledge-base agent (graphite-stacked, landing 2026-05-07): scaffold → port LifeOS workflow bodies → wire `/ingest` `/query` `/lint` slash commands → docs. Third agent on ship (alongside reader and example), workspace under `040 FORGE/` with `010 RAW/` + `020 HUMAN/` write-blocked per LifeOS policy. All three workflow bodies preloaded into the system prompt; commands are minimal triggers.
 
 ## Completed
+
+- **Session list: scroll viewport follows the keyboard selection** (2026-05-13, PR 2/2 of the session-list nav stack). Ctrl+N / ↓ / End past the last visible row used to leave the selection scrolled out of view because the `<scrollbox>` didn't track `navStore.selected`. Ported `DialogSelect`'s scroll-sync pattern (`src/tui/ui/dialog-select.tsx:171-193`) into `SessionList`: each `SessionListItem` stamps `id={row.id}` on its outer box, `SessionList` captures a `scroll` ref, and a new `syncScroll()` helper called at the end of `moveTo()` locates the selected child via `scroll.getChildren().find(c => c.id === selectedRow()?.id)`, computes `target.y - scroll.y`, and `scrollBy`s when the row is outside `[0, scroll.height)`. Wrap-to-top clamp matches the reference. Two reference branches intentionally omitted (no caller): the `center` parameter for filter-driven jumps and the `current`-prop mount-time scroll-to. One new test seeds 50 rows, captures the first-row title via `listSessions()`, presses End, and asserts that title is no longer in the frame (negative form is leftover-resilient — the test-process DB is shared across the full `bun test` run with no per-test cleanup, so absolute index assertions wouldn't work).
 
 - **Session list: emacs-style nav consistency** (2026-05-13). Dropped `ctrl+n` from `panel_close` so the open-key no longer toggles the panel closed; only Esc closes. Ctrl+N inside the open panel now moves selection down via `select_down` (mirroring the command palette's Ctrl+P / `select_up` pattern, where second-press-of-open-key navigates rather than toggles closed). Wiring uses `command.suspend()` / `command.resume()` on `SessionList` mount/cleanup — same pattern the autocomplete dropdown uses — so global `session_list` dispatch is dormant while the panel is open and the panel-local `useKeyboard` reaches `select_down` cleanly. Header hint inside the panel switched from `Keybind.print("session_list")` to `Keybind.print("panel_close")` ("esc") since hints rendered inside an open surface read as "how to close." Stale Ctrl+N-collision rationale removed from `session-list.tsx`; ARCHITECTURE.md "Session list panel" + keybind-scope table updated. One new test in `test/tui/session-list.test.tsx` ("Ctrl+N inside the panel moves selection down instead of closing"); the existing "ESC closes" test still passes unchanged.
 

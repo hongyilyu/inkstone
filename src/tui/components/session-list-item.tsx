@@ -29,6 +29,7 @@ export function SessionListItem(props: SessionListItemProps) {
 
 	return (
 		<box
+			id={props.row.id}
 			flexDirection="column"
 			backgroundColor={props.active ? theme.primary : theme.backgroundPanel}
 			paddingLeft={props.current ? 0 : 2}
