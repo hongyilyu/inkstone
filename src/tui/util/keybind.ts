@@ -59,6 +59,7 @@ export const KEYBINDS = {
 	select_last: "end",
 	select_submit: "return",
 	secondary_page_close: "escape,ctrl+[",
+	secondary_page_forward: "ctrl+]",
 } as const;
 
 export type KeybindAction = keyof typeof KEYBINDS;

@@ -4,7 +4,11 @@ import { createMemo, For, Show } from "solid-js";
 import pkg from "../../../package.json";
 import { useAgent } from "../context/agent";
 import { useLayout } from "../context/layout";
-import { closeSecondaryPage } from "../context/secondary-page";
+import {
+	canGoForward,
+	goBack,
+	goForward,
+} from "../context/secondary-page-history";
 import { useTheme } from "../context/theme";
 import { displayPath, formatCost, formatTokensFull } from "../util/format";
 
@@ -60,10 +64,27 @@ export function Sidebar(props: { inSecondaryPage?: boolean }) {
 		>
 			{/* Top section — grows to fill, footer stays anchored below */}
 			<box flexDirection="column" flexGrow={1} gap={1}>
-				{/* Back button — only in secondary page view */}
-				<Show when={props.inSecondaryPage}>
-					<box onMouseDown={() => closeSecondaryPage()}>
-						<text fg={theme.accent}>{"← Back"}</text>
+				{/*
+				 * Back / forward arrows — browser-tab semantics. `←`
+				 * mounts whenever a page is on screen (closing the page
+				 * to conversation is one valid "back" step); `→` only
+				 * mounts when there's a forward entry to step into,
+				 * matching ctrl+]'s gate. Glyphs only — no labels —
+				 * because we want both to fit on a single sidebar row
+				 * without word-wrap on the narrow (30-col) panel.
+				 */}
+				<Show when={props.inSecondaryPage || canGoForward()}>
+					<box flexDirection="row" gap={2}>
+						<Show when={props.inSecondaryPage}>
+							<box onMouseDown={() => goBack()}>
+								<text fg={theme.accent}>{"←"}</text>
+							</box>
+						</Show>
+						<Show when={canGoForward()}>
+							<box onMouseDown={() => goForward()}>
+								<text fg={theme.accent}>{"→"}</text>
+							</box>
+						</Show>
 					</box>
 				</Show>
 

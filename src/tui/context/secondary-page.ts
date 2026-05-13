@@ -7,20 +7,19 @@
  * content (future subagent output, logs, etc.) and renders without the
  * markdown parser.
  *
- * Not agent/session state — purely a TUI navigation concern.
+ * Not agent/session state — this module is purely the page-shape type
+ * declaration plus the public `getSecondaryPage`/`openSecondaryPage`/
+ * `closeSecondaryPage` surface. All actual storage, per-session
+ * scoping, and back/forward history live in `secondary-page-history.ts`,
+ * which this module re-exports from. See that file for the full
+ * navigation contract and ADR `0017-per-session-back-forward-history`
+ * for the rationale.
  *
- * Module-level signal so deeply nested components (UserPart, Sidebar,
- * SecondaryPage) can read/write without prop drilling. The signal is
- * wrapped in `createRoot` so it has an owner even though no provider
- * contains it — without the explicit root, Solid emits a dev warning
- * about "computations created outside a createRoot will never be
- * disposed" and (more importantly for the test harness) the state
- * would leak across back-to-back `renderApp()` calls in the same
- * process. The root lives for the process lifetime, which matches the
- * intent: a module-global navigation signal.
+ * Existing callers that just want "open this page" or "close the
+ * page" import unchanged from here; the history split is invisible
+ * unless you also need `goBack` / `goForward` / `canGoBack` /
+ * `canGoForward`, which live in `secondary-page-history.ts`.
  */
-
-import { createRoot, createSignal } from "solid-js";
 
 export type SecondaryPageFormat = "markdown" | "text";
 
@@ -41,22 +40,8 @@ export interface SecondaryPageState {
 	format?: SecondaryPageFormat;
 }
 
-const { secondaryPage, setSecondaryPage } = createRoot(() => {
-	const [get, set] = createSignal<SecondaryPageState | null>(null);
-	return { secondaryPage: get, setSecondaryPage: set };
-});
-
-/** Open a secondary page with the given content. */
-export function openSecondaryPage(state: SecondaryPageState) {
-	setSecondaryPage(state);
-}
-
-/** Return from the secondary page to the conversation. */
-export function closeSecondaryPage() {
-	setSecondaryPage(null);
-}
-
-/** Current secondary page state (null = conversation visible). */
-export function getSecondaryPage() {
-	return secondaryPage();
-}
+export {
+	closeSecondaryPage,
+	getSecondaryPage,
+	openSecondaryPage,
+} from "./secondary-page-history";

@@ -14,19 +14,17 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
-import {
-	closeSecondaryPage,
-	openSecondaryPage,
-} from "../../src/tui/context/secondary-page";
+import { openSecondaryPage } from "../../src/tui/context/secondary-page";
+import { __resetSecondaryPageHistoryForTesting } from "../../src/tui/context/secondary-page-history";
 import { makeFakeSession } from "./fake-session";
 import { renderApp, waitForFrame } from "./harness";
 
 let setup: Awaited<ReturnType<typeof renderApp>> | undefined;
 
 afterEach(() => {
-	// Always close any secondary page left open by a failing test so
-	// the module-level signal doesn't leak across cases.
-	closeSecondaryPage();
+	// Reset the module-level history signals so a page or stack entry
+	// left behind by a failing test doesn't leak into the next case.
+	__resetSecondaryPageHistoryForTesting();
 	if (setup) {
 		setup.renderer.destroy();
 		setup = undefined;
@@ -53,8 +51,8 @@ describe("secondary page", () => {
 		});
 		await waitForFrame(setup, "Article Title");
 
-		// Back button is visible in the sidebar.
-		expect(setup.captureCharFrame()).toContain("← Back");
+		// Back arrow is visible in the sidebar.
+		expect(setup.captureCharFrame()).toContain("←");
 
 		// ESC closes.
 		setup.mockInput.pressEscape();

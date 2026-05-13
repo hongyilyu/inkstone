@@ -37,13 +37,14 @@ import {
 	closeSecondaryPage,
 	openSecondaryPage,
 } from "../../src/tui/context/secondary-page";
+import { __resetSecondaryPageHistoryForTesting } from "../../src/tui/context/secondary-page-history";
 import { makeFakeSession } from "./fake-session";
 import { renderApp } from "./harness";
 
 let setup: Awaited<ReturnType<typeof renderApp>> | undefined;
 
 afterEach(() => {
-	closeSecondaryPage();
+	__resetSecondaryPageHistoryForTesting();
 	if (setup) {
 		setup.renderer.destroy();
 		setup = undefined;
