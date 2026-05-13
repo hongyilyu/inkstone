@@ -29,6 +29,7 @@ import type {
 	AssistantMessageEvent,
 	Model,
 } from "@mariozechner/pi-ai";
+import { DEFAULT_AGENT_NAME } from "../../src/backend/agent";
 import type { SessionSnapshot } from "../../src/bridge/view-model";
 import type { Session, SessionFactory } from "../../src/tui/context/agent";
 
@@ -166,6 +167,25 @@ export function makeFakeSession(
 		const snap = buildSnapshot();
 		for (const cb of subscribers) cb(snap);
 	}
+	/**
+	 * Mirror the real backend's `clearSession` rebind-to-default tail.
+	 * `clearSession` ends an in-memory lifetime and starts a fresh one
+	 * (ADR 0008); a fresh lifetime is bound to the router by
+	 * definition (ADR 0007 / `resolveInitialAgentName`). Tracked
+	 * separately from `calls.selectAgent` because it's not the user
+	 * `selectAgent` verb — it's part of `clearSession`'s contract.
+	 */
+	function rebindToDefault(): void {
+		if (agentName === DEFAULT_AGENT_NAME) return;
+		agentName = DEFAULT_AGENT_NAME;
+		if (opts.agentModels?.[DEFAULT_AGENT_NAME]) {
+			model = opts.agentModels[DEFAULT_AGENT_NAME];
+		}
+		if (opts.agentThinkingLevels?.[DEFAULT_AGENT_NAME]) {
+			thinkingLevel = opts.agentThinkingLevels[DEFAULT_AGENT_NAME];
+		}
+		notify();
+	}
 
 	const factory: SessionFactory = (params) => {
 		onEvent = params.onEvent;
@@ -252,9 +272,11 @@ export function makeFakeSession(
 					// running app.
 					await Promise.resolve();
 					messageCount = 0;
+					rebindToDefault();
 					return;
 				}
 				messageCount = 0;
+				rebindToDefault();
 			},
 			restoreMessages(msgs: AgentMessage[]) {
 				calls.restoreMessages.push(msgs);
