@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
 	type CommandOption,
 	canRunSlashEntry,
+	findSlashEntry,
+	type SlashSpec,
 } from "../src/tui/components/dialog/command";
 
 /**
@@ -143,5 +145,69 @@ describe("canRunSlashEntry", () => {
 			expect(canRunSlashEntry(entry, "")).toBe(true);
 			expect(canRunSlashEntry(entry, "anything")).toBe(true);
 		});
+	});
+});
+
+describe("findSlashEntry", () => {
+	type Fixture = { id: string; slash?: SlashSpec };
+	const make = (id: string, slash?: SlashSpec): Fixture => ({ id, slash });
+
+	test("empty registry returns undefined", () => {
+		expect(findSlashEntry([] as Fixture[], "clear")).toBeUndefined();
+	});
+
+	test("matches by canonical name when no aliases involved", () => {
+		const entries = [
+			make("a", { name: "clear" }),
+			make("b", { name: "config" }),
+		];
+		expect(findSlashEntry(entries, "clear")?.id).toBe("a");
+		expect(findSlashEntry(entries, "config")?.id).toBe("b");
+	});
+
+	test("matches by alias when no canonical with that name exists", () => {
+		const entries = [make("clear-entry", { name: "clear", aliases: ["new"] })];
+		expect(findSlashEntry(entries, "new")?.id).toBe("clear-entry");
+	});
+
+	test("canonical-name match always wins over alias match (precedence)", () => {
+		const entries = [
+			make("b", { name: "bar", aliases: ["foo"] }),
+			make("a", { name: "foo" }),
+		];
+		expect(findSlashEntry(entries, "foo")?.id).toBe("a");
+	});
+
+	test("first alias match wins when two entries share an alias", () => {
+		const entries = [
+			make("first", { name: "x", aliases: ["shared"] }),
+			make("second", { name: "y", aliases: ["shared"] }),
+		];
+		expect(findSlashEntry(entries, "shared")?.id).toBe("first");
+	});
+
+	test("entries without slash spec are skipped", () => {
+		const entries = [
+			make("palette", undefined),
+			make("clear-entry", { name: "clear", aliases: ["new"] }),
+		];
+		expect(findSlashEntry(entries, "palette")).toBeUndefined();
+		expect(findSlashEntry(entries, "new")?.id).toBe("clear-entry");
+	});
+
+	test("unknown name returns undefined", () => {
+		const entries = [make("a", { name: "clear", aliases: ["new"] })];
+		expect(findSlashEntry(entries, "unknown")).toBeUndefined();
+	});
+
+	test("/clear ↔ /new round-trip (named feature regression guard)", () => {
+		const entries = [
+			make("session.clear", { name: "clear", aliases: ["new"] }),
+		];
+		const viaCanonical = findSlashEntry(entries, "clear");
+		const viaAlias = findSlashEntry(entries, "new");
+		expect(viaCanonical?.id).toBe("session.clear");
+		expect(viaAlias?.id).toBe("session.clear");
+		expect(viaCanonical).toBe(viaAlias);
 	});
 });

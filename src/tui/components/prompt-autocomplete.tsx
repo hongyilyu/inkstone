@@ -55,6 +55,8 @@ const MAX_RESULTS = 10;
 interface Option {
 	display: string;
 	description?: string;
+	/** Slash-mode only; extra fuzzysort key. See `docs/SLASH-COMMANDS.md`. */
+	aliases?: string[];
 	onSelect: () => void;
 }
 
@@ -207,7 +209,12 @@ export function PromptAutocomplete(props: {
 		if (!needle) return all.slice(0, MAX_RESULTS);
 		return fuzzysort
 			.go(needle, all, {
-				keys: [(o) => o.display.trimEnd(), (o) => o.description ?? ""],
+				keys: [
+					(o) => o.display.trimEnd(),
+					(o) => o.description ?? "",
+					// `/`-prefixed to match `display` formatting.
+					(o) => o.aliases?.map((a) => `/${a}`).join(" ") ?? "",
+				],
 				limit: MAX_RESULTS,
 			})
 			.map((r) => r.obj);
@@ -420,12 +427,18 @@ function buildSlashOptions(
 	entries: readonly (CommandOption | AgentSlashOption)[],
 	sel: SlashSelectors,
 ): Option[] {
-	const raw: { name: string; description: string; onSelect: () => void }[] = [];
+	const raw: {
+		name: string;
+		description: string;
+		aliases?: string[];
+		onSelect: () => void;
+	}[] = [];
 	for (const e of entries) {
 		if (!e.slash) continue;
 		raw.push({
 			name: `/${e.slash.name}`,
 			description: e.description ?? e.title,
+			aliases: e.slash.aliases,
 			onSelect: () => {
 				const input = sel.input();
 				if (e.slash?.argHint) {
@@ -455,6 +468,7 @@ function buildSlashOptions(
 	return raw.map((o) => ({
 		display: max > 0 ? o.name.padEnd(max + 2) : o.name,
 		description: o.description,
+		aliases: o.aliases,
 		onSelect: o.onSelect,
 	}));
 }
