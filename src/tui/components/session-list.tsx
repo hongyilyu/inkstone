@@ -2,7 +2,7 @@ import {
 	listSessions,
 	type SessionSummary,
 } from "@backend/persistence/sessions";
-import { TextAttributes } from "@opentui/core";
+import { type ScrollBoxRenderable, TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
 import { createMemo, For, onCleanup, onMount, Show } from "solid-js";
 import { createStore } from "solid-js/store";
@@ -83,10 +83,27 @@ export function SessionList(props: SessionListProps) {
 		if (next < 0) next = list.length - 1;
 		if (next >= list.length) next = 0;
 		setNavStore("selected", next);
+		syncScroll();
 	}
 
 	function move(dir: number) {
 		moveTo(navStore.selected + dir);
+	}
+
+	// Scroll-follow port of `dialog-select.tsx:171-193` —
+	// see ARCHITECTURE.md § Session list panel.
+	let scroll: ScrollBoxRenderable | undefined;
+	function syncScroll() {
+		if (!scroll) return;
+		const target = scroll.getChildren().find((c) => c.id === selectedRow()?.id);
+		if (!target) return;
+		const y = target.y - scroll.y;
+		if (y >= scroll.height) {
+			scroll.scrollBy(y - scroll.height + 1);
+		} else if (y < 0) {
+			scroll.scrollBy(y);
+			if (navStore.selected === 0) scroll.scrollTo(0);
+		}
 	}
 
 	function submit() {
@@ -172,7 +189,11 @@ export function SessionList(props: SessionListProps) {
 				when={rows.length > 0}
 				fallback={<text fg={theme.textMuted}>No past sessions</text>}
 			>
-				<scrollbox scrollbarOptions={{ visible: false }} flexGrow={1}>
+				<scrollbox
+					ref={(r: ScrollBoxRenderable) => (scroll = r)}
+					scrollbarOptions={{ visible: false }}
+					flexGrow={1}
+				>
 					<For each={rows}>
 						{(row, i) => (
 							<SessionListItem
