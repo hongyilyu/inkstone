@@ -225,12 +225,7 @@ export function ToolPart(props: {
 			</Show>
 			<Show when={state().diff}>
 				{(p) => (
-					<box
-						marginTop={1}
-						maxHeight={15}
-						flexShrink={0}
-						flexDirection="column"
-					>
+					<box marginTop={1} flexShrink={0} flexDirection="column">
 						<diff
 							diff={p().unifiedDiff}
 							view="unified"
