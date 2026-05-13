@@ -20,13 +20,12 @@ import {
 	updateDisplayMessageMeta,
 	updateSessionTitle,
 } from "@backend/persistence/sessions";
-import type { DisplayMessage, DisplayPart } from "@bridge/view-model";
+import type { DisplayMessage } from "@bridge/view-model";
 import { getOpenAICodexWebSocketDebugStats } from "@mariozechner/pi-ai/openai-codex-responses";
 import { batch } from "solid-js";
 import { produce } from "solid-js/store";
 import type { ActionDeps } from "../actions";
-
-const log = logger.child("tui.title-task");
+import { buildTitlePrompt, scheduleSessionTitleTask } from "./session-title";
 
 export async function promptAction(
 	text: string,
@@ -105,14 +104,18 @@ async function promptActionBody(
 			// verbatim instead of a paraphrased approximation.
 			applyExplicitSessionTitle(sessionId, explicitTitle, deps);
 		} else {
-			startSessionTitleTask(
+			scheduleSessionTitleTask(
 				{
 					sessionId,
 					activeProviderId: titleProviderId,
 					activeModelId: titleModelId,
 					prompt: buildTitlePrompt(text, displayParts),
 				},
-				deps,
+				{
+					titleGenerator: deps.titleGenerator,
+					getCurrentSessionId: deps.sessionState.getCurrentSessionId,
+					setStore: deps.setStore,
+				},
 			);
 		}
 	}
@@ -169,99 +172,6 @@ function applyExplicitSessionTitle(
 			}
 		},
 	});
-}
-
-/**
- * Build the input the LLM title generator sees on the no-explicit-title
- * path.
- *
- * Plain prompts carry their full content in `text` and have no
- * `displayParts` — `text` is the right title input.
- *
- * `@`-mention prompts pack `text` with `Path:` + body blocks per
- * mention, then truncate at 4 KB inside `generateSessionTitle` —
- * losing the prompt's actual question. The `displayParts` the bubble
- * renders ARE the user-facing shape (text + file chips), so we
- * flatten those into a short "text + filename-stem" string for the
- * title model.
- *
- * Commands that supply `opts.title` short-circuit before reaching
- * here (see `applyExplicitSessionTitle`).
- *
- * File parts contribute the basename without extension; the directory
- * prefix is structure noise and `.md` is uniform across the vault.
- */
-function buildTitlePrompt(
-	text: string,
-	displayParts: DisplayPart[] | undefined,
-): string {
-	if (!displayParts) return text;
-	const pieces: string[] = [];
-	for (const part of displayParts) {
-		if (part.type === "text") {
-			const t = part.text.trim();
-			if (t) pieces.push(t);
-		} else if (part.type === "file") {
-			const stem = filenameStem(part.filename);
-			if (stem) pieces.push(stem);
-		}
-	}
-	const joined = pieces.join(" ").trim();
-	return joined || text;
-}
-
-function filenameStem(path: string): string {
-	const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-	const base = slash === -1 ? path : path.slice(slash + 1);
-	const dot = base.lastIndexOf(".");
-	return dot <= 0 ? base : base.slice(0, dot);
-}
-
-function startSessionTitleTask(
-	params: {
-		sessionId: string;
-		activeProviderId: string;
-		activeModelId: string;
-		prompt: string;
-	},
-	deps: ActionDeps,
-): void {
-	void deps
-		.titleGenerator(params)
-		.then((title) => {
-			if (!title) return;
-			// Persist-first: only update the in-store title if the disk
-			// write committed. Inlined here (rather than via a shared
-			// helper) because this is the only non-MessageLog
-			// persist-first site — the rest of the persist-first pattern
-			// lives in `MessageLog` so it can sit next to the writers it
-			// gates.
-			persist((tx) => updateSessionTitle(tx, params.sessionId, title), {
-				onSuccess: () => {
-					if (deps.sessionState.getCurrentSessionId() === params.sessionId) {
-						deps.setStore("sessionTitle", title);
-					}
-				},
-			});
-		})
-		.catch((error) => {
-			// Expected title-gen failures (completeSimple throws on
-			// primary and retry) are caught inside `generateSessionTitle`
-			// and logged there with the resolved model ids. This outer
-			// catch only fires on truly unexpected throws from
-			// orchestration steps NOT wrapped by the inner try/catch —
-			// e.g. `provider.getApiKey()` rejecting, or `loadConfig()`
-			// throwing inside `resolveTitleModel`. Log the active params
-			// so the next layer up has something to debug with.
-			log.warn(
-				"task failed",
-				error instanceof Error ? error : new Error(String(error)),
-			);
-			log.debug("active model context", {
-				providerId: params.activeProviderId,
-				modelId: params.activeModelId,
-			});
-		});
 }
 
 function handlePreStreamError(

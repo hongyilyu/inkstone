@@ -23,6 +23,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test";
+import type { generateSessionTitle } from "@backend/agent";
 import { getDb } from "@backend/persistence/db/client";
 import { sessions } from "@backend/persistence/db/schema";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
@@ -247,5 +248,135 @@ describe("routing seam", () => {
 		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
 		await waitForFrame(setup, "Routing to Reader");
 		expect(setup.getAgent().store.isStreaming).toBe(false);
+	});
+
+	test("dispatch fork triggers title generation for the child session", async () => {
+		// The routing seam bypasses `promptAction`, so the title task
+		// has to fire from the seam's `agent_end` macrotask. Without
+		// it, routed children keep the default `New session - <ISO>`.
+		let capturedSid: string | null = null;
+		let capturedPrompt: string | null = null;
+		const titleGenerator: typeof generateSessionTitle = async (params) => {
+			capturedSid = params.sessionId;
+			capturedPrompt = params.prompt;
+			return "Routed Child Title";
+		};
+		const fake = makeFakeSession({ agentName: "router" });
+		setup = await renderApp({
+			session: fake.factory,
+			sessionTitleGenerator: titleGenerator,
+		});
+		await setup.renderOnce();
+
+		const userText = "whats in foo title needle";
+		await setup.mockInput.typeText(userText);
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await waitForFrame(setup, userText);
+
+		// Snapshot router sid before dispatch — the seam swaps the
+		// active session, so `getCurrentSessionId()` returns the child
+		// id afterwards.
+		const routerSid = setup.getAgent().session.getCurrentSessionId();
+		expect(routerSid).not.toBeNull();
+
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		const dispatchEvent: AgentEvent = {
+			type: "tool_execution_end",
+			toolCallId: "call-dispatch-title",
+			toolName: "dispatch",
+			result: {
+				content: [{ type: "text", text: "→ reader" }],
+				details: { agent: "reader" },
+			},
+			isError: false,
+		};
+		fake.emit(dispatchEvent);
+		fake.emit(ev_messageEnd({ stopReason: "stop" }));
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
+
+		// Divider needle gates on the seam having fired; the title
+		// frame gates on the kickoff resolving.
+		await waitForFrame(setup, "Routing to Reader");
+		const f = await waitForFrame(setup, "Routed Child Title");
+		expect(f).toContain("Routed Child Title");
+
+		// Pin the captured sid against the actual child row, not
+		// `getCurrentSessionId()` — a kickoff that fired pre-resume
+		// would also have the child as "current" by assert time.
+		expect(capturedSid).not.toBeNull();
+		expect(capturedPrompt).toContain(userText);
+		const db = getDb();
+		const childRows = db
+			.select()
+			.from(sessions)
+			.where(eq(sessions.parentSessionId, routerSid as string))
+			.all();
+		expect(childRows.length).toBe(1);
+		const childSid = childRows[0]?.id;
+		expect(capturedSid).toBe(childSid as string);
+		// Title must hit the child's row, not the (hidden) router row.
+		expect(childRows[0]?.title).toBe("Routed Child Title");
+	});
+
+	test("late-resolving title from a routed child does not poison a subsequent /clear", async () => {
+		// Routing-seam mirror of `session-list.test.tsx`'s stale-resolve
+		// guard. Same `getCurrentSessionId() === sessionId` check
+		// inside the shared helper, separate call site — a future
+		// seam-only fast-path that skipped the guard would only show
+		// up here.
+		let resolveTitle: (t: string) => void = () => {};
+		const titlePromise = new Promise<string>((r) => {
+			resolveTitle = r;
+		});
+		const titleGenerator: typeof generateSessionTitle = async () =>
+			titlePromise;
+		const fake = makeFakeSession({ agentName: "router" });
+		setup = await renderApp({
+			session: fake.factory,
+			sessionTitleGenerator: titleGenerator,
+		});
+		await setup.renderOnce();
+
+		await setup.mockInput.typeText("stale routed needle");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await waitForFrame(setup, "stale routed needle");
+
+		fake.emit(ev_agentStart());
+		fake.emit(ev_messageStart());
+		fake.emit({
+			type: "tool_execution_end",
+			toolCallId: "call-dispatch-stale",
+			toolName: "dispatch",
+			result: {
+				content: [{ type: "text", text: "→ reader" }],
+				details: { agent: "reader" },
+			},
+			isError: false,
+		} as AgentEvent);
+		fake.emit(ev_messageEnd({ stopReason: "stop" }));
+		fake.emit(ev_agentEnd([assistantMessage({ stopReason: "stop" })]));
+
+		// Wait for the seam to land on the child session.
+		await waitForFrame(setup, "Routing to Reader");
+
+		// User clears the session BEFORE the title resolves.
+		await setup.mockInput.typeText("/clear");
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(50);
+
+		// Now the title resolves with the routed child's would-be title.
+		// The guard inside `scheduleSessionTitleTask` should reject the
+		// store mutation because `getCurrentSessionId()` no longer
+		// matches the captured `sessionId`.
+		resolveTitle("Stale Routed Title");
+		await Bun.sleep(50);
+		await setup.renderOnce();
+
+		expect(setup.captureCharFrame()).not.toContain("Stale Routed Title");
+		expect(fake.calls.clearSession).toBeGreaterThanOrEqual(1);
 	});
 });

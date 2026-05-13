@@ -352,6 +352,7 @@ export function AgentProvider(
 			}
 			resumeRef(sid);
 		},
+		titleGenerator,
 	});
 
 	const wrappedActions = createWrappedActions({
