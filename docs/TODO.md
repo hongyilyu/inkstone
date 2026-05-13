@@ -3,7 +3,7 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-13 (slash-command alias support + fuzzysort key narrowing)
+**Last updated**: 2026-05-13 (session list panel: emacs-style nav consistency — Ctrl+N navigates, Esc closes)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
@@ -21,6 +21,8 @@
   - Stack E — knowledge-base agent (graphite-stacked, landing 2026-05-07): scaffold → port LifeOS workflow bodies → wire `/ingest` `/query` `/lint` slash commands → docs. Third agent on ship (alongside reader and example), workspace under `040 FORGE/` with `010 RAW/` + `020 HUMAN/` write-blocked per LifeOS policy. All three workflow bodies preloaded into the system prompt; commands are minimal triggers.
 
 ## Completed
+
+- **Session list: emacs-style nav consistency** (2026-05-13). Dropped `ctrl+n` from `panel_close` so the open-key no longer toggles the panel closed; only Esc closes. Ctrl+N inside the open panel now moves selection down via `select_down` (mirroring the command palette's Ctrl+P / `select_up` pattern, where second-press-of-open-key navigates rather than toggles closed). Wiring uses `command.suspend()` / `command.resume()` on `SessionList` mount/cleanup — same pattern the autocomplete dropdown uses — so global `session_list` dispatch is dormant while the panel is open and the panel-local `useKeyboard` reaches `select_down` cleanly. Header hint inside the panel switched from `Keybind.print("session_list")` to `Keybind.print("panel_close")` ("esc") since hints rendered inside an open surface read as "how to close." Stale Ctrl+N-collision rationale removed from `session-list.tsx`; ARCHITECTURE.md "Session list panel" + keybind-scope table updated. One new test in `test/tui/session-list.test.tsx` ("Ctrl+N inside the panel moves selection down instead of closing"); the existing "ESC closes" test still passes unchanged.
 
 - **Narrow slash-mode fuzzysort keys to `display` + `aliases`** (2026-05-13, PR 2 of the slash-aliases stack). Description text is no longer a fuzzy-match key in the slash dropdown. Surfaced when typing `/new` (an alias of `/clear`) also lit up `/ingest` ("Process **new** 010 RAW/ sources...") and `/query` (description fuzzy-subsequences `new` via "**A**ns**w**er ... k**n**owledge"), drowning the canonical row. Diverges from OpenCode's three-key shape (display + description + aliases) — Inkstone's smaller registry doesn't need description-keying for discoverability now that aliases are a first-class field. Mention mode unaffected (its rows have no description anyway). Pinned by a new "description text does not pollute slash search results" case in `test/tui/autocomplete.test.tsx`.
 

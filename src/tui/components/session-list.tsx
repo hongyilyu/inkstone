@@ -4,12 +4,13 @@ import {
 } from "@backend/persistence/sessions";
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard } from "@opentui/solid";
-import { createMemo, For, onMount, Show } from "solid-js";
+import { createMemo, For, onCleanup, onMount, Show } from "solid-js";
 import { createStore } from "solid-js/store";
 import { useAgent } from "../context/agent";
 import { useLayout } from "../context/layout";
 import { useTheme } from "../context/theme";
 import * as Keybind from "../util/keybind";
+import { useCommand } from "./dialog/command";
 import { SessionListItem } from "./session-list-item";
 
 const PANEL_WIDTH = 34;
@@ -22,20 +23,19 @@ export interface SessionListProps {
 }
 
 /**
- * Left-side panel listing past sessions across every agent. Ctrl+N
- * toggles this panel on; Enter on a selected row calls `onSelect`, which
- * the layout wires to `actions.resumeSession`. Resuming a session bound
- * to a different agent silently swaps the live Session to that agent
- * (see D13 in `docs/AGENT-DESIGN.md` — the one-agent-per-session rule
- * applies to a session's in-memory lifetime; resume constructs a fresh
- * in-memory lifetime).
+ * Left-side panel listing past sessions across every agent. Ctrl+N opens;
+ * Esc closes; Ctrl+N inside the panel navigates down (matches the command
+ * palette's Ctrl+P / `select_up` pattern — see ARCHITECTURE.md § Session
+ * list panel). Enter on a selected row calls `onSelect`, which the layout
+ * wires to `actions.resumeSession`. Resuming a session bound to a
+ * different agent silently swaps the live Session to that agent (D13 in
+ * `docs/AGENT-DESIGN.md`).
  *
- * The keyboard handler matches the subset of DialogSelect's nav (up /
- * down / enter / esc / ctrl+n). We deliberately skip the fuzzy filter,
- * mouse input-mode tracking, and page-up / page-down from DialogSelect —
- * the session list's shape (small, flat, visible-when-you-opened-it)
- * doesn't need them. If that stops being true, refactor toward a
- * panel-variant of DialogSelect rather than letting this file grow.
+ * Keyboard handler matches the subset of DialogSelect's nav (up / down /
+ * enter / esc / ctrl+n / ctrl+p) — the session list's shape (small,
+ * flat, visible-when-you-opened-it) doesn't need DialogSelect's filter,
+ * input-mode tracking, or page-up / page-down. If that stops being true,
+ * refactor toward a panel-variant of DialogSelect.
  *
  * Row rendering lives in `session-list-item.tsx`; this file owns the
  * panel chrome, nav state, and keyboard handler only.
@@ -44,6 +44,7 @@ export function SessionList(props: SessionListProps) {
 	const { theme } = useTheme();
 	const { session } = useAgent();
 	const layout = useLayout();
+	const command = useCommand();
 
 	// Snapshot taken on mount. The panel re-mounts on every open (see
 	// `<Show when={sessionListOpen()}>` in app.tsx), so a closed-then-
@@ -60,8 +61,15 @@ export function SessionList(props: SessionListProps) {
 	// selected session; Up/Down would also move the prompt caret and the
 	// panel selection simultaneously. The parent's `closeSessionList` calls
 	// `refocusInput()` on dismiss, so focus round-trips cleanly.
+	//
+	// `command.suspend()` mirrors the autocomplete dropdown — see
+	// ARCHITECTURE.md § Session list panel for the Ctrl+N collision rationale.
 	onMount(() => {
 		layout.blurInput();
+		command.suspend();
+	});
+	onCleanup(() => {
+		command.resume();
 	});
 
 	const [navStore, setNavStore] = createStore({ selected: 0 });
@@ -88,12 +96,6 @@ export function SessionList(props: SessionListProps) {
 	}
 
 	useKeyboard((evt: any) => {
-		// Close check runs FIRST because `panel_close` includes `ctrl+n`,
-		// which is also an alternate of `select_down`. If we checked
-		// `select_down` first, ctrl+n while the panel is open would move
-		// the selection instead of closing — the opposite of what the
-		// user expects when they press the open-key again.
-		//
 		// ESC overlap: `session_interrupt` is also ESC, registered by
 		// prompt.tsx while streaming. If the user opens the panel during
 		// a streaming turn and presses ESC, both handlers fire — this
@@ -162,7 +164,7 @@ export function SessionList(props: SessionListProps) {
 					Sessions
 				</text>
 				<text fg={theme.textMuted} onMouseUp={() => props.onClose()}>
-					{Keybind.print("session_list")}
+					{Keybind.print("panel_close")}
 				</text>
 			</box>
 

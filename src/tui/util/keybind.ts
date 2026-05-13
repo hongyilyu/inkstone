@@ -28,15 +28,11 @@ export interface Info {
  * name. Tokens: `ctrl`, `alt` / `meta` / `option`, `shift`, `super`, `esc`
  * (alias for `escape`). Value `"none"` disables the binding.
  *
- * Collisions (all intentional, resolved by dispatch order / scope guards):
- *   - `ctrl+p` is both `command_list` and one alternate of `select_up`.
- *     CommandProvider's dispatch is suspended while any dialog is open
- *     (driven by `DialogProvider` via `setSuspendHandler`), and
- *     dialog-select calls `evt.preventDefault()` on nav matches.
- *   - `escape` is both `session_interrupt` and `dialog_close`. Dialog's
- *     useKeyboard runs first and calls `preventDefault` when a dialog is
- *     on the stack, so CommandProvider's dispatch sees an already-handled
- *     event (and is also suspended for the same reason).
+ * Collisions resolved by dispatch order / scope guards — see
+ * ARCHITECTURE.md § Collision safety. Bindings to be aware of:
+ *   - `ctrl+p` collides between `command_list` and `select_up`.
+ *   - `ctrl+n` collides between `session_list` and `select_down`.
+ *   - `escape` collides between `session_interrupt` and `dialog_close`.
  */
 export const KEYBINDS = {
 	app_exit: "ctrl+c",
@@ -50,7 +46,7 @@ export const KEYBINDS = {
 	messages_last: "ctrl+end",
 	session_interrupt: "escape",
 	dialog_close: "escape,ctrl+c",
-	panel_close: "escape,ctrl+n",
+	panel_close: "escape",
 	select_up: "up,ctrl+p",
 	select_down: "down,ctrl+n",
 	select_page_up: "pageup",
@@ -126,7 +122,13 @@ function infoToString(info: Info | undefined): string {
 	if (info.super) parts.push("super");
 	if (info.shift) parts.push("shift");
 	if (info.name) {
-		parts.push(info.name === "delete" ? "del" : info.name);
+		const display =
+			info.name === "delete"
+				? "del"
+				: info.name === "escape"
+					? "esc"
+					: info.name;
+		parts.push(display);
 	}
 	return parts.join("+");
 }
