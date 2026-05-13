@@ -90,6 +90,43 @@ describe("session list panel", () => {
 		expect(f).toContain("Widen the window");
 	});
 
+	test("Ctrl+N inside the panel moves selection down instead of closing", async () => {
+		// `listSessions` orders by `desc(sessions.id)` (UUIDv7 = chrono),
+		// so the more-recently-seeded row sits at index 0 and the initial
+		// selection lands there. After one Ctrl+N press we expect the
+		// selection to move to index 1 — pressing Enter then resumes the
+		// FIRST-seeded session's content.
+		const firstId = seedSession("first row content");
+		seedSession("second row content");
+
+		const fake = makeFakeSession();
+		setup = await renderApp({ session: fake.factory, width: 120 });
+		await setup.renderOnce();
+
+		setup.mockInput.pressKey("n", { ctrl: true });
+		await waitForFrame(setup, "first row content");
+
+		// Second Ctrl+N inside the open panel: should move selection down,
+		// NOT close. Pre-fix behavior closes the panel here.
+		setup.mockInput.pressKey("n", { ctrl: true });
+		await setup.renderOnce();
+		await Bun.sleep(30);
+
+		// Panel still open — both rows still rendered.
+		const f = setup.captureCharFrame();
+		expect(f).toContain("first row content");
+		expect(f).toContain("second row content");
+
+		// Confirm selection landed on index 1 by pressing Enter and
+		// asserting the resumed session is the FIRST-seeded one (which
+		// `desc(id)` ordering puts at index 1).
+		setup.mockInput.pressEnter();
+		await setup.renderOnce();
+		await Bun.sleep(30);
+
+		expect(fake.calls.setSessionId).toContain(firstId);
+	});
+
 	test("ESC closes the panel", async () => {
 		seedSession("close me");
 
