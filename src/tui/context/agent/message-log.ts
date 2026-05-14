@@ -50,7 +50,6 @@ import {
 	persist,
 	type Tx,
 	updateDisplayMessageMeta,
-	withTransaction,
 } from "@backend/persistence/sessions";
 import type {
 	AgentStoreState,
@@ -205,16 +204,18 @@ export function createMessageLog(deps: {
 		writes: (tx: Tx) => void,
 		onSuccess: () => void,
 	): boolean {
-		try {
-			withTransaction(writes);
-		} catch {
-			// Already reported by the writer or by withTransaction's
-			// outer catch. Skip onSuccess so the store stays at its
-			// pre-mutation value.
-			return false;
-		}
-		onSuccess();
-		return true;
+		// Delegates to the backend `persist` primitive — the persist-first
+		// gate has one home (`sessions.ts`). The captured `committed` flag
+		// adapts `persist`'s `void` return to the `boolean` shape that
+		// `appendUserBubble` uses to short-circuit on write failure.
+		let committed = false;
+		persist(writes, {
+			onSuccess: () => {
+				onSuccess();
+				committed = true;
+			},
+		});
+		return committed;
 	}
 
 	function appendUserBubble(parts: DisplayPart[]): boolean {
