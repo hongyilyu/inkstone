@@ -3,11 +3,13 @@
 ## Status
 
 **Current phase**: MVP complete
-**Last updated**: 2026-05-13 (session list panel: scroll viewport follows keyboard selection)
+**Last updated**: 2026-05-13 (per-session secondary page (PR 1/2): switching A → B → A re-displays each session's open page automatically)
 
 **Pre-MVP completed-task history**: see [`./.archive/CHANGELOG-pre-MVP.md`](./.archive/CHANGELOG-pre-MVP.md). `git log` remains the authoritative shipped-vs-not source.
 
 ## In Progress
+
+- **Browser-style back/forward for the secondary page** (2-PR Graphite stack, opens 2026-05-13). PR 1 (this) lifts secondary-page storage from a single global `Signal<State|null>` to `Map<sessionId, State>` keyed by the AgentProvider's session id, with a derived `view` signal that mirrors `pages.get(sid) ?? null`. Session-id bridge in `useLayoutKeybinds` calls `setActiveSession(sid)` on every `subscribeSessionId()` change so the rendered page swaps automatically across resume — switching A → B → A within a process re-displays whatever page A was on (browser-tab semantics, no keystroke). `resume.ts` no longer touches the secondary page; `/clear` keeps calling `closeSecondaryPage()` (clearing the session means its open page goes with it). PR 2 will widen `Map<sid, State>` to `Map<sid, { back, current, forward }>`, add `goBack`/`goForward`/`canGoForward`, and bind `Ctrl+]` for the forward gesture + sidebar arrow glyphs.
 
 - **Opt-in command-declared session titles** (3-PR Graphite stack, opens 2026-05-12). PR 1 (#164) extracts `todayLocalDate(): string` from two duplicate sites (`compose.ts` env block + `agents/reader/recommendations.ts`) into `src/backend/agent/util/local-date.ts`. PR 2 (#167) flips `helpers.prompt(text, displayParts?)` → `helpers.prompt(text, opts?: { displayParts?, title? })` end-to-end, threads `opts.title` through `promptAction` so commands can short-circuit the LLM title task at dispatch, and makes reader's `/article` the first consumer (passes `frontmatter.title || basename(path, ".md")`). Also hoists `MAX_TITLE_CHARS` from a private backend constant to a `@backend/agent`-exported single source so the LLM-cleaned and explicit-title paths share one bound. PR 3 (#168) wires KB `/ingest` → `Ingest · YYYY-MM-DD` and `/lint` → `Lint · YYYY-MM-DD`; `/query` keeps the LLM path (its question IS the per-session content). Motivating bug: `/article` was producing titles like "Title generator" because the LLM title generator received the LLM-facing 6.5KB workflow prelude truncated to 4KB by `MAX_INPUT_CHARS` — never seeing the article. Fix: any command that knows the session identity at dispatch declares it via `opts.title`; freeform prompts keep the LLM path.
 
