@@ -3,13 +3,15 @@
  * registry) because these bindings don't fit the registry's model:
  *
  *   - `app_exit` destroys the renderer (not a normal "command").
- *   - `secondary_page_close` is gated on the secondary-page being
- *     open — no natural palette entry.
+ *   - `secondary_page_close` / `secondary_page_forward` are gated on
+ *     per-session `canGoBack` / `canGoForward` predicates from
+ *     `secondary-page.ts` — no natural palette entry.
  *   - scroll keys target a layout-local ref (`scroll`) that's only
  *     meaningful when the session view is mounted.
  *
  * Also hosts the `setActiveSession(sid)` bridge for the secondary
- * page; see `docs/ARCHITECTURE.md` § Per-session secondary page.
+ * page; see `docs/ARCHITECTURE.md` § Secondary-page back/forward
+ * history.
  *
  * Gains a `defaultPrevented` guard at the top that matches the
  * patterns in `dialog.tsx` and `command.tsx` — stops nested consumers
@@ -26,8 +28,10 @@ import { createEffect } from "solid-js";
 import { useAgent } from "../context/agent";
 import { useLayout } from "../context/layout";
 import {
-	closeSecondaryPage,
-	getSecondaryPage,
+	canGoBack,
+	canGoForward,
+	goBack,
+	goForward,
 	setActiveSession,
 } from "../context/secondary-page";
 import { useDialog } from "../ui/dialog";
@@ -87,16 +91,24 @@ export function useLayoutKeybinds(): void {
 			return;
 		}
 
-		// ESC / Ctrl+[ — close secondary page and return to
-		// conversation. Checked after app_exit but before scroll
-		// guards. Gated on no open dialogs so ESC closes a dialog
-		// first when one is on the stack.
+		// ESC / Ctrl+[ — step back. Dialog gate first so ESC closes
+		// an open dialog before consuming the back gesture.
 		if (
 			Keybind.match("secondary_page_close", evt) &&
-			getSecondaryPage() &&
+			canGoBack() &&
 			dialog.stack.length === 0
 		) {
-			closeSecondaryPage();
+			goBack();
+			return;
+		}
+
+		// Ctrl+] — step forward.
+		if (
+			Keybind.match("secondary_page_forward", evt) &&
+			canGoForward() &&
+			dialog.stack.length === 0
+		) {
+			goForward();
 			return;
 		}
 

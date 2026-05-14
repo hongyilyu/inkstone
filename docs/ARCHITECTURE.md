@@ -155,7 +155,7 @@ src/
     commands/
       layout-commands.ts            registerLayoutCommands — extracted Layout palette + keybind registrations
     hooks/
-      use-layout-keybinds.ts        useLayoutKeybinds — extracted Layout keyboard handler (app_exit, scroll, secondary_page_close + session-id → secondary-page bridge)
+      use-layout-keybinds.ts        useLayoutKeybinds — extracted Layout keyboard handler (app_exit, scroll, secondary_page_close + secondary_page_forward, session-id → secondary-page bridge)
     context/
       agent.tsx                     Thin barrel re-exporting AgentProvider + useAgent + SessionFactory / Session
       agent/                        Agent provider split (7 modules; see below)
@@ -271,13 +271,17 @@ Reads inside the hook's effect (`getDraft`, `fileStyleId`) are wrapped in `untra
 
 Process-lifetime only — no disk persistence. Open-page drafts are intentionally not preserved because the open page has no round-trip surface that doesn't commit the draft via router-fork.
 
-### Per-session secondary page
+### Secondary-page back/forward history
 
-The secondary-page overlay (file-chip preview, `@`-mention preview) is per-session: each session keeps its own currently-rendered page in a `Map<sessionId, SecondaryPageState>` inside `src/tui/context/secondary-page.ts`, with a derived `view` signal mirroring `pages.get(sid) ?? null`. Switching session A → B → A within one process re-displays whatever page A had open without any keystroke (browser-tab semantics).
+Browser-style navigation for the secondary-page overlay (`Ctrl+[` back, `Ctrl+]` forward), per session. State lives in `src/tui/context/secondary-page.ts` — a `Map<sessionId, { back: SecondaryPageState[]; current: SecondaryPageState | null; forward: SecondaryPageState[] }>` plus a derived `view` signal that mirrors `map.get(currentSid)?.current`. The public API (`getSecondaryPage`/`openSecondaryPage`/`closeSecondaryPage`) is what `file-part-handler.ts`, `app.tsx`'s render gate, and the `clear` action import; `goBack`/`goForward`/`canGoBack`/`canGoForward` are imported by `useLayoutKeybinds` and `Sidebar`.
 
-The session-id bridge that swaps the view on session change lives in `useLayoutKeybinds` (`src/tui/hooks/use-layout-keybinds.ts`) — it reads `session.subscribeSessionId()` inside a `createEffect` and forwards each change into `setActiveSession(sid)`. The bridge inherits the layout's lifetime (same as the AgentProvider's), so resume / `/clear` / first-prompt all flow through it. `setActiveSession` wraps its body in `untrack()` because the effect's tracked dependency is the session-id accessor; without `untrack`, every `openSecondaryPage` / `closeSecondaryPage` write would re-fire the effect (no-op via the early return on same-sid, but Solid's batched scheduler surfaces the cycle as a stack overflow under load) — same `untrack`-on-internal-read pattern as `prompt-draft-bridge.tsx`.
+The three nav functions follow the standard browser model: `navigateTo(page)` pushes `current` onto `back`, sets `current = page`, **clears `forward`**; `goBack()` pushes `current` onto `forward`, pops `back` into `current`; `goForward()` pushes `current` onto `back`, pops `forward` into `current`. Conversation is the implicit floor of `back` (`current === null`, never pushed). The "clear forward on open" rule keeps the model coherent: opening a fresh page after stepping back drops any prior forward entry, so `Ctrl+]` doesn't time-travel to a path the user abandoned. `back`/`forward` are arrays even though only one level deep is reachable today — see ADR 0017 for the data-shape rationale.
 
-`/resume` no longer calls `closeSecondaryPage()` directly — the session-id effect swaps the rendered page automatically. `/clear` continues to call `closeSecondaryPage()` since clearing the in-memory session means its open page must go with it.
+The session-id bridge that swaps `view` on session change lives in `useLayoutKeybinds` (`src/tui/hooks/use-layout-keybinds.ts`) — it reads `session.subscribeSessionId()` inside a `createEffect` and forwards each change into `setActiveSession(sid)`. The bridge inherits the layout's lifetime (same as the AgentProvider's), so resume / `/clear` / first-prompt all flow through it. `setActiveSession` wraps its body in `untrack()` because the effect's tracked dependency is the session-id accessor; without `untrack`, every nav write would re-fire the effect (no-op via the early return on same-sid, but Solid's batched scheduler surfaces the cycle as a stack overflow under load) — same untrack-on-internal-read pattern as `prompt-draft-bridge.tsx`.
+
+`closeSecondaryPage()` had two intents pre-history: navigation gestures (ESC/`Ctrl+[` and the sidebar back chip) and session resets (`/clear`). The keybind handler and the sidebar `←` chip now call `goBack()` (history-aware); `/clear` keeps calling `closeSecondaryPage()` (history-wiping). `/resume` no longer touches the page directly — the session-id effect swaps the rendered page automatically (browser-tab semantics: switching A → B → A within one process re-displays whatever page A was on without any keystroke).
+
+The sidebar's `←` chip (`src/tui/components/sidebar.tsx`) calls `goBack()`, mounts iff a page is currently shown. A `→` chip mounts when `canGoForward()` is true and calls `goForward()`. Glyphs only — no labels — to fit both on a row in the 30-col sidebar.
 
 Process-lifetime only, mirrors prompt-draft. Disk persistence is a separable additive feature.
 

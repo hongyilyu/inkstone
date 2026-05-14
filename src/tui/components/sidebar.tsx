@@ -4,7 +4,7 @@ import { createMemo, For, Show } from "solid-js";
 import pkg from "../../../package.json";
 import { useAgent } from "../context/agent";
 import { useLayout } from "../context/layout";
-import { closeSecondaryPage } from "../context/secondary-page";
+import { canGoForward, goBack, goForward } from "../context/secondary-page";
 import { useTheme } from "../context/theme";
 import { displayPath, formatCost, formatTokensFull } from "../util/format";
 
@@ -60,10 +60,19 @@ export function Sidebar(props: { inSecondaryPage?: boolean }) {
 		>
 			{/* Top section — grows to fill, footer stays anchored below */}
 			<box flexDirection="column" flexGrow={1} gap={1}>
-				{/* Back button — only in secondary page view */}
-				<Show when={props.inSecondaryPage}>
-					<box onMouseDown={() => closeSecondaryPage()}>
-						<text fg={theme.accent}>{"← Back"}</text>
+				{/* Back / forward arrows — see ADR 0017. */}
+				<Show when={props.inSecondaryPage || canGoForward()}>
+					<box flexDirection="row" gap={2}>
+						<Show when={props.inSecondaryPage}>
+							<box onMouseDown={() => goBack()}>
+								<text fg={theme.accent}>{"←"}</text>
+							</box>
+						</Show>
+						<Show when={canGoForward()}>
+							<box onMouseDown={() => goForward()}>
+								<text fg={theme.accent}>{"→"}</text>
+							</box>
+						</Show>
 					</box>
 				</Show>
 
