@@ -79,6 +79,12 @@ _Avoid_: indexes (when meaning the whole tier), derived state (ambiguous with no
 **Source Content**:
 Tier-1 material in the Vault: notes, raw captures, articles, anything the user authors or imports and expects to own directly.
 
+**Message**:
+A tier-2 storage record for one bubble in the chat UI — a user prompt, an assistant response, or similar. Has many Message Parts. *Not* a domain concept (the domain has Threads, Runs, Turns); this is the storage shape for what the user sees rendered in a Thread, modeled after the chat-API content-block convention. Each Message belongs to exactly one Run.
+
+**Message Part**:
+One ordered chunk inside a Message — a text block, an attachment reference, a marker for an inline tool call, etc. Composite key `(message_id, seq)`. Polymorphic by `type`; payloads beyond plain text are JSON. Tool calls and tool results are *not* Message Parts — they live in their own table and are interleaved with Messages at render time via Run Steps.
+
 **Snapshot**:
 The byte content of a Vault file at a stable instant, plus its content hash. The trustworthy unit Core builds on — distinct from raw watcher events, which can fire while a file is mid-write or be re-ordered by sync.
 
@@ -107,9 +113,12 @@ An Entity record in tier 2 — created either by user action, by accepting a Pro
 The runnable unit of agent behavior. Each Workflow defines its own system prompt, tool allowlist, model choice, and any bootstrap context. One Run executes exactly one Workflow. Workflows are the primitive — there is no higher grouping (no "Agent" object). Code-level organization of related Workflows is implementation detail, not vocabulary.
 _Avoid_: agent, command, skill, task.
 
+**Dispatcher**:
+The Core-side seam that picks a Workflow for each Run. Called once at Run creation, before the Worker starts. Always present, even when only one Workflow exists; in that case the Dispatcher is a one-liner that returns the single Workflow. The strategy *inside* the Dispatcher (hard-coded, deterministic, LLM-driven, user-picker) is a separate concern.
+
 **Router**:
-The component that selects a Workflow for an incoming user request before the Worker starts the Run. Implementation (deterministic classifier, LLM call, user picker, hybrid) stays open; whether Router exists in the MVP also stays open. Threads carry conversation history but do not lock the next Run to a specific Workflow.
-_Avoid_: dispatcher, classifier (those are possible implementations, not the role).
+A possible implementation strategy for the Dispatcher — a non-trivial Workflow selector (keyword classifier, LLM call, user picker, hybrid). Whether a Router exists in the MVP stays open; the Dispatcher exists either way. Threads carry conversation history but do not lock the next Run to a specific Workflow.
+_Avoid_: classifier (one possible implementation, not the role).
 
 ## Example dialogue
 
