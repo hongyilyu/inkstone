@@ -26,4 +26,4 @@ These are implementation choices for a later ADR or just a code decision; they d
 
 ## Related
 
-- [ADR-0008](./0008-repo-shape-and-protocol-strategy.md) — how the protocol types are shared across Rust and TypeScript.
+- [ADR-0008](./0008-monorepo-shape.md) — how the protocol types are shared across Rust and TypeScript.

@@ -16,6 +16,6 @@ Inkstone is split into two components across a process and language boundary: **
 
 ## Consequences
 
-- A protocol between Core and Worker is mandatory; see [ADR-0006](./0006-run-events-vs-tool-protocol.md) for its shape and [ADR-0008](./0008-repo-shape-and-protocol-strategy.md) for how it is shared across languages.
+- A protocol between Core and Worker is mandatory; see [ADR-0006](./0006-run-events-vs-tool-protocol.md) for its shape, [ADR-0008](./0008-monorepo-shape.md) for repository layout and [ADR-0009](./0009-protocol-strategy.md) for cross-language protocol consistency.
 - Tools and integrations belong in Core by default; LLM-provider logic belongs in the Worker by default.
 - Worker has no direct access to the SQLite database or the Vault; see [ADR-0003](./0003-worker-via-tool-protocol.md).
