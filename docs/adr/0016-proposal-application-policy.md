@@ -50,7 +50,7 @@ The set of auto-approveable operations is a property of *each Workflow's* design
 
 Pinning a global table in this ADR forces every Workflow into the same shape. Letting the Workflow manifest carry its own auto-approve list keeps the policy where the context lives.
 
-The Workflow manifest format is decided in [ADR-0018](./0018-workflow-definition-format.md) (still to be written). What this ADR commits to is: **wherever the table lives, the mechanism Core uses to consult it is the same single-policy-function described above.**
+The Workflow manifest format is decided in [ADR-0018](./0018-workflow-and-tools-definition.md). What this ADR commits to is: **wherever the table lives, the mechanism Core uses to consult it is the same single-policy-function described above.**
 
 ## What slice 1 does
 
@@ -72,4 +72,4 @@ This is intentional: the chat-driven slice's whole shape is "user captures → W
 - [ADR-0010](./0010-mvp-slice-chat-driven-web-client.md) — approve-then-apply confirmed for slice 1.
 - [ADR-0013](./0013-worker-process-lifecycle-and-transport.md) — Worker is parked while a manual Proposal awaits decision; auto-approve resolves immediately and the Run continues without parking.
 - [ADR-0014](./0014-client-core-wire-protocol.md) — `proposal/pending` and `proposal/changed` are the Notifications surfaced by this flow.
-- ADR-0018 (pending) — Workflow manifest format will define where each Workflow's auto-approve declarations live.
+- [ADR-0018](./0018-workflow-and-tools-definition.md) — Workflow manifest format that carries each Workflow's auto-approve declarations.
