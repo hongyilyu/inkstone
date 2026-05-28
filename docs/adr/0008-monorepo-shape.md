@@ -9,6 +9,7 @@ packages/protocol/    Shared protocol definitions (TypeScript side)
 packages/ui-sdk/      Client-to-Core wrapper consumed by Clients
 packages/worker/      Worker (TypeScript)
 bridges/              Cross-language contract / integration tests
+tests/                End-to-end Test Harness
 ```
 
 ## Why the cross-language monorepo

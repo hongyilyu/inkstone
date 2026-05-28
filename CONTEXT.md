@@ -29,6 +29,10 @@ _Avoid_: UI, UI Client, frontend (use "Web Client" / "TUI Client" / "Capture Cli
 **Capture Client**:
 A Client whose sole job is to ingest content into the Workspace — clipping articles, piping text into Inkstone, mobile share-sheet captures, and similar. Distinguished from interactive clients by being one-shot and non-conversational.
 
+**Test Harness**:
+A non-product package that drives end-to-end tests against a real Core, real Worker, and a real Web Client in a headless browser. Spawns Core against a temporary Workspace, configures the Worker to use a mock LLM provider, and asserts behavior through the same surfaces a real user touches. Not a Client (it tests Core's client surface rather than using it for product purposes). Lives outside `apps/`, `crates/`, and `packages/`.
+_Avoid_: test runner (too generic), e2e suite (the suite is a thing the Test Harness runs).
+
 ### Execution
 
 **Thread**:

@@ -63,6 +63,16 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") force constant clarification.
 
+## Response style
+
+- Lead with the answer. No "let me work through this" preamble.
+- One question per turn. Don't bundle branching options.
+- Visualize multi-part things (HTML, tables, examples) over text walls.
+- Push back when grounded. Don't capitulate to the last thing said.
+- Verdict + deltas only. Skip synthesis essays.
+- Cut meta-commentary about what you did or what's next.
+- Strong language ("wtf", "fking") = "you lost me, restart smaller."
+
 ## Pointers
 
 Repo conventions live in `docs/agents/`. Domain truth lives in `CONTEXT.md` and `docs/adr/`.
