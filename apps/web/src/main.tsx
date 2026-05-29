@@ -7,7 +7,9 @@ import "./index.css";
 
 const wsLayer = Layer.provide(
 	WsClientLive,
-	Layer.succeed(WsClientConfig, { url: "ws://localhost:8765/ws" }),
+	Layer.succeed(WsClientConfig, {
+		url: "ws://127.0.0.1:8765/ws",
+	}),
 );
 
 const runtime = ManagedRuntime.make(wsLayer);

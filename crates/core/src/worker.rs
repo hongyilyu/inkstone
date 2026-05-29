@@ -25,8 +25,9 @@ pub fn spawn(
     ws_sender: UnboundedSender<String>,
     runs: Runs,
 ) -> RunHandle {
-    let cmd = std::env::var("INKSTONE_WORKER_CMD")
-        .unwrap_or_else(|_| "node_modules/.bin/tsx packages/worker/src/cli.ts".to_string());
+    let cmd = std::env::var("INKSTONE_WORKER_CMD").unwrap_or_else(|_| {
+        "packages/worker/node_modules/.bin/tsx packages/worker/src/cli.ts".to_string()
+    });
 
     tokio::spawn(async move {
         run_worker(run_id, cmd, prompt, ws_sender, runs).await;

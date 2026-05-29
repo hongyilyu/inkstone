@@ -9,7 +9,6 @@ import {
 	Schema as S,
 	Stream,
 } from "effect";
-import WebSocket from "ws";
 
 export type RunId = string;
 
@@ -39,8 +38,16 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			// Open the WebSocket; the Layer is "ready" only once it's open.
 			const socket = yield* Effect.async<WebSocket>((resume) => {
 				const ws = new WebSocket(cfg.url);
-				ws.once("open", () => resume(Effect.succeed(ws)));
-				ws.once("error", (err) => resume(Effect.die(err)));
+				ws.addEventListener(
+					"open",
+					() => resume(Effect.succeed(ws)),
+					{ once: true },
+				);
+				ws.addEventListener(
+					"error",
+					(ev) => resume(Effect.die(ev)),
+					{ once: true },
+				);
 			});
 
 			const pending = new Map<number, Deferred.Deferred<unknown>>();
@@ -56,8 +63,8 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				return queue;
 			};
 
-			socket.on("message", (data) => {
-				const msg = JSON.parse(data.toString()) as {
+			socket.addEventListener("message", (ev) => {
+				const msg = JSON.parse(String(ev.data)) as {
 					id?: number;
 					method?: string;
 					result?: unknown;
