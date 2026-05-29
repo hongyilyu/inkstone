@@ -6,7 +6,7 @@ import {
 	RunEvent,
 	WorkerInbound,
 	WorkerOutbound,
-} from "./index.ts";
+} from "./index.js";
 
 describe("PostMessageParams", () => {
 	it("decodes a valid prompt", () => {
