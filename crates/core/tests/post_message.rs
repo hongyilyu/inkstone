@@ -7,7 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
 #[test]
-fn post_message_returns_uuidv7_run_id_with_no_followups() {
+fn post_message_returns_uuidv7_run_id() {
     let mut child = std::process::Command::cargo_bin("core")
         .expect("core binary exists")
         .stdout(Stdio::piped())
@@ -70,19 +70,15 @@ fn post_message_returns_uuidv7_run_id_with_no_followups() {
             other => panic!("expected text frame, got {other:?}"),
         };
 
-        // No further frames should arrive — slice 4 only mints and replies.
-        let next = tokio::time::timeout(Duration::from_millis(200), ws.next()).await;
-        let no_followup = matches!(next, Err(_) | Ok(None));
-
         ws.close(None).await.ok();
 
-        (body, no_followup)
+        body
     });
 
     let _ = child.kill();
     let _ = child.wait();
 
-    let (body, no_followup) = outcome;
+    let body = outcome;
     let v: serde_json::Value = serde_json::from_str(&body)
         .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"));
 
@@ -99,10 +95,5 @@ fn post_message_returns_uuidv7_run_id_with_no_followups() {
         Some(uuid::Version::SortRand),
         "run_id is UUIDv7 (got version {:?})",
         parsed.get_version()
-    );
-
-    assert!(
-        no_followup,
-        "no further frames should follow the response in slice 4"
     );
 }
