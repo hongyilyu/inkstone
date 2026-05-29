@@ -1,6 +1,6 @@
+import { type RunEventValue, WsClient } from "@inkstone/ui-sdk";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { WsClient, type RunEventValue } from "@inkstone/ui-sdk";
 import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 import App from "./App.js";
