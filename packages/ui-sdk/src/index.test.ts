@@ -6,7 +6,9 @@ import { WsClient, WsClientConfig, WsClientLive } from "./index.js";
 describe("WsClient", () => {
 	it("postMessage returns the run_id and subscribeRun yields the run's events", async () => {
 		const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
-		await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+		await new Promise<void>((resolve) =>
+			wss.once("listening", () => resolve()),
+		);
 		const port = (wss.address() as { port: number }).port;
 		const url = `ws://127.0.0.1:${port}/ws`;
 
