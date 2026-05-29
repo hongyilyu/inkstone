@@ -7,7 +7,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
 #[test]
-fn ws_route_echoes_text_frame() {
+fn post_message_returns_uuidv7_run_id_with_no_followups() {
     let mut child = std::process::Command::cargo_bin("core")
         .expect("core binary exists")
         .stdout(Stdio::piped())
@@ -18,7 +18,6 @@ fn ws_route_echoes_text_frame() {
     let stdout = child.stdout.take().expect("piped stdout");
     let mut reader = BufReader::new(stdout);
 
-    // Read lines with a 5s budget; bail loudly if Core never announces.
     let deadline = Instant::now() + Duration::from_secs(5);
     let http_url = loop {
         if Instant::now() > deadline {
@@ -49,33 +48,61 @@ fn ws_route_echoes_text_frame() {
         .build()
         .expect("tokio runtime builds");
 
-    let result = rt.block_on(async {
+    let outcome = rt.block_on(async {
         let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
             .await
             .expect("ws handshake succeeds");
 
-        ws.send(Message::Text("ping".into()))
+        let request =
+            r#"{"jsonrpc":"2.0","id":1,"method":"run/post_message","params":{"prompt":"hi"}}"#;
+        ws.send(Message::Text(request.into()))
             .await
-            .expect("send text frame");
+            .expect("send request frame");
 
         let frame = ws
             .next()
             .await
-            .expect("frame received")
-            .expect("frame ok");
+            .expect("response frame received")
+            .expect("response frame ok");
 
-        let echoed = match frame {
+        let body = match frame {
             Message::Text(t) => t.to_string(),
             other => panic!("expected text frame, got {other:?}"),
         };
 
+        // No further frames should arrive — slice 4 only mints and replies.
+        let next = tokio::time::timeout(Duration::from_millis(200), ws.next()).await;
+        let no_followup = matches!(next, Err(_) | Ok(None));
+
         ws.close(None).await.ok();
 
-        echoed
+        (body, no_followup)
     });
 
     let _ = child.kill();
     let _ = child.wait();
 
-    assert_eq!(result, "ping", "/ws echoes the text frame back");
+    let (body, no_followup) = outcome;
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"));
+
+    assert_eq!(v["jsonrpc"], serde_json::json!("2.0"), "jsonrpc field");
+    assert_eq!(v["id"], serde_json::json!(1), "echoed id");
+
+    let run_id = v["result"]["run_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("result.run_id is a string — body: {body}"));
+
+    let parsed = uuid::Uuid::parse_str(run_id).expect("run_id parses as UUID");
+    assert_eq!(
+        parsed.get_version(),
+        Some(uuid::Version::SortRand),
+        "run_id is UUIDv7 (got version {:?})",
+        parsed.get_version()
+    );
+
+    assert!(
+        no_followup,
+        "no further frames should follow the response in slice 4"
+    );
 }
