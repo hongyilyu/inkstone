@@ -16,6 +16,13 @@ export default function App() {
 	useLayoutEffect(() => {
 		const el = chatCardRef.current;
 		if (!el) return;
+		// When the rail is open, the icons sit above the rail (no carve);
+		// when the rail is collapsed, the icons need a carved-out bay in the
+		// chat card. Only apply the clip-path in the collapsed state.
+		if (!rightRailCollapsed) {
+			setClipPath("");
+			return;
+		}
 		const update = () => {
 			const r = el.getBoundingClientRect();
 			setClipPath(makeChatCardClipPath(r.width, r.height));
@@ -24,7 +31,7 @@ export default function App() {
 		const ro = new ResizeObserver(update);
 		ro.observe(el);
 		return () => ro.disconnect();
-	}, []);
+	}, [rightRailCollapsed]);
 
 	return (
 		<div
@@ -44,16 +51,27 @@ export default function App() {
 				>
 					<ChatColumn />
 				</div>
-				<div className="absolute top-3 right-3 z-10">
-					<TopRightControls
-						onOpenSettings={() => console.log("settings")}
-						railCollapsed={rightRailCollapsed}
-						onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
-					/>
-				</div>
+				{rightRailCollapsed ? (
+					<div className="absolute top-3 right-3 z-10">
+						<TopRightControls
+							onOpenSettings={() => console.log("settings")}
+							railCollapsed={rightRailCollapsed}
+							onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
+						/>
+					</div>
+				) : null}
 			</div>
-			<div className="overflow-hidden">
+			<div className="relative overflow-hidden">
 				<ActivityRail />
+				{rightRailCollapsed ? null : (
+					<div className="absolute top-3 right-3 z-10">
+						<TopRightControls
+							onOpenSettings={() => console.log("settings")}
+							railCollapsed={rightRailCollapsed}
+							onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
+						/>
+					</div>
+				)}
 			</div>
 			{sidebarCollapsed ? (
 				<Button
