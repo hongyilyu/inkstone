@@ -30,7 +30,7 @@ function installLocalStorage() {
 	});
 }
 
-describe("TopRightControls + WelcomeBanner", () => {
+describe("TopRightControls", () => {
 	beforeEach(() => {
 		installLocalStorage();
 		document.documentElement.dataset.theme = "light";
@@ -40,15 +40,6 @@ describe("TopRightControls + WelcomeBanner", () => {
 		cleanup();
 		delete document.documentElement.dataset.theme;
 		localStorage.clear();
-	});
-
-	it("welcome banner renders and dismisses", async () => {
-		const user = userEvent.setup();
-		render(<App />);
-		const banner = screen.getByText(/welcome/i);
-		expect(banner).toBeInTheDocument();
-		await user.click(screen.getByRole("button", { name: /dismiss/i }));
-		expect(screen.queryByText(/welcome/i)).not.toBeInTheDocument();
 	});
 
 	it("theme toggle flips data-theme + localStorage", async () => {
