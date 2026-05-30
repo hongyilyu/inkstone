@@ -255,30 +255,6 @@ export const conversation: ChatTurn[] = [
 			{ kind: "search", label: "‘API rename’ across 312 notes" },
 		],
 	},
-	{
-		role: "user",
-		t: "10:41",
-		text:
-			"Good. Turn the action items into todos under Migration, and draft a follow-up note for the rename decision.",
-	},
-	{
-		role: "agent",
-		t: "10:42",
-		// This is the streaming turn — designs animate `streamed` from currentRun.streamed
-		// into this final text. Treat `streamed[]` as the live progressive render.
-		text: [
-			"Reading standup-2026-05-21.md from Daily Notes.",
-			"Found 4 action items, 1 unresolved decision (API rename → /v2/contacts).",
-			"Cross-referencing with the Migration project — 2 of 4 already exist as open todos; skipping duplicates.",
-			"Added two todos under Migration and a decision note for the API rename. Done.",
-		].join(" "),
-		actions: [
-			{ kind: "read", label: "projects/migration.md" },
-			{ kind: "decide", label: "skip 2 duplicate todos" },
-			{ kind: "write", label: "applied 4 edits" },
-		],
-		proposalIds: ["p_todo_1", "p_todo_2", "p_note_1", "p_proj_1"],
-	},
 ];
 
 export const automations: Automation[] = [
