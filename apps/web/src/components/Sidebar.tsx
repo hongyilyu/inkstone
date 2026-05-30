@@ -1,6 +1,6 @@
 import { PanelLeftClose, Search, UserPlus, WandSparkles } from "lucide-react";
 import { useState } from "react";
-import { history } from "../data/mock.js";
+import { useHistory } from "@/lib/hooks/useHistory";
 import { cn } from "../lib/utils.js";
 import { Button } from "./ui/button.js";
 
@@ -9,10 +9,12 @@ export function Sidebar({
 }: {
 	onToggleCollapse?: () => void;
 } = {}) {
-	const [activeId, setActiveId] = useState(history[0].id);
+	const { data: history } = useHistory();
+	const list = history ?? [];
+	const [activeId, setActiveId] = useState(list[0]?.id ?? "");
 	const [query, setQuery] = useState("");
 
-	const filtered = history.filter((h) =>
+	const filtered = list.filter((h) =>
 		h.prompt.toLowerCase().includes(query.trim().toLowerCase()),
 	);
 

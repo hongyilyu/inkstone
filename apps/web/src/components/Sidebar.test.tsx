@@ -1,11 +1,12 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { history } from "../data/mock.js";
+import { history } from "@/data/mock/history";
+import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import { Sidebar } from "./Sidebar.js";
 
 describe("Sidebar", () => {
 	it("renders t3 layout: top bar, New Chat, search, Last 30 Days, threads", () => {
-		render(<Sidebar />);
+		renderWithQuery(<Sidebar />);
 
 		expect(
 			screen.getByRole("button", { name: /new chat/i }),

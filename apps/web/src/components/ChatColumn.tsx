@@ -1,21 +1,13 @@
-import { CheckCircle2, Edit3, Eye, Search } from "lucide-react";
 import { useLayoutEffect, useRef } from "react";
-import { type ChatTurn, conversation, proposals } from "../data/mock.js";
+import type { ChatTurn } from "@/data/mock/types";
+import { useConversation } from "@/lib/hooks/useConversation";
+import { AgentActions } from "./AgentActions.js";
+import { AgentProposals } from "./AgentProposals.js";
 import { ComposeFooter } from "./ComposeFooter.js";
-import { ProposalCard } from "./ProposalCard.js";
-import { Button } from "./ui/button.js";
-
-const proposalById = new Map(proposals.map((p) => [p.id, p]));
-
-const ICON = {
-	read: Eye,
-	search: Search,
-	write: Edit3,
-	decide: CheckCircle2,
-} as const;
 
 export function ChatColumn() {
 	const scrollerRef = useRef<HTMLDivElement>(null);
+	const { data: conversation } = useConversation();
 
 	useLayoutEffect(() => {
 		const el = scrollerRef.current;
@@ -24,12 +16,9 @@ export function ChatColumn() {
 
 	return (
 		<main className="flex h-full flex-col overflow-hidden bg-chat-bg">
-			<div
-				ref={scrollerRef}
-				className="flex-1 overflow-y-auto px-6 py-6"
-			>
+			<div ref={scrollerRef} className="flex-1 overflow-y-auto px-6 py-6">
 				<ol className="mx-auto flex max-w-3xl flex-col gap-6">
-					{conversation.map((turn, i) =>
+					{conversation?.map((turn, i) =>
 						turn.role === "user" ? (
 							<UserBubble key={i} turn={turn} />
 						) : (
@@ -45,10 +34,7 @@ export function ChatColumn() {
 
 function UserBubble({ turn }: { turn: Extract<ChatTurn, { role: "user" }> }) {
 	return (
-		<li
-			data-role="user"
-			className="flex flex-col items-end gap-1"
-		>
+		<li data-role="user" className="flex flex-col items-end gap-1">
 			<div className="max-w-[80%] rounded-xl border border-secondary/50 bg-secondary/50 px-4 py-2 text-sm text-foreground">
 				{turn.text}
 			</div>
@@ -59,43 +45,13 @@ function UserBubble({ turn }: { turn: Extract<ChatTurn, { role: "user" }> }) {
 
 function AgentBubble({ turn }: { turn: Extract<ChatTurn, { role: "agent" }> }) {
 	return (
-		<li
-			data-role="agent"
-			className="flex flex-col items-start gap-2"
-		>
+		<li data-role="agent" className="flex flex-col items-start gap-2">
 			<div className="prose prose-pink dark:prose-invert max-w-none">
 				{turn.text}
 			</div>
-			{turn.actions ? (
-				<div className="flex flex-wrap gap-1">
-					{turn.actions.map((a, i) => {
-						const I = ICON[a.kind];
-						return (
-							<Button
-								key={i}
-								variant="ghost"
-								size="xs"
-								data-action={a.kind}
-							>
-								<I className="h-3 w-3" aria-hidden />
-								<span>{a.label}</span>
-							</Button>
-						);
-					})}
-				</div>
-			) : null}
+			{turn.actions ? <AgentActions actions={turn.actions} /> : null}
 			{turn.proposalIds ? (
-				<div className="mt-1 flex w-full flex-col gap-3">
-					{turn.proposalIds.map((id) => {
-						const p = proposalById.get(id);
-						return p ? (
-							<ProposalCard
-								key={id}
-								proposal={p}
-							/>
-						) : null;
-					})}
-				</div>
+				<AgentProposals proposalIds={turn.proposalIds} />
 			) : null}
 			<span className="text-xs text-foreground/40">{turn.t}</span>
 		</li>

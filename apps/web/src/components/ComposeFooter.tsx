@@ -6,13 +6,14 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { currentRun } from "../data/mock.js";
+import { useCurrentRun } from "@/lib/hooks/useCurrentRun";
 import { ModelPicker } from "./ModelPicker.js";
 import { Button } from "./ui/button.js";
 
 export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const { data: currentRun } = useCurrentRun();
 
 	const submit = () => {
 		const trimmed = value.trim();
@@ -74,7 +75,7 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 							<span>Attach</span>
 						</Button>
 						<span className="ml-1 hidden text-xs text-foreground/40 lg:inline">
-							{currentRun.tokens.toLocaleString("en-US")} tokens
+							{currentRun?.tokens.toLocaleString("en-US")} tokens
 						</span>
 					</div>
 					<Button

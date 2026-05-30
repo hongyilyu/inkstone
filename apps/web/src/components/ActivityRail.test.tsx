@@ -1,13 +1,15 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { automationRuns, proposals } from "../data/mock.js";
+import { automationRuns } from "@/data/mock/automations";
+import { proposals } from "@/data/mock/proposals";
+import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import { ActivityRail } from "./ActivityRail.js";
 
 describe("ActivityRail", () => {
 	it("groups rows into Today/Yesterday/Earlier and filter pill hides automations", async () => {
 		const user = userEvent.setup();
-		render(<ActivityRail />);
+		renderWithQuery(<ActivityRail />);
 
 		// Three section headers visible.
 		expect(screen.getByText(/^Today$/i)).toBeInTheDocument();

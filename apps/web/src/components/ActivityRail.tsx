@@ -2,26 +2,14 @@
 import { Bot, Check, File, FileText, Folder } from "lucide-react";
 import { useMemo, useState } from "react";
 import {
-	type AutomationRun,
-	type Proposal,
-	automationRuns,
-	automations,
-	proposals,
-} from "../data/mock.js";
-import { type Bucket, classify } from "../lib/activity.js";
+	type AutomationRowT,
+	type EditRow,
+	type Row,
+	useActivityRows,
+} from "@/lib/hooks/useActivityRows";
 import { Button } from "./ui/button.js";
 
 type Filter = "all" | "edits" | "automations";
-
-type EditRow = { kind: "edit"; bucket: Bucket; at: string; data: Proposal };
-type AutomationRowT = {
-	kind: "automation";
-	bucket: Bucket;
-	at: string;
-	data: AutomationRun;
-	name: string;
-};
-type Row = EditRow | AutomationRowT;
 
 const KIND_ICON = {
 	todo: Check,
@@ -32,30 +20,7 @@ const KIND_ICON = {
 
 export function ActivityRail() {
 	const [filter, setFilter] = useState<Filter>("all");
-
-	const automationsById = useMemo(
-		() => new Map(automations.map((a) => [a.id, a])),
-		[],
-	);
-
-	const allRows = useMemo<Row[]>(() => {
-		const editRows: EditRow[] = proposals
-			.filter((p) => p.appliedAt)
-			.map((p) => ({
-				kind: "edit",
-				bucket: classify(p.appliedAt!),
-				at: p.appliedAt!,
-				data: p,
-			}));
-		const autoRows: AutomationRowT[] = automationRuns.map((r) => ({
-			kind: "automation",
-			bucket: classify(r.at),
-			at: r.at,
-			data: r,
-			name: automationsById.get(r.automationId)?.name ?? "Automation",
-		}));
-		return [...editRows, ...autoRows];
-	}, [automationsById]);
+	const { data: allRows } = useActivityRows();
 
 	const filtered = useMemo(() => {
 		if (filter === "edits") return allRows.filter((r) => r.kind === "edit");
@@ -133,7 +98,10 @@ function EditRowView({ row }: { row: EditRow }) {
 	const Icon = KIND_ICON[row.data.kind];
 	return (
 		<div className="flex items-start gap-1.5">
-			<Icon className="mt-0.5 h-3 w-3 shrink-0 text-sidebar-foreground/50" aria-hidden />
+			<Icon
+				className="mt-0.5 h-3 w-3 shrink-0 text-sidebar-foreground/50"
+				aria-hidden
+			/>
 			<div className="min-w-0 flex-1">
 				<div className="truncate">{row.data.title}</div>
 				<div className="truncate text-sidebar-foreground/60">
@@ -147,10 +115,15 @@ function EditRowView({ row }: { row: EditRow }) {
 function AutomationRowView({ row }: { row: AutomationRowT }) {
 	return (
 		<div className="flex items-start gap-1.5">
-			<Bot className="mt-0.5 h-3 w-3 shrink-0 text-sidebar-foreground/50" aria-hidden />
+			<Bot
+				className="mt-0.5 h-3 w-3 shrink-0 text-sidebar-foreground/50"
+				aria-hidden
+			/>
 			<div className="min-w-0 flex-1">
 				<div className="truncate">{row.name}</div>
-				<div className="truncate text-sidebar-foreground/60">{row.data.summary}</div>
+				<div className="truncate text-sidebar-foreground/60">
+					{row.data.summary}
+				</div>
 				<div className="text-[10px] text-sidebar-foreground/45">
 					{row.at} · {row.data.status}
 				</div>

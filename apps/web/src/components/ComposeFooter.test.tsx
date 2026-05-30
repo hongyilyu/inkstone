@@ -1,13 +1,14 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import { ComposeFooter } from "./ComposeFooter.js";
 
 describe("ComposeFooter", () => {
 	it("calls onSend with the typed text on click and renders model/token strip", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();
-		render(<ComposeFooter onSend={onSend} />);
+		renderWithQuery(<ComposeFooter onSend={onSend} />);
 
 		await user.type(screen.getByRole("textbox"), "hello");
 		await user.click(screen.getByRole("button", { name: /send/i }));

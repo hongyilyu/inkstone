@@ -1,4 +1,5 @@
 import { WsClientConfig, WsClientLive } from "@inkstone/ui-sdk";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Layer, ManagedRuntime } from "effect";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
@@ -15,6 +16,13 @@ const wsLayer = Layer.provide(
 );
 void ManagedRuntime.make(wsLayer);
 
+// Mock data never goes stale: prevent refetch loops.
+const queryClient = new QueryClient({
+	defaultOptions: {
+		queries: { staleTime: Number.POSITIVE_INFINITY },
+	},
+});
+
 const root = document.getElementById("root");
 
 if (!root) {
@@ -23,6 +31,8 @@ if (!root) {
 
 createRoot(root).render(
 	<StrictMode>
-		<App />
+		<QueryClientProvider client={queryClient}>
+			<App />
+		</QueryClientProvider>
 	</StrictMode>,
 );

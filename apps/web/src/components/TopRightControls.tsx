@@ -5,7 +5,7 @@ import {
 	Settings2,
 	Sun,
 } from "lucide-react";
-import { useState } from "react";
+import { useTheme } from "@/lib/hooks/useTheme";
 import { Button } from "./ui/button.js";
 
 export interface TopRightControlsProps {
@@ -19,24 +19,7 @@ export function TopRightControls({
 	onToggleRail,
 	railCollapsed = false,
 }: TopRightControlsProps = {}) {
-	const [theme, setTheme] = useState<"light" | "dark">(() => {
-		const initial =
-			typeof document !== "undefined"
-				? (document.documentElement.dataset.theme as "light" | "dark" | undefined)
-				: undefined;
-		return initial === "dark" ? "dark" : "light";
-	});
-
-	const toggleTheme = () => {
-		const next = theme === "dark" ? "light" : "dark";
-		setTheme(next);
-		document.documentElement.dataset.theme = next;
-		try {
-			localStorage.setItem("inkstone-theme", next);
-		} catch {
-			// localStorage may be unavailable — non-fatal
-		}
-	};
+	const { theme, toggle } = useTheme();
 
 	return (
 		<div className="flex items-center gap-1 px-2 py-1 text-sm">
@@ -44,7 +27,7 @@ export function TopRightControls({
 				variant="icon"
 				size="icon"
 				aria-label="Toggle theme"
-				onClick={toggleTheme}
+				onClick={toggle}
 			>
 				{theme === "dark" ? (
 					<Sun className="h-3.5 w-3.5" aria-hidden />
@@ -63,7 +46,9 @@ export function TopRightControls({
 			<Button
 				variant="icon"
 				size="icon"
-				aria-label={railCollapsed ? "Open activity rail" : "Close activity rail"}
+				aria-label={
+					railCollapsed ? "Open activity rail" : "Close activity rail"
+				}
 				aria-pressed={railCollapsed}
 				onClick={onToggleRail}
 			>

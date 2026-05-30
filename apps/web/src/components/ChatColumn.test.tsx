@@ -1,11 +1,12 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { conversation } from "../data/mock.js";
+import { conversation } from "@/data/mock/conversation";
+import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import { ChatColumn } from "./ChatColumn.js";
 
 describe("ChatColumn", () => {
 	it("renders user and agent bubbles with action chips on the streaming turn", () => {
-		render(<ChatColumn />);
+		renderWithQuery(<ChatColumn />);
 
 		for (const turn of conversation) {
 			const node = screen.getByText(turn.text);
@@ -19,7 +20,9 @@ describe("ChatColumn", () => {
 				expect(screen.getByText(action.label)).toBeInTheDocument();
 			}
 		} else {
-			throw new Error("test setup expects last turn to be an agent with actions");
+			throw new Error(
+				"test setup expects last turn to be an agent with actions",
+			);
 		}
 	});
 });

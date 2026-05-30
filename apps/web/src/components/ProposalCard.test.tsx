@@ -1,6 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { proposals } from "../data/mock.js";
+import { proposals } from "@/data/mock/proposals";
 import { ProposalCard } from "./ProposalCard.js";
 
 describe("ProposalCard", () => {

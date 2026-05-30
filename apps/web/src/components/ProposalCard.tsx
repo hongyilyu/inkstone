@@ -1,7 +1,7 @@
 // VISUAL ONLY — auto-applied + undo affordance shown here is reference; real wiring will manual-approve all proposals per ADR-0016.
 import { Check, File, FileText, Folder } from "lucide-react";
 import type { ElementType } from "react";
-import type { Proposal, ProposalKind } from "../data/mock.js";
+import type { Proposal, ProposalKind } from "@/data/mock/types";
 
 const KIND_ICON = {
 	todo: Check,

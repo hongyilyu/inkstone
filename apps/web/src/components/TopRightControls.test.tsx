@@ -1,6 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import App from "../App.js";
 
 // Node 26's experimental localStorage is gated by --localstorage-file, leaving
@@ -44,7 +45,7 @@ describe("TopRightControls", () => {
 
 	it("theme toggle flips data-theme + localStorage", async () => {
 		const user = userEvent.setup();
-		render(<App />);
+		renderWithQuery(<App />);
 		const toggle = screen.getByRole("button", { name: /toggle theme/i });
 
 		await user.click(toggle);
