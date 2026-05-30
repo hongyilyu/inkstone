@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 @font-face {
 	font-family: "Inter";
@@ -9,47 +10,59 @@
 }
 
 :root {
-	--background: oklch(1 0 0);
-	--foreground: oklch(0.145 0 0);
-	--card: oklch(1 0 0);
-	--card-foreground: oklch(0.145 0 0);
-	--popover: oklch(1 0 0);
-	--popover-foreground: oklch(0.145 0 0);
-	--primary: oklch(0.205 0 0);
-	--primary-foreground: oklch(0.985 0 0);
-	--secondary: oklch(0.97 0 0);
-	--secondary-foreground: oklch(0.205 0 0);
-	--muted: oklch(0.97 0 0);
-	--muted-foreground: oklch(0.556 0 0);
-	--accent: oklch(0.97 0 0);
-	--accent-foreground: oklch(0.205 0 0);
-	--destructive: oklch(0.577 0.245 27.325);
-	--destructive-foreground: oklch(0.985 0 0);
-	--border: oklch(0.922 0 0);
-	--input: oklch(0.922 0 0);
-	--ring: oklch(0.708 0 0);
+	--background: #f2e1f4;
+	--foreground: #501854;
+	--card: #faf3fb;
+	--card-foreground: #454554;
+	--popover: #ffffff;
+	--popover-foreground: #501854;
+	--primary: #e33f86;
+	--primary-foreground: #ffffff;
+	--secondary: #f1c4e6;
+	--secondary-foreground: #77347c;
+	--muted: #eaa7cb;
+	--muted-foreground: #ac1668;
+	--accent: #f1c4e6;
+	--accent-foreground: #454554;
+	--destructive: #f7086c;
+	--destructive-foreground: #ffffff;
+	--border: #eee1ed;
+	--input: #e7c1dc;
+	--ring: #db2777;
+	--sidebar: #ead0ef;
+	--sidebar-accent: #f8f8f7;
+	--chat-bg: #fdf7fd;
+	--chat-input-bg: hsla(270, 0%, 100%, 0.1);
+	--chat-input-gradient: #fbccff;
+	--chat-overlay: hsla(309, 63%, 92%, 0.72);
 }
 
 [data-theme="dark"] {
-	--background: oklch(0.145 0 0);
-	--foreground: oklch(0.985 0 0);
-	--card: oklch(0.145 0 0);
-	--card-foreground: oklch(0.985 0 0);
-	--popover: oklch(0.145 0 0);
-	--popover-foreground: oklch(0.985 0 0);
-	--primary: oklch(0.985 0 0);
-	--primary-foreground: oklch(0.205 0 0);
-	--secondary: oklch(0.269 0 0);
-	--secondary-foreground: oklch(0.985 0 0);
-	--muted: oklch(0.269 0 0);
-	--muted-foreground: oklch(0.708 0 0);
-	--accent: oklch(0.269 0 0);
-	--accent-foreground: oklch(0.985 0 0);
-	--destructive: oklch(0.396 0.141 25.723);
-	--destructive-foreground: oklch(0.985 0 0);
-	--border: oklch(0.269 0 0);
-	--input: oklch(0.269 0 0);
-	--ring: oklch(0.439 0 0);
+	--background: #21141e;
+	--foreground: #f9f8fb;
+	--card: #0b080b;
+	--card-foreground: #f4f4f5;
+	--popover: #100a0e;
+	--popover-foreground: #f8f1f5;
+	--primary: #a3004c;
+	--primary-foreground: #fbd0e8;
+	--secondary: #362d3d;
+	--secondary-foreground: #d4c7e1;
+	--muted: #423a45;
+	--muted-foreground: #e7d0dd;
+	--accent: #463753;
+	--accent-foreground: #f8f1f5;
+	--destructive: #9d174d;
+	--destructive-foreground: #ffffff;
+	--border: #27242c;
+	--input: #302029;
+	--ring: #db2777;
+	--sidebar: #131314;
+	--sidebar-accent: #261922;
+	--chat-bg: #1f1a24;
+	--chat-input-bg: hsla(270, 10%, 20%, 0.4);
+	--chat-input-gradient: #432d48;
+	--chat-overlay: hsla(270, 12%, 16%, 0.71);
 }
 
 @theme inline {
@@ -72,6 +85,11 @@
 	--color-border: var(--border);
 	--color-input: var(--input);
 	--color-ring: var(--ring);
+	--color-sidebar: var(--sidebar);
+	--color-sidebar-accent: var(--sidebar-accent);
+	--color-chat-bg: var(--chat-bg);
+	--color-chat-input-bg: var(--chat-input-bg);
+	--color-chat-overlay: var(--chat-overlay);
 }
 
 html,
@@ -82,5 +100,13 @@ body,
 }
 
 body {
-	font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+	font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+		"Noto Sans", "Helvetica Neue", Arial, sans-serif;
+	font-feature-settings: "ss05" on;
+	font-variant-numeric: proportional-nums;
+}
+
+::selection {
+	background: var(--primary);
+	color: white;
 }
