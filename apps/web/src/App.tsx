@@ -25,6 +25,13 @@ export default function App() {
 				<div className="relative h-full overflow-hidden rounded-tl-2xl">
 					<ChatColumn />
 					<ChatCardCornerCarve />
+					<div className="absolute top-3 right-3 z-10">
+						<TopRightControls
+							onOpenSettings={() => console.log("settings")}
+							railCollapsed={rightRailCollapsed}
+							onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
+						/>
+					</div>
 				</div>
 			</div>
 			<div className="overflow-hidden">
@@ -41,13 +48,6 @@ export default function App() {
 					<PanelLeftOpen className="size-4" />
 				</Button>
 			) : null}
-			<div className="absolute top-3 right-3 z-10">
-				<TopRightControls
-					onOpenSettings={() => console.log("settings")}
-					railCollapsed={rightRailCollapsed}
-					onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
-				/>
-			</div>
 		</div>
 	);
 }
