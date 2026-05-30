@@ -1,10 +1,17 @@
 import { ArrowUp, ChevronDown, Paperclip, Search, Zap } from "lucide-react";
-import { type FormEvent, type KeyboardEvent, useState } from "react";
+import {
+	type FormEvent,
+	type KeyboardEvent,
+	type MouseEvent,
+	useRef,
+	useState,
+} from "react";
 import { currentRun } from "../data/mock.js";
 import { Button } from "./ui/button.js";
 
 export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 	const [value, setValue] = useState("");
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
 	const submit = () => {
 		const trimmed = value.trim();
@@ -25,13 +32,23 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 		}
 	};
 
+	const focusTextarea = (e: MouseEvent<HTMLFormElement>) => {
+		// Only steal focus when the click hits the form chrome itself, not a
+		// nested interactive element (chips, send button).
+		if (e.target === e.currentTarget) {
+			textareaRef.current?.focus();
+		}
+	};
+
 	return (
 		<div className="px-4 pt-2 pb-4">
 			<form
 				onSubmit={handleSubmit}
-				className="rounded-2xl border border-border bg-card/40 p-4 backdrop-blur-lg"
+				onClick={focusTextarea}
+				className="cursor-text rounded-2xl border border-border bg-card/40 p-4 backdrop-blur-lg"
 			>
 				<textarea
+					ref={textareaRef}
 					aria-label="Message"
 					value={value}
 					onChange={(e) => setValue(e.target.value)}
