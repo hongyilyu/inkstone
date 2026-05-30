@@ -1,11 +1,18 @@
+import { CheckCircle2, Edit3, Eye, Search } from "lucide-react";
 import { useLayoutEffect, useRef } from "react";
 import { type ChatTurn, conversation, proposals } from "../data/mock.js";
 import { ComposeFooter } from "./ComposeFooter.js";
 import { ProposalCard } from "./ProposalCard.js";
 import { QueueBanner } from "./QueueBanner.js";
-import { WelcomeBanner } from "./WelcomeBanner.js";
 
 const proposalById = new Map(proposals.map((p) => [p.id, p]));
+
+const ICON = {
+	read: Eye,
+	search: Search,
+	write: Edit3,
+	decide: CheckCircle2,
+} as const;
 
 export function ChatColumn() {
 	const scrollerRef = useRef<HTMLDivElement>(null);
@@ -17,7 +24,6 @@ export function ChatColumn() {
 
 	return (
 		<main className="flex h-full flex-col overflow-hidden bg-chat-bg">
-			<WelcomeBanner />
 			<QueueBanner />
 			<div
 				ref={scrollerRef}
@@ -58,20 +64,28 @@ function AgentBubble({ turn }: { turn: Extract<ChatTurn, { role: "agent" }> }) {
 			data-role="agent"
 			className="group flex flex-col items-start gap-2"
 		>
-			<div className="prose prose-pink dark:prose-invert max-w-none text-sm">
+			<div className="prose prose-pink dark:prose-invert max-w-none">
 				{turn.text}
 			</div>
 			{turn.actions ? (
-				<div className="flex flex-wrap gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
-					{turn.actions.map((a, i) => (
-						<span
-							key={i}
-							data-action={a.kind}
-							className="rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-						>
-							{a.label}
-						</span>
-					))}
+				<div className="flex flex-wrap gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+					{turn.actions.map((a, i) => {
+						const I = ICON[a.kind];
+						return (
+							<button
+								key={i}
+								type="button"
+								data-action={a.kind}
+								className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+							>
+								<I
+									className="h-3 w-3"
+									aria-hidden
+								/>
+								<span>{a.label}</span>
+							</button>
+						);
+					})}
 				</div>
 			) : null}
 			{turn.proposalIds ? (

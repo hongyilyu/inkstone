@@ -43,7 +43,6 @@ test("loads the chat surface with all eight slice regions populated", async ({ p
 
 	// Slice 8: Top-right controls + welcome banner
 	await expect(page.getByRole("button", { name: /toggle theme/i })).toBeVisible();
-	await expect(page.getByText(/welcome/i)).toBeVisible();
 
 	// Slice 13: t3 palette wired — body bg should resolve to either theme's --background hex.
 	const bg = await page.evaluate(() =>

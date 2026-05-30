@@ -1,6 +1,5 @@
 import { Moon, Sun } from "lucide-react";
 import { useState } from "react";
-import { currentRun } from "../data/mock.js";
 
 export function TopRightControls() {
 	const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -24,7 +23,6 @@ export function TopRightControls() {
 
 	return (
 		<div className="flex items-center gap-2 px-2 py-1 text-sm">
-			<span className="text-muted-foreground">{currentRun.model}</span>
 			<button
 				type="button"
 				aria-label="Toggle theme"
