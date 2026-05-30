@@ -18,11 +18,9 @@ export default function App() {
 					: "260px 1fr 320px",
 			}}
 		>
-			{sidebarCollapsed ? null : (
-				<Sidebar
-					onToggleCollapse={() => setSidebarCollapsed(true)}
-				/>
-			)}
+			<div className="overflow-hidden">
+				<Sidebar onToggleCollapse={() => setSidebarCollapsed(true)} />
+			</div>
 			<ChatColumn />
 			<ActivityRail />
 			{sidebarCollapsed ? (
