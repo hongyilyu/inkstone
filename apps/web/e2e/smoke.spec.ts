@@ -44,9 +44,10 @@ test("loads the chat surface with all eight slice regions populated", async ({ p
 	// Slice 8: Top-right controls + welcome banner
 	await expect(page.getByRole("button", { name: /toggle theme/i })).toBeVisible();
 
-	// Slice 13: t3 palette wired — body bg should resolve to either theme's --background hex.
+	// Slice 13: t3 palette wired — body bg should resolve to either theme's --sidebar hex
+	// (we paint body with --sidebar so any unfilled viewport area matches the outer chrome).
 	const bg = await page.evaluate(() =>
 		getComputedStyle(document.body).backgroundColor,
 	);
-	expect(bg).toMatch(/^rgb\((242, 225, 244|33, 20, 30)\)$/);
+	expect(bg).toMatch(/^rgb\((234, 208, 239|19, 19, 20)\)$/);
 });
