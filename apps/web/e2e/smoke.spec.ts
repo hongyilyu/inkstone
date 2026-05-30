@@ -14,10 +14,10 @@ test("loads the chat surface with all eight slice regions populated", async ({ p
 	await expect(page.getByRole("main")).toBeVisible();
 	await expect(activity).toBeVisible();
 
-	// Slice 2: Sidebar Today + Automations (scoped to Sidebar — "Today" also appears in ActivityRail and timestamps)
-	await expect(sidebar.getByText("Today")).toBeVisible();
-	await expect(sidebar.getByText("This week")).toBeVisible();
-	await expect(sidebar.getByRole("button", { name: /Automations/i })).toBeVisible();
+	// Slice 13: Sidebar t3 layout — New Chat pill, Last 30 Days section, first thread
+	await expect(sidebar.getByRole("button", { name: /new chat/i })).toBeVisible();
+	await expect(sidebar.getByText(/Last 30 Days/i)).toBeVisible();
+	await expect(sidebar.getByText(/Turn standup action items/i)).toBeVisible();
 
 	// Slice 3: Chat bubbles + an action chip from the agent turn
 	// (assertion uses concrete mock content; updates if mock.ts changes.)

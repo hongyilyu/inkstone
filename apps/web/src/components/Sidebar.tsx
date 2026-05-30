@@ -1,82 +1,76 @@
-// VISUAL ONLY — automations are out of scope per ADR-0010; rendered from mock data.
-import { ChevronRight } from "lucide-react";
-import { useState } from "react";
-import { automations, history, type RunHistoryItem } from "../data/mock.js";
+import { PanelLeftClose, Search, UserPlus, WandSparkles } from "lucide-react";
+import { history } from "../data/mock.js";
 import { cn } from "../lib/utils.js";
 import { Button } from "./ui/button.js";
 
-const today = history.slice(0, 1);
-const week = history.slice(1, 4);
-const older = history.slice(4);
-
 export function Sidebar() {
-	const [automationsOpen, setAutomationsOpen] = useState(false);
-
 	return (
 		<aside
 			aria-label="Sidebar"
-			className="flex flex-col gap-4 bg-sidebar py-3 text-sm text-sidebar-foreground"
+			className="flex h-full flex-col bg-sidebar text-sm text-sidebar-foreground"
 		>
-			<HistorySection label="Today" items={today} />
-			<HistorySection label="This week" items={week} />
-			<HistorySection label="Older" items={older} />
-
-			<div className="px-2">
-				<Button
-					variant="sidebar-item"
-					size="row"
-					className="w-full text-xs font-semibold text-sidebar-foreground/70"
-					aria-expanded={automationsOpen}
-					onClick={() => setAutomationsOpen((open) => !open)}
-				>
-					<ChevronRight
-						className={cn(
-							"size-4 transition-transform",
-							automationsOpen && "rotate-90",
-						)}
-					/>
-					Automations
+			<div className="grid h-14 grid-cols-3 items-center px-3">
+				<Button variant="icon" size="icon" aria-label="Toggle sidebar">
+					<PanelLeftClose className="size-4" />
 				</Button>
-				{automationsOpen ? (
-					<ul className="mt-1 flex flex-col gap-0.5 pl-6">
-						{automations.map((a) => (
-							<li
-								key={a.id}
-								className="flex h-9 cursor-default items-center truncate rounded-lg px-2 py-1 text-sm text-foreground hover:bg-sidebar-accent"
-							>
-								{a.name}
-							</li>
-						))}
-					</ul>
-				) : null}
+				<div className="text-center text-base font-bold text-foreground">
+					T3.chat
+				</div>
+				<Button
+					variant="icon"
+					size="icon"
+					className="justify-self-end"
+					aria-label="New thread"
+				>
+					<WandSparkles className="size-4" />
+				</Button>
 			</div>
-		</aside>
-	);
-}
 
-function HistorySection({
-	label,
-	items,
-}: {
-	label: string;
-	items: RunHistoryItem[];
-}) {
-	if (items.length === 0) return null;
-	return (
-		<div className="flex flex-col gap-0.5">
-			<div className="px-3 py-1 text-xs font-semibold text-sidebar-foreground/70">
-				{label}
+			<button
+				type="button"
+				className="mx-3 my-2 rounded-lg bg-primary py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90"
+			>
+				New Chat
+			</button>
+
+			<div className="mx-3 flex h-10 items-center gap-2 border-b border-input">
+				<Search className="size-4 text-sidebar-foreground/60" />
+				<input
+					type="text"
+					aria-label="Search your threads"
+					placeholder="Search your threads…"
+					className="flex-1 bg-transparent text-sm text-sidebar-foreground placeholder:text-sidebar-foreground/50 focus:outline-none"
+				/>
 			</div>
-			<ul className="flex flex-col gap-0.5 px-2">
-				{items.map((item) => (
+
+			<div className="mx-3 mt-2 border-t border-border" />
+
+			<div className="px-3 py-2 text-xs font-semibold text-primary">
+				Last 30 Days
+			</div>
+
+			<ul className="flex flex-1 flex-col gap-0.5 px-2">
+				{history.map((item, i) => (
 					<li
 						key={item.id}
-						className="flex h-9 cursor-default items-center truncate rounded-lg px-2 py-1 text-sm hover:bg-sidebar-accent"
+						className={cn(
+							"flex h-9 cursor-default items-center truncate rounded-lg px-3 text-sm text-sidebar-foreground hover:bg-sidebar-accent",
+							i === 0 && "bg-sidebar-accent",
+						)}
 					>
 						{item.prompt}
 					</li>
 				))}
 			</ul>
-		</div>
+
+			<div className="flex items-center justify-between border-t border-border px-3 py-3">
+				<div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-sm font-medium text-primary-foreground">
+					H
+				</div>
+				<Button variant="icon" size="icon" aria-label="Invite">
+					<UserPlus className="size-4" />
+				</Button>
+			</div>
+		</aside>
 	);
 }
