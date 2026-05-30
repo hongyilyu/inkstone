@@ -27,7 +27,7 @@ test("loads the chat surface with all eight slice regions populated", async ({ p
 	// Slice 4: Compose footer
 	await expect(page.getByRole("textbox", { name: /message/i })).toBeVisible();
 	await expect(page.getByRole("button", { name: /^Send$/i })).toBeVisible();
-	await expect(page.getByText(/local · gemma-3 27b/).first()).toBeVisible();
+	await expect(page.getByText(/gemma-3 27b/i).first()).toBeVisible();
 	await expect(page.getByText(/4,812/).first()).toBeVisible();
 
 	// Slice 5: Proposal cards inline (also surfaced in ActivityRail)

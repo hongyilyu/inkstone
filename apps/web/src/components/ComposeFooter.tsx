@@ -1,4 +1,4 @@
-import { ArrowUp, ChevronDown, Paperclip, Search, Zap } from "lucide-react";
+import { ArrowUp, Paperclip, Search, Zap } from "lucide-react";
 import {
 	type FormEvent,
 	type KeyboardEvent,
@@ -7,6 +7,7 @@ import {
 	useState,
 } from "react";
 import { currentRun } from "../data/mock.js";
+import { ModelPicker } from "./ModelPicker.js";
 import { Button } from "./ui/button.js";
 
 export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
@@ -59,10 +60,7 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 				/>
 				<div className="mt-3 flex items-end justify-between gap-2">
 					<div className="flex flex-wrap items-center gap-2">
-						<Button variant="chip" size="pill">
-							<span>{currentRun.model}</span>
-							<ChevronDown className="h-4 w-4" aria-hidden />
-						</Button>
+						<ModelPicker defaultModelId="gemma-3-27b" />
 						<Button variant="chip" size="pill">
 							<Zap className="h-4 w-4" aria-hidden />
 							<span>Instant</span>

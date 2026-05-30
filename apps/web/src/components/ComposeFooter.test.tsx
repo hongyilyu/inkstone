@@ -15,7 +15,11 @@ describe("ComposeFooter", () => {
 		expect(onSend).toHaveBeenCalledTimes(1);
 		expect(onSend).toHaveBeenCalledWith("hello");
 
-		expect(screen.getByText(/local · gemma-3 27b/i)).toBeInTheDocument();
+		// Model picker trigger shows the model name; full label is in the dropdown.
+		expect(
+			screen.getByRole("button", { name: /Select model/i }),
+		).toBeInTheDocument();
+		expect(screen.getByText(/gemma-3 27b/i)).toBeInTheDocument();
 		expect(screen.getByText(/4,812/)).toBeInTheDocument();
 	});
 });

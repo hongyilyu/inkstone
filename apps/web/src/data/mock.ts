@@ -492,3 +492,43 @@ export const queue: QueueItem[] = [
 		pendingTitle: "Approve change to projects/migration.md",
 	},
 ];
+
+export type Model = {
+	id: string;
+	provider: "local" | "anthropic" | "openai";
+	name: string;
+	description: string;
+};
+
+export const models: Model[] = [
+	{
+		id: "gemma-3-27b",
+		provider: "local",
+		name: "gemma-3 27b",
+		description: "local · ollama",
+	},
+	{
+		id: "llama-3.3-70b",
+		provider: "local",
+		name: "llama-3.3 70b",
+		description: "local · ollama",
+	},
+	{
+		id: "claude-sonnet-4-6",
+		provider: "anthropic",
+		name: "Claude Sonnet 4.6",
+		description: "anthropic · cloud",
+	},
+	{
+		id: "claude-opus-4-7",
+		provider: "anthropic",
+		name: "Claude Opus 4.7",
+		description: "anthropic · cloud",
+	},
+	{
+		id: "gpt-5",
+		provider: "openai",
+		name: "GPT-5",
+		description: "openai · cloud",
+	},
+];
