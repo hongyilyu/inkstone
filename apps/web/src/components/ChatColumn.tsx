@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef } from "react";
 import { type ChatTurn, conversation, proposals } from "../data/mock.js";
 import { ComposeFooter } from "./ComposeFooter.js";
 import { ProposalCard } from "./ProposalCard.js";
+import { QueueBanner } from "./QueueBanner.js";
 
 const proposalById = new Map(proposals.map((p) => [p.id, p]));
 
@@ -15,6 +16,7 @@ export function ChatColumn() {
 
 	return (
 		<main className="flex h-full flex-col overflow-hidden">
+			<QueueBanner />
 			<div
 				ref={scrollerRef}
 				className="flex-1 overflow-y-auto px-6 py-6"
