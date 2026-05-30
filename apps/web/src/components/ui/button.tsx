@@ -8,23 +8,22 @@ const buttonVariants = cva(
 		variants: {
 			variant: {
 				ghost: "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-				chip: "text-foreground/60 hover:bg-secondary/50 hover:text-foreground",
-				"chip-bordered":
-					"border border-input bg-transparent text-foreground/70 hover:bg-secondary/50 hover:text-foreground",
+				chip: "border border-input bg-transparent text-foreground/80 hover:bg-secondary/50 hover:text-foreground",
 				"sidebar-item":
 					"text-sidebar-foreground hover:bg-sidebar-accent",
 				"sidebar-item-active":
 					"bg-sidebar-accent text-sidebar-foreground",
 				"primary-icon":
-					"justify-center bg-primary/20 text-primary-foreground shadow-sm hover:bg-primary",
+					"justify-center bg-primary text-primary-foreground shadow-sm hover:bg-primary/90",
 				icon: "justify-center text-foreground/60 hover:bg-accent hover:text-accent-foreground",
 			},
 			size: {
 				xs: "rounded-md px-2 py-0.5 gap-1 text-xs",
 				sm: "rounded-md px-2 py-1 gap-1 text-xs font-medium",
+				pill: "rounded-full px-3.5 py-1.5 gap-2 text-sm font-medium",
 				row: "h-9 rounded-lg px-2 py-1 gap-2 text-sm",
 				icon: "rounded-md p-1.5",
-				"icon-lg": "h-9 w-9 rounded-lg",
+				"icon-lg": "h-11 w-11 rounded-xl",
 			},
 		},
 		defaultVariants: { variant: "ghost", size: "sm" },

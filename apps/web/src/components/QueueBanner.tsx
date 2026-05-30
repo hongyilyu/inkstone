@@ -48,7 +48,7 @@ export function QueueBanner() {
 		>
 			<span aria-hidden>{item.pendingGlyph}</span>
 			<span className="flex-1">{item.pendingTitle}</span>
-			<Button variant="chip-bordered" size="xs" onClick={advance}>
+			<Button variant="chip" size="xs" onClick={advance}>
 				{item.kind === "approval" ? "Approve (1)" : "Answer (1)"}
 			</Button>
 		</div>
