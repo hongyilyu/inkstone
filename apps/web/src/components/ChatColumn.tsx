@@ -3,6 +3,7 @@ import { type ChatTurn, conversation, proposals } from "../data/mock.js";
 import { ComposeFooter } from "./ComposeFooter.js";
 import { ProposalCard } from "./ProposalCard.js";
 import { QueueBanner } from "./QueueBanner.js";
+import { WelcomeBanner } from "./WelcomeBanner.js";
 
 const proposalById = new Map(proposals.map((p) => [p.id, p]));
 
@@ -16,6 +17,7 @@ export function ChatColumn() {
 
 	return (
 		<main className="flex h-full flex-col overflow-hidden">
+			<WelcomeBanner />
 			<QueueBanner />
 			<div
 				ref={scrollerRef}
