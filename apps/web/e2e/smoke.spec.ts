@@ -19,10 +19,10 @@ test("loads the chat surface with all eight slice regions populated", async ({ p
 	await expect(sidebar.getByText("This week")).toBeVisible();
 	await expect(sidebar.getByRole("button", { name: /Automations/i })).toBeVisible();
 
-	// Slice 3: Chat bubbles + an action chip from the streaming agent turn
+	// Slice 3: Chat bubbles + an action chip from the agent turn
 	// (assertion uses concrete mock content; updates if mock.ts changes.)
 	await expect(page.getByText(/Morning\. What did standup land on/i)).toBeVisible();
-	await expect(page.getByText(/projects\/migration\.md/).first()).toBeVisible(); // an action chip label (also appears in ActivityRail/QueueBanner)
+	await expect(page.getByText(/standup-2026-05-21\.md/i).first()).toBeVisible(); // an action chip label on the agent turn
 
 	// Slice 4: Compose footer
 	await expect(page.getByRole("textbox", { name: /message/i })).toBeVisible();
