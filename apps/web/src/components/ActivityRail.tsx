@@ -76,7 +76,7 @@ export function ActivityRail() {
 	return (
 		<aside
 			aria-label="Activity"
-			className="flex flex-col gap-2 overflow-y-auto border-l border-border p-3"
+			className="flex flex-col gap-2 overflow-y-auto border-l border-border p-3 pt-10"
 		>
 			<div className="flex gap-1 text-xs">
 				{(["all", "edits", "automations"] as Filter[]).map((f) => (
