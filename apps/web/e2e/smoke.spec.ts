@@ -38,8 +38,8 @@ test("loads the chat surface with all eight slice regions populated", async ({ p
 	await expect(activity.getByRole("button", { name: /^edits$/i })).toBeVisible();
 	await expect(activity.getByRole("button", { name: /^automations$/i })).toBeVisible();
 
-	// Slice 7: Queue banner — first item visible (banner can render twice if mounted in App + ChatColumn etc.; assert at least one)
-	await expect(page.getByText(/Inbox sweeper · pick aggressiveness/i).first()).toBeVisible();
+	// Slice 7: Queue banner — removed from app surface mid-slice-13 (will be redesigned later);
+	// QueueBanner.tsx still exists as a component and is exercised by its own test.
 
 	// Slice 8: Top-right controls + welcome banner
 	await expect(page.getByRole("button", { name: /toggle theme/i })).toBeVisible();
