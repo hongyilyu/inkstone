@@ -1,7 +1,7 @@
 import { PanelLeftOpen } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { ActivityRail } from "./components/ActivityRail.js";
-import { ChatCardRecess } from "./components/ChatCardRecess.js";
+import { makeChatCardClipPath } from "./components/ChatCardRecess.js";
 import { ChatColumn } from "./components/ChatColumn.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TopRightControls } from "./components/TopRightControls.js";
@@ -10,6 +10,21 @@ import { Button } from "./components/ui/button.js";
 export default function App() {
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
+	const chatCardRef = useRef<HTMLDivElement>(null);
+	const [clipPath, setClipPath] = useState<string>("");
+
+	useLayoutEffect(() => {
+		const el = chatCardRef.current;
+		if (!el) return;
+		const update = () => {
+			const r = el.getBoundingClientRect();
+			setClipPath(makeChatCardClipPath(r.width, r.height));
+		};
+		update();
+		const ro = new ResizeObserver(update);
+		ro.observe(el);
+		return () => ro.disconnect();
+	}, []);
 
 	return (
 		<div
@@ -21,17 +36,20 @@ export default function App() {
 			<div className="overflow-hidden">
 				<Sidebar onToggleCollapse={() => setSidebarCollapsed(true)} />
 			</div>
-			<div className="min-h-0 pt-2">
-				<div className="relative h-full overflow-hidden rounded-tl-2xl">
+			<div className="relative min-h-0 pt-2">
+				<div
+					ref={chatCardRef}
+					className="relative h-full"
+					style={{ clipPath }}
+				>
 					<ChatColumn />
-					<ChatCardRecess />
-					<div className="absolute top-3 right-3 z-10">
-						<TopRightControls
-							onOpenSettings={() => console.log("settings")}
-							railCollapsed={rightRailCollapsed}
-							onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
-						/>
-					</div>
+				</div>
+				<div className="absolute top-3 right-3 z-10">
+					<TopRightControls
+						onOpenSettings={() => console.log("settings")}
+						railCollapsed={rightRailCollapsed}
+						onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
+					/>
 				</div>
 			</div>
 			<div className="overflow-hidden">

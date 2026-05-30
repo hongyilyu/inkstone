@@ -16,7 +16,7 @@ export function ChatColumn() {
 
 	return (
 		<main className="flex h-full flex-col overflow-hidden bg-chat-bg">
-			<div ref={scrollerRef} className="flex-1 overflow-y-auto px-6 py-6">
+			<div ref={scrollerRef} className="flex-1 overflow-y-auto px-6 pt-14 pb-6">
 				<ol className="mx-auto flex max-w-3xl flex-col gap-6">
 					{conversation?.map((turn, i) =>
 						turn.role === "user" ? (

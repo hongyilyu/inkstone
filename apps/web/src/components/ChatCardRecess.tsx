@@ -1,39 +1,57 @@
 /**
- * Carves a rectangular recess out of the chat card's top-right corner so
- * the TopRightControls icon cluster sits in chrome (sidebar bg), with a
- * single concave arc where the recess's bottom-left meets the chat-bg.
+ * Builds a CSS clip-path that carves a smooth recess out of the chat
+ * card's top edge for the TopRightControls icon cluster. The recess is a
+ * "bay": chat-card's top edge dips down with a smooth concave arc on the
+ * left, runs flat under the icons, and curves back up to the right edge.
  *
- * The recess's bottom-right is flush against the chat card's right edge
- * (which abuts the activity rail — same chrome color), so no concave is
- * needed there.
- *
- * Layering (in the chat-card wrapper):
- *   ChatColumn (z=0) → recess plate (z=1) → concave pseudo (z=2) → icons (z=10)
+ * Apply via inline style on the chat-card wrapper:
+ *   <div style={{ clipPath: makeChatCardClipPath(w, h) }} ... />
  */
-const W = 152;
-const H = 44;
-const R = 14;
 
-export function ChatCardRecess() {
-	return (
-		<>
-			<div
-				aria-hidden
-				className="pointer-events-none absolute top-0 right-0 bg-sidebar"
-				style={{ width: W, height: H }}
-			/>
-			<div
-				aria-hidden
-				className="pointer-events-none absolute bg-chat-bg"
-				style={{
-					width: R,
-					height: R,
-					top: H,
-					right: W,
-					borderTopRightRadius: R,
-					boxShadow: `0 -${R}px 0 0 var(--sidebar)`,
-				}}
-			/>
-		</>
-	);
+const RECESS_W = 124; // total recess width (right-anchored)
+const RECESS_DEPTH = 44; // how far the bay drops below y=0
+const ARC = 14; // concave-arc radius at both bay shoulders
+const TL_RADIUS = 16; // top-left corner radius (matches rounded-tl-2xl)
+
+/**
+ * Returns the path() definition string. Trace clockwise from the top-left
+ * corner's start, around the perimeter of the visible chat-card shape.
+ */
+export function chatCardPath(width: number, height: number): string {
+	const W = width;
+	const H = height;
+	const recessLeft = W - RECESS_W;
+
+	return [
+		// top-left corner: curl from (0, TL_RADIUS) to (TL_RADIUS, 0)
+		`M 0 ${TL_RADIUS}`,
+		`Q 0 0 ${TL_RADIUS} 0`,
+
+		// flat top edge up to where the bay's left arc begins
+		`H ${recessLeft}`,
+
+		// left shoulder of bay: concave curl DOWN-RIGHT
+		// from (recessLeft, 0) to (recessLeft + ARC, RECESS_DEPTH)
+		// using a Q control at (recessLeft + ARC, 0) — produces a concave
+		// arc (the chat card "loses" a corner here)
+		`Q ${recessLeft + ARC} 0 ${recessLeft + ARC} ${RECESS_DEPTH}`,
+
+		// flat bottom of the bay, under the icon cluster
+		`H ${W - ARC}`,
+
+		// right shoulder of bay: concave curl UP-RIGHT
+		// from (W - ARC, RECESS_DEPTH) to (W, 0)
+		`Q ${W - ARC} 0 ${W} 0`,
+
+		// down the right edge
+		`V ${H}`,
+		// across the bottom
+		`H 0`,
+		// up the left edge — closes back to (0, TL_RADIUS) via Z
+		`Z`,
+	].join(" ");
+}
+
+export function makeChatCardClipPath(width: number, height: number): string {
+	return `path("${chatCardPath(width, height)}")`;
 }
