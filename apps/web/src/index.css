@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @font-face {
 	font-family: "Inter";
 	src: url("/fonts/Inter-Variable.woff2") format("woff2-variations");

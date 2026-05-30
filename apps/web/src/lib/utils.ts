@@ -37,7 +37,25 @@ const twMerge = extendTailwindMerge({
 					],
 				},
 			],
-			"border-color": [{ border: ["border", "input", "ring"] }],
+			"border-color": [
+				{
+					border: [
+						"border",
+						"input",
+						"ring",
+						"background",
+						"card",
+						"popover",
+						"primary",
+						"secondary",
+						"muted",
+						"accent",
+						"destructive",
+						"sidebar",
+						"sidebar-accent",
+					],
+				},
+			],
 		},
 	},
 });
