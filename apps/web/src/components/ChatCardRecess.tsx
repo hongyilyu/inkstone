@@ -11,9 +11,9 @@
  *   <div style={{ clipPath: makeChatCardClipPath(w, h) }} ... />
  */
 
-const RECESS_W = 124; // recess width, right-anchored
+const RECESS_W = 134; // recess width, right-anchored (matches t3 reference)
 const RECESS_DEPTH = 44; // how far the bay drops below y=0
-const ARC = 18; // concave-arc radius (gentle taper)
+const ARC = 46; // horizontal span of the concave taper (matches t3 reference)
 const TL_RADIUS = 16; // top-left corner radius (matches rounded-tl-2xl)
 
 /**
@@ -33,9 +33,12 @@ export function chatCardPath(width: number, height: number): string {
 		// flat top edge up to where the bay's left arc begins
 		`H ${recessLeft}`,
 
-		// left shoulder of bay: concave curl DOWN-RIGHT
-		// from (recessLeft, 0) to (recessLeft + ARC, RECESS_DEPTH)
-		`Q ${recessLeft + ARC} 0 ${recessLeft + ARC} ${RECESS_DEPTH}`,
+		// left shoulder of bay: smooth S-curve from (recessLeft, 0) to
+		// (recessLeft + ARC, RECESS_DEPTH). Cubic Bezier with both control
+		// points placed at the curve's horizontal midpoint so the tangent is
+		// horizontal at BOTH ends — flush with flat top, flush with flat
+		// floor. Matches t3's gradual taper.
+		`C ${recessLeft + ARC / 2} 0 ${recessLeft + ARC / 2} ${RECESS_DEPTH} ${recessLeft + ARC} ${RECESS_DEPTH}`,
 
 		// flat bottom of the bay, all the way to the right edge
 		`H ${W}`,
