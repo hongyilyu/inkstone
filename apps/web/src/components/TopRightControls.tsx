@@ -23,13 +23,13 @@ export function TopRightControls() {
 	};
 
 	return (
-		<div className="flex items-center gap-2 rounded-md border border-border bg-card/80 px-2 py-1 text-xs text-card-foreground backdrop-blur">
+		<div className="flex items-center gap-2 px-2 py-1 text-sm">
 			<span className="text-muted-foreground">{currentRun.model}</span>
 			<button
 				type="button"
 				aria-label="Toggle theme"
 				onClick={toggleTheme}
-				className="rounded-md p-1 hover:bg-muted/50"
+				className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
 			>
 				{theme === "dark" ? (
 					<Sun

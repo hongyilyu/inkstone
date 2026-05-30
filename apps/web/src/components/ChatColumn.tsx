@@ -16,7 +16,7 @@ export function ChatColumn() {
 	}, []);
 
 	return (
-		<main className="flex h-full flex-col overflow-hidden">
+		<main className="flex h-full flex-col overflow-hidden bg-chat-bg">
 			<WelcomeBanner />
 			<QueueBanner />
 			<div
@@ -44,7 +44,7 @@ function UserBubble({ turn }: { turn: Extract<ChatTurn, { role: "user" }> }) {
 			data-role="user"
 			className="flex flex-col items-end gap-1"
 		>
-			<div className="rounded-2xl bg-primary px-4 py-2 text-sm text-primary-foreground">
+			<div className="max-w-[80%] rounded-xl border border-secondary/50 bg-secondary/50 px-4 py-2 text-sm text-foreground">
 				{turn.text}
 			</div>
 			<span className="text-xs text-muted-foreground">{turn.t}</span>
@@ -56,18 +56,18 @@ function AgentBubble({ turn }: { turn: Extract<ChatTurn, { role: "agent" }> }) {
 	return (
 		<li
 			data-role="agent"
-			className="flex flex-col items-start gap-2"
+			className="group flex flex-col items-start gap-2"
 		>
-			<div className="rounded-2xl bg-card px-4 py-2 text-sm text-card-foreground">
+			<div className="prose prose-pink dark:prose-invert max-w-none text-sm">
 				{turn.text}
 			</div>
 			{turn.actions ? (
-				<div className="flex flex-wrap gap-1.5">
+				<div className="flex flex-wrap gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
 					{turn.actions.map((a, i) => (
 						<span
 							key={i}
 							data-action={a.kind}
-							className="rounded-full border border-border bg-muted/50 px-2 py-0.5 text-xs text-muted-foreground"
+							className="rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
 						>
 							{a.label}
 						</span>

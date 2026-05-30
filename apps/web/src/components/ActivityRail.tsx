@@ -76,7 +76,7 @@ export function ActivityRail() {
 	return (
 		<aside
 			aria-label="Activity"
-			className="flex flex-col gap-2 overflow-y-auto border-l border-border p-3 pt-10"
+			className="flex flex-col gap-2 overflow-y-auto bg-sidebar p-3 pt-10 text-foreground"
 		>
 			<div className="flex gap-1 text-xs">
 				{(["all", "edits", "automations"] as Filter[]).map((f) => (
@@ -86,10 +86,10 @@ export function ActivityRail() {
 						onClick={() => setFilter(f)}
 						aria-pressed={filter === f}
 						className={cn(
-							"rounded-full px-2.5 py-1 capitalize",
+							"rounded-md px-2.5 py-1 text-sm font-medium capitalize transition-colors",
 							filter === f
-								? "bg-primary text-primary-foreground"
-								: "bg-muted/50 text-muted-foreground hover:bg-muted",
+								? "bg-secondary/40 text-foreground shadow-xs"
+								: "bg-transparent text-muted-foreground hover:bg-sidebar-accent",
 						)}
 					>
 						{f}
@@ -107,7 +107,7 @@ export function ActivityRail() {
 function Section({ label, rows }: { label: string; rows: Row[] }) {
 	return (
 		<div className="flex flex-col gap-1.5">
-			<div className="px-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+			<div className="px-1 text-xs font-semibold text-muted-foreground">
 				{label}
 			</div>
 			{rows.length === 0 ? (
@@ -118,7 +118,7 @@ function Section({ label, rows }: { label: string; rows: Row[] }) {
 						<li
 							key={r.data.id}
 							data-row={r.kind}
-							className="rounded-md px-2 py-1.5 text-xs hover:bg-muted/50"
+							className="flex h-9 items-start rounded-md px-2 py-1 text-xs hover:bg-sidebar-accent"
 						>
 							{r.kind === "edit" ? (
 								<EditRowView row={r} />

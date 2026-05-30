@@ -6,6 +6,7 @@ import { TopRightControls } from "./components/TopRightControls.js";
 export default function App() {
 	return (
 		<div className="relative grid h-full grid-cols-[260px_1fr_320px] bg-background text-foreground">
+			{/* central column delegates its own bg to ChatColumn (chat-bg, lighter than page bg). */}
 			<Sidebar />
 			<ChatColumn />
 			<ActivityRail />

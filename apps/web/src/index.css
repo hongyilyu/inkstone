@@ -104,6 +104,8 @@ body {
 		"Noto Sans", "Helvetica Neue", Arial, sans-serif;
 	font-feature-settings: "ss05" on;
 	font-variant-numeric: proportional-nums;
+	background-color: var(--background);
+	color: var(--foreground);
 }
 
 ::selection {

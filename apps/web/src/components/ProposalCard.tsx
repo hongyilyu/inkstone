@@ -15,7 +15,7 @@ export function ProposalCard({ proposal }: { proposal: Proposal }) {
 	return (
 		<article
 			data-proposal-kind={proposal.kind}
-			className="rounded-lg border border-border bg-card p-3 text-card-foreground"
+			className="rounded-lg border border-border bg-card p-4 text-card-foreground"
 		>
 			<header className="flex items-center gap-2 text-sm">
 				<Icon
@@ -26,7 +26,7 @@ export function ProposalCard({ proposal }: { proposal: Proposal }) {
 				<span className="ml-auto text-xs text-muted-foreground">{proposal.target}</span>
 			</header>
 			<p className="mt-1.5 text-xs text-muted-foreground">{proposal.summary}</p>
-			<pre className="mt-2 whitespace-pre-wrap rounded-md bg-muted/50 p-2 font-mono text-xs text-foreground">
+			<pre className="mt-2 whitespace-pre-wrap rounded-md bg-secondary/30 p-2 font-mono text-xs text-foreground">
 				{proposal.diff.map((line, i) => (
 					<div key={i}>
 						{line.before ? <div className="text-destructive">- {line.before}</div> : null}

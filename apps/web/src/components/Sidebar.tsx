@@ -14,18 +14,18 @@ export function Sidebar() {
 	return (
 		<aside
 			aria-label="Sidebar"
-			className="flex flex-col gap-4 border-r border-border bg-background py-3 text-sm"
+			className="flex flex-col gap-4 bg-sidebar py-3 text-sm text-foreground"
 		>
 			<HistorySection label="Today" items={today} />
 			<HistorySection label="This week" items={week} />
 			<HistorySection label="Older" items={older} />
 
-			<div className="px-1">
+			<div className="px-2">
 				<button
 					type="button"
 					aria-expanded={automationsOpen}
 					onClick={() => setAutomationsOpen((open) => !open)}
-					className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium hover:bg-muted/50"
+					className="flex h-9 w-full items-center gap-2 rounded-lg px-2 py-1 text-xs font-semibold text-muted-foreground hover:bg-sidebar-accent"
 				>
 					<ChevronRight
 						className={cn(
@@ -40,7 +40,7 @@ export function Sidebar() {
 						{automations.map((a) => (
 							<li
 								key={a.id}
-								className="cursor-default truncate rounded-md px-3 py-1.5 text-sm text-foreground hover:bg-muted/50"
+								className="flex h-9 cursor-default items-center truncate rounded-lg px-2 py-1 text-sm text-foreground hover:bg-sidebar-accent"
 							>
 								{a.name}
 							</li>
@@ -62,14 +62,14 @@ function HistorySection({
 	if (items.length === 0) return null;
 	return (
 		<div className="flex flex-col gap-0.5">
-			<div className="px-4 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+			<div className="px-3 py-1 text-xs font-semibold text-muted-foreground">
 				{label}
 			</div>
-			<ul className="flex flex-col gap-0.5 px-1">
+			<ul className="flex flex-col gap-0.5 px-2">
 				{items.map((item) => (
 					<li
 						key={item.id}
-						className="cursor-default truncate rounded-md px-3 py-1.5 text-sm hover:bg-muted/50"
+						className="flex h-9 cursor-default items-center truncate rounded-lg px-2 py-1 text-sm hover:bg-sidebar-accent"
 					>
 						{item.prompt}
 					</li>

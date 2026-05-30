@@ -27,7 +27,7 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 	return (
 		<form
 			onSubmit={handleSubmit}
-			className="flex flex-col gap-2 border-t border-border bg-background p-3"
+			className="relative rounded-t-[20px] bg-chat-input-bg p-2 pb-0 backdrop-blur-lg before:pointer-events-none before:absolute before:inset-x-0 before:top-0 before:h-px before:bg-[linear-gradient(90deg,transparent,var(--chat-input-gradient),transparent)] before:content-['']"
 		>
 			<textarea
 				aria-label="Message"
@@ -36,18 +36,18 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 				onKeyDown={handleKey}
 				rows={2}
 				placeholder="Message"
-				className="resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+				className="w-full resize-none bg-transparent px-2 py-2 text-base text-foreground outline-none placeholder:text-secondary-foreground/60"
 			/>
-			<div className="flex items-center justify-between text-xs text-muted-foreground">
+			<div className="flex items-center justify-between px-2 pb-2 text-xs text-muted-foreground">
 				<span>
 					{currentRun.model} · {currentRun.tokens.toLocaleString("en-US")} tokens
 				</span>
 				<button
 					type="submit"
-					className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+					aria-label="Send"
+					className="inline-flex h-[45px] w-[45px] items-center justify-center rounded-lg bg-primary/20 text-primary-foreground shadow-sm transition-colors hover:bg-primary"
 				>
-					<Send className="h-3.5 w-3.5" />
-					Send
+					<Send className="h-4 w-4 text-pink-50" />
 				</button>
 			</div>
 		</form>

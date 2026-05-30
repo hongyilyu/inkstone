@@ -40,22 +40,17 @@ export function QueueBanner() {
 		<div
 			data-phase={phase}
 			className={cn(
-				"flex items-center gap-2 border-b border-border bg-card px-3 py-2 text-sm text-card-foreground transition-opacity",
+				"flex items-center gap-2 bg-chat-overlay px-3 py-2 text-xs text-muted-foreground backdrop-blur-sm transition-opacity",
 				phase === "leaving" && "opacity-0",
 				phase === "entering" && "opacity-100",
 			)}
 		>
-			<span
-				aria-hidden
-				className="text-muted-foreground"
-			>
-				{item.pendingGlyph}
-			</span>
+			<span aria-hidden>{item.pendingGlyph}</span>
 			<span className="flex-1">{item.pendingTitle}</span>
 			<button
 				type="button"
 				onClick={advance}
-				className="rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+				className="rounded-md bg-primary/20 px-2 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary"
 			>
 				{item.kind === "approval" ? "Approve (1)" : "Answer (1)"}
 			</button>
