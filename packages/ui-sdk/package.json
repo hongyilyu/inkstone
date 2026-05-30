@@ -7,12 +7,18 @@
 		".": "./src/index.ts"
 	},
 	"dependencies": {
-		"@inkstone/protocol": "workspace:*"
+		"@inkstone/protocol": "workspace:*",
+		"effect": "^3.21.2"
 	},
 	"scripts": {
-		"check": "tsc --noEmit"
+		"check": "tsc --noEmit",
+		"test": "vitest run"
 	},
 	"devDependencies": {
-		"typescript": "^5.0.0"
+		"@types/node": "^22.0.0",
+		"@types/ws": "^8.5.13",
+		"typescript": "^5.0.0",
+		"vitest": "^4.1.7",
+		"ws": "^8.18.0"
 	}
 }

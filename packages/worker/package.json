@@ -4,12 +4,17 @@
 	"private": true,
 	"type": "module",
 	"dependencies": {
-		"@inkstone/protocol": "workspace:*"
+		"@inkstone/protocol": "workspace:*",
+		"effect": "^3.21.2"
 	},
 	"scripts": {
-		"check": "tsc --noEmit"
+		"check": "tsc --noEmit",
+		"test": "vitest run"
 	},
 	"devDependencies": {
-		"typescript": "^6.0.0"
+		"@types/node": "^22.0.0",
+		"tsx": "^4.8.1",
+		"typescript": "^6.0.0",
+		"vitest": "^4.1.7"
 	}
 }
