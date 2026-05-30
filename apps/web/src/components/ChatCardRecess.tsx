@@ -1,16 +1,19 @@
 /**
  * Builds a CSS clip-path that carves a smooth recess out of the chat
  * card's top edge for the TopRightControls icon cluster. The recess is a
- * "bay": chat-card's top edge dips down with a smooth concave arc on the
- * left, runs flat under the icons, and curves back up to the right edge.
+ * "bay": chat-card's top edge dips down with a single smooth concave arc
+ * on the left, then runs flat all the way to the right edge. The right
+ * side has NO curl back up — the chat card's right edge meets the
+ * activity rail (same chrome color) so the chrome continues seamlessly,
+ * matching t3's reference.
  *
  * Apply via inline style on the chat-card wrapper:
  *   <div style={{ clipPath: makeChatCardClipPath(w, h) }} ... />
  */
 
-const RECESS_W = 124; // total recess width (right-anchored)
+const RECESS_W = 124; // recess width, right-anchored
 const RECESS_DEPTH = 44; // how far the bay drops below y=0
-const ARC = 14; // concave-arc radius at both bay shoulders
+const ARC = 18; // concave-arc radius (gentle taper)
 const TL_RADIUS = 16; // top-left corner radius (matches rounded-tl-2xl)
 
 /**
@@ -32,18 +35,12 @@ export function chatCardPath(width: number, height: number): string {
 
 		// left shoulder of bay: concave curl DOWN-RIGHT
 		// from (recessLeft, 0) to (recessLeft + ARC, RECESS_DEPTH)
-		// using a Q control at (recessLeft + ARC, 0) — produces a concave
-		// arc (the chat card "loses" a corner here)
 		`Q ${recessLeft + ARC} 0 ${recessLeft + ARC} ${RECESS_DEPTH}`,
 
-		// flat bottom of the bay, under the icon cluster
-		`H ${W - ARC}`,
+		// flat bottom of the bay, all the way to the right edge
+		`H ${W}`,
 
-		// right shoulder of bay: concave curl UP-RIGHT
-		// from (W - ARC, RECESS_DEPTH) to (W, 0)
-		`Q ${W - ARC} 0 ${W} 0`,
-
-		// down the right edge
+		// down the right edge from RECESS_DEPTH to bottom
 		`V ${H}`,
 		// across the bottom
 		`H 0`,
