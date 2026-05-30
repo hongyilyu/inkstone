@@ -38,7 +38,7 @@ export function Sidebar({
 					<PanelLeftClose className="size-4" />
 				</Button>
 				<div className="text-center text-base font-bold text-foreground">
-					T3.chat
+					Inkstone
 				</div>
 				<Button
 					variant="icon"
