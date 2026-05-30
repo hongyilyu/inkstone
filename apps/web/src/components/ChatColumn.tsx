@@ -62,13 +62,13 @@ function AgentBubble({ turn }: { turn: Extract<ChatTurn, { role: "agent" }> }) {
 	return (
 		<li
 			data-role="agent"
-			className="group flex flex-col items-start gap-2"
+			className="flex flex-col items-start gap-2"
 		>
 			<div className="prose prose-pink dark:prose-invert max-w-none">
 				{turn.text}
 			</div>
 			{turn.actions ? (
-				<div className="flex flex-wrap gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+				<div className="flex flex-wrap gap-1">
 					{turn.actions.map((a, i) => {
 						const I = ICON[a.kind];
 						return (
