@@ -22,7 +22,7 @@ export default function App() {
 				<Sidebar onToggleCollapse={() => setSidebarCollapsed(true)} />
 			</div>
 			<div className="min-h-0 pt-2">
-				<div className="relative h-full overflow-hidden rounded-tl-2xl">
+				<div className="relative h-full overflow-hidden rounded-tl-2xl bg-sidebar pr-2">
 					<ChatColumn />
 					<ChatCardCornerCarve />
 					<div className="absolute top-3 right-3 z-10">
