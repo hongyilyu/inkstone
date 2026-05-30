@@ -5,14 +5,15 @@ import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
 import "./index.css";
 
+// Left intact for the future re-wiring feature; currently unused by App.
+// `void` keeps the construction live without TS' noUnusedLocals tripping.
 const wsLayer = Layer.provide(
 	WsClientLive,
 	Layer.succeed(WsClientConfig, {
 		url: "ws://127.0.0.1:8765/ws",
 	}),
 );
-
-const runtime = ManagedRuntime.make(wsLayer);
+void ManagedRuntime.make(wsLayer);
 
 const root = document.getElementById("root");
 
@@ -22,6 +23,6 @@ if (!root) {
 
 createRoot(root).render(
 	<StrictMode>
-		<App runtime={runtime} />
+		<App />
 	</StrictMode>,
 );
