@@ -1,6 +1,7 @@
 import { ChevronDown, Paperclip, Search, Send, Zap } from "lucide-react";
 import { type FormEvent, type KeyboardEvent, useState } from "react";
 import { currentRun } from "../data/mock.js";
+import { Button } from "./ui/button.js";
 
 export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 	const [value, setValue] = useState("");
@@ -39,47 +40,44 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 				className="w-full resize-none bg-transparent px-2 py-2 text-base text-foreground outline-none placeholder:text-secondary-foreground/60"
 			/>
 			<div className="flex items-center justify-between gap-2 px-2 pb-2">
-				<div className="flex items-center gap-1.5 text-xs text-foreground/60">
-					<button
-						type="button"
-						className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium text-foreground/60 transition-colors hover:bg-secondary/50 hover:text-foreground"
-					>
+				<div className="flex items-center gap-1.5 text-xs">
+					<ChipButton>
 						<span>{currentRun.model}</span>
 						<ChevronDown className="h-3 w-3" aria-hidden />
-					</button>
-					<ChipButton icon={Zap} label="Instant" />
-					<ChipButton icon={Search} label="Search" />
-					<ChipButton icon={Paperclip} label="Attach" />
+					</ChipButton>
+					<ChipButton>
+						<Zap className="h-3 w-3" aria-hidden />
+						<span>Instant</span>
+					</ChipButton>
+					<ChipButton>
+						<Search className="h-3 w-3" aria-hidden />
+						<span>Search</span>
+					</ChipButton>
+					<ChipButton>
+						<Paperclip className="h-3 w-3" aria-hidden />
+						<span>Attach</span>
+					</ChipButton>
 					<span className="ml-1 hidden text-foreground/40 lg:inline">
 						{currentRun.tokens.toLocaleString("en-US")} tokens
 					</span>
 				</div>
-				<button
+				<Button
 					type="submit"
 					aria-label="Send"
-					className="inline-flex h-[36px] w-[36px] items-center justify-center rounded-lg bg-primary/20 text-primary-foreground shadow-sm transition-colors hover:bg-primary"
+					variant="primary-icon"
+					size="icon-lg"
 				>
 					<Send className="h-4 w-4 text-pink-50" />
-				</button>
+				</Button>
 			</div>
 		</form>
 	);
 }
 
-function ChipButton({
-	icon: Icon,
-	label,
-}: {
-	icon: typeof Zap;
-	label: string;
-}) {
+function ChipButton({ children }: { children: React.ReactNode }) {
 	return (
-		<button
-			type="button"
-			className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium text-foreground/60 transition-colors hover:bg-secondary/50 hover:text-foreground"
-		>
-			<Icon className="h-3 w-3" aria-hidden />
-			<span>{label}</span>
-		</button>
+		<Button variant="chip" size="sm">
+			{children}
+		</Button>
 	);
 }

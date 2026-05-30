@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { queue } from "../data/mock.js";
 import { cn } from "../lib/utils.js";
+import { Button } from "./ui/button.js";
 
 const LEAVE_MS = 220;
 const ENTER_DELAY_MS = 80;
@@ -47,13 +48,9 @@ export function QueueBanner() {
 		>
 			<span aria-hidden>{item.pendingGlyph}</span>
 			<span className="flex-1">{item.pendingTitle}</span>
-			<button
-				type="button"
-				onClick={advance}
-				className="rounded-md border border-input bg-transparent px-2 py-0.5 text-xs font-medium text-foreground/70 transition-colors hover:bg-secondary/50 hover:text-foreground"
-			>
+			<Button variant="chip-bordered" size="xs" onClick={advance}>
 				{item.kind === "approval" ? "Approve (1)" : "Answer (1)"}
-			</button>
+			</Button>
 		</div>
 	);
 }

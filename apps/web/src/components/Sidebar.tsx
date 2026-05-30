@@ -3,6 +3,7 @@ import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { automations, history, type RunHistoryItem } from "../data/mock.js";
 import { cn } from "../lib/utils.js";
+import { Button } from "./ui/button.js";
 
 const today = history.slice(0, 1);
 const week = history.slice(1, 4);
@@ -21,11 +22,12 @@ export function Sidebar() {
 			<HistorySection label="Older" items={older} />
 
 			<div className="px-2">
-				<button
-					type="button"
+				<Button
+					variant="sidebar-item"
+					size="row"
+					className="w-full text-xs font-semibold text-sidebar-foreground/70"
 					aria-expanded={automationsOpen}
 					onClick={() => setAutomationsOpen((open) => !open)}
-					className="flex h-9 w-full items-center gap-2 rounded-lg px-2 py-1 text-xs font-semibold text-sidebar-foreground/70 hover:bg-sidebar-accent"
 				>
 					<ChevronRight
 						className={cn(
@@ -34,7 +36,7 @@ export function Sidebar() {
 						)}
 					/>
 					Automations
-				</button>
+				</Button>
 				{automationsOpen ? (
 					<ul className="mt-1 flex flex-col gap-0.5 pl-6">
 						{automations.map((a) => (

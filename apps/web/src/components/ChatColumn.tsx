@@ -4,6 +4,7 @@ import { type ChatTurn, conversation, proposals } from "../data/mock.js";
 import { ComposeFooter } from "./ComposeFooter.js";
 import { ProposalCard } from "./ProposalCard.js";
 import { QueueBanner } from "./QueueBanner.js";
+import { Button } from "./ui/button.js";
 
 const proposalById = new Map(proposals.map((p) => [p.id, p]));
 
@@ -72,18 +73,15 @@ function AgentBubble({ turn }: { turn: Extract<ChatTurn, { role: "agent" }> }) {
 					{turn.actions.map((a, i) => {
 						const I = ICON[a.kind];
 						return (
-							<button
+							<Button
 								key={i}
-								type="button"
+								variant="ghost"
+								size="xs"
 								data-action={a.kind}
-								className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
 							>
-								<I
-									className="h-3 w-3"
-									aria-hidden
-								/>
+								<I className="h-3 w-3" aria-hidden />
 								<span>{a.label}</span>
-							</button>
+							</Button>
 						);
 					})}
 				</div>

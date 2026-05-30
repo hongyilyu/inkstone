@@ -9,7 +9,7 @@ import {
 	proposals,
 } from "../data/mock.js";
 import { type Bucket, classify } from "../lib/activity.js";
-import { cn } from "../lib/utils.js";
+import { Button } from "./ui/button.js";
 
 type Filter = "all" | "edits" | "automations";
 
@@ -80,20 +80,16 @@ export function ActivityRail() {
 		>
 			<div className="flex gap-1 text-xs">
 				{(["all", "edits", "automations"] as Filter[]).map((f) => (
-					<button
+					<Button
 						key={f}
-						type="button"
+						variant={filter === f ? "sidebar-item-active" : "sidebar-item"}
+						size="xs"
+						className="capitalize"
 						onClick={() => setFilter(f)}
 						aria-pressed={filter === f}
-						className={cn(
-							"rounded-md px-2 py-0.5 text-xs font-medium capitalize transition-colors",
-							filter === f
-								? "bg-sidebar-accent text-sidebar-foreground"
-								: "bg-transparent text-sidebar-foreground/60 hover:bg-sidebar-accent/60",
-						)}
 					>
 						{f}
-					</button>
+					</Button>
 				))}
 			</div>
 

@@ -1,5 +1,6 @@
 import { Moon, Sun } from "lucide-react";
 import { useState } from "react";
+import { Button } from "./ui/button.js";
 
 export function TopRightControls() {
 	const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -23,24 +24,18 @@ export function TopRightControls() {
 
 	return (
 		<div className="flex items-center gap-2 px-2 py-1 text-sm">
-			<button
-				type="button"
+			<Button
+				variant="icon"
+				size="icon"
 				aria-label="Toggle theme"
 				onClick={toggleTheme}
-				className="rounded-md p-1.5 text-foreground/60 hover:bg-accent hover:text-accent-foreground"
 			>
 				{theme === "dark" ? (
-					<Sun
-						className="h-3.5 w-3.5"
-						aria-hidden
-					/>
+					<Sun className="h-3.5 w-3.5" aria-hidden />
 				) : (
-					<Moon
-						className="h-3.5 w-3.5"
-						aria-hidden
-					/>
+					<Moon className="h-3.5 w-3.5" aria-hidden />
 				)}
-			</button>
+			</Button>
 		</div>
 	);
 }
