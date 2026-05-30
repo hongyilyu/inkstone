@@ -12,7 +12,7 @@ export default function App() {
 
 	return (
 		<div
-			className="relative grid h-full bg-background text-foreground"
+			className="relative grid h-full bg-sidebar text-sidebar-foreground"
 			style={{
 				gridTemplateColumns: `${sidebarCollapsed ? "0px" : "260px"} 1fr ${rightRailCollapsed ? "0px" : "320px"}`,
 			}}
