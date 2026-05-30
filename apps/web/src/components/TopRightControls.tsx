@@ -1,8 +1,24 @@
-import { Moon, Sun } from "lucide-react";
+import {
+	Moon,
+	PanelRightClose,
+	PanelRightOpen,
+	Settings2,
+	Sun,
+} from "lucide-react";
 import { useState } from "react";
 import { Button } from "./ui/button.js";
 
-export function TopRightControls() {
+export interface TopRightControlsProps {
+	onOpenSettings?: () => void;
+	onToggleRail?: () => void;
+	railCollapsed?: boolean;
+}
+
+export function TopRightControls({
+	onOpenSettings,
+	onToggleRail,
+	railCollapsed = false,
+}: TopRightControlsProps = {}) {
 	const [theme, setTheme] = useState<"light" | "dark">(() => {
 		const initial =
 			typeof document !== "undefined"
@@ -23,7 +39,7 @@ export function TopRightControls() {
 	};
 
 	return (
-		<div className="flex items-center gap-2 px-2 py-1 text-sm">
+		<div className="flex items-center gap-1 px-2 py-1 text-sm">
 			<Button
 				variant="icon"
 				size="icon"
@@ -34,6 +50,27 @@ export function TopRightControls() {
 					<Sun className="h-3.5 w-3.5" aria-hidden />
 				) : (
 					<Moon className="h-3.5 w-3.5" aria-hidden />
+				)}
+			</Button>
+			<Button
+				variant="icon"
+				size="icon"
+				aria-label="Settings"
+				onClick={onOpenSettings}
+			>
+				<Settings2 className="h-3.5 w-3.5" aria-hidden />
+			</Button>
+			<Button
+				variant="icon"
+				size="icon"
+				aria-label={railCollapsed ? "Open activity rail" : "Close activity rail"}
+				aria-pressed={railCollapsed}
+				onClick={onToggleRail}
+			>
+				{railCollapsed ? (
+					<PanelRightOpen className="h-3.5 w-3.5" aria-hidden />
+				) : (
+					<PanelRightClose className="h-3.5 w-3.5" aria-hidden />
 				)}
 			</Button>
 		</div>

@@ -8,21 +8,26 @@ import { Button } from "./components/ui/button.js";
 
 export default function App() {
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+	const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
 
 	return (
 		<div
 			className="relative grid h-full bg-background text-foreground"
 			style={{
-				gridTemplateColumns: sidebarCollapsed
-					? "0px 1fr 320px"
-					: "260px 1fr 320px",
+				gridTemplateColumns: `${sidebarCollapsed ? "0px" : "260px"} 1fr ${rightRailCollapsed ? "0px" : "320px"}`,
 			}}
 		>
 			<div className="overflow-hidden">
 				<Sidebar onToggleCollapse={() => setSidebarCollapsed(true)} />
 			</div>
-			<ChatColumn />
-			<ActivityRail />
+			<div className="min-h-0 p-2 pl-0">
+				<div className="h-full overflow-hidden rounded-2xl">
+					<ChatColumn />
+				</div>
+			</div>
+			<div className="overflow-hidden">
+				<ActivityRail />
+			</div>
 			{sidebarCollapsed ? (
 				<Button
 					variant="icon"
@@ -35,7 +40,11 @@ export default function App() {
 				</Button>
 			) : null}
 			<div className="absolute top-3 right-3 z-10">
-				<TopRightControls />
+				<TopRightControls
+					onOpenSettings={() => console.log("settings")}
+					railCollapsed={rightRailCollapsed}
+					onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
+				/>
 			</div>
 		</div>
 	);
