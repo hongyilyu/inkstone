@@ -76,7 +76,7 @@ export function ActivityRail() {
 	return (
 		<aside
 			aria-label="Activity"
-			className="flex flex-col gap-2 overflow-y-auto bg-sidebar p-3 pt-10 text-foreground"
+			className="flex flex-col gap-2 overflow-y-auto bg-sidebar p-3 pt-10 text-sm text-sidebar-foreground"
 		>
 			<div className="flex gap-1 text-xs">
 				{(["all", "edits", "automations"] as Filter[]).map((f) => (
@@ -86,10 +86,10 @@ export function ActivityRail() {
 						onClick={() => setFilter(f)}
 						aria-pressed={filter === f}
 						className={cn(
-							"rounded-md px-2.5 py-1 text-sm font-medium capitalize transition-colors",
+							"rounded-md px-2 py-0.5 text-xs font-medium capitalize transition-colors",
 							filter === f
-								? "bg-secondary/40 text-foreground shadow-xs"
-								: "bg-transparent text-muted-foreground hover:bg-sidebar-accent",
+								? "bg-sidebar-accent text-sidebar-foreground"
+								: "bg-transparent text-sidebar-foreground/60 hover:bg-sidebar-accent/60",
 						)}
 					>
 						{f}
@@ -106,19 +106,19 @@ export function ActivityRail() {
 
 function Section({ label, rows }: { label: string; rows: Row[] }) {
 	return (
-		<div className="flex flex-col gap-1.5">
-			<div className="px-1 text-xs font-semibold text-muted-foreground">
+		<div className="flex flex-col gap-1">
+			<div className="px-2 text-[11px] font-semibold tracking-wide text-sidebar-foreground/50 uppercase">
 				{label}
 			</div>
 			{rows.length === 0 ? (
-				<div className="px-1 text-xs text-muted-foreground">—</div>
+				<div className="px-2 text-xs text-sidebar-foreground/60">—</div>
 			) : (
-				<ul className="flex flex-col gap-1">
+				<ul className="flex flex-col">
 					{rows.map((r) => (
 						<li
 							key={r.data.id}
 							data-row={r.kind}
-							className="flex h-9 items-start rounded-md px-2 py-1 text-xs hover:bg-sidebar-accent"
+							className="flex items-start rounded-md px-2 py-1 text-xs text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
 						>
 							{r.kind === "edit" ? (
 								<EditRowView row={r} />
@@ -137,12 +137,10 @@ function EditRowView({ row }: { row: EditRow }) {
 	const Icon = KIND_ICON[row.data.kind];
 	return (
 		<div className="flex items-start gap-1.5">
-			<Icon className="mt-0.5 h-3 w-3 text-muted-foreground" aria-hidden />
+			<Icon className="mt-0.5 h-3 w-3 shrink-0 text-sidebar-foreground/50" aria-hidden />
 			<div className="min-w-0 flex-1">
-				<div className="truncate font-medium text-foreground">
-					{row.data.title}
-				</div>
-				<div className="truncate text-muted-foreground">
+				<div className="truncate">{row.data.title}</div>
+				<div className="truncate text-sidebar-foreground/60">
 					{row.data.target} · {row.at}
 				</div>
 			</div>
@@ -153,11 +151,11 @@ function EditRowView({ row }: { row: EditRow }) {
 function AutomationRowView({ row }: { row: AutomationRowT }) {
 	return (
 		<div className="flex items-start gap-1.5">
-			<Bot className="mt-0.5 h-3 w-3 text-muted-foreground" aria-hidden />
+			<Bot className="mt-0.5 h-3 w-3 shrink-0 text-sidebar-foreground/50" aria-hidden />
 			<div className="min-w-0 flex-1">
-				<div className="truncate font-medium text-foreground">{row.name}</div>
-				<div className="truncate text-muted-foreground">{row.data.summary}</div>
-				<div className="text-[10px] text-muted-foreground/70">
+				<div className="truncate">{row.name}</div>
+				<div className="truncate text-sidebar-foreground/60">{row.data.summary}</div>
+				<div className="text-[10px] text-sidebar-foreground/45">
 					{row.at} · {row.data.status}
 				</div>
 			</div>

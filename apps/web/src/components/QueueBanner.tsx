@@ -40,7 +40,7 @@ export function QueueBanner() {
 		<div
 			data-phase={phase}
 			className={cn(
-				"flex items-center gap-2 bg-chat-overlay px-3 py-2 text-xs text-muted-foreground backdrop-blur-sm transition-opacity",
+				"flex items-center gap-2 bg-chat-overlay px-3 py-2 text-xs text-foreground/60 backdrop-blur-sm transition-opacity",
 				phase === "leaving" && "opacity-0",
 				phase === "entering" && "opacity-100",
 			)}
@@ -50,7 +50,7 @@ export function QueueBanner() {
 			<button
 				type="button"
 				onClick={advance}
-				className="rounded-md bg-primary/20 px-2 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary"
+				className="rounded-md border border-input bg-transparent px-2 py-0.5 text-xs font-medium text-foreground/70 transition-colors hover:bg-secondary/50 hover:text-foreground"
 			>
 				{item.kind === "approval" ? "Approve (1)" : "Answer (1)"}
 			</button>

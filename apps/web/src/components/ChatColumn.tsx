@@ -53,7 +53,7 @@ function UserBubble({ turn }: { turn: Extract<ChatTurn, { role: "user" }> }) {
 			<div className="max-w-[80%] rounded-xl border border-secondary/50 bg-secondary/50 px-4 py-2 text-sm text-foreground">
 				{turn.text}
 			</div>
-			<span className="text-xs text-muted-foreground">{turn.t}</span>
+			<span className="text-xs text-foreground/40">{turn.t}</span>
 		</li>
 	);
 }
@@ -89,7 +89,7 @@ function AgentBubble({ turn }: { turn: Extract<ChatTurn, { role: "agent" }> }) {
 				</div>
 			) : null}
 			{turn.proposalIds ? (
-				<div className="flex w-full flex-col gap-2">
+				<div className="mt-1 flex w-full flex-col gap-3">
 					{turn.proposalIds.map((id) => {
 						const p = proposalById.get(id);
 						return p ? (
@@ -101,7 +101,7 @@ function AgentBubble({ turn }: { turn: Extract<ChatTurn, { role: "agent" }> }) {
 					})}
 				</div>
 			) : null}
-			<span className="text-xs text-muted-foreground">{turn.t}</span>
+			<span className="text-xs text-foreground/40">{turn.t}</span>
 		</li>
 	);
 }

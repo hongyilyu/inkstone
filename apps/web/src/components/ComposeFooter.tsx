@@ -1,4 +1,4 @@
-import { Send } from "lucide-react";
+import { ChevronDown, Paperclip, Search, Send, Zap } from "lucide-react";
 import { type FormEvent, type KeyboardEvent, useState } from "react";
 import { currentRun } from "../data/mock.js";
 
@@ -38,18 +38,48 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 				placeholder="Message"
 				className="w-full resize-none bg-transparent px-2 py-2 text-base text-foreground outline-none placeholder:text-secondary-foreground/60"
 			/>
-			<div className="flex items-center justify-between px-2 pb-2 text-xs text-muted-foreground">
-				<span>
-					{currentRun.model} · {currentRun.tokens.toLocaleString("en-US")} tokens
-				</span>
+			<div className="flex items-center justify-between gap-2 px-2 pb-2">
+				<div className="flex items-center gap-1.5 text-xs text-foreground/60">
+					<button
+						type="button"
+						className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium text-foreground/60 transition-colors hover:bg-secondary/50 hover:text-foreground"
+					>
+						<span>{currentRun.model}</span>
+						<ChevronDown className="h-3 w-3" aria-hidden />
+					</button>
+					<ChipButton icon={Zap} label="Instant" />
+					<ChipButton icon={Search} label="Search" />
+					<ChipButton icon={Paperclip} label="Attach" />
+					<span className="ml-1 hidden text-foreground/40 lg:inline">
+						{currentRun.tokens.toLocaleString("en-US")} tokens
+					</span>
+				</div>
 				<button
 					type="submit"
 					aria-label="Send"
-					className="inline-flex h-[45px] w-[45px] items-center justify-center rounded-lg bg-primary/20 text-primary-foreground shadow-sm transition-colors hover:bg-primary"
+					className="inline-flex h-[36px] w-[36px] items-center justify-center rounded-lg bg-primary/20 text-primary-foreground shadow-sm transition-colors hover:bg-primary"
 				>
 					<Send className="h-4 w-4 text-pink-50" />
 				</button>
 			</div>
 		</form>
+	);
+}
+
+function ChipButton({
+	icon: Icon,
+	label,
+}: {
+	icon: typeof Zap;
+	label: string;
+}) {
+	return (
+		<button
+			type="button"
+			className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-medium text-foreground/60 transition-colors hover:bg-secondary/50 hover:text-foreground"
+		>
+			<Icon className="h-3 w-3" aria-hidden />
+			<span>{label}</span>
+		</button>
 	);
 }

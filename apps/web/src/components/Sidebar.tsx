@@ -14,7 +14,7 @@ export function Sidebar() {
 	return (
 		<aside
 			aria-label="Sidebar"
-			className="flex flex-col gap-4 bg-sidebar py-3 text-sm text-foreground"
+			className="flex flex-col gap-4 bg-sidebar py-3 text-sm text-sidebar-foreground"
 		>
 			<HistorySection label="Today" items={today} />
 			<HistorySection label="This week" items={week} />
@@ -25,7 +25,7 @@ export function Sidebar() {
 					type="button"
 					aria-expanded={automationsOpen}
 					onClick={() => setAutomationsOpen((open) => !open)}
-					className="flex h-9 w-full items-center gap-2 rounded-lg px-2 py-1 text-xs font-semibold text-muted-foreground hover:bg-sidebar-accent"
+					className="flex h-9 w-full items-center gap-2 rounded-lg px-2 py-1 text-xs font-semibold text-sidebar-foreground/70 hover:bg-sidebar-accent"
 				>
 					<ChevronRight
 						className={cn(
@@ -62,7 +62,7 @@ function HistorySection({
 	if (items.length === 0) return null;
 	return (
 		<div className="flex flex-col gap-0.5">
-			<div className="px-3 py-1 text-xs font-semibold text-muted-foreground">
+			<div className="px-3 py-1 text-xs font-semibold text-sidebar-foreground/70">
 				{label}
 			</div>
 			<ul className="flex flex-col gap-0.5 px-2">

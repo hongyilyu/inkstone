@@ -30,6 +30,7 @@
 	--input: #e7c1dc;
 	--ring: #db2777;
 	--sidebar: #ead0ef;
+	--sidebar-foreground: #454554;
 	--sidebar-accent: #f8f8f7;
 	--chat-bg: #fdf7fd;
 	--chat-input-bg: hsla(270, 0%, 100%, 0.1);
@@ -58,6 +59,7 @@
 	--input: #302029;
 	--ring: #db2777;
 	--sidebar: #131314;
+	--sidebar-foreground: #f4f4f5;
 	--sidebar-accent: #261922;
 	--chat-bg: #1f1a24;
 	--chat-input-bg: hsla(270, 10%, 20%, 0.4);
@@ -86,6 +88,7 @@
 	--color-input: var(--input);
 	--color-ring: var(--ring);
 	--color-sidebar: var(--sidebar);
+	--color-sidebar-foreground: var(--sidebar-foreground);
 	--color-sidebar-accent: var(--sidebar-accent);
 	--color-chat-bg: var(--chat-bg);
 	--color-chat-input-bg: var(--chat-input-bg);
@@ -134,6 +137,10 @@ body,
 #root {
 	height: 100%;
 	margin: 0;
+}
+
+html {
+	font-size: 16px;
 }
 
 body {

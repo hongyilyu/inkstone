@@ -15,18 +15,18 @@ export function ProposalCard({ proposal }: { proposal: Proposal }) {
 	return (
 		<article
 			data-proposal-kind={proposal.kind}
-			className="rounded-lg border border-border bg-card p-4 text-card-foreground"
+			className="rounded-lg border border-border bg-card p-5 text-card-foreground"
 		>
 			<header className="flex items-center gap-2 text-sm">
 				<Icon
-					className="h-4 w-4 text-muted-foreground"
+					className="h-4 w-4 text-card-foreground/60"
 					aria-hidden
 				/>
 				<span className="font-medium">{proposal.title}</span>
-				<span className="ml-auto text-xs text-muted-foreground">{proposal.target}</span>
+				<span className="ml-auto text-xs text-card-foreground/60">{proposal.target}</span>
 			</header>
-			<p className="mt-1.5 text-xs text-muted-foreground">{proposal.summary}</p>
-			<pre className="mt-2 whitespace-pre-wrap rounded-md bg-secondary/30 p-2 font-mono text-xs text-foreground">
+			<p className="mt-2 text-sm leading-relaxed text-card-foreground/80">{proposal.summary}</p>
+			<pre className="mt-3 whitespace-pre-wrap rounded-md bg-secondary/50 p-3 font-mono text-xs leading-relaxed text-foreground">
 				{proposal.diff.map((line, i) => (
 					<div key={i}>
 						{line.before ? <div className="text-destructive">- {line.before}</div> : null}

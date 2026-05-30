@@ -27,7 +27,7 @@ export function TopRightControls() {
 				type="button"
 				aria-label="Toggle theme"
 				onClick={toggleTheme}
-				className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+				className="rounded-md p-1.5 text-foreground/60 hover:bg-accent hover:text-accent-foreground"
 			>
 				{theme === "dark" ? (
 					<Sun
