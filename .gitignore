@@ -5,3 +5,5 @@ target
 .env
 .env.*
 .DS_Store
+.claude/worktrees
+.agents/runs
