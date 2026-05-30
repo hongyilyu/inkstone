@@ -1,6 +1,7 @@
 import { PanelLeftOpen } from "lucide-react";
 import { useState } from "react";
 import { ActivityRail } from "./components/ActivityRail.js";
+import { ChatCardCornerCarve } from "./components/ChatCardCornerCarve.js";
 import { ChatColumn } from "./components/ChatColumn.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TopRightControls } from "./components/TopRightControls.js";
@@ -21,8 +22,9 @@ export default function App() {
 				<Sidebar onToggleCollapse={() => setSidebarCollapsed(true)} />
 			</div>
 			<div className="min-h-0 pt-2">
-				<div className="h-full overflow-hidden rounded-t-2xl">
+				<div className="relative h-full overflow-hidden rounded-tl-2xl">
 					<ChatColumn />
+					<ChatCardCornerCarve />
 				</div>
 			</div>
 			<div className="overflow-hidden">
