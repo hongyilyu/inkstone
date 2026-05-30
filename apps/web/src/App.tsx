@@ -20,8 +20,8 @@ export default function App() {
 			<div className="overflow-hidden">
 				<Sidebar onToggleCollapse={() => setSidebarCollapsed(true)} />
 			</div>
-			<div className="min-h-0 p-2 pl-0">
-				<div className="h-full overflow-hidden rounded-2xl">
+			<div className="min-h-0 pt-2">
+				<div className="h-full overflow-hidden rounded-t-2xl">
 					<ChatColumn />
 				</div>
 			</div>
