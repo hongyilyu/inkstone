@@ -333,4 +333,5 @@ The inkstone-poc's `messages` table uses Bun's `randomUUIDv7()`. We follow the s
 - [ADR-0014](./0014-client-core-wire-protocol.md) — wire shape; this ADR is what the wire reads from and writes to.
 - [ADR-0016](./0016-proposal-application-policy.md) — Proposal application flow; `proposals.decided_by`, `edited_payload`, and `entity_revisions` together fulfill the audit/uniformity claims.
 - CONTEXT.md — adds `Message` and `Message Part` as tier-2 storage vocabulary.
+- [ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md) — `run/subscribe` reads this ADR's streaming-text model (append-in-place into the `text` part; coarse events in `run_events`) to build the snapshot it sends on subscribe.
 - inkstone-poc, t3code — both informed live-text streaming and the no-Turn-table call.

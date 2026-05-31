@@ -53,3 +53,4 @@ The cost is that you cannot easily attach a separately running Worker to Core fo
 - [ADR-0006](./0006-run-events-vs-tool-protocol.md) — what the protocol carries; this ADR pins how it travels.
 - [ADR-0009](./0009-protocol-strategy.md) — manual type mirroring; stdio JSON makes this concrete.
 - [ADR-0012](./0012-run-lifecycle-ownership.md) — Run state owned by Core. Per-Run ephemeral Workers depend on this; this ADR refines the "Worker dies" cases.
+- [ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md) — where a Worker's emitted Run Events land: a per-run hub owned by Core, not the connection that started the Run.

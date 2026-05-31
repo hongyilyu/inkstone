@@ -49,7 +49,7 @@ The wire does **not** commit Inkstone to a workspace-wide event log. If a future
 
 A Client opens a stream with the relevant typed subscribe method:
 
-- `run/subscribe(run_id, since_run_seq?)` — live Run-Event stream. The `since_run_seq` is optional and only useful for resuming an active Run's stream after a reconnect; for a Run that has already completed, prefer `run/get_history`.
+- `run/subscribe(run_id, since_run_seq?)` — live Run-Event stream. The `since_run_seq` is optional and only useful for resuming an active Run's stream after a reconnect; for a Run that has already completed, prefer `run/get_history`. **MVP note:** [ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md) implements `run/subscribe` as *snapshot-then-tail* (Core emits the current persisted assistant text as a snapshot, then the live tail). The `since_run_seq` cursor and `run/get_history` are deferred under that ADR — the snapshot covers the only active-Run resume case the MVP exercises.
 - `thread/subscribe_changes()` — live `thread/changed` Notifications.
 - `entity/subscribe_changes()` — live `entity/changed` Notifications.
 - `proposal/subscribe()` — live `proposal/pending` and `proposal/changed` Notifications.
@@ -65,6 +65,8 @@ After a WebSocket drop, the Client:
 3. Refetches relevant state via normal queries (`thread/list`, `thread/get` for the open Thread, `entity/list_*`, `proposal/get` for the pending Proposal if any).
 4. Resubscribes to live updates.
 5. **For an active Run**, calls `run/get_history(run_id, since_run_seq)` to fetch any Run Events emitted while disconnected, then `run/subscribe(run_id)` to resume the live stream.
+
+> **MVP amendment ([ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md)).** Step 5 is implemented as a single `run/subscribe(run_id)` call: Core replies with a *snapshot* of the Run's current persisted assistant text, then streams the live tail from a per-run hub. The separate `run/get_history` + `since_run_seq` call is deferred until a consumer needs durable coarse-event replay. The reloaded Client therefore resyncs an active Run through the same subscribe path as a fresh one.
 
 There is no workspace-global replay cursor. The only "since cursor" in the protocol is the per-Run `run_seq`, scoped to a single active Run's stream — and even that is just a small ordering tool for the active-Run case.
 
@@ -139,3 +141,4 @@ There is no `schema_hash` in the MVP. In production the SPA is embedded in the C
 - [ADR-0012](./0012-run-lifecycle-ownership.md) — Core is the Run state authority that this protocol surfaces.
 - [ADR-0013](./0013-worker-process-lifecycle-and-transport.md) — symmetric ADR for the Worker side.
 - [ADR-0015](./0015-web-client-packaging.md) — how the SPA reaches the browser in dev vs prod.
+- [ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md) — amends this ADR's reconnect flow: `run/subscribe` is snapshot-then-tail over a per-run hub; `run/get_history` deferred.

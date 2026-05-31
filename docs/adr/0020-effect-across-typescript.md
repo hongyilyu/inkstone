@@ -1,6 +1,6 @@
 # Effect across the TypeScript codebase
 
-TypeScript modules in Inkstone are written on top of [Effect](https://effect.website). Runtime schemas, IO-bearing functions, service injection, and asynchronous streams use Effect's primitives — `Schema`, `Effect`, `Layer`, `Stream`, `Fiber` — instead of plain async/await + zod + ad-hoc class-based services. React talks to Effect through `@effect/rx` + `@effect-rx/rx-react`.
+TypeScript modules in Inkstone are written on top of [Effect](https://effect.website). Runtime schemas, IO-bearing functions, service injection, and asynchronous streams use Effect's primitives — `Schema`, `Effect`, `Layer`, `Stream`, `Fiber` — instead of plain async/await + zod + ad-hoc class-based services. React consumes Effect at the boundary through a single `ManagedRuntime` plus a thin bridge into plain React state — **not** through an Effect React-binding library.
 
 ## Scope
 
@@ -31,7 +31,13 @@ Plain async/await delivers none of these as defaults. Each one would be re-inven
 - **`packages/protocol`** — `Schema` is the source of truth for wire types on the TS side; type aliases are inferred via `S.Schema.Type<typeof X>`. Rust mirrors the same shapes by hand with `serde` per [ADR-0009](./0009-protocol-strategy.md).
 - **`packages/worker`** — `main` is `Effect.gen` end-to-end. Reads stdin as a `Stream`, decodes via `Schema`, emits Run Events via `console.log`-equivalent within the Effect runtime, exits when the stream completes.
 - **`packages/ui-sdk`** — `WsClient` is a `Context.Tag` exposed via a `Layer`. Methods return `Effect` (for request/response) and `Stream` (for `subscribeRun`). No singleton module state; the connection lives inside the `Layer`'s scope.
-- **`apps/web`** — provides `WsClientLive` at the React root. Components consume Effects and Streams through `@effect/rx` Rx atoms; React state for streamed messages is updated as the Stream emits.
+- **`apps/web`** — provides `WsClientLive` at the React root through a single `ManagedRuntime`. SDK methods run on that runtime; the `subscribeRun` `Stream` is forked on it and a thin imperative bridge pushes its events into plain React state (a small store). React state for streamed messages is updated as the Stream emits. No Effect React-binding library — see *React boundary* below.
+
+### React boundary: `ManagedRuntime` + thin bridge, no binding library
+
+React consumes Effect through one `ManagedRuntime` (built from `WsClientLive`) exposed at the root, plus a thin bridge: SDK request Effects are run on the runtime; the `subscribeRun` `Stream` is forked on the runtime (`runtime.runFork(Stream.runForEach(stream, applyEvent))`) and its events are pushed into a plain store, with the per-run fiber interrupted on `done`/unmount for structured cleanup. React state itself is plain (a small store), not Effect-bound.
+
+This deliberately omits an Effect React-binding library (`@effect-atom/atom-react`, formerly `@effect/rx` / `@effect-rx/rx-react`). The earlier draft of this ADR named `@effect/rx`; it was aspirational and never implemented. The reference implementation the project validates against (t3code) has a far more complex streaming-chat UI and uses exactly this pattern — Effect at the wire boundary, a plain store (zustand) for React state, an imperative callback bridging the subscription into the store — with **no** Effect React-binding library. The only capability such a library adds for Inkstone is a declarative stream→render primitive, which is a few lines of `runFork` + `Stream.runForEach` + fiber-interrupt against the runtime we already hold. Adding a young (0.x) dependency and a second state paradigm to save those lines is not worth it for a single-user tool; revisit only if the React surface grows enough that hand-bridged streams become a maintenance burden.
 
 ## Considered and rejected
 
@@ -42,7 +48,7 @@ Plain async/await delivers none of these as defaults. Each one would be re-inven
 
 ## Consequences
 
-- **Bundle size in `apps/web`.** Effect core + `@effect/rx` + `@effect-rx/rx-react` is ~80KB gzipped — meaningful relative to a hand-rolled React app, irrelevant for a single-user local-first tool ([ADR-0007](./0007-local-first-single-user.md)) where the SPA loads from loopback.
+- **Bundle size in `apps/web`.** Effect core is meaningful relative to a hand-rolled React app, irrelevant for a single-user local-first tool ([ADR-0007](./0007-local-first-single-user.md)) where the SPA loads from loopback. No Effect React-binding library is added (see *React boundary*), so the only Effect cost in the bundle is core.
 - **Onboarding cliff.** A reader unfamiliar with Effect cannot navigate the TypeScript codebase without learning the basics (`Effect.gen`, `Layer`, `Stream`). Accepted as part of the learning goal.
 - **Effect↔world friction.** Calling non-Effect libraries (browser APIs, `WebSocket`, the LLM SDK) requires `Effect.tryPromise` or `Effect.async` adapters. Concentrated at adapter modules; not pervasive once those are written.
 - **Reversal cost is high.** Every IO-bearing TS function would change shape. The decision is recorded as load-bearing rather than provisional.
