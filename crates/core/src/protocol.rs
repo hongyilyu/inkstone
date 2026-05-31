@@ -1,9 +1,6 @@
 //! Wire protocol types: JSON-RPC 2.0 envelope and serde mirrors of the
-//! TypeScript schemas in `packages/protocol`.
-//!
-//! Mirrored by hand per ADR-0009. `WorkerInbound` and `RunEvent` are
-//! defined now even though Core only consumes them in slice 7 — this
-//! establishes the snake_case mirror up front.
+//! TypeScript schemas in `packages/protocol`. Mirrored by hand per
+//! ADR-0009.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,7 +23,6 @@ pub struct JsonRpcResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct PostMessageParams {
-    #[allow(dead_code)] // unused this slice; consumed in slice 7 when Worker is spawned
     pub prompt: String,
 }
 
@@ -35,16 +31,20 @@ pub struct PostMessageResult {
     pub run_id: String,
 }
 
+/// Run Event emitted by the Worker over its stdout NDJSON stream
+/// (per ADR-0006). Core deserializes each line into this enum, takes
+/// the appropriate persistence action, and forwards it as a `run/event`
+/// Notification.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[allow(dead_code)] // consumed in slice 7 when Worker output is forwarded
 pub enum RunEvent {
     TextDelta { delta: String },
     Done,
 }
 
+/// Single line written to the Worker's stdin at spawn time, carrying the
+/// user prompt the Worker should act on.
 #[derive(Debug, Serialize)]
-#[allow(dead_code)] // emitted in slice 7 when Core spawns the Worker
 pub struct WorkerInbound<'a> {
     pub prompt: &'a str,
 }

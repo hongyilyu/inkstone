@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
 use futures_util::{SinkExt, StreamExt};
+use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
 
 #[test]
@@ -33,10 +34,14 @@ fn end_to_end_post_message_streams_text_delta_then_done() {
 
     let worker_cmd = format!("{} {}", tsx.display(), cli.display());
 
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+
     let mut child = std::process::Command::cargo_bin("core")
         .expect("core binary exists")
         .current_dir(repo_root)
         .env("INKSTONE_WORKER_CMD", &worker_cmd)
+        .env("INKSTONE_DB_PATH", &db_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()

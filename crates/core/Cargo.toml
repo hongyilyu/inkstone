@@ -8,6 +8,7 @@ anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "process"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 
@@ -15,4 +16,5 @@ uuid = { version = "1", features = ["v7", "serde"] }
 assert_cmd = "2"
 futures-util = "0.3"
 reqwest = { version = "0.12", features = ["blocking"] }
+tempfile = "3"
 tokio-tungstenite = "0.29"

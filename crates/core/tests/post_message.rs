@@ -4,12 +4,17 @@ use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
 use futures_util::{SinkExt, StreamExt};
+use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
 
 #[test]
 fn post_message_returns_uuidv7_run_id() {
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+
     let mut child = std::process::Command::cargo_bin("core")
         .expect("core binary exists")
+        .env("INKSTONE_DB_PATH", &db_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

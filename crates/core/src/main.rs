@@ -1,35 +1,33 @@
+mod db;
 mod dispatcher;
 mod protocol;
 mod runs;
 mod worker;
 mod workflow;
 
-use std::sync::{Arc, Mutex};
-
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::{Router, routing::get};
+use sqlx::SqlitePool;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc::{self, UnboundedSender};
-use uuid::Uuid;
+use tokio::sync::mpsc;
 
-use crate::protocol::{JsonRpcRequest, JsonRpcResponse, PostMessageParams, PostMessageResult};
-use crate::runs::{RunHandle, Runs};
+use crate::protocol::{JsonRpcRequest, PostMessageParams};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct AppState {
-    runs: Runs,
-    /// Implicit ephemeral Thread for the skeleton: lazy-minted on the first
-    /// `run/post_message` and reused for every subsequent Run on this Core
-    /// process. Real Thread CRUD lands in a future feature.
-    thread_id: Arc<Mutex<Option<Uuid>>>,
+    /// Tier-2 SQLite pool (ADR-0017). Threads, Runs, Messages, Run Steps,
+    /// and Run Events are written here inside a single transaction with
+    /// deferred FK enforcement.
+    pool: SqlitePool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let state = AppState::default();
+    let pool = db::open().await?;
+    let state = AppState { pool };
 
     let app = Router::new()
         .route("/", get(|| async { "Inkstone Core" }))
@@ -69,7 +67,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                             else {
                                 continue;
                             };
-                            handle_post_message(&state, req.id, params, &out_tx);
+                            runs::handle_post_message(&state.pool, req.id, params, &out_tx).await;
                         }
                         // Other methods: drop silently for the skeleton.
                     }
@@ -85,48 +83,4 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             }
         }
     }
-}
-
-fn handle_post_message(
-    state: &AppState,
-    id: serde_json::Value,
-    params: PostMessageParams,
-    out_tx: &UnboundedSender<String>,
-) {
-    let thread_id = {
-        let mut guard = state.thread_id.lock().expect("thread_id mutex");
-        *guard.get_or_insert_with(Uuid::now_v7)
-    };
-
-    // Dispatcher seam (ADR-0011): pick a Workflow for this Run.
-    let workflow = dispatcher::dispatch(thread_id, &params.prompt);
-
-    let run_id = Uuid::now_v7();
-    state
-        .runs
-        .0
-        .lock()
-        .expect("runs mutex")
-        .insert(run_id, RunHandle);
-
-    // Spawn the Worker; the per-Run task forwards its NDJSON events as
-    // `run/event` Notifications on the same per-connection sender.
-    worker::spawn(
-        run_id,
-        workflow,
-        params.prompt,
-        out_tx.clone(),
-        state.runs.clone(),
-    );
-
-    let response = JsonRpcResponse {
-        jsonrpc: "2.0",
-        id,
-        result: serde_json::to_value(PostMessageResult {
-            run_id: run_id.to_string(),
-        })
-        .expect("PostMessageResult serializes"),
-    };
-    let body = serde_json::to_string(&response).expect("JsonRpcResponse always serializes");
-    let _ = out_tx.send(body);
 }
