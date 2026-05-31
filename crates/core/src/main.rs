@@ -118,12 +118,14 @@ async fn handle_post_message(
 
     let run_id = Uuid::now_v7();
     let user_message_id = Uuid::now_v7();
+    let assistant_message_id = Uuid::now_v7();
 
     if let Err(e) = persist_initial_run(
         &state.pool,
         run_id,
         thread_id,
         user_message_id,
+        assistant_message_id,
         workflow,
         &params.prompt,
         now,
@@ -143,11 +145,16 @@ async fn handle_post_message(
         .insert(run_id, RunHandle);
 
     // Spawn the Worker; the per-Run task forwards its NDJSON events as
-    // `run/event` Notifications on the same per-connection sender.
+    // `run/event` Notifications on the same per-connection sender. The
+    // pool + assistant_message_id let the forwarder UPSERT each
+    // `text_delta` into `message_parts.text` before forwarding the WS
+    // frame (ADR-0017).
     worker::spawn(
         run_id,
         workflow,
         params.prompt,
+        state.pool.clone(),
+        assistant_message_id,
         out_tx.clone(),
         state.runs.clone(),
     );
@@ -167,11 +174,17 @@ async fn handle_post_message(
 /// Single transaction with deferred FK enforcement. sqlx's `pool.begin()`
 /// issues `BEGIN` (deferred by default in SQLite), so the FK cycle between
 /// `runs.user_message_id` and `messages.run_id` resolves only at COMMIT.
+///
+/// Slice 3 also pre-inserts the assistant `messages` row
+/// (`status='streaming'`) + an empty `message_parts` row at `seq=0` so
+/// each Worker `text_delta` event can append to it via a single
+/// `UPDATE message_parts SET text = text || ?1`.
 async fn persist_initial_run(
     pool: &SqlitePool,
     run_id: Uuid,
     thread_id: Uuid,
     user_message_id: Uuid,
+    assistant_message_id: Uuid,
     workflow: &workflow::Workflow,
     prompt: &str,
     now_ms: i64,
@@ -216,12 +229,44 @@ async fn persist_initial_run(
     .await?;
 
     sqlx::query(
+        "INSERT INTO messages \
+         (id, thread_id, run_id, role, status, created_at, updated_at) \
+         VALUES (?, ?, ?, 'assistant', 'streaming', ?, ?)",
+    )
+    .bind(assistant_message_id.to_string())
+    .bind(thread_id.to_string())
+    .bind(run_id.to_string())
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO message_parts (message_id, seq, type, text) \
+         VALUES (?, 0, 'text', '')",
+    )
+    .bind(assistant_message_id.to_string())
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
         "INSERT INTO run_steps \
          (run_id, seq, kind, message_id, tool_call_id, created_at) \
          VALUES (?, 0, 'message', ?, NULL, ?)",
     )
     .bind(run_id.to_string())
     .bind(user_message_id.to_string())
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO run_steps \
+         (run_id, seq, kind, message_id, tool_call_id, created_at) \
+         VALUES (?, 1, 'message', ?, NULL, ?)",
+    )
+    .bind(run_id.to_string())
+    .bind(assistant_message_id.to_string())
     .bind(now_ms)
     .execute(&mut *tx)
     .await?;

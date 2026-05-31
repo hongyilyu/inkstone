@@ -5,6 +5,7 @@
 
 use std::process::Stdio;
 
+use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
@@ -18,10 +19,17 @@ use crate::workflow::Workflow;
 /// `RunHandle`; a Tokio task drives the child to completion and forwards
 /// stdout NDJSON events as `run/event` Notifications via `ws_sender`.
 /// On stdout EOF, removes the Run from `runs`.
+///
+/// `pool` + `assistant_message_id` are used to UPSERT each `text_delta`
+/// event into `message_parts.text` (slice 3). The UPDATE commits BEFORE
+/// the matching WS Notification is forwarded, so a test that observes the
+/// WS frame can immediately query the DB and see the same delta.
 pub fn spawn(
     run_id: Uuid,
     _workflow: &'static Workflow,
     prompt: String,
+    pool: SqlitePool,
+    assistant_message_id: Uuid,
     ws_sender: UnboundedSender<String>,
     runs: Runs,
 ) -> RunHandle {
@@ -30,7 +38,7 @@ pub fn spawn(
     });
 
     tokio::spawn(async move {
-        run_worker(run_id, cmd, prompt, ws_sender, runs).await;
+        run_worker(run_id, cmd, prompt, pool, assistant_message_id, ws_sender, runs).await;
     });
 
     RunHandle
@@ -40,6 +48,8 @@ async fn run_worker(
     run_id: Uuid,
     cmd: String,
     prompt: String,
+    pool: SqlitePool,
+    assistant_message_id: Uuid,
     ws_sender: UnboundedSender<String>,
     runs: Runs,
 ) {
@@ -96,6 +106,30 @@ async fn run_worker(
                 continue;
             }
         };
+
+        // For `text_delta`, append to the assistant `message_parts.text`
+        // BEFORE forwarding the WS frame so a test that observes the
+        // frame and then queries the DB sees the committed delta.
+        // Persistence loss here is logged but not fatal — the WS frame
+        // is the user's observable channel for slice 3.
+        if event.get("kind") == Some(&serde_json::Value::String("text_delta".to_string())) {
+            if let Some(delta) = event.get("delta").and_then(serde_json::Value::as_str) {
+                if let Err(e) = sqlx::query(
+                    "UPDATE message_parts SET text = text || ?1 \
+                     WHERE message_id = ?2 AND seq = 0",
+                )
+                .bind(delta)
+                .bind(assistant_message_id.to_string())
+                .execute(&pool)
+                .await
+                {
+                    eprintln!(
+                        "text_delta UPDATE failed for assistant message {assistant_message_id}: {e}"
+                    );
+                }
+            }
+        }
+
         let notification = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "run/event",
