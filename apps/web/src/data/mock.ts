@@ -491,3 +491,28 @@ export const automationThread = {
 		},
 	] satisfies AutomationStep[],
 };
+
+export type QueueKind = "question" | "approval";
+export type QueueItem = {
+	id: string;
+	kind: QueueKind;
+	resolveProposalId: string;
+	pendingGlyph: string;
+	pendingTitle: string;
+};
+export const queue: QueueItem[] = [
+	{
+		id: "q_inbox",
+		kind: "question",
+		resolveProposalId: "p_note_1",
+		pendingGlyph: "?",
+		pendingTitle: "Inbox sweeper · pick aggressiveness",
+	},
+	{
+		id: "q_migration",
+		kind: "approval",
+		resolveProposalId: "p_proj_1",
+		pendingGlyph: "✱",
+		pendingTitle: "Approve change to projects/migration.md",
+	},
+];
