@@ -1,0 +1,48 @@
+import { Moon, Sun } from "lucide-react";
+import { useState } from "react";
+import { currentRun } from "../data/mock.js";
+
+export function TopRightControls() {
+	const [theme, setTheme] = useState<"light" | "dark">(() => {
+		const initial =
+			typeof document !== "undefined"
+				? (document.documentElement.dataset.theme as "light" | "dark" | undefined)
+				: undefined;
+		return initial === "dark" ? "dark" : "light";
+	});
+
+	const toggleTheme = () => {
+		const next = theme === "dark" ? "light" : "dark";
+		setTheme(next);
+		document.documentElement.dataset.theme = next;
+		try {
+			localStorage.setItem("inkstone-theme", next);
+		} catch {
+			// localStorage may be unavailable — non-fatal
+		}
+	};
+
+	return (
+		<div className="flex items-center gap-2 rounded-md border border-border bg-card/80 px-2 py-1 text-xs text-card-foreground backdrop-blur">
+			<span className="text-muted-foreground">{currentRun.model}</span>
+			<button
+				type="button"
+				aria-label="Toggle theme"
+				onClick={toggleTheme}
+				className="rounded-md p-1 hover:bg-muted/50"
+			>
+				{theme === "dark" ? (
+					<Sun
+						className="h-3.5 w-3.5"
+						aria-hidden
+					/>
+				) : (
+					<Moon
+						className="h-3.5 w-3.5"
+						aria-hidden
+					/>
+				)}
+			</button>
+		</div>
+	);
+}
