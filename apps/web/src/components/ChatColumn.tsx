@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef } from "react";
 import { type ChatTurn, conversation } from "../data/mock.js";
+import { ComposeFooter } from "./ComposeFooter.js";
 
 export function ChatColumn() {
 	const scrollerRef = useRef<HTMLDivElement>(null);
@@ -25,6 +26,7 @@ export function ChatColumn() {
 					)}
 				</ol>
 			</div>
+			<ComposeFooter onSend={(text) => console.log("send:", text)} />
 		</main>
 	);
 }
