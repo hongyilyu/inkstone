@@ -1,60 +1,89 @@
-import { WsClient } from "@inkstone/ui-sdk";
-import { Effect, type ManagedRuntime, Stream } from "effect";
-import { useState } from "react";
-import "./App.css";
-import { Composer } from "./Composer.js";
-import { type Message, MessageList } from "./MessageList.js";
-import { Sidebar } from "./Sidebar.js";
+import { PanelLeftOpen } from "lucide-react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { ActivityRail } from "./components/ActivityRail.js";
+import { makeChatCardClipPath } from "./components/ChatCardRecess.js";
+import { ChatColumn } from "./components/ChatColumn.js";
+import { Sidebar } from "./components/Sidebar.js";
+import { TopRightControls } from "./components/TopRightControls.js";
+import { Button } from "./components/ui/button.js";
 
-interface Props {
-	runtime: ManagedRuntime.ManagedRuntime<WsClient, never>;
-}
+export default function App() {
+	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+	const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
+	const chatCardRef = useRef<HTMLDivElement>(null);
+	const [clipPath, setClipPath] = useState<string>("");
 
-function App({ runtime }: Props) {
-	const [messages, setMessages] = useState<Message[]>([]);
-
-	const send = async (prompt: string) => {
-		setMessages((prev) => [...prev, { role: "user", text: prompt }]);
-		const runId = await runtime.runPromise(
-			Effect.gen(function* () {
-				const c = yield* WsClient;
-				return yield* c.postMessage(prompt);
-			}),
-		);
-		setMessages((prev) => [...prev, { role: "assistant", text: "" }]);
-		await runtime.runPromise(
-			Effect.gen(function* () {
-				const c = yield* WsClient;
-				yield* Stream.runForEach(c.subscribeRun(runId), (event) =>
-					Effect.sync(() => {
-						if (event.kind === "text_delta") {
-							setMessages((prev) => {
-								const next = prev.slice();
-								const last = next[next.length - 1];
-								if (last && last.role === "assistant") {
-									next[next.length - 1] = {
-										...last,
-										text: last.text + event.delta,
-									};
-								}
-								return next;
-							});
-						}
-					}),
-				);
-			}),
-		);
-	};
+	useLayoutEffect(() => {
+		const el = chatCardRef.current;
+		if (!el) return;
+		// When the rail is open, the icons sit above the rail (no carve);
+		// when the rail is collapsed, the icons need a carved-out bay in the
+		// chat card. Only apply the clip-path in the collapsed state.
+		if (!rightRailCollapsed) {
+			setClipPath("");
+			return;
+		}
+		const update = () => {
+			const r = el.getBoundingClientRect();
+			setClipPath(makeChatCardClipPath(r.width, r.height));
+		};
+		update();
+		const ro = new ResizeObserver(update);
+		ro.observe(el);
+		return () => ro.disconnect();
+	}, [rightRailCollapsed]);
 
 	return (
-		<div className="app">
-			<Sidebar />
-			<main className="chat">
-				<MessageList messages={messages} />
-				<Composer onSend={send} />
-			</main>
+		<div
+			className="relative grid h-full bg-sidebar text-sidebar-foreground"
+			style={{
+				gridTemplateColumns: `${sidebarCollapsed ? "0px" : "260px"} 1fr ${rightRailCollapsed ? "0px" : "320px"}`,
+			}}
+		>
+			<div className="overflow-hidden">
+				<Sidebar onToggleCollapse={() => setSidebarCollapsed(true)} />
+			</div>
+			<div className="relative min-h-0 pt-2">
+				<div
+					ref={chatCardRef}
+					className="relative h-full"
+					style={{ clipPath }}
+				>
+					<ChatColumn />
+				</div>
+				{rightRailCollapsed ? (
+					<div className="absolute top-3 right-3 z-10">
+						<TopRightControls
+							onOpenSettings={() => console.log("settings")}
+							railCollapsed={rightRailCollapsed}
+							onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
+						/>
+					</div>
+				) : null}
+			</div>
+			<div className="relative overflow-hidden">
+				<ActivityRail />
+				{rightRailCollapsed ? null : (
+					<div className="absolute top-3 right-3 z-10">
+						<TopRightControls
+							onOpenSettings={() => console.log("settings")}
+							railCollapsed={rightRailCollapsed}
+							onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
+						/>
+					</div>
+				)}
+			</div>
+			{sidebarCollapsed ? (
+				<Button
+					variant="icon"
+					size="icon"
+					aria-label="Open sidebar"
+					onClick={() => setSidebarCollapsed(false)}
+					className="absolute top-3 left-3 z-10"
+				>
+					<PanelLeftOpen className="size-4" />
+				</Button>
+			) : null}
 		</div>
 	);
 }
-
-export default App;

@@ -18,6 +18,10 @@ This ADR records the architecture so that test-authoring decisions over the next
 - **Playwright fixtures expose `{core, workspace, page}`.** `core` is the spawned-process handle. `page` is Playwright's. `workspace` exposes typed setup helpers (`createThread`, `postMessage`, `path`, `withFixture`, etc.) implemented as a thin wrapper around the same WebSocket protocol the Web Client uses (per [ADR-0014](./0014-client-core-wire-protocol.md)) — same surface, different caller. Vault file seeding when needed uses direct FS writes, since the Vault is a user-owned directory rather than a Core-internal abstraction. A page-object layer hides DOM selectors so test code is behavior-level, not DOM-level.
 - **Spawned Core runs in its own process group**, hard-killed on a deadline if SIGTERM hangs. Tempdirs use a recognizable prefix (`inkstone-test-*`) and are cleaned in per-test teardown plus a session-end exit handler.
 
+## Scope: full-system tests only
+
+This ADR governs *full-system* end-to-end tests — those that exercise Core + Worker + UI together. Tests against a Web Client running on **mock data only** (no Core, no Worker, no protocol traffic) live next to the Client they test, currently `apps/web`, under that package's `e2e/` directory and its own `test:e2e` script. Such tests are useful for catching layout / component-composition regressions that jsdom Vitest can't see; they are not full-system tests and the `tests/` harness, the `--web-dir` flag, the Worker mock LLM provider, and the spawned-Core fixture all do not apply. When the Web Client is wired to real Core (the future re-wiring feature), full-system tests of those flows belong in `tests/` per the rest of this ADR; the `apps/web` mock-driven e2e suite stays as the no-network smoke surface.
+
 ## What this does not decide
 
 - **CI integration.** Local-first test runs are the bar; GitHub Actions or similar is a follow-up.
@@ -56,6 +60,7 @@ When wire-level tests become useful (e.g., for protocol contract tests independe
 - **Programmatic fixtures (TS function returning provider response from `(turn, history)`).** Maximum flexibility, but fixtures become code — harder to author, review, diff, and rotate.
 - **Mock provider always shipped, runtime env-var gated.** Simpler one-config build, but production bundle carries test-only code reachable by setting one env var. Build-mode exclusion is one extra conditional for an unambiguous shipping story.
 - **Always rebuild Core for FE changes (no `--web-dir` flag).** Honors "production-style serving" most strictly, but pays a Rust compile cost on every FE-only iteration. The debug-only flag serves files from disk — a strict subset of what `rust-embed` does in prod, no new attack surface.
+- **Mock-driven UI tests in `tests/` instead of `apps/web/e2e/`.** Considered. Mock-driven tests don't need a spawned Core, a mock Worker, or fixtures; placing them in `tests/` would require either gutting the spawned-Core fixture for them (forks the harness shape) or paying the spawn cost for tests that ignore it (waste). Co-locating with the Client they test keeps the Client's regression surface inside the Client's `pnpm install` boundary and avoids cross-package script gymnastics.
 
 ## Related
 
