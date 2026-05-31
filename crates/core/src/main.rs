@@ -1,11 +1,8 @@
 mod db;
 mod dispatcher;
 mod protocol;
-mod runs;
 mod worker;
 mod workflow;
-
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -18,24 +15,19 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use uuid::Uuid;
 
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse, PostMessageParams, PostMessageResult};
-use crate::runs::{RunHandle, Runs};
 
 #[derive(Clone)]
 struct AppState {
-    runs: Runs,
-    /// Tier-2 SQLite pool (ADR-0017). Slice 2 begins writing Threads, Runs,
-    /// Messages, Run Steps, and Run Events through this pool inside a single
-    /// transaction with deferred FK enforcement.
+    /// Tier-2 SQLite pool (ADR-0017). Threads, Runs, Messages, Run Steps,
+    /// and Run Events are written here inside a single transaction with
+    /// deferred FK enforcement.
     pool: SqlitePool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let pool = db::open().await?;
-    let state = AppState {
-        runs: Runs::default(),
-        pool,
-    };
+    let state = AppState { pool };
 
     let app = Router::new()
         .route("/", get(|| async { "Inkstone Core" }))
@@ -99,10 +91,7 @@ async fn handle_post_message(
     params: PostMessageParams,
     out_tx: &UnboundedSender<String>,
 ) {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before epoch")
-        .as_millis() as i64;
+    let now = db::now_ms();
 
     let thread_id = match db::ensure_default_thread(&state.pool, now).await {
         Ok(tid) => tid,
@@ -137,18 +126,12 @@ async fn handle_post_message(
         return;
     }
 
-    state
-        .runs
-        .0
-        .lock()
-        .expect("runs mutex")
-        .insert(run_id, RunHandle);
-
     // Spawn the Worker; the per-Run task forwards its NDJSON events as
     // `run/event` Notifications on the same per-connection sender. The
-    // pool + assistant_message_id let the forwarder UPSERT each
-    // `text_delta` into `message_parts.text` before forwarding the WS
-    // frame (ADR-0017).
+    // pool + assistant_message_id let the forwarder append each
+    // `text_delta` to the assistant `message_parts.text` row that
+    // `persist_initial_run` pre-inserted at `seq=0` before forwarding
+    // the WS frame (ADR-0017).
     worker::spawn(
         run_id,
         workflow,
@@ -156,7 +139,6 @@ async fn handle_post_message(
         state.pool.clone(),
         assistant_message_id,
         out_tx.clone(),
-        state.runs.clone(),
     );
 
     let response = JsonRpcResponse {

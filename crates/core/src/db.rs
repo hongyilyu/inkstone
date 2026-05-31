@@ -4,11 +4,21 @@
 //! Entities.
 
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use uuid::Uuid;
+
+/// Current wall-clock time as ms since UNIX_EPOCH. Used as `created_at` /
+/// `updated_at` / `started_at` / `ended_at` for tier-2 rows.
+pub(crate) fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before epoch")
+        .as_millis() as i64
+}
 
 /// Resolve the DB path: `INKSTONE_DB_PATH` env override wins; otherwise
 /// land on `<OS data dir>/inkstone/db.sqlite` (e.g. macOS:
@@ -61,7 +71,7 @@ pub async fn open() -> Result<SqlitePool> {
 /// WS frame at a time per connection); the eventual fix is an
 /// `is_default` flag with `INSERT … ON CONFLICT DO NOTHING`.
 pub async fn ensure_default_thread(pool: &SqlitePool, now_ms: i64) -> sqlx::Result<Uuid> {
-    if let Some((id_str,)) = sqlx::query_as::<_, (String,)>(
+    if let Some(id_str) = sqlx::query_scalar::<_, String>(
         "SELECT id FROM threads ORDER BY created_at ASC LIMIT 1",
     )
     .fetch_optional(pool)

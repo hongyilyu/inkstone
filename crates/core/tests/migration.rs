@@ -66,8 +66,7 @@ fn migration_creates_all_tables() {
             .await
             .expect("connect to migrated DB");
         let rows = sqlx::query(
-            "SELECT name FROM sqlite_master \
-             WHERE type IN ('table','virtual') ORDER BY name",
+            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
         )
         .fetch_all(&pool)
         .await

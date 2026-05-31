@@ -7,7 +7,7 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
@@ -46,10 +46,8 @@ fn worker_cmd_real() -> String {
 /// serially or they collide. Cargo runs tests within a binary in parallel
 /// by default, so we acquire this lock for the full Core lifetime.
 fn port_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 fn false_binary() -> &'static str {
@@ -316,7 +314,6 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        drop(pool);
 
         ws.close(None).await.ok();
         run_id
@@ -378,5 +375,120 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
         .await
         .expect("count error events");
         assert_eq!(error_count, 1, "exactly one terminal error run_event");
+    });
+}
+
+/// Regression: a Worker process that fails to spawn (missing binary, empty
+/// `INKSTONE_WORKER_CMD`, etc.) hits one of `run_worker`'s pre-loop
+/// early-return paths. Without `finalize_error`, those paths skipped the
+/// terminal tx entirely and left `runs.status='running'` and the
+/// assistant `messages.status='streaming'` forever — a violation of
+/// ADR-0017's atomic recovery invariant.
+#[test]
+fn worker_spawn_failure_errors_run() {
+    let _guard = port_lock();
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+
+    // Path that doesn't exist → tokio::process::Command::spawn() returns
+    // Err, hitting the second pre-loop early-return path in run_worker.
+    let (_child, ws_url) = spawn_core("/nonexistent/inkstone-test-worker", &db_path);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let run_id = rt.block_on(async {
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("ws handshake succeeds");
+
+        let request =
+            r#"{"jsonrpc":"2.0","id":1,"method":"run/post_message","params":{"prompt":"hi"}}"#;
+        ws.send(Message::Text(request.into()))
+            .await
+            .expect("send request frame");
+
+        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("response frame within 5s")
+            .expect("response frame present")
+            .expect("response frame ok");
+        let body = match frame {
+            Message::Text(t) => t.to_string(),
+            other => panic!("expected text frame, got {other:?}"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"));
+        let run_id = v["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string — body: {body}"))
+            .to_string();
+
+        // Worker never ran; poll for terminal status.
+        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status: String =
+                sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
+                    .bind(&run_id)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("poll run status");
+            if status != "running" {
+                break;
+            }
+            if Instant::now() > deadline {
+                panic!(
+                    "timed out waiting for runs.status to leave 'running' (still {status:?})"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        ws.close(None).await.ok();
+        run_id
+    });
+
+    rt.block_on(async {
+        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+
+        let run_row =
+            sqlx::query("SELECT status, terminal_reason FROM runs WHERE id = ?1")
+                .bind(&run_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read run row");
+        let status: String = run_row.get("status");
+        assert_eq!(status, "errored", "spawn failure flips runs.status to errored");
+        let terminal_reason: Option<String> = run_row.get("terminal_reason");
+        assert_eq!(
+            terminal_reason.as_deref(),
+            Some("worker_disconnected"),
+            "terminal_reason='worker_disconnected'"
+        );
+
+        let assistant_status: String = sqlx::query_scalar(
+            "SELECT status FROM messages WHERE role='assistant' AND run_id = ?1",
+        )
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read assistant message status");
+        assert_eq!(
+            assistant_status, "incomplete",
+            "assistant message flipped to incomplete"
+        );
     });
 }

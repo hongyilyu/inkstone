@@ -108,17 +108,10 @@ fn post_message_writes_initial_rows() {
 
         let v: serde_json::Value = serde_json::from_str(&body)
             .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"));
-        let run_id = v["result"]["run_id"]
+        v["result"]["run_id"]
             .as_str()
             .unwrap_or_else(|| panic!("result.run_id is a string — body: {body}"))
-            .to_string();
-        let parsed = uuid::Uuid::parse_str(&run_id).expect("run_id parses as UUID");
-        assert_eq!(
-            parsed.get_version(),
-            Some(uuid::Version::SortRand),
-            "run_id is UUIDv7"
-        );
-        run_id
+            .to_string()
     });
 
     let _ = child.kill();

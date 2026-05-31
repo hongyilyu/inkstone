@@ -4,7 +4,6 @@
 //! JSON-RPC Notification on the per-connection outbound channel.
 
 use std::process::Stdio;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -14,18 +13,20 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::protocol::WorkerInbound;
-use crate::runs::{RunHandle, Runs};
 use crate::workflow::Workflow;
 
-/// Spawn a Worker for `run_id`. Returns immediately with a placeholder
-/// `RunHandle`; a Tokio task drives the child to completion and forwards
-/// stdout NDJSON events as `run/event` Notifications via `ws_sender`.
-/// On stdout EOF, removes the Run from `runs`.
+/// Spawn a Worker for `run_id`. Returns immediately; a Tokio task drives
+/// the child to completion and forwards stdout NDJSON events as
+/// `run/event` Notifications via `ws_sender`. Whichever way the loop
+/// exits — clean `done`, stdout EOF, or a pre-loop spawn failure — the
+/// terminal tx (`db::complete_run` / `db::error_run`) commits before the
+/// task ends.
 ///
-/// `pool` + `assistant_message_id` are used to UPSERT each `text_delta`
-/// event into `message_parts.text` (slice 3). The UPDATE commits BEFORE
-/// the matching WS Notification is forwarded, so a test that observes the
-/// WS frame can immediately query the DB and see the same delta.
+/// `pool` + `assistant_message_id` are used to append each `text_delta`
+/// to the assistant `message_parts.text` row that `persist_initial_run`
+/// pre-inserted at `seq=0`. The UPDATE commits BEFORE the matching WS
+/// Notification is forwarded, so a test that observes the WS frame can
+/// immediately query the DB and see the same delta.
 pub fn spawn(
     run_id: Uuid,
     _workflow: &'static Workflow,
@@ -33,17 +34,14 @@ pub fn spawn(
     pool: SqlitePool,
     assistant_message_id: Uuid,
     ws_sender: UnboundedSender<String>,
-    runs: Runs,
-) -> RunHandle {
+) {
     let cmd = std::env::var("INKSTONE_WORKER_CMD").unwrap_or_else(|_| {
         "packages/worker/node_modules/.bin/tsx packages/worker/src/cli.ts".to_string()
     });
 
     tokio::spawn(async move {
-        run_worker(run_id, cmd, prompt, pool, assistant_message_id, ws_sender, runs).await;
+        run_worker(run_id, cmd, prompt, pool, assistant_message_id, ws_sender).await;
     });
-
-    RunHandle
 }
 
 async fn run_worker(
@@ -53,12 +51,11 @@ async fn run_worker(
     pool: SqlitePool,
     assistant_message_id: Uuid,
     ws_sender: UnboundedSender<String>,
-    runs: Runs,
 ) {
     let mut parts = cmd.split_whitespace();
     let Some(program) = parts.next() else {
         eprintln!("INKSTONE_WORKER_CMD is empty");
-        remove_run(&runs, run_id);
+        finalize_error(&pool, run_id).await;
         return;
     };
     let args: Vec<&str> = parts.collect();
@@ -73,7 +70,7 @@ async fn run_worker(
         Ok(c) => c,
         Err(e) => {
             eprintln!("failed to spawn worker {program:?}: {e}");
-            remove_run(&runs, run_id);
+            finalize_error(&pool, run_id).await;
             return;
         }
     };
@@ -94,7 +91,7 @@ async fn run_worker(
         None => {
             eprintln!("worker child has no stdout");
             let _ = child.wait().await;
-            remove_run(&runs, run_id);
+            finalize_error(&pool, run_id).await;
             return;
         }
     };
@@ -161,10 +158,7 @@ async fn run_worker(
     // drained, so a slice-4 test that wants to assert post-terminal DB
     // state must close the WS and let Core finish (e.g. by killing it
     // and reaping, or by polling the DB) before querying.
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time before epoch")
-        .as_millis() as i64;
+    let now_ms = db::now_ms();
     let result = if saw_done {
         db::complete_run(&pool, run_id, now_ms).await
     } else {
@@ -175,11 +169,16 @@ async fn run_worker(
     }
 
     let _ = child.wait().await;
-    remove_run(&runs, run_id);
 }
 
-fn remove_run(runs: &Runs, run_id: Uuid) {
-    if let Ok(mut map) = runs.0.lock() {
-        map.remove(&run_id);
+/// Pre-loop spawn-failure path: the Worker never produced any output, so
+/// the run terminates immediately with `worker_disconnected`. Honors the
+/// ADR-0017 atomic recovery invariant — without this, an empty
+/// `INKSTONE_WORKER_CMD` or a missing worker binary would leave
+/// `runs.status='running'` and the assistant `messages.status='streaming'`
+/// forever.
+async fn finalize_error(pool: &SqlitePool, run_id: Uuid) {
+    if let Err(e) = db::error_run(pool, run_id, db::now_ms()).await {
+        eprintln!("error_run after pre-loop spawn failure for run {run_id}: {e}");
     }
 }
