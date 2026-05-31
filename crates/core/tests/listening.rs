@@ -3,11 +3,16 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
+use tempfile::TempDir;
 
 #[test]
 fn core_announces_listening_url_and_serves_root() {
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+
     let mut child = std::process::Command::cargo_bin("core")
         .expect("core binary exists")
+        .env("INKSTONE_DB_PATH", &db_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

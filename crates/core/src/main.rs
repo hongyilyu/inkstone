@@ -1,3 +1,4 @@
+mod db;
 mod dispatcher;
 mod protocol;
 mod runs;
@@ -18,18 +19,27 @@ use uuid::Uuid;
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse, PostMessageParams, PostMessageResult};
 use crate::runs::{RunHandle, Runs};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct AppState {
     runs: Runs,
     /// Implicit ephemeral Thread for the skeleton: lazy-minted on the first
     /// `run/post_message` and reused for every subsequent Run on this Core
     /// process. Real Thread CRUD lands in a future feature.
     thread_id: Arc<Mutex<Option<Uuid>>>,
+    /// Tier-2 SQLite pool (ADR-0017). Slice 1 only proves the pool is open
+    /// and the migration ran; later slices use it for writes/reads.
+    #[allow(dead_code)]
+    pool: sqlx::SqlitePool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let state = AppState::default();
+    let pool = db::open().await?;
+    let state = AppState {
+        runs: Runs::default(),
+        thread_id: Arc::new(Mutex::new(None)),
+        pool,
+    };
 
     let app = Router::new()
         .route("/", get(|| async { "Inkstone Core" }))
