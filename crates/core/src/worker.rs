@@ -12,7 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 use crate::db;
-use crate::protocol::WorkerInbound;
+use crate::protocol::{RunEvent, WorkerInbound};
 use crate::workflow::Workflow;
 
 /// Spawn a Worker for `run_id`. Returns immediately; a Tokio task drives
@@ -102,32 +102,31 @@ async fn run_worker(
     let mut saw_done = false;
 
     while let Ok(Some(line)) = lines.next_line().await {
-        let event: serde_json::Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
+        let event: RunEvent = match serde_json::from_str(&line) {
+            Ok(e) => e,
             Err(e) => {
-                eprintln!("worker emitted invalid json line {line:?}: {e}");
+                eprintln!("worker emitted unknown event {line:?}: {e}");
                 continue;
             }
         };
 
-        let kind = event.get("kind").and_then(serde_json::Value::as_str);
-
-        // For `text_delta`, append to the assistant `message_parts.text`
-        // BEFORE forwarding the WS frame so a test that observes the
-        // frame and then queries the DB sees the committed delta.
-        // Persistence loss here is logged but not fatal — the WS frame
-        // is the user's observable channel for slice 3.
-        if kind == Some("text_delta") {
-            if let Some(delta) = event.get("delta").and_then(serde_json::Value::as_str) {
-                if let Err(e) = db::append_assistant_text(&pool, assistant_message_id, delta).await
+        // Persist BEFORE forwarding the WS frame so a test that observes
+        // the frame and then queries the DB sees the committed delta.
+        // Persistence loss is logged but not fatal — the WS frame is the
+        // user's observable channel for slice 3.
+        match &event {
+            RunEvent::TextDelta { delta } => {
+                if let Err(e) =
+                    db::append_assistant_text(&pool, assistant_message_id, delta).await
                 {
                     eprintln!(
                         "text_delta append failed for assistant message {assistant_message_id}: {e}"
                     );
                 }
             }
-        } else if kind == Some("done") {
-            saw_done = true;
+            RunEvent::Done => {
+                saw_done = true;
+            }
         }
 
         let notification = serde_json::json!({
