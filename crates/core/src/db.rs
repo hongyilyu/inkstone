@@ -11,6 +11,8 @@ use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use uuid::Uuid;
 
+use crate::workflow::Workflow;
+
 /// Current wall-clock time as ms since UNIX_EPOCH. Used as `created_at` /
 /// `updated_at` / `started_at` / `ended_at` for tier-2 rows.
 pub(crate) fn now_ms() -> i64 {
@@ -113,6 +115,143 @@ pub async fn ensure_default_thread(pool: &SqlitePool, now_ms: i64) -> sqlx::Resu
     .execute(pool)
     .await?;
     Ok(id)
+}
+
+/// Single transaction with deferred FK enforcement. sqlx's `pool.begin()`
+/// issues `BEGIN` (deferred by default in SQLite), so the FK cycle between
+/// `runs.user_message_id` and `messages.run_id` resolves only at COMMIT.
+///
+/// Also pre-inserts the assistant `messages` row (`status='streaming'`)
+/// + an empty `message_parts` row at `seq=0` so each Worker `text_delta`
+/// event can append to it via [`append_assistant_text`].
+pub async fn persist_initial_run(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    thread_id: Uuid,
+    user_message_id: Uuid,
+    assistant_message_id: Uuid,
+    workflow: &Workflow,
+    prompt: &str,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "INSERT INTO runs \
+         (id, thread_id, workflow_name, workflow_version, provider, model, \
+          user_message_id, status, started_at) \
+         VALUES (?, ?, ?, ?, 'echo', 'echo', ?, 'running', ?)",
+    )
+    .bind(run_id.to_string())
+    .bind(thread_id.to_string())
+    .bind(workflow.name)
+    .bind(workflow.version.to_string())
+    .bind(user_message_id.to_string())
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO messages \
+         (id, thread_id, run_id, role, status, created_at, updated_at) \
+         VALUES (?, ?, ?, 'user', 'completed', ?, ?)",
+    )
+    .bind(user_message_id.to_string())
+    .bind(thread_id.to_string())
+    .bind(run_id.to_string())
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO message_parts (message_id, seq, type, text) \
+         VALUES (?, 0, 'text', ?)",
+    )
+    .bind(user_message_id.to_string())
+    .bind(prompt)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO messages \
+         (id, thread_id, run_id, role, status, created_at, updated_at) \
+         VALUES (?, ?, ?, 'assistant', 'streaming', ?, ?)",
+    )
+    .bind(assistant_message_id.to_string())
+    .bind(thread_id.to_string())
+    .bind(run_id.to_string())
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO message_parts (message_id, seq, type, text) \
+         VALUES (?, 0, 'text', '')",
+    )
+    .bind(assistant_message_id.to_string())
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO run_steps \
+         (run_id, seq, kind, message_id, tool_call_id, created_at) \
+         VALUES (?, 0, 'message', ?, NULL, ?)",
+    )
+    .bind(run_id.to_string())
+    .bind(user_message_id.to_string())
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO run_steps \
+         (run_id, seq, kind, message_id, tool_call_id, created_at) \
+         VALUES (?, 1, 'message', ?, NULL, ?)",
+    )
+    .bind(run_id.to_string())
+    .bind(assistant_message_id.to_string())
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO run_events (run_id, run_seq, kind, payload, created_at) \
+         VALUES (?, 0, 'status', ?, ?)",
+    )
+    .bind(run_id.to_string())
+    .bind(r#"{"status":"running"}"#)
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("UPDATE threads SET last_activity_at = ? WHERE id = ?")
+        .bind(now_ms)
+        .bind(thread_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await
+}
+
+/// Append a streaming `text_delta` to the assistant `message_parts.text`
+/// row that [`persist_initial_run`] pre-inserted at `seq=0`. Single
+/// statement; SQLite serializes writes, no UPSERT semantics needed.
+pub async fn append_assistant_text(
+    pool: &SqlitePool,
+    assistant_message_id: Uuid,
+    delta: &str,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE message_parts SET text = text || ?1 \
+         WHERE message_id = ?2 AND seq = 0",
+    )
+    .bind(delta)
+    .bind(assistant_message_id.to_string())
+    .execute(pool)
+    .await
+    .map(|_| ())
 }
 
 /// Slice 4: clean termination. Worker emitted `done`; flip `runs` to

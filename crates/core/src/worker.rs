@@ -119,17 +119,10 @@ async fn run_worker(
         // is the user's observable channel for slice 3.
         if kind == Some("text_delta") {
             if let Some(delta) = event.get("delta").and_then(serde_json::Value::as_str) {
-                if let Err(e) = sqlx::query(
-                    "UPDATE message_parts SET text = text || ?1 \
-                     WHERE message_id = ?2 AND seq = 0",
-                )
-                .bind(delta)
-                .bind(assistant_message_id.to_string())
-                .execute(&pool)
-                .await
+                if let Err(e) = db::append_assistant_text(&pool, assistant_message_id, delta).await
                 {
                     eprintln!(
-                        "text_delta UPDATE failed for assistant message {assistant_message_id}: {e}"
+                        "text_delta append failed for assistant message {assistant_message_id}: {e}"
                     );
                 }
             }
