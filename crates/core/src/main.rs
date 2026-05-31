@@ -5,13 +5,14 @@ mod runs;
 mod worker;
 mod workflow;
 
-use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::{Router, routing::get};
+use sqlx::SqlitePool;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc::{self, UnboundedSender};
 use uuid::Uuid;
@@ -22,14 +23,10 @@ use crate::runs::{RunHandle, Runs};
 #[derive(Clone)]
 struct AppState {
     runs: Runs,
-    /// Implicit ephemeral Thread for the skeleton: lazy-minted on the first
-    /// `run/post_message` and reused for every subsequent Run on this Core
-    /// process. Real Thread CRUD lands in a future feature.
-    thread_id: Arc<Mutex<Option<Uuid>>>,
-    /// Tier-2 SQLite pool (ADR-0017). Slice 1 only proves the pool is open
-    /// and the migration ran; later slices use it for writes/reads.
-    #[allow(dead_code)]
-    pool: sqlx::SqlitePool,
+    /// Tier-2 SQLite pool (ADR-0017). Slice 2 begins writing Threads, Runs,
+    /// Messages, Run Steps, and Run Events through this pool inside a single
+    /// transaction with deferred FK enforcement.
+    pool: SqlitePool,
 }
 
 #[tokio::main]
@@ -37,7 +34,6 @@ async fn main() -> Result<()> {
     let pool = db::open().await?;
     let state = AppState {
         runs: Runs::default(),
-        thread_id: Arc::new(Mutex::new(None)),
         pool,
     };
 
@@ -79,7 +75,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                             else {
                                 continue;
                             };
-                            handle_post_message(&state, req.id, params, &out_tx);
+                            handle_post_message(&state, req.id, params, &out_tx).await;
                         }
                         // Other methods: drop silently for the skeleton.
                     }
@@ -97,21 +93,48 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
     }
 }
 
-fn handle_post_message(
+async fn handle_post_message(
     state: &AppState,
     id: serde_json::Value,
     params: PostMessageParams,
     out_tx: &UnboundedSender<String>,
 ) {
-    let thread_id = {
-        let mut guard = state.thread_id.lock().expect("thread_id mutex");
-        *guard.get_or_insert_with(Uuid::now_v7)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before epoch")
+        .as_millis() as i64;
+
+    let thread_id = match db::ensure_default_thread(&state.pool, now).await {
+        Ok(tid) => tid,
+        Err(e) => {
+            eprintln!("ensure_default_thread failed: {e}");
+            send_error(out_tx, id, format!("ensure_default_thread: {e}"));
+            return;
+        }
     };
 
     // Dispatcher seam (ADR-0011): pick a Workflow for this Run.
     let workflow = dispatcher::dispatch(thread_id, &params.prompt);
 
     let run_id = Uuid::now_v7();
+    let user_message_id = Uuid::now_v7();
+
+    if let Err(e) = persist_initial_run(
+        &state.pool,
+        run_id,
+        thread_id,
+        user_message_id,
+        workflow,
+        &params.prompt,
+        now,
+    )
+    .await
+    {
+        eprintln!("persist_initial_run failed: {e}");
+        send_error(out_tx, id, format!("persist_initial_run: {e}"));
+        return;
+    }
+
     state
         .runs
         .0
@@ -138,5 +161,96 @@ fn handle_post_message(
         .expect("PostMessageResult serializes"),
     };
     let body = serde_json::to_string(&response).expect("JsonRpcResponse always serializes");
+    let _ = out_tx.send(body);
+}
+
+/// Single transaction with deferred FK enforcement. sqlx's `pool.begin()`
+/// issues `BEGIN` (deferred by default in SQLite), so the FK cycle between
+/// `runs.user_message_id` and `messages.run_id` resolves only at COMMIT.
+async fn persist_initial_run(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    thread_id: Uuid,
+    user_message_id: Uuid,
+    workflow: &workflow::Workflow,
+    prompt: &str,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query(
+        "INSERT INTO runs \
+         (id, thread_id, workflow_name, workflow_version, provider, model, \
+          user_message_id, status, started_at) \
+         VALUES (?, ?, ?, ?, 'echo', 'echo', ?, 'running', ?)",
+    )
+    .bind(run_id.to_string())
+    .bind(thread_id.to_string())
+    .bind(workflow.name)
+    .bind(workflow.version.to_string())
+    .bind(user_message_id.to_string())
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO messages \
+         (id, thread_id, run_id, role, status, created_at, updated_at) \
+         VALUES (?, ?, ?, 'user', 'completed', ?, ?)",
+    )
+    .bind(user_message_id.to_string())
+    .bind(thread_id.to_string())
+    .bind(run_id.to_string())
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO message_parts (message_id, seq, type, text) \
+         VALUES (?, 0, 'text', ?)",
+    )
+    .bind(user_message_id.to_string())
+    .bind(prompt)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO run_steps \
+         (run_id, seq, kind, message_id, tool_call_id, created_at) \
+         VALUES (?, 0, 'message', ?, NULL, ?)",
+    )
+    .bind(run_id.to_string())
+    .bind(user_message_id.to_string())
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO run_events (run_id, run_seq, kind, payload, created_at) \
+         VALUES (?, 0, 'status', ?, ?)",
+    )
+    .bind(run_id.to_string())
+    .bind(r#"{"status":"running"}"#)
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query("UPDATE threads SET last_activity_at = ? WHERE id = ?")
+        .bind(now_ms)
+        .bind(thread_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+    tx.commit().await
+}
+
+fn send_error(out_tx: &UnboundedSender<String>, id: serde_json::Value, message: String) {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": -32603, "message": message },
+    })
+    .to_string();
     let _ = out_tx.send(body);
 }

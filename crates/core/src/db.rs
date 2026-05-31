@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use uuid::Uuid;
 
 /// Resolve the DB path: `INKSTONE_DB_PATH` env override wins; otherwise
 /// land on `<OS data dir>/inkstone/db.sqlite` (e.g. macOS:
@@ -47,4 +48,36 @@ pub async fn open() -> Result<SqlitePool> {
         .context("run SQLite migrations")?;
 
     Ok(pool)
+}
+
+/// Return the default Thread's id, lazy-minting one row in `threads` the
+/// first time we're called against a fresh DB. The skeleton has a single
+/// implicit Thread; real Thread CRUD lands in a future feature.
+///
+/// Note: the SELECT and INSERT run on the pool directly, not inside the
+/// caller's transaction. Two concurrent first-time `run/post_message`
+/// callers could each miss the other's INSERT and both insert. For the
+/// MVP single-user single-process model this race is theoretical (one
+/// WS frame at a time per connection); the eventual fix is an
+/// `is_default` flag with `INSERT … ON CONFLICT DO NOTHING`.
+pub async fn ensure_default_thread(pool: &SqlitePool, now_ms: i64) -> sqlx::Result<Uuid> {
+    if let Some((id_str,)) = sqlx::query_as::<_, (String,)>(
+        "SELECT id FROM threads ORDER BY created_at ASC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?
+    {
+        return Ok(Uuid::parse_str(&id_str).expect("threads.id is a valid UUID"));
+    }
+    let id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO threads (id, title, created_at, last_activity_at) \
+         VALUES (?, 'Untitled', ?, ?)",
+    )
+    .bind(id.to_string())
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(pool)
+    .await?;
+    Ok(id)
 }
