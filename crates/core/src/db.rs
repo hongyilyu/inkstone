@@ -21,15 +21,38 @@ pub(crate) fn now_ms() -> i64 {
 }
 
 /// Resolve the DB path: `INKSTONE_DB_PATH` env override wins; otherwise
-/// land on `<OS data dir>/inkstone/db.sqlite` (e.g. macOS:
-/// `~/Library/Application Support/inkstone/db.sqlite`).
+/// land on `<OS data dir>/inkstone/db.sqlite`:
+/// - macOS:   `~/Library/Application Support/inkstone/db.sqlite`
+/// - Linux:   `$XDG_DATA_HOME/inkstone/db.sqlite` (or `~/.local/share/inkstone/...`)
+/// - Windows: `%APPDATA%/inkstone/db.sqlite`
 fn resolve_db_path() -> Result<PathBuf> {
     if let Some(env) = std::env::var_os("INKSTONE_DB_PATH") {
         return Ok(PathBuf::from(env));
     }
-    let dirs = directories::ProjectDirs::from("", "", "inkstone")
-        .context("could not resolve OS data directory for inkstone")?;
-    Ok(dirs.data_dir().join("db.sqlite"))
+    Ok(os_data_dir()?.join("inkstone").join("db.sqlite"))
+}
+
+/// Per-OS application-data directory. Hand-rolled instead of pulling in a
+/// crate; the rules are short and the inputs are env vars + `$HOME`.
+#[cfg(target_os = "macos")]
+fn os_data_dir() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("$HOME not set")?;
+    Ok(PathBuf::from(home).join("Library").join("Application Support"))
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn os_data_dir() -> Result<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME").filter(|s| !s.is_empty()) {
+        return Ok(PathBuf::from(xdg));
+    }
+    let home = std::env::var_os("HOME").context("$HOME not set")?;
+    Ok(PathBuf::from(home).join(".local").join("share"))
+}
+
+#[cfg(target_os = "windows")]
+fn os_data_dir() -> Result<PathBuf> {
+    let appdata = std::env::var_os("APPDATA").context("%APPDATA% not set")?;
+    Ok(PathBuf::from(appdata))
 }
 
 /// Open the SQLite pool, creating the file (and parent dir) if missing,
