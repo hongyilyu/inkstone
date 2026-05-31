@@ -2,6 +2,12 @@
 //! and runs the embedded migration. The pool is the durable home for
 //! Threads, Runs, Messages, Run Events, Tool Calls, Proposals, and
 //! Entities.
+//!
+//! All SQL strings live in [`queries`]; this module owns the high-level
+//! operations and transaction boundaries. Outside `db::`, no caller
+//! writes SQL — they call these functions.
+
+mod queries;
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -96,24 +102,11 @@ pub async fn open() -> Result<SqlitePool> {
 /// WS frame at a time per connection); the eventual fix is an
 /// `is_default` flag with `INSERT … ON CONFLICT DO NOTHING`.
 pub async fn ensure_default_thread(pool: &SqlitePool, now_ms: i64) -> sqlx::Result<Uuid> {
-    if let Some(id_str) = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM threads ORDER BY created_at ASC LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await?
-    {
+    if let Some(id_str) = queries::select_first_thread_id(pool).await? {
         return Ok(Uuid::parse_str(&id_str).expect("threads.id is a valid UUID"));
     }
     let id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO threads (id, title, created_at, last_activity_at) \
-         VALUES (?, 'Untitled', ?, ?)",
-    )
-    .bind(id.to_string())
-    .bind(now_ms)
-    .bind(now_ms)
-    .execute(pool)
-    .await?;
+    queries::insert_thread(pool, id, "Untitled", now_ms).await?;
     Ok(id)
 }
 
@@ -136,101 +129,57 @@ pub async fn persist_initial_run(
 ) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
 
-    sqlx::query(
-        "INSERT INTO runs \
-         (id, thread_id, workflow_name, workflow_version, provider, model, \
-          user_message_id, status, started_at) \
-         VALUES (?, ?, ?, ?, 'echo', 'echo', ?, 'running', ?)",
+    queries::insert_run(
+        &mut *tx,
+        run_id,
+        thread_id,
+        workflow.name,
+        &workflow.version.to_string(),
+        "echo",
+        "echo",
+        user_message_id,
+        now_ms,
     )
-    .bind(run_id.to_string())
-    .bind(thread_id.to_string())
-    .bind(workflow.name)
-    .bind(workflow.version.to_string())
-    .bind(user_message_id.to_string())
-    .bind(now_ms)
-    .execute(&mut *tx)
     .await?;
 
-    sqlx::query(
-        "INSERT INTO messages \
-         (id, thread_id, run_id, role, status, created_at, updated_at) \
-         VALUES (?, ?, ?, 'user', 'completed', ?, ?)",
+    queries::insert_message(
+        &mut *tx,
+        user_message_id,
+        thread_id,
+        run_id,
+        "user",
+        "completed",
+        now_ms,
     )
-    .bind(user_message_id.to_string())
-    .bind(thread_id.to_string())
-    .bind(run_id.to_string())
-    .bind(now_ms)
-    .bind(now_ms)
-    .execute(&mut *tx)
+    .await?;
+    queries::insert_text_part(&mut *tx, user_message_id, 0, prompt).await?;
+
+    queries::insert_message(
+        &mut *tx,
+        assistant_message_id,
+        thread_id,
+        run_id,
+        "assistant",
+        "streaming",
+        now_ms,
+    )
+    .await?;
+    queries::insert_text_part(&mut *tx, assistant_message_id, 0, "").await?;
+
+    queries::insert_message_run_step(&mut *tx, run_id, 0, user_message_id, now_ms).await?;
+    queries::insert_message_run_step(&mut *tx, run_id, 1, assistant_message_id, now_ms).await?;
+
+    queries::insert_run_event(
+        &mut *tx,
+        run_id,
+        0,
+        "status",
+        Some(r#"{"status":"running"}"#),
+        now_ms,
+    )
     .await?;
 
-    sqlx::query(
-        "INSERT INTO message_parts (message_id, seq, type, text) \
-         VALUES (?, 0, 'text', ?)",
-    )
-    .bind(user_message_id.to_string())
-    .bind(prompt)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "INSERT INTO messages \
-         (id, thread_id, run_id, role, status, created_at, updated_at) \
-         VALUES (?, ?, ?, 'assistant', 'streaming', ?, ?)",
-    )
-    .bind(assistant_message_id.to_string())
-    .bind(thread_id.to_string())
-    .bind(run_id.to_string())
-    .bind(now_ms)
-    .bind(now_ms)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "INSERT INTO message_parts (message_id, seq, type, text) \
-         VALUES (?, 0, 'text', '')",
-    )
-    .bind(assistant_message_id.to_string())
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "INSERT INTO run_steps \
-         (run_id, seq, kind, message_id, tool_call_id, created_at) \
-         VALUES (?, 0, 'message', ?, NULL, ?)",
-    )
-    .bind(run_id.to_string())
-    .bind(user_message_id.to_string())
-    .bind(now_ms)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "INSERT INTO run_steps \
-         (run_id, seq, kind, message_id, tool_call_id, created_at) \
-         VALUES (?, 1, 'message', ?, NULL, ?)",
-    )
-    .bind(run_id.to_string())
-    .bind(assistant_message_id.to_string())
-    .bind(now_ms)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "INSERT INTO run_events (run_id, run_seq, kind, payload, created_at) \
-         VALUES (?, 0, 'status', ?, ?)",
-    )
-    .bind(run_id.to_string())
-    .bind(r#"{"status":"running"}"#)
-    .bind(now_ms)
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query("UPDATE threads SET last_activity_at = ? WHERE id = ?")
-        .bind(now_ms)
-        .bind(thread_id.to_string())
-        .execute(&mut *tx)
-        .await?;
+    queries::touch_thread_activity(&mut *tx, thread_id, now_ms).await?;
 
     tx.commit().await
 }
@@ -243,15 +192,7 @@ pub async fn append_assistant_text(
     assistant_message_id: Uuid,
     delta: &str,
 ) -> sqlx::Result<()> {
-    sqlx::query(
-        "UPDATE message_parts SET text = text || ?1 \
-         WHERE message_id = ?2 AND seq = 0",
-    )
-    .bind(delta)
-    .bind(assistant_message_id.to_string())
-    .execute(pool)
-    .await
-    .map(|_| ())
+    queries::append_text_part(pool, assistant_message_id, 0, delta).await
 }
 
 /// Slice 4: clean termination. Worker emitted `done`; flip `runs` to
@@ -259,48 +200,12 @@ pub async fn append_assistant_text(
 /// `completed`, and append a terminal `run_events` row with `kind='done'`.
 /// All three writes happen in one transaction so a reader sees either the
 /// pre-terminal or post-terminal state, never an in-between mix.
-pub async fn complete_run(
-    pool: &SqlitePool,
-    run_id: Uuid,
-    now_ms: i64,
-) -> sqlx::Result<()> {
+pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
-
-    let next_seq: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(run_seq), -1) + 1 FROM run_events WHERE run_id = ?",
-    )
-    .bind(run_id.to_string())
-    .fetch_one(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "UPDATE runs SET status = 'completed', \
-         terminal_reason = 'completed', ended_at = ? WHERE id = ?",
-    )
-    .bind(now_ms)
-    .bind(run_id.to_string())
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "UPDATE messages SET status = 'completed', updated_at = ? \
-         WHERE run_id = ? AND role = 'assistant'",
-    )
-    .bind(now_ms)
-    .bind(run_id.to_string())
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "INSERT INTO run_events (run_id, run_seq, kind, payload, created_at) \
-         VALUES (?, ?, 'done', NULL, ?)",
-    )
-    .bind(run_id.to_string())
-    .bind(next_seq)
-    .bind(now_ms)
-    .execute(&mut *tx)
-    .await?;
-
+    let next_seq = queries::next_run_seq(&mut *tx, run_id).await?;
+    queries::mark_run_completed(&mut *tx, run_id, now_ms).await?;
+    queries::mark_assistant_messages_completed(&mut *tx, run_id, now_ms).await?;
+    queries::insert_run_event(&mut *tx, run_id, next_seq, "done", None, now_ms).await?;
     tx.commit().await
 }
 
@@ -310,51 +215,29 @@ pub async fn complete_run(
 /// row for this Run to `'incomplete'` (the ADR-0017 invariant — no Message
 /// is left dangling at `'streaming'` after its Run terminates), and append
 /// a terminal `run_events` row with `kind='error'`. One transaction.
-pub async fn error_run(
-    pool: &SqlitePool,
-    run_id: Uuid,
-    now_ms: i64,
-) -> sqlx::Result<()> {
+pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
-
-    let next_seq: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(run_seq), -1) + 1 FROM run_events WHERE run_id = ?",
+    let next_seq = queries::next_run_seq(&mut *tx, run_id).await?;
+    queries::mark_run_errored(
+        &mut *tx,
+        run_id,
+        "worker_disconnected",
+        "worker_disconnected",
+        "worker exited without emitting done event",
+        now_ms,
     )
-    .bind(run_id.to_string())
-    .fetch_one(&mut *tx)
     .await?;
-
-    sqlx::query(
-        "UPDATE runs SET status = 'errored', \
-         terminal_reason = 'worker_disconnected', \
-         error_code = 'worker_disconnected', \
-         error_message = 'worker exited without emitting done event', \
-         ended_at = ? WHERE id = ?",
+    queries::mark_streaming_messages_incomplete(&mut *tx, run_id, now_ms).await?;
+    queries::insert_run_event(
+        &mut *tx,
+        run_id,
+        next_seq,
+        "error",
+        Some(
+            r#"{"code":"worker_disconnected","message":"worker exited without emitting done event"}"#,
+        ),
+        now_ms,
     )
-    .bind(now_ms)
-    .bind(run_id.to_string())
-    .execute(&mut *tx)
     .await?;
-
-    sqlx::query(
-        "UPDATE messages SET status = 'incomplete', updated_at = ? \
-         WHERE run_id = ? AND status = 'streaming'",
-    )
-    .bind(now_ms)
-    .bind(run_id.to_string())
-    .execute(&mut *tx)
-    .await?;
-
-    sqlx::query(
-        "INSERT INTO run_events (run_id, run_seq, kind, payload, created_at) \
-         VALUES (?, ?, 'error', ?, ?)",
-    )
-    .bind(run_id.to_string())
-    .bind(next_seq)
-    .bind(r#"{"code":"worker_disconnected","message":"worker exited without emitting done event"}"#)
-    .bind(now_ms)
-    .execute(&mut *tx)
-    .await?;
-
     tx.commit().await
 }
