@@ -158,7 +158,11 @@ fn post_message_writes_initial_rows() {
         let id: String = r.get("id");
         assert_eq!(id, run_id, "runs.id matches response run_id");
         let status: String = r.get("status");
-        assert_eq!(status, "running");
+        // slice 4: Core may finish the terminal tx before the test kills it; both states are acceptable here.
+        assert!(
+            matches!(status.as_str(), "running" | "completed"),
+            "runs.status is 'running' or 'completed' (slice-4 race), got {status:?}"
+        );
         let wf_name: String = r.get("workflow_name");
         assert_eq!(wf_name, "echo");
         let wf_ver: String = r.get("workflow_version");

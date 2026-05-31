@@ -4,6 +4,7 @@
 //! JSON-RPC Notification on the per-connection outbound channel.
 
 use std::process::Stdio;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -11,6 +12,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
+use crate::db;
 use crate::protocol::WorkerInbound;
 use crate::runs::{RunHandle, Runs};
 use crate::workflow::Workflow;
@@ -98,6 +100,10 @@ async fn run_worker(
     };
     let mut lines = BufReader::new(stdout).lines();
 
+    // Slice 4: track whether the Worker emitted a terminal `done` event so
+    // the post-loop branch can pick `complete_run` vs `error_run`.
+    let mut saw_done = false;
+
     while let Ok(Some(line)) = lines.next_line().await {
         let event: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
@@ -107,12 +113,14 @@ async fn run_worker(
             }
         };
 
+        let kind = event.get("kind").and_then(serde_json::Value::as_str);
+
         // For `text_delta`, append to the assistant `message_parts.text`
         // BEFORE forwarding the WS frame so a test that observes the
         // frame and then queries the DB sees the committed delta.
         // Persistence loss here is logged but not fatal — the WS frame
         // is the user's observable channel for slice 3.
-        if event.get("kind") == Some(&serde_json::Value::String("text_delta".to_string())) {
+        if kind == Some("text_delta") {
             if let Some(delta) = event.get("delta").and_then(serde_json::Value::as_str) {
                 if let Err(e) = sqlx::query(
                     "UPDATE message_parts SET text = text || ?1 \
@@ -128,6 +136,8 @@ async fn run_worker(
                     );
                 }
             }
+        } else if kind == Some("done") {
+            saw_done = true;
         }
 
         let notification = serde_json::json!({
@@ -143,6 +153,25 @@ async fn run_worker(
             // Connection dropped; nothing more to do.
             break;
         }
+    }
+
+    // Slice 4: terminal-state tx. Either path commits the runs/messages/
+    // run_events triple in a single transaction (ADR-0017's atomic
+    // recovery invariant). The tx fires AFTER the WS forwarder has
+    // drained, so a slice-4 test that wants to assert post-terminal DB
+    // state must close the WS and let Core finish (e.g. by killing it
+    // and reaping, or by polling the DB) before querying.
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time before epoch")
+        .as_millis() as i64;
+    let result = if saw_done {
+        db::complete_run(&pool, run_id, now_ms).await
+    } else {
+        db::error_run(&pool, run_id, now_ms).await
+    };
+    if let Err(e) = result {
+        eprintln!("terminal tx failed for run {run_id}: {e}");
     }
 
     let _ = child.wait().await;

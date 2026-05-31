@@ -81,3 +81,108 @@ pub async fn ensure_default_thread(pool: &SqlitePool, now_ms: i64) -> sqlx::Resu
     .await?;
     Ok(id)
 }
+
+/// Slice 4: clean termination. Worker emitted `done`; flip `runs` to
+/// `completed`, the assistant `messages` row from `streaming` to
+/// `completed`, and append a terminal `run_events` row with `kind='done'`.
+/// All three writes happen in one transaction so a reader sees either the
+/// pre-terminal or post-terminal state, never an in-between mix.
+pub async fn complete_run(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+
+    let next_seq: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(run_seq), -1) + 1 FROM run_events WHERE run_id = ?",
+    )
+    .bind(run_id.to_string())
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE runs SET status = 'completed', \
+         terminal_reason = 'completed', ended_at = ? WHERE id = ?",
+    )
+    .bind(now_ms)
+    .bind(run_id.to_string())
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE messages SET status = 'completed', updated_at = ? \
+         WHERE run_id = ? AND role = 'assistant'",
+    )
+    .bind(now_ms)
+    .bind(run_id.to_string())
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO run_events (run_id, run_seq, kind, payload, created_at) \
+         VALUES (?, ?, 'done', NULL, ?)",
+    )
+    .bind(run_id.to_string())
+    .bind(next_seq)
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await
+}
+
+/// Slice 4: Worker stdout EOF without a `done` event (the worker died, was
+/// killed, or otherwise hung up). Flip `runs` to `errored` with
+/// `terminal_reason='worker_disconnected'`, every `messages.status='streaming'`
+/// row for this Run to `'incomplete'` (the ADR-0017 invariant — no Message
+/// is left dangling at `'streaming'` after its Run terminates), and append
+/// a terminal `run_events` row with `kind='error'`. One transaction.
+pub async fn error_run(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+
+    let next_seq: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(run_seq), -1) + 1 FROM run_events WHERE run_id = ?",
+    )
+    .bind(run_id.to_string())
+    .fetch_one(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE runs SET status = 'errored', \
+         terminal_reason = 'worker_disconnected', \
+         error_code = 'worker_disconnected', \
+         error_message = 'worker exited without emitting done event', \
+         ended_at = ? WHERE id = ?",
+    )
+    .bind(now_ms)
+    .bind(run_id.to_string())
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE messages SET status = 'incomplete', updated_at = ? \
+         WHERE run_id = ? AND status = 'streaming'",
+    )
+    .bind(now_ms)
+    .bind(run_id.to_string())
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO run_events (run_id, run_seq, kind, payload, created_at) \
+         VALUES (?, ?, 'error', ?, ?)",
+    )
+    .bind(run_id.to_string())
+    .bind(next_seq)
+    .bind(r#"{"code":"worker_disconnected","message":"worker exited without emitting done event"}"#)
+    .bind(now_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await
+}

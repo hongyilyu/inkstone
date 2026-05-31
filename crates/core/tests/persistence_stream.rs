@@ -172,9 +172,11 @@ fn text_delta_appends_to_message_parts() {
                 .expect("read assistant message");
         let assistant_message_id: String = assistant_row.get("id");
         let status: String = assistant_row.get("status");
-        assert_eq!(
-            status, "streaming",
-            "slice 3 leaves assistant status='streaming'; slice 4 will flip it"
+        // slice 4: Core may finish the terminal tx before the test kills it, flipping
+        // assistant status='streaming' → 'completed'; both states are acceptable here.
+        assert!(
+            matches!(status.as_str(), "streaming" | "completed"),
+            "assistant status is 'streaming' or 'completed' (slice-4 race), got {status:?}"
         );
 
         // Assistant message_parts ------------------------------------------
