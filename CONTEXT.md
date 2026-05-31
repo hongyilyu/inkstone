@@ -15,7 +15,7 @@ The TypeScript component that drives Runs to completion by executing Turns, and 
 _Avoid_: Agent Runtime, TypeScript Agent Runtime, TypeScript Worker, runtime.
 
 **Workspace**:
-The full local Inkstone state on disk that Core opens and operates against — the vault directory, SQLite database, config, and runtime artifacts taken as a unit. Inkstone may eventually support multiple workspaces; only one is open per Core process.
+The full local Inkstone state on disk that Core opens and operates against — the vault directory, SQLite database, config, and runtime artifacts taken as a unit. The "unit" is logical, not physical: the Vault is wherever the user keeps it; Core-managed state (DB, config) lives in the OS application-data directory. Inkstone may eventually support multiple workspaces; only one is open per Core process. The MVP supports exactly one Workspace per install.
 _Avoid_: project, environment, instance.
 
 **Vault**:
