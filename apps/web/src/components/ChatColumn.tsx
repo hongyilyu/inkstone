@@ -1,6 +1,9 @@
 import { useLayoutEffect, useRef } from "react";
-import { type ChatTurn, conversation } from "../data/mock.js";
+import { type ChatTurn, conversation, proposals } from "../data/mock.js";
 import { ComposeFooter } from "./ComposeFooter.js";
+import { ProposalCard } from "./ProposalCard.js";
+
+const proposalById = new Map(proposals.map((p) => [p.id, p]));
 
 export function ChatColumn() {
 	const scrollerRef = useRef<HTMLDivElement>(null);
@@ -65,6 +68,19 @@ function AgentBubble({ turn }: { turn: Extract<ChatTurn, { role: "agent" }> }) {
 							{a.label}
 						</span>
 					))}
+				</div>
+			) : null}
+			{turn.proposalIds ? (
+				<div className="flex w-full flex-col gap-2">
+					{turn.proposalIds.map((id) => {
+						const p = proposalById.get(id);
+						return p ? (
+							<ProposalCard
+								key={id}
+								proposal={p}
+							/>
+						) : null;
+					})}
 				</div>
 			) : null}
 			<span className="text-xs text-muted-foreground">{turn.t}</span>
