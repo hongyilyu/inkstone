@@ -98,24 +98,51 @@ fn send_subscribe_response(out_tx: &UnboundedSender<String>, id: serde_json::Val
 /// when `out_tx.send` fails (connection dropped). On `RecvError::Lagged(n)`
 /// it continues (slice 1 tolerance; the rigorous re-snapshot is slice 2).
 /// Spawning keeps `handle_socket`'s select loop free to drain `out_rx`.
+///
+/// Terminal-`done` guarantee: a subscribe can attach in the window between
+/// the Worker publishing `Done` (under the gate, then releasing it) and
+/// `hub::remove` (after the terminal SQLite tx). A `tokio::broadcast`
+/// receiver created in that window is positioned AFTER the already-sent
+/// `Done` and would never see it — the stream would hang. The gate gives
+/// exactly-once for `text_delta`s but cannot protect a terminal message a
+/// late receiver structurally cannot replay. So the forwarder tracks whether
+/// it forwarded a `Done` from the tail and, on channel close, synthesizes one
+/// if it never did. This is the single guarantee point: every subscriber path
+/// ends with exactly one `done`.
 fn spawn_tail_forwarder(
     run_id: Uuid,
     mut receiver: broadcast::Receiver<RunEvent>,
     out_tx: UnboundedSender<String>,
 ) {
     tokio::spawn(async move {
+        let mut saw_done = false;
         loop {
             match receiver.recv().await {
                 Ok(event) => {
+                    if matches!(event, RunEvent::Done) {
+                        saw_done = true;
+                    }
                     send_run_event(&out_tx, run_id, &event);
                     if out_tx.is_closed() {
                         break;
                     }
                 }
-                Err(broadcast::error::RecvError::Closed) => break,
+                Err(broadcast::error::RecvError::Closed) => {
+                    // Sender dropped at the Worker's `hub::remove`. If we
+                    // never forwarded a `Done` (attached after the Worker
+                    // published it, or it fell in a lagged window),
+                    // synthesize one so the client's run-stream finalizes
+                    // instead of hanging forever.
+                    if !saw_done {
+                        send_run_event(&out_tx, run_id, &RunEvent::Done);
+                    }
+                    break;
+                }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     eprintln!("subscribe forwarder lagged {n} events for run {run_id}");
-                    // Slice 1: tolerate lag and keep forwarding the tail.
+                    // Slice 1: tolerate lag and keep forwarding the tail. A
+                    // `Done` dropped in the lagged window is recovered by the
+                    // synthesize-on-close path above.
                     continue;
                 }
             }

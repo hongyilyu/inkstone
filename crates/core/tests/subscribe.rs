@@ -18,12 +18,21 @@
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
 use futures_util::{SinkExt, StreamExt};
 use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
+
+/// Core binds a fixed port (8765); the two tests in this binary must run
+/// serially or they collide. Cargo runs tests within a binary in parallel
+/// by default, so each acquires this lock for the full Core lifetime.
+fn port_lock() -> MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
 
 /// Drop guard around `Child` that SIGKILLs and reaps on drop. Without this a
 /// panicking test would leak Core (which holds the fixed port 8765 and blocks
@@ -39,10 +48,15 @@ impl Drop for CoreChild {
     }
 }
 
-#[test]
-fn subscribe_snapshot_then_tail() {
-    // Resolve repo paths from this crate's manifest dir so tests work
-    // regardless of cargo's CWD. Mirror end_to_end.rs:15-19.
+/// Spawn Core wired to the slice-0 slow-worker fixture and block on its
+/// stdout until `INKSTONE_LISTENING` appears. Returns the reaped-on-drop
+/// child guard and the `ws://…/ws` URL. `chunks`/`gate_path` are passed
+/// through to the fixture via Core's env (the worker child inherits it).
+fn spawn_core_with_fixture(
+    db_path: &Path,
+    gate_path: &Path,
+    chunks: &str,
+) -> (CoreChild, String) {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir
         .parent()
@@ -60,25 +74,15 @@ fn subscribe_snapshot_then_tail() {
     if !fixture.exists() {
         panic!("slow-worker fixture not found at {}", fixture.display());
     }
-
-    // Core spawns the worker via `INKSTONE_WORKER_CMD`; the fixture is a
-    // drop-in for the real worker. `INKSTONE_FIXTURE_*` are read by the
-    // fixture — Core inherits its env into the worker child, so setting them
-    // on Core makes them visible to the fixture.
     let worker_cmd = format!("{} {}", tsx.display(), fixture.display());
-
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let gate_path = tmp.path().join("gate");
-    assert!(!gate_path.exists(), "gate must not exist before release");
 
     let mut child = std::process::Command::cargo_bin("core")
         .expect("core binary exists")
         .current_dir(repo_root)
         .env("INKSTONE_WORKER_CMD", &worker_cmd)
-        .env("INKSTONE_DB_PATH", &db_path)
-        .env("INKSTONE_FIXTURE_CHUNKS", "2")
-        .env("INKSTONE_FIXTURE_GATE", &gate_path)
+        .env("INKSTONE_DB_PATH", db_path)
+        .env("INKSTONE_FIXTURE_CHUNKS", chunks)
+        .env("INKSTONE_FIXTURE_GATE", gate_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -106,13 +110,25 @@ fn subscribe_snapshot_then_tail() {
             break rest.to_string();
         }
     };
-    // Re-arm the drop guard so Core is reaped on any panic below.
-    let _core = CoreChild(Some(child));
 
     let ws_url = http_url
         .strip_prefix("http://")
         .map(|host| format!("ws://{host}/ws"))
         .expect("INKSTONE_LISTENING URL has http:// prefix");
+
+    (CoreChild(Some(child)), ws_url)
+}
+
+#[test]
+fn subscribe_snapshot_then_tail() {
+    let _guard = port_lock();
+
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    let gate_path = tmp.path().join("gate");
+    assert!(!gate_path.exists(), "gate must not exist before release");
+
+    let (_core, ws_url) = spawn_core_with_fixture(&db_path, &gate_path, "2");
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -249,6 +265,166 @@ fn subscribe_snapshot_then_tail() {
         assert_eq!(
             assembled, "echo: hello",
             "snapshot + tail reassembles to the full echo output exactly once"
+        );
+    });
+}
+
+/// Regression (iteration 2): a `run/subscribe` that attaches at or after a
+/// Run's terminal `done` MUST still receive a terminal `done` and never hang.
+///
+/// The bug: the Worker publishes `Done` to the broadcast channel under the
+/// gate, releases the gate, runs the terminal SQLite tx (multi-ms), and only
+/// THEN removes the hub entry. A subscribe landing in that window takes the
+/// streaming (`Some`) branch, calls `tx.subscribe()` — positioned AFTER the
+/// already-broadcast `Done`, which `tokio::broadcast` does not replay — and
+/// the forwarder would block forever, never delivering `done`. The fix:
+/// `spawn_tail_forwarder` synthesizes a `done` on channel close if it never
+/// forwarded one.
+///
+/// Determinism/bounding: the first subscribe drains to `done`, proving the
+/// Worker published it. A SECOND WS connection (pre-opened so there is zero
+/// setup latency) then subscribes to the SAME run_id the instant the first
+/// `done` is observed — landing at or just after terminal, which is exactly
+/// the race window. EVERY frame read is bounded by a 5s timeout, so a
+/// regression (the hang) fails fast as a timeout rather than blocking CI.
+/// The late subscriber must deliver a snapshot `text_delta` (cumulative
+/// `echo: hello`) and a terminal `done`; this holds whether it lands in the
+/// `Some`-branch-after-done window (synthesize-on-close) or the already-
+/// removed `None` branch (which synthesizes `done` directly).
+#[test]
+fn late_subscribe_after_terminal_still_gets_done() {
+    let _guard = port_lock();
+
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    // chunks=1: the fixture emits the sole `echo: hello` chunk, then blocks on
+    // the gate, then emits `done`. Tripping the gate releases `done`, giving
+    // the test a controlled "Worker has now published done" instant.
+    let gate_path = tmp.path().join("gate");
+
+    let (_core, ws_url) = spawn_core_with_fixture(&db_path, &gate_path, "1");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        async fn next_text(
+            ws: &mut tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        ) -> String {
+            let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+                .await
+                .expect("frame within 5s (a hang here is the regression)")
+                .expect("frame present")
+                .expect("frame ok");
+            match frame {
+                Message::Text(t) => t.to_string(),
+                other => panic!("expected text frame, got {other:?}"),
+            }
+        }
+
+        // Connection A: post + first subscribe, drained to done.
+        let (mut ws_a, _resp) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("ws A handshake succeeds");
+
+        // Connection B: pre-open so there is no setup latency between seeing
+        // the first `done` and issuing the late subscribe (maximizes the
+        // chance of landing in the Some-branch-after-done race window).
+        let (mut ws_b, _resp_b) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("ws B handshake succeeds");
+
+        let post = r#"{"jsonrpc":"2.0","id":1,"method":"run/post_message","params":{"prompt":"hello"}}"#;
+        ws_a.send(Message::Text(post.into()))
+            .await
+            .expect("send post_message frame");
+        let response_body = next_text(&mut ws_a).await;
+        let response: serde_json::Value = serde_json::from_str(&response_body)
+            .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {response_body}"));
+        let run_id = response["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string — body: {response_body}"))
+            .to_string();
+
+        // First subscribe on A. With chunks=1 the fixture emits the sole
+        // chunk, then blocks on the gate before `done`; trip the gate so the
+        // Worker publishes `done`.
+        let subscribe_a = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
+        );
+        ws_a.send(Message::Text(subscribe_a.into()))
+            .await
+            .expect("send subscribe A frame");
+        let _sub_a_resp = next_text(&mut ws_a).await; // subscribe response
+        let _snapshot_a = next_text(&mut ws_a).await; // snapshot text_delta
+
+        std::fs::write(&gate_path, b"go").expect("create gate file");
+
+        // Drain A to its terminal done — this proves the Worker published it.
+        loop {
+            let body = next_text(&mut ws_a).await;
+            let v: serde_json::Value = serde_json::from_str(&body)
+                .unwrap_or_else(|e| panic!("A tail frame is JSON: {e} — body: {body}"));
+            if v["params"]["event"]["kind"] == serde_json::json!("done") {
+                break;
+            }
+        }
+
+        // The INSTANT the first done is observed, issue the late subscribe on
+        // B. The Worker is now running its terminal tx (and has not yet
+        // removed the hub), so B's subscribe may take the Some branch and
+        // attach AFTER the broadcast `Done` — the exact race the fix closes.
+        let subscribe_b = format!(
+            r#"{{"jsonrpc":"2.0","id":3,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
+        );
+        ws_b.send(Message::Text(subscribe_b.into()))
+            .await
+            .expect("send subscribe B frame");
+
+        // B's subscribe response.
+        let sub_b_resp_body = next_text(&mut ws_b).await;
+        let sub_b_resp: serde_json::Value = serde_json::from_str(&sub_b_resp_body)
+            .unwrap_or_else(|e| panic!("B subscribe response is JSON: {e} — body: {sub_b_resp_body}"));
+        assert_eq!(sub_b_resp["id"], serde_json::json!(3), "B subscribe response id");
+
+        // B MUST receive a snapshot text_delta then a terminal done within the
+        // bounded timeout — never hang. (Before the fix, a Some-branch B
+        // hangs here and the 5s timeout fails the test.) The loop only exits
+        // via the `done` arm's `break`; reaching the line after it proves a
+        // terminal `done` was delivered.
+        let mut assembled = String::new();
+        loop {
+            let body = next_text(&mut ws_b).await;
+            let v: serde_json::Value = serde_json::from_str(&body)
+                .unwrap_or_else(|e| panic!("B frame is JSON: {e} — body: {body}"));
+            assert_eq!(
+                v["method"],
+                serde_json::json!("run/event"),
+                "B frame is a run/event — body: {body}"
+            );
+            match v["params"]["event"]["kind"].as_str() {
+                Some("text_delta") => {
+                    assembled.push_str(
+                        v["params"]["event"]["delta"]
+                            .as_str()
+                            .unwrap_or_else(|| panic!("B text_delta carries a string — body: {body}")),
+                    );
+                }
+                Some("done") => break,
+                other => panic!("unexpected B event kind {other:?} — body: {body}"),
+            }
+        }
+
+        ws_a.close(None).await.ok();
+        ws_b.close(None).await.ok();
+
+        assert_eq!(
+            assembled, "echo: hello",
+            "late subscriber's snapshot reassembles to the full echo output"
         );
     });
 }
