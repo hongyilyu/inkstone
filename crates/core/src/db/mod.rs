@@ -195,6 +195,35 @@ pub async fn append_assistant_text(
     queries::append_text_part(pool, assistant_message_id, 0, delta).await
 }
 
+/// A Run's snapshot for `run/subscribe` (ADR-0022): the assistant
+/// message's cumulative text at the subscribe instant plus the Run's
+/// status. `text` is empty for a Run that has streamed no delta yet.
+pub struct RunSnapshot {
+    pub text: String,
+    /// The Run's `runs.status` at the snapshot instant. Slice 1 keys
+    /// streaming-vs-terminal off hub presence, not this field; it is part
+    /// of the ADR-0022 snapshot shape and consumed by the `thread/get`
+    /// rehydration read in a later slice.
+    #[allow(dead_code)]
+    pub status: String,
+}
+
+/// Read the snapshot-then-tail starting point for `run_id`: the assistant
+/// message's cumulative `message_parts.text` (seq 0) and the Run status.
+/// Returns `None` when the Run does not exist, so the subscribe handler can
+/// stay defensible against an unknown run id.
+pub async fn select_run_snapshot(
+    pool: &SqlitePool,
+    run_id: Uuid,
+) -> sqlx::Result<Option<RunSnapshot>> {
+    Ok(queries::select_run_snapshot(pool, run_id)
+        .await?
+        .map(|(text, status)| RunSnapshot {
+            text: text.unwrap_or_default(),
+            status,
+        }))
+}
+
 /// Slice 4: clean termination. Worker emitted `done`; flip `runs` to
 /// `completed`, the assistant `messages` row from `streaming` to
 /// `completed`, and append a terminal `run_events` row with `kind='done'`.

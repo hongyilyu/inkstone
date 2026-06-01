@@ -150,8 +150,6 @@ fn run_history_survives_restart() {
             }
 
             let response_body = next_text(&mut ws).await;
-            let _text_delta_body = next_text(&mut ws).await;
-            let done_body = next_text(&mut ws).await;
 
             let response: serde_json::Value = serde_json::from_str(&response_body)
                 .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {response_body}"));
@@ -160,13 +158,27 @@ fn run_history_survives_restart() {
                 .unwrap_or_else(|| panic!("result.run_id is a string — body: {response_body}"))
                 .to_string();
 
-            let done: serde_json::Value = serde_json::from_str(&done_body)
-                .unwrap_or_else(|e| panic!("done frame is JSON: {e} — body: {done_body}"));
-            assert_eq!(
-                done["params"]["event"]["kind"],
-                serde_json::json!("done"),
-                "third frame is done"
+            // Pure-subscribe (ADR-0022): post_message returns {run_id} only;
+            // subscribe by run_id and read until the terminal done.
+            let subscribe = format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
             );
+            ws.send(Message::Text(subscribe.into()))
+                .await
+                .expect("send subscribe frame");
+
+            let _sub_response = next_text(&mut ws).await;
+
+            // The loop only exits via the `done` arm's `break`; reaching the
+            // line after it proves the subscribe stream ended with a `done`.
+            loop {
+                let body = next_text(&mut ws).await;
+                let v: serde_json::Value = serde_json::from_str(&body)
+                    .unwrap_or_else(|e| panic!("event is JSON: {e} — body: {body}"));
+                if v["params"]["event"]["kind"] == serde_json::json!("done") {
+                    break;
+                }
+            }
 
             ws.close(None).await.ok();
             // Slice-4 ordering: terminal tx commits in Core's per-Run task

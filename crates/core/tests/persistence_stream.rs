@@ -110,10 +110,6 @@ fn text_delta_appends_to_message_parts() {
         }
 
         let response_body = next_text(&mut ws).await;
-        let event1_body = next_text(&mut ws).await;
-        let event2_body = next_text(&mut ws).await;
-
-        ws.close(None).await.ok();
 
         let response: serde_json::Value = serde_json::from_str(&response_body)
             .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {response_body}"));
@@ -121,27 +117,51 @@ fn text_delta_appends_to_message_parts() {
             .as_str()
             .unwrap_or_else(|| panic!("result.run_id is a string — body: {response_body}"))
             .to_string();
-
-        let event1: serde_json::Value = serde_json::from_str(&event1_body)
-            .unwrap_or_else(|e| panic!("event1 is JSON: {e} — body: {event1_body}"));
-        assert_eq!(
-            event1["params"]["event"]["kind"],
-            serde_json::json!("text_delta"),
-            "frame 1 is text_delta"
-        );
-        assert_eq!(
-            event1["params"]["event"]["delta"],
-            serde_json::json!("echo: hi"),
-            "text_delta carries 'echo: hi'"
+        // Pure-subscribe (ADR-0022): no events on the post_message response.
+        assert!(
+            response["params"].get("event").is_none(),
+            "post_message response carries no event — body: {response_body}"
         );
 
-        let event2: serde_json::Value = serde_json::from_str(&event2_body)
-            .unwrap_or_else(|e| panic!("event2 is JSON: {e} — body: {event2_body}"));
-        assert_eq!(
-            event2["params"]["event"]["kind"],
-            serde_json::json!("done"),
-            "frame 2 is done"
+        // Subscribe by run_id, then drain the snapshot + tail until done.
+        let subscribe = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
         );
+        ws.send(Message::Text(subscribe.into()))
+            .await
+            .expect("send subscribe frame");
+
+        let _sub_response = next_text(&mut ws).await;
+
+        let mut assembled = String::new();
+        // The loop only exits via the `done` arm's `break`; every other path
+        // panics, so reaching the line after it proves the terminal frame was
+        // a `done`.
+        loop {
+            let body = next_text(&mut ws).await;
+            let v: serde_json::Value = serde_json::from_str(&body)
+                .unwrap_or_else(|e| panic!("event is JSON: {e} — body: {body}"));
+            assert_eq!(
+                v["method"],
+                serde_json::json!("run/event"),
+                "frame is a run/event — body: {body}"
+            );
+            match v["params"]["event"]["kind"].as_str() {
+                Some("text_delta") => {
+                    assembled.push_str(
+                        v["params"]["event"]["delta"]
+                            .as_str()
+                            .unwrap_or_else(|| panic!("text_delta carries a string — body: {body}")),
+                    );
+                }
+                Some("done") => break,
+                other => panic!("unexpected event kind {other:?} — body: {body}"),
+            }
+        }
+        // snapshot + tail reassembles to the full echo output.
+        assert_eq!(assembled, "echo: hi", "reassembled stream is 'echo: hi'");
+
+        ws.close(None).await.ok();
 
         run_id
     });

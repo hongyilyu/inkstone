@@ -26,6 +26,14 @@ pub struct PostMessageParams {
     pub prompt: String,
 }
 
+/// `run/subscribe` params: the Run to attach to. Snapshot-then-tail
+/// (ADR-0022) — Core replies with the cumulative assistant text as a
+/// `text_delta` snapshot, then forwards the live tail until `done`.
+#[derive(Debug, Deserialize)]
+pub struct SubscribeParams {
+    pub run_id: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PostMessageResult {
     pub run_id: String,
@@ -35,7 +43,7 @@ pub struct PostMessageResult {
 /// (per ADR-0006). Core deserializes each line into this enum, takes
 /// the appropriate persistence action, and forwards it as a `run/event`
 /// Notification.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunEvent {
     TextDelta { delta: String },

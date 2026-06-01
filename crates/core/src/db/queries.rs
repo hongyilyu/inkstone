@@ -250,6 +250,31 @@ where
     .map(|_| ())
 }
 
+/// Read a Run's snapshot for `run/subscribe`: the assistant message's
+/// cumulative `message_parts.text` at `seq=0` plus the Run's `status`.
+/// Returns `None` when the Run does not exist. The text is `Some("")` for
+/// a Run that has begun streaming but persisted no delta yet; `None` only
+/// when there is no assistant message_part row at all.
+pub(super) async fn select_run_snapshot<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<(Option<String>, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<(Option<String>, String)> = sqlx::query_as(
+        "SELECT mp.text, r.status \
+         FROM runs r \
+         JOIN messages m ON m.run_id = r.id AND m.role = 'assistant' \
+         JOIN message_parts mp ON mp.message_id = m.id AND mp.seq = 0 \
+         WHERE r.id = ?1",
+    )
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
+}
+
 // ─── run_steps ────────────────────────────────────────────────────────
 
 pub(super) async fn insert_message_run_step<'e, E>(
