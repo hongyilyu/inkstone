@@ -6,10 +6,15 @@ import { getChatState, resetChatStore, setFocusedThread } from "./chat.js";
 
 // A stub WsClient backed by an in-memory Queue the test offers events to.
 // This is the slice-10 RuntimeProvider injection seam: a runtime built from
-// `ManagedRuntime.make(Layer.succeed(WsClient, stub))` (no real socket).
+// `ManagedRuntime.make(Layer.succeed(WsClient, stub))` (no real socket). Only
+// postMessage + subscribeRun are exercised here; the rest never run.
 function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
+	const unused = Effect.die("not used in slice 11");
 	const stub = WsClient.of({
+		threadCreate: () => unused,
 		postMessage: () => Effect.succeed(runId),
+		threadList: () => unused,
+		threadGet: () => unused,
 		subscribeRun: () => Stream.fromQueue(queue),
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
