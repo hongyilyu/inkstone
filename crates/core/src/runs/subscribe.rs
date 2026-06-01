@@ -60,7 +60,7 @@ pub(super) async fn handle(
 
             send_subscribe_response(out_tx, id, run_id);
             send_text_delta(out_tx, run_id, &snapshot_text);
-            spawn_tail_forwarder(run_id, receiver, out_tx.clone());
+            spawn_tail_forwarder(run_id, receiver, out_tx.clone(), pool.clone());
         }
         // ---- Run terminal/unknown: snapshot from the DB, emit done. ----
         None => {
@@ -93,11 +93,25 @@ fn send_subscribe_response(out_tx: &UnboundedSender<String>, id: serde_json::Val
 }
 
 /// Spawn a task that owns the broadcast `Receiver` + the connection's
-/// `out_tx` and forwards the live tail as `run/event` notifications. Ends on
-/// `RecvError::Closed` (terminal — sender dropped at the Worker's removal) or
-/// when `out_tx.send` fails (connection dropped). On `RecvError::Lagged(n)`
-/// it continues (slice 1 tolerance; the rigorous re-snapshot is slice 2).
-/// Spawning keeps `handle_socket`'s select loop free to drain `out_rx`.
+/// `out_tx` and forwards the live tail as `run/event` notifications. Ends
+/// on `RecvError::Closed` (terminal — sender dropped at the Worker's
+/// removal) or when the connection drops (`out_tx.closed()` resolves once
+/// the connection's `out_rx` is gone). Spawning keeps `handle_socket`'s
+/// select loop free to drain `out_rx`.
+///
+/// Connection-drop detection (ADR-0022 connection decoupling): the forwarder
+/// `tokio::select!`s between `receiver.recv()` and `out_tx.closed()` so a
+/// dropped connection wakes it promptly — even while parked on `recv()` with
+/// no events flowing — rather than leaking the task until the next event or
+/// channel close. When the connection drops the forwarder just breaks: there
+/// is no client left to receive a synthesized `done` (ADR-0012: the Run
+/// itself keeps running, owned by the Worker, regardless of this connection).
+///
+/// `Lagged` → re-snapshot (ADR-0022 §28): if a slow subscriber overflows the
+/// bounded broadcast buffer, the forwarder re-reads the persisted snapshot
+/// from tier 2 (the durable text floor) and re-emits it as a cumulative
+/// `text_delta`, then resumes the tail. Lag degrades to "re-read the truth,"
+/// never to lost text. A re-snapshot read error is logged and tolerated.
 ///
 /// Terminal-`done` guarantee: a subscribe can attach in the window between
 /// the Worker publishing `Done` (under the gate, then releasing it) and
@@ -105,45 +119,70 @@ fn send_subscribe_response(out_tx: &UnboundedSender<String>, id: serde_json::Val
 /// receiver created in that window is positioned AFTER the already-sent
 /// `Done` and would never see it — the stream would hang. The gate gives
 /// exactly-once for `text_delta`s but cannot protect a terminal message a
-/// late receiver structurally cannot replay. So the forwarder tracks whether
-/// it forwarded a `Done` from the tail and, on channel close, synthesizes one
-/// if it never did. This is the single guarantee point: every subscriber path
-/// ends with exactly one `done`.
+/// late receiver structurally cannot replay. So the forwarder tracks
+/// whether it forwarded a `Done` from the tail and, on channel close (the
+/// connection still up), synthesizes one if it never did. This is the single
+/// guarantee point: every connected subscriber path ends with exactly one
+/// `done`.
 fn spawn_tail_forwarder(
     run_id: Uuid,
     mut receiver: broadcast::Receiver<RunEvent>,
     out_tx: UnboundedSender<String>,
+    pool: SqlitePool,
 ) {
     tokio::spawn(async move {
         let mut saw_done = false;
         loop {
-            match receiver.recv().await {
-                Ok(event) => {
-                    if matches!(event, RunEvent::Done) {
-                        saw_done = true;
-                    }
-                    send_run_event(&out_tx, run_id, &event);
-                    if out_tx.is_closed() {
-                        break;
-                    }
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    // Sender dropped at the Worker's `hub::remove`. If we
-                    // never forwarded a `Done` (attached after the Worker
-                    // published it, or it fell in a lagged window),
-                    // synthesize one so the client's run-stream finalizes
-                    // instead of hanging forever.
-                    if !saw_done {
-                        send_run_event(&out_tx, run_id, &RunEvent::Done);
-                    }
+            tokio::select! {
+                // The connection dropped: its `out_rx` is gone, so further
+                // forwarding is pointless. Break WITHOUT synthesizing a
+                // `done` — there is no client to receive it. The Run keeps
+                // running under the Worker (ADR-0012).
+                () = out_tx.closed() => {
                     break;
                 }
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    eprintln!("subscribe forwarder lagged {n} events for run {run_id}");
-                    // Slice 1: tolerate lag and keep forwarding the tail. A
-                    // `Done` dropped in the lagged window is recovered by the
-                    // synthesize-on-close path above.
-                    continue;
+                recv = receiver.recv() => {
+                    match recv {
+                        Ok(event) => {
+                            if matches!(event, RunEvent::Done) {
+                                saw_done = true;
+                            }
+                            send_run_event(&out_tx, run_id, &event);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            // Sender dropped at the Worker's `hub::remove`. If
+                            // we never forwarded a `Done` (attached after the
+                            // Worker published it, or it fell in a lagged
+                            // window), synthesize one so the client's
+                            // run-stream finalizes instead of hanging forever.
+                            if !saw_done {
+                                send_run_event(&out_tx, run_id, &RunEvent::Done);
+                            }
+                            break;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            eprintln!(
+                                "subscribe forwarder lagged {n} events for run {run_id}; \
+                                 re-snapshotting from tier 2"
+                            );
+                            // Re-read the persisted text (the durable floor)
+                            // and re-emit it as a cumulative `text_delta` so
+                            // the overflow degrades to "re-read the truth,"
+                            // not lost text. A read error is logged and
+                            // tolerated; the tail resumes either way.
+                            match db::select_run_snapshot(&pool, run_id).await {
+                                Ok(Some(snap)) => {
+                                    send_text_delta(&out_tx, run_id, &snap.text);
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    eprintln!(
+                                        "re-snapshot read failed for run {run_id}: {e}"
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
