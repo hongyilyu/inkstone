@@ -91,23 +91,12 @@ pub async fn open() -> Result<SqlitePool> {
     Ok(pool)
 }
 
-/// Return the default Thread's id, lazy-minting one row in `threads` the
-/// first time we're called against a fresh DB. The skeleton has a single
-/// implicit Thread; real Thread CRUD lands in a future feature.
-///
-/// Note: the SELECT and INSERT run on the pool directly, not inside the
-/// caller's transaction. Two concurrent first-time `run/post_message`
-/// callers could each miss the other's INSERT and both insert. For the
-/// MVP single-user single-process model this race is theoretical (one
-/// WS frame at a time per connection); the eventual fix is an
-/// `is_default` flag with `INSERT … ON CONFLICT DO NOTHING`.
-pub async fn ensure_default_thread(pool: &SqlitePool, now_ms: i64) -> sqlx::Result<Uuid> {
-    if let Some(id_str) = queries::select_first_thread_id(pool).await? {
-        return Ok(Uuid::parse_str(&id_str).expect("threads.id is a valid UUID"));
-    }
-    let id = Uuid::now_v7();
-    queries::insert_thread(pool, id, "Untitled", now_ms).await?;
-    Ok(id)
+/// Return whether a Thread row with `thread_id` exists. `run/post_message`
+/// is existing-thread-only (ADR-0022): it calls this before persisting a new
+/// Run so a well-formed-but-unknown `thread_id` is rejected with
+/// `unknown_thread` and writes zero rows.
+pub async fn thread_exists(pool: &SqlitePool, thread_id: Uuid) -> sqlx::Result<bool> {
+    queries::thread_exists(pool, thread_id).await
 }
 
 /// Single transaction with deferred FK enforcement. sqlx's `pool.begin()`
@@ -146,10 +135,9 @@ pub async fn persist_initial_run(
 
 /// Message-first thread creation (ADR-0022): mint a NEW Thread row (with a
 /// derived `title`) THEN the same initial-run rows `persist_initial_run`
-/// writes — all in ONE transaction. `thread/create` uses this instead of
-/// `ensure_default_thread` + `persist_initial_run` so the Thread and its
-/// first message are born atomically. Deferred-FK ordering is identical to
-/// `persist_initial_run` (begin → inserts → commit).
+/// writes — all in ONE transaction. `thread/create` uses this so the Thread
+/// and its first message are born atomically. Deferred-FK ordering is
+/// identical to `persist_initial_run` (begin → inserts → commit).
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_thread_with_first_run(
     pool: &SqlitePool,

@@ -11,13 +11,15 @@ use uuid::Uuid;
 
 // ─── threads ──────────────────────────────────────────────────────────
 
-pub(super) async fn select_first_thread_id<'e, E>(executor: E) -> sqlx::Result<Option<String>>
+pub(super) async fn thread_exists<'e, E>(executor: E, thread_id: Uuid) -> sqlx::Result<bool>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_scalar::<_, String>("SELECT id FROM threads ORDER BY created_at ASC LIMIT 1")
+    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM threads WHERE id = ?1 LIMIT 1")
+        .bind(thread_id.to_string())
         .fetch_optional(executor)
-        .await
+        .await?;
+    Ok(row.is_some())
 }
 
 pub(super) async fn insert_thread<'e, E>(

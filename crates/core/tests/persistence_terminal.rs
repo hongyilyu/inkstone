@@ -139,7 +139,7 @@ fn done_event_completes_run() {
             .expect("ws handshake succeeds");
 
         let request =
-            r#"{"jsonrpc":"2.0","id":1,"method":"run/post_message","params":{"prompt":"hi"}}"#;
+            r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#;
         ws.send(Message::Text(request.into()))
             .await
             .expect("send request frame");
@@ -278,7 +278,7 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
             .expect("ws handshake succeeds");
 
         let request =
-            r#"{"jsonrpc":"2.0","id":1,"method":"run/post_message","params":{"prompt":"hi"}}"#;
+            r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#;
         ws.send(Message::Text(request.into()))
             .await
             .expect("send request frame");
@@ -421,7 +421,7 @@ fn worker_spawn_failure_errors_run() {
             .expect("ws handshake succeeds");
 
         let request =
-            r#"{"jsonrpc":"2.0","id":1,"method":"run/post_message","params":{"prompt":"hi"}}"#;
+            r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#;
         ws.send(Message::Text(request.into()))
             .await
             .expect("send request frame");

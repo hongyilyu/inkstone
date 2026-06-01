@@ -77,6 +77,20 @@ pub(crate) fn send_invalid_params(
     send_rpc_error(out_tx, id, -32602, message);
 }
 
+/// Frame a JSON-RPC `unknown_thread` error and queue it on the
+/// per-connection channel. Code `-32001` sits in ADR-0014's Inkstone-specific
+/// server-error band (`-32000..-32099`). Used by `run/post_message` when the
+/// `thread_id` is well-formed but names a Thread that does not exist —
+/// distinct from `invalid_params` (-32602), which is for a malformed
+/// `thread_id`.
+pub(crate) fn send_unknown_thread(
+    out_tx: &UnboundedSender<String>,
+    id: serde_json::Value,
+    message: String,
+) {
+    send_rpc_error(out_tx, id, -32001, message);
+}
+
 /// Shared JSON-RPC error framer: builds the `{jsonrpc, id, error:{code,
 /// message}}` envelope and queues it on the per-connection channel.
 fn send_rpc_error(

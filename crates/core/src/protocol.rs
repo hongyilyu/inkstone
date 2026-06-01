@@ -21,8 +21,16 @@ pub struct JsonRpcResponse {
     pub result: serde_json::Value,
 }
 
+/// `run/post_message` params: add a message (and its Run) to an EXISTING
+/// Thread. Existing-thread-only (ADR-0022) — `thread_id` is required and
+/// never optional; minting a new Thread is `thread/create`'s job. A
+/// malformed `thread_id` is rejected with `invalid_params` (-32602); a
+/// well-formed id for a Thread that does not exist with `unknown_thread`
+/// (-32001). Field order is cosmetic (serde matches by name; `thread_id` is
+/// snake_case to mirror the TS schema, slice 7).
 #[derive(Debug, Deserialize)]
 pub struct PostMessageParams {
+    pub thread_id: String,
     pub prompt: String,
 }
 

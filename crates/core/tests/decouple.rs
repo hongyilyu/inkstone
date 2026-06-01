@@ -149,10 +149,13 @@ async fn next_text(ws: &mut WsStream) -> String {
     }
 }
 
-/// Send `run/post_message` on `ws` and return the minted `run_id`.
+/// Start a Run via `thread/create` on `ws` and return the minted `run_id`.
+/// (Slice 4: `run/post_message` now requires a `thread_id`; `thread/create`
+/// is the message-first entry that mints a Thread + its first Run and returns
+/// the same `run_id` shape, so the rest of each test is unchanged.)
 async fn post_message(ws: &mut WsStream, id: u32) -> String {
     let post = format!(
-        r#"{{"jsonrpc":"2.0","id":{id},"method":"run/post_message","params":{{"prompt":"hello"}}}}"#
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"thread/create","params":{{"prompt":"hello"}}}}"#
     );
     ws.send(Message::Text(post.into()))
         .await

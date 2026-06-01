@@ -89,7 +89,7 @@ fn post_message_writes_initial_rows() {
             .expect("ws handshake succeeds");
 
         let request =
-            r#"{"jsonrpc":"2.0","id":1,"method":"run/post_message","params":{"prompt":"hello"}}"#;
+            r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hello"}}"#;
         ws.send(Message::Text(request.into()))
             .await
             .expect("send request frame");

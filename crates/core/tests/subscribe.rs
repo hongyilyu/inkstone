@@ -157,7 +157,7 @@ fn subscribe_snapshot_then_tail() {
         }
 
         // ---- post_message: returns {run_id}, NO events on the frame ----
-        let post = r#"{"jsonrpc":"2.0","id":1,"method":"run/post_message","params":{"prompt":"hello"}}"#;
+        let post = r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hello"}}"#;
         ws.send(Message::Text(post.into()))
             .await
             .expect("send post_message frame");
@@ -338,7 +338,7 @@ fn late_subscribe_after_terminal_still_gets_done() {
             .await
             .expect("ws B handshake succeeds");
 
-        let post = r#"{"jsonrpc":"2.0","id":1,"method":"run/post_message","params":{"prompt":"hello"}}"#;
+        let post = r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hello"}}"#;
         ws_a.send(Message::Text(post.into()))
             .await
             .expect("send post_message frame");

@@ -1,8 +1,15 @@
 //! `run/post_message` handler.
 //!
-//! Lazy-mint the default Thread, pick a Workflow, write the initial Run rows
-//! in one transaction, create the per-run hub, spawn the Worker publishing
-//! into it, then frame the JSON-RPC response.
+//! Add a message (and a new Run) to an EXISTING Thread (ADR-0022 —
+//! `post_message` is existing-thread-only; `thread_id` is required and never
+//! optional). Parse `thread_id`, verify the Thread exists, pick a Workflow,
+//! write the initial Run rows in one transaction, create the per-run hub,
+//! spawn the Worker publishing into it, then frame the JSON-RPC response.
+//!
+//! Validation (ADR-0002: Core is the authority; ADR-0014 error codes):
+//! - A malformed `thread_id` (not a UUID) → `invalid_params` (-32602).
+//! - A well-formed `thread_id` for a Thread that does not exist →
+//!   `unknown_thread` (-32001) and ZERO rows written.
 //!
 //! Pure-subscribe (ADR-0022): the response carries ONLY `{run_id}` — no Run
 //! Events ride the response frame. The Client receives events by following
@@ -14,7 +21,7 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-use super::reply::{send_error, send_response};
+use super::reply::{send_error, send_invalid_params, send_response, send_unknown_thread};
 use crate::db;
 use crate::dispatcher;
 use crate::hub::{self, Hubs};
@@ -28,16 +35,32 @@ pub(super) async fn handle(
     params: PostMessageParams,
     out_tx: &UnboundedSender<String>,
 ) {
-    let now = db::now_ms();
+    // Parse the thread_id; a malformed id is a client error (invalid_params).
+    let Ok(thread_id) = Uuid::parse_str(&params.thread_id) else {
+        send_invalid_params(
+            out_tx,
+            id,
+            format!("invalid thread_id {:?}", params.thread_id),
+        );
+        return;
+    };
 
-    let thread_id = match db::ensure_default_thread(pool, now).await {
-        Ok(tid) => tid,
-        Err(e) => {
-            eprintln!("ensure_default_thread failed: {e}");
-            send_error(out_tx, id, format!("ensure_default_thread: {e}"));
+    // Existing-thread-only (ADR-0022): a well-formed but unknown thread_id is
+    // rejected with unknown_thread BEFORE any persistence — zero rows written.
+    match db::thread_exists(pool, thread_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            send_unknown_thread(out_tx, id, format!("unknown thread_id {thread_id}"));
             return;
         }
-    };
+        Err(e) => {
+            eprintln!("thread_exists check failed: {e}");
+            send_error(out_tx, id, format!("thread_exists: {e}"));
+            return;
+        }
+    }
+
+    let now = db::now_ms();
 
     // Dispatcher seam (ADR-0011): pick a Workflow for this Run.
     let workflow = dispatcher::dispatch(thread_id, &params.prompt);
