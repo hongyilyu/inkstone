@@ -147,6 +147,33 @@ export function attachRun(
 	});
 }
 
+/**
+ * Load a thread's hydrated history (slice 13). Replaces the thread's messages
+ * with the wire→live mapped set and points `activeRunId` at the streaming
+ * message's run, if any (else clears it).
+ *
+ * CRITICAL (snapshot-vs-resubscribe interplay): this does NOT pre-mark
+ * `snapshotApplied[run_id]` for the streaming message. Leaving it unset means
+ * the resubscribe's FIRST `text_delta` (the cumulative snapshot) SETs the text
+ * to the authoritative cumulative value in {@link applyEvent} — the hydrated
+ * partial text is just an initial paint that the snapshot then supersedes. The
+ * orchestrator (`hydrate.ts#hydrateThread`) owns the thread/get → load →
+ * resubscribe flow; this action only loads.
+ */
+export function loadThreadMessages(
+	threadId: string,
+	messages: Message[],
+): void {
+	const streaming = messages.find((m) => m.status === "streaming");
+	setState((s) =>
+		withThread(s, threadId, (t) => ({
+			...t,
+			messages,
+			activeRunId: streaming?.run_id,
+		})),
+	);
+}
+
 /** Mark a seeded assistant message failed by id (failed-send path, Q7). */
 export function markMessageIncomplete(
 	threadId: string,

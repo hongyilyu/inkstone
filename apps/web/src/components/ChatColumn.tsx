@@ -6,6 +6,7 @@ import {
 	useFocusedThreadId,
 	useThreadMessages,
 } from "@/store/chat";
+import { useHydrateFocusedThread } from "@/store/hydrate";
 import { ComposeFooter } from "./ComposeFooter.js";
 
 export function ChatColumn() {
@@ -13,6 +14,11 @@ export function ChatColumn() {
 	const runtime = useRuntime();
 	const focusedThreadId = useFocusedThreadId();
 	const messages = useThreadMessages(focusedThreadId ?? "");
+
+	// On focus change to a non-null, not-yet-live thread: thread/get → load →
+	// resubscribe-if-streaming. Locally-originated threads are pre-marked so this
+	// is a no-op for them (no double-load / double-resubscribe).
+	useHydrateFocusedThread(runtime, focusedThreadId);
 
 	useLayoutEffect(() => {
 		const el = scrollerRef.current;

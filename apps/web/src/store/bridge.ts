@@ -10,6 +10,7 @@ import {
 	seedAssistantMessage,
 	setFocusedThread,
 } from "./chat.js";
+import { markThreadHydrated } from "./hydration-set.js";
 
 /**
  * The thin imperative seam between Effect (which owns the wire/streams/runtime)
@@ -62,6 +63,9 @@ export async function send(
 	threadId: string,
 	text: string,
 ): Promise<void> {
+	// The thread is now live locally — its messages + stream are seeded here, so
+	// the hydrate-on-focus effect must not re-hydrate it (slice 13 guard).
+	markThreadHydrated(threadId);
 	appendUserMessage(threadId, {
 		id: nextMessageId(),
 		role: "user",
@@ -118,6 +122,9 @@ export async function sendNewThread(
 	try {
 		const { thread_id, run_id } = await runtime.runPromise(create);
 		setFocusedThread(thread_id);
+		// The freshly-minted thread is live (seeded + streamed below); mark it so
+		// focusing it does NOT trigger a thread/get hydrate (slice 13 guard).
+		markThreadHydrated(thread_id);
 		appendUserMessage(thread_id, {
 			id: nextMessageId(),
 			role: "user",
