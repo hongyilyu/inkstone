@@ -99,6 +99,13 @@ pub async fn thread_exists(pool: &SqlitePool, thread_id: Uuid) -> sqlx::Result<b
     queries::thread_exists(pool, thread_id).await
 }
 
+/// Read all Threads for `thread/list` (ADR-0022 read path), ordered
+/// most-recent-activity-first. Returns `(id, title, last_activity_at)` rows;
+/// the handler maps them to the wire `ThreadSummary` shape.
+pub async fn list_threads(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String, i64)>> {
+    queries::list_threads(pool).await
+}
+
 /// Single transaction with deferred FK enforcement. sqlx's `pool.begin()`
 /// issues `BEGIN` (deferred by default in SQLite), so the FK cycle between
 /// `runs.user_message_id` and `messages.run_id` resolves only at COMMIT.

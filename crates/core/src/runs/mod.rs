@@ -2,7 +2,7 @@
 //!
 //! [`dispatch`] is the single `match` over the wire method; each arm routes
 //! to a dedicated handler module ([`post_message`], [`subscribe`],
-//! [`thread_create`]). Shared wire-framing (response/notification/error
+//! [`thread_create`], [`thread_list`]). Shared wire-framing (response/notification/error
 //! envelopes) lives in [`reply`]. The actual SQL is in [`crate::db`]; Worker
 //! process management is in [`crate::worker`]; the per-run hub is in
 //! [`crate::hub`].
@@ -11,6 +11,7 @@ mod post_message;
 mod reply;
 mod subscribe;
 mod thread_create;
+mod thread_list;
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -46,6 +47,11 @@ pub async fn dispatch(
                 return;
             };
             thread_create::handle(pool, hubs, req.id, params, out_tx).await;
+        }
+        "thread/list" => {
+            // Read-only, no params (ADR-0022 read path) — skip param
+            // deserialization entirely.
+            thread_list::handle(pool, req.id, out_tx).await;
         }
         // Other methods: drop silently for the skeleton.
         _ => {}

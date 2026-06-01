@@ -66,6 +66,26 @@ pub struct ThreadCreateResult {
     pub run_id: String,
 }
 
+/// A single Thread row in a `thread/list` result: the sidebar's view of a
+/// Thread (ADR-0017 `threads` columns). `last_activity_at` is the ms-epoch
+/// the Thread was last touched (bumped on each new Run); the list orders by
+/// it, newest-first.
+#[derive(Debug, Serialize)]
+pub struct ThreadSummary {
+    pub id: String,
+    pub title: String,
+    pub last_activity_at: i64,
+}
+
+/// `thread/list` result: every Thread, ordered most-recent-activity-first.
+/// Object-wrapper shape (`{threads: [...]}`) rather than a bare array so the
+/// result stays forward-extensible and the TS mirror (slice 7) is a
+/// `Schema.Struct`.
+#[derive(Debug, Serialize)]
+pub struct ThreadListResult {
+    pub threads: Vec<ThreadSummary>,
+}
+
 /// Run Event emitted by the Worker over its stdout NDJSON stream
 /// (per ADR-0006). Core deserializes each line into this enum, takes
 /// the appropriate persistence action, and forwards it as a `run/event`

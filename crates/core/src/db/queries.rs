@@ -60,6 +60,18 @@ where
         .map(|_| ())
 }
 
+/// Read every Thread for `thread/list`, ordered most-recent-activity-first.
+/// Returns `(id, title, last_activity_at)` rows; the handler maps them to
+/// `ThreadSummary`. Read-only — no FK/transaction concerns.
+pub(super) async fn list_threads<'e, E>(executor: E) -> sqlx::Result<Vec<(String, String, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as("SELECT id, title, last_activity_at FROM threads ORDER BY last_activity_at DESC")
+        .fetch_all(executor)
+        .await
+}
+
 // ─── runs ─────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
