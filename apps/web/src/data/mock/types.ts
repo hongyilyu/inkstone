@@ -3,13 +3,18 @@
 
 export type ProposalKind = "todo" | "project" | "note" | "file";
 
-export type ChatTurn =
+// Flat mock view of a chat message. NOTE: this shape is wrong vs ADR-0017 —
+// it collapses into one record what the tier-2 schema splits across
+// messages / message_parts / tool_calls / run_steps / proposals. It's a
+// stand-in for the design routes and is slated to be replaced by the live
+// `Message` type.
+export type MockChatMessage =
 	| { role: "user"; t: string; text: string }
 	| {
-			role: "agent";
+			role: "assistant";
 			t: string;
 			text: string;
-			// optional things the agent did during this turn
+			// optional things the assistant did during this message
 			actions?: {
 				kind: "read" | "search" | "write" | "decide";
 				label: string;
