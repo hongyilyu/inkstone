@@ -54,6 +54,47 @@ This deliberately omits an Effect React-binding library (`@effect-atom/atom-reac
 - **Reversal cost is high.** Every IO-bearing TS function would change shape. The decision is recorded as load-bearing rather than provisional.
 - **No matching Rust paradigm shift.** Core stays idiomatic Rust. The protocol mirroring across the boundary still happens by hand per [ADR-0009](./0009-protocol-strategy.md).
 
+## t3code comparison (web architecture)
+
+Inkstone validates its web client against t3code, an all-TypeScript streaming-chat
+reference. Re-examining t3code's web architecture after wiring the Web Client to Core
+(PRs #28–#41) confirms which of its patterns transfer and which the Rust/TS split
+makes unreachable.
+
+**`@effect/rpc` over the wire — does not transfer.** t3code's `RpcClient`/`RpcServer`
+work because one `RpcGroup` generates *both* ends in TypeScript, so @effect/rpc owns
+the framing: request ids, chunk/exit, ack-based stream backpressure. Inkstone's WS
+server is Rust Core (serde + tokio). Pointing `RpcClient` at Core would force Core to
+reimplement @effect/rpc's framing in serde — inverting protocol ownership away from
+the hand-mirrored JSON-RPC envelope. Rejected; the wire contract stays owned by
+[ADR-0014](./0014-client-core-wire-protocol.md).
+
+**Shared `contracts` package — does not transfer.** t3code shares one `RpcGroup` for
+client and server. Inkstone hand-mirrors Effect `Schema` (TS) ↔ `serde` (Rust) with
+contract tests per [ADR-0009](./0009-protocol-strategy.md). Type codegen
+(typeshare / ts-rs) emits plain TS types, not `Schema`, so it would lose the runtime
+decode at the wire boundary that this ADR depends on. Nothing in t3code changes that
+calculus. Rejected.
+
+**Zustand for domain/streaming state, not `@effect/atom`.** t3code keeps its large
+streaming domain state (threads/messages) in plain Zustand and reserves an Effect
+React-binding only for second-tier request state. Adopting atoms for chat state would
+*contradict* t3code's own split. Inkstone's chat store therefore stays a plain store
+(migrated to Zustand for ergonomics — a `apps/web`-local dependency, not a Rust-side
+one), consistent with the *React boundary* section above. Atoms remain available for
+any future second-tier state but are not adopted for the streaming path.
+
+**The Stream→store bridge is inherent and retained.** Even t3code keeps a manual
+`Stream.runForEach` bridge from the subscription into its store. The Stream→store seam
+is a property of consuming a server-pushed stream in React, not an artifact we can
+delete. Inkstone keeps its equivalent bridge (`apps/web/src/store/bridge.ts`); see the
+*React boundary* section.
+
+**Stay on effect 3.x stable.** t3code runs effect 4.0.0-beta; Inkstone runs effect
+3.x stable. `@effect/platform` Socket and Zustand both support 3.x, so no forced beta
+upgrade is needed. t3code's 4.x-beta patterns are noted for future reference but not
+adopted.
+
 ## Related
 
 - [ADR-0001](./0001-core-worker-split.md) — names the learning-vehicle goal this ADR invokes alongside tool-fit.
