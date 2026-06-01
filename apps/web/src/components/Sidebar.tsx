@@ -1,6 +1,14 @@
+import { WsClient } from "@inkstone/ui-sdk";
+import { useQuery } from "@tanstack/react-query";
+import { Effect } from "effect";
 import { PanelLeftClose, Search, UserPlus, WandSparkles } from "lucide-react";
 import { useState } from "react";
-import { useHistory } from "@/lib/hooks/useHistory";
+import { useRuntime } from "@/runtime";
+import {
+	clearFocusedThread,
+	setFocusedThread,
+	useFocusedThreadId,
+} from "@/store/chat";
 import { cn } from "../lib/utils.js";
 import { Button } from "./ui/button.js";
 
@@ -9,17 +17,31 @@ export function Sidebar({
 }: {
 	onToggleCollapse?: () => void;
 } = {}) {
-	const { data: history } = useHistory();
-	const list = history ?? [];
-	const [activeId, setActiveId] = useState(list[0]?.id ?? "");
+	const runtime = useRuntime();
+	const focusedThreadId = useFocusedThreadId();
 	const [query, setQuery] = useState("");
 
-	const filtered = list.filter((h) =>
-		h.prompt.toLowerCase().includes(query.trim().toLowerCase()),
+	// Reads run on the runtime via TanStack Query (loading/error/success free);
+	// the live stream stays on the store+bridge (ADR-0020). `data` is undefined
+	// while loading or on error → render an empty list, never throw.
+	const { data } = useQuery({
+		queryKey: ["threads"],
+		queryFn: () =>
+			runtime.runPromise(
+				Effect.gen(function* () {
+					const client = yield* WsClient;
+					return yield* client.threadList();
+				}),
+			),
+	});
+
+	const threads = data?.threads ?? [];
+	const filtered = threads.filter((t) =>
+		t.title.toLowerCase().includes(query.trim().toLowerCase()),
 	);
 
 	const newChat = () => {
-		setActiveId("");
+		clearFocusedThread();
 		setQuery("");
 	};
 
@@ -87,14 +109,14 @@ export function Sidebar({
 						<li key={item.id}>
 							<button
 								type="button"
-								onClick={() => setActiveId(item.id)}
-								aria-current={item.id === activeId ? "true" : undefined}
+								onClick={() => setFocusedThread(item.id)}
+								aria-current={item.id === focusedThreadId ? "true" : undefined}
 								className={cn(
 									"flex h-9 w-full cursor-pointer items-center truncate rounded-lg px-3 text-left text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent",
-									item.id === activeId && "bg-sidebar-accent",
+									item.id === focusedThreadId && "bg-sidebar-accent",
 								)}
 							>
-								{item.prompt}
+								{item.title}
 							</button>
 						</li>
 					))

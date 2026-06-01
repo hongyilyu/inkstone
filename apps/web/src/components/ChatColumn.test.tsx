@@ -1,8 +1,8 @@
 import { type RunEventValue, WsClient } from "@inkstone/ui-sdk";
-import { screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { resetBridge } from "@/store/bridge";
 import { getChatState, resetChatStore, setFocusedThread } from "@/store/chat";
@@ -36,6 +36,10 @@ function makeStubRuntime(opts: {
 beforeEach(() => {
 	resetChatStore();
 	resetBridge();
+});
+
+afterEach(() => {
+	cleanup();
 });
 
 describe("ChatColumn", () => {

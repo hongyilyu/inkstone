@@ -1,8 +1,8 @@
 import { WsClient } from "@inkstone/ui-sdk";
-import { screen } from "@testing-library/react";
+import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { getChatState, resetChatStore } from "@/store/chat";
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
@@ -30,6 +30,10 @@ function makeStubRuntime() {
 
 beforeEach(() => {
 	resetChatStore();
+});
+
+afterEach(() => {
+	cleanup();
 });
 
 describe("Sidebar", () => {

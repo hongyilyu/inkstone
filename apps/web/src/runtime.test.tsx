@@ -1,7 +1,5 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { renderWithQuery } from "@/test-utils/renderWithQuery";
-import App from "./App.js";
 import { RuntimeProvider, useRuntime } from "./runtime.js";
 
 afterEach(() => {
@@ -9,22 +7,24 @@ afterEach(() => {
 });
 
 describe("RuntimeProvider", () => {
-	it("mounts the shell under the provider without opening a socket", () => {
+	it("provides the runtime without opening a socket until an effect runs", () => {
 		// Spy on the WebSocket constructor BEFORE rendering. A lazy
-		// ManagedRuntime must not run the WsClientLive layer at mount, so
-		// zero sockets should be constructed.
+		// ManagedRuntime must not run the WsClientLive layer when it is merely
+		// built + provided, so a passive subtree that never runs an SDK effect
+		// constructs zero sockets. (App itself now reads thread/list on mount —
+		// that intentionally opens a socket; the laziness guarantee is about the
+		// runtime, proven here against a passive child.)
 		const wsSpy = vi.fn();
 		vi.stubGlobal("WebSocket", wsSpy);
 
-		renderWithQuery(
+		render(
 			<RuntimeProvider config={{ url: "ws://stub/ws" }}>
-				<App />
+				<div data-testid="passive">no effect run here</div>
 			</RuntimeProvider>,
 		);
 
-		// The shell renders even with Core down (no real server).
-		expect(screen.getByRole("main")).toBeInTheDocument();
-		// Lazy runtime: no socket opened at mount.
+		expect(screen.getByTestId("passive")).toBeInTheDocument();
+		// Lazy runtime: providing it ran no effect, so no socket opened.
 		expect(wsSpy).toHaveBeenCalledTimes(0);
 	});
 

@@ -96,6 +96,11 @@ export function setFocusedThread(threadId: string): void {
 	setState((s) => ({ ...s, focusedThreadId: threadId }));
 }
 
+/** Clear the focused thread (New Chat → null → next send mints a thread). */
+export function clearFocusedThread(): void {
+	setState((s) => ({ ...s, focusedThreadId: undefined }));
+}
+
 export function appendUserMessage(threadId: string, message: Message): void {
 	setState((s) =>
 		withThread(s, threadId, (t) => ({

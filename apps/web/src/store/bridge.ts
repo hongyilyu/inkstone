@@ -8,6 +8,7 @@ import {
 	markMessageIncomplete,
 	nextMessageId,
 	seedAssistantMessage,
+	setFocusedThread,
 } from "./chat.js";
 
 /**
@@ -90,6 +91,53 @@ export async function send(
 		// postMessage failed (typed failure or defect surfaced as a rejected
 		// promise) → mark the seeded assistant message incomplete.
 		markMessageIncomplete(threadId, assistantId);
+	}
+}
+
+/**
+ * First-message path: no thread is focused yet, so mint one. `threadCreate`
+ * returns `{thread_id, run_id}` in a single round trip; we then focus the new
+ * thread, seed the same user + live-assistant pair as {@link send}, promote the
+ * assistant message onto the run, and fork its stream. Mirrors {@link send} but
+ * minting the thread first (the slice-11-deferred create-on-first-message path).
+ *
+ * Because the thread id only exists once `threadCreate` resolves, the optimistic
+ * seed happens after the await (unlike {@link send}, which seeds into a known
+ * thread up front). If `threadCreate` itself fails, nothing was minted or
+ * seeded, so there is no orphaned bubble to mark — the user can retry.
+ */
+export async function sendNewThread(
+	runtime: WsRuntime,
+	text: string,
+): Promise<void> {
+	const create = Effect.gen(function* () {
+		const client = yield* WsClient;
+		return yield* client.threadCreate(text);
+	});
+
+	try {
+		const { thread_id, run_id } = await runtime.runPromise(create);
+		setFocusedThread(thread_id);
+		appendUserMessage(thread_id, {
+			id: nextMessageId(),
+			role: "user",
+			status: "completed",
+			text,
+			run_id: "",
+		});
+		const assistantId = nextMessageId();
+		seedAssistantMessage(thread_id, {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			text: "",
+			run_id: "",
+		});
+		attachRun(thread_id, assistantId, run_id);
+		startRunStream(runtime, thread_id, run_id);
+	} catch {
+		// threadCreate failed before any thread was minted — nothing to seed
+		// or mark incomplete. No orphaned bubble is left behind.
 	}
 }
 
