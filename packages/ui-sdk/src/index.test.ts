@@ -1,84 +1,257 @@
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Either, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type WebSocket as WsConn } from "ws";
 import { WsClient, WsClientConfig, WsClientLive } from "./index.js";
 
-describe("WsClient", () => {
-	it("postMessage returns the run_id and subscribeRun yields the run's events", async () => {
-		const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
-		await new Promise<void>((resolve) =>
-			wss.once("listening", () => resolve()),
+type WireRequest = {
+	id?: number;
+	method?: string;
+	params?: { [k: string]: unknown };
+};
+
+const makeServer = async (
+	onMessage: (ws: WsConn, req: WireRequest) => void,
+): Promise<{ url: string; close: () => Promise<void> }> => {
+	const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+	await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+	const { port } = wss.address() as { port: number };
+	wss.on("connection", (ws) => {
+		ws.on("message", (data) => onMessage(ws, JSON.parse(data.toString())));
+	});
+	return {
+		url: `ws://127.0.0.1:${port}/ws`,
+		close: () => new Promise<void>((resolve) => wss.close(() => resolve())),
+	};
+};
+
+const provide =
+	(url: string) =>
+	<A, E>(program: Effect.Effect<A, E, WsClient>): Effect.Effect<A, E> =>
+		program.pipe(
+			Effect.scoped,
+			Effect.provide(
+				WsClientLive.pipe(
+					Layer.provide(Layer.succeed(WsClientConfig, { url })),
+				),
+			),
 		);
-		const port = (wss.address() as { port: number }).port;
-		const url = `ws://127.0.0.1:${port}/ws`;
 
-		const expectedRunId = "01234567-89ab-7def-8012-345678901234";
+describe("WsClient", () => {
+	it("threadCreate returns the ids and subscribeRun streams the run's events after run/subscribe", async () => {
+		const threadId = "01999999-0000-7000-8000-000000000001";
+		const runId = "01234567-89ab-7def-8012-345678901234";
 
-		wss.on("connection", (ws) => {
-			ws.on("message", (data) => {
-				const req = JSON.parse(data.toString());
-				if (req.method === "run/post_message") {
-					ws.send(
-						JSON.stringify({
-							jsonrpc: "2.0",
-							id: req.id,
-							result: { run_id: expectedRunId },
-						}),
-					);
-					ws.send(
-						JSON.stringify({
-							jsonrpc: "2.0",
-							method: "run/event",
-							params: {
-								run_id: expectedRunId,
-								event: { kind: "text_delta", delta: "echo: hi" },
-							},
-						}),
-					);
-					ws.send(
-						JSON.stringify({
-							jsonrpc: "2.0",
-							method: "run/event",
-							params: {
-								run_id: expectedRunId,
-								event: { kind: "done" },
-							},
-						}),
-					);
-				}
-			});
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/create") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { thread_id: threadId, run_id: runId },
+					}),
+				);
+			}
+			if (req.method === "run/subscribe") {
+				const subscribedRunId = req.params?.run_id;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { run_id: subscribedRunId },
+					}),
+				);
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "run/event",
+						params: {
+							run_id: subscribedRunId,
+							event: { kind: "text_delta", delta: "echo: hi" },
+						},
+					}),
+				);
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "run/event",
+						params: {
+							run_id: subscribedRunId,
+							event: { kind: "done" },
+						},
+					}),
+				);
+			}
 		});
 
 		const program = Effect.gen(function* () {
 			const client = yield* WsClient;
-			const runId = yield* client.postMessage("hi");
+			const created = yield* client.threadCreate("hi");
 			const events = yield* Stream.runCollect(
 				client
-					.subscribeRun(runId)
+					.subscribeRun(created.run_id)
 					.pipe(Stream.takeUntil((e) => e.kind === "done")),
 			);
-			return { runId, events: Array.from(events) };
+			return { created, events: Array.from(events) };
 		});
 
 		try {
-			const { runId, events } = await Effect.runPromise(
-				program.pipe(
-					Effect.scoped,
-					Effect.provide(
-						WsClientLive.pipe(
-							Layer.provide(Layer.succeed(WsClientConfig, { url })),
-						),
-					),
-				),
+			const { created, events } = await Effect.runPromise(
+				provide(server.url)(program),
 			);
 
-			expect(runId).toBe(expectedRunId);
+			expect(created).toEqual({ thread_id: threadId, run_id: runId });
 			expect(events).toEqual([
 				{ kind: "text_delta", delta: "echo: hi" },
 				{ kind: "done" },
 			]);
 		} finally {
-			await new Promise<void>((resolve) => wss.close(() => resolve()));
+			await server.close();
+		}
+	});
+
+	it("threadList round-trips the canonical ThreadListResult", async () => {
+		const expected = {
+			threads: [
+				{
+					id: "01999999-0000-7000-8000-000000000001",
+					title: "First thread",
+					last_activity_at: 1717200000000,
+				},
+			],
+		};
+
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/list") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: expected,
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.threadList();
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toEqual(expected);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("threadGet round-trips the canonical ThreadGetResult", async () => {
+		const expected = {
+			thread_id: "01999999-0000-7000-8000-000000000001",
+			title: "First thread",
+			messages: [
+				{
+					id: "msg-1",
+					role: "user",
+					status: "complete",
+					run_id: "01234567-89ab-7def-8012-345678901234",
+					text: "hi",
+				},
+				{
+					id: "msg-2",
+					role: "assistant",
+					status: "complete",
+					run_id: "01234567-89ab-7def-8012-345678901234",
+					text: "echo: hi",
+				},
+			],
+		};
+
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/get") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: expected,
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.threadGet(expected.thread_id);
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toEqual(expected);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("postMessage sends thread_id and prompt and returns the run_id", async () => {
+		const runId = "01234567-89ab-7def-8012-345678901234";
+		let captured: WireRequest["params"];
+
+		const server = await makeServer((ws, req) => {
+			if (req.method === "run/post_message") {
+				captured = req.params;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { run_id: runId },
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.postMessage("thread-x", "hello");
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toBe(runId);
+			expect(captured?.thread_id).toBe("thread-x");
+			expect(captured?.prompt).toBe("hello");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("maps a -32001 error envelope to a typed failure in the E channel", async () => {
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/get") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						error: { code: -32001, message: "unknown_thread" },
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.threadGet("missing");
+		});
+
+		try {
+			const result = await Effect.runPromise(
+				provide(server.url)(Effect.either(program)),
+			);
+			expect(Either.isLeft(result)).toBe(true);
+			if (Either.isLeft(result)) {
+				expect(result.left._tag).toBe("UnknownThreadError");
+			}
+		} finally {
+			await server.close();
 		}
 	});
 });
