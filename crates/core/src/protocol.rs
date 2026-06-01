@@ -86,6 +86,40 @@ pub struct ThreadListResult {
     pub threads: Vec<ThreadSummary>,
 }
 
+/// `thread/get` params: the Thread to rehydrate. A malformed `thread_id` is
+/// rejected with `invalid_params` (-32602); a well-formed id for a Thread
+/// that does not exist with `unknown_thread` (-32001), same as
+/// `run/post_message`.
+#[derive(Debug, Deserialize)]
+pub struct ThreadGetParams {
+    pub thread_id: String,
+}
+
+/// A single Message in a `thread/get` result. Flat assembled `text`
+/// (ADR-0017/Q15): NO `parts[]` array on the wire until attachments exist —
+/// `text` is the concatenation of the Message's text parts in `seq` order.
+/// `run_id` lets a refreshed Client resubscribe to a `streaming` Message's
+/// Run (the rehydration source for refresh-durability).
+#[derive(Debug, Serialize)]
+pub struct MessageView {
+    pub id: String,
+    pub role: String,
+    pub status: String,
+    pub run_id: String,
+    pub text: String,
+}
+
+/// `thread/get` result: the Thread header (`thread_id`, `title`) plus its
+/// Messages in chronological order (`messages`). A completed Run yields full
+/// user + assistant text; a mid-stream Run yields a `streaming` assistant
+/// Message with its partial text and `run_id`.
+#[derive(Debug, Serialize)]
+pub struct ThreadGetResult {
+    pub thread_id: String,
+    pub title: String,
+    pub messages: Vec<MessageView>,
+}
+
 /// Run Event emitted by the Worker over its stdout NDJSON stream
 /// (per ADR-0006). Core deserializes each line into this enum, takes
 /// the appropriate persistence action, and forwards it as a `run/event`

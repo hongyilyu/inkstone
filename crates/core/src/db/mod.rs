@@ -106,6 +106,49 @@ pub async fn list_threads(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String
     queries::list_threads(pool).await
 }
 
+/// One Message in a `thread/get` read: its identity, `role`, `status`,
+/// owning `run_id`, and `text` already assembled (the concat of its text
+/// parts in `seq` order). Flat-text-no-parts[] per ADR-0017/Q15 — the handler
+/// maps this straight onto the wire `MessageView`.
+pub struct MessageRow {
+    pub id: String,
+    pub role: String,
+    pub status: String,
+    pub run_id: String,
+    pub text: String,
+}
+
+/// Read a Thread plus its Messages for `thread/get` (ADR-0022 read path).
+/// Returns `None` when the Thread does not exist (the title query is the
+/// existence check), so the handler maps that to `unknown_thread` (-32001).
+/// Otherwise `Some((title, messages))` where messages are in chronological
+/// order (`created_at, rowid` — the rowid tiebreaker keeps the user Message
+/// ahead of the assistant Message on a same-ms insert) and each Message's
+/// `text` is the concat of its text parts assembled in Rust.
+pub async fn get_thread_with_messages(
+    pool: &SqlitePool,
+    thread_id: Uuid,
+) -> sqlx::Result<Option<(String, Vec<MessageRow>)>> {
+    let Some(title) = queries::thread_title(pool, thread_id).await? else {
+        return Ok(None);
+    };
+
+    let rows = queries::messages_by_thread(pool, thread_id).await?;
+    let mut messages = Vec::with_capacity(rows.len());
+    for (id, role, status, run_id) in rows {
+        let text = queries::text_parts_by_message(pool, &id).await?.concat();
+        messages.push(MessageRow {
+            id,
+            role,
+            status,
+            run_id,
+            text,
+        });
+    }
+
+    Ok(Some((title, messages)))
+}
+
 /// Single transaction with deferred FK enforcement. sqlx's `pool.begin()`
 /// issues `BEGIN` (deferred by default in SQLite), so the FK cycle between
 /// `runs.user_message_id` and `messages.run_id` resolves only at COMMIT.

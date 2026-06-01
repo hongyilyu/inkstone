@@ -72,6 +72,21 @@ where
         .await
 }
 
+/// Read a Thread's `title` by id for `thread/get`. `None` means the Thread
+/// does not exist — the handler maps that to `unknown_thread` (-32001).
+pub(super) async fn thread_title<'e, E>(
+    executor: E,
+    thread_id: Uuid,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT title FROM threads WHERE id = ?1")
+        .bind(thread_id.to_string())
+        .fetch_optional(executor)
+        .await
+}
+
 // ─── runs ─────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -223,6 +238,28 @@ where
     .map(|_| ())
 }
 
+/// Read a Thread's Messages for `thread/get`, in chronological order.
+/// Returns `(id, role, status, run_id)` rows. Ordered by `created_at, rowid`:
+/// the user and assistant Messages of the first Run are inserted in the same
+/// ms, so the monotonic `rowid` tiebreaker keeps the user Message (inserted
+/// first) ahead of the assistant Message on a ms-tie. The handler assembles
+/// each Message's text from its parts.
+pub(super) async fn messages_by_thread<'e, E>(
+    executor: E,
+    thread_id: Uuid,
+) -> sqlx::Result<Vec<(String, String, String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, role, status, run_id FROM messages \
+         WHERE thread_id = ?1 ORDER BY created_at, rowid",
+    )
+    .bind(thread_id.to_string())
+    .fetch_all(executor)
+    .await
+}
+
 // ─── message_parts ────────────────────────────────────────────────────
 
 pub(super) async fn insert_text_part<'e, E>(
@@ -262,6 +299,26 @@ where
     .execute(executor)
     .await
     .map(|_| ())
+}
+
+/// Read a Message's text parts for `thread/get`, ordered by `seq`. Returns
+/// the `text` columns; the handler concatenates them into the Message's
+/// assembled wire text (flat-text-no-parts[], ADR-0017/Q15). The MVP has one
+/// text part per Message at `seq=0`, but the concat handles multi-part too.
+pub(super) async fn text_parts_by_message<'e, E>(
+    executor: E,
+    message_id: &str,
+) -> sqlx::Result<Vec<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT text FROM message_parts \
+         WHERE message_id = ?1 AND type = 'text' ORDER BY seq",
+    )
+    .bind(message_id)
+    .fetch_all(executor)
+    .await
 }
 
 /// Read a Run's snapshot for `run/subscribe`: the assistant message's

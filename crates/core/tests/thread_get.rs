@@ -246,15 +246,37 @@ fn thread_get_completed_run_returns_full_text() {
             }
         }
 
-        // ---- thread/get{thread_id} (distinct id 50) ----
-        send(
-            &mut ws,
-            format!(
-                r#"{{"jsonrpc":"2.0","id":50,"method":"thread/get","params":{{"thread_id":"{thread_id}"}}}}"#
-            ),
-        )
-        .await;
-        let got = read_response_with_id(&mut ws, 50).await;
+        // ---- thread/get{thread_id} (distinct ids from 50). The subscribe
+        // `done` is published by the Worker BEFORE its terminal tx commits
+        // the status flip (worker.rs: publish under the gate, then
+        // `complete_run` after stdout EOF), so the assistant status may still
+        // read `streaming` for a beat after we observe `done`. Poll
+        // thread/get (bounded ~5s) until the assistant settles to
+        // `completed`; the text is already fully assembled. ----
+        let got = {
+            let mut req_id = 50;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                send(
+                    &mut ws,
+                    format!(
+                        r#"{{"jsonrpc":"2.0","id":{req_id},"method":"thread/get","params":{{"thread_id":"{thread_id}"}}}}"#
+                    ),
+                )
+                .await;
+                let resp = read_response_with_id(&mut ws, req_id).await;
+                let settled = resp["result"]["messages"]
+                    .as_array()
+                    .and_then(|m| m.get(1))
+                    .map(|asst| asst["status"] == serde_json::json!("completed"))
+                    .unwrap_or(false);
+                if settled || Instant::now() > deadline {
+                    break resp;
+                }
+                req_id += 1;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
 
         assert!(
             got.get("error").is_none(),

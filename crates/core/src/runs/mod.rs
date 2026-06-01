@@ -2,7 +2,7 @@
 //!
 //! [`dispatch`] is the single `match` over the wire method; each arm routes
 //! to a dedicated handler module ([`post_message`], [`subscribe`],
-//! [`thread_create`], [`thread_list`]). Shared wire-framing (response/notification/error
+//! [`thread_create`], [`thread_list`], [`thread_get`]). Shared wire-framing (response/notification/error
 //! envelopes) lives in [`reply`]. The actual SQL is in [`crate::db`]; Worker
 //! process management is in [`crate::worker`]; the per-run hub is in
 //! [`crate::hub`].
@@ -11,13 +11,16 @@ mod post_message;
 mod reply;
 mod subscribe;
 mod thread_create;
+mod thread_get;
 mod thread_list;
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::hub::Hubs;
-use crate::protocol::{JsonRpcRequest, PostMessageParams, SubscribeParams, ThreadCreateParams};
+use crate::protocol::{
+    JsonRpcRequest, PostMessageParams, SubscribeParams, ThreadCreateParams, ThreadGetParams,
+};
 
 /// Route a decoded JSON-RPC request to its handler. One `match` arm per
 /// method; each arm deserializes its params then delegates to the method's
@@ -52,6 +55,12 @@ pub async fn dispatch(
             // Read-only, no params (ADR-0022 read path) — skip param
             // deserialization entirely.
             thread_list::handle(pool, req.id, out_tx).await;
+        }
+        "thread/get" => {
+            let Ok(params) = serde_json::from_value::<ThreadGetParams>(req.params) else {
+                return;
+            };
+            thread_get::handle(pool, req.id, params, out_tx).await;
         }
         // Other methods: drop silently for the skeleton.
         _ => {}
