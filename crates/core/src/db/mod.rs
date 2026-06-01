@@ -91,23 +91,62 @@ pub async fn open() -> Result<SqlitePool> {
     Ok(pool)
 }
 
-/// Return the default Thread's id, lazy-minting one row in `threads` the
-/// first time we're called against a fresh DB. The skeleton has a single
-/// implicit Thread; real Thread CRUD lands in a future feature.
-///
-/// Note: the SELECT and INSERT run on the pool directly, not inside the
-/// caller's transaction. Two concurrent first-time `run/post_message`
-/// callers could each miss the other's INSERT and both insert. For the
-/// MVP single-user single-process model this race is theoretical (one
-/// WS frame at a time per connection); the eventual fix is an
-/// `is_default` flag with `INSERT … ON CONFLICT DO NOTHING`.
-pub async fn ensure_default_thread(pool: &SqlitePool, now_ms: i64) -> sqlx::Result<Uuid> {
-    if let Some(id_str) = queries::select_first_thread_id(pool).await? {
-        return Ok(Uuid::parse_str(&id_str).expect("threads.id is a valid UUID"));
+/// Return whether a Thread row with `thread_id` exists. `run/post_message`
+/// is existing-thread-only (ADR-0022): it calls this before persisting a new
+/// Run so a well-formed-but-unknown `thread_id` is rejected with
+/// `unknown_thread` and writes zero rows.
+pub async fn thread_exists(pool: &SqlitePool, thread_id: Uuid) -> sqlx::Result<bool> {
+    queries::thread_exists(pool, thread_id).await
+}
+
+/// Read all Threads for `thread/list` (ADR-0022 read path), ordered
+/// most-recent-activity-first. Returns `(id, title, last_activity_at)` rows;
+/// the handler maps them to the wire `ThreadSummary` shape.
+pub async fn list_threads(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String, i64)>> {
+    queries::list_threads(pool).await
+}
+
+/// One Message in a `thread/get` read: its identity, `role`, `status`,
+/// owning `run_id`, and `text` already assembled (the concat of its text
+/// parts in `seq` order). Flat-text-no-parts[] per ADR-0017/Q15 — the handler
+/// maps this straight onto the wire `MessageView`.
+pub struct MessageRow {
+    pub id: String,
+    pub role: String,
+    pub status: String,
+    pub run_id: String,
+    pub text: String,
+}
+
+/// Read a Thread plus its Messages for `thread/get` (ADR-0022 read path).
+/// Returns `None` when the Thread does not exist (the title query is the
+/// existence check), so the handler maps that to `unknown_thread` (-32001).
+/// Otherwise `Some((title, messages))` where messages are in chronological
+/// order (`created_at, rowid` — the rowid tiebreaker keeps the user Message
+/// ahead of the assistant Message on a same-ms insert) and each Message's
+/// `text` is the concat of its text parts assembled in Rust.
+pub async fn get_thread_with_messages(
+    pool: &SqlitePool,
+    thread_id: Uuid,
+) -> sqlx::Result<Option<(String, Vec<MessageRow>)>> {
+    let Some(title) = queries::thread_title(pool, thread_id).await? else {
+        return Ok(None);
+    };
+
+    let rows = queries::messages_by_thread(pool, thread_id).await?;
+    let mut messages = Vec::with_capacity(rows.len());
+    for (id, role, status, run_id) in rows {
+        let text = queries::text_parts_by_message(pool, &id).await?.concat();
+        messages.push(MessageRow {
+            id,
+            role,
+            status,
+            run_id,
+            text,
+        });
     }
-    let id = Uuid::now_v7();
-    queries::insert_thread(pool, id, "Untitled", now_ms).await?;
-    Ok(id)
+
+    Ok(Some((title, messages)))
 }
 
 /// Single transaction with deferred FK enforcement. sqlx's `pool.begin()`
@@ -129,8 +168,77 @@ pub async fn persist_initial_run(
 ) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
 
+    insert_initial_run_rows(
+        &mut tx,
+        run_id,
+        thread_id,
+        user_message_id,
+        assistant_message_id,
+        workflow,
+        prompt,
+        now_ms,
+    )
+    .await?;
+
+    tx.commit().await
+}
+
+/// Message-first thread creation (ADR-0022): mint a NEW Thread row (with a
+/// derived `title`) THEN the same initial-run rows `persist_initial_run`
+/// writes — all in ONE transaction. `thread/create` uses this so the Thread
+/// and its first message are born atomically. Deferred-FK ordering is
+/// identical to `persist_initial_run` (begin → inserts → commit).
+#[allow(clippy::too_many_arguments)]
+pub async fn persist_thread_with_first_run(
+    pool: &SqlitePool,
+    thread_id: Uuid,
+    run_id: Uuid,
+    user_message_id: Uuid,
+    assistant_message_id: Uuid,
+    workflow: &Workflow,
+    prompt: &str,
+    title: &str,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+
+    queries::insert_thread(&mut *tx, thread_id, title, now_ms).await?;
+
+    insert_initial_run_rows(
+        &mut tx,
+        run_id,
+        thread_id,
+        user_message_id,
+        assistant_message_id,
+        workflow,
+        prompt,
+        now_ms,
+    )
+    .await?;
+
+    tx.commit().await
+}
+
+/// Shared initial-run inserts for a Thread that already exists in the open
+/// transaction: the Run row, the user Message + its `seq=0` text part, the
+/// assistant Message (`status='streaming'`) + an empty `seq=0` text part
+/// (so each Worker `text_delta` can append via [`append_assistant_text`]),
+/// the two `message_run_steps`, the `status` `run_event`, and the Thread
+/// activity touch. Runs inside the caller's transaction; the caller owns
+/// the `begin`/`commit` (and any preceding `insert_thread`).
+#[allow(clippy::too_many_arguments)]
+async fn insert_initial_run_rows(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run_id: Uuid,
+    thread_id: Uuid,
+    user_message_id: Uuid,
+    assistant_message_id: Uuid,
+    workflow: &Workflow,
+    prompt: &str,
+    now_ms: i64,
+) -> sqlx::Result<()> {
     queries::insert_run(
-        &mut *tx,
+        &mut **tx,
         run_id,
         thread_id,
         workflow.name,
@@ -143,7 +251,7 @@ pub async fn persist_initial_run(
     .await?;
 
     queries::insert_message(
-        &mut *tx,
+        &mut **tx,
         user_message_id,
         thread_id,
         run_id,
@@ -152,10 +260,10 @@ pub async fn persist_initial_run(
         now_ms,
     )
     .await?;
-    queries::insert_text_part(&mut *tx, user_message_id, 0, prompt).await?;
+    queries::insert_text_part(&mut **tx, user_message_id, 0, prompt).await?;
 
     queries::insert_message(
-        &mut *tx,
+        &mut **tx,
         assistant_message_id,
         thread_id,
         run_id,
@@ -164,13 +272,13 @@ pub async fn persist_initial_run(
         now_ms,
     )
     .await?;
-    queries::insert_text_part(&mut *tx, assistant_message_id, 0, "").await?;
+    queries::insert_text_part(&mut **tx, assistant_message_id, 0, "").await?;
 
-    queries::insert_message_run_step(&mut *tx, run_id, 0, user_message_id, now_ms).await?;
-    queries::insert_message_run_step(&mut *tx, run_id, 1, assistant_message_id, now_ms).await?;
+    queries::insert_message_run_step(&mut **tx, run_id, 0, user_message_id, now_ms).await?;
+    queries::insert_message_run_step(&mut **tx, run_id, 1, assistant_message_id, now_ms).await?;
 
     queries::insert_run_event(
-        &mut *tx,
+        &mut **tx,
         run_id,
         0,
         "status",
@@ -179,9 +287,7 @@ pub async fn persist_initial_run(
     )
     .await?;
 
-    queries::touch_thread_activity(&mut *tx, thread_id, now_ms).await?;
-
-    tx.commit().await
+    queries::touch_thread_activity(&mut **tx, thread_id, now_ms).await
 }
 
 /// Append a streaming `text_delta` to the assistant `message_parts.text`
@@ -193,6 +299,35 @@ pub async fn append_assistant_text(
     delta: &str,
 ) -> sqlx::Result<()> {
     queries::append_text_part(pool, assistant_message_id, 0, delta).await
+}
+
+/// A Run's snapshot for `run/subscribe` (ADR-0022): the assistant
+/// message's cumulative text at the subscribe instant plus the Run's
+/// status. `text` is empty for a Run that has streamed no delta yet.
+pub struct RunSnapshot {
+    pub text: String,
+    /// The Run's `runs.status` at the snapshot instant. Slice 1 keys
+    /// streaming-vs-terminal off hub presence, not this field; it is part
+    /// of the ADR-0022 snapshot shape and consumed by the `thread/get`
+    /// rehydration read in a later slice.
+    #[allow(dead_code)]
+    pub status: String,
+}
+
+/// Read the snapshot-then-tail starting point for `run_id`: the assistant
+/// message's cumulative `message_parts.text` (seq 0) and the Run status.
+/// Returns `None` when the Run does not exist, so the subscribe handler can
+/// stay defensible against an unknown run id.
+pub async fn select_run_snapshot(
+    pool: &SqlitePool,
+    run_id: Uuid,
+) -> sqlx::Result<Option<RunSnapshot>> {
+    Ok(queries::select_run_snapshot(pool, run_id)
+        .await?
+        .map(|(text, status)| RunSnapshot {
+            text: text.unwrap_or_default(),
+            status,
+        }))
 }
 
 /// Slice 4: clean termination. Worker emitted `done`; flip `runs` to

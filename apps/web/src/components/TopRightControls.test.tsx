@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import App from "../App.js";
+import { RuntimeProvider } from "../runtime.js";
 
 // Node 26's experimental localStorage is gated by --localstorage-file, leaving
 // jsdom's window.localStorage undefined. Provide an in-memory polyfill so the
@@ -45,7 +46,13 @@ describe("TopRightControls", () => {
 
 	it("theme toggle flips data-theme + localStorage", async () => {
 		const user = userEvent.setup();
-		renderWithQuery(<App />);
+		// App now mounts ChatColumn + Sidebar, which call useRuntime() — wrap in
+		// a RuntimeProvider (stub url, lazy → no socket at mount).
+		renderWithQuery(
+			<RuntimeProvider config={{ url: "ws://stub/ws" }}>
+				<App />
+			</RuntimeProvider>,
+		);
 		const toggle = screen.getByRole("button", { name: /toggle theme/i });
 
 		await user.click(toggle);

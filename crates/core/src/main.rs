@@ -1,5 +1,6 @@
 mod db;
 mod dispatcher;
+mod hub;
 mod protocol;
 mod runs;
 mod worker;
@@ -14,7 +15,8 @@ use sqlx::SqlitePool;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
-use crate::protocol::{JsonRpcRequest, PostMessageParams};
+use crate::hub::Hubs;
+use crate::protocol::JsonRpcRequest;
 
 #[derive(Clone)]
 struct AppState {
@@ -22,12 +24,20 @@ struct AppState {
     /// and Run Events are written here inside a single transaction with
     /// deferred FK enforcement.
     pool: SqlitePool,
+    /// Per-run event hubs (ADR-0022). `run_id → RunHub`; the Worker
+    /// publishes Run Events into the hub and `run/subscribe` attaches to
+    /// it. Shared across all connections so a Run's live stream outlives
+    /// the socket that started it.
+    hubs: Hubs,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let pool = db::open().await?;
-    let state = AppState { pool };
+    let state = AppState {
+        pool,
+        hubs: hub::new_hubs(),
+    };
 
     let app = Router::new()
         .route("/", get(|| async { "Inkstone Core" }))
@@ -62,14 +72,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                         let Ok(req) = serde_json::from_str::<JsonRpcRequest>(&t) else {
                             continue;
                         };
-                        if req.method == "run/post_message" {
-                            let Ok(params) = serde_json::from_value::<PostMessageParams>(req.params)
-                            else {
-                                continue;
-                            };
-                            runs::handle_post_message(&state.pool, req.id, params, &out_tx).await;
-                        }
-                        // Other methods: drop silently for the skeleton.
+                        runs::dispatch(&state.pool, &state.hubs, req, &out_tx).await;
                     }
                     Message::Close(_) => break,
                     _ => {}

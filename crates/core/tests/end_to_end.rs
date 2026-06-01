@@ -86,7 +86,7 @@ fn end_to_end_post_message_streams_text_delta_then_done() {
             .expect("ws handshake succeeds");
 
         let request =
-            r#"{"jsonrpc":"2.0","id":1,"method":"run/post_message","params":{"prompt":"hello"}}"#;
+            r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hello"}}"#;
         ws.send(Message::Text(request.into()))
             .await
             .expect("send request frame");
@@ -107,27 +107,63 @@ fn end_to_end_post_message_streams_text_delta_then_done() {
             }
         }
 
+        // Pure-subscribe (ADR-0022): post_message returns {run_id} only — no
+        // events on the response frame. Read the response, then subscribe by
+        // run_id and reassemble the snapshot + tail.
         let response = next_text(&mut ws).await;
-        let event1 = next_text(&mut ws).await;
-        let event2 = next_text(&mut ws).await;
+
+        let resp_v: serde_json::Value = serde_json::from_str(&response)
+            .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {response}"));
+        let run_id = resp_v["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string — body: {response}"))
+            .to_string();
+
+        let subscribe = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
+        );
+        ws.send(Message::Text(subscribe.into()))
+            .await
+            .expect("send subscribe frame");
+
+        let sub_response = next_text(&mut ws).await;
+
+        // Drain run/event notifications until done; reassemble the text.
+        let mut events = Vec::new();
+        loop {
+            let body = next_text(&mut ws).await;
+            let v: serde_json::Value = serde_json::from_str(&body)
+                .unwrap_or_else(|e| panic!("event is JSON: {e} — body: {body}"));
+            let is_done = v["params"]["event"]["kind"] == serde_json::json!("done");
+            events.push(body);
+            if is_done {
+                break;
+            }
+        }
 
         ws.close(None).await.ok();
-        (response, event1, event2)
+        (response, sub_response, run_id, events)
     });
 
     let _ = child.kill();
     let _ = child.wait();
 
-    let (response_body, event1_body, event2_body) = outcome;
+    let (response_body, sub_response_body, run_id, event_bodies) = outcome;
 
     let response: serde_json::Value = serde_json::from_str(&response_body)
         .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {response_body}"));
     assert_eq!(response["jsonrpc"], serde_json::json!("2.0"), "jsonrpc");
     assert_eq!(response["id"], serde_json::json!(1), "echoed id");
-    let run_id = response["result"]["run_id"]
-        .as_str()
-        .unwrap_or_else(|| panic!("result.run_id is a string — body: {response_body}"))
-        .to_string();
+    // The post_message response frame is NOT a run/event notification and
+    // carries no events.
+    assert!(
+        response.get("method").is_none(),
+        "post_message response is not a notification — body: {response_body}"
+    );
+    assert!(
+        response["params"].get("event").is_none(),
+        "post_message response carries no event — body: {response_body}"
+    );
     let parsed = uuid::Uuid::parse_str(&run_id).expect("run_id parses as UUID");
     assert_eq!(
         parsed.get_version(),
@@ -135,41 +171,49 @@ fn end_to_end_post_message_streams_text_delta_then_done() {
         "run_id is UUIDv7"
     );
 
-    let event1: serde_json::Value = serde_json::from_str(&event1_body)
-        .unwrap_or_else(|e| panic!("event1 is JSON: {e} — body: {event1_body}"));
-    assert_eq!(event1["jsonrpc"], serde_json::json!("2.0"), "event1 jsonrpc");
-    assert_eq!(
-        event1["method"],
-        serde_json::json!("run/event"),
-        "event1 method"
-    );
-    assert_eq!(
-        event1["params"]["run_id"],
-        serde_json::json!(run_id),
-        "event1 run_id matches"
-    );
-    assert_eq!(
-        event1["params"]["event"],
-        serde_json::json!({"kind": "text_delta", "delta": "echo: hello"}),
-        "event1 event payload"
+    // The subscribe request resolves with its own response frame.
+    let sub_response: serde_json::Value = serde_json::from_str(&sub_response_body)
+        .unwrap_or_else(|e| panic!("subscribe response is JSON: {e} — body: {sub_response_body}"));
+    assert_eq!(sub_response["id"], serde_json::json!(2), "subscribe id");
+    assert!(
+        sub_response.get("method").is_none(),
+        "subscribe response is a response, not a notification — body: {sub_response_body}"
     );
 
-    let event2: serde_json::Value = serde_json::from_str(&event2_body)
-        .unwrap_or_else(|e| panic!("event2 is JSON: {e} — body: {event2_body}"));
-    assert_eq!(event2["jsonrpc"], serde_json::json!("2.0"), "event2 jsonrpc");
+    // Every event arrives as a run/event for this run_id. Reassemble the
+    // snapshot + tail text and assert it equals the full echo output, and
+    // that the terminal frame is done.
+    let mut assembled = String::new();
+    let mut saw_done = false;
+    for body in &event_bodies {
+        let v: serde_json::Value = serde_json::from_str(body)
+            .unwrap_or_else(|e| panic!("event is JSON: {e} — body: {body}"));
+        assert_eq!(v["jsonrpc"], serde_json::json!("2.0"), "event jsonrpc");
+        assert_eq!(
+            v["method"],
+            serde_json::json!("run/event"),
+            "event method — body: {body}"
+        );
+        assert_eq!(
+            v["params"]["run_id"],
+            serde_json::json!(run_id),
+            "event run_id matches — body: {body}"
+        );
+        match v["params"]["event"]["kind"].as_str() {
+            Some("text_delta") => {
+                assembled.push_str(
+                    v["params"]["event"]["delta"]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("text_delta carries a string — body: {body}")),
+                );
+            }
+            Some("done") => saw_done = true,
+            other => panic!("unexpected event kind {other:?} — body: {body}"),
+        }
+    }
+    assert!(saw_done, "terminal frame is done");
     assert_eq!(
-        event2["method"],
-        serde_json::json!("run/event"),
-        "event2 method"
-    );
-    assert_eq!(
-        event2["params"]["run_id"],
-        serde_json::json!(run_id),
-        "event2 run_id matches"
-    );
-    assert_eq!(
-        event2["params"]["event"],
-        serde_json::json!({"kind": "done"}),
-        "event2 event payload"
+        assembled, "echo: hello",
+        "snapshot + tail reassembles to the echo output"
     );
 }

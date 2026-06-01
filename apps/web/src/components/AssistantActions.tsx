@@ -1,5 +1,5 @@
 import { CheckCircle2, Edit3, Eye, Search } from "lucide-react";
-import type { ChatTurn } from "@/data/mock/types";
+import type { MockChatMessage } from "@/data/mock/types";
 import { Button } from "./ui/button.js";
 
 const ICON = {
@@ -9,9 +9,13 @@ const ICON = {
 	decide: CheckCircle2,
 } as const;
 
-type AgentTurn = Extract<ChatTurn, { role: "agent" }>;
+type AssistantMessage = Extract<MockChatMessage, { role: "assistant" }>;
 
-export function AgentActions({ actions }: { actions: AgentTurn["actions"] }) {
+export function AssistantActions({
+	actions,
+}: {
+	actions: AssistantMessage["actions"];
+}) {
 	if (!actions) return null;
 	return (
 		<div className="flex flex-wrap gap-1">

@@ -11,13 +11,15 @@ use uuid::Uuid;
 
 // ─── threads ──────────────────────────────────────────────────────────
 
-pub(super) async fn select_first_thread_id<'e, E>(executor: E) -> sqlx::Result<Option<String>>
+pub(super) async fn thread_exists<'e, E>(executor: E, thread_id: Uuid) -> sqlx::Result<bool>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_scalar::<_, String>("SELECT id FROM threads ORDER BY created_at ASC LIMIT 1")
+    let row: Option<i64> = sqlx::query_scalar("SELECT 1 FROM threads WHERE id = ?1 LIMIT 1")
+        .bind(thread_id.to_string())
         .fetch_optional(executor)
-        .await
+        .await?;
+    Ok(row.is_some())
 }
 
 pub(super) async fn insert_thread<'e, E>(
@@ -56,6 +58,33 @@ where
         .execute(executor)
         .await
         .map(|_| ())
+}
+
+/// Read every Thread for `thread/list`, ordered most-recent-activity-first.
+/// Returns `(id, title, last_activity_at)` rows; the handler maps them to
+/// `ThreadSummary`. Read-only — no FK/transaction concerns.
+pub(super) async fn list_threads<'e, E>(executor: E) -> sqlx::Result<Vec<(String, String, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as("SELECT id, title, last_activity_at FROM threads ORDER BY last_activity_at DESC")
+        .fetch_all(executor)
+        .await
+}
+
+/// Read a Thread's `title` by id for `thread/get`. `None` means the Thread
+/// does not exist — the handler maps that to `unknown_thread` (-32001).
+pub(super) async fn thread_title<'e, E>(
+    executor: E,
+    thread_id: Uuid,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT title FROM threads WHERE id = ?1")
+        .bind(thread_id.to_string())
+        .fetch_optional(executor)
+        .await
 }
 
 // ─── runs ─────────────────────────────────────────────────────────────
@@ -209,6 +238,28 @@ where
     .map(|_| ())
 }
 
+/// Read a Thread's Messages for `thread/get`, in chronological order.
+/// Returns `(id, role, status, run_id)` rows. Ordered by `created_at, rowid`:
+/// the user and assistant Messages of the first Run are inserted in the same
+/// ms, so the monotonic `rowid` tiebreaker keeps the user Message (inserted
+/// first) ahead of the assistant Message on a ms-tie. The handler assembles
+/// each Message's text from its parts.
+pub(super) async fn messages_by_thread<'e, E>(
+    executor: E,
+    thread_id: Uuid,
+) -> sqlx::Result<Vec<(String, String, String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, role, status, run_id FROM messages \
+         WHERE thread_id = ?1 ORDER BY created_at, rowid",
+    )
+    .bind(thread_id.to_string())
+    .fetch_all(executor)
+    .await
+}
+
 // ─── message_parts ────────────────────────────────────────────────────
 
 pub(super) async fn insert_text_part<'e, E>(
@@ -248,6 +299,51 @@ where
     .execute(executor)
     .await
     .map(|_| ())
+}
+
+/// Read a Message's text parts for `thread/get`, ordered by `seq`. Returns
+/// the `text` columns; the handler concatenates them into the Message's
+/// assembled wire text (flat-text-no-parts[], ADR-0017/Q15). The MVP has one
+/// text part per Message at `seq=0`, but the concat handles multi-part too.
+pub(super) async fn text_parts_by_message<'e, E>(
+    executor: E,
+    message_id: &str,
+) -> sqlx::Result<Vec<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT text FROM message_parts \
+         WHERE message_id = ?1 AND type = 'text' ORDER BY seq",
+    )
+    .bind(message_id)
+    .fetch_all(executor)
+    .await
+}
+
+/// Read a Run's snapshot for `run/subscribe`: the assistant message's
+/// cumulative `message_parts.text` at `seq=0` plus the Run's `status`.
+/// Returns `None` when the Run does not exist. The text is `Some("")` for
+/// a Run that has begun streaming but persisted no delta yet; `None` only
+/// when there is no assistant message_part row at all.
+pub(super) async fn select_run_snapshot<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<(Option<String>, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<(Option<String>, String)> = sqlx::query_as(
+        "SELECT mp.text, r.status \
+         FROM runs r \
+         JOIN messages m ON m.run_id = r.id AND m.role = 'assistant' \
+         JOIN message_parts mp ON mp.message_id = m.id AND mp.seq = 0 \
+         WHERE r.id = ?1",
+    )
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
 }
 
 // ─── run_steps ────────────────────────────────────────────────────────

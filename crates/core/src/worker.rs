@@ -1,61 +1,80 @@
 //! Worker process spawn (per ADR-0013). One Worker process per Run, stdio
 //! transport with NDJSON framing. The spawned task owns the child handle,
-//! reads stdout line-by-line, and forwards each line as a `run/event`
-//! JSON-RPC Notification on the per-connection outbound channel.
+//! reads stdout line-by-line, and publishes each Run Event into the Run's
+//! hub (ADR-0022) — the live stream is owned by Core and observable by any
+//! connection, not bound to the socket that issued `run/post_message`.
 
 use std::process::Stdio;
+use std::sync::Arc;
 
 use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::db;
+use crate::hub::Hubs;
 use crate::protocol::{RunEvent, WorkerInbound};
 use crate::workflow::Workflow;
 
 /// Spawn a Worker for `run_id`. Returns immediately; a Tokio task drives
-/// the child to completion and forwards stdout NDJSON events as
-/// `run/event` Notifications via `ws_sender`. Whichever way the loop
-/// exits — clean `done`, stdout EOF, or a pre-loop spawn failure — the
-/// terminal tx (`db::complete_run` / `db::error_run`) commits before the
-/// task ends.
+/// the child to completion and publishes stdout NDJSON events into the
+/// Run's hub. Whichever way the loop exits — clean `done`, stdout EOF, or a
+/// pre-loop spawn failure — the terminal tx (`db::complete_run` /
+/// `db::error_run`) commits, then the hub entry is removed (dropping the
+/// broadcast sender so subscribers see the channel close after `done`).
 ///
 /// `pool` + `assistant_message_id` are used to append each `text_delta`
 /// to the assistant `message_parts.text` row that `persist_initial_run`
-/// pre-inserted at `seq=0`. The UPDATE commits BEFORE the matching WS
-/// Notification is forwarded, so a test that observes the WS frame can
-/// immediately query the DB and see the same delta.
+/// pre-inserted at `seq=0`. Per ADR-0022 the per-event critical section is
+/// `lock gate → persist delta → publish to hub → unlock`, so a concurrent
+/// `run/subscribe`'s `snapshot → attach` falls wholly before or after each
+/// delta — exactly-once across the snapshot/tail boundary.
 pub fn spawn(
     run_id: Uuid,
     _workflow: &'static Workflow,
     prompt: String,
     pool: SqlitePool,
     assistant_message_id: Uuid,
-    ws_sender: UnboundedSender<String>,
+    hubs: Hubs,
+    tx: broadcast::Sender<RunEvent>,
+    gate: Arc<tokio::sync::Mutex<()>>,
 ) {
     let cmd = std::env::var("INKSTONE_WORKER_CMD").unwrap_or_else(|_| {
         "packages/worker/node_modules/.bin/tsx packages/worker/src/cli.ts".to_string()
     });
 
     tokio::spawn(async move {
-        run_worker(run_id, cmd, prompt, pool, assistant_message_id, ws_sender).await;
+        run_worker(
+            run_id,
+            cmd,
+            prompt,
+            pool,
+            assistant_message_id,
+            hubs,
+            tx,
+            gate,
+        )
+        .await;
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_worker(
     run_id: Uuid,
     cmd: String,
     prompt: String,
     pool: SqlitePool,
     assistant_message_id: Uuid,
-    ws_sender: UnboundedSender<String>,
+    hubs: Hubs,
+    tx: broadcast::Sender<RunEvent>,
+    gate: Arc<tokio::sync::Mutex<()>>,
 ) {
     let mut parts = cmd.split_whitespace();
     let Some(program) = parts.next() else {
         eprintln!("INKSTONE_WORKER_CMD is empty");
-        finalize_error(&pool, run_id).await;
+        finalize_error(&pool, &hubs, run_id).await;
         return;
     };
     let args: Vec<&str> = parts.collect();
@@ -70,7 +89,7 @@ async fn run_worker(
         Ok(c) => c,
         Err(e) => {
             eprintln!("failed to spawn worker {program:?}: {e}");
-            finalize_error(&pool, run_id).await;
+            finalize_error(&pool, &hubs, run_id).await;
             return;
         }
     };
@@ -91,14 +110,14 @@ async fn run_worker(
         None => {
             eprintln!("worker child has no stdout");
             let _ = child.wait().await;
-            finalize_error(&pool, run_id).await;
+            finalize_error(&pool, &hubs, run_id).await;
             return;
         }
     };
     let mut lines = BufReader::new(stdout).lines();
 
-    // Slice 4: track whether the Worker emitted a terminal `done` event so
-    // the post-loop branch can pick `complete_run` vs `error_run`.
+    // Track whether the Worker emitted a terminal `done` event so the
+    // post-loop branch can pick `complete_run` vs `error_run`.
     let mut saw_done = false;
 
     while let Ok(Some(line)) = lines.next_line().await {
@@ -110,12 +129,17 @@ async fn run_worker(
             }
         };
 
-        // Persist BEFORE forwarding the WS frame so a test that observes
-        // the frame and then queries the DB sees the committed delta.
-        // Persistence loss is logged but not fatal — the WS frame is the
-        // user's observable channel for slice 3.
+        // Per-event critical section (ADR-0022 exactly-once). Hold the
+        // per-run gate across persist + publish so a concurrent
+        // `run/subscribe` snapshot/attach sees this delta either wholly in
+        // the snapshot or wholly in the tail, never split or duplicated.
+        let guard = gate.lock().await;
+
         match &event {
             RunEvent::TextDelta { delta } => {
+                // Persist BEFORE publishing so the persisted text (the
+                // snapshot floor) is never behind a delta a subscriber
+                // already saw on the tail.
                 if let Err(e) =
                     db::append_assistant_text(&pool, assistant_message_id, delta).await
                 {
@@ -129,27 +153,17 @@ async fn run_worker(
             }
         }
 
-        let notification = serde_json::json!({
-            "jsonrpc": "2.0",
-            "method": "run/event",
-            "params": {
-                "run_id": run_id.to_string(),
-                "event": event,
-            },
-        });
-        let body = serde_json::to_string(&notification).expect("notification serializes");
-        if ws_sender.send(body).is_err() {
-            // Connection dropped; nothing more to do.
-            break;
-        }
+        // Publish to the hub. `SendError` (no receivers attached) is fine —
+        // the persisted text is the durable floor; a late subscriber reads
+        // it from the snapshot.
+        let _ = tx.send(event);
+
+        drop(guard);
     }
 
-    // Slice 4: terminal-state tx. Either path commits the runs/messages/
-    // run_events triple in a single transaction (ADR-0017's atomic
-    // recovery invariant). The tx fires AFTER the WS forwarder has
-    // drained, so a slice-4 test that wants to assert post-terminal DB
-    // state must close the WS and let Core finish (e.g. by killing it
-    // and reaping, or by polling the DB) before querying.
+    // Terminal-state tx. Either path commits the runs/messages/run_events
+    // triple in a single transaction (ADR-0017's atomic recovery
+    // invariant).
     let now_ms = db::now_ms();
     let result = if saw_done {
         db::complete_run(&pool, run_id, now_ms).await
@@ -160,17 +174,21 @@ async fn run_worker(
         eprintln!("terminal tx failed for run {run_id}: {e}");
     }
 
+    // Remove the hub entry AFTER the terminal tx. Dropping the broadcast
+    // sender lets attached subscribers observe `RecvError::Closed` once they
+    // have drained the tail (including the terminal `done` published above).
+    crate::hub::remove(&hubs, run_id);
+
     let _ = child.wait().await;
 }
 
 /// Pre-loop spawn-failure path: the Worker never produced any output, so
 /// the run terminates immediately with `worker_disconnected`. Honors the
-/// ADR-0017 atomic recovery invariant — without this, an empty
-/// `INKSTONE_WORKER_CMD` or a missing worker binary would leave
-/// `runs.status='running'` and the assistant `messages.status='streaming'`
-/// forever.
-async fn finalize_error(pool: &SqlitePool, run_id: Uuid) {
+/// ADR-0017 atomic recovery invariant, then removes the hub entry so any
+/// subscriber falls through to the persisted snapshot + `done`.
+async fn finalize_error(pool: &SqlitePool, hubs: &Hubs, run_id: Uuid) {
     if let Err(e) = db::error_run(pool, run_id, db::now_ms()).await {
         eprintln!("error_run after pre-loop spawn failure for run {run_id}: {e}");
     }
+    crate::hub::remove(hubs, run_id);
 }
