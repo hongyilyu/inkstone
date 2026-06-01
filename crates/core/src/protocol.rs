@@ -39,6 +39,25 @@ pub struct PostMessageResult {
     pub run_id: String,
 }
 
+/// `thread/create` params: the first user message. Message-first thread
+/// creation (ADR-0022) — a Thread is born only with its first message, so
+/// `prompt` is required. An empty/whitespace prompt is rejected with
+/// `invalid_params` before any row is written (the trim-empty guard lives
+/// in [`crate::runs::handle_thread_create`], not here).
+#[derive(Debug, Deserialize)]
+pub struct ThreadCreateParams {
+    pub prompt: String,
+}
+
+/// `thread/create` result: the freshly-minted Thread and its first Run.
+/// Pure-subscribe (ADR-0022) — the response carries only these ids; the
+/// Client follows with `run/subscribe(run_id)` to receive events.
+#[derive(Debug, Serialize)]
+pub struct ThreadCreateResult {
+    pub thread_id: String,
+    pub run_id: String,
+}
+
 /// Run Event emitted by the Worker over its stdout NDJSON stream
 /// (per ADR-0006). Core deserializes each line into this enum, takes
 /// the appropriate persistence action, and forwards it as a `run/event`

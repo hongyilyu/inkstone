@@ -55,18 +55,40 @@ pub(super) fn send_text_delta(out_tx: &UnboundedSender<String>, run_id: Uuid, te
     );
 }
 
-/// Frame a JSON-RPC 2.0 error envelope and queue it on the per-connection
-/// channel. `-32603` is the JSON-RPC reserved "internal error" code per
-/// ADR-0014.
+/// Frame a JSON-RPC 2.0 internal error (`-32603`, the JSON-RPC reserved code
+/// per ADR-0014) and queue it on the per-connection channel.
 pub(crate) fn send_error(
     out_tx: &UnboundedSender<String>,
     id: serde_json::Value,
     message: String,
 ) {
+    send_rpc_error(out_tx, id, -32603, message);
+}
+
+/// Frame a JSON-RPC 2.0 `invalid_params` error (`-32602`, ADR-0014) and queue
+/// it on the per-connection channel. Used for client-input rejections like an
+/// empty `thread/create` prompt — distinct from the `-32603` internal-error
+/// code [`send_error`] uses.
+pub(crate) fn send_invalid_params(
+    out_tx: &UnboundedSender<String>,
+    id: serde_json::Value,
+    message: String,
+) {
+    send_rpc_error(out_tx, id, -32602, message);
+}
+
+/// Shared JSON-RPC error framer: builds the `{jsonrpc, id, error:{code,
+/// message}}` envelope and queues it on the per-connection channel.
+fn send_rpc_error(
+    out_tx: &UnboundedSender<String>,
+    id: serde_json::Value,
+    code: i64,
+    message: String,
+) {
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
-        "error": { "code": -32603, "message": message },
+        "error": { "code": code, "message": message },
     })
     .to_string();
     let _ = out_tx.send(body);

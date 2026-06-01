@@ -129,8 +129,78 @@ pub async fn persist_initial_run(
 ) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
 
+    insert_initial_run_rows(
+        &mut tx,
+        run_id,
+        thread_id,
+        user_message_id,
+        assistant_message_id,
+        workflow,
+        prompt,
+        now_ms,
+    )
+    .await?;
+
+    tx.commit().await
+}
+
+/// Message-first thread creation (ADR-0022): mint a NEW Thread row (with a
+/// derived `title`) THEN the same initial-run rows `persist_initial_run`
+/// writes — all in ONE transaction. `thread/create` uses this instead of
+/// `ensure_default_thread` + `persist_initial_run` so the Thread and its
+/// first message are born atomically. Deferred-FK ordering is identical to
+/// `persist_initial_run` (begin → inserts → commit).
+#[allow(clippy::too_many_arguments)]
+pub async fn persist_thread_with_first_run(
+    pool: &SqlitePool,
+    thread_id: Uuid,
+    run_id: Uuid,
+    user_message_id: Uuid,
+    assistant_message_id: Uuid,
+    workflow: &Workflow,
+    prompt: &str,
+    title: &str,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+
+    queries::insert_thread(&mut *tx, thread_id, title, now_ms).await?;
+
+    insert_initial_run_rows(
+        &mut tx,
+        run_id,
+        thread_id,
+        user_message_id,
+        assistant_message_id,
+        workflow,
+        prompt,
+        now_ms,
+    )
+    .await?;
+
+    tx.commit().await
+}
+
+/// Shared initial-run inserts for a Thread that already exists in the open
+/// transaction: the Run row, the user Message + its `seq=0` text part, the
+/// assistant Message (`status='streaming'`) + an empty `seq=0` text part
+/// (so each Worker `text_delta` can append via [`append_assistant_text`]),
+/// the two `message_run_steps`, the `status` `run_event`, and the Thread
+/// activity touch. Runs inside the caller's transaction; the caller owns
+/// the `begin`/`commit` (and any preceding `insert_thread`).
+#[allow(clippy::too_many_arguments)]
+async fn insert_initial_run_rows(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run_id: Uuid,
+    thread_id: Uuid,
+    user_message_id: Uuid,
+    assistant_message_id: Uuid,
+    workflow: &Workflow,
+    prompt: &str,
+    now_ms: i64,
+) -> sqlx::Result<()> {
     queries::insert_run(
-        &mut *tx,
+        &mut **tx,
         run_id,
         thread_id,
         workflow.name,
@@ -143,7 +213,7 @@ pub async fn persist_initial_run(
     .await?;
 
     queries::insert_message(
-        &mut *tx,
+        &mut **tx,
         user_message_id,
         thread_id,
         run_id,
@@ -152,10 +222,10 @@ pub async fn persist_initial_run(
         now_ms,
     )
     .await?;
-    queries::insert_text_part(&mut *tx, user_message_id, 0, prompt).await?;
+    queries::insert_text_part(&mut **tx, user_message_id, 0, prompt).await?;
 
     queries::insert_message(
-        &mut *tx,
+        &mut **tx,
         assistant_message_id,
         thread_id,
         run_id,
@@ -164,13 +234,13 @@ pub async fn persist_initial_run(
         now_ms,
     )
     .await?;
-    queries::insert_text_part(&mut *tx, assistant_message_id, 0, "").await?;
+    queries::insert_text_part(&mut **tx, assistant_message_id, 0, "").await?;
 
-    queries::insert_message_run_step(&mut *tx, run_id, 0, user_message_id, now_ms).await?;
-    queries::insert_message_run_step(&mut *tx, run_id, 1, assistant_message_id, now_ms).await?;
+    queries::insert_message_run_step(&mut **tx, run_id, 0, user_message_id, now_ms).await?;
+    queries::insert_message_run_step(&mut **tx, run_id, 1, assistant_message_id, now_ms).await?;
 
     queries::insert_run_event(
-        &mut *tx,
+        &mut **tx,
         run_id,
         0,
         "status",
@@ -179,9 +249,7 @@ pub async fn persist_initial_run(
     )
     .await?;
 
-    queries::touch_thread_activity(&mut *tx, thread_id, now_ms).await?;
-
-    tx.commit().await
+    queries::touch_thread_activity(&mut **tx, thread_id, now_ms).await
 }
 
 /// Append a streaming `text_delta` to the assistant `message_parts.text`
