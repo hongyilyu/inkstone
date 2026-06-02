@@ -1,5 +1,10 @@
 # Workflow and tool definitions: data in Core, generic Worker
 
+> **As-built amendment (real-worker-codex feature, see [ADR-0023](./0023-provider-oauth-core-owned-credentials.md)).** When the generic interpreter replaced the echo Worker, the spawn manifest was extended beyond this ADR's original sketch in two backward-compatible ways:
+> - **Assembled conversation history.** The manifest carries an ordered `messages[]` array — the Thread's completed Messages that Core assembles from tier 2 — so a Run is multi-turn. The Worker maps these to `pi-agent-core` `AgentMessage[]`. (The original ADR implied only the current prompt; history was always going to be needed and is additive.)
+> - **An optional provider access token.** For OAuth providers (`openai-codex`), Core injects a short-lived `access_token` into the manifest, resolved per-spawn per ADR-0023. Non-OAuth providers (e.g. the `faux` test provider) omit it.
+> - **Deferred fields.** `auto_approve` and `bootstrap` are not yet emitted — they wait for the tools slice. `tools = []` ships today.
+
 A **Workflow** is a TOML file in `crates/core/workflows/`. It is pure declarative data — name, version, system prompt, tool allowlist, model + provider, auto-approve rules, and an optional bootstrap tool-call list. Workflows are owned by Core; the Worker has no per-Workflow code.
 
 A **tool** is implemented in Rust in Core, with its input schema derived from a Rust struct via `schemars`. At Worker spawn, Core ships the tool descriptors (filtered by the Workflow's allowlist) inside the manifest. The Worker constructs `pi-agent-core` `AgentTool` proxies whose `execute` method round-trips back to Core over stdio. Tool implementations exist exactly once, in Rust; the Worker has zero per-tool code.

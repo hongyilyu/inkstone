@@ -23,6 +23,7 @@ Slash-style names, taking cues from LSP and Zed's ACP. They are not literal ACP/
 - `run/*` — Runs. `run/post_message` (creates and starts a Run, returns `run_id`), `run/get`, `run/get_history`, `run/cancel`, `run/subscribe`.
 - `proposal/*` — Proposal review. `proposal/get`, `proposal/decide` (accept | reject | edit), `proposal/subscribe`.
 - `entity/*` — Accepted Entity reads. `entity/list_todos`, `entity/list_people`, `entity/subscribe_changes`, etc., shaped per the schema ADR.
+- `auth/*` — provider-credential connection. `auth/status` (which providers are connected), `auth/login_start` (begin an OAuth login, returns the authorize URL). Added by [ADR-0023](./0023-provider-oauth-core-owned-credentials.md); see the as-built amendment below.
 
 Subscribe verbs are typed and per-resource — there is no generic `session/subscribe` with topic strings. The set of subscribe methods is small and obvious; adding one when the slice needs it is cheaper than registering topics.
 
@@ -131,10 +132,17 @@ There is no `schema_hash` in the MVP. In production the SPA is embedded in the C
 - **Fire-and-forget `run/cancel`.** Saves one frame per cancel but loses the ability to distinguish `accepted` vs `already_terminal` vs `unknown_run`. Rejected.
 - **`schema_hash` runtime fingerprint.** Premature for MVP; production embeds the SPA in Core; dev drift is rare and recoverable. Rejected for now.
 
-## Related
+## As-built amendment: `auth/*` methods (ADR-0023)
 
+[ADR-0023](./0023-provider-oauth-core-owned-credentials.md) adds provider-credential connection to the client surface. Two request/response methods, no new Notification:
+
+- **`auth/status`** → `{ providers: [{ id, connected }] }`. Reports which providers have stored credentials. Called by the settings view on mount and on window focus.
+- **`auth/login_start`** `{ provider }` → `{ authorize_url }`. Core spawns the Auth Helper, which runs the OAuth `:1455` loopback and prints the authorize URL; Core relays it. The Client opens the URL in a **new tab**; the helper's loopback handles the OpenAI callback and writes credentials via Core, then serves its own success page. The settings tab (still alive) re-queries `auth/status` on focus to flip to connected.
+
+A live `auth/changed` Notification was considered and **deferred**: the new-tab flow leaves the settings tab alive, so focus-driven `auth/status` re-query is sufficient for the scrappy first cut. A push notification earns its keep only if connection state must update with no user action; revisit then.
+
+## Related
 - [ADR-0002](./0002-clients-talk-only-to-core.md) — Clients only reach Core.
-- [ADR-0006](./0006-run-events-vs-tool-protocol.md) — symmetric pattern on the Worker side; this ADR mirrors the request/notification distinction for the Client side.
 - [ADR-0007](./0007-local-first-single-user.md) — loopback only; "it's my machine" auth.
 - [ADR-0008](./0008-monorepo-shape.md) — `packages/protocol` carries the wire types; `packages/ui-sdk` wraps them for Clients.
 - [ADR-0009](./0009-protocol-strategy.md) — manual type mirroring + contract tests; honored here.
@@ -142,3 +150,4 @@ There is no `schema_hash` in the MVP. In production the SPA is embedded in the C
 - [ADR-0013](./0013-worker-process-lifecycle-and-transport.md) — symmetric ADR for the Worker side.
 - [ADR-0015](./0015-web-client-packaging.md) — how the SPA reaches the browser in dev vs prod.
 - [ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md) — amends this ADR's reconnect flow: `run/subscribe` is snapshot-then-tail over a per-run hub; `run/get_history` deferred.
+- [ADR-0023](./0023-provider-oauth-core-owned-credentials.md) — adds the `auth/*` methods amended above.
