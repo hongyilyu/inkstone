@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::hub::Hubs;
-use crate::protocol::{RunEvent, WorkerManifest, WorkflowManifest};
+use crate::protocol::{ManifestMessage, RunEvent, WorkerManifest, WorkflowManifest};
 use crate::workflow::Workflow;
 
 /// Spawn a Worker for `run_id`. Returns immediately; a Tokio task drives
@@ -35,6 +35,7 @@ pub fn spawn(
     run_id: Uuid,
     workflow: &'static Workflow,
     prompt: String,
+    history: Vec<(String, String)>,
     pool: SqlitePool,
     assistant_message_id: Uuid,
     hubs: Hubs,
@@ -51,6 +52,7 @@ pub fn spawn(
             cmd,
             workflow,
             prompt,
+            history,
             pool,
             assistant_message_id,
             hubs,
@@ -67,6 +69,7 @@ async fn run_worker(
     cmd: String,
     workflow: &'static Workflow,
     prompt: String,
+    history: Vec<(String, String)>,
     pool: SqlitePool,
     assistant_message_id: Uuid,
     hubs: Hubs,
@@ -98,9 +101,13 @@ async fn run_worker(
 
     if let Some(mut stdin) = child.stdin.take() {
         // Build the spawn manifest (ADR-0018 as-built): the Workflow fields,
-        // the current prompt, the assembled history (empty in slice 4;
-        // populated in slice 5), and — for OAuth providers — a short-lived
-        // access token (None until slice 7). Written as one NDJSON line.
+        // the current prompt, the assembled prior history (multi-turn,
+        // slice 5), and — for OAuth providers — a short-lived access token
+        // (None until slice 7). Written as one NDJSON line.
+        let messages: Vec<ManifestMessage> = history
+            .iter()
+            .map(|(role, text)| ManifestMessage { role, text })
+            .collect();
         let manifest = WorkerManifest {
             workflow: WorkflowManifest {
                 name: &workflow.name,
@@ -112,7 +119,7 @@ async fn run_worker(
                 tools: &workflow.tools,
             },
             prompt: &prompt,
-            messages: Vec::new(),
+            messages,
             access_token: None,
         };
         let mut line = serde_json::to_string(&manifest).expect("WorkerManifest serializes");

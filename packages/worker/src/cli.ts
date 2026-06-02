@@ -69,6 +69,29 @@ function depsFor(manifest: WorkerManifest): InterpreterDeps {
 		faux.setResponses([
 			fauxAssistantMessage("", { stopReason: "error", errorMessage }),
 		]);
+	} else if (process.env.INKSTONE_FAUX_ECHO_HISTORY === "1") {
+		// History-echo mode (slice 5 multi-turn test): reply with the prior
+		// USER messages the loop passed in its context, joined by "|". Proves
+		// Core assembled the manifest history and the interpreter forwarded it
+		// to the provider. Uses a response factory so it reads the live
+		// context rather than a canned string.
+		faux.setResponses([
+			(context) => {
+				const priorUserTexts = context.messages
+					.filter((m) => m.role === "user")
+					.map((m) =>
+						typeof m.content === "string"
+							? m.content
+							: m.content
+									.map((c) => ("text" in c ? c.text : ""))
+									.join(""),
+					)
+					// The current prompt is the last user message; the test
+					// asserts on the PRIOR turn, so drop the final entry.
+					.slice(0, -1);
+				return fauxAssistantMessage(`history:${priorUserTexts.join("|")}`);
+			},
+		]);
 	} else {
 		faux.setResponses([
 			fauxAssistantMessage(process.env.INKSTONE_FAUX_RESPONSE ?? "faux reply"),

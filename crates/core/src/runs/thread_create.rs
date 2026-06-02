@@ -87,6 +87,8 @@ pub(super) async fn handle(
         run_id,
         workflow,
         params.prompt,
+        // A brand-new Thread has no prior exchange — empty history.
+        Vec::new(),
         pool.clone(),
         assistant_message_id,
         hubs.clone(),

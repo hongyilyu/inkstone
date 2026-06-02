@@ -149,6 +149,26 @@ pub async fn get_thread_with_messages(
     Ok(Some((title, messages)))
 }
 
+/// Assemble the prior-Run conversation history for a Run's manifest
+/// (ADR-0018 multi-turn). Returns `(role, text)` pairs for every
+/// `completed` Message in `thread_id` belonging to a Run OTHER than
+/// `exclude_run_id`, oldest-first, with each Message's text assembled from
+/// its parts. The current Run is excluded so the history is strictly the
+/// prior exchange; `completed`-only drops partial/errored assistant text.
+pub async fn history_for_run(
+    pool: &SqlitePool,
+    thread_id: Uuid,
+    exclude_run_id: Uuid,
+) -> sqlx::Result<Vec<(String, String)>> {
+    let rows = queries::history_messages_for_run(pool, thread_id, exclude_run_id).await?;
+    let mut history = Vec::with_capacity(rows.len());
+    for (id, role) in rows {
+        let text = queries::text_parts_by_message(pool, &id).await?.concat();
+        history.push((role, text));
+    }
+    Ok(history)
+}
+
 /// Single transaction with deferred FK enforcement. sqlx's `pool.begin()`
 /// issues `BEGIN` (deferred by default in SQLite), so the FK cycle between
 /// `runs.user_message_id` and `messages.run_id` resolves only at COMMIT.
