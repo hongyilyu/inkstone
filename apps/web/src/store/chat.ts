@@ -1,5 +1,6 @@
 import type { RunEventValue } from "@inkstone/ui-sdk";
-import { useSyncExternalStore } from "react";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 
 /**
  * The canonical live UI message (distinct from the demoted `MockChatMessage`).
@@ -30,43 +31,28 @@ interface ChatState {
 }
 
 // ---------------------------------------------------------------------------
-// Plain external store (NOT Effect-bound, NO zustand). A tiny module-level
-// object with getSnapshot/subscribe/setState, consumed via React 19's built-in
-// `useSyncExternalStore`. See OPEN-QUESTIONS.md: "zustand pattern" = the shape,
-// not the dependency. ADR-0020: Effect owns the wire; React state is plain.
+// Zustand store (slice A migration). The store is a plain *vanilla* store so the
+// free action functions below stay callable OUTSIDE React render — the bridge
+// (`bridge.ts`) and hydration (`hydrate.ts`) drive these imperatively. The
+// selector hooks wrap zustand's `useStore`, which is backed by
+// `useSyncExternalStore`; returning stable references (e.g. `EMPTY_MESSAGES`)
+// preserves selector identity across unrelated state changes. ADR-0020: Effect
+// owns the wire; React state is plain (zustand, not `@effect/atom`).
 // ---------------------------------------------------------------------------
 
 const initialState = (): ChatState => ({ threads: {} });
 
-let state: ChatState = initialState();
-const listeners = new Set<() => void>();
-
-function setState(updater: (s: ChatState) => ChatState): void {
-	state = updater(state);
-	for (const listener of listeners) {
-		listener();
-	}
-}
-
-function getSnapshot(): ChatState {
-	return state;
-}
-
-function subscribe(listener: () => void): () => void {
-	listeners.add(listener);
-	return () => {
-		listeners.delete(listener);
-	};
-}
+const store = createStore<ChatState>()(() => initialState());
 
 /** Read the raw state (test + bridge use this; components use the hooks). */
 export function getChatState(): ChatState {
-	return state;
+	return store.getState();
 }
 
-/** Reset to empty state — for test isolation. */
+/** Reset to empty state — for test isolation. Replace mode so stale threads
+ * (and any `focusedThreadId`) don't leak between tests. */
 export function resetChatStore(): void {
-	state = initialState();
+	store.setState(initialState(), true);
 }
 
 let idCounter = 0;
@@ -93,16 +79,16 @@ function withThread(
 // --- actions ----------------------------------------------------------------
 
 export function setFocusedThread(threadId: string): void {
-	setState((s) => ({ ...s, focusedThreadId: threadId }));
+	store.setState((s) => ({ ...s, focusedThreadId: threadId }));
 }
 
 /** Clear the focused thread (New Chat → null → next send mints a thread). */
 export function clearFocusedThread(): void {
-	setState((s) => ({ ...s, focusedThreadId: undefined }));
+	store.setState((s) => ({ ...s, focusedThreadId: undefined }));
 }
 
 export function appendUserMessage(threadId: string, message: Message): void {
-	setState((s) =>
+	store.setState((s) =>
 		withThread(s, threadId, (t) => ({
 			...t,
 			messages: [...t.messages, message],
@@ -117,7 +103,7 @@ export function appendUserMessage(threadId: string, message: Message): void {
  * flip it to `incomplete` (Q7).
  */
 export function seedAssistantMessage(threadId: string, message: Message): void {
-	setState((s) =>
+	store.setState((s) =>
 		withThread(s, threadId, (t) => ({
 			...t,
 			messages: [...t.messages, message],
@@ -131,7 +117,7 @@ export function attachRun(
 	messageId: string,
 	runId: string,
 ): void {
-	setState((s) => {
+	store.setState((s) => {
 		const thread = s.threads[threadId];
 		if (thread === undefined) {
 			return s;
@@ -165,7 +151,7 @@ export function loadThreadMessages(
 	messages: Message[],
 ): void {
 	const streaming = messages.find((m) => m.status === "streaming");
-	setState((s) =>
+	store.setState((s) =>
 		withThread(s, threadId, (t) => ({
 			...t,
 			messages,
@@ -179,7 +165,7 @@ export function markMessageIncomplete(
 	threadId: string,
 	messageId: string,
 ): void {
-	setState((s) => {
+	store.setState((s) => {
 		const thread = s.threads[threadId];
 		if (thread === undefined) {
 			return s;
@@ -203,7 +189,7 @@ export function applyEvent(
 	runId: string,
 	event: RunEventValue,
 ): void {
-	setState((s) => {
+	store.setState((s) => {
 		const thread = s.threads[threadId];
 		if (thread === undefined) {
 			return s;
@@ -243,24 +229,18 @@ const EMPTY_MESSAGES: Message[] = [];
 
 /** Live messages for a thread (stable reference between unchanged renders). */
 export function useThreadMessages(threadId: string): Message[] {
-	return useSyncExternalStore(
-		subscribe,
-		() => getSnapshot().threads[threadId]?.messages ?? EMPTY_MESSAGES,
+	return useStore(
+		store,
+		(s) => s.threads[threadId]?.messages ?? EMPTY_MESSAGES,
 	);
 }
 
 /** Focused thread id, `null` at the React boundary (undefined internally). */
 export function useFocusedThreadId(): string | null {
-	return useSyncExternalStore(
-		subscribe,
-		() => getSnapshot().focusedThreadId ?? null,
-	);
+	return useStore(store, (s) => s.focusedThreadId ?? null);
 }
 
 /** Active run id for a thread, `null` at the React boundary. */
 export function useActiveRunId(threadId: string): string | null {
-	return useSyncExternalStore(
-		subscribe,
-		() => getSnapshot().threads[threadId]?.activeRunId ?? null,
-	);
+	return useStore(store, (s) => s.threads[threadId]?.activeRunId ?? null);
 }
