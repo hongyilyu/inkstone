@@ -1,3 +1,4 @@
+import { Socket } from "@effect/platform";
 import {
 	PostMessageResult,
 	type RunEvent,
@@ -12,9 +13,12 @@ import {
 	Deferred,
 	Effect,
 	Either,
+	Cause,
+	Fiber,
 	Layer,
 	Queue,
 	Runtime,
+	Schedule,
 	Schema as S,
 	Stream,
 } from "effect";
@@ -108,19 +112,6 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			const runFork = Runtime.runFork(runtime);
 			const runSync = Runtime.runSync(runtime);
 
-			// Open the WebSocket; the Layer is "ready" only once it's open.
-			// Open failure is a defect (Effect.die) — the Layer cannot construct,
-			// so it is not a recoverable request-level error.
-			const socket = yield* Effect.async<WebSocket>((resume) => {
-				const ws = new WebSocket(cfg.url);
-				ws.addEventListener("open", () => resume(Effect.succeed(ws)), {
-					once: true,
-				});
-				ws.addEventListener("error", (ev) => resume(Effect.die(ev)), {
-					once: true,
-				});
-			});
-
 			const pending = new Map<number, Deferred.Deferred<unknown, WsError>>();
 			const runQueues = new Map<RunId, Queue.Queue<RunEventValue>>();
 			let nextId = 1;
@@ -134,8 +125,11 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				return queue;
 			};
 
-			socket.addEventListener("message", (ev) => {
-				const decoded = decodeEnvelope(JSON.parse(String(ev.data)));
+			// Decode + dispatch a single inbound frame — identical to the previous
+			// addEventListener("message") body. Responses resolve `pending`
+			// Deferreds; run/event notifications offer onto per-run queues.
+			const onFrame = (raw: string): void => {
+				const decoded = decodeEnvelope(JSON.parse(raw));
 				if (Either.isLeft(decoded)) {
 					return;
 				}
@@ -160,9 +154,98 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 						Queue.unsafeOffer(queue, event.right.event);
 					}
 				}
+			};
+
+			// Build the Socket on @effect/platform. makeWebSocket only constructs
+			// the Socket value; the connection is established when `runRaw` runs.
+			// Provide the WebSocketConstructor (browser/global WebSocket — present
+			// in Node 26 and the browser) internally so the public layer signature
+			// stays Layer<WsClient, never, WsClientConfig> (no R leak).
+			const socket = yield* Socket.makeWebSocket(cfg.url).pipe(
+				Effect.provide(Socket.layerWebSocketConstructorGlobal),
+			);
+
+			// The writer is a function (chunk) => Effect<void, SocketError>; it
+			// blocks on an internal latch until the socket is open, so sends issued
+			// during a reconnect window wait for the fresh connection.
+			const write = yield* socket.writer;
+
+			const decoder = new TextDecoder();
+
+			// Fail every in-flight request with a typed connection_lost error and
+			// clear the map. No resubscribe-replay: runQueues persist (a future
+			// re-subscribe reuses the queue) but we do NOT auto-resend run/subscribe
+			// — stream recovery is slice-13 hydration's job.
+			const failPending = Effect.sync(() => {
+				for (const deferred of pending.values()) {
+					runFork(
+						Deferred.fail(
+							deferred,
+							new WsRequestError({ reason: "connection_lost" }),
+						),
+					);
+				}
+				pending.clear();
 			});
 
-			yield* Effect.addFinalizer(() => Effect.sync(() => socket.close()));
+			// Open failure stays a defect (ADR-0020): the layer cannot construct.
+			// We track the first successful open; only AFTER it has opened once do
+			// we treat a disconnect as recoverable and bounded-retry.
+			let hasOpened = false;
+			const firstOpen = yield* Deferred.make<void>();
+			const onOpen = Effect.sync(() => {
+				hasOpened = true;
+			}).pipe(
+				Effect.zipRight(Deferred.succeed(firstOpen, void 0)),
+				Effect.asVoid,
+			);
+
+			// One connection lifetime. runRaw resolves only when the link ends
+			// (clean close => success; read/open/abnormal close => failure). Either
+			// way the connection is gone, so we fail it uniformly to drive retry.
+			const connection = socket
+				.runRaw(
+					(data) =>
+						onFrame(
+							typeof data === "string" ? data : decoder.decode(data),
+						),
+					{ onOpen },
+				)
+				.pipe(Effect.zipRight(Effect.fail("dropped" as const)));
+
+			// On every drop, fail in-flight requests, then bounded-retry the
+			// reconnect. `while: hasOpened` ensures a FIRST-open failure is NOT
+			// retried (it propagates so the layer build can die); only mid-session
+			// drops reconnect. Capped at 5 attempts with exponential backoff.
+			const supervised = connection.pipe(
+				Effect.tapError(() => failPending),
+				Effect.retry({
+					schedule: Schedule.exponential("50 millis"),
+					times: 5,
+					while: () => hasOpened,
+				}),
+			);
+
+			// Fork the receive/reconnect loop into the layer scope (interrupted on
+			// teardown, which closes the underlying socket — resource-safe).
+			const fiber = yield* Effect.forkScoped(supervised);
+
+			// Block layer construction until the first open succeeds. If the loop
+			// ends before that (first open failed), the layer cannot construct:
+			// die, matching the previous Effect.die-on-open behavior.
+			yield* Deferred.await(firstOpen).pipe(
+				Effect.raceFirst(
+					Fiber.join(fiber).pipe(
+						Effect.matchCauseEffect({
+							onFailure: (cause) => Effect.die(Cause.squash(cause)),
+							onSuccess: () =>
+								Effect.die(
+									new Error("socket closed before opening"),
+								),
+						}),
+					),
+				),
+			);
 
 			const request = <A, I>(
 				method: string,
@@ -173,8 +256,13 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					const id = nextId++;
 					const deferred = yield* Deferred.make<unknown, WsError>();
 					pending.set(id, deferred);
-					socket.send(
+					yield* write(
 						JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+					).pipe(
+						Effect.mapError(
+							(cause) =>
+								new WsRequestError({ reason: "send_failed", cause }),
+						),
 					);
 					const result = yield* Deferred.await(deferred);
 					return yield* S.decodeUnknown(schema)(result).pipe(
