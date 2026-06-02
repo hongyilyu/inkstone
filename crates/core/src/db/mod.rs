@@ -33,7 +33,7 @@ pub(crate) fn now_ms() -> i64 {
 /// - macOS:   `~/Library/Application Support/inkstone/db.sqlite`
 /// - Linux:   `$XDG_DATA_HOME/inkstone/db.sqlite` (or `~/.local/share/inkstone/...`)
 /// - Windows: `%APPDATA%/inkstone/db.sqlite`
-fn resolve_db_path() -> Result<PathBuf> {
+pub(crate) fn resolve_db_path() -> Result<PathBuf> {
     if let Some(env) = std::env::var_os("INKSTONE_DB_PATH") {
         return Ok(PathBuf::from(env));
     }

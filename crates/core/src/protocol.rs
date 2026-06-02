@@ -132,6 +132,23 @@ pub enum RunEvent {
     Error { message: String },
 }
 
+/// One provider's connection status in an `auth/status` result (ADR-0023).
+/// `id` is the provider key (`"openai-codex"`); `connected` is true when a
+/// credential file exists for it.
+#[derive(Debug, Serialize)]
+pub struct ProviderStatus {
+    pub id: String,
+    pub connected: bool,
+}
+
+/// `auth/status` result: the connection state of each known provider.
+/// Object-wrapper shape (`{providers: [...]}`) so the result stays
+/// forward-extensible and the TS mirror is a `Schema.Struct`.
+#[derive(Debug, Serialize)]
+pub struct AuthStatusResult {
+    pub providers: Vec<ProviderStatus>,
+}
+
 /// One prior message in the assembled Thread history shipped in the spawn
 /// manifest (ADR-0018 as-built `messages[]`). `role` is `"user"` or
 /// `"assistant"`; `text` is the Message's assembled text. Serialize-only —
@@ -427,5 +444,22 @@ mod mirror_tests {
         );
         assert_eq!(v["workflow"]["tools"], json!([]));
         assert_eq!(v["messages"], json!([]));
+    }
+
+    // --- auth/status (Serialize-only): encode to the canonical wire JSON the
+    // TS `AuthStatusResult` schema decodes. ---
+
+    #[test]
+    fn auth_status_result_encodes_providers_array() {
+        let r = AuthStatusResult {
+            providers: vec![ProviderStatus {
+                id: "openai-codex".to_string(),
+                connected: true,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({ "providers": [{ "id": "openai-codex", "connected": true }] }),
+        );
     }
 }

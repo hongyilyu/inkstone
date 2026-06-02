@@ -1,6 +1,7 @@
 import { Schema as S } from "effect";
 import { describe, expect, it } from "vitest";
 import {
+	AuthStatusResult,
 	MessageView,
 	PostMessageParams,
 	PostMessageResult,
@@ -299,6 +300,30 @@ describe("WorkerOutbound", () => {
 		expect(S.decodeUnknownSync(WorkerOutbound)({ kind: "done" })).toEqual({
 			kind: "done",
 		});
+	});
+});
+
+describe("AuthStatusResult", () => {
+	it("decodes a providers array with connection flags", () => {
+		const wire = { providers: [{ id: "openai-codex", connected: false }] };
+		expect(S.decodeUnknownSync(AuthStatusResult)(wire)).toEqual(wire);
+	});
+
+	it("encodes back to the same wire shape", () => {
+		const decoded = S.decodeUnknownSync(AuthStatusResult)({
+			providers: [{ id: "openai-codex", connected: true }],
+		});
+		expect(S.encodeSync(AuthStatusResult)(decoded)).toEqual({
+			providers: [{ id: "openai-codex", connected: true }],
+		});
+	});
+
+	it("rejects a non-boolean connected", () => {
+		expect(() =>
+			S.decodeUnknownSync(AuthStatusResult)({
+				providers: [{ id: "openai-codex", connected: "yes" }],
+			}),
+		).toThrow();
 	});
 });
 

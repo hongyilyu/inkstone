@@ -1,4 +1,5 @@
 mod db;
+mod credentials;
 mod dispatcher;
 mod hub;
 mod protocol;

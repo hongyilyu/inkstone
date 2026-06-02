@@ -60,6 +60,21 @@ export type RunEvent = S.Schema.Type<typeof RunEvent>;
 export const WorkerOutbound = RunEvent;
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 
+// --- auth/* (ADR-0023, ADR-0014 amendment): provider-credential connection.
+
+/** One provider's connection state in `auth/status`. */
+export const ProviderStatus = S.Struct({
+	id: S.String,
+	connected: S.Boolean,
+});
+export type ProviderStatus = S.Schema.Type<typeof ProviderStatus>;
+
+/** `auth/status` result: connection state of each known provider. */
+export const AuthStatusResult = S.Struct({
+	providers: S.Array(ProviderStatus),
+});
+export type AuthStatusResult = S.Schema.Type<typeof AuthStatusResult>;
+
 // --- Worker manifest (ADR-0018 as-built): the spawn payload Core ships to
 // the generic interpreter on stdin. Carries the Workflow definition, the
 // assembled conversation history, and — for OAuth providers — a short-lived
