@@ -75,6 +75,18 @@ export const ProviderStatusResult = S.Struct({
 });
 export type ProviderStatusResult = S.Schema.Type<typeof ProviderStatusResult>;
 
+/** `provider/login_start` params: which provider to begin an OAuth login for. */
+export const ProviderLoginStartParams = S.Struct({ provider: S.String });
+export type ProviderLoginStartParams = S.Schema.Type<
+	typeof ProviderLoginStartParams
+>;
+
+/** `provider/login_start` result: the authorize URL to open in a new tab. */
+export const ProviderLoginStartResult = S.Struct({ authorize_url: S.String });
+export type ProviderLoginStartResult = S.Schema.Type<
+	typeof ProviderLoginStartResult
+>;
+
 // --- Worker manifest (ADR-0018 as-built): the spawn payload Core ships to
 // the generic interpreter on stdin. Carries the Workflow definition, the
 // assembled conversation history, and — for OAuth providers — a short-lived

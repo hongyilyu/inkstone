@@ -149,6 +149,23 @@ pub struct ProviderStatusResult {
     pub providers: Vec<ProviderStatus>,
 }
 
+/// `provider/login_start` params: which provider to begin an OAuth login for.
+/// A malformed/unknown provider is rejected with `invalid_params`.
+#[derive(Debug, Deserialize)]
+pub struct ProviderLoginStartParams {
+    pub provider: String,
+}
+
+/// `provider/login_start` result: the authorize URL the Client opens in a new
+/// tab (ADR-0023, ADR-0014 amendment). Core spawns the Provider Helper, which
+/// runs the OAuth loopback and prints this URL; Core relays it here. The
+/// callback + credential write happen out-of-band; the Client re-queries
+/// `provider/status` on focus to learn the outcome.
+#[derive(Debug, Serialize)]
+pub struct ProviderLoginStartResult {
+    pub authorize_url: String,
+}
+
 /// One prior message in the assembled Thread history shipped in the spawn
 /// manifest (ADR-0018 as-built `messages[]`). `role` is `"user"` or
 /// `"assistant"`; `text` is the Message's assembled text. Serialize-only —
@@ -460,6 +477,24 @@ mod mirror_tests {
         assert_eq!(
             serde_json::to_value(&r).unwrap(),
             json!({ "providers": [{ "id": "openai-codex", "connected": true }] }),
+        );
+    }
+
+    #[test]
+    fn provider_login_start_params_decodes_provider() {
+        let wire = json!({ "provider": "openai-codex" });
+        let p: ProviderLoginStartParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.provider, "openai-codex");
+    }
+
+    #[test]
+    fn provider_login_start_result_encodes_authorize_url() {
+        let r = ProviderLoginStartResult {
+            authorize_url: "https://auth.openai.com/oauth/authorize?x=1".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({ "authorize_url": "https://auth.openai.com/oauth/authorize?x=1" }),
         );
     }
 }

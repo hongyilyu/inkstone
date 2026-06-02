@@ -16,6 +16,8 @@ function makeFailingThreadCreateRuntime() {
 		threadList: () => unused,
 		threadGet: () => unused,
 		subscribeRun: () => unused,
+		providerStatus: () => unused,
+		providerLoginStart: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

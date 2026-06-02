@@ -29,6 +29,8 @@ function makeStubRuntime(opts: {
 		threadList: () => unused,
 		threadGet: () => unused,
 		subscribeRun: () => Stream.fromIterable(opts.events),
+		providerStatus: () => unused,
+		providerLoginStart: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

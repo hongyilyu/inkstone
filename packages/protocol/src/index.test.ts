@@ -4,6 +4,7 @@ import {
 	MessageView,
 	PostMessageParams,
 	PostMessageResult,
+	ProviderLoginStartResult,
 	ProviderStatusResult,
 	RunEvent,
 	SubscribeParams,
@@ -324,6 +325,17 @@ describe("ProviderStatusResult", () => {
 				providers: [{ id: "openai-codex", connected: "yes" }],
 			}),
 		).toThrow();
+	});
+});
+
+describe("ProviderLoginStartResult", () => {
+	it("decodes an authorize_url", () => {
+		const wire = { authorize_url: "https://auth.openai.com/oauth/authorize" };
+		expect(S.decodeUnknownSync(ProviderLoginStartResult)(wire)).toEqual(wire);
+	});
+
+	it("rejects a missing authorize_url", () => {
+		expect(() => S.decodeUnknownSync(ProviderLoginStartResult)({})).toThrow();
 	});
 });
 
