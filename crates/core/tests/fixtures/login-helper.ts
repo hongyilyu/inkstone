@@ -13,10 +13,15 @@ const emit = (obj: unknown): void => {
 };
 
 async function main(): Promise<void> {
-	emit({
-		kind: "authorize_url",
-		url: "https://auth.openai.com/oauth/authorize?stub=1",
-	});
+	// The authorize URL the stub reports. Defaults to a realistic OpenAI URL
+	// (the Core integration test asserts this exact value); the browser e2e
+	// overrides it via INKSTONE_LOGIN_STUB_URL=about:blank so window.open in
+	// headless Chromium navigates somewhere harmless instead of the real
+	// OpenAI auth page.
+	const url =
+		process.env.INKSTONE_LOGIN_STUB_URL ??
+		"https://auth.openai.com/oauth/authorize?stub=1";
+	emit({ kind: "authorize_url", url });
 	// Simulate the user completing the browser flow + the :1455 callback.
 	await new Promise((r) => setTimeout(r, 100));
 	emit({
