@@ -145,7 +145,7 @@ fn spawn_tail_forwarder(
                     match recv {
                         Ok(event) => {
                             // Both `done` and `error` are terminal Run Events
-                            // (ADR-0023 adds `error`). Tracking either as the
+                            // (ADR-0006 lists errors as a Run Event). Tracking either as the
                             // terminal marker means a worker that errored does
                             // not also get a synthesized `done` appended after
                             // its error on channel close.

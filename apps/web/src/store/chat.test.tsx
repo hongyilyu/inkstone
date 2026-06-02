@@ -84,4 +84,31 @@ describe("chat store + stream bridge", () => {
 
 		await runtime.dispose();
 	});
+
+	it("error event finalizes the run: assistant incomplete, fiber settles", async () => {
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime(queue, "run-err");
+		setFocusedThread("threadA");
+
+		await send(runtime, "threadA", "hi");
+
+		// Partial text streams, then the worker errors (ADR-0023). `error` is
+		// terminal: takeUntil must release the fiber even though no `done` follows.
+		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "partial" });
+		Queue.unsafeOffer(queue, {
+			kind: "error",
+			message: "provider rejected the request",
+		});
+		// awaitRun resolves only if the stream fiber settled — i.e. takeUntil
+		// fired on `error`. If error weren't treated as terminal this would hang.
+		await awaitRun(runtime, "run-err");
+
+		const threadA = getChatState().threads.threadA;
+		const assistant = threadA?.messages[1];
+		expect(assistant?.text).toBe("partial");
+		expect(assistant?.status).toBe("incomplete");
+		expect(threadA?.activeRunId).toBeUndefined();
+
+		await runtime.dispose();
+	});
 });

@@ -209,6 +209,23 @@ export function applyEvent(
 			}));
 		}
 
+		if (event.kind === "error") {
+			// A worker-emitted error (ADR-0006) is terminal: flip the
+			// assistant message to `incomplete` and clear the active run.
+			// Richer error rendering (surfacing the message) is a later UI
+			// slice; here we just finalize so the stream fiber settles.
+			const messages = thread.messages.map((m): Message =>
+				m.role === "assistant" && m.run_id === runId
+					? { ...m, status: "incomplete" }
+					: m,
+			);
+			return withThread(s, threadId, (t) => ({
+				...t,
+				messages,
+				activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
+			}));
+		}
+
 		// done → finalize the assistant message and clear the active run.
 		const messages = thread.messages.map((m): Message =>
 			m.role === "assistant" && m.run_id === runId

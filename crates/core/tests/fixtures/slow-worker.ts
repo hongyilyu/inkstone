@@ -36,7 +36,7 @@
 // INKSTONE_FIXTURE_ERROR
 //   A string. When set and non-empty, the fixture emits all chunks (honoring the
 //   gate if set), then emits {"kind":"error","message":"<value>"} as its TERMINAL
-//   event INSTEAD OF done — the worker-emitted error path (ADR-0023). Unset =>
+//   event INSTEAD OF done — the worker-emitted error path (ADR-0006). Unset =>
 //   normal done termination.
 //
 // On empty stdin (no newline-terminated line, mirroring the real worker's
@@ -129,7 +129,7 @@ const main = async (): Promise<void> => {
 		emit({ kind: "text_delta", delta: pieces[i] });
 	}
 
-	// Terminal event: a worker-emitted error (ADR-0023) when configured,
+	// Terminal event: a worker-emitted error (ADR-0006) when configured,
 	// otherwise the normal done.
 	const errorMessage = process.env.INKSTONE_FIXTURE_ERROR;
 	if (errorMessage !== undefined && errorMessage.length > 0) {

@@ -119,8 +119,8 @@ async fn run_worker(
     // Track whether the Worker emitted a terminal `done` event so the
     // post-loop branch can pick `complete_run` vs `error_run`. A worker-
     // emitted `error` event captures its message here so the terminal tx
-    // records it (ADR-0023 real-provider path) instead of the generic
-    // `worker_disconnected`.
+    // records it (ADR-0006 lists errors as a Run Event; this is the
+    // real-provider error path) instead of the generic `worker_disconnected`.
     let mut saw_done = false;
     let mut worker_error: Option<String> = None;
 

@@ -60,7 +60,7 @@ impl Drop for CoreChild {
     }
 }
 
-fn spawn_core(worker_cmd: &str, db_path: &Path, error_message: &str) -> (CoreChild, String) {
+fn spawn_core(worker_cmd: &str, db_path: &Path, error_message: &str, gate_path: &Path) -> (CoreChild, String) {
     let repo_root = repo_root();
     let mut child = std::process::Command::cargo_bin("core")
         .expect("core binary exists")
@@ -68,6 +68,14 @@ fn spawn_core(worker_cmd: &str, db_path: &Path, error_message: &str) -> (CoreChi
         .env("INKSTONE_WORKER_CMD", worker_cmd)
         .env("INKSTONE_DB_PATH", db_path)
         .env("INKSTONE_FIXTURE_ERROR", error_message)
+        // CHUNKS=2 + GATE makes the stream provably pause mid-flight: the
+        // fixture emits chunk 1, blocks until the gate file appears, then
+        // emits chunk 2 + the terminal error. The test creates the gate file
+        // only AFTER subscribing, so the error is delivered strictly after
+        // the subscriber attaches — deterministic live-stream assertion with
+        // no reliance on tsx cold-start timing.
+        .env("INKSTONE_FIXTURE_CHUNKS", "2")
+        .env("INKSTONE_FIXTURE_GATE", gate_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -110,9 +118,10 @@ fn worker_error_event_marks_run_errored_with_message() {
     let worker_cmd = slow_worker_cmd();
     let tmp = TempDir::new().expect("tempdir");
     let db_path = tmp.path().join("db.sqlite");
+    let gate_path = tmp.path().join("gate");
     let error_message = "provider rejected the request";
 
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, error_message);
+    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, error_message, &gate_path);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -161,6 +170,12 @@ fn worker_error_event_marks_run_errored_with_message() {
             .await
             .expect("send subscribe frame");
         let _sub_response = next_text(&mut ws).await;
+
+        // Now that we've subscribed (and read the subscribe response), trip
+        // the gate so the fixture emits the remaining chunk + the terminal
+        // error. This guarantees the error is delivered AFTER the subscriber
+        // attached — the live-stream assertion can't be won by a race.
+        std::fs::write(&gate_path, b"go").expect("create gate file");
 
         // Drain events; the stream must carry an `error` event and then close
         // (terminal). The loop exits on the error arm; a `done` before any

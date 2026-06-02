@@ -362,8 +362,8 @@ pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Re
     .await
 }
 
-/// Worker emitted an explicit `error` Run Event (per ADR-0023's real
-/// provider path). Same terminal shape as [`error_run`] but with a
+/// Worker emitted an explicit `error` Run Event (ADR-0006 lists errors as a
+/// Run Event subtype; this is the real-provider error path). Same terminal shape as [`error_run`] but with a
 /// caller-supplied `terminal_reason`, `error_code`, and `error_message`
 /// carried into both the `runs` row and the terminal `run_events` payload.
 /// `terminal_reason` must satisfy the `runs` CHECK constraint

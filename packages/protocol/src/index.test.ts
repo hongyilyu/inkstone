@@ -261,6 +261,17 @@ describe("RunEvent", () => {
 		});
 	});
 
+	it("decodes an error variant carrying a message", () => {
+		const event = { kind: "error", message: "provider rejected the request" };
+		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
+	});
+
+	it("rejects an error variant missing its message field", () => {
+		expect(() =>
+			S.decodeUnknownSync(RunEvent)({ kind: "error" }),
+		).toThrow();
+	});
+
 	it("rejects an unknown kind", () => {
 		expect(() =>
 			S.decodeUnknownSync(RunEvent)({ kind: "unknown" }),
