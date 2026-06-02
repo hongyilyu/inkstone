@@ -224,6 +224,69 @@ describe("WsClient", () => {
 		}
 	});
 
+	it("fails in-flight requests with connection_lost on a mid-session drop, then bounded-reconnects so a fresh request succeeds", async () => {
+		const expected = {
+			threads: [
+				{
+					id: "01999999-0000-7000-8000-000000000001",
+					title: "First thread",
+					last_activity_at: 1717200000000,
+				},
+			],
+		};
+		let listAcks = 0;
+
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/list") {
+				listAcks += 1;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: expected,
+					}),
+				);
+				return;
+			}
+			if (req.method === "thread/get") {
+				// In-flight request: drop the connection without responding. The
+				// server keeps listening, so the client's bounded retry re-opens
+				// a fresh connection that answers the post-reconnect request.
+				ws.close();
+				return;
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			// First request on connection 1 succeeds.
+			yield* client.threadList();
+			// In-flight request that the server drops on — must fail (not hang).
+			const inflight = yield* Effect.either(client.threadGet("dropped"));
+			// Post-reconnect request must resolve on the fresh connection.
+			const after = yield* client.threadList();
+			return { inflight, after };
+		});
+
+		try {
+			const { inflight, after } = await Effect.runPromise(
+				provide(server.url)(program),
+			);
+
+			expect(Either.isLeft(inflight)).toBe(true);
+			if (Either.isLeft(inflight)) {
+				expect(inflight.left._tag).toBe("WsRequestError");
+				if (inflight.left._tag === "WsRequestError") {
+					expect(inflight.left.reason).toBe("connection_lost");
+				}
+			}
+			expect(after).toEqual(expected);
+			expect(listAcks).toBeGreaterThanOrEqual(2);
+		} finally {
+			await server.close();
+		}
+	});
+
 	it("maps a -32001 error envelope to a typed failure in the E channel", async () => {
 		const server = await makeServer((ws, req) => {
 			if (req.method === "thread/get") {
