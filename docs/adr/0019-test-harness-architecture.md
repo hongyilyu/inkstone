@@ -4,6 +4,16 @@ End-to-end tests run against a real Core process, a real Worker process when one
 
 This ADR records the architecture so that test-authoring decisions over the next year don't relitigate the same questions.
 
+## As-built amendment (e2e-harness flow)
+
+The harness was implemented after the Web Client was wired to real Core (the `wire-web-client` feature). Three decisions in the original draft were adjusted to the smallest change that delivered the headline acceptance tests; the rest of the ADR stands as written.
+
+- **Config surface is `INKSTONE_*` env overrides, not CLI flags.** Core is configured by environment variables — `INKSTONE_PORT` (default `8765`; `0` = OS-assigned ephemeral), `INKSTONE_WEB_DIR` (debug-only SPA-from-disk serving), `INKSTONE_DB_PATH` (per-test Workspace). This matches Core's existing `INKSTONE_DB_PATH` / `INKSTONE_WORKER_CMD` convention; a real argument parser (and a literal `--web-dir` / `--port` flag) is deferred to a product CLI feature. Where this ADR says `--web-dir=<dist>`, read `INKSTONE_WEB_DIR=<dist>`; the debug-build gate is preserved (a release binary ignores the env var, so production cannot serve arbitrary files from disk).
+- **Echo-era determinism rides the slow-worker gate fixture, not a compiled-in mock LLM.** The Worker mock-LLM provider described below is deferred until the first real-LLM Workflow exists (there is nothing for it to stand in for in the echo product). Until then, determinism comes from `crates/core/tests/fixtures/slow-worker.ts`, selected via `INKSTONE_WORKER_CMD` with `INKSTONE_FIXTURE_CHUNKS` / `INKSTONE_FIXTURE_GATE`. It speaks the real Worker NDJSON protocol and is spawned by Core exactly as the real Worker would be, so the "only Core spawns Worker" invariant (ADR-0001/0013) holds. The fixture's gate file is the pause primitive the original draft noted was missing — it lets a test hold a Run provably mid-stream with no wall-clock sleeps, which is what makes the reload-mid-stream and cancellation-style flows deterministic.
+- **The Core-served SPA dials a same-origin WebSocket.** Because Core serves the bundle on an ephemeral port, the Web Client derives its WS URL from `window.location` (`ws(s)://<host>/ws`) rather than a hardcoded port. In Vite dev the page's `/ws` is proxied to Core (ADR-0015). The harness relies on this so a Core-served SPA always reaches the Core that served it.
+
+The harness package lives at `tests/e2e/` (registered in `pnpm-workspace.yaml`; root `pnpm test:e2e` delegates to it). Fixtures expose `{core, workspace, chat}` where `chat` is the `ChatPage` page object; the `workspace` fixture exposes `path` only (WS-level setup helpers are deferred — the current specs drive through the UI).
+
 ## Core decisions
 
 - **Top-level `tests/` package**, registered in `pnpm-workspace.yaml`. Runs under Playwright's test runner with a `test:e2e` script. Not under `apps/` (it's not a product Client) and not under `packages/` (it's not a library). It's a `Test Harness` per the term in `CONTEXT.md`. The boundary with `bridges/` (per [ADR-0008](./0008-monorepo-shape.md)): `bridges/` holds protocol-level contract tests — Rust↔TS serialization round-trips, one shape per test, no spawned processes. `tests/` holds full-system behavioral tests through the Web Client. If a test could pass without rendering DOM, it belongs in `bridges/`.
