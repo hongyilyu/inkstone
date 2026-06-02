@@ -1,9 +1,26 @@
 import { render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { RuntimeProvider, useRuntime } from "./runtime.js";
+import { deriveWsUrl, RuntimeProvider, useRuntime } from "./runtime.js";
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+});
+
+describe("deriveWsUrl", () => {
+	it("derives a same-origin ws:// URL from an http location", () => {
+		// A Core-served SPA must dial the Core that served it, on whatever
+		// (possibly ephemeral) port that is — so the WS URL is derived from
+		// window.location's host, not a hardcoded port (ADR-0019 harness).
+		expect(deriveWsUrl({ protocol: "http:", host: "127.0.0.1:4321" })).toBe(
+			"ws://127.0.0.1:4321/ws",
+		);
+	});
+
+	it("upgrades to wss:// when the page is served over https", () => {
+		expect(deriveWsUrl({ protocol: "https:", host: "app.example:8443" })).toBe(
+			"wss://app.example:8443/ws",
+		);
+	});
 });
 
 describe("RuntimeProvider", () => {
