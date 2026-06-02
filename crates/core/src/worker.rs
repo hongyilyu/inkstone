@@ -103,11 +103,25 @@ async fn run_worker(
         // Build the spawn manifest (ADR-0018 as-built): the Workflow fields,
         // the current prompt, the assembled prior history (multi-turn,
         // slice 5), and — for OAuth providers — a short-lived access token
-        // (None until slice 7). Written as one NDJSON line.
+        // resolved by Core (ADR-0023): valid token used as-is, expired token
+        // refreshed single-flight before spawn. Written as one NDJSON line.
         let messages: Vec<ManifestMessage> = history
             .iter()
             .map(|(role, text)| ManifestMessage { role, text })
             .collect();
+        let access_token =
+            match crate::provider_auth::resolve_access_token(&workflow.provider, db::now_ms()).await
+            {
+                Ok(token) => token,
+                Err(e) => {
+                    // Token resolution/refresh failed — the Run cannot reach
+                    // the provider. Terminate it as errored rather than
+                    // spawning a Worker that will fail opaquely.
+                    eprintln!("access token resolution failed for run {run_id}: {e}");
+                    finalize_error(&pool, &hubs, run_id).await;
+                    return;
+                }
+            };
         let manifest = WorkerManifest {
             workflow: WorkflowManifest {
                 name: &workflow.name,
@@ -120,7 +134,7 @@ async fn run_worker(
             },
             prompt: &prompt,
             messages,
-            access_token: None,
+            access_token: access_token.as_deref(),
         };
         let mut line = serde_json::to_string(&manifest).expect("WorkerManifest serializes");
         line.push('\n');

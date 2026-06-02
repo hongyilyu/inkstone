@@ -3,6 +3,7 @@ mod db;
 mod dispatcher;
 mod hub;
 mod protocol;
+mod provider_auth;
 mod runs;
 mod worker;
 mod workflow;
