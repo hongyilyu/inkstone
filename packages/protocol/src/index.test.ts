@@ -1,10 +1,10 @@
 import { Schema as S } from "effect";
 import { describe, expect, it } from "vitest";
 import {
-	AuthStatusResult,
 	MessageView,
 	PostMessageParams,
 	PostMessageResult,
+	ProviderStatusResult,
 	RunEvent,
 	SubscribeParams,
 	ThreadCreateParams,
@@ -303,24 +303,24 @@ describe("WorkerOutbound", () => {
 	});
 });
 
-describe("AuthStatusResult", () => {
+describe("ProviderStatusResult", () => {
 	it("decodes a providers array with connection flags", () => {
 		const wire = { providers: [{ id: "openai-codex", connected: false }] };
-		expect(S.decodeUnknownSync(AuthStatusResult)(wire)).toEqual(wire);
+		expect(S.decodeUnknownSync(ProviderStatusResult)(wire)).toEqual(wire);
 	});
 
 	it("encodes back to the same wire shape", () => {
-		const decoded = S.decodeUnknownSync(AuthStatusResult)({
+		const decoded = S.decodeUnknownSync(ProviderStatusResult)({
 			providers: [{ id: "openai-codex", connected: true }],
 		});
-		expect(S.encodeSync(AuthStatusResult)(decoded)).toEqual({
+		expect(S.encodeSync(ProviderStatusResult)(decoded)).toEqual({
 			providers: [{ id: "openai-codex", connected: true }],
 		});
 	});
 
 	it("rejects a non-boolean connected", () => {
 		expect(() =>
-			S.decodeUnknownSync(AuthStatusResult)({
+			S.decodeUnknownSync(ProviderStatusResult)({
 				providers: [{ id: "openai-codex", connected: "yes" }],
 			}),
 		).toThrow();

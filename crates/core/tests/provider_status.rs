@@ -1,5 +1,5 @@
-//! Slice 6 (real-worker-codex): the Credential Store + `auth/status`
-//! (ADR-0023). `auth/status` reports `openai-codex` disconnected when no
+//! Slice 6 (real-worker-codex): the Credential Store + `provider/status`
+//! (ADR-0023). `provider/status` reports `openai-codex` disconnected when no
 //! credential file exists and connected once one does. Drives Core over the
 //! WebSocket with a per-test `INKSTONE_CREDENTIALS_DIR`. (The store's own
 //! `write()` 0600/0700 behavior is unit-tested in `credentials.rs`; here the
@@ -89,14 +89,14 @@ async fn next_text(ws: &mut Ws) -> String {
     }
 }
 
-/// Send `auth/status` and return the `openai-codex` connected flag.
+/// Send `provider/status` and return the `openai-codex` connected flag.
 async fn codex_connected(ws: &mut Ws, id: u64) -> bool {
-    let req = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"auth/status","params":{{}}}}"#);
+    let req = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"provider/status","params":{{}}}}"#);
     ws.send(Message::Text(req.into()))
         .await
-        .expect("send auth/status");
+        .expect("send provider/status");
     let body = next_text(ws).await;
-    let v: serde_json::Value = serde_json::from_str(&body).expect("auth/status json");
+    let v: serde_json::Value = serde_json::from_str(&body).expect("provider/status json");
     let providers = v["result"]["providers"].as_array().expect("providers array");
     let codex = providers
         .iter()
@@ -106,7 +106,7 @@ async fn codex_connected(ws: &mut Ws, id: u64) -> bool {
 }
 
 #[test]
-fn auth_status_reflects_credential_presence() {
+fn provider_status_reflects_credential_presence() {
     let tmp = TempDir::new().expect("tempdir");
     let db_path = tmp.path().join("db.sqlite");
     let creds_dir = tmp.path().join("credentials");

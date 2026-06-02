@@ -1,6 +1,6 @@
 # Provider OAuth: Core-owned credentials, reused pi-ai flow, Core-orchestrated refresh
 
-The first real provider (ChatGPT/Codex) authenticates with OAuth. We reuse `pi-ai`'s pure OAuth functions for the hard parts (PKCE login, token exchange, refresh-with-rotation), but **Core owns the credential bytes** on disk, **Core orchestrates refresh** (serialized, before each Worker spawn), and the Worker manifest carries **only a short-lived access token** — never the refresh token. The login flow runs in a stateless TypeScript **Auth Helper** process Core spawns; its result is handed back to Core, which writes it.
+The first real provider (ChatGPT/Codex) authenticates with OAuth. We reuse `pi-ai`'s pure OAuth functions for the hard parts (PKCE login, token exchange, refresh-with-rotation), but **Core owns the credential bytes** on disk, **Core orchestrates refresh** (serialized, before each Worker spawn), and the Worker manifest carries **only a short-lived access token** — never the refresh token. The login flow runs in a stateless TypeScript **Provider Helper** process Core spawns; its result is handed back to Core, which writes it.
 
 This ADR records that division because it is hard to reverse (it shapes the manifest, the credential store, and the Worker's trust surface), surprising without context (the obvious "Worker authenticates itself" path is explicitly rejected), and the result of a real trade-off against reimplementing OAuth in Rust and against vendoring `pi-coding-agent`'s storage.
 
@@ -18,13 +18,13 @@ This ADR records that division because it is hard to reverse (it shapes the mani
 
 2. **Core owns the credential bytes.** Credentials are stored in a `0600` JSON file beside `db.sqlite` (the Credential Store), holding `{ access, refresh, expires, accountId }` for `openai-codex`. Core is the **single writer** — no other process writes credential bytes, so no file-locking is needed.
 
-3. **Core orchestrates refresh, serialized.** Before spawning a Worker, Core reads the stored `expires`. If still valid (common path), Core ships only the access token in the manifest. If expired (rare path), Core invokes the Auth Helper in `refresh` mode under a single in-process `tokio::Mutex`, with a **double-checked expiry** after acquiring the lock (so a second concurrent expired Run reuses the just-refreshed token rather than refreshing again). The rotated credentials are persisted before the Worker spawns.
+3. **Core orchestrates refresh, serialized.** Before spawning a Worker, Core reads the stored `expires`. If still valid (common path), Core ships only the access token in the manifest. If expired (rare path), Core invokes the Provider Helper in `refresh` mode under a single in-process `tokio::Mutex`, with a **double-checked expiry** after acquiring the lock (so a second concurrent expired Run reuses the just-refreshed token rather than refreshing again). The rotated credentials are persisted before the Worker spawns.
 
 4. **The manifest carries only the access token.** The refresh token (the long-lived secret) never crosses the process boundary into a Worker. The codex provider re-derives `accountId` from the access-token JWT at call time, so the access token alone is sufficient for a Run.
 
-5. **Two stateless TypeScript entry points** in `packages/worker`: the run interpreter (gets an access token, runs the chat loop) and the Auth Helper (`login` / `refresh` modes, runs pi-ai's OAuth). Neither holds durable state; Core owns the file and all orchestration.
+5. **Two stateless TypeScript entry points** in `packages/worker`: the run interpreter (gets an access token, runs the chat loop) and the Provider Helper (`login` / `refresh` modes, runs pi-ai's OAuth). Neither holds durable state; Core owns the file and all orchestration.
 
-6. **Login orchestration rides Core's client surface (ADR-0014).** The Web Client never runs OAuth itself: it asks Core to start login, Core spawns the Auth Helper, the helper's `:1455` loopback handles the OpenAI callback and prints the credential JSON on stdout, and Core writes it. See the ADR-0014 amendment for the wire methods.
+6. **Login orchestration rides Core's client surface (ADR-0014).** The Web Client never runs OAuth itself: it asks Core to start login, Core spawns the Provider Helper, the helper's `:1455` loopback handles the OpenAI callback and prints the credential JSON on stdout, and Core writes it. See the ADR-0014 amendment for the wire methods.
 
 ## Why the Worker holding an access token does not violate ADR-0013
 
@@ -44,5 +44,5 @@ ADR-0013 frames the Worker as holding no **durable** state — anything that mus
 - [ADR-0002](./0002-clients-talk-only-to-core.md) — login orchestration goes through Core's client surface, not the Web Client running OAuth directly.
 - [ADR-0007](./0007-local-first-single-user.md) — provider credentials are the explicitly carved-out "separate concern" this ADR handles.
 - [ADR-0003](./0003-worker-via-tool-protocol.md) — the Worker's no-SQLite/no-Vault chokepoint stays intact; the Credential Store is Core's.
-- [ADR-0014](./0014-client-core-wire-protocol.md) — amended with `auth/login_start` and `auth/status`.
+- [ADR-0014](./0014-client-core-wire-protocol.md) — amended with `provider/login_start` and `provider/status`.
 - [ADR-0018](./0018-workflow-and-tools-definition.md) — the manifest this ADR extends with an access token.

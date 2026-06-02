@@ -7,8 +7,8 @@
 //! process management is in [`crate::worker`]; the per-run hub is in
 //! [`crate::hub`].
 
-mod auth;
 mod post_message;
+mod provider;
 mod reply;
 mod subscribe;
 mod thread_create;
@@ -63,9 +63,9 @@ pub async fn dispatch(
             };
             thread_get::handle(pool, req.id, params, out_tx).await;
         }
-        "auth/status" => {
+        "provider/status" => {
             // Read-only, no params — the credential store is the only input.
-            auth::handle(req.id, out_tx).await;
+            provider::handle(req.id, out_tx).await;
         }
         // Other methods: drop silently for the skeleton.
         _ => {}

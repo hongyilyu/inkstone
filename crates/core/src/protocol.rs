@@ -132,20 +132,20 @@ pub enum RunEvent {
     Error { message: String },
 }
 
-/// One provider's connection status in an `auth/status` result (ADR-0023).
-/// `id` is the provider key (`"openai-codex"`); `connected` is true when a
-/// credential file exists for it.
+/// One provider's connection status in a `provider/status` result
+/// (ADR-0023). `id` is the provider key (`"openai-codex"`); `connected` is
+/// true when a credential file exists for it.
 #[derive(Debug, Serialize)]
 pub struct ProviderStatus {
     pub id: String,
     pub connected: bool,
 }
 
-/// `auth/status` result: the connection state of each known provider.
+/// `provider/status` result: the connection state of each known provider.
 /// Object-wrapper shape (`{providers: [...]}`) so the result stays
 /// forward-extensible and the TS mirror is a `Schema.Struct`.
 #[derive(Debug, Serialize)]
-pub struct AuthStatusResult {
+pub struct ProviderStatusResult {
     pub providers: Vec<ProviderStatus>,
 }
 
@@ -446,12 +446,12 @@ mod mirror_tests {
         assert_eq!(v["messages"], json!([]));
     }
 
-    // --- auth/status (Serialize-only): encode to the canonical wire JSON the
-    // TS `AuthStatusResult` schema decodes. ---
+    // --- provider/status (Serialize-only): encode to the canonical wire JSON
+    // the TS `ProviderStatusResult` schema decodes. ---
 
     #[test]
-    fn auth_status_result_encodes_providers_array() {
-        let r = AuthStatusResult {
+    fn provider_status_result_encodes_providers_array() {
+        let r = ProviderStatusResult {
             providers: vec![ProviderStatus {
                 id: "openai-codex".to_string(),
                 connected: true,
