@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useLayoutEffect, useRef } from "react";
 import { useRuntime } from "@/runtime";
 import { send, sendNewThread } from "@/store/bridge";
@@ -12,6 +13,7 @@ import { ComposeFooter } from "./ComposeFooter.js";
 export function ChatColumn() {
 	const scrollerRef = useRef<HTMLDivElement>(null);
 	const runtime = useRuntime();
+	const queryClient = useQueryClient();
 	const focusedThreadId = useFocusedThreadId();
 	const messages = useThreadMessages(focusedThreadId ?? "");
 
@@ -39,12 +41,17 @@ export function ChatColumn() {
 				</ol>
 			</div>
 			<ComposeFooter
-				onSend={(text) => {
+				onSend={async (text) => {
+					// Send into the focused thread, or mint a new one on the first
+					// message. Either way, refresh the sidebar's thread/list read so
+					// a freshly-created thread (or a bumped last-activity order) shows
+					// without a manual reload — the precondition for switching threads.
 					if (focusedThreadId !== null) {
-						void send(runtime, focusedThreadId, text);
+						await send(runtime, focusedThreadId, text);
 					} else {
-						void sendNewThread(runtime, text);
+						await sendNewThread(runtime, text);
 					}
+					await queryClient.invalidateQueries({ queryKey: ["threads"] });
 				}}
 			/>
 		</main>

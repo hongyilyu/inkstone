@@ -1,11 +1,13 @@
-import { WsClient } from "@inkstone/ui-sdk";
+import { type RunEventValue, WsClient } from "@inkstone/ui-sdk";
 import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime } from "effect";
+import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RuntimeProvider } from "@/runtime";
+import { resetBridge } from "@/store/bridge";
 import { getChatState, resetChatStore } from "@/store/chat";
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
+import { ChatColumn } from "./ChatColumn.js";
 import { Sidebar } from "./Sidebar.js";
 
 // Stub WsClient whose `threadList` returns a fixed set of threads. Sidebar reads
@@ -28,8 +30,37 @@ function makeStubRuntime() {
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
+// A stub whose thread list GROWS when `threadCreate` is called — modelling
+// Core minting a Thread row. `threadList` reads the mutable array, so a fresh
+// read after creation includes the new thread. Used to prove the sidebar
+// refreshes (query invalidation) once a new thread is created via the composer.
+function makeGrowingStubRuntime(opts: {
+	readonly newThreadId: string;
+	readonly runId: string;
+	readonly events: readonly RunEventValue[];
+}) {
+	const threads: { id: string; title: string; last_activity_at: number }[] = [];
+	const stub = WsClient.of({
+		threadCreate: (prompt: string) =>
+			Effect.sync(() => {
+				threads.unshift({
+					id: opts.newThreadId,
+					title: prompt,
+					last_activity_at: threads.length + 1,
+				});
+				return { thread_id: opts.newThreadId, run_id: opts.runId };
+			}),
+		postMessage: () => Effect.succeed(opts.runId),
+		threadList: () => Effect.sync(() => ({ threads: [...threads] })),
+		threadGet: () => Effect.die("not exercised"),
+		subscribeRun: () => Stream.fromIterable(opts.events),
+	});
+	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+}
+
 beforeEach(() => {
 	resetChatStore();
+	resetBridge();
 });
 
 afterEach(() => {
@@ -73,6 +104,41 @@ describe("Sidebar", () => {
 
 		await user.click(screen.getByRole("button", { name: /new chat/i }));
 		expect(getChatState().focusedThreadId ?? null).toBeNull();
+
+		await runtime.dispose();
+	});
+
+	it("shows a newly-created thread without a manual reload", async () => {
+		const user = userEvent.setup();
+		const runtime = makeGrowingStubRuntime({
+			newThreadId: "thread-new",
+			runId: "run-1",
+			events: [{ kind: "text_delta", delta: "echo: hi" }, { kind: "done" }],
+		});
+
+		// Sidebar + ChatColumn share one runtime + QueryClient, so the
+		// composer's threadCreate and the sidebar's thread/list read go through
+		// the same query cache — exactly the real app wiring.
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<Sidebar />
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		// Initially the list is empty (no threads created yet).
+		expect(await screen.findByText(/no threads match/i)).toBeInTheDocument();
+
+		// Send the first message with no focused thread → mints "thread-new".
+		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		// The sidebar must surface the freshly-minted thread — proving the
+		// thread/list query was invalidated on create (not stuck on the empty
+		// first read). Its title is the prompt text.
+		expect(
+			await screen.findByRole("button", { name: "hi" }),
+		).toBeInTheDocument();
 
 		await runtime.dispose();
 	});
