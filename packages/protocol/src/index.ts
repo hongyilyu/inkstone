@@ -53,6 +53,7 @@ export type ThreadGetResult = S.Schema.Type<typeof ThreadGetResult>;
 export const RunEvent = S.Union(
 	S.Struct({ kind: S.Literal("text_delta"), delta: S.String }),
 	S.Struct({ kind: S.Literal("done") }),
+	S.Struct({ kind: S.Literal("error"), message: S.String }),
 );
 export type RunEvent = S.Schema.Type<typeof RunEvent>;
 

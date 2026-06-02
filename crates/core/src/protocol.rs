@@ -129,6 +129,7 @@ pub struct ThreadGetResult {
 pub enum RunEvent {
     TextDelta { delta: String },
     Done,
+    Error { message: String },
 }
 
 /// Single line written to the Worker's stdin at spawn time, carrying the
@@ -308,6 +309,17 @@ mod mirror_tests {
         let wire = json!({ "kind": "done" });
         let ev: RunEvent = serde_json::from_value(wire.clone()).unwrap();
         assert!(matches!(ev, RunEvent::Done));
+        assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
+    }
+
+    #[test]
+    fn run_event_error_round_trips() {
+        let wire = json!({ "kind": "error", "message": "boom" });
+        let ev: RunEvent = serde_json::from_value(wire.clone()).unwrap();
+        match &ev {
+            RunEvent::Error { message } => assert_eq!(message, "boom"),
+            other => panic!("expected Error, got {other:?}"),
+        }
         assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
     }
 }

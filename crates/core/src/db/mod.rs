@@ -351,28 +351,46 @@ pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx:
 /// is left dangling at `'streaming'` after its Run terminates), and append
 /// a terminal `run_events` row with `kind='error'`. One transaction.
 pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<()> {
-    let mut tx = pool.begin().await?;
-    let next_seq = queries::next_run_seq(&mut *tx, run_id).await?;
-    queries::mark_run_errored(
-        &mut *tx,
+    error_run_with_message(
+        pool,
         run_id,
         "worker_disconnected",
         "worker_disconnected",
         "worker exited without emitting done event",
         now_ms,
     )
-    .await?;
-    queries::mark_streaming_messages_incomplete(&mut *tx, run_id, now_ms).await?;
-    queries::insert_run_event(
+    .await
+}
+
+/// Worker emitted an explicit `error` Run Event (per ADR-0023's real
+/// provider path). Same terminal shape as [`error_run`] but with a
+/// caller-supplied `terminal_reason`, `error_code`, and `error_message`
+/// carried into both the `runs` row and the terminal `run_events` payload.
+/// `terminal_reason` must satisfy the `runs` CHECK constraint
+/// (`worker_disconnected` for a disconnect, `errored` for a worker-emitted
+/// error). One transaction so a reader sees the pre- or post-terminal
+/// state, never a mix.
+pub async fn error_run_with_message(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    terminal_reason: &str,
+    error_code: &str,
+    error_message: &str,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    let next_seq = queries::next_run_seq(&mut *tx, run_id).await?;
+    queries::mark_run_errored(
         &mut *tx,
         run_id,
-        next_seq,
-        "error",
-        Some(
-            r#"{"code":"worker_disconnected","message":"worker exited without emitting done event"}"#,
-        ),
+        terminal_reason,
+        error_code,
+        error_message,
         now_ms,
     )
     .await?;
+    queries::mark_streaming_messages_incomplete(&mut *tx, run_id, now_ms).await?;
+    let payload = serde_json::json!({ "code": error_code, "message": error_message }).to_string();
+    queries::insert_run_event(&mut *tx, run_id, next_seq, "error", Some(&payload), now_ms).await?;
     tx.commit().await
 }

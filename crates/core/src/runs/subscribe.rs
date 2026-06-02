@@ -131,7 +131,7 @@ fn spawn_tail_forwarder(
     pool: SqlitePool,
 ) {
     tokio::spawn(async move {
-        let mut saw_done = false;
+        let mut saw_terminal = false;
         loop {
             tokio::select! {
                 // The connection dropped: its `out_rx` is gone, so further
@@ -144,18 +144,24 @@ fn spawn_tail_forwarder(
                 recv = receiver.recv() => {
                     match recv {
                         Ok(event) => {
-                            if matches!(event, RunEvent::Done) {
-                                saw_done = true;
+                            // Both `done` and `error` are terminal Run Events
+                            // (ADR-0023 adds `error`). Tracking either as the
+                            // terminal marker means a worker that errored does
+                            // not also get a synthesized `done` appended after
+                            // its error on channel close.
+                            if matches!(event, RunEvent::Done | RunEvent::Error { .. }) {
+                                saw_terminal = true;
                             }
                             send_run_event(&out_tx, run_id, &event);
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             // Sender dropped at the Worker's `hub::remove`. If
-                            // we never forwarded a `Done` (attached after the
-                            // Worker published it, or it fell in a lagged
-                            // window), synthesize one so the client's
-                            // run-stream finalizes instead of hanging forever.
-                            if !saw_done {
+                            // we never forwarded a terminal event (attached
+                            // after the Worker published it, or it fell in a
+                            // lagged window), synthesize a `done` so the
+                            // client's run-stream finalizes instead of hanging
+                            // forever.
+                            if !saw_terminal {
                                 send_run_event(&out_tx, run_id, &RunEvent::Done);
                             }
                             break;

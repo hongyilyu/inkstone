@@ -117,8 +117,12 @@ async fn run_worker(
     let mut lines = BufReader::new(stdout).lines();
 
     // Track whether the Worker emitted a terminal `done` event so the
-    // post-loop branch can pick `complete_run` vs `error_run`.
+    // post-loop branch can pick `complete_run` vs `error_run`. A worker-
+    // emitted `error` event captures its message here so the terminal tx
+    // records it (ADR-0023 real-provider path) instead of the generic
+    // `worker_disconnected`.
     let mut saw_done = false;
+    let mut worker_error: Option<String> = None;
 
     while let Ok(Some(line)) = lines.next_line().await {
         let event: RunEvent = match serde_json::from_str(&line) {
@@ -151,6 +155,9 @@ async fn run_worker(
             RunEvent::Done => {
                 saw_done = true;
             }
+            RunEvent::Error { message } => {
+                worker_error = Some(message.clone());
+            }
         }
 
         // Publish to the hub. `SendError` (no receivers attached) is fine —
@@ -163,9 +170,12 @@ async fn run_worker(
 
     // Terminal-state tx. Either path commits the runs/messages/run_events
     // triple in a single transaction (ADR-0017's atomic recovery
-    // invariant).
+    // invariant). A worker-emitted `error` takes precedence over the
+    // EOF-without-done path and carries its own message.
     let now_ms = db::now_ms();
-    let result = if saw_done {
+    let result = if let Some(message) = worker_error {
+        db::error_run_with_message(&pool, run_id, "errored", "worker_error", &message, now_ms).await
+    } else if saw_done {
         db::complete_run(&pool, run_id, now_ms).await
     } else {
         db::error_run(&pool, run_id, now_ms).await
