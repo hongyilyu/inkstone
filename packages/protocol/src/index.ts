@@ -57,9 +57,6 @@ export const RunEvent = S.Union(
 );
 export type RunEvent = S.Schema.Type<typeof RunEvent>;
 
-export const WorkerInbound = S.Struct({ prompt: S.String });
-export type WorkerInbound = S.Schema.Type<typeof WorkerInbound>;
-
 export const WorkerOutbound = RunEvent;
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 

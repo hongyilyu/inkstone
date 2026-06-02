@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The set of thinking levels the manifest's `thinking_level` may take,
 /// mirroring `pi-agent-core`'s `ThinkingLevel` (`off` + the five pi-ai
@@ -24,19 +24,15 @@ const THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "
 /// A loaded Workflow. Pure data deserialized from TOML via serde. `tools` is
 /// empty until the tools slice; `auto_approve`/`bootstrap` (ADR-0018) are not
 /// modeled yet (deferred per the as-built amendment).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Workflow {
     pub name: String,
     pub version: String,
     pub provider: String,
     pub model: String,
-    // `system_prompt` and `tools` are shipped in the spawn manifest by the
-    // Core cutover (slice 4); read by the worker, not yet by Core itself.
-    #[allow(dead_code)]
     pub system_prompt: String,
     pub thinking_level: String,
     #[serde(default)]
-    #[allow(dead_code)]
     pub tools: Vec<String>,
 }
 

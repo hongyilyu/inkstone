@@ -29,7 +29,7 @@ fn repo_root() -> PathBuf {
 fn worker_cmd_real() -> String {
     let repo_root = repo_root();
     let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let cli = repo_root.join("packages/worker/src/cli.ts");
+    let cli = repo_root.join("crates/core/tests/fixtures/slow-worker.ts");
     if !tsx.exists() {
         panic!("worker tsx not installed — run `pnpm install`");
     }

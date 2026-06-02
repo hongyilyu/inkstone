@@ -21,7 +21,11 @@ fn end_to_end_post_message_streams_text_delta_then_done() {
     // tsx is a worker dev-dependency; pnpm's isolated mode lands the binary
     // under packages/worker/node_modules/.bin/tsx (not the workspace root).
     let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let cli = repo_root.join("packages/worker/src/cli.ts");
+    // Slice 4 cut cli.ts over to the generic interpreter (real providers).
+    // The echo-shaped assertions in this test now ride the slow-worker
+    // fixture, which reads the manifest's `.prompt` and emits `echo: <prompt>`
+    // — the deterministic stand-in (ADR-0019). Real providers are manual smoke.
+    let cli = repo_root.join("crates/core/tests/fixtures/slow-worker.ts");
     if !tsx.exists() {
         panic!(
             "worker tsx not installed at {} — run `pnpm install` at repo root",

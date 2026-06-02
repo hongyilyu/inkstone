@@ -66,7 +66,7 @@ fn spawn_core(db_path: &Path) -> (CoreChild, String) {
         .expect("repo root resolves from <repo>/crates/core");
 
     let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let cli = repo_root.join("packages/worker/src/cli.ts");
+    let cli = repo_root.join("crates/core/tests/fixtures/slow-worker.ts");
     if !tsx.exists() {
         panic!(
             "worker tsx not installed at {} — run `pnpm install` at repo root",

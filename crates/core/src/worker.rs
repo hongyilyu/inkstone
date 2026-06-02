@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::hub::Hubs;
-use crate::protocol::{RunEvent, WorkerInbound};
+use crate::protocol::{RunEvent, WorkerManifest, WorkflowManifest};
 use crate::workflow::Workflow;
 
 /// Spawn a Worker for `run_id`. Returns immediately; a Tokio task drives
@@ -33,7 +33,7 @@ use crate::workflow::Workflow;
 /// delta — exactly-once across the snapshot/tail boundary.
 pub fn spawn(
     run_id: Uuid,
-    _workflow: &'static Workflow,
+    workflow: &'static Workflow,
     prompt: String,
     pool: SqlitePool,
     assistant_message_id: Uuid,
@@ -49,6 +49,7 @@ pub fn spawn(
         run_worker(
             run_id,
             cmd,
+            workflow,
             prompt,
             pool,
             assistant_message_id,
@@ -64,6 +65,7 @@ pub fn spawn(
 async fn run_worker(
     run_id: Uuid,
     cmd: String,
+    workflow: &'static Workflow,
     prompt: String,
     pool: SqlitePool,
     assistant_message_id: Uuid,
@@ -95,8 +97,25 @@ async fn run_worker(
     };
 
     if let Some(mut stdin) = child.stdin.take() {
-        let inbound = WorkerInbound { prompt: &prompt };
-        let mut line = serde_json::to_string(&inbound).expect("WorkerInbound serializes");
+        // Build the spawn manifest (ADR-0018 as-built): the Workflow fields,
+        // the current prompt, the assembled history (empty in slice 4;
+        // populated in slice 5), and — for OAuth providers — a short-lived
+        // access token (None until slice 7). Written as one NDJSON line.
+        let manifest = WorkerManifest {
+            workflow: WorkflowManifest {
+                name: &workflow.name,
+                version: &workflow.version,
+                provider: &workflow.provider,
+                model: &workflow.model,
+                system_prompt: &workflow.system_prompt,
+                thinking_level: &workflow.thinking_level,
+                tools: &workflow.tools,
+            },
+            prompt: &prompt,
+            messages: Vec::new(),
+            access_token: None,
+        };
+        let mut line = serde_json::to_string(&manifest).expect("WorkerManifest serializes");
         line.push('\n');
         if let Err(e) = stdin.write_all(line.as_bytes()).await {
             eprintln!("failed to write worker stdin: {e}");

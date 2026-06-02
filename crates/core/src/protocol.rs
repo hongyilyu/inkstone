@@ -132,11 +132,44 @@ pub enum RunEvent {
     Error { message: String },
 }
 
-/// Single line written to the Worker's stdin at spawn time, carrying the
-/// user prompt the Worker should act on.
+/// One prior message in the assembled Thread history shipped in the spawn
+/// manifest (ADR-0018 as-built `messages[]`). `role` is `"user"` or
+/// `"assistant"`; `text` is the Message's assembled text. Serialize-only —
+/// Core produces these, the Worker consumes them.
 #[derive(Debug, Serialize)]
-pub struct WorkerInbound<'a> {
+pub struct ManifestMessage<'a> {
+    pub role: &'a str,
+    pub text: &'a str,
+}
+
+/// The Workflow fields shipped in the manifest (ADR-0018). Mirrors the TS
+/// `WorkflowManifest`. Serialized from [`crate::workflow::Workflow`] via its
+/// own `Serialize` derive, whose field set matches this shape; this struct
+/// documents the wire contract and anchors the mirror test.
+#[derive(Debug, Serialize)]
+pub struct WorkflowManifest<'a> {
+    pub name: &'a str,
+    pub version: &'a str,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub system_prompt: &'a str,
+    pub thinking_level: &'a str,
+    pub tools: &'a [String],
+}
+
+/// The full spawn manifest written to the Worker's stdin (ADR-0018 as-built,
+/// ADR-0013 stdin transport). Replaces the slice-1 `WorkerInbound{prompt}`.
+/// `messages` is the assembled prior history (empty in slice 4; populated in
+/// slice 5). `access_token` is `Some` only for OAuth providers (ADR-0023);
+/// `None` (and skipped on the wire) for the faux/env providers. Mirrors the
+/// TS `WorkerManifest`.
+#[derive(Debug, Serialize)]
+pub struct WorkerManifest<'a> {
+    pub workflow: WorkflowManifest<'a>,
     pub prompt: &'a str,
+    pub messages: Vec<ManifestMessage<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<&'a str>,
 }
 
 /// Mirror tests: lock the Rust serde shapes to the canonical wire JSON the
@@ -321,5 +354,78 @@ mod mirror_tests {
             other => panic!("expected Error, got {other:?}"),
         }
         assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
+    }
+
+    // --- Manifest (Serialize-only): encode to the canonical wire JSON the TS
+    // `WorkerManifest`/`WorkflowManifest`/`ManifestMessage` schemas decode. ---
+
+    #[test]
+    fn worker_manifest_encodes_full_shape_with_history_and_token() {
+        let tools = vec!["a".to_string(), "b".to_string()];
+        let manifest = WorkerManifest {
+            workflow: WorkflowManifest {
+                name: "default",
+                version: "1.0.0",
+                provider: "openai-codex",
+                model: "gpt-5.5",
+                system_prompt: "hi",
+                thinking_level: "off",
+                tools: &tools,
+            },
+            prompt: "now",
+            messages: vec![
+                ManifestMessage { role: "user", text: "earlier q" },
+                ManifestMessage { role: "assistant", text: "earlier a" },
+            ],
+            access_token: Some("tok_abc"),
+        };
+        assert_eq!(
+            serde_json::to_value(&manifest).unwrap(),
+            json!({
+                "workflow": {
+                    "name": "default",
+                    "version": "1.0.0",
+                    "provider": "openai-codex",
+                    "model": "gpt-5.5",
+                    "system_prompt": "hi",
+                    "thinking_level": "off",
+                    "tools": ["a", "b"]
+                },
+                "prompt": "now",
+                "messages": [
+                    { "role": "user", "text": "earlier q" },
+                    { "role": "assistant", "text": "earlier a" }
+                ],
+                "access_token": "tok_abc"
+            }),
+        );
+    }
+
+    #[test]
+    fn worker_manifest_omits_access_token_when_none() {
+        let tools: Vec<String> = vec![];
+        let manifest = WorkerManifest {
+            workflow: WorkflowManifest {
+                name: "default",
+                version: "1.0.0",
+                provider: "faux",
+                model: "faux-1",
+                system_prompt: "hi",
+                thinking_level: "off",
+                tools: &tools,
+            },
+            prompt: "now",
+            messages: vec![],
+            access_token: None,
+        };
+        let v = serde_json::to_value(&manifest).unwrap();
+        // `access_token` is skipped entirely (TS schema marks it optional);
+        // the Worker treats absent as "no OAuth token".
+        assert!(
+            v.get("access_token").is_none(),
+            "access_token must be omitted when None, got {v}"
+        );
+        assert_eq!(v["workflow"]["tools"], json!([]));
+        assert_eq!(v["messages"], json!([]));
     }
 }

@@ -12,7 +12,6 @@ import {
 	ThreadGetResult,
 	ThreadListResult,
 	ThreadSummary,
-	WorkerInbound,
 	WorkerManifest,
 	WorkerOutbound,
 } from "./index.js";
@@ -283,18 +282,6 @@ describe("RunEvent", () => {
 		expect(() =>
 			S.decodeUnknownSync(RunEvent)({ kind: "text_delta" }),
 		).toThrow();
-	});
-});
-
-describe("WorkerInbound", () => {
-	it("decodes a worker stdin frame", () => {
-		expect(S.decodeUnknownSync(WorkerInbound)({ prompt: "hi" })).toEqual({
-			prompt: "hi",
-		});
-	});
-
-	it("rejects a missing prompt", () => {
-		expect(() => S.decodeUnknownSync(WorkerInbound)({})).toThrow();
 	});
 });
 
