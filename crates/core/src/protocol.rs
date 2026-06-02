@@ -143,9 +143,9 @@ pub struct ManifestMessage<'a> {
 }
 
 /// The Workflow fields shipped in the manifest (ADR-0018). Mirrors the TS
-/// `WorkflowManifest`. Serialized from [`crate::workflow::Workflow`] via its
-/// own `Serialize` derive, whose field set matches this shape; this struct
-/// documents the wire contract and anchors the mirror test.
+/// `WorkflowManifest`. Built by borrowing from [`crate::workflow::Workflow`]
+/// at spawn (the field sets match); this struct is the wire contract and
+/// anchors the mirror test.
 #[derive(Debug, Serialize)]
 pub struct WorkflowManifest<'a> {
     pub name: &'a str,
