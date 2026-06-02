@@ -31,6 +31,38 @@ export function resetBridge(): void {
 }
 
 /**
+ * The outcome of a send. Default to a returned discriminated result (not an
+ * `onError` callback) so callers learn of a failure synchronously off the
+ * awaited promise (FEATURE-PLAN slice C).
+ */
+export type SendResult = { ok: true } | { ok: false; error: unknown };
+
+/**
+ * Optimistically seed a turn into `threadId`: append the completed user message,
+ * then a live (streaming) assistant message, returning the seeded assistant id.
+ * Shared by {@link send} and {@link sendNewThread} — the ONLY ordering
+ * difference is when it's called (see each caller), not what it does.
+ */
+function seedTurn(threadId: string, text: string): string {
+	appendUserMessage(threadId, {
+		id: nextMessageId(),
+		role: "user",
+		status: "completed",
+		text,
+		run_id: "",
+	});
+	const assistantId = nextMessageId();
+	seedAssistantMessage(threadId, {
+		id: assistantId,
+		role: "assistant",
+		status: "streaming",
+		text: "",
+		run_id: "",
+	});
+	return assistantId;
+}
+
+/**
  * Fork the SDK stream for `runId` and drive each event into the store. The
  * fiber is retained keyed by run id and removed when the stream completes (on
  * `done`, via `takeUntil`) so it survives focus changes until its own `done`.
@@ -56,31 +88,17 @@ export function startRunStream(
 /**
  * Send a prompt into a (focused) thread: append the user message, seed a live
  * assistant message, start the Run, then fork its stream. A failed send flips
- * the assistant message to `incomplete` (Q7).
+ * the assistant message to `incomplete` (Q7) and returns `{ ok: false, error }`.
  */
 export async function send(
 	runtime: WsRuntime,
 	threadId: string,
 	text: string,
-): Promise<void> {
+): Promise<SendResult> {
 	// The thread is now live locally — its messages + stream are seeded here, so
 	// the hydrate-on-focus effect must not re-hydrate it (slice 13 guard).
 	markThreadHydrated(threadId);
-	appendUserMessage(threadId, {
-		id: nextMessageId(),
-		role: "user",
-		status: "completed",
-		text,
-		run_id: "",
-	});
-	const assistantId = nextMessageId();
-	seedAssistantMessage(threadId, {
-		id: assistantId,
-		role: "assistant",
-		status: "streaming",
-		text: "",
-		run_id: "",
-	});
+	const assistantId = seedTurn(threadId, text);
 
 	const post = Effect.gen(function* () {
 		const client = yield* WsClient;
@@ -91,10 +109,12 @@ export async function send(
 		const runId = await runtime.runPromise(post);
 		attachRun(threadId, assistantId, runId);
 		startRunStream(runtime, threadId, runId);
-	} catch {
+		return { ok: true };
+	} catch (error) {
 		// postMessage failed (typed failure or defect surfaced as a rejected
-		// promise) → mark the seeded assistant message incomplete.
+		// promise) → mark the seeded assistant message incomplete and surface it.
 		markMessageIncomplete(threadId, assistantId);
+		return { ok: false, error };
 	}
 }
 
@@ -113,7 +133,7 @@ export async function send(
 export async function sendNewThread(
 	runtime: WsRuntime,
 	text: string,
-): Promise<void> {
+): Promise<SendResult> {
 	const create = Effect.gen(function* () {
 		const client = yield* WsClient;
 		return yield* client.threadCreate(text);
@@ -125,26 +145,15 @@ export async function sendNewThread(
 		// The freshly-minted thread is live (seeded + streamed below); mark it so
 		// focusing it does NOT trigger a thread/get hydrate (slice 13 guard).
 		markThreadHydrated(thread_id);
-		appendUserMessage(thread_id, {
-			id: nextMessageId(),
-			role: "user",
-			status: "completed",
-			text,
-			run_id: "",
-		});
-		const assistantId = nextMessageId();
-		seedAssistantMessage(thread_id, {
-			id: assistantId,
-			role: "assistant",
-			status: "streaming",
-			text: "",
-			run_id: "",
-		});
+		const assistantId = seedTurn(thread_id, text);
 		attachRun(thread_id, assistantId, run_id);
 		startRunStream(runtime, thread_id, run_id);
-	} catch {
-		// threadCreate failed before any thread was minted — nothing to seed
-		// or mark incomplete. No orphaned bubble is left behind.
+		return { ok: true };
+	} catch (error) {
+		// threadCreate failed before any thread was minted — nothing was seeded,
+		// so there is no orphaned bubble to mark incomplete. Surface the failure
+		// so the caller can tell the user (instead of silently swallowing it).
+		return { ok: false, error };
 	}
 }
 

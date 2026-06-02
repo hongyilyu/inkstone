@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useRuntime } from "@/runtime";
 import { send, sendNewThread } from "@/store/bridge";
 import {
@@ -16,6 +16,7 @@ export function ChatColumn() {
 	const queryClient = useQueryClient();
 	const focusedThreadId = useFocusedThreadId();
 	const messages = useThreadMessages(focusedThreadId ?? "");
+	const [sendError, setSendError] = useState<string | null>(null);
 
 	// On focus change to a non-null, not-yet-live thread: thread/get → load →
 	// resubscribe-if-streaming. Locally-originated threads are pre-marked so this
@@ -40,16 +41,24 @@ export function ChatColumn() {
 					)}
 				</ol>
 			</div>
+			{sendError !== null && (
+				<p role="alert" className="mx-auto max-w-3xl px-6 text-sm text-destructive">
+					{sendError}
+				</p>
+			)}
 			<ComposeFooter
 				onSend={async (text) => {
 					// Send into the focused thread, or mint a new one on the first
 					// message. Either way, refresh the sidebar's thread/list read so
 					// a freshly-created thread (or a bumped last-activity order) shows
 					// without a manual reload — the precondition for switching threads.
-					if (focusedThreadId !== null) {
-						await send(runtime, focusedThreadId, text);
-					} else {
-						await sendNewThread(runtime, text);
+					setSendError(null);
+					const result =
+						focusedThreadId !== null
+							? await send(runtime, focusedThreadId, text)
+							: await sendNewThread(runtime, text);
+					if (!result.ok) {
+						setSendError("Couldn't send your message. Please try again.");
 					}
 					await queryClient.invalidateQueries({ queryKey: ["threads"] });
 				}}
