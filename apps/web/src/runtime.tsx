@@ -5,7 +5,23 @@ import { createContext, type ReactNode, useContext, useState } from "react";
 /** The single runtime the React tree runs SDK Effects + the stream bridge on. */
 export type WsRuntime = ManagedRuntime.ManagedRuntime<WsClient, never>;
 
-const DEFAULT_URL = "ws://127.0.0.1:8765/ws";
+/**
+ * Derive the Core WebSocket URL from the page's location, so a Core-served SPA
+ * dials back the same Core that served it — on whatever (possibly ephemeral)
+ * port that is. `http:` → `ws:`, `https:` → `wss:`, same host, `/ws` path.
+ *
+ * In Vite dev the page is served from Vite's port; its `/ws` is proxied to
+ * Core (see `vite.config.ts`), so the same-origin URL still reaches Core.
+ * Production embeds the SPA in Core, so location IS Core. The harness
+ * (ADR-0019) relies on this to avoid hardcoding Core's port in the bundle.
+ */
+export const deriveWsUrl = (location: {
+	readonly protocol: string;
+	readonly host: string;
+}): string => {
+	const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+	return `${scheme}//${location.host}/ws`;
+};
 
 /** Build the WS layer: `WsClientLive` provided a concrete `WsClientConfig`. */
 export const makeWsLayer = (config: {
@@ -31,7 +47,7 @@ interface RuntimeProviderProps {
  * Injection seam (slices 11–13 drive a stub `WsClient` through here):
  *   - `runtime` prop → used directly
  *   - else `layer` prop → `ManagedRuntime.make(layer)`
- *   - else built from `config` (default {@link DEFAULT_URL}) via {@link makeWsLayer}
+ *   - else built from `config` (default: same-origin via {@link deriveWsUrl}) via {@link makeWsLayer}
  *
  * Laziness: `ManagedRuntime.make` does NOT run the layer — `WsClientLive` is
  * `Layer.scoped` and only opens the socket when the runtime first RUNS an
@@ -58,7 +74,9 @@ export function RuntimeProvider({
 		if (layer !== undefined) {
 			return ManagedRuntime.make(layer);
 		}
-		return ManagedRuntime.make(makeWsLayer(config ?? { url: DEFAULT_URL }));
+		return ManagedRuntime.make(
+			makeWsLayer(config ?? { url: deriveWsUrl(window.location) }),
+		);
 	});
 
 	return (
