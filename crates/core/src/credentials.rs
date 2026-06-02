@@ -47,9 +47,8 @@ impl std::fmt::Debug for Credentials {
 
 impl Credentials {
     /// Whether the access token is at or past its expiry at `now_ms`. The
-    /// refresh path (slice 7) consults this; status (this slice) does not —
-    /// an expired-but-present credential still counts as "connected".
-    #[allow(dead_code)] // consumed by the refresh path in slice 7
+    /// refresh path consults this; status does not — an expired-but-present
+    /// credential still counts as "connected".
     pub fn is_expired(&self, now_ms: i64) -> bool {
         now_ms >= self.expires
     }
@@ -99,11 +98,10 @@ pub fn is_connected(provider: &str) -> Result<bool> {
 }
 
 /// Persist `creds` for `provider` as a `0600` JSON file in a `0700` dir.
-/// Core is the single writer (ADR-0023). Used by the login helper result
-/// path and the refresh path (slice 7). The file is created with mode 0600
-/// from the start (no write-then-chmod window where it sits at the umask
-/// default), inside a 0700 dir.
-#[allow(dead_code)] // first writer lands in slice 7 (login/refresh)
+/// Core is the single writer (ADR-0023). Used by the login result path and
+/// the refresh path. The file is created with mode 0600 from the start (no
+/// write-then-chmod window where it sits at the umask default), inside a
+/// 0700 dir.
 pub fn write(provider: &str, creds: &Credentials) -> Result<()> {
     let dir = credentials_dir()?;
     std::fs::create_dir_all(&dir)
