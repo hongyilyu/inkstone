@@ -13,6 +13,7 @@ import {
 	ThreadListResult,
 	ThreadSummary,
 	WorkerInbound,
+	WorkerManifest,
 	WorkerOutbound,
 } from "./index.js";
 
@@ -311,5 +312,60 @@ describe("WorkerOutbound", () => {
 		expect(S.decodeUnknownSync(WorkerOutbound)({ kind: "done" })).toEqual({
 			kind: "done",
 		});
+	});
+});
+
+describe("WorkerManifest", () => {
+	const valid = {
+		workflow: {
+			name: "default",
+			version: "1.0.0",
+			provider: "openai-codex",
+			model: "gpt-5.5",
+			system_prompt: "You assist with journaling.",
+			thinking_level: "off",
+			tools: [],
+		},
+		prompt: "hello",
+		messages: [
+			{ role: "user", text: "earlier question" },
+			{ role: "assistant", text: "earlier answer" },
+		],
+		access_token: "tok_abc",
+	};
+
+	it("decodes a full manifest with history and access token", () => {
+		expect(S.decodeUnknownSync(WorkerManifest)(valid)).toEqual(valid);
+	});
+
+	it("decodes a manifest without an access token (faux/env providers)", () => {
+		const { access_token: _omit, ...noToken } = valid;
+		expect(S.decodeUnknownSync(WorkerManifest)(noToken)).toEqual(noToken);
+	});
+
+	it("decodes an empty history and empty tools", () => {
+		const minimal = { ...valid, messages: [], access_token: undefined };
+		const { access_token: _o, ...expected } = minimal;
+		expect(S.decodeUnknownSync(WorkerManifest)({ ...expected })).toEqual(
+			expected,
+		);
+	});
+
+	it("rejects an unknown thinking_level", () => {
+		expect(() =>
+			S.decodeUnknownSync(WorkerManifest)({
+				...valid,
+				workflow: { ...valid.workflow, thinking_level: "turbo" },
+			}),
+		).toThrow();
+	});
+
+	it("rejects a message with an unknown role", () => {
+		expect(() =>
+			S.decodeUnknownSync(WorkerManifest)({
+				...valid,
+				messages: [{ role: "system", text: "x" }],
+			}),
+		).toThrow();
 	});
 });

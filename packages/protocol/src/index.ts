@@ -62,3 +62,49 @@ export type WorkerInbound = S.Schema.Type<typeof WorkerInbound>;
 
 export const WorkerOutbound = RunEvent;
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
+
+// --- Worker manifest (ADR-0018 as-built): the spawn payload Core ships to
+// the generic interpreter on stdin. Carries the Workflow definition, the
+// assembled conversation history, and — for OAuth providers — a short-lived
+// access token (ADR-0023). `tools` is empty until the tools slice.
+
+/** One prior message in the assembled Thread history (ADR-0018 messages[]). */
+export const ManifestMessage = S.Struct({
+	role: S.Literal("user", "assistant"),
+	text: S.String,
+});
+export type ManifestMessage = S.Schema.Type<typeof ManifestMessage>;
+
+/** The Workflow definition fields the interpreter consumes (ADR-0018). */
+export const WorkflowManifest = S.Struct({
+	name: S.String,
+	version: S.String,
+	provider: S.String,
+	model: S.String,
+	system_prompt: S.String,
+	thinking_level: S.Literal(
+		"off",
+		"minimal",
+		"low",
+		"medium",
+		"high",
+		"xhigh",
+	),
+	tools: S.Array(S.String),
+});
+export type WorkflowManifest = S.Schema.Type<typeof WorkflowManifest>;
+
+/**
+ * The full spawn manifest written to the Worker's stdin. `prompt` is the
+ * current user turn; `messages` is the prior completed history (oldest
+ * first, excluding the current prompt). `access_token` is present only for
+ * OAuth providers (ADR-0023); absent for the `faux` test provider and any
+ * env-key provider.
+ */
+export const WorkerManifest = S.Struct({
+	workflow: WorkflowManifest,
+	prompt: S.String,
+	messages: S.Array(ManifestMessage),
+	access_token: S.optional(S.String),
+});
+export type WorkerManifest = S.Schema.Type<typeof WorkerManifest>;
