@@ -82,7 +82,7 @@ fn spawn_core(
     db_path: &Path,
     workflows_dir: &Path,
     creds_dir: &Path,
-    counter_path: &Path,
+    counter_dir: &Path,
 ) -> (CoreChild, String) {
     let root = repo_root();
     let manifest_echo = root.join("crates/core/tests/fixtures/manifest-echo.ts");
@@ -99,7 +99,7 @@ fn spawn_core(
         .env("INKSTONE_CREDENTIALS_DIR", creds_dir)
         .env("INKSTONE_WORKER_CMD", &worker_cmd)
         .env("INKSTONE_PROVIDER_HELPER_CMD", &helper_cmd)
-        .env("INKSTONE_REFRESH_COUNTER", counter_path)
+        .env("INKSTONE_REFRESH_COUNTER", counter_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -190,10 +190,14 @@ async fn drain_to_token(ws: &mut Ws, run_id: &str) -> String {
     text
 }
 
-fn read_counter(path: &Path) -> i64 {
-    match std::fs::read_to_string(path) {
-        Ok(s) if !s.trim().is_empty() => s.trim().parse().unwrap_or(0),
-        _ => 0,
+/// Count Provider-Helper invocations by counting marker files in the dir.
+/// File-counting is race-free: each helper invocation writes a UNIQUE file,
+/// so two concurrent refreshes (a single-flight bug) reliably yield 2 — a
+/// shared counter's read-modify-write could lose an update and mask the bug.
+fn refresh_count(dir: &Path) -> usize {
+    match std::fs::read_dir(dir) {
+        Ok(entries) => entries.filter(|e| e.is_ok()).count(),
+        Err(_) => 0,
     }
 }
 
@@ -203,12 +207,12 @@ fn expired_token_refreshes_once_under_contention() {
     let db_path = tmp.path().join("db.sqlite");
     let workflows_dir = tmp.path().join("workflows");
     let creds_dir = tmp.path().join("credentials");
-    let counter_path = tmp.path().join("refresh-count");
+    let counter_dir = tmp.path().join("refresh-markers");
     write_codex_workflow(&workflows_dir);
     // Expired credential (expires far in the past).
     write_credential(&creds_dir, "stale_access", "refresh_v1", 1);
 
-    let (_child, ws_url) = spawn_core(&db_path, &workflows_dir, &creds_dir, &counter_path);
+    let (_child, ws_url) = spawn_core(&db_path, &workflows_dir, &creds_dir, &counter_dir);
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -239,7 +243,7 @@ fn expired_token_refreshes_once_under_contention() {
 
     // Single-flight: exactly one refresh happened despite two expired runs.
     assert_eq!(
-        read_counter(&counter_path),
+        refresh_count(&counter_dir),
         1,
         "the provider helper refresh ran exactly once under contention"
     );
@@ -269,12 +273,12 @@ fn valid_token_used_without_refresh() {
     let db_path = tmp.path().join("db.sqlite");
     let workflows_dir = tmp.path().join("workflows");
     let creds_dir = tmp.path().join("credentials");
-    let counter_path = tmp.path().join("refresh-count");
+    let counter_dir = tmp.path().join("refresh-markers");
     write_codex_workflow(&workflows_dir);
     // Valid credential (expires far in the future).
     write_credential(&creds_dir, "fresh_access", "refresh_v1", 9_999_999_999_999);
 
-    let (_child, ws_url) = spawn_core(&db_path, &workflows_dir, &creds_dir, &counter_path);
+    let (_child, ws_url) = spawn_core(&db_path, &workflows_dir, &creds_dir, &counter_dir);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -290,5 +294,5 @@ fn valid_token_used_without_refresh() {
     });
 
     assert_eq!(token, "fresh_access", "valid token used as-is");
-    assert_eq!(read_counter(&counter_path), 0, "no refresh for a valid token");
+    assert_eq!(refresh_count(&counter_dir), 0, "no refresh for a valid token");
 }

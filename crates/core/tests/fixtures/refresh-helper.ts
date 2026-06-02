@@ -2,13 +2,18 @@
 // packages/worker/src/provider.ts so the Core refresh-orchestration test
 // never touches real OpenAI. Node builtins only.
 //
-// Reads one stdin line `{"refresh":"<token>"}`, increments a counter file at
-// $INKSTONE_REFRESH_COUNTER (so the test can assert single-flight), and emits
-// one Core-shaped credentials line with a rotated access token and a
-// far-future expiry. The rotated access token is `rotated:<old refresh>` so
-// the test can assert the manifest carried the refreshed token.
+// Reads one stdin line `{"refresh":"<token>"}`, records this invocation by
+// writing a UNIQUE marker file into the directory $INKSTONE_REFRESH_COUNTER
+// (so the test counts invocations by counting files — race-free, unlike a
+// read-modify-write counter which could lose an update and mask a
+// single-flight bug), and emits one Core-shaped credentials line with a
+// rotated access token and a far-future expiry. The rotated access token is
+// `rotated:<old refresh>` so the test can assert the manifest carried the
+// refreshed token.
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 
 function readFirstLine(): Promise<string | null> {
 	return new Promise((resolve) => {
@@ -41,21 +46,21 @@ async function main(): Promise<void> {
 	}
 	const { refresh } = JSON.parse(line) as { refresh: string };
 
-	// Bump the invocation counter (single-flight assertion). A tiny
-	// read-modify-write; the refresh lock on the Core side serializes callers,
-	// so there's no concurrent write here in the single-flight case.
-	const counterPath = process.env.INKSTONE_REFRESH_COUNTER;
-	if (counterPath !== undefined && counterPath.length > 0) {
-		const prev =
-			existsSync(counterPath) && readFileSync(counterPath, "utf8").trim() !== ""
-				? Number.parseInt(readFileSync(counterPath, "utf8").trim(), 10)
-				: 0;
-		writeFileSync(counterPath, String(prev + 1));
+	// Record this invocation as a unique file in the marker DIR. Counting
+	// files is race-free: two concurrent helpers (which would happen if Core's
+	// single-flight lock were removed) each write a DISTINCT file, so the test
+	// reliably observes 2 — a non-atomic counter increment could lose an
+	// update and falsely report 1, masking the bug. Write the marker BEFORE
+	// the latency sleep so overlapping invocations both leave evidence.
+	const markerDir = process.env.INKSTONE_REFRESH_COUNTER;
+	if (markerDir !== undefined && markerDir.length > 0) {
+		mkdirSync(markerDir, { recursive: true });
+		writeFileSync(join(markerDir, `${randomUUID()}`), "1");
 	}
 
 	// Simulate provider latency so a second concurrent caller would overlap
 	// IF Core failed to serialize/double-check — making a single-flight bug
-	// observable as counter > 1.
+	// observable as two marker files.
 	await new Promise((r) => setTimeout(r, 150));
 
 	const rotated = {

@@ -76,8 +76,15 @@ async function runRefresh(): Promise<void> {
 		return;
 	}
 	const { refresh } = JSON.parse(line) as { refresh: string };
-	const rotated = await refreshOpenAICodexToken(refresh);
-	emit(toCoreCredentials(rotated));
+	try {
+		const rotated = await refreshOpenAICodexToken(refresh);
+		emit(toCoreCredentials(rotated));
+	} catch {
+		// Defensive: never forward a provider/SDK error verbatim — it could
+		// embed the refresh token. Emit a generic, token-free message.
+		emit({ kind: "error", message: "refresh failed" });
+		process.exitCode = 1;
+	}
 }
 
 async function runLogin(): Promise<void> {
@@ -111,7 +118,9 @@ async function main(): Promise<void> {
 	process.exitCode = 1;
 }
 
-main().catch((e) => {
-	emit({ kind: "error", message: e instanceof Error ? e.message : String(e) });
+main().catch(() => {
+	// Token-free generic error — a thrown SDK/parse error could embed the
+	// refresh token, so never forward its message verbatim.
+	emit({ kind: "error", message: "provider helper failed" });
 	process.exit(1);
 });
