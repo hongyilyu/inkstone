@@ -44,9 +44,17 @@ async fn main() -> Result<()> {
         .route("/ws", get(ws_handler))
         .with_state(state);
 
-    let addr = "127.0.0.1:8765";
-    let listener = TcpListener::bind(addr).await?;
-    println!("INKSTONE_LISTENING http://{addr}");
+    // Port resolution (ADR-0019): `INKSTONE_PORT` overrides the default 8765.
+    // `0` asks the OS for an ephemeral port so the test harness can spawn one
+    // fresh Core per test without collisions; the *resolved* port is read back
+    // from the bound listener and announced, never the literal 0.
+    let port: u16 = std::env::var("INKSTONE_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8765);
+    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
+    let local_addr = listener.local_addr()?;
+    println!("INKSTONE_LISTENING http://{local_addr}");
 
     axum::serve(listener, app).await?;
     Ok(())
