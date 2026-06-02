@@ -12,8 +12,10 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::{Router, routing::get};
 use sqlx::SqlitePool;
+use std::path::PathBuf;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use tower_http::services::{ServeDir, ServeFile};
 
 use crate::hub::Hubs;
 use crate::protocol::JsonRpcRequest;
@@ -40,9 +42,26 @@ async fn main() -> Result<()> {
     };
 
     let app = Router::new()
-        .route("/", get(|| async { "Inkstone Core" }))
         .route("/ws", get(ws_handler))
         .with_state(state);
+
+    // SPA serving (ADR-0015 dev path / ADR-0019 harness). When
+    // `INKSTONE_WEB_DIR` is set AND this is a debug build, serve the built Web
+    // Client from that directory: assets directly, every other non-`/ws` path
+    // falls back to `index.html` so the SPA's client-side router can take over.
+    // Release builds ignore the env var entirely, so a production binary can
+    // never serve arbitrary files from disk (production embeds the bundle
+    // instead — a future feature). With no web dir, `/` is the bare liveness
+    // string the integration tests assert against.
+    let app = match web_dir_for_serving() {
+        Some(dir) => {
+            let index = dir.join("index.html");
+            let serve_dir =
+                ServeDir::new(&dir).fallback(ServeFile::new(index));
+            app.fallback_service(serve_dir)
+        }
+        None => app.route("/", get(|| async { "Inkstone Core" })),
+    };
 
     // Port resolution (ADR-0019): `INKSTONE_PORT` overrides the default 8765.
     // `0` asks the OS for an ephemeral port so the test harness can spawn one
@@ -58,6 +77,18 @@ async fn main() -> Result<()> {
 
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// The directory to serve the SPA from, or `None` to serve the liveness
+/// string. Reads `INKSTONE_WEB_DIR`, but only honors it in debug builds — a
+/// release binary always returns `None` so it cannot serve files from disk.
+fn web_dir_for_serving() -> Option<PathBuf> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    std::env::var_os("INKSTONE_WEB_DIR")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
