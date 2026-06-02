@@ -1,8 +1,9 @@
 //! Slice 6 (real-worker-codex): the Credential Store + `auth/status`
 //! (ADR-0023). `auth/status` reports `openai-codex` disconnected when no
 //! credential file exists and connected once one does. Drives Core over the
-//! WebSocket with a per-test `INKSTONE_CREDENTIALS_DIR`, and (on unix) checks
-//! the written file lands at mode 0600.
+//! WebSocket with a per-test `INKSTONE_CREDENTIALS_DIR`. (The store's own
+//! `write()` 0600/0700 behavior is unit-tested in `credentials.rs`; here the
+//! test writes the fixture file directly to drive the status read.)
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
