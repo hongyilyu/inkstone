@@ -87,6 +87,61 @@ export type ProviderLoginStartResult = S.Schema.Type<
 	typeof ProviderLoginStartResult
 >;
 
+// --- model/catalog (ADR-0024): the models available per provider. Static
+// data hand-mirrored from pi-ai's MODELS and embedded in Core; a Worker-side
+// drift test guards it. `openai-codex` is the only connectable provider today.
+
+/** One model in `model/catalog`. `input` is the modality list (`text`/`image`). */
+export const ModelInfo = S.Struct({
+	id: S.String,
+	name: S.String,
+	reasoning: S.Boolean,
+	input: S.Array(S.String),
+	cost_input: S.Number,
+	cost_output: S.Number,
+});
+export type ModelInfo = S.Schema.Type<typeof ModelInfo>;
+
+/** One provider's model group in `model/catalog`. */
+export const ProviderModels = S.Struct({
+	id: S.String,
+	label: S.String,
+	models: S.Array(ModelInfo),
+});
+export type ProviderModels = S.Schema.Type<typeof ProviderModels>;
+
+/** `model/catalog` result: the models available per provider. */
+export const ModelCatalogResult = S.Struct({
+	providers: S.Array(ProviderModels),
+});
+export type ModelCatalogResult = S.Schema.Type<typeof ModelCatalogResult>;
+
+// --- settings/* (ADR-0024): the user's preferred model + global effort.
+
+/**
+ * `settings/get` / `settings/set` result: the effective model selection and
+ * global effort for the default Workflow. `model` is `null` until the user
+ * picks one (the resolver then falls back to the per-provider default);
+ * `provider` is the Workflow's provider; `effort` is the global thinking level.
+ */
+export const SettingsResult = S.Struct({
+	provider: S.String,
+	model: S.NullOr(S.String),
+	effort: S.String,
+});
+export type SettingsResult = S.Schema.Type<typeof SettingsResult>;
+
+/**
+ * `settings/set` params: a partial update. An absent field is left unchanged;
+ * `model` must be a known catalog id and `effort` a valid thinking level, else
+ * the request is rejected with `invalid_params`.
+ */
+export const SettingsSetParams = S.Struct({
+	model: S.optional(S.String),
+	effort: S.optional(S.String),
+});
+export type SettingsSetParams = S.Schema.Type<typeof SettingsSetParams>;
+
 // --- Worker manifest (ADR-0018 as-built): the spawn payload Core ships to
 // the generic interpreter on stdin. Carries the Workflow definition, the
 // assembled conversation history, and — for OAuth providers — a short-lived

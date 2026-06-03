@@ -61,7 +61,7 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 				/>
 				<div className="mt-3 flex items-end justify-between gap-2">
 					<div className="flex flex-wrap items-center gap-2">
-						<ModelPicker defaultModelId="gemma-3-27b" />
+						<ModelPicker />
 						<Button variant="chip" size="pill">
 							<Zap className="h-4 w-4" aria-hidden />
 							<span>Instant</span>

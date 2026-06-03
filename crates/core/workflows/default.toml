@@ -1,8 +1,6 @@
 name          = "default"
 version       = "1.0.0"
 provider       = "openai-codex"
-model          = "gpt-5.5"
-thinking_level = "off"
 
 system_prompt = """
 You are Inkstone's assistant. The user keeps a personal vault of notes and

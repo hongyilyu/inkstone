@@ -21,33 +21,49 @@ use serde::Deserialize;
 /// than a Run.
 const THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
+/// Whether `level` is one of the valid thinking levels (ADR-0024). Backs the
+/// `settings/set` effort validator, sharing the one allowed-set with the
+/// Workflow loader's `validate` so the wire and the TOML agree.
+pub fn is_valid_thinking_level(level: &str) -> bool {
+    THINKING_LEVELS.contains(&level)
+}
+
 /// A loaded Workflow. Pure data deserialized from TOML via serde. `tools` is
 /// empty until the tools slice; `auto_approve`/`bootstrap` (ADR-0018) are not
 /// modeled yet (deferred per the as-built amendment).
+///
+/// `model` and `thinking_level` are optional (ADR-0024): production
+/// `default.toml` no longer authors them — they come from user settings with a
+/// per-provider default, resolved per-Run by `dispatcher::resolve_effective_workflow`.
+/// The TOML fields remain as an ultimate fallback (test fixtures still set them).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Workflow {
     pub name: String,
     pub version: String,
     pub provider: String,
-    pub model: String,
+    #[serde(default)]
+    pub model: Option<String>,
     pub system_prompt: String,
-    pub thinking_level: String,
+    #[serde(default)]
+    pub thinking_level: Option<String>,
     #[serde(default)]
     pub tools: Vec<String>,
 }
 
 impl Workflow {
     /// Validate invariants that serde's type-check can't express. Called
-    /// once at load. Currently: `thinking_level` is one of the allowed
-    /// values.
+    /// once at load. Currently: when present, `thinking_level` is one of the
+    /// allowed values (an absent level is resolved from settings later).
     fn validate(&self) -> Result<()> {
-        if !THINKING_LEVELS.contains(&self.thinking_level.as_str()) {
-            bail!(
-                "workflow {:?}: invalid thinking_level {:?} (expected one of {:?})",
-                self.name,
-                self.thinking_level,
-                THINKING_LEVELS
-            );
+        if let Some(ref level) = self.thinking_level {
+            if !THINKING_LEVELS.contains(&level.as_str()) {
+                bail!(
+                    "workflow {:?}: invalid thinking_level {:?} (expected one of {:?})",
+                    self.name,
+                    level,
+                    THINKING_LEVELS
+                );
+            }
         }
         Ok(())
     }

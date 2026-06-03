@@ -9,7 +9,9 @@
 
 mod post_message;
 mod provider;
+mod catalog;
 mod reply;
+mod settings;
 mod subscribe;
 mod thread_create;
 mod thread_get;
@@ -66,6 +68,22 @@ pub async fn dispatch(
         "provider/status" => {
             // Read-only, no params — the credential store is the only input.
             provider::handle(req.id, out_tx).await;
+        }
+        "model/catalog" => {
+            // Read-only, no params — the embedded model catalog is the only input.
+            catalog::handle(req.id, out_tx);
+        }
+        "settings/get" => {
+            // Read-only, no params — reads the settings table + default Workflow.
+            settings::handle_get(pool, req.id, out_tx).await;
+        }
+        "settings/set" => {
+            let Ok(params) =
+                serde_json::from_value::<crate::protocol::SettingsSetParams>(req.params)
+            else {
+                return;
+            };
+            settings::handle_set(pool, req.id, params, out_tx).await;
         }
         "provider/login_start" => {
             let Ok(params) =

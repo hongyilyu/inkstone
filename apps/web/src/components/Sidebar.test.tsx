@@ -28,6 +28,9 @@ function makeStubRuntime() {
 		subscribeRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
+		modelCatalog: () => unused,
+		settingsGet: () => unused,
+		settingsSet: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -58,6 +61,9 @@ function makeGrowingStubRuntime(opts: {
 		subscribeRun: () => Stream.fromIterable(opts.events),
 		providerStatus: () => Effect.die("not exercised"),
 		providerLoginStart: () => Effect.die("not exercised"),
+		modelCatalog: () => Effect.die("not exercised"),
+		settingsGet: () => Effect.die("not exercised"),
+		settingsSet: () => Effect.die("not exercised"),
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

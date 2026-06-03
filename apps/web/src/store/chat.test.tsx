@@ -18,6 +18,9 @@ function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
 		subscribeRun: () => Stream.fromQueue(queue),
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
+		modelCatalog: () => unused,
+		settingsGet: () => unused,
+		settingsSet: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

@@ -1,11 +1,23 @@
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
+import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 // https://vite.dev/config/
 export default defineConfig({
-	plugins: [react(), tailwindcss()],
+	// tanstackRouter must precede the React plugin: it generates
+	// `src/routeTree.gen.ts` from the `src/routes/` tree before React transforms
+	// the modules that import it (ADR-0024 settings route). Co-located route
+	// tests (`*.test.tsx`) are excluded from the route tree.
+	plugins: [
+		tanstackRouter({
+			target: "react",
+			routeFileIgnorePattern: ".*\\.test\\.tsx?$",
+		}),
+		react(),
+		tailwindcss(),
+	],
 	resolve: {
 		alias: {
 			"@": path.resolve(import.meta.dirname, "./src"),

@@ -264,7 +264,7 @@ async fn insert_initial_run_rows(
         &workflow.name,
         &workflow.version,
         &workflow.provider,
-        &workflow.model,
+        workflow.model.as_deref().unwrap_or_default(),
         user_message_id,
         now_ms,
     )
@@ -413,4 +413,16 @@ pub async fn error_run_with_message(
     let payload = serde_json::json!({ "code": error_code, "message": error_message }).to_string();
     queries::insert_run_event(&mut *tx, run_id, next_seq, "error", Some(&payload), now_ms).await?;
     tx.commit().await
+}
+
+/// Read a user setting value by key (ADR-0024), or `None` if unset. Backs
+/// `settings/get` and the Run-creation resolver that overrides the Workflow's
+/// model/effort from persisted user choices.
+pub async fn get_setting(pool: &SqlitePool, key: &str) -> sqlx::Result<Option<String>> {
+    queries::get_setting(pool, key).await
+}
+
+/// Upsert a user setting (ADR-0024). Single statement; backs `settings/set`.
+pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result<()> {
+    queries::set_setting(pool, key, value).await
 }
