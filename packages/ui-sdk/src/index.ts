@@ -1,10 +1,12 @@
 import { Socket } from "@effect/platform";
 import {
+	ModelCatalogResult,
 	PostMessageResult,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
 	type RunEvent,
 	RunEvent as RunEventSchema,
+	SettingsResult,
 	ThreadCreateResult,
 	ThreadGetResult,
 	ThreadListResult,
@@ -109,6 +111,12 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly providerLoginStart: (
 			provider: string,
 		) => Effect.Effect<ProviderLoginStartResult, WsError>;
+		readonly modelCatalog: () => Effect.Effect<ModelCatalogResult, WsError>;
+		readonly settingsGet: () => Effect.Effect<SettingsResult, WsError>;
+		readonly settingsSet: (params: {
+			readonly model?: string;
+			readonly effort?: string;
+		}) => Effect.Effect<SettingsResult, WsError>;
 	}
 >() {}
 
@@ -339,6 +347,20 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					ProviderLoginStartResult,
 				);
 
+			// model/catalog + settings/* (ADR-0024): the model catalog and the
+			// user's preferred model + global effort.
+			const modelCatalog = (): Effect.Effect<ModelCatalogResult, WsError> =>
+				request("model/catalog", {}, ModelCatalogResult);
+
+			const settingsGet = (): Effect.Effect<SettingsResult, WsError> =>
+				request("settings/get", {}, SettingsResult);
+
+			const settingsSet = (params: {
+				readonly model?: string;
+				readonly effort?: string;
+			}): Effect.Effect<SettingsResult, WsError> =>
+				request("settings/set", { ...params }, SettingsResult);
+
 			return WsClient.of({
 				threadCreate,
 				postMessage,
@@ -347,6 +369,9 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				subscribeRun,
 				providerStatus,
 				providerLoginStart,
+				modelCatalog,
+				settingsGet,
+				settingsSet,
 			});
 		}),
 	);

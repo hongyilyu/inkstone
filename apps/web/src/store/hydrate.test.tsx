@@ -45,6 +45,9 @@ describe("refresh-durable hydration", () => {
 			subscribeRun,
 			providerStatus: () => Effect.die("unused"),
 			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -97,6 +100,9 @@ describe("refresh-durable hydration", () => {
 			subscribeRun,
 			providerStatus: () => Effect.die("unused"),
 			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 

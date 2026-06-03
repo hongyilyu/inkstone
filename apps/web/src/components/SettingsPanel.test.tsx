@@ -41,6 +41,9 @@ function makeRuntime(opts: { authorizeUrl: string }) {
 		subscribeRun: () => unusedStream(),
 		providerStatus: status,
 		providerLoginStart: loginStart,
+		modelCatalog: () => Effect.die("unused"),
+		settingsGet: () => Effect.die("unused"),
+		settingsSet: () => Effect.die("unused"),
 	});
 	const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 	return { runtime, loginStart, status };
