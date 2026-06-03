@@ -11,8 +11,18 @@ function SettingsLayout() {
 	return (
 		<main
 			aria-label="Settings"
-			className="h-full w-full overflow-y-auto bg-sidebar text-sidebar-foreground"
+			className="relative h-full w-full overflow-y-auto bg-sidebar text-sidebar-foreground"
 		>
+			{/* Subtle atmospheric backdrop (t3-style depth), theme-aware via the
+			    primary token. Decorative only. */}
+			<div
+				aria-hidden
+				className="pointer-events-none fixed inset-0 -z-10"
+				style={{
+					backgroundImage:
+						"radial-gradient(closest-corner at 50% -10%, color-mix(in oklch, var(--primary) 14%, transparent), transparent 70%)",
+				}}
+			/>
 			<div className="mx-auto flex max-w-[60rem] flex-col px-4 pt-6 pb-24 md:px-6">
 				<header className="flex items-center justify-between pb-6 md:pb-8">
 					<Link
