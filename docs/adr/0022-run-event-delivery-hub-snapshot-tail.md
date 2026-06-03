@@ -27,6 +27,12 @@ Because both take the same per-run gate, every delta falls wholly before or whol
 
 If a slow subscriber overflows the bounded broadcast buffer (`broadcast::error::RecvError::Lagged`), the subscriber **re-snapshots** from tier 2 (the persisted text is always the floor) and resumes the tail. Lag degrades to "re-read the truth," never to lost text.
 
+### Terminal-event ordering (as-built amendment, real-worker-codex slice 9)
+
+The exactly-once gate above governs **`text_delta`** delivery. The **terminal** event (`done`/`error`) has a second ordering constraint the original design did not pin: it must not reach a Client *before* tier 2 reflects the terminal state. The Worker originally published every event — terminal included — from inside the event loop, before the terminal SQLite transaction (`complete_run`/`error_run`) committed. That opened a sub-millisecond window: a Client reacting to `done` (most concretely, posting the next Run in the same Thread, whose history assembly filters on `status='completed'`) could read tier 2 *before* the prior Run's assistant Message flipped from `streaming` to `completed`, and so miss that turn.
+
+The fix: the Worker publishes the terminal `done`/`error` to the hub **after** the terminal transaction commits (and still before `hub::remove`). `text_delta` publishing is unchanged — still `lock gate → persist → publish → unlock` in the loop. This does not weaken the gate (the terminal event is not text and never rode the snapshot/tail dedup), and terminal delivery to late subscribers is still guaranteed by the forwarder's synthesize-on-`Closed` path. The net guarantee added: **any Client that observes `done`/`error` is guaranteed that tier 2 has committed the Run's terminal state**, so a read triggered by the terminal event always sees `completed` Messages.
+
 ## Consequences
 
 - **`run/get_history` and `since_run_seq` are deferred.** [ADR-0014](./0014-client-core-wire-protocol.md) §Reconnect specifies a two-call active-Run resume (`run/get_history(run_id, since_run_seq)` then `run/subscribe`). The snapshot-then-tail subscribe covers the only resume case the MVP exercises (an active Run's text), so `run/get_history`, the `since_run_seq` cursor, and durable coarse-event *replay* are not built now. The `run_events` table still receives coarse rows (status, done, error) per [ADR-0017](./0017-tier-2-schema-slice-1.md); nothing reads them back yet. When a consumer needs sub-Turn coarse-event replay (e.g. surfacing tool boundaries across a reconnect), add `run/get_history` then.
