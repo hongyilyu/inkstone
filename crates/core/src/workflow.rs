@@ -21,6 +21,13 @@ use serde::Deserialize;
 /// than a Run.
 const THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
+/// Whether `level` is one of the valid thinking levels (ADR-0024). Backs the
+/// `settings/set` effort validator, sharing the one allowed-set with the
+/// Workflow loader's `validate` so the wire and the TOML agree.
+pub fn is_valid_thinking_level(level: &str) -> bool {
+    THINKING_LEVELS.contains(&level)
+}
+
 /// A loaded Workflow. Pure data deserialized from TOML via serde. `tools` is
 /// empty until the tools slice; `auto_approve`/`bootstrap` (ADR-0018) are not
 /// modeled yet (deferred per the as-built amendment).

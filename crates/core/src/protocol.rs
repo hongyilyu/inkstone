@@ -196,6 +196,30 @@ pub struct ModelCatalogResult {
     pub providers: Vec<ProviderModels>,
 }
 
+/// `settings/get` + `settings/set` result (ADR-0024): the effective model
+/// selection and global effort for the default Workflow. `model` is `null`
+/// until the user picks one (the resolver falls back to the per-provider
+/// default); `provider` is the Workflow's provider; `effort` is the global
+/// thinking level (default `off`). Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct SettingsResult {
+    pub provider: String,
+    pub model: Option<String>,
+    pub effort: String,
+}
+
+/// `settings/set` params (ADR-0024): a partial update. An absent field is
+/// left unchanged (`#[serde(default)]` → `None`); a present `model` must be a
+/// known catalog id and a present `effort` a valid thinking level, else
+/// `invalid_params`. Deserialize-only — Core consumes it.
+#[derive(Debug, Deserialize)]
+pub struct SettingsSetParams {
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+}
+
 /// One prior message in the assembled Thread history shipped in the spawn
 /// manifest (ADR-0018 as-built `messages[]`). `role` is `"user"` or
 /// `"assistant"`; `text` is the Message's assembled text. Serialize-only —
@@ -554,5 +578,51 @@ mod mirror_tests {
         assert_eq!(decoded.providers[0].models[0].id, "gpt-5.5");
         assert!(decoded.providers[0].models[0].reasoning);
         assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);
+    }
+
+    // --- settings/* (ADR-0024): result encodes provider/model/effort with a
+    // `null` model when unset; params decode partial updates (absent = leave).
+
+    #[test]
+    fn settings_result_encodes_null_model_when_unset() {
+        let r = SettingsResult {
+            provider: "openai-codex".to_string(),
+            model: None,
+            effort: "off".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({ "provider": "openai-codex", "model": null, "effort": "off" }),
+        );
+    }
+
+    #[test]
+    fn settings_result_encodes_selected_model() {
+        let r = SettingsResult {
+            provider: "openai-codex".to_string(),
+            model: Some("gpt-5.5".to_string()),
+            effort: "high".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({ "provider": "openai-codex", "model": "gpt-5.5", "effort": "high" }),
+        );
+    }
+
+    #[test]
+    fn settings_set_params_decodes_partial_updates() {
+        let only_effort: SettingsSetParams =
+            serde_json::from_value(json!({ "effort": "low" })).unwrap();
+        assert_eq!(only_effort.model, None);
+        assert_eq!(only_effort.effort.as_deref(), Some("low"));
+
+        let only_model: SettingsSetParams =
+            serde_json::from_value(json!({ "model": "gpt-5.4" })).unwrap();
+        assert_eq!(only_model.model.as_deref(), Some("gpt-5.4"));
+        assert_eq!(only_model.effort, None);
+
+        let empty: SettingsSetParams = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(empty.model, None);
+        assert_eq!(empty.effort, None);
     }
 }

@@ -116,6 +116,32 @@ export const ModelCatalogResult = S.Struct({
 });
 export type ModelCatalogResult = S.Schema.Type<typeof ModelCatalogResult>;
 
+// --- settings/* (ADR-0024): the user's preferred model + global effort.
+
+/**
+ * `settings/get` / `settings/set` result: the effective model selection and
+ * global effort for the default Workflow. `model` is `null` until the user
+ * picks one (the resolver then falls back to the per-provider default);
+ * `provider` is the Workflow's provider; `effort` is the global thinking level.
+ */
+export const SettingsResult = S.Struct({
+	provider: S.String,
+	model: S.NullOr(S.String),
+	effort: S.String,
+});
+export type SettingsResult = S.Schema.Type<typeof SettingsResult>;
+
+/**
+ * `settings/set` params: a partial update. An absent field is left unchanged;
+ * `model` must be a known catalog id and `effort` a valid thinking level, else
+ * the request is rejected with `invalid_params`.
+ */
+export const SettingsSetParams = S.Struct({
+	model: S.optional(S.String),
+	effort: S.optional(S.String),
+});
+export type SettingsSetParams = S.Schema.Type<typeof SettingsSetParams>;
+
 // --- Worker manifest (ADR-0018 as-built): the spawn payload Core ships to
 // the generic interpreter on stdin. Carries the Workflow definition, the
 // assembled conversation history, and — for OAuth providers — a short-lived

@@ -25,3 +25,13 @@ pub fn catalog() -> &'static ModelCatalogResult {
         serde_json::from_str(CATALOG_JSON).expect("embedded model catalog JSON is valid")
     })
 }
+
+/// Whether `model` is a known model id in any provider's catalog. Backs the
+/// `settings/set` validator (ADR-0024) — an unknown model id is rejected with
+/// `invalid_params` rather than persisted and later failing a Run.
+pub fn is_known_model(model: &str) -> bool {
+    catalog()
+        .providers
+        .iter()
+        .any(|p| p.models.iter().any(|m| m.id == model))
+}
