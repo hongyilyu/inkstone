@@ -85,7 +85,7 @@ Re-derivable indexes and views computed from tiers 1 and 2 — FTS, extraction c
 _Avoid_: indexes (when meaning the whole tier), derived state (ambiguous with non-projection derivations).
 
 **Credential Store**:
-The Core-owned file holding provider OAuth credentials (`access`, `refresh`, `expires`, `accountId`), kept `0600` beside the SQLite database. Outside the three-tier model by design — ADR-0007 carves provider credentials out as "a separate concern," so they are neither tier-2 canonical state nor a tier-3 projection. Core is the single writer; the Worker never sees the refresh token, only a short-lived access token in its manifest.
+The Core-owned file holding provider OAuth credentials (`access`, `refresh`, `expires`, `account_id`), kept `0600` in a `credentials/` directory next to the SQLite database. Outside the three-tier model by design — ADR-0007 carves provider credentials out as "a separate concern," so they are neither tier-2 canonical state nor a tier-3 projection. Core is the single writer; the Worker never sees the refresh token, only a short-lived access token in its manifest.
 _Avoid_: token store, secrets store, auth db.
 
 **Source Content**:

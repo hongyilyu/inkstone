@@ -16,11 +16,11 @@ This ADR records that division because it is hard to reverse (it shapes the mani
 
 1. **Depend on `pi-ai` + `pi-agent-core` only** — not `pi-coding-agent`. Reuse pi-ai's pure OAuth functions wholesale; do not reimplement PKCE, token exchange, or refresh-rotation in Rust.
 
-2. **Core owns the credential bytes.** Credentials are stored in a `0600` JSON file beside `db.sqlite` (the Credential Store), holding `{ access, refresh, expires, accountId }` for `openai-codex`. Core is the **single writer** — no other process writes credential bytes, so no file-locking is needed.
+2. **Core owns the credential bytes.** Credentials are stored in a `0600` JSON file in a `credentials/` directory next to `db.sqlite` (the Credential Store), holding `{ access, refresh, expires, account_id }` for `openai-codex`. Core is the **single writer** — no other process writes credential bytes, so no file-locking is needed.
 
 3. **Core orchestrates refresh, serialized.** Before spawning a Worker, Core reads the stored `expires`. If still valid (common path), Core ships only the access token in the manifest. If expired (rare path), Core invokes the Provider Helper in `refresh` mode under a single in-process `tokio::Mutex`, with a **double-checked expiry** after acquiring the lock (so a second concurrent expired Run reuses the just-refreshed token rather than refreshing again). The rotated credentials are persisted before the Worker spawns.
 
-4. **The manifest carries only the access token.** The refresh token (the long-lived secret) never crosses the process boundary into a Worker. The codex provider re-derives `accountId` from the access-token JWT at call time, so the access token alone is sufficient for a Run.
+4. **The manifest carries only the access token.** The refresh token (the long-lived secret) never crosses the process boundary into a Worker. The codex provider re-derives the account id from the access-token JWT at call time, so the access token alone is sufficient for a Run.
 
 5. **Two stateless TypeScript entry points** in `packages/worker`: the run interpreter (gets an access token, runs the chat loop) and the Provider Helper (`login` / `refresh` modes, runs pi-ai's OAuth). Neither holds durable state; Core owns the file and all orchestration.
 
