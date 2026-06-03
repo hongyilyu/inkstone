@@ -12,6 +12,12 @@ export interface Message {
 	readonly status: "streaming" | "completed" | "incomplete";
 	readonly text: string;
 	readonly run_id: string;
+	/**
+	 * Set when a Run terminates with an `error` Run Event (ADR-0006): the
+	 * worker/provider failure message. Drives the error rendering in the
+	 * assistant bubble so a failed Run is never a silent blank.
+	 */
+	readonly error?: string;
 }
 
 /**
@@ -211,12 +217,12 @@ export function applyEvent(
 
 		if (event.kind === "error") {
 			// A worker-emitted error (ADR-0006) is terminal: flip the
-			// assistant message to `incomplete` and clear the active run.
-			// Richer error rendering (surfacing the message) is a later UI
-			// slice; here we just finalize so the stream fiber settles.
+			// assistant message to `incomplete`, attach the error message so
+			// the bubble can surface it (a failed Run must never be a silent
+			// blank), and clear the active run.
 			const messages = thread.messages.map((m): Message =>
 				m.role === "assistant" && m.run_id === runId
-					? { ...m, status: "incomplete" }
+					? { ...m, status: "incomplete", error: event.message }
 					: m,
 			);
 			return withThread(s, threadId, (t) => ({

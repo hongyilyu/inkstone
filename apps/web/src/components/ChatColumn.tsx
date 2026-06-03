@@ -80,9 +80,20 @@ function UserBubble({ message }: { message: Message }) {
 function AssistantBubble({ message }: { message: Message }) {
 	return (
 		<li data-role="assistant" className="flex flex-col items-start gap-2">
-			<div className="prose prose-pink dark:prose-invert max-w-none">
-				{message.text}
-			</div>
+			{message.text.length > 0 && (
+				<div className="prose prose-pink dark:prose-invert max-w-none">
+					{message.text}
+				</div>
+			)}
+			{message.status === "incomplete" && (
+				<div
+					role="alert"
+					data-testid="assistant-error"
+					className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive text-sm"
+				>
+					{message.error ?? "This response didn't finish."}
+				</div>
+			)}
 		</li>
 	);
 }
