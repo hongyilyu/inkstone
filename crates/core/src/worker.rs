@@ -183,7 +183,9 @@ async fn run_worker(
             RunEvent::TextDelta { delta } => {
                 // Persist BEFORE publishing so the persisted text (the
                 // snapshot floor) is never behind a delta a subscriber
-                // already saw on the tail.
+                // already saw on the tail. Publish the delta to the hub
+                // inside the gate — this is the snapshot/tail exactly-once
+                // critical section (ADR-0022).
                 if let Err(e) =
                     db::append_assistant_text(&pool, assistant_message_id, delta).await
                 {
@@ -191,7 +193,16 @@ async fn run_worker(
                         "text_delta append failed for assistant message {assistant_message_id}: {e}"
                     );
                 }
+                let _ = tx.send(event);
             }
+            // Terminal events (`done`/`error`) are NOT published here. They
+            // are published AFTER the terminal SQLite tx commits (below), so
+            // a Client reacting to the terminal event — e.g. posting the next
+            // Run, whose history read filters on `status='completed'` — can
+            // never observe `done` before tier 2 reflects the completed
+            // Messages (closes the slice-5 multi-turn race). Terminal-event
+            // delivery to late subscribers is still guaranteed by the
+            // forwarder's synthesize-on-`Closed` path (ADR-0022).
             RunEvent::Done => {
                 saw_done = true;
             }
@@ -199,11 +210,6 @@ async fn run_worker(
                 worker_error = Some(message.clone());
             }
         }
-
-        // Publish to the hub. `SendError` (no receivers attached) is fine —
-        // the persisted text is the durable floor; a late subscriber reads
-        // it from the snapshot.
-        let _ = tx.send(event);
 
         drop(guard);
     }
@@ -213,8 +219,8 @@ async fn run_worker(
     // invariant). A worker-emitted `error` takes precedence over the
     // EOF-without-done path and carries its own message.
     let now_ms = db::now_ms();
-    let result = if let Some(message) = worker_error {
-        db::error_run_with_message(&pool, run_id, "errored", "worker_error", &message, now_ms).await
+    let result = if let Some(ref message) = worker_error {
+        db::error_run_with_message(&pool, run_id, "errored", "worker_error", message, now_ms).await
     } else if saw_done {
         db::complete_run(&pool, run_id, now_ms).await
     } else {
@@ -224,9 +230,28 @@ async fn run_worker(
         eprintln!("terminal tx failed for run {run_id}: {e}");
     }
 
-    // Remove the hub entry AFTER the terminal tx. Dropping the broadcast
-    // sender lets attached subscribers observe `RecvError::Closed` once they
-    // have drained the tail (including the terminal `done` published above).
+    // Publish the terminal Run Event to the hub ONLY AFTER the terminal tx
+    // commits (ordering matters — see the per-event match above). A Client
+    // that receives this `done`/`error` is now guaranteed that tier 2
+    // reflects the terminal state. The EOF-without-`done` path published
+    // nothing (the Worker emitted no terminal event); its subscribers get a
+    // synthesized `done` on `hub::remove` below.
+    match (&worker_error, saw_done) {
+        (Some(message), _) => {
+            let _ = tx.send(RunEvent::Error {
+                message: message.clone(),
+            });
+        }
+        (None, true) => {
+            let _ = tx.send(RunEvent::Done);
+        }
+        (None, false) => {}
+    }
+
+    // Remove the hub entry AFTER publishing the terminal event. Dropping the
+    // broadcast sender lets attached subscribers observe `RecvError::Closed`
+    // once they have drained the tail (including the terminal event published
+    // just above).
     crate::hub::remove(&hubs, run_id);
 
     let _ = child.wait().await;
