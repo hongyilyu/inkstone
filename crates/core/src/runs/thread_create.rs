@@ -58,8 +58,10 @@ pub(super) async fn handle(
     let user_message_id = Uuid::now_v7();
     let assistant_message_id = Uuid::now_v7();
 
-    // Dispatcher seam (ADR-0011): pick a Workflow for this Run.
-    let workflow = dispatcher::dispatch(thread_id, &params.prompt);
+    // Dispatcher seam (ADR-0011): pick a Workflow for this Run, then resolve
+    // its effective model/effort from user settings (ADR-0024).
+    let base = dispatcher::dispatch(thread_id, &params.prompt);
+    let workflow = dispatcher::resolve_effective_workflow(pool, base).await;
 
     if let Err(e) = db::persist_thread_with_first_run(
         pool,
@@ -67,7 +69,7 @@ pub(super) async fn handle(
         run_id,
         user_message_id,
         assistant_message_id,
-        workflow,
+        &workflow,
         &params.prompt,
         &title,
         now,
