@@ -1,40 +1,29 @@
-# Snapshot-and-hash ingestion
+# Vault writes are one-way exports
 
-Vault interactions are mediated through stable content identity, not raw filesystem events. Reads operate on **Snapshots** (the byte content at a stable instant, plus its content hash). Writes are conditional on the Snapshot they were authored against. The Vault is never updated based on assumptions about what was last seen.
+> **Note on filename.** The slug is historical. This ADR no longer covers snapshot-and-hash ingestion (which is removed); it is kept at `0005-snapshot-and-hash-ingestion.md` to preserve inbound ADR links.
+
+Core only ever **writes** the Vault; it never reads it back as authority. Exported documents are regenerated from tier 2 (per [ADR-0004](./0004-three-tier-storage-authority.md)). There is no watcher, no Snapshot ingestion, no Reconciliation.
 
 ## Why
 
-File sync (iCloud, Dropbox, syncthing) and filesystem watchers are not clean transactional event sources. A watcher may fire while a file is mid-write, deliver duplicate events for one logical change, or re-order events when sync resolves a delta. Treating those events as authoritative produces ingestion that is sometimes wrong in ways that are hard to reproduce and hard to recover from.
+Treating the Vault as an authoritative input required a stable-instant snapshot pipeline, content-hash identity, and stale-base reconciliation to tolerate sync layers and watcher noise. None of that earns its keep when the Vault is a one-way export — the bytes Core writes are the bytes Core last computed from tier 2, and the next regeneration overwrites them. There is no merge problem because there is no second writer Inkstone trusts.
 
-Anchoring everything to content identity (a hash of the actual bytes Core read at a stable instant) makes the pipeline idempotent, replay-safe, and tolerant of watcher noise.
+## Consequences
 
-## The principle, applied
+- **The Vault is regenerated, not mutated in place.** Whether regeneration is full or incremental is implementation detail; either way, the Vault is a function of tier 2.
+- **External edits are not preserved.** A user editing an exported file in Obsidian will see their edit overwritten on the next regeneration. This is the trade ADR-0004 makes: external editing is not a supported authoring path.
+- **No watcher, no ingestion bookkeeping, no conflict resolution.** Removed from the system.
+- **Atomic writes still matter.** Partial files visible to the user are bad UX even when nothing reads them back; the exporter writes whole files atomically (e.g., temp file + rename). Implementation detail.
 
-**On reads (Ingestion):**
+## Future: drift detection (deferred to its own ADR)
 
-1. Watcher notices a possible file change.
-2. Core reads a stable Snapshot of the file.
-3. Core computes the content hash.
-4. Core records ingestion bookkeeping and updates Projections transactionally.
-5. Tier 3 derived state (see [ADR-0004](./0004-three-tier-storage-authority.md)) can be regenerated from any accepted Snapshot.
+A future cron may hash each exported file against a hash-on-record and, on mismatch, **notify the user to open a Thread** to fold the external edit back in. This is human-in-the-loop escalation, never auto-merge. It is not built now and is not part of this ADR; it gets its own ADR when a real need motivates it.
 
-**On writes (Reconciliation):**
+## Considered and rejected
 
-1. Every Core-authored Vault write is conditional on a base Snapshot — the version of the file the write was authored against.
-2. If the file's current Snapshot does not match the base, the write is a stale-base write and must be reconciled rather than blindly applied.
-3. Writes must never leave the Vault in an in-between state visible to ingestion. Partial writes are not permitted; the technique used to achieve that (e.g., temp file + atomic rename) is implementation detail.
-
-## Out of scope for this ADR
-
-- Hash algorithm choice.
-- Whether Snapshots are stored verbatim or recomputed.
-- Watcher implementation (notify, fsevents, polling fallback).
-- The product-level policy for resolving stale-base writes (auto-merge, prompt user, abort) — that decision is deferred until the first Workflow that does writes ships.
-
-## Why this is generic
-
-The pattern is not specific to Todos, People, or any one Entity type. It applies to every Vault file Inkstone reads or writes. Applying it generically prevents per-feature special cases that would inevitably skip the conflict check in the name of velocity.
+- **Snapshot-and-hash ingestion with stale-base reconciliation (this ADR's prior decision).** Rejected together with the prior tier-1 authoritative Vault — see ADR-0004.
 
 ## Related
 
-- [ADR-0004](./0004-three-tier-storage-authority.md) — the storage tiers Snapshots feed into.
+- [ADR-0004](./0004-three-tier-storage-authority.md) — the storage-authority decision this ADR is the write-side of.
+- [ADR-0002](./0002-clients-talk-only-to-core.md), [ADR-0003](./0003-worker-via-tool-protocol.md) — chokepoint rules; only Core writes the Vault.

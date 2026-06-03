@@ -1,32 +1,45 @@
-# Three-tier storage authority
+# Storage authority: SQLite is the single source of truth
 
-Inkstone has three persistence tiers. Authority is scoped by *what kind of fact is being stored*, not by storage location — Vault Files and SQLite Canonical State are both authoritative, for different claims.
+> **Note on filename.** The slug is historical. Inkstone now has **two** tiers, not three; the file is kept at `0004-three-tier-storage-authority.md` to preserve inbound ADR links.
+
+Inkstone has two persistence tiers. SQLite is authoritative for everything Core durably owns — content **and** application state. The Vault is no longer an authoritative tier; it is a tier-3 derived export.
 
 | Tier | Storage | Authoritative for | Examples |
 |---|---|---|---|
-| 1. Source content | Vault Files | User-owned and imported source content | Notes, raw captures, articles, rendered markdown intended for the user to edit |
-| 2. Canonical application state | SQLite (canonical tables) | Inkstone-managed durable state | Threads, Runs, Proposals, Accepted Entities, ingestion and reconciliation bookkeeping, approvals |
-| 3. Projections | SQLite (derived tables/indexes) | Nothing canonical; rebuildable from tiers 1 and/or 2 | FTS, extraction candidates, backlinks, entity-note links, dashboards, denormalized views |
+| 2. Canonical | SQLite (canonical tables) | All content and application state Inkstone durably owns | Threads, Runs, Proposals, Accepted Entities, approvals, captured content |
+| 3. Derived | SQLite (derived tables/indexes) **+ Vault export** | Nothing canonical; rebuildable from tier 2 | FTS, backlinks, dashboards, denormalized views, exported documents in the Vault |
 
 ## Why
 
-The naive model — "files are content, DB is everything else" — is wrong, and the wrongness shows up at the Entity lifecycle. An Entity may originate from agent extraction, user creation, or Reconciliation. The act of *accepting* an Entity is not a re-derivation of source content; it is an authoritative decision Inkstone makes and must remember. Putting Accepted Entities in the same tier as FTS indexes would mean "rebuild from sources" silently destroys user decisions.
+Earlier drafts modeled Vault Files as a separate authoritative tier so the user could edit content directly in their editor and have Inkstone reconcile. That premise required a watcher, snapshot-and-hash ingestion, and stale-base reconciliation — the largest *unbuilt* chunk of complexity in the project, paying for a capability nobody had committed to.
 
-Splitting tier 2 from tier 3 makes the contract explicit: tier 3 can be dropped and rebuilt at any time; tier 2 cannot.
+Collapsing to a single canonical tier (SQLite) removes that machinery and replaces it with one clear rule: content is authored only through Inkstone. The Vault becomes a one-way derived export — convenient for human reading, never re-ingested.
 
-The Vault and SQLite both being authoritative is not a contradiction because they answer different questions:
+This does not weaken the Entity-lifecycle gate that was 0004's real reason to exist. It still holds:
 
-- **Vault is authoritative for**: "what did I actually write in this note?"
-- **SQLite tier 2 is authoritative for**: "which canonical Person record does 'Alice' resolve to?", "which Runs have I executed?", "what Proposals are pending?"
-- **SQLite tier 3 is authoritative for nothing**: "which notes currently mention Alice?" is re-derivable.
+> **Extraction candidate (tier 3) → Proposal (tier 2) → Accepted Entity (tier 2).**
+
+Putting Accepted Entities in the same tier as FTS indexes would still mean "rebuild from sources" silently destroys user decisions. Splitting tier 2 from tier 3 keeps the contract explicit: tier 3 can be dropped and rebuilt at any time; tier 2 cannot.
 
 ## Consequences
 
-- **Backup and recovery**: tier 1 + tier 2 are what must survive a backup. Tier 3 may be discarded and rebuilt. A backup strategy that captures only the Vault is insufficient; one that captures the Vault and the canonical SQLite tables is sufficient.
-- **Schema separation**: canonical and projection tables should be distinguishable (separate schemas, naming convention, or comments) so it is mechanically clear which tier any table belongs to.
-- **Migration discipline**: schema changes to tier 2 are migrations with the usual care; schema changes to tier 3 can be implemented as drop-and-rebuild.
-- **The Entity lifecycle is constrained**: extraction candidate (tier 3) → Proposal (tier 2) → Accepted Entity (tier 2). Skipping the Proposal step for agent-originated Entities would let tier 3 drive tier 2 silently.
+- **Backup and recovery.** Tier 2 is what must survive a backup — the SQLite database (plus the Credential Store, which sits outside the tier model per ADR-0007). Tier 3 may be discarded and rebuilt; the Vault export is not a backup.
+- **Schema separation.** Canonical and projection tables remain mechanically distinguishable (separate schemas, naming convention, or comments). Tier-3 includes both in-DB derived tables and the on-disk Vault export.
+- **Migration discipline.** Schema changes to tier 2 are migrations with the usual care; tier-3 changes (in-DB and the Vault export format) can be drop-and-rebuild.
+- **The Entity lifecycle is constrained, unchanged.** Extraction candidate (tier 3) → Proposal (tier 2) → Accepted Entity (tier 2). Skipping the Proposal step for agent-originated Entities would let tier 3 drive tier 2 silently.
+- **Chokepoint untouched.** Worker and Clients still never touch the Vault directly (ADR-0002, ADR-0003). The Vault becoming derived doesn't open it up; if anything it narrows the surface, since only Core's exporter writes there.
+
+## What this does not decide
+
+- The canonical content shape in SQL for non-chat content (a captures table? Messages + Entities only? something else). Open while use cases stay exploratory.
+- The export shape (single file vs a derived tree of documents). Open.
+
+## Considered and rejected
+
+- **The previous three-tier model with authoritative Vault Files + snapshot/ingestion/reconciliation (this ADR's prior decision, plus the prior ADR-0005).** Rejected: external editing turned out not to be a required capability for the foreseeable slices, and the reconciliation machinery — watcher, stable-instant snapshots, content-hash identity, stale-base writes — was the single largest unbuilt complexity in the project. Pinning SQLite as authoritative deletes that complexity outright and replaces it with one rule the rest of the system can rely on.
 
 ## Related
 
-- [ADR-0005](./0005-snapshot-and-hash-ingestion.md) — how tier 1 changes propagate into tier 2 and tier 3.
+- [ADR-0005](./0005-snapshot-and-hash-ingestion.md) — the symmetric write-side decision: Vault writes are one-way exports.
+- [ADR-0002](./0002-clients-talk-only-to-core.md), [ADR-0003](./0003-worker-via-tool-protocol.md) — chokepoint rules; unchanged.
+- [ADR-0007](./0007-local-first-single-user.md) — Credential Store sits outside the tier model.

@@ -192,8 +192,11 @@ For each slice, in order:
 3. impl       → 1 (usually) or 2 (rarely) impl agents — see "Slice parallelism" below
 4. review     → 4 reviewers in parallel, each in own worktree
 5. verify     → run gates on the slice's branch
-6. gate       → all green? proceed to slice-(n+1). Any fail? loop slice (cap 3).
+6. gate       → all green + advisories triaged? proceed to slice-(n+1).
+                Any fail or unhandled-reasonable-advisory? loop slice (cap 3).
 ```
+
+After slice-N's gate passes, the **Final review phase** runs once over the whole stack: feature-level gates (full e2e suite, full Rust tests) and feature-level reviewers. Only then is `REPORT.md` written and the stack handed off.
 
 Slice failures don't block other slices from being attempted **only if** the failure is contained — which it almost never is, since slices stack. In practice: a slice that fails its retry cap halts the whole flow.
 
@@ -204,7 +207,8 @@ Intake already validated the plan and received user sign-off. This phase is mech
 1. Verify working tree clean: `git status --porcelain`. If not, stop — don't risk WIP.
 2. Confirm `master` is the base branch.
 3. The run directory `.agents/runs/<slug>/` already exists (intake created it). Init `STATE.md`.
-4. Append `started` to `STATE.md`.
+4. Capture the flow's base SHA: `FEATURE_BASE := $(git rev-parse master)`. Record it in `STATE.md` alongside the `started` event — the Final review phase reads it from there.
+5. Append `started` to `STATE.md`.
 
 ## Subagent prompt envelope
 
@@ -310,13 +314,80 @@ Write `slices/<n>/VERIFY/<iteration>.md`. Deterministic gates are authoritative;
 
 ### Slice phase 6: gate
 
-- All green → append `slice-<n>-passed` to `STATE.md`. Move to slice-(n+1).
-- Any failure → identify failing component, respawn its impl agent on a fresh `flow/<slug>/slice-<n>-iter<m>` branch off the slice's base, with the failure findings inline. Re-run review and verify. Cap: 3 iterations.
-- Iteration cap hit → write `BLOCKED.md` with the slice number and unresolved findings. Stop the whole flow. Earlier passing slices remain in their branches for human inspection.
+Three outcomes:
+
+- **Hard fail.** Any deterministic gate failed OR any reviewer returned `fail`. Identify failing component, respawn its impl agent on a fresh `flow/<slug>/slice-<n>-iter<m>` branch off the slice's base, with the failure findings inline in `PRIOR_FINDINGS`. Re-run review and verify. Cap: 3 iterations. Iteration cap hit → write `BLOCKED.md` with the slice number and unresolved findings. Stop the whole flow. Earlier passing slices remain in their branches for human inspection.
+
+- **Polish.** All gates green AND no reviewer `fail`, but reviewers returned `advisory` findings. **Triage them** — every advisory finding must be resolved one way or the other before the slice advances:
+  - **Reasonable to address now** = all of: (a) the fix touches files already inside the slice's "Owned files" list in `DECOMPOSE.md`; (b) it's a small, focused change that doesn't expand slice scope or alter the slice's behavior contract; (c) addressing it doesn't depend on later slices.
+  - **Not reasonable** = anything else: cross-slice concerns, feature-level redesigns, ADR-level questions, or out-of-scope cleanup. These get deferred — the orchestrator records them and moves on.
+  - For each finding, write one line in `slices/<n>/ADVISORY-TRIAGE.md`: finding source (reviewer + heading), verdict (`address` | `defer`), and a one-line reason for deferrals.
+  - If any advisories are marked `address`: respawn the slice's impl agent on `flow/<slug>/slice-<n>-iter<m>` (off the slice's base, like a hard-fail iteration) with `PRIOR_FINDINGS` listing the `address`-verdict findings. Re-run review and verify. Counts toward the 3-iteration cap.
+  - If all advisories are `defer` (or there are none): the slice passes — append `slice-<n>-passed` to `STATE.md`, move to slice-(n+1). Deferred advisories are surfaced in the final report and `SUMMARY.md`.
+
+- **Pass.** All gates green, no reviewer `fail`, no `advisory` findings (or all advisories triaged + addressed in a polish iteration). Append `slice-<n>-passed` to `STATE.md`. Move to slice-(n+1).
+
+The triage rule applies on every iteration that produces advisory findings, not just the first. The 3-iteration cap covers hard-fail iterations and polish iterations together — a slice that needs three rounds of polish is a planning miss; surface it.
 
 ## Done
 
-When slice-N passes verify, write `REPORT.md` listing each slice, its branch, and its commits.
+When slice-N passes verify, the per-slice loop is finished — but the feature is **not** declared shipped yet. Run the **Final review phase** below before writing `REPORT.md`.
+
+## Final review phase
+
+After slice-N's gate passes, before any landing/Graphite step. The per-slice gates only assert what each slice promised; they do not assert the feature is coherent end-to-end or that unrelated tests still pass. This phase does both.
+
+The phase runs on the stack tip (`flow/<slug>/slice-N`). Capture two SHAs once on entry, before any subagent spawn:
+
+```
+FEATURE_BASE   := the master SHA recorded in STATE.md at flow start
+FEATURE_BRANCH := flow/<slug>/slice-N
+FEATURE_TIP    := $(git rev-parse FEATURE_BRANCH)   # snapshot the tip
+```
+
+The diff scope for this phase is `git diff <FEATURE_BASE>..<FEATURE_TIP>` — the union of every slice.
+
+### Final phase 1: feature-level deterministic gates
+
+On `FEATURE_BRANCH`, run every gate, top to bottom, capturing pass/fail per command:
+
+- `pnpm install --frozen-lockfile` if `pnpm-lock.yaml` changed across the feature
+- `pnpm check` (workspace typecheck + Rust check)
+- `pnpm -C apps/web build` if the feature touched `apps/web/**` or `packages/ui-sdk/**`
+- `cargo test --workspace` (every Rust crate, not just the slices' touched crates — this catches regressions)
+- `pnpm exec playwright install chromium` (idempotent — no-op if cached)
+- `pnpm -C tests/e2e test:e2e` — **the entire e2e suite**, including any new specs the feature added. This is the bar the user expects: all e2e tests green, including the newly-added ones for this feature.
+- Any other repo-level test commands enumerated across the slices' `DECOMPOSE.md` "Test commands" sections; deduplicate and run each once.
+
+Write `FINAL-VERIFY/<iteration>.md` with the command/status table.
+
+### Final phase 2: feature-level reviewers
+
+Spawn the four reviewers in parallel, each with `isolation: "worktree"` checking out `FEATURE_BRANCH`. The envelope mirrors slice review except:
+
+```
+SLICE:        feature
+SLICE_BASE:   <FEATURE_BASE>
+SLICE_BRANCH: <FEATURE_BRANCH>
+OUTPUT_PATH:  <RUN_DIR>/FINAL-REVIEWS/<iteration>/<reviewer>.md
+PRIOR_FINDINGS: <RUN_DIR>/FINAL-REVIEWS/<iteration-1>/<reviewer>.md  (only on retry)
+```
+
+Reviewers use the existing SOPs ([REVIEW-CORRECTNESS.md](REVIEW-CORRECTNESS.md), [REVIEW-INTEGRATION.md](REVIEW-INTEGRATION.md), [REVIEW-TESTS.md](REVIEW-TESTS.md), [REVIEW-ADR.md](REVIEW-ADR.md)) — they're already diff-scoped, so feeding the feature diff makes them feature-scoped. They catch what per-slice review can't: cross-slice integration drift, contract divergence between producer and consumer slices, ADR contradictions that only emerge from the full diff, missing tests for behavior introduced piecewise.
+
+Note for reviewers: when `SLICE: feature`, the tests reviewer's TDD-commit-pattern check is **scoped per slice**, not over the whole feature diff. Each slice already had its own pattern review in phase 4; the feature-level tests reviewer asserts gates and union test coverage, not the merged commit log.
+
+### Final phase 3: gate
+
+Same three outcomes as a slice gate, applied at feature scope:
+
+- **Hard fail.** Any feature-level gate failed OR any reviewer returned `fail`. Diagnose which slice (or cross-slice seam) introduced the problem, then respawn its impl agent on `flow/<slug>/slice-N` directly (the stack tip) with `PRIOR_FINDINGS` listing the failures. The fix lands on top of slice-N as a new commit pair (`test(<comp>): final fix — <brief>` then `<comp>: final fix — <brief>`). Re-run final phases 1–3. Cap: 3 final iterations. Iteration cap hit → write `BLOCKED.md` and stop.
+
+- **Polish.** All gates green, no reviewer `fail`, but advisory findings exist. Triage with the same "reasonable to address now" rule as a slice gate, scoped to the feature. Reasonable feature-level fixes land on `flow/<slug>/slice-N` as a final polish commit pair. Deferred findings go into `RUN_DIR/FINAL-ADVISORY-DEFERRED.md`. After fixes, re-run final phases 1–3. Counts toward the 3 final-iteration cap.
+
+- **Pass.** All gates green, no reviewer `fail`, no remaining advisories (or all triaged + handled). Append `final-review-passed` to `STATE.md`. Proceed to the landing step.
+
+Final-iteration commits land on `flow/<slug>/slice-N` directly — they don't introduce a new branch. The Graphite stack stays at N branches.
 
 ### Landing the stack with Graphite
 
@@ -337,7 +408,7 @@ Notes:
 
 Include the three commands above in `REPORT.md` so the user has a copy-pasteable handoff.
 
-Then run the **Summary phase** — see below.
+Then write `REPORT.md` listing each slice, its branch, its commits, and the final review's outcome. Then run the **Summary phase** — see below.
 
 ## Summary phase (terminal)
 
@@ -346,9 +417,11 @@ Runs after `REPORT.md` (success) or `BLOCKED.md` (failure). Always runs. Output:
 ### Steps
 
 1. Walk `STATE.md`. Per slice: iteration count, outcome (`passed` / `blocked`).
-2. List every reviewer `fail` verdict (slice, iteration, reviewer, one-line finding).
-3. List every `BLOCKED.md` content verbatim.
-4. Append `summary-written` to `STATE.md`. This is the final event.
+2. List every reviewer `fail` verdict (slice or `final`, iteration, reviewer, one-line finding).
+3. Aggregate deferred advisory findings: read every `slices/<n>/ADVISORY-TRIAGE.md` (deferred entries only) and `FINAL-ADVISORY-DEFERRED.md` if present.
+4. Record final-review outcome: number of final iterations, gate results, advisories addressed vs deferred.
+5. List every `BLOCKED.md` content verbatim.
+6. Append `summary-written` to `STATE.md`. This is the final event.
 
 ### SUMMARY.md template
 
@@ -365,11 +438,26 @@ Outcome: success | blocked
 | 2 | ... | 2 | passed |
 | 3 | ... | 3 | blocked |
 
+## Final review
+
+- Iterations: <n>
+- Gate: pass | fail (one-line summary)
+- Advisories addressed: <count>
+- Advisories deferred: <count>
+
 ## Reviewer fails
 
-(One line per `fail` verdict. Empty if none.)
+(One line per `fail` verdict across slice and final review. Empty if none.)
 
 - slice-<n> iter-<m> review-<role>: <verbatim one-line finding>
+- final iter-<m> review-<role>: <verbatim one-line finding>
+
+## Deferred advisories
+
+(Triaged-but-not-addressed findings, slice and final. Empty if none.)
+
+- slice-<n> review-<role>: <one-line finding> — <one-line reason for deferral>
+- final review-<role>: <one-line finding> — <one-line reason for deferral>
 
 ## Hard blocks
 
@@ -394,3 +482,4 @@ That's it. No interpretation, no "patterns" section, no friction-signal aggregat
 - Decompose detects unresolvable file overlap **between this slice and an earlier-merged slice** → stop, the plan has bad slice ordering.
 - Iteration cap hit on any slice → write `BLOCKED.md`, surface to user.
 - Verify fails with the same error two iterations in a row on the same slice → stop, the loop is not converging.
+- Final review iteration cap hit → write `BLOCKED.md`, surface to user. The stack is intact for human inspection; the unresolved findings are in `RUN_DIR/FINAL-REVIEWS/<last-iter>/`.

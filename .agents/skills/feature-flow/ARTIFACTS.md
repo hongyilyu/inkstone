@@ -22,13 +22,25 @@ All run state lives under `.agents/runs/<slug>/`. The orchestrator owns this dir
 │   │   ├── VERIFY/
 │   │   │   ├── 1.md
 │   │   │   └── 2.md
+│   │   ├── ADVISORY-TRIAGE.md   # per-iteration triage of advisory findings (address vs defer)
 │   │   ├── OPEN-QUESTIONS.md    # ambiguities found mid-slice (optional)
 │   │   └── BLOCKED.md           # only if this slice halted the flow
 │   ├── 2/...
 │   └── N/...
-├── REPORT.md                    # written on full success
-├── BLOCKED.md                   # written if any slice hit its retry cap
-└── SUMMARY.md                   # always written last; friction-signal digest for skill revision
+├── FINAL-REVIEWS/               # written by the Final review phase
+│   ├── 1/
+│   │   ├── correctness.md
+│   │   ├── integration.md
+│   │   ├── tests.md
+│   │   └── adr.md
+│   └── 2/                        # iteration 2 (only on final-review retry)
+├── FINAL-VERIFY/                # written by the Final review phase's deterministic gates
+│   ├── 1.md
+│   └── 2.md
+├── FINAL-ADVISORY-DEFERRED.md   # feature-level advisories triaged as `defer` (optional)
+├── REPORT.md                    # written on full success, AFTER the Final review phase passes
+├── BLOCKED.md                   # written if any slice or the final review hit its retry cap
+└── SUMMARY.md                   # always written last; mechanical digest
 ```
 
 Worktrees are created by the `Agent` tool's `isolation: "worktree"` mode. The harness picks the path. Record returned paths in `STATE.md`.
@@ -41,11 +53,11 @@ Append-only, newest at the bottom. One line per event. Format:
 <ISO-8601 timestamp>  <scope>  <event>  <detail>
 ```
 
-Scope is `flow` for top-level events or `slice-<n>` for slice-scoped events.
+Scope is `flow` for top-level events, `slice-<n>` for slice-scoped events, or `final` for Final-review-phase events.
 
 Top-level events (scope `flow`):
 
-- `started`
+- `started` — detail includes `feature-base=<sha>` (the master SHA captured at flow start; the Final review phase reads it from here)
 - `done` — REPORT.md written
 - `blocked` — BLOCKED.md written
 - `summary-written` — SUMMARY.md written; final event
@@ -57,9 +69,19 @@ Slice events (scope `slice-<n>`):
 - `impl-spawned` (with worktree path) | `impl-done`
 - `review-spawned` | `review-done`
 - `verify-pass` | `verify-fail`
-- `iter-end` (when respawning for another iteration)
+- `advisory-triaged` (with `addressed=<n> deferred=<n>`)
+- `iter-end` (when respawning for another iteration — hard fail or polish)
 - `passed` (slice green, moving to next)
 - `blocked` (this slice hit retry cap)
+
+Final-review events (scope `final`):
+
+- `gates-spawned` | `gates-pass` | `gates-fail`
+- `reviewers-spawned` | `reviewers-done`
+- `advisory-triaged` (with `addressed=<n> deferred=<n>`)
+- `iter-end` (final-review retry)
+- `final-review-passed`
+- `blocked` (final review hit its retry cap)
 
 ## Branch model
 

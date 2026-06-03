@@ -9,14 +9,13 @@ The set of auto-approve rules is **not pinned in this ADR**. Each Workflow decla
 In scope (Proposal-gated):
 
 - Create / update / delete an Accepted Entity (Person, Todo, Project, …).
-- Write or modify a Vault file.
-- Delete or rename a Vault file.
 - Update Thread metadata (title, tags) when the Worker initiates it.
 
 Out of scope (not Proposals):
 
-- **Reads** — file reads, entity queries, search. Tool Protocol calls without Proposal semantics.
+- **Reads** — entity queries, search. Tool Protocol calls without Proposal semantics.
 - **Run-internal bookkeeping** — Run Events Core persists, Run/Turn state transitions, Tool Request/Result records. These are Core's persistence of in-flight Run state, not Worker-initiated changes to the Workspace.
+- **Vault export writes** — the Vault is a tier-3 derived export (per [ADR-0004](./0004-three-tier-storage-authority.md), [ADR-0005](./0005-snapshot-and-hash-ingestion.md)); regenerating exported documents is derived rendering, not a user-gated mutation.
 
 ## Why one write path
 

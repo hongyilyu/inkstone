@@ -61,8 +61,8 @@ If the carve-out applies, you may skip RED and only commit GREEN. Otherwise, run
 - **File boundary is a hard rule.** Do not edit `packages/worker/**`, `packages/protocol/**`, `apps/web/**`, `packages/ui-sdk/**`. If you think you need to, that's a decompose failure — write to `BLOCKED.md` in the run directory and stop.
 - **`docs/adr/` is out of scope.** ADRs are planning artifacts. They land during intake, before the slice loop starts. If your slice's behavior contradicts a consulted ADR or surfaces a new architectural decision that should be recorded, that's a planning miss — write `BLOCKED.md` describing the conflict and stop. **Never** author or amend an ADR from impl.
 - **Domain vocabulary.** Use the canonical terms from `CONTEXT.md`. If you find yourself reaching for an "Avoid" term, the boundary is leaking — stop and re-read the relevant ADR.
-- **Storage tier discipline.** Tier 1 = Vault files, tier 2 = canonical SQLite, tier 3 = projections. Don't write user-authoritative content to tier 2 or projections. Don't read tier 3 as if it were authoritative.
-- **Snapshots, not raw events.** If watcher logic is involved, build on Snapshot + hash, not raw FS events (ADR-0005).
+- **Storage tier discipline (ADR-0004).** Tier 2 = canonical SQLite (content + state); tier 3 = derived projections + Vault export. Don't write user-authoritative content as a tier-3 projection. Don't read tier 3 as if it were authoritative.
+- **Vault is one-way export (ADR-0005).** Core writes the Vault; Core never reads it back as authority. No file-watcher logic, no snapshot/ingestion pipeline.
 - **Run lifecycle is Core-owned.** Worker drives Turns; Core owns Run state and persistence (ADR-0012).
 
 ## When to fail
