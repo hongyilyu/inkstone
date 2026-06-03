@@ -70,26 +70,35 @@ function depsFor(manifest: WorkerManifest): InterpreterDeps {
 			fauxAssistantMessage("", { stopReason: "error", errorMessage }),
 		]);
 	} else if (process.env.INKSTONE_FAUX_ECHO_HISTORY === "1") {
-		// History-echo mode (slice 5 multi-turn test): reply with the prior
-		// USER messages the loop passed in its context, joined by "|". Proves
-		// Core assembled the manifest history and the interpreter forwarded it
-		// to the provider. Uses a response factory so it reads the live
-		// context rather than a canned string.
+		// History-echo mode (multi-turn test): reply with the prior messages
+		// the loop passed in its context — both roles — so the test can prove
+		// Core assembled BOTH the prior user prompt AND the prior assistant
+		// reply into the manifest history (the assistant turn is the
+		// slice-9 race that this exercises). Uses a response factory so it
+		// reads the live context rather than a canned string.
+		const textOf = (content: unknown): string => {
+			if (typeof content === "string") return content;
+			if (Array.isArray(content)) {
+				return content
+					.map((c) =>
+						c && typeof c === "object" && "text" in c
+							? String((c as { text: unknown }).text)
+							: "",
+					)
+					.join("");
+			}
+			return "";
+		};
 		faux.setResponses([
 			(context) => {
-				const priorUserTexts = context.messages
-					.filter((m) => m.role === "user")
-					.map((m) =>
-						typeof m.content === "string"
-							? m.content
-							: m.content
-									.map((c) => ("text" in c ? c.text : ""))
-									.join(""),
-					)
-					// The current prompt is the last user message; the test
-					// asserts on the PRIOR turn, so drop the final entry.
-					.slice(0, -1);
-				return fauxAssistantMessage(`history:${priorUserTexts.join("|")}`);
+				// All prior turns except the current prompt (the last user
+				// message). Tag each with its role so the test can assert the
+				// assistant turn specifically.
+				const prior = context.messages.slice(0, -1);
+				const parts = prior.map(
+					(m) => `${m.role}=${textOf(m.content)}`,
+				);
+				return fauxAssistantMessage(`history:${parts.join("|")}`);
 			},
 		]);
 	} else {

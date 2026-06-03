@@ -195,11 +195,24 @@ fn second_run_sees_prior_exchange() {
         text
     });
 
-    // The faux history-echo reply is `history:<prior user texts joined by |>`.
-    // Run 2's prior user text is run 1's prompt — proving Core assembled it
-    // into the manifest and the interpreter forwarded it to the provider.
+    // The faux history-echo reply is `history:<role=text|...>` for every
+    // prior turn. Run 1's reply (no prior turns) is `history:`. Run 2's prior
+    // turns are run 1's user prompt AND run 1's assistant reply, so run 2's
+    // reply must contain BOTH:
+    //   - `user=remember pineapple`  (the prior user turn — always present)
+    //   - `assistant=history:`       (the prior ASSISTANT turn — only present
+    //                                 if run 1's assistant message was
+    //                                 `completed` before run 2's history read,
+    //                                 i.e. the slice-9 terminal-ordering fix)
     assert!(
-        run2_text.contains("remember pineapple"),
-        "run 2 must see run 1's prompt in its assembled history; got {run2_text:?}"
+        run2_text.contains("user=remember pineapple"),
+        "run 2 must see run 1's user prompt in its assembled history; got {run2_text:?}"
+    );
+    assert!(
+        run2_text.contains("assistant=history:"),
+        "run 2 must see run 1's ASSISTANT reply in its assembled history \
+         (terminal `done` must be published only after complete_run commits, \
+         so the assistant message is `completed` before run 2's history read); \
+         got {run2_text:?}"
     );
 }
