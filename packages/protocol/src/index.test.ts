@@ -4,6 +4,7 @@ import {
 	MessageView,
 	PostMessageParams,
 	PostMessageResult,
+	ProviderLoginStartParams,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
 	RunEvent,
@@ -336,6 +337,21 @@ describe("ProviderLoginStartResult", () => {
 
 	it("rejects a missing authorize_url", () => {
 		expect(() => S.decodeUnknownSync(ProviderLoginStartResult)({})).toThrow();
+	});
+});
+
+describe("ProviderLoginStartParams", () => {
+	it("decodes a provider and encodes back to the same wire shape", () => {
+		const wire = { provider: "openai-codex" };
+		const decoded = S.decodeUnknownSync(ProviderLoginStartParams)(wire);
+		expect(decoded).toEqual(wire);
+		// The Client ENCODES this param onto the wire, so guard the encode
+		// mirror too (the Rust side decodes it).
+		expect(S.encodeSync(ProviderLoginStartParams)(decoded)).toEqual(wire);
+	});
+
+	it("rejects a missing provider", () => {
+		expect(() => S.decodeUnknownSync(ProviderLoginStartParams)({})).toThrow();
 	});
 });
 
