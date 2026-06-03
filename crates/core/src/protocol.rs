@@ -166,6 +166,36 @@ pub struct ProviderLoginStartResult {
     pub authorize_url: String,
 }
 
+/// One model in the `model/catalog` result (ADR-0024). Mirrors the TS
+/// `ModelInfo`. Derives both directions: Core deserializes these from the
+/// embedded catalog JSON and serializes them onto the wire.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+    pub reasoning: bool,
+    pub input: Vec<String>,
+    pub cost_input: f64,
+    pub cost_output: f64,
+}
+
+/// One provider's model group in `model/catalog`. Mirrors the TS
+/// `ProviderModels`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderModels {
+    pub id: String,
+    pub label: String,
+    pub models: Vec<ModelInfo>,
+}
+
+/// `model/catalog` result: the models available per provider (ADR-0024).
+/// Object-wrapper shape (`{providers: [...]}`) so the result stays
+/// forward-extensible and the TS mirror is a `Schema.Struct`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelCatalogResult {
+    pub providers: Vec<ProviderModels>,
+}
+
 /// One prior message in the assembled Thread history shipped in the spawn
 /// manifest (ADR-0018 as-built `messages[]`). `role` is `"user"` or
 /// `"assistant"`; `text` is the Message's assembled text. Serialize-only —
@@ -496,5 +526,33 @@ mod mirror_tests {
             serde_json::to_value(&r).unwrap(),
             json!({ "authorize_url": "https://auth.openai.com/oauth/authorize?x=1" }),
         );
+    }
+
+    // --- model/catalog (Serialize + Deserialize): the embedded JSON decodes
+    // and re-encodes to the canonical wire shape the TS `ModelCatalogResult`
+    // schema produces (ADR-0024). `cost_input`/`cost_output` are bare JSON
+    // numbers (the TS mirror is `S.Number`); `input` is a string array.
+
+    #[test]
+    fn model_catalog_result_round_trips_snake_case() {
+        let wire = json!({
+            "providers": [{
+                "id": "openai-codex",
+                "label": "OpenAI",
+                "models": [{
+                    "id": "gpt-5.5",
+                    "name": "GPT-5.5",
+                    "reasoning": true,
+                    "input": ["text", "image"],
+                    "cost_input": 5.0,
+                    "cost_output": 30.0
+                }]
+            }]
+        });
+        let decoded: ModelCatalogResult = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(decoded.providers[0].id, "openai-codex");
+        assert_eq!(decoded.providers[0].models[0].id, "gpt-5.5");
+        assert!(decoded.providers[0].models[0].reasoning);
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), wire);
     }
 }

@@ -2,6 +2,7 @@ mod credentials;
 mod db;
 mod dispatcher;
 mod hub;
+mod models;
 mod protocol;
 mod provider_auth;
 mod runs;

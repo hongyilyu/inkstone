@@ -87,6 +87,35 @@ export type ProviderLoginStartResult = S.Schema.Type<
 	typeof ProviderLoginStartResult
 >;
 
+// --- model/catalog (ADR-0024): the models available per provider. Static
+// data hand-mirrored from pi-ai's MODELS and embedded in Core; a Worker-side
+// drift test guards it. `openai-codex` is the only connectable provider today.
+
+/** One model in `model/catalog`. `input` is the modality list (`text`/`image`). */
+export const ModelInfo = S.Struct({
+	id: S.String,
+	name: S.String,
+	reasoning: S.Boolean,
+	input: S.Array(S.String),
+	cost_input: S.Number,
+	cost_output: S.Number,
+});
+export type ModelInfo = S.Schema.Type<typeof ModelInfo>;
+
+/** One provider's model group in `model/catalog`. */
+export const ProviderModels = S.Struct({
+	id: S.String,
+	label: S.String,
+	models: S.Array(ModelInfo),
+});
+export type ProviderModels = S.Schema.Type<typeof ProviderModels>;
+
+/** `model/catalog` result: the models available per provider. */
+export const ModelCatalogResult = S.Struct({
+	providers: S.Array(ProviderModels),
+});
+export type ModelCatalogResult = S.Schema.Type<typeof ModelCatalogResult>;
+
 // --- Worker manifest (ADR-0018 as-built): the spawn payload Core ships to
 // the generic interpreter on stdin. Carries the Workflow definition, the
 // assembled conversation history, and — for OAuth providers — a short-lived

@@ -9,6 +9,7 @@
 
 mod post_message;
 mod provider;
+mod catalog;
 mod reply;
 mod subscribe;
 mod thread_create;
@@ -66,6 +67,10 @@ pub async fn dispatch(
         "provider/status" => {
             // Read-only, no params — the credential store is the only input.
             provider::handle(req.id, out_tx).await;
+        }
+        "model/catalog" => {
+            // Read-only, no params — the embedded model catalog is the only input.
+            catalog::handle(req.id, out_tx);
         }
         "provider/login_start" => {
             let Ok(params) =
