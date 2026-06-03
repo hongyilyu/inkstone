@@ -4,7 +4,6 @@
 export * from "./automations.js";
 export * from "./conversation.js";
 export * from "./history.js";
-export * from "./models.js";
 export * from "./proposals.js";
 export * from "./queue.js";
 export * from "./run.js";
