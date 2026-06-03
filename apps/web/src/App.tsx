@@ -1,8 +1,9 @@
-import { PanelLeftOpen } from "lucide-react";
+import { PanelLeftOpen, X } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { ActivityRail } from "./components/ActivityRail.js";
 import { makeChatCardClipPath } from "./components/ChatCardRecess.js";
 import { ChatColumn } from "./components/ChatColumn.js";
+import { SettingsPanel } from "./components/SettingsPanel.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { TopRightControls } from "./components/TopRightControls.js";
 import { Button } from "./components/ui/button.js";
@@ -10,6 +11,7 @@ import { Button } from "./components/ui/button.js";
 export default function App() {
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
+	const [settingsOpen, setSettingsOpen] = useState(false);
 	const chatCardRef = useRef<HTMLDivElement>(null);
 	const [clipPath, setClipPath] = useState<string>("");
 
@@ -54,7 +56,7 @@ export default function App() {
 				{rightRailCollapsed ? (
 					<div className="absolute top-3 right-3 z-10">
 						<TopRightControls
-							onOpenSettings={() => console.log("settings")}
+							onOpenSettings={() => setSettingsOpen(true)}
 							railCollapsed={rightRailCollapsed}
 							onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
 						/>
@@ -66,7 +68,7 @@ export default function App() {
 				{rightRailCollapsed ? null : (
 					<div className="absolute top-3 right-3 z-10">
 						<TopRightControls
-							onOpenSettings={() => console.log("settings")}
+							onOpenSettings={() => setSettingsOpen(true)}
 							railCollapsed={rightRailCollapsed}
 							onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
 						/>
@@ -83,6 +85,24 @@ export default function App() {
 				>
 					<PanelLeftOpen className="size-4" />
 				</Button>
+			) : null}
+			{settingsOpen ? (
+				<div className="absolute inset-0 z-20 flex items-start justify-center bg-black/30 pt-20">
+					<div className="relative w-[28rem] max-w-[90vw] rounded-lg border border-border bg-background shadow-lg">
+						<div className="flex items-center justify-between border-border border-b px-4 py-2">
+							<span className="font-medium text-sm">Settings</span>
+							<Button
+								variant="icon"
+								size="icon"
+								aria-label="Close settings"
+								onClick={() => setSettingsOpen(false)}
+							>
+								<X className="h-3.5 w-3.5" aria-hidden />
+							</Button>
+						</div>
+						<SettingsPanel />
+					</div>
+				</div>
 			) : null}
 		</div>
 	);

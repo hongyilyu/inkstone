@@ -33,6 +33,10 @@ A Client whose sole job is to ingest content into the Workspace — clipping art
 A non-product package that drives end-to-end tests against a real Core, real Worker, and a real Web Client in a headless browser. Spawns Core against a temporary Workspace, configures the Worker to use a mock LLM provider, and asserts behavior through the same surfaces a real user touches. Not a Client (it tests Core's client surface rather than using it for product purposes). Lives outside `apps/`, `crates/`, and `packages/`.
 _Avoid_: test runner (too generic), e2e suite (the suite is a thing the Test Harness runs).
 
+**Provider Helper**:
+A stateless TypeScript process Core spawns to run LLM-provider OAuth via `pi-ai` — `login` mode (PKCE flow + loopback callback, returns credentials) and `refresh` mode (rotates an expired token). It holds no durable state; it hands its result back to Core on stdout, and Core writes the Credential Store. Distinct from the Worker (which drives Runs) though both live in `packages/worker` and depend on `pi-ai`. Named "provider", not "auth", because ADR-0007 reserves auth for the (absent) human-auth concern — this is LLM-provider connection.
+_Avoid_: auth helper, login worker, oauth client.
+
 ### Execution
 
 **Thread**:
@@ -79,6 +83,10 @@ Authoritative for Inkstone-managed durable application state — Threads, Runs, 
 **SQLite Projections** (tier 3, derived):
 Re-derivable indexes and views computed from tiers 1 and 2 — FTS, extraction candidates, backlinks, dashboards, denormalized views. Authoritative for nothing; lost projections can always be rebuilt.
 _Avoid_: indexes (when meaning the whole tier), derived state (ambiguous with non-projection derivations).
+
+**Credential Store**:
+The Core-owned file holding provider OAuth credentials (`access`, `refresh`, `expires`, `account_id`), kept `0600` in a `credentials/` directory next to the SQLite database. Outside the three-tier model by design — ADR-0007 carves provider credentials out as "a separate concern," so they are neither tier-2 canonical state nor a tier-3 projection. Core is the single writer; the Worker never sees the refresh token, only a short-lived access token in its manifest.
+_Avoid_: token store, secrets store, auth db.
 
 **Source Content**:
 Tier-1 material in the Vault: notes, raw captures, articles, anything the user authors or imports and expects to own directly.

@@ -4,6 +4,9 @@ import {
 	MessageView,
 	PostMessageParams,
 	PostMessageResult,
+	ProviderLoginStartParams,
+	ProviderLoginStartResult,
+	ProviderStatusResult,
 	RunEvent,
 	SubscribeParams,
 	ThreadCreateParams,
@@ -12,7 +15,7 @@ import {
 	ThreadGetResult,
 	ThreadListResult,
 	ThreadSummary,
-	WorkerInbound,
+	WorkerManifest,
 	WorkerOutbound,
 } from "./index.js";
 
@@ -261,6 +264,17 @@ describe("RunEvent", () => {
 		});
 	});
 
+	it("decodes an error variant carrying a message", () => {
+		const event = { kind: "error", message: "provider rejected the request" };
+		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
+	});
+
+	it("rejects an error variant missing its message field", () => {
+		expect(() =>
+			S.decodeUnknownSync(RunEvent)({ kind: "error" }),
+		).toThrow();
+	});
+
 	it("rejects an unknown kind", () => {
 		expect(() =>
 			S.decodeUnknownSync(RunEvent)({ kind: "unknown" }),
@@ -271,18 +285,6 @@ describe("RunEvent", () => {
 		expect(() =>
 			S.decodeUnknownSync(RunEvent)({ kind: "text_delta" }),
 		).toThrow();
-	});
-});
-
-describe("WorkerInbound", () => {
-	it("decodes a worker stdin frame", () => {
-		expect(S.decodeUnknownSync(WorkerInbound)({ prompt: "hi" })).toEqual({
-			prompt: "hi",
-		});
-	});
-
-	it("rejects a missing prompt", () => {
-		expect(() => S.decodeUnknownSync(WorkerInbound)({})).toThrow();
 	});
 });
 
@@ -300,5 +302,110 @@ describe("WorkerOutbound", () => {
 		expect(S.decodeUnknownSync(WorkerOutbound)({ kind: "done" })).toEqual({
 			kind: "done",
 		});
+	});
+});
+
+describe("ProviderStatusResult", () => {
+	it("decodes a providers array with connection flags", () => {
+		const wire = { providers: [{ id: "openai-codex", connected: false }] };
+		expect(S.decodeUnknownSync(ProviderStatusResult)(wire)).toEqual(wire);
+	});
+
+	it("encodes back to the same wire shape", () => {
+		const decoded = S.decodeUnknownSync(ProviderStatusResult)({
+			providers: [{ id: "openai-codex", connected: true }],
+		});
+		expect(S.encodeSync(ProviderStatusResult)(decoded)).toEqual({
+			providers: [{ id: "openai-codex", connected: true }],
+		});
+	});
+
+	it("rejects a non-boolean connected", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProviderStatusResult)({
+				providers: [{ id: "openai-codex", connected: "yes" }],
+			}),
+		).toThrow();
+	});
+});
+
+describe("ProviderLoginStartResult", () => {
+	it("decodes an authorize_url", () => {
+		const wire = { authorize_url: "https://auth.openai.com/oauth/authorize" };
+		expect(S.decodeUnknownSync(ProviderLoginStartResult)(wire)).toEqual(wire);
+	});
+
+	it("rejects a missing authorize_url", () => {
+		expect(() => S.decodeUnknownSync(ProviderLoginStartResult)({})).toThrow();
+	});
+});
+
+describe("ProviderLoginStartParams", () => {
+	it("decodes a provider and encodes back to the same wire shape", () => {
+		const wire = { provider: "openai-codex" };
+		const decoded = S.decodeUnknownSync(ProviderLoginStartParams)(wire);
+		expect(decoded).toEqual(wire);
+		// The Client ENCODES this param onto the wire, so guard the encode
+		// mirror too (the Rust side decodes it).
+		expect(S.encodeSync(ProviderLoginStartParams)(decoded)).toEqual(wire);
+	});
+
+	it("rejects a missing provider", () => {
+		expect(() => S.decodeUnknownSync(ProviderLoginStartParams)({})).toThrow();
+	});
+});
+
+describe("WorkerManifest", () => {
+	const valid = {
+		workflow: {
+			name: "default",
+			version: "1.0.0",
+			provider: "openai-codex",
+			model: "gpt-5.5",
+			system_prompt: "You assist with journaling.",
+			thinking_level: "off",
+			tools: [],
+		},
+		prompt: "hello",
+		messages: [
+			{ role: "user", text: "earlier question" },
+			{ role: "assistant", text: "earlier answer" },
+		],
+		access_token: "tok_abc",
+	};
+
+	it("decodes a full manifest with history and access token", () => {
+		expect(S.decodeUnknownSync(WorkerManifest)(valid)).toEqual(valid);
+	});
+
+	it("decodes a manifest without an access token (faux/env providers)", () => {
+		const { access_token: _omit, ...noToken } = valid;
+		expect(S.decodeUnknownSync(WorkerManifest)(noToken)).toEqual(noToken);
+	});
+
+	it("decodes an empty history and empty tools", () => {
+		const minimal = { ...valid, messages: [], access_token: undefined };
+		const { access_token: _o, ...expected } = minimal;
+		expect(S.decodeUnknownSync(WorkerManifest)({ ...expected })).toEqual(
+			expected,
+		);
+	});
+
+	it("rejects an unknown thinking_level", () => {
+		expect(() =>
+			S.decodeUnknownSync(WorkerManifest)({
+				...valid,
+				workflow: { ...valid.workflow, thinking_level: "turbo" },
+			}),
+		).toThrow();
+	});
+
+	it("rejects a message with an unknown role", () => {
+		expect(() =>
+			S.decodeUnknownSync(WorkerManifest)({
+				...valid,
+				messages: [{ role: "system", text: "x" }],
+			}),
+		).toThrow();
 	});
 });

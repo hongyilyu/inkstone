@@ -24,7 +24,7 @@ fn text_delta_appends_to_message_parts() {
         .and_then(Path::parent)
         .expect("repo root resolves from <repo>/crates/core");
     let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let cli = repo_root.join("packages/worker/src/cli.ts");
+    let cli = repo_root.join("crates/core/tests/fixtures/slow-worker.ts");
     if !tsx.exists() {
         panic!(
             "worker tsx not installed at {} — run `pnpm install` at repo root",

@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,6 +41,39 @@ const FIXTURE = path.join(
 /** The worker command Core spawns: tsx running the gate fixture. */
 export const GATE_WORKER_CMD = `${TSX_BIN} ${FIXTURE}`;
 
+const LOGIN_HELPER_FIXTURE = path.join(
+	REPO_ROOT,
+	"crates",
+	"core",
+	"tests",
+	"fixtures",
+	"login-helper.ts",
+);
+
+/**
+ * The provider-login helper command Core runs for `provider/login_start`:
+ * the offline stub that emits an authorize URL then credentials (ADR-0019 /
+ * ADR-0023). Use via `coreOptions.providerLoginCmd` so the Connect e2e never
+ * touches the real OpenAI flow.
+ */
+export const LOGIN_HELPER_CMD = `${TSX_BIN} ${LOGIN_HELPER_FIXTURE} login`;
+
+const INTERPRETER_CLI = path.join(
+	REPO_ROOT,
+	"packages",
+	"worker",
+	"src",
+	"cli.ts",
+);
+
+/**
+ * The REAL generic interpreter worker command (packages/worker/src/cli.ts),
+ * as opposed to the slow-worker echo fixture. Paired with a faux workflow +
+ * `fauxResponse`, it drives the real pi-agent-core loop offline through the
+ * browser. Use via `coreOptions.workerCmd = INTERPRETER_WORKER_CMD`.
+ */
+export const INTERPRETER_WORKER_CMD = `${TSX_BIN} ${INTERPRETER_CLI}`;
+
 export interface SpawnCoreOptions {
 	/** Bind port. Default 0 → OS-assigned ephemeral (avoids cross-test collisions). */
 	readonly port?: number;
@@ -56,6 +89,29 @@ export interface SpawnCoreOptions {
 	 */
 	readonly chunks?: number;
 	readonly gatePath?: string;
+	/**
+	 * Provider-login helper command Core runs for `provider/login_start`
+	 * (ADR-0023). Set by the Connect-ChatGPT e2e to a stub that emits an
+	 * authorize URL then credentials, so the flow runs offline (no real
+	 * OpenAI / :1455). Maps to `INKSTONE_PROVIDER_LOGIN_CMD`.
+	 */
+	readonly providerLoginCmd?: string;
+	/**
+	 * When set, write a faux Workflow (`provider="faux"`) into a per-test
+	 * workflows dir and feed the faux provider this canned response via
+	 * `INKSTONE_FAUX_RESPONSE`. Combined with `workerCmd =
+	 * INTERPRETER_WORKER_CMD`, this drives the real pi-agent-core loop offline
+	 * so a browser test can assert a real interpreter completion (not echo).
+	 */
+	readonly fauxResponse?: string;
+	/**
+	 * When set, the faux provider FAILS the turn with this message
+	 * (`stopReason: "error"`) instead of replying. Combined with `workerCmd =
+	 * INTERPRETER_WORKER_CMD`, this produces the same `error` Run Event a real
+	 * provider/network failure would — letting a browser test assert the
+	 * error surfaces in the UI. Maps to `INKSTONE_FAUX_ERROR`.
+	 */
+	readonly fauxError?: string;
 	/** Milliseconds to wait for the listening line before failing. Default 30s. */
 	readonly startupTimeoutMs?: number;
 }
@@ -149,6 +205,43 @@ export async function spawnCore(
 		env.INKSTONE_WORKER_CMD = workerCmd;
 		env.INKSTONE_FIXTURE_CHUNKS = String(chunks);
 		if (gatePath) env.INKSTONE_FIXTURE_GATE = gatePath;
+	}
+
+	// Per-test credential store (isolated tempdir) so provider/status starts
+	// disconnected and a login e2e can observe it flip to connected.
+	env.INKSTONE_CREDENTIALS_DIR = path.join(workspaceDir, "credentials");
+	if (opts.providerLoginCmd !== undefined) {
+		env.INKSTONE_PROVIDER_LOGIN_CMD = opts.providerLoginCmd;
+	}
+
+	// Faux-interpreter mode: write a provider="faux" Workflow into a per-test
+	// workflows dir and feed the canned response to the faux provider. Paired
+	// with workerCmd = INTERPRETER_WORKER_CMD this drives the real
+	// pi-agent-core loop offline (ADR-0019 faux seam). `fauxError` instead
+	// makes the faux provider fail the turn (stopReason error) — the same
+	// `error` Run Event a real provider/network failure produces.
+	if (opts.fauxResponse !== undefined || opts.fauxError !== undefined) {
+		const workflowsDir = path.join(workspaceDir, "workflows");
+		mkdirSync(workflowsDir, { recursive: true });
+		writeFileSync(
+			path.join(workflowsDir, "default.toml"),
+			[
+				'name = "default"',
+				'version = "1.0.0"',
+				'provider = "faux"',
+				'model = "faux-1"',
+				'thinking_level = "off"',
+				'system_prompt = "You are a test assistant."',
+				"tools = []",
+				"",
+			].join("\n"),
+		);
+		env.INKSTONE_WORKFLOWS_DIR = workflowsDir;
+		if (opts.fauxError !== undefined) {
+			env.INKSTONE_FAUX_ERROR = opts.fauxError;
+		} else if (opts.fauxResponse !== undefined) {
+			env.INKSTONE_FAUX_RESPONSE = opts.fauxResponse;
+		}
 	}
 
 	// Own process group (detached) so shutdown can hard-kill any orphaned

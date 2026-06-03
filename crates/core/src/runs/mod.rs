@@ -8,6 +8,7 @@
 //! [`crate::hub`].
 
 mod post_message;
+mod provider;
 mod reply;
 mod subscribe;
 mod thread_create;
@@ -61,6 +62,18 @@ pub async fn dispatch(
                 return;
             };
             thread_get::handle(pool, req.id, params, out_tx).await;
+        }
+        "provider/status" => {
+            // Read-only, no params — the credential store is the only input.
+            provider::handle(req.id, out_tx).await;
+        }
+        "provider/login_start" => {
+            let Ok(params) =
+                serde_json::from_value::<crate::protocol::ProviderLoginStartParams>(req.params)
+            else {
+                return;
+            };
+            provider::handle_login_start(req.id, params, out_tx).await;
         }
         // Other methods: drop silently for the skeleton.
         _ => {}

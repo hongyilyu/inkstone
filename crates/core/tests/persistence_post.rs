@@ -25,7 +25,7 @@ fn post_message_writes_initial_rows() {
         .and_then(Path::parent)
         .expect("repo root resolves from <repo>/crates/core");
     let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let cli = repo_root.join("packages/worker/src/cli.ts");
+    let cli = repo_root.join("crates/core/tests/fixtures/slow-worker.ts");
     if !tsx.exists() {
         panic!(
             "worker tsx not installed at {} — run `pnpm install` at repo root",
@@ -157,13 +157,13 @@ fn post_message_writes_initial_rows() {
             "runs.status is 'running' or 'completed' (slice-4 race), got {status:?}"
         );
         let wf_name: String = r.get("workflow_name");
-        assert_eq!(wf_name, "echo");
+        assert_eq!(wf_name, "default");
         let wf_ver: String = r.get("workflow_version");
-        assert_eq!(wf_ver, "1");
+        assert_eq!(wf_ver, "1.0.0");
         let provider: String = r.get("provider");
-        assert_eq!(provider, "echo");
+        assert_eq!(provider, "openai-codex");
         let model: String = r.get("model");
-        assert_eq!(model, "echo");
+        assert_eq!(model, "gpt-5.5");
         let started_at: Option<i64> = r.get("started_at");
         assert!(started_at.is_some(), "started_at is set");
         let user_msg_id: Option<String> = r.get("user_message_id");

@@ -14,6 +14,15 @@ The harness was implemented after the Web Client was wired to real Core (the `wi
 
 The harness package lives at `tests/e2e/` (registered in `pnpm-workspace.yaml`; root `pnpm test:e2e` delegates to it). Fixtures expose `{core, workspace, chat}` where `chat` is the `ChatPage` page object; the `workspace` fixture exposes `path` only (WS-level setup helpers are deferred — the current specs drive through the UI).
 
+## As-built amendment: `faux` realizes the deferred mock-LLM seam (ADR-0023 feature)
+
+The "Mock LLM provider compiled into Worker" decision below is now realized — not by a bespoke compiled-in mock, but by **`pi-ai`'s built-in `faux` provider**. When the generic interpreter replaced the echo Worker, the Worker gained a real provider-routing layer (`streamSimple` dispatched by `model.api`). `faux` is a first-class provider in that layer, so a Workflow with `provider = "faux"` drives the entire interpreter path — manifest parsing, message mapping, the `pi-agent-core` loop, Run Event emission — with zero network and deterministic output. This is strictly better than a hand-rolled mock: it exercises the *real* `pi-agent-core` loop and the *real* provider seam, not a stand-in for them.
+
+Consequences for this ADR's original mock plan:
+- The fixture format (ordered Turn responses keyed by `turn`) and the `INKSTONE_LLM_PROVIDER=mock` / `INKSTONE_LLM_FIXTURE` env contract are superseded by selecting `provider = "faux"` in the Workflow and supplying the faux script's response via the manifest/fixture. The intent ("no test touches a real provider", "fixtures are explicit and human-authored") is preserved.
+- Offline determinism for the real-interpreter slices comes from `faux`. The `slow-worker.ts` gate fixture remains for the Core-level mid-stream/pause flows that predate the interpreter.
+- The real `openai-codex` provider is exercised only by **manual smoke** (a real ChatGPT login + completion), never in the automated suite — consistent with "no test ever touches a real provider."
+
 ## Core decisions
 
 - **Top-level `tests/` package**, registered in `pnpm-workspace.yaml`. Runs under Playwright's test runner with a `test:e2e` script. Not under `apps/` (it's not a product Client) and not under `packages/` (it's not a library). It's a `Test Harness` per the term in `CONTEXT.md`. The boundary with `bridges/` (per [ADR-0008](./0008-monorepo-shape.md)): `bridges/` holds protocol-level contract tests — Rust↔TS serialization round-trips, one shape per test, no spawned processes. `tests/` holds full-system behavioral tests through the Web Client. If a test could pass without rendering DOM, it belongs in `bridges/`.

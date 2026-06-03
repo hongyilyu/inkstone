@@ -14,7 +14,7 @@ The chat-driven MVP ([ADR-0010](./0010-mvp-slice-chat-driven-web-client.md)) wir
 - **The Worker writes to the hub, not to a connection.** The Worker-forwarding task publishes each Run Event into `hub[run_id]`. The connection that issued `run/post_message` is no longer special; it receives events only by subscribing, exactly like any other connection.
 - **`run/subscribe(run_id)` is snapshot-then-tail.** On subscribe, Core reads the Run's current persisted assistant text and status, emits that accumulated text as a `text_delta` Run Event (the snapshot), then — if the Run is still streaming — attaches a hub receiver and forwards the live tail; if the Run is already terminal, it emits `done` and closes. A reloaded tab and the originating tab use the identical path.
 - **`run/post_message` and `thread/create` are pure-subscribe.** They create and start the Run and return its ids; they stream nothing on the request frame. The Client always follows with `run/subscribe(run_id)` to receive events. This keeps "fresh send" and "reconnect resume" on one code path.
-- **The wire RunEvent stays frozen at `text_delta` and `done`.** The snapshot rides as a `text_delta` carrying cumulative text; the Client appends it like any other delta. No new event variant is introduced for this feature.
+- **The wire RunEvent stays frozen at `text_delta` and `done`.** The snapshot rides as a `text_delta` carrying cumulative text; the Client appends it like any other delta. No new event variant is introduced for this feature. (As-built amendment, real-worker-codex feature: a third terminal variant `error { message }` was later added — see ADR-0006, which always listed errors as a Run Event. It rides the identical hub/snapshot/tail path; the forwarder treats `error` as terminal alongside `done`. This does not reopen the snapshot-as-`text_delta` decision above.)
 
 ## The exactly-once guarantee (snapshot/tail boundary)
 
@@ -26,6 +26,12 @@ A naive snapshot-then-attach loses events: a delta persisted *after* the snapsho
 Because both take the same per-run gate, every delta falls wholly before or wholly after the subscribe instant: a delta persisted before subscribe is in the snapshot and the receiver is positioned after it (delivered once, via snapshot); a delta published after subscribe is caught by the attached receiver (delivered once, via tail). Exactly-once, with no per-delta sequence number and no schema change. The gate is per-run, so it never serializes unrelated Runs; the only contention is one Run's Worker against a simultaneous subscribe to that same Run, lasting one SQLite write.
 
 If a slow subscriber overflows the bounded broadcast buffer (`broadcast::error::RecvError::Lagged`), the subscriber **re-snapshots** from tier 2 (the persisted text is always the floor) and resumes the tail. Lag degrades to "re-read the truth," never to lost text.
+
+### Terminal-event ordering (as-built amendment, real-worker-codex slice 9)
+
+The exactly-once gate above governs **`text_delta`** delivery. The **terminal** event (`done`/`error`) has a second ordering constraint the original design did not pin: it must not reach a Client *before* tier 2 reflects the terminal state. The Worker originally published every event — terminal included — from inside the event loop, before the terminal SQLite transaction (`complete_run`/`error_run`) committed. That opened a sub-millisecond window: a Client reacting to `done` (most concretely, posting the next Run in the same Thread, whose history assembly filters on `status='completed'`) could read tier 2 *before* the prior Run's assistant Message flipped from `streaming` to `completed`, and so miss that turn.
+
+The fix: the Worker publishes the terminal `done`/`error` to the hub **after** the terminal transaction commits (and still before `hub::remove`). `text_delta` publishing is unchanged — still `lock gate → persist → publish → unlock` in the loop. This does not weaken the gate (the terminal event is not text and never rode the snapshot/tail dedup), and terminal delivery to late subscribers is still guaranteed by the forwarder's synthesize-on-`Closed` path. The net guarantee added: **any Client that observes `done`/`error` is guaranteed that tier 2 has committed the Run's terminal state**, so a read triggered by the terminal event always sees `completed` Messages.
 
 ## Consequences
 

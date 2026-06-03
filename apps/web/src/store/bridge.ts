@@ -77,7 +77,11 @@ export function startRunStream(
 		yield* Stream.runForEach(
 			client
 				.subscribeRun(runId)
-				.pipe(Stream.takeUntil((event) => event.kind === "done")),
+				.pipe(
+					Stream.takeUntil(
+						(event) => event.kind === "done" || event.kind === "error",
+					),
+				),
 			(event) => Effect.sync(() => applyEvent(threadId, runId, event)),
 		);
 	}).pipe(Effect.ensuring(Effect.sync(() => fibers.delete(runId))));

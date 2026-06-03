@@ -26,6 +26,8 @@ function makeStubRuntime() {
 			}),
 		threadGet: () => unused,
 		subscribeRun: () => unused,
+		providerStatus: () => unused,
+		providerLoginStart: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -54,6 +56,8 @@ function makeGrowingStubRuntime(opts: {
 		threadList: () => Effect.sync(() => ({ threads: [...threads] })),
 		threadGet: () => Effect.die("not exercised"),
 		subscribeRun: () => Stream.fromIterable(opts.events),
+		providerStatus: () => Effect.die("not exercised"),
+		providerLoginStart: () => Effect.die("not exercised"),
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

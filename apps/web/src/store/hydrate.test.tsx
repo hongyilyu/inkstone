@@ -43,6 +43,8 @@ describe("refresh-durable hydration", () => {
 			threadGet: (id) =>
 				id === "tA" ? Effect.succeed(result) : Effect.die("unknown thread"),
 			subscribeRun,
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
@@ -93,6 +95,8 @@ describe("refresh-durable hydration", () => {
 			threadGet: (id) =>
 				id === "tB" ? Effect.succeed(result) : Effect.die("unknown thread"),
 			subscribeRun,
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 

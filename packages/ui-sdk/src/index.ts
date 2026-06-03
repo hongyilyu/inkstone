@@ -1,6 +1,8 @@
 import { Socket } from "@effect/platform";
 import {
 	PostMessageResult,
+	ProviderLoginStartResult,
+	ProviderStatusResult,
 	type RunEvent,
 	RunEvent as RunEventSchema,
 	ThreadCreateResult,
@@ -100,6 +102,13 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly subscribeRun: (
 			runId: RunId,
 		) => Stream.Stream<RunEventValue, WsError>;
+		readonly providerStatus: () => Effect.Effect<
+			ProviderStatusResult,
+			WsError
+		>;
+		readonly providerLoginStart: (
+			provider: string,
+		) => Effect.Effect<ProviderLoginStartResult, WsError>;
 	}
 >() {}
 
@@ -315,12 +324,29 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					}),
 				);
 
+			// provider/* (ADR-0023): connection status + begin OAuth login.
+			const providerStatus = (): Effect.Effect<
+				ProviderStatusResult,
+				WsError
+			> => request("provider/status", {}, ProviderStatusResult);
+
+			const providerLoginStart = (
+				provider: string,
+			): Effect.Effect<ProviderLoginStartResult, WsError> =>
+				request(
+					"provider/login_start",
+					{ provider },
+					ProviderLoginStartResult,
+				);
+
 			return WsClient.of({
 				threadCreate,
 				postMessage,
 				threadList,
 				threadGet,
 				subscribeRun,
+				providerStatus,
+				providerLoginStart,
 			});
 		}),
 	);

@@ -91,12 +91,24 @@ pub(super) async fn handle(
     // about to stream.
     let run_hub = hub::create(hubs, run_id);
 
+    // Assemble the prior-Run conversation history for this Thread (ADR-0018
+    // multi-turn). Excludes the Run just persisted above, so the Worker sees
+    // the prior exchange but not the current prompt twice. A read failure is
+    // non-fatal: fall back to no history rather than failing the Run.
+    let history = db::history_for_run(pool, thread_id, run_id)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("history_for_run failed for run {run_id}: {e}");
+            Vec::new()
+        });
+
     // Spawn the Worker wired to publish into the hub (broadcast sender +
     // per-run gate). It removes the hub entry after its terminal tx.
     worker::spawn(
         run_id,
         workflow,
         params.prompt,
+        history,
         pool.clone(),
         assistant_message_id,
         hubs.clone(),

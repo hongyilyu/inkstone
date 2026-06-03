@@ -95,11 +95,13 @@ fn await_listening(mut child: Child) -> (CoreChild, String) {
     (CoreChild(Some(child)), ws_url)
 }
 
-/// Spawn Core wired to the REAL echo Worker.
+/// Spawn Core wired to the slow-worker fixture (the deterministic echo
+/// stand-in after the slice-4 cutover — reads the manifest's `.prompt` and
+/// emits `echo: <prompt>`, ADR-0019).
 fn spawn_core_real(db_path: &Path) -> (CoreChild, String) {
     let root = repo_root();
     let tsx = root.join("packages/worker/node_modules/.bin/tsx");
-    let cli = root.join("packages/worker/src/cli.ts");
+    let cli = root.join("crates/core/tests/fixtures/slow-worker.ts");
     if !tsx.exists() {
         panic!(
             "worker tsx not installed at {} — run `pnpm install` at repo root",
@@ -107,7 +109,7 @@ fn spawn_core_real(db_path: &Path) -> (CoreChild, String) {
         );
     }
     if !cli.exists() {
-        panic!("worker cli not found at {}", cli.display());
+        panic!("worker fixture not found at {}", cli.display());
     }
     let worker_cmd = format!("{} {}", tsx.display(), cli.display());
 

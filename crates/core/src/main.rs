@@ -1,7 +1,9 @@
+mod credentials;
 mod db;
 mod dispatcher;
 mod hub;
 mod protocol;
+mod provider_auth;
 mod runs;
 mod worker;
 mod workflow;
@@ -35,6 +37,11 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load and validate the Workflow(s) before serving — a malformed
+    // default.toml or an invalid thinking_level aborts boot (fail-fast,
+    // ADR-0018) rather than failing the first Run.
+    workflow::init()?;
+
     let pool = db::open().await?;
     let state = AppState {
         pool,

@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::hub::Hubs;
-use crate::protocol::{RunEvent, WorkerInbound};
+use crate::protocol::{ManifestMessage, RunEvent, WorkerManifest, WorkflowManifest};
 use crate::workflow::Workflow;
 
 /// Spawn a Worker for `run_id`. Returns immediately; a Tokio task drives
@@ -33,8 +33,9 @@ use crate::workflow::Workflow;
 /// delta — exactly-once across the snapshot/tail boundary.
 pub fn spawn(
     run_id: Uuid,
-    _workflow: &'static Workflow,
+    workflow: &'static Workflow,
     prompt: String,
+    history: Vec<(String, String)>,
     pool: SqlitePool,
     assistant_message_id: Uuid,
     hubs: Hubs,
@@ -49,7 +50,9 @@ pub fn spawn(
         run_worker(
             run_id,
             cmd,
+            workflow,
             prompt,
+            history,
             pool,
             assistant_message_id,
             hubs,
@@ -64,7 +67,9 @@ pub fn spawn(
 async fn run_worker(
     run_id: Uuid,
     cmd: String,
+    workflow: &'static Workflow,
     prompt: String,
+    history: Vec<(String, String)>,
     pool: SqlitePool,
     assistant_message_id: Uuid,
     hubs: Hubs,
@@ -95,8 +100,43 @@ async fn run_worker(
     };
 
     if let Some(mut stdin) = child.stdin.take() {
-        let inbound = WorkerInbound { prompt: &prompt };
-        let mut line = serde_json::to_string(&inbound).expect("WorkerInbound serializes");
+        // Build the spawn manifest (ADR-0018 as-built): the Workflow fields,
+        // the current prompt, the assembled prior history (multi-turn,
+        // slice 5), and — for OAuth providers — a short-lived access token
+        // resolved by Core (ADR-0023): valid token used as-is, expired token
+        // refreshed single-flight before spawn. Written as one NDJSON line.
+        let messages: Vec<ManifestMessage> = history
+            .iter()
+            .map(|(role, text)| ManifestMessage { role, text })
+            .collect();
+        let access_token =
+            match crate::provider_auth::resolve_access_token(&workflow.provider, db::now_ms()).await
+            {
+                Ok(token) => token,
+                Err(e) => {
+                    // Token resolution/refresh failed — the Run cannot reach
+                    // the provider. Terminate it as errored rather than
+                    // spawning a Worker that will fail opaquely.
+                    eprintln!("access token resolution failed for run {run_id}: {e}");
+                    finalize_error(&pool, &hubs, run_id).await;
+                    return;
+                }
+            };
+        let manifest = WorkerManifest {
+            workflow: WorkflowManifest {
+                name: &workflow.name,
+                version: &workflow.version,
+                provider: &workflow.provider,
+                model: &workflow.model,
+                system_prompt: &workflow.system_prompt,
+                thinking_level: &workflow.thinking_level,
+                tools: &workflow.tools,
+            },
+            prompt: &prompt,
+            messages,
+            access_token: access_token.as_deref(),
+        };
+        let mut line = serde_json::to_string(&manifest).expect("WorkerManifest serializes");
         line.push('\n');
         if let Err(e) = stdin.write_all(line.as_bytes()).await {
             eprintln!("failed to write worker stdin: {e}");
@@ -117,8 +157,12 @@ async fn run_worker(
     let mut lines = BufReader::new(stdout).lines();
 
     // Track whether the Worker emitted a terminal `done` event so the
-    // post-loop branch can pick `complete_run` vs `error_run`.
+    // post-loop branch can pick `complete_run` vs `error_run`. A worker-
+    // emitted `error` event captures its message here so the terminal tx
+    // records it (ADR-0006 lists errors as a Run Event; this is the
+    // real-provider error path) instead of the generic `worker_disconnected`.
     let mut saw_done = false;
+    let mut worker_error: Option<String> = None;
 
     while let Ok(Some(line)) = lines.next_line().await {
         let event: RunEvent = match serde_json::from_str(&line) {
@@ -139,7 +183,9 @@ async fn run_worker(
             RunEvent::TextDelta { delta } => {
                 // Persist BEFORE publishing so the persisted text (the
                 // snapshot floor) is never behind a delta a subscriber
-                // already saw on the tail.
+                // already saw on the tail. Publish the delta to the hub
+                // inside the gate — this is the snapshot/tail exactly-once
+                // critical section (ADR-0022).
                 if let Err(e) =
                     db::append_assistant_text(&pool, assistant_message_id, delta).await
                 {
@@ -147,25 +193,35 @@ async fn run_worker(
                         "text_delta append failed for assistant message {assistant_message_id}: {e}"
                     );
                 }
+                let _ = tx.send(event);
             }
+            // Terminal events (`done`/`error`) are NOT published here. They
+            // are published AFTER the terminal SQLite tx commits (below), so
+            // a Client reacting to the terminal event — e.g. posting the next
+            // Run, whose history read filters on `status='completed'` — can
+            // never observe `done` before tier 2 reflects the completed
+            // Messages (closes the slice-5 multi-turn race). Terminal-event
+            // delivery to late subscribers is still guaranteed by the
+            // forwarder's synthesize-on-`Closed` path (ADR-0022).
             RunEvent::Done => {
                 saw_done = true;
             }
+            RunEvent::Error { message } => {
+                worker_error = Some(message.clone());
+            }
         }
-
-        // Publish to the hub. `SendError` (no receivers attached) is fine —
-        // the persisted text is the durable floor; a late subscriber reads
-        // it from the snapshot.
-        let _ = tx.send(event);
 
         drop(guard);
     }
 
     // Terminal-state tx. Either path commits the runs/messages/run_events
     // triple in a single transaction (ADR-0017's atomic recovery
-    // invariant).
+    // invariant). A worker-emitted `error` takes precedence over the
+    // EOF-without-done path and carries its own message.
     let now_ms = db::now_ms();
-    let result = if saw_done {
+    let result = if let Some(ref message) = worker_error {
+        db::error_run_with_message(&pool, run_id, "errored", "worker_error", message, now_ms).await
+    } else if saw_done {
         db::complete_run(&pool, run_id, now_ms).await
     } else {
         db::error_run(&pool, run_id, now_ms).await
@@ -174,9 +230,28 @@ async fn run_worker(
         eprintln!("terminal tx failed for run {run_id}: {e}");
     }
 
-    // Remove the hub entry AFTER the terminal tx. Dropping the broadcast
-    // sender lets attached subscribers observe `RecvError::Closed` once they
-    // have drained the tail (including the terminal `done` published above).
+    // Publish the terminal Run Event to the hub ONLY AFTER the terminal tx
+    // commits (ordering matters — see the per-event match above). A Client
+    // that receives this `done`/`error` is now guaranteed that tier 2
+    // reflects the terminal state. The EOF-without-`done` path published
+    // nothing (the Worker emitted no terminal event); its subscribers get a
+    // synthesized `done` on `hub::remove` below.
+    match (&worker_error, saw_done) {
+        (Some(message), _) => {
+            let _ = tx.send(RunEvent::Error {
+                message: message.clone(),
+            });
+        }
+        (None, true) => {
+            let _ = tx.send(RunEvent::Done);
+        }
+        (None, false) => {}
+    }
+
+    // Remove the hub entry AFTER publishing the terminal event. Dropping the
+    // broadcast sender lets attached subscribers observe `RecvError::Closed`
+    // once they have drained the tail (including the terminal event published
+    // just above).
     crate::hub::remove(&hubs, run_id);
 
     let _ = child.wait().await;

@@ -260,6 +260,32 @@ where
     .await
 }
 
+/// The `completed` Messages of a Thread that belong to Runs OTHER than
+/// `exclude_run_id`, oldest-first. Backs the multi-turn manifest history
+/// (ADR-0018 as-built): the current Run's just-inserted rows are excluded so
+/// the assembled history is strictly the prior exchange, and `status =
+/// 'completed'` drops any in-flight or errored partial assistant text.
+/// Returns `(id, role)` rows; the caller assembles each Message's text from
+/// its parts.
+pub(super) async fn history_messages_for_run<'e, E>(
+    executor: E,
+    thread_id: Uuid,
+    exclude_run_id: Uuid,
+) -> sqlx::Result<Vec<(String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, role FROM messages \
+         WHERE thread_id = ?1 AND run_id != ?2 AND status = 'completed' \
+         ORDER BY created_at, rowid",
+    )
+    .bind(thread_id.to_string())
+    .bind(exclude_run_id.to_string())
+    .fetch_all(executor)
+    .await
+}
+
 // ─── message_parts ────────────────────────────────────────────────────
 
 pub(super) async fn insert_text_part<'e, E>(
