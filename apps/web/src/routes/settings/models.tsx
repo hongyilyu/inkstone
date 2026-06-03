@@ -1,25 +1,29 @@
+import type { ModelInfo } from "@inkstone/protocol";
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { EffortControl, type EffortLevel } from "@/components/EffortControl";
+import { ModelCatalogTable } from "@/components/ModelCatalogTable";
 import { ProviderConnectionCard } from "@/components/ProviderConnectionCard";
 import { useRuntime } from "@/runtime";
 import {
-	fetchConnected,
 	PROVIDER_OPENAI_CODEX,
+	fetchConnected,
 	startLogin,
 } from "@/store/providers";
-import { fetchSettings, saveSettings } from "@/store/settings";
+import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
 
 /**
- * `/settings/models` (ADR-0024). Slice 5: provider connection (restyled OAuth)
- * + a global effort control wired to `settings/*`. The model catalog table +
- * preferred selection land in slice 6.
+ * `/settings/models` (ADR-0024): provider connection (restyled OAuth), a global
+ * effort control, and the t3-style model catalog table with a single Preferred
+ * model. All persisted via `settings/*` + read from `model/catalog`.
  */
 function ModelsSettings() {
 	const runtime = useRuntime();
 	const [connected, setConnected] = useState<boolean | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [effort, setEffort] = useState<string>("off");
+	const [models, setModels] = useState<readonly ModelInfo[]>([]);
+	const [selectedModel, setSelectedModel] = useState<string | null>(null);
 
 	const refreshConnected = useCallback(() => {
 		fetchConnected(runtime, PROVIDER_OPENAI_CODEX)
@@ -36,12 +40,20 @@ function ModelsSettings() {
 		return () => window.removeEventListener("focus", onFocus);
 	}, [refreshConnected]);
 
-	// Load the persisted global effort once.
+	// Load the persisted preferred model + global effort, and the catalog.
 	useEffect(() => {
 		let alive = true;
 		fetchSettings(runtime)
 			.then((s) => {
-				if (alive) setEffort(s.effort);
+				if (!alive) return;
+				setEffort(s.effort);
+				setSelectedModel(s.model);
+			})
+			.catch(() => {});
+		fetchCatalog(runtime)
+			.then((c) => {
+				if (!alive) return;
+				setModels(c.providers.flatMap((p) => p.models));
 			})
 			.catch(() => {});
 		return () => {
@@ -61,6 +73,16 @@ function ModelsSettings() {
 			setEffort(next); // optimistic
 			saveSettings(runtime, { effort: next })
 				.then((s) => setEffort(s.effort))
+				.catch(() => {});
+		},
+		[runtime],
+	);
+
+	const onSelectModel = useCallback(
+		(id: string) => {
+			setSelectedModel(id); // optimistic
+			saveSettings(runtime, { model: id })
+				.then((s) => setSelectedModel(s.model))
 				.catch(() => {});
 		},
 		[runtime],
@@ -94,6 +116,20 @@ function ModelsSettings() {
 					</p>
 				</div>
 				<EffortControl value={effort} onChange={onEffortChange} />
+			</div>
+
+			<div className="flex min-h-0 flex-1 flex-col gap-3">
+				<div>
+					<h3 className="font-semibold text-sm">Preferred model</h3>
+					<p className="text-muted-foreground text-xs">
+						The model new chats use by default.
+					</p>
+				</div>
+				<ModelCatalogTable
+					models={models}
+					selectedId={selectedModel}
+					onSelect={onSelectModel}
+				/>
 			</div>
 		</div>
 	);

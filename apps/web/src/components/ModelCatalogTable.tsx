@@ -1,0 +1,124 @@
+import type { ModelInfo } from "@inkstone/protocol";
+import { Brain, Eye, Star } from "lucide-react";
+
+/** Map a model's output price to a t3-style cost tier badge. */
+function CostBadge({ cost }: { cost: number }) {
+	const { label, dollars, tone } =
+		cost <= 0
+			? { label: "Free", dollars: 0, tone: "text-emerald-500" }
+			: cost < 5
+				? { label: "Low cost", dollars: 1, tone: "text-emerald-500" }
+				: cost < 15
+					? { label: "Medium cost", dollars: 2, tone: "text-amber-500" }
+					: { label: "High cost", dollars: 3, tone: "text-rose-500" };
+	return (
+		<span
+			aria-label={label}
+			className="inline-flex items-center font-mono font-semibold text-[10px] tabular-nums tracking-tight"
+		>
+			{dollars === 0 ? (
+				<span className={tone}>$0</span>
+			) : (
+				Array.from({ length: dollars }, (_, i) => (
+					// biome-ignore lint/suspicious/noArrayIndexKey: fixed-length glyph repeat
+					<span key={i} className={tone}>
+						$
+					</span>
+				))
+			)}
+		</span>
+	);
+}
+
+export interface ModelCatalogTableProps {
+	models: readonly ModelInfo[];
+	selectedId: string | null;
+	onSelect: (id: string) => void;
+	disabled?: boolean;
+}
+
+/**
+ * The model catalog as a t3-style table (ADR-0024): one row per model with its
+ * name, cost tier, and capability chips. Exactly one row is "Preferred"; the
+ * others reveal a "Set as preferred" action on hover/focus. Presentational —
+ * the parent persists the choice via `settings/set`.
+ */
+export function ModelCatalogTable({
+	models,
+	selectedId,
+	onSelect,
+	disabled,
+}: ModelCatalogTableProps) {
+	if (models.length === 0) {
+		return (
+			<div className="rounded-md border border-input border-dashed px-3 py-8 text-center text-muted-foreground text-sm">
+				No models available. Connect a provider to see its models.
+			</div>
+		);
+	}
+
+	return (
+		<div className="overflow-hidden rounded-md border border-input">
+			<table className="w-full caption-bottom text-sm">
+				<tbody>
+					{models.map((m) => {
+						const preferred = m.id === selectedId;
+						return (
+							<tr
+								key={m.id}
+								className="group/row border-input border-b transition-colors last:border-0 hover:bg-muted/50"
+							>
+								<td className="p-2 align-middle">
+									<div className="flex items-center gap-2.5">
+										<div className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground">
+											<Brain className="size-4" aria-hidden />
+										</div>
+										<div className="flex min-w-0 flex-col gap-0.5">
+											<div className="flex items-center gap-1.5">
+												<span className="truncate font-medium text-sm">
+													{m.name}
+												</span>
+												<CostBadge cost={m.cost_output} />
+											</div>
+											<div className="flex items-center gap-2 text-muted-foreground">
+												{m.reasoning ? (
+													<span className="inline-flex items-center gap-1 text-[11px]">
+														<Brain className="size-3" aria-hidden />
+														Reasoning
+													</span>
+												) : null}
+												{m.input.includes("image") ? (
+													<span className="inline-flex items-center gap-1 text-[11px]">
+														<Eye className="size-3" aria-hidden />
+														Vision
+													</span>
+												) : null}
+											</div>
+										</div>
+									</div>
+								</td>
+								<td className="w-0 p-2 align-middle">
+									{preferred ? (
+										<span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md bg-primary/10 px-2 py-1 font-medium text-primary text-xs">
+											<Star className="size-3 fill-current" aria-hidden />
+											Preferred
+										</span>
+									) : (
+										<button
+											type="button"
+											disabled={disabled}
+											onClick={() => onSelect(m.id)}
+											className="cursor-pointer whitespace-nowrap rounded-md px-2 py-1 font-medium text-muted-foreground text-xs opacity-0 transition-opacity hover:bg-muted/40 hover:text-foreground focus-visible:opacity-100 disabled:cursor-not-allowed group-hover/row:opacity-100"
+										>
+											Set as preferred
+										</button>
+									)}
+								</td>
+							</tr>
+						);
+					})}
+				</tbody>
+			</table>
+		</div>
+	);
+}
