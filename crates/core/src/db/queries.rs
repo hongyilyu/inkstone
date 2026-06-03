@@ -436,3 +436,34 @@ where
     .await
     .map(|_| ())
 }
+
+// ─── settings ─────────────────────────────────────────────────────────
+
+/// Read a user setting's value by key (ADR-0024). `None` when the key is
+/// unset (the caller supplies the default).
+pub(super) async fn get_setting<'e, E>(executor: E, key: &str) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT value FROM settings WHERE key = ?1")
+        .bind(key)
+        .fetch_optional(executor)
+        .await
+}
+
+/// Upsert a user setting (ADR-0024). Insert-or-replace keyed by `key` so a
+/// repeated `settings/set` overwrites the prior value.
+pub(super) async fn set_setting<'e, E>(executor: E, key: &str, value: &str) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(key)
+    .bind(value)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}

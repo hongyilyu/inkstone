@@ -6,6 +6,7 @@ mod models;
 mod protocol;
 mod provider_auth;
 mod runs;
+mod settings;
 mod worker;
 mod workflow;
 
