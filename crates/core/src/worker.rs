@@ -33,7 +33,7 @@ use crate::workflow::Workflow;
 /// delta — exactly-once across the snapshot/tail boundary.
 pub fn spawn(
     run_id: Uuid,
-    workflow: &'static Workflow,
+    workflow: Workflow,
     prompt: String,
     history: Vec<(String, String)>,
     pool: SqlitePool,
@@ -67,7 +67,7 @@ pub fn spawn(
 async fn run_worker(
     run_id: Uuid,
     cmd: String,
-    workflow: &'static Workflow,
+    workflow: Workflow,
     prompt: String,
     history: Vec<(String, String)>,
     pool: SqlitePool,
@@ -127,9 +127,9 @@ async fn run_worker(
                 name: &workflow.name,
                 version: &workflow.version,
                 provider: &workflow.provider,
-                model: &workflow.model,
+                model: workflow.model.as_deref().unwrap_or_default(),
                 system_prompt: &workflow.system_prompt,
-                thinking_level: &workflow.thinking_level,
+                thinking_level: workflow.thinking_level.as_deref().unwrap_or_default(),
                 tools: &workflow.tools,
             },
             prompt: &prompt,

@@ -35,3 +35,16 @@ pub fn is_known_model(model: &str) -> bool {
         .iter()
         .any(|p| p.models.iter().any(|m| m.id == model))
 }
+
+/// The default model id for `provider` when the user has not picked one
+/// (ADR-0024). This is product policy, NOT catalog data, so it is authored
+/// here rather than read from the embedded JSON — that JSON is drift-tested
+/// against `pi-ai` and must not grow a non-`pi-ai` `default` field. Only
+/// `openai-codex` is connectable today (ADR-0023); other providers return
+/// `None`, leaving the resolver to fall through to the Workflow TOML's `model`.
+pub fn default_model(provider: &str) -> Option<&'static str> {
+    match provider {
+        "openai-codex" => Some("gpt-5.5"),
+        _ => None,
+    }
+}

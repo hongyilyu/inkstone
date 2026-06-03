@@ -264,7 +264,7 @@ async fn insert_initial_run_rows(
         &workflow.name,
         &workflow.version,
         &workflow.provider,
-        &workflow.model,
+        workflow.model.as_deref().unwrap_or_default(),
         user_message_id,
         now_ms,
     )
