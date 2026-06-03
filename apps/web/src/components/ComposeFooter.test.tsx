@@ -1,14 +1,73 @@
-import { screen } from "@testing-library/react";
+import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { RuntimeProvider } from "@/runtime";
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import { ComposeFooter } from "./ComposeFooter.js";
 
+afterEach(cleanup);
+
+const die = (): Effect.Effect<never, never> => Effect.die("unused");
+const dieStream = (): Stream.Stream<never, WsError> =>
+	Stream.fromEffect(Effect.die("unused")) as Stream.Stream<never, WsError>;
+
+/** A stub runtime whose catalog + settings feed the composer's ModelPicker. */
+function makeRuntime() {
+	const stub = WsClient.of({
+		threadCreate: die,
+		postMessage: die,
+		threadList: die,
+		threadGet: die,
+		subscribeRun: dieStream,
+		providerStatus: die,
+		providerLoginStart: die,
+		modelCatalog: () =>
+			Effect.succeed({
+				providers: [
+					{
+						id: "openai-codex",
+						label: "OpenAI",
+						models: [
+							{
+								id: "gpt-5.5",
+								name: "GPT-5.5",
+								reasoning: true,
+								input: ["text", "image"],
+								cost_input: 5,
+								cost_output: 30,
+							},
+						],
+					},
+				],
+			}),
+		settingsGet: () =>
+			Effect.succeed({
+				provider: "openai-codex",
+				model: "gpt-5.5",
+				effort: "off",
+			}),
+		settingsSet: () =>
+			Effect.succeed({
+				provider: "openai-codex",
+				model: "gpt-5.5",
+				effort: "off",
+			}),
+	});
+	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+}
+
 describe("ComposeFooter", () => {
-	it("calls onSend with the typed text on click and renders model/token strip", async () => {
+	it("calls onSend with the typed text and renders the model/token strip", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();
-		renderWithQuery(<ComposeFooter onSend={onSend} />);
+		const runtime = makeRuntime();
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ComposeFooter onSend={onSend} />
+			</RuntimeProvider>,
+		);
 
 		await user.type(screen.getByRole("textbox"), "hello");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -16,11 +75,14 @@ describe("ComposeFooter", () => {
 		expect(onSend).toHaveBeenCalledTimes(1);
 		expect(onSend).toHaveBeenCalledWith("hello");
 
-		// Model picker trigger shows the model name; full label is in the dropdown.
+		// The model picker trigger is present; it reflects the preferred model
+		// from settings (`gpt-5.5`) once loaded.
 		expect(
-			screen.getByRole("button", { name: /Select model/i }),
+			screen.getByRole("button", { name: /select model/i }),
 		).toBeInTheDocument();
-		expect(screen.getByText(/gemma-3 27b/i)).toBeInTheDocument();
+		expect(await screen.findByText(/GPT-5\.5/)).toBeInTheDocument();
 		expect(screen.getByText(/4,812/)).toBeInTheDocument();
+
+		await runtime.dispose();
 	});
 });

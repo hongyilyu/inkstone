@@ -98,23 +98,3 @@ export type QueueItem = {
 	pendingGlyph: string;
 	pendingTitle: string;
 };
-
-export type ModelCapability = "vision" | "reasoning" | "files";
-export type ModelTier = "$" | "$$" | "$$$";
-export type ModelProvider =
-	| "openai"
-	| "anthropic"
-	| "google"
-	| "meta"
-	| "deepseek"
-	| "moonshot"
-	| "local";
-export type Model = {
-	id: string;
-	provider: ModelProvider;
-	name: string;
-	description: string;
-	tier: ModelTier;
-	capabilities: ModelCapability[];
-	favorite?: boolean;
-};
