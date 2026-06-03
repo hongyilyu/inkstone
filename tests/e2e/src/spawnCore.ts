@@ -104,6 +104,14 @@ export interface SpawnCoreOptions {
 	 * so a browser test can assert a real interpreter completion (not echo).
 	 */
 	readonly fauxResponse?: string;
+	/**
+	 * When set, the faux provider FAILS the turn with this message
+	 * (`stopReason: "error"`) instead of replying. Combined with `workerCmd =
+	 * INTERPRETER_WORKER_CMD`, this produces the same `error` Run Event a real
+	 * provider/network failure would — letting a browser test assert the
+	 * error surfaces in the UI. Maps to `INKSTONE_FAUX_ERROR`.
+	 */
+	readonly fauxError?: string;
 	/** Milliseconds to wait for the listening line before failing. Default 30s. */
 	readonly startupTimeoutMs?: number;
 }
@@ -209,8 +217,10 @@ export async function spawnCore(
 	// Faux-interpreter mode: write a provider="faux" Workflow into a per-test
 	// workflows dir and feed the canned response to the faux provider. Paired
 	// with workerCmd = INTERPRETER_WORKER_CMD this drives the real
-	// pi-agent-core loop offline (ADR-0019 faux seam).
-	if (opts.fauxResponse !== undefined) {
+	// pi-agent-core loop offline (ADR-0019 faux seam). `fauxError` instead
+	// makes the faux provider fail the turn (stopReason error) — the same
+	// `error` Run Event a real provider/network failure produces.
+	if (opts.fauxResponse !== undefined || opts.fauxError !== undefined) {
 		const workflowsDir = path.join(workspaceDir, "workflows");
 		mkdirSync(workflowsDir, { recursive: true });
 		writeFileSync(
@@ -227,7 +237,11 @@ export async function spawnCore(
 			].join("\n"),
 		);
 		env.INKSTONE_WORKFLOWS_DIR = workflowsDir;
-		env.INKSTONE_FAUX_RESPONSE = opts.fauxResponse;
+		if (opts.fauxError !== undefined) {
+			env.INKSTONE_FAUX_ERROR = opts.fauxError;
+		} else if (opts.fauxResponse !== undefined) {
+			env.INKSTONE_FAUX_RESPONSE = opts.fauxResponse;
+		}
 	}
 
 	// Own process group (detached) so shutdown can hard-kill any orphaned

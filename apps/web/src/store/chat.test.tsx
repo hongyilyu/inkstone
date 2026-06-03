@@ -109,6 +109,7 @@ describe("chat store + stream bridge", () => {
 		const assistant = threadA?.messages[1];
 		expect(assistant?.text).toBe("partial");
 		expect(assistant?.status).toBe("incomplete");
+		expect(assistant?.error).toBe("provider rejected the request");
 		expect(threadA?.activeRunId).toBeUndefined();
 
 		await runtime.dispose();
