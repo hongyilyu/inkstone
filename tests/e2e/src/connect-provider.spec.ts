@@ -2,15 +2,14 @@ import { LOGIN_HELPER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
 
 /**
- * Connect-ChatGPT acceptance flow (real-worker-codex slice 8, ADR-0023): a
- * user opens Settings → Providers, sees ChatGPT disconnected, clicks Connect,
+ * Connect-ChatGPT acceptance flow (real-worker-codex slice 8, ADR-0023/0024): a
+ * user opens Settings → Models, sees ChatGPT not connected, clicks Connect,
  * and — after the (stubbed) OAuth flow completes and Core persists the
- * credential — the row flips to Connected when the tab regains focus.
+ * credential — the provider card flips to Connected when the tab regains focus.
  *
  * Runs fully offline: Core's provider/login_start is pointed at the
  * login-helper stub (emits an authorize URL then credentials, no real :1455 /
- * OpenAI), and the stub's URL is about:blank so the real `window.open` in the
- * SPA navigates a harmless popup instead of the OpenAI auth page.
+ * OpenAI), and the SPA's `window.open` is stubbed to a no-op.
  */
 test.use({
 	coreOptions: {
@@ -24,20 +23,18 @@ test("Settings → Connect ChatGPT flips to Connected after login", async ({
 }) => {
 	// Make the real window.open target harmless in headless Chromium.
 	await page.addInitScript(() => {
-		// The SPA's default openUrl calls window.open(authorize_url). The
-		// stub returns about:blank (via INKSTONE_LOGIN_STUB_URL below), so the
-		// popup is harmless; stub window.open anyway to avoid popup churn.
 		window.open = () => null;
 	});
 
 	await chat.goto();
 
-	// Open Settings (the gear in the top-right controls).
+	// Open Settings (the gear navigates to the /settings/models route).
 	await page.getByRole("button", { name: "Settings" }).click();
+	await expect(page.getByRole("heading", { name: "Models" })).toBeVisible();
 
-	// Providers panel shows ChatGPT disconnected.
-	const status = page.getByTestId("chatgpt-status");
-	await expect(status).toHaveText("Disconnected");
+	// The provider card shows ChatGPT not connected.
+	const status = page.getByTestId("provider-status");
+	await expect(status).toHaveText("Not connected");
 
 	// Click Connect → Core runs provider/login_start (stub helper), the SPA
 	// opens the authorize URL (stubbed no-op), and the helper emits
@@ -45,14 +42,12 @@ test("Settings → Connect ChatGPT flips to Connected after login", async ({
 	await page.getByRole("button", { name: "Connect" }).click();
 
 	// Returning to the tab re-queries provider/status. Poll by dispatching the
-	// focus event until the row flips to Connected (helper persist + status
+	// focus event until the card flips to Connected (helper persist + status
 	// round-trip), bounded by the assertion timeout.
 	await expect
 		.poll(
 			async () => {
-				await page.evaluate(() =>
-					window.dispatchEvent(new Event("focus")),
-				);
+				await page.evaluate(() => window.dispatchEvent(new Event("focus")));
 				return status.textContent();
 			},
 			{ timeout: 10_000, intervals: [100, 200, 300, 500] },
