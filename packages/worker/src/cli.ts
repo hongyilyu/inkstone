@@ -5,11 +5,13 @@ import {
 	streamSimple,
 } from "@earendil-works/pi-ai";
 import { Schema as S } from "effect";
+import { createInterface } from "node:readline";
 import {
 	type InterpreterDeps,
 	defaultInterpreterDeps,
 	runInterpreter,
 } from "./interpreter.js";
+import type { CallTool, ToolCallResponse } from "./tool-proxy.js";
 
 /**
  * The Worker entry point (ADR-0013 stdin transport, ADR-0018 generic
@@ -28,30 +30,71 @@ import {
  * (slice-2 review carry #1).
  */
 
-const emit = (event: RunEvent): void => {
-	process.stdout.write(`${JSON.stringify(event)}\n`);
+/** Write one NDJSON frame to stdout (Run Events and `tool_request`s). */
+const writeLine = (frame: unknown): void => {
+	process.stdout.write(`${JSON.stringify(frame)}\n`);
 };
 
-/** Resolve the first non-empty newline-terminated stdin line (the manifest). */
-function readManifestLine(): Promise<string | null> {
-	return new Promise((resolve) => {
-		let buf = "";
-		let done = false;
-		const finish = (value: string | null): void => {
-			if (done) return;
-			done = true;
-			resolve(value);
+const emit = (event: RunEvent): void => {
+	writeLine(event);
+};
+
+// Bidirectional stdio (ADR-0013): a single readline over stdin. The FIRST line
+// is the manifest; every subsequent line is a `tool_result` Core writes back,
+// dispatched to the pending tool call keyed by `tool_call_id`.
+const pendingTools = new Map<string, (resp: ToolCallResponse) => void>();
+let resolveManifest!: (line: string | null) => void;
+const manifestLine = new Promise<string | null>((resolve) => {
+	resolveManifest = resolve;
+});
+let gotManifest = false;
+
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line: string) => {
+	if (!gotManifest) {
+		gotManifest = true;
+		resolveManifest(line);
+		return;
+	}
+	try {
+		const msg = JSON.parse(line) as {
+			kind?: string;
+			tool_call_id?: string;
+			outcome?: ToolCallResponse;
 		};
-		process.stdin.setEncoding("utf8");
-		process.stdin.on("data", (chunk: string) => {
-			buf += chunk;
-			const nl = buf.indexOf("\n");
-			if (nl >= 0) finish(buf.slice(0, nl));
+		if (msg.kind === "tool_result" && typeof msg.tool_call_id === "string" && msg.outcome) {
+			const pending = pendingTools.get(msg.tool_call_id);
+			if (pending) {
+				pendingTools.delete(msg.tool_call_id);
+				pending(msg.outcome);
+			}
+		}
+	} catch {
+		// Non-JSON / unknown inbound line: ignore.
+	}
+});
+rl.on("close", () => {
+	if (!gotManifest) {
+		gotManifest = true;
+		resolveManifest(null);
+	}
+});
+
+/**
+ * The production `callTool` (ADR-0018): write a `tool_request` to stdout and
+ * resolve when Core writes back the matching `tool_result` on stdin.
+ */
+const callTool: CallTool = (toolCallId, name, params) =>
+	new Promise<ToolCallResponse>((resolve) => {
+		pendingTools.set(toolCallId, resolve);
+		writeLine({
+			kind: "tool_request",
+			run_id: "",
+			tool_call_id: toolCallId,
+			name,
+			params,
 		});
-		process.stdin.on("end", () => finish(buf.length > 0 ? buf : null));
-		process.stdin.on("error", () => finish(null));
 	});
-}
 
 /**
  * Build interpreter deps for this manifest. The faux path registers a
@@ -113,7 +156,7 @@ function depsFor(manifest: WorkerManifest): InterpreterDeps {
 }
 
 async function main(): Promise<void> {
-	const line = await readManifestLine();
+	const line = await manifestLine;
 	if (line === null) {
 		// Empty stdin — nothing to run. Mirror the prior worker's exit-0 on
 		// no input; Core treats stdout EOF without `done` as a disconnect.
@@ -134,7 +177,9 @@ async function main(): Promise<void> {
 	}
 
 	try {
-		await runInterpreter(manifest, emit, depsFor(manifest));
+		// Wire the stdio-backed callTool into the deps so the interpreter's
+		// tool proxies (ADR-0018) round-trip through Core.
+		await runInterpreter(manifest, emit, { ...depsFor(manifest), callTool });
 	} catch (e) {
 		// runInterpreter normally emits its own terminal event, but an
 		// unexpected throw (unknown provider in getModel, loop defect) must
