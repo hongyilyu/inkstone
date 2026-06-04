@@ -67,14 +67,36 @@ export class ChatPage {
 
 	/** Open the thread whose sidebar row title matches `title`. */
 	async openThread(title: string | RegExp): Promise<void> {
-		await this.sidebar().getByRole("button", { name: title }).click();
+		// Each row has a select button (named by title) AND a copy-id button
+		// (named "Copy thread id for …"). Scope to the row's first button (the
+		// selector) so the copy button never causes a strict-mode ambiguity.
+		await this.sidebar()
+			.locator("ul li")
+			.filter({ hasText: title })
+			.getByRole("button")
+			.first()
+			.click();
+	}
+
+	/** Click the copy-id button for the row titled `title`. */
+	async copyThreadId(title: string): Promise<void> {
+		await this.sidebar()
+			.getByRole("button", { name: `Copy thread id for ${title}` })
+			.click();
+	}
+
+	/** Read the browser clipboard (requires clipboard permission granted). */
+	async clipboardText(): Promise<string> {
+		return this.page.evaluate(() => navigator.clipboard.readText());
 	}
 
 	/** Number of thread rows currently listed in the sidebar. */
 	async threadCount(): Promise<number> {
-		// Thread rows are buttons inside the sidebar's scrolling list; the
-		// New Chat / toggle / account buttons are excluded by being outside <ul>.
-		return this.sidebar().locator("ul button").count();
+		// One copy-id button per real thread row (the empty-state <li> has none),
+		// so this counts threads without double-counting the per-row buttons.
+		return this.sidebar()
+			.locator('ul button[aria-label^="Copy thread id"]')
+			.count();
 	}
 
 	/** Reload the page (simulates the user refreshing mid-stream). */
