@@ -21,7 +21,14 @@
 //   allowlist → Core dispatches it). Set to an off-list name (e.g.
 //   "nonexistent") to exercise allowlist rejection → Core returns an `err`
 //   outcome and the fixture echoes `tool_outcome=err:<code>`.
+//
+// INKSTONE_TOOLWORKER_THREAD_ID_FILE
+//   A filesystem path. If set AND the file exists, its trimmed contents are
+//   the `thread_id` passed to read_thread (lets a test point the call at a
+//   real, just-created thread). Absent/missing → the default "t-dummy", which
+//   is an unknown id (→ Core returns a `not_found` error outcome).
 
+import { existsSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const emit = (event: unknown): void => {
@@ -81,13 +88,17 @@ const main = async (): Promise<void> => {
 	}
 
 	// Emit one tool_request. `run_id` is Core-ignored (Core uses the spawn's
-	// authoritative run id); send "" to keep the wire shape.
+	// authoritative run id); send "" to keep the wire shape. The thread_id is
+	// read from the id-file when present, else the unknown "t-dummy".
+	const idFile = process.env.INKSTONE_TOOLWORKER_THREAD_ID_FILE;
+	const threadId =
+		idFile && existsSync(idFile) ? readFileSync(idFile, "utf8").trim() : "t-dummy";
 	emit({
 		kind: "tool_request",
 		run_id: "",
 		tool_call_id: "tc_test_1",
 		name: tool,
-		params: { thread_id: "t-dummy" },
+		params: { thread_id: threadId },
 	});
 
 	// Block for the tool_result Core writes back on stdin.

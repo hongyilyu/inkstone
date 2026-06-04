@@ -57,8 +57,14 @@ impl Drop for CoreChild {
 
 /// Spawn Core on an ephemeral port (`INKSTONE_PORT=0`) so tests don't
 /// contend a fixed port. `tool` optionally overrides the tool the fixture
-/// requests (off-allowlist case).
-fn spawn_core(worker_cmd: &str, db_path: &Path, tool: Option<&str>) -> (CoreChild, String) {
+/// requests (off-allowlist case); `id_file` points the fixture at a file
+/// holding the `thread_id` to read.
+fn spawn_core(
+    worker_cmd: &str,
+    db_path: &Path,
+    tool: Option<&str>,
+    id_file: Option<&Path>,
+) -> (CoreChild, String) {
     let repo_root = repo_root();
     let mut cmd = std::process::Command::cargo_bin("core").expect("core binary exists");
     cmd.current_dir(&repo_root)
@@ -69,6 +75,9 @@ fn spawn_core(worker_cmd: &str, db_path: &Path, tool: Option<&str>) -> (CoreChil
         .stderr(Stdio::inherit());
     if let Some(t) = tool {
         cmd.env("INKSTONE_TOOLWORKER_TOOL", t);
+    }
+    if let Some(f) = id_file {
+        cmd.env("INKSTONE_TOOLWORKER_THREAD_ID_FILE", f);
     }
     let mut child = cmd.spawn().expect("core spawns");
 
@@ -116,13 +125,16 @@ async fn next_text(ws: &mut Ws) -> String {
     }
 }
 
-/// Drive a Run to completion and return (run_id, concatenated text deltas).
-async fn run_and_collect(ws_url: &str) -> (String, String) {
+/// Create a Thread with `prompt`, subscribe to its Run, drain to `done`, and
+/// return (thread_id, run_id, concatenated text deltas).
+async fn run_and_collect(ws_url: &str, prompt: &str) -> (String, String, String) {
     let (mut ws, _resp) = tokio_tungstenite::connect_async(ws_url)
         .await
         .expect("ws handshake succeeds");
 
-    let request = r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#;
+    let request = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{{"prompt":"{prompt}"}}}}"#
+    );
     ws.send(Message::Text(request.into()))
         .await
         .expect("send request frame");
@@ -130,6 +142,10 @@ async fn run_and_collect(ws_url: &str) -> (String, String) {
     let response_body = next_text(&mut ws).await;
     let response: serde_json::Value = serde_json::from_str(&response_body)
         .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {response_body}"));
+    let thread_id = response["result"]["thread_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("result.thread_id is a string — body: {response_body}"))
+        .to_string();
     let run_id = response["result"]["run_id"]
         .as_str()
         .unwrap_or_else(|| panic!("result.run_id is a string — body: {response_body}"))
@@ -161,34 +177,42 @@ async fn run_and_collect(ws_url: &str) -> (String, String) {
     }
     ws.close(None).await.ok();
     tokio::time::sleep(Duration::from_millis(200)).await;
-    (run_id, text)
+    (thread_id, run_id, text)
 }
 
 #[test]
-fn read_thread_tool_round_trips_and_persists() {
+fn read_thread_returns_another_threads_messages() {
     let worker_cmd = tool_worker_cmd();
     let tmp = TempDir::new().expect("tempdir");
     let db_path = tmp.path().join("db.sqlite");
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, None);
+    let id_file = tmp.path().join("tid");
+    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, None, Some(&id_file));
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("tokio runtime builds");
 
-    let run_id = rt.block_on(async {
-        let (run_id, text) = run_and_collect(&ws_url).await;
-        // The fixture echoes the outcome it received from Core. A successful
-        // round-trip yields `tool_outcome=ok:<stub payload>`.
+    let run_b = rt.block_on(async {
+        // Thread A carries a distinctive prompt. Its own Run calls read_thread
+        // with the default unknown id (the id-file doesn't exist yet) → an
+        // error outcome it ignores; we just need A persisted.
+        let (thread_a, _run_a, _text_a) =
+            run_and_collect(&ws_url, "alpha-secret-123").await;
+
+        // Point the fixture at A, then run Thread B — B's Run reads A.
+        std::fs::write(&id_file, &thread_a).expect("write id file");
+        let (_thread_b, run_b, text_b) = run_and_collect(&ws_url, "beta").await;
+
         assert!(
-            text.contains("tool_outcome=ok:"),
-            "stream shows a successful tool outcome — got {text:?}"
+            text_b.contains("tool_outcome=ok:"),
+            "B's read_thread call succeeded — got {text_b:?}"
         );
         assert!(
-            text.contains("messages"),
-            "tool result carries the stub {{messages:[]}} payload — got {text:?}"
+            text_b.contains("alpha-secret-123"),
+            "read_thread returned A's message text — got {text_b:?}"
         );
-        run_id
+        run_b
     });
 
     rt.block_on(async {
@@ -199,36 +223,54 @@ fn read_thread_tool_round_trips_and_persists() {
             .await
             .expect("connect to migrated DB");
 
-        // tool_calls -----------------------------------------------------
         let row = sqlx::query(
-            "SELECT name, status, request_payload, result_payload \
-             FROM tool_calls WHERE run_id = ?1",
+            "SELECT name, status, result_payload FROM tool_calls WHERE run_id = ?1",
         )
-        .bind(&run_id)
+        .bind(&run_b)
         .fetch_one(&pool)
         .await
-        .expect("a tool_calls row exists for the run");
+        .expect("a tool_calls row exists for B's run");
         let name: String = row.get("name");
         let status: String = row.get("status");
-        let request_payload: Option<String> = row.get("request_payload");
         let result_payload: Option<String> = row.get("result_payload");
-        assert_eq!(name, "read_thread", "tool_calls.name");
-        assert_eq!(status, "completed", "tool_calls.status flipped to completed");
-        assert!(request_payload.is_some(), "request_payload persisted");
+        assert_eq!(name, "read_thread");
+        assert_eq!(status, "completed");
         assert!(
-            result_payload.as_deref().unwrap_or("").contains("messages"),
-            "result_payload carries the tool output — got {result_payload:?}"
+            result_payload.as_deref().unwrap_or("").contains("alpha-secret-123"),
+            "result_payload carries A's content — got {result_payload:?}"
         );
 
-        // run_steps ------------------------------------------------------
         let step_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM run_steps WHERE run_id = ?1 AND kind = 'tool_call'",
         )
-        .bind(&run_id)
+        .bind(&run_b)
         .fetch_one(&pool)
         .await
         .expect("count tool_call run_steps");
         assert_eq!(step_count, 1, "exactly one tool_call run_step");
+    });
+}
+
+#[test]
+fn unknown_thread_id_returns_error_outcome() {
+    let worker_cmd = tool_worker_cmd();
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    // No id-file → the fixture reads the unknown "t-dummy"; read_thread must
+    // return an error outcome and the Run must still complete cleanly.
+    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, None, None);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let (_thread, _run, text) = run_and_collect(&ws_url, "hi").await;
+        assert!(
+            text.contains("tool_outcome=err:"),
+            "unknown thread id yields an error outcome — got {text:?}"
+        );
     });
 }
 
@@ -239,7 +281,7 @@ fn off_allowlist_tool_returns_error_outcome() {
     let db_path = tmp.path().join("db.sqlite");
     // The fixture requests a tool not in the Workflow allowlist; Core must
     // reject it with an `err` outcome rather than dispatching.
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, Some("nonexistent"));
+    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, Some("nonexistent"), None);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -247,7 +289,7 @@ fn off_allowlist_tool_returns_error_outcome() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        let (_run_id, text) = run_and_collect(&ws_url).await;
+        let (_thread, _run, text) = run_and_collect(&ws_url, "hi").await;
         assert!(
             text.contains("tool_outcome=err:"),
             "off-allowlist tool yields an error outcome — got {text:?}"
