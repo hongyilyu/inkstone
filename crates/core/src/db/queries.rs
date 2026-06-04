@@ -398,6 +398,101 @@ where
     .map(|_| ())
 }
 
+/// The next `run_steps.seq` for a Run (`MAX(seq)+1`, or 0 for the first).
+/// The initial run inserts the user + assistant message steps at seq 0/1, so
+/// the first tool-call step lands at seq 2.
+pub(super) async fn next_run_step_seq<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<i64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM run_steps WHERE run_id = ?")
+        .bind(run_id.to_string())
+        .fetch_one(executor)
+        .await
+}
+
+// ─── tool_calls (ADR-0017) ────────────────────────────────────────────
+
+/// Insert a `tool_calls` row in the `pending` state with its request payload.
+/// `id` is the Worker-assigned `tool_call_id` (a string, not necessarily a
+/// UUID). Resolved later by [`complete_tool_call`].
+pub(super) async fn insert_tool_call<'e, E>(
+    executor: E,
+    id: &str,
+    run_id: Uuid,
+    name: &str,
+    request_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO tool_calls \
+         (id, run_id, name, request_payload, status, requested_at) \
+         VALUES (?, ?, ?, ?, 'pending', ?)",
+    )
+    .bind(id)
+    .bind(run_id.to_string())
+    .bind(name)
+    .bind(request_payload)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Flip a `tool_calls` row to `completed` with its result payload and resolve
+/// time. `status` is the terminal tool-call status (`completed` or `errored`).
+pub(super) async fn resolve_tool_call<'e, E>(
+    executor: E,
+    id: &str,
+    status: &str,
+    result_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE tool_calls SET status = ?, result_payload = ?, resolved_at = ? \
+         WHERE id = ?",
+    )
+    .bind(status)
+    .bind(result_payload)
+    .bind(now_ms)
+    .bind(id)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Insert a `run_steps` row of kind `tool_call`, interleaving the tool call
+/// into the Run timeline at `seq`.
+pub(super) async fn insert_tool_call_run_step<'e, E>(
+    executor: E,
+    run_id: Uuid,
+    seq: i64,
+    tool_call_id: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO run_steps \
+         (run_id, seq, kind, message_id, tool_call_id, created_at) \
+         VALUES (?, ?, 'tool_call', NULL, ?, ?)",
+    )
+    .bind(run_id.to_string())
+    .bind(seq)
+    .bind(tool_call_id)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
 // ─── run_events ───────────────────────────────────────────────────────
 
 pub(super) async fn next_run_seq<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<i64>

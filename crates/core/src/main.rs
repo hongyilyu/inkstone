@@ -7,6 +7,7 @@ mod protocol;
 mod provider_auth;
 mod runs;
 mod settings;
+mod tools;
 mod worker;
 mod workflow;
 
