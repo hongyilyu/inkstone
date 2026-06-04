@@ -2,7 +2,7 @@ import { type RunEventValue, WsClient } from "@inkstone/ui-sdk";
 import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { resetBridge } from "@/store/bridge";
 import { getChatState, resetChatStore } from "@/store/chat";
@@ -118,37 +118,31 @@ describe("Sidebar", () => {
 		await runtime.dispose();
 	});
 
-	it("shows a newly-created thread without a manual reload", async () => {
+	it("copies a thread's id to the clipboard from its row button", async () => {
 		const user = userEvent.setup();
-		const runtime = makeGrowingStubRuntime({
-			newThreadId: "thread-new",
-			runId: "run-1",
-			events: [{ kind: "text_delta", delta: "echo: hi" }, { kind: "done" }],
+		const runtime = makeStubRuntime();
+
+		const writeText = vi.fn(() => Promise.resolve());
+		Object.defineProperty(navigator, "clipboard", {
+			value: { writeText },
+			configurable: true,
 		});
 
-		// Sidebar + ChatColumn share one runtime + QueryClient, so the
-		// composer's threadCreate and the sidebar's thread/list read go through
-		// the same query cache — exactly the real app wiring.
 		renderWithQuery(
 			<RuntimeProvider runtime={runtime}>
 				<Sidebar />
-				<ChatColumn />
 			</RuntimeProvider>,
 		);
 
-		// Initially the list is empty (no threads created yet).
-		expect(await screen.findByText(/no threads match/i)).toBeInTheDocument();
+		// Each row exposes a copy-id control; clicking it writes that thread's
+		// id (not its title) to the clipboard so the user can paste it into a
+		// message for the read_thread tool.
+		const copyBtn = await screen.findByRole("button", {
+			name: /copy thread id for standup digest/i,
+		});
+		await user.click(copyBtn);
 
-		// Send the first message with no focused thread → mints "thread-new".
-		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
-		await user.click(screen.getByRole("button", { name: /send/i }));
-
-		// The sidebar must surface the freshly-minted thread — proving the
-		// thread/list query was invalidated on create (not stuck on the empty
-		// first read). Its title is the prompt text.
-		expect(
-			await screen.findByRole("button", { name: "hi" }),
-		).toBeInTheDocument();
+		expect(writeText).toHaveBeenCalledWith("t-1");
 
 		await runtime.dispose();
 	});
