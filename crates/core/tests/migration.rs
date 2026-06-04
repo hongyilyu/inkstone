@@ -16,6 +16,7 @@ fn migration_creates_all_tables() {
     let mut child = std::process::Command::cargo_bin("core")
         .expect("core binary exists")
         .env("INKSTONE_DB_PATH", &db_path)
+        .env("INKSTONE_PORT", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
@@ -87,6 +88,7 @@ fn migration_creates_all_tables() {
         "run_events",
         "run_steps",
         "runs",
+        "settings",
         "threads",
         "tool_calls",
     ]
