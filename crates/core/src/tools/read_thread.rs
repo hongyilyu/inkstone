@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 use sqlx::SqlitePool;
+use uuid::Uuid;
 
 use super::ToolError;
 use crate::protocol::{AgentToolResult, CoreToolDescriptor, ToolTextContent};
@@ -23,8 +24,6 @@ const LABEL: &str = "Read thread";
 /// struct on receipt (ADR-0018 "Argument validation").
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Input {
-    // Read by the real query in slice 3; the slice-2 stub only validates shape.
-    #[allow(dead_code)]
     pub thread_id: String,
 }
 
@@ -40,19 +39,47 @@ pub fn descriptor() -> CoreToolDescriptor {
     }
 }
 
-/// Slice 2 stub. Validates `params` against [`Input`] (malformed → an
-/// `invalid_params` ToolError) then returns the empty `{"messages":[]}`
-/// payload. Slice 3 replaces this body with the real query.
-pub async fn execute(_pool: &SqlitePool, params: Value) -> Result<AgentToolResult, ToolError> {
-    let _input: Input = serde_json::from_value(params).map_err(|e| ToolError {
+/// Read the requested Thread's messages and return them as a JSON payload
+/// `{ thread_id, title, messages: [{ role, text }, …] }` in a single text
+/// content block. Reuses the same read path as `thread/get`
+/// ([`crate::db::get_thread_with_messages`]) — no new query. A malformed or
+/// unknown `thread_id` is a `not_found` ToolError (the Run continues; the
+/// model sees the error result, per ADR-0018).
+pub async fn execute(pool: &SqlitePool, params: Value) -> Result<AgentToolResult, ToolError> {
+    let input: Input = serde_json::from_value(params).map_err(|e| ToolError {
         code: "invalid_params".to_string(),
         message: e.to_string(),
     })?;
 
+    let thread_uuid = Uuid::parse_str(&input.thread_id).map_err(|_| ToolError {
+        code: "not_found".to_string(),
+        message: format!("no thread with id {:?}", input.thread_id),
+    })?;
+
+    let (title, messages) = crate::db::get_thread_with_messages(pool, thread_uuid)
+        .await
+        .map_err(|e| ToolError {
+            code: "internal".to_string(),
+            message: e.to_string(),
+        })?
+        .ok_or_else(|| ToolError {
+            code: "not_found".to_string(),
+            message: format!("no thread with id {}", input.thread_id),
+        })?;
+
+    let payload = serde_json::json!({
+        "thread_id": input.thread_id,
+        "title": title,
+        "messages": messages
+            .iter()
+            .map(|m| serde_json::json!({ "role": m.role, "text": m.text }))
+            .collect::<Vec<_>>(),
+    });
+
     Ok(AgentToolResult {
         content: vec![ToolTextContent {
             r#type: "text".to_string(),
-            text: r#"{"messages":[]}"#.to_string(),
+            text: payload.to_string(),
         }],
         details: None,
         terminate: None,

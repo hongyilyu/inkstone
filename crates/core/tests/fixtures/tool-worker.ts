@@ -89,14 +89,17 @@ const main = async (): Promise<void> => {
 
 	// Emit one tool_request. `run_id` is Core-ignored (Core uses the spawn's
 	// authoritative run id); send "" to keep the wire shape. The thread_id is
-	// read from the id-file when present, else the unknown "t-dummy".
+	// read from the id-file when present, else the unknown "t-dummy". The
+	// tool_call_id is per-process (one worker process per Run) so it is unique
+	// across Runs — `tool_calls.id` is a global primary key.
 	const idFile = process.env.INKSTONE_TOOLWORKER_THREAD_ID_FILE;
 	const threadId =
 		idFile && existsSync(idFile) ? readFileSync(idFile, "utf8").trim() : "t-dummy";
+	const toolCallId = `tc_${process.pid}`;
 	emit({
 		kind: "tool_request",
 		run_id: "",
-		tool_call_id: "tc_test_1",
+		tool_call_id: toolCallId,
 		name: tool,
 		params: { thread_id: threadId },
 	});
@@ -106,7 +109,7 @@ const main = async (): Promise<void> => {
 	const result = JSON.parse(resultLine) as ToolResultLine;
 
 	let outcome: string;
-	if (result.kind !== "tool_result" || result.tool_call_id !== "tc_test_1") {
+	if (result.kind !== "tool_result" || result.tool_call_id !== toolCallId) {
 		outcome = "malformed";
 	} else if (result.outcome?.ok) {
 		const text = result.outcome.ok.content?.[0]?.text ?? "";
