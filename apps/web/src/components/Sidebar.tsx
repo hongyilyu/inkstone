@@ -1,7 +1,7 @@
 import { WsClient } from "@inkstone/ui-sdk";
 import { useQuery } from "@tanstack/react-query";
 import { Effect } from "effect";
-import { PanelLeftClose, Search, UserPlus, WandSparkles } from "lucide-react";
+import { Copy, PanelLeftClose, Search, UserPlus, WandSparkles } from "lucide-react";
 import { useState } from "react";
 import { useRuntime } from "@/runtime";
 import {
@@ -106,17 +106,31 @@ export function Sidebar({
 					</li>
 				) : (
 					filtered.map((item) => (
-						<li key={item.id}>
+						<li
+							key={item.id}
+							className={cn(
+								"group flex h-9 items-center rounded-lg pr-1 transition-colors hover:bg-sidebar-accent",
+								item.id === focusedThreadId && "bg-sidebar-accent",
+							)}
+						>
 							<button
 								type="button"
 								onClick={() => setFocusedThread(item.id)}
 								aria-current={item.id === focusedThreadId ? "true" : undefined}
-								className={cn(
-									"flex h-9 w-full cursor-pointer items-center truncate rounded-lg px-3 text-left text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent",
-									item.id === focusedThreadId && "bg-sidebar-accent",
-								)}
+								className="h-full flex-1 cursor-pointer truncate rounded-lg px-3 text-left text-sm text-sidebar-foreground"
 							>
 								{item.title}
+							</button>
+							<button
+								type="button"
+								aria-label={`Copy thread id for ${item.title}`}
+								title="Copy thread id"
+								onClick={() => {
+									void navigator.clipboard?.writeText(item.id);
+								}}
+								className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/50 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100"
+							>
+								<Copy className="size-3.5" />
 							</button>
 						</li>
 					))

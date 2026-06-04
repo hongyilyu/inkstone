@@ -118,6 +118,41 @@ describe("Sidebar", () => {
 		await runtime.dispose();
 	});
 
+	it("shows a newly-created thread without a manual reload", async () => {
+		const user = userEvent.setup();
+		const runtime = makeGrowingStubRuntime({
+			newThreadId: "thread-new",
+			runId: "run-1",
+			events: [{ kind: "text_delta", delta: "echo: hi" }, { kind: "done" }],
+		});
+
+		// Sidebar + ChatColumn share one runtime + QueryClient, so the
+		// composer's threadCreate and the sidebar's thread/list read go through
+		// the same query cache — exactly the real app wiring.
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<Sidebar />
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		// Initially the list is empty (no threads created yet).
+		expect(await screen.findByText(/no threads match/i)).toBeInTheDocument();
+
+		// Send the first message with no focused thread → mints "thread-new".
+		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		// The sidebar must surface the freshly-minted thread — proving the
+		// thread/list query was invalidated on create (not stuck on the empty
+		// first read). Its title is the prompt text.
+		expect(
+			await screen.findByRole("button", { name: "hi" }),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
 	it("copies a thread's id to the clipboard from its row button", async () => {
 		const user = userEvent.setup();
 		const runtime = makeStubRuntime();
