@@ -1,6 +1,7 @@
 import { WorkerManifest, type RunEvent } from "@inkstone/protocol";
 import {
 	fauxAssistantMessage,
+	fauxToolCall,
 	registerFauxProvider,
 	streamSimple,
 } from "@earendil-works/pi-ai";
@@ -96,6 +97,23 @@ const callTool: CallTool = (toolCallId, name, params) =>
 		});
 	});
 
+/** Flatten a pi message `content` (string | content blocks) to plain text. */
+function textOf(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content
+			.map((c) =>
+				c && typeof c === "object" && "text" in c
+					? String((c as { text: unknown }).text)
+					: "",
+			)
+			.join("");
+	}
+	return "";
+}
+
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
 /**
  * Build interpreter deps for this manifest. The faux path registers a
  * provider whose single queued response is the env-supplied text (or a
@@ -112,6 +130,33 @@ function depsFor(manifest: WorkerManifest): InterpreterDeps {
 		faux.setResponses([
 			fauxAssistantMessage("", { stopReason: "error", errorMessage }),
 		]);
+	} else if (process.env.INKSTONE_FAUX_TOOL_CALL === "1") {
+		// Tool-call mode (e2e): turn 1 extracts a thread id from the latest
+		// user prompt and calls read_thread; turn 2 echoes the tool result so
+		// the assistant's reply reflects the read thread's content. Uses
+		// response factories so it reads the live context (the pasted id, then
+		// the tool result the proxy round-tripped back).
+		faux.setResponses([
+			(context) => {
+				const lastUser = [...context.messages]
+					.reverse()
+					.find((m) => m.role === "user");
+				const match = textOf(lastUser?.content).match(UUID_RE);
+				const threadId = match ? match[0] : "missing";
+				return fauxAssistantMessage(
+					[fauxToolCall("read_thread", { thread_id: threadId })],
+					{ stopReason: "toolUse" },
+				);
+			},
+			(context) => {
+				const toolResult = [...context.messages]
+					.reverse()
+					.find((m) => m.role === "toolResult");
+				return fauxAssistantMessage(
+					`read_thread result: ${textOf(toolResult?.content)}`,
+				);
+			},
+		]);
 	} else if (process.env.INKSTONE_FAUX_ECHO_HISTORY === "1") {
 		// History-echo mode (multi-turn test): reply with the prior messages
 		// the loop passed in its context — both roles — so the test can prove
@@ -119,28 +164,13 @@ function depsFor(manifest: WorkerManifest): InterpreterDeps {
 		// reply into the manifest history (the assistant turn is the
 		// slice-9 race that this exercises). Uses a response factory so it
 		// reads the live context rather than a canned string.
-		const textOf = (content: unknown): string => {
-			if (typeof content === "string") return content;
-			if (Array.isArray(content)) {
-				return content
-					.map((c) =>
-						c && typeof c === "object" && "text" in c
-							? String((c as { text: unknown }).text)
-							: "",
-					)
-					.join("");
-			}
-			return "";
-		};
 		faux.setResponses([
 			(context) => {
 				// All prior turns except the current prompt (the last user
 				// message). Tag each with its role so the test can assert the
 				// assistant turn specifically.
 				const prior = context.messages.slice(0, -1);
-				const parts = prior.map(
-					(m) => `${m.role}=${textOf(m.content)}`,
-				);
+				const parts = prior.map((m) => `${m.role}=${textOf(m.content)}`);
 				return fauxAssistantMessage(`history:${parts.join("|")}`);
 			},
 		]);
