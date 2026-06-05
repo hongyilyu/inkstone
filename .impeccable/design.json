@@ -1,0 +1,135 @@
+{
+	"schemaVersion": 2,
+	"generatedAt": "2026-06-05T00:00:00.000Z",
+	"title": "Design System: Inkstone",
+	"extensions": {
+		"colorMeta": {
+			"ink-magenta": {
+				"role": "primary",
+				"displayName": "Ink Magenta",
+				"canonical": "#e33f86",
+				"tonalRamp": ["#3d0f23", "#5e1535", "#7e1c48", "#a8255e", "#cc3576", "#e33f86", "#ee82ad", "#f8cede"]
+			},
+			"soft-pink": {
+				"role": "secondary",
+				"displayName": "Soft Pink",
+				"canonical": "#f1c4e6",
+				"tonalRamp": ["#3a1330", "#5a1d49", "#7c2a66", "#a23d86", "#c75fa6", "#dd8cc4", "#f1c4e6", "#fae6f4"]
+			},
+			"deep-plum-ink": {
+				"role": "neutral",
+				"displayName": "Deep Plum Ink",
+				"canonical": "#501854",
+				"tonalRamp": ["#1c0820", "#2e0d33", "#421248", "#501854", "#6c2f70", "#8f5293", "#bd8fc0", "#e6d3e8"]
+			},
+			"deep-magenta-muted": {
+				"role": "neutral",
+				"displayName": "Deep Magenta Muted",
+				"canonical": "#ac1668",
+				"tonalRamp": ["#2e0519", "#4a0a28", "#6a0f3a", "#88134e", "#ac1668", "#c94e8d", "#e08fb6", "#f3cfe0"]
+			},
+			"blush-surface": {
+				"role": "neutral",
+				"displayName": "Blush Surface",
+				"canonical": "#fdf7fd",
+				"tonalRamp": ["#3a3340", "#564d5c", "#766b7c", "#9a8fa0", "#c0b6c5", "#e0d6e4", "#f3eaf4", "#fdf7fd"]
+			}
+		},
+		"typographyMeta": {
+			"display": { "displayName": "Display", "purpose": "The 'Today' overview title; the largest type in the app." },
+			"headline": { "displayName": "Headline", "purpose": "Collection and settings page titles." },
+			"title": { "displayName": "Title", "purpose": "Detail-panel entity names and dialog titles." },
+			"body": { "displayName": "Body", "purpose": "Row titles, descriptions, prose (cap 65-75ch)." },
+			"label": { "displayName": "Label", "purpose": "Field labels, counts, metadata, kbd hints. Sentence case." }
+		},
+		"shadows": [
+			{ "name": "raised", "value": "0 1px 2px rgba(80, 24, 84, 0.10)", "purpose": "Primary buttons only: a 1px lift on the single most actionable element." },
+			{ "name": "floating", "value": "0 16px 48px -24px rgba(80, 24, 84, 0.45)", "purpose": "Popovers and the command palette, floating above a blurred backdrop." }
+		],
+		"motion": [
+			{ "name": "ease-out-quint", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Entrance reveals (section rise, panel slide, palette open)." },
+			{ "name": "duration-state", "value": "150ms", "purpose": "Hover/selection color transitions." },
+			{ "name": "duration-enter", "value": "320-500ms", "purpose": "Panel slide and overview section rise; disabled under prefers-reduced-motion." }
+		],
+		"breakpoints": [
+			{ "name": "sm", "value": "640px" },
+			{ "name": "lg", "value": "1024px" }
+		]
+	},
+	"components": [
+		{
+			"name": "Primary Button",
+			"kind": "button",
+			"refersTo": "button-primary",
+			"description": "The single saturated action per context (New Chat, Start a chat).",
+			"html": "<button class=\"ds-btn-primary\">New Chat</button>",
+			"css": ".ds-btn-primary { background: #e33f86; color: #fff; border: none; border-radius: 8px; padding: 10px 16px; font: 600 0.875rem Inter, system-ui, sans-serif; box-shadow: 0 1px 2px rgba(80,24,84,0.10); cursor: pointer; transition: background 0.15s ease; } .ds-btn-primary:hover { background: #d52f78; } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 1px #db2777; }"
+		},
+		{
+			"name": "Chip Button",
+			"kind": "chip",
+			"refersTo": "chip",
+			"description": "Bordered, transparent secondary action and filter (Confirm, model picker).",
+			"html": "<button class=\"ds-chip\">Confirm</button>",
+			"css": ".ds-chip { background: transparent; color: #501854; border: 1px solid #e7c1dc; border-radius: 9999px; padding: 6px 14px; font: 500 0.875rem Inter, system-ui, sans-serif; cursor: pointer; transition: background 0.15s ease; } .ds-chip:hover { background: rgba(241,196,230,0.5); } .ds-chip:focus-visible { outline: none; box-shadow: 0 0 0 1px #db2777; }"
+		},
+		{
+			"name": "Search Input",
+			"kind": "input",
+			"refersTo": "input-search",
+			"description": "Collection search field with a leading glyph; placeholder holds contrast.",
+			"html": "<div class=\"ds-search\"><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"#ac1668\" stroke-width=\"2\" stroke-linecap=\"round\"><circle cx=\"11\" cy=\"11\" r=\"7\"/><path d=\"M21 21l-4.3-4.3\"/></svg><input placeholder=\"Search people…\"/></div>",
+			"css": ".ds-search { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; background: rgba(250,243,251,0.4); border: 1px solid #e7c1dc; border-radius: 8px; } .ds-search input { flex: 1; border: none; background: transparent; outline: none; color: #501854; font: 400 0.875rem Inter, system-ui, sans-serif; } .ds-search input::placeholder { color: #ac1668; } .ds-search:focus-within { box-shadow: 0 0 0 1px #db2777; }"
+		},
+		{
+			"name": "Entity Row",
+			"kind": "custom",
+			"refersTo": "card",
+			"description": "Selectable list row: glyph tile + title + subtitle, optional trailing chip.",
+			"html": "<button class=\"ds-row\"><span class=\"ds-glyph\">PN</span><span class=\"ds-row-text\"><span class=\"ds-row-title\">Priya Nair</span><span class=\"ds-row-sub\">Staff engineer, Platform</span></span></button>",
+			"css": ".ds-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border: none; background: transparent; border-radius: 8px; text-align: left; cursor: pointer; transition: background 0.15s ease; } .ds-row:hover { background: rgba(241,196,230,0.4); } .ds-glyph { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 9999px; background: #f1c4e6; color: #77347c; font: 600 11px Inter, system-ui, sans-serif; flex: none; } .ds-row-text { min-width: 0; } .ds-row-title { display: block; color: #501854; font: 500 0.875rem Inter, system-ui, sans-serif; } .ds-row-sub { display: block; color: #ac1668; font: 400 0.75rem Inter, system-ui, sans-serif; }"
+		},
+		{
+			"name": "Status Chip",
+			"kind": "chip",
+			"refersTo": "chip",
+			"description": "Project status and overdue states; a dot or icon plus a word, never colour alone.",
+			"html": "<span class=\"ds-status\"><span class=\"ds-dot\"></span>In review</span>",
+			"css": ".ds-status { display: inline-flex; align-items: center; gap: 6px; background: #f1c4e6; color: #77347c; border-radius: 9999px; padding: 4px 10px; font: 500 0.75rem Inter, system-ui, sans-serif; } .ds-dot { width: 6px; height: 6px; border-radius: 9999px; background: #e33f86; }"
+		}
+	],
+	"narrative": {
+		"northStar": "The Lamplit Desk",
+		"overview": "Inkstone is the desk you return to at dusk: a private, warm-lit place where the day's loose thoughts settle into something you can find again. The whole system is built around one committed magenta that behaves like lamplight, a single warm glow that anchors a near-monochrome field of plums and blushes. It is characterful without being loud, and unhurried by construction: generous whitespace, calm lists over busy cards, and a quiet confidence that the work is yours and stays private. Depth comes from warm tonal steps and thin hairlines, not heavy shadows; type does the heavy lifting with one Inter family, and the magenta is rationed so its appearances always mean something.",
+		"keyCharacteristics": [
+			"One committed magenta as the only accent; everything else is a warm plum neutral.",
+			"Tonal layering (sidebar → surface → card) over drop shadows.",
+			"Lists, grouping, and whitespace instead of card grids.",
+			"One typeface (Inter), hierarchy through weight and size, not ornament.",
+			"Full light and dark parity; the same tokens flip under [data-theme]."
+		],
+		"rules": [
+			{ "name": "The One Ink Rule", "body": "Magenta is the only accent. New categories earn distinction through icon + label + tonal soft-pink, never a new hue.", "section": "colors" },
+			{ "name": "The Warm Neutral Rule", "body": "There are no true grays. Every 'gray' is a plum or magenta tint; muted text is a darkened brand hue (#ac1668), not #888.", "section": "colors" },
+			{ "name": "The Fixed-Scale Rule", "body": "App UI uses a fixed rem scale, never fluid clamp(). Headings must not shrink in a sidebar or panel.", "section": "typography" },
+			{ "name": "The Sentence-Case Rule", "body": "Section headers and labels are sentence case. No tracked all-caps eyebrow above every section.", "section": "typography" },
+			{ "name": "The No Ghost-Card Rule", "body": "Never pair a 1px border with a wide (>=16px blur) drop shadow on the same element. Resting surfaces layer tonally.", "section": "elevation" }
+		],
+		"dos": [
+			"Do ration Ink Magenta (#e33f86) to one primary action or the current selection per context.",
+			"Do convey depth by tonal layering (petal → blush → card) and hairlines, not drop shadows.",
+			"Do distinguish entity kinds with icon + label and a uniform soft-pink glyph tile.",
+			"Do keep muted text at the darkened brand hue (#ac1668) so subtitles clear 4.5:1 on warm surfaces.",
+			"Do prefer grouped lists with generous whitespace; reach for a card only when content is truly distinct.",
+			"Do give every animation a prefers-reduced-motion alternative."
+		],
+		"donts": [
+			"Don't ship the generic SaaS dashboard: identical card grids, hero-metric templates, Notion/Linear sameness.",
+			"Don't drift toward corporate enterprise: navy-and-gray, stock photography, buzzword copy.",
+			"Don't build a cluttered power-tool: toolbar soup, dense nested menus, everything visible at once.",
+			"Don't introduce a second saturated hue. Categories earn distinction through icon, label, and tint.",
+			"Don't pair a 1px border with a wide drop shadow (the 'ghost card'); pick one.",
+			"Don't round cards past 16px, encode meaning in color alone, set a tracked all-caps eyebrow above every section, or use em dashes in copy."
+		]
+	}
+}

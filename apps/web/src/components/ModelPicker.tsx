@@ -1,11 +1,12 @@
-import type { ModelInfo } from "@inkstone/protocol";
 import { Popover } from "@base-ui-components/react/popover";
-import { Brain, Check, ChevronDown, Eye, Search } from "lucide-react";
+import type { ModelInfo } from "@inkstone/protocol";
+import { Brain, Check, ChevronDown, Eye } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { cn } from "@/lib/utils.js";
 import { useRuntime } from "@/runtime";
 import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
-import { cn } from "@/lib/utils.js";
 import { Button } from "./ui/button.js";
+import { SearchField } from "./ui/search-field.js";
 
 /**
  * Composer model picker (ADR-0024). Reflects the real `model/catalog` and the
@@ -45,8 +46,7 @@ export function ModelPicker() {
 		const q = query.trim().toLowerCase();
 		if (!q) return models;
 		return models.filter(
-			(m) =>
-				m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q),
+			(m) => m.name.toLowerCase().includes(q) || m.id.toLowerCase().includes(q),
 		);
 	}, [models, query]);
 
@@ -71,16 +71,13 @@ export function ModelPicker() {
 			<Popover.Portal>
 				<Popover.Positioner side="top" align="start" sideOffset={8}>
 					<Popover.Popup className="flex max-h-[420px] w-[360px] flex-col rounded-xl border border-border bg-popover p-2 text-popover-foreground shadow-lg outline-none">
-						<div className="flex items-center gap-2 border-input border-b px-2 pb-2">
-							<Search className="h-4 w-4 text-muted-foreground" aria-hidden />
-							<input
-								type="text"
-								value={query}
-								onChange={(e) => setQuery(e.target.value)}
-								placeholder="Search models…"
-								className="h-8 flex-1 bg-transparent text-foreground text-sm outline-none placeholder:text-muted-foreground"
-							/>
-						</div>
+						<SearchField
+							variant="divider"
+							wrapperClassName="px-2"
+							value={query}
+							onChange={(e) => setQuery(e.target.value)}
+							placeholder="Search models…"
+						/>
 						<ul className="mt-1 flex flex-col gap-0.5 overflow-y-auto pr-1">
 							{visible.length === 0 ? (
 								<li className="px-3 py-6 text-center text-muted-foreground text-sm">

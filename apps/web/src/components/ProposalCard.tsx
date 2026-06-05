@@ -2,6 +2,7 @@
 import { Check, File, FileText, Folder } from "lucide-react";
 import type { ElementType } from "react";
 import type { Proposal, ProposalKind } from "@/data/mock/types";
+import { Card } from "./ui/card.js";
 
 const KIND_ICON = {
 	todo: Check,
@@ -13,27 +14,28 @@ const KIND_ICON = {
 export function ProposalCard({ proposal }: { proposal: Proposal }) {
 	const Icon = KIND_ICON[proposal.kind];
 	return (
-		<article
-			data-proposal-kind={proposal.kind}
-			className="rounded-lg border border-border bg-card p-5 text-card-foreground"
-		>
+		<Card data-proposal-kind={proposal.kind} className="p-5">
 			<header className="flex items-center gap-2 text-sm">
-				<Icon
-					className="h-4 w-4 text-card-foreground/60"
-					aria-hidden
-				/>
+				<Icon className="h-4 w-4 text-card-foreground/60" aria-hidden />
 				<span className="font-medium">{proposal.title}</span>
-				<span className="ml-auto text-xs text-card-foreground/60">{proposal.target}</span>
+				<span className="ml-auto text-xs text-card-foreground/60">
+					{proposal.target}
+				</span>
 			</header>
-			<p className="mt-2 text-sm leading-relaxed text-card-foreground/80">{proposal.summary}</p>
+			<p className="mt-2 text-sm leading-relaxed text-card-foreground/80">
+				{proposal.summary}
+			</p>
 			<pre className="mt-3 whitespace-pre-wrap rounded-md bg-secondary/50 p-3 font-mono text-xs leading-relaxed text-foreground">
 				{proposal.diff.map((line, i) => (
+					// biome-ignore lint/suspicious/noArrayIndexKey: diff lines are a fixed, ordered array
 					<div key={i}>
-						{line.before ? <div className="text-destructive">- {line.before}</div> : null}
+						{line.before ? (
+							<div className="text-destructive">- {line.before}</div>
+						) : null}
 						<div>{line.after}</div>
 					</div>
 				))}
 			</pre>
-		</article>
+		</Card>
 	);
 }

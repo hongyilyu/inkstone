@@ -7,7 +7,12 @@ import App from "../App.js";
  */
 function ChatRoute() {
 	const navigate = useNavigate();
-	return <App onOpenSettings={() => navigate({ to: "/settings/models" })} />;
+	return (
+		<App
+			onOpenSettings={() => navigate({ to: "/settings/models" })}
+			onOpenLibrary={() => navigate({ to: "/library" })}
+		/>
+	);
 }
 
 export const Route = createFileRoute("/")({

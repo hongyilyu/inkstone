@@ -10,12 +10,20 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteRouteImport } from './routes/settings/route'
+import { Route as LibraryRouteRouteImport } from './routes/library/route'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as LibraryIndexRouteImport } from './routes/library/index'
 import { Route as SettingsModelsRouteImport } from './routes/settings/models'
+import { Route as LibraryKindRouteImport } from './routes/library/$kind'
 
 const SettingsRouteRoute = SettingsRouteRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LibraryRouteRoute = LibraryRouteRouteImport.update({
+  id: '/library',
+  path: '/library',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -23,38 +31,70 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LibraryIndexRoute = LibraryIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => LibraryRouteRoute,
+} as any)
 const SettingsModelsRoute = SettingsModelsRouteImport.update({
   id: '/models',
   path: '/models',
   getParentRoute: () => SettingsRouteRoute,
 } as any)
+const LibraryKindRoute = LibraryKindRouteImport.update({
+  id: '/$kind',
+  path: '/$kind',
+  getParentRoute: () => LibraryRouteRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/library': typeof LibraryRouteRouteWithChildren
   '/settings': typeof SettingsRouteRouteWithChildren
+  '/library/$kind': typeof LibraryKindRoute
   '/settings/models': typeof SettingsModelsRoute
+  '/library/': typeof LibraryIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/settings': typeof SettingsRouteRouteWithChildren
+  '/library/$kind': typeof LibraryKindRoute
   '/settings/models': typeof SettingsModelsRoute
+  '/library': typeof LibraryIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/library': typeof LibraryRouteRouteWithChildren
   '/settings': typeof SettingsRouteRouteWithChildren
+  '/library/$kind': typeof LibraryKindRoute
   '/settings/models': typeof SettingsModelsRoute
+  '/library/': typeof LibraryIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/settings' | '/settings/models'
+  fullPaths:
+    | '/'
+    | '/library'
+    | '/settings'
+    | '/library/$kind'
+    | '/settings/models'
+    | '/library/'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/settings' | '/settings/models'
-  id: '__root__' | '/' | '/settings' | '/settings/models'
+  to: '/' | '/settings' | '/library/$kind' | '/settings/models' | '/library'
+  id:
+    | '__root__'
+    | '/'
+    | '/library'
+    | '/settings'
+    | '/library/$kind'
+    | '/settings/models'
+    | '/library/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  LibraryRouteRoute: typeof LibraryRouteRouteWithChildren
   SettingsRouteRoute: typeof SettingsRouteRouteWithChildren
 }
 
@@ -67,12 +107,26 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/library': {
+      id: '/library'
+      path: '/library'
+      fullPath: '/library'
+      preLoaderRoute: typeof LibraryRouteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/library/': {
+      id: '/library/'
+      path: '/'
+      fullPath: '/library/'
+      preLoaderRoute: typeof LibraryIndexRouteImport
+      parentRoute: typeof LibraryRouteRoute
     }
     '/settings/models': {
       id: '/settings/models'
@@ -81,8 +135,29 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsModelsRouteImport
       parentRoute: typeof SettingsRouteRoute
     }
+    '/library/$kind': {
+      id: '/library/$kind'
+      path: '/$kind'
+      fullPath: '/library/$kind'
+      preLoaderRoute: typeof LibraryKindRouteImport
+      parentRoute: typeof LibraryRouteRoute
+    }
   }
 }
+
+interface LibraryRouteRouteChildren {
+  LibraryKindRoute: typeof LibraryKindRoute
+  LibraryIndexRoute: typeof LibraryIndexRoute
+}
+
+const LibraryRouteRouteChildren: LibraryRouteRouteChildren = {
+  LibraryKindRoute: LibraryKindRoute,
+  LibraryIndexRoute: LibraryIndexRoute,
+}
+
+const LibraryRouteRouteWithChildren = LibraryRouteRoute._addFileChildren(
+  LibraryRouteRouteChildren,
+)
 
 interface SettingsRouteRouteChildren {
   SettingsModelsRoute: typeof SettingsModelsRoute
@@ -98,6 +173,7 @@ const SettingsRouteRouteWithChildren = SettingsRouteRoute._addFileChildren(
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  LibraryRouteRoute: LibraryRouteRouteWithChildren,
   SettingsRouteRoute: SettingsRouteRouteWithChildren,
 }
 export const routeTree = rootRouteImport
