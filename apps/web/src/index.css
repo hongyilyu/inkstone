@@ -134,6 +134,13 @@
 	--tw-prose-invert-td-borders: var(--border);
 }
 
+/* prose wraps inline code in literal backticks via ::before/::after; the chat
+   bubble renders react-markdown <code>, so strip them for clean inline code. */
+.prose :where(code):not(pre code)::before,
+.prose :where(code):not(pre code)::after {
+	content: "";
+}
+
 html,
 body,
 #root {

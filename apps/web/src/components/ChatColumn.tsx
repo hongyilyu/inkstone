@@ -8,6 +8,7 @@ import {
 	useThreadMessages,
 } from "@/store/chat";
 import { useHydrateFocusedThread } from "@/store/hydrate";
+import { ChatMarkdown } from "./ChatMarkdown.js";
 import { ComposeFooter } from "./ComposeFooter.js";
 
 export function ChatColumn() {
@@ -82,7 +83,7 @@ function AssistantBubble({ message }: { message: Message }) {
 		<li data-role="assistant" className="flex flex-col items-start gap-2">
 			{message.text.length > 0 && (
 				<div className="prose prose-pink dark:prose-invert max-w-none">
-					{message.text}
+					<ChatMarkdown text={message.text} />
 				</div>
 			)}
 			{message.status === "incomplete" && (
