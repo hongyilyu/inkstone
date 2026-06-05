@@ -15,7 +15,10 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::hub::Hubs;
-use crate::protocol::{ManifestMessage, RunEvent, WorkerManifest, WorkflowManifest};
+use crate::protocol::{
+    ManifestMessage, RunEvent, ToolErrorWire, ToolOutcome, ToolResult, WorkerManifest,
+    WorkerStdout, WorkflowManifest,
+};
 use crate::workflow::Workflow;
 
 /// Spawn a Worker for `run_id`. Returns immediately; a Tokio task drives
@@ -99,12 +102,15 @@ async fn run_worker(
         }
     };
 
-    if let Some(mut stdin) = child.stdin.take() {
+    // Keep the Worker's stdin open for the lifetime of the Run. After the
+    // manifest, Core writes `tool_result` lines back over it (ADR-0013
+    // bidirectional stdio); it is dropped when this task ends.
+    let mut stdin = child.stdin.take();
+    {
         // Build the spawn manifest (ADR-0018 as-built): the Workflow fields,
-        // the current prompt, the assembled prior history (multi-turn,
-        // slice 5), and — for OAuth providers — a short-lived access token
-        // resolved by Core (ADR-0023): valid token used as-is, expired token
-        // refreshed single-flight before spawn. Written as one NDJSON line.
+        // the current prompt, the assembled prior history, the tool
+        // descriptors (filtered by the Workflow's allowlist), and — for OAuth
+        // providers — a short-lived access token resolved by Core (ADR-0023).
         let messages: Vec<ManifestMessage> = history
             .iter()
             .map(|(role, text)| ManifestMessage { role, text })
@@ -130,7 +136,7 @@ async fn run_worker(
                 model: workflow.model.as_deref().unwrap_or_default(),
                 system_prompt: &workflow.system_prompt,
                 thinking_level: workflow.thinking_level.as_deref().unwrap_or_default(),
-                tools: &workflow.tools,
+                tools: crate::tools::descriptors_for(&workflow.tools),
             },
             prompt: &prompt,
             messages,
@@ -138,11 +144,13 @@ async fn run_worker(
         };
         let mut line = serde_json::to_string(&manifest).expect("WorkerManifest serializes");
         line.push('\n');
-        if let Err(e) = stdin.write_all(line.as_bytes()).await {
-            eprintln!("failed to write worker stdin: {e}");
+        if let Some(ref mut si) = stdin {
+            if let Err(e) = si.write_all(line.as_bytes()).await {
+                eprintln!("failed to write worker stdin: {e}");
+            }
+            let _ = si.flush().await;
         }
-        // Drop stdin so the Worker sees EOF on its input stream.
-        drop(stdin);
+        // Deliberately NOT dropped — kept open for `tool_result` writes.
     }
 
     let stdout = match child.stdout.take() {
@@ -165,53 +173,78 @@ async fn run_worker(
     let mut worker_error: Option<String> = None;
 
     while let Ok(Some(line)) = lines.next_line().await {
-        let event: RunEvent = match serde_json::from_str(&line) {
-            Ok(e) => e,
+        let msg: WorkerStdout = match serde_json::from_str(&line) {
+            Ok(m) => m,
             Err(e) => {
-                eprintln!("worker emitted unknown event {line:?}: {e}");
+                eprintln!("worker emitted unknown line {line:?}: {e}");
                 continue;
             }
         };
 
-        // Per-event critical section (ADR-0022 exactly-once). Hold the
-        // per-run gate across persist + publish so a concurrent
-        // `run/subscribe` snapshot/attach sees this delta either wholly in
-        // the snapshot or wholly in the tail, never split or duplicated.
-        let guard = gate.lock().await;
-
-        match &event {
-            RunEvent::TextDelta { delta } => {
-                // Persist BEFORE publishing so the persisted text (the
-                // snapshot floor) is never behind a delta a subscriber
-                // already saw on the tail. Publish the delta to the hub
-                // inside the gate — this is the snapshot/tail exactly-once
-                // critical section (ADR-0022).
-                if let Err(e) =
-                    db::append_assistant_text(&pool, assistant_message_id, delta).await
+        match msg {
+            // Per-event critical section (ADR-0022 exactly-once): hold the
+            // per-run gate across persist + publish so a concurrent
+            // `run/subscribe` snapshot/attach sees this delta either wholly in
+            // the snapshot or wholly in the tail, never split or duplicated.
+            WorkerStdout::TextDelta { delta } => {
+                let guard = gate.lock().await;
+                if let Err(e) = db::append_assistant_text(&pool, assistant_message_id, &delta).await
                 {
                     eprintln!(
                         "text_delta append failed for assistant message {assistant_message_id}: {e}"
                     );
                 }
-                let _ = tx.send(event);
+                let _ = tx.send(RunEvent::TextDelta { delta });
+                drop(guard);
             }
-            // Terminal events (`done`/`error`) are NOT published here. They
-            // are published AFTER the terminal SQLite tx commits (below), so
-            // a Client reacting to the terminal event — e.g. posting the next
-            // Run, whose history read filters on `status='completed'` — can
-            // never observe `done` before tier 2 reflects the completed
-            // Messages (closes the slice-5 multi-turn race). Terminal-event
-            // delivery to late subscribers is still guaranteed by the
-            // forwarder's synthesize-on-`Closed` path (ADR-0022).
-            RunEvent::Done => {
+            // Terminal events are recorded as flags and published AFTER the
+            // terminal tx commits (below) — see the comment on that branch.
+            // Dropping stdin here sends the Worker EOF: a terminal event means
+            // no further `tool_request`s can come, and workers that block on
+            // stdin EOF to exit (e.g. the fixtures) must be released so their
+            // stdout closes and this loop can break.
+            WorkerStdout::Done => {
                 saw_done = true;
+                stdin = None;
             }
-            RunEvent::Error { message } => {
-                worker_error = Some(message.clone());
+            WorkerStdout::Error { message } => {
+                worker_error = Some(message);
+                stdin = None;
+            }
+            // Tool Request (ADR-0018): execute the Core-owned tool and write a
+            // `tool_result` back on the kept-open stdin, correlated by
+            // `tool_call_id`. Handled OUTSIDE the per-delta gate — it is not a
+            // hub event and must not block `run/subscribe`. One tool at a time
+            // is sufficient for this slice (the single `read_thread` tool).
+            WorkerStdout::ToolRequest {
+                tool_call_id,
+                name,
+                params,
+                ..
+            } => {
+                let outcome =
+                    handle_tool_request(&pool, run_id, &workflow, &tool_call_id, &name, params)
+                        .await;
+                let result = ToolResult {
+                    kind: "tool_result",
+                    run_id: run_id.to_string(),
+                    tool_call_id,
+                    outcome,
+                };
+                if let Some(ref mut si) = stdin {
+                    match serde_json::to_string(&result) {
+                        Ok(mut l) => {
+                            l.push('\n');
+                            if let Err(e) = si.write_all(l.as_bytes()).await {
+                                eprintln!("failed to write tool_result to worker stdin: {e}");
+                            }
+                            let _ = si.flush().await;
+                        }
+                        Err(e) => eprintln!("failed to serialize tool_result: {e}"),
+                    }
+                }
             }
         }
-
-        drop(guard);
     }
 
     // Terminal-state tx. Either path commits the runs/messages/run_events
@@ -255,6 +288,73 @@ async fn run_worker(
     crate::hub::remove(&hubs, run_id);
 
     let _ = child.wait().await;
+}
+
+/// Handle one Tool Request (ADR-0018): enforce the Workflow's allowlist,
+/// persist the call, dispatch it to the Rust tool registry, persist the
+/// outcome, and return the `ToolOutcome` to write back to the Worker.
+///
+/// Allowlist enforcement (ADR-0003 chokepoint) uses Core's own copy of the
+/// Workflow — a `tool_request` for a tool not in this Workflow's allowlist (or
+/// not registered at all) is rejected with an `err` outcome and persists
+/// nothing. The Worker can't tell whether the answer came from a tool or a
+/// policy refusal — it just receives a `tool_result` (ADR-0016 shape).
+async fn handle_tool_request(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    workflow: &Workflow,
+    tool_call_id: &str,
+    name: &str,
+    params: serde_json::Value,
+) -> ToolOutcome {
+    let allowed =
+        workflow.tools.iter().any(|t| t.as_str() == name) && crate::tools::is_registered(name);
+    if !allowed {
+        return ToolOutcome::Err {
+            err: ToolErrorWire {
+                code: "tool_not_allowed".to_string(),
+                message: format!("tool {name:?} is not in this workflow's allowlist"),
+            },
+        };
+    }
+
+    // Persist the pending call + its run_step before executing, so the
+    // timeline reflects an in-flight tool call (ADR-0017). A persistence
+    // failure is logged but does not abort the call — the Worker still gets a
+    // result so the Run can make progress.
+    let request_payload = params.to_string();
+    if let Err(e) =
+        db::persist_tool_call(pool, run_id, tool_call_id, name, &request_payload, db::now_ms()).await
+    {
+        eprintln!("persist_tool_call failed for {tool_call_id}: {e}");
+    }
+
+    match crate::tools::execute(pool, name, params).await {
+        Ok(result) => {
+            let payload = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
+            if let Err(e) =
+                db::resolve_tool_call(pool, tool_call_id, "completed", &payload, db::now_ms()).await
+            {
+                eprintln!("resolve_tool_call (completed) failed for {tool_call_id}: {e}");
+            }
+            ToolOutcome::Ok { ok: result }
+        }
+        Err(te) => {
+            let payload =
+                serde_json::json!({ "code": te.code, "message": te.message }).to_string();
+            if let Err(e) =
+                db::resolve_tool_call(pool, tool_call_id, "errored", &payload, db::now_ms()).await
+            {
+                eprintln!("resolve_tool_call (errored) failed for {tool_call_id}: {e}");
+            }
+            ToolOutcome::Err {
+                err: ToolErrorWire {
+                    code: te.code,
+                    message: te.message,
+                },
+            }
+        }
+    }
 }
 
 /// Pre-loop spawn-failure path: the Worker never produced any output, so

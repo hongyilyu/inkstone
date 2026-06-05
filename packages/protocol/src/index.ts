@@ -57,8 +57,65 @@ export const RunEvent = S.Union(
 );
 export type RunEvent = S.Schema.Type<typeof RunEvent>;
 
-export const WorkerOutbound = RunEvent;
+// --- tool protocol (ADR-0018): the Worker↔Core duplex for tool calls. The
+// Worker emits `tool_request` on its outbound stream (alongside RunEvents);
+// Core replies with `tool_result` on the post-manifest inbound stream.
+// `params` and `json_schema` are opaque JSON forwarded verbatim (the Worker
+// wraps `json_schema` in `Type.Unsafe`; Core re-validates `params`). The
+// descriptor list ships in the WorkflowManifest.
+
+/** The only `content` modality Core produces today (image is out of scope). */
+export const ToolTextContent = S.Struct({
+	type: S.Literal("text"),
+	text: S.String,
+});
+export type ToolTextContent = S.Schema.Type<typeof ToolTextContent>;
+
+/** Hand-mirror of pi-agent-core's `AgentToolResult` (ADR-0018:201; no `isError`). */
+export const AgentToolResult = S.Struct({
+	content: S.Array(ToolTextContent),
+	details: S.optional(S.Unknown),
+	terminate: S.optional(S.Boolean),
+});
+export type AgentToolResult = S.Schema.Type<typeof AgentToolResult>;
+
+/** Worker → Core: a request to run a named tool with opaque params. */
+export const ToolRequest = S.Struct({
+	kind: S.Literal("tool_request"),
+	run_id: S.String,
+	tool_call_id: S.String,
+	name: S.String,
+	params: S.Unknown,
+});
+export type ToolRequest = S.Schema.Type<typeof ToolRequest>;
+
+/** Core → Worker: the outcome of a tool call (success or error). */
+export const ToolResult = S.Struct({
+	kind: S.Literal("tool_result"),
+	run_id: S.String,
+	tool_call_id: S.String,
+	outcome: S.Union(
+		S.Struct({ ok: AgentToolResult }),
+		S.Struct({ err: S.Struct({ code: S.String, message: S.String }) }),
+	),
+});
+export type ToolResult = S.Schema.Type<typeof ToolResult>;
+
+/** One tool the Workflow exposes; shipped in the WorkflowManifest. */
+export const CoreToolDescriptor = S.Struct({
+	name: S.String,
+	description: S.String,
+	label: S.String,
+	json_schema: S.Unknown,
+});
+export type CoreToolDescriptor = S.Schema.Type<typeof CoreToolDescriptor>;
+
+export const WorkerOutbound = S.Union(RunEvent, ToolRequest);
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
+
+/** Core → Worker, after the manifest: a tool's outcome (ADR-0018). */
+export const WorkerInbound = ToolResult;
+export type WorkerInbound = S.Schema.Type<typeof WorkerInbound>;
 
 // --- provider/* (ADR-0023, ADR-0014 amendment): LLM-provider connection.
 
@@ -169,7 +226,7 @@ export const WorkflowManifest = S.Struct({
 		"high",
 		"xhigh",
 	),
-	tools: S.Array(S.String),
+	tools: S.Array(CoreToolDescriptor),
 });
 export type WorkflowManifest = S.Schema.Type<typeof WorkflowManifest>;
 

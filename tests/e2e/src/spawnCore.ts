@@ -112,6 +112,15 @@ export interface SpawnCoreOptions {
 	 * error surfaces in the UI. Maps to `INKSTONE_FAUX_ERROR`.
 	 */
 	readonly fauxError?: string;
+	/**
+	 * When true, write a faux Workflow whose tool allowlist is `["read_thread"]`
+	 * and drive the faux provider in tool-call mode (`INKSTONE_FAUX_TOOL_CALL`):
+	 * turn 1 calls `read_thread` with a thread id extracted from the user's
+	 * prompt, turn 2 echoes the tool result. Paired with `workerCmd =
+	 * INTERPRETER_WORKER_CMD` this exercises the full Tool Protocol round-trip
+	 * (Worker proxy ↔ Core registry) end-to-end through the browser.
+	 */
+	readonly fauxToolCall?: boolean;
 	/** Milliseconds to wait for the listening line before failing. Default 30s. */
 	readonly startupTimeoutMs?: number;
 }
@@ -220,9 +229,14 @@ export async function spawnCore(
 	// pi-agent-core loop offline (ADR-0019 faux seam). `fauxError` instead
 	// makes the faux provider fail the turn (stopReason error) — the same
 	// `error` Run Event a real provider/network failure produces.
-	if (opts.fauxResponse !== undefined || opts.fauxError !== undefined) {
+	if (
+		opts.fauxResponse !== undefined ||
+		opts.fauxError !== undefined ||
+		opts.fauxToolCall
+	) {
 		const workflowsDir = path.join(workspaceDir, "workflows");
 		mkdirSync(workflowsDir, { recursive: true });
+		const tools = opts.fauxToolCall ? '["read_thread"]' : "[]";
 		writeFileSync(
 			path.join(workflowsDir, "default.toml"),
 			[
@@ -232,12 +246,14 @@ export async function spawnCore(
 				'model = "faux-1"',
 				'thinking_level = "off"',
 				'system_prompt = "You are a test assistant."',
-				"tools = []",
+				`tools = ${tools}`,
 				"",
 			].join("\n"),
 		);
 		env.INKSTONE_WORKFLOWS_DIR = workflowsDir;
-		if (opts.fauxError !== undefined) {
+		if (opts.fauxToolCall) {
+			env.INKSTONE_FAUX_TOOL_CALL = "1";
+		} else if (opts.fauxError !== undefined) {
 			env.INKSTONE_FAUX_ERROR = opts.fauxError;
 		} else if (opts.fauxResponse !== undefined) {
 			env.INKSTONE_FAUX_RESPONSE = opts.fauxResponse;

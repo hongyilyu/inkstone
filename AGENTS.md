@@ -63,6 +63,16 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") force constant clarification.
 
+### 5. Early-stage: destructive changes welcome
+
+Inkstone is pre-release. There are no users, no production data, nothing to preserve. Optimize for the cleanest end state, not backward compatibility — and proactively propose incompatible changes when they buy a better design.
+
+- **Edit migrations in place.** Collapse, rewrite, or reorder migration files freely so the set reads as the *current* schema, not its history. Don't add patch/compatibility migrations to keep an old local DB alive.
+- **Nuke local DBs without ceremony.** A schema change that orphans a dev DB is fine — delete it (`INKSTONE_DB_PATH` or the OS data dir) and let Core recreate it. A "migration N was previously applied but has been modified" error means *reset the DB*, not write a patch migration.
+- **Prefer destructive simplicity.** When a cleaner design needs a breaking change, take it rather than accreting shims to dodge it.
+
+This holds until the first real user/data exists. Re-introduce migration discipline (append-only; never edit an applied migration) at that point — supersede this section then.
+
 ## Response style
 
 - Lead with the answer. No "let me work through this" preamble.

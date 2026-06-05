@@ -321,6 +321,40 @@ pub async fn append_assistant_text(
     queries::append_text_part(pool, assistant_message_id, 0, delta).await
 }
 
+/// Persist an incoming Tool Request (ADR-0017/0018): a `tool_calls` row in the
+/// `pending` state plus a `run_steps` row of kind `tool_call` interleaving it
+/// into the Run timeline — both in one transaction so the timeline never has a
+/// tool call that isn't addressable via `run_steps`. `tool_call_id` is the
+/// Worker-assigned id (the wire correlation key); `request_payload` is the
+/// serialized tool args.
+pub async fn persist_tool_call(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    tool_call_id: &str,
+    name: &str,
+    request_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    let seq = queries::next_run_step_seq(&mut *tx, run_id).await?;
+    queries::insert_tool_call(&mut *tx, tool_call_id, run_id, name, request_payload, now_ms).await?;
+    queries::insert_tool_call_run_step(&mut *tx, run_id, seq, tool_call_id, now_ms).await?;
+    tx.commit().await
+}
+
+/// Resolve a previously-persisted Tool Request with its outcome (ADR-0017):
+/// flip the `tool_calls` row to `status` (`completed` for a normal result,
+/// `errored` for a tool failure) and store the serialized `result_payload`.
+pub async fn resolve_tool_call(
+    pool: &SqlitePool,
+    tool_call_id: &str,
+    status: &str,
+    result_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    queries::resolve_tool_call(pool, tool_call_id, status, result_payload, now_ms).await
+}
+
 /// A Run's snapshot for `run/subscribe` (ADR-0022): the assistant
 /// message's cumulative text at the subscribe instant plus the Run's
 /// status. `text` is empty for a Run that has streamed no delta yet.

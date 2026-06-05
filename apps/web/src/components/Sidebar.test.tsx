@@ -2,7 +2,7 @@ import { type RunEventValue, WsClient } from "@inkstone/ui-sdk";
 import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { resetBridge } from "@/store/bridge";
 import { getChatState, resetChatStore } from "@/store/chat";
@@ -149,6 +149,35 @@ describe("Sidebar", () => {
 		expect(
 			await screen.findByRole("button", { name: "hi" }),
 		).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("copies a thread's id to the clipboard from its row button", async () => {
+		const user = userEvent.setup();
+		const runtime = makeStubRuntime();
+
+		const writeText = vi.fn(() => Promise.resolve());
+		Object.defineProperty(navigator, "clipboard", {
+			value: { writeText },
+			configurable: true,
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<Sidebar />
+			</RuntimeProvider>,
+		);
+
+		// Each row exposes a copy-id control; clicking it writes that thread's
+		// id (not its title) to the clipboard so the user can paste it into a
+		// message for the read_thread tool.
+		const copyBtn = await screen.findByRole("button", {
+			name: /copy thread id for standup digest/i,
+		});
+		await user.click(copyBtn);
+
+		expect(writeText).toHaveBeenCalledWith("t-1");
 
 		await runtime.dispose();
 	});

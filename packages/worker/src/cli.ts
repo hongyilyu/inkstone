@@ -1,15 +1,18 @@
 import { WorkerManifest, type RunEvent } from "@inkstone/protocol";
 import {
 	fauxAssistantMessage,
+	fauxToolCall,
 	registerFauxProvider,
 	streamSimple,
 } from "@earendil-works/pi-ai";
 import { Schema as S } from "effect";
+import { createInterface } from "node:readline";
 import {
 	type InterpreterDeps,
 	defaultInterpreterDeps,
 	runInterpreter,
 } from "./interpreter.js";
+import type { CallTool, ToolCallResponse } from "./tool-proxy.js";
 
 /**
  * The Worker entry point (ADR-0013 stdin transport, ADR-0018 generic
@@ -28,30 +31,88 @@ import {
  * (slice-2 review carry #1).
  */
 
-const emit = (event: RunEvent): void => {
-	process.stdout.write(`${JSON.stringify(event)}\n`);
+/** Write one NDJSON frame to stdout (Run Events and `tool_request`s). */
+const writeLine = (frame: unknown): void => {
+	process.stdout.write(`${JSON.stringify(frame)}\n`);
 };
 
-/** Resolve the first non-empty newline-terminated stdin line (the manifest). */
-function readManifestLine(): Promise<string | null> {
-	return new Promise((resolve) => {
-		let buf = "";
-		let done = false;
-		const finish = (value: string | null): void => {
-			if (done) return;
-			done = true;
-			resolve(value);
+const emit = (event: RunEvent): void => {
+	writeLine(event);
+};
+
+// Bidirectional stdio (ADR-0013): a single readline over stdin. The FIRST line
+// is the manifest; every subsequent line is a `tool_result` Core writes back,
+// dispatched to the pending tool call keyed by `tool_call_id`.
+const pendingTools = new Map<string, (resp: ToolCallResponse) => void>();
+let resolveManifest!: (line: string | null) => void;
+const manifestLine = new Promise<string | null>((resolve) => {
+	resolveManifest = resolve;
+});
+let gotManifest = false;
+
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line: string) => {
+	if (!gotManifest) {
+		gotManifest = true;
+		resolveManifest(line);
+		return;
+	}
+	try {
+		const msg = JSON.parse(line) as {
+			kind?: string;
+			tool_call_id?: string;
+			outcome?: ToolCallResponse;
 		};
-		process.stdin.setEncoding("utf8");
-		process.stdin.on("data", (chunk: string) => {
-			buf += chunk;
-			const nl = buf.indexOf("\n");
-			if (nl >= 0) finish(buf.slice(0, nl));
+		if (msg.kind === "tool_result" && typeof msg.tool_call_id === "string" && msg.outcome) {
+			const pending = pendingTools.get(msg.tool_call_id);
+			if (pending) {
+				pendingTools.delete(msg.tool_call_id);
+				pending(msg.outcome);
+			}
+		}
+	} catch {
+		// Non-JSON / unknown inbound line: ignore.
+	}
+});
+rl.on("close", () => {
+	if (!gotManifest) {
+		gotManifest = true;
+		resolveManifest(null);
+	}
+});
+
+/**
+ * The production `callTool` (ADR-0018): write a `tool_request` to stdout and
+ * resolve when Core writes back the matching `tool_result` on stdin.
+ */
+const callTool: CallTool = (toolCallId, name, params) =>
+	new Promise<ToolCallResponse>((resolve) => {
+		pendingTools.set(toolCallId, resolve);
+		writeLine({
+			kind: "tool_request",
+			run_id: "",
+			tool_call_id: toolCallId,
+			name,
+			params,
 		});
-		process.stdin.on("end", () => finish(buf.length > 0 ? buf : null));
-		process.stdin.on("error", () => finish(null));
 	});
+
+/** Flatten a pi message `content` (string | content blocks) to plain text. */
+function textOf(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (Array.isArray(content)) {
+		return content
+			.map((c) =>
+				c && typeof c === "object" && "text" in c
+					? String((c as { text: unknown }).text)
+					: "",
+			)
+			.join("");
+	}
+	return "";
 }
+
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
 /**
  * Build interpreter deps for this manifest. The faux path registers a
@@ -69,6 +130,33 @@ function depsFor(manifest: WorkerManifest): InterpreterDeps {
 		faux.setResponses([
 			fauxAssistantMessage("", { stopReason: "error", errorMessage }),
 		]);
+	} else if (process.env.INKSTONE_FAUX_TOOL_CALL === "1") {
+		// Tool-call mode (e2e): turn 1 extracts a thread id from the latest
+		// user prompt and calls read_thread; turn 2 echoes the tool result so
+		// the assistant's reply reflects the read thread's content. Uses
+		// response factories so it reads the live context (the pasted id, then
+		// the tool result the proxy round-tripped back).
+		faux.setResponses([
+			(context) => {
+				const lastUser = [...context.messages]
+					.reverse()
+					.find((m) => m.role === "user");
+				const match = textOf(lastUser?.content).match(UUID_RE);
+				const threadId = match ? match[0] : "missing";
+				return fauxAssistantMessage(
+					[fauxToolCall("read_thread", { thread_id: threadId })],
+					{ stopReason: "toolUse" },
+				);
+			},
+			(context) => {
+				const toolResult = [...context.messages]
+					.reverse()
+					.find((m) => m.role === "toolResult");
+				return fauxAssistantMessage(
+					`read_thread result: ${textOf(toolResult?.content)}`,
+				);
+			},
+		]);
 	} else if (process.env.INKSTONE_FAUX_ECHO_HISTORY === "1") {
 		// History-echo mode (multi-turn test): reply with the prior messages
 		// the loop passed in its context — both roles — so the test can prove
@@ -76,28 +164,13 @@ function depsFor(manifest: WorkerManifest): InterpreterDeps {
 		// reply into the manifest history (the assistant turn is the
 		// slice-9 race that this exercises). Uses a response factory so it
 		// reads the live context rather than a canned string.
-		const textOf = (content: unknown): string => {
-			if (typeof content === "string") return content;
-			if (Array.isArray(content)) {
-				return content
-					.map((c) =>
-						c && typeof c === "object" && "text" in c
-							? String((c as { text: unknown }).text)
-							: "",
-					)
-					.join("");
-			}
-			return "";
-		};
 		faux.setResponses([
 			(context) => {
 				// All prior turns except the current prompt (the last user
 				// message). Tag each with its role so the test can assert the
 				// assistant turn specifically.
 				const prior = context.messages.slice(0, -1);
-				const parts = prior.map(
-					(m) => `${m.role}=${textOf(m.content)}`,
-				);
+				const parts = prior.map((m) => `${m.role}=${textOf(m.content)}`);
 				return fauxAssistantMessage(`history:${parts.join("|")}`);
 			},
 		]);
@@ -113,7 +186,7 @@ function depsFor(manifest: WorkerManifest): InterpreterDeps {
 }
 
 async function main(): Promise<void> {
-	const line = await readManifestLine();
+	const line = await manifestLine;
 	if (line === null) {
 		// Empty stdin — nothing to run. Mirror the prior worker's exit-0 on
 		// no input; Core treats stdout EOF without `done` as a disconnect.
@@ -134,7 +207,9 @@ async function main(): Promise<void> {
 	}
 
 	try {
-		await runInterpreter(manifest, emit, depsFor(manifest));
+		// Wire the stdio-backed callTool into the deps so the interpreter's
+		// tool proxies (ADR-0018) round-trip through Core.
+		await runInterpreter(manifest, emit, { ...depsFor(manifest), callTool });
 	} catch (e) {
 		// runInterpreter normally emits its own terminal event, but an
 		// unexpected throw (unknown provider in getModel, loop defect) must

@@ -132,6 +132,93 @@ pub enum RunEvent {
     Error { message: String },
 }
 
+// --- Tool Protocol (ADR-0018): the Worker↔Core duplex. Rust mirror of the TS
+// shapes in `packages/protocol`. The Worker emits `tool_request` on stdout
+// (a `WorkerStdout` variant, alongside RunEvents); Core replies with a
+// `ToolResult` on the kept-open stdin. `params`/`json_schema` are opaque JSON
+// (`serde_json::Value`): Core re-validates `params` against each tool's Input
+// struct; the Worker wraps `json_schema` in `Type.Unsafe`.
+
+/// One `content` block of an `AgentToolResult`. Text-only today (image
+/// content is out of scope for this slice). `r#type` serializes as `"type"`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ToolTextContent {
+    pub r#type: String,
+    pub text: String,
+}
+
+/// Hand-mirror of `pi-agent-core`'s `AgentToolResult` (ADR-0018:201). No
+/// `isError` field — a tool error is a `ToolResult` `err` outcome, not a flag.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AgentToolResult {
+    pub content: Vec<ToolTextContent>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub details: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub terminate: Option<bool>,
+}
+
+/// One tool the Workflow exposes; shipped (filtered by the allowlist) inside
+/// the spawn manifest. `json_schema` is the `schemars`-derived Draft-07 schema
+/// of the tool's Rust `Input` struct.
+#[derive(Debug, Serialize, Clone)]
+pub struct CoreToolDescriptor {
+    pub name: String,
+    pub description: String,
+    pub label: String,
+    pub json_schema: serde_json::Value,
+}
+
+/// The error half of a `ToolResult` outcome.
+#[derive(Debug, Serialize)]
+pub struct ToolErrorWire {
+    pub code: String,
+    pub message: String,
+}
+
+/// A `ToolResult`'s outcome: success carries an `AgentToolResult` under `ok`;
+/// failure carries `{code, message}` under `err`. Untagged so it serializes
+/// as `{"ok": …}` or `{"err": …}` to match the TS `outcome` union.
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum ToolOutcome {
+    Ok { ok: AgentToolResult },
+    Err { err: ToolErrorWire },
+}
+
+/// Core → Worker: the outcome of a tool call, written to the Worker's
+/// kept-open stdin, correlated by `tool_call_id`. Serialize-only.
+#[derive(Debug, Serialize)]
+pub struct ToolResult {
+    pub kind: &'static str,
+    pub run_id: String,
+    pub tool_call_id: String,
+    pub outcome: ToolOutcome,
+}
+
+/// What Core reads off the Worker's stdout: the one-way `RunEvent`s plus the
+/// bidirectional `tool_request`. Deserialize-only. The `tool_request`'s
+/// `run_id` is Core-ignored (Core uses the spawn's authoritative run id);
+/// it is part of the wire shape for symmetry with the TS `ToolRequest`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WorkerStdout {
+    TextDelta {
+        delta: String,
+    },
+    Done,
+    Error {
+        message: String,
+    },
+    ToolRequest {
+        #[allow(dead_code)]
+        run_id: String,
+        tool_call_id: String,
+        name: String,
+        params: serde_json::Value,
+    },
+}
+
 /// One provider's connection status in a `provider/status` result
 /// (ADR-0023). `id` is the provider key (`"openai-codex"`); `connected` is
 /// true when a credential file exists for it.
@@ -242,7 +329,7 @@ pub struct WorkflowManifest<'a> {
     pub model: &'a str,
     pub system_prompt: &'a str,
     pub thinking_level: &'a str,
-    pub tools: &'a [String],
+    pub tools: Vec<CoreToolDescriptor>,
 }
 
 /// The full spawn manifest written to the Worker's stdin (ADR-0018 as-built,
@@ -449,7 +536,6 @@ mod mirror_tests {
 
     #[test]
     fn worker_manifest_encodes_full_shape_with_history_and_token() {
-        let tools = vec!["a".to_string(), "b".to_string()];
         let manifest = WorkerManifest {
             workflow: WorkflowManifest {
                 name: "default",
@@ -458,7 +544,12 @@ mod mirror_tests {
                 model: "gpt-5.5",
                 system_prompt: "hi",
                 thinking_level: "off",
-                tools: &tools,
+                tools: vec![CoreToolDescriptor {
+                    name: "read_thread".to_string(),
+                    description: "Read a thread".to_string(),
+                    label: "Read thread".to_string(),
+                    json_schema: json!({ "type": "object" }),
+                }],
             },
             prompt: "now",
             messages: vec![
@@ -477,7 +568,12 @@ mod mirror_tests {
                     "model": "gpt-5.5",
                     "system_prompt": "hi",
                     "thinking_level": "off",
-                    "tools": ["a", "b"]
+                    "tools": [{
+                        "name": "read_thread",
+                        "description": "Read a thread",
+                        "label": "Read thread",
+                        "json_schema": { "type": "object" }
+                    }]
                 },
                 "prompt": "now",
                 "messages": [
@@ -491,7 +587,6 @@ mod mirror_tests {
 
     #[test]
     fn worker_manifest_omits_access_token_when_none() {
-        let tools: Vec<String> = vec![];
         let manifest = WorkerManifest {
             workflow: WorkflowManifest {
                 name: "default",
@@ -500,7 +595,7 @@ mod mirror_tests {
                 model: "faux-1",
                 system_prompt: "hi",
                 thinking_level: "off",
-                tools: &tools,
+                tools: vec![],
             },
             prompt: "now",
             messages: vec![],
@@ -515,6 +610,108 @@ mod mirror_tests {
         );
         assert_eq!(v["workflow"]["tools"], json!([]));
         assert_eq!(v["messages"], json!([]));
+    }
+
+    // --- Tool Protocol (ADR-0018): the duplex frames mirror the TS shapes. ---
+
+    #[test]
+    fn core_tool_descriptor_encodes_snake_case_with_schema() {
+        let d = CoreToolDescriptor {
+            name: "read_thread".to_string(),
+            description: "Read a thread by id".to_string(),
+            label: "Read thread".to_string(),
+            json_schema: json!({ "type": "object", "properties": { "thread_id": { "type": "string" } } }),
+        };
+        assert_eq!(
+            serde_json::to_value(&d).unwrap(),
+            json!({
+                "name": "read_thread",
+                "description": "Read a thread by id",
+                "label": "Read thread",
+                "json_schema": { "type": "object", "properties": { "thread_id": { "type": "string" } } }
+            }),
+        );
+    }
+
+    #[test]
+    fn tool_result_ok_encodes_outcome_ok() {
+        let r = ToolResult {
+            kind: "tool_result",
+            run_id: UUID_A.to_string(),
+            tool_call_id: "tc_01".to_string(),
+            outcome: ToolOutcome::Ok {
+                ok: AgentToolResult {
+                    content: vec![ToolTextContent {
+                        r#type: "text".to_string(),
+                        text: "{\"messages\":[]}".to_string(),
+                    }],
+                    details: None,
+                    terminate: None,
+                },
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({
+                "kind": "tool_result",
+                "run_id": UUID_A,
+                "tool_call_id": "tc_01",
+                "outcome": { "ok": { "content": [{ "type": "text", "text": "{\"messages\":[]}" }] } }
+            }),
+        );
+    }
+
+    #[test]
+    fn tool_result_err_encodes_outcome_err() {
+        let r = ToolResult {
+            kind: "tool_result",
+            run_id: UUID_A.to_string(),
+            tool_call_id: "tc_01".to_string(),
+            outcome: ToolOutcome::Err {
+                err: ToolErrorWire {
+                    code: "tool_not_allowed".to_string(),
+                    message: "no".to_string(),
+                },
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({
+                "kind": "tool_result",
+                "run_id": UUID_A,
+                "tool_call_id": "tc_01",
+                "outcome": { "err": { "code": "tool_not_allowed", "message": "no" } }
+            }),
+        );
+    }
+
+    #[test]
+    fn worker_stdout_decodes_tool_request() {
+        let wire = json!({
+            "kind": "tool_request",
+            "run_id": "",
+            "tool_call_id": "tc_01",
+            "name": "read_thread",
+            "params": { "thread_id": UUID_A }
+        });
+        let ev: WorkerStdout = serde_json::from_value(wire).unwrap();
+        match ev {
+            WorkerStdout::ToolRequest { tool_call_id, name, params, .. } => {
+                assert_eq!(tool_call_id, "tc_01");
+                assert_eq!(name, "read_thread");
+                assert_eq!(params["thread_id"], json!(UUID_A));
+            }
+            other => panic!("expected ToolRequest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn worker_stdout_decodes_text_delta_and_done() {
+        let d: WorkerStdout =
+            serde_json::from_value(json!({ "kind": "text_delta", "delta": "x" })).unwrap();
+        assert!(matches!(d, WorkerStdout::TextDelta { .. }));
+        let done: WorkerStdout = serde_json::from_value(json!({ "kind": "done" })).unwrap();
+        assert!(matches!(done, WorkerStdout::Done));
     }
 
     // --- provider/status (Serialize-only): encode to the canonical wire JSON

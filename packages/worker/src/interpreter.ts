@@ -3,6 +3,8 @@ import { runAgentLoop } from "@earendil-works/pi-agent-core";
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getModel, streamSimple } from "@earendil-works/pi-ai";
 import type { Message, Model } from "@earendil-works/pi-ai";
+import { type CallTool, makeProxyTools } from "./tool-proxy.js";
+export type { CallTool, ToolCallResponse } from "./tool-proxy.js";
 
 /**
  * The generic interpreter (ADR-0018): a single, Workflow-agnostic loop that
@@ -25,6 +27,11 @@ export interface InterpreterDeps {
 	resolveModel: (workflow: WorkerManifest["workflow"]) => Model<string>;
 	/** The LLM call. Production injects the access token here; tests pass plain streamSimple. */
 	streamFn: StreamFn;
+	/**
+	 * Round-trip a tool call to Core (ADR-0018). Required for a Workflow whose
+	 * manifest carries tool descriptors; absent → the loop runs with no tools.
+	 */
+	callTool?: CallTool;
 }
 
 /** Production deps: real model registry + token-injecting streamSimple (ADR-0023). */
@@ -79,8 +86,9 @@ function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
  * `error` if the model/stream failed (pi surfaces this as an assistant
  * message with `stopReason: "error" | "aborted"`).
  *
- * The loop runs with `tools: []` — chat-only this slice (ADR-0018 tools are
- * a later slice).
+ * Tools (ADR-0018): the Workflow's tool descriptors become `pi-agent-core`
+ * proxies whose `execute` round-trips to Core via `deps.callTool`. A manifest
+ * with no tools (or no `callTool`) runs chat-only.
  */
 export async function runInterpreter(
 	manifest: WorkerManifest,
@@ -94,6 +102,11 @@ export async function runInterpreter(
 		content: manifest.prompt,
 		timestamp: Date.now(),
 	};
+
+	const tools =
+		manifest.workflow.tools.length > 0 && deps.callTool !== undefined
+			? makeProxyTools(manifest.workflow.tools, deps.callTool)
+			: [];
 
 	// Inject the OAuth access token (if present) as the provider apiKey for
 	// every call this Run makes (ADR-0023). faux/env providers omit it.
@@ -121,7 +134,7 @@ export async function runInterpreter(
 		{
 			systemPrompt: manifest.workflow.system_prompt,
 			messages: toAgentMessages(manifest),
-			tools: [],
+			tools,
 		},
 		{
 			model,
