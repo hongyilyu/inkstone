@@ -1,5 +1,6 @@
 import type { ModelInfo } from "@inkstone/protocol";
 import { Brain, Eye, Star } from "lucide-react";
+import { Badge } from "./ui/badge.js";
 
 /** Map a model's output price to a t3-style cost tier badge. */
 function CostBadge({ cost }: { cost: number }) {
@@ -99,10 +100,10 @@ export function ModelCatalogTable({
 								</td>
 								<td className="w-0 p-2 align-middle">
 									{preferred ? (
-										<span className="inline-flex items-center gap-1 whitespace-nowrap rounded-md bg-primary/10 px-2 py-1 font-medium text-primary text-xs">
+										<Badge variant="primary" className="whitespace-nowrap">
 											<Star className="size-3 fill-current" aria-hidden />
 											Preferred
-										</span>
+										</Badge>
 									) : (
 										<button
 											type="button"

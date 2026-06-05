@@ -14,8 +14,10 @@ import { Button } from "./components/ui/button.js";
  */
 export default function App({
 	onOpenSettings = () => {},
+	onOpenLibrary = () => {},
 }: {
 	onOpenSettings?: () => void;
+	onOpenLibrary?: () => void;
 } = {}) {
 	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [rightRailCollapsed, setRightRailCollapsed] = useState(false);
@@ -50,14 +52,13 @@ export default function App({
 			}}
 		>
 			<div className="overflow-hidden">
-				<Sidebar onToggleCollapse={() => setSidebarCollapsed(true)} />
+				<Sidebar
+					onToggleCollapse={() => setSidebarCollapsed(true)}
+					onOpenLibrary={onOpenLibrary}
+				/>
 			</div>
 			<div className="relative min-h-0 pt-2">
-				<div
-					ref={chatCardRef}
-					className="relative h-full"
-					style={{ clipPath }}
-				>
+				<div ref={chatCardRef} className="relative h-full" style={{ clipPath }}>
 					<ChatColumn />
 				</div>
 				{rightRailCollapsed ? (

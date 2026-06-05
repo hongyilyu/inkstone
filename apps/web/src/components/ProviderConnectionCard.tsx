@@ -1,6 +1,7 @@
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "./ui/button.js";
+import { Card } from "./ui/card.js";
 
 export interface ProviderConnectionCardProps {
 	/** Display name, e.g. "ChatGPT". */
@@ -31,7 +32,7 @@ export function ProviderConnectionCard({
 				: "Not connected";
 
 	return (
-		<div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-card p-4">
+		<Card className="flex items-center justify-between gap-4 p-4">
 			<div className="flex items-center gap-3">
 				<div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-secondary font-semibold text-secondary-foreground text-sm">
 					{name.slice(0, 1)}
@@ -64,6 +65,6 @@ export function ProviderConnectionCard({
 					Connect
 				</Button>
 			)}
-		</div>
+		</Card>
 	);
 }

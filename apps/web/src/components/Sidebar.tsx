@@ -1,7 +1,13 @@
 import { WsClient } from "@inkstone/ui-sdk";
 import { useQuery } from "@tanstack/react-query";
 import { Effect } from "effect";
-import { Copy, PanelLeftClose, Search, UserPlus, WandSparkles } from "lucide-react";
+import {
+	Copy,
+	Library,
+	PanelLeftClose,
+	UserPlus,
+	WandSparkles,
+} from "lucide-react";
 import { useState } from "react";
 import { useRuntime } from "@/runtime";
 import {
@@ -11,11 +17,14 @@ import {
 } from "@/store/chat";
 import { cn } from "../lib/utils.js";
 import { Button } from "./ui/button.js";
+import { SearchField } from "./ui/search-field.js";
 
 export function Sidebar({
 	onToggleCollapse,
+	onOpenLibrary,
 }: {
 	onToggleCollapse?: () => void;
+	onOpenLibrary?: () => void;
 } = {}) {
 	const runtime = useRuntime();
 	const focusedThreadId = useFocusedThreadId();
@@ -81,17 +90,24 @@ export function Sidebar({
 				New Chat
 			</button>
 
-			<div className="mx-3 flex h-10 items-center gap-2 border-b border-input">
-				<Search className="size-4 text-sidebar-foreground/60" />
-				<input
-					type="text"
-					aria-label="Search your threads"
-					placeholder="Search your threads…"
-					value={query}
-					onChange={(e) => setQuery(e.target.value)}
-					className="flex-1 bg-transparent text-sm text-sidebar-foreground placeholder:text-sidebar-foreground/50 focus:outline-none"
-				/>
-			</div>
+			<button
+				type="button"
+				onClick={onOpenLibrary}
+				className="mx-3 mb-1 flex h-9 cursor-pointer items-center gap-2.5 rounded-lg px-3 text-sm text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+			>
+				<Library className="size-4 shrink-0" aria-hidden />
+				Library
+			</button>
+
+			<SearchField
+				variant="divider"
+				tone="sidebar"
+				wrapperClassName="mx-3"
+				aria-label="Search your threads"
+				placeholder="Search your threads…"
+				value={query}
+				onChange={(e) => setQuery(e.target.value)}
+			/>
 
 			<div className="mx-3 mt-2 border-t border-border" />
 
