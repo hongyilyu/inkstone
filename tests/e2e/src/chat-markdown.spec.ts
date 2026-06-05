@@ -35,6 +35,9 @@ const SCREENSHOT_PATH =
 const STREAMING_SCREENSHOT_PATH =
 	"/Users/lyuhongy/dev/inkstone/.agents/runs/chat-markdown-rendering/screenshots/streaming-slice2.png";
 
+const COPY_SCREENSHOT_PATH =
+	"/Users/lyuhongy/dev/inkstone/.agents/runs/chat-markdown-rendering/screenshots/copy-slice3.png";
+
 test.use({
 	coreOptions: {
 		workerCmd: INTERPRETER_WORKER_CMD,
@@ -129,5 +132,57 @@ test.describe("streaming render", () => {
 		await expect(
 			chat.assistantBubbles().getByTestId("typing-indicator"),
 		).toHaveCount(0);
+	});
+});
+
+/**
+ * Copy button on completed assistant messages (chat-markdown-rendering slice 3).
+ * A short faux reply completes; the assistant bubble exposes a hover-revealed
+ * copy button (accessible name /copy/i, see apps/web/src/components/CopyButton.tsx).
+ * Clicking it writes the message text to the real browser clipboard, which we
+ * read back through `chat.clipboardText()`. Clipboard permission is granted on
+ * the browser context BEFORE navigating (mirrors tool-read-thread.spec.ts). The
+ * button is opacity-0 until group-hover but stays in the DOM, so we hover the
+ * bubble to reveal it before clicking.
+ */
+test.describe("copy button", () => {
+	const COPY_REPLY = "copy me please";
+
+	test.use({
+		coreOptions: {
+			workerCmd: INTERPRETER_WORKER_CMD,
+			fauxResponse: COPY_REPLY,
+		},
+	});
+
+	test("clicking copy on a completed reply writes its text to the clipboard", async ({
+		chat,
+		page,
+	}) => {
+		// Grant clipboard permission on the context BEFORE navigating.
+		await page
+			.context()
+			.grantPermissions(["clipboard-read", "clipboard-write"]);
+
+		await chat.goto();
+
+		await chat.send("hi");
+		await chat.waitForAssistantText(COPY_REPLY);
+
+		const bubble = chat.assistantBubbles().first();
+
+		// The copy button is hover-revealed (group-hover opacity) but in the DOM.
+		// Hover the bubble to reveal it, then click.
+		await bubble.hover();
+		const copyButton = bubble.getByRole("button", { name: /copy/i });
+		await copyButton.click();
+
+		// The clipboard write is async — poll until it settles on the reply text.
+		await expect
+			.poll(() => chat.clipboardText())
+			.toBe(COPY_REPLY);
+
+		// Human-review artifact: snapshot the bubble in its copied state.
+		await bubble.screenshot({ path: COPY_SCREENSHOT_PATH });
 	});
 });
