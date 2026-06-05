@@ -10,6 +10,7 @@ import {
 import { useHydrateFocusedThread } from "@/store/hydrate";
 import { ChatMarkdown } from "./ChatMarkdown.js";
 import { ComposeFooter } from "./ComposeFooter.js";
+import { CopyButton } from "./CopyButton.js";
 
 export function ChatColumn() {
 	const scrollerRef = useRef<HTMLDivElement>(null);
@@ -80,7 +81,7 @@ function UserBubble({ message }: { message: Message }) {
 
 function AssistantBubble({ message }: { message: Message }) {
 	return (
-		<li data-role="assistant" className="flex flex-col items-start gap-2">
+		<li data-role="assistant" className="group flex flex-col items-start gap-2">
 			{message.status === "streaming" && message.text === "" && (
 				<div
 					data-testid="typing-indicator"
@@ -95,6 +96,11 @@ function AssistantBubble({ message }: { message: Message }) {
 			{message.text.length > 0 && (
 				<div className="prose prose-pink dark:prose-invert max-w-none">
 					<ChatMarkdown text={message.text} />
+				</div>
+			)}
+			{message.status === "completed" && (
+				<div className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+					<CopyButton text={message.text} />
 				</div>
 			)}
 			{message.status === "incomplete" && (
