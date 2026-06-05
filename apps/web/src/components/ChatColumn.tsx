@@ -98,7 +98,7 @@ function AssistantBubble({ message }: { message: Message }) {
 					<ChatMarkdown text={message.text} />
 				</div>
 			)}
-			{message.status === "completed" && (
+			{message.status === "completed" && message.text.length > 0 && (
 				<div className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
 					<CopyButton text={message.text} />
 				</div>
