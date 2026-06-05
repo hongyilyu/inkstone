@@ -5,7 +5,12 @@ import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { resetBridge } from "@/store/bridge";
-import { getChatState, resetChatStore, setFocusedThread } from "@/store/chat";
+import {
+	getChatState,
+	resetChatStore,
+	seedAssistantMessage,
+	setFocusedThread,
+} from "@/store/chat";
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import { ChatColumn } from "./ChatColumn.js";
 
@@ -130,5 +135,65 @@ describe("ChatColumn", () => {
 		});
 
 		await runtime.dispose();
+	});
+
+	it("shows a typing indicator for a streaming assistant message with no text", () => {
+		const runtime = makeStubRuntime({ runId: "run-3", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a1",
+			role: "assistant",
+			status: "streaming",
+			text: "",
+			run_id: "r1",
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(screen.getByTestId("typing-indicator")).toBeInTheDocument();
+	});
+
+	it("hides the typing indicator once streamed text arrives", () => {
+		const runtime = makeStubRuntime({ runId: "run-4", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a2",
+			role: "assistant",
+			status: "streaming",
+			text: "hi",
+			run_id: "r2",
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(screen.queryByTestId("typing-indicator")).toBeNull();
+	});
+
+	it("shows no typing indicator on a completed (empty) assistant message", () => {
+		const runtime = makeStubRuntime({ runId: "run-5", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a3",
+			role: "assistant",
+			status: "completed",
+			text: "",
+			run_id: "r3",
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 	});
 });
