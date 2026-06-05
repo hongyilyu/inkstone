@@ -81,6 +81,17 @@ function UserBubble({ message }: { message: Message }) {
 function AssistantBubble({ message }: { message: Message }) {
 	return (
 		<li data-role="assistant" className="flex flex-col items-start gap-2">
+			{message.status === "streaming" && message.text === "" && (
+				<div
+					data-testid="typing-indicator"
+					aria-label="Assistant is typing"
+					className="flex items-center gap-1 px-1 py-2"
+				>
+					<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite]" />
+					<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite] [animation-delay:0.2s]" />
+					<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite] [animation-delay:0.4s]" />
+				</div>
+			)}
 			{message.text.length > 0 && (
 				<div className="prose prose-pink dark:prose-invert max-w-none">
 					<ChatMarkdown text={message.text} />

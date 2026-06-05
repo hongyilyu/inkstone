@@ -141,6 +141,22 @@
 	content: "";
 }
 
+/* 3-dot pulse for the streaming typing indicator (AssistantBubble): the three
+   dots share one keyframe and stagger via animation-delay. Behavior is gated by
+   the data-testid in jsdom; this is purely the visual paint. */
+@keyframes typing-pulse {
+	0%,
+	60%,
+	100% {
+		opacity: 0.25;
+		transform: translateY(0);
+	}
+	30% {
+		opacity: 1;
+		transform: translateY(-2px);
+	}
+}
+
 html,
 body,
 #root {
