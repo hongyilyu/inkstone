@@ -134,6 +134,29 @@
 	--tw-prose-invert-td-borders: var(--border);
 }
 
+/* prose wraps inline code in literal backticks via ::before/::after; the chat
+   bubble renders react-markdown <code>, so strip them for clean inline code. */
+.prose :where(code):not(pre code)::before,
+.prose :where(code):not(pre code)::after {
+	content: "";
+}
+
+/* 3-dot pulse for the streaming typing indicator (AssistantBubble): the three
+   dots share one keyframe and stagger via animation-delay. Behavior is gated by
+   the data-testid in jsdom; this is purely the visual paint. */
+@keyframes typing-pulse {
+	0%,
+	60%,
+	100% {
+		opacity: 0.25;
+		transform: translateY(0);
+	}
+	30% {
+		opacity: 1;
+		transform: translateY(-2px);
+	}
+}
+
 html,
 body,
 #root {

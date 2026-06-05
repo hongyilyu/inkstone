@@ -2,10 +2,15 @@ import { type RunEventValue, WsClient } from "@inkstone/ui-sdk";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { resetBridge } from "@/store/bridge";
-import { getChatState, resetChatStore, setFocusedThread } from "@/store/chat";
+import {
+	getChatState,
+	resetChatStore,
+	seedAssistantMessage,
+	setFocusedThread,
+} from "@/store/chat";
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import { ChatColumn } from "./ChatColumn.js";
 
@@ -130,5 +135,140 @@ describe("ChatColumn", () => {
 		});
 
 		await runtime.dispose();
+	});
+
+	it("shows a typing indicator for a streaming assistant message with no text", () => {
+		const runtime = makeStubRuntime({ runId: "run-3", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a1",
+			role: "assistant",
+			status: "streaming",
+			text: "",
+			run_id: "r1",
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(screen.getByTestId("typing-indicator")).toBeInTheDocument();
+	});
+
+	it("hides the typing indicator once streamed text arrives", () => {
+		const runtime = makeStubRuntime({ runId: "run-4", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a2",
+			role: "assistant",
+			status: "streaming",
+			text: "hi",
+			run_id: "r2",
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(screen.queryByTestId("typing-indicator")).toBeNull();
+	});
+
+	it("copies the message text and swaps to the Check icon on a completed assistant message", async () => {
+		const user = userEvent.setup();
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, "clipboard", {
+			value: { writeText },
+			configurable: true,
+		});
+
+		const runtime = makeStubRuntime({ runId: "run-6", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a4",
+			role: "assistant",
+			status: "completed",
+			text: "hello world",
+			run_id: "r4",
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		const copyButton = screen.getByRole("button", { name: /copy/i });
+		await user.click(copyButton);
+
+		expect(writeText).toHaveBeenCalledWith("hello world");
+		await waitFor(() => {
+			expect(
+				screen.getByTestId("copy-button-check"),
+			).toBeInTheDocument();
+		});
+	});
+
+	it("shows no copy button on a streaming assistant message", () => {
+		const runtime = makeStubRuntime({ runId: "run-7", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a5",
+			role: "assistant",
+			status: "streaming",
+			text: "partial response",
+			run_id: "r5",
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
+	});
+
+	it("shows no copy button on an empty completed assistant message", () => {
+		const runtime = makeStubRuntime({ runId: "run-8", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a6",
+			role: "assistant",
+			status: "completed",
+			text: "",
+			run_id: "r6",
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
+	});
+
+	it("shows no typing indicator on a completed (empty) assistant message", () => {
+		const runtime = makeStubRuntime({ runId: "run-5", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a3",
+			role: "assistant",
+			status: "completed",
+			text: "",
+			run_id: "r3",
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 	});
 });
