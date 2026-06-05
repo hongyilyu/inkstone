@@ -117,7 +117,7 @@ export function Sidebar({
 								type="button"
 								onClick={() => setFocusedThread(item.id)}
 								aria-current={item.id === focusedThreadId ? "true" : undefined}
-								className="h-full flex-1 cursor-pointer truncate rounded-lg px-3 text-left text-sm text-sidebar-foreground"
+								className="h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg px-3 text-left text-sm text-sidebar-foreground"
 							>
 								{item.title}
 							</button>
