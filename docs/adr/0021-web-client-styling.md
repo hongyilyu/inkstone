@@ -49,12 +49,13 @@ Real assistant message bubbles will render markdown (lists, links, tables, fence
 
 - **`react-markdown`** — Parses markdown → React tree.
 - **`remark-gfm`** — GitHub-flavored extensions: tables, task lists, strikethrough.
-- **`shiki`** — Code-block syntax highlighting via TextMate grammars (the VS Code engine). Highest-fidelity available in JS. Local-first compatible: WASM (oniguruma) ships in `dist/` and is embedded via `rust-embed`; no runtime network. Shiki's dual-theme rendering emits light + dark token classes in one render and lets CSS pick — composes naturally with `[data-theme]` from [Theming](#theming) (no re-render on toggle).
-- **`@tailwindcss/typography`** — `prose` classes for default markdown styling (paragraphs, headings, lists, blockquotes).
+- **`@tailwindcss/typography`** — `prose` classes for default markdown styling (paragraphs, headings, lists, blockquotes). Code blocks render as clean monospace blocks styled by `prose` (`--tw-prose-pre-bg: var(--secondary)`).
 
-None of the current revamp slices import these — slice 3 renders mock-array bubble text plain; slice 5's proposal cards parse structured strings into custom JSX (regex-based, not markdown), matching `ui-mock`'s `TodoBody` / `NoteBody` / `ProjectBody`. The first import site is the re-wiring feature that plumbs real assistant content.
+**Syntax highlighting is out of scope** (superseded the original `shiki` line). inkstone is not a code-heavy app; assistant messages are prose-dominant, so token-level highlighting is not worth its cost (a WASM grammar engine, `dist/` embedding, and lazy per-language loading). Code fences render as plain monospace via `prose`. If basic color highlighting is ever wanted, it's a trivial later add (`rehype-highlight` + ~20 lines of token CSS) and does not require the shiki machinery.
 
-To keep bundle in check, Shiki languages are lazy-loaded via `getHighlighter` per-language; the base highlighter ships only a small core grammar set.
+None of the original revamp slices imported these — slice 3 renders mock-array bubble text plain; slice 5's proposal cards parse structured strings into custom JSX (regex-based, not markdown), matching `ui-mock`'s `TodoBody` / `NoteBody` / `ProjectBody`. The first import site is the chat-markdown-rendering feature that plumbs real assistant content (`react-markdown` + `remark-gfm` + `prose`, no highlighting).
+
+(Bundle note removed with shiki: with no highlighter, the markdown stack is `react-markdown` + `remark-gfm` only.)
 
 ## Testing
 
