@@ -32,6 +32,9 @@ const greet = (name: string) => \`hello \${name}\`;
 const SCREENSHOT_PATH =
 	"/Users/lyuhongy/dev/inkstone/.agents/runs/chat-markdown-rendering/screenshots/markdown-slice1.png";
 
+const STREAMING_SCREENSHOT_PATH =
+	"/Users/lyuhongy/dev/inkstone/.agents/runs/chat-markdown-rendering/screenshots/streaming-slice2.png";
+
 test.use({
 	coreOptions: {
 		workerCmd: INTERPRETER_WORKER_CMD,
@@ -70,4 +73,61 @@ test("assistant markdown reply renders as formatted HTML in chromium", async ({
 	// Human-review artifact: snapshot the rendered bubble. Existence is not an
 	// assertion — the DOM checks above are the hard gate.
 	await bubble.screenshot({ path: SCREENSHOT_PATH });
+});
+
+/**
+ * Streaming-render transition (chat-markdown-rendering slice 2). Proves the
+ * streaming render path works end-to-end in a real browser: a gated 2-chunk
+ * Run shows the FIRST chunk's partial text in the assistant bubble while held
+ * mid-stream, then renders the FULL echo once the gate is tripped.
+ *
+ * Gate semantics (crates/core/tests/fixtures/slow-worker.ts): the fixture emits
+ * the first chunk THEN pauses on the gate. With `chunks: 2` the prompt
+ * "hi there" yields `echo: hi there` (14 chars) split as "echo: h" + "i there",
+ * so the first chunk is "echo: h". Because the first delta has already arrived
+ * by the time the run is gated, the assistant bubble already has text — the
+ * `status === "streaming" && text === ""` window the typing-indicator gates on
+ * is NOT observable here (see slices/2/OPEN-QUESTIONS.md). That empty-text
+ * indicator behavior is proven authoritatively by the vitest test; this e2e leg
+ * asserts the streaming-render transition it CAN observe and only asserts the
+ * indicator's ABSENCE once text is present.
+ */
+test.describe("streaming render", () => {
+	test.use({ coreOptions: { chunks: 2 } });
+
+	test("gated mid-stream shows partial text, then full text after tripGate", async ({
+		chat,
+		core,
+	}) => {
+		await chat.goto();
+
+		await chat.send("hi there");
+
+		// While GATED (after chunk 1, before tripping): the assistant bubble has
+		// appeared with the FIRST chunk's partial text ("echo: h"), but NOT the
+		// full echo. Web-first auto-retrying assertions settle on the gated
+		// state — the gate holds the stream open, so the bubble stays in its
+		// first-chunk form until we trip it.
+		await chat.waitForAssistantText("echo: h");
+		await chat.expectNoAssistantText("echo: hi there");
+
+		// No typing indicator here: text already arrived with chunk 1, so the
+		// empty-text indicator window never opens (OPEN-QUESTIONS.md deviation).
+		const bubble = chat.assistantBubbles().first();
+		await expect(bubble).toBeVisible();
+		await expect(bubble).toContainText("echo: h");
+
+		// Human-review artifact: snapshot the mid-stream bubble.
+		await bubble.screenshot({ path: STREAMING_SCREENSHOT_PATH });
+
+		// Release the gate → the remaining chunk streams in → full echo renders.
+		core.tripGate();
+		await chat.waitForAssistantText("echo: hi there");
+
+		// Once text is present the typing indicator is absent (its only assertion
+		// here, per OPEN-QUESTIONS.md — never asserted visible mid-stream).
+		await expect(
+			chat.assistantBubbles().getByTestId("typing-indicator"),
+		).toHaveCount(0);
+	});
 });
