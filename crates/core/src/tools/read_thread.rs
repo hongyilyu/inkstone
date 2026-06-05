@@ -64,7 +64,7 @@ pub async fn execute(pool: &SqlitePool, params: Value) -> Result<AgentToolResult
         })?
         .ok_or_else(|| ToolError {
             code: "not_found".to_string(),
-            message: format!("no thread with id {}", input.thread_id),
+            message: format!("no thread with id {:?}", input.thread_id),
         })?;
 
     let payload = serde_json::json!({
