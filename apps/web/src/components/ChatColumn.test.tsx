@@ -232,6 +232,26 @@ describe("ChatColumn", () => {
 		expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
 	});
 
+	it("shows no copy button on an empty completed assistant message", () => {
+		const runtime = makeStubRuntime({ runId: "run-8", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a6",
+			role: "assistant",
+			status: "completed",
+			text: "",
+			run_id: "r6",
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
+	});
+
 	it("shows no typing indicator on a completed (empty) assistant message", () => {
 		const runtime = makeStubRuntime({ runId: "run-5", events: [] });
 		setFocusedThread("threadA");
