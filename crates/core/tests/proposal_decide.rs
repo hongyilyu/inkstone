@@ -323,6 +323,134 @@ fn accept_applies_and_resumes() {
     });
 }
 
+/// Slice 4 (Proposal reject): `proposal/decide{decision:"reject"}` on a parked
+/// Run resolves the Decision WITHOUT applying — no entity lands in tier 2, the
+/// Proposal becomes `rejected`, the awaited tool_call resolves as a NORMAL
+/// (non-error) declined result, and the Run resumes in a fresh Worker to
+/// `completed` (the model reads the decline and wraps up conversationally).
+#[test]
+fn reject_resumes_without_applying() {
+    let worker_cmd = propose_worker_cmd();
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let run_id = rt.block_on(async {
+        let run_id = create_and_park(&ws_url).await;
+
+        // Learn the proposal_id.
+        let resp = rpc(
+            &ws_url,
+            3,
+            "proposal/get",
+            serde_json::json!({ "run_id": run_id }),
+        )
+        .await;
+        let proposal_id = resp["result"]["proposal_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
+            .to_string();
+
+        // Decide: reject.
+        let resp = rpc(
+            &ws_url,
+            4,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "reject",
+                "decision_idempotency_key": "r1",
+            }),
+        )
+        .await;
+        let result = &resp["result"];
+        assert_eq!(
+            result["status"].as_str(),
+            Some("rejected"),
+            "decide result status — body: {resp}"
+        );
+        assert!(
+            result["entity_id"].is_null() || result.get("entity_id").is_none(),
+            "reject result carries no entity_id — body: {resp}"
+        );
+
+        // The Run resumes in a fresh Worker and reaches completed.
+        await_completed(&ws_url, &run_id).await;
+        run_id
+    });
+
+    // White-box DB assertions.
+    rt.block_on(async {
+        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+
+        // ZERO entities for this run's proposal — reject applies nothing.
+        let entity_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM entities WHERE created_via_proposal_id IN \
+             (SELECT p.id FROM proposals p JOIN tool_calls tc ON tc.id = p.tool_call_id \
+              WHERE tc.run_id = ?1)",
+        )
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count entities");
+        assert_eq!(entity_count, 0, "reject created no entity");
+
+        // proposals.status='rejected'.
+        let prop_status: String = sqlx::query_scalar(
+            "SELECT p.status FROM proposals p \
+             JOIN tool_calls tc ON tc.id = p.tool_call_id WHERE tc.run_id = ?1",
+        )
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("proposal row exists");
+        assert_eq!(prop_status, "rejected", "proposal rejected");
+
+        // tool_calls resolved (completed) — a NORMAL result, not errored.
+        let row = sqlx::query("SELECT status, result_payload FROM tool_calls WHERE run_id = ?1")
+            .bind(&run_id)
+            .fetch_one(&pool)
+            .await
+            .expect("tool_call row exists");
+        let tc_status: String = row.get("status");
+        let result_payload: Option<String> = row.get("result_payload");
+        assert_eq!(tc_status, "completed", "tool_call resolved (not errored)");
+        let payload = result_payload.expect("tool_call carries a result_payload");
+        let payload_json: serde_json::Value =
+            serde_json::from_str(&payload).expect("result_payload is JSON");
+        // The decline result must NOT be flagged as an error (ADR-0025): a
+        // normal Tool Result so the resumed model continues conversationally.
+        assert_ne!(
+            payload_json["is_error"].as_bool(),
+            Some(true),
+            "decline result is not an error — payload: {payload}"
+        );
+        assert_ne!(
+            payload_json["decision"].as_str(),
+            Some("accept"),
+            "decline result is a reject decision — payload: {payload}"
+        );
+
+        // runs.status='completed'.
+        let run_status: String = sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
+            .bind(&run_id)
+            .fetch_one(&pool)
+            .await
+            .expect("run row exists");
+        assert_eq!(run_status, "completed", "run completed after reject resume");
+    });
+}
+
 #[test]
 fn accept_is_idempotent() {
     let worker_cmd = propose_worker_cmd();
