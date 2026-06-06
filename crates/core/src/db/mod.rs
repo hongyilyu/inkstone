@@ -603,6 +603,57 @@ pub async fn apply_proposal(
     Ok(entity_id)
 }
 
+/// Reject a Proposal in ONE atomic transaction (ADR-0025). Applies NOTHING to
+/// the entity store: flip the `proposals` row to `rejected` (+ `decided_by`,
+/// `decided_at`, `decision_idempotency_key`) and resolve the awaited
+/// `tool_calls` row to `completed` with `result_payload` = the Decision the
+/// model reads on resume — a NORMAL (non-error) decline so it continues
+/// conversationally rather than retrying a failure. No `entities` /
+/// `entity_revisions` write.
+///
+/// SELF-GUARDING against a double-decide (review M1, mirrors [`apply_proposal`]):
+/// the `proposals` flip is `… WHERE id = ? AND status = 'pending'`. If it
+/// affects 0 rows the Proposal was already decided by a racing decide, so the
+/// whole tx rolls back and [`ApplyError::NotPending`] is returned. The caller
+/// maps `NotPending` to `proposal_not_pending`.
+pub async fn reject_proposal(
+    pool: &SqlitePool,
+    proposal_id: &str,
+    tool_call_id: &str,
+    decision_idempotency_key: Option<&str>,
+    decision_result_payload: &str,
+    now_ms: i64,
+) -> Result<(), ApplyError> {
+    let mut tx = pool.begin().await?;
+
+    // Flip the Proposal FIRST under the `status='pending'` guard — the single
+    // concurrency choke. If a racing decide already decided it this affects 0
+    // rows; bail (rolling back the tx) before resolving the tool call.
+    let rejected = queries::mark_proposal_rejected(
+        &mut *tx,
+        proposal_id,
+        decision_idempotency_key,
+        now_ms,
+    )
+    .await?;
+    if rejected != 1 {
+        // tx drops here without commit → rollback. Nothing was changed.
+        return Err(ApplyError::NotPending);
+    }
+
+    queries::resolve_tool_call(
+        &mut *tx,
+        tool_call_id,
+        "completed",
+        decision_result_payload,
+        now_ms,
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Flip a parked Run back to `running` on resume (ADR-0025), clearing the
 /// waitpoint. Called after `apply_proposal` commits and before the resume
 /// Worker spawns, so a `run/subscribe` in the window sees `running`.

@@ -284,6 +284,37 @@ where
     .map(|r| r.rows_affected())
 }
 
+/// Reject a Proposal (ADR-0025): flip the `proposals` row to `rejected`, stamp
+/// `decided_by='user'` + `decided_at`. Runs inside the caller's reject
+/// transaction. NO `applied_at`/`edited_payload` — reject applies nothing.
+///
+/// SELF-GUARDING (review M1, mirrors [`mark_proposal_accepted`]): the
+/// `WHERE … AND status = 'pending'` clause is the single concurrency choke.
+/// Returns the affected row count so the caller asserts `== 1` inside the tx
+/// and rolls back the loser (it returns `proposal_not_pending`), so the
+/// Proposal can never be decided twice.
+pub(super) async fn mark_proposal_rejected<'e, E>(
+    executor: E,
+    proposal_id: &str,
+    decision_idempotency_key: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE proposals SET status = 'rejected', decided_by = 'user', \
+         decided_at = ?, decision_idempotency_key = ? \
+         WHERE id = ? AND status = 'pending'",
+    )
+    .bind(now_ms)
+    .bind(decision_idempotency_key)
+    .bind(proposal_id)
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
 // ─── entities + entity_revisions (ADR-0004) ───────────────────────────
 
 /// Insert a freshly-created Entity (ADR-0004): `created_by='proposal'` with the
