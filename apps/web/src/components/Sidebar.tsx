@@ -93,7 +93,7 @@ export function Sidebar({
 			<button
 				type="button"
 				onClick={onOpenLibrary}
-				className="mx-3 mb-1 flex h-9 cursor-pointer items-center gap-2.5 rounded-lg px-3 text-sm text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
+				className="mx-3 mb-1 flex h-9 cursor-pointer items-center gap-2.5 rounded-lg px-3 text-sm text-sidebar-foreground/90 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
 			>
 				<Library className="size-4 shrink-0" aria-hidden />
 				Library
@@ -111,13 +111,13 @@ export function Sidebar({
 
 			<div className="mx-3 mt-2 border-t border-border" />
 
-			<div className="px-3 py-2 text-xs font-semibold text-primary">
-				Last 30 Days
+			<div className="px-3 py-2 text-xs font-semibold text-muted-foreground">
+				Last 30 days
 			</div>
 
 			<ul className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2">
 				{filtered.length === 0 ? (
-					<li className="px-3 py-2 text-xs text-sidebar-foreground/50">
+					<li className="px-3 py-2 text-muted-foreground text-xs">
 						No threads match.
 					</li>
 				) : (
@@ -144,7 +144,7 @@ export function Sidebar({
 								onClick={() => {
 									void navigator.clipboard?.writeText(item.id);
 								}}
-								className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/50 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100"
+								className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100"
 							>
 								<Copy className="size-3.5" />
 							</button>

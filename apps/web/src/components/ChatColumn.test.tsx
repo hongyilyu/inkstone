@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { resetBridge } from "@/store/bridge";
 import {
+	appendUserMessage,
 	getChatState,
 	resetChatStore,
 	seedAssistantMessage,
@@ -206,9 +207,7 @@ describe("ChatColumn", () => {
 
 		expect(writeText).toHaveBeenCalledWith("hello world");
 		await waitFor(() => {
-			expect(
-				screen.getByTestId("copy-button-check"),
-			).toBeInTheDocument();
+			expect(screen.getByTestId("copy-button-check")).toBeInTheDocument();
 		});
 	});
 
@@ -292,7 +291,9 @@ describe("ChatColumn", () => {
 
 		const row = screen.getByTestId("tool-call");
 		expect(row).toHaveAttribute("data-status", "running");
-		expect(row).toHaveTextContent("Reading thread");
+		expect(row).toHaveTextContent("Reading this thread");
+		// read_thread is observe-only; the row says so (privacy/control).
+		expect(row).toHaveTextContent(/read-only/i);
 		// The tool indicator is the activity signal while a tool runs, so the
 		// generic typing dots must not double up.
 		expect(screen.queryByTestId("typing-indicator")).toBeNull();
@@ -318,7 +319,7 @@ describe("ChatColumn", () => {
 
 		const row = screen.getByTestId("tool-call");
 		expect(row).toHaveAttribute("data-status", "completed");
-		expect(row).toHaveTextContent("Read thread");
+		expect(row).toHaveTextContent("Read this thread");
 	});
 
 	it("surfaces an errored tool call with a failed indication", () => {
@@ -363,5 +364,46 @@ describe("ChatColumn", () => {
 		);
 
 		expect(screen.getByTestId("tool-call")).toHaveTextContent("Search web");
+	});
+
+	it("offers Try again on an interrupted reply and re-sends the previous turn", async () => {
+		const user = userEvent.setup();
+		const runtime = makeStubRuntime({
+			runId: "run-retry",
+			events: [{ kind: "text_delta", delta: "recovered" }, { kind: "done" }],
+		});
+		setFocusedThread("threadA");
+		appendUserMessage("threadA", {
+			id: "u1",
+			role: "user",
+			status: "completed",
+			text: "do it",
+			run_id: "",
+		});
+		seedAssistantMessage("threadA", {
+			id: "a-fail",
+			role: "assistant",
+			status: "incomplete",
+			text: "",
+			run_id: "r-fail",
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		// Brand-voice, reassuring fallback when no specific error is attached.
+		expect(screen.getByTestId("assistant-error")).toHaveTextContent(
+			/nothing was saved without your approval/i,
+		);
+
+		await user.click(screen.getByRole("button", { name: /try again/i }));
+
+		// The previous user turn is re-sent → a fresh assistant reply streams in.
+		expect(await screen.findByText("recovered")).toBeInTheDocument();
+
+		await runtime.dispose();
 	});
 });

@@ -59,7 +59,7 @@ function makeRuntime() {
 }
 
 describe("ComposeFooter", () => {
-	it("calls onSend with the typed text and renders the model/token strip", async () => {
+	it("calls onSend with the typed text and renders the model + effort strip", async () => {
 		const user = userEvent.setup();
 		const onSend = vi.fn();
 		const runtime = makeRuntime();
@@ -81,7 +81,17 @@ describe("ComposeFooter", () => {
 			screen.getByRole("button", { name: /select model/i }),
 		).toBeInTheDocument();
 		expect(await screen.findByText(/GPT-5\.5/)).toBeInTheDocument();
-		expect(screen.getByText(/4,812/)).toBeInTheDocument();
+
+		// The effort picker reflects the global effort from settings (`off`).
+		expect(
+			screen.getByRole("button", { name: /reasoning effort/i }),
+		).toBeInTheDocument();
+		expect(await screen.findByText(/^Off$/)).toBeInTheDocument();
+
+		// Search + Attach have no Core backing yet, so they ship disabled rather
+		// than masquerading as live controls.
+		expect(screen.getByRole("button", { name: /^search$/i })).toBeDisabled();
+		expect(screen.getByRole("button", { name: /^attach$/i })).toBeDisabled();
 
 		await runtime.dispose();
 	});
