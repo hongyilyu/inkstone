@@ -76,6 +76,34 @@ pub struct ProposalGetResult {
     pub status: String,
 }
 
+/// `proposal/decide` params (ADR-0025): the user's Decision on a pending
+/// Proposal. `decision` ships the full enum now (accept|reject|edit) so
+/// reject/edit are Core-only follow-up slices; `edited_payload` carries the
+/// user's edits for `edit`. `decision_idempotency_key` makes a retried decide
+/// safe (ADR-0014 retry-safety): a repeat with the same key returns the prior
+/// result without re-applying. Deserialize-only — Core consumes it.
+#[derive(Debug, Deserialize)]
+pub struct ProposalDecideParams {
+    pub proposal_id: String,
+    pub decision: String,
+    #[serde(default)]
+    #[allow(dead_code)] // consumed by `edit` (slice 5); accept ignores it
+    pub edited_payload: Option<serde_json::Value>,
+    #[serde(default)]
+    pub decision_idempotency_key: Option<String>,
+}
+
+/// `proposal/decide` result (ADR-0025): the Proposal's post-decision `status`
+/// (`accepted`|`rejected`) and, for an accept/edit that created an Entity, its
+/// `entity_id` (omitted on the wire for a reject). Serialize-only — Core
+/// produces it.
+#[derive(Debug, Serialize)]
+pub struct ProposalDecideResult {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PostMessageResult {
     pub run_id: String,
@@ -540,6 +568,60 @@ mod mirror_tests {
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["rationale"], json!(null));
+    }
+
+    #[test]
+    fn proposal_decide_params_decodes_accept_with_key() {
+        let wire = json!({
+            "proposal_id": UUID_B,
+            "decision": "accept",
+            "decision_idempotency_key": "k1"
+        });
+        let p: ProposalDecideParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.proposal_id, UUID_B);
+        assert_eq!(p.decision, "accept");
+        assert_eq!(p.decision_idempotency_key.as_deref(), Some("k1"));
+        assert!(p.edited_payload.is_none());
+    }
+
+    #[test]
+    fn proposal_decide_params_decodes_bare_accept_and_edit() {
+        let bare: ProposalDecideParams =
+            serde_json::from_value(json!({ "proposal_id": UUID_B, "decision": "accept" })).unwrap();
+        assert_eq!(bare.decision_idempotency_key, None);
+        assert!(bare.edited_payload.is_none());
+
+        let edit: ProposalDecideParams = serde_json::from_value(json!({
+            "proposal_id": UUID_B,
+            "decision": "edit",
+            "edited_payload": { "title": "buy oat milk" }
+        }))
+        .unwrap();
+        assert_eq!(edit.decision, "edit");
+        assert_eq!(edit.edited_payload.unwrap()["title"], json!("buy oat milk"));
+    }
+
+    #[test]
+    fn proposal_decide_result_encodes_accepted_with_entity_id() {
+        let r = ProposalDecideResult {
+            status: "accepted".to_string(),
+            entity_id: Some(UUID_A.to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({ "status": "accepted", "entity_id": UUID_A }),
+        );
+    }
+
+    #[test]
+    fn proposal_decide_result_omits_entity_id_when_none() {
+        let r = ProposalDecideResult {
+            status: "rejected".to_string(),
+            entity_id: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v, json!({ "status": "rejected" }));
+        assert!(v.get("entity_id").is_none());
     }
 
     #[test]

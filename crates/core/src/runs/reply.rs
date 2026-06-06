@@ -91,6 +91,19 @@ pub(crate) fn send_unknown_thread(
     send_rpc_error(out_tx, id, -32001, message);
 }
 
+/// Frame a JSON-RPC `proposal_not_pending` error (ADR-0025). Code `-32002`
+/// sits in ADR-0014's Inkstone-specific server-error band. Used by
+/// `proposal/decide` when the Proposal is not `pending` (already decided) or
+/// its Run is not `parked` — a stale/duplicate decide that is not the
+/// idempotent-retry case.
+pub(crate) fn send_proposal_not_pending(
+    out_tx: &UnboundedSender<String>,
+    id: serde_json::Value,
+    message: String,
+) {
+    send_rpc_error(out_tx, id, -32002, message);
+}
+
 /// Shared JSON-RPC error framer: builds the `{jsonrpc, id, error:{code,
 /// message}}` envelope and queues it on the per-connection channel.
 fn send_rpc_error(

@@ -201,9 +201,176 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
-        .bind(run_id.to_string())
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await
+}
+
+/// Load a Proposal by id for `proposal/decide` (ADR-0025): its lifecycle
+/// columns, the owning Run, the proposed payload (from the tool call's
+/// `request_payload`), and the recorded `decision_idempotency_key`. `None`
+/// when no Proposal with that id exists. Returns `(run_id, tool_call_id, kind,
+/// change_kind, status, request_payload, decision_idempotency_key)`.
+#[allow(clippy::type_complexity)]
+pub(super) async fn proposal_by_id<'e, E>(
+    executor: E,
+    proposal_id: &str,
+) -> sqlx::Result<Option<(String, String, String, String, String, String, Option<String>)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT tc.run_id, p.tool_call_id, p.kind, p.change_kind, p.status, \
+                tc.request_payload, p.decision_idempotency_key \
+         FROM proposals p \
+         JOIN tool_calls tc ON tc.id = p.tool_call_id \
+         WHERE p.id = ?1",
+    )
+    .bind(proposal_id)
+    .fetch_optional(executor)
+    .await
+}
+
+/// The Entity created by a Proposal, for idempotent decide (ADR-0025): a
+/// repeated `proposal/decide` with the same `decision_idempotency_key` returns
+/// the already-created `entities.id` rather than applying again. `None` when
+/// no Entity was created via this Proposal.
+pub(super) async fn entity_id_for_proposal<'e, E>(
+    executor: E,
+    proposal_id: &str,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT id FROM entities WHERE created_via_proposal_id = ?1 LIMIT 1")
+        .bind(proposal_id)
         .fetch_optional(executor)
         .await
+}
+
+/// Accept a Proposal (ADR-0016 single atomic apply, ADR-0025): flip the
+/// `proposals` row to `accepted`, stamp `decided_by='user'` + `decided_at` +
+/// `applied_at` + `decision_idempotency_key`, and record the `edited_payload`
+/// (NULL for an unedited accept). Runs inside the caller's apply transaction.
+pub(super) async fn mark_proposal_accepted<'e, E>(
+    executor: E,
+    proposal_id: &str,
+    edited_payload: Option<&str>,
+    decision_idempotency_key: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE proposals SET status = 'accepted', decided_by = 'user', \
+         decided_at = ?, applied_at = ?, edited_payload = ?, \
+         decision_idempotency_key = ? WHERE id = ?",
+    )
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(edited_payload)
+    .bind(decision_idempotency_key)
+    .bind(proposal_id)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+// ─── entities + entity_revisions (ADR-0004) ───────────────────────────
+
+/// Insert a freshly-created Entity (ADR-0004): `created_by='proposal'` with the
+/// originating `created_via_proposal_id`. `data` is the validated JSON snapshot;
+/// `schema_version` stamps the type's current shape. Runs inside the apply tx.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn insert_entity<'e, E>(
+    executor: E,
+    id: &str,
+    entity_type: &str,
+    schema_version: i64,
+    data: &str,
+    created_via_proposal_id: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO entities \
+         (id, type, schema_version, data, created_by, created_via_proposal_id, \
+          created_at, updated_at) \
+         VALUES (?, ?, ?, ?, 'proposal', ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(entity_type)
+    .bind(schema_version)
+    .bind(data)
+    .bind(created_via_proposal_id)
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Insert an Entity's revision (ADR-0004). A freshly-created Entity gets
+/// `seq=1` carrying the same `data` + the originating `proposal_id`. Runs
+/// inside the apply tx.
+pub(super) async fn insert_entity_revision<'e, E>(
+    executor: E,
+    entity_id: &str,
+    seq: i64,
+    data: &str,
+    proposal_id: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(entity_id)
+    .bind(seq)
+    .bind(data)
+    .bind(proposal_id)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Flip a parked Run back to `running` on resume (ADR-0025): clear the
+/// `awaiting_tool_call_id` waitpoint. The reverse of [`mark_run_parked`]; the
+/// Run goes parked→running before its resume Worker spawns.
+pub(super) async fn mark_run_running<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("UPDATE runs SET status = 'running', awaiting_tool_call_id = NULL WHERE id = ?")
+        .bind(run_id.to_string())
+        .execute(executor)
+        .await
+        .map(|_| ())
+}
+
+/// Read the run's assistant Message id (the seq-0 streaming row resume
+/// continues appending into). `None` when the Run has no assistant message.
+pub(super) async fn assistant_message_id_for_run<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT id FROM messages WHERE run_id = ?1 AND role = 'assistant' \
+         ORDER BY created_at, rowid LIMIT 1",
+    )
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await
 }
 
 // ─── messages ─────────────────────────────────────────────────────────
@@ -529,6 +696,45 @@ where
     .execute(executor)
     .await
     .map(|_| ())
+}
+
+/// Read a Run's ordered timeline for resume transcript reconstruction
+/// (ADR-0025): every `run_steps` row in `seq` order, joined to the message's
+/// role (when a message step) and to the tool call's name/payloads (when a
+/// tool_call step). One ordered query so the reconstruction walks the turn
+/// structure exactly as it was recorded. Returns `(kind, message_id, role,
+/// tool_call_id, tc_name, request_payload, result_payload)` tuples; the
+/// caller assembles message text from parts separately.
+#[allow(clippy::type_complexity)]
+pub(super) async fn run_timeline<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<
+    Vec<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )>,
+>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT rs.kind, rs.message_id, m.role, rs.tool_call_id, \
+                tc.name, tc.request_payload, tc.result_payload \
+         FROM run_steps rs \
+         LEFT JOIN messages m ON m.id = rs.message_id \
+         LEFT JOIN tool_calls tc ON tc.id = rs.tool_call_id \
+         WHERE rs.run_id = ?1 \
+         ORDER BY rs.seq",
+    )
+    .bind(run_id.to_string())
+    .fetch_all(executor)
+    .await
 }
 
 // ─── proposals (ADR-0025) ─────────────────────────────────────────────

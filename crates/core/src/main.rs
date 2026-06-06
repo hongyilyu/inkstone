@@ -1,10 +1,12 @@
 mod credentials;
 mod db;
 mod dispatcher;
+mod entities;
 mod hub;
 mod models;
 mod protocol;
 mod provider_auth;
+mod resume;
 mod runs;
 mod settings;
 mod tools;

@@ -44,7 +44,23 @@ const main = async (): Promise<void> => {
 		});
 
 	// Consume the manifest line.
-	await nextLine();
+	const manifestLine = await nextLine();
+
+	// Resume path (ADR-0025): on a `mode:"resume"` manifest, Core has applied
+	// the Decision and is re-spawning us with the reconstructed transcript
+	// (ending in the Decision tool_result). DON'T propose again — emit a short
+	// completion and `done` so the Run reaches `completed`.
+	let manifest: { mode?: string } = {};
+	try {
+		manifest = JSON.parse(manifestLine);
+	} catch {
+		// Malformed manifest — fall through to the fresh (propose) path.
+	}
+	if (manifest.mode === "resume") {
+		emit({ kind: "text_delta", delta: "Done — added it." });
+		emit({ kind: "done" });
+		return;
+	}
 
 	// Optional pre-propose phase (INKSTONE_PROPOSE_DELAY_MS > 0): emit a
 	// `text_delta` so the Run's hub is live and streaming, then wait. This lets

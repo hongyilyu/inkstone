@@ -445,6 +445,194 @@ pub fn should_auto_approve() -> bool {
     false
 }
 
+/// A pending Proposal loaded by id for `proposal/decide` (ADR-0025). Carries
+/// the owning Run, the awaited `tool_call_id`, the Proposal lifecycle columns,
+/// the proposed `data` (parsed from the tool call's `request_payload`), and any
+/// already-recorded `decision_idempotency_key`.
+pub struct DecidableProposal {
+    pub run_id: Uuid,
+    pub tool_call_id: String,
+    pub kind: String,
+    #[allow(dead_code)]
+    pub change_kind: String,
+    pub status: String,
+    pub data: serde_json::Value,
+    pub decision_idempotency_key: Option<String>,
+}
+
+/// Load a Proposal by id for `proposal/decide`. `None` when no Proposal with
+/// that id exists. The proposed `data` is parsed from the awaited tool call's
+/// `request_payload`; a malformed payload degrades to `Value::Null`.
+pub async fn load_proposal_for_decide(
+    pool: &SqlitePool,
+    proposal_id: &str,
+) -> sqlx::Result<Option<DecidableProposal>> {
+    let Some((run_id, tool_call_id, kind, change_kind, status, request_payload, idem)) =
+        queries::proposal_by_id(pool, proposal_id).await?
+    else {
+        return Ok(None);
+    };
+    let Ok(run_id) = Uuid::parse_str(&run_id) else {
+        return Ok(None);
+    };
+    let payload: serde_json::Value =
+        serde_json::from_str(&request_payload).unwrap_or(serde_json::Value::Null);
+    let data = payload
+        .get("data")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    Ok(Some(DecidableProposal {
+        run_id,
+        tool_call_id,
+        kind,
+        change_kind,
+        status,
+        data,
+        decision_idempotency_key: idem,
+    }))
+}
+
+/// The `entities.id` already created via `proposal_id`, or `None`. Backs the
+/// idempotent-decide check: a repeated `proposal/decide` (same Proposal already
+/// accepted) returns the prior `entity_id` instead of re-applying.
+pub async fn entity_id_for_proposal(
+    pool: &SqlitePool,
+    proposal_id: &str,
+) -> sqlx::Result<Option<String>> {
+    queries::entity_id_for_proposal(pool, proposal_id).await
+}
+
+/// Apply an accepted Proposal in ONE atomic transaction (ADR-0016, ADR-0025).
+/// All-or-nothing: insert the `entities` row (`created_by='proposal'`,
+/// `created_via_proposal_id`), its `entity_revisions` seq-1 snapshot, flip the
+/// `proposals` row to `accepted` (+ `decided_by='user'`, `decided_at`,
+/// `applied_at`, `decision_idempotency_key`, `edited_payload`), and resolve the
+/// awaited `tool_calls` row to `completed` with `result_payload` = the Decision
+/// rendered for the model to read on resume. No durable change exists before
+/// this commits. Returns the new `entity_id`.
+#[allow(clippy::too_many_arguments)]
+pub async fn apply_proposal(
+    pool: &SqlitePool,
+    proposal_id: &str,
+    tool_call_id: &str,
+    entity_type: &str,
+    data: &serde_json::Value,
+    edited_payload: Option<&serde_json::Value>,
+    decision_idempotency_key: Option<&str>,
+    decision_result_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<String> {
+    let entity_id = Uuid::now_v7().to_string();
+    let data_str = data.to_string();
+    let edited_str = edited_payload.map(|v| v.to_string());
+
+    let mut tx = pool.begin().await?;
+
+    queries::insert_entity(
+        &mut *tx,
+        &entity_id,
+        entity_type,
+        crate::entities::TODO_SCHEMA_VERSION,
+        &data_str,
+        proposal_id,
+        now_ms,
+    )
+    .await?;
+    queries::insert_entity_revision(&mut *tx, &entity_id, 1, &data_str, proposal_id, now_ms).await?;
+    queries::mark_proposal_accepted(
+        &mut *tx,
+        proposal_id,
+        edited_str.as_deref(),
+        decision_idempotency_key,
+        now_ms,
+    )
+    .await?;
+    queries::resolve_tool_call(
+        &mut *tx,
+        tool_call_id,
+        "completed",
+        decision_result_payload,
+        now_ms,
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(entity_id)
+}
+
+/// Flip a parked Run back to `running` on resume (ADR-0025), clearing the
+/// waitpoint. Called after `apply_proposal` commits and before the resume
+/// Worker spawns, so a `run/subscribe` in the window sees `running`.
+pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<()> {
+    queries::mark_run_running(pool, run_id).await
+}
+
+/// The run's assistant Message id (the seq-0 streaming row resume continues
+/// appending into). `None` when the Run has no assistant message.
+pub async fn assistant_message_id_for_run(
+    pool: &SqlitePool,
+    run_id: Uuid,
+) -> sqlx::Result<Option<Uuid>> {
+    let id = queries::assistant_message_id_for_run(pool, run_id).await?;
+    Ok(id.and_then(|s| Uuid::parse_str(&s).ok()))
+}
+
+/// One reconstructed turn-element of a Run's timeline for resume (ADR-0025).
+/// A `Message` carries the assembled text + role; a `ToolCall` carries the
+/// awaited tool's id/name/request and its resolved `result` (the persisted
+/// `result_payload`, `None` if still pending → a synthesized "not executed"
+/// result is emitted by the reconstruction).
+pub enum TimelineStep {
+    Message {
+        role: String,
+        text: String,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        request: serde_json::Value,
+        result: Option<String>,
+    },
+}
+
+/// Read a Run's ordered timeline for resume transcript reconstruction
+/// (ADR-0025): each `run_steps` row, resolving message text from parts and
+/// the tool call's name/request/result. Ordered by `run_steps.seq`.
+pub async fn read_run_timeline(
+    pool: &SqlitePool,
+    run_id: Uuid,
+) -> sqlx::Result<Vec<TimelineStep>> {
+    let rows = queries::run_timeline(pool, run_id).await?;
+    let mut steps = Vec::with_capacity(rows.len());
+    for (kind, message_id, role, tool_call_id, tc_name, request_payload, result_payload) in rows {
+        match kind.as_str() {
+            "message" => {
+                let Some(mid) = message_id else { continue };
+                let text = queries::text_parts_by_message(pool, &mid).await?.concat();
+                steps.push(TimelineStep::Message {
+                    role: role.unwrap_or_default(),
+                    text,
+                });
+            }
+            "tool_call" => {
+                let Some(id) = tool_call_id else { continue };
+                let request = request_payload
+                    .as_deref()
+                    .and_then(|p| serde_json::from_str(p).ok())
+                    .unwrap_or(serde_json::Value::Null);
+                steps.push(TimelineStep::ToolCall {
+                    id,
+                    name: tc_name.unwrap_or_default(),
+                    request,
+                    result: result_payload,
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(steps)
+}
+
 /// A Run's snapshot for `run/subscribe` (ADR-0022): the assistant
 /// message's cumulative text at the subscribe instant plus the Run's
 /// status. `text` is empty for a Run that has streamed no delta yet.

@@ -14,7 +14,7 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::db;
-use crate::hub::Hubs;
+use crate::hub::{self, Hubs};
 use crate::protocol::{
     ManifestMessage, RunEvent, ToolCallStatus, ToolErrorWire, ToolOutcome, ToolResult,
     WorkerManifest, WorkerStdout, WorkflowManifest,
@@ -64,6 +64,156 @@ pub fn spawn(
         )
         .await;
     });
+}
+
+/// Resume a parked Run after its Proposal is decided (ADR-0025). Reads the
+/// run's assistant message + reconstructs the transcript from tier 2, flips the
+/// Run `parked → running`, creates a FRESH per-run hub (ADR-0022), and spawns a
+/// resume Worker seeded with a `mode:"resume"` manifest. The shared
+/// [`stream_worker`] then continues appending into the run's assistant message
+/// and commits the terminal tx on `done`.
+///
+/// Returns an error only on a pre-spawn failure (the assistant message is
+/// missing, or the run-running flip fails) — the caller has already committed
+/// the atomic apply, so a resume failure leaves a durably-accepted Proposal on
+/// a still-parked Run (a later idempotent decide retry can re-resume).
+pub async fn resume(
+    run_id: Uuid,
+    pool: &SqlitePool,
+    hubs: &Hubs,
+) -> anyhow::Result<()> {
+    let workflow = crate::workflow::default_workflow().clone();
+
+    let assistant_message_id = db::assistant_message_id_for_run(pool, run_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("run {run_id} has no assistant message to resume into"))?;
+
+    // Reconstruct the transcript (ADR-0025): every tool_call resolved, final
+    // message the Decision tool_result. Built from the persisted timeline.
+    let transcript = crate::resume::reconstruct(pool, run_id).await?;
+
+    // Flip parked → running BEFORE creating the hub/spawning, so a
+    // `run/subscribe` in the window sees `running` (live stream) not `parked`.
+    db::mark_run_running(pool, run_id).await?;
+
+    // Fresh hub for the resume segment (ADR-0022): created before the Worker
+    // spawns so a fast subscribe finds it.
+    let run_hub = hub::create(hubs, run_id);
+
+    let cmd = std::env::var("INKSTONE_WORKER_CMD").unwrap_or_else(|_| {
+        "packages/worker/node_modules/.bin/tsx packages/worker/src/cli.ts".to_string()
+    });
+
+    let pool = pool.clone();
+    let hubs = hubs.clone();
+    tokio::spawn(async move {
+        run_resume_worker(
+            run_id,
+            cmd,
+            workflow,
+            transcript,
+            pool,
+            assistant_message_id,
+            hubs,
+            run_hub.tx,
+            run_hub.gate,
+        )
+        .await;
+    });
+
+    Ok(())
+}
+
+/// The resume Worker task: spawn the Worker, write a `mode:"resume"` manifest
+/// carrying the reconstructed transcript (and an empty prompt), then delegate
+/// to the shared [`stream_worker`]. Mirrors [`run_worker`] but for the resume
+/// manifest shape (ADR-0025).
+#[allow(clippy::too_many_arguments)]
+async fn run_resume_worker(
+    run_id: Uuid,
+    cmd: String,
+    workflow: Workflow,
+    transcript: Vec<crate::resume::Block>,
+    pool: SqlitePool,
+    assistant_message_id: Uuid,
+    hubs: Hubs,
+    tx: broadcast::Sender<RunEvent>,
+    gate: Arc<tokio::sync::Mutex<()>>,
+) {
+    let mut parts = cmd.split_whitespace();
+    let Some(program) = parts.next() else {
+        eprintln!("INKSTONE_WORKER_CMD is empty");
+        finalize_error(&pool, &hubs, run_id).await;
+        return;
+    };
+    let args: Vec<&str> = parts.collect();
+
+    let mut child = match Command::new(program)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("failed to spawn resume worker {program:?}: {e}");
+            finalize_error(&pool, &hubs, run_id).await;
+            return;
+        }
+    };
+
+    let mut stdin = child.stdin.take();
+    {
+        let messages: Vec<ManifestMessage> =
+            transcript.iter().map(crate::resume::Block::as_message).collect();
+        let access_token =
+            match crate::provider_auth::resolve_access_token(&workflow.provider, db::now_ms()).await
+            {
+                Ok(token) => token,
+                Err(e) => {
+                    eprintln!("access token resolution failed for resume run {run_id}: {e}");
+                    finalize_error(&pool, &hubs, run_id).await;
+                    return;
+                }
+            };
+        let manifest = WorkerManifest {
+            workflow: WorkflowManifest {
+                name: &workflow.name,
+                version: &workflow.version,
+                provider: &workflow.provider,
+                model: workflow.model.as_deref().unwrap_or_default(),
+                system_prompt: &workflow.system_prompt,
+                thinking_level: workflow.thinking_level.as_deref().unwrap_or_default(),
+                tools: crate::tools::descriptors_for(&workflow.tools),
+            },
+            prompt: "",
+            messages,
+            mode: Some("resume"),
+            access_token: access_token.as_deref(),
+        };
+        let mut line = serde_json::to_string(&manifest).expect("WorkerManifest serializes");
+        line.push('\n');
+        if let Some(ref mut si) = stdin {
+            if let Err(e) = si.write_all(line.as_bytes()).await {
+                eprintln!("failed to write resume worker stdin: {e}");
+            }
+            let _ = si.flush().await;
+        }
+    }
+
+    stream_worker(
+        run_id,
+        child,
+        stdin,
+        workflow,
+        pool,
+        assistant_message_id,
+        hubs,
+        tx,
+        gate,
+    )
+    .await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -163,7 +313,42 @@ async fn run_worker(
         // Deliberately NOT dropped — kept open for `tool_result` writes.
     }
 
+    stream_worker(
+        run_id,
+        child,
+        stdin,
+        workflow,
+        pool,
+        assistant_message_id,
+        hubs,
+        tx,
+        gate,
+    )
+    .await;
+}
+
+/// Stream a spawned Worker's stdout to completion: read NDJSON lines, append
+/// `text_delta`s under the per-run gate, dispatch (or park on) `tool_request`s,
+/// and commit the terminal tx (`complete_run`/`error_run`) unless the Run
+/// parked. Shared by the fresh spawn ([`run_worker`]) and the resume spawn
+/// ([`run_resume_worker`]) — the only difference between them is the manifest
+/// written before this runs. `child` already has its manifest on stdin; `stdin`
+/// is the kept-open handle for `tool_result` writes (None once a terminal event
+/// arrives).
+#[allow(clippy::too_many_arguments)]
+async fn stream_worker(
+    run_id: Uuid,
+    mut child: tokio::process::Child,
+    mut stdin: Option<tokio::process::ChildStdin>,
+    workflow: Workflow,
+    pool: SqlitePool,
+    assistant_message_id: Uuid,
+    hubs: Hubs,
+    tx: broadcast::Sender<RunEvent>,
+    gate: Arc<tokio::sync::Mutex<()>>,
+) {
     let stdout = match child.stdout.take() {
+
         Some(s) => s,
         None => {
             eprintln!("worker child has no stdout");

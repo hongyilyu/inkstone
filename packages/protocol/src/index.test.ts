@@ -8,6 +8,8 @@ import {
 	PostMessageResult,
 	ProposalGetParams,
 	ProposalGetResult,
+	ProposalDecideParams,
+	ProposalDecideResult,
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
@@ -160,6 +162,82 @@ describe("ProposalGetResult", () => {
 	it("rejects a missing status", () => {
 		const { status: _omit, ...noStatus } = wire;
 		expect(() => S.decodeUnknownSync(ProposalGetResult)(noStatus)).toThrow();
+	});
+});
+
+describe("ProposalDecideParams", () => {
+	it("decodes an accept with an idempotency key and encodes back unchanged", () => {
+		const wire = {
+			proposal_id: "01900000-0000-7000-8000-000000000010",
+			decision: "accept",
+			decision_idempotency_key: "k1",
+		};
+		const decoded = S.decodeUnknownSync(ProposalDecideParams)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ProposalDecideParams)(decoded)).toEqual(wire);
+	});
+
+	it("decodes a bare accept (no key, no edited_payload)", () => {
+		const wire = {
+			proposal_id: "01900000-0000-7000-8000-000000000010",
+			decision: "accept",
+		};
+		expect(S.decodeUnknownSync(ProposalDecideParams)(wire)).toEqual(wire);
+	});
+
+	it("decodes an edit carrying an opaque edited_payload", () => {
+		const wire = {
+			proposal_id: "01900000-0000-7000-8000-000000000010",
+			decision: "edit",
+			edited_payload: { title: "buy oat milk", done: false },
+		};
+		expect(S.decodeUnknownSync(ProposalDecideParams)(wire)).toEqual(wire);
+	});
+
+	it("decodes reject", () => {
+		const wire = {
+			proposal_id: "01900000-0000-7000-8000-000000000010",
+			decision: "reject",
+		};
+		expect(S.decodeUnknownSync(ProposalDecideParams)(wire)).toEqual(wire);
+	});
+
+	it("rejects an unknown decision", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProposalDecideParams)({
+				proposal_id: "01900000-0000-7000-8000-000000000010",
+				decision: "defer",
+			}),
+		).toThrow();
+	});
+
+	it("rejects a missing proposal_id", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProposalDecideParams)({ decision: "accept" }),
+		).toThrow();
+	});
+});
+
+describe("ProposalDecideResult", () => {
+	it("decodes an accepted result with an entity_id and encodes back unchanged", () => {
+		const wire = {
+			status: "accepted",
+			entity_id: "01900000-0000-7000-8000-000000000020",
+		};
+		const decoded = S.decodeUnknownSync(ProposalDecideResult)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ProposalDecideResult)(decoded)).toEqual(wire);
+	});
+
+	it("decodes a rejected result with no entity_id", () => {
+		const wire = { status: "rejected" };
+		expect(S.decodeUnknownSync(ProposalDecideResult)(wire)).toEqual(wire);
+	});
+
+	it("rejects an unknown status", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProposalDecideResult)({ status: "deferred" }),
+		).toThrow();
 	});
 });
 

@@ -108,6 +108,32 @@ export const ProposalGetResult = S.Struct({
 });
 export type ProposalGetResult = S.Schema.Type<typeof ProposalGetResult>;
 
+/**
+ * `proposal/decide` params: the user's Decision on a pending Proposal. The
+ * full `decision` enum ships now (accept|reject|edit) so reject/edit are
+ * Core-only follow-ups; `edited_payload` carries the user's edits for
+ * `edit`. `decision_idempotency_key` makes a retried decide safe — a repeat
+ * with the same key returns the prior result without re-applying.
+ */
+export const ProposalDecideParams = S.Struct({
+	proposal_id: S.String,
+	decision: S.Literal("accept", "reject", "edit"),
+	edited_payload: S.optional(S.Unknown),
+	decision_idempotency_key: S.optional(S.String),
+});
+export type ProposalDecideParams = S.Schema.Type<typeof ProposalDecideParams>;
+
+/**
+ * `proposal/decide` result: the Proposal's post-decision `status`
+ * (accepted|rejected) and, for an accept/edit that created an Entity, its
+ * `entity_id`. A reject carries no `entity_id`.
+ */
+export const ProposalDecideResult = S.Struct({
+	status: S.Literal("accepted", "rejected"),
+	entity_id: S.optional(S.String),
+});
+export type ProposalDecideResult = S.Schema.Type<typeof ProposalDecideResult>;
+
 // --- tool protocol (ADR-0018): the Worker↔Core duplex for tool calls. The
 // Worker emits `tool_request` on its outbound stream (alongside RunEvents);
 // Core replies with `tool_result` on the post-manifest inbound stream.
