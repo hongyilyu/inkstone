@@ -72,3 +72,4 @@ This is intentional: the chat-driven slice's whole shape is "user captures → W
 - [ADR-0013](./0013-worker-process-lifecycle-and-transport.md) — Worker is parked while a manual Proposal awaits decision; auto-approve resolves immediately and the Run continues without parking.
 - [ADR-0014](./0014-client-core-wire-protocol.md) — `proposal/pending` and `proposal/changed` are the Notifications surfaced by this flow.
 - [ADR-0018](./0018-workflow-and-tools-definition.md) — Workflow manifest format that carries each Workflow's auto-approve declarations.
+- [ADR-0025](./0025-proposal-park-and-resume.md) — how the manual-approve Decision reaches the model: parked, then delivered as the awaited tool's result on resume.

@@ -53,3 +53,4 @@ These can be revisited; none is foundational.
 - [ADR-0002](./0002-clients-talk-only-to-core.md) — Clients reach the Worker only through Core, which is why Run state has to be in Core to be visible.
 - [ADR-0006](./0006-run-events-vs-tool-protocol.md) — Run Events are observational; Core persists what it needs from them.
 - [ADR-0010](./0010-mvp-slice-chat-driven-web-client.md) — the slice this lifecycle serves.
+- [ADR-0025](./0025-proposal-park-and-resume.md) — adds `parked` as a durable, non-terminal Run state; parked Runs survive a Core restart instead of being force-errored.
