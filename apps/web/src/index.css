@@ -182,12 +182,65 @@
 	}
 }
 
-/* Motion tokens (extract): one easing + the two entrance animations, exposed as
-   Tailwind utilities (`ease-out-quint`, `animate-rise`, `animate-panel`). */
+/* Tool-call activity motion (ChatColumn → ToolActivity). The running row's
+   leading glyph breathes a soft magenta "lamplight" halo (the system's north
+   star) while a slow highlight sweeps the row; the completion check pops in.
+   All three are applied with `motion-safe:` so a reduced-motion user or a
+   headless render sees the fully-painted, static row (icon + label + state
+   are never gated on motion). */
+@keyframes tool-glow {
+	0%,
+	100% {
+		box-shadow: 0 0 0 0 transparent;
+	}
+	50% {
+		box-shadow: 0 0 10px 1px color-mix(in oklab, var(--primary) 45%, transparent);
+	}
+}
+@keyframes tool-shimmer {
+	from {
+		background-position: 140% 0;
+	}
+	to {
+		background-position: -140% 0;
+	}
+}
+@keyframes tool-pop {
+	from {
+		opacity: 0;
+		transform: scale(0.7);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+/* The sweeping highlight overlay for a running tool row: a primary-tinted band
+   wider than its track, slid across by `tool-shimmer`. Clipped by the row's
+   `overflow-hidden` + `rounded-lg`. */
+.tool-shimmer {
+	background-image: linear-gradient(
+		110deg,
+		transparent 30%,
+		color-mix(in oklab, var(--primary) 18%, transparent) 50%,
+		transparent 70%
+	);
+	background-size: 220% 100%;
+	background-repeat: no-repeat;
+}
+
+/* Motion tokens (extract): one easing + the entrance/activity animations,
+   exposed as Tailwind utilities (`ease-out-quint`, `animate-rise`,
+   `animate-panel`, `animate-tool-glow`, `animate-tool-shimmer`,
+   `animate-tool-pop`). */
 @theme {
 	--ease-out-quint: cubic-bezier(0.16, 1, 0.3, 1);
 	--animate-rise: rise 0.5s var(--ease-out-quint) both;
 	--animate-panel: panel-slide 0.32s var(--ease-out-quint) both;
+	--animate-tool-glow: tool-glow 1.8s ease-in-out infinite;
+	--animate-tool-shimmer: tool-shimmer 2.2s linear infinite;
+	--animate-tool-pop: tool-pop 0.22s var(--ease-out-quint) both;
 }
 
 html,

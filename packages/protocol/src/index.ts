@@ -52,6 +52,17 @@ export type ThreadGetResult = S.Schema.Type<typeof ThreadGetResult>;
 
 export const RunEvent = S.Union(
 	S.Struct({ kind: S.Literal("text_delta"), delta: S.String }),
+	// Live tool-call boundary (ADR-0006): Core synthesizes these when it
+	// receives a `tool_request` from the Worker and publishes them on the Run
+	// Event hub so the Client can show a tool running. `started` precedes
+	// dispatch; the terminal `completed`/`error` mirrors the outcome. Ephemeral
+	// (not persisted), so not replayed on a snapshot/reconnect (ADR-0022).
+	S.Struct({
+		kind: S.Literal("tool_call"),
+		tool_call_id: S.String,
+		name: S.String,
+		status: S.Literal("started", "completed", "error"),
+	}),
 	S.Struct({ kind: S.Literal("done") }),
 	S.Struct({ kind: S.Literal("error"), message: S.String }),
 );

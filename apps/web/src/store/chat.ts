@@ -3,6 +3,18 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
 /**
+ * A tool call surfaced live within an assistant turn (ADR-0006 tool_call Run
+ * Event). `id` is the wire `tool_call_id`; `status` is the UI lifecycle
+ * (`running` while Core dispatches it, then a terminal `completed`/`error`).
+ * The wire `started` status maps to `running` (see {@link applyEvent}).
+ */
+export interface ToolCall {
+	readonly id: string;
+	readonly name: string;
+	readonly status: "running" | "completed" | "error";
+}
+
+/**
  * The canonical live UI message (distinct from the demoted `MockChatMessage`).
  * Mirrors the wire `MessageView` shape so slice-13 hydration maps cleanly.
  */
@@ -12,6 +24,12 @@ export interface Message {
 	readonly status: "streaming" | "completed" | "incomplete";
 	readonly text: string;
 	readonly run_id: string;
+	/**
+	 * Tool calls observed during this assistant turn, in arrival order. Driven
+	 * by `tool_call` Run Events (ADR-0006); ephemeral, so a Run rehydrated from
+	 * history starts without them (ADR-0022 defers durable replay).
+	 */
+	readonly toolCalls?: readonly ToolCall[];
 	/**
 	 * Set when a Run terminates with an `error` Run Event (ADR-0006): the
 	 * worker/provider failure message. Drives the error rendering in the
@@ -213,6 +231,31 @@ export function applyEvent(
 				messages,
 				snapshotApplied: { ...t.snapshotApplied, [runId]: true },
 			}));
+		}
+
+		if (event.kind === "tool_call") {
+			// Upsert the tool call on the assistant message for this run: a
+			// `started` event appends a `running` row; a terminal event flips the
+			// matching row to `completed`/`error`. The wire `started` maps to the
+			// UI `running` vocabulary.
+			const status = event.status === "started" ? "running" : event.status;
+			const messages = thread.messages.map((m): Message => {
+				if (m.role !== "assistant" || m.run_id !== runId) {
+					return m;
+				}
+				const existing = m.toolCalls ?? [];
+				const found = existing.some((tc) => tc.id === event.tool_call_id);
+				const toolCalls: ToolCall[] = found
+					? existing.map((tc) =>
+							tc.id === event.tool_call_id ? { ...tc, status } : tc,
+						)
+					: [
+							...existing,
+							{ id: event.tool_call_id, name: event.name, status },
+						];
+				return { ...m, toolCalls };
+			});
+			return withThread(s, threadId, (t) => ({ ...t, messages }));
 		}
 
 		if (event.kind === "error") {

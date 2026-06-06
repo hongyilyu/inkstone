@@ -120,16 +120,45 @@ pub struct ThreadGetResult {
     pub messages: Vec<MessageView>,
 }
 
+/// Lifecycle status of a tool call surfaced to the Client on the Run Event
+/// stream (ADR-0006). `Started` is published when Core receives the
+/// `tool_request`; the terminal `Completed`/`Error` mirrors the dispatch
+/// outcome. Serializes snake_case (`"started"`/`"completed"`/`"error"`).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolCallStatus {
+    Started,
+    Completed,
+    Error,
+}
+
 /// Run Event emitted by the Worker over its stdout NDJSON stream
 /// (per ADR-0006). Core deserializes each line into this enum, takes
 /// the appropriate persistence action, and forwards it as a `run/event`
 /// Notification.
+///
+/// `ToolCall` is the exception: it is NOT a Worker stdout line. Core
+/// SYNTHESIZES it when it receives a `tool_request` from the Worker (a
+/// separate stdio channel) and publishes it onto the same hub as the text
+/// stream, so the Client can surface "a tool is running" live. It is
+/// ephemeral — unlike `text_delta` it is not persisted, so it is not
+/// replayed on a `run/subscribe` snapshot/reconnect (ADR-0022:38 defers
+/// durable coarse-event replay to a future `run/get_history`).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunEvent {
-    TextDelta { delta: String },
+    TextDelta {
+        delta: String,
+    },
+    ToolCall {
+        tool_call_id: String,
+        name: String,
+        status: ToolCallStatus,
+    },
     Done,
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 // --- Tool Protocol (ADR-0018): the Worker↔Core duplex. Rust mirror of the TS
@@ -529,6 +558,36 @@ mod mirror_tests {
             other => panic!("expected Error, got {other:?}"),
         }
         assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
+    }
+
+    #[test]
+    fn run_event_tool_call_round_trips_each_status() {
+        for (status, wire_status) in [
+            (ToolCallStatus::Started, "started"),
+            (ToolCallStatus::Completed, "completed"),
+            (ToolCallStatus::Error, "error"),
+        ] {
+            let wire = json!({
+                "kind": "tool_call",
+                "tool_call_id": "tc_01",
+                "name": "read_thread",
+                "status": wire_status,
+            });
+            let ev: RunEvent = serde_json::from_value(wire.clone()).unwrap();
+            match &ev {
+                RunEvent::ToolCall {
+                    tool_call_id,
+                    name,
+                    status: got,
+                } => {
+                    assert_eq!(tool_call_id, "tc_01");
+                    assert_eq!(name, "read_thread");
+                    assert_eq!(*got, status);
+                }
+                other => panic!("expected ToolCall, got {other:?}"),
+            }
+            assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
+        }
     }
 
     // --- Manifest (Serialize-only): encode to the canonical wire JSON the TS

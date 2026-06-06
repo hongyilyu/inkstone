@@ -117,4 +117,70 @@ describe("chat store + stream bridge", () => {
 
 		await runtime.dispose();
 	});
+
+	it("tool_call events upsert a running row then flip it to completed", async () => {
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime(queue, "run-tool");
+		setFocusedThread("threadA");
+
+		await send(runtime, "threadA", "summarize my other thread");
+
+		// Core synthesizes a `started` boundary when it dispatches the tool, then
+		// a terminal `completed` when the outcome returns.
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "tc_1",
+			name: "read_thread",
+			status: "started",
+		});
+		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "Here's what I found" });
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "tc_1",
+			name: "read_thread",
+			status: "completed",
+		});
+		Queue.unsafeOffer(queue, { kind: "done" });
+		await awaitRun(runtime, "run-tool");
+
+		const assistant = getChatState().threads.threadA?.messages[1];
+		// The same tool_call_id is upserted, not duplicated: one row, terminal.
+		expect(assistant?.toolCalls).toEqual([
+			{ id: "tc_1", name: "read_thread", status: "completed" },
+		]);
+		expect(assistant?.text).toBe("Here's what I found");
+		expect(assistant?.status).toBe("completed");
+
+		await runtime.dispose();
+	});
+
+	it("maps a tool_call error status onto the matching row", async () => {
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime(queue, "run-tool-err");
+		setFocusedThread("threadA");
+
+		await send(runtime, "threadA", "read a missing thread");
+
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "tc_2",
+			name: "read_thread",
+			status: "started",
+		});
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "tc_2",
+			name: "read_thread",
+			status: "error",
+		});
+		Queue.unsafeOffer(queue, { kind: "done" });
+		await awaitRun(runtime, "run-tool-err");
+
+		const assistant = getChatState().threads.threadA?.messages[1];
+		expect(assistant?.toolCalls).toEqual([
+			{ id: "tc_2", name: "read_thread", status: "error" },
+		]);
+
+		await runtime.dispose();
+	});
 });

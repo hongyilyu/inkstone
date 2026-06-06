@@ -271,4 +271,97 @@ describe("ChatColumn", () => {
 
 		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 	});
+
+	it("renders a running tool call with its label and suppresses the typing dots", () => {
+		const runtime = makeStubRuntime({ runId: "run-tc1", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a7",
+			role: "assistant",
+			status: "streaming",
+			text: "",
+			run_id: "r7",
+			toolCalls: [{ id: "tc_1", name: "read_thread", status: "running" }],
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		const row = screen.getByTestId("tool-call");
+		expect(row).toHaveAttribute("data-status", "running");
+		expect(row).toHaveTextContent("Reading thread");
+		// The tool indicator is the activity signal while a tool runs, so the
+		// generic typing dots must not double up.
+		expect(screen.queryByTestId("typing-indicator")).toBeNull();
+	});
+
+	it("renders a completed tool call in its settled past-tense state", () => {
+		const runtime = makeStubRuntime({ runId: "run-tc2", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a8",
+			role: "assistant",
+			status: "completed",
+			text: "done",
+			run_id: "r8",
+			toolCalls: [{ id: "tc_2", name: "read_thread", status: "completed" }],
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		const row = screen.getByTestId("tool-call");
+		expect(row).toHaveAttribute("data-status", "completed");
+		expect(row).toHaveTextContent("Read thread");
+	});
+
+	it("surfaces an errored tool call with a failed indication", () => {
+		const runtime = makeStubRuntime({ runId: "run-tc3", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a9",
+			role: "assistant",
+			status: "streaming",
+			text: "",
+			run_id: "r9",
+			toolCalls: [{ id: "tc_3", name: "read_thread", status: "error" }],
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		const row = screen.getByTestId("tool-call");
+		expect(row).toHaveAttribute("data-status", "error");
+		expect(row).toHaveTextContent(/failed/i);
+	});
+
+	it("falls back to a humanized label for an unregistered tool", () => {
+		const runtime = makeStubRuntime({ runId: "run-tc4", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a10",
+			role: "assistant",
+			status: "streaming",
+			text: "",
+			run_id: "r10",
+			toolCalls: [{ id: "tc_4", name: "search_web", status: "running" }],
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(screen.getByTestId("tool-call")).toHaveTextContent("Search web");
+	});
 });

@@ -16,8 +16,8 @@ use uuid::Uuid;
 use crate::db;
 use crate::hub::Hubs;
 use crate::protocol::{
-    ManifestMessage, RunEvent, ToolErrorWire, ToolOutcome, ToolResult, WorkerManifest,
-    WorkerStdout, WorkflowManifest,
+    ManifestMessage, RunEvent, ToolCallStatus, ToolErrorWire, ToolOutcome, ToolResult,
+    WorkerManifest, WorkerStdout, WorkflowManifest,
 };
 use crate::workflow::Workflow;
 
@@ -213,18 +213,37 @@ async fn run_worker(
             }
             // Tool Request (ADR-0018): execute the Core-owned tool and write a
             // `tool_result` back on the kept-open stdin, correlated by
-            // `tool_call_id`. Handled OUTSIDE the per-delta gate — it is not a
-            // hub event and must not block `run/subscribe`. One tool at a time
-            // is sufficient for this slice (the single `read_thread` tool).
+            // `tool_call_id`. The dispatch itself rides a separate stdio
+            // channel (not the hub) and must not block `run/subscribe`, so it
+            // stays OUTSIDE the per-delta gate. We DO publish two ephemeral
+            // `tool_call` Run Events onto the hub around it — `started` before
+            // dispatch, then the terminal `completed`/`error` — so a connected
+            // Client can surface "a tool is running" live (ADR-0006). These are
+            // not persisted, so a late/reconnecting subscriber won't replay
+            // them (ADR-0022:38). One tool at a time is sufficient for this
+            // slice (the single `read_thread` tool).
             WorkerStdout::ToolRequest {
                 tool_call_id,
                 name,
                 params,
                 ..
             } => {
+                let _ = tx.send(RunEvent::ToolCall {
+                    tool_call_id: tool_call_id.clone(),
+                    name: name.clone(),
+                    status: ToolCallStatus::Started,
+                });
                 let outcome =
                     handle_tool_request(&pool, run_id, &workflow, &tool_call_id, &name, params)
                         .await;
+                let _ = tx.send(RunEvent::ToolCall {
+                    tool_call_id: tool_call_id.clone(),
+                    name: name.clone(),
+                    status: match &outcome {
+                        ToolOutcome::Ok { .. } => ToolCallStatus::Completed,
+                        ToolOutcome::Err { .. } => ToolCallStatus::Error,
+                    },
+                });
                 let result = ToolResult {
                     kind: "tool_result",
                     run_id: run_id.to_string(),
