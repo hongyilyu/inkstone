@@ -46,6 +46,18 @@ const main = async (): Promise<void> => {
 	// Consume the manifest line.
 	await nextLine();
 
+	// Optional pre-propose phase (INKSTONE_PROPOSE_DELAY_MS > 0): emit a
+	// `text_delta` so the Run's hub is live and streaming, then wait. This lets
+	// a test subscribe and attach to the LIVE hub BEFORE the park, so it can
+	// assert the attached-forwarder path emits no false `done` when the Run
+	// parks (ADR-0025 no-false-done). Default 0 → no delay, immediate propose
+	// (the park-state test relies on this unchanged).
+	const delayMs = Number(process.env.INKSTONE_PROPOSE_DELAY_MS ?? "0");
+	if (delayMs > 0) {
+		emit({ kind: "text_delta", delta: "thinking… " });
+		await new Promise<void>((r) => setTimeout(r, delayMs));
+	}
+
 	// Emit one propose_entity tool_request for a Todo. `run_id` is
 	// Core-ignored (Core uses the spawn's authoritative run id); send "" to
 	// keep the wire shape. The tool_call_id is per-process (one worker per

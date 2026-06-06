@@ -53,6 +53,17 @@ impl Drop for CoreChild {
 }
 
 fn spawn_core(worker_cmd: &str, db_path: &Path) -> (CoreChild, String) {
+    spawn_core_env(worker_cmd, db_path, &[])
+}
+
+/// Like [`spawn_core`] but with extra env vars on the Core process. Core
+/// spawns the Worker as a child, which inherits Core's env — so this is how a
+/// test reaches the fixture Worker (e.g. `INKSTONE_PROPOSE_DELAY_MS`).
+fn spawn_core_env(
+    worker_cmd: &str,
+    db_path: &Path,
+    extra_env: &[(&str, &str)],
+) -> (CoreChild, String) {
     let repo_root = repo_root();
     let mut cmd = std::process::Command::cargo_bin("core").expect("core binary exists");
     cmd.current_dir(&repo_root)
@@ -61,6 +72,9 @@ fn spawn_core(worker_cmd: &str, db_path: &Path) -> (CoreChild, String) {
         .env("INKSTONE_PORT", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
     let mut child = cmd.spawn().expect("core spawns");
 
     let stdout = child.stdout.take().expect("piped stdout");
@@ -278,5 +292,112 @@ fn parks_on_propose_entity() {
         .await
         .expect("count terminal run_events");
         assert_eq!(terminal_events, 0, "no done/error run_event for a parked run");
+    });
+}
+
+/// No-false-done for an ATTACHED subscriber (ADR-0025). A Client that
+/// subscribes to a live, streaming Run (`status:"running"`) and is still
+/// attached when the Run parks must NOT receive a synthesized `done` — the
+/// forwarder's channel-close path suppresses it for a parked Run. The
+/// `parks_on_propose_entity` test can only hit the no-hub branch (it polls
+/// until parked first), so this is the only coverage of the forwarder path,
+/// which is the slice's stated reason to exist.
+#[test]
+fn parked_run_emits_no_false_done_to_attached_subscriber() {
+    let worker_cmd = propose_worker_cmd();
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    // The fixture emits a `text_delta` then waits 1.5s before proposing, so a
+    // subscribe lands on the LIVE hub before the park.
+    let (_child, ws_url) = spawn_core_env(
+        &worker_cmd,
+        &db_path,
+        &[("INKSTONE_PROPOSE_DELAY_MS", "1500")],
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let resp = rpc(
+            &ws_url,
+            1,
+            "thread/create",
+            serde_json::json!({ "prompt": "remember to buy milk" }),
+        )
+        .await;
+        let run_id = resp["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
+            .to_string();
+
+        // Subscribe immediately — attach to the live hub during the fixture's
+        // pre-propose delay. `status:"running"` proves we took the streaming
+        // (hub-present) path, not the no-hub parked branch.
+        let (mut ws, _r) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("ws handshake");
+        let sub = serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "run/subscribe",
+            "params": { "run_id": run_id },
+        });
+        ws.send(Message::Text(sub.to_string().into()))
+            .await
+            .expect("send subscribe");
+        let sub_resp = next_text(&mut ws).await;
+        let sub_v: serde_json::Value =
+            serde_json::from_str(&sub_resp).expect("subscribe response is JSON");
+        assert_eq!(
+            sub_v["result"]["status"].as_str(),
+            Some("running"),
+            "attached to a LIVE streaming hub before the park — body: {sub_resp}"
+        );
+
+        // Drain across the park (fixture proposes at ~boot+1.5s). The hub closes
+        // when Core parks; the forwarder must suppress the synthesized `done`.
+        // Assert no terminal event ever arrives, and that we saw the live
+        // text_delta (confirming a real attached tail, not an empty snapshot).
+        let mut saw_text = false;
+        let window = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < window {
+            match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+                Ok(Some(Ok(Message::Text(t)))) => {
+                    let v: serde_json::Value = serde_json::from_str(&t).unwrap_or_default();
+                    let kind = v["params"]["event"]["kind"].as_str();
+                    if kind == Some("text_delta") {
+                        saw_text = true;
+                    }
+                    assert!(
+                        kind != Some("done") && kind != Some("error"),
+                        "attached subscriber must not get a terminal done/error on park — got {t}"
+                    );
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(_))) | Ok(None) => break, // hub/conn closed without a done — acceptable
+                Err(_) => {}                          // idle tick
+            }
+        }
+        ws.close(None).await.ok();
+        assert!(
+            saw_text,
+            "attached subscriber received the pre-propose text_delta (live tail)"
+        );
+
+        // Confirm the Run actually parked within the window (so the assertion
+        // above genuinely covered the park transition).
+        let resp = rpc(
+            &ws_url,
+            3,
+            "proposal/get",
+            serde_json::json!({ "run_id": run_id }),
+        )
+        .await;
+        assert_eq!(
+            resp["result"]["status"].as_str(),
+            Some("pending"),
+            "Run parked with a pending proposal — {resp}"
+        );
     });
 }
