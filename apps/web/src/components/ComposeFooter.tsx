@@ -1,4 +1,4 @@
-import { ArrowUp, Paperclip, Search, Zap } from "lucide-react";
+import { ArrowUp, Paperclip, Search } from "lucide-react";
 import {
 	type FormEvent,
 	type KeyboardEvent,
@@ -6,14 +6,13 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { useCurrentRun } from "@/lib/hooks/useCurrentRun";
+import { EffortPicker } from "./EffortPicker.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { Button } from "./ui/button.js";
 
 export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
-	const { data: currentRun } = useCurrentRun();
 
 	const submit = () => {
 		const trimmed = value.trim();
@@ -57,26 +56,30 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 					onKeyDown={handleKey}
 					rows={1}
 					placeholder="Type your message here…"
-					className="w-full resize-none bg-transparent text-base text-foreground outline-none placeholder:text-foreground/40"
+					className="w-full resize-none bg-transparent text-base text-foreground outline-none placeholder:text-muted-foreground"
 				/>
 				<div className="mt-3 flex items-end justify-between gap-2">
 					<div className="flex flex-wrap items-center gap-2">
 						<ModelPicker />
-						<Button variant="chip" size="pill">
-							<Zap className="h-4 w-4" aria-hidden />
-							<span>Instant</span>
-						</Button>
-						<Button variant="chip" size="pill">
+						<EffortPicker />
+						<Button
+							variant="chip"
+							size="pill"
+							disabled
+							title="Web search isn't available yet"
+						>
 							<Search className="h-4 w-4" aria-hidden />
 							<span>Search</span>
 						</Button>
-						<Button variant="chip" size="pill">
+						<Button
+							variant="chip"
+							size="pill"
+							disabled
+							title="Attachments aren't available yet"
+						>
 							<Paperclip className="h-4 w-4" aria-hidden />
 							<span>Attach</span>
 						</Button>
-						<span className="ml-1 hidden text-xs text-foreground/40 lg:inline">
-							{currentRun?.tokens.toLocaleString("en-US")} tokens
-						</span>
 					</div>
 					<Button
 						type="submit"

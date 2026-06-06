@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { RotateCcw } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { useRuntime } from "@/runtime";
 import { send, sendNewThread } from "@/store/bridge";
@@ -31,21 +32,47 @@ export function ChatColumn() {
 		if (el) el.scrollTop = el.scrollHeight;
 	}, []);
 
+	// Re-issue a previous user turn after a failed/interrupted Run (harden).
+	// The thread already exists (it holds the failed turn), so this always takes
+	// the `send` path, mirroring the composer's send (surface errors + bump the
+	// sidebar's last-activity order).
+	const retry = (text: string) => {
+		if (focusedThreadId === null) return;
+		setSendError(null);
+		void send(runtime, focusedThreadId, text).then(async (result) => {
+			if (!result.ok) {
+				setSendError("Couldn't send your message. Please try again.");
+			}
+			await queryClient.invalidateQueries({ queryKey: ["threads"] });
+		});
+	};
+
 	return (
 		<main className="flex h-full flex-col overflow-hidden bg-chat-bg">
 			<div ref={scrollerRef} className="flex-1 overflow-y-auto px-6 pt-14 pb-6">
 				<ol className="mx-auto flex max-w-3xl flex-col gap-6">
-					{messages.map((message) =>
+					{messages.map((message, i) =>
 						message.role === "user" ? (
 							<UserBubble key={message.id} message={message} />
 						) : (
-							<AssistantBubble key={message.id} message={message} />
+							<AssistantBubble
+								key={message.id}
+								message={message}
+								onRetry={
+									focusedThreadId !== null && messages[i - 1]?.role === "user"
+										? () => retry(messages[i - 1].text)
+										: undefined
+								}
+							/>
 						),
 					)}
 				</ol>
 			</div>
 			{sendError !== null && (
-				<p role="alert" className="mx-auto max-w-3xl px-6 text-sm text-destructive">
+				<p
+					role="alert"
+					className="mx-auto max-w-3xl px-6 text-sm text-destructive"
+				>
 					{sendError}
 				</p>
 			)}
@@ -80,7 +107,13 @@ function UserBubble({ message }: { message: Message }) {
 	);
 }
 
-function AssistantBubble({ message }: { message: Message }) {
+function AssistantBubble({
+	message,
+	onRetry,
+}: {
+	message: Message;
+	onRetry?: () => void;
+}) {
 	const toolCalls = message.toolCalls ?? [];
 	const toolRunning = toolCalls.some((tc) => tc.status === "running");
 	return (
@@ -91,12 +124,13 @@ function AssistantBubble({ message }: { message: Message }) {
 				!toolRunning && (
 					<div
 						data-testid="typing-indicator"
+						role="status"
 						aria-label="Assistant is typing"
 						className="flex items-center gap-1 px-1 py-2"
 					>
-						<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite]" />
-						<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite] [animation-delay:0.2s]" />
-						<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite] [animation-delay:0.4s]" />
+						<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite]" />
+						<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite] motion-safe:[animation-delay:0.2s]" />
+						<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite] motion-safe:[animation-delay:0.4s]" />
 					</div>
 				)}
 			{message.text.length > 0 && (
@@ -112,10 +146,24 @@ function AssistantBubble({ message }: { message: Message }) {
 			{message.status === "incomplete" && (
 				<div
 					role="alert"
+					tabIndex={-1}
 					data-testid="assistant-error"
-					className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive text-sm"
+					className="flex flex-col items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive text-sm outline-none"
 				>
-					{message.error ?? "This response didn't finish."}
+					<span>
+						{message.error ??
+							"This reply stopped before it finished. Nothing was saved without your approval."}
+					</span>
+					{onRetry && (
+						<button
+							type="button"
+							onClick={onRetry}
+							className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-destructive/40 px-2 py-1 font-medium text-xs transition-colors hover:bg-destructive/20 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive"
+						>
+							<RotateCcw className="size-3.5" aria-hidden />
+							Try again
+						</button>
+					)}
 				</div>
 			)}
 		</li>

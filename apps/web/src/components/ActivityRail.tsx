@@ -68,18 +68,18 @@ export function ActivityRail() {
 function Section({ label, rows }: { label: string; rows: Row[] }) {
 	return (
 		<div className="flex flex-col gap-1">
-			<div className="px-2 text-[11px] font-semibold tracking-wide text-sidebar-foreground/50 uppercase">
+			<div className="px-2 font-semibold text-[11px] text-sidebar-foreground/90">
 				{label}
 			</div>
 			{rows.length === 0 ? (
-				<div className="px-2 text-xs text-sidebar-foreground/60">—</div>
+				<div className="px-2 text-sidebar-foreground/90 text-xs">None</div>
 			) : (
 				<ul className="flex flex-col">
 					{rows.map((r) => (
 						<li
 							key={r.data.id}
 							data-row={r.kind}
-							className="flex items-start rounded-md px-2 py-1 text-xs text-sidebar-foreground/80 transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
+							className="flex items-start rounded-md px-2 py-1 text-sidebar-foreground/90 text-xs transition-colors hover:bg-sidebar-accent/60 hover:text-sidebar-foreground"
 						>
 							{r.kind === "edit" ? (
 								<EditRowView row={r} />
@@ -99,12 +99,12 @@ function EditRowView({ row }: { row: EditRow }) {
 	return (
 		<div className="flex items-start gap-1.5">
 			<Icon
-				className="mt-0.5 h-3 w-3 shrink-0 text-sidebar-foreground/50"
+				className="mt-0.5 h-3 w-3 shrink-0 text-sidebar-foreground/80"
 				aria-hidden
 			/>
 			<div className="min-w-0 flex-1">
 				<div className="truncate">{row.data.title}</div>
-				<div className="truncate text-sidebar-foreground/60">
+				<div className="truncate text-sidebar-foreground/90">
 					{row.data.target} · {row.at}
 				</div>
 			</div>
@@ -116,15 +116,15 @@ function AutomationRowView({ row }: { row: AutomationRowT }) {
 	return (
 		<div className="flex items-start gap-1.5">
 			<Bot
-				className="mt-0.5 h-3 w-3 shrink-0 text-sidebar-foreground/50"
+				className="mt-0.5 h-3 w-3 shrink-0 text-sidebar-foreground/80"
 				aria-hidden
 			/>
 			<div className="min-w-0 flex-1">
 				<div className="truncate">{row.name}</div>
-				<div className="truncate text-sidebar-foreground/60">
+				<div className="truncate text-sidebar-foreground/90">
 					{row.data.summary}
 				</div>
-				<div className="text-[10px] text-sidebar-foreground/45">
+				<div className="text-[10px] text-sidebar-foreground/90">
 					{row.at} · {row.data.status}
 				</div>
 			</div>

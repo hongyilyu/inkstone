@@ -38,6 +38,10 @@
 	--chat-input-bg: hsla(270, 0%, 100%, 0.1);
 	--chat-input-gradient: #fbccff;
 	--chat-overlay: hsla(309, 63%, 92%, 0.72);
+	/* Running tool-call glyph + its lamplight halo. A bright brand magenta kept
+	   legible (≥3:1) on both the chat surface and the running-row tint — the
+	   default `--primary` flips to a dark oxblood in dark mode and fails there. */
+	--tool-glyph: #e33f86;
 }
 
 [data-theme="dark"] {
@@ -67,6 +71,9 @@
 	--chat-input-bg: hsla(270, 10%, 20%, 0.4);
 	--chat-input-gradient: #432d48;
 	--chat-overlay: hsla(270, 12%, 16%, 0.71);
+	/* Lighter than the dark `--primary` oxblood so the running glyph + halo stay
+	   legible on the dark chat surface (≈5.4:1 / 4.7:1 on the running tint). */
+	--tool-glyph: #e9609c;
 }
 
 @theme inline {
@@ -95,6 +102,7 @@
 	--color-chat-bg: var(--chat-bg);
 	--color-chat-input-bg: var(--chat-input-bg);
 	--color-chat-overlay: var(--chat-overlay);
+	--color-tool-glyph: var(--tool-glyph);
 }
 
 .prose {
@@ -183,26 +191,19 @@
 }
 
 /* Tool-call activity motion (ChatColumn → ToolActivity). The running row's
-   leading glyph breathes a soft magenta "lamplight" halo (the system's north
-   star) while a slow highlight sweeps the row; the completion check pops in.
-   All three are applied with `motion-safe:` so a reduced-motion user or a
-   headless render sees the fully-painted, static row (icon + label + state
-   are never gated on motion). */
+   leading glyph carries a soft magenta "lamplight" halo (the system's north
+   star) that breathes; the completion check pops in. Both are applied with
+   `motion-safe:` so a reduced-motion user or a headless render sees a
+   fully-painted, static row — a steady halo, not nothing — with icon + label
+   + state never gated on motion. The halo is a fixed `box-shadow` whose
+   opacity is animated (GPU-friendly), not an animated `box-shadow`. */
 @keyframes tool-glow {
 	0%,
 	100% {
-		box-shadow: 0 0 0 0 transparent;
+		opacity: 0.35;
 	}
 	50% {
-		box-shadow: 0 0 10px 1px color-mix(in oklab, var(--primary) 45%, transparent);
-	}
-}
-@keyframes tool-shimmer {
-	from {
-		background-position: 140% 0;
-	}
-	to {
-		background-position: -140% 0;
+		opacity: 1;
 	}
 }
 @keyframes tool-pop {
@@ -216,30 +217,21 @@
 	}
 }
 
-/* The sweeping highlight overlay for a running tool row: a primary-tinted band
-   wider than its track, slid across by `tool-shimmer`. Clipped by the row's
-   `overflow-hidden` + `rounded-lg`. */
-.tool-shimmer {
-	background-image: linear-gradient(
-		110deg,
-		transparent 30%,
-		color-mix(in oklab, var(--primary) 18%, transparent) 50%,
-		transparent 70%
-	);
-	background-size: 220% 100%;
-	background-repeat: no-repeat;
+/* The lamplight halo behind a running tool glyph: a fixed magenta glow whose
+   opacity is pulsed by `tool-glow`. Sits as an absolutely-positioned layer
+   under the icon, clipped to the glyph's circle. */
+.tool-glow {
+	box-shadow: 0 0 9px 1px color-mix(in oklab, var(--tool-glyph) 55%, transparent);
 }
 
 /* Motion tokens (extract): one easing + the entrance/activity animations,
    exposed as Tailwind utilities (`ease-out-quint`, `animate-rise`,
-   `animate-panel`, `animate-tool-glow`, `animate-tool-shimmer`,
-   `animate-tool-pop`). */
+   `animate-panel`, `animate-tool-glow`, `animate-tool-pop`). */
 @theme {
 	--ease-out-quint: cubic-bezier(0.16, 1, 0.3, 1);
 	--animate-rise: rise 0.5s var(--ease-out-quint) both;
 	--animate-panel: panel-slide 0.32s var(--ease-out-quint) both;
 	--animate-tool-glow: tool-glow 1.8s ease-in-out infinite;
-	--animate-tool-shimmer: tool-shimmer 2.2s linear infinite;
 	--animate-tool-pop: tool-pop 0.22s var(--ease-out-quint) both;
 }
 
