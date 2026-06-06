@@ -671,6 +671,29 @@ pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<(
     queries::mark_run_running(pool, run_id).await
 }
 
+/// Cancel a parked Run and its pending Proposal in ONE transaction (ADR-0014,
+/// slice 6). Self-guarding on `status='parked'`: flip the `runs` row to
+/// `cancelled` (`terminal_reason='cancelled'`, `ended_at`) only while it is
+/// still parked, then flip any `pending` Proposal of the Run to `cancelled`.
+/// Returns whether the Run was actually cancelled — `false` (tx rolled back,
+/// nothing changed) when a concurrent decide/cancel already moved the Run off
+/// `parked`, which the caller maps to `already_terminal`.
+pub async fn cancel_parked_run(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    now_ms: i64,
+) -> sqlx::Result<bool> {
+    let mut tx = pool.begin().await?;
+    let cancelled = queries::mark_parked_run_cancelled(&mut *tx, run_id, now_ms).await?;
+    if cancelled != 1 {
+        // tx drops here without commit → rollback. The Run was not parked.
+        return Ok(false);
+    }
+    queries::cancel_pending_proposals_for_run(&mut *tx, run_id).await?;
+    tx.commit().await?;
+    Ok(true)
+}
+
 /// The run's assistant Message id (the seq-0 streaming row resume continues
 /// appending into). `None` when the Run has no assistant message.
 pub async fn assistant_message_id_for_run(

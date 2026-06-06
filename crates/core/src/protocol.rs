@@ -53,6 +53,21 @@ pub struct SubscribeResult {
     pub status: String,
 }
 
+/// `run/cancel` params (ADR-0014): the Run to cancel. Deserialize-only.
+#[derive(Debug, Deserialize)]
+pub struct RunCancelParams {
+    pub run_id: String,
+}
+
+/// `run/cancel` result (ADR-0014): whether Core accepted the cancel command.
+/// `accepted` — the Run was live/parked and is being cancelled;
+/// `already_terminal` — the Run had already finished before the cancel arrived;
+/// `unknown_run` — the `run_id` named no Run. Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct RunCancelResult {
+    pub outcome: String,
+}
+
 /// `proposal/get` params (ADR-0025): the parked Run whose pending Proposal to
 /// fetch. Deserialize-only.
 #[derive(Debug, Deserialize)]
@@ -521,6 +536,26 @@ mod mirror_tests {
             serde_json::to_value(&r).unwrap(),
             json!({ "run_id": UUID_A, "status": "parked" }),
         );
+    }
+
+    #[test]
+    fn run_cancel_params_decodes_run_id() {
+        let wire = json!({ "run_id": UUID_A });
+        let p: RunCancelParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.run_id, UUID_A);
+    }
+
+    #[test]
+    fn run_cancel_result_encodes_outcome() {
+        for outcome in ["accepted", "already_terminal", "unknown_run"] {
+            let r = RunCancelResult {
+                outcome: outcome.to_string(),
+            };
+            assert_eq!(
+                serde_json::to_value(&r).unwrap(),
+                json!({ "outcome": outcome }),
+            );
+        }
     }
 
     #[test]

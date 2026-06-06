@@ -9,6 +9,7 @@
 
 mod post_message;
 mod proposal;
+mod cancel;
 mod provider;
 mod catalog;
 mod reply;
@@ -48,6 +49,18 @@ pub async fn dispatch(
                 return;
             };
             subscribe::handle(pool, hubs, req.id, params, out_tx).await;
+        }
+        "run/cancel" => {
+            let id = req.id.clone();
+            let Ok(params) = serde_json::from_value::<crate::protocol::RunCancelParams>(req.params)
+            else {
+                // Don't leave the client hanging on malformed params — reply
+                // with invalid_params, matching the other input-validating
+                // handlers.
+                reply::send_invalid_params(out_tx, id, "invalid run/cancel params".to_string());
+                return;
+            };
+            cancel::handle_cancel(pool, req.id, params, out_tx).await;
         }
         "thread/create" => {
             let Ok(params) = serde_json::from_value::<ThreadCreateParams>(req.params) else {

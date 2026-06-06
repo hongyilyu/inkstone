@@ -106,7 +106,7 @@ CREATE TABLE proposals (
   tool_call_id             TEXT NOT NULL UNIQUE REFERENCES tool_calls(id) ON DELETE CASCADE,
   kind                     TEXT NOT NULL,
   change_kind              TEXT NOT NULL CHECK (change_kind IN ('create','update','delete')),
-  status                   TEXT NOT NULL CHECK (status IN ('pending','accepted','rejected')),
+  status                   TEXT NOT NULL CHECK (status IN ('pending','accepted','rejected','cancelled')),
   decided_by               TEXT CHECK (decided_by IN ('user','auto')),
   decided_at               INTEGER,
   edited_payload           TEXT,                    -- JSON; NULL means accepted unedited; populated means user edited before accepting

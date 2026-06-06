@@ -25,6 +25,21 @@ export const SubscribeResult = S.Struct({
 });
 export type SubscribeResult = S.Schema.Type<typeof SubscribeResult>;
 
+/** `run/cancel` params: the Run to cancel (ADR-0014). */
+export const RunCancelParams = S.Struct({ run_id: S.String });
+export type RunCancelParams = S.Schema.Type<typeof RunCancelParams>;
+
+/**
+ * `run/cancel` result (ADR-0014): whether Core accepted the cancel command.
+ * `accepted` — the Run was live/parked and is being cancelled; `already_terminal`
+ * — the Run had already finished before the cancel arrived; `unknown_run` — the
+ * `run_id` named no Run.
+ */
+export const RunCancelResult = S.Struct({
+	outcome: S.Literal("accepted", "already_terminal", "unknown_run"),
+});
+export type RunCancelResult = S.Schema.Type<typeof RunCancelResult>;
+
 export const ThreadCreateParams = S.Struct({ prompt: S.String });
 export type ThreadCreateParams = S.Schema.Type<typeof ThreadCreateParams>;
 

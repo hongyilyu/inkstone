@@ -393,6 +393,52 @@ where
         .map(|_| ())
 }
 
+/// Cancel a parked Run (ADR-0014, slice 6): flip `runs` to `cancelled` with
+/// `terminal_reason='cancelled'` + `ended_at`. SELF-GUARDING on
+/// `status='parked'` (mirrors the slice 3/4 guarded flips): if the Run is no
+/// longer parked this affects 0 rows and the caller's tx rolls back. Returns
+/// the affected row count so the caller asserts `== 1`.
+pub(super) async fn mark_parked_run_cancelled<'e, E>(
+    executor: E,
+    run_id: Uuid,
+    ended_at: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE runs SET status = 'cancelled', terminal_reason = 'cancelled', \
+         ended_at = ? WHERE id = ? AND status = 'parked'",
+    )
+    .bind(ended_at)
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+/// Cancel a Run's pending Proposal(s) (ADR-0014, slice 6): flip any `pending`
+/// `proposals` row whose tool call belongs to `run_id` to `cancelled`. Runs
+/// inside the cancel tx alongside [`mark_parked_run_cancelled`]. No-op (0 rows)
+/// when the Run has no pending Proposal.
+pub(super) async fn cancel_pending_proposals_for_run<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE proposals SET status = 'cancelled' \
+         WHERE tool_call_id IN (SELECT id FROM tool_calls WHERE run_id = ?1) \
+         AND status = 'pending'",
+    )
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
 /// Read the run's assistant Message id (the seq-0 streaming row resume
 /// continues appending into). `None` when the Run has no assistant message.
 pub(super) async fn assistant_message_id_for_run<'e, E>(

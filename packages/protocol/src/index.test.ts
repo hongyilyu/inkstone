@@ -13,6 +13,8 @@ import {
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
+	RunCancelParams,
+	RunCancelResult,
 	RunEvent,
 	SubscribeParams,
 	SubscribeResult,
@@ -120,6 +122,40 @@ describe("SubscribeResult", () => {
 			S.decodeUnknownSync(SubscribeResult)({
 				run_id: "01900000-0000-7000-8000-000000000000",
 			}),
+		).toThrow();
+	});
+});
+
+describe("RunCancelParams", () => {
+	it("decodes a run_id and encodes back unchanged", () => {
+		const wire = { run_id: "01900000-0000-7000-8000-000000000000" };
+		const decoded = S.decodeUnknownSync(RunCancelParams)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(RunCancelParams)(decoded)).toEqual(wire);
+	});
+
+	it("rejects a missing run_id", () => {
+		expect(() => S.decodeUnknownSync(RunCancelParams)({})).toThrow();
+	});
+});
+
+describe("RunCancelResult", () => {
+	it("decodes each outcome and encodes back unchanged", () => {
+		for (const outcome of [
+			"accepted",
+			"already_terminal",
+			"unknown_run",
+		] as const) {
+			const wire = { outcome };
+			const decoded = S.decodeUnknownSync(RunCancelResult)(wire);
+			expect(decoded).toEqual(wire);
+			expect(S.encodeSync(RunCancelResult)(decoded)).toEqual(wire);
+		}
+	});
+
+	it("rejects an unknown outcome", () => {
+		expect(() =>
+			S.decodeUnknownSync(RunCancelResult)({ outcome: "maybe" }),
 		).toThrow();
 	});
 });
