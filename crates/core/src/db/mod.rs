@@ -539,6 +539,11 @@ impl std::fmt::Display for ApplyError {
 /// rendered for the model to read on resume. No durable change exists before
 /// this commits. Returns the new `entity_id`.
 ///
+/// EDIT (ADR-0025): when `edited_payload` is `Some`, the entity `data` is the
+/// EDITED payload (Core-validated by the caller), not the model's proposed
+/// `data` — the edit is applied in one step. `proposals.edited_payload` records
+/// the edit; an unedited accept passes `None` and writes the proposed `data`.
+///
 /// SELF-GUARDING against a double-apply (review M1): the `proposals` flip is
 /// `… WHERE id = ? AND status = 'pending'`. If it affects 0 rows the Proposal
 /// was already decided by a racing decide (keyed OR keyless), so the whole tx
@@ -558,8 +563,13 @@ pub async fn apply_proposal(
     now_ms: i64,
 ) -> Result<String, ApplyError> {
     let entity_id = Uuid::now_v7().to_string();
-    let data_str = data.to_string();
     let edited_str = edited_payload.map(|v| v.to_string());
+    // The applied entity data is the EDITED payload when present (edit), else
+    // the model's proposed `data` (accept). The resolved tool_call's rendered
+    // result and the entity snapshot both use this effective data so the model
+    // reads the FINAL values on resume.
+    let applied_data = edited_payload.unwrap_or(data);
+    let data_str = applied_data.to_string();
 
     let mut tx = pool.begin().await?;
 

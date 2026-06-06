@@ -73,11 +73,11 @@ pub(super) async fn handle_decide(
     params: ProposalDecideParams,
     out_tx: &UnboundedSender<String>,
 ) {
-    // Slice 3 implements `accept`; slice 4 adds `reject`. Both reuse this
-    // validate → apply → resume spine; only the apply step differs. `edit`
-    // (slice 5) is not yet implemented. Reject any other decision explicitly
-    // rather than silently mis-applying.
-    if params.decision != "accept" && params.decision != "reject" {
+    // Slice 3 implements `accept`; slice 4 adds `reject`; slice 5 adds `edit`.
+    // All reuse this validate → apply → resume spine; only the apply step
+    // differs. Reject any other decision explicitly rather than silently
+    // mis-applying.
+    if params.decision != "accept" && params.decision != "reject" && params.decision != "edit" {
         send_invalid_params(
             out_tx,
             id,
@@ -86,6 +86,7 @@ pub(super) async fn handle_decide(
         return;
     }
     let is_reject = params.decision == "reject";
+    let is_edit = params.decision == "edit";
 
     let proposal = match db::load_proposal_for_decide(pool, &params.proposal_id).await {
         Ok(Some(p)) => p,
@@ -205,13 +206,35 @@ pub(super) async fn handle_decide(
         }
     }
 
-    // Validate the proposed data against its entity schema (ADR-0016 — Core is
-    // the authority) for an ACCEPT only. Reject applies nothing, so there is no
-    // payload to validate — it declines whatever was proposed. Slice 3 models
-    // only `todo`.
+    // The data this Decision will apply: the EDITED payload for an edit, else
+    // the model's proposed data for a plain accept. An edit REQUIRES an
+    // `edited_payload`; its absence is `invalid_params` (no write).
+    let edited_payload = if is_edit {
+        match params.edited_payload.as_ref() {
+            Some(p) => Some(p),
+            None => {
+                send_invalid_params(
+                    out_tx,
+                    id,
+                    "edit requires edited_payload".to_string(),
+                );
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    let applied_data: &serde_json::Value = edited_payload.unwrap_or(&proposal.data);
+
+    // Validate the data being applied against its entity schema (ADR-0016 —
+    // Core is the authority) for accept AND edit. For an edit the EDITED
+    // payload is validated (not the model's proposed data); an invalid edit is
+    // rejected BEFORE any write, leaving the Proposal pending + Run parked
+    // (re-decidable). Reject applies nothing, so there is no payload to
+    // validate. Slice 3 models only `todo`.
     if !is_reject {
         if proposal.kind == "todo" {
-            if let Err(reason) = crate::entities::validate_todo(&proposal.data) {
+            if let Err(reason) = crate::entities::validate_todo(applied_data) {
                 send_invalid_params(out_tx, id, format!("invalid todo: {reason}"));
                 return;
             }
@@ -267,7 +290,11 @@ pub(super) async fn handle_decide(
             }
         }
     } else {
-        let decision_text = render_accept_decision(&proposal.kind, &proposal.data);
+        // Accept OR edit: ONE atomic apply. For an edit the entity data is the
+        // validated `edited_payload` (apply-in-one-step, ADR-0025); the
+        // rendered Decision the model reads on resume shows the FINAL (edited)
+        // values. `edited_payload` is recorded on the `proposals` row.
+        let decision_text = render_accept_decision(&proposal.kind, applied_data);
         let decision_payload = serde_json::json!({
             "decision": "accept",
             "content": decision_text,
@@ -280,7 +307,7 @@ pub(super) async fn handle_decide(
             &proposal.tool_call_id,
             &proposal.kind,
             &proposal.data,
-            None,
+            edited_payload,
             params.decision_idempotency_key.as_deref(),
             &decision_payload,
             db::now_ms(),
