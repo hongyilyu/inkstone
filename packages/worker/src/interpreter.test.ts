@@ -96,18 +96,42 @@ describe("generic interpreter (faux provider)", () => {
 
 		let sawToolResult = false;
 		let sawToolCall = false;
+		// Stronger than presence: the seeded `tool_result` must be paired to a
+		// `tool_call` of matching id in a PRECEDING assistant message — the exact
+		// ordering+id invariant a real provider enforces (an orphan/reordered
+		// `toolResult` is rejected). Guards slice 3's reconstruction.
+		let pairedToPrecedingToolCall = false;
 		faux.setResponses([
 			(context) => {
 				// Read the live context the REAL transform produced, proving
 				// the seeded transcript reached the model with NO orphan
 				// rejection.
-				sawToolResult = context.messages.some((m) => m.role === "toolResult");
-				sawToolCall = context.messages.some(
+				const msgs = context.messages;
+				const trIdx = msgs.findIndex((m) => m.role === "toolResult");
+				sawToolResult = trIdx >= 0;
+				sawToolCall = msgs.some(
 					(m) =>
 						m.role === "assistant" &&
 						Array.isArray(m.content) &&
 						m.content.some((c) => "type" in c && c.type === "toolCall"),
 				);
+				if (trIdx >= 0) {
+					const resultId = (msgs[trIdx] as { toolCallId?: string }).toolCallId;
+					pairedToPrecedingToolCall =
+						typeof resultId === "string" &&
+						resultId.length > 0 &&
+						msgs.slice(0, trIdx).some(
+							(m) =>
+								m.role === "assistant" &&
+								Array.isArray(m.content) &&
+								m.content.some(
+									(c) =>
+										"type" in c &&
+										c.type === "toolCall" &&
+										(c as { id?: string }).id === resultId,
+								),
+						);
+				}
 				return fauxAssistantMessage("Done — added it.");
 			},
 		]);
@@ -181,9 +205,11 @@ describe("generic interpreter (faux provider)", () => {
 
 		// The model saw the seeded transcript through the real transform: the
 		// assistant tool_call AND its tool_result both reached it (no orphan
-		// rejection).
+		// rejection), and the tool_result is paired to a PRECEDING tool_call of
+		// matching id — the ordering a real provider enforces.
 		expect(sawToolCall).toBe(true);
 		expect(sawToolResult).toBe(true);
+		expect(pairedToPrecedingToolCall).toBe(true);
 
 		// The seeded tool was NOT re-executed on resume.
 		expect(callToolInvoked).toBe(false);
