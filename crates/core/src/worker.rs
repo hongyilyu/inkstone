@@ -348,7 +348,6 @@ async fn stream_worker(
     gate: Arc<tokio::sync::Mutex<()>>,
 ) {
     let stdout = match child.stdout.take() {
-
         Some(s) => s,
         None => {
             eprintln!("worker child has no stdout");

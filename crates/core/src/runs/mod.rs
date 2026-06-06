@@ -75,9 +75,18 @@ pub async fn dispatch(
             proposal::handle_get(pool, req.id, params, out_tx).await;
         }
         "proposal/decide" => {
+            let id = req.id.clone();
             let Ok(params) =
                 serde_json::from_value::<crate::protocol::ProposalDecideParams>(req.params)
             else {
+                // Don't leave the client hanging on malformed params — reply
+                // with invalid_params, matching the other input-validating
+                // handlers (review m2).
+                reply::send_invalid_params(
+                    out_tx,
+                    id,
+                    "invalid proposal/decide params".to_string(),
+                );
                 return;
             };
             proposal::handle_decide(pool, hubs, req.id, params, out_tx).await;

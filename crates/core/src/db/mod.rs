@@ -502,6 +502,34 @@ pub async fn entity_id_for_proposal(
     queries::entity_id_for_proposal(pool, proposal_id).await
 }
 
+/// Outcome of [`apply_proposal`] that the caller must distinguish (review M1).
+/// `NotPending` is the lost-race branch — a concurrent decide already accepted
+/// the Proposal, so the apply tx rolled back without a durable change and the
+/// caller returns `proposal_not_pending`. `Sql` is any other DB failure.
+#[derive(Debug)]
+pub enum ApplyError {
+    /// The `proposals` row was not `pending` when the guarded flip ran — a
+    /// concurrent decide won. The transaction rolled back; nothing was applied.
+    NotPending,
+    /// An underlying SQL error inside the apply transaction.
+    Sql(sqlx::Error),
+}
+
+impl From<sqlx::Error> for ApplyError {
+    fn from(e: sqlx::Error) -> Self {
+        ApplyError::Sql(e)
+    }
+}
+
+impl std::fmt::Display for ApplyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApplyError::NotPending => write!(f, "proposal is not pending (lost the apply race)"),
+            ApplyError::Sql(e) => write!(f, "{e}"),
+        }
+    }
+}
+
 /// Apply an accepted Proposal in ONE atomic transaction (ADR-0016, ADR-0025).
 /// All-or-nothing: insert the `entities` row (`created_by='proposal'`,
 /// `created_via_proposal_id`), its `entity_revisions` seq-1 snapshot, flip the
@@ -510,6 +538,13 @@ pub async fn entity_id_for_proposal(
 /// awaited `tool_calls` row to `completed` with `result_payload` = the Decision
 /// rendered for the model to read on resume. No durable change exists before
 /// this commits. Returns the new `entity_id`.
+///
+/// SELF-GUARDING against a double-apply (review M1): the `proposals` flip is
+/// `… WHERE id = ? AND status = 'pending'`. If it affects 0 rows the Proposal
+/// was already decided by a racing decide (keyed OR keyless), so the whole tx
+/// rolls back and [`ApplyError::NotPending`] is returned — exactly one of two
+/// concurrent decides applies. The caller maps `NotPending` to
+/// `proposal_not_pending`.
 #[allow(clippy::too_many_arguments)]
 pub async fn apply_proposal(
     pool: &SqlitePool,
@@ -521,12 +556,28 @@ pub async fn apply_proposal(
     decision_idempotency_key: Option<&str>,
     decision_result_payload: &str,
     now_ms: i64,
-) -> sqlx::Result<String> {
+) -> Result<String, ApplyError> {
     let entity_id = Uuid::now_v7().to_string();
     let data_str = data.to_string();
     let edited_str = edited_payload.map(|v| v.to_string());
 
     let mut tx = pool.begin().await?;
+
+    // Flip the Proposal FIRST under the `status='pending'` guard — the single
+    // concurrency choke. If a racing decide already accepted it this affects 0
+    // rows; bail (rolling back the tx) before inserting a duplicate entity.
+    let accepted = queries::mark_proposal_accepted(
+        &mut *tx,
+        proposal_id,
+        edited_str.as_deref(),
+        decision_idempotency_key,
+        now_ms,
+    )
+    .await?;
+    if accepted != 1 {
+        // tx drops here without commit → rollback. No entity was inserted.
+        return Err(ApplyError::NotPending);
+    }
 
     queries::insert_entity(
         &mut *tx,
@@ -539,14 +590,6 @@ pub async fn apply_proposal(
     )
     .await?;
     queries::insert_entity_revision(&mut *tx, &entity_id, 1, &data_str, proposal_id, now_ms).await?;
-    queries::mark_proposal_accepted(
-        &mut *tx,
-        proposal_id,
-        edited_str.as_deref(),
-        decision_idempotency_key,
-        now_ms,
-    )
-    .await?;
     queries::resolve_tool_call(
         &mut *tx,
         tool_call_id,

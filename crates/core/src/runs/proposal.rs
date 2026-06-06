@@ -103,23 +103,72 @@ pub(super) async fn handle_decide(
     // Idempotency (ADR-0025): a repeat decide with the same recorded key
     // returns the prior result, no re-apply. This also covers a duplicate of an
     // already-accepted Proposal — its key was stored on accept.
+    //
+    // Resume-failure recovery (review M2): the apply commits BEFORE the resume
+    // spawn, so a resume failure (token resolution, missing assistant message,
+    // spawn error) can leave a durably-accepted Proposal on a still-`parked`
+    // Run. A short-circuit-and-return here would wedge it forever. Instead, if
+    // the Run is still `parked`, re-drive `worker::resume` before returning —
+    // making the idempotent retry the genuine recovery path it was claimed to
+    // be. A Run already `running`/`completed`/`errored` is left untouched.
     if let Some(ref recorded) = proposal.decision_idempotency_key
         && params.decision_idempotency_key.as_deref() == Some(recorded.as_str())
     {
-        match db::entity_id_for_proposal(pool, &params.proposal_id).await {
-            Ok(entity_id) => {
-                send_decide_result(out_tx, id, "accepted", entity_id);
-            }
+        let entity_id = match db::entity_id_for_proposal(pool, &params.proposal_id).await {
+            Ok(eid) => eid,
             Err(e) => {
                 eprintln!("entity_id_for_proposal failed for {}: {e}", params.proposal_id);
                 send_error(out_tx, id, format!("proposal/decide: {e}"));
+                return;
             }
+        };
+        if let Err(e) = recover_resume_if_parked(pool, hubs, proposal.run_id).await {
+            eprintln!("resume recovery failed for run {}: {e}", proposal.run_id);
+            send_error(out_tx, id, format!("proposal/decide resume: {e}"));
+            return;
         }
+        send_decide_result(out_tx, id, "accepted", entity_id);
         return;
     }
 
     // Must be pending to decide afresh (a non-idempotent duplicate falls here).
     if proposal.status != "pending" {
+        // Already-accepted, but possibly wedged at `parked` from a resume that
+        // failed after the apply committed (review M2). Recover by re-driving
+        // the resume and returning the prior result, rather than reporting
+        // not-pending and leaving the Run stuck. Any other non-pending status
+        // (or a non-parked Run) is a genuine stale decide → not-pending.
+        if proposal.status == "accepted" {
+            match db::run_status(pool, proposal.run_id).await {
+                Ok(Some(ref s)) if s == "parked" => {
+                    let entity_id = match db::entity_id_for_proposal(pool, &params.proposal_id).await
+                    {
+                        Ok(eid) => eid,
+                        Err(e) => {
+                            eprintln!(
+                                "entity_id_for_proposal failed for {}: {e}",
+                                params.proposal_id
+                            );
+                            send_error(out_tx, id, format!("proposal/decide: {e}"));
+                            return;
+                        }
+                    };
+                    if let Err(e) = recover_resume_if_parked(pool, hubs, proposal.run_id).await {
+                        eprintln!("resume recovery failed for run {}: {e}", proposal.run_id);
+                        send_error(out_tx, id, format!("proposal/decide resume: {e}"));
+                        return;
+                    }
+                    send_decide_result(out_tx, id, "accepted", entity_id);
+                    return;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("run_status failed for {}: {e}", proposal.run_id);
+                    send_error(out_tx, id, format!("proposal/decide: {e}"));
+                    return;
+                }
+            }
+        }
         send_proposal_not_pending(
             out_tx,
             id,
@@ -186,7 +235,19 @@ pub(super) async fn handle_decide(
     .await
     {
         Ok(eid) => eid,
-        Err(e) => {
+        // Lost the apply race (review M1): a concurrent decide already accepted
+        // this Proposal. The guarded flip affected 0 rows and the tx rolled
+        // back, so nothing was applied here — report not-pending. The winner's
+        // resume drives the Run forward.
+        Err(db::ApplyError::NotPending) => {
+            send_proposal_not_pending(
+                out_tx,
+                id,
+                format!("proposal {} is no longer pending", params.proposal_id),
+            );
+            return;
+        }
+        Err(db::ApplyError::Sql(e)) => {
             eprintln!("apply_proposal failed for {}: {e}", params.proposal_id);
             send_error(out_tx, id, format!("proposal/decide apply: {e}"));
             return;
@@ -197,14 +258,34 @@ pub(super) async fn handle_decide(
     // a `run/subscribe` in the window sees `running`, then spawn.
     if let Err(e) = crate::worker::resume(proposal.run_id, pool, hubs).await {
         eprintln!("resume failed for run {}: {e}", proposal.run_id);
-        // The apply already committed; surface the resume failure but the
-        // Proposal is durably accepted. The Run stays parked (running flip is
-        // inside `resume`), recoverable by a later decide retry (idempotent).
+        // The apply already committed; surface the resume failure. The Proposal
+        // is durably accepted and the Run stays `parked` (the running flip is
+        // inside `resume`, so a pre-flip failure leaves it parked). A later
+        // decide retry recovers it: the idempotent branch (keyed) and the
+        // already-accepted branch (keyless) both re-drive `worker::resume` when
+        // the Run is still parked — see `recover_resume_if_parked`.
         send_error(out_tx, id, format!("proposal/decide resume: {e}"));
         return;
     }
 
     send_decide_result(out_tx, id, "accepted", Some(entity_id));
+}
+
+/// Recovery seam for a resume that failed AFTER the atomic apply committed
+/// (review M2). The Decision is durable but the Run can be wedged at `parked`
+/// because `worker::resume` errored before flipping it to `running`. A repeat
+/// `proposal/decide` (the documented idempotent retry) calls this: it reads the
+/// Run's status and re-drives `worker::resume` ONLY when still `parked`. A Run
+/// already `running`/`completed`/`errored` is left untouched (no double spawn).
+async fn recover_resume_if_parked(
+    pool: &SqlitePool,
+    hubs: &Hubs,
+    run_id: Uuid,
+) -> anyhow::Result<()> {
+    match db::run_status(pool, run_id).await? {
+        Some(ref s) if s == "parked" => crate::worker::resume(run_id, pool, hubs).await,
+        _ => Ok(()),
+    }
 }
 
 /// Render the human-readable Decision text the model reads on resume as the

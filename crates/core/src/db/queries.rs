@@ -252,20 +252,27 @@ where
 /// `proposals` row to `accepted`, stamp `decided_by='user'` + `decided_at` +
 /// `applied_at` + `decision_idempotency_key`, and record the `edited_payload`
 /// (NULL for an unedited accept). Runs inside the caller's apply transaction.
+///
+/// SELF-GUARDING (review M1): the `WHERE … AND status = 'pending'` clause makes
+/// this the single concurrency choke — two concurrent decides (with or WITHOUT
+/// an idempotency key) race here, and exactly one matches a still-pending row.
+/// Returns the affected row count so the caller can assert `== 1` inside the
+/// apply tx and roll back the loser (it returns `proposal_not_pending`), so the
+/// Proposal can never be applied twice.
 pub(super) async fn mark_proposal_accepted<'e, E>(
     executor: E,
     proposal_id: &str,
     edited_payload: Option<&str>,
     decision_idempotency_key: Option<&str>,
     now_ms: i64,
-) -> sqlx::Result<()>
+) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
         "UPDATE proposals SET status = 'accepted', decided_by = 'user', \
          decided_at = ?, applied_at = ?, edited_payload = ?, \
-         decision_idempotency_key = ? WHERE id = ?",
+         decision_idempotency_key = ? WHERE id = ? AND status = 'pending'",
     )
     .bind(now_ms)
     .bind(now_ms)
@@ -274,7 +281,7 @@ where
     .bind(proposal_id)
     .execute(executor)
     .await
-    .map(|_| ())
+    .map(|r| r.rows_affected())
 }
 
 // ─── entities + entity_revisions (ADR-0004) ───────────────────────────
