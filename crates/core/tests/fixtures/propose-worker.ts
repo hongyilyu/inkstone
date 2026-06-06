@@ -62,6 +62,45 @@ const main = async (): Promise<void> => {
 		return;
 	}
 
+	// Multi-step fresh path (INKSTONE_MULTISTEP=1): prove Core reconstructs a
+	// provider-valid MULTI-step transcript on resume (ADR-0025). The worker
+	// FIRST emits an assistant text turn + a real `read_thread` tool_request,
+	// which Core executes synchronously and resolves (a resolved tool_call →
+	// rendered as a paired `tool_result`), THEN emits `propose_entity` (which
+	// parks). On resume Core must rebuild: assistant{text} → assistant{tool_call
+	// read_thread} → tool_result(read_thread) → assistant{tool_call propose} →
+	// tool_result(Decision) — with NO orphan tool_result. We pass a valid-but-
+	// nonexistent thread_id so read_thread resolves deterministically (a
+	// `not_found` error result is still a resolved tool_call to reconstruct).
+	if (process.env.INKSTONE_MULTISTEP === "1") {
+		emit({ kind: "text_delta", delta: "Let me check the other thread. " });
+		const readCallId = `tc_read_${process.pid}`;
+		emit({
+			kind: "tool_request",
+			run_id: "",
+			tool_call_id: readCallId,
+			name: "read_thread",
+			params: { thread_id: "00000000-0000-0000-0000-000000000000" },
+		});
+		// Wait for Core's tool_result (read_thread resolved), then propose.
+		await nextLine();
+		const toolCallId = `tc_${process.pid}`;
+		emit({
+			kind: "tool_request",
+			run_id: "",
+			tool_call_id: toolCallId,
+			name: "propose_entity",
+			params: {
+				type: "todo",
+				data: { title: "buy milk", done: false },
+				rationale: "the user asked to remember this",
+			},
+		});
+		// Block forever — Core parks and tears us down (drops stdin → EOF).
+		await new Promise<void>(() => {});
+		return;
+	}
+
 	// Optional pre-propose phase (INKSTONE_PROPOSE_DELAY_MS > 0): emit a
 	// `text_delta` so the Run's hub is live and streaming, then wait. This lets
 	// a test subscribe and attach to the LIVE hub BEFORE the park, so it can

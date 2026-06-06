@@ -54,6 +54,14 @@ impl Drop for CoreChild {
 }
 
 fn spawn_core(worker_cmd: &str, db_path: &Path) -> (CoreChild, String) {
+    spawn_core_with_env(worker_cmd, db_path, &[])
+}
+
+fn spawn_core_with_env(
+    worker_cmd: &str,
+    db_path: &Path,
+    extra_env: &[(&str, &str)],
+) -> (CoreChild, String) {
     let repo_root = repo_root();
     let mut cmd = std::process::Command::cargo_bin("core").expect("core binary exists");
     cmd.current_dir(&repo_root)
@@ -62,6 +70,9 @@ fn spawn_core(worker_cmd: &str, db_path: &Path) -> (CoreChild, String) {
         .env("INKSTONE_PORT", "0")
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
     let mut child = cmd.spawn().expect("core spawns");
 
     let stdout = child.stdout.take().expect("piped stdout");
@@ -401,5 +412,93 @@ fn accept_is_idempotent() {
         .await
         .expect("count entities");
         assert_eq!(entity_count, 1, "idempotent decide created exactly one entity");
+    });
+}
+
+/// Multi-step reconstruction (ADR-0025 core risk): the worker's first spawn
+/// does a real `read_thread` tool_call (Core executes + resolves it
+/// synchronously) BEFORE the `propose_entity` that parks. On accept the Run
+/// resumes, and Core must rebuild a provider-valid MULTI-step transcript — a
+/// prior resolved tool_call rendered as a paired `tool_result`, the
+/// text-then-tool_call assistant split, and the Decision `tool_result` last,
+/// with NO orphan `tool_result`. If reconstruction emitted an orphan or dropped
+/// a pair the resume Worker's provider would reject the transcript and the Run
+/// would not reach `completed`; reaching `completed` proves the transcript is
+/// well-formed.
+#[test]
+fn accept_resumes_after_multistep_transcript() {
+    let worker_cmd = propose_worker_cmd();
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    let (_child, ws_url) = spawn_core_with_env(&worker_cmd, &db_path, &[("INKSTONE_MULTISTEP", "1")]);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let run_id = rt.block_on(async {
+        let run_id = create_and_park(&ws_url).await;
+
+        let resp = rpc(
+            &ws_url,
+            3,
+            "proposal/get",
+            serde_json::json!({ "run_id": run_id }),
+        )
+        .await;
+        let proposal_id = resp["result"]["proposal_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
+            .to_string();
+
+        let resp = rpc(
+            &ws_url,
+            4,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "accept",
+                "decision_idempotency_key": "k-multistep",
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp["result"]["status"].as_str(),
+            Some("accepted"),
+            "decide result status — body: {resp}"
+        );
+
+        // The Run resumes from the reconstructed MULTI-step transcript and
+        // reaches completed — proving the transcript is provider-valid.
+        await_completed(&ws_url, &run_id).await;
+        run_id
+    });
+
+    // White-box: the read_thread tool_call AND the propose tool_call both
+    // resolved (no orphan), and the run completed.
+    rt.block_on(async {
+        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+
+        let resolved: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM tool_calls WHERE run_id = ?1 AND status IN ('completed','errored')",
+        )
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count tool_calls");
+        assert_eq!(resolved, 2, "both read_thread and propose tool_calls resolved");
+
+        let run_status: String = sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
+            .bind(&run_id)
+            .fetch_one(&pool)
+            .await
+            .expect("run row exists");
+        assert_eq!(run_status, "completed", "run completed after multi-step resume");
     });
 }
