@@ -52,6 +52,17 @@ export type ThreadGetResult = S.Schema.Type<typeof ThreadGetResult>;
 
 export const RunEvent = S.Union(
 	S.Struct({ kind: S.Literal("text_delta"), delta: S.String }),
+	// Live tool-call boundary (ADR-0006): Core synthesizes these when it
+	// receives a `tool_request` from the Worker and publishes them on the Run
+	// Event hub so the Client can show a tool running. `started` precedes
+	// dispatch; the terminal `completed`/`error` mirrors the outcome. Ephemeral
+	// (not persisted), so not replayed on a snapshot/reconnect (ADR-0022).
+	S.Struct({
+		kind: S.Literal("tool_call"),
+		tool_call_id: S.String,
+		name: S.String,
+		status: S.Literal("started", "completed", "error"),
+	}),
 	S.Struct({ kind: S.Literal("done") }),
 	S.Struct({ kind: S.Literal("error"), message: S.String }),
 );
@@ -110,6 +121,10 @@ export const CoreToolDescriptor = S.Struct({
 });
 export type CoreToolDescriptor = S.Schema.Type<typeof CoreToolDescriptor>;
 
+// What the Worker writes to stdout. NOTE: the `tool_call` member of `RunEvent`
+// is Core-synthesized (Core publishes it to the Client hub when it receives a
+// `tool_request`); the Worker never emits it, so Core's stdout decoder ignores
+// that kind. The union is widened only because it reuses `RunEvent`.
 export const WorkerOutbound = S.Union(RunEvent, ToolRequest);
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 

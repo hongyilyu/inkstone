@@ -126,8 +126,14 @@ async fn next_text(ws: &mut Ws) -> String {
 }
 
 /// Create a Thread with `prompt`, subscribe to its Run, drain to `done`, and
-/// return (thread_id, run_id, concatenated text deltas).
-async fn run_and_collect(ws_url: &str, prompt: &str) -> (String, String, String) {
+/// return (thread_id, run_id, concatenated text deltas, tool_call boundaries).
+/// Each tool_call boundary is captured as `(name, status)` in arrival order —
+/// the Worker boots tsx (hundreds of ms) long after this subscribe attaches,
+/// so the ephemeral `tool_call` events are reliably observed on the live tail.
+async fn run_and_collect(
+    ws_url: &str,
+    prompt: &str,
+) -> (String, String, String, Vec<(String, String)>) {
     let (mut ws, _resp) = tokio_tungstenite::connect_async(ws_url)
         .await
         .expect("ws handshake succeeds");
@@ -160,6 +166,7 @@ async fn run_and_collect(ws_url: &str, prompt: &str) -> (String, String, String)
     let _sub_response = next_text(&mut ws).await;
 
     let mut text = String::new();
+    let mut tool_calls: Vec<(String, String)> = Vec::new();
     loop {
         let body = next_text(&mut ws).await;
         let v: serde_json::Value = serde_json::from_str(&body)
@@ -170,6 +177,14 @@ async fn run_and_collect(ws_url: &str, prompt: &str) -> (String, String, String)
                     text.push_str(d);
                 }
             }
+            Some("tool_call") => {
+                let name = v["params"]["event"]["name"].as_str().unwrap_or("").to_string();
+                let status = v["params"]["event"]["status"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                tool_calls.push((name, status));
+            }
             Some("done") => break,
             Some("error") => panic!("run errored unexpectedly — body: {body}"),
             _ => {}
@@ -177,7 +192,7 @@ async fn run_and_collect(ws_url: &str, prompt: &str) -> (String, String, String)
     }
     ws.close(None).await.ok();
     tokio::time::sleep(Duration::from_millis(200)).await;
-    (thread_id, run_id, text)
+    (thread_id, run_id, text, tool_calls)
 }
 
 #[test]
@@ -197,12 +212,12 @@ fn read_thread_returns_another_threads_messages() {
         // Thread A carries a distinctive prompt. Its own Run calls read_thread
         // with the default unknown id (the id-file doesn't exist yet) → an
         // error outcome it ignores; we just need A persisted.
-        let (thread_a, _run_a, _text_a) =
+        let (thread_a, _run_a, _text_a, _tools_a) =
             run_and_collect(&ws_url, "alpha-secret-123").await;
 
         // Point the fixture at A, then run Thread B — B's Run reads A.
         std::fs::write(&id_file, &thread_a).expect("write id file");
-        let (_thread_b, run_b, text_b) = run_and_collect(&ws_url, "beta").await;
+        let (_thread_b, run_b, text_b, tools_b) = run_and_collect(&ws_url, "beta").await;
 
         assert!(
             text_b.contains("tool_outcome=ok:"),
@@ -211,6 +226,16 @@ fn read_thread_returns_another_threads_messages() {
         assert!(
             text_b.contains("alpha-secret-123"),
             "read_thread returned A's message text — got {text_b:?}"
+        );
+        // The live tool_call boundaries reach the subscribe stream: a `started`
+        // when Core dispatches read_thread, then a terminal `completed`.
+        assert_eq!(
+            tools_b,
+            vec![
+                ("read_thread".to_string(), "started".to_string()),
+                ("read_thread".to_string(), "completed".to_string()),
+            ],
+            "B's run surfaced read_thread started→completed on the stream",
         );
         run_b
     });
@@ -266,10 +291,20 @@ fn unknown_thread_id_returns_error_outcome() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        let (_thread, _run, text) = run_and_collect(&ws_url, "hi").await;
+        let (_thread, _run, text, tools) = run_and_collect(&ws_url, "hi").await;
         assert!(
             text.contains("tool_outcome=err:"),
             "unknown thread id yields an error outcome — got {text:?}"
+        );
+        // The terminal `error` boundary reaches the stream (read_thread is
+        // allowlisted and dispatched, but the unknown thread id fails).
+        assert_eq!(
+            tools,
+            vec![
+                ("read_thread".to_string(), "started".to_string()),
+                ("read_thread".to_string(), "error".to_string()),
+            ],
+            "an errored dispatch surfaces started→error — got {tools:?}",
         );
     });
 }
@@ -289,10 +324,22 @@ fn off_allowlist_tool_returns_error_outcome() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        let (_thread, _run, text) = run_and_collect(&ws_url, "hi").await;
+        let (_thread, _run, text, tools) = run_and_collect(&ws_url, "hi").await;
         assert!(
             text.contains("tool_outcome=err:"),
             "off-allowlist tool yields an error outcome — got {text:?}"
+        );
+        // The boundary still reaches the stream as started→error even though the
+        // tool is rejected before dispatch (Core emits `started` on arrival,
+        // then `error` from the allowlist refusal). The Client shows a brief
+        // running→failed flash, never a stuck row.
+        assert_eq!(
+            tools,
+            vec![
+                ("nonexistent".to_string(), "started".to_string()),
+                ("nonexistent".to_string(), "error".to_string()),
+            ],
+            "off-allowlist request surfaces started→error — got {tools:?}",
         );
     });
 }

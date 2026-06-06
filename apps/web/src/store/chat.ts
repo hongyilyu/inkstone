@@ -3,6 +3,18 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
 /**
+ * A tool call surfaced live within an assistant turn (ADR-0006 tool_call Run
+ * Event). `id` is the wire `tool_call_id`; `status` is the UI lifecycle
+ * (`running` while Core dispatches it, then a terminal `completed`/`error`).
+ * The wire `started` status maps to `running` (see {@link applyEvent}).
+ */
+export interface ToolCall {
+	readonly id: string;
+	readonly name: string;
+	readonly status: "running" | "completed" | "error";
+}
+
+/**
  * The canonical live UI message (distinct from the demoted `MockChatMessage`).
  * Mirrors the wire `MessageView` shape so slice-13 hydration maps cleanly.
  */
@@ -12,6 +24,12 @@ export interface Message {
 	readonly status: "streaming" | "completed" | "incomplete";
 	readonly text: string;
 	readonly run_id: string;
+	/**
+	 * Tool calls observed during this assistant turn, in arrival order. Driven
+	 * by `tool_call` Run Events (ADR-0006); ephemeral, so a Run rehydrated from
+	 * history starts without them (ADR-0022 defers durable replay).
+	 */
+	readonly toolCalls?: readonly ToolCall[];
 	/**
 	 * Set when a Run terminates with an `error` Run Event (ADR-0006): the
 	 * worker/provider failure message. Drives the error rendering in the
@@ -184,6 +202,28 @@ export function markMessageIncomplete(
 }
 
 /**
+ * Settle any tool call still marked `running` when its Run terminates. The
+ * terminal `tool_call` boundary is ephemeral, so it can be lost to broadcast
+ * lag (ADR-0022 does not replay it) or never arrive if Core ends mid-dispatch;
+ * without this the indicator would animate forever on a finished turn. Returns
+ * the same reference when nothing is running, preserving selector identity.
+ */
+function settleRunningToolCalls(
+	toolCalls: readonly ToolCall[] | undefined,
+	terminal: "completed" | "error",
+): readonly ToolCall[] | undefined {
+	if (
+		toolCalls === undefined ||
+		!toolCalls.some((tc) => tc.status === "running")
+	) {
+		return toolCalls;
+	}
+	return toolCalls.map((tc) =>
+		tc.status === "running" ? { ...tc, status: terminal } : tc,
+	);
+}
+
+/**
  * Apply a streamed run event to the thread's assistant message for `runId`.
  *
  * SET-vs-APPEND rule (slice 2/8): the FIRST `text_delta` after subscribe is the
@@ -215,6 +255,31 @@ export function applyEvent(
 			}));
 		}
 
+		if (event.kind === "tool_call") {
+			// Upsert the tool call on the assistant message for this run: a
+			// `started` event appends a `running` row; a terminal event flips the
+			// matching row to `completed`/`error`. The wire `started` maps to the
+			// UI `running` vocabulary.
+			const status = event.status === "started" ? "running" : event.status;
+			const messages = thread.messages.map((m): Message => {
+				if (m.role !== "assistant" || m.run_id !== runId) {
+					return m;
+				}
+				const existing = m.toolCalls ?? [];
+				const found = existing.some((tc) => tc.id === event.tool_call_id);
+				const toolCalls: ToolCall[] = found
+					? existing.map((tc) =>
+							tc.id === event.tool_call_id ? { ...tc, status } : tc,
+						)
+					: [
+							...existing,
+							{ id: event.tool_call_id, name: event.name, status },
+						];
+				return { ...m, toolCalls };
+			});
+			return withThread(s, threadId, (t) => ({ ...t, messages }));
+		}
+
 		if (event.kind === "error") {
 			// A worker-emitted error (ADR-0006) is terminal: flip the
 			// assistant message to `incomplete`, attach the error message so
@@ -222,7 +287,12 @@ export function applyEvent(
 			// blank), and clear the active run.
 			const messages = thread.messages.map((m): Message =>
 				m.role === "assistant" && m.run_id === runId
-					? { ...m, status: "incomplete", error: event.message }
+					? {
+							...m,
+							status: "incomplete",
+							error: event.message,
+							toolCalls: settleRunningToolCalls(m.toolCalls, "error"),
+						}
 					: m,
 			);
 			return withThread(s, threadId, (t) => ({
@@ -235,7 +305,11 @@ export function applyEvent(
 		// done → finalize the assistant message and clear the active run.
 		const messages = thread.messages.map((m): Message =>
 			m.role === "assistant" && m.run_id === runId
-				? { ...m, status: "completed" }
+				? {
+						...m,
+						status: "completed",
+						toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
+					}
 				: m,
 		);
 		return withThread(s, threadId, (t) => ({

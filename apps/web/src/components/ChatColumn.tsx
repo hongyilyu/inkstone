@@ -11,6 +11,7 @@ import { useHydrateFocusedThread } from "@/store/hydrate";
 import { ChatMarkdown } from "./ChatMarkdown.js";
 import { ComposeFooter } from "./ComposeFooter.js";
 import { CopyButton } from "./CopyButton.js";
+import { ToolActivity } from "./ToolActivity.js";
 
 export function ChatColumn() {
 	const scrollerRef = useRef<HTMLDivElement>(null);
@@ -80,19 +81,24 @@ function UserBubble({ message }: { message: Message }) {
 }
 
 function AssistantBubble({ message }: { message: Message }) {
+	const toolCalls = message.toolCalls ?? [];
+	const toolRunning = toolCalls.some((tc) => tc.status === "running");
 	return (
 		<li data-role="assistant" className="group flex flex-col items-start gap-2">
-			{message.status === "streaming" && message.text === "" && (
-				<div
-					data-testid="typing-indicator"
-					aria-label="Assistant is typing"
-					className="flex items-center gap-1 px-1 py-2"
-				>
-					<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite]" />
-					<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite] [animation-delay:0.2s]" />
-					<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite] [animation-delay:0.4s]" />
-				</div>
-			)}
+			{toolCalls.length > 0 && <ToolActivity toolCalls={toolCalls} />}
+			{message.status === "streaming" &&
+				message.text === "" &&
+				!toolRunning && (
+					<div
+						data-testid="typing-indicator"
+						aria-label="Assistant is typing"
+						className="flex items-center gap-1 px-1 py-2"
+					>
+						<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite]" />
+						<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite] [animation-delay:0.2s]" />
+						<span className="size-2 rounded-full bg-muted-foreground [animation:typing-pulse_1.2s_ease-in-out_infinite] [animation-delay:0.4s]" />
+					</div>
+				)}
 			{message.text.length > 0 && (
 				<div className="prose prose-pink dark:prose-invert max-w-none">
 					<ChatMarkdown text={message.text} />

@@ -291,6 +291,40 @@ describe("RunEvent", () => {
 			S.decodeUnknownSync(RunEvent)({ kind: "text_delta" }),
 		).toThrow();
 	});
+
+	it.each(["started", "completed", "error"] as const)(
+		"decodes a tool_call variant with status %s",
+		(status) => {
+			const event = {
+				kind: "tool_call",
+				tool_call_id: "tc_01",
+				name: "read_thread",
+				status,
+			};
+			expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
+		},
+	);
+
+	it("rejects a tool_call with an unknown status", () => {
+		expect(() =>
+			S.decodeUnknownSync(RunEvent)({
+				kind: "tool_call",
+				tool_call_id: "tc_01",
+				name: "read_thread",
+				status: "pending",
+			}),
+		).toThrow();
+	});
+
+	it("rejects a tool_call missing its name field", () => {
+		expect(() =>
+			S.decodeUnknownSync(RunEvent)({
+				kind: "tool_call",
+				tool_call_id: "tc_01",
+				status: "started",
+			}),
+		).toThrow();
+	});
 });
 
 describe("WorkerOutbound", () => {

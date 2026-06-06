@@ -4,7 +4,7 @@ description: A local-first thinking surface where chat accrues browsable persona
 colors:
   ink-magenta: "#e33f86"
   magenta-ring: "#db2777"
-  alert-magenta: "#f7086c"
+  alert-crimson: "#b3003f"
   deep-plum-ink: "#501854"
   slate-ink: "#454554"
   plum-label: "#77347c"
@@ -147,7 +147,7 @@ A near-monochrome magenta-and-plum field where a single saturated ink carries ev
 - **Hairline** (#eee1ed) / **Field Line** (#e7c1dc): Borders and dividers.
 
 ### Tertiary (status only)
-- **Alert Magenta** (#f7086c): Destructive and overdue states, always paired with an icon and a word ("Overdue"), never color alone.
+- **Alert Crimson** (light #b3003f / dark #ff9ebb): Destructive and overdue states, always paired with an icon and a word ("Overdue"), never color alone. It is a *readable* alert, tuned to clear 4.5:1 as text on the warm surfaces and its own soft tint (`destructive/10`) in both themes, and deliberately deeper than the bright magenta primary so "error" never reads as "primary action". The earlier vivid #f7086c failed AA as body text (≈3.8:1 light, ≈2.2:1 dark) and was retired.
 
 ### Named Rules
 **The One Ink Rule.** Magenta is the only accent. New categories earn distinction through icon + label + tonal soft-pink, never a new hue. If you reach for a second saturated color, stop.
@@ -196,7 +196,7 @@ Flat by tonal layering, not by shadow. Depth is read from the warm-neutral stack
 
 ### Chips / Badges
 - **Style:** Soft-pink fill (#f1c4e6), plum-label text, `rounded-full`, `text-xs`. Relationship/role/tag/status metadata.
-- **Status:** Project status pairs a tiny dot with a word ("In review"); overdue pairs an alert-magenta `AlertTriangle` with "Overdue". Color is never the only signal.
+- **Status:** Project status pairs a tiny dot with a word ("In review"); overdue pairs an alert-crimson `AlertTriangle` with "Overdue". Color is never the only signal.
 
 ### Cards / Containers
 - **Corner Style:** `rounded-xl` (12px). Cap card radius at 16px; never 24px+.
