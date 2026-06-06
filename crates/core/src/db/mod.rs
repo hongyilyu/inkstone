@@ -355,6 +355,96 @@ pub async fn resolve_tool_call(
     queries::resolve_tool_call(pool, tool_call_id, status, result_payload, now_ms).await
 }
 
+/// Persist a pending Proposal (ADR-0025), sidecar to the Proposal's
+/// `tool_calls` row. The proposed payload (`type`/`data`/`rationale`) rides on
+/// the tool call's `request_payload` already persisted by
+/// [`persist_tool_call`]; this row carries the Proposal lifecycle columns
+/// (`kind`, `change_kind`, `status='pending'`). `change_kind` is `create` for
+/// `propose_entity` (the only Proposal tool today).
+pub async fn persist_proposal(
+    pool: &SqlitePool,
+    proposal_id: &str,
+    tool_call_id: &str,
+    kind: &str,
+    change_kind: &str,
+) -> sqlx::Result<()> {
+    queries::insert_proposal(pool, proposal_id, tool_call_id, kind, change_kind).await
+}
+
+/// Park a Run on a Proposal (ADR-0025): set `runs.status='parked'` and record
+/// the waitpoint in `awaiting_tool_call_id`. Park is non-terminal — no
+/// `ended_at`/`terminal_reason`/error fields are touched, so the Run stays
+/// decidable.
+pub async fn mark_run_parked(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    awaiting_tool_call_id: &str,
+) -> sqlx::Result<()> {
+    queries::mark_run_parked(pool, run_id, awaiting_tool_call_id).await
+}
+
+/// Read a Run's `status` (ADR-0025). `None` when the Run does not exist.
+/// Backs `run/subscribe`'s parked branch and the forwarder's no-false-done
+/// check.
+pub async fn run_status(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Option<String>> {
+    queries::run_status(pool, run_id).await
+}
+
+/// A Run's pending Proposal for `proposal/get` (ADR-0025). `data` and
+/// `rationale` are extracted from the Proposal tool call's stored
+/// `request_payload` (the `{type, data, rationale}` the model sent); `kind`,
+/// `change_kind`, and `status` come from the `proposals` row.
+pub struct ProposalRow {
+    pub proposal_id: String,
+    pub kind: String,
+    pub change_kind: String,
+    pub status: String,
+    pub data: serde_json::Value,
+    pub rationale: Option<String>,
+}
+
+/// Read the Run's pending Proposal, or `None` if it has none. Parses the
+/// tool call's `request_payload` to recover the proposed `data`/`rationale`;
+/// a malformed payload degrades to `data: null` / `rationale: None` rather
+/// than failing the read.
+pub async fn get_pending_proposal_for_run(
+    pool: &SqlitePool,
+    run_id: Uuid,
+) -> sqlx::Result<Option<ProposalRow>> {
+    let Some((proposal_id, kind, change_kind, status, request_payload)) =
+        queries::pending_proposal_for_run(pool, run_id).await?
+    else {
+        return Ok(None);
+    };
+    let payload: serde_json::Value =
+        serde_json::from_str(&request_payload).unwrap_or(serde_json::Value::Null);
+    let data = payload
+        .get("data")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let rationale = payload
+        .get("rationale")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    Ok(Some(ProposalRow {
+        proposal_id,
+        kind,
+        change_kind,
+        status,
+        data,
+        rationale,
+    }))
+}
+
+/// Auto-approve seam (ADR-0025, ADR-0016): whether a Proposal should be
+/// approved automatically (skipping the park). Returns `false` for now — every
+/// Proposal is manual, so every `propose_entity` parks the Run. A later policy
+/// slice gives this a real body; the Worker is oblivious to auto vs manual
+/// either way.
+pub fn should_auto_approve() -> bool {
+    false
+}
+
 /// A Run's snapshot for `run/subscribe` (ADR-0022): the assistant
 /// message's cumulative text at the subscribe instant plus the Run's
 /// status. `text` is empty for a Run that has streamed no delta yet.

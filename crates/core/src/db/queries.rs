@@ -168,6 +168,44 @@ where
     .map(|_| ())
 }
 
+/// Park a Run (ADR-0025): set `status='parked'` and record the waitpoint in
+/// `awaiting_tool_call_id`. Park is a non-terminal state — no `ended_at`,
+/// `terminal_reason`, or error fields. `awaiting_tool_call_id` references the
+/// `tool_calls` row of the Proposal's tool call.
+pub(super) async fn mark_run_parked<'e, E>(
+    executor: E,
+    run_id: Uuid,
+    awaiting_tool_call_id: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE runs SET status = 'parked', awaiting_tool_call_id = ? WHERE id = ?",
+    )
+    .bind(awaiting_tool_call_id)
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Read a Run's `status` by id (ADR-0025). `None` when the Run does not exist.
+/// Backs `run/subscribe`'s parked branch: with no live hub, the persisted
+/// status decides whether to emit a terminal `done` or report `parked`.
+pub(super) async fn run_status<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
+        .bind(run_id.to_string())
+        .fetch_optional(executor)
+        .await
+}
+
 // ─── messages ─────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -491,6 +529,62 @@ where
     .execute(executor)
     .await
     .map(|_| ())
+}
+
+// ─── proposals (ADR-0025) ─────────────────────────────────────────────
+
+/// Insert a `proposals` row in the `pending` state, sidecar to the Proposal's
+/// `tool_calls` row. `kind` is the proposed entity type (from the proposed
+/// `type`); `change_kind` is create|update|delete. The proposed `data` and
+/// `rationale` are stored as a JSON sidecar in `edited_payload`'s sibling — for
+/// now Core keeps the proposed payload on the tool_call's `request_payload`, so
+/// this row carries only the lifecycle columns. `decision_idempotency_key` is
+/// NULL until a Decision is made (a later slice).
+pub(super) async fn insert_proposal<'e, E>(
+    executor: E,
+    id: &str,
+    tool_call_id: &str,
+    kind: &str,
+    change_kind: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO proposals (id, tool_call_id, kind, change_kind, status) \
+         VALUES (?, ?, ?, ?, 'pending')",
+    )
+    .bind(id)
+    .bind(tool_call_id)
+    .bind(kind)
+    .bind(change_kind)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// A Run's pending Proposal for `proposal/get` (ADR-0025): the proposal id,
+/// kind, change_kind, lifecycle status, plus the Proposal tool call's stored
+/// `request_payload` (carrying the proposed `type`/`data`/`rationale`). Joined
+/// through `tool_calls` on `run_id`. `None` when the Run has no pending
+/// Proposal.
+pub(super) async fn pending_proposal_for_run<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<(String, String, String, String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT p.id, p.kind, p.change_kind, p.status, tc.request_payload \
+         FROM proposals p \
+         JOIN tool_calls tc ON tc.id = p.tool_call_id \
+         WHERE tc.run_id = ?1 AND p.status = 'pending' \
+         ORDER BY tc.requested_at DESC LIMIT 1",
+    )
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await
 }
 
 // ─── run_events ───────────────────────────────────────────────────────

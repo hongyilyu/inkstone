@@ -8,6 +8,7 @@
 //! [`crate::hub`].
 
 mod post_message;
+mod proposal;
 mod provider;
 mod catalog;
 mod reply;
@@ -64,6 +65,14 @@ pub async fn dispatch(
                 return;
             };
             thread_get::handle(pool, req.id, params, out_tx).await;
+        }
+        "proposal/get" => {
+            let Ok(params) =
+                serde_json::from_value::<crate::protocol::ProposalGetParams>(req.params)
+            else {
+                return;
+            };
+            proposal::handle_get(pool, req.id, params, out_tx).await;
         }
         "provider/status" => {
             // Read-only, no params — the credential store is the only input.

@@ -171,6 +171,13 @@ async fn run_worker(
     // real-provider error path) instead of the generic `worker_disconnected`.
     let mut saw_done = false;
     let mut worker_error: Option<String> = None;
+    // Park (ADR-0025): set when a `propose_entity` tool_request is intercepted.
+    // A parked Run is a third Worker exit — neither clean `done` nor
+    // stdout-EOF-without-`done` — so the post-loop terminal branch must run
+    // NEITHER `complete_run` NOR `error_run`, and publish no terminal Run
+    // Event. The loop breaks immediately after parking; dropping `stdin`
+    // (below) tears the Worker down.
+    let mut parked = false;
 
     while let Ok(Some(line)) = lines.next_line().await {
         let msg: WorkerStdout = match serde_json::from_str(&line) {
@@ -228,6 +235,22 @@ async fn run_worker(
                 params,
                 ..
             } => {
+                // Proposal tools park the Run instead of dispatching (ADR-0025).
+                // Persist the tool_call + a pending Proposal, set the Run to
+                // `parked` recording the waitpoint, then break the read loop
+                // with the `parked` flag so the post-loop branch runs neither
+                // `complete_run` nor `error_run` and publishes no terminal Run
+                // Event. The auto-approve seam returns false (every Proposal is
+                // manual this slice), so every `propose_entity` parks.
+                if crate::tools::is_proposal(&name) && !db::should_auto_approve() {
+                    park_on_proposal(&pool, run_id, &tool_call_id, &name, &params).await;
+                    parked = true;
+                    // Drop stdin → EOF tears the Worker down (it blocks on
+                    // stdin awaiting a tool_result that will never come).
+                    drop(stdin.take());
+                    break;
+                }
+
                 let _ = tx.send(RunEvent::ToolCall {
                     tool_call_id: tool_call_id.clone(),
                     name: name.clone(),
@@ -270,34 +293,43 @@ async fn run_worker(
     // triple in a single transaction (ADR-0017's atomic recovery
     // invariant). A worker-emitted `error` takes precedence over the
     // EOF-without-done path and carries its own message.
-    let now_ms = db::now_ms();
-    let result = if let Some(ref message) = worker_error {
-        db::error_run_with_message(&pool, run_id, "errored", "worker_error", message, now_ms).await
-    } else if saw_done {
-        db::complete_run(&pool, run_id, now_ms).await
-    } else {
-        db::error_run(&pool, run_id, now_ms).await
-    };
-    if let Err(e) = result {
-        eprintln!("terminal tx failed for run {run_id}: {e}");
-    }
+    //
+    // Park (ADR-0025) short-circuits this entirely: a parked Run already
+    // committed `status='parked'` in `park_on_proposal`, and park is NOT a
+    // terminal state — so neither `complete_run` nor `error_run` runs, and no
+    // terminal Run Event is published. The hub is still removed below so a
+    // later `run/subscribe` falls through to the persisted `parked` status.
+    if !parked {
+        let now_ms = db::now_ms();
+        let result = if let Some(ref message) = worker_error {
+            db::error_run_with_message(&pool, run_id, "errored", "worker_error", message, now_ms)
+                .await
+        } else if saw_done {
+            db::complete_run(&pool, run_id, now_ms).await
+        } else {
+            db::error_run(&pool, run_id, now_ms).await
+        };
+        if let Err(e) = result {
+            eprintln!("terminal tx failed for run {run_id}: {e}");
+        }
 
-    // Publish the terminal Run Event to the hub ONLY AFTER the terminal tx
-    // commits (ordering matters — see the per-event match above). A Client
-    // that receives this `done`/`error` is now guaranteed that tier 2
-    // reflects the terminal state. The EOF-without-`done` path published
-    // nothing (the Worker emitted no terminal event); its subscribers get a
-    // synthesized `done` on `hub::remove` below.
-    match (&worker_error, saw_done) {
-        (Some(message), _) => {
-            let _ = tx.send(RunEvent::Error {
-                message: message.clone(),
-            });
+        // Publish the terminal Run Event to the hub ONLY AFTER the terminal tx
+        // commits (ordering matters — see the per-event match above). A Client
+        // that receives this `done`/`error` is now guaranteed that tier 2
+        // reflects the terminal state. The EOF-without-`done` path published
+        // nothing (the Worker emitted no terminal event); its subscribers get a
+        // synthesized `done` on `hub::remove` below.
+        match (&worker_error, saw_done) {
+            (Some(message), _) => {
+                let _ = tx.send(RunEvent::Error {
+                    message: message.clone(),
+                });
+            }
+            (None, true) => {
+                let _ = tx.send(RunEvent::Done);
+            }
+            (None, false) => {}
         }
-        (None, true) => {
-            let _ = tx.send(RunEvent::Done);
-        }
-        (None, false) => {}
     }
 
     // Remove the hub entry AFTER publishing the terminal event. Dropping the
@@ -373,6 +405,46 @@ async fn handle_tool_request(
                 },
             }
         }
+    }
+}
+
+/// Park the Run on a Proposal tool request (ADR-0025). Persists the Proposal's
+/// `tool_calls` row (`pending`), a sidecar `proposals` row (`pending`,
+/// `change_kind='create'`, `kind` from the proposed `type`), then sets
+/// `runs.status='parked'` recording `awaiting_tool_call_id`. The proposed
+/// `data`/`rationale` ride on the tool call's `request_payload`, so
+/// `proposal/get` reconstructs them without a duplicate column. Persistence
+/// failures are logged but do not abort — the loop still breaks and tears the
+/// Worker down; a half-parked Run is recoverable on a later sweep.
+async fn park_on_proposal(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    tool_call_id: &str,
+    name: &str,
+    params: &serde_json::Value,
+) {
+    let now = db::now_ms();
+    let request_payload = params.to_string();
+    if let Err(e) =
+        db::persist_tool_call(pool, run_id, tool_call_id, name, &request_payload, now).await
+    {
+        eprintln!("persist_tool_call (proposal) failed for {tool_call_id}: {e}");
+    }
+
+    // The proposed entity type becomes the Proposal `kind`; `change_kind` is
+    // `create` (propose_entity only creates). A missing/malformed `type`
+    // degrades to an empty kind rather than aborting the park.
+    let kind = params
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let proposal_id = Uuid::now_v7().to_string();
+    if let Err(e) = db::persist_proposal(pool, &proposal_id, tool_call_id, kind, "create").await {
+        eprintln!("persist_proposal failed for {tool_call_id}: {e}");
+    }
+
+    if let Err(e) = db::mark_run_parked(pool, run_id, tool_call_id).await {
+        eprintln!("mark_run_parked failed for run {run_id}: {e}");
     }
 }
 

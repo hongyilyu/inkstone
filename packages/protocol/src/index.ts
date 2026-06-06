@@ -12,6 +12,19 @@ export type PostMessageResult = S.Schema.Type<typeof PostMessageResult>;
 export const SubscribeParams = S.Struct({ run_id: S.String });
 export type SubscribeParams = S.Schema.Type<typeof SubscribeParams>;
 
+/**
+ * `run/subscribe` result: the Run's `status` at the subscribe instant
+ * (ADR-0022 + ADR-0025). `running` while a live stream (hub) exists, else the
+ * persisted `runs.status` — notably `parked`, which a refreshed Client must
+ * distinguish from a terminal `completed`/`errored` so it does not treat the
+ * stopped Run Event stream as a false `done`.
+ */
+export const SubscribeResult = S.Struct({
+	run_id: S.String,
+	status: S.String,
+});
+export type SubscribeResult = S.Schema.Type<typeof SubscribeResult>;
+
 export const ThreadCreateParams = S.Struct({ prompt: S.String });
 export type ThreadCreateParams = S.Schema.Type<typeof ThreadCreateParams>;
 
@@ -67,6 +80,33 @@ export const RunEvent = S.Union(
 	S.Struct({ kind: S.Literal("error"), message: S.String }),
 );
 export type RunEvent = S.Schema.Type<typeof RunEvent>;
+
+// --- proposal/* (ADR-0025): a Proposal is a Tool Request awaiting a human
+// Decision. When the Worker emits a `propose_entity` tool_request, Core parks
+// the Run and persists a pending Proposal. The Proposal lifecycle rides this
+// `proposal/*` channel, NOT a new RunEvent variant (the wire RunEvent enum
+// stays frozen at text_delta/tool_call/done/error).
+
+/** `proposal/get` params: the parked Run whose pending Proposal to fetch. */
+export const ProposalGetParams = S.Struct({ run_id: S.String });
+export type ProposalGetParams = S.Schema.Type<typeof ProposalGetParams>;
+
+/**
+ * `proposal/get` result: the Run's pending Proposal. `kind` is the proposed
+ * entity type (e.g. `todo`); `change_kind` is create|update|delete; `data` is
+ * the opaque proposed entity payload; `rationale` is the model's reason (may
+ * be null); `status` is the Proposal's lifecycle state.
+ */
+export const ProposalGetResult = S.Struct({
+	proposal_id: S.String,
+	run_id: S.String,
+	kind: S.String,
+	change_kind: S.String,
+	data: S.Unknown,
+	rationale: S.NullOr(S.String),
+	status: S.String,
+});
+export type ProposalGetResult = S.Schema.Type<typeof ProposalGetResult>;
 
 // --- tool protocol (ADR-0018): the Worker↔Core duplex for tool calls. The
 // Worker emits `tool_request` on its outbound stream (alongside RunEvents);

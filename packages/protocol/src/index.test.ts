@@ -6,11 +6,14 @@ import {
 	MessageView,
 	PostMessageParams,
 	PostMessageResult,
+	ProposalGetParams,
+	ProposalGetResult,
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
 	RunEvent,
 	SubscribeParams,
+	SubscribeResult,
 	ThreadCreateParams,
 	ThreadCreateResult,
 	ThreadGetParams,
@@ -96,6 +99,67 @@ describe("SubscribeParams", () => {
 
 	it("rejects a missing run_id", () => {
 		expect(() => S.decodeUnknownSync(SubscribeParams)({})).toThrow();
+	});
+});
+
+describe("SubscribeResult", () => {
+	it("decodes run_id and status and encodes back unchanged", () => {
+		const wire = {
+			run_id: "01900000-0000-7000-8000-000000000000",
+			status: "parked",
+		};
+		const decoded = S.decodeUnknownSync(SubscribeResult)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(SubscribeResult)(decoded)).toEqual(wire);
+	});
+
+	it("rejects a missing status", () => {
+		expect(() =>
+			S.decodeUnknownSync(SubscribeResult)({
+				run_id: "01900000-0000-7000-8000-000000000000",
+			}),
+		).toThrow();
+	});
+});
+
+describe("ProposalGetParams", () => {
+	it("decodes a run_id and encodes back unchanged", () => {
+		const wire = { run_id: "01900000-0000-7000-8000-000000000000" };
+		const decoded = S.decodeUnknownSync(ProposalGetParams)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ProposalGetParams)(decoded)).toEqual(wire);
+	});
+
+	it("rejects a missing run_id", () => {
+		expect(() => S.decodeUnknownSync(ProposalGetParams)({})).toThrow();
+	});
+});
+
+describe("ProposalGetResult", () => {
+	const wire = {
+		proposal_id: "01900000-0000-7000-8000-000000000010",
+		run_id: "01900000-0000-7000-8000-000000000000",
+		kind: "todo",
+		change_kind: "create",
+		data: { title: "buy milk", done: false },
+		rationale: "the user asked to remember this",
+		status: "pending",
+	};
+
+	it("decodes a full proposal with opaque data and encodes back unchanged", () => {
+		const decoded = S.decodeUnknownSync(ProposalGetResult)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(wire);
+	});
+
+	it("decodes a null rationale", () => {
+		const noReason = { ...wire, rationale: null };
+		expect(S.decodeUnknownSync(ProposalGetResult)(noReason)).toEqual(noReason);
+	});
+
+	it("rejects a missing status", () => {
+		const { status: _omit, ...noStatus } = wire;
+		expect(() => S.decodeUnknownSync(ProposalGetResult)(noStatus)).toThrow();
 	});
 });
 

@@ -42,6 +42,40 @@ pub struct SubscribeParams {
     pub run_id: String,
 }
 
+/// `run/subscribe` result (ADR-0022 + ADR-0025): the Run's `status` at the
+/// subscribe instant. `running` while a live stream (hub) exists, else the
+/// persisted `runs.status` — notably `parked`, which a refreshed Client must
+/// distinguish from a terminal state so it does not treat the stopped Run
+/// Event stream as a false `done`. Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct SubscribeResult {
+    pub run_id: String,
+    pub status: String,
+}
+
+/// `proposal/get` params (ADR-0025): the parked Run whose pending Proposal to
+/// fetch. Deserialize-only.
+#[derive(Debug, Deserialize)]
+pub struct ProposalGetParams {
+    pub run_id: String,
+}
+
+/// `proposal/get` result (ADR-0025): the Run's pending Proposal. `kind` is the
+/// proposed entity type (e.g. `todo`); `change_kind` is create|update|delete;
+/// `data` is the opaque proposed entity payload; `rationale` is the model's
+/// reason (may be `null`); `status` is the Proposal's lifecycle state.
+/// Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct ProposalGetResult {
+    pub proposal_id: String,
+    pub run_id: String,
+    pub kind: String,
+    pub change_kind: String,
+    pub data: serde_json::Value,
+    pub rationale: Option<String>,
+    pub status: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PostMessageResult {
     pub run_id: String,
@@ -410,6 +444,65 @@ mod mirror_tests {
         let wire = json!({ "run_id": UUID_A });
         let p: SubscribeParams = serde_json::from_value(wire).unwrap();
         assert_eq!(p.run_id, UUID_A);
+    }
+
+    #[test]
+    fn subscribe_result_encodes_run_id_and_status() {
+        let r = SubscribeResult {
+            run_id: UUID_A.to_string(),
+            status: "parked".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({ "run_id": UUID_A, "status": "parked" }),
+        );
+    }
+
+    #[test]
+    fn proposal_get_params_decodes_run_id() {
+        let wire = json!({ "run_id": UUID_A });
+        let p: ProposalGetParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.run_id, UUID_A);
+    }
+
+    #[test]
+    fn proposal_get_result_encodes_full_shape() {
+        let r = ProposalGetResult {
+            proposal_id: UUID_B.to_string(),
+            run_id: UUID_A.to_string(),
+            kind: "todo".to_string(),
+            change_kind: "create".to_string(),
+            data: json!({ "title": "buy milk", "done": false }),
+            rationale: Some("because".to_string()),
+            status: "pending".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({
+                "proposal_id": UUID_B,
+                "run_id": UUID_A,
+                "kind": "todo",
+                "change_kind": "create",
+                "data": { "title": "buy milk", "done": false },
+                "rationale": "because",
+                "status": "pending"
+            }),
+        );
+    }
+
+    #[test]
+    fn proposal_get_result_encodes_null_rationale() {
+        let r = ProposalGetResult {
+            proposal_id: UUID_B.to_string(),
+            run_id: UUID_A.to_string(),
+            kind: "todo".to_string(),
+            change_kind: "create".to_string(),
+            data: json!({}),
+            rationale: None,
+            status: "pending".to_string(),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["rationale"], json!(null));
     }
 
     #[test]

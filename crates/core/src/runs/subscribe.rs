@@ -27,7 +27,7 @@ use uuid::Uuid;
 use super::reply::{send_error, send_response, send_run_event, send_text_delta};
 use crate::db;
 use crate::hub::{self, Hubs};
-use crate::protocol::{RunEvent, SubscribeParams};
+use crate::protocol::{RunEvent, SubscribeParams, SubscribeResult};
 
 pub(super) async fn handle(
     pool: &SqlitePool,
@@ -58,37 +58,64 @@ pub(super) async fn handle(
                 }
             };
 
-            send_subscribe_response(out_tx, id, run_id);
+            // A live hub means the Run is actively streaming → `running`.
+            send_subscribe_response(out_tx, id, run_id, "running");
             send_text_delta(out_tx, run_id, &snapshot_text);
             spawn_tail_forwarder(run_id, receiver, out_tx.clone(), pool.clone());
         }
-        // ---- Run terminal/unknown: snapshot from the DB, emit done. ----
+        // ---- No hub: terminal, parked, or unknown. Read the persisted
+        // status to tell parked (ADR-0025) from terminal. ----
         None => {
+            let status = match db::run_status(pool, run_id).await {
+                Ok(Some(s)) => s,
+                Ok(None) => String::new(), // unknown run id — stay defensible
+                Err(e) => {
+                    eprintln!("run_status read failed for run {run_id}: {e}");
+                    String::new()
+                }
+            };
             let snapshot = db::select_run_snapshot(pool, run_id).await;
-            send_subscribe_response(out_tx, id, run_id);
+            send_subscribe_response(out_tx, id, run_id, &status);
             match snapshot {
                 Ok(Some(snap)) => {
                     send_text_delta(out_tx, run_id, &snap.text);
                 }
                 Ok(None) => {
-                    // Unknown run id — stay defensible: no snapshot, just done.
+                    // Unknown run id — no snapshot.
                 }
                 Err(e) => {
                     eprintln!("snapshot read failed for run {run_id}: {e}");
                 }
             }
-            send_run_event(out_tx, run_id, &RunEvent::Done);
+            // No-false-done (ADR-0025): a parked Run's Run Event stream stopped
+            // without a terminal event. Emit the snapshot, but NOT a `done` —
+            // the Client distinguishes `parked` via the response status. Only
+            // terminal/unknown runs get the synthesized `done`.
+            if status != "parked" {
+                send_run_event(out_tx, run_id, &RunEvent::Done);
+            }
         }
     }
 }
 
-/// Frame the subscribe RESPONSE. Result shape is `{run_id}` (symmetry with
-/// `post_message`); events arrive as separate `run/event` notifications.
-fn send_subscribe_response(out_tx: &UnboundedSender<String>, id: serde_json::Value, run_id: Uuid) {
+/// Frame the subscribe RESPONSE. Result shape is `{run_id, status}` (ADR-0022,
+/// ADR-0025): `status` is `running` while a live hub exists, else the
+/// persisted `runs.status` — so a refreshed Client can tell a `parked` Run
+/// from a terminal one. Events arrive as separate `run/event` notifications.
+fn send_subscribe_response(
+    out_tx: &UnboundedSender<String>,
+    id: serde_json::Value,
+    run_id: Uuid,
+    status: &str,
+) {
     send_response(
         out_tx,
         id,
-        serde_json::json!({ "run_id": run_id.to_string() }),
+        serde_json::to_value(SubscribeResult {
+            run_id: run_id.to_string(),
+            status: status.to_string(),
+        })
+        .expect("SubscribeResult serializes"),
     );
 }
 
@@ -161,8 +188,22 @@ fn spawn_tail_forwarder(
                             // lagged window), synthesize a `done` so the
                             // client's run-stream finalizes instead of hanging
                             // forever.
+                            //
+                            // No-false-done on park (ADR-0025): a Worker that
+                            // parks removes the hub WITHOUT a terminal event,
+                            // so `saw_terminal` is false here too — but the Run
+                            // is not done. Check the persisted status and
+                            // suppress the synthesized `done` when `parked`;
+                            // the Client learns the park via `run/subscribe`'s
+                            // response status (or `proposal/get`).
                             if !saw_terminal {
-                                send_run_event(&out_tx, run_id, &RunEvent::Done);
+                                let parked = matches!(
+                                    db::run_status(&pool, run_id).await,
+                                    Ok(Some(ref s)) if s == "parked"
+                                );
+                                if !parked {
+                                    send_run_event(&out_tx, run_id, &RunEvent::Done);
+                                }
                             }
                             break;
                         }
