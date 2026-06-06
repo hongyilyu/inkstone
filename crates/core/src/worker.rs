@@ -238,7 +238,7 @@ async fn run_worker(
                         .await;
                 let _ = tx.send(RunEvent::ToolCall {
                     tool_call_id: tool_call_id.clone(),
-                    name: name.clone(),
+                    name,
                     status: match &outcome {
                         ToolOutcome::Ok { .. } => ToolCallStatus::Completed,
                         ToolOutcome::Err { .. } => ToolCallStatus::Error,

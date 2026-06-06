@@ -27,6 +27,7 @@ const TOOL_PRESENTATION: Record<
 
 function humanize(name: string): string {
 	const spaced = name.replace(/[_-]+/g, " ").trim();
+	if (spaced === "") return name;
 	return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
@@ -105,11 +106,16 @@ function ToolCallRow({ call }: { call: ToolCall }) {
 				)}
 			</span>
 
-			<span className="relative truncate">{label}</span>
+			<span aria-hidden className="relative min-w-0 truncate">{label}</span>
 			{errored && (
-				<span className="relative shrink-0 text-xs opacity-80">failed</span>
+				<span aria-hidden className="relative shrink-0 text-xs">
+					failed
+				</span>
 			)}
 
+			{/* Single authoritative announcement per row (the visible label +
+			    "failed" are aria-hidden so they don't double-speak in the live
+			    region). */}
 			<span className="sr-only">
 				{running
 					? `${active}, in progress`

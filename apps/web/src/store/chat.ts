@@ -202,6 +202,28 @@ export function markMessageIncomplete(
 }
 
 /**
+ * Settle any tool call still marked `running` when its Run terminates. The
+ * terminal `tool_call` boundary is ephemeral, so it can be lost to broadcast
+ * lag (ADR-0022 does not replay it) or never arrive if Core ends mid-dispatch;
+ * without this the indicator would animate forever on a finished turn. Returns
+ * the same reference when nothing is running, preserving selector identity.
+ */
+function settleRunningToolCalls(
+	toolCalls: readonly ToolCall[] | undefined,
+	terminal: "completed" | "error",
+): readonly ToolCall[] | undefined {
+	if (
+		toolCalls === undefined ||
+		!toolCalls.some((tc) => tc.status === "running")
+	) {
+		return toolCalls;
+	}
+	return toolCalls.map((tc) =>
+		tc.status === "running" ? { ...tc, status: terminal } : tc,
+	);
+}
+
+/**
  * Apply a streamed run event to the thread's assistant message for `runId`.
  *
  * SET-vs-APPEND rule (slice 2/8): the FIRST `text_delta` after subscribe is the
@@ -265,7 +287,12 @@ export function applyEvent(
 			// blank), and clear the active run.
 			const messages = thread.messages.map((m): Message =>
 				m.role === "assistant" && m.run_id === runId
-					? { ...m, status: "incomplete", error: event.message }
+					? {
+							...m,
+							status: "incomplete",
+							error: event.message,
+							toolCalls: settleRunningToolCalls(m.toolCalls, "error"),
+						}
 					: m,
 			);
 			return withThread(s, threadId, (t) => ({
@@ -278,7 +305,11 @@ export function applyEvent(
 		// done → finalize the assistant message and clear the active run.
 		const messages = thread.messages.map((m): Message =>
 			m.role === "assistant" && m.run_id === runId
-				? { ...m, status: "completed" }
+				? {
+						...m,
+						status: "completed",
+						toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
+					}
 				: m,
 		);
 		return withThread(s, threadId, (t) => ({

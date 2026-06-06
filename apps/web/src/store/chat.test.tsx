@@ -183,4 +183,137 @@ describe("chat store + stream bridge", () => {
 
 		await runtime.dispose();
 	});
+
+	it("tracks multiple concurrent tool calls independently, in arrival order", async () => {
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime(queue, "run-multi");
+		setFocusedThread("threadA");
+
+		await send(runtime, "threadA", "do two things");
+
+		// Two calls start; they resolve out of order. Each id is upserted
+		// independently and the rows keep their first-seen order.
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "a",
+			name: "read_thread",
+			status: "started",
+		});
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "b",
+			name: "search_web",
+			status: "started",
+		});
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "b",
+			name: "search_web",
+			status: "error",
+		});
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "a",
+			name: "read_thread",
+			status: "completed",
+		});
+		Queue.unsafeOffer(queue, { kind: "done" });
+		await awaitRun(runtime, "run-multi");
+
+		const assistant = getChatState().threads.threadA?.messages[1];
+		expect(assistant?.toolCalls).toEqual([
+			{ id: "a", name: "read_thread", status: "completed" },
+			{ id: "b", name: "search_web", status: "error" },
+		]);
+
+		await runtime.dispose();
+	});
+
+	it("settles a still-running tool call when the run finishes (lost terminal boundary)", async () => {
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime(queue, "run-lost");
+		setFocusedThread("threadA");
+
+		await send(runtime, "threadA", "hi");
+
+		// `started` arrives, but the terminal `tool_call` is lost (broadcast lag,
+		// ADR-0022 does not replay it). `done` must still settle the row so the
+		// indicator doesn't animate forever on a finished turn.
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "x",
+			name: "read_thread",
+			status: "started",
+		});
+		Queue.unsafeOffer(queue, { kind: "done" });
+		await awaitRun(runtime, "run-lost");
+
+		const assistant = getChatState().threads.threadA?.messages[1];
+		expect(assistant?.toolCalls).toEqual([
+			{ id: "x", name: "read_thread", status: "completed" },
+		]);
+		expect(assistant?.status).toBe("completed");
+
+		await runtime.dispose();
+	});
+
+	it("settles a still-running tool call to error when the run errors", async () => {
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime(queue, "run-lost-err");
+		setFocusedThread("threadA");
+
+		await send(runtime, "threadA", "hi");
+
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "x",
+			name: "read_thread",
+			status: "started",
+		});
+		Queue.unsafeOffer(queue, { kind: "error", message: "worker died" });
+		await awaitRun(runtime, "run-lost-err");
+
+		const assistant = getChatState().threads.threadA?.messages[1];
+		expect(assistant?.toolCalls).toEqual([
+			{ id: "x", name: "read_thread", status: "error" },
+		]);
+		expect(assistant?.status).toBe("incomplete");
+
+		await runtime.dispose();
+	});
+
+	it("keeps SET-then-APPEND text semantics when a tool_call interleaves", async () => {
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime(queue, "run-interleave");
+		setFocusedThread("threadA");
+
+		await send(runtime, "threadA", "hi");
+
+		// A tool_call before the first text_delta must NOT consume the snapshot
+		// slot: the first delta still SETs, the second APPENDs.
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "t",
+			name: "read_thread",
+			status: "started",
+		});
+		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "A" });
+		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "B" });
+		Queue.unsafeOffer(queue, {
+			kind: "tool_call",
+			tool_call_id: "t",
+			name: "read_thread",
+			status: "completed",
+		});
+		Queue.unsafeOffer(queue, { kind: "done" });
+		await awaitRun(runtime, "run-interleave");
+
+		const assistant = getChatState().threads.threadA?.messages[1];
+		expect(assistant?.text).toBe("AB");
+		expect(assistant?.toolCalls).toEqual([
+			{ id: "t", name: "read_thread", status: "completed" },
+		]);
+
+		await runtime.dispose();
+	});
 });

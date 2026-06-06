@@ -121,6 +121,10 @@ export const CoreToolDescriptor = S.Struct({
 });
 export type CoreToolDescriptor = S.Schema.Type<typeof CoreToolDescriptor>;
 
+// What the Worker writes to stdout. NOTE: the `tool_call` member of `RunEvent`
+// is Core-synthesized (Core publishes it to the Client hub when it receives a
+// `tool_request`); the Worker never emits it, so Core's stdout decoder ignores
+// that kind. The union is widened only because it reuses `RunEvent`.
 export const WorkerOutbound = S.Union(RunEvent, ToolRequest);
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 

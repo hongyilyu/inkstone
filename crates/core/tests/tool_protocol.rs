@@ -324,10 +324,22 @@ fn off_allowlist_tool_returns_error_outcome() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        let (_thread, _run, text, _tools) = run_and_collect(&ws_url, "hi").await;
+        let (_thread, _run, text, tools) = run_and_collect(&ws_url, "hi").await;
         assert!(
             text.contains("tool_outcome=err:"),
             "off-allowlist tool yields an error outcome — got {text:?}"
+        );
+        // The boundary still reaches the stream as started→error even though the
+        // tool is rejected before dispatch (Core emits `started` on arrival,
+        // then `error` from the allowlist refusal). The Client shows a brief
+        // running→failed flash, never a stuck row.
+        assert_eq!(
+            tools,
+            vec![
+                ("nonexistent".to_string(), "started".to_string()),
+                ("nonexistent".to_string(), "error".to_string()),
+            ],
+            "off-allowlist request surfaces started→error — got {tools:?}",
         );
     });
 }
