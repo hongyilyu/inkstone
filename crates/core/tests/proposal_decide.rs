@@ -543,6 +543,211 @@ fn accept_is_idempotent() {
     });
 }
 
+/// Slice 5 (Proposal edit): `proposal/decide{decision:"edit", edited_payload}`
+/// on a parked Run validates the edited Todo, applies the EDITED values (not
+/// the model's proposed data), records `proposals.edited_payload`, and resumes
+/// the Run in a fresh Worker to `completed`. The model proposed
+/// `title:"buy milk"`; the user edits to `title:"buy oat milk"`, and the
+/// created entity must carry the EDIT.
+#[test]
+fn edit_applies_edited_payload() {
+    let worker_cmd = propose_worker_cmd();
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let (run_id, entity_id) = rt.block_on(async {
+        let run_id = create_and_park(&ws_url).await;
+
+        let resp = rpc(
+            &ws_url,
+            3,
+            "proposal/get",
+            serde_json::json!({ "run_id": run_id }),
+        )
+        .await;
+        let proposal_id = resp["result"]["proposal_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
+            .to_string();
+
+        // Decide: edit with a new title.
+        let resp = rpc(
+            &ws_url,
+            4,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "edit",
+                "edited_payload": { "title": "buy oat milk", "done": false },
+                "decision_idempotency_key": "e1",
+            }),
+        )
+        .await;
+        let result = &resp["result"];
+        assert_eq!(
+            result["status"].as_str(),
+            Some("accepted"),
+            "edit decide result status — body: {resp}"
+        );
+        let entity_id = result["entity_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
+            .to_string();
+
+        await_completed(&ws_url, &run_id).await;
+        (run_id, entity_id)
+    });
+
+    rt.block_on(async {
+        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+
+        // The entity carries the EDITED title, not the model's "buy milk".
+        let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
+            .bind(&entity_id)
+            .fetch_one(&pool)
+            .await
+            .expect("entity row exists");
+        let data_json: serde_json::Value = serde_json::from_str(&data).expect("entity data is JSON");
+        assert_eq!(
+            data_json["title"].as_str(),
+            Some("buy oat milk"),
+            "entity data.title is the EDIT — got {data}"
+        );
+
+        // proposals.status='accepted' AND edited_payload recorded.
+        let row = sqlx::query(
+            "SELECT p.status, p.edited_payload FROM proposals p \
+             JOIN tool_calls tc ON tc.id = p.tool_call_id WHERE tc.run_id = ?1",
+        )
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("proposal row exists");
+        let prop_status: String = row.get("status");
+        let edited_payload: Option<String> = row.get("edited_payload");
+        assert_eq!(prop_status, "accepted", "edit proposal accepted");
+        let edited = edited_payload.expect("proposals.edited_payload is set on edit");
+        let edited_json: serde_json::Value =
+            serde_json::from_str(&edited).expect("edited_payload is JSON");
+        assert_eq!(
+            edited_json["title"].as_str(),
+            Some("buy oat milk"),
+            "edited_payload carries the edit — got {edited}"
+        );
+
+        // runs.status='completed'.
+        let run_status: String = sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
+            .bind(&run_id)
+            .fetch_one(&pool)
+            .await
+            .expect("run row exists");
+        assert_eq!(run_status, "completed", "run completed after edit resume");
+    });
+}
+
+/// Slice 5: an invalid `edited_payload` (empty title fails `validate_todo`) is
+/// rejected with `invalid_params` BEFORE any DB write — no entity lands, the
+/// Proposal stays `pending`, and the Run stays `parked` (re-decidable).
+#[test]
+fn edit_rejects_invalid_payload() {
+    let worker_cmd = propose_worker_cmd();
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let run_id = rt.block_on(async {
+        let run_id = create_and_park(&ws_url).await;
+
+        let resp = rpc(
+            &ws_url,
+            3,
+            "proposal/get",
+            serde_json::json!({ "run_id": run_id }),
+        )
+        .await;
+        let proposal_id = resp["result"]["proposal_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
+            .to_string();
+
+        // Decide: edit with an empty title → invalid_params, no apply.
+        let resp = rpc(
+            &ws_url,
+            4,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "edit",
+                "edited_payload": { "title": "" },
+                "decision_idempotency_key": "bad1",
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp["error"]["code"].as_i64(),
+            Some(-32602),
+            "invalid edited_payload → invalid_params — body: {resp}"
+        );
+        run_id
+    });
+
+    rt.block_on(async {
+        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+
+        // NO entity created.
+        let entity_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM entities WHERE created_via_proposal_id IN \
+             (SELECT p.id FROM proposals p JOIN tool_calls tc ON tc.id = p.tool_call_id \
+              WHERE tc.run_id = ?1)",
+        )
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count entities");
+        assert_eq!(entity_count, 0, "invalid edit created no entity");
+
+        // proposals.status still 'pending'.
+        let prop_status: String = sqlx::query_scalar(
+            "SELECT p.status FROM proposals p \
+             JOIN tool_calls tc ON tc.id = p.tool_call_id WHERE tc.run_id = ?1",
+        )
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("proposal row exists");
+        assert_eq!(prop_status, "pending", "proposal still pending after invalid edit");
+
+        // runs.status still 'parked' (no resume).
+        let run_status: String = sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
+            .bind(&run_id)
+            .fetch_one(&pool)
+            .await
+            .expect("run row exists");
+        assert_eq!(run_status, "parked", "run still parked after invalid edit");
+    });
+}
+
 /// Multi-step reconstruction (ADR-0025 core risk): the worker's first spawn
 /// does a real `read_thread` tool_call (Core executes + resolves it
 /// synchronously) BEFORE the `propose_entity` that parks. On accept the Run
