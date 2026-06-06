@@ -259,11 +259,36 @@ export type SettingsSetParams = S.Schema.Type<typeof SettingsSetParams>;
 // assembled conversation history, and — for OAuth providers — a short-lived
 // access token (ADR-0023). `tools` is empty until the tools slice.
 
-/** One prior message in the assembled Thread history (ADR-0018 messages[]). */
-export const ManifestMessage = S.Struct({
-	role: S.Literal("user", "assistant"),
-	text: S.String,
+/** One tool call inside an assistant manifest message (ADR-0025 resume). */
+export const ManifestToolCall = S.Struct({
+	id: S.String,
+	name: S.String,
+	arguments: S.Unknown,
 });
+export type ManifestToolCall = S.Schema.Type<typeof ManifestToolCall>;
+
+/**
+ * One prior message in the assembled Thread history (ADR-0018 messages[]),
+ * now a tagged union (ADR-0025). The fresh path emits `user{text}` and
+ * `assistant{text}` exactly as before; the resume path (slice 3 produces it)
+ * adds `assistant.tool_calls` and `tool_result` blocks so the reconstructed
+ * transcript is provider-valid (an assistant `tool_call` precedes its
+ * `tool_result`). This is a backward-compatible superset.
+ */
+export const ManifestMessage = S.Union(
+	S.Struct({ role: S.Literal("user"), text: S.String }),
+	S.Struct({
+		role: S.Literal("assistant"),
+		text: S.optional(S.String),
+		tool_calls: S.optional(S.Array(ManifestToolCall)),
+	}),
+	S.Struct({
+		role: S.Literal("tool_result"),
+		tool_call_id: S.String,
+		content: S.String,
+		is_error: S.optional(S.Boolean),
+	}),
+);
 export type ManifestMessage = S.Schema.Type<typeof ManifestMessage>;
 
 /** The Workflow definition fields the interpreter consumes (ADR-0018). */
@@ -290,12 +315,15 @@ export type WorkflowManifest = S.Schema.Type<typeof WorkflowManifest>;
  * current user turn; `messages` is the prior completed history (oldest
  * first, excluding the current prompt). `access_token` is present only for
  * OAuth providers (ADR-0023); absent for the `faux` test provider and any
- * env-key provider.
+ * env-key provider. `mode` selects the loop entry point (ADR-0025): `fresh`
+ * (default/absent) starts a new prompt; `resume` continues a reconstructed
+ * transcript whose last message is a `tool_result` (via `runAgentLoopContinue`).
  */
 export const WorkerManifest = S.Struct({
 	workflow: WorkflowManifest,
 	prompt: S.String,
 	messages: S.Array(ManifestMessage),
+	mode: S.optional(S.Literal("fresh", "resume")),
 	access_token: S.optional(S.String),
 });
 export type WorkerManifest = S.Schema.Type<typeof WorkerManifest>;

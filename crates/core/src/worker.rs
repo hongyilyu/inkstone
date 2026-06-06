@@ -111,9 +111,18 @@ async fn run_worker(
         // the current prompt, the assembled prior history, the tool
         // descriptors (filtered by the Workflow's allowlist), and — for OAuth
         // providers — a short-lived access token resolved by Core (ADR-0023).
+        // Fresh-path history: each (role, text) becomes a typed-block
+        // `ManifestMessage` (ADR-0025). The fresh path only ever emits
+        // `user{text}` / `assistant{text}`; resume blocks are slice 3.
         let messages: Vec<ManifestMessage> = history
             .iter()
-            .map(|(role, text)| ManifestMessage { role, text })
+            .map(|(role, text)| match role.as_str() {
+                "assistant" => ManifestMessage::Assistant {
+                    text: Some(text),
+                    tool_calls: None,
+                },
+                _ => ManifestMessage::User { text },
+            })
             .collect();
         let access_token =
             match crate::provider_auth::resolve_access_token(&workflow.provider, db::now_ms()).await
@@ -140,6 +149,7 @@ async fn run_worker(
             },
             prompt: &prompt,
             messages,
+            mode: None,
             access_token: access_token.as_deref(),
         };
         let mut line = serde_json::to_string(&manifest).expect("WorkerManifest serializes");

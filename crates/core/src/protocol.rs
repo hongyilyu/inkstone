@@ -370,14 +370,46 @@ pub struct SettingsSetParams {
     pub effort: Option<String>,
 }
 
-/// One prior message in the assembled Thread history shipped in the spawn
-/// manifest (ADR-0018 as-built `messages[]`). `role` is `"user"` or
-/// `"assistant"`; `text` is the Message's assembled text. Serialize-only —
-/// Core produces these, the Worker consumes them.
+/// One tool call inside an assistant manifest message (ADR-0025 resume).
+/// Mirrors the TS `ManifestToolCall`. Produced by the resume reconstruction
+/// (slice 3); not yet built here.
 #[derive(Debug, Serialize)]
-pub struct ManifestMessage<'a> {
-    pub role: &'a str,
-    pub text: &'a str,
+#[allow(dead_code)]
+pub struct ManifestToolCall<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub arguments: serde_json::Value,
+}
+
+/// One prior message in the assembled Thread history shipped in the spawn
+/// manifest (ADR-0018 as-built `messages[]`), now a tagged union (ADR-0025).
+/// The fresh path emits `User{text}` / `Assistant{text}` exactly as before;
+/// the resume path (slice 3) adds `assistant.tool_calls` and `ToolResult`
+/// blocks so the reconstructed transcript is provider-valid. Tagged on
+/// `role`, snake_case; a backward-compatible superset of the slice-1 shape.
+/// Serialize-only — Core produces these, the Worker consumes them. The
+/// `Assistant.tool_calls` and `ToolResult` variants are produced in slice 3;
+/// marked `#[allow(dead_code)]` until then.
+#[derive(Debug, Serialize)]
+#[serde(tag = "role", rename_all = "snake_case")]
+pub enum ManifestMessage<'a> {
+    User {
+        text: &'a str,
+    },
+    Assistant {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[allow(dead_code)]
+        tool_calls: Option<Vec<ManifestToolCall<'a>>>,
+    },
+    #[allow(dead_code)]
+    ToolResult {
+        tool_call_id: &'a str,
+        content: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
 }
 
 /// The Workflow fields shipped in the manifest (ADR-0018). Mirrors the TS
@@ -397,15 +429,20 @@ pub struct WorkflowManifest<'a> {
 
 /// The full spawn manifest written to the Worker's stdin (ADR-0018 as-built,
 /// ADR-0013 stdin transport). Replaces the slice-1 `WorkerInbound{prompt}`.
-/// `messages` is the assembled prior history (empty in slice 4; populated in
-/// slice 5). `access_token` is `Some` only for OAuth providers (ADR-0023);
-/// `None` (and skipped on the wire) for the faux/env providers. Mirrors the
-/// TS `WorkerManifest`.
+/// `messages` is the assembled prior history. `mode` selects the loop entry
+/// point (ADR-0025): `"fresh"` (default; omitted on the wire when the fresh
+/// path) starts a new prompt; `"resume"` continues a reconstructed transcript
+/// (slice 3 produces it). `access_token` is `Some` only for OAuth providers
+/// (ADR-0023); `None` (and skipped on the wire) for the faux/env providers.
+/// Mirrors the TS `WorkerManifest`.
 #[derive(Debug, Serialize)]
 pub struct WorkerManifest<'a> {
     pub workflow: WorkflowManifest<'a>,
     pub prompt: &'a str,
     pub messages: Vec<ManifestMessage<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    pub mode: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_token: Option<&'a str>,
 }
@@ -705,9 +742,13 @@ mod mirror_tests {
             },
             prompt: "now",
             messages: vec![
-                ManifestMessage { role: "user", text: "earlier q" },
-                ManifestMessage { role: "assistant", text: "earlier a" },
+                ManifestMessage::User { text: "earlier q" },
+                ManifestMessage::Assistant {
+                    text: Some("earlier a"),
+                    tool_calls: None,
+                },
             ],
+            mode: None,
             access_token: Some("tok_abc"),
         };
         assert_eq!(
@@ -751,6 +792,7 @@ mod mirror_tests {
             },
             prompt: "now",
             messages: vec![],
+            mode: None,
             access_token: None,
         };
         let v = serde_json::to_value(&manifest).unwrap();
@@ -760,11 +802,77 @@ mod mirror_tests {
             v.get("access_token").is_none(),
             "access_token must be omitted when None, got {v}"
         );
+        // `mode` is likewise skipped when None (fresh path); the Worker treats
+        // absent as `fresh` (ADR-0025).
+        assert!(
+            v.get("mode").is_none(),
+            "mode must be omitted when None, got {v}"
+        );
         assert_eq!(v["workflow"]["tools"], json!([]));
         assert_eq!(v["messages"], json!([]));
     }
 
     // --- Tool Protocol (ADR-0018): the duplex frames mirror the TS shapes. ---
+
+    #[test]
+    fn worker_manifest_encodes_resume_transcript_with_typed_blocks() {
+        // The EXACT resume transcript slice 3 reconstructs (ADR-0025): a user
+        // turn, an assistant `tool_call`, and the awaited `tool_result`. The
+        // assistant carries no text. Mirrors the TS resume shape test.
+        let manifest = WorkerManifest {
+            workflow: WorkflowManifest {
+                name: "default",
+                version: "1.0.0",
+                provider: "faux",
+                model: "faux-1",
+                system_prompt: "hi",
+                thinking_level: "off",
+                tools: vec![],
+            },
+            prompt: "",
+            messages: vec![
+                ManifestMessage::User {
+                    text: "remember to buy milk",
+                },
+                ManifestMessage::Assistant {
+                    text: None,
+                    tool_calls: Some(vec![ManifestToolCall {
+                        id: "tc_1",
+                        name: "propose_entity",
+                        arguments: json!({ "type": "todo", "data": { "title": "buy milk" } }),
+                    }]),
+                },
+                ManifestMessage::ToolResult {
+                    tool_call_id: "tc_1",
+                    content: "Accepted. Created Todo \"buy milk\".",
+                    is_error: None,
+                },
+            ],
+            mode: Some("resume"),
+            access_token: None,
+        };
+        let v = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(v["mode"], json!("resume"));
+        assert_eq!(
+            v["messages"],
+            json!([
+                { "role": "user", "text": "remember to buy milk" },
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "tc_1",
+                        "name": "propose_entity",
+                        "arguments": { "type": "todo", "data": { "title": "buy milk" } }
+                    }]
+                },
+                {
+                    "role": "tool_result",
+                    "tool_call_id": "tc_1",
+                    "content": "Accepted. Created Todo \"buy milk\"."
+                }
+            ]),
+        );
+    }
 
     #[test]
     fn core_tool_descriptor_encodes_snake_case_with_schema() {

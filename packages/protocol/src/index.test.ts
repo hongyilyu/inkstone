@@ -538,6 +538,65 @@ describe("WorkerManifest", () => {
 			}),
 		).toThrow();
 	});
+
+	it("decodes mode: resume with a typed-block resume transcript (ADR-0025)", () => {
+		const resume = {
+			...valid,
+			mode: "resume",
+			messages: [
+				{ role: "user", text: "remember to buy milk" },
+				{
+					role: "assistant",
+					tool_calls: [
+						{
+							id: "tc_1",
+							name: "propose_entity",
+							arguments: { type: "todo", data: { title: "buy milk" } },
+						},
+					],
+				},
+				{
+					role: "tool_result",
+					tool_call_id: "tc_1",
+					content: 'Accepted. Created Todo "buy milk".',
+				},
+			],
+		};
+		expect(S.decodeUnknownSync(WorkerManifest)(resume)).toEqual(resume);
+	});
+
+	it("decodes mode: fresh and a tool_result carrying is_error", () => {
+		const fresh = { ...valid, mode: "fresh" };
+		expect(S.decodeUnknownSync(WorkerManifest)(fresh)).toEqual(fresh);
+
+		const withError = {
+			...valid,
+			messages: [
+				{
+					role: "tool_result",
+					tool_call_id: "tc_9",
+					content: "boom",
+					is_error: true,
+				},
+			],
+		};
+		expect(S.decodeUnknownSync(WorkerManifest)(withError)).toEqual(withError);
+	});
+
+	it("rejects an unknown mode", () => {
+		expect(() =>
+			S.decodeUnknownSync(WorkerManifest)({ ...valid, mode: "replay" }),
+		).toThrow();
+	});
+
+	it("rejects a tool_result message missing tool_call_id", () => {
+		expect(() =>
+			S.decodeUnknownSync(WorkerManifest)({
+				...valid,
+				messages: [{ role: "tool_result", content: "x" }],
+			}),
+		).toThrow();
+	});
 });
 
 describe("ToolTextContent / AgentToolResult", () => {
