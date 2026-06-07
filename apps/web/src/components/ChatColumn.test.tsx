@@ -34,12 +34,16 @@ function makeStubRuntime(opts: {
 		postMessage: () => Effect.succeed(opts.runId),
 		threadList: () => unused,
 		threadGet: () => unused,
+		listTodos: () => unused,
 		subscribeRun: () => Stream.fromIterable(opts.events),
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
 		settingsSet: () => unused,
+		proposalGet: () => unused,
+		proposalDecide: () => unused,
+		proposalNotifications: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

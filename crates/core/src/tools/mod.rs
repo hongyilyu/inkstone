@@ -9,6 +9,7 @@
 //! Slice 2 registers exactly one tool, `read_thread`, with a stub body.
 
 mod read_thread;
+mod propose_entity;
 
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -29,6 +30,7 @@ pub struct ToolError {
 fn descriptor_for(name: &str) -> Option<CoreToolDescriptor> {
     match name {
         read_thread::NAME => Some(read_thread::descriptor()),
+        propose_entity::NAME => Some(propose_entity::descriptor()),
         _ => None,
     }
 }
@@ -47,6 +49,14 @@ pub fn is_registered(name: &str) -> bool {
     descriptor_for(name).is_some()
 }
 
+/// Whether `name` is a Proposal tool (ADR-0025). Core's Worker run loop
+/// intercepts a Proposal-tool `tool_request` BEFORE dispatch and parks the Run
+/// instead of executing it; non-Proposal tools take the synchronous
+/// dispatch-and-reply path. `propose_entity` is the only Proposal tool today.
+pub fn is_proposal(name: &str) -> bool {
+    name == propose_entity::NAME
+}
+
 /// Dispatch a `tool_request` to the named tool's `execute`. The caller has
 /// already enforced the allowlist; an unregistered name here is a defensive
 /// `unknown_tool` error.
@@ -57,6 +67,14 @@ pub async fn execute(
 ) -> Result<crate::protocol::AgentToolResult, ToolError> {
     match name {
         read_thread::NAME => read_thread::execute(pool, params).await,
+        // Proposal tools never reach dispatch — the Worker run loop parks the
+        // Run before `execute` (ADR-0025). A `propose_entity` here means the
+        // park interception was bypassed; refuse defensively rather than treat
+        // a Proposal as a synchronous tool.
+        propose_entity::NAME => Err(ToolError {
+            code: "proposal_not_executable".to_string(),
+            message: "propose_entity parks the Run; it is not dispatched".to_string(),
+        }),
         _ => Err(ToolError {
             code: "unknown_tool".to_string(),
             message: format!("no tool registered as {name:?}"),

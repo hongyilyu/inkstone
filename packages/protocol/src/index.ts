@@ -12,6 +12,34 @@ export type PostMessageResult = S.Schema.Type<typeof PostMessageResult>;
 export const SubscribeParams = S.Struct({ run_id: S.String });
 export type SubscribeParams = S.Schema.Type<typeof SubscribeParams>;
 
+/**
+ * `run/subscribe` result: the Run's `status` at the subscribe instant
+ * (ADR-0022 + ADR-0025). `running` while a live stream (hub) exists, else the
+ * persisted `runs.status` — notably `parked`, which a refreshed Client must
+ * distinguish from a terminal `completed`/`errored` so it does not treat the
+ * stopped Run Event stream as a false `done`.
+ */
+export const SubscribeResult = S.Struct({
+	run_id: S.String,
+	status: S.String,
+});
+export type SubscribeResult = S.Schema.Type<typeof SubscribeResult>;
+
+/** `run/cancel` params: the Run to cancel (ADR-0014). */
+export const RunCancelParams = S.Struct({ run_id: S.String });
+export type RunCancelParams = S.Schema.Type<typeof RunCancelParams>;
+
+/**
+ * `run/cancel` result (ADR-0014): whether Core accepted the cancel command.
+ * `accepted` — the Run was live/parked and is being cancelled; `already_terminal`
+ * — the Run had already finished before the cancel arrived; `unknown_run` — the
+ * `run_id` named no Run.
+ */
+export const RunCancelResult = S.Struct({
+	outcome: S.Literal("accepted", "already_terminal", "unknown_run"),
+});
+export type RunCancelResult = S.Schema.Type<typeof RunCancelResult>;
+
 export const ThreadCreateParams = S.Struct({ prompt: S.String });
 export type ThreadCreateParams = S.Schema.Type<typeof ThreadCreateParams>;
 
@@ -67,6 +95,114 @@ export const RunEvent = S.Union(
 	S.Struct({ kind: S.Literal("error"), message: S.String }),
 );
 export type RunEvent = S.Schema.Type<typeof RunEvent>;
+
+// --- proposal/* (ADR-0025): a Proposal is a Tool Request awaiting a human
+// Decision. When the Worker emits a `propose_entity` tool_request, Core parks
+// the Run and persists a pending Proposal. The Proposal lifecycle rides this
+// `proposal/*` channel, NOT a new RunEvent variant (the wire RunEvent enum
+// stays frozen at text_delta/tool_call/done/error).
+
+/** `proposal/get` params: the parked Run whose pending Proposal to fetch. */
+export const ProposalGetParams = S.Struct({ run_id: S.String });
+export type ProposalGetParams = S.Schema.Type<typeof ProposalGetParams>;
+
+/**
+ * `proposal/get` result: the Run's pending Proposal. `kind` is the proposed
+ * entity type (e.g. `todo`); `change_kind` is create|update|delete; `data` is
+ * the opaque proposed entity payload; `rationale` is the model's reason (may
+ * be null); `status` is the Proposal's lifecycle state.
+ */
+export const ProposalGetResult = S.Struct({
+	proposal_id: S.String,
+	run_id: S.String,
+	kind: S.String,
+	change_kind: S.String,
+	data: S.Unknown,
+	rationale: S.NullOr(S.String),
+	status: S.String,
+});
+export type ProposalGetResult = S.Schema.Type<typeof ProposalGetResult>;
+
+/**
+ * `proposal/decide` params: the user's Decision on a pending Proposal. The
+ * full `decision` enum ships now (accept|reject|edit) so reject/edit are
+ * Core-only follow-ups; `edited_payload` carries the user's edits for
+ * `edit`. `decision_idempotency_key` makes a retried decide safe — a repeat
+ * with the same key returns the prior result without re-applying.
+ */
+export const ProposalDecideParams = S.Struct({
+	proposal_id: S.String,
+	decision: S.Literal("accept", "reject", "edit"),
+	edited_payload: S.optional(S.Unknown),
+	decision_idempotency_key: S.optional(S.String),
+});
+export type ProposalDecideParams = S.Schema.Type<typeof ProposalDecideParams>;
+
+/**
+ * `proposal/decide` result: the Proposal's post-decision `status`
+ * (accepted|rejected) and, for an accept/edit that created an Entity, its
+ * `entity_id`. A reject carries no `entity_id`.
+ */
+export const ProposalDecideResult = S.Struct({
+	status: S.Literal("accepted", "rejected"),
+	entity_id: S.optional(S.String),
+});
+export type ProposalDecideResult = S.Schema.Type<typeof ProposalDecideResult>;
+
+/**
+ * `proposal/pending` Notification: pushed to a Run's subscribers the moment
+ * the Run parks (ADR-0025), so an already-attached chat surface learns to show
+ * the review card without polling. Rides the `proposal/*` channel, not a new
+ * RunEvent variant (the wire RunEvent enum stays frozen).
+ */
+export const ProposalPendingNotification = S.Struct({
+	run_id: S.String,
+	proposal_id: S.String,
+});
+export type ProposalPendingNotification = S.Schema.Type<
+	typeof ProposalPendingNotification
+>;
+
+/**
+ * `proposal/changed` Notification: pushed when a pending Proposal is decided
+ * (ADR-0025). `status` is the Proposal's post-decision lifecycle state
+ * (accepted|rejected). Best-effort on the deciding connection this slice.
+ */
+export const ProposalChangedNotification = S.Struct({
+	run_id: S.String,
+	proposal_id: S.String,
+	status: S.Literal("accepted", "rejected"),
+});
+export type ProposalChangedNotification = S.Schema.Type<
+	typeof ProposalChangedNotification
+>;
+
+// --- entity/* (ADR-0004): the accepted Entities the Library reads. Only the
+// Todo type goes live this slice (the one type the engine creates today).
+
+/**
+ * One Entity row in an `entity/list_todos` result: the raw tier-2 `entities`
+ * columns (ADR-0004). `data` is the opaque entity JSON (for a Todo,
+ * `{title, done, due?}`); `type` is the entity type (`todo`). `created_at` /
+ * `updated_at` are ms-epoch stamps. The Client maps these to its Library view
+ * model.
+ */
+export const EntityRow = S.Struct({
+	id: S.String,
+	type: S.String,
+	data: S.Unknown,
+	created_at: S.Number,
+	updated_at: S.Number,
+});
+export type EntityRow = S.Schema.Type<typeof EntityRow>;
+
+/**
+ * `entity/list_todos` result: the accepted Todos, newest-first. Object-wrapper
+ * shape (`{entities: [...]}`) so the result stays forward-extensible and the
+ * Rust mirror is a struct (mirrors `thread/list`'s `{threads: [...]}`).
+ */
+export const EntityListResult = S.Struct({ entities: S.Array(EntityRow) });
+export type EntityListResult = S.Schema.Type<typeof EntityListResult>;
 
 // --- tool protocol (ADR-0018): the Worker↔Core duplex for tool calls. The
 // Worker emits `tool_request` on its outbound stream (alongside RunEvents);
@@ -219,11 +355,36 @@ export type SettingsSetParams = S.Schema.Type<typeof SettingsSetParams>;
 // assembled conversation history, and — for OAuth providers — a short-lived
 // access token (ADR-0023). `tools` is empty until the tools slice.
 
-/** One prior message in the assembled Thread history (ADR-0018 messages[]). */
-export const ManifestMessage = S.Struct({
-	role: S.Literal("user", "assistant"),
-	text: S.String,
+/** One tool call inside an assistant manifest message (ADR-0025 resume). */
+export const ManifestToolCall = S.Struct({
+	id: S.String,
+	name: S.String,
+	arguments: S.Unknown,
 });
+export type ManifestToolCall = S.Schema.Type<typeof ManifestToolCall>;
+
+/**
+ * One prior message in the assembled Thread history (ADR-0018 messages[]),
+ * now a tagged union (ADR-0025). The fresh path emits `user{text}` and
+ * `assistant{text}` exactly as before; the resume path (slice 3 produces it)
+ * adds `assistant.tool_calls` and `tool_result` blocks so the reconstructed
+ * transcript is provider-valid (an assistant `tool_call` precedes its
+ * `tool_result`). This is a backward-compatible superset.
+ */
+export const ManifestMessage = S.Union(
+	S.Struct({ role: S.Literal("user"), text: S.String }),
+	S.Struct({
+		role: S.Literal("assistant"),
+		text: S.optional(S.String),
+		tool_calls: S.optional(S.Array(ManifestToolCall)),
+	}),
+	S.Struct({
+		role: S.Literal("tool_result"),
+		tool_call_id: S.String,
+		content: S.String,
+		is_error: S.optional(S.Boolean),
+	}),
+);
 export type ManifestMessage = S.Schema.Type<typeof ManifestMessage>;
 
 /** The Workflow definition fields the interpreter consumes (ADR-0018). */
@@ -233,14 +394,7 @@ export const WorkflowManifest = S.Struct({
 	provider: S.String,
 	model: S.String,
 	system_prompt: S.String,
-	thinking_level: S.Literal(
-		"off",
-		"minimal",
-		"low",
-		"medium",
-		"high",
-		"xhigh",
-	),
+	thinking_level: S.Literal("off", "minimal", "low", "medium", "high", "xhigh"),
 	tools: S.Array(CoreToolDescriptor),
 });
 export type WorkflowManifest = S.Schema.Type<typeof WorkflowManifest>;
@@ -250,12 +404,15 @@ export type WorkflowManifest = S.Schema.Type<typeof WorkflowManifest>;
  * current user turn; `messages` is the prior completed history (oldest
  * first, excluding the current prompt). `access_token` is present only for
  * OAuth providers (ADR-0023); absent for the `faux` test provider and any
- * env-key provider.
+ * env-key provider. `mode` selects the loop entry point (ADR-0025): `fresh`
+ * (default/absent) starts a new prompt; `resume` continues a reconstructed
+ * transcript whose last message is a `tool_result` (via `runAgentLoopContinue`).
  */
 export const WorkerManifest = S.Struct({
 	workflow: WorkflowManifest,
 	prompt: S.String,
 	messages: S.Array(ManifestMessage),
+	mode: S.optional(S.Literal("fresh", "resume")),
 	access_token: S.optional(S.String),
 });
 export type WorkerManifest = S.Schema.Type<typeof WorkerManifest>;

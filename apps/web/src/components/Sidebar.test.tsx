@@ -25,12 +25,16 @@ function makeStubRuntime() {
 				],
 			}),
 		threadGet: () => unused,
+		listTodos: () => unused,
 		subscribeRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
 		settingsSet: () => unused,
+		proposalGet: () => unused,
+		proposalDecide: () => unused,
+		proposalNotifications: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -58,12 +62,16 @@ function makeGrowingStubRuntime(opts: {
 		postMessage: () => Effect.succeed(opts.runId),
 		threadList: () => Effect.sync(() => ({ threads: [...threads] })),
 		threadGet: () => Effect.die("not exercised"),
+		listTodos: () => Effect.die("not exercised"),
 		subscribeRun: () => Stream.fromIterable(opts.events),
 		providerStatus: () => Effect.die("not exercised"),
 		providerLoginStart: () => Effect.die("not exercised"),
 		modelCatalog: () => Effect.die("not exercised"),
 		settingsGet: () => Effect.die("not exercised"),
 		settingsSet: () => Effect.die("not exercised"),
+		proposalGet: () => Effect.die("not exercised"),
+		proposalDecide: () => Effect.die("not exercised"),
+		proposalNotifications: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

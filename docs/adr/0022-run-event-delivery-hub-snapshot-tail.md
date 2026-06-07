@@ -61,3 +61,4 @@ This was chosen over a message-less `thread/create` that returns a `thread_id` u
 - [ADR-0013](./0013-worker-process-lifecycle-and-transport.md) — the Worker is per-Run and Core-owned; this ADR pins where its emitted events land (the hub) rather than on a connection.
 - [ADR-0014](./0014-client-core-wire-protocol.md) — the wire protocol this ADR amends: snapshot-then-tail replaces the two-call active-Run resume; `run/get_history` deferred.
 - [ADR-0017](./0017-tier-2-schema-slice-1.md) — the tier-2 streaming-text model (append-in-place into the `text` part, coarse events in `run_events`) that the snapshot reads from; honored unchanged.
+- [ADR-0025](./0025-proposal-park-and-resume.md) — adds a `parked` branch to `run/subscribe`: snapshot + status, no `done`, no tail, so a refreshed Client does not see a false terminal.

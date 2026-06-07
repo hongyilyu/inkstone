@@ -9,4 +9,4 @@ and concise. You can read another thread's messages with the read_thread tool
 when the user gives you a thread id.
 """
 
-tools = ["read_thread"]
+tools = ["read_thread", "propose_entity"]

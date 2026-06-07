@@ -1,10 +1,12 @@
 mod credentials;
 mod db;
 mod dispatcher;
+mod entities;
 mod hub;
 mod models;
 mod protocol;
 mod provider_auth;
+mod resume;
 mod runs;
 mod settings;
 mod tools;
@@ -46,6 +48,15 @@ async fn main() -> Result<()> {
     workflow::init()?;
 
     let pool = db::open().await?;
+
+    // Boot recovery sweep (ADR-0012): error any Run left `running`/`pending` by
+    // a prior Core crash/restart — they have no live Worker and cannot progress.
+    // PRESERVES `parked` Runs (ADR-0025): they stay decidable on this new Core.
+    let recovered = db::recover_interrupted_runs(&pool, db::now_ms()).await?;
+    if recovered > 0 {
+        println!("INKSTONE_RECOVERED {recovered} interrupted run(s) errored as core_restarted");
+    }
+
     let state = AppState {
         pool,
         hubs: hub::new_hubs(),

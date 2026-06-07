@@ -25,12 +25,16 @@ const stub = WsClient.of({
 	postMessage: die,
 	threadList: () => Effect.succeed({ threads: [] }),
 	threadGet: die,
+	listTodos: () => Effect.succeed({ entities: [] }),
 	subscribeRun: dieStream,
 	providerStatus: die,
 	providerLoginStart: die,
 	modelCatalog: die,
 	settingsGet: die,
 	settingsSet: die,
+	proposalGet: die,
+	proposalDecide: die,
+	proposalNotifications: () => Stream.empty,
 });
 
 function renderApp() {

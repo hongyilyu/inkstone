@@ -49,6 +49,14 @@ One user request handled end-to-end within a Thread. Durable, cancellable, indiv
 One LLM call and the model's response. A Turn ends when the model returns either a final answer (which ends the Run) or one or more tool calls (which trigger Core-side execution before the next Turn begins). A Run is exactly N Turns where N - 1 ended in tool calls and the last ended in a final answer.
 _Avoid_: step, iteration, exchange.
 
+**Parked**:
+A Run state: the Run is waiting on a user **Decision** for a **Proposal** before it can continue. Durable and non-terminal — Core tears the Worker down while parked and resumes the Run when the Decision arrives; a parked Run survives a Core restart.
+_Avoid_: paused, suspended, blocked, waiting.
+
+**Resume**:
+Continuing a parked Run once its Decision is in: Core spawns a fresh Worker, replays the Run's transcript from tier 2 with the Decision as the awaited tool's Tool Result, and the agent loop continues from the next Turn.
+_Avoid_: restart (that creates a new Run), retry, continue (overloaded).
+
 ### Protocol
 
 **Run Event**:
@@ -69,6 +77,10 @@ The bidirectional Worker ↔ Core channel carrying Tool Requests and Tool Result
 **Proposal**:
 A structured description of a change the Worker wants to make to the Workspace, awaiting an explicit user decision before Core applies it. Carries enough context for review (what, why, where, diff where applicable) and is applied atomically on acceptance. Submitted as a Tool Request; the Tool Result carries the user's decision (accept, reject, edit). Which operations require a Proposal vs. apply directly is a policy decision tracked elsewhere.
 _Avoid_: suggestion, draft, pending change.
+
+**Decision**:
+The user's resolution of a Proposal — **accept**, **reject**, or **edit** — carried back to the Worker as the Proposal's Tool Result. An *edit* supplies a modified payload that Core validates and applies in place of the proposed one; a *reject* is a normal (non-error) Tool Result so the Run continues conversationally.
+_Avoid_: approval (covers only accept), response, verdict.
 
 ### Storage
 

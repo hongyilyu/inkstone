@@ -157,6 +157,30 @@ function depsFor(manifest: WorkerManifest): InterpreterDeps {
 				);
 			},
 		]);
+	} else if (process.env.INKSTONE_FAUX_PROPOSE === "1") {
+		// Propose mode (e2e, ADR-0025): the fresh turn calls `propose_entity`
+		// with a Todo, which Core round-trips, persists as a pending Proposal,
+		// and PARKS (tearing this Worker down). On resume (`mode:"resume"`) Core
+		// re-spawns with the reconstructed transcript ending in the Decision
+		// tool_result; the loop continues with a short completion. The faux
+		// provider state is per-process, so the resume spawn freshly applies the
+		// resume response (mirrors propose-worker.ts at the protocol level).
+		if (manifest.mode === "resume") {
+			faux.setResponses([fauxAssistantMessage("Done — added it.")]);
+		} else {
+			faux.setResponses([
+				fauxAssistantMessage(
+					[
+						fauxToolCall("propose_entity", {
+							type: "todo",
+							data: { title: "buy milk", done: false },
+							rationale: "the user asked to remember this",
+						}),
+					],
+					{ stopReason: "toolUse" },
+				),
+			]);
+		}
 	} else if (process.env.INKSTONE_FAUX_ECHO_HISTORY === "1") {
 		// History-echo mode (multi-turn test): reply with the prior messages
 		// the loop passed in its context — both roles — so the test can prove

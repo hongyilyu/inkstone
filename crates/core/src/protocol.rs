@@ -42,11 +42,106 @@ pub struct SubscribeParams {
     pub run_id: String,
 }
 
+/// `run/subscribe` result (ADR-0022 + ADR-0025): the Run's `status` at the
+/// subscribe instant. `running` while a live stream (hub) exists, else the
+/// persisted `runs.status` — notably `parked`, which a refreshed Client must
+/// distinguish from a terminal state so it does not treat the stopped Run
+/// Event stream as a false `done`. Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct SubscribeResult {
+    pub run_id: String,
+    pub status: String,
+}
+
+/// `run/cancel` params (ADR-0014): the Run to cancel. Deserialize-only.
+#[derive(Debug, Deserialize)]
+pub struct RunCancelParams {
+    pub run_id: String,
+}
+
+/// `run/cancel` result (ADR-0014): whether Core accepted the cancel command.
+/// `accepted` — the Run was live/parked and is being cancelled;
+/// `already_terminal` — the Run had already finished before the cancel arrived;
+/// `unknown_run` — the `run_id` named no Run. Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct RunCancelResult {
+    pub outcome: String,
+}
+
+/// `proposal/get` params (ADR-0025): the parked Run whose pending Proposal to
+/// fetch. Deserialize-only.
+#[derive(Debug, Deserialize)]
+pub struct ProposalGetParams {
+    pub run_id: String,
+}
+
+/// `proposal/get` result (ADR-0025): the Run's pending Proposal. `kind` is the
+/// proposed entity type (e.g. `todo`); `change_kind` is create|update|delete;
+/// `data` is the opaque proposed entity payload; `rationale` is the model's
+/// reason (may be `null`); `status` is the Proposal's lifecycle state.
+/// Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct ProposalGetResult {
+    pub proposal_id: String,
+    pub run_id: String,
+    pub kind: String,
+    pub change_kind: String,
+    pub data: serde_json::Value,
+    pub rationale: Option<String>,
+    pub status: String,
+}
+
+/// `proposal/decide` params (ADR-0025): the user's Decision on a pending
+/// Proposal. `decision` ships the full enum now (accept|reject|edit) so
+/// reject/edit are Core-only follow-up slices; `edited_payload` carries the
+/// user's edits for `edit`. `decision_idempotency_key` makes a retried decide
+/// safe (ADR-0014 retry-safety): a repeat with the same key returns the prior
+/// result without re-applying. Deserialize-only — Core consumes it.
+#[derive(Debug, Deserialize)]
+pub struct ProposalDecideParams {
+    pub proposal_id: String,
+    pub decision: String,
+    #[serde(default)]
+    #[allow(dead_code)] // consumed by `edit` (slice 5); accept ignores it
+    pub edited_payload: Option<serde_json::Value>,
+    #[serde(default)]
+    pub decision_idempotency_key: Option<String>,
+}
+
+/// `proposal/decide` result (ADR-0025): the Proposal's post-decision `status`
+/// (`accepted`|`rejected`) and, for an accept/edit that created an Entity, its
+/// `entity_id` (omitted on the wire for a reject). Serialize-only — Core
+/// produces it.
+#[derive(Debug, Serialize)]
+pub struct ProposalDecideResult {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+}
+
+/// `proposal/pending` Notification params (ADR-0025): pushed to a Run's
+/// subscribers the moment it parks so an attached chat surface shows the
+/// review card without polling. Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct ProposalPendingNotification {
+    pub run_id: String,
+    pub proposal_id: String,
+}
+
+/// `proposal/changed` Notification params (ADR-0025): pushed when a pending
+/// Proposal is decided. `status` is the post-decision lifecycle state
+/// (`accepted`|`rejected`). Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct ProposalChangedNotification {
+    pub run_id: String,
+    pub proposal_id: String,
+    pub status: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PostMessageResult {
     pub run_id: String,
 }
-
 /// `thread/create` params: the first user message. Message-first thread
 /// creation (ADR-0022) — a Thread is born only with its first message, so
 /// `prompt` is required. An empty/whitespace prompt is rejected with
@@ -84,6 +179,29 @@ pub struct ThreadSummary {
 #[derive(Debug, Serialize)]
 pub struct ThreadListResult {
     pub threads: Vec<ThreadSummary>,
+}
+
+/// One Entity row in an `entity/list_todos` result (ADR-0004): the raw tier-2
+/// `entities` columns. `r#type` serializes as `"type"`; `data` is the opaque
+/// entity JSON (for a Todo, `{title, done, due?}`); `created_at`/`updated_at`
+/// are ms-epoch stamps. Serialize-only — Core produces it. Mirrors the TS
+/// `EntityRow`.
+#[derive(Debug, Serialize)]
+pub struct EntityRow {
+    pub id: String,
+    pub r#type: String,
+    pub data: serde_json::Value,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// `entity/list_todos` result: the accepted Todos, newest-first. Object-wrapper
+/// shape (`{entities: [...]}`) so the result stays forward-extensible and the
+/// TS mirror is a `Schema.Struct` (mirrors `thread/list`'s `{threads: [...]}`).
+/// Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct EntityListResult {
+    pub entities: Vec<EntityRow>,
 }
 
 /// `thread/get` params: the Thread to rehydrate. A malformed `thread_id` is
@@ -336,14 +454,46 @@ pub struct SettingsSetParams {
     pub effort: Option<String>,
 }
 
-/// One prior message in the assembled Thread history shipped in the spawn
-/// manifest (ADR-0018 as-built `messages[]`). `role` is `"user"` or
-/// `"assistant"`; `text` is the Message's assembled text. Serialize-only —
-/// Core produces these, the Worker consumes them.
+/// One tool call inside an assistant manifest message (ADR-0025 resume).
+/// Mirrors the TS `ManifestToolCall`. Produced by the resume reconstruction
+/// (slice 3); not yet built here.
 #[derive(Debug, Serialize)]
-pub struct ManifestMessage<'a> {
-    pub role: &'a str,
-    pub text: &'a str,
+#[allow(dead_code)]
+pub struct ManifestToolCall<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+    pub arguments: serde_json::Value,
+}
+
+/// One prior message in the assembled Thread history shipped in the spawn
+/// manifest (ADR-0018 as-built `messages[]`), now a tagged union (ADR-0025).
+/// The fresh path emits `User{text}` / `Assistant{text}` exactly as before;
+/// the resume path (slice 3) adds `assistant.tool_calls` and `ToolResult`
+/// blocks so the reconstructed transcript is provider-valid. Tagged on
+/// `role`, snake_case; a backward-compatible superset of the slice-1 shape.
+/// Serialize-only — Core produces these, the Worker consumes them. The
+/// `Assistant.tool_calls` and `ToolResult` variants are produced in slice 3;
+/// marked `#[allow(dead_code)]` until then.
+#[derive(Debug, Serialize)]
+#[serde(tag = "role", rename_all = "snake_case")]
+pub enum ManifestMessage<'a> {
+    User {
+        text: &'a str,
+    },
+    Assistant {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        text: Option<&'a str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[allow(dead_code)]
+        tool_calls: Option<Vec<ManifestToolCall<'a>>>,
+    },
+    #[allow(dead_code)]
+    ToolResult {
+        tool_call_id: &'a str,
+        content: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
 }
 
 /// The Workflow fields shipped in the manifest (ADR-0018). Mirrors the TS
@@ -363,15 +513,20 @@ pub struct WorkflowManifest<'a> {
 
 /// The full spawn manifest written to the Worker's stdin (ADR-0018 as-built,
 /// ADR-0013 stdin transport). Replaces the slice-1 `WorkerInbound{prompt}`.
-/// `messages` is the assembled prior history (empty in slice 4; populated in
-/// slice 5). `access_token` is `Some` only for OAuth providers (ADR-0023);
-/// `None` (and skipped on the wire) for the faux/env providers. Mirrors the
-/// TS `WorkerManifest`.
+/// `messages` is the assembled prior history. `mode` selects the loop entry
+/// point (ADR-0025): `"fresh"` (default; omitted on the wire when the fresh
+/// path) starts a new prompt; `"resume"` continues a reconstructed transcript
+/// (slice 3 produces it). `access_token` is `Some` only for OAuth providers
+/// (ADR-0023); `None` (and skipped on the wire) for the faux/env providers.
+/// Mirrors the TS `WorkerManifest`.
 #[derive(Debug, Serialize)]
 pub struct WorkerManifest<'a> {
     pub workflow: WorkflowManifest<'a>,
     pub prompt: &'a str,
     pub messages: Vec<ManifestMessage<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[allow(dead_code)]
+    pub mode: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub access_token: Option<&'a str>,
 }
@@ -410,6 +565,166 @@ mod mirror_tests {
         let wire = json!({ "run_id": UUID_A });
         let p: SubscribeParams = serde_json::from_value(wire).unwrap();
         assert_eq!(p.run_id, UUID_A);
+    }
+
+    #[test]
+    fn subscribe_result_encodes_run_id_and_status() {
+        let r = SubscribeResult {
+            run_id: UUID_A.to_string(),
+            status: "parked".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({ "run_id": UUID_A, "status": "parked" }),
+        );
+    }
+
+    #[test]
+    fn run_cancel_params_decodes_run_id() {
+        let wire = json!({ "run_id": UUID_A });
+        let p: RunCancelParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.run_id, UUID_A);
+    }
+
+    #[test]
+    fn run_cancel_result_encodes_outcome() {
+        for outcome in ["accepted", "already_terminal", "unknown_run"] {
+            let r = RunCancelResult {
+                outcome: outcome.to_string(),
+            };
+            assert_eq!(
+                serde_json::to_value(&r).unwrap(),
+                json!({ "outcome": outcome }),
+            );
+        }
+    }
+
+    #[test]
+    fn proposal_get_params_decodes_run_id() {
+        let wire = json!({ "run_id": UUID_A });
+        let p: ProposalGetParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.run_id, UUID_A);
+    }
+
+    #[test]
+    fn proposal_get_result_encodes_full_shape() {
+        let r = ProposalGetResult {
+            proposal_id: UUID_B.to_string(),
+            run_id: UUID_A.to_string(),
+            kind: "todo".to_string(),
+            change_kind: "create".to_string(),
+            data: json!({ "title": "buy milk", "done": false }),
+            rationale: Some("because".to_string()),
+            status: "pending".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({
+                "proposal_id": UUID_B,
+                "run_id": UUID_A,
+                "kind": "todo",
+                "change_kind": "create",
+                "data": { "title": "buy milk", "done": false },
+                "rationale": "because",
+                "status": "pending"
+            }),
+        );
+    }
+
+    #[test]
+    fn proposal_get_result_encodes_null_rationale() {
+        let r = ProposalGetResult {
+            proposal_id: UUID_B.to_string(),
+            run_id: UUID_A.to_string(),
+            kind: "todo".to_string(),
+            change_kind: "create".to_string(),
+            data: json!({}),
+            rationale: None,
+            status: "pending".to_string(),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["rationale"], json!(null));
+    }
+
+    #[test]
+    fn proposal_decide_params_decodes_accept_with_key() {
+        let wire = json!({
+            "proposal_id": UUID_B,
+            "decision": "accept",
+            "decision_idempotency_key": "k1"
+        });
+        let p: ProposalDecideParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.proposal_id, UUID_B);
+        assert_eq!(p.decision, "accept");
+        assert_eq!(p.decision_idempotency_key.as_deref(), Some("k1"));
+        assert!(p.edited_payload.is_none());
+    }
+
+    #[test]
+    fn proposal_decide_params_decodes_bare_accept_and_edit() {
+        let bare: ProposalDecideParams =
+            serde_json::from_value(json!({ "proposal_id": UUID_B, "decision": "accept" })).unwrap();
+        assert_eq!(bare.decision_idempotency_key, None);
+        assert!(bare.edited_payload.is_none());
+
+        let edit: ProposalDecideParams = serde_json::from_value(json!({
+            "proposal_id": UUID_B,
+            "decision": "edit",
+            "edited_payload": { "title": "buy oat milk" }
+        }))
+        .unwrap();
+        assert_eq!(edit.decision, "edit");
+        assert_eq!(edit.edited_payload.unwrap()["title"], json!("buy oat milk"));
+    }
+
+    #[test]
+    fn proposal_decide_result_encodes_accepted_with_entity_id() {
+        let r = ProposalDecideResult {
+            status: "accepted".to_string(),
+            entity_id: Some(UUID_A.to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({ "status": "accepted", "entity_id": UUID_A }),
+        );
+    }
+
+    #[test]
+    fn proposal_decide_result_omits_entity_id_when_none() {
+        let r = ProposalDecideResult {
+            status: "rejected".to_string(),
+            entity_id: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v, json!({ "status": "rejected" }));
+        assert!(v.get("entity_id").is_none());
+    }
+
+    #[test]
+    fn proposal_pending_notification_encodes_run_id_and_proposal_id() {
+        let n = ProposalPendingNotification {
+            run_id: UUID_A.to_string(),
+            proposal_id: UUID_B.to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&n).unwrap(),
+            json!({ "run_id": UUID_A, "proposal_id": UUID_B }),
+        );
+    }
+
+    #[test]
+    fn proposal_changed_notification_encodes_full_shape() {
+        for status in ["accepted", "rejected"] {
+            let n = ProposalChangedNotification {
+                run_id: UUID_A.to_string(),
+                proposal_id: UUID_B.to_string(),
+                status: status.to_string(),
+            };
+            assert_eq!(
+                serde_json::to_value(&n).unwrap(),
+                json!({ "run_id": UUID_A, "proposal_id": UUID_B, "status": status }),
+            );
+        }
     }
 
     #[test]
@@ -612,9 +927,13 @@ mod mirror_tests {
             },
             prompt: "now",
             messages: vec![
-                ManifestMessage { role: "user", text: "earlier q" },
-                ManifestMessage { role: "assistant", text: "earlier a" },
+                ManifestMessage::User { text: "earlier q" },
+                ManifestMessage::Assistant {
+                    text: Some("earlier a"),
+                    tool_calls: None,
+                },
             ],
+            mode: None,
             access_token: Some("tok_abc"),
         };
         assert_eq!(
@@ -658,6 +977,7 @@ mod mirror_tests {
             },
             prompt: "now",
             messages: vec![],
+            mode: None,
             access_token: None,
         };
         let v = serde_json::to_value(&manifest).unwrap();
@@ -667,11 +987,77 @@ mod mirror_tests {
             v.get("access_token").is_none(),
             "access_token must be omitted when None, got {v}"
         );
+        // `mode` is likewise skipped when None (fresh path); the Worker treats
+        // absent as `fresh` (ADR-0025).
+        assert!(
+            v.get("mode").is_none(),
+            "mode must be omitted when None, got {v}"
+        );
         assert_eq!(v["workflow"]["tools"], json!([]));
         assert_eq!(v["messages"], json!([]));
     }
 
     // --- Tool Protocol (ADR-0018): the duplex frames mirror the TS shapes. ---
+
+    #[test]
+    fn worker_manifest_encodes_resume_transcript_with_typed_blocks() {
+        // The EXACT resume transcript slice 3 reconstructs (ADR-0025): a user
+        // turn, an assistant `tool_call`, and the awaited `tool_result`. The
+        // assistant carries no text. Mirrors the TS resume shape test.
+        let manifest = WorkerManifest {
+            workflow: WorkflowManifest {
+                name: "default",
+                version: "1.0.0",
+                provider: "faux",
+                model: "faux-1",
+                system_prompt: "hi",
+                thinking_level: "off",
+                tools: vec![],
+            },
+            prompt: "",
+            messages: vec![
+                ManifestMessage::User {
+                    text: "remember to buy milk",
+                },
+                ManifestMessage::Assistant {
+                    text: None,
+                    tool_calls: Some(vec![ManifestToolCall {
+                        id: "tc_1",
+                        name: "propose_entity",
+                        arguments: json!({ "type": "todo", "data": { "title": "buy milk" } }),
+                    }]),
+                },
+                ManifestMessage::ToolResult {
+                    tool_call_id: "tc_1",
+                    content: "Accepted. Created Todo \"buy milk\".",
+                    is_error: None,
+                },
+            ],
+            mode: Some("resume"),
+            access_token: None,
+        };
+        let v = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(v["mode"], json!("resume"));
+        assert_eq!(
+            v["messages"],
+            json!([
+                { "role": "user", "text": "remember to buy milk" },
+                {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "tc_1",
+                        "name": "propose_entity",
+                        "arguments": { "type": "todo", "data": { "title": "buy milk" } }
+                    }]
+                },
+                {
+                    "role": "tool_result",
+                    "tool_call_id": "tc_1",
+                    "content": "Accepted. Created Todo \"buy milk\"."
+                }
+            ]),
+        );
+    }
 
     #[test]
     fn core_tool_descriptor_encodes_snake_case_with_schema() {

@@ -8,7 +8,7 @@ import { expect, type Page } from "@playwright/test";
  */
 export class ChatPage {
 	constructor(
-		private readonly page: Page,
+		readonly page: Page,
 		private readonly baseUrl: string,
 	) {}
 
@@ -44,6 +44,11 @@ export class ChatPage {
 	/** User message bubbles (in DOM order). */
 	userBubbles() {
 		return this.page.locator('[data-role="user"]');
+	}
+
+	/** The interactive proposal review card (slice 9). */
+	proposalCard() {
+		return this.page.locator("[data-proposal]");
 	}
 
 	/** Wait until some assistant bubble contains `expected` (substring/regex). */

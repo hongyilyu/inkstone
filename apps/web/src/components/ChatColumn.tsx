@@ -1,14 +1,15 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { RotateCcw } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRuntime } from "@/runtime";
-import { send, sendNewThread } from "@/store/bridge";
+import { send, sendNewThread, startProposalStream } from "@/store/bridge";
 import {
 	type Message,
 	useFocusedThreadId,
 	useThreadMessages,
 } from "@/store/chat";
 import { useHydrateFocusedThread } from "@/store/hydrate";
+import { AssistantProposals } from "./AssistantProposals.js";
 import { ChatMarkdown } from "./ChatMarkdown.js";
 import { ComposeFooter } from "./ComposeFooter.js";
 import { CopyButton } from "./CopyButton.js";
@@ -26,6 +27,13 @@ export function ChatColumn() {
 	// resubscribe-if-streaming. Locally-originated threads are pre-marked so this
 	// is a no-op for them (no double-load / double-resubscribe).
 	useHydrateFocusedThread(runtime, focusedThreadId);
+
+	// Consume the global proposal/* stream once for the chat surface: a parked
+	// Run pushes proposal/pending → the bridge fetches + attaches the Proposal,
+	// which the assistant turn's review card reads (ADR-0025). Idempotent.
+	useEffect(() => {
+		startProposalStream(runtime);
+	}, [runtime]);
 
 	useLayoutEffect(() => {
 		const el = scrollerRef.current;
@@ -166,6 +174,7 @@ function AssistantBubble({
 					)}
 				</div>
 			)}
+			{message.run_id !== "" && <AssistantProposals runId={message.run_id} />}
 		</li>
 	);
 }

@@ -8,8 +8,11 @@
 //! [`crate::hub`].
 
 mod post_message;
+mod proposal;
+mod cancel;
 mod provider;
 mod catalog;
+mod entity;
 mod reply;
 mod settings;
 mod subscribe;
@@ -48,6 +51,18 @@ pub async fn dispatch(
             };
             subscribe::handle(pool, hubs, req.id, params, out_tx).await;
         }
+        "run/cancel" => {
+            let id = req.id.clone();
+            let Ok(params) = serde_json::from_value::<crate::protocol::RunCancelParams>(req.params)
+            else {
+                // Don't leave the client hanging on malformed params — reply
+                // with invalid_params, matching the other input-validating
+                // handlers.
+                reply::send_invalid_params(out_tx, id, "invalid run/cancel params".to_string());
+                return;
+            };
+            cancel::handle_cancel(pool, req.id, params, out_tx).await;
+        }
         "thread/create" => {
             let Ok(params) = serde_json::from_value::<ThreadCreateParams>(req.params) else {
                 return;
@@ -64,6 +79,36 @@ pub async fn dispatch(
                 return;
             };
             thread_get::handle(pool, req.id, params, out_tx).await;
+        }
+        "entity/list_todos" => {
+            // Read-only, no params (ADR-0022 read path) — skip param
+            // deserialization entirely.
+            entity::handle_list_todos(pool, req.id, out_tx).await;
+        }
+        "proposal/get" => {
+            let Ok(params) =
+                serde_json::from_value::<crate::protocol::ProposalGetParams>(req.params)
+            else {
+                return;
+            };
+            proposal::handle_get(pool, req.id, params, out_tx).await;
+        }
+        "proposal/decide" => {
+            let id = req.id.clone();
+            let Ok(params) =
+                serde_json::from_value::<crate::protocol::ProposalDecideParams>(req.params)
+            else {
+                // Don't leave the client hanging on malformed params — reply
+                // with invalid_params, matching the other input-validating
+                // handlers (review m2).
+                reply::send_invalid_params(
+                    out_tx,
+                    id,
+                    "invalid proposal/decide params".to_string(),
+                );
+                return;
+            };
+            proposal::handle_decide(pool, hubs, req.id, params, out_tx).await;
         }
         "provider/status" => {
             // Read-only, no params — the credential store is the only input.

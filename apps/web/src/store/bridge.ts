@@ -5,10 +5,14 @@ import {
 	appendUserMessage,
 	attachRun,
 	applyEvent,
+	getChatState,
 	markMessageIncomplete,
 	nextMessageId,
+	resetSnapshot,
 	seedAssistantMessage,
 	setFocusedThread,
+	setPendingProposal,
+	setProposalStatus,
 } from "./chat.js";
 import { markThreadHydrated } from "./hydration-set.js";
 
@@ -25,9 +29,13 @@ import { markThreadHydrated } from "./hydration-set.js";
  */
 const fibers = new Map<RunId, Fiber.RuntimeFiber<void, WsError>>();
 
+/** The global proposal-notification stream fiber, if started. */
+let proposalFiber: Fiber.RuntimeFiber<void> | undefined;
+
 /** Clear retained fibers — for test isolation (runtime disposal interrupts them). */
 export function resetBridge(): void {
 	fibers.clear();
+	proposalFiber = undefined;
 }
 
 /**
@@ -181,4 +189,127 @@ export async function awaitRun(
 		return;
 	}
 	await runtime.runPromise(Fiber.join(fiber));
+}
+
+// --- proposals (ADR-0025) ---------------------------------------------------
+
+/**
+ * Fork the global `proposalNotifications()` stream and drive each notification
+ * into the store. On `pending` → fetch the Proposal (`proposal/get`) and attach
+ * it to its parked Run keyed by `run_id`; on `changed` → update its review
+ * status. Started ONCE for the chat surface (idempotent — a second call while a
+ * fiber is live is a no-op).
+ */
+export function startProposalStream(runtime: WsRuntime): void {
+	if (proposalFiber !== undefined) {
+		return;
+	}
+	const program = Effect.gen(function* () {
+		const client = yield* WsClient;
+		yield* Stream.runForEach(client.proposalNotifications(), (n) =>
+			Effect.gen(function* () {
+				if (n.kind === "pending") {
+					const p = yield* client.proposalGet(n.run_id);
+					setPendingProposal({
+						proposal_id: p.proposal_id,
+						run_id: p.run_id,
+						kind: p.kind,
+						change_kind: p.change_kind,
+						data: p.data,
+						rationale: p.rationale,
+						status: "pending",
+					});
+				} else {
+					setProposalStatus(n.run_id, n.status);
+				}
+				// A `proposal/get` failure (rare; the Run un-parked between the
+				// notification and the fetch) must not tear down the whole stream.
+			}).pipe(Effect.catchAll(() => Effect.void)),
+		);
+	}).pipe(Effect.ensuring(Effect.sync(() => (proposalFiber = undefined))));
+
+	proposalFiber = runtime.runFork(program);
+}
+
+/**
+ * Decide a parked Run's Proposal (accept/reject/edit) and resume the Run. Flips
+ * the card to `deciding`, calls `proposal/decide`, then on success sets the
+ * decided status AND re-subscribes to the Run so the resume tail (parked →
+ * running → completed, ADR-0022 snapshot-then-tail) streams into the assistant
+ * bubble. A failed decide flips the card to `error` so the user can retry.
+ *
+ * An `edit` carries the user's `editedPayload` (the Todo `data`); Core
+ * re-validates it and applies-in-one-step (ADR-0025), so the resume tail
+ * behaves exactly like an accept. A decide already in flight short-circuits (no
+ * double-submit); the stale parked stream fiber is interrupted before
+ * re-subscribing so the resume tail has a single consumer.
+ */
+export async function decideProposal(
+	runtime: WsRuntime,
+	runId: RunId,
+	decision: "accept" | "reject" | "edit",
+	editedPayload?: unknown,
+): Promise<void> {
+	const proposal = getChatState().proposals[runId];
+	if (proposal === undefined) {
+		return;
+	}
+	// Double-submit guard (M1): a decide is already in flight. Returning here
+	// stops a fast double-click from firing a second `proposal/decide` that
+	// races behind the first — the Run un-parks after the first decide, so the
+	// second hits Core as `proposal_not_pending` and its catch would stomp an
+	// accept that actually succeeded with a spurious `error`. Retry from
+	// `error` is still allowed (only `deciding` short-circuits).
+	if (proposal.status === "deciding") {
+		return;
+	}
+	setProposalStatus(runId, "deciding");
+
+	const program = Effect.gen(function* () {
+		const client = yield* WsClient;
+		return yield* client.proposalDecide({
+			proposal_id: proposal.proposal_id,
+			decision,
+			...(decision === "edit" ? { edited_payload: editedPayload } : {}),
+		});
+	});
+
+	try {
+		const result = await runtime.runPromise(program);
+		setProposalStatus(runId, result.status);
+		// Re-subscribe to catch the resume tail. The thread that holds this run's
+		// assistant turn drives the subscribe; find it by run id.
+		const threadId = findThreadForRun(runId);
+		if (threadId !== undefined) {
+			// Stale-fiber guard (M2): a parked Run's forwarder closes with NO
+			// terminal event, so the original `subscribeRun` fiber (bounded by
+			// `takeUntil(done|error)`) never completed and is still blocked on
+			// the per-run queue. Interrupt it BEFORE re-subscribing so exactly
+			// one consumer drains the resume tail — two consumers would split a
+			// multi-chunk continuation between them and corrupt the text.
+			interruptRun(runtime, runId);
+			// Reset the snapshot bit (review M1): the original parked subscribe
+			// already marked `snapshotApplied[runId] = true` on its initial
+			// (possibly empty) snapshot delta. The resume's FIRST `text_delta` is
+			// again the cumulative snapshot (it re-includes any pre-park prose);
+			// without this reset it would be APPENDed onto the on-screen text and
+			// duplicate the prefix. Clearing the bit makes it SET the
+			// authoritative cumulative text instead.
+			resetSnapshot(threadId, runId);
+			startRunStream(runtime, threadId, runId);
+		}
+	} catch {
+		setProposalStatus(runId, "error");
+	}
+}
+
+/** The thread holding an assistant message for `runId`, if any. */
+function findThreadForRun(runId: RunId): string | undefined {
+	const { threads } = getChatState();
+	for (const [threadId, thread] of Object.entries(threads)) {
+		if (thread.messages.some((m) => m.run_id === runId)) {
+			return threadId;
+		}
+	}
+	return undefined;
 }

@@ -168,6 +168,375 @@ where
     .map(|_| ())
 }
 
+/// Boot recovery sweep (ADR-0012): error every Run interrupted mid-flight by a
+/// Core crash/restart — `status IN ('running','pending')` — stamping
+/// `terminal_reason='core_restarted'` + the error fields + `ended_at`. ONE
+/// statement. Explicitly EXCLUDES `parked` (decidable, durable per ADR-0025)
+/// and the terminal states (`completed`/`errored`/`cancelled`). Returns the
+/// affected row count so the caller can log how many Runs were recovered.
+pub(super) async fn recover_interrupted_runs<'e, E>(
+    executor: E,
+    error_message: &str,
+    ended_at: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE runs SET status = 'errored', terminal_reason = 'core_restarted', \
+         error_code = 'core_restarted', error_message = ?, ended_at = ? \
+         WHERE status IN ('running','pending')",
+    )
+    .bind(error_message)
+    .bind(ended_at)
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+/// Companion to [`recover_interrupted_runs`] (ADR-0017 invariant): flip every
+/// `streaming` Message whose Run was just swept (i.e. is now `errored` with
+/// `terminal_reason='core_restarted'`) to `incomplete`, so no Message dangles
+/// at `streaming` after its Run terminates. Runs in the same boot tx as the
+/// sweep. Scoped to the swept set via the run join — leaves `parked` Runs'
+/// Messages untouched.
+pub(super) async fn mark_recovered_streaming_messages_incomplete<'e, E>(
+    executor: E,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE messages SET status = 'incomplete', updated_at = ? \
+         WHERE status = 'streaming' AND run_id IN \
+         (SELECT id FROM runs WHERE status = 'errored' AND terminal_reason = 'core_restarted')",
+    )
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Park a Run (ADR-0025): set `status='parked'` and record the waitpoint in
+/// `awaiting_tool_call_id`. Park is a non-terminal state — no `ended_at`,
+/// `terminal_reason`, or error fields. `awaiting_tool_call_id` references the
+/// `tool_calls` row of the Proposal's tool call.
+pub(super) async fn mark_run_parked<'e, E>(
+    executor: E,
+    run_id: Uuid,
+    awaiting_tool_call_id: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE runs SET status = 'parked', awaiting_tool_call_id = ? WHERE id = ?",
+    )
+    .bind(awaiting_tool_call_id)
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Read a Run's `status` by id (ADR-0025). `None` when the Run does not exist.
+/// Backs `run/subscribe`'s parked branch: with no live hub, the persisted
+/// status decides whether to emit a terminal `done` or report `parked`.
+pub(super) async fn run_status<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await
+}
+
+/// Load a Proposal by id for `proposal/decide` (ADR-0025): its lifecycle
+/// columns, the owning Run, the proposed payload (from the tool call's
+/// `request_payload`), and the recorded `decision_idempotency_key`. `None`
+/// when no Proposal with that id exists. Returns `(run_id, tool_call_id, kind,
+/// change_kind, status, request_payload, decision_idempotency_key)`.
+#[allow(clippy::type_complexity)]
+pub(super) async fn proposal_by_id<'e, E>(
+    executor: E,
+    proposal_id: &str,
+) -> sqlx::Result<Option<(String, String, String, String, String, String, Option<String>)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT tc.run_id, p.tool_call_id, p.kind, p.change_kind, p.status, \
+                tc.request_payload, p.decision_idempotency_key \
+         FROM proposals p \
+         JOIN tool_calls tc ON tc.id = p.tool_call_id \
+         WHERE p.id = ?1",
+    )
+    .bind(proposal_id)
+    .fetch_optional(executor)
+    .await
+}
+
+/// The Entity created by a Proposal, for idempotent decide (ADR-0025): a
+/// repeated `proposal/decide` with the same `decision_idempotency_key` returns
+/// the already-created `entities.id` rather than applying again. `None` when
+/// no Entity was created via this Proposal.
+pub(super) async fn entity_id_for_proposal<'e, E>(
+    executor: E,
+    proposal_id: &str,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT id FROM entities WHERE created_via_proposal_id = ?1 LIMIT 1")
+        .bind(proposal_id)
+        .fetch_optional(executor)
+        .await
+}
+
+/// Accept a Proposal (ADR-0016 single atomic apply, ADR-0025): flip the
+/// `proposals` row to `accepted`, stamp `decided_by='user'` + `decided_at` +
+/// `applied_at` + `decision_idempotency_key`, and record the `edited_payload`
+/// (NULL for an unedited accept). Runs inside the caller's apply transaction.
+///
+/// SELF-GUARDING (review M1): the `WHERE … AND status = 'pending'` clause makes
+/// this the single concurrency choke — two concurrent decides (with or WITHOUT
+/// an idempotency key) race here, and exactly one matches a still-pending row.
+/// Returns the affected row count so the caller can assert `== 1` inside the
+/// apply tx and roll back the loser (it returns `proposal_not_pending`), so the
+/// Proposal can never be applied twice.
+pub(super) async fn mark_proposal_accepted<'e, E>(
+    executor: E,
+    proposal_id: &str,
+    edited_payload: Option<&str>,
+    decision_idempotency_key: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE proposals SET status = 'accepted', decided_by = 'user', \
+         decided_at = ?, applied_at = ?, edited_payload = ?, \
+         decision_idempotency_key = ? WHERE id = ? AND status = 'pending'",
+    )
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(edited_payload)
+    .bind(decision_idempotency_key)
+    .bind(proposal_id)
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+/// Reject a Proposal (ADR-0025): flip the `proposals` row to `rejected`, stamp
+/// `decided_by='user'` + `decided_at`. Runs inside the caller's reject
+/// transaction. NO `applied_at`/`edited_payload` — reject applies nothing.
+///
+/// SELF-GUARDING (review M1, mirrors [`mark_proposal_accepted`]): the
+/// `WHERE … AND status = 'pending'` clause is the single concurrency choke.
+/// Returns the affected row count so the caller asserts `== 1` inside the tx
+/// and rolls back the loser (it returns `proposal_not_pending`), so the
+/// Proposal can never be decided twice.
+pub(super) async fn mark_proposal_rejected<'e, E>(
+    executor: E,
+    proposal_id: &str,
+    decision_idempotency_key: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE proposals SET status = 'rejected', decided_by = 'user', \
+         decided_at = ?, decision_idempotency_key = ? \
+         WHERE id = ? AND status = 'pending'",
+    )
+    .bind(now_ms)
+    .bind(decision_idempotency_key)
+    .bind(proposal_id)
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+// ─── entities + entity_revisions (ADR-0004) ───────────────────────────
+
+/// Read every accepted Todo for `entity/list_todos` (slice 11), newest-first.
+/// Returns the raw `entities` columns `(id, type, data, created_at, updated_at)`
+/// for `type='todo'` rows; the handler parses `data` and maps each to the wire
+/// `EntityRow`. Read-only — no FK/transaction concerns.
+pub(super) async fn list_todos<'e, E>(
+    executor: E,
+) -> sqlx::Result<Vec<(String, String, String, i64, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, type, data, created_at, updated_at \
+         FROM entities WHERE type = 'todo' ORDER BY created_at DESC",
+    )
+    .fetch_all(executor)
+    .await
+}
+
+/// Insert a freshly-created Entity (ADR-0004): `created_by='proposal'` with the
+/// originating `created_via_proposal_id`. `data` is the validated JSON snapshot;
+/// `schema_version` stamps the type's current shape. Runs inside the apply tx.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn insert_entity<'e, E>(
+    executor: E,
+    id: &str,
+    entity_type: &str,
+    schema_version: i64,
+    data: &str,
+    created_via_proposal_id: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO entities \
+         (id, type, schema_version, data, created_by, created_via_proposal_id, \
+          created_at, updated_at) \
+         VALUES (?, ?, ?, ?, 'proposal', ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(entity_type)
+    .bind(schema_version)
+    .bind(data)
+    .bind(created_via_proposal_id)
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Insert an Entity's revision (ADR-0004). A freshly-created Entity gets
+/// `seq=1` carrying the same `data` + the originating `proposal_id`. Runs
+/// inside the apply tx.
+pub(super) async fn insert_entity_revision<'e, E>(
+    executor: E,
+    entity_id: &str,
+    seq: i64,
+    data: &str,
+    proposal_id: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(entity_id)
+    .bind(seq)
+    .bind(data)
+    .bind(proposal_id)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Flip a parked Run back to `running` on resume (ADR-0025): clear the
+/// `awaiting_tool_call_id` waitpoint. The reverse of [`mark_run_parked`]; the
+/// Run goes parked→running before its resume Worker spawns.
+///
+/// SELF-GUARDING (review M2, mirrors [`mark_proposal_accepted`] /
+/// [`mark_parked_run_cancelled`]): the `WHERE … AND status = 'parked'` clause
+/// makes this the single concurrency choke for resume. Two concurrent resume
+/// attempts (a keyed idempotent retry racing a keyless one, or a decide racing
+/// `recover_resume_if_parked`) both read `parked`, but only one flip matches a
+/// still-parked row. Returns the affected row count so the caller asserts
+/// `== 1` and BAILS on 0 (another resume already won) rather than spawning a
+/// second resume Worker.
+pub(super) async fn mark_run_running<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE runs SET status = 'running', awaiting_tool_call_id = NULL \
+         WHERE id = ? AND status = 'parked'",
+    )
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+/// Cancel a parked Run (ADR-0014, slice 6): flip `runs` to `cancelled` with
+/// `terminal_reason='cancelled'` + `ended_at`. SELF-GUARDING on
+/// `status='parked'` (mirrors the slice 3/4 guarded flips): if the Run is no
+/// longer parked this affects 0 rows and the caller's tx rolls back. Returns
+/// the affected row count so the caller asserts `== 1`.
+pub(super) async fn mark_parked_run_cancelled<'e, E>(
+    executor: E,
+    run_id: Uuid,
+    ended_at: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE runs SET status = 'cancelled', terminal_reason = 'cancelled', \
+         ended_at = ? WHERE id = ? AND status = 'parked'",
+    )
+    .bind(ended_at)
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+/// Cancel a Run's pending Proposal(s) (ADR-0014, slice 6): flip any `pending`
+/// `proposals` row whose tool call belongs to `run_id` to `cancelled`. Runs
+/// inside the cancel tx alongside [`mark_parked_run_cancelled`]. No-op (0 rows)
+/// when the Run has no pending Proposal.
+pub(super) async fn cancel_pending_proposals_for_run<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE proposals SET status = 'cancelled' \
+         WHERE tool_call_id IN (SELECT id FROM tool_calls WHERE run_id = ?1) \
+         AND status = 'pending'",
+    )
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Read the run's assistant Message id (the seq-0 streaming row resume
+/// continues appending into). `None` when the Run has no assistant message.
+pub(super) async fn assistant_message_id_for_run<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT id FROM messages WHERE run_id = ?1 AND role = 'assistant' \
+         ORDER BY created_at, rowid LIMIT 1",
+    )
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await
+}
+
 // ─── messages ─────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -491,6 +860,101 @@ where
     .execute(executor)
     .await
     .map(|_| ())
+}
+
+/// Read a Run's ordered timeline for resume transcript reconstruction
+/// (ADR-0025): every `run_steps` row in `seq` order, joined to the message's
+/// role (when a message step) and to the tool call's name/payloads (when a
+/// tool_call step). One ordered query so the reconstruction walks the turn
+/// structure exactly as it was recorded. Returns `(kind, message_id, role,
+/// tool_call_id, tc_name, request_payload, result_payload)` tuples; the
+/// caller assembles message text from parts separately.
+#[allow(clippy::type_complexity)]
+pub(super) async fn run_timeline<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<
+    Vec<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )>,
+>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT rs.kind, rs.message_id, m.role, rs.tool_call_id, \
+                tc.name, tc.request_payload, tc.result_payload \
+         FROM run_steps rs \
+         LEFT JOIN messages m ON m.id = rs.message_id \
+         LEFT JOIN tool_calls tc ON tc.id = rs.tool_call_id \
+         WHERE rs.run_id = ?1 \
+         ORDER BY rs.seq",
+    )
+    .bind(run_id.to_string())
+    .fetch_all(executor)
+    .await
+}
+
+// ─── proposals (ADR-0025) ─────────────────────────────────────────────
+
+/// Insert a `proposals` row in the `pending` state, sidecar to the Proposal's
+/// `tool_calls` row. `kind` is the proposed entity type (from the proposed
+/// `type`); `change_kind` is create|update|delete. The proposed `data` and
+/// `rationale` are stored as a JSON sidecar in `edited_payload`'s sibling — for
+/// now Core keeps the proposed payload on the tool_call's `request_payload`, so
+/// this row carries only the lifecycle columns. `decision_idempotency_key` is
+/// NULL until a Decision is made (a later slice).
+pub(super) async fn insert_proposal<'e, E>(
+    executor: E,
+    id: &str,
+    tool_call_id: &str,
+    kind: &str,
+    change_kind: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO proposals (id, tool_call_id, kind, change_kind, status) \
+         VALUES (?, ?, ?, ?, 'pending')",
+    )
+    .bind(id)
+    .bind(tool_call_id)
+    .bind(kind)
+    .bind(change_kind)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// A Run's pending Proposal for `proposal/get` (ADR-0025): the proposal id,
+/// kind, change_kind, lifecycle status, plus the Proposal tool call's stored
+/// `request_payload` (carrying the proposed `type`/`data`/`rationale`). Joined
+/// through `tool_calls` on `run_id`. `None` when the Run has no pending
+/// Proposal.
+pub(super) async fn pending_proposal_for_run<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<(String, String, String, String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT p.id, p.kind, p.change_kind, p.status, tc.request_payload \
+         FROM proposals p \
+         JOIN tool_calls tc ON tc.id = p.tool_call_id \
+         WHERE tc.run_id = ?1 AND p.status = 'pending' \
+         ORDER BY tc.requested_at DESC LIMIT 1",
+    )
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await
 }
 
 // ─── run_events ───────────────────────────────────────────────────────

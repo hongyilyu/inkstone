@@ -121,6 +121,15 @@ export interface SpawnCoreOptions {
 	 * (Worker proxy ↔ Core registry) end-to-end through the browser.
 	 */
 	readonly fauxToolCall?: boolean;
+	/**
+	 * Drive a higher-level faux interpreter mode by name (paired with `workerCmd
+	 * = INTERPRETER_WORKER_CMD`). `"propose"` writes a faux Workflow allowlisting
+	 * `propose_entity` and runs the worker in propose mode
+	 * (`INKSTONE_FAUX_PROPOSE`): turn 1 proposes a Todo (`buy milk`) so Core
+	 * parks the Run; on accept/reject the Run resumes to a short completion. This
+	 * exercises the full park → decide → resume loop end-to-end (ADR-0025).
+	 */
+	readonly faux?: "propose";
 	/** Milliseconds to wait for the listening line before failing. Default 30s. */
 	readonly startupTimeoutMs?: number;
 }
@@ -232,11 +241,16 @@ export async function spawnCore(
 	if (
 		opts.fauxResponse !== undefined ||
 		opts.fauxError !== undefined ||
-		opts.fauxToolCall
+		opts.fauxToolCall ||
+		opts.faux !== undefined
 	) {
 		const workflowsDir = path.join(workspaceDir, "workflows");
 		mkdirSync(workflowsDir, { recursive: true });
-		const tools = opts.fauxToolCall ? '["read_thread"]' : "[]";
+		const tools = opts.fauxToolCall
+			? '["read_thread"]'
+			: opts.faux === "propose"
+				? '["propose_entity"]'
+				: "[]";
 		writeFileSync(
 			path.join(workflowsDir, "default.toml"),
 			[
@@ -244,7 +258,12 @@ export async function spawnCore(
 				'version = "1.0.0"',
 				'provider = "faux"',
 				'model = "faux-1"',
-				'thinking_level = "off"',
+				// Deliberately NO `thinking_level` — mirrors the real
+				// crates/core/workflows/default.toml, which omits it and relies
+				// on settings resolution (DEFAULT_EFFORT = "off"). This exercises
+				// the resume path's `resolve_effective_workflow` through the real
+				// Worker: an unresolved `thinking_level` would serialize as "" and
+				// the manifest decode would reject it (regression guard).
 				'system_prompt = "You are a test assistant."',
 				`tools = ${tools}`,
 				"",
@@ -253,6 +272,8 @@ export async function spawnCore(
 		env.INKSTONE_WORKFLOWS_DIR = workflowsDir;
 		if (opts.fauxToolCall) {
 			env.INKSTONE_FAUX_TOOL_CALL = "1";
+		} else if (opts.faux === "propose") {
+			env.INKSTONE_FAUX_PROPOSE = "1";
 		} else if (opts.fauxError !== undefined) {
 			env.INKSTONE_FAUX_ERROR = opts.fauxError;
 		} else if (opts.fauxResponse !== undefined) {

@@ -25,8 +25,10 @@ test("a failed run surfaces an error in the assistant bubble", async ({
 
 	// The faux provider fails the turn; the interpreter emits an `error` Run
 	// Event, which the UI renders as an error on the assistant turn (not a
-	// blank bubble, not a hang).
+	// blank bubble, not a hang). The error bubble also carries a "Try again"
+	// retry affordance (added in #90), so assert the message is CONTAINED, not
+	// that it's the bubble's only text.
 	const error = page.getByTestId("assistant-error");
 	await expect(error).toBeVisible({ timeout: 15_000 });
-	await expect(error).toHaveText("the provider is unavailable");
+	await expect(error).toContainText("the provider is unavailable");
 });

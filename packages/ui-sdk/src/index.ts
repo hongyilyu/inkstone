@@ -1,7 +1,13 @@
 import { Socket } from "@effect/platform";
 import {
+	EntityListResult,
 	ModelCatalogResult,
 	PostMessageResult,
+	ProposalChangedNotification,
+	type ProposalDecideParams,
+	ProposalDecideResult,
+	ProposalGetResult,
+	ProposalPendingNotification,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
 	type RunEvent,
@@ -12,18 +18,18 @@ import {
 	ThreadListResult,
 } from "@inkstone/protocol";
 import {
+	Cause,
 	Context,
 	Data,
 	Deferred,
 	Effect,
 	Either,
-	Cause,
 	Fiber,
 	Layer,
 	Queue,
 	Runtime,
-	Schedule,
 	Schema as S,
+	Schedule,
 	Stream,
 } from "effect";
 
@@ -39,13 +45,13 @@ export class WsRequestError extends Data.TaggedError("WsRequestError")<{
 	cause?: unknown;
 }> {}
 
-export class UnknownThreadError extends Data.TaggedError(
-	"UnknownThreadError",
-)<{ message: string }> {}
+export class UnknownThreadError extends Data.TaggedError("UnknownThreadError")<{
+	message: string;
+}> {}
 
-export class InvalidParamsError extends Data.TaggedError(
-	"InvalidParamsError",
-)<{ message: string }> {}
+export class InvalidParamsError extends Data.TaggedError("InvalidParamsError")<{
+	message: string;
+}> {}
 
 export type WsError = WsRequestError | UnknownThreadError | InvalidParamsError;
 
@@ -66,6 +72,28 @@ const RunEventNotification = S.Struct({
 	event: RunEventSchema,
 });
 const decodeRunEventNotification = S.decodeUnknownEither(RunEventNotification);
+
+const decodeProposalPending = S.decodeUnknownEither(
+	ProposalPendingNotification,
+);
+const decodeProposalChanged = S.decodeUnknownEither(
+	ProposalChangedNotification,
+);
+
+// The consumer-facing shape the UI subscribes to: a tagged union over the two
+// proposal Notifications Core pushes onto a Run's subscribers (ADR-0025).
+export type ProposalNotification =
+	| {
+			readonly kind: "pending";
+			readonly run_id: string;
+			readonly proposal_id: string;
+	  }
+	| {
+			readonly kind: "changed";
+			readonly run_id: string;
+			readonly proposal_id: string;
+			readonly status: "accepted" | "rejected";
+	  };
 
 // run/subscribe acknowledgement is not a pinned protocol shape; accept {} or {run_id}.
 const SubscribeAck = S.Struct({ run_id: S.optional(S.String) });
@@ -101,13 +129,11 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly threadGet: (
 			threadId: string,
 		) => Effect.Effect<ThreadGetResult, WsError>;
+		readonly listTodos: () => Effect.Effect<EntityListResult, WsError>;
 		readonly subscribeRun: (
 			runId: RunId,
 		) => Stream.Stream<RunEventValue, WsError>;
-		readonly providerStatus: () => Effect.Effect<
-			ProviderStatusResult,
-			WsError
-		>;
+		readonly providerStatus: () => Effect.Effect<ProviderStatusResult, WsError>;
 		readonly providerLoginStart: (
 			provider: string,
 		) => Effect.Effect<ProviderLoginStartResult, WsError>;
@@ -117,6 +143,13 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 			readonly model?: string;
 			readonly effort?: string;
 		}) => Effect.Effect<SettingsResult, WsError>;
+		readonly proposalGet: (
+			runId: RunId,
+		) => Effect.Effect<ProposalGetResult, WsError>;
+		readonly proposalDecide: (
+			params: ProposalDecideParams,
+		) => Effect.Effect<ProposalDecideResult, WsError>;
+		readonly proposalNotifications: () => Stream.Stream<ProposalNotification>;
 	}
 >() {}
 
@@ -131,7 +164,18 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 
 			const pending = new Map<number, Deferred.Deferred<unknown, WsError>>();
 			const runQueues = new Map<RunId, Queue.Queue<RunEventValue>>();
+			// One shared queue for proposal/* notifications (ADR-0025); the UI
+			// reads them via `proposalNotifications()`. Lazily created so a Client
+			// that never subscribes pays nothing.
+			let proposalQueue: Queue.Queue<ProposalNotification> | undefined;
 			let nextId = 1;
+
+			const ensureProposalQueue = (): Queue.Queue<ProposalNotification> => {
+				if (proposalQueue === undefined) {
+					proposalQueue = runSync(Queue.unbounded<ProposalNotification>());
+				}
+				return proposalQueue;
+			};
 
 			const ensureQueue = (runId: RunId): Queue.Queue<RunEventValue> => {
 				let queue = runQueues.get(runId);
@@ -170,6 +214,30 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 						const queue = ensureQueue(event.right.run_id);
 						Queue.unsafeOffer(queue, event.right.event);
 					}
+					return;
+				}
+				if (frame.method === "proposal/pending") {
+					const n = decodeProposalPending(frame.params);
+					if (Either.isRight(n)) {
+						Queue.unsafeOffer(ensureProposalQueue(), {
+							kind: "pending",
+							run_id: n.right.run_id,
+							proposal_id: n.right.proposal_id,
+						});
+					}
+					return;
+				}
+				if (frame.method === "proposal/changed") {
+					const n = decodeProposalChanged(frame.params);
+					if (Either.isRight(n)) {
+						Queue.unsafeOffer(ensureProposalQueue(), {
+							kind: "changed",
+							run_id: n.right.run_id,
+							proposal_id: n.right.proposal_id,
+							status: n.right.status,
+						});
+					}
+					return;
 				}
 			};
 
@@ -223,9 +291,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			const connection = socket
 				.runRaw(
 					(data) =>
-						onFrame(
-							typeof data === "string" ? data : decoder.decode(data),
-						),
+						onFrame(typeof data === "string" ? data : decoder.decode(data)),
 					{ onOpen },
 				)
 				.pipe(Effect.zipRight(Effect.fail("dropped" as const)));
@@ -256,9 +322,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 						Effect.matchCauseEffect({
 							onFailure: (cause) => Effect.die(Cause.squash(cause)),
 							onSuccess: () =>
-								Effect.die(
-									new Error("socket closed before opening"),
-								),
+								Effect.die(new Error("socket closed before opening")),
 						}),
 					),
 				),
@@ -277,15 +341,13 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 						JSON.stringify({ jsonrpc: "2.0", id, method, params }),
 					).pipe(
 						Effect.mapError(
-							(cause) =>
-								new WsRequestError({ reason: "send_failed", cause }),
+							(cause) => new WsRequestError({ reason: "send_failed", cause }),
 						),
 					);
 					const result = yield* Deferred.await(deferred);
 					return yield* S.decodeUnknown(schema)(result).pipe(
 						Effect.mapError(
-							(cause) =>
-								new WsRequestError({ reason: "decode_failed", cause }),
+							(cause) => new WsRequestError({ reason: "decode_failed", cause }),
 						),
 					);
 				});
@@ -313,6 +375,11 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			): Effect.Effect<ThreadGetResult, WsError> =>
 				request("thread/get", { thread_id: threadId }, ThreadGetResult);
 
+			// entity/* (ADR-0004): the live read the Library's Todos collection
+			// consumes. No params (read path); returns the accepted Todos.
+			const listTodos = (): Effect.Effect<EntityListResult, WsError> =>
+				request("entity/list_todos", {}, EntityListResult);
+
 			// subscribeRun is request-driven (pure-subscribe): send run/subscribe,
 			// await its correlated response, THEN stream the run's events from the
 			// per-run queue. The queue is created before the request is sent so any
@@ -323,29 +390,19 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				Stream.unwrap(
 					Effect.gen(function* () {
 						const queue = ensureQueue(runId);
-						yield* request(
-							"run/subscribe",
-							{ run_id: runId },
-							SubscribeAck,
-						);
+						yield* request("run/subscribe", { run_id: runId }, SubscribeAck);
 						return Stream.fromQueue(queue);
 					}),
 				);
 
 			// provider/* (ADR-0023): connection status + begin OAuth login.
-			const providerStatus = (): Effect.Effect<
-				ProviderStatusResult,
-				WsError
-			> => request("provider/status", {}, ProviderStatusResult);
+			const providerStatus = (): Effect.Effect<ProviderStatusResult, WsError> =>
+				request("provider/status", {}, ProviderStatusResult);
 
 			const providerLoginStart = (
 				provider: string,
 			): Effect.Effect<ProviderLoginStartResult, WsError> =>
-				request(
-					"provider/login_start",
-					{ provider },
-					ProviderLoginStartResult,
-				);
+				request("provider/login_start", { provider }, ProviderLoginStartResult);
 
 			// model/catalog + settings/* (ADR-0024): the model catalog and the
 			// user's preferred model + global effort.
@@ -361,17 +418,37 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			}): Effect.Effect<SettingsResult, WsError> =>
 				request("settings/set", { ...params }, SettingsResult);
 
+			// proposal/* (ADR-0025): fetch a parked Run's pending Proposal and
+			// decide it. `proposalNotifications` streams the pushed
+			// pending/changed notifications a subscribed Client receives.
+			const proposalGet = (
+				runId: RunId,
+			): Effect.Effect<ProposalGetResult, WsError> =>
+				request("proposal/get", { run_id: runId }, ProposalGetResult);
+
+			const proposalDecide = (
+				params: ProposalDecideParams,
+			): Effect.Effect<ProposalDecideResult, WsError> =>
+				request("proposal/decide", { ...params }, ProposalDecideResult);
+
+			const proposalNotifications = (): Stream.Stream<ProposalNotification> =>
+				Stream.fromQueue(ensureProposalQueue());
+
 			return WsClient.of({
 				threadCreate,
 				postMessage,
 				threadList,
 				threadGet,
+				listTodos,
 				subscribeRun,
 				providerStatus,
 				providerLoginStart,
 				modelCatalog,
 				settingsGet,
 				settingsSet,
+				proposalGet,
+				proposalDecide,
+				proposalNotifications,
 			});
 		}),
 	);

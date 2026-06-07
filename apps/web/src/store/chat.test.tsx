@@ -1,4 +1,4 @@
-import { WsClient, type RunEventValue, type RunId } from "@inkstone/ui-sdk";
+import { type RunEventValue, type RunId, WsClient } from "@inkstone/ui-sdk";
 import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "./bridge.js";
@@ -15,12 +15,16 @@ function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
 		postMessage: () => Effect.succeed(runId),
 		threadList: () => unused,
 		threadGet: () => unused,
+		listTodos: () => unused,
 		subscribeRun: () => Stream.fromQueue(queue),
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
 		settingsSet: () => unused,
+		proposalGet: () => unused,
+		proposalDecide: () => unused,
+		proposalNotifications: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
@@ -40,9 +44,7 @@ describe("chat store + stream bridge", () => {
 		await send(runtime, "threadA", "hi");
 
 		const seeded = getChatState().threads.threadA;
-		expect(
-			seeded?.messages.map((m) => [m.role, m.text, m.status]),
-		).toEqual([
+		expect(seeded?.messages.map((m) => [m.role, m.text, m.status])).toEqual([
 			["user", "hi", "completed"],
 			["assistant", "", "streaming"],
 		]);
@@ -133,7 +135,10 @@ describe("chat store + stream bridge", () => {
 			name: "read_thread",
 			status: "started",
 		});
-		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "Here's what I found" });
+		Queue.unsafeOffer(queue, {
+			kind: "text_delta",
+			delta: "Here's what I found",
+		});
 		Queue.unsafeOffer(queue, {
 			kind: "tool_call",
 			tool_call_id: "tc_1",
