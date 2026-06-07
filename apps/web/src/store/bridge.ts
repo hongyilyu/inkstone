@@ -236,6 +236,10 @@ export function startProposalStream(runtime: WsRuntime): void {
  * status AND re-subscribes to the Run so the resume tail (parked → running →
  * completed, ADR-0022 snapshot-then-tail) streams into the assistant bubble. A
  * failed decide flips the card to `error` so the user can retry.
+ *
+ * A decide already in flight short-circuits (no double-submit); the stale parked
+ * stream fiber is interrupted before re-subscribing so the resume tail has a
+ * single consumer.
  */
 export async function decideProposal(
 	runtime: WsRuntime,
@@ -244,6 +248,15 @@ export async function decideProposal(
 ): Promise<void> {
 	const proposal = getChatState().proposals[runId];
 	if (proposal === undefined) {
+		return;
+	}
+	// Double-submit guard (M1): a decide is already in flight. Returning here
+	// stops a fast double-click from firing a second `proposal/decide` that
+	// races behind the first — the Run un-parks after the first decide, so the
+	// second hits Core as `proposal_not_pending` and its catch would stomp an
+	// accept that actually succeeded with a spurious `error`. Retry from
+	// `error` is still allowed (only `deciding` short-circuits).
+	if (proposal.status === "deciding") {
 		return;
 	}
 	setProposalStatus(runId, "deciding");
@@ -263,6 +276,13 @@ export async function decideProposal(
 		// assistant turn drives the subscribe; find it by run id.
 		const threadId = findThreadForRun(runId);
 		if (threadId !== undefined) {
+			// Stale-fiber guard (M2): a parked Run's forwarder closes with NO
+			// terminal event, so the original `subscribeRun` fiber (bounded by
+			// `takeUntil(done|error)`) never completed and is still blocked on
+			// the per-run queue. Interrupt it BEFORE re-subscribing so exactly
+			// one consumer drains the resume tail — two consumers would split a
+			// multi-chunk continuation between them and corrupt the text.
+			interruptRun(runtime, runId);
 			startRunStream(runtime, threadId, runId);
 		}
 	} catch {

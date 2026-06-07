@@ -126,7 +126,8 @@ function AssistantBubble({
 	const toolRunning = toolCalls.some((tc) => tc.status === "running");
 	return (
 		<li data-role="assistant" className="group flex flex-col items-start gap-2">
-			{toolCalls.length > 0 && <ToolActivity toolCalls={toolCalls} />}			{message.status === "streaming" &&
+			{toolCalls.length > 0 && <ToolActivity toolCalls={toolCalls} />}
+			{message.status === "streaming" &&
 				message.text === "" &&
 				!toolRunning && (
 					<div
@@ -173,9 +174,7 @@ function AssistantBubble({
 					)}
 				</div>
 			)}
-			{message.run_id !== "" && (
-				<AssistantProposals runId={message.run_id} />
-			)}
+			{message.run_id !== "" && <AssistantProposals runId={message.run_id} />}
 		</li>
 	);
 }

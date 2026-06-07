@@ -1,4 +1,5 @@
-import { Check, ListTodo, Pencil, RotateCcw } from "lucide-react";
+import { Check, ListTodo, Loader2, Pencil, RotateCcw } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { PendingProposal } from "@/store/chat";
 import { cn } from "@/lib/utils.js";
 import { Card } from "./ui/card.js";
@@ -23,10 +24,10 @@ function field(data: unknown, key: string): string | undefined {
  * Rule, DESIGN.md); Edit is a chip (wired in slice 10); Dismiss is a ghost.
  *
  * States (PRODUCT.md "show the state"): `pending` (actions live) · `deciding`
- * (chosen action disabled, others disabled) · `accepted` / `rejected` (collapse
- * to a quiet decided line) · `error` (inline message + retry). The decision is
- * announced via a live region; accept/reject pair an icon with a word, never
- * colour alone.
+ * (the chosen action shows a spinner + progress label, the others disabled) ·
+ * `accepted` / `rejected` (collapse to a quiet decided line) · `error` (inline
+ * message + retry). The decision is announced via a live region; accept/reject
+ * pair an icon with a word, never colour alone.
  */
 export function ProposalCard({
 	proposal,
@@ -39,6 +40,18 @@ export function ProposalCard({
 	const noun = KIND_NOUN[kind] ?? kind;
 	const title = field(data, "title") ?? `New ${noun}`;
 	const due = field(data, "due");
+
+	// Track which action the user chose so the spinner lands on THAT button
+	// while the decide is in flight (the store's `deciding` status doesn't
+	// carry the decision). Reset once the decide settles (left `deciding`).
+	const [inFlight, setInFlight] = useState<"accept" | "reject" | null>(null);
+	useEffect(() => {
+		if (proposal.status !== "deciding") setInFlight(null);
+	}, [proposal.status]);
+	const decide = (decision: "accept" | "reject") => {
+		setInFlight(decision);
+		onDecide(decision);
+	};
 
 	if (status === "accepted" || status === "rejected") {
 		const accepted = status === "accepted";
@@ -97,7 +110,7 @@ export function ProposalCard({
 
 			{isError ? (
 				<p role="alert" className="text-sm text-destructive">
-					Couldn't apply — try again.
+					Couldn't apply. Try again.
 				</p>
 			) : null}
 
@@ -105,7 +118,7 @@ export function ProposalCard({
 				{isError ? (
 					<button
 						type="button"
-						onClick={() => onDecide("accept")}
+						onClick={() => decide("accept")}
 						className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 					>
 						<RotateCcw className="size-4" aria-hidden />
@@ -115,13 +128,25 @@ export function ProposalCard({
 					<button
 						type="button"
 						disabled={deciding}
-						onClick={() => onDecide("accept")}
+						onClick={() => decide("accept")}
 						className={cn(
 							"inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
 						)}
 					>
-						<Check className="size-4" aria-hidden />
-						Add to Todos
+						{deciding && inFlight === "accept" ? (
+							<>
+								<Loader2
+									className="size-4 motion-safe:animate-spin"
+									aria-hidden
+								/>
+								Adding…
+							</>
+						) : (
+							<>
+								<Check className="size-4" aria-hidden />
+								Add to Todos
+							</>
+						)}
 					</button>
 				)}
 
@@ -138,10 +163,20 @@ export function ProposalCard({
 				<button
 					type="button"
 					disabled={deciding}
-					onClick={() => onDecide("reject")}
+					onClick={() => decide("reject")}
 					className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 				>
-					Dismiss
+					{deciding && inFlight === "reject" ? (
+						<>
+							<Loader2
+								className="size-3.5 motion-safe:animate-spin"
+								aria-hidden
+							/>
+							Dismissing…
+						</>
+					) : (
+						"Dismiss"
+					)}
 				</button>
 			</footer>
 		</Card>
