@@ -13,10 +13,10 @@ Since the durable path is required regardless, keep-alive would be a pure latenc
 
 ## Mechanics this pins
 
-- **One Tool Request = one Proposal = one entity = one Decision.** No batching, no partial approval. The proposal tool (`propose_entity`) is `executionMode: "sequential"`.
+- **One Tool Request = one Proposal = one entity = one Decision.** No batching, no partial approval. One-at-a-time is enforced by the **Worker tearing down on the first proposal `tool_request`**: Core's stdout read loop breaks at the first proposal it sees, so only that one Proposal is persisted and parked; any sibling tool calls the model emitted in the same Turn are simply not read (not persisted), and the fresh resume loop proceeds from the Decision. (There is no `executionMode` wiring — the loop-break is the mechanism.)
 - **Decision vocabulary: accept / reject / edit.** *Reject* resolves as a **normal** Tool Result (not an error) so the model continues conversationally rather than retrying a "failure." *Edit* applies a Core-validated `edited_payload` in one step.
 - **Resume transcript** is reconstructed from `run_steps` + `tool_calls` + message text into a **typed-block manifest**: assistant messages carry `tool_call` blocks; `tool_result` messages carry results. **Every** `tool_call` in the parked turn is paired with a result — its persisted result, the Decision for the parked call, or a synthesized "not executed" result for an unexecuted sibling — so the transcript is provider-valid (a `toolResult` is rejected by providers unless its `toolCall` precedes it).
-- **The parked Run is surfaced via Run status + the `proposal/*` channel.** The Run Event stream stops **without** a `done`; `run/subscribe` reports `parked`. Resume creates a fresh per-run hub. The wire `RunEvent` enum stays frozen at `text_delta`/`done`/`error` — the Proposal lifecycle rides `proposal/pending` and `proposal/changed`, not a new Run Event.
+- **The parked Run is surfaced via Run status + the `proposal/*` channel.** The Run Event stream stops **without** a `done`; `run/subscribe` reports `parked` and pushes a `proposal/pending` to attached subscribers. Resume creates a fresh per-run hub. No **new** wire `RunEvent` variant is added for Proposals (the enum keeps `text_delta`/`done`/`error` plus the pre-existing ephemeral `tool_call` indicator) — the Proposal lifecycle rides `proposal/pending` and `proposal/changed`.
 - **Auto-approve is a Core seam** (`should_auto_approve`) on the same path; it returns false for now (every Proposal is manual), per [ADR-0016](./0016-proposal-application-policy.md). The Worker is oblivious to auto vs manual either way.
 
 ## How this refines earlier ADRs
@@ -31,6 +31,16 @@ Since the durable path is required regardless, keep-alive would be a pure latenc
 - **Keep the Worker alive and block the tool's `execute()` until the Decision** (in-process await; how pi's TUI/RPC host and openclaw's ACP Gateway do it). Rejected: their processes are long-lived daemons, so an in-memory waitpoint is fine; Inkstone's Workers are per-Run and ephemeral, and the wait must survive a Core restart, which only the durable path achieves. See *Why* above.
 - **Adopt ACP (`@agentclientprotocol/sdk`) for the Client surface.** ACP earns its cost when hosting **foreign/heterogeneous** agents (openclaw spawns Codex et al. over ACP). Inkstone has one engine (the pi Worker) and one Client (its embedded SPA), so a bespoke `proposal/*` that **mirrors ACP's permission-request shape** suffices, honoring [ADR-0014](./0014-client-core-wire-protocol.md)'s "not literal ACP." Revisit if Inkstone ever hosts an external agent as a Workflow engine.
 - **Batch / per-entity Proposals.** Rejected: one-at-a-time keeps a single pending Proposal per Run, sidesteps multi-park, and matches "applied atomically."
+
+## As-built notes
+
+Decisions made during implementation, recorded here rather than as their own ADRs (each is small and reversible):
+
+- **Proposed `data`/`rationale` ride on `tool_calls.request_payload`.** The `proposals` row has no dedicated payload column; `proposal/get` reconstructs `data`/`rationale` from the originating tool call's args. The `edit` flow stores the user's override in `proposals.edited_payload`.
+- **`run/cancel` on a parked Run** marks the Run `cancelled` and its pending Proposal `cancelled` (a value added to the `proposals.status` CHECK). No Worker to abort (already torn down); live-Run abort is out of scope.
+- **Proposal notifications are per-run-connection, best-effort.** `proposal/pending`/`proposal/changed` are pushed on the subscriber's own connection; there is no workspace-wide proposal bus, so cross-tab fan-out of a decision is not guaranteed (the deciding tab re-subscribes for the resume tail; other tabs reconcile on their next read). Revisit if multi-tab live Proposal sync is needed.
+- **Apply commits before resume; idempotent re-decide is the recovery path.** If the resume spawn fails after a Decision is applied, the Run stays `parked` with an accepted/rejected Proposal; a later `proposal/decide` (idempotent on `decision_idempotency_key`) re-drives the resume via `recover_resume_if_parked`. The parked→running flip is self-guarded (`WHERE status='parked'`) so concurrent retries cannot double-spawn.
+- **Only the Todo entity type and `change_kind='create'`** are implemented; `update`/`delete` and other types are forward headroom in the schema/types.
 
 ## Related
 
