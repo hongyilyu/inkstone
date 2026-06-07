@@ -56,6 +56,28 @@ describe("ProposalCard", () => {
 		expect(screen.getByRole("button", { name: /dismiss/i })).toBeDisabled();
 	});
 
+	it("shows a progress affordance on the chosen action while deciding (m1)", () => {
+		// Render pending, click Add to Todos, then re-render as deciding: the
+		// spinner/progress label lands on the chosen (accept) action, while the
+		// others stay disabled with their resting labels.
+		const onDecide = vi.fn();
+		const { rerender } = render(
+			<ProposalCard proposal={base} onDecide={onDecide} />,
+		);
+		fireEvent.click(screen.getByRole("button", { name: /add to todos/i }));
+		rerender(
+			<ProposalCard
+				proposal={{ ...base, status: "deciding" }}
+				onDecide={onDecide}
+			/>,
+		);
+		const accept = screen.getByRole("button", { name: /adding/i });
+		expect(accept).toBeDisabled();
+		expect(accept).toHaveTextContent(/adding/i);
+		// The unchosen action keeps its resting label and stays disabled.
+		expect(screen.getByRole("button", { name: /dismiss/i })).toBeDisabled();
+	});
+
 	it("collapses to the accepted state", () => {
 		render(
 			<ProposalCard
