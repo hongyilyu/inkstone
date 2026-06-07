@@ -52,6 +52,30 @@ interface ThreadState {
 interface ChatState {
 	readonly threads: Record<string, ThreadState>;
 	readonly focusedThreadId?: string;
+	/**
+	 * Pending (and decided) Proposals keyed by the parked Run's id (ADR-0025).
+	 * A `propose_entity` parks a Run; the chat surface renders the review card
+	 * under that Run's assistant turn (which carries the same `run_id`). The
+	 * UI `status` is the review lifecycle, distinct from the wire Proposal
+	 * status: `deciding` and `error` are local-only (no wire equivalent).
+	 */
+	readonly proposals: Record<string, PendingProposal>;
+}
+
+/**
+ * A Proposal surfaced for review under its parked Run's assistant turn. Mirrors
+ * `ProposalGetResult` (ADR-0025) plus a UI `status` driving the card's states:
+ * `pending` (actions live) · `deciding` (decide in flight) · `accepted` /
+ * `rejected` (decided) · `error` (decide failed — offer retry).
+ */
+export interface PendingProposal {
+	readonly proposal_id: string;
+	readonly run_id: string;
+	readonly kind: string;
+	readonly change_kind: string;
+	readonly data: unknown;
+	readonly rationale: string | null;
+	readonly status: "pending" | "deciding" | "accepted" | "rejected" | "error";
 }
 
 // ---------------------------------------------------------------------------
@@ -64,7 +88,7 @@ interface ChatState {
 // owns the wire; React state is plain (zustand, not `@effect/atom`).
 // ---------------------------------------------------------------------------
 
-const initialState = (): ChatState => ({ threads: {} });
+const initialState = (): ChatState => ({ threads: {}, proposals: {} });
 
 const store = createStore<ChatState>()(() => initialState());
 
@@ -109,6 +133,42 @@ export function setFocusedThread(threadId: string): void {
 /** Clear the focused thread (New Chat → null → next send mints a thread). */
 export function clearFocusedThread(): void {
 	store.setState((s) => ({ ...s, focusedThreadId: undefined }));
+}
+
+// --- proposals (ADR-0025) ---------------------------------------------------
+
+/**
+ * Attach (or replace) the pending Proposal for `runId`, keyed by the parked
+ * Run's id. Driven by a `proposal/pending` notification → `proposal/get`
+ * round-trip in the bridge. Always lands as `pending` — the review starts with
+ * its actions live.
+ */
+export function setPendingProposal(proposal: PendingProposal): void {
+	store.setState((s) => ({
+		...s,
+		proposals: { ...s.proposals, [proposal.run_id]: proposal },
+	}));
+}
+
+/**
+ * Move a Proposal to a new review `status` (deciding/accepted/rejected/error).
+ * A no-op if no Proposal is attached for `runId` (a `proposal/changed` can race
+ * ahead of the `proposal/get` that seeds the card).
+ */
+export function setProposalStatus(
+	runId: string,
+	status: PendingProposal["status"],
+): void {
+	store.setState((s) => {
+		const existing = s.proposals[runId];
+		if (existing === undefined) {
+			return s;
+		}
+		return {
+			...s,
+			proposals: { ...s.proposals, [runId]: { ...existing, status } },
+		};
+	});
 }
 
 export function appendUserMessage(threadId: string, message: Message): void {
@@ -340,4 +400,9 @@ export function useFocusedThreadId(): string | null {
 /** Active run id for a thread, `null` at the React boundary. */
 export function useActiveRunId(threadId: string): string | null {
 	return useStore(store, (s) => s.threads[threadId]?.activeRunId ?? null);
+}
+
+/** The pending/decided Proposal attached to `runId`, `null` if none. */
+export function useProposalForRun(runId: string): PendingProposal | null {
+	return useStore(store, (s) => s.proposals[runId] ?? null);
 }

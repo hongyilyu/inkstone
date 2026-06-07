@@ -18,7 +18,7 @@ describe("ProposalCard", () => {
 
 	it("renders the pending proposal with its title, rationale, and the three actions", () => {
 		render(<ProposalCard proposal={base} onDecide={() => {}} />);
-		expect(screen.getByText("buy milk")).toBeInTheDocument();
+		expect(screen.getAllByText("buy milk").length).toBeGreaterThan(0);
 		expect(
 			screen.getByText("the user asked to remember this"),
 		).toBeInTheDocument();

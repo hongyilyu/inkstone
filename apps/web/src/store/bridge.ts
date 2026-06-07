@@ -5,10 +5,13 @@ import {
 	appendUserMessage,
 	attachRun,
 	applyEvent,
+	getChatState,
 	markMessageIncomplete,
 	nextMessageId,
 	seedAssistantMessage,
 	setFocusedThread,
+	setPendingProposal,
+	setProposalStatus,
 } from "./chat.js";
 import { markThreadHydrated } from "./hydration-set.js";
 
@@ -25,9 +28,13 @@ import { markThreadHydrated } from "./hydration-set.js";
  */
 const fibers = new Map<RunId, Fiber.RuntimeFiber<void, WsError>>();
 
+/** The global proposal-notification stream fiber, if started. */
+let proposalFiber: Fiber.RuntimeFiber<void> | undefined;
+
 /** Clear retained fibers — for test isolation (runtime disposal interrupts them). */
 export function resetBridge(): void {
 	fibers.clear();
+	proposalFiber = undefined;
 }
 
 /**
@@ -181,4 +188,95 @@ export async function awaitRun(
 		return;
 	}
 	await runtime.runPromise(Fiber.join(fiber));
+}
+
+// --- proposals (ADR-0025) ---------------------------------------------------
+
+/**
+ * Fork the global `proposalNotifications()` stream and drive each notification
+ * into the store. On `pending` → fetch the Proposal (`proposal/get`) and attach
+ * it to its parked Run keyed by `run_id`; on `changed` → update its review
+ * status. Started ONCE for the chat surface (idempotent — a second call while a
+ * fiber is live is a no-op).
+ */
+export function startProposalStream(runtime: WsRuntime): void {
+	if (proposalFiber !== undefined) {
+		return;
+	}
+	const program = Effect.gen(function* () {
+		const client = yield* WsClient;
+		yield* Stream.runForEach(client.proposalNotifications(), (n) =>
+			Effect.gen(function* () {
+				if (n.kind === "pending") {
+					const p = yield* client.proposalGet(n.run_id);
+					setPendingProposal({
+						proposal_id: p.proposal_id,
+						run_id: p.run_id,
+						kind: p.kind,
+						change_kind: p.change_kind,
+						data: p.data,
+						rationale: p.rationale,
+						status: "pending",
+					});
+				} else {
+					setProposalStatus(n.run_id, n.status);
+				}
+				// A `proposal/get` failure (rare; the Run un-parked between the
+				// notification and the fetch) must not tear down the whole stream.
+			}).pipe(Effect.catchAll(() => Effect.void)),
+		);
+	}).pipe(Effect.ensuring(Effect.sync(() => (proposalFiber = undefined))));
+
+	proposalFiber = runtime.runFork(program);
+}
+
+/**
+ * Decide a parked Run's Proposal (accept/reject) and resume the Run. Flips the
+ * card to `deciding`, calls `proposal/decide`, then on success sets the decided
+ * status AND re-subscribes to the Run so the resume tail (parked → running →
+ * completed, ADR-0022 snapshot-then-tail) streams into the assistant bubble. A
+ * failed decide flips the card to `error` so the user can retry.
+ */
+export async function decideProposal(
+	runtime: WsRuntime,
+	runId: RunId,
+	decision: "accept" | "reject",
+): Promise<void> {
+	const proposal = getChatState().proposals[runId];
+	if (proposal === undefined) {
+		return;
+	}
+	setProposalStatus(runId, "deciding");
+
+	const program = Effect.gen(function* () {
+		const client = yield* WsClient;
+		return yield* client.proposalDecide({
+			proposal_id: proposal.proposal_id,
+			decision,
+		});
+	});
+
+	try {
+		const result = await runtime.runPromise(program);
+		setProposalStatus(runId, result.status);
+		// Re-subscribe to catch the resume tail. The thread that holds this run's
+		// assistant turn drives the subscribe; find it by run id.
+		const threadId = findThreadForRun(runId);
+		if (threadId !== undefined) {
+			startRunStream(runtime, threadId, runId);
+		}
+	} catch {
+		setProposalStatus(runId, "error");
+	}
+}
+
+/** The thread holding an assistant message for `runId`, if any. */
+function findThreadForRun(runId: RunId): string | undefined {
+	const { threads } = getChatState();
+	for (const [threadId, thread] of Object.entries(threads)) {
+		if (thread.messages.some((m) => m.run_id === runId)) {
+			return threadId;
+		}
+	}
+	return undefined;
 }

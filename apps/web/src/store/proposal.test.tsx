@@ -7,7 +7,6 @@ import {
 import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-	awaitProposalStream,
 	decideProposal,
 	resetBridge,
 	startProposalStream,
@@ -63,6 +62,15 @@ beforeEach(() => {
 	resetBridge();
 });
 
+/** Poll the store until `predicate` holds (the stream fiber is async). */
+async function waitFor(predicate: () => boolean): Promise<void> {
+	for (let i = 0; i < 200; i++) {
+		if (predicate()) return;
+		await new Promise((r) => setTimeout(r, 5));
+	}
+	throw new Error("waitFor timed out");
+}
+
 describe("proposal stream + decide", () => {
 	it("a proposal/pending notification fetches and attaches the pending proposal", async () => {
 		const proposalQueue = Effect.runSync(
@@ -76,9 +84,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		// Close the stream so the fiber settles and the test can await it.
-		await Queue.shutdown(proposalQueue);
-		await awaitProposalStream(runtime);
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
 
 		const proposal = getChatState().proposals["run-1"];
 		expect(proposal?.status).toBe("pending");
@@ -105,8 +111,9 @@ describe("proposal stream + decide", () => {
 			proposal_id: "prop-1",
 			status: "accepted",
 		});
-		await Queue.shutdown(proposalQueue);
-		await awaitProposalStream(runtime);
+		await waitFor(
+			() => getChatState().proposals["run-1"]?.status === "accepted",
+		);
 
 		expect(getChatState().proposals["run-1"]?.status).toBe("accepted");
 
@@ -127,8 +134,7 @@ describe("proposal stream + decide", () => {
 			run_id: "run-1",
 			proposal_id: "prop-1",
 		});
-		await Queue.shutdown(proposalQueue);
-		await awaitProposalStream(runtime);
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
 

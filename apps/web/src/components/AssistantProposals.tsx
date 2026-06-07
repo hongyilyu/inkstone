@@ -1,17 +1,33 @@
-import { useProposalById } from "@/lib/hooks/useProposalById";
+import { useRuntime } from "@/runtime";
+import { decideProposal } from "@/store/bridge";
+import { useProposalForRun } from "@/store/chat";
 import { ProposalCard } from "./ProposalCard.js";
 
-export function AssistantProposals({ proposalIds }: { proposalIds: string[] }) {
+/**
+ * Render the live pending Proposal (if any) for an assistant turn's Run. The
+ * Proposal is keyed by `runId` in the chat store (a parked Run pushes a
+ * `proposal/pending` notification → the bridge attaches it). Deciding routes
+ * through {@link decideProposal}, which calls `proposal/decide` and resumes the
+ * Run. Renders nothing until a Proposal is attached.
+ */
+export function AssistantProposals({ runId }: { runId: string }) {
+	const runtime = useRuntime();
+	const proposal = useProposalForRun(runId);
+	if (proposal === null) {
+		return null;
+	}
 	return (
 		<div className="mt-1 flex w-full flex-col gap-3">
-			{proposalIds.map((id) => (
-				<ProposalRef key={id} id={id} />
-			))}
+			<ProposalCard
+				proposal={proposal}
+				onDecide={(decision) =>
+					decideProposal(
+						runtime,
+						runId,
+						decision === "accept" ? "accept" : "reject",
+					)
+				}
+			/>
 		</div>
 	);
-}
-
-function ProposalRef({ id }: { id: string }) {
-	const proposal = useProposalById(id);
-	return proposal ? <ProposalCard proposal={proposal} /> : null;
 }
