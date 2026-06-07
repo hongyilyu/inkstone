@@ -82,7 +82,15 @@ pub async fn resume(
     pool: &SqlitePool,
     hubs: &Hubs,
 ) -> anyhow::Result<()> {
-    let workflow = crate::workflow::default_workflow().clone();
+    // Resolve the effective Workflow (ADR-0024) exactly as the fresh
+    // `post_message` path does — overriding `model` + `thinking_level` from
+    // user settings. The raw `default_workflow()` leaves both `None`, which the
+    // manifest would serialize as `""`; the wire `WorkflowManifest` requires a
+    // concrete model and a `thinking_level` from the enum, so an unresolved
+    // workflow makes the real Worker reject the manifest on resume.
+    let workflow =
+        crate::dispatcher::resolve_effective_workflow(pool, crate::workflow::default_workflow())
+            .await;
 
     let assistant_message_id = db::assistant_message_id_for_run(pool, run_id)
         .await?
@@ -197,7 +205,7 @@ async fn run_resume_worker(
                 provider: &workflow.provider,
                 model: workflow.model.as_deref().unwrap_or_default(),
                 system_prompt: &workflow.system_prompt,
-                thinking_level: workflow.thinking_level.as_deref().unwrap_or_default(),
+                thinking_level: workflow.thinking_level.as_deref().unwrap_or("off"),
                 tools: crate::tools::descriptors_for(&workflow.tools),
             },
             prompt: "",
@@ -307,7 +315,7 @@ async fn run_worker(
                 provider: &workflow.provider,
                 model: workflow.model.as_deref().unwrap_or_default(),
                 system_prompt: &workflow.system_prompt,
-                thinking_level: workflow.thinking_level.as_deref().unwrap_or_default(),
+                thinking_level: workflow.thinking_level.as_deref().unwrap_or("off"),
                 tools: crate::tools::descriptors_for(&workflow.tools),
             },
             prompt: &prompt,

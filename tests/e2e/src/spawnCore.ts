@@ -258,7 +258,12 @@ export async function spawnCore(
 				'version = "1.0.0"',
 				'provider = "faux"',
 				'model = "faux-1"',
-				'thinking_level = "off"',
+				// Deliberately NO `thinking_level` — mirrors the real
+				// crates/core/workflows/default.toml, which omits it and relies
+				// on settings resolution (DEFAULT_EFFORT = "off"). This exercises
+				// the resume path's `resolve_effective_workflow` through the real
+				// Worker: an unresolved `thinking_level` would serialize as "" and
+				// the manifest decode would reject it (regression guard).
 				'system_prompt = "You are a test assistant."',
 				`tools = ${tools}`,
 				"",
