@@ -168,6 +168,56 @@ where
     .map(|_| ())
 }
 
+/// Boot recovery sweep (ADR-0012): error every Run interrupted mid-flight by a
+/// Core crash/restart — `status IN ('running','pending')` — stamping
+/// `terminal_reason='core_restarted'` + the error fields + `ended_at`. ONE
+/// statement. Explicitly EXCLUDES `parked` (decidable, durable per ADR-0025)
+/// and the terminal states (`completed`/`errored`/`cancelled`). Returns the
+/// affected row count so the caller can log how many Runs were recovered.
+pub(super) async fn recover_interrupted_runs<'e, E>(
+    executor: E,
+    error_message: &str,
+    ended_at: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE runs SET status = 'errored', terminal_reason = 'core_restarted', \
+         error_code = 'core_restarted', error_message = ?, ended_at = ? \
+         WHERE status IN ('running','pending')",
+    )
+    .bind(error_message)
+    .bind(ended_at)
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
+/// Companion to [`recover_interrupted_runs`] (ADR-0017 invariant): flip every
+/// `streaming` Message whose Run was just swept (i.e. is now `errored` with
+/// `terminal_reason='core_restarted'`) to `incomplete`, so no Message dangles
+/// at `streaming` after its Run terminates. Runs in the same boot tx as the
+/// sweep. Scoped to the swept set via the run join — leaves `parked` Runs'
+/// Messages untouched.
+pub(super) async fn mark_recovered_streaming_messages_incomplete<'e, E>(
+    executor: E,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE messages SET status = 'incomplete', updated_at = ? \
+         WHERE status = 'streaming' AND run_id IN \
+         (SELECT id FROM runs WHERE status = 'errored' AND terminal_reason = 'core_restarted')",
+    )
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
 /// Park a Run (ADR-0025): set `status='parked'` and record the waitpoint in
 /// `awaiting_tool_call_id`. Park is a non-terminal state — no `ended_at`,
 /// `terminal_reason`, or error fields. `awaiting_tool_call_id` references the

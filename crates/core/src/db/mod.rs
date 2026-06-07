@@ -854,6 +854,32 @@ pub async fn error_run_with_message(
     tx.commit().await
 }
 
+/// Boot recovery sweep (ADR-0012): on every Core start, after migrations and
+/// before serving, force-error every Run interrupted mid-flight by a prior
+/// Core crash/restart. A `running` or `pending` Run has no live Worker after a
+/// restart, so it can never make progress on its own — it is transitioned to
+/// `errored` with `terminal_reason='core_restarted'`. Its `streaming`
+/// assistant Message is flipped to `incomplete` (ADR-0017 invariant) in the
+/// SAME transaction.
+///
+/// PRESERVES `parked` Runs (ADR-0025): a parked Run is durable and decidable
+/// across a restart — a Client can still `proposal/decide` it on the new Core
+/// to resume — so it is explicitly excluded from the sweep (as are the terminal
+/// states). This exclusion is the property that lets a parked Run survive a
+/// Core restart. Returns the count of Runs swept, for boot logging.
+pub async fn recover_interrupted_runs(pool: &SqlitePool, now_ms: i64) -> sqlx::Result<u64> {
+    let mut tx = pool.begin().await?;
+    let swept = queries::recover_interrupted_runs(
+        &mut *tx,
+        "core restarted while run in flight",
+        now_ms,
+    )
+    .await?;
+    queries::mark_recovered_streaming_messages_incomplete(&mut *tx, now_ms).await?;
+    tx.commit().await?;
+    Ok(swept)
+}
+
 /// Read a user setting value by key (ADR-0024), or `None` if unset. Backs
 /// `settings/get` and the Run-creation resolver that overrides the Workflow's
 /// model/effort from persisted user choices.
@@ -874,9 +900,12 @@ mod tests {
     /// migration so the `runs` CHECK constraints (status/terminal_reason) are
     /// in force.
     async fn memory_pool() -> SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect("sqlite::memory:")
+            .connect_with(options)
             .await
             .expect("open in-memory sqlite");
         sqlx::migrate!("./migrations")
@@ -891,6 +920,7 @@ mod tests {
     /// is set; `awaiting_tool_call_id` is left NULL (the FK is nullable and the
     /// sweep does not read it).
     async fn insert_bare_run(pool: &SqlitePool, run_id: &str, status: &str) {
+        let mut tx = pool.begin().await.expect("begin");
         sqlx::query(
             "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, ?, ?)",
         )
@@ -898,10 +928,11 @@ mod tests {
         .bind("t")
         .bind(1_i64)
         .bind(1_i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .expect("insert thread");
-        // user_message_id FK is DEFERRABLE; insert a matching message after.
+        // user_message_id FK is DEFERRABLE — resolved at COMMIT, so the run can
+        // reference a message inserted later in the same tx.
         sqlx::query(
             "INSERT INTO runs \
              (id, thread_id, workflow_name, workflow_version, provider, model, \
@@ -913,7 +944,7 @@ mod tests {
         .bind(format!("msg-{run_id}"))
         .bind(status)
         .bind(1_i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .expect("insert run");
         sqlx::query(
@@ -925,9 +956,10 @@ mod tests {
         .bind(run_id)
         .bind(1_i64)
         .bind(1_i64)
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .expect("insert message");
+        tx.commit().await.expect("commit bare run");
     }
 
     async fn run_status_of(pool: &SqlitePool, run_id: &str) -> String {
