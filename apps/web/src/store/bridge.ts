@@ -8,6 +8,7 @@ import {
 	getChatState,
 	markMessageIncomplete,
 	nextMessageId,
+	resetSnapshot,
 	seedAssistantMessage,
 	setFocusedThread,
 	setPendingProposal,
@@ -287,6 +288,14 @@ export async function decideProposal(
 			// one consumer drains the resume tail — two consumers would split a
 			// multi-chunk continuation between them and corrupt the text.
 			interruptRun(runtime, runId);
+			// Reset the snapshot bit (review M1): the original parked subscribe
+			// already marked `snapshotApplied[runId] = true` on its initial
+			// (possibly empty) snapshot delta. The resume's FIRST `text_delta` is
+			// again the cumulative snapshot (it re-includes any pre-park prose);
+			// without this reset it would be APPENDed onto the on-screen text and
+			// duplicate the prefix. Clearing the bit makes it SET the
+			// authoritative cumulative text instead.
+			resetSnapshot(threadId, runId);
 			startRunStream(runtime, threadId, runId);
 		}
 	} catch {

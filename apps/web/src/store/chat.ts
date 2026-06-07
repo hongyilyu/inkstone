@@ -171,6 +171,27 @@ export function setProposalStatus(
 	});
 }
 
+/**
+ * Clear the snapshot-applied bit for `runId` (ADR-0025 resume re-subscribe).
+ * A parked Run's resume opens a FRESH `run/subscribe` whose first `text_delta`
+ * is again the cumulative snapshot (`subscribe.rs` always emits one). The
+ * original parked subscribe already marked `snapshotApplied[runId] = true`, so
+ * without this reset the resume snapshot would be treated as an incremental
+ * delta and APPENDed — duplicating any pre-park assistant text. Resetting the
+ * bit makes the next `text_delta` SET the authoritative cumulative text (which
+ * already contains the pre-park prefix). A no-op when the thread is unknown.
+ */
+export function resetSnapshot(threadId: string, runId: string): void {
+	store.setState((s) => {
+		const thread = s.threads[threadId];
+		if (thread === undefined || thread.snapshotApplied?.[runId] === undefined) {
+			return s;
+		}
+		const { [runId]: _dropped, ...rest } = thread.snapshotApplied;
+		return withThread(s, threadId, (t) => ({ ...t, snapshotApplied: rest }));
+	});
+}
+
 export function appendUserMessage(threadId: string, message: Message): void {
 	store.setState((s) =>
 		withThread(s, threadId, (t) => ({

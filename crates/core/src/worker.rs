@@ -94,7 +94,20 @@ pub async fn resume(
 
     // Flip parked → running BEFORE creating the hub/spawning, so a
     // `run/subscribe` in the window sees `running` (live stream) not `parked`.
-    db::mark_run_running(pool, run_id).await?;
+    //
+    // CONCURRENCY GUARD (review M2): the flip is self-guarded on
+    // `status = 'parked'` and returns the affected row count. Two concurrent
+    // resume attempts (a keyed idempotent decide racing a keyless retry, or a
+    // decide racing `recover_resume_if_parked`) both read `parked`, but only
+    // one flip matches a still-parked row. If we affected 0 rows another resume
+    // already won the race — BAIL before creating the hub or spawning, so
+    // exactly one resume Worker runs (no double terminal tx, no duplicated
+    // tail). The reconstruction above is wasted work for the loser but is
+    // read-only, so it is harmless.
+    let flipped = db::mark_run_running(pool, run_id).await?;
+    if flipped == 0 {
+        return Ok(());
+    }
 
     // Fresh hub for the resume segment (ADR-0022): created before the Worker
     // spawns so a fast subscribe finds it.

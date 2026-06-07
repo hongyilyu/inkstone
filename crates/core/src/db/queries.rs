@@ -450,15 +450,27 @@ where
 /// Flip a parked Run back to `running` on resume (ADR-0025): clear the
 /// `awaiting_tool_call_id` waitpoint. The reverse of [`mark_run_parked`]; the
 /// Run goes parked→running before its resume Worker spawns.
+///
+/// SELF-GUARDING (review M2, mirrors [`mark_proposal_accepted`] /
+/// [`mark_parked_run_cancelled`]): the `WHERE … AND status = 'parked'` clause
+/// makes this the single concurrency choke for resume. Two concurrent resume
+/// attempts (a keyed idempotent retry racing a keyless one, or a decide racing
+/// `recover_resume_if_parked`) both read `parked`, but only one flip matches a
+/// still-parked row. Returns the affected row count so the caller asserts
+/// `== 1` and BAILS on 0 (another resume already won) rather than spawning a
+/// second resume Worker.
 pub(super) async fn mark_run_running<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query("UPDATE runs SET status = 'running', awaiting_tool_call_id = NULL WHERE id = ?")
-        .bind(run_id.to_string())
-        .execute(executor)
-        .await
-        .map(|r| r.rows_affected())
+    sqlx::query(
+        "UPDATE runs SET status = 'running', awaiting_tool_call_id = NULL \
+         WHERE id = ? AND status = 'parked'",
+    )
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
 }
 
 /// Cancel a parked Run (ADR-0014, slice 6): flip `runs` to `cancelled` with
