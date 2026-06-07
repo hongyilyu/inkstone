@@ -450,7 +450,7 @@ where
 /// Flip a parked Run back to `running` on resume (ADR-0025): clear the
 /// `awaiting_tool_call_id` waitpoint. The reverse of [`mark_run_parked`]; the
 /// Run goes parked→running before its resume Worker spawns.
-pub(super) async fn mark_run_running<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<()>
+pub(super) async fn mark_run_running<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
@@ -458,7 +458,7 @@ where
         .bind(run_id.to_string())
         .execute(executor)
         .await
-        .map(|_| ())
+        .map(|r| r.rows_affected())
 }
 
 /// Cancel a parked Run (ADR-0014, slice 6): flip `runs` to `cancelled` with

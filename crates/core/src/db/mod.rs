@@ -695,8 +695,10 @@ pub async fn reject_proposal(
 
 /// Flip a parked Run back to `running` on resume (ADR-0025), clearing the
 /// waitpoint. Called after `apply_proposal` commits and before the resume
-/// Worker spawns, so a `run/subscribe` in the window sees `running`.
-pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<()> {
+/// Worker spawns, so a `run/subscribe` in the window sees `running`. Returns
+/// the affected row count (review M2): the caller bails on 0 (another resume
+/// already won the race) rather than spawning a duplicate resume Worker.
+pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<u64> {
     queries::mark_run_running(pool, run_id).await
 }
 
@@ -1050,5 +1052,35 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(parked_msg, "streaming", "parked Run's message untouched");
+    }
+
+    /// `mark_run_running` is self-guarding on `status='parked'` (review M2): the
+    /// FIRST flip of a parked Run affects exactly one row; a SECOND flip (the
+    /// concurrent-resume retry / a decide racing `recover_resume_if_parked`)
+    /// affects ZERO — the Run is already `running`. A non-parked Run is also a
+    /// 0-row no-op. The caller bails on 0 so exactly one resume Worker spawns,
+    /// restoring the "exactly one resume" guarantee (mirrors the slice-3/4/6
+    /// self-guarded flips).
+    #[tokio::test]
+    async fn mark_run_running_guards_on_parked() {
+        let pool = memory_pool().await;
+        let parked = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+        let running = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
+        insert_bare_run(&pool, &parked.to_string(), "parked").await;
+        insert_bare_run(&pool, &running.to_string(), "running").await;
+
+        // First flip of the parked Run wins the race (1 row).
+        let first = mark_run_running(&pool, parked).await.expect("first flip");
+        assert_eq!(first, 1, "parked → running flips exactly one row");
+        assert_eq!(run_status_of(&pool, &parked.to_string()).await, "running");
+
+        // Second flip (the concurrent retry) is a no-op — the Run already left
+        // `parked`, so the loser must bail instead of spawning a second Worker.
+        let second = mark_run_running(&pool, parked).await.expect("second flip");
+        assert_eq!(second, 0, "a second flip on an already-running Run is a no-op");
+
+        // A flip of a Run that was never parked is likewise 0 rows.
+        let non_parked = mark_run_running(&pool, running).await.expect("non-parked flip");
+        assert_eq!(non_parked, 0, "flipping a non-parked Run affects no rows");
     }
 }
