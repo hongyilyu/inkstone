@@ -6,10 +6,12 @@ import {
 	MessageView,
 	PostMessageParams,
 	PostMessageResult,
+	ProposalChangedNotification,
 	ProposalGetParams,
 	ProposalGetResult,
 	ProposalDecideParams,
 	ProposalDecideResult,
+	ProposalPendingNotification,
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
@@ -273,6 +275,60 @@ describe("ProposalDecideResult", () => {
 	it("rejects an unknown status", () => {
 		expect(() =>
 			S.decodeUnknownSync(ProposalDecideResult)({ status: "deferred" }),
+		).toThrow();
+	});
+});
+
+describe("ProposalPendingNotification", () => {
+	it("decodes run_id and proposal_id and encodes back unchanged", () => {
+		const wire = {
+			run_id: "01900000-0000-7000-8000-000000000000",
+			proposal_id: "01900000-0000-7000-8000-000000000010",
+		};
+		const decoded = S.decodeUnknownSync(ProposalPendingNotification)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ProposalPendingNotification)(decoded)).toEqual(wire);
+	});
+
+	it("rejects a missing proposal_id", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProposalPendingNotification)({
+				run_id: "01900000-0000-7000-8000-000000000000",
+			}),
+		).toThrow();
+	});
+});
+
+describe("ProposalChangedNotification", () => {
+	it("decodes run_id, proposal_id, and status and encodes back unchanged", () => {
+		const wire = {
+			run_id: "01900000-0000-7000-8000-000000000000",
+			proposal_id: "01900000-0000-7000-8000-000000000010",
+			status: "accepted",
+		};
+		const decoded = S.decodeUnknownSync(ProposalChangedNotification)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ProposalChangedNotification)(decoded)).toEqual(wire);
+	});
+
+	it("decodes a rejected status", () => {
+		const wire = {
+			run_id: "01900000-0000-7000-8000-000000000000",
+			proposal_id: "01900000-0000-7000-8000-000000000010",
+			status: "rejected",
+		};
+		expect(S.decodeUnknownSync(ProposalChangedNotification)(wire)).toEqual(
+			wire,
+		);
+	});
+
+	it("rejects an unknown status", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProposalChangedNotification)({
+				run_id: "01900000-0000-7000-8000-000000000000",
+				proposal_id: "01900000-0000-7000-8000-000000000010",
+				status: "deferred",
+			}),
 		).toThrow();
 	});
 });

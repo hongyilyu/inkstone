@@ -660,6 +660,33 @@ mod mirror_tests {
     }
 
     #[test]
+    fn proposal_pending_notification_encodes_run_id_and_proposal_id() {
+        let n = ProposalPendingNotification {
+            run_id: UUID_A.to_string(),
+            proposal_id: UUID_B.to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&n).unwrap(),
+            json!({ "run_id": UUID_A, "proposal_id": UUID_B }),
+        );
+    }
+
+    #[test]
+    fn proposal_changed_notification_encodes_full_shape() {
+        for status in ["accepted", "rejected"] {
+            let n = ProposalChangedNotification {
+                run_id: UUID_A.to_string(),
+                proposal_id: UUID_B.to_string(),
+                status: status.to_string(),
+            };
+            assert_eq!(
+                serde_json::to_value(&n).unwrap(),
+                json!({ "run_id": UUID_A, "proposal_id": UUID_B, "status": status }),
+            );
+        }
+    }
+
+    #[test]
     fn thread_create_params_decodes_prompt() {
         let wire = json!({ "prompt": "hi" });
         let p: ThreadCreateParams = serde_json::from_value(wire).unwrap();

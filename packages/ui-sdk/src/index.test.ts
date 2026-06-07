@@ -1,4 +1,4 @@
-import { Effect, Either, Layer, Stream } from "effect";
+import { Effect, Either, Fiber, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsConn } from "ws";
 import { WsClient, WsClientConfig, WsClientLive } from "./index.js";
@@ -313,6 +313,155 @@ describe("WsClient", () => {
 			if (Either.isLeft(result)) {
 				expect(result.left._tag).toBe("UnknownThreadError");
 			}
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("routes a proposal/pending notification to the proposalNotifications stream", async () => {
+		const runId = "01234567-89ab-7def-8012-345678901234";
+		const proposalId = "01900000-0000-7000-8000-000000000010";
+
+		const server = await makeServer((ws, req) => {
+			if (req.method === "run/subscribe") {
+				const subscribedRunId = req.params?.run_id;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { run_id: subscribedRunId },
+					}),
+				);
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "proposal/pending",
+						params: {
+							run_id: subscribedRunId,
+							proposal_id: proposalId,
+						},
+					}),
+				);
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "proposal/changed",
+						params: {
+							run_id: subscribedRunId,
+							proposal_id: proposalId,
+							status: "accepted",
+						},
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			// Collect proposal notifications in the background, then trigger the
+			// server to push the two frames by issuing run/subscribe.
+			const collected = yield* Effect.fork(
+				Stream.runCollect(
+					client.proposalNotifications().pipe(Stream.take(2)),
+				),
+			);
+			yield* client.subscribeRun(runId).pipe(
+				Stream.take(0),
+				Stream.runDrain,
+			);
+			const events = yield* Fiber.join(collected);
+			return Array.from(events);
+		});
+
+		try {
+			const events = await Effect.runPromise(provide(server.url)(program));
+			expect(events).toEqual([
+				{ kind: "pending", run_id: runId, proposal_id: proposalId },
+				{
+					kind: "changed",
+					run_id: runId,
+					proposal_id: proposalId,
+					status: "accepted",
+				},
+			]);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("proposalGet sends run_id and decodes the ProposalGetResult", async () => {
+		const runId = "01234567-89ab-7def-8012-345678901234";
+		const expected = {
+			proposal_id: "01900000-0000-7000-8000-000000000010",
+			run_id: runId,
+			kind: "todo",
+			change_kind: "create",
+			data: { title: "buy milk", done: false },
+			rationale: "the user asked",
+			status: "pending",
+		};
+		let captured: WireRequest["params"];
+
+		const server = await makeServer((ws, req) => {
+			if (req.method === "proposal/get") {
+				captured = req.params;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: expected,
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.proposalGet(runId);
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toEqual(expected);
+			expect(captured?.run_id).toBe(runId);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("proposalDecide sends the decision params and decodes the result", async () => {
+		const proposalId = "01900000-0000-7000-8000-000000000010";
+		const entityId = "01900000-0000-7000-8000-000000000020";
+		let captured: WireRequest["params"];
+
+		const server = await makeServer((ws, req) => {
+			if (req.method === "proposal/decide") {
+				captured = req.params;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { status: "accepted", entity_id: entityId },
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.proposalDecide({
+				proposal_id: proposalId,
+				decision: "accept",
+				decision_idempotency_key: "k1",
+			});
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toEqual({ status: "accepted", entity_id: entityId });
+			expect(captured?.proposal_id).toBe(proposalId);
+			expect(captured?.decision).toBe("accept");
+			expect(captured?.decision_idempotency_key).toBe("k1");
 		} finally {
 			await server.close();
 		}

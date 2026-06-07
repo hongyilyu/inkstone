@@ -401,3 +401,101 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
         );
     });
 }
+
+/// Slice 8: an ATTACHED subscriber is PUSHED a `proposal/pending` Notification
+/// the moment the Run parks (ADR-0025) — so a chat surface already subscribed
+/// to the Run learns to show the review card without polling. The forwarder's
+/// channel-close→parked branch emits `proposal/pending {run_id, proposal_id}`
+/// instead of merely suppressing the synthesized `done`. Still NO terminal
+/// `done`/`error`.
+#[test]
+fn attached_subscriber_gets_proposal_pending_on_park() {
+    let worker_cmd = propose_worker_cmd();
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    // The fixture emits a `text_delta` then waits 1.5s before proposing, so a
+    // subscribe lands on the LIVE hub before the park.
+    let (_child, ws_url) = spawn_core_env(
+        &worker_cmd,
+        &db_path,
+        &[("INKSTONE_PROPOSE_DELAY_MS", "1500")],
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let resp = rpc(
+            &ws_url,
+            1,
+            "thread/create",
+            serde_json::json!({ "prompt": "remember to buy milk" }),
+        )
+        .await;
+        let run_id = resp["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
+            .to_string();
+
+        // Attach to the live hub during the fixture's pre-propose delay.
+        let (mut ws, _r) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("ws handshake");
+        let sub = serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "run/subscribe",
+            "params": { "run_id": run_id },
+        });
+        ws.send(Message::Text(sub.to_string().into()))
+            .await
+            .expect("send subscribe");
+        let sub_resp = next_text(&mut ws).await;
+        let sub_v: serde_json::Value =
+            serde_json::from_str(&sub_resp).expect("subscribe response is JSON");
+        assert_eq!(
+            sub_v["result"]["status"].as_str(),
+            Some("running"),
+            "attached to a LIVE streaming hub before the park — body: {sub_resp}"
+        );
+
+        // Drain across the park. We must observe a `proposal/pending`
+        // notification carrying this run_id (and a proposal_id), and NEVER a
+        // terminal done/error.
+        let mut saw_pending = false;
+        let window = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < window {
+            match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
+                Ok(Some(Ok(Message::Text(t)))) => {
+                    let v: serde_json::Value = serde_json::from_str(&t).unwrap_or_default();
+                    let kind = v["params"]["event"]["kind"].as_str();
+                    assert!(
+                        kind != Some("done") && kind != Some("error"),
+                        "attached subscriber must not get a terminal done/error on park — got {t}"
+                    );
+                    if v["method"].as_str() == Some("proposal/pending") {
+                        assert_eq!(
+                            v["params"]["run_id"].as_str(),
+                            Some(run_id.as_str()),
+                            "proposal/pending carries the run_id — {t}"
+                        );
+                        assert!(
+                            v["params"]["proposal_id"].as_str().is_some(),
+                            "proposal/pending carries a proposal_id — {t}"
+                        );
+                        saw_pending = true;
+                        break;
+                    }
+                }
+                Ok(Some(Ok(_))) => {}
+                Ok(Some(Err(_))) | Ok(None) => break,
+                Err(_) => {}
+            }
+        }
+        ws.close(None).await.ok();
+        assert!(
+            saw_pending,
+            "attached subscriber received a proposal/pending notification on park"
+        );
+    });
+}
