@@ -37,12 +37,17 @@ const TODO = { title: "buy milk", done: false };
 function makeStubRuntime(opts: {
 	proposalQueue: Queue.Queue<ProposalNotification>;
 	runQueue?: Queue.Queue<RunEventValue>;
+	runQueues?: Queue.Queue<RunEventValue>[];
 	onDecide?: (
 		params: ProposalDecideParams,
 	) => Effect.Effect<ProposalDecideResult, WsError>;
 	onSubscribe?: () => void;
 }) {
 	const unused = Effect.die("not exercised");
+	// Each `subscribeRun` call gets the next queue in `runQueues` (a fresh
+	// stream segment, as production does — a new subscribe is a new hub), or
+	// falls back to the single `runQueue` / an empty stream.
+	let subscribeIdx = 0;
 	const stub = WsClient.of({
 		threadCreate: () => unused,
 		postMessage: () => unused,
@@ -51,6 +56,11 @@ function makeStubRuntime(opts: {
 		listTodos: () => unused,
 		subscribeRun: () => {
 			opts.onSubscribe?.();
+			if (opts.runQueues) {
+				const q = opts.runQueues[subscribeIdx];
+				subscribeIdx += 1;
+				return q ? Stream.fromQueue(q) : Stream.empty;
+			}
 			return opts.runQueue ? Stream.fromQueue(opts.runQueue) : Stream.empty;
 		},
 		providerStatus: () => unused,
@@ -269,6 +279,93 @@ describe("proposal stream + decide", () => {
 			(m) => m.run_id === "run-1",
 		);
 		expect(msg?.text).toBe("Done. added it.");
+
+		await runtime.dispose();
+	});
+
+	it("resume snapshot SETs (not appends) cumulative text after pre-park prose (M1)", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		// Two distinct stream segments: the original parked subscribe and the
+		// resume re-subscribe each get a fresh queue (production opens a new hub
+		// per subscribe, so the resume's first delta is again the cumulative
+		// snapshot).
+		const parkedQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const resumeQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueues: [parkedQueue, resumeQueue],
+		});
+
+		// Seed the assistant turn for run-1 and start the ORIGINAL parked stream.
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			text: "",
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+
+		// The ORIGINAL subscribe streams the pre-park prose. Its FIRST delta is
+		// the cumulative snapshot (SET), marking `snapshotApplied[run-1] = true`
+		// — exactly what production does on every first subscribe. The model
+		// streams prose, then parks on `propose_entity` (NO terminal event, so
+		// the fiber stays blocked — this is the parked state).
+		Queue.unsafeOffer(parkedQueue, {
+			kind: "text_delta",
+			delta: "Let me check the other thread. ",
+		});
+		await waitFor(() => {
+			const msg = getChatState().threads["thread-1"]?.messages.find(
+				(m) => m.run_id === "run-1",
+			);
+			return msg?.text === "Let me check the other thread. ";
+		});
+
+		// Park + decide → resume re-subscribe. The resume snapshot RE-INCLUDES
+		// the pre-park prose (the cumulative text Core reconstructed) and then
+		// appends the closing line.
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+
+		// The resume tail (on the FRESH resume queue): the first delta is the
+		// cumulative snapshot (re-including the prefix) → must SET, not append.
+		// The remaining deltas APPEND.
+		Queue.unsafeOffer(resumeQueue, {
+			kind: "text_delta",
+			delta: "Let me check the other thread. ",
+		});
+		Queue.unsafeOffer(resumeQueue, {
+			kind: "text_delta",
+			delta: "Done — added it.",
+		});
+		Queue.unsafeOffer(resumeQueue, { kind: "done" });
+
+		await waitFor(() => {
+			const msg = getChatState().threads["thread-1"]?.messages.find(
+				(m) => m.run_id === "run-1",
+			);
+			return msg?.status === "completed";
+		});
+
+		const msg = getChatState().threads["thread-1"]?.messages.find(
+			(m) => m.run_id === "run-1",
+		);
+		// SET (correct): the snapshot replaced the on-screen prefix.
+		// Append (the M1 bug): "Let me check the other thread. Let me check the
+		// other thread. Done — added it." (duplicated prefix).
+		expect(msg?.text).toBe("Let me check the other thread. Done — added it.");
 
 		await runtime.dispose();
 	});
