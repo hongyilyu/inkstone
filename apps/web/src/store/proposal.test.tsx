@@ -48,6 +48,7 @@ function makeStubRuntime(opts: {
 		postMessage: () => unused,
 		threadList: () => unused,
 		threadGet: () => unused,
+		listTodos: () => unused,
 		subscribeRun: () => {
 			opts.onSubscribe?.();
 			return opts.runQueue ? Stream.fromQueue(opts.runQueue) : Stream.empty;
@@ -181,7 +182,9 @@ describe("proposal stream + decide", () => {
 				if (decideCalls === 1) {
 					return Effect.succeed({ status: "accepted" } as const);
 				}
-				return Effect.fail(new WsRequestError({ reason: "proposal_not_pending" }));
+				return Effect.fail(
+					new WsRequestError({ reason: "proposal_not_pending" }),
+				);
 			},
 		});
 

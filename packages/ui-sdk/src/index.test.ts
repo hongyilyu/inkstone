@@ -145,6 +145,44 @@ describe("WsClient", () => {
 		}
 	});
 
+	it("listTodos round-trips the canonical EntityListResult", async () => {
+		const expected = {
+			entities: [
+				{
+					id: "01999999-0000-7000-8000-000000000030",
+					type: "todo",
+					data: { title: "buy milk", done: false },
+					created_at: 1717200000000,
+					updated_at: 1717200000000,
+				},
+			],
+		};
+
+		const server = await makeServer((ws, req) => {
+			if (req.method === "entity/list_todos") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: expected,
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.listTodos();
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toEqual(expected);
+		} finally {
+			await server.close();
+		}
+	});
+
 	it("threadGet round-trips the canonical ThreadGetResult", async () => {
 		const expected = {
 			thread_id: "01999999-0000-7000-8000-000000000001",

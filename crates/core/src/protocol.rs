@@ -142,7 +142,6 @@ pub struct ProposalChangedNotification {
 pub struct PostMessageResult {
     pub run_id: String,
 }
-
 /// `thread/create` params: the first user message. Message-first thread
 /// creation (ADR-0022) — a Thread is born only with its first message, so
 /// `prompt` is required. An empty/whitespace prompt is rejected with
@@ -180,6 +179,29 @@ pub struct ThreadSummary {
 #[derive(Debug, Serialize)]
 pub struct ThreadListResult {
     pub threads: Vec<ThreadSummary>,
+}
+
+/// One Entity row in an `entity/list_todos` result (ADR-0004): the raw tier-2
+/// `entities` columns. `r#type` serializes as `"type"`; `data` is the opaque
+/// entity JSON (for a Todo, `{title, done, due?}`); `created_at`/`updated_at`
+/// are ms-epoch stamps. Serialize-only — Core produces it. Mirrors the TS
+/// `EntityRow`.
+#[derive(Debug, Serialize)]
+pub struct EntityRow {
+    pub id: String,
+    pub r#type: String,
+    pub data: serde_json::Value,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// `entity/list_todos` result: the accepted Todos, newest-first. Object-wrapper
+/// shape (`{entities: [...]}`) so the result stays forward-extensible and the
+/// TS mirror is a `Schema.Struct` (mirrors `thread/list`'s `{threads: [...]}`).
+/// Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct EntityListResult {
+    pub entities: Vec<EntityRow>,
 }
 
 /// `thread/get` params: the Thread to rehydrate. A malformed `thread_id` is

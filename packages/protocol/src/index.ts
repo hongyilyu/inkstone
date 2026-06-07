@@ -177,6 +177,33 @@ export type ProposalChangedNotification = S.Schema.Type<
 	typeof ProposalChangedNotification
 >;
 
+// --- entity/* (ADR-0004): the accepted Entities the Library reads. Only the
+// Todo type goes live this slice (the one type the engine creates today).
+
+/**
+ * One Entity row in an `entity/list_todos` result: the raw tier-2 `entities`
+ * columns (ADR-0004). `data` is the opaque entity JSON (for a Todo,
+ * `{title, done, due?}`); `type` is the entity type (`todo`). `created_at` /
+ * `updated_at` are ms-epoch stamps. The Client maps these to its Library view
+ * model.
+ */
+export const EntityRow = S.Struct({
+	id: S.String,
+	type: S.String,
+	data: S.Unknown,
+	created_at: S.Number,
+	updated_at: S.Number,
+});
+export type EntityRow = S.Schema.Type<typeof EntityRow>;
+
+/**
+ * `entity/list_todos` result: the accepted Todos, newest-first. Object-wrapper
+ * shape (`{entities: [...]}`) so the result stays forward-extensible and the
+ * Rust mirror is a struct (mirrors `thread/list`'s `{threads: [...]}`).
+ */
+export const EntityListResult = S.Struct({ entities: S.Array(EntityRow) });
+export type EntityListResult = S.Schema.Type<typeof EntityListResult>;
+
 // --- tool protocol (ADR-0018): the Worker↔Core duplex for tool calls. The
 // Worker emits `tool_request` on its outbound stream (alongside RunEvents);
 // Core replies with `tool_result` on the post-manifest inbound stream.
@@ -367,14 +394,7 @@ export const WorkflowManifest = S.Struct({
 	provider: S.String,
 	model: S.String,
 	system_prompt: S.String,
-	thinking_level: S.Literal(
-		"off",
-		"minimal",
-		"low",
-		"medium",
-		"high",
-		"xhigh",
-	),
+	thinking_level: S.Literal("off", "minimal", "low", "medium", "high", "xhigh"),
 	tools: S.Array(CoreToolDescriptor),
 });
 export type WorkflowManifest = S.Schema.Type<typeof WorkflowManifest>;

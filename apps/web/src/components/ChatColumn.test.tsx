@@ -34,6 +34,7 @@ function makeStubRuntime(opts: {
 		postMessage: () => Effect.succeed(opts.runId),
 		threadList: () => unused,
 		threadGet: () => unused,
+		listTodos: () => unused,
 		subscribeRun: () => Stream.fromIterable(opts.events),
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,

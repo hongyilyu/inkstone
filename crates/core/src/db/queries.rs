@@ -367,6 +367,24 @@ where
 
 // ─── entities + entity_revisions (ADR-0004) ───────────────────────────
 
+/// Read every accepted Todo for `entity/list_todos` (slice 11), newest-first.
+/// Returns the raw `entities` columns `(id, type, data, created_at, updated_at)`
+/// for `type='todo'` rows; the handler parses `data` and maps each to the wire
+/// `EntityRow`. Read-only — no FK/transaction concerns.
+pub(super) async fn list_todos<'e, E>(
+    executor: E,
+) -> sqlx::Result<Vec<(String, String, String, i64, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, type, data, created_at, updated_at \
+         FROM entities WHERE type = 'todo' ORDER BY created_at DESC",
+    )
+    .fetch_all(executor)
+    .await
+}
+
 /// Insert a freshly-created Entity (ADR-0004): `created_by='proposal'` with the
 /// originating `created_via_proposal_id`. `data` is the validated JSON snapshot;
 /// `schema_version` stamps the type's current shape. Runs inside the apply tx.

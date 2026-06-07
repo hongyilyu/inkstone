@@ -106,6 +106,35 @@ pub async fn list_threads(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String
     queries::list_threads(pool).await
 }
 
+/// One accepted Entity for `entity/list_todos` (slice 11): the raw tier-2
+/// `entities` columns. `data` is parsed from the stored JSON snapshot; a
+/// malformed row degrades to `data: null` rather than failing the whole read.
+/// The handler maps this straight onto the wire `EntityRow`.
+pub struct EntityRow {
+    pub id: String,
+    pub r#type: String,
+    pub data: serde_json::Value,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// Read every accepted Todo for `entity/list_todos`, newest-first. Maps each
+/// `entities` row of `type='todo'` to an [`EntityRow`], parsing the stored
+/// `data` JSON. Read-only.
+pub async fn list_todos(pool: &SqlitePool) -> sqlx::Result<Vec<EntityRow>> {
+    let rows = queries::list_todos(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, r#type, data, created_at, updated_at)| EntityRow {
+            id,
+            r#type,
+            data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+            created_at,
+            updated_at,
+        })
+        .collect())
+}
+
 /// One Message in a `thread/get` read: its identity, `role`, `status`,
 /// owning `run_id`, and `text` already assembled (the concat of its text
 /// parts in `seq` order). Flat-text-no-parts[] per ADR-0017/Q15 — the handler

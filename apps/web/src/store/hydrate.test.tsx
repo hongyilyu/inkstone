@@ -26,7 +26,13 @@ describe("refresh-durable hydration", () => {
 			thread_id: "tA",
 			title: "T",
 			messages: [
-				{ id: "m1", role: "user", status: "completed", run_id: "r1", text: "hi" },
+				{
+					id: "m1",
+					role: "user",
+					status: "completed",
+					run_id: "r1",
+					text: "hi",
+				},
 				{
 					id: "m2",
 					role: "assistant",
@@ -40,6 +46,7 @@ describe("refresh-durable hydration", () => {
 			threadCreate: () => Effect.die("unused"),
 			postMessage: () => Effect.die("unused"),
 			threadList: () => Effect.die("unused"),
+			listTodos: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tA" ? Effect.succeed(result) : Effect.die("unknown thread"),
 			subscribeRun,
@@ -98,6 +105,7 @@ describe("refresh-durable hydration", () => {
 			threadCreate: () => Effect.die("unused"),
 			postMessage: () => Effect.die("unused"),
 			threadList: () => Effect.die("unused"),
+			listTodos: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tB" ? Effect.succeed(result) : Effect.die("unknown thread"),
 			subscribeRun,

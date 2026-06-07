@@ -3,14 +3,16 @@ import { describe, expect, it } from "vitest";
 import {
 	AgentToolResult,
 	CoreToolDescriptor,
+	EntityListResult,
+	EntityRow,
 	MessageView,
 	PostMessageParams,
 	PostMessageResult,
 	ProposalChangedNotification,
-	ProposalGetParams,
-	ProposalGetResult,
 	ProposalDecideParams,
 	ProposalDecideResult,
+	ProposalGetParams,
+	ProposalGetResult,
 	ProposalPendingNotification,
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
@@ -423,6 +425,58 @@ describe("ThreadListResult", () => {
 	});
 });
 
+describe("EntityRow", () => {
+	const wire = {
+		id: "01900000-0000-7000-8000-000000000030",
+		type: "todo",
+		data: { title: "buy milk", done: false },
+		created_at: 1_700_000_000_000,
+		updated_at: 1_700_000_000_000,
+	};
+
+	it("decodes a row with opaque data and encodes back unchanged", () => {
+		const decoded = S.decodeUnknownSync(EntityRow)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(EntityRow)(decoded)).toEqual(wire);
+	});
+
+	it("rejects a non-number created_at", () => {
+		expect(() =>
+			S.decodeUnknownSync(EntityRow)({ ...wire, created_at: "today" }),
+		).toThrow();
+	});
+
+	it("rejects a missing type", () => {
+		const { type: _omit, ...noType } = wire;
+		expect(() => S.decodeUnknownSync(EntityRow)(noType)).toThrow();
+	});
+});
+
+describe("EntityListResult", () => {
+	it("decodes an entities array and encodes back unchanged", () => {
+		const wire = {
+			entities: [
+				{
+					id: "01900000-0000-7000-8000-000000000030",
+					type: "todo",
+					data: { title: "buy milk", done: false },
+					created_at: 1_700_000_000_000,
+					updated_at: 1_700_000_000_000,
+				},
+			],
+		};
+		const decoded = S.decodeUnknownSync(EntityListResult)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(EntityListResult)(decoded)).toEqual(wire);
+	});
+
+	it("decodes an empty entities array", () => {
+		expect(S.decodeUnknownSync(EntityListResult)({ entities: [] })).toEqual({
+			entities: [],
+		});
+	});
+});
+
 describe("ThreadGetParams", () => {
 	it("decodes a thread_id", () => {
 		const wire = { thread_id: "01900000-0000-7000-8000-000000000000" };
@@ -509,15 +563,11 @@ describe("RunEvent", () => {
 	});
 
 	it("rejects an error variant missing its message field", () => {
-		expect(() =>
-			S.decodeUnknownSync(RunEvent)({ kind: "error" }),
-		).toThrow();
+		expect(() => S.decodeUnknownSync(RunEvent)({ kind: "error" })).toThrow();
 	});
 
 	it("rejects an unknown kind", () => {
-		expect(() =>
-			S.decodeUnknownSync(RunEvent)({ kind: "unknown" }),
-		).toThrow();
+		expect(() => S.decodeUnknownSync(RunEvent)({ kind: "unknown" })).toThrow();
 	});
 
 	it("rejects a text_delta missing its delta field", () => {
@@ -526,18 +576,19 @@ describe("RunEvent", () => {
 		).toThrow();
 	});
 
-	it.each(["started", "completed", "error"] as const)(
-		"decodes a tool_call variant with status %s",
-		(status) => {
-			const event = {
-				kind: "tool_call",
-				tool_call_id: "tc_01",
-				name: "read_thread",
-				status,
-			};
-			expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
-		},
-	);
+	it.each([
+		"started",
+		"completed",
+		"error",
+	] as const)("decodes a tool_call variant with status %s", (status) => {
+		const event = {
+			kind: "tool_call",
+			tool_call_id: "tc_01",
+			name: "read_thread",
+			status,
+		};
+		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
+	});
 
 	it("rejects a tool_call with an unknown status", () => {
 		expect(() =>

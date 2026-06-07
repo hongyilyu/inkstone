@@ -12,6 +12,7 @@ mod proposal;
 mod cancel;
 mod provider;
 mod catalog;
+mod entity;
 mod reply;
 mod settings;
 mod subscribe;
@@ -78,6 +79,11 @@ pub async fn dispatch(
                 return;
             };
             thread_get::handle(pool, req.id, params, out_tx).await;
+        }
+        "entity/list_todos" => {
+            // Read-only, no params (ADR-0022 read path) — skip param
+            // deserialization entirely.
+            entity::handle_list_todos(pool, req.id, out_tx).await;
         }
         "proposal/get" => {
             let Ok(params) =

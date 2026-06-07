@@ -1,9 +1,9 @@
 import type { ModelInfo } from "@inkstone/protocol";
 import { WsClient, type WsError } from "@inkstone/ui-sdk";
 import {
-	RouterProvider,
 	createMemoryHistory,
 	createRouter,
+	RouterProvider,
 } from "@tanstack/react-router";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -36,6 +36,7 @@ function makeRuntime(opts: {
 		postMessage: die,
 		threadList: die,
 		threadGet: die,
+		listTodos: die,
 		subscribeRun: dieStream,
 		providerStatus: () =>
 			Effect.succeed({
@@ -155,7 +156,9 @@ describe("Models settings page (ADR-0024)", () => {
 			within(row).getByRole("button", { name: /set as preferred/i }),
 		);
 
-		await waitFor(() => expect(settingsSet).toHaveBeenCalledWith({ model: "gpt-5.5" }));
+		await waitFor(() =>
+			expect(settingsSet).toHaveBeenCalledWith({ model: "gpt-5.5" }),
+		);
 		// The chosen row now shows the Preferred badge.
 		expect(
 			within(await screen.findByRole("row", { name: /GPT-5\.5/ })).getByText(
