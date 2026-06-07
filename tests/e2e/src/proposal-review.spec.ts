@@ -39,6 +39,27 @@ test("renders a pending proposal and accept resumes the run", async ({
 	await chat.waitForAssistantText(/done — added it/i);
 });
 
+test("edit changes the todo then resumes", async ({ chat }) => {
+	await chat.goto();
+
+	await chat.send("remember to buy milk");
+
+	const card = chat.proposalCard();
+	await expect(card).toBeVisible({ timeout: 15_000 });
+	await expect(card).toContainText("buy milk");
+
+	// Edit: open the inline form, retype the title, save.
+	await card.getByRole("button", { name: /edit/i }).click();
+	const title = card.getByRole("textbox", { name: /title/i });
+	await title.fill("buy oat milk");
+	await card.getByRole("button", { name: /save changes/i }).click();
+
+	// The edit decides AND accepts in one step (ADR-0025); the card reaches
+	// accepted and the Run resumes to completion.
+	await expect(card).toContainText(/added to todos/i, { timeout: 15_000 });
+	await chat.waitForAssistantText(/done — added it/i);
+});
+
 test("dismiss rejects and resumes", async ({ chat }) => {
 	await chat.goto();
 

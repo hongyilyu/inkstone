@@ -116,4 +116,50 @@ describe("ProposalCard", () => {
 		fireEvent.click(screen.getByRole("button", { name: /try again/i }));
 		expect(onDecide).toHaveBeenCalledWith("accept");
 	});
+
+	it("opens the inline edit form with the proposed title pre-filled", () => {
+		render(<ProposalCard proposal={base} onDecide={() => {}} />);
+		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+		const title = screen.getByRole("textbox", { name: /title/i });
+		expect(title).toHaveValue("buy milk");
+		expect(
+			screen.getByRole("button", { name: /save changes/i }),
+		).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
+	});
+
+	it("saves the edited title via onDecide('edit', {title})", () => {
+		const onDecide = vi.fn();
+		render(<ProposalCard proposal={base} onDecide={onDecide} />);
+		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+		const title = screen.getByRole("textbox", { name: /title/i });
+		fireEvent.change(title, { target: { value: "buy oat milk" } });
+		fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+		expect(onDecide).toHaveBeenCalledWith("edit", {
+			title: "buy oat milk",
+			done: false,
+		});
+	});
+
+	it("disables Save when the title is empty", () => {
+		render(<ProposalCard proposal={base} onDecide={() => {}} />);
+		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+		const title = screen.getByRole("textbox", { name: /title/i });
+		fireEvent.change(title, { target: { value: "" } });
+		expect(screen.getByRole("button", { name: /save changes/i })).toBeDisabled();
+	});
+
+	it("Cancel restores the pending actions without deciding", () => {
+		const onDecide = vi.fn();
+		render(<ProposalCard proposal={base} onDecide={onDecide} />);
+		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+		fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+		expect(onDecide).not.toHaveBeenCalled();
+		expect(
+			screen.getByRole("button", { name: /add to todos/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /save changes/i }),
+		).not.toBeInTheDocument();
+	});
 });
