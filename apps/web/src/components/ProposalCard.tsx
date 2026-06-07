@@ -1,8 +1,9 @@
 import { Check, ListTodo, Loader2, Pencil, RotateCcw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { PendingProposal } from "@/store/chat";
 import { cn } from "@/lib/utils.js";
 import { Card } from "./ui/card.js";
+import { Input } from "./ui/input.js";
 
 /** A human label for an entity kind (todo → "todo"); falls back to the raw kind. */
 const KIND_NOUN: Record<string, string> = { todo: "todo" };
@@ -28,13 +29,22 @@ function field(data: unknown, key: string): string | undefined {
  * `accepted` / `rejected` (collapse to a quiet decided line) · `error` (inline
  * message + retry). The decision is announced via a live region; accept/reject
  * pair an icon with a word, never colour alone.
+ *
+ * Edit is local-only: the chip swaps the body for an inline form (no modal,
+ * product register) pre-filled from the proposed `data`. Save edits AND accepts
+ * in one step (`onDecide("edit", editedPayload)`, ADR-0025); Cancel returns to
+ * pending. Save stays the single Ink Magenta primary in the editing state (One
+ * Ink Rule).
  */
 export function ProposalCard({
 	proposal,
 	onDecide,
 }: {
 	proposal: PendingProposal;
-	onDecide: (decision: "accept" | "reject") => void;
+	onDecide: (
+		decision: "accept" | "reject" | "edit",
+		editedPayload?: { title: string; done: boolean; due?: string },
+	) => void;
 }) {
 	const { status, data, rationale, kind } = proposal;
 	const noun = KIND_NOUN[kind] ?? kind;
@@ -51,6 +61,24 @@ export function ProposalCard({
 	const decide = (decision: "accept" | "reject") => {
 		setInFlight(decision);
 		onDecide(decision);
+	};
+
+	// The inline edit form (local-only): the Edit chip opens it pre-filled from
+	// the proposed values; Save applies-in-one-step, Cancel returns to pending.
+	const [editing, setEditing] = useState(false);
+	const [editTitle, setEditTitle] = useState(title);
+	const titleRef = useRef<HTMLInputElement>(null);
+	const openEdit = () => {
+		setEditTitle(title);
+		setEditing(true);
+	};
+	useEffect(() => {
+		if (editing) titleRef.current?.focus();
+	}, [editing]);
+	const saveEdit = () => {
+		const trimmed = editTitle.trim();
+		if (trimmed.length === 0) return;
+		onDecide("edit", { title: trimmed, done: false, ...(due ? { due } : {}) });
 	};
 
 	if (status === "accepted" || status === "rejected") {
@@ -97,88 +125,143 @@ export function ProposalCard({
 				</div>
 			</header>
 
-			<dl className="flex flex-col gap-1.5 border-border border-t pt-3 text-sm">
-				<Field label="Title" value={title} />
-				{due ? <Field label="Due" value={due} /> : null}
-			</dl>
-
-			{rationale ? (
-				<p className="text-sm leading-relaxed text-muted-foreground">
-					{rationale}
-				</p>
-			) : null}
-
-			{isError ? (
-				<p role="alert" className="text-sm text-destructive">
-					Couldn't apply. Try again.
-				</p>
-			) : null}
-
-			<footer className="flex items-center gap-2 pt-1">
-				{isError ? (
-					<button
-						type="button"
-						onClick={() => decide("accept")}
-						className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-					>
-						<RotateCcw className="size-4" aria-hidden />
-						Try again
-					</button>
-				) : (
-					<button
-						type="button"
-						disabled={deciding}
-						onClick={() => decide("accept")}
-						className={cn(
-							"inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
-						)}
-					>
-						{deciding && inFlight === "accept" ? (
-							<>
-								<Loader2
-									className="size-4 motion-safe:animate-spin"
-									aria-hidden
-								/>
-								Adding…
-							</>
-						) : (
-							<>
-								<Check className="size-4" aria-hidden />
-								Add to Todos
-							</>
-						)}
-					</button>
-				)}
-
-				<button
-					type="button"
-					disabled
-					title="Editing arrives soon"
-					className="inline-flex cursor-not-allowed items-center gap-1.5 rounded-full border border-input px-3 py-1.5 font-medium text-foreground/80 text-sm opacity-50"
+			{editing ? (
+				<form
+					onSubmit={(e) => {
+						e.preventDefault();
+						saveEdit();
+					}}
+					className="flex flex-col gap-3 border-border border-t pt-3"
 				>
-					<Pencil className="size-3.5" aria-hidden />
-					Edit
-				</button>
-
-				<button
-					type="button"
-					disabled={deciding}
-					onClick={() => decide("reject")}
-					className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-				>
-					{deciding && inFlight === "reject" ? (
-						<>
-							<Loader2
-								className="size-3.5 motion-safe:animate-spin"
-								aria-hidden
+					<label className="flex flex-col gap-1.5" htmlFor="proposal-edit-title">
+						<span className="text-xs font-medium text-muted-foreground">
+							Title
+						</span>
+						<Input
+							id="proposal-edit-title"
+							ref={titleRef}
+							value={editTitle}
+							onChange={(e) => setEditTitle(e.target.value)}
+							className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
+						/>
+					</label>
+					{due ? (
+						<label className="flex flex-col gap-1.5" htmlFor="proposal-edit-due">
+							<span className="text-xs font-medium text-muted-foreground">
+								Due
+							</span>
+							<Input
+								id="proposal-edit-due"
+								value={due}
+								readOnly
+								className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-muted-foreground"
 							/>
-							Dismissing…
-						</>
-					) : (
-						"Dismiss"
-					)}
-				</button>
-			</footer>
+						</label>
+					) : null}
+					<footer className="flex items-center gap-2 pt-1">
+						<button
+							type="submit"
+							disabled={editTitle.trim().length === 0}
+							className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+						>
+							<Check className="size-4" aria-hidden />
+							Save changes
+						</button>
+						<button
+							type="button"
+							onClick={() => setEditing(false)}
+							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+						>
+							Cancel
+						</button>
+					</footer>
+				</form>
+			) : (
+				<>
+					<dl className="flex flex-col gap-1.5 border-border border-t pt-3 text-sm">
+						<Field label="Title" value={title} />
+						{due ? <Field label="Due" value={due} /> : null}
+					</dl>
+
+					{rationale ? (
+						<p className="text-sm leading-relaxed text-muted-foreground">
+							{rationale}
+						</p>
+					) : null}
+
+					{isError ? (
+						<p role="alert" className="text-sm text-destructive">
+							Couldn't apply. Try again.
+						</p>
+					) : null}
+
+					<footer className="flex items-center gap-2 pt-1">
+						{isError ? (
+							<button
+								type="button"
+								onClick={() => decide("accept")}
+								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+							>
+								<RotateCcw className="size-4" aria-hidden />
+								Try again
+							</button>
+						) : (
+							<button
+								type="button"
+								disabled={deciding}
+								onClick={() => decide("accept")}
+								className={cn(
+									"inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
+								)}
+							>
+								{deciding && inFlight === "accept" ? (
+									<>
+										<Loader2
+											className="size-4 motion-safe:animate-spin"
+											aria-hidden
+										/>
+										Adding…
+									</>
+								) : (
+									<>
+										<Check className="size-4" aria-hidden />
+										Add to Todos
+									</>
+								)}
+							</button>
+						)}
+
+						<button
+							type="button"
+							disabled={deciding || isError}
+							onClick={openEdit}
+							className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-input px-3 py-1.5 font-medium text-foreground/80 text-sm transition-colors hover:bg-secondary/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+						>
+							<Pencil className="size-3.5" aria-hidden />
+							Edit
+						</button>
+
+						<button
+							type="button"
+							disabled={deciding}
+							onClick={() => decide("reject")}
+							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+						>
+							{deciding && inFlight === "reject" ? (
+								<>
+									<Loader2
+										className="size-3.5 motion-safe:animate-spin"
+										aria-hidden
+									/>
+									Dismissing…
+								</>
+							) : (
+								"Dismiss"
+							)}
+						</button>
+					</footer>
+				</>
+			)}
 		</Card>
 	);
 }

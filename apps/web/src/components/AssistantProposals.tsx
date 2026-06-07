@@ -20,12 +20,8 @@ export function AssistantProposals({ runId }: { runId: string }) {
 		<div className="mt-1 flex w-full flex-col gap-3">
 			<ProposalCard
 				proposal={proposal}
-				onDecide={(decision) =>
-					decideProposal(
-						runtime,
-						runId,
-						decision === "accept" ? "accept" : "reject",
-					)
+				onDecide={(decision, editedPayload) =>
+					decideProposal(runtime, runId, decision, editedPayload)
 				}
 			/>
 		</div>

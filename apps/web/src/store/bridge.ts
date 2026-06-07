@@ -231,20 +231,23 @@ export function startProposalStream(runtime: WsRuntime): void {
 }
 
 /**
- * Decide a parked Run's Proposal (accept/reject) and resume the Run. Flips the
- * card to `deciding`, calls `proposal/decide`, then on success sets the decided
- * status AND re-subscribes to the Run so the resume tail (parked → running →
- * completed, ADR-0022 snapshot-then-tail) streams into the assistant bubble. A
- * failed decide flips the card to `error` so the user can retry.
+ * Decide a parked Run's Proposal (accept/reject/edit) and resume the Run. Flips
+ * the card to `deciding`, calls `proposal/decide`, then on success sets the
+ * decided status AND re-subscribes to the Run so the resume tail (parked →
+ * running → completed, ADR-0022 snapshot-then-tail) streams into the assistant
+ * bubble. A failed decide flips the card to `error` so the user can retry.
  *
- * A decide already in flight short-circuits (no double-submit); the stale parked
- * stream fiber is interrupted before re-subscribing so the resume tail has a
- * single consumer.
+ * An `edit` carries the user's `editedPayload` (the Todo `data`); Core
+ * re-validates it and applies-in-one-step (ADR-0025), so the resume tail
+ * behaves exactly like an accept. A decide already in flight short-circuits (no
+ * double-submit); the stale parked stream fiber is interrupted before
+ * re-subscribing so the resume tail has a single consumer.
  */
 export async function decideProposal(
 	runtime: WsRuntime,
 	runId: RunId,
-	decision: "accept" | "reject",
+	decision: "accept" | "reject" | "edit",
+	editedPayload?: unknown,
 ): Promise<void> {
 	const proposal = getChatState().proposals[runId];
 	if (proposal === undefined) {
@@ -266,6 +269,7 @@ export async function decideProposal(
 		return yield* client.proposalDecide({
 			proposal_id: proposal.proposal_id,
 			decision,
+			...(decision === "edit" ? { edited_payload: editedPayload } : {}),
 		});
 	});
 
