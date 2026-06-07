@@ -865,3 +865,129 @@ pub async fn get_setting(pool: &SqlitePool, key: &str) -> sqlx::Result<Option<St
 pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result<()> {
     queries::set_setting(pool, key, value).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A migrated in-memory pool for the carve-out unit test. Mirrors `open()`'s
+    /// migration so the `runs` CHECK constraints (status/terminal_reason) are
+    /// in force.
+    async fn memory_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    /// Insert a Thread + a bare Run row in `status` directly (no Worker), so the
+    /// carve-out test can hand-craft a `running` and a `parked` Run. `started_at`
+    /// is set; `awaiting_tool_call_id` is left NULL (the FK is nullable and the
+    /// sweep does not read it).
+    async fn insert_bare_run(pool: &SqlitePool, run_id: &str, status: &str) {
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(format!("thr-{run_id}"))
+        .bind("t")
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(pool)
+        .await
+        .expect("insert thread");
+        // user_message_id FK is DEFERRABLE; insert a matching message after.
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', ?, ?, ?)",
+        )
+        .bind(run_id)
+        .bind(format!("thr-{run_id}"))
+        .bind(format!("msg-{run_id}"))
+        .bind(status)
+        .bind(1_i64)
+        .execute(pool)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'assistant', 'streaming', ?, ?)",
+        )
+        .bind(format!("msg-{run_id}"))
+        .bind(format!("thr-{run_id}"))
+        .bind(run_id)
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(pool)
+        .await
+        .expect("insert message");
+    }
+
+    async fn run_status_of(pool: &SqlitePool, run_id: &str) -> String {
+        sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
+            .bind(run_id)
+            .fetch_one(pool)
+            .await
+            .expect("run row")
+    }
+
+    /// The boot recovery sweep (ADR-0012) errors an interrupted `running` Run
+    /// but PRESERVES a `parked` one — the carve-out that makes a parked Run
+    /// survive a Core restart (ADR-0025). It also flips the swept Run's
+    /// `streaming` assistant Message to `incomplete` (ADR-0017 invariant) while
+    /// leaving the parked Run's Message untouched.
+    #[tokio::test]
+    async fn recover_errors_running_preserves_parked() {
+        let pool = memory_pool().await;
+        insert_bare_run(&pool, "run-running", "running").await;
+        insert_bare_run(&pool, "run-pending", "pending").await;
+        insert_bare_run(&pool, "run-parked", "parked").await;
+
+        let swept = recover_interrupted_runs(&pool, 42).await.expect("sweep ok");
+        assert_eq!(swept, 2, "swept exactly the running + pending Runs");
+
+        assert_eq!(run_status_of(&pool, "run-running").await, "errored");
+        assert_eq!(run_status_of(&pool, "run-pending").await, "errored");
+        assert_eq!(
+            run_status_of(&pool, "run-parked").await,
+            "parked",
+            "parked Run preserved across the sweep"
+        );
+
+        // Swept Runs carry the core_restarted terminal_reason + error fields.
+        let reason: Option<String> =
+            sqlx::query_scalar("SELECT terminal_reason FROM runs WHERE id = 'run-running'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(reason.as_deref(), Some("core_restarted"));
+        let ended_at: Option<i64> =
+            sqlx::query_scalar("SELECT ended_at FROM runs WHERE id = 'run-running'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ended_at, Some(42), "ended_at stamped with the boot now");
+
+        // The swept Run's streaming Message is flipped to incomplete; the parked
+        // Run's stays streaming (it is not terminal).
+        let swept_msg: String =
+            sqlx::query_scalar("SELECT status FROM messages WHERE run_id = 'run-running'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(swept_msg, "incomplete", "swept Run's streaming message → incomplete");
+        let parked_msg: String =
+            sqlx::query_scalar("SELECT status FROM messages WHERE run_id = 'run-parked'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(parked_msg, "streaming", "parked Run's message untouched");
+    }
+}
