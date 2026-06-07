@@ -40,6 +40,9 @@ function makeStubRuntime(opts: {
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
 		settingsSet: () => unused,
+		proposalGet: () => unused,
+		proposalDecide: () => unused,
+		proposalNotifications: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

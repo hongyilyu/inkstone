@@ -2,6 +2,11 @@ import { Socket } from "@effect/platform";
 import {
 	ModelCatalogResult,
 	PostMessageResult,
+	ProposalChangedNotification,
+	ProposalDecideParams,
+	ProposalDecideResult,
+	ProposalGetResult,
+	ProposalPendingNotification,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
 	type RunEvent,
@@ -67,6 +72,20 @@ const RunEventNotification = S.Struct({
 });
 const decodeRunEventNotification = S.decodeUnknownEither(RunEventNotification);
 
+const decodeProposalPending = S.decodeUnknownEither(ProposalPendingNotification);
+const decodeProposalChanged = S.decodeUnknownEither(ProposalChangedNotification);
+
+// The consumer-facing shape the UI subscribes to: a tagged union over the two
+// proposal Notifications Core pushes onto a Run's subscribers (ADR-0025).
+export type ProposalNotification =
+	| { readonly kind: "pending"; readonly run_id: string; readonly proposal_id: string }
+	| {
+			readonly kind: "changed";
+			readonly run_id: string;
+			readonly proposal_id: string;
+			readonly status: "accepted" | "rejected";
+	  };
+
 // run/subscribe acknowledgement is not a pinned protocol shape; accept {} or {run_id}.
 const SubscribeAck = S.Struct({ run_id: S.optional(S.String) });
 
@@ -117,6 +136,13 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 			readonly model?: string;
 			readonly effort?: string;
 		}) => Effect.Effect<SettingsResult, WsError>;
+		readonly proposalGet: (
+			runId: RunId,
+		) => Effect.Effect<ProposalGetResult, WsError>;
+		readonly proposalDecide: (
+			params: ProposalDecideParams,
+		) => Effect.Effect<ProposalDecideResult, WsError>;
+		readonly proposalNotifications: () => Stream.Stream<ProposalNotification>;
 	}
 >() {}
 
@@ -131,7 +157,18 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 
 			const pending = new Map<number, Deferred.Deferred<unknown, WsError>>();
 			const runQueues = new Map<RunId, Queue.Queue<RunEventValue>>();
+			// One shared queue for proposal/* notifications (ADR-0025); the UI
+			// reads them via `proposalNotifications()`. Lazily created so a Client
+			// that never subscribes pays nothing.
+			let proposalQueue: Queue.Queue<ProposalNotification> | undefined;
 			let nextId = 1;
+
+			const ensureProposalQueue = (): Queue.Queue<ProposalNotification> => {
+				if (proposalQueue === undefined) {
+					proposalQueue = runSync(Queue.unbounded<ProposalNotification>());
+				}
+				return proposalQueue;
+			};
 
 			const ensureQueue = (runId: RunId): Queue.Queue<RunEventValue> => {
 				let queue = runQueues.get(runId);
@@ -170,6 +207,30 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 						const queue = ensureQueue(event.right.run_id);
 						Queue.unsafeOffer(queue, event.right.event);
 					}
+					return;
+				}
+				if (frame.method === "proposal/pending") {
+					const n = decodeProposalPending(frame.params);
+					if (Either.isRight(n)) {
+						Queue.unsafeOffer(ensureProposalQueue(), {
+							kind: "pending",
+							run_id: n.right.run_id,
+							proposal_id: n.right.proposal_id,
+						});
+					}
+					return;
+				}
+				if (frame.method === "proposal/changed") {
+					const n = decodeProposalChanged(frame.params);
+					if (Either.isRight(n)) {
+						Queue.unsafeOffer(ensureProposalQueue(), {
+							kind: "changed",
+							run_id: n.right.run_id,
+							proposal_id: n.right.proposal_id,
+							status: n.right.status,
+						});
+					}
+					return;
 				}
 			};
 
@@ -361,6 +422,22 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			}): Effect.Effect<SettingsResult, WsError> =>
 				request("settings/set", { ...params }, SettingsResult);
 
+			// proposal/* (ADR-0025): fetch a parked Run's pending Proposal and
+			// decide it. `proposalNotifications` streams the pushed
+			// pending/changed notifications a subscribed Client receives.
+			const proposalGet = (
+				runId: RunId,
+			): Effect.Effect<ProposalGetResult, WsError> =>
+				request("proposal/get", { run_id: runId }, ProposalGetResult);
+
+			const proposalDecide = (
+				params: ProposalDecideParams,
+			): Effect.Effect<ProposalDecideResult, WsError> =>
+				request("proposal/decide", { ...params }, ProposalDecideResult);
+
+			const proposalNotifications = (): Stream.Stream<ProposalNotification> =>
+				Stream.fromQueue(ensureProposalQueue());
+
 			return WsClient.of({
 				threadCreate,
 				postMessage,
@@ -372,6 +449,9 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				modelCatalog,
 				settingsGet,
 				settingsSet,
+				proposalGet,
+				proposalDecide,
+				proposalNotifications,
 			});
 		}),
 	);

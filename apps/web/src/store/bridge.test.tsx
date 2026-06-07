@@ -21,6 +21,9 @@ function makeFailingThreadCreateRuntime() {
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
 		settingsSet: () => unused,
+		proposalGet: () => unused,
+		proposalDecide: () => unused,
+		proposalNotifications: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

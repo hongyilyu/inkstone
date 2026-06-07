@@ -24,7 +24,9 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-use super::reply::{send_error, send_response, send_run_event, send_text_delta};
+use super::reply::{
+    send_error, send_proposal_pending, send_response, send_run_event, send_text_delta,
+};
 use crate::db;
 use crate::hub::{self, Hubs};
 use crate::protocol::{RunEvent, SubscribeParams, SubscribeResult};
@@ -93,7 +95,28 @@ pub(super) async fn handle(
             // terminal/unknown runs get the synthesized `done`.
             if status != "parked" {
                 send_run_event(out_tx, run_id, &RunEvent::Done);
+            } else {
+                // Push `proposal/pending` (ADR-0025) so a fresh subscriber to an
+                // already-parked Run learns to show the review card without a
+                // separate `proposal/get` poll. Look up the Run's pending
+                // Proposal id; if none is found (race / read error), the Client
+                // still has the `parked` response status to fall back on.
+                emit_pending(out_tx, pool, run_id).await;
             }
+        }
+    }
+}
+
+/// Look up the Run's pending Proposal and, if present, push a
+/// `proposal/pending {run_id, proposal_id}` Notification on the connection.
+/// A missing Proposal or a read error is logged and tolerated: the Client
+/// still learns the park via the `parked` response status (ADR-0025).
+async fn emit_pending(out_tx: &UnboundedSender<String>, pool: &SqlitePool, run_id: Uuid) {
+    match db::get_pending_proposal_for_run(pool, run_id).await {
+        Ok(Some(p)) => send_proposal_pending(out_tx, run_id, &p.proposal_id),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("pending proposal lookup failed for run {run_id}: {e}");
         }
     }
 }
@@ -194,14 +217,16 @@ fn spawn_tail_forwarder(
                             // so `saw_terminal` is false here too — but the Run
                             // is not done. Check the persisted status and
                             // suppress the synthesized `done` when `parked`;
-                            // the Client learns the park via `run/subscribe`'s
-                            // response status (or `proposal/get`).
+                            // instead PUSH a `proposal/pending` so the attached
+                            // chat surface shows the review card without polling.
                             if !saw_terminal {
                                 let parked = matches!(
                                     db::run_status(&pool, run_id).await,
                                     Ok(Some(ref s)) if s == "parked"
                                 );
-                                if !parked {
+                                if parked {
+                                    emit_pending(&out_tx, &pool, run_id).await;
+                                } else {
                                     send_run_event(&out_tx, run_id, &RunEvent::Done);
                                 }
                             }

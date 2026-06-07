@@ -119,6 +119,25 @@ pub struct ProposalDecideResult {
     pub entity_id: Option<String>,
 }
 
+/// `proposal/pending` Notification params (ADR-0025): pushed to a Run's
+/// subscribers the moment it parks so an attached chat surface shows the
+/// review card without polling. Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct ProposalPendingNotification {
+    pub run_id: String,
+    pub proposal_id: String,
+}
+
+/// `proposal/changed` Notification params (ADR-0025): pushed when a pending
+/// Proposal is decided. `status` is the post-decision lifecycle state
+/// (`accepted`|`rejected`). Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct ProposalChangedNotification {
+    pub run_id: String,
+    pub proposal_id: String,
+    pub status: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PostMessageResult {
     pub run_id: String,

@@ -358,18 +358,17 @@ describe("WsClient", () => {
 
 		const program = Effect.gen(function* () {
 			const client = yield* WsClient;
-			// Collect proposal notifications in the background, then trigger the
-			// server to push the two frames by issuing run/subscribe.
-			const collected = yield* Effect.fork(
-				Stream.runCollect(
-					client.proposalNotifications().pipe(Stream.take(2)),
-				),
+			// Drain the run's events in the background so the run/subscribe
+			// request is actually sent (the server pushes the proposal frames in
+			// response). The run stream never sees a `done`, so it would block
+			// forever — interrupt it once we've collected the proposals.
+			const subFiber = yield* Effect.fork(
+				Stream.runDrain(client.subscribeRun(runId)),
 			);
-			yield* client.subscribeRun(runId).pipe(
-				Stream.take(0),
-				Stream.runDrain,
+			const events = yield* Stream.runCollect(
+				client.proposalNotifications().pipe(Stream.take(2)),
 			);
-			const events = yield* Fiber.join(collected);
+			yield* Fiber.interrupt(subFiber);
 			return Array.from(events);
 		});
 

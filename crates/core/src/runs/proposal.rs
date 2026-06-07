@@ -22,7 +22,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 use super::reply::{
-    send_error, send_invalid_params, send_proposal_not_pending, send_response,
+    send_error, send_invalid_params, send_proposal_changed, send_proposal_not_pending,
+    send_response,
 };
 use crate::db;
 use crate::hub::Hubs;
@@ -138,6 +139,7 @@ pub(super) async fn handle_decide(
             return;
         }
         send_decide_result(out_tx, id, &status, entity_id);
+        send_proposal_changed(out_tx, proposal.run_id, &params.proposal_id, &status);
         return;
     }
 
@@ -170,6 +172,7 @@ pub(super) async fn handle_decide(
                         return;
                     }
                     send_decide_result(out_tx, id, &status, entity_id);
+                    send_proposal_changed(out_tx, proposal.run_id, &params.proposal_id, &status);
                     return;
                 }
                 Ok(_) => {}
@@ -349,7 +352,14 @@ pub(super) async fn handle_decide(
         return;
     }
 
+    // Push `proposal/changed` (ADR-0025) on the deciding connection now the
+    // Decision is durably applied and the resume is under way. Sent AFTER the
+    // decide RESPONSE so the request's reply frames first; the notification is
+    // a side-channel push. Best-effort to OTHER tabs this slice — the deciding
+    // tab re-subscribes for the resume tail (slice 9); a workspace-wide
+    // proposal bus is out of scope.
     send_decide_result(out_tx, id, result_status, entity_id);
+    send_proposal_changed(out_tx, proposal.run_id, &params.proposal_id, result_status);
 }
 
 /// The prior result of an already-decided Proposal for the idempotent /

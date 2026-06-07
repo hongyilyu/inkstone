@@ -56,6 +56,9 @@ function makeRuntime(opts: {
 				effort: opts.effort ?? "off",
 			}),
 		settingsSet,
+		proposalGet: die,
+		proposalDecide: die,
+		proposalNotifications: () => Stream.empty,
 	});
 	return {
 		runtime: ManagedRuntime.make(Layer.succeed(WsClient, stub)),

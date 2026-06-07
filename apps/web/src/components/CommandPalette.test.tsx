@@ -31,6 +31,9 @@ const stub = WsClient.of({
 	modelCatalog: die,
 	settingsGet: die,
 	settingsSet: die,
+	proposalGet: die,
+	proposalDecide: die,
+	proposalNotifications: () => Stream.empty,
 });
 
 function renderApp() {

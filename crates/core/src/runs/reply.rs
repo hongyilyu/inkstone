@@ -6,7 +6,9 @@
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-use crate::protocol::{JsonRpcResponse, RunEvent};
+use crate::protocol::{
+    JsonRpcResponse, ProposalChangedNotification, ProposalPendingNotification, RunEvent,
+};
 
 /// Frame a JSON-RPC RESPONSE carrying `result` for request `id` and queue it.
 pub(super) fn send_response(
@@ -53,6 +55,49 @@ pub(super) fn send_text_delta(out_tx: &UnboundedSender<String>, run_id: Uuid, te
             delta: text.to_string(),
         },
     );
+}
+
+/// Queue a `proposal/pending` notification (ADR-0025) on the per-connection
+/// channel: the Run parked and `proposal_id` is its awaiting Proposal. A
+/// subscribed Client renders the review card on receipt. Rides the
+/// `proposal/*` channel, NOT a Run Event (the RunEvent enum stays frozen).
+pub(super) fn send_proposal_pending(
+    out_tx: &UnboundedSender<String>,
+    run_id: Uuid,
+    proposal_id: &str,
+) {
+    let notification = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "proposal/pending",
+        "params": ProposalPendingNotification {
+            run_id: run_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+        },
+    });
+    let body = serde_json::to_string(&notification).expect("notification serializes");
+    let _ = out_tx.send(body);
+}
+
+/// Queue a `proposal/changed` notification (ADR-0025) on the per-connection
+/// channel: the Proposal `proposal_id` for `run_id` was decided to `status`
+/// (`accepted`|`rejected`). Pushed on the deciding connection after the apply.
+pub(super) fn send_proposal_changed(
+    out_tx: &UnboundedSender<String>,
+    run_id: Uuid,
+    proposal_id: &str,
+    status: &str,
+) {
+    let notification = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "proposal/changed",
+        "params": ProposalChangedNotification {
+            run_id: run_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+            status: status.to_string(),
+        },
+    });
+    let body = serde_json::to_string(&notification).expect("notification serializes");
+    let _ = out_tx.send(body);
 }
 
 /// Frame a JSON-RPC 2.0 internal error (`-32603`, the JSON-RPC reserved code

@@ -54,6 +54,9 @@ function makeRuntime() {
 				model: "gpt-5.5",
 				effort: "off",
 			}),
+		proposalGet: die,
+		proposalDecide: die,
+		proposalNotifications: () => Stream.empty,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }

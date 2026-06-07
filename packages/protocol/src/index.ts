@@ -149,6 +149,34 @@ export const ProposalDecideResult = S.Struct({
 });
 export type ProposalDecideResult = S.Schema.Type<typeof ProposalDecideResult>;
 
+/**
+ * `proposal/pending` Notification: pushed to a Run's subscribers the moment
+ * the Run parks (ADR-0025), so an already-attached chat surface learns to show
+ * the review card without polling. Rides the `proposal/*` channel, not a new
+ * RunEvent variant (the wire RunEvent enum stays frozen).
+ */
+export const ProposalPendingNotification = S.Struct({
+	run_id: S.String,
+	proposal_id: S.String,
+});
+export type ProposalPendingNotification = S.Schema.Type<
+	typeof ProposalPendingNotification
+>;
+
+/**
+ * `proposal/changed` Notification: pushed when a pending Proposal is decided
+ * (ADR-0025). `status` is the Proposal's post-decision lifecycle state
+ * (accepted|rejected). Best-effort on the deciding connection this slice.
+ */
+export const ProposalChangedNotification = S.Struct({
+	run_id: S.String,
+	proposal_id: S.String,
+	status: S.Literal("accepted", "rejected"),
+});
+export type ProposalChangedNotification = S.Schema.Type<
+	typeof ProposalChangedNotification
+>;
+
 // --- tool protocol (ADR-0018): the Worker↔Core duplex for tool calls. The
 // Worker emits `tool_request` on its outbound stream (alongside RunEvents);
 // Core replies with `tool_result` on the post-manifest inbound stream.
