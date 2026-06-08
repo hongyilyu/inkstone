@@ -105,7 +105,7 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
     // `status = 'parked'`: if 0 rows matched, another resume already won the
     // race — bail so exactly one resume Worker runs.
     let flipped = db::mark_run_running(pool, run_id).await?;
-    if flipped == 0 {
+    if !flipped.won() {
         return Ok(());
     }
 

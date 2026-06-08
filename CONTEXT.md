@@ -57,6 +57,10 @@ _Avoid_: paused, suspended, blocked, waiting.
 Continuing a parked Run once its Decision is in: Core spawns a fresh Worker, replays the Run's transcript from tier 2 with the Decision as the awaited tool's Tool Result, and the agent loop continues from the next Turn.
 _Avoid_: restart (that creates a new Run), retry, continue (overloaded).
 
+**Run status**:
+The materialized lifecycle state of a Run, authoritative in tier 2. One of: **running** (a Worker is driving it), **parked** (waiting on a Decision; non-terminal, survives a Core restart), **completed** (ended with a final answer), **errored** (ended in failure), **cancelled** (ended by user cancellation). A Run moves between these only through guarded *transitions*, never a free-form status write; the legal moves are `running → {completed, errored, parked}` and `parked → {running, cancelled}`. The parallel **Proposal status** (`pending → {accepted, rejected, cancelled}`) is the same shape. Derived from what the Worker did, then recorded — distinct from a Run Event, which only observes.
+_Avoid_: state (too generic), phase, stage.
+
 ### Protocol
 
 **Run Event**:

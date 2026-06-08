@@ -59,7 +59,7 @@ pub(super) async fn handle_cancel(
                 send_error(out_tx, id, format!("run/cancel: {e}"));
             }
         },
-        // A live (running/pending) Run: best-effort accept. Aborting the live
+        // A live running Run: best-effort accept. Aborting the live
         // Worker process is OUT OF SCOPE this slice — only the parked path is
         // exercised. A later slice wires the Worker-abort signal; for now we
         // accept the command so the Client UX ("cancelling…") is consistent.

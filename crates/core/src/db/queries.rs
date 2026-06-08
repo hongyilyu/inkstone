@@ -126,20 +126,22 @@ where
 pub(super) async fn mark_run_completed<'e, E>(
     executor: E,
     run_id: Uuid,
+    terminal_reason: &str,
     ended_at: i64,
-) -> sqlx::Result<()>
+) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
         "UPDATE runs SET status = 'completed', \
-         terminal_reason = 'completed', ended_at = ? WHERE id = ?",
+         terminal_reason = ?, ended_at = ? WHERE id = ? AND status = 'running'",
     )
+    .bind(terminal_reason)
     .bind(ended_at)
     .bind(run_id.to_string())
     .execute(executor)
     .await
-    .map(|_| ())
+    .map(|r| r.rows_affected())
 }
 
 pub(super) async fn mark_run_errored<'e, E>(
@@ -149,14 +151,14 @@ pub(super) async fn mark_run_errored<'e, E>(
     error_code: &str,
     error_message: &str,
     ended_at: i64,
-) -> sqlx::Result<()>
+) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
         "UPDATE runs SET status = 'errored', \
          terminal_reason = ?, error_code = ?, error_message = ?, \
-         ended_at = ? WHERE id = ?",
+         ended_at = ? WHERE id = ? AND status = 'running'",
     )
     .bind(terminal_reason)
     .bind(error_code)
@@ -165,11 +167,11 @@ where
     .bind(run_id.to_string())
     .execute(executor)
     .await
-    .map(|_| ())
+    .map(|r| r.rows_affected())
 }
 
 /// Boot recovery sweep (ADR-0012): error every Run interrupted mid-flight by a
-/// Core crash/restart — `status IN ('running','pending')` — stamping
+/// Core crash/restart — `status='running'` — stamping
 /// `terminal_reason='core_restarted'` + the error fields + `ended_at`. ONE
 /// statement. Explicitly EXCLUDES `parked` (decidable, durable per ADR-0025)
 /// and the terminal states (`completed`/`errored`/`cancelled`). Returns the
@@ -185,7 +187,7 @@ where
     sqlx::query(
         "UPDATE runs SET status = 'errored', terminal_reason = 'core_restarted', \
          error_code = 'core_restarted', error_message = ?, ended_at = ? \
-         WHERE status IN ('running','pending')",
+         WHERE status = 'running'",
     )
     .bind(error_message)
     .bind(ended_at)
@@ -226,18 +228,19 @@ pub(super) async fn mark_run_parked<'e, E>(
     executor: E,
     run_id: Uuid,
     awaiting_tool_call_id: &str,
-) -> sqlx::Result<()>
+) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
-        "UPDATE runs SET status = 'parked', awaiting_tool_call_id = ? WHERE id = ?",
+        "UPDATE runs SET status = 'parked', awaiting_tool_call_id = ? \
+         WHERE id = ? AND status = 'running'",
     )
     .bind(awaiting_tool_call_id)
     .bind(run_id.to_string())
     .execute(executor)
     .await
-    .map(|_| ())
+    .map(|r| r.rows_affected())
 }
 
 /// Read a Run's `status` by id (ADR-0025). `None` when the Run does not exist.
@@ -481,15 +484,17 @@ where
 pub(super) async fn mark_parked_run_cancelled<'e, E>(
     executor: E,
     run_id: Uuid,
+    terminal_reason: &str,
     ended_at: i64,
 ) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
-        "UPDATE runs SET status = 'cancelled', terminal_reason = 'cancelled', \
+        "UPDATE runs SET status = 'cancelled', terminal_reason = ?, \
          ended_at = ? WHERE id = ? AND status = 'parked'",
     )
+    .bind(terminal_reason)
     .bind(ended_at)
     .bind(run_id.to_string())
     .execute(executor)
@@ -497,26 +502,25 @@ where
     .map(|r| r.rows_affected())
 }
 
-/// Cancel a Run's pending Proposal(s) (ADR-0014, slice 6): flip any `pending`
-/// `proposals` row whose tool call belongs to `run_id` to `cancelled`. Runs
-/// inside the cancel tx alongside [`mark_parked_run_cancelled`]. No-op (0 rows)
-/// when the Run has no pending Proposal.
-pub(super) async fn cancel_pending_proposals_for_run<'e, E>(
+/// Cancel a pending Proposal (ADR-0014): flip `status='pending'` to
+/// `status='cancelled'`. Runs inside the cancel tx alongside
+/// [`mark_parked_run_cancelled`]. Returns the affected row count so the caller
+/// can roll back if a concurrent decide already moved the Proposal.
+pub(super) async fn mark_proposal_cancelled<'e, E>(
     executor: E,
-    run_id: Uuid,
-) -> sqlx::Result<()>
+    proposal_id: &str,
+) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
         "UPDATE proposals SET status = 'cancelled' \
-         WHERE tool_call_id IN (SELECT id FROM tool_calls WHERE run_id = ?1) \
-         AND status = 'pending'",
+         WHERE id = ? AND status = 'pending'",
     )
-    .bind(run_id.to_string())
+    .bind(proposal_id)
     .execute(executor)
     .await
-    .map(|_| ())
+    .map(|r| r.rows_affected())
 }
 
 /// Read the run's assistant Message id (the seq-0 streaming row resume

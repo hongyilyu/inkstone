@@ -18,7 +18,7 @@ CREATE TABLE runs (
   idempotency_key          TEXT UNIQUE,
   awaiting_tool_call_id    TEXT REFERENCES tool_calls(id),  -- waitpoint when status='parked'
   status                   TEXT NOT NULL CHECK (status IN
-                            ('pending','running','parked','completed','errored','cancelled')),
+                            ('running','parked','completed','errored','cancelled')),
   terminal_reason          TEXT CHECK (terminal_reason IS NULL OR terminal_reason IN
                             ('completed','cancelled','worker_disconnected','core_restarted','errored')),
   error_code               TEXT,                      -- enumerated wire error per ADR-0014, NULL unless status='errored'
@@ -27,7 +27,7 @@ CREATE TABLE runs (
   ended_at                 INTEGER
 );
 CREATE INDEX idx_runs_thread_started ON runs(thread_id, started_at);
-CREATE INDEX idx_runs_status         ON runs(status) WHERE status IN ('pending','running','parked');
+CREATE INDEX idx_runs_status         ON runs(status) WHERE status IN ('running','parked');
 
 -- Messages and parts ---------------------------------------------------
 CREATE TABLE messages (
@@ -94,7 +94,7 @@ CREATE TABLE run_events (
   kind        TEXT NOT NULL CHECK (kind IN
                 ('status','tool_request','tool_result',
                  'proposal_pending','proposal_decided',
-                 'parked','done','error')),
+                 'parked','done','error','cancelled')),
   payload     TEXT,                                -- JSON; shape depends on kind
   created_at  INTEGER NOT NULL,
   PRIMARY KEY (run_id, run_seq)

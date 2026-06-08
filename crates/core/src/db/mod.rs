@@ -7,6 +7,7 @@
 //! operations and transaction boundaries. Outside `db::`, no caller
 //! writes SQL — they call these functions.
 
+mod lifecycle;
 mod queries;
 
 use std::path::PathBuf;
@@ -18,6 +19,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use uuid::Uuid;
 
 use crate::workflow::Workflow;
+
+pub use lifecycle::Moved;
+use lifecycle::{ProposalStatus, RunStatus, TerminalReason};
 
 /// Current wall-clock time as ms since UNIX_EPOCH. Used as `created_at` /
 /// `updated_at` / `started_at` / `ended_at` for tier-2 rows.
@@ -365,10 +369,29 @@ pub async fn persist_tool_call(
     now_ms: i64,
 ) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
-    let seq = queries::next_run_step_seq(&mut *tx, run_id).await?;
-    queries::insert_tool_call(&mut *tx, tool_call_id, run_id, name, request_payload, now_ms).await?;
-    queries::insert_tool_call_run_step(&mut *tx, run_id, seq, tool_call_id, now_ms).await?;
+    persist_tool_call_rows(&mut tx, run_id, tool_call_id, name, request_payload, now_ms).await?;
     tx.commit().await
+}
+
+async fn persist_tool_call_rows(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run_id: Uuid,
+    tool_call_id: &str,
+    name: &str,
+    request_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    let seq = queries::next_run_step_seq(&mut **tx, run_id).await?;
+    queries::insert_tool_call(
+        &mut **tx,
+        tool_call_id,
+        run_id,
+        name,
+        request_payload,
+        now_ms,
+    )
+    .await?;
+    queries::insert_tool_call_run_step(&mut **tx, run_id, seq, tool_call_id, now_ms).await
 }
 
 /// Resolve a previously-persisted Tool Request with its outcome (ADR-0017):
@@ -384,32 +407,54 @@ pub async fn resolve_tool_call(
     queries::resolve_tool_call(pool, tool_call_id, status, result_payload, now_ms).await
 }
 
-/// Persist a pending Proposal (ADR-0025), sidecar to the Proposal's
-/// `tool_calls` row. The proposed payload (`type`/`data`/`rationale`) rides on
-/// the tool call's `request_payload` already persisted by
-/// [`persist_tool_call`]; this row carries the Proposal lifecycle columns
-/// (`kind`, `change_kind`, `status='pending'`). `change_kind` is `create` for
-/// `propose_entity` (the only Proposal tool today).
-pub async fn persist_proposal(
-    pool: &SqlitePool,
-    proposal_id: &str,
-    tool_call_id: &str,
-    kind: &str,
-    change_kind: &str,
-) -> sqlx::Result<()> {
-    queries::insert_proposal(pool, proposal_id, tool_call_id, kind, change_kind).await
-}
-
-/// Park a Run on a Proposal (ADR-0025): set `runs.status='parked'` and record
-/// the waitpoint in `awaiting_tool_call_id`. Park is non-terminal — no
-/// `ended_at`/`terminal_reason`/error fields are touched, so the Run stays
-/// decidable.
-pub async fn mark_run_parked(
+/// Park a Run on a Proposal tool request (ADR-0025): persist the `tool_calls`
+/// row + timeline step, persist the pending Proposal, then move the Run
+/// `running -> parked` with the waitpoint recorded. The lifecycle events
+/// (`parked`, `proposal_pending`) are appended in the same transaction. If the
+/// Run is no longer `running`, the guarded park loses and the whole transaction
+/// rolls back.
+#[allow(clippy::too_many_arguments)]
+pub async fn park_on_proposal(
     pool: &SqlitePool,
     run_id: Uuid,
-    awaiting_tool_call_id: &str,
-) -> sqlx::Result<()> {
-    queries::mark_run_parked(pool, run_id, awaiting_tool_call_id).await
+    proposal_id: &str,
+    tool_call_id: &str,
+    name: &str,
+    request_payload: &str,
+    kind: &str,
+    change_kind: &str,
+    now_ms: i64,
+) -> sqlx::Result<Moved> {
+    let mut tx = pool.begin().await?;
+
+    persist_tool_call_rows(&mut tx, run_id, tool_call_id, name, request_payload, now_ms).await?;
+    queries::insert_proposal(&mut *tx, proposal_id, tool_call_id, kind, change_kind).await?;
+
+    let moved = RunStatus::park(&mut *tx, run_id, tool_call_id, now_ms).await?;
+    if !moved.won() {
+        return Ok(moved);
+    }
+
+    let payload = serde_json::json!({
+        "proposal_id": proposal_id,
+        "tool_call_id": tool_call_id,
+        "kind": kind,
+        "change_kind": change_kind,
+    })
+    .to_string();
+    let next_seq = queries::next_run_seq(&mut *tx, run_id).await?;
+    queries::insert_run_event(
+        &mut *tx,
+        run_id,
+        next_seq,
+        "proposal_pending",
+        Some(&payload),
+        now_ms,
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(moved)
 }
 
 /// Read a Run's `status` (ADR-0025). `None` when the Run does not exist.
@@ -582,6 +627,7 @@ impl std::fmt::Display for ApplyError {
 #[allow(clippy::too_many_arguments)]
 pub async fn apply_proposal(
     pool: &SqlitePool,
+    run_id: Uuid,
     proposal_id: &str,
     tool_call_id: &str,
     entity_type: &str,
@@ -605,15 +651,16 @@ pub async fn apply_proposal(
     // Flip the Proposal FIRST under the `status='pending'` guard — the single
     // concurrency choke. If a racing decide already accepted it this affects 0
     // rows; bail (rolling back the tx) before inserting a duplicate entity.
-    let accepted = queries::mark_proposal_accepted(
+    let accepted = ProposalStatus::accept(
         &mut *tx,
+        run_id,
         proposal_id,
         edited_str.as_deref(),
         decision_idempotency_key,
         now_ms,
     )
     .await?;
-    if accepted != 1 {
+    if !accepted.won() {
         // tx drops here without commit → rollback. No entity was inserted.
         return Err(ApplyError::NotPending);
     }
@@ -657,6 +704,7 @@ pub async fn apply_proposal(
 /// maps `NotPending` to `proposal_not_pending`.
 pub async fn reject_proposal(
     pool: &SqlitePool,
+    run_id: Uuid,
     proposal_id: &str,
     tool_call_id: &str,
     decision_idempotency_key: Option<&str>,
@@ -668,14 +716,15 @@ pub async fn reject_proposal(
     // Flip the Proposal FIRST under the `status='pending'` guard — the single
     // concurrency choke. If a racing decide already decided it this affects 0
     // rows; bail (rolling back the tx) before resolving the tool call.
-    let rejected = queries::mark_proposal_rejected(
+    let rejected = ProposalStatus::reject(
         &mut *tx,
+        run_id,
         proposal_id,
         decision_idempotency_key,
         now_ms,
     )
     .await?;
-    if rejected != 1 {
+    if !rejected.won() {
         // tx drops here without commit → rollback. Nothing was changed.
         return Err(ApplyError::NotPending);
     }
@@ -698,29 +747,46 @@ pub async fn reject_proposal(
 /// Worker spawns, so a `run/subscribe` in the window sees `running`. Returns
 /// the affected row count (review M2): the caller bails on 0 (another resume
 /// already won the race) rather than spawning a duplicate resume Worker.
-pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<u64> {
-    queries::mark_run_running(pool, run_id).await
+pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Moved> {
+    let mut tx = pool.begin().await?;
+    let moved = RunStatus::resume(&mut *tx, run_id).await?;
+    tx.commit().await?;
+    Ok(moved)
 }
 
 /// Cancel a parked Run and its pending Proposal in ONE transaction (ADR-0014,
-/// slice 6). Self-guarding on `status='parked'`: flip the `runs` row to
-/// `cancelled` (`terminal_reason='cancelled'`, `ended_at`) only while it is
-/// still parked, then flip any `pending` Proposal of the Run to `cancelled`.
+/// ADR-0028). Loads the Run's pending Proposal, then funnels both status
+/// changes through their guarded verbs: `ProposalStatus::cancel` (guard
+/// `status='pending'`) and `RunStatus::cancel` (guard `status='parked'`, owning
+/// `terminal_reason='cancelled'` + `ended_at`). Each verb appends its own
+/// `cancelled` `run_events` row in the same transaction.
 /// Returns whether the Run was actually cancelled — `false` (tx rolled back,
-/// nothing changed) when a concurrent decide/cancel already moved the Run off
+/// nothing changed) when the Run has no pending Proposal, or a concurrent
+/// decide/cancel already moved the Proposal off `pending` / the Run off
 /// `parked`, which the caller maps to `already_terminal`.
-pub async fn cancel_parked_run(
-    pool: &SqlitePool,
-    run_id: Uuid,
-    now_ms: i64,
-) -> sqlx::Result<bool> {
+pub async fn cancel_parked_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<bool> {
     let mut tx = pool.begin().await?;
-    let cancelled = queries::mark_parked_run_cancelled(&mut *tx, run_id, now_ms).await?;
-    if cancelled != 1 {
-        // tx drops here without commit → rollback. The Run was not parked.
+
+    let Some((proposal_id, _, _, _, _)) =
+        queries::pending_proposal_for_run(&mut *tx, run_id).await?
+    else {
+        // tx drops here without commit → rollback. The Run had no pending
+        // Proposal, so a concurrent decide/cancel likely won.
+        return Ok(false);
+    };
+
+    let proposal_cancelled = ProposalStatus::cancel(&mut *tx, run_id, &proposal_id, now_ms).await?;
+    if !proposal_cancelled.won() {
+        // tx drops here without commit → rollback. The Proposal was no longer pending.
         return Ok(false);
     }
-    queries::cancel_pending_proposals_for_run(&mut *tx, run_id).await?;
+
+    let run_cancelled = RunStatus::cancel(&mut *tx, run_id, now_ms).await?;
+    if !run_cancelled.won() {
+        // tx drops here without commit → rollback. The Run was no longer parked.
+        return Ok(false);
+    }
+
     tx.commit().await?;
     Ok(true)
 }
@@ -825,13 +891,11 @@ pub async fn select_run_snapshot(
 /// `completed`, and append a terminal `run_events` row with `kind='done'`.
 /// All three writes happen in one transaction so a reader sees either the
 /// pre-terminal or post-terminal state, never an in-between mix.
-pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<()> {
+pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Moved> {
     let mut tx = pool.begin().await?;
-    let next_seq = queries::next_run_seq(&mut *tx, run_id).await?;
-    queries::mark_run_completed(&mut *tx, run_id, now_ms).await?;
-    queries::mark_assistant_messages_completed(&mut *tx, run_id, now_ms).await?;
-    queries::insert_run_event(&mut *tx, run_id, next_seq, "done", None, now_ms).await?;
-    tx.commit().await
+    let moved = RunStatus::complete(&mut *tx, run_id, now_ms).await?;
+    tx.commit().await?;
+    Ok(moved)
 }
 
 /// Slice 4: Worker stdout EOF without a `done` event (the worker died, was
@@ -840,7 +904,7 @@ pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx:
 /// row for this Run to `'incomplete'` (the ADR-0017 invariant — no Message
 /// is left dangling at `'streaming'` after its Run terminates), and append
 /// a terminal `run_events` row with `kind='error'`. One transaction.
-pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<()> {
+pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Moved> {
     error_run_with_message(
         pool,
         run_id,
@@ -867,29 +931,25 @@ pub async fn error_run_with_message(
     error_code: &str,
     error_message: &str,
     now_ms: i64,
-) -> sqlx::Result<()> {
+) -> sqlx::Result<Moved> {
     let mut tx = pool.begin().await?;
-    let next_seq = queries::next_run_seq(&mut *tx, run_id).await?;
-    queries::mark_run_errored(
-        &mut *tx,
-        run_id,
-        terminal_reason,
-        error_code,
-        error_message,
-        now_ms,
-    )
-    .await?;
-    queries::mark_streaming_messages_incomplete(&mut *tx, run_id, now_ms).await?;
-    let payload = serde_json::json!({ "code": error_code, "message": error_message }).to_string();
-    queries::insert_run_event(&mut *tx, run_id, next_seq, "error", Some(&payload), now_ms).await?;
-    tx.commit().await
+    let reason = match terminal_reason {
+        "worker_disconnected" => TerminalReason::WorkerDisconnected,
+        "core_restarted" => TerminalReason::CoreRestarted,
+        "errored" => TerminalReason::Errored,
+        _ => TerminalReason::Errored,
+    };
+    let moved =
+        RunStatus::fail(&mut *tx, run_id, reason, error_code, error_message, now_ms).await?;
+    tx.commit().await?;
+    Ok(moved)
 }
 
 /// Boot recovery sweep (ADR-0012): on every Core start, after migrations and
 /// before serving, force-error every Run interrupted mid-flight by a prior
-/// Core crash/restart. A `running` or `pending` Run has no live Worker after a
-/// restart, so it can never make progress on its own — it is transitioned to
-/// `errored` with `terminal_reason='core_restarted'`. Its `streaming`
+/// Core crash/restart. A `running` Run has no live Worker after a restart, so
+/// it can never make progress on its own — it is transitioned to `errored`
+/// with `terminal_reason='core_restarted'`. Its `streaming`
 /// assistant Message is flipped to `incomplete` (ADR-0017 invariant) in the
 /// SAME transaction.
 ///
@@ -1010,14 +1070,12 @@ mod tests {
     async fn recover_errors_running_preserves_parked() {
         let pool = memory_pool().await;
         insert_bare_run(&pool, "run-running", "running").await;
-        insert_bare_run(&pool, "run-pending", "pending").await;
         insert_bare_run(&pool, "run-parked", "parked").await;
 
         let swept = recover_interrupted_runs(&pool, 42).await.expect("sweep ok");
-        assert_eq!(swept, 2, "swept exactly the running + pending Runs");
+        assert_eq!(swept, 1, "swept exactly the running Run");
 
         assert_eq!(run_status_of(&pool, "run-running").await, "errored");
-        assert_eq!(run_status_of(&pool, "run-pending").await, "errored");
         assert_eq!(
             run_status_of(&pool, "run-parked").await,
             "parked",
@@ -1054,6 +1112,266 @@ mod tests {
         assert_eq!(parked_msg, "streaming", "parked Run's message untouched");
     }
 
+    async fn run_event_count(pool: &SqlitePool, run_id: &str, kind: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM run_events WHERE run_id = ?1 AND kind = ?2")
+            .bind(run_id)
+            .bind(kind)
+            .fetch_one(pool)
+            .await
+            .expect("count run events")
+    }
+
+    #[tokio::test]
+    async fn complete_loses_on_parked_and_writes_no_done_event() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+
+        let moved = complete_run(&pool, run_id, 42).await.expect("complete");
+
+        assert_eq!(moved, Moved::Lost);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
+        assert_eq!(run_event_count(&pool, &run_id.to_string(), "done").await, 0);
+    }
+
+    #[tokio::test]
+    async fn fail_loses_on_parked_and_writes_no_error_event() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+
+        let moved = error_run(&pool, run_id, 42).await.expect("error");
+
+        assert_eq!(moved, Moved::Lost);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
+        assert_eq!(run_event_count(&pool, &run_id.to_string(), "error").await, 0);
+    }
+
+    #[tokio::test]
+    async fn park_on_proposal_is_atomic_and_records_events() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "running").await;
+
+        let moved = park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-1",
+            "tool-1",
+            "propose_entity",
+            r#"{"type":"todo","data":{"title":"milk"}}"#,
+            "todo",
+            "create",
+            42,
+        )
+        .await
+        .expect("park");
+
+        assert_eq!(moved, Moved::Won);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "parked").await,
+            1
+        );
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_pending").await,
+            1
+        );
+
+        let second = park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-2",
+            "tool-2",
+            "propose_entity",
+            r#"{"type":"todo","data":{"title":"eggs"}}"#,
+            "todo",
+            "create",
+            43,
+        )
+        .await
+        .expect("second park");
+        assert_eq!(second, Moved::Lost);
+        let proposal_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM proposals")
+            .fetch_one(&pool)
+            .await
+            .expect("count proposals");
+        assert_eq!(proposal_count, 1, "lost park rolled back its proposal row");
+    }
+
+    async fn seed_pending_proposal(pool: &SqlitePool, run_id: Uuid, tool_call_id: &str) -> String {
+        let proposal_id = Uuid::now_v7().to_string();
+        let mut tx = pool.begin().await.expect("begin proposal seed");
+        queries::insert_tool_call(
+            &mut *tx,
+            tool_call_id,
+            run_id,
+            "propose_entity",
+            r#"{"type":"todo","data":{"title":"milk"}}"#,
+            2,
+        )
+        .await
+        .expect("insert tool call");
+        queries::insert_tool_call_run_step(&mut *tx, run_id, 2, tool_call_id, 2)
+            .await
+            .expect("insert tool step");
+        queries::insert_proposal(&mut *tx, &proposal_id, tool_call_id, "todo", "create")
+            .await
+            .expect("insert proposal");
+        tx.commit().await.expect("commit proposal seed");
+        proposal_id
+    }
+
+    #[tokio::test]
+    async fn accept_records_proposal_decided_and_resume_is_guarded() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("66666666-6666-4666-8666-666666666666").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-accept").await;
+
+        let entity_id = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-accept",
+            "todo",
+            &serde_json::json!({"title": "milk"}),
+            None,
+            Some("idem-accept"),
+            r#"{"decision":"accept","content":"Accepted."}"#,
+            42,
+        )
+        .await
+        .expect("apply");
+        assert!(!entity_id.is_empty());
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1
+        );
+
+        let first_resume = mark_run_running(&pool, run_id).await.expect("resume");
+        assert_eq!(first_resume, Moved::Won);
+        let second_resume = mark_run_running(&pool, run_id).await.expect("resume again");
+        assert_eq!(second_resume, Moved::Lost);
+
+        let duplicate = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-accept",
+            "todo",
+            &serde_json::json!({"title": "milk"}),
+            None,
+            Some("idem-accept-2"),
+            r#"{"decision":"accept","content":"Accepted."}"#,
+            43,
+        )
+        .await;
+        assert!(matches!(duplicate, Err(ApplyError::NotPending)));
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1,
+            "lost apply wrote no duplicate event"
+        );
+    }
+
+    #[tokio::test]
+    async fn reject_records_proposal_decided_and_is_guarded() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("88888888-8888-4888-8888-888888888888").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-reject").await;
+
+        reject_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-reject",
+            Some("idem-reject"),
+            r#"{"decision":"reject","content":"Rejected."}"#,
+            42,
+        )
+        .await
+        .expect("reject");
+
+        let proposal_status: String =
+            sqlx::query_scalar("SELECT status FROM proposals WHERE id = ?1")
+                .bind(&proposal_id)
+                .fetch_one(&pool)
+                .await
+                .expect("proposal status");
+        assert_eq!(proposal_status, "rejected");
+        let tool_status: String =
+            sqlx::query_scalar("SELECT status FROM tool_calls WHERE id = 'tool-reject'")
+                .fetch_one(&pool)
+                .await
+                .expect("tool status");
+        assert_eq!(tool_status, "completed");
+        let entity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
+            .fetch_one(&pool)
+            .await
+            .expect("count entities");
+        assert_eq!(entity_count, 0, "reject applies no entity");
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1
+        );
+
+        let duplicate = reject_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-reject",
+            Some("idem-reject-2"),
+            r#"{"decision":"reject","content":"Rejected."}"#,
+            43,
+        )
+        .await;
+        assert!(matches!(duplicate, Err(ApplyError::NotPending)));
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1,
+            "lost reject wrote no duplicate event"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_parked_run_records_run_and_proposal_cancel_events() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("77777777-7777-4777-8777-777777777777").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        seed_pending_proposal(&pool, run_id, "tool-cancel").await;
+
+        let cancelled = cancel_parked_run(&pool, run_id, 42).await.expect("cancel");
+
+        assert!(cancelled);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "cancelled");
+        let proposal_status: String = sqlx::query_scalar(
+            "SELECT p.status FROM proposals p \
+             JOIN tool_calls tc ON tc.id = p.tool_call_id WHERE tc.run_id = ?1",
+        )
+        .bind(run_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("proposal status");
+        assert_eq!(proposal_status, "cancelled");
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "cancelled").await,
+            2,
+            "one cancelled event for the Proposal and one for the Run"
+        );
+
+        let second = cancel_parked_run(&pool, run_id, 43)
+            .await
+            .expect("second cancel");
+        assert!(!second);
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "cancelled").await,
+            2,
+            "lost cancel wrote no duplicate event"
+        );
+    }
+
     /// `mark_run_running` is self-guarding on `status='parked'` (review M2): the
     /// FIRST flip of a parked Run affects exactly one row; a SECOND flip (the
     /// concurrent-resume retry / a decide racing `recover_resume_if_parked`)
@@ -1071,16 +1389,26 @@ mod tests {
 
         // First flip of the parked Run wins the race (1 row).
         let first = mark_run_running(&pool, parked).await.expect("first flip");
-        assert_eq!(first, 1, "parked → running flips exactly one row");
+        assert_eq!(first, Moved::Won, "parked → running flips exactly one row");
         assert_eq!(run_status_of(&pool, &parked.to_string()).await, "running");
 
         // Second flip (the concurrent retry) is a no-op — the Run already left
         // `parked`, so the loser must bail instead of spawning a second Worker.
         let second = mark_run_running(&pool, parked).await.expect("second flip");
-        assert_eq!(second, 0, "a second flip on an already-running Run is a no-op");
+        assert_eq!(
+            second,
+            Moved::Lost,
+            "a second flip on an already-running Run is a no-op"
+        );
 
         // A flip of a Run that was never parked is likewise 0 rows.
-        let non_parked = mark_run_running(&pool, running).await.expect("non-parked flip");
-        assert_eq!(non_parked, 0, "flipping a non-parked Run affects no rows");
+        let non_parked = mark_run_running(&pool, running)
+            .await
+            .expect("non-parked flip");
+        assert_eq!(
+            non_parked,
+            Moved::Lost,
+            "flipping a non-parked Run affects no rows"
+        );
     }
 }
