@@ -170,6 +170,40 @@ impl RunStatus {
         let moved = Moved::from_rows(queries::mark_run_running(&mut *conn, run_id).await?);
         Ok(moved)
     }
+
+    pub(super) async fn cancel(
+        conn: &mut SqliteConnection,
+        run_id: Uuid,
+        now_ms: i64,
+    ) -> sqlx::Result<Moved> {
+        debug_assert_eq!(Self::Parked.as_str(), "parked");
+        debug_assert_eq!(Self::Cancelled.as_str(), "cancelled");
+        let moved = Moved::from_rows(
+            queries::mark_parked_run_cancelled(
+                &mut *conn,
+                run_id,
+                TerminalReason::Cancelled.as_str(),
+                now_ms,
+            )
+            .await?,
+        );
+        if !moved.won() {
+            return Ok(moved);
+        }
+
+        let payload = serde_json::json!({ "target": "run" }).to_string();
+        let next_seq = queries::next_run_seq(&mut *conn, run_id).await?;
+        queries::insert_run_event(
+            &mut *conn,
+            run_id,
+            next_seq,
+            "cancelled",
+            Some(&payload),
+            now_ms,
+        )
+        .await?;
+        Ok(moved)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,6 +283,38 @@ impl ProposalStatus {
             )
             .await?;
         }
+        Ok(moved)
+    }
+
+    pub(super) async fn cancel(
+        conn: &mut SqliteConnection,
+        run_id: Uuid,
+        proposal_id: &str,
+        now_ms: i64,
+    ) -> sqlx::Result<Moved> {
+        debug_assert_eq!(Self::Pending.as_str(), "pending");
+        debug_assert_eq!(Self::Cancelled.as_str(), "cancelled");
+        let moved =
+            Moved::from_rows(queries::mark_proposal_cancelled(&mut *conn, proposal_id).await?);
+        if !moved.won() {
+            return Ok(moved);
+        }
+
+        let payload = serde_json::json!({
+            "target": "proposal",
+            "proposal_id": proposal_id,
+        })
+        .to_string();
+        let next_seq = queries::next_run_seq(&mut *conn, run_id).await?;
+        queries::insert_run_event(
+            &mut *conn,
+            run_id,
+            next_seq,
+            "cancelled",
+            Some(&payload),
+            now_ms,
+        )
+        .await?;
         Ok(moved)
     }
 }

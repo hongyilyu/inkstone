@@ -755,24 +755,38 @@ pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<M
 }
 
 /// Cancel a parked Run and its pending Proposal in ONE transaction (ADR-0014,
-/// slice 6). Self-guarding on `status='parked'`: flip the `runs` row to
-/// `cancelled` (`terminal_reason='cancelled'`, `ended_at`) only while it is
-/// still parked, then flip any `pending` Proposal of the Run to `cancelled`.
+/// ADR-0028). Loads the Run's pending Proposal, then funnels both status
+/// changes through their guarded verbs: `ProposalStatus::cancel` (guard
+/// `status='pending'`) and `RunStatus::cancel` (guard `status='parked'`, owning
+/// `terminal_reason='cancelled'` + `ended_at`). Each verb appends its own
+/// `cancelled` `run_events` row in the same transaction.
 /// Returns whether the Run was actually cancelled — `false` (tx rolled back,
-/// nothing changed) when a concurrent decide/cancel already moved the Run off
+/// nothing changed) when the Run has no pending Proposal, or a concurrent
+/// decide/cancel already moved the Proposal off `pending` / the Run off
 /// `parked`, which the caller maps to `already_terminal`.
-pub async fn cancel_parked_run(
-    pool: &SqlitePool,
-    run_id: Uuid,
-    now_ms: i64,
-) -> sqlx::Result<bool> {
+pub async fn cancel_parked_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<bool> {
     let mut tx = pool.begin().await?;
-    let cancelled = queries::mark_parked_run_cancelled(&mut *tx, run_id, now_ms).await?;
-    if cancelled != 1 {
-        // tx drops here without commit → rollback. The Run was not parked.
+
+    let Some((proposal_id, _, _, _, _)) =
+        queries::pending_proposal_for_run(&mut *tx, run_id).await?
+    else {
+        // tx drops here without commit → rollback. The Run had no pending
+        // Proposal, so a concurrent decide/cancel likely won.
+        return Ok(false);
+    };
+
+    let proposal_cancelled = ProposalStatus::cancel(&mut *tx, run_id, &proposal_id, now_ms).await?;
+    if !proposal_cancelled.won() {
+        // tx drops here without commit → rollback. The Proposal was no longer pending.
         return Ok(false);
     }
-    queries::cancel_pending_proposals_for_run(&mut *tx, run_id).await?;
+
+    let run_cancelled = RunStatus::cancel(&mut *tx, run_id, now_ms).await?;
+    if !run_cancelled.won() {
+        // tx drops here without commit → rollback. The Run was no longer parked.
+        return Ok(false);
+    }
+
     tx.commit().await?;
     Ok(true)
 }
@@ -1318,6 +1332,43 @@ mod tests {
             run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
             1,
             "lost reject wrote no duplicate event"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_parked_run_records_run_and_proposal_cancel_events() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("77777777-7777-4777-8777-777777777777").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        seed_pending_proposal(&pool, run_id, "tool-cancel").await;
+
+        let cancelled = cancel_parked_run(&pool, run_id, 42).await.expect("cancel");
+
+        assert!(cancelled);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "cancelled");
+        let proposal_status: String = sqlx::query_scalar(
+            "SELECT p.status FROM proposals p \
+             JOIN tool_calls tc ON tc.id = p.tool_call_id WHERE tc.run_id = ?1",
+        )
+        .bind(run_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("proposal status");
+        assert_eq!(proposal_status, "cancelled");
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "cancelled").await,
+            2,
+            "one cancelled event for the Proposal and one for the Run"
+        );
+
+        let second = cancel_parked_run(&pool, run_id, 43)
+            .await
+            .expect("second cancel");
+        assert!(!second);
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "cancelled").await,
+            2,
+            "lost cancel wrote no duplicate event"
         );
     }
 

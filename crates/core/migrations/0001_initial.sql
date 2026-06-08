@@ -94,7 +94,7 @@ CREATE TABLE run_events (
   kind        TEXT NOT NULL CHECK (kind IN
                 ('status','tool_request','tool_result',
                  'proposal_pending','proposal_decided',
-                 'parked','done','error')),
+                 'parked','done','error','cancelled')),
   payload     TEXT,                                -- JSON; shape depends on kind
   created_at  INTEGER NOT NULL,
   PRIMARY KEY (run_id, run_seq)
