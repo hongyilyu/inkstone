@@ -103,10 +103,12 @@ pub(super) async fn handle<P, S, F, Fut>(
     };
 
     match body(decoded).await {
-        Ok(value) => {
-            let result = serde_json::to_value(value).expect("handler result serializes");
-            send_response(out_tx, id, result);
-        }
+        Ok(value) => match serde_json::to_value(value) {
+            Ok(result) => send_response(out_tx, id, result),
+            // A result that fails to serialize is an internal fault, not a
+            // reason to panic and tear down the connection task.
+            Err(e) => frame_error(out_tx, id, HandlerError::Internal(anyhow::Error::new(e))),
+        },
         Err(err) => frame_error(out_tx, id, err),
     }
 }
@@ -178,5 +180,22 @@ mod tests {
         let msg = v["error"]["message"].as_str().unwrap();
         assert_eq!(msg, "internal error");
         assert!(!msg.contains("credentials"));
+    }
+
+    #[tokio::test]
+    async fn unserializable_result_frames_internal_not_panic() {
+        use std::collections::HashMap;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // A map with non-string keys cannot serialize to a JSON object; the
+        // combinator must frame -32603, not panic and tear down the task.
+        handle(json!(1), json!({ "id": Uuid::nil() }), &tx, |_p: TestParams| async move {
+            let mut m: HashMap<(u8, u8), u8> = HashMap::new();
+            m.insert((1, 2), 3);
+            Ok::<_, HandlerError>(m)
+        })
+        .await;
+        let v = recv_json(&mut rx);
+        assert_eq!(v["error"]["code"], json!(-32603));
+        assert!(v.get("result").is_none());
     }
 }
