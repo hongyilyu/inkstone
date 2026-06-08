@@ -3,7 +3,7 @@ import { Effect } from "effect";
 import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { makeStdioTransport } from "./transport-stdio.js";
-import { WorkerTransport } from "./transport.js";
+import { ManifestParseError, WorkerTransport } from "./transport.js";
 
 // A Writable that records everything written to it, so the test can assert the
 // exact NDJSON frames the transport emitted.
@@ -104,5 +104,24 @@ describe("StdioTransportLive (over injected streams)", () => {
 		);
 
 		expect(manifest).toBeNull();
+	});
+
+	it("readManifest fails with ManifestParseError on a malformed manifest line", async () => {
+		const input = new PassThrough();
+		const { output } = capturingWritable();
+		// Valid JSON, but not a WorkerManifest (Schema decode fails).
+		input.write(`${JSON.stringify({ not: "a manifest" })}\n`);
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const t = yield* WorkerTransport;
+				return yield* Effect.either(t.readManifest);
+			}).pipe(Effect.provide(makeStdioTransport(input, output))),
+		);
+
+		expect(result._tag).toBe("Left");
+		if (result._tag === "Left") {
+			expect(result.left).toBeInstanceOf(ManifestParseError);
+		}
 	});
 });
