@@ -34,6 +34,8 @@ For *this slice*, three questions:
 
 3. **TDD commit pattern.** Run `git log --oneline <SLICE_BASE>..HEAD` and inspect commits.
 
+   **Feature-scope exception (`SLICE: feature`):** `feature/<slug>` carries one squashed commit per slice, so there is no RED→GREEN sequence to inspect here — it was already verified per slice in phase 4 on each scratch branch. Skip this entire step; assert gates (step 1) and coverage (step 4) only.
+
    **Per-component subsequence, not whole-slice alternation.** When a slice touches two components, the log will interleave by spawn order, not strict alternation. Group commits by their prefix (`test(core):`/`core:` together, `test(ui):`/`ui:` together, etc.) and check the *subsequence* for each component, not the merged stream.
 
    For each component's subsequence, the expected pattern is alternating `test(<comp>):` / `<comp>:` commits, with the first usually being `test(<comp>):` (the RED).

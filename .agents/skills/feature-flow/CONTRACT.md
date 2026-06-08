@@ -49,7 +49,7 @@ export type FooEvent = ...
 - Any callers that need to update? {{which components, mapped to DECOMPOSE.md}}
 ```
 
-5. Commit on the worktree's branch (`flow/<slug>/contract`) with a message like `contract: <slug>`.
+5. Commit on the worktree's branch (`flow/<slug>/slice-<n>-contract`) with a message like `contract: <slug> — slice <n>`.
 
 6. Return a summary to the orchestrator: file paths edited, key type names added, whether typecheck passed.
 

@@ -49,7 +49,7 @@ If the carve-out applies, you may skip RED and only commit GREEN. Otherwise, run
    - `pnpm -C packages/worker check` (this repo's convention for typecheck)
    - `pnpm -C packages/worker test` only if a `test` script exists in `packages/worker/package.json`
 
-5. Confirm commit pattern via `git log --oneline <SLICE_BASE>..HEAD`. Do **not** use `master..HEAD` — wrong base for stacked slices.
+5. Confirm commit pattern via `git log --oneline <SLICE_BASE>..HEAD`. Do **not** use `master..HEAD` — it includes prior slices' commits and gives a misleading log.
 
 6. Write summary to `OUTPUT_PATH` and return it: cycles run, gates passed, drift from plan, carve-out invocation if any, prior findings addressed.
 

@@ -71,7 +71,7 @@ Slice events (scope `slice-<n>`):
 - `verify-pass` | `verify-fail`
 - `advisory-triaged` (with `addressed=<n> deferred=<n>`)
 - `iter-end` (when respawning for another iteration — hard fail or polish)
-- `passed` (slice green, moving to next)
+- `passed` (slice green and squashed onto `feature/<slug>`; detail includes the squashed commit SHA)
 - `blocked` (this slice hit retry cap)
 
 Final-review events (scope `final`):
@@ -85,27 +85,38 @@ Final-review events (scope `final`):
 
 ## Branch model
 
-Stacked. Each slice is a branch on top of the previous.
+One durable branch, one commit per slice.
 
 ```
 master
-└── flow/<slug>/slice-1                ← off master
-    ├── flow/<slug>/slice-1-iter2      ← retry, off slice-1's parent (master)
-    └── flow/<slug>/slice-2             ← off slice-1 (the passing version)
-        └── flow/<slug>/slice-3         ← off slice-2
-            └── ...
+└── feature/<slug>                     ← durable; one squashed commit per slice
+       slice-1   ← squashed from flow/<slug>/slice-1
+       slice-2   ← squashed from flow/<slug>/slice-2
+       …
+       slice-N   ← squashed from flow/<slug>/slice-N
+```
+
+Each slice is built on a throwaway scratch branch cut from `feature/<slug>`'s current tip, then squashed back onto it:
+
+```
+feature/<slug> tip ──┬── flow/<slug>/slice-<n>          ← scratch; RED→GREEN commits, reviewed here
+                     └── flow/<slug>/slice-<n>-iter<m>  ← retry, off the same tip
 ```
 
 Per-slice details:
-- A retry iteration creates `flow/<slug>/slice-<n>-iter<m>` off the slice's *parent* (i.e., not off the failing iteration). Failed iterations are kept for diff/debugging but not stacked on.
-- The contract phase, when present, branches off the slice's parent and is merged into the slice's main branch before impl runs.
+- The scratch branch `flow/<slug>/slice-<n>` is cut from `feature/<slug>`'s current tip (slice-(n-1)'s squashed commit, or `master` for slice-1).
+- The impl agent commits RED→GREEN on the scratch branch; the tests reviewer verifies that pattern in phase 4.
+- On gate pass, the orchestrator squashes the scratch branch into a single commit on `feature/<slug>` (`git merge --squash` + `git commit`). The scratch branch is kept for debugging but never built on again.
+- A retry iteration creates `flow/<slug>/slice-<n>-iter<m>` off `feature/<slug>`'s tip (i.e., not off the failing iteration). Failed iterations are kept for diff/debugging.
+- The contract phase, when present, branches off `feature/<slug>`'s tip and is merged into the slice's scratch branch before impl runs.
+- Final-review fixes are built on `flow/<slug>/final-iter<m>` and squashed onto `feature/<slug>` as `final-fix:` commits.
 
-The whole stack lives until the user merges. The user owns the merge — `/feature-flow` never pushes or merges to `master`.
+`feature/<slug>` opens a single PR after the final review passes. `/feature-flow` pushes the branch and opens the PR but never merges to `master` — the user owns the merge.
 
 ## Cleanup
 
-On success: leave artifacts and branches in place. The user reviews the stack and decides how to land it (squash all, merge each, rebase onto master).
+On success: `feature/<slug>` holds the squashed, one-commit-per-slice history and a PR is open. Leave it and the scratch branches in place; the user reviews the PR and owns the merge.
 
-On `BLOCKED.md`: leave everything — branches (including failed iterations), worktrees, logs. The user needs them to debug.
+On `BLOCKED.md`: leave everything — `feature/<slug>`, scratch branches (including failed iterations), worktrees, logs. The user needs them to debug.
 
 Worktrees auto-clean if the agent made no commits (reviewers); committed worktrees (impl agents) stay until the user calls `ExitWorktree` or removes them with `git worktree remove`.

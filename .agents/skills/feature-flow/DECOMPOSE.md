@@ -42,8 +42,8 @@ The high-level slice-level decomposition (which slices exist, their order, their
 ```md
 # Slice <n> decomposition: {{slice title}}
 
-Parent branch: {{flow/<slug>/slice-<n-1> | master}}
-Slice branch: flow/<slug>/slice-<n>
+Base: feature/<slug> tip (slice-<n-1>'s squashed commit, or master for slice-1)
+Scratch branch: flow/<slug>/slice-<n>
 
 ## Component
 
@@ -91,4 +91,4 @@ If the slice's affected packages have no test commands (e.g., placeholder UI bun
 
 - **Slice ownership conflicts with the plan.** Plan says one component; the work clearly needs another. Write `slices/<n>/BLOCKED.md` and stop the flow — the slice is mis-planned, not just mis-decomposed.
 - **Slice can't be made vertical.** The slice's RED test would require code from a future slice to compile/pass. The plan ordered the slices wrong. `BLOCKED.md`, stop.
-- **File overlap with an earlier-merged slice that breaks the earlier slice's behavior.** Earlier slice's tests would fail. `BLOCKED.md`, stop.
+- **File overlap with an earlier slice (already squashed onto `feature/<slug>`) that breaks the earlier slice's behavior.** Earlier slice's tests would fail. `BLOCKED.md`, stop.
