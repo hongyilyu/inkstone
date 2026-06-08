@@ -266,6 +266,7 @@ pub(super) async fn handle_decide(
 
         match db::reject_proposal(
             pool,
+            proposal.run_id,
             &params.proposal_id,
             &proposal.tool_call_id,
             params.decision_idempotency_key.as_deref(),
@@ -306,6 +307,7 @@ pub(super) async fn handle_decide(
 
         match db::apply_proposal(
             pool,
+            proposal.run_id,
             &params.proposal_id,
             &proposal.tool_call_id,
             &proposal.kind,

@@ -163,4 +163,116 @@ impl RunStatus {
         .await?;
         Ok(moved)
     }
+
+    pub(super) async fn resume(conn: &mut SqliteConnection, run_id: Uuid) -> sqlx::Result<Moved> {
+        debug_assert_eq!(Self::Parked.as_str(), "parked");
+        debug_assert_eq!(Self::Running.as_str(), "running");
+        let moved = Moved::from_rows(queries::mark_run_running(&mut *conn, run_id).await?);
+        Ok(moved)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProposalStatus {
+    Pending,
+    Accepted,
+    Rejected,
+    Cancelled,
+}
+
+impl ProposalStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub(super) async fn accept(
+        conn: &mut SqliteConnection,
+        run_id: Uuid,
+        proposal_id: &str,
+        edited_payload: Option<&str>,
+        decision_idempotency_key: Option<&str>,
+        now_ms: i64,
+    ) -> sqlx::Result<Moved> {
+        debug_assert_eq!(Self::Pending.as_str(), "pending");
+        let moved = Moved::from_rows(
+            queries::mark_proposal_accepted(
+                &mut *conn,
+                proposal_id,
+                edited_payload,
+                decision_idempotency_key,
+                now_ms,
+            )
+            .await?,
+        );
+        if moved.won() {
+            insert_proposal_decided_event(
+                conn,
+                run_id,
+                proposal_id,
+                ProposalStatus::Accepted,
+                now_ms,
+            )
+            .await?;
+        }
+        Ok(moved)
+    }
+
+    pub(super) async fn reject(
+        conn: &mut SqliteConnection,
+        run_id: Uuid,
+        proposal_id: &str,
+        decision_idempotency_key: Option<&str>,
+        now_ms: i64,
+    ) -> sqlx::Result<Moved> {
+        debug_assert_eq!(Self::Pending.as_str(), "pending");
+        let moved = Moved::from_rows(
+            queries::mark_proposal_rejected(
+                &mut *conn,
+                proposal_id,
+                decision_idempotency_key,
+                now_ms,
+            )
+            .await?,
+        );
+        if moved.won() {
+            insert_proposal_decided_event(
+                conn,
+                run_id,
+                proposal_id,
+                ProposalStatus::Rejected,
+                now_ms,
+            )
+            .await?;
+        }
+        Ok(moved)
+    }
+}
+
+async fn insert_proposal_decided_event(
+    conn: &mut SqliteConnection,
+    run_id: Uuid,
+    proposal_id: &str,
+    status: ProposalStatus,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    let payload = serde_json::json!({
+        "proposal_id": proposal_id,
+        "status": status.as_str(),
+    })
+    .to_string();
+    let next_seq = queries::next_run_seq(&mut *conn, run_id).await?;
+    queries::insert_run_event(
+        &mut *conn,
+        run_id,
+        next_seq,
+        "proposal_decided",
+        Some(&payload),
+        now_ms,
+    )
+    .await
 }

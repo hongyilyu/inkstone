@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::workflow::Workflow;
 
 pub use lifecycle::Moved;
-use lifecycle::{RunStatus, TerminalReason};
+use lifecycle::{ProposalStatus, RunStatus, TerminalReason};
 
 /// Current wall-clock time as ms since UNIX_EPOCH. Used as `created_at` /
 /// `updated_at` / `started_at` / `ended_at` for tier-2 rows.
@@ -627,6 +627,7 @@ impl std::fmt::Display for ApplyError {
 #[allow(clippy::too_many_arguments)]
 pub async fn apply_proposal(
     pool: &SqlitePool,
+    run_id: Uuid,
     proposal_id: &str,
     tool_call_id: &str,
     entity_type: &str,
@@ -650,15 +651,16 @@ pub async fn apply_proposal(
     // Flip the Proposal FIRST under the `status='pending'` guard — the single
     // concurrency choke. If a racing decide already accepted it this affects 0
     // rows; bail (rolling back the tx) before inserting a duplicate entity.
-    let accepted = queries::mark_proposal_accepted(
+    let accepted = ProposalStatus::accept(
         &mut *tx,
+        run_id,
         proposal_id,
         edited_str.as_deref(),
         decision_idempotency_key,
         now_ms,
     )
     .await?;
-    if accepted != 1 {
+    if !accepted.won() {
         // tx drops here without commit → rollback. No entity was inserted.
         return Err(ApplyError::NotPending);
     }
@@ -702,6 +704,7 @@ pub async fn apply_proposal(
 /// maps `NotPending` to `proposal_not_pending`.
 pub async fn reject_proposal(
     pool: &SqlitePool,
+    run_id: Uuid,
     proposal_id: &str,
     tool_call_id: &str,
     decision_idempotency_key: Option<&str>,
@@ -713,14 +716,15 @@ pub async fn reject_proposal(
     // Flip the Proposal FIRST under the `status='pending'` guard — the single
     // concurrency choke. If a racing decide already decided it this affects 0
     // rows; bail (rolling back the tx) before resolving the tool call.
-    let rejected = queries::mark_proposal_rejected(
+    let rejected = ProposalStatus::reject(
         &mut *tx,
+        run_id,
         proposal_id,
         decision_idempotency_key,
         now_ms,
     )
     .await?;
-    if rejected != 1 {
+    if !rejected.won() {
         // tx drops here without commit → rollback. Nothing was changed.
         return Err(ApplyError::NotPending);
     }
@@ -743,8 +747,11 @@ pub async fn reject_proposal(
 /// Worker spawns, so a `run/subscribe` in the window sees `running`. Returns
 /// the affected row count (review M2): the caller bails on 0 (another resume
 /// already won the race) rather than spawning a duplicate resume Worker.
-pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<u64> {
-    queries::mark_run_running(pool, run_id).await
+pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Moved> {
+    let mut tx = pool.begin().await?;
+    let moved = RunStatus::resume(&mut *tx, run_id).await?;
+    tx.commit().await?;
+    Ok(moved)
 }
 
 /// Cancel a parked Run and its pending Proposal in ONE transaction (ADR-0014,
@@ -1178,6 +1185,142 @@ mod tests {
         assert_eq!(proposal_count, 1, "lost park rolled back its proposal row");
     }
 
+    async fn seed_pending_proposal(pool: &SqlitePool, run_id: Uuid, tool_call_id: &str) -> String {
+        let proposal_id = Uuid::now_v7().to_string();
+        let mut tx = pool.begin().await.expect("begin proposal seed");
+        queries::insert_tool_call(
+            &mut *tx,
+            tool_call_id,
+            run_id,
+            "propose_entity",
+            r#"{"type":"todo","data":{"title":"milk"}}"#,
+            2,
+        )
+        .await
+        .expect("insert tool call");
+        queries::insert_tool_call_run_step(&mut *tx, run_id, 2, tool_call_id, 2)
+            .await
+            .expect("insert tool step");
+        queries::insert_proposal(&mut *tx, &proposal_id, tool_call_id, "todo", "create")
+            .await
+            .expect("insert proposal");
+        tx.commit().await.expect("commit proposal seed");
+        proposal_id
+    }
+
+    #[tokio::test]
+    async fn accept_records_proposal_decided_and_resume_is_guarded() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("66666666-6666-4666-8666-666666666666").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-accept").await;
+
+        let entity_id = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-accept",
+            "todo",
+            &serde_json::json!({"title": "milk"}),
+            None,
+            Some("idem-accept"),
+            r#"{"decision":"accept","content":"Accepted."}"#,
+            42,
+        )
+        .await
+        .expect("apply");
+        assert!(!entity_id.is_empty());
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1
+        );
+
+        let first_resume = mark_run_running(&pool, run_id).await.expect("resume");
+        assert_eq!(first_resume, Moved::Won);
+        let second_resume = mark_run_running(&pool, run_id).await.expect("resume again");
+        assert_eq!(second_resume, Moved::Lost);
+
+        let duplicate = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-accept",
+            "todo",
+            &serde_json::json!({"title": "milk"}),
+            None,
+            Some("idem-accept-2"),
+            r#"{"decision":"accept","content":"Accepted."}"#,
+            43,
+        )
+        .await;
+        assert!(matches!(duplicate, Err(ApplyError::NotPending)));
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1,
+            "lost apply wrote no duplicate event"
+        );
+    }
+
+    #[tokio::test]
+    async fn reject_records_proposal_decided_and_is_guarded() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("88888888-8888-4888-8888-888888888888").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-reject").await;
+
+        reject_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-reject",
+            Some("idem-reject"),
+            r#"{"decision":"reject","content":"Rejected."}"#,
+            42,
+        )
+        .await
+        .expect("reject");
+
+        let proposal_status: String =
+            sqlx::query_scalar("SELECT status FROM proposals WHERE id = ?1")
+                .bind(&proposal_id)
+                .fetch_one(&pool)
+                .await
+                .expect("proposal status");
+        assert_eq!(proposal_status, "rejected");
+        let tool_status: String =
+            sqlx::query_scalar("SELECT status FROM tool_calls WHERE id = 'tool-reject'")
+                .fetch_one(&pool)
+                .await
+                .expect("tool status");
+        assert_eq!(tool_status, "completed");
+        let entity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
+            .fetch_one(&pool)
+            .await
+            .expect("count entities");
+        assert_eq!(entity_count, 0, "reject applies no entity");
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1
+        );
+
+        let duplicate = reject_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-reject",
+            Some("idem-reject-2"),
+            r#"{"decision":"reject","content":"Rejected."}"#,
+            43,
+        )
+        .await;
+        assert!(matches!(duplicate, Err(ApplyError::NotPending)));
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
+            1,
+            "lost reject wrote no duplicate event"
+        );
+    }
+
     /// `mark_run_running` is self-guarding on `status='parked'` (review M2): the
     /// FIRST flip of a parked Run affects exactly one row; a SECOND flip (the
     /// concurrent-resume retry / a decide racing `recover_resume_if_parked`)
@@ -1195,16 +1338,26 @@ mod tests {
 
         // First flip of the parked Run wins the race (1 row).
         let first = mark_run_running(&pool, parked).await.expect("first flip");
-        assert_eq!(first, 1, "parked → running flips exactly one row");
+        assert_eq!(first, Moved::Won, "parked → running flips exactly one row");
         assert_eq!(run_status_of(&pool, &parked.to_string()).await, "running");
 
         // Second flip (the concurrent retry) is a no-op — the Run already left
         // `parked`, so the loser must bail instead of spawning a second Worker.
         let second = mark_run_running(&pool, parked).await.expect("second flip");
-        assert_eq!(second, 0, "a second flip on an already-running Run is a no-op");
+        assert_eq!(
+            second,
+            Moved::Lost,
+            "a second flip on an already-running Run is a no-op"
+        );
 
         // A flip of a Run that was never parked is likewise 0 rows.
-        let non_parked = mark_run_running(&pool, running).await.expect("non-parked flip");
-        assert_eq!(non_parked, 0, "flipping a non-parked Run affects no rows");
+        let non_parked = mark_run_running(&pool, running)
+            .await
+            .expect("non-parked flip");
+        assert_eq!(
+            non_parked,
+            Moved::Lost,
+            "flipping a non-parked Run affects no rows"
+        );
     }
 }
