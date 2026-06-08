@@ -10,7 +10,7 @@
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::reply::{send_error, send_invalid_params, send_response};
+use super::handler::{self, HandlerError};
 use crate::protocol::{SettingsResult, SettingsSetParams};
 use crate::{models, settings, workflow};
 
@@ -33,67 +33,52 @@ async fn current(pool: &SqlitePool) -> sqlx::Result<SettingsResult> {
 pub(super) async fn handle_get(
     pool: &SqlitePool,
     id: serde_json::Value,
+    params: serde_json::Value,
     out_tx: &UnboundedSender<String>,
 ) {
-    match current(pool).await {
-        Ok(result) => send_response(
-            out_tx,
-            id,
-            serde_json::to_value(result).expect("SettingsResult serializes"),
-        ),
-        Err(e) => {
-            eprintln!("settings/get failed: {e}");
-            send_error(out_tx, id, format!("settings/get: {e}"));
-        }
-    }
+    handler::handle(id, params, out_tx, |_p: serde_json::Value| async move {
+        current(pool)
+            .await
+            .map_err(|e| HandlerError::Internal(e.into()))
+    })
+    .await;
 }
 
 pub(super) async fn handle_set(
     pool: &SqlitePool,
     id: serde_json::Value,
-    params: SettingsSetParams,
+    params: serde_json::Value,
     out_tx: &UnboundedSender<String>,
 ) {
-    // Validate BEFORE any write (ADR-0002: Core is the authority) so a bad
-    // value persists nothing.
-    if let Some(ref model) = params.model {
-        if !models::is_known_model(model) {
-            send_invalid_params(out_tx, id, format!("unknown model {model:?}"));
-            return;
+    handler::handle(id, params, out_tx, |params: SettingsSetParams| async move {
+        // Validate BEFORE any write (ADR-0002: Core is the authority) so a bad
+        // value persists nothing.
+        if let Some(ref model) = params.model {
+            if !models::is_known_model(model) {
+                return Err(HandlerError::InvalidParams(format!("unknown model {model:?}")));
+            }
         }
-    }
-    if let Some(ref effort) = params.effort {
-        if !workflow::is_valid_thinking_level(effort) {
-            send_invalid_params(out_tx, id, format!("invalid effort {effort:?}"));
-            return;
+        if let Some(ref effort) = params.effort {
+            if !workflow::is_valid_thinking_level(effort) {
+                return Err(HandlerError::InvalidParams(format!("invalid effort {effort:?}")));
+            }
         }
-    }
 
-    let wf = workflow::default_workflow();
-    if let Some(ref model) = params.model {
-        if let Err(e) = settings::set_preferred_model(pool, &wf.name, model).await {
-            eprintln!("settings/set model failed: {e}");
-            send_error(out_tx, id, format!("settings/set: {e}"));
-            return;
+        let wf = workflow::default_workflow();
+        if let Some(ref model) = params.model {
+            settings::set_preferred_model(pool, &wf.name, model)
+                .await
+                .map_err(|e| HandlerError::Internal(e.into()))?;
         }
-    }
-    if let Some(ref effort) = params.effort {
-        if let Err(e) = settings::set_effort(pool, effort).await {
-            eprintln!("settings/set effort failed: {e}");
-            send_error(out_tx, id, format!("settings/set: {e}"));
-            return;
+        if let Some(ref effort) = params.effort {
+            settings::set_effort(pool, effort)
+                .await
+                .map_err(|e| HandlerError::Internal(e.into()))?;
         }
-    }
 
-    match current(pool).await {
-        Ok(result) => send_response(
-            out_tx,
-            id,
-            serde_json::to_value(result).expect("SettingsResult serializes"),
-        ),
-        Err(e) => {
-            eprintln!("settings/set re-read failed: {e}");
-            send_error(out_tx, id, format!("settings/set: {e}"));
-        }
-    }
+        current(pool)
+            .await
+            .map_err(|e| HandlerError::Internal(e.into()))
+    })
+    .await;
 }

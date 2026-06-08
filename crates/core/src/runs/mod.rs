@@ -54,18 +54,14 @@ pub async fn dispatch(
             thread_create::handle(pool, hubs, req.id, req.params, out_tx).await;
         }
         "thread/list" => {
-            // Read-only, no params (ADR-0022 read path) — skip param
-            // deserialization entirely.
-            thread_list::handle(pool, req.id, out_tx).await;
+            thread_list::handle(pool, req.id, req.params, out_tx).await;
         }
         "thread/get" => {
             // The combinator (ADR-0029) owns decode + framing; pass raw params.
             thread_get::handle(pool, req.id, req.params, out_tx).await;
         }
         "entity/list_todos" => {
-            // Read-only, no params (ADR-0022 read path) — skip param
-            // deserialization entirely.
-            entity::handle_list_todos(pool, req.id, out_tx).await;
+            entity::handle_list_todos(pool, req.id, req.params, out_tx).await;
         }
         "proposal/get" => {
             proposal::handle_get(pool, req.id, req.params, out_tx).await;
@@ -88,32 +84,19 @@ pub async fn dispatch(
             proposal::handle_decide(pool, hubs, req.id, params, out_tx).await;
         }
         "provider/status" => {
-            // Read-only, no params — the credential store is the only input.
-            provider::handle(req.id, out_tx).await;
+            provider::handle(req.id, req.params, out_tx).await;
         }
         "model/catalog" => {
-            // Read-only, no params — the embedded model catalog is the only input.
-            catalog::handle(req.id, out_tx);
+            catalog::handle(req.id, req.params, out_tx).await;
         }
         "settings/get" => {
-            // Read-only, no params — reads the settings table + default Workflow.
-            settings::handle_get(pool, req.id, out_tx).await;
+            settings::handle_get(pool, req.id, req.params, out_tx).await;
         }
         "settings/set" => {
-            let Ok(params) =
-                serde_json::from_value::<crate::protocol::SettingsSetParams>(req.params)
-            else {
-                return;
-            };
-            settings::handle_set(pool, req.id, params, out_tx).await;
+            settings::handle_set(pool, req.id, req.params, out_tx).await;
         }
         "provider/login_start" => {
-            let Ok(params) =
-                serde_json::from_value::<crate::protocol::ProviderLoginStartParams>(req.params)
-            else {
-                return;
-            };
-            provider::handle_login_start(req.id, params, out_tx).await;
+            provider::handle_login_start(req.id, req.params, out_tx).await;
         }
         // Other methods: drop silently for the skeleton.
         _ => {}

@@ -168,3 +168,38 @@ fn settings_get_set_round_trips_and_validates() {
         ws.close(None).await.ok();
     });
 }
+
+#[test]
+fn settings_set_malformed_params_rejected() {
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    let (_child, ws_url) = spawn_core(&db_path);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("ws handshake");
+
+        // Malformed params (model is the wrong type — fails to decode). Before
+        // ADR-0029 the dispatch silently dropped this (no reply); the combinator
+        // now frames it as invalid_params (-32602).
+        let bad = request(&mut ws, 1, "settings/set", serde_json::json!({ "model": 123 })).await;
+        assert_eq!(bad["id"], serde_json::json!(1));
+        assert!(
+            bad.get("result").is_none(),
+            "malformed set carries no result: {bad}"
+        );
+        assert_eq!(
+            bad["error"]["code"],
+            serde_json::json!(-32602),
+            "malformed settings/set params rejected with invalid_params: {bad}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
