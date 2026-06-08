@@ -369,10 +369,29 @@ pub async fn persist_tool_call(
     now_ms: i64,
 ) -> sqlx::Result<()> {
     let mut tx = pool.begin().await?;
-    let seq = queries::next_run_step_seq(&mut *tx, run_id).await?;
-    queries::insert_tool_call(&mut *tx, tool_call_id, run_id, name, request_payload, now_ms).await?;
-    queries::insert_tool_call_run_step(&mut *tx, run_id, seq, tool_call_id, now_ms).await?;
+    persist_tool_call_rows(&mut tx, run_id, tool_call_id, name, request_payload, now_ms).await?;
     tx.commit().await
+}
+
+async fn persist_tool_call_rows(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run_id: Uuid,
+    tool_call_id: &str,
+    name: &str,
+    request_payload: &str,
+    now_ms: i64,
+) -> sqlx::Result<()> {
+    let seq = queries::next_run_step_seq(&mut **tx, run_id).await?;
+    queries::insert_tool_call(
+        &mut **tx,
+        tool_call_id,
+        run_id,
+        name,
+        request_payload,
+        now_ms,
+    )
+    .await?;
+    queries::insert_tool_call_run_step(&mut **tx, run_id, seq, tool_call_id, now_ms).await
 }
 
 /// Resolve a previously-persisted Tool Request with its outcome (ADR-0017):
@@ -388,32 +407,54 @@ pub async fn resolve_tool_call(
     queries::resolve_tool_call(pool, tool_call_id, status, result_payload, now_ms).await
 }
 
-/// Persist a pending Proposal (ADR-0025), sidecar to the Proposal's
-/// `tool_calls` row. The proposed payload (`type`/`data`/`rationale`) rides on
-/// the tool call's `request_payload` already persisted by
-/// [`persist_tool_call`]; this row carries the Proposal lifecycle columns
-/// (`kind`, `change_kind`, `status='pending'`). `change_kind` is `create` for
-/// `propose_entity` (the only Proposal tool today).
-pub async fn persist_proposal(
-    pool: &SqlitePool,
-    proposal_id: &str,
-    tool_call_id: &str,
-    kind: &str,
-    change_kind: &str,
-) -> sqlx::Result<()> {
-    queries::insert_proposal(pool, proposal_id, tool_call_id, kind, change_kind).await
-}
-
-/// Park a Run on a Proposal (ADR-0025): set `runs.status='parked'` and record
-/// the waitpoint in `awaiting_tool_call_id`. Park is non-terminal — no
-/// `ended_at`/`terminal_reason`/error fields are touched, so the Run stays
-/// decidable.
-pub async fn mark_run_parked(
+/// Park a Run on a Proposal tool request (ADR-0025): persist the `tool_calls`
+/// row + timeline step, persist the pending Proposal, then move the Run
+/// `running -> parked` with the waitpoint recorded. The lifecycle events
+/// (`parked`, `proposal_pending`) are appended in the same transaction. If the
+/// Run is no longer `running`, the guarded park loses and the whole transaction
+/// rolls back.
+#[allow(clippy::too_many_arguments)]
+pub async fn park_on_proposal(
     pool: &SqlitePool,
     run_id: Uuid,
-    awaiting_tool_call_id: &str,
-) -> sqlx::Result<()> {
-    queries::mark_run_parked(pool, run_id, awaiting_tool_call_id).await
+    proposal_id: &str,
+    tool_call_id: &str,
+    name: &str,
+    request_payload: &str,
+    kind: &str,
+    change_kind: &str,
+    now_ms: i64,
+) -> sqlx::Result<Moved> {
+    let mut tx = pool.begin().await?;
+
+    persist_tool_call_rows(&mut tx, run_id, tool_call_id, name, request_payload, now_ms).await?;
+    queries::insert_proposal(&mut *tx, proposal_id, tool_call_id, kind, change_kind).await?;
+
+    let moved = RunStatus::park(&mut *tx, run_id, tool_call_id, now_ms).await?;
+    if !moved.won() {
+        return Ok(moved);
+    }
+
+    let payload = serde_json::json!({
+        "proposal_id": proposal_id,
+        "tool_call_id": tool_call_id,
+        "kind": kind,
+        "change_kind": change_kind,
+    })
+    .to_string();
+    let next_seq = queries::next_run_seq(&mut *tx, run_id).await?;
+    queries::insert_run_event(
+        &mut *tx,
+        run_id,
+        next_seq,
+        "proposal_pending",
+        Some(&payload),
+        now_ms,
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(moved)
 }
 
 /// Read a Run's `status` (ADR-0025). `None` when the Run does not exist.
@@ -1083,6 +1124,58 @@ mod tests {
         assert_eq!(moved, Moved::Lost);
         assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
         assert_eq!(run_event_count(&pool, &run_id.to_string(), "error").await, 0);
+    }
+
+    #[tokio::test]
+    async fn park_on_proposal_is_atomic_and_records_events() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "running").await;
+
+        let moved = park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-1",
+            "tool-1",
+            "propose_entity",
+            r#"{"type":"todo","data":{"title":"milk"}}"#,
+            "todo",
+            "create",
+            42,
+        )
+        .await
+        .expect("park");
+
+        assert_eq!(moved, Moved::Won);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "parked").await,
+            1
+        );
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "proposal_pending").await,
+            1
+        );
+
+        let second = park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-2",
+            "tool-2",
+            "propose_entity",
+            r#"{"type":"todo","data":{"title":"eggs"}}"#,
+            "todo",
+            "create",
+            43,
+        )
+        .await
+        .expect("second park");
+        assert_eq!(second, Moved::Lost);
+        let proposal_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM proposals")
+            .fetch_one(&pool)
+            .await
+            .expect("count proposals");
+        assert_eq!(proposal_count, 1, "lost park rolled back its proposal row");
     }
 
     /// `mark_run_running` is self-guarding on `status='parked'` (review M2): the

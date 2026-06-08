@@ -84,8 +84,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 ..
             } => {
                 if crate::tools::is_proposal(&name) && !db::should_auto_approve() {
-                    park_on_proposal(&pool, run_id, &tool_call_id, &name, &params).await;
-                    parked = true;
+                    parked = park_on_proposal(&pool, run_id, &tool_call_id, &name, &params).await;
                     worker.shutdown().await;
                     break;
                 }
@@ -228,35 +227,44 @@ async fn handle_tool_request(
     }
 }
 
-/// Park the Run on a Proposal tool request (ADR-0025). Persists the Proposal's
-/// `tool_calls` row (`pending`), a sidecar `proposals` row, then sets
-/// `runs.status='parked'` recording `awaiting_tool_call_id`. Persistence
-/// failures are logged but do not abort — a half-parked Run is recoverable.
+/// Park the Run on a Proposal tool request (ADR-0025). Persists the
+/// `tool_calls` row (`pending`), the sidecar `proposals` row, the guarded
+/// `running -> parked` move, and the `parked`/`proposal_pending` events in one
+/// transaction. Returns whether the terminal branch should be skipped.
 async fn park_on_proposal(
     pool: &SqlitePool,
     run_id: Uuid,
     tool_call_id: &str,
     name: &str,
     params: &serde_json::Value,
-) {
+) -> bool {
     let now = db::now_ms();
     let request_payload = params.to_string();
-    if let Err(e) = db::persist_tool_call(pool, run_id, tool_call_id, name, &request_payload, now).await
-    {
-        eprintln!("persist_tool_call (proposal) failed for {tool_call_id}: {e}");
-    }
 
     let kind = params
         .get("type")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     let proposal_id = Uuid::now_v7().to_string();
-    if let Err(e) = db::persist_proposal(pool, &proposal_id, tool_call_id, kind, "create").await {
-        eprintln!("persist_proposal failed for {tool_call_id}: {e}");
-    }
 
-    if let Err(e) = db::mark_run_parked(pool, run_id, tool_call_id).await {
-        eprintln!("mark_run_parked failed for run {run_id}: {e}");
+    match db::park_on_proposal(
+        pool,
+        run_id,
+        &proposal_id,
+        tool_call_id,
+        name,
+        &request_payload,
+        kind,
+        "create",
+        now,
+    )
+    .await
+    {
+        Ok(moved) => moved.won(),
+        Err(e) => {
+            eprintln!("park_on_proposal failed for run {run_id}, tool_call {tool_call_id}: {e}");
+            false
+        }
     }
 }
 

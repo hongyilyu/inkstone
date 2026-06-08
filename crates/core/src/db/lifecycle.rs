@@ -133,4 +133,34 @@ impl RunStatus {
         .await?;
         Ok(moved)
     }
+
+    pub(super) async fn park(
+        conn: &mut SqliteConnection,
+        run_id: Uuid,
+        awaiting_tool_call_id: &str,
+        now_ms: i64,
+    ) -> sqlx::Result<Moved> {
+        debug_assert_eq!(Self::Running.as_str(), "running");
+        debug_assert_eq!(Self::Parked.as_str(), "parked");
+        let moved = Moved::from_rows(
+            queries::mark_run_parked(&mut *conn, run_id, awaiting_tool_call_id).await?,
+        );
+        if !moved.won() {
+            return Ok(moved);
+        }
+
+        let payload =
+            serde_json::json!({ "awaiting_tool_call_id": awaiting_tool_call_id }).to_string();
+        let next_seq = queries::next_run_seq(&mut *conn, run_id).await?;
+        queries::insert_run_event(
+            &mut *conn,
+            run_id,
+            next_seq,
+            "parked",
+            Some(&payload),
+            now_ms,
+        )
+        .await?;
+        Ok(moved)
+    }
 }

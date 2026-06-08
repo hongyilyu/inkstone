@@ -228,18 +228,19 @@ pub(super) async fn mark_run_parked<'e, E>(
     executor: E,
     run_id: Uuid,
     awaiting_tool_call_id: &str,
-) -> sqlx::Result<()>
+) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
-        "UPDATE runs SET status = 'parked', awaiting_tool_call_id = ? WHERE id = ?",
+        "UPDATE runs SET status = 'parked', awaiting_tool_call_id = ? \
+         WHERE id = ? AND status = 'running'",
     )
     .bind(awaiting_tool_call_id)
     .bind(run_id.to_string())
     .execute(executor)
     .await
-    .map(|_| ())
+    .map(|r| r.rows_affected())
 }
 
 /// Read a Run's `status` by id (ADR-0025). `None` when the Run does not exist.
