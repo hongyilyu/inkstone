@@ -12,7 +12,7 @@
 //! - A malformed `thread_id` (not a UUID) → `invalid_params` (-32602).
 //! - A well-formed `thread_id` for a Thread that does not exist →
 //!   `unknown_thread` (-32001).
-//! A DB read error falls back to `send_error` (internal, -32603).
+//! A DB read error surfaces as an internal error (-32603) via the combinator.
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;

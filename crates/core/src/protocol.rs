@@ -39,7 +39,7 @@ pub struct PostMessageParams {
 /// `text_delta` snapshot, then forwards the live tail until `done`.
 #[derive(Debug, Deserialize)]
 pub struct SubscribeParams {
-    pub run_id: String,
+    pub run_id: uuid::Uuid,
 }
 
 /// `run/subscribe` result (ADR-0022 + ADR-0025): the Run's `status` at the
@@ -99,7 +99,7 @@ pub struct ProposalGetResult {
 /// result without re-applying. Deserialize-only — Core consumes it.
 #[derive(Debug, Deserialize)]
 pub struct ProposalDecideParams {
-    pub proposal_id: String,
+    pub proposal_id: uuid::Uuid,
     pub decision: String,
     #[serde(default)]
     #[allow(dead_code)] // consumed by `edit` (slice 5); accept ignores it
@@ -564,7 +564,7 @@ mod mirror_tests {
     fn subscribe_params_decodes_run_id() {
         let wire = json!({ "run_id": UUID_A });
         let p: SubscribeParams = serde_json::from_value(wire).unwrap();
-        assert_eq!(p.run_id, UUID_A);
+        assert_eq!(p.run_id.to_string(), UUID_A);
     }
 
     #[test]
@@ -654,7 +654,7 @@ mod mirror_tests {
             "decision_idempotency_key": "k1"
         });
         let p: ProposalDecideParams = serde_json::from_value(wire).unwrap();
-        assert_eq!(p.proposal_id, UUID_B);
+        assert_eq!(p.proposal_id.to_string(), UUID_B);
         assert_eq!(p.decision, "accept");
         assert_eq!(p.decision_idempotency_key.as_deref(), Some("k1"));
         assert!(p.edited_payload.is_none());

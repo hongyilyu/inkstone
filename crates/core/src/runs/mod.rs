@@ -42,10 +42,16 @@ pub async fn dispatch(
             post_message::handle(pool, hubs, req.id, req.params, out_tx).await;
         }
         "run/subscribe" => {
-            let Ok(params) = serde_json::from_value::<SubscribeParams>(req.params) else {
-                return;
-            };
-            subscribe::handle(pool, hubs, req.id, params, out_tx).await;
+            // Hand-written (streaming), but decode framing matches the
+            // combinator: a malformed id is invalid_params (ADR-0029).
+            match serde_json::from_value::<SubscribeParams>(req.params) {
+                Ok(params) => subscribe::handle(pool, hubs, req.id, params, out_tx).await,
+                Err(e) => handler::frame_error(
+                    out_tx,
+                    req.id,
+                    handler::HandlerError::InvalidParams(format!("invalid params: {e}")),
+                ),
+            }
         }
         "run/cancel" => {
             cancel::handle_cancel(pool, req.id, req.params, out_tx).await;
@@ -67,21 +73,16 @@ pub async fn dispatch(
             proposal::handle_get(pool, req.id, req.params, out_tx).await;
         }
         "proposal/decide" => {
-            let id = req.id.clone();
-            let Ok(params) =
-                serde_json::from_value::<crate::protocol::ProposalDecideParams>(req.params)
-            else {
-                // Don't leave the client hanging on malformed params — reply
-                // with invalid_params, matching the other input-validating
-                // handlers (review m2).
-                reply::send_invalid_params(
+            // Hand-written (idempotent multi-step), but decode framing matches
+            // the combinator: a malformed id is invalid_params (ADR-0029).
+            match serde_json::from_value::<crate::protocol::ProposalDecideParams>(req.params) {
+                Ok(params) => proposal::handle_decide(pool, hubs, req.id, params, out_tx).await,
+                Err(e) => handler::frame_error(
                     out_tx,
-                    id,
-                    "invalid proposal/decide params".to_string(),
-                );
-                return;
-            };
-            proposal::handle_decide(pool, hubs, req.id, params, out_tx).await;
+                    req.id,
+                    handler::HandlerError::InvalidParams(format!("invalid params: {e}")),
+                ),
+            }
         }
         "provider/status" => {
             provider::handle(req.id, req.params, out_tx).await;
