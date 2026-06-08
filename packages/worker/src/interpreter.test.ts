@@ -3,9 +3,11 @@ import {
 	registerFauxProvider,
 	streamSimple,
 } from "@earendil-works/pi-ai";
-import type { WorkerManifest } from "@inkstone/protocol";
+import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
-import { type Emit, type InterpreterDeps, runInterpreter } from "./interpreter.js";
+import { type InterpreterDeps, runInterpreter } from "./interpreter.js";
+import { InMemoryTransport } from "./transport-memory.js";
 
 // Each test registers a fresh faux provider and tears it down after, so the
 // pi-ai global api-registry never leaks a provider across tests.
@@ -31,36 +33,38 @@ function fauxManifest(overrides: Partial<WorkerManifest> = {}): WorkerManifest {
 	};
 }
 
-function collect(): { emit: Emit; events: import("@inkstone/protocol").RunEvent[] } {
-	const events: import("@inkstone/protocol").RunEvent[] = [];
-	return { emit: (e) => events.push(e), events };
+// Drive the interpreter through an InMemoryTransport on a test runtime and
+// return the Run Events the seam captured (ADR-0027).
+function runChat(
+	manifest: WorkerManifest,
+	deps: InterpreterDeps,
+): Promise<RunEvent[]> {
+	const captured: RunEvent[] = [];
+	return Effect.runPromise(
+		runInterpreter(manifest, deps).pipe(
+			Effect.provide(InMemoryTransport(captured)),
+		),
+	).then(() => captured);
 }
 
 describe("generic interpreter (faux provider)", () => {
-	it("streams a faux completion as text deltas then done", async () => {
-		const faux = registerFauxProvider({ provider: "faux", tokenSize: { min: 1, max: 2 } });
+	it("emits a faux completion as text_delta then done through the transport", async () => {
+		const faux = registerFauxProvider({ provider: "faux" });
 		registrations.push(faux);
-		faux.setResponses([fauxAssistantMessage("hello world")]);
+		faux.setResponses([fauxAssistantMessage("hello")]);
 
 		const deps: InterpreterDeps = {
 			resolveModel: () => faux.getModel(),
 			streamFn: streamSimple,
 		};
 
-		const { emit, events } = collect();
-		await runInterpreter(fauxManifest(), emit, deps);
+		const events = await runChat(fauxManifest(), deps);
 
-		const terminal = events[events.length - 1];
-		expect(terminal).toEqual({ kind: "done" });
-
-		const text = events
-			.filter((e): e is { kind: "text_delta"; delta: string } => e.kind === "text_delta")
-			.map((e) => e.delta)
-			.join("");
-		expect(text).toBe("hello world");
-
-		// No error event on the happy path.
-		expect(events.some((e) => e.kind === "error")).toBe(false);
+		// The seam captured exactly the streamed delta then the terminal done.
+		expect(events).toEqual([
+			{ kind: "text_delta", delta: "hello" },
+			{ kind: "done" },
+		]);
 	});
 
 	it("surfaces a faux error as the error event, not done", async () => {
@@ -78,8 +82,7 @@ describe("generic interpreter (faux provider)", () => {
 			streamFn: streamSimple,
 		};
 
-		const { emit, events } = collect();
-		await runInterpreter(fauxManifest(), emit, deps);
+		const events = await runChat(fauxManifest(), deps);
 
 		const terminal = events[events.length - 1];
 		expect(terminal).toEqual({ kind: "error", message: "provider exploded" });
@@ -187,8 +190,7 @@ describe("generic interpreter (faux provider)", () => {
 			],
 		});
 
-		const { emit, events } = collect();
-		await runInterpreter(manifest, emit, deps);
+		const events = await runChat(manifest, deps);
 
 		// Exactly one terminal `done`, no error.
 		const terminal = events[events.length - 1];
@@ -247,8 +249,7 @@ describe("generic interpreter (faux provider)", () => {
 			],
 		});
 
-		const { emit } = collect();
-		await runInterpreter(manifest, emit, deps);
+		await runChat(manifest, deps);
 
 		expect(seenUserTexts).toContain("earlier question");
 		expect(seenUserTexts).toContain("current question");

@@ -5,7 +5,7 @@ import {
 	registerFauxProvider,
 	streamSimple,
 } from "@earendil-works/pi-ai";
-import { Schema as S } from "effect";
+import { Effect, Layer, Schema as S } from "effect";
 import { createInterface } from "node:readline";
 import {
 	type InterpreterDeps,
@@ -13,6 +13,7 @@ import {
 	runInterpreter,
 } from "./interpreter.js";
 import type { CallTool, ToolCallResponse } from "./tool-proxy.js";
+import { WorkerTransport } from "./transport.js";
 
 /**
  * The Worker entry point (ADR-0013 stdin transport, ADR-0018 generic
@@ -39,6 +40,11 @@ const writeLine = (frame: unknown): void => {
 const emit = (event: RunEvent): void => {
 	writeLine(event);
 };
+
+// Inline WorkerTransport (ADR-0027): the Worker binary still emits Run Events
+// as NDJSON on stdout, now behind the transport seam. Extracting a formal
+// `StdioTransportLive` Layer and converting `main` to `Effect.gen` is slice 3.
+const runEventTransport = Layer.succeed(WorkerTransport, { emit });
 
 // Bidirectional stdio (ADR-0013): a single readline over stdin. The FIRST line
 // is the manifest; every subsequent line is a `tool_result` Core writes back,
@@ -232,8 +238,13 @@ async function main(): Promise<void> {
 
 	try {
 		// Wire the stdio-backed callTool into the deps so the interpreter's
-		// tool proxies (ADR-0018) round-trip through Core.
-		await runInterpreter(manifest, emit, { ...depsFor(manifest), callTool });
+		// tool proxies (ADR-0018) round-trip through Core. The interpreter is
+		// now an Effect that sources `emit` from the provided transport seam.
+		await Effect.runPromise(
+			runInterpreter(manifest, { ...depsFor(manifest), callTool }).pipe(
+				Effect.provide(runEventTransport),
+			),
+		);
 	} catch (e) {
 		// runInterpreter normally emits its own terminal event, but an
 		// unexpected throw (unknown provider in getModel, loop defect) must

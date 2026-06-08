@@ -5,13 +5,14 @@ import {
 	streamSimple,
 } from "@earendil-works/pi-ai";
 import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type CallTool,
-	type Emit,
 	type InterpreterDeps,
 	runInterpreter,
 } from "./interpreter.js";
+import { InMemoryTransport } from "./transport-memory.js";
 
 // Each test registers a fresh faux provider and tears it down after.
 const registrations: Array<{ unregister: () => void }> = [];
@@ -79,8 +80,11 @@ describe("tool proxy round-trip (faux provider)", () => {
 		};
 
 		const events: RunEvent[] = [];
-		const emit: Emit = (e) => events.push(e);
-		await runInterpreter(manifestWithReadThread(), emit, deps);
+		await Effect.runPromise(
+			runInterpreter(manifestWithReadThread(), deps).pipe(
+				Effect.provide(InMemoryTransport(events)),
+			),
+		);
 
 		// The proxy round-tripped exactly the model's tool call.
 		expect(calls).toHaveLength(1);
@@ -121,8 +125,11 @@ describe("tool proxy round-trip (faux provider)", () => {
 		};
 
 		const events: RunEvent[] = [];
-		const emit: Emit = (e) => events.push(e);
-		await runInterpreter(manifestWithReadThread(), emit, deps);
+		await Effect.runPromise(
+			runInterpreter(manifestWithReadThread(), deps).pipe(
+				Effect.provide(InMemoryTransport(events)),
+			),
+		);
 
 		// The Run reaches a terminal event (the thrown tool error became a
 		// tool result the model recovered from); it did not crash.
