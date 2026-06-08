@@ -11,11 +11,12 @@ use super::port::WorkerPort;
 use crate::protocol::{ToolResult, WorkerStdout};
 
 /// A spawned Worker child process with its stdio framed as NDJSON. Holds the
-/// `Child` so the process stays alive for the Run; when the loop returns this
-/// is dropped and tokio reaps the child (replacing the former explicit
-/// `child.wait()`).
+/// `Child` so the process stays alive for the Run; the child is spawned with
+/// `kill_on_drop(true)`, so when the loop returns and this is dropped the Worker
+/// is torn down (and reaped) — no worker that keeps running after its last frame
+/// can outlive the Run (replacing the former explicit `child.wait()`).
 pub(super) struct ChildWorker {
-    #[allow(dead_code)] // held to own the process lifetime; dropped → tokio reaps.
+    #[allow(dead_code)] // held to own the process lifetime; kill_on_drop tears it down on drop.
     child: Child,
     /// Kept open across the Run for `tool_result` writes (ADR-0013); set to
     /// `None` by [`WorkerPort::shutdown`] to send the Worker EOF.
@@ -41,6 +42,7 @@ impl ChildWorker {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
+            .kill_on_drop(true)
             .spawn()
         {
             Ok(c) => c,
@@ -58,7 +60,12 @@ impl ChildWorker {
             eprintln!("failed to write worker manifest: {e}");
             return Err(());
         }
-        let _ = stdin.flush().await;
+        if let Err(e) = stdin.flush().await {
+            // The manifest is the Worker's first input; if it never flushes the
+            // Worker blocks forever. Fail fast → the caller runs finalize_error.
+            eprintln!("failed to flush worker manifest: {e}");
+            return Err(());
+        }
 
         let Some(stdout) = child.stdout.take() else {
             eprintln!("worker child has no stdout");

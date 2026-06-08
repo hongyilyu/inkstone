@@ -151,8 +151,9 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
 
     // Remove the hub entry after publishing the terminal event so attached
     // subscribers observe the channel close once they have drained the tail.
-    // `worker` is dropped when this function returns; tokio reaps the child
-    // process (the former explicit `child.wait()`).
+    // `worker` is dropped when this function returns; the child is spawned
+    // `kill_on_drop`, so the Worker process is torn down then (the former
+    // explicit `child.wait()`) — no orphan outlives the Run.
     crate::hub::remove(&hubs, run_id);
 
     if parked {
