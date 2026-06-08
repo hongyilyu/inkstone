@@ -7,6 +7,7 @@
 //! process management is in [`crate::worker`]; the per-run hub is in
 //! [`crate::hub`].
 
+mod handler;
 mod post_message;
 mod proposal;
 mod cancel;
@@ -25,7 +26,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::hub::Hubs;
 use crate::protocol::{
-    JsonRpcRequest, PostMessageParams, SubscribeParams, ThreadCreateParams, ThreadGetParams,
+    JsonRpcRequest, PostMessageParams, SubscribeParams, ThreadCreateParams,
 };
 
 /// Route a decoded JSON-RPC request to its handler. One `match` arm per
@@ -75,10 +76,8 @@ pub async fn dispatch(
             thread_list::handle(pool, req.id, out_tx).await;
         }
         "thread/get" => {
-            let Ok(params) = serde_json::from_value::<ThreadGetParams>(req.params) else {
-                return;
-            };
-            thread_get::handle(pool, req.id, params, out_tx).await;
+            // The combinator (ADR-0029) owns decode + framing; pass raw params.
+            thread_get::handle(pool, req.id, req.params, out_tx).await;
         }
         "entity/list_todos" => {
             // Read-only, no params (ADR-0022 read path) — skip param

@@ -151,7 +151,7 @@ pub(crate) fn send_proposal_not_pending(
 
 /// Shared JSON-RPC error framer: builds the `{jsonrpc, id, error:{code,
 /// message}}` envelope and queues it on the per-connection channel.
-fn send_rpc_error(
+pub(super) fn send_rpc_error(
     out_tx: &UnboundedSender<String>,
     id: serde_json::Value,
     code: i64,

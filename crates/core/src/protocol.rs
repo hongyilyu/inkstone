@@ -210,7 +210,7 @@ pub struct EntityListResult {
 /// `run/post_message`.
 #[derive(Debug, Deserialize)]
 pub struct ThreadGetParams {
-    pub thread_id: String,
+    pub thread_id: uuid::Uuid,
 }
 
 /// A single Message in a `thread/get` result. Flat assembled `text`
@@ -738,7 +738,10 @@ mod mirror_tests {
     fn thread_get_params_decodes_thread_id() {
         let wire = json!({ "thread_id": UUID_A });
         let p: ThreadGetParams = serde_json::from_value(wire).unwrap();
-        assert_eq!(p.thread_id, UUID_A);
+        assert_eq!(p.thread_id.to_string(), UUID_A);
+        // C2 (ADR-0029): a non-UUID thread_id is rejected at decode (the
+        // combinator frames it as invalid_params).
+        assert!(serde_json::from_value::<ThreadGetParams>(json!({ "thread_id": "nope" })).is_err());
     }
 
     // --- Serialize-only results: encode to the canonical snake_case wire JSON. ---
