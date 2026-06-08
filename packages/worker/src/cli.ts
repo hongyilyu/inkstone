@@ -1,25 +1,27 @@
-import { WorkerManifest, type RunEvent } from "@inkstone/protocol";
+import type { WorkerManifest } from "@inkstone/protocol";
 import {
 	fauxAssistantMessage,
 	fauxToolCall,
 	registerFauxProvider,
 	streamSimple,
 } from "@earendil-works/pi-ai";
-import { Effect, Layer, Schema as S } from "effect";
-import { createInterface } from "node:readline";
+import { Effect } from "effect";
 import {
 	type InterpreterDeps,
 	defaultInterpreterDeps,
 	runInterpreter,
 } from "./interpreter.js";
-import type { CallTool, ToolCallResponse } from "./tool-proxy.js";
+import { StdioTransportLive } from "./transport-stdio.js";
 import { WorkerTransport } from "./transport.js";
 
 /**
  * The Worker entry point (ADR-0013 stdin transport, ADR-0018 generic
- * interpreter). Reads exactly one NDJSON manifest line from stdin, runs the
- * generic interpreter, and emits Run Events as NDJSON on stdout. There is no
- * per-Workflow code here.
+ * interpreter, ADR-0027 transport seam). `main` is `Effect.gen` from entry to
+ * exit (ADR-0020): it reads the manifest through {@link WorkerTransport}, runs
+ * the generic interpreter against the provided transport, and lets the
+ * interpreter emit Run Events as NDJSON. The stdio plumbing — readline, the
+ * `tool_call_id` correlation map, the stdout writer — lives behind the seam in
+ * {@link StdioTransportLive}; there is no per-Workflow code here.
  *
  * Provider deps are chosen by `manifest.workflow.provider`:
  * - `faux` → register pi-ai's faux provider and feed it the canned response
@@ -27,83 +29,10 @@ import { WorkerTransport } from "./transport.js";
  * - anything else → {@link defaultInterpreterDeps} (real getModel +
  *   token-injecting streamSimple).
  *
- * Any failure resolving the model or running the loop is converted into a
- * terminal `error` Run Event so a Run never ends without a terminal event
- * (slice-2 review carry #1).
+ * Any failure parsing the manifest, resolving the model, or running the loop is
+ * converted into a terminal `error` Run Event so a Run never ends without a
+ * terminal event (slice-2 review carry #1).
  */
-
-/** Write one NDJSON frame to stdout (Run Events and `tool_request`s). */
-const writeLine = (frame: unknown): void => {
-	process.stdout.write(`${JSON.stringify(frame)}\n`);
-};
-
-const emit = (event: RunEvent): void => {
-	writeLine(event);
-};
-
-// Bidirectional stdio (ADR-0013): a single readline over stdin. The FIRST line
-// is the manifest; every subsequent line is a `tool_result` Core writes back,
-// dispatched to the pending tool call keyed by `tool_call_id`.
-const pendingTools = new Map<string, (resp: ToolCallResponse) => void>();
-let resolveManifest!: (line: string | null) => void;
-const manifestLine = new Promise<string | null>((resolve) => {
-	resolveManifest = resolve;
-});
-let gotManifest = false;
-
-const rl = createInterface({ input: process.stdin });
-rl.on("line", (line: string) => {
-	if (!gotManifest) {
-		gotManifest = true;
-		resolveManifest(line);
-		return;
-	}
-	try {
-		const msg = JSON.parse(line) as {
-			kind?: string;
-			tool_call_id?: string;
-			outcome?: ToolCallResponse;
-		};
-		if (msg.kind === "tool_result" && typeof msg.tool_call_id === "string" && msg.outcome) {
-			const pending = pendingTools.get(msg.tool_call_id);
-			if (pending) {
-				pendingTools.delete(msg.tool_call_id);
-				pending(msg.outcome);
-			}
-		}
-	} catch {
-		// Non-JSON / unknown inbound line: ignore.
-	}
-});
-rl.on("close", () => {
-	if (!gotManifest) {
-		gotManifest = true;
-		resolveManifest(null);
-	}
-});
-
-/**
- * The production `callTool` (ADR-0018): write a `tool_request` to stdout and
- * resolve when Core writes back the matching `tool_result` on stdin.
- */
-const callTool: CallTool = (toolCallId, name, params) =>
-	new Promise<ToolCallResponse>((resolve) => {
-		pendingTools.set(toolCallId, resolve);
-		writeLine({
-			kind: "tool_request",
-			run_id: "",
-			tool_call_id: toolCallId,
-			name,
-			params,
-		});
-	});
-
-// Inline WorkerTransport (ADR-0027): the Worker binary emits Run Events as
-// NDJSON on stdout (`emit`) and round-trips Tool Requests over the stdin/stdout
-// `pendingTools` correlation above (`callTool`), now behind the transport seam.
-// Extracting a formal `StdioTransportLive` Layer and converting `main` to
-// `Effect.gen` is slice 3.
-const transport = Layer.succeed(WorkerTransport, { emit, callTool });
 
 /** Flatten a pi message `content` (string | content blocks) to plain text. */
 function textOf(content: unknown): string {
@@ -217,58 +146,44 @@ function depsFor(manifest: WorkerManifest): InterpreterDeps {
 	};
 }
 
-async function main(): Promise<void> {
-	const line = await manifestLine;
-	if (line === null) {
-		// Empty stdin — nothing to run. Mirror the prior worker's exit-0 on
-		// no input; Core treats stdout EOF without `done` as a disconnect.
-		return;
-	}
+// Read the manifest through the seam, then drive the interpreter. Empty stdin
+// (`readManifest` → null) is a clean exit with no output; Core treats stdout
+// EOF without `done` as a disconnect.
+const program = Effect.gen(function* () {
+	const transport = yield* WorkerTransport;
+	const manifest = yield* transport.readManifest;
+	if (manifest === null) return;
+	// The interpreter sources both transport channels (`emit` + `callTool`)
+	// from the provided seam (ADR-0027); only provider deps are injected.
+	yield* runInterpreter(manifest, depsFor(manifest));
+});
 
-	let manifest: WorkerManifest;
-	try {
-		manifest = S.decodeUnknownSync(WorkerManifest)(JSON.parse(line));
-	} catch (e) {
-		emit({
-			kind: "error",
-			message: `worker could not parse manifest: ${
-				e instanceof Error ? e.message : String(e)
-			}`,
-		});
-		return;
-	}
-
-	try {
-		// The interpreter sources BOTH transport channels (`emit` + `callTool`)
-		// from the provided seam (ADR-0027); only provider deps are injected.
-		await Effect.runPromise(
-			runInterpreter(manifest, depsFor(manifest)).pipe(
-				Effect.provide(transport),
+// A Run never ends without a terminal event: a bad manifest (typed
+// ManifestParseError) or an unexpected throw (unknown provider in getModel, a
+// loop defect) is converted into a terminal `error` Run Event through the seam.
+const main = program.pipe(
+	Effect.catchAll((error) =>
+		Effect.flatMap(WorkerTransport, (t) =>
+			Effect.sync(() => t.emit({ kind: "error", message: error.message })),
+		),
+	),
+	Effect.catchAllDefect((defect) =>
+		Effect.flatMap(WorkerTransport, (t) =>
+			Effect.sync(() =>
+				t.emit({
+					kind: "error",
+					message: defect instanceof Error ? defect.message : String(defect),
+				}),
 			),
-		);
-	} catch (e) {
-		// runInterpreter normally emits its own terminal event, but an
-		// unexpected throw (unknown provider in getModel, loop defect) must
-		// still terminate the Run with an error rather than a silent EOF.
-		emit({
-			kind: "error",
-			message: e instanceof Error ? e.message : String(e),
-		});
-	}
-}
+		),
+	),
+	Effect.provide(StdioTransportLive),
+);
 
-main().then(
+Effect.runPromise(main).then(
 	() => process.exit(0),
-	(e) => {
-		// Last-resort guard: emit a terminal error before exiting non-zero.
-		try {
-			emit({
-				kind: "error",
-				message: e instanceof Error ? e.message : String(e),
-			});
-		} catch {
-			// stdout already closed; nothing more to do.
-		}
-		process.exit(1);
-	},
+	// Last resort: the seam already emits the terminal error for every
+	// non-catastrophic path above, so a rejection here means stdout itself
+	// failed — nothing left to do but exit non-zero.
+	() => process.exit(1),
 );

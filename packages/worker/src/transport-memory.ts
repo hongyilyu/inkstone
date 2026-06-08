@@ -1,5 +1,5 @@
 import type { RunEvent } from "@inkstone/protocol";
-import { Layer } from "effect";
+import { Effect, Layer } from "effect";
 import type { ToolCallResponse } from "./tool-proxy.js";
 import { WorkerTransport } from "./transport.js";
 
@@ -37,13 +37,17 @@ export interface InMemoryToolChannel {
  * `callTool` is never invoked. If it ever is (a missing scripted result), the
  * returned `Promise` rejects so the test fails loudly rather than hanging.
  *
- * Slice 3 grows this with a preset manifest (for `readManifest`).
+ * `readManifest` is a stub (`null`): the interpreter never reads the manifest
+ * through the seam (it is handed the manifest by `main`), so in-process
+ * interpreter tests don't exercise it. The real read+decode lives in
+ * `StdioTransportLive` and is covered by `transport-stdio.test.ts`.
  */
 export const InMemoryTransport = (
 	captured: RunEvent[],
 	tools?: InMemoryToolChannel,
 ): Layer.Layer<WorkerTransport> =>
 	Layer.succeed(WorkerTransport, {
+		readManifest: Effect.succeed(null),
 		emit: (event) => {
 			captured.push(event);
 		},
