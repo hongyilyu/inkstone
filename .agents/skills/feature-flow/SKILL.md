@@ -1,6 +1,12 @@
 ---
 name: feature-flow
-description: End-to-end feature delivery for inkstone. Pass anything — a vague request, a half-formed plan, or an existing FEATURE-PLAN.md path. The skill grills the user as needed to produce a runnable plan, then autonomously executes it as a sequence of vertical slices (per slice: decompose, optional contract, impl, review, verify, squash). Use when the user wants to build, design, or deliver a feature.
+description: >-
+  End-to-end feature delivery for inkstone. Pass anything — a vague request, a
+  half-formed plan, or an existing FEATURE-PLAN.md path. The skill grills the
+  user as needed to produce a runnable plan, then autonomously executes it as a
+  sequence of vertical slices (per slice: decompose, optional contract, impl,
+  review, verify, squash). Use when the user wants to build, design, or deliver
+  a feature.
 ---
 
 # /feature-flow
