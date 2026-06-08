@@ -79,14 +79,15 @@ pub(super) async fn handle_login_start(
             )));
         }
 
-        // Single in-flight login (the :1455 loopback binds once).
+        // Single in-flight login (the :1455 loopback binds once). A user-facing
+        // condition, not an internal fault — surface the reason.
         if LOGIN_IN_FLIGHT
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
-            return Err(HandlerError::Internal(anyhow::anyhow!(
-                "a provider login is already in progress"
-            )));
+            return Err(HandlerError::ProviderLoginFailed(
+                "a provider login is already in progress".to_string(),
+            ));
         }
 
         let cmd = std::env::var("INKSTONE_PROVIDER_LOGIN_CMD").unwrap_or_else(|_| {
@@ -136,7 +137,8 @@ pub(super) async fn handle_login_start(
                     Ok(LoginLine::Error { message }) => {
                         LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
                         let _ = child.wait().await;
-                        return Err(HandlerError::Internal(anyhow::anyhow!(
+                        // The helper sanitizes this message for display.
+                        return Err(HandlerError::ProviderLoginFailed(format!(
                             "provider login failed: {message}"
                         )));
                     }
@@ -147,9 +149,9 @@ pub(super) async fn handle_login_start(
                 Ok(None) => {
                     LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
                     let _ = child.wait().await;
-                    return Err(HandlerError::Internal(anyhow::anyhow!(
-                        "provider login helper exited before authorize URL"
-                    )));
+                    return Err(HandlerError::ProviderLoginFailed(
+                        "provider login helper exited before authorize URL".to_string(),
+                    ));
                 }
                 Err(e) => {
                     LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);

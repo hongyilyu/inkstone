@@ -41,22 +41,24 @@ impl Drop for CoreChild {
     }
 }
 
-fn spawn_core(db_path: &Path, creds_dir: &Path) -> (CoreChild, String) {
+fn spawn_core(db_path: &Path, creds_dir: &Path, login_error: Option<&str>) -> (CoreChild, String) {
     let root = repo_root();
     let login_helper = root.join("crates/core/tests/fixtures/login-helper.ts");
     let login_cmd = format!("{} {} login", tsx().display(), login_helper.display());
 
-    let mut child = std::process::Command::cargo_bin("core")
-        .expect("core binary exists")
-        .current_dir(&root)
+    let mut cmd = std::process::Command::cargo_bin("core").expect("core binary exists");
+    cmd.current_dir(&root)
         .env("INKSTONE_PORT", "0")
         .env("INKSTONE_DB_PATH", db_path)
         .env("INKSTONE_CREDENTIALS_DIR", creds_dir)
         .env("INKSTONE_PROVIDER_LOGIN_CMD", &login_cmd)
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("core spawns");
+        .stderr(Stdio::inherit());
+    // Failure-path tests inject a helper error via the stub's env flag.
+    if let Some(message) = login_error {
+        cmd.env("INKSTONE_LOGIN_STUB_ERROR", message);
+    }
+    let mut child = cmd.spawn().expect("core spawns");
 
     let stdout = child.stdout.take().expect("piped stdout");
     let mut reader = BufReader::new(stdout);
@@ -123,7 +125,7 @@ fn login_start_returns_authorize_url_then_persists() {
     let db_path = tmp.path().join("db.sqlite");
     let creds_dir = tmp.path().join("credentials");
 
-    let (_child, ws_url) = spawn_core(&db_path, &creds_dir);
+    let (_child, ws_url) = spawn_core(&db_path, &creds_dir, None);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -183,4 +185,50 @@ fn login_start_returns_authorize_url_then_persists() {
             & 0o777;
         assert_eq!(mode, 0o600, "persisted credential is 0600");
     }
+}
+
+#[test]
+fn login_start_helper_error_surfaces_provider_login_failed() {
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    let creds_dir = tmp.path().join("credentials");
+
+    // The stub helper emits a sanitized error line before any authorize URL.
+    let (_child, ws_url) = spawn_core(&db_path, &creds_dir, Some("account is locked"));
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("ws handshake");
+
+        let req = r#"{"jsonrpc":"2.0","id":1,"method":"provider/login_start","params":{"provider":"openai-codex"}}"#;
+        ws.send(Message::Text(req.into())).await.expect("send login_start");
+        let body = next_text(&mut ws).await;
+        let v: serde_json::Value = serde_json::from_str(&body).expect("login_start json");
+
+        // The failure is a named provider-login error (-32003, ADR-0014), not a
+        // generic internal error — and it carries the helper's message so the
+        // settings UI can show why (PR #105 review).
+        assert!(
+            v.get("result").is_none(),
+            "a failed login carries no result — body: {body}"
+        );
+        assert_eq!(
+            v["error"]["code"],
+            serde_json::json!(-32003),
+            "helper error → provider_login_failed (-32003) — body: {body}"
+        );
+        assert_eq!(
+            v["error"]["message"],
+            serde_json::json!("provider login failed: account is locked"),
+            "the sanitized helper message reaches the client — body: {body}"
+        );
+
+        ws.close(None).await.ok();
+    });
 }

@@ -32,10 +32,12 @@ pub(super) enum HandlerError {
     /// `-32001`: a well-formed id naming a Thread that does not exist.
     UnknownThread(Uuid),
     /// `-32002`: the Proposal is not pending (already decided, or its Run is not
-    /// parked). Consumed by the hand-written `proposal/decide` once it routes
-    /// through [`frame_error`].
-    #[allow(dead_code)] // first consumer lands when the framers collapse (later slice)
+    /// parked).
     ProposalNotPending(String),
+    /// `-32003`: a provider login could not start or complete. Carries a
+    /// sanitized, user-facing message (helper output, or "already in progress")
+    /// — NOT internal detail — so the settings UI can show why (ADR-0014).
+    ProviderLoginFailed(String),
     /// `-32603`: an internal fault. The full error is logged server-side; the
     /// client gets a generic message so SQL/internal detail never leaks.
     Internal(anyhow::Error),
@@ -48,17 +50,20 @@ impl HandlerError {
             HandlerError::InvalidParams(_) => -32602,
             HandlerError::UnknownThread(_) => -32001,
             HandlerError::ProposalNotPending(_) => -32002,
+            HandlerError::ProviderLoginFailed(_) => -32003,
             HandlerError::Internal(_) => -32603,
         }
     }
 
     /// The client-facing message. `Internal` is deliberately generic — the full
-    /// error is logged, never sent over the wire.
+    /// error is logged, never sent over the wire. Every other variant carries a
+    /// sanitized, user-facing message.
     fn client_message(&self) -> String {
         match self {
             HandlerError::InvalidParams(m) => m.clone(),
             HandlerError::UnknownThread(id) => format!("unknown thread_id {id}"),
             HandlerError::ProposalNotPending(m) => m.clone(),
+            HandlerError::ProviderLoginFailed(m) => m.clone(),
             HandlerError::Internal(_) => "internal error".to_string(),
         }
     }
@@ -180,6 +185,24 @@ mod tests {
         let msg = v["error"]["message"].as_str().unwrap();
         assert_eq!(msg, "internal error");
         assert!(!msg.contains("credentials"));
+    }
+
+    #[tokio::test]
+    async fn provider_login_failed_frames_minus_32003_with_message() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle(json!(1), json!({ "id": Uuid::nil() }), &tx, |_p: TestParams| async move {
+            Err::<Value, _>(HandlerError::ProviderLoginFailed(
+                "provider login failed: account locked".to_string(),
+            ))
+        })
+        .await;
+        let v = recv_json(&mut rx);
+        assert_eq!(v["error"]["code"], json!(-32003));
+        // Unlike Internal, the sanitized provider message reaches the client.
+        assert_eq!(
+            v["error"]["message"],
+            json!("provider login failed: account locked")
+        );
     }
 
     #[tokio::test]

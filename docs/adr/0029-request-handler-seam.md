@@ -17,6 +17,7 @@ Two methods are **deliberately out** (see below): `run/subscribe` and `proposal/
 - `InvalidParams(String)` → `-32602` — also the target of every decode failure (missing field, wrong type, malformed UUID).
 - `UnknownThread(Uuid)` → `-32001`.
 - `ProposalNotPending(String)` → `-32002`.
+- `ProviderLoginFailed(String)` → `-32003` — a provider login could not start/complete; carries a sanitized, user-facing message (helper output, or "already in progress").
 - `Internal(anyhow::Error)` → `-32603` — full detail logged to stderr, **generic** message to the client.
 
 ## What is a protocol error vs a result value
@@ -44,7 +45,11 @@ The trade-off, recorded honestly: the param structs in `crates/core/src/protocol
 
 ## Why generic client messages for `Internal`
 
-Today a DB failure sends the client `"get_thread_with_messages: {e}"` — a function name and raw SQL error over the wire — and separately `eprintln!`s. Routing all framing through the combinator makes the policy single-sourced: `Internal(e)` is **logged in full** server-side (the one site that replaces ~33 copied `eprintln! + send_error` pairs) and returns a **generic** message to the client. The client cannot act on Core's internals, and leaking them is a habit worth not forming. The three client-facing variants (`InvalidParams`, `UnknownThread`, `ProposalNotPending`) keep their specific messages via `Display`.
+Today a DB failure sends the client `"get_thread_with_messages: {e}"` — a function name and raw SQL error over the wire — and separately `eprintln!`s. Routing all framing through the combinator makes the policy single-sourced: `Internal(e)` is **logged in full** server-side (the one site that replaces ~33 copied `eprintln! + send_error` pairs) and returns a **generic** message to the client. The client cannot act on Core's internals, and leaking them is a habit worth not forming.
+
+The rule is precise: **`Internal` is for faults whose detail would leak** (SQL, function names, IO errors). Every *other* variant carries a sanitized, user-facing message via `Display` — `InvalidParams`, `UnknownThread`, `ProposalNotPending`, and `ProviderLoginFailed`. A provider-login failure is the instructive case: the Provider Helper's error text is already sanitized for display and is actionable ("login failed: …", "already in progress"), so it is a named domain error (`-32003`) that keeps its message, **not** an `Internal` collapsed to "internal error". Genuine operational faults in the same handler (helper spawn failure, no stdout, IO read error) stay `Internal` (PR #105 review).
+
+The combinator's success path is also non-panicking: a result that fails to serialize is framed as `Internal` (`-32603`), not `expect`-panicked, so one bad `Serialize` cannot tear down the connection task (PR #105 review).
 
 ## Consequences
 
