@@ -120,6 +120,56 @@ fn spawn_core_with_fixture(
 }
 
 #[test]
+fn subscribe_malformed_run_id_is_invalid_params() {
+    let _guard = port_lock();
+
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+    let gate_path = tmp.path().join("gate");
+
+    let (_core, ws_url) = spawn_core_with_fixture(&db_path, &gate_path, "1");
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("ws handshake succeeds");
+
+        // A malformed run_id. Before ADR-0029 subscribe framed this as an
+        // internal error (-32603); typed-at-decode (C2) makes it the same
+        // invalid_params (-32602) every other method returns.
+        let sub =
+            r#"{"jsonrpc":"2.0","id":9,"method":"run/subscribe","params":{"run_id":"not-a-uuid"}}"#;
+        ws.send(Message::Text(sub.into()))
+            .await
+            .expect("send subscribe");
+
+        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
+            .await
+            .expect("frame within 5s")
+            .expect("frame present")
+            .expect("frame ok");
+        let body = match frame {
+            Message::Text(t) => t.to_string(),
+            other => panic!("expected text frame, got {other:?}"),
+        };
+        let v: serde_json::Value = serde_json::from_str(&body).expect("json response");
+        assert_eq!(v["id"], serde_json::json!(9), "echoed id");
+        assert_eq!(
+            v["error"]["code"],
+            serde_json::json!(-32602),
+            "malformed run_id rejected with invalid_params (-32602) — body: {body}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+#[test]
 fn subscribe_snapshot_then_tail() {
     let _guard = port_lock();
 

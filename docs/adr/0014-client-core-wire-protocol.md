@@ -82,7 +82,7 @@ Heartbeat is **client-initiated only**. Core notices a dead Client when its next
 Errors live in JSON-RPC 2.0's `{code, message, data}` shape. Reserve a code range for Inkstone-specific errors and name them:
 
 - `parse_error`, `invalid_request`, `method_not_found`, `invalid_params`, `internal_error` — JSON-RPC reserved (`-32700` to `-32603`).
-- `unknown_thread`, `unknown_run`, `run_already_terminal`, `proposal_not_pending`, `protocol_version_mismatch`, `subscription_not_found` — Inkstone-reserved (e.g. `-32000` to `-32099`).
+- `unknown_thread`, `unknown_run`, `run_already_terminal`, `proposal_not_pending`, `provider_login_failed`, `protocol_version_mismatch`, `subscription_not_found` — Inkstone-reserved (e.g. `-32000` to `-32099`). Concrete codes for the implemented ones are pinned in [ADR-0029](./0029-request-handler-seam.md): `unknown_thread` `-32001`, `proposal_not_pending` `-32002`, `provider_login_failed` `-32003`.
 
 ### Cancellation
 

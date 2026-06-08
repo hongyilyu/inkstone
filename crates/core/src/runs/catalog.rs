@@ -4,13 +4,16 @@
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::reply::send_response;
+use super::handler::{self, HandlerError};
 use crate::models;
 
-pub(super) fn handle(id: serde_json::Value, out_tx: &UnboundedSender<String>) {
-    send_response(
-        out_tx,
-        id,
-        serde_json::to_value(models::catalog()).expect("ModelCatalogResult serializes"),
-    );
+pub(super) async fn handle(
+    id: serde_json::Value,
+    params: serde_json::Value,
+    out_tx: &UnboundedSender<String>,
+) {
+    handler::handle(id, params, out_tx, |_p: serde_json::Value| async move {
+        Ok::<_, HandlerError>(models::catalog())
+    })
+    .await;
 }

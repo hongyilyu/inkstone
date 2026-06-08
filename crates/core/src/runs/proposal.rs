@@ -21,10 +21,8 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-use super::reply::{
-    send_error, send_invalid_params, send_proposal_changed, send_proposal_not_pending,
-    send_response,
-};
+use super::handler::{self, HandlerError};
+use super::reply::{send_proposal_changed, send_response};
 use crate::db;
 use crate::hub::Hubs;
 use crate::protocol::{ProposalDecideParams, ProposalDecideResult, ProposalGetParams, ProposalGetResult};
@@ -32,39 +30,29 @@ use crate::protocol::{ProposalDecideParams, ProposalDecideResult, ProposalGetPar
 pub(super) async fn handle_get(
     pool: &SqlitePool,
     id: serde_json::Value,
-    params: ProposalGetParams,
+    params: serde_json::Value,
     out_tx: &UnboundedSender<String>,
 ) {
-    let Ok(run_id) = Uuid::parse_str(&params.run_id) else {
-        send_invalid_params(out_tx, id, format!("invalid run_id {:?}", params.run_id));
-        return;
-    };
+    handler::handle(id, params, out_tx, |params: ProposalGetParams| async move {
+        let run_id = params.run_id;
+        let p = db::get_pending_proposal_for_run(pool, run_id)
+            .await
+            .map_err(|e| HandlerError::Internal(e.into()))?
+            .ok_or_else(|| {
+                HandlerError::ProposalNotPending(format!("no pending proposal for run {run_id}"))
+            })?;
 
-    match db::get_pending_proposal_for_run(pool, run_id).await {
-        Ok(Some(p)) => {
-            send_response(
-                out_tx,
-                id,
-                serde_json::to_value(ProposalGetResult {
-                    proposal_id: p.proposal_id,
-                    run_id: run_id.to_string(),
-                    kind: p.kind,
-                    change_kind: p.change_kind,
-                    data: p.data,
-                    rationale: p.rationale,
-                    status: p.status,
-                })
-                .expect("ProposalGetResult serializes"),
-            );
-        }
-        Ok(None) => {
-            send_error(out_tx, id, format!("no pending proposal for run {run_id}"));
-        }
-        Err(e) => {
-            eprintln!("get_pending_proposal_for_run failed for {run_id}: {e}");
-            send_error(out_tx, id, format!("proposal/get: {e}"));
-        }
-    }
+        Ok(ProposalGetResult {
+            proposal_id: p.proposal_id,
+            run_id: run_id.to_string(),
+            kind: p.kind,
+            change_kind: p.change_kind,
+            data: p.data,
+            rationale: p.rationale,
+            status: p.status,
+        })
+    })
+    .await;
 }
 
 pub(super) async fn handle_decide(
@@ -79,29 +67,35 @@ pub(super) async fn handle_decide(
     // differs. Reject any other decision explicitly rather than silently
     // mis-applying.
     if params.decision != "accept" && params.decision != "reject" && params.decision != "edit" {
-        send_invalid_params(
+        handler::frame_error(
             out_tx,
             id,
-            format!("decision {:?} not implemented in this slice", params.decision),
+            HandlerError::InvalidParams(format!(
+                "decision {:?} not implemented in this slice",
+                params.decision
+            )),
         );
         return;
     }
     let is_reject = params.decision == "reject";
     let is_edit = params.decision == "edit";
+    // proposal_id is typed at decode (ADR-0029 C2); the db layer takes it as a
+    // string, so bind the canonical form once.
+    let proposal_id = params.proposal_id.to_string();
 
-    let proposal = match db::load_proposal_for_decide(pool, &params.proposal_id).await {
+    let proposal = match db::load_proposal_for_decide(pool, &proposal_id).await {
         Ok(Some(p)) => p,
         Ok(None) => {
-            send_proposal_not_pending(
+            handler::frame_error(
                 out_tx,
                 id,
-                format!("no proposal {}", params.proposal_id),
+                HandlerError::ProposalNotPending(format!("no proposal {proposal_id}")),
             );
             return;
         }
         Err(e) => {
-            eprintln!("load_proposal_for_decide failed for {}: {e}", params.proposal_id);
-            send_error(out_tx, id, format!("proposal/decide: {e}"));
+            eprintln!("load_proposal_for_decide failed for {}: {e}", proposal_id);
+            handler::frame_error(out_tx, id, HandlerError::Internal(anyhow::anyhow!("proposal/decide: {e}")));
             return;
         }
     };
@@ -125,21 +119,21 @@ pub(super) async fn handle_decide(
         && params.decision_idempotency_key.as_deref() == Some(recorded.as_str())
     {
         let (status, entity_id) =
-            match prior_decide_result(pool, &params.proposal_id, &proposal.status).await {
+            match prior_decide_result(pool, &proposal_id, &proposal.status).await {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("prior_decide_result failed for {}: {e}", params.proposal_id);
-                    send_error(out_tx, id, format!("proposal/decide: {e}"));
+                    eprintln!("prior_decide_result failed for {}: {e}", proposal_id);
+                    handler::frame_error(out_tx, id, HandlerError::Internal(anyhow::anyhow!("proposal/decide: {e}")));
                     return;
                 }
             };
         if let Err(e) = recover_resume_if_parked(pool, hubs, proposal.run_id).await {
             eprintln!("resume recovery failed for run {}: {e}", proposal.run_id);
-            send_error(out_tx, id, format!("proposal/decide resume: {e}"));
+            handler::frame_error(out_tx, id, HandlerError::Internal(anyhow::anyhow!("proposal/decide resume: {e}")));
             return;
         }
         send_decide_result(out_tx, id, &status, entity_id);
-        send_proposal_changed(out_tx, proposal.run_id, &params.proposal_id, &status);
+        send_proposal_changed(out_tx, proposal.run_id, &proposal_id, &status);
         return;
     }
 
@@ -154,39 +148,42 @@ pub(super) async fn handle_decide(
             match db::run_status(pool, proposal.run_id).await {
                 Ok(Some(ref s)) if s == "parked" => {
                     let (status, entity_id) =
-                        match prior_decide_result(pool, &params.proposal_id, &proposal.status).await
+                        match prior_decide_result(pool, &proposal_id, &proposal.status).await
                         {
                             Ok(r) => r,
                             Err(e) => {
                                 eprintln!(
                                     "prior_decide_result failed for {}: {e}",
-                                    params.proposal_id
+                                    proposal_id
                                 );
-                                send_error(out_tx, id, format!("proposal/decide: {e}"));
+                                handler::frame_error(out_tx, id, HandlerError::Internal(anyhow::anyhow!("proposal/decide: {e}")));
                                 return;
                             }
                         };
                     if let Err(e) = recover_resume_if_parked(pool, hubs, proposal.run_id).await {
                         eprintln!("resume recovery failed for run {}: {e}", proposal.run_id);
-                        send_error(out_tx, id, format!("proposal/decide resume: {e}"));
+                        handler::frame_error(out_tx, id, HandlerError::Internal(anyhow::anyhow!("proposal/decide resume: {e}")));
                         return;
                     }
                     send_decide_result(out_tx, id, &status, entity_id);
-                    send_proposal_changed(out_tx, proposal.run_id, &params.proposal_id, &status);
+                    send_proposal_changed(out_tx, proposal.run_id, &proposal_id, &status);
                     return;
                 }
                 Ok(_) => {}
                 Err(e) => {
                     eprintln!("run_status failed for {}: {e}", proposal.run_id);
-                    send_error(out_tx, id, format!("proposal/decide: {e}"));
+                    handler::frame_error(out_tx, id, HandlerError::Internal(anyhow::anyhow!("proposal/decide: {e}")));
                     return;
                 }
             }
         }
-        send_proposal_not_pending(
+        handler::frame_error(
             out_tx,
             id,
-            format!("proposal {} is {} (not pending)", params.proposal_id, proposal.status),
+            HandlerError::ProposalNotPending(format!(
+                "proposal {} is {} (not pending)",
+                proposal_id, proposal.status
+            )),
         );
         return;
     }
@@ -195,16 +192,16 @@ pub(super) async fn handle_decide(
     match db::run_status(pool, proposal.run_id).await {
         Ok(Some(ref s)) if s == "parked" => {}
         Ok(_) => {
-            send_proposal_not_pending(
+            handler::frame_error(
                 out_tx,
                 id,
-                format!("run {} is not parked", proposal.run_id),
+                HandlerError::ProposalNotPending(format!("run {} is not parked", proposal.run_id)),
             );
             return;
         }
         Err(e) => {
             eprintln!("run_status failed for {}: {e}", proposal.run_id);
-            send_error(out_tx, id, format!("proposal/decide: {e}"));
+            handler::frame_error(out_tx, id, HandlerError::Internal(anyhow::anyhow!("proposal/decide: {e}")));
             return;
         }
     }
@@ -216,10 +213,10 @@ pub(super) async fn handle_decide(
         match params.edited_payload.as_ref() {
             Some(p) => Some(p),
             None => {
-                send_invalid_params(
+                handler::frame_error(
                     out_tx,
                     id,
-                    "edit requires edited_payload".to_string(),
+                    HandlerError::InvalidParams("edit requires edited_payload".to_string()),
                 );
                 return;
             }
@@ -238,14 +235,17 @@ pub(super) async fn handle_decide(
     if !is_reject {
         if proposal.kind == "todo" {
             if let Err(reason) = crate::entities::validate_todo(applied_data) {
-                send_invalid_params(out_tx, id, format!("invalid todo: {reason}"));
+                handler::frame_error(out_tx, id, HandlerError::InvalidParams(format!("invalid todo: {reason}")));
                 return;
             }
         } else {
-            send_invalid_params(
+            handler::frame_error(
                 out_tx,
                 id,
-                format!("entity kind {:?} not supported", proposal.kind),
+                HandlerError::InvalidParams(format!(
+                    "entity kind {:?} not supported",
+                    proposal.kind
+                )),
             );
             return;
         }
@@ -267,7 +267,7 @@ pub(super) async fn handle_decide(
         match db::reject_proposal(
             pool,
             proposal.run_id,
-            &params.proposal_id,
+            &proposal_id,
             &proposal.tool_call_id,
             params.decision_idempotency_key.as_deref(),
             &decision_payload,
@@ -280,16 +280,18 @@ pub(super) async fn handle_decide(
             // decided this Proposal. The guarded flip affected 0 rows and the
             // tx rolled back, so nothing changed here — report not-pending.
             Err(db::ApplyError::NotPending) => {
-                send_proposal_not_pending(
+                handler::frame_error(
                     out_tx,
                     id,
-                    format!("proposal {} is no longer pending", params.proposal_id),
+                    HandlerError::ProposalNotPending(format!(
+                        "proposal {proposal_id} is no longer pending"
+                    )),
                 );
                 return;
             }
             Err(db::ApplyError::Sql(e)) => {
-                eprintln!("reject_proposal failed for {}: {e}", params.proposal_id);
-                send_error(out_tx, id, format!("proposal/decide reject: {e}"));
+                eprintln!("reject_proposal failed for {}: {e}", proposal_id);
+                handler::frame_error(out_tx, id, HandlerError::Internal(anyhow::anyhow!("proposal/decide reject: {e}")));
                 return;
             }
         }
@@ -308,7 +310,7 @@ pub(super) async fn handle_decide(
         match db::apply_proposal(
             pool,
             proposal.run_id,
-            &params.proposal_id,
+            &proposal_id,
             &proposal.tool_call_id,
             &proposal.kind,
             &proposal.data,
@@ -325,16 +327,18 @@ pub(super) async fn handle_decide(
             // tx rolled back, so nothing was applied here — report not-pending.
             // The winner's resume drives the Run forward.
             Err(db::ApplyError::NotPending) => {
-                send_proposal_not_pending(
+                handler::frame_error(
                     out_tx,
                     id,
-                    format!("proposal {} is no longer pending", params.proposal_id),
+                    HandlerError::ProposalNotPending(format!(
+                        "proposal {proposal_id} is no longer pending"
+                    )),
                 );
                 return;
             }
             Err(db::ApplyError::Sql(e)) => {
-                eprintln!("apply_proposal failed for {}: {e}", params.proposal_id);
-                send_error(out_tx, id, format!("proposal/decide apply: {e}"));
+                eprintln!("apply_proposal failed for {}: {e}", proposal_id);
+                handler::frame_error(out_tx, id, HandlerError::Internal(anyhow::anyhow!("proposal/decide apply: {e}")));
                 return;
             }
         }
@@ -350,7 +354,7 @@ pub(super) async fn handle_decide(
         // later decide retry recovers it: the idempotent branch (keyed) and the
         // already-decided branch (keyless) both re-drive `worker::resume` when
         // the Run is still parked — see `recover_resume_if_parked`.
-        send_error(out_tx, id, format!("proposal/decide resume: {e}"));
+        handler::frame_error(out_tx, id, HandlerError::Internal(anyhow::anyhow!("proposal/decide resume: {e}")));
         return;
     }
 
@@ -361,7 +365,7 @@ pub(super) async fn handle_decide(
     // tab re-subscribes for the resume tail (slice 9); a workspace-wide
     // proposal bus is out of scope.
     send_decide_result(out_tx, id, result_status, entity_id);
-    send_proposal_changed(out_tx, proposal.run_id, &params.proposal_id, result_status);
+    send_proposal_changed(out_tx, proposal.run_id, &proposal_id, result_status);
 }
 
 /// The prior result of an already-decided Proposal for the idempotent /

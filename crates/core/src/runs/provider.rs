@@ -12,36 +12,32 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::reply::{send_error, send_invalid_params, send_response};
+use super::handler::{self, HandlerError};
 use crate::credentials::{self, Credentials, OPENAI_CODEX};
 use crate::protocol::{
     ProviderLoginStartParams, ProviderLoginStartResult, ProviderStatus, ProviderStatusResult,
 };
 
-pub(super) async fn handle(id: serde_json::Value, out_tx: &UnboundedSender<String>) {
-    // ChatGPT/Codex is the only provider this feature supports.
-    let connected = match credentials::is_connected(OPENAI_CODEX) {
-        Ok(c) => c,
-        Err(e) => {
-            // A corrupt credential file (present but unparseable) surfaces as
-            // an internal error rather than a misleading "connected: false".
-            eprintln!("provider/status: credential read failed: {e}");
-            send_error(out_tx, id, format!("provider/status: {e}"));
-            return;
-        }
-    };
+pub(super) async fn handle(
+    id: serde_json::Value,
+    params: serde_json::Value,
+    out_tx: &UnboundedSender<String>,
+) {
+    handler::handle(id, params, out_tx, |_p: serde_json::Value| async move {
+        // ChatGPT/Codex is the only provider this feature supports. A corrupt
+        // credential file surfaces as an internal error rather than a
+        // misleading "connected: false".
+        let connected =
+            credentials::is_connected(OPENAI_CODEX).map_err(|e| HandlerError::Internal(e.into()))?;
 
-    send_response(
-        out_tx,
-        id,
-        serde_json::to_value(ProviderStatusResult {
+        Ok(ProviderStatusResult {
             providers: vec![ProviderStatus {
                 id: OPENAI_CODEX.to_string(),
                 connected,
             }],
         })
-        .expect("ProviderStatusResult serializes"),
-    );
+    })
+    .await;
 }
 
 /// At most one login flow runs at a time: the Provider Helper binds a fixed
@@ -72,119 +68,127 @@ enum LoginLine {
 
 pub(super) async fn handle_login_start(
     id: serde_json::Value,
-    params: ProviderLoginStartParams,
+    params: serde_json::Value,
     out_tx: &UnboundedSender<String>,
 ) {
-    if params.provider != OPENAI_CODEX {
-        send_invalid_params(out_tx, id, format!("unknown provider {:?}", params.provider));
-        return;
-    }
-
-    // Single in-flight login (the :1455 loopback binds once).
-    if LOGIN_IN_FLIGHT
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        send_error(out_tx, id, "a provider login is already in progress".to_string());
-        return;
-    }
-
-    let cmd = std::env::var("INKSTONE_PROVIDER_LOGIN_CMD").unwrap_or_else(|_| {
-        "packages/worker/node_modules/.bin/tsx packages/worker/src/provider.ts login".to_string()
-    });
-    let mut parts = cmd.split_whitespace();
-    let Some(program) = parts.next() else {
-        LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
-        send_error(out_tx, id, "INKSTONE_PROVIDER_LOGIN_CMD is empty".to_string());
-        return;
-    };
-    let args: Vec<String> = parts.map(str::to_string).collect();
-
-    let mut child = match Command::new(program)
-        .args(&args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
-            send_error(out_tx, id, format!("spawn provider login helper: {e}"));
-            return;
+    handler::handle(id, params, out_tx, |params: ProviderLoginStartParams| async move {
+        if params.provider != OPENAI_CODEX {
+            return Err(HandlerError::InvalidParams(format!(
+                "unknown provider {:?}",
+                params.provider
+            )));
         }
-    };
 
-    let Some(stdout) = child.stdout.take() else {
-        LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
-        let _ = child.kill().await;
-        send_error(out_tx, id, "provider login helper has no stdout".to_string());
-        return;
-    };
-    let mut lines = BufReader::new(stdout).lines();
+        // Single in-flight login (the :1455 loopback binds once). A user-facing
+        // condition, not an internal fault — surface the reason.
+        if LOGIN_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err(HandlerError::ProviderLoginFailed(
+                "a provider login is already in progress".to_string(),
+            ));
+        }
 
-    // Read until the authorize URL (the first structured line) so we can
-    // reply to the Client, which opens it in a new tab.
-    let authorize_url = loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => match serde_json::from_str::<LoginLine>(&line) {
-                Ok(LoginLine::AuthorizeUrl { url }) => break url,
-                Ok(LoginLine::Error { message }) => {
+        let cmd = std::env::var("INKSTONE_PROVIDER_LOGIN_CMD").unwrap_or_else(|_| {
+            "packages/worker/node_modules/.bin/tsx packages/worker/src/provider.ts login"
+                .to_string()
+        });
+        let mut parts = cmd.split_whitespace();
+        let Some(program) = parts.next() else {
+            LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
+            return Err(HandlerError::Internal(anyhow::anyhow!(
+                "INKSTONE_PROVIDER_LOGIN_CMD is empty"
+            )));
+        };
+        let args: Vec<String> = parts.map(str::to_string).collect();
+
+        let mut child = match Command::new(program)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
+                return Err(HandlerError::Internal(
+                    anyhow::Error::from(e).context("spawn provider login helper"),
+                ));
+            }
+        };
+
+        let Some(stdout) = child.stdout.take() else {
+            LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
+            let _ = child.kill().await;
+            return Err(HandlerError::Internal(anyhow::anyhow!(
+                "provider login helper has no stdout"
+            )));
+        };
+        let mut lines = BufReader::new(stdout).lines();
+
+        // Read until the authorize URL (the first structured line) so we can
+        // reply to the Client, which opens it in a new tab.
+        let authorize_url = loop {
+            match lines.next_line().await {
+                Ok(Some(line)) => match serde_json::from_str::<LoginLine>(&line) {
+                    Ok(LoginLine::AuthorizeUrl { url }) => break url,
+                    Ok(LoginLine::Error { message }) => {
+                        LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
+                        let _ = child.wait().await;
+                        // The helper sanitizes this message for display.
+                        return Err(HandlerError::ProviderLoginFailed(format!(
+                            "provider login failed: {message}"
+                        )));
+                    }
+                    // A credentials line before a URL is unexpected; ignore.
+                    Ok(_) => continue,
+                    Err(_) => continue, // skip non-JSON noise
+                },
+                Ok(None) => {
                     LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
                     let _ = child.wait().await;
-                    send_error(out_tx, id, format!("provider login failed: {message}"));
-                    return;
+                    return Err(HandlerError::ProviderLoginFailed(
+                        "provider login helper exited before authorize URL".to_string(),
+                    ));
                 }
-                // A credentials line before a URL is unexpected; ignore and keep reading.
-                Ok(_) => continue,
-                Err(_) => continue, // skip non-JSON noise
-            },
-            Ok(None) => {
-                LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
-                let _ = child.wait().await;
-                send_error(out_tx, id, "provider login helper exited before authorize URL".to_string());
-                return;
-            }
-            Err(e) => {
-                LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
-                let _ = child.wait().await;
-                send_error(out_tx, id, format!("read provider login helper: {e}"));
-                return;
-            }
-        }
-    };
-
-    // Reply with the authorize URL now; the callback + credential write
-    // continue out-of-band in the spawned task below.
-    send_response(
-        out_tx,
-        id,
-        serde_json::to_value(ProviderLoginStartResult { authorize_url })
-            .expect("ProviderLoginStartResult serializes"),
-    );
-
-    // Continue draining the helper: when it emits the credentials line (after
-    // the browser callback hits its :1455 loopback), Core — the single writer
-    // — persists them. The Client learns the outcome by re-querying
-    // `provider/status` on focus.
-    tokio::spawn(async move {
-        let result = read_login_credentials(&mut lines).await;
-        match result {
-            Ok(Some(creds)) => {
-                if let Err(e) = credentials::write(OPENAI_CODEX, &creds) {
-                    eprintln!("provider login: persisting credentials failed: {e}");
+                Err(e) => {
+                    LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
+                    let _ = child.wait().await;
+                    return Err(HandlerError::Internal(
+                        anyhow::Error::from(e).context("read provider login helper"),
+                    ));
                 }
             }
-            Ok(None) => {
-                eprintln!("provider login: helper finished without credentials");
+        };
+
+        // Continue draining the helper out-of-band: when it emits the
+        // credentials line (after the browser callback hits its :1455
+        // loopback), Core — the single writer — persists them. The Client
+        // learns the outcome by re-querying `provider/status` on focus.
+        tokio::spawn(async move {
+            let result = read_login_credentials(&mut lines).await;
+            match result {
+                Ok(Some(creds)) => {
+                    if let Err(e) = credentials::write(OPENAI_CODEX, &creds) {
+                        eprintln!("provider login: persisting credentials failed: {e}");
+                    }
+                }
+                Ok(None) => {
+                    eprintln!("provider login: helper finished without credentials");
+                }
+                Err(e) => {
+                    eprintln!("provider login: {e}");
+                }
             }
-            Err(e) => {
-                eprintln!("provider login: {e}");
-            }
-        }
-        let _ = child.wait().await;
-        LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
-    });
+            let _ = child.wait().await;
+            LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
+        });
+
+        Ok(ProviderLoginStartResult { authorize_url })
+    })
+    .await;
 }
 
 /// Drain the remaining helper lines after the authorize URL, returning the

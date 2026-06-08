@@ -100,58 +100,11 @@ pub(super) fn send_proposal_changed(
     let _ = out_tx.send(body);
 }
 
-/// Frame a JSON-RPC 2.0 internal error (`-32603`, the JSON-RPC reserved code
-/// per ADR-0014) and queue it on the per-connection channel.
-pub(crate) fn send_error(
-    out_tx: &UnboundedSender<String>,
-    id: serde_json::Value,
-    message: String,
-) {
-    send_rpc_error(out_tx, id, -32603, message);
-}
-
-/// Frame a JSON-RPC 2.0 `invalid_params` error (`-32602`, ADR-0014) and queue
-/// it on the per-connection channel. Used for client-input rejections like an
-/// empty `thread/create` prompt — distinct from the `-32603` internal-error
-/// code [`send_error`] uses.
-pub(crate) fn send_invalid_params(
-    out_tx: &UnboundedSender<String>,
-    id: serde_json::Value,
-    message: String,
-) {
-    send_rpc_error(out_tx, id, -32602, message);
-}
-
-/// Frame a JSON-RPC `unknown_thread` error and queue it on the
-/// per-connection channel. Code `-32001` sits in ADR-0014's Inkstone-specific
-/// server-error band (`-32000..-32099`). Used by `run/post_message` when the
-/// `thread_id` is well-formed but names a Thread that does not exist —
-/// distinct from `invalid_params` (-32602), which is for a malformed
-/// `thread_id`.
-pub(crate) fn send_unknown_thread(
-    out_tx: &UnboundedSender<String>,
-    id: serde_json::Value,
-    message: String,
-) {
-    send_rpc_error(out_tx, id, -32001, message);
-}
-
-/// Frame a JSON-RPC `proposal_not_pending` error (ADR-0025). Code `-32002`
-/// sits in ADR-0014's Inkstone-specific server-error band. Used by
-/// `proposal/decide` when the Proposal is not `pending` (already decided) or
-/// its Run is not `parked` — a stale/duplicate decide that is not the
-/// idempotent-retry case.
-pub(crate) fn send_proposal_not_pending(
-    out_tx: &UnboundedSender<String>,
-    id: serde_json::Value,
-    message: String,
-) {
-    send_rpc_error(out_tx, id, -32002, message);
-}
-
 /// Shared JSON-RPC error framer: builds the `{jsonrpc, id, error:{code,
-/// message}}` envelope and queues it on the per-connection channel.
-fn send_rpc_error(
+/// message}}` envelope and queues it on the per-connection channel. The
+/// failure→code map lives on [`super::handler::HandlerError`] (ADR-0029); this
+/// is the single wire framer it (and the hand-written handlers) call.
+pub(super) fn send_rpc_error(
     out_tx: &UnboundedSender<String>,
     id: serde_json::Value,
     code: i64,

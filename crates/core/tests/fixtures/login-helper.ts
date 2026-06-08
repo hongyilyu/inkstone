@@ -13,6 +13,15 @@ const emit = (obj: unknown): void => {
 };
 
 async function main(): Promise<void> {
+	// Failure injection (Core provider-login error-path test): when
+	// INKSTONE_LOGIN_STUB_ERROR is set, emit a sanitized error line BEFORE any
+	// authorize_url and exit — mirroring a helper that fails the OAuth flow.
+	const errorMessage = process.env.INKSTONE_LOGIN_STUB_ERROR;
+	if (errorMessage !== undefined && errorMessage.length > 0) {
+		emit({ kind: "error", message: errorMessage });
+		return;
+	}
+
 	// The authorize URL the stub reports. Defaults to a realistic OpenAI URL
 	// (the Core integration test asserts this exact value); the browser e2e
 	// overrides it via INKSTONE_LOGIN_STUB_URL=about:blank so window.open in

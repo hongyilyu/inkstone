@@ -25,7 +25,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 use super::reply::{
-    send_error, send_proposal_pending, send_response, send_run_event, send_text_delta,
+    send_proposal_pending, send_response, send_run_event, send_text_delta,
 };
 use crate::db;
 use crate::hub::{self, Hubs};
@@ -38,10 +38,9 @@ pub(super) async fn handle(
     params: SubscribeParams,
     out_tx: &UnboundedSender<String>,
 ) {
-    let Ok(run_id) = Uuid::parse_str(&params.run_id) else {
-        send_error(out_tx, id, format!("invalid run_id {:?}", params.run_id));
-        return;
-    };
+    // run_id is typed at decode (ADR-0029 C2): a malformed id is framed as
+    // invalid_params by the dispatch arm before this runs.
+    let run_id = params.run_id;
 
     match hub::get(hubs, run_id) {
         // ---- Run still streaming: snapshot under the gate, then attach. ----
