@@ -126,20 +126,22 @@ where
 pub(super) async fn mark_run_completed<'e, E>(
     executor: E,
     run_id: Uuid,
+    terminal_reason: &str,
     ended_at: i64,
-) -> sqlx::Result<()>
+) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
         "UPDATE runs SET status = 'completed', \
-         terminal_reason = 'completed', ended_at = ? WHERE id = ?",
+         terminal_reason = ?, ended_at = ? WHERE id = ? AND status = 'running'",
     )
+    .bind(terminal_reason)
     .bind(ended_at)
     .bind(run_id.to_string())
     .execute(executor)
     .await
-    .map(|_| ())
+    .map(|r| r.rows_affected())
 }
 
 pub(super) async fn mark_run_errored<'e, E>(
@@ -149,14 +151,14 @@ pub(super) async fn mark_run_errored<'e, E>(
     error_code: &str,
     error_message: &str,
     ended_at: i64,
-) -> sqlx::Result<()>
+) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
         "UPDATE runs SET status = 'errored', \
          terminal_reason = ?, error_code = ?, error_message = ?, \
-         ended_at = ? WHERE id = ?",
+         ended_at = ? WHERE id = ? AND status = 'running'",
     )
     .bind(terminal_reason)
     .bind(error_code)
@@ -165,11 +167,11 @@ where
     .bind(run_id.to_string())
     .execute(executor)
     .await
-    .map(|_| ())
+    .map(|r| r.rows_affected())
 }
 
 /// Boot recovery sweep (ADR-0012): error every Run interrupted mid-flight by a
-/// Core crash/restart — `status IN ('running','pending')` — stamping
+/// Core crash/restart — `status='running'` — stamping
 /// `terminal_reason='core_restarted'` + the error fields + `ended_at`. ONE
 /// statement. Explicitly EXCLUDES `parked` (decidable, durable per ADR-0025)
 /// and the terminal states (`completed`/`errored`/`cancelled`). Returns the
@@ -185,7 +187,7 @@ where
     sqlx::query(
         "UPDATE runs SET status = 'errored', terminal_reason = 'core_restarted', \
          error_code = 'core_restarted', error_message = ?, ended_at = ? \
-         WHERE status IN ('running','pending')",
+         WHERE status = 'running'",
     )
     .bind(error_message)
     .bind(ended_at)

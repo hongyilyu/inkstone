@@ -7,6 +7,7 @@
 //! operations and transaction boundaries. Outside `db::`, no caller
 //! writes SQL — they call these functions.
 
+mod lifecycle;
 mod queries;
 
 use std::path::PathBuf;
@@ -18,6 +19,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use uuid::Uuid;
 
 use crate::workflow::Workflow;
+
+pub use lifecycle::Moved;
+use lifecycle::{RunStatus, TerminalReason};
 
 /// Current wall-clock time as ms since UNIX_EPOCH. Used as `created_at` /
 /// `updated_at` / `started_at` / `ended_at` for tier-2 rows.
@@ -825,13 +829,11 @@ pub async fn select_run_snapshot(
 /// `completed`, and append a terminal `run_events` row with `kind='done'`.
 /// All three writes happen in one transaction so a reader sees either the
 /// pre-terminal or post-terminal state, never an in-between mix.
-pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<()> {
+pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Moved> {
     let mut tx = pool.begin().await?;
-    let next_seq = queries::next_run_seq(&mut *tx, run_id).await?;
-    queries::mark_run_completed(&mut *tx, run_id, now_ms).await?;
-    queries::mark_assistant_messages_completed(&mut *tx, run_id, now_ms).await?;
-    queries::insert_run_event(&mut *tx, run_id, next_seq, "done", None, now_ms).await?;
-    tx.commit().await
+    let moved = RunStatus::complete(&mut *tx, run_id, now_ms).await?;
+    tx.commit().await?;
+    Ok(moved)
 }
 
 /// Slice 4: Worker stdout EOF without a `done` event (the worker died, was
@@ -840,7 +842,7 @@ pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx:
 /// row for this Run to `'incomplete'` (the ADR-0017 invariant — no Message
 /// is left dangling at `'streaming'` after its Run terminates), and append
 /// a terminal `run_events` row with `kind='error'`. One transaction.
-pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<()> {
+pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Moved> {
     error_run_with_message(
         pool,
         run_id,
@@ -867,29 +869,25 @@ pub async fn error_run_with_message(
     error_code: &str,
     error_message: &str,
     now_ms: i64,
-) -> sqlx::Result<()> {
+) -> sqlx::Result<Moved> {
     let mut tx = pool.begin().await?;
-    let next_seq = queries::next_run_seq(&mut *tx, run_id).await?;
-    queries::mark_run_errored(
-        &mut *tx,
-        run_id,
-        terminal_reason,
-        error_code,
-        error_message,
-        now_ms,
-    )
-    .await?;
-    queries::mark_streaming_messages_incomplete(&mut *tx, run_id, now_ms).await?;
-    let payload = serde_json::json!({ "code": error_code, "message": error_message }).to_string();
-    queries::insert_run_event(&mut *tx, run_id, next_seq, "error", Some(&payload), now_ms).await?;
-    tx.commit().await
+    let reason = match terminal_reason {
+        "worker_disconnected" => TerminalReason::WorkerDisconnected,
+        "core_restarted" => TerminalReason::CoreRestarted,
+        "errored" => TerminalReason::Errored,
+        _ => TerminalReason::Errored,
+    };
+    let moved =
+        RunStatus::fail(&mut *tx, run_id, reason, error_code, error_message, now_ms).await?;
+    tx.commit().await?;
+    Ok(moved)
 }
 
 /// Boot recovery sweep (ADR-0012): on every Core start, after migrations and
 /// before serving, force-error every Run interrupted mid-flight by a prior
-/// Core crash/restart. A `running` or `pending` Run has no live Worker after a
-/// restart, so it can never make progress on its own — it is transitioned to
-/// `errored` with `terminal_reason='core_restarted'`. Its `streaming`
+/// Core crash/restart. A `running` Run has no live Worker after a restart, so
+/// it can never make progress on its own — it is transitioned to `errored`
+/// with `terminal_reason='core_restarted'`. Its `streaming`
 /// assistant Message is flipped to `incomplete` (ADR-0017 invariant) in the
 /// SAME transaction.
 ///
@@ -1010,14 +1008,12 @@ mod tests {
     async fn recover_errors_running_preserves_parked() {
         let pool = memory_pool().await;
         insert_bare_run(&pool, "run-running", "running").await;
-        insert_bare_run(&pool, "run-pending", "pending").await;
         insert_bare_run(&pool, "run-parked", "parked").await;
 
         let swept = recover_interrupted_runs(&pool, 42).await.expect("sweep ok");
-        assert_eq!(swept, 2, "swept exactly the running + pending Runs");
+        assert_eq!(swept, 1, "swept exactly the running Run");
 
         assert_eq!(run_status_of(&pool, "run-running").await, "errored");
-        assert_eq!(run_status_of(&pool, "run-pending").await, "errored");
         assert_eq!(
             run_status_of(&pool, "run-parked").await,
             "parked",
@@ -1052,6 +1048,41 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(parked_msg, "streaming", "parked Run's message untouched");
+    }
+
+    async fn run_event_count(pool: &SqlitePool, run_id: &str, kind: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM run_events WHERE run_id = ?1 AND kind = ?2")
+            .bind(run_id)
+            .bind(kind)
+            .fetch_one(pool)
+            .await
+            .expect("count run events")
+    }
+
+    #[tokio::test]
+    async fn complete_loses_on_parked_and_writes_no_done_event() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+
+        let moved = complete_run(&pool, run_id, 42).await.expect("complete");
+
+        assert_eq!(moved, Moved::Lost);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
+        assert_eq!(run_event_count(&pool, &run_id.to_string(), "done").await, 0);
+    }
+
+    #[tokio::test]
+    async fn fail_loses_on_parked_and_writes_no_error_event() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+
+        let moved = error_run(&pool, run_id, 42).await.expect("error");
+
+        assert_eq!(moved, Moved::Lost);
+        assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
+        assert_eq!(run_event_count(&pool, &run_id.to_string(), "error").await, 0);
     }
 
     /// `mark_run_running` is self-guarding on `status='parked'` (review M2): the

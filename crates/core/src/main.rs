@@ -49,8 +49,8 @@ async fn main() -> Result<()> {
 
     let pool = db::open().await?;
 
-    // Boot recovery sweep (ADR-0012): error any Run left `running`/`pending` by
-    // a prior Core crash/restart — they have no live Worker and cannot progress.
+    // Boot recovery sweep (ADR-0012): error any Run left `running` by a prior
+    // Core crash/restart — it has no live Worker and cannot progress.
     // PRESERVES `parked` Runs (ADR-0025): they stay decidable on this new Core.
     let recovered = db::recover_interrupted_runs(&pool, db::now_ms()).await?;
     if recovered > 0 {
