@@ -347,3 +347,49 @@ fn thread_create_empty_prompt_rejected() {
         assert_eq!(run_count, 0, "rejection writes zero run rows");
     });
 }
+
+#[test]
+fn thread_create_malformed_params_rejected() {
+    let _guard = port_lock();
+
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("db.sqlite");
+
+    let (_core, ws_url) = spawn_core(&db_path);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
+            .await
+            .expect("ws handshake succeeds");
+
+        // Malformed params (prompt is the wrong type). Before ADR-0029 the
+        // dispatch silently dropped this (no reply); the combinator now frames
+        // it as invalid_params (-32602).
+        let create =
+            r#"{"jsonrpc":"2.0","id":7,"method":"thread/create","params":{"prompt":123}}"#;
+        ws.send(Message::Text(create.into()))
+            .await
+            .expect("send thread/create frame");
+
+        let body = next_text(&mut ws).await;
+        let v: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"));
+        assert_eq!(v["id"], serde_json::json!(7), "echoed id");
+        assert!(
+            v.get("result").is_none(),
+            "malformed create carries no result — body: {body}"
+        );
+        assert_eq!(
+            v["error"]["code"],
+            serde_json::json!(-32602),
+            "malformed params rejected with invalid_params (-32602) — body: {body}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}

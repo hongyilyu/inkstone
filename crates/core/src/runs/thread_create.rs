@@ -20,7 +20,7 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-use super::reply::{send_error, send_invalid_params, send_response};
+use super::handler::{self, HandlerError};
 use crate::db;
 use crate::dispatcher;
 use crate::hub::{self, Hubs};
@@ -36,75 +36,70 @@ pub(super) async fn handle(
     pool: &SqlitePool,
     hubs: &Hubs,
     id: serde_json::Value,
-    params: ThreadCreateParams,
+    params: serde_json::Value,
     out_tx: &UnboundedSender<String>,
 ) {
-    // Empty-prompt guard — runs BEFORE any persistence so a rejection writes
-    // zero rows (ADR-0002: Core is the authority).
-    let trimmed = params.prompt.trim();
-    if trimmed.is_empty() {
-        send_invalid_params(out_tx, id, "prompt must not be empty".to_string());
-        return;
-    }
+    handler::handle(id, params, out_tx, |params: ThreadCreateParams| async move {
+        // Empty-prompt guard — runs BEFORE any persistence so a rejection
+        // writes zero rows (ADR-0002: Core is the authority).
+        let trimmed = params.prompt.trim();
+        if trimmed.is_empty() {
+            return Err(HandlerError::InvalidParams(
+                "prompt must not be empty".to_string(),
+            ));
+        }
 
-    // Title derivation: the trimmed prompt, truncated to TITLE_MAX_CHARS
-    // Unicode scalars (never empty here — the guard above rejected blanks).
-    let title: String = trimmed.chars().take(TITLE_MAX_CHARS).collect();
+        // Title derivation: the trimmed prompt, truncated to TITLE_MAX_CHARS
+        // Unicode scalars (never empty here — the guard above rejected blanks).
+        let title: String = trimmed.chars().take(TITLE_MAX_CHARS).collect();
 
-    let now = db::now_ms();
+        let now = db::now_ms();
 
-    let thread_id = Uuid::now_v7();
-    let run_id = Uuid::now_v7();
-    let user_message_id = Uuid::now_v7();
-    let assistant_message_id = Uuid::now_v7();
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let user_message_id = Uuid::now_v7();
+        let assistant_message_id = Uuid::now_v7();
 
-    // Dispatcher seam (ADR-0011): pick a Workflow for this Run, then resolve
-    // its effective model/effort from user settings (ADR-0024).
-    let base = dispatcher::dispatch(thread_id, &params.prompt);
-    let workflow = dispatcher::resolve_effective_workflow(pool, base).await;
+        // Dispatcher seam (ADR-0011): pick a Workflow for this Run, then resolve
+        // its effective model/effort from user settings (ADR-0024).
+        let base = dispatcher::dispatch(thread_id, &params.prompt);
+        let workflow = dispatcher::resolve_effective_workflow(pool, base).await;
 
-    if let Err(e) = db::persist_thread_with_first_run(
-        pool,
-        thread_id,
-        run_id,
-        user_message_id,
-        assistant_message_id,
-        &workflow,
-        &params.prompt,
-        &title,
-        now,
-    )
-    .await
-    {
-        eprintln!("persist_thread_with_first_run failed: {e}");
-        send_error(out_tx, id, format!("persist_thread_with_first_run: {e}"));
-        return;
-    }
+        db::persist_thread_with_first_run(
+            pool,
+            thread_id,
+            run_id,
+            user_message_id,
+            assistant_message_id,
+            &workflow,
+            &params.prompt,
+            &title,
+            now,
+        )
+        .await
+        .map_err(|e| HandlerError::Internal(e.into()))?;
 
-    // Create the hub BEFORE spawning the Worker so a subscribe arriving the
-    // instant after the response cannot find a missing hub.
-    let run_hub = hub::create(hubs, run_id);
+        // Create the hub BEFORE spawning the Worker so a subscribe arriving the
+        // instant after the response cannot find a missing hub.
+        let run_hub = hub::create(hubs, run_id);
 
-    worker::spawn(
-        run_id,
-        workflow,
-        params.prompt,
-        // A brand-new Thread has no prior exchange — empty history.
-        Vec::new(),
-        pool.clone(),
-        assistant_message_id,
-        hubs.clone(),
-        run_hub.tx,
-        run_hub.gate,
-    );
+        worker::spawn(
+            run_id,
+            workflow,
+            params.prompt,
+            // A brand-new Thread has no prior exchange — empty history.
+            Vec::new(),
+            pool.clone(),
+            assistant_message_id,
+            hubs.clone(),
+            run_hub.tx,
+            run_hub.gate,
+        );
 
-    send_response(
-        out_tx,
-        id,
-        serde_json::to_value(ThreadCreateResult {
+        Ok(ThreadCreateResult {
             thread_id: thread_id.to_string(),
             run_id: run_id.to_string(),
         })
-        .expect("ThreadCreateResult serializes"),
-    );
+    })
+    .await;
 }

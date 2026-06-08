@@ -21,6 +21,7 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
+use super::handler::{self, HandlerError};
 use super::reply::{
     send_error, send_invalid_params, send_proposal_changed, send_proposal_not_pending,
     send_response,
@@ -32,39 +33,29 @@ use crate::protocol::{ProposalDecideParams, ProposalDecideResult, ProposalGetPar
 pub(super) async fn handle_get(
     pool: &SqlitePool,
     id: serde_json::Value,
-    params: ProposalGetParams,
+    params: serde_json::Value,
     out_tx: &UnboundedSender<String>,
 ) {
-    let Ok(run_id) = Uuid::parse_str(&params.run_id) else {
-        send_invalid_params(out_tx, id, format!("invalid run_id {:?}", params.run_id));
-        return;
-    };
+    handler::handle(id, params, out_tx, |params: ProposalGetParams| async move {
+        let run_id = params.run_id;
+        let p = db::get_pending_proposal_for_run(pool, run_id)
+            .await
+            .map_err(|e| HandlerError::Internal(e.into()))?
+            .ok_or_else(|| {
+                HandlerError::ProposalNotPending(format!("no pending proposal for run {run_id}"))
+            })?;
 
-    match db::get_pending_proposal_for_run(pool, run_id).await {
-        Ok(Some(p)) => {
-            send_response(
-                out_tx,
-                id,
-                serde_json::to_value(ProposalGetResult {
-                    proposal_id: p.proposal_id,
-                    run_id: run_id.to_string(),
-                    kind: p.kind,
-                    change_kind: p.change_kind,
-                    data: p.data,
-                    rationale: p.rationale,
-                    status: p.status,
-                })
-                .expect("ProposalGetResult serializes"),
-            );
-        }
-        Ok(None) => {
-            send_error(out_tx, id, format!("no pending proposal for run {run_id}"));
-        }
-        Err(e) => {
-            eprintln!("get_pending_proposal_for_run failed for {run_id}: {e}");
-            send_error(out_tx, id, format!("proposal/get: {e}"));
-        }
-    }
+        Ok(ProposalGetResult {
+            proposal_id: p.proposal_id,
+            run_id: run_id.to_string(),
+            kind: p.kind,
+            change_kind: p.change_kind,
+            data: p.data,
+            rationale: p.rationale,
+            status: p.status,
+        })
+    })
+    .await;
 }
 
 pub(super) async fn handle_decide(

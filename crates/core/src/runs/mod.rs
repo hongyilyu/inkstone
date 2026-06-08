@@ -25,9 +25,7 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::hub::Hubs;
-use crate::protocol::{
-    JsonRpcRequest, PostMessageParams, SubscribeParams, ThreadCreateParams,
-};
+use crate::protocol::{JsonRpcRequest, SubscribeParams};
 
 /// Route a decoded JSON-RPC request to its handler. One `match` arm per
 /// method; each arm deserializes its params then delegates to the method's
@@ -41,10 +39,7 @@ pub async fn dispatch(
 ) {
     match req.method.as_str() {
         "run/post_message" => {
-            let Ok(params) = serde_json::from_value::<PostMessageParams>(req.params) else {
-                return;
-            };
-            post_message::handle(pool, hubs, req.id, params, out_tx).await;
+            post_message::handle(pool, hubs, req.id, req.params, out_tx).await;
         }
         "run/subscribe" => {
             let Ok(params) = serde_json::from_value::<SubscribeParams>(req.params) else {
@@ -53,22 +48,10 @@ pub async fn dispatch(
             subscribe::handle(pool, hubs, req.id, params, out_tx).await;
         }
         "run/cancel" => {
-            let id = req.id.clone();
-            let Ok(params) = serde_json::from_value::<crate::protocol::RunCancelParams>(req.params)
-            else {
-                // Don't leave the client hanging on malformed params — reply
-                // with invalid_params, matching the other input-validating
-                // handlers.
-                reply::send_invalid_params(out_tx, id, "invalid run/cancel params".to_string());
-                return;
-            };
-            cancel::handle_cancel(pool, req.id, params, out_tx).await;
+            cancel::handle_cancel(pool, req.id, req.params, out_tx).await;
         }
         "thread/create" => {
-            let Ok(params) = serde_json::from_value::<ThreadCreateParams>(req.params) else {
-                return;
-            };
-            thread_create::handle(pool, hubs, req.id, params, out_tx).await;
+            thread_create::handle(pool, hubs, req.id, req.params, out_tx).await;
         }
         "thread/list" => {
             // Read-only, no params (ADR-0022 read path) — skip param
@@ -85,12 +68,7 @@ pub async fn dispatch(
             entity::handle_list_todos(pool, req.id, out_tx).await;
         }
         "proposal/get" => {
-            let Ok(params) =
-                serde_json::from_value::<crate::protocol::ProposalGetParams>(req.params)
-            else {
-                return;
-            };
-            proposal::handle_get(pool, req.id, params, out_tx).await;
+            proposal::handle_get(pool, req.id, req.params, out_tx).await;
         }
         "proposal/decide" => {
             let id = req.id.clone();

@@ -30,7 +30,7 @@ pub struct JsonRpcResponse {
 /// snake_case to mirror the TS schema, slice 7).
 #[derive(Debug, Deserialize)]
 pub struct PostMessageParams {
-    pub thread_id: String,
+    pub thread_id: uuid::Uuid,
     pub prompt: String,
 }
 
@@ -56,7 +56,7 @@ pub struct SubscribeResult {
 /// `run/cancel` params (ADR-0014): the Run to cancel. Deserialize-only.
 #[derive(Debug, Deserialize)]
 pub struct RunCancelParams {
-    pub run_id: String,
+    pub run_id: uuid::Uuid,
 }
 
 /// `run/cancel` result (ADR-0014): whether Core accepted the cancel command.
@@ -72,7 +72,7 @@ pub struct RunCancelResult {
 /// fetch. Deserialize-only.
 #[derive(Debug, Deserialize)]
 pub struct ProposalGetParams {
-    pub run_id: String,
+    pub run_id: uuid::Uuid,
 }
 
 /// `proposal/get` result (ADR-0025): the Run's pending Proposal. `kind` is the
@@ -556,7 +556,7 @@ mod mirror_tests {
     fn post_message_params_decodes_thread_id_and_prompt() {
         let wire = json!({ "thread_id": UUID_A, "prompt": "hi" });
         let p: PostMessageParams = serde_json::from_value(wire).unwrap();
-        assert_eq!(p.thread_id, UUID_A);
+        assert_eq!(p.thread_id.to_string(), UUID_A);
         assert_eq!(p.prompt, "hi");
     }
 
@@ -583,7 +583,7 @@ mod mirror_tests {
     fn run_cancel_params_decodes_run_id() {
         let wire = json!({ "run_id": UUID_A });
         let p: RunCancelParams = serde_json::from_value(wire).unwrap();
-        assert_eq!(p.run_id, UUID_A);
+        assert_eq!(p.run_id.to_string(), UUID_A);
     }
 
     #[test]
@@ -603,7 +603,7 @@ mod mirror_tests {
     fn proposal_get_params_decodes_run_id() {
         let wire = json!({ "run_id": UUID_A });
         let p: ProposalGetParams = serde_json::from_value(wire).unwrap();
-        assert_eq!(p.run_id, UUID_A);
+        assert_eq!(p.run_id.to_string(), UUID_A);
     }
 
     #[test]
