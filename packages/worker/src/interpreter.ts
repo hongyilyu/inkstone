@@ -1,4 +1,5 @@
-import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
+import type { WorkerManifest } from "@inkstone/protocol";
+import { Effect } from "effect";
 import {
 	runAgentLoop,
 	runAgentLoopContinue,
@@ -11,8 +12,8 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { getModel, streamSimple } from "@earendil-works/pi-ai";
 import type { Message, Model } from "@earendil-works/pi-ai";
-import { type CallTool, makeProxyTools } from "./tool-proxy.js";
-export type { CallTool, ToolCallResponse } from "./tool-proxy.js";
+import { makeProxyTools } from "./tool-proxy.js";
+import { WorkerTransport } from "./transport.js";
 
 /**
  * The generic interpreter (ADR-0018): a single, Workflow-agnostic loop that
@@ -28,18 +29,11 @@ export type { CallTool, ToolCallResponse } from "./tool-proxy.js";
  * tests pass a faux model + plain `streamSimple`.
  */
 
-export type Emit = (event: RunEvent) => void;
-
 export interface InterpreterDeps {
 	/** Resolve the provider model for this manifest's workflow. */
 	resolveModel: (workflow: WorkerManifest["workflow"]) => Model<string>;
 	/** The LLM call. Production injects the access token here; tests pass plain streamSimple. */
 	streamFn: StreamFn;
-	/**
-	 * Round-trip a tool call to Core (ADR-0018). Required for a Workflow whose
-	 * manifest carries tool descriptors; absent → the loop runs with no tools.
-	 */
-	callTool?: CallTool;
 }
 
 /** Production deps: real model registry + token-injecting streamSimple (ADR-0023). */
@@ -129,8 +123,9 @@ function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
  * message with `stopReason: "error" | "aborted"`).
  *
  * Tools (ADR-0018): the Workflow's tool descriptors become `pi-agent-core`
- * proxies whose `execute` round-trips to Core via `deps.callTool`. A manifest
- * with no tools (or no `callTool`) runs chat-only.
+ * proxies whose `execute` round-trips to Core via the transport's `callTool`
+ * (the bidirectional Tool Protocol channel, ADR-0006). A manifest with no
+ * tools runs chat-only.
  *
  * Mode (ADR-0025): `manifest.mode === "resume"` continues a reconstructed
  * transcript via `runAgentLoopContinue` — the manifest's `messages` ARE the
@@ -138,91 +133,102 @@ function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
  * the seeded tool call is not re-executed. Any other/absent mode is the fresh
  * path: `runAgentLoop([prompt], …)` as before.
  */
-export async function runInterpreter(
+export function runInterpreter(
 	manifest: WorkerManifest,
-	emit: Emit,
 	deps: InterpreterDeps,
 	signal?: AbortSignal,
-): Promise<void> {
-	const model = deps.resolveModel(manifest.workflow);
-	const prompt: AgentMessage = {
-		role: "user",
-		content: manifest.prompt,
-		timestamp: Date.now(),
-	};
+): Effect.Effect<void, never, WorkerTransport> {
+	return Effect.gen(function* () {
+		// Source both transport channels from the seam (ADR-0027) once at the
+		// top: the synchronous `emit` (Run Events) and the request/response
+		// `callTool` (Tool Protocol). Both feed pi's callbacks, which run
+		// outside the Effect context (ADR-0027 push-shape).
+		const { emit, callTool } = yield* WorkerTransport;
 
-	const tools =
-		manifest.workflow.tools.length > 0 && deps.callTool !== undefined
-			? makeProxyTools(manifest.workflow.tools, deps.callTool)
-			: [];
+		const model = deps.resolveModel(manifest.workflow);
+		const prompt: AgentMessage = {
+			role: "user",
+			content: manifest.prompt,
+			timestamp: Date.now(),
+		};
 
-	// Inject the OAuth access token (if present) as the provider apiKey for
-	// every call this Run makes (ADR-0023). faux/env providers omit it.
-	const streamFn: StreamFn = (model_, context, options) =>
-		deps.streamFn(model_, context, {
-			...options,
-			...(manifest.access_token !== undefined
-				? { apiKey: manifest.access_token }
-				: {}),
-		});
+		const tools =
+			manifest.workflow.tools.length > 0
+				? makeProxyTools(manifest.workflow.tools, callTool)
+				: [];
 
-	let errorMessage: string | undefined;
+		// Inject the OAuth access token (if present) as the provider apiKey for
+		// every call this Run makes (ADR-0023). faux/env providers omit it.
+		const streamFn: StreamFn = (model_, context, options) =>
+			deps.streamFn(model_, context, {
+				...options,
+				...(manifest.access_token !== undefined
+					? { apiKey: manifest.access_token }
+					: {}),
+			});
 
-	// pi's functional loop takes `reasoning` (SimpleStreamOptions), not the
-	// stateful Agent's `thinkingLevel`. "off" means no reasoning → omit it;
-	// any other level maps straight through (pi-ai ThinkingLevel excludes
-	// "off").
-	const reasoning =
-		manifest.workflow.thinking_level === "off"
-			? undefined
-			: (manifest.workflow.thinking_level as Exclude<ThinkingLevel, "off">);
+		let errorMessage: string | undefined;
 
-	const context = {
-		systemPrompt: manifest.workflow.system_prompt,
-		messages: toAgentMessages(manifest),
-		tools,
-	};
-	const config = {
-		model,
-		...(reasoning !== undefined ? { reasoning } : {}),
-		convertToLlm: (messages: AgentMessage[]) =>
-			messages.filter(
-				(m): m is Message =>
-					m.role === "user" ||
-					m.role === "assistant" ||
-					m.role === "toolResult",
-			),
-	};
-	const onEvent: AgentEventSink = (event) => {
-		if (
-			event.type === "message_update" &&
-			event.assistantMessageEvent.type === "text_delta"
-		) {
-			emit({ kind: "text_delta", delta: event.assistantMessageEvent.delta });
+		// pi's functional loop takes `reasoning` (SimpleStreamOptions), not the
+		// stateful Agent's `thinkingLevel`. "off" means no reasoning → omit it;
+		// any other level maps straight through (pi-ai ThinkingLevel excludes
+		// "off").
+		const reasoning =
+			manifest.workflow.thinking_level === "off"
+				? undefined
+				: (manifest.workflow.thinking_level as Exclude<ThinkingLevel, "off">);
+
+		const context = {
+			systemPrompt: manifest.workflow.system_prompt,
+			messages: toAgentMessages(manifest),
+			tools,
+		};
+		const config = {
+			model,
+			...(reasoning !== undefined ? { reasoning } : {}),
+			convertToLlm: (messages: AgentMessage[]) =>
+				messages.filter(
+					(m): m is Message =>
+						m.role === "user" ||
+						m.role === "assistant" ||
+						m.role === "toolResult",
+				),
+		};
+		const onEvent: AgentEventSink = (event) => {
+			if (
+				event.type === "message_update" &&
+				event.assistantMessageEvent.type === "text_delta"
+			) {
+				emit({ kind: "text_delta", delta: event.assistantMessageEvent.delta });
+				return;
+			}
+			if (event.type === "message_end") {
+				const msg = event.message;
+				if (
+					msg.role === "assistant" &&
+					(msg.stopReason === "error" || msg.stopReason === "aborted")
+				) {
+					errorMessage = msg.errorMessage ?? `run ${msg.stopReason}`;
+				}
+			}
+		};
+
+		if (manifest.mode === "resume") {
+			// Resume (ADR-0025): the manifest's transcript is already the context
+			// (last message is a `tool_result`); continue without a new prompt.
+			yield* Effect.promise(() =>
+				runAgentLoopContinue(context, config, onEvent, signal, streamFn),
+			);
+		} else {
+			yield* Effect.promise(() =>
+				runAgentLoop([prompt], context, config, onEvent, signal, streamFn),
+			);
+		}
+
+		if (errorMessage !== undefined) {
+			emit({ kind: "error", message: errorMessage });
 			return;
 		}
-		if (event.type === "message_end") {
-			const msg = event.message;
-			if (
-				msg.role === "assistant" &&
-				(msg.stopReason === "error" || msg.stopReason === "aborted")
-			) {
-				errorMessage = msg.errorMessage ?? `run ${msg.stopReason}`;
-			}
-		}
-	};
-
-	if (manifest.mode === "resume") {
-		// Resume (ADR-0025): the manifest's transcript is already the context
-		// (last message is a `tool_result`); continue without a new prompt.
-		await runAgentLoopContinue(context, config, onEvent, signal, streamFn);
-	} else {
-		await runAgentLoop([prompt], context, config, onEvent, signal, streamFn);
-	}
-
-	if (errorMessage !== undefined) {
-		emit({ kind: "error", message: errorMessage });
-		return;
-	}
-	emit({ kind: "done" });
+		emit({ kind: "done" });
+	});
 }

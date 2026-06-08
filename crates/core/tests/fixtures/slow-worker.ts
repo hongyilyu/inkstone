@@ -43,46 +43,10 @@
 // `Stream.runHead === None` case) the fixture exits 0 without emitting.
 
 import { existsSync } from "node:fs";
+import { emit, stdinLines } from "./transport.js";
 
 const sleep = (ms: number): Promise<void> =>
 	new Promise((resolve) => setTimeout(resolve, ms));
-
-const emit = (event: unknown): void => {
-	process.stdout.write(`${JSON.stringify(event)}\n`);
-};
-
-/**
- * Resolve the first non-empty, newline-terminated line of stdin, or null on EOF
- * with no such line. Mirrors the real worker: only `\n`-terminated lines count;
- * a trailing fragment without a newline is dropped.
- */
-const readFirstLine = (): Promise<string | null> =>
-	new Promise((resolve) => {
-		let buf = "";
-		let done = false;
-		const finish = (value: string | null): void => {
-			if (done) return;
-			done = true;
-			resolve(value);
-		};
-		process.stdin.setEncoding("utf8");
-		process.stdin.on("data", (chunk: string) => {
-			if (done) return;
-			buf += chunk;
-			let nl = buf.indexOf("\n");
-			while (nl >= 0) {
-				const line = buf.slice(0, nl);
-				buf = buf.slice(nl + 1);
-				if (line.length > 0) {
-					finish(line);
-					return;
-				}
-				nl = buf.indexOf("\n");
-			}
-		});
-		process.stdin.on("end", () => finish(null));
-		process.stdin.on("error", () => finish(null));
-	});
 
 /** Split `text` into N roughly-equal incremental pieces (concat === text). */
 const chunkText = (text: string, n: number): string[] => {
@@ -107,7 +71,12 @@ const waitForGate = async (path: string): Promise<void> => {
 };
 
 const main = async (): Promise<void> => {
-	const line = await readFirstLine();
+	// First non-empty stdin line (the `{prompt}` JSON); empty stdin → exit 0
+	// without emitting. Core always newline-terminates its writes, so the first
+	// line is the whole prompt.
+	const lines = stdinLines();
+	let line = await lines.next();
+	while (line === "") line = await lines.next();
 	if (line === null) return; // empty stdin -> exit 0 without emitting
 
 	const inbound = JSON.parse(line) as { prompt: string };

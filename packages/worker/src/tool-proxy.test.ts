@@ -5,13 +5,13 @@ import {
 	streamSimple,
 } from "@earendil-works/pi-ai";
 import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
+import { type InterpreterDeps, runInterpreter } from "./interpreter.js";
 import {
-	type CallTool,
-	type Emit,
-	type InterpreterDeps,
-	runInterpreter,
-} from "./interpreter.js";
+	type CapturedToolRequest,
+	InMemoryTransport,
+} from "./transport-memory.js";
 
 // Each test registers a fresh faux provider and tears it down after.
 const registrations: Array<{ unregister: () => void }> = [];
@@ -46,56 +46,67 @@ function manifestWithReadThread(): WorkerManifest {
 	};
 }
 
-describe("tool proxy round-trip (faux provider)", () => {
-	it("routes a model tool call through callTool and feeds the result back to the loop", async () => {
+describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
+	it("round-trips a model tool call through the transport's callTool and feeds the scripted result back to the loop", async () => {
 		const faux = registerFauxProvider({ provider: "faux" });
 		registrations.push(faux);
 		// Turn 1: the model calls read_thread. Turn 2 (after the tool result):
-		// a final text answer.
+		// a final text answer that reflects the scripted result.
 		faux.setResponses([
 			fauxAssistantMessage(
-				[fauxToolCall("read_thread", { thread_id: "T-1" }, { id: "tc_01" })],
+				[fauxToolCall("read_thread", { thread_id: "T-1" }, { id: "tc1" })],
 				{ stopReason: "toolUse" },
 			),
 			fauxAssistantMessage("here is the thread"),
 		]);
 
-		const calls: Array<{ toolCallId: string; name: string; params: unknown }> = [];
-		const callTool: CallTool = async (toolCallId, name, params) => {
-			calls.push({ toolCallId, name, params });
-			return {
-				ok: {
-					content: [
-						{ type: "text", text: '{"messages":[{"role":"user","text":"hi from T-1"}]}' },
-					],
-				},
-			};
-		};
-
 		const deps: InterpreterDeps = {
 			resolveModel: () => faux.getModel(),
 			streamFn: streamSimple,
-			callTool,
 		};
 
+		// The seam supplies the Tool Result (scripted, keyed by tool_call_id) and
+		// records the outbound tool_request — no loose `deps.callTool` (ADR-0027).
 		const events: RunEvent[] = [];
-		const emit: Emit = (e) => events.push(e);
-		await runInterpreter(manifestWithReadThread(), emit, deps);
+		const requests: CapturedToolRequest[] = [];
+		await Effect.runPromise(
+			runInterpreter(manifestWithReadThread(), deps).pipe(
+				Effect.provide(
+					InMemoryTransport(events, {
+						results: {
+							tc1: {
+								ok: {
+									content: [
+										{
+											type: "text",
+											text: '{"messages":[{"role":"user","text":"hi from T-1"}]}',
+										},
+									],
+								},
+							},
+						},
+						requests,
+					}),
+				),
+			),
+		);
 
-		// The proxy round-tripped exactly the model's tool call.
-		expect(calls).toHaveLength(1);
-		expect(calls[0]).toEqual({
-			toolCallId: "tc_01",
-			name: "read_thread",
-			params: { thread_id: "T-1" },
-		});
+		// (a) The transport captured exactly the model's outbound tool_request.
+		expect(requests).toEqual([
+			{ toolCallId: "tc1", name: "read_thread", params: { thread_id: "T-1" } },
+		]);
 
-		// The loop fed the result back and produced the follow-up answer + done.
+		// (b) The loop fed the scripted result back; the follow-up answer reflects it.
 		const text = events
-			.filter((e): e is { kind: "text_delta"; delta: string } => e.kind === "text_delta")
+			.filter(
+				(e): e is { kind: "text_delta"; delta: string } =>
+					e.kind === "text_delta",
+			)
 			.map((e) => e.delta)
 			.join("");
 		expect(text).toContain("here is the thread");
+
+		// (c) The terminal event is done.
 		expect(events[events.length - 1]).toEqual({ kind: "done" });
 	});
 
@@ -104,28 +115,36 @@ describe("tool proxy round-trip (faux provider)", () => {
 		registrations.push(faux);
 		faux.setResponses([
 			fauxAssistantMessage(
-				[fauxToolCall("read_thread", { thread_id: "nope" }, { id: "tc_02" })],
+				[fauxToolCall("read_thread", { thread_id: "nope" }, { id: "tc_err" })],
 				{ stopReason: "toolUse" },
 			),
 			fauxAssistantMessage("could not read it"),
 		]);
 
-		const callTool: CallTool = async () => ({
-			err: { code: "not_found", message: "no such thread" },
-		});
-
 		const deps: InterpreterDeps = {
 			resolveModel: () => faux.getModel(),
 			streamFn: streamSimple,
-			callTool,
 		};
 
 		const events: RunEvent[] = [];
-		const emit: Emit = (e) => events.push(e);
-		await runInterpreter(manifestWithReadThread(), emit, deps);
+		const requests: CapturedToolRequest[] = [];
+		await Effect.runPromise(
+			runInterpreter(manifestWithReadThread(), deps).pipe(
+				Effect.provide(
+					InMemoryTransport(events, {
+						results: {
+							tc_err: { err: { code: "not_found", message: "no such thread" } },
+						},
+						requests,
+					}),
+				),
+			),
+		);
 
-		// The Run reaches a terminal event (the thrown tool error became a
-		// tool result the model recovered from); it did not crash.
+		// The proxy round-tripped the request; the `err` outcome made the proxy
+		// throw, which pi converts into an error tool result the model recovered
+		// from — the Run still reaches a terminal event without crashing.
+		expect(requests).toHaveLength(1);
 		const terminal = events[events.length - 1];
 		expect(terminal.kind === "done" || terminal.kind === "error").toBe(true);
 	});

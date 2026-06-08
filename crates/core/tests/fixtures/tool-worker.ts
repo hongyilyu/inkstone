@@ -29,11 +29,7 @@
 //   is an unknown id (→ Core returns a `not_found` error outcome).
 
 import { existsSync, readFileSync } from "node:fs";
-import { createInterface } from "node:readline";
-
-const emit = (event: unknown): void => {
-	process.stdout.write(`${JSON.stringify(event)}\n`);
-};
+import { emit, stdinLines } from "./transport.js";
 
 interface Manifest {
 	workflow?: { tools?: Array<{ name?: string }> };
@@ -53,26 +49,10 @@ const main = async (): Promise<void> => {
 
 	// Read the bidirectional stdin line-by-line: line 1 is the manifest, the
 	// next line (after we emit the request) is the tool_result.
-	const rl = createInterface({ input: process.stdin });
-	const lines: string[] = [];
-	let resolveLine: ((line: string) => void) | null = null;
-	rl.on("line", (line) => {
-		if (resolveLine) {
-			const r = resolveLine;
-			resolveLine = null;
-			r(line);
-		} else {
-			lines.push(line);
-		}
-	});
-	const nextLine = (): Promise<string> =>
-		new Promise((resolve) => {
-			const queued = lines.shift();
-			if (queued !== undefined) resolve(queued);
-			else resolveLine = resolve;
-		});
+	const lines = stdinLines();
 
-	const manifestLine = await nextLine();
+	const manifestLine = await lines.next();
+	if (manifestLine === null) return;
 	const manifest = JSON.parse(manifestLine) as Manifest;
 
 	// In the default (happy) mode, prove Core shipped the read_thread
@@ -105,7 +85,8 @@ const main = async (): Promise<void> => {
 	});
 
 	// Block for the tool_result Core writes back on stdin.
-	const resultLine = await nextLine();
+	const resultLine = await lines.next();
+	if (resultLine === null) return;
 	const result = JSON.parse(resultLine) as ToolResultLine;
 
 	let outcome: string;
@@ -122,7 +103,7 @@ const main = async (): Promise<void> => {
 
 	emit({ kind: "text_delta", delta: `tool_outcome=${outcome}` });
 	emit({ kind: "done" });
-	rl.close();
+	lines.close();
 };
 
 main().catch((err) => {

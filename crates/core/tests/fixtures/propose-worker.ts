@@ -15,36 +15,16 @@
 // Node builtins ONLY (no @inkstone/protocol, no npm deps) so it runs
 // standalone via tsx, matching the tool-worker.ts convention.
 
-import { createInterface } from "node:readline";
-
-const emit = (event: unknown): void => {
-	process.stdout.write(`${JSON.stringify(event)}\n`);
-};
+import { emit, stdinLines } from "./transport.js";
 
 const main = async (): Promise<void> => {
-	// Read stdin line-by-line: line 1 is the manifest. We never read further
-	// (no tool_result arrives — Core parks and tears us down).
-	const rl = createInterface({ input: process.stdin });
-	const lines: string[] = [];
-	let resolveLine: ((line: string) => void) | null = null;
-	rl.on("line", (line) => {
-		if (resolveLine) {
-			const r = resolveLine;
-			resolveLine = null;
-			r(line);
-		} else {
-			lines.push(line);
-		}
-	});
-	const nextLine = (): Promise<string> =>
-		new Promise((resolve) => {
-			const queued = lines.shift();
-			if (queued !== undefined) resolve(queued);
-			else resolveLine = resolve;
-		});
+	// Read stdin line-by-line: line 1 is the manifest. In the park path we never
+	// read further (no tool_result arrives — Core parks and tears us down).
+	const lines = stdinLines();
 
 	// Consume the manifest line.
-	const manifestLine = await nextLine();
+	const manifestLine = await lines.next();
+	if (manifestLine === null) return;
 
 	// Resume path (ADR-0025): on a `mode:"resume"` manifest, Core has applied
 	// the Decision and is re-spawning us with the reconstructed transcript
@@ -83,7 +63,7 @@ const main = async (): Promise<void> => {
 			params: { thread_id: "00000000-0000-0000-0000-000000000000" },
 		});
 		// Wait for Core's tool_result (read_thread resolved), then propose.
-		await nextLine();
+		await lines.next();
 		const toolCallId = `tc_${process.pid}`;
 		emit({
 			kind: "tool_request",
