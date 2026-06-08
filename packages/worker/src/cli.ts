@@ -41,11 +41,6 @@ const emit = (event: RunEvent): void => {
 	writeLine(event);
 };
 
-// Inline WorkerTransport (ADR-0027): the Worker binary still emits Run Events
-// as NDJSON on stdout, now behind the transport seam. Extracting a formal
-// `StdioTransportLive` Layer and converting `main` to `Effect.gen` is slice 3.
-const runEventTransport = Layer.succeed(WorkerTransport, { emit });
-
 // Bidirectional stdio (ADR-0013): a single readline over stdin. The FIRST line
 // is the manifest; every subsequent line is a `tool_result` Core writes back,
 // dispatched to the pending tool call keyed by `tool_call_id`.
@@ -102,6 +97,13 @@ const callTool: CallTool = (toolCallId, name, params) =>
 			params,
 		});
 	});
+
+// Inline WorkerTransport (ADR-0027): the Worker binary emits Run Events as
+// NDJSON on stdout (`emit`) and round-trips Tool Requests over the stdin/stdout
+// `pendingTools` correlation above (`callTool`), now behind the transport seam.
+// Extracting a formal `StdioTransportLive` Layer and converting `main` to
+// `Effect.gen` is slice 3.
+const transport = Layer.succeed(WorkerTransport, { emit, callTool });
 
 /** Flatten a pi message `content` (string | content blocks) to plain text. */
 function textOf(content: unknown): string {
@@ -237,12 +239,11 @@ async function main(): Promise<void> {
 	}
 
 	try {
-		// Wire the stdio-backed callTool into the deps so the interpreter's
-		// tool proxies (ADR-0018) round-trip through Core. The interpreter is
-		// now an Effect that sources `emit` from the provided transport seam.
+		// The interpreter sources BOTH transport channels (`emit` + `callTool`)
+		// from the provided seam (ADR-0027); only provider deps are injected.
 		await Effect.runPromise(
-			runInterpreter(manifest, { ...depsFor(manifest), callTool }).pipe(
-				Effect.provide(runEventTransport),
+			runInterpreter(manifest, depsFor(manifest)).pipe(
+				Effect.provide(transport),
 			),
 		);
 	} catch (e) {

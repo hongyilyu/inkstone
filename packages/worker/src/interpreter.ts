@@ -12,9 +12,8 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { getModel, streamSimple } from "@earendil-works/pi-ai";
 import type { Message, Model } from "@earendil-works/pi-ai";
-import { type CallTool, makeProxyTools } from "./tool-proxy.js";
+import { makeProxyTools } from "./tool-proxy.js";
 import { WorkerTransport } from "./transport.js";
-export type { CallTool, ToolCallResponse } from "./tool-proxy.js";
 
 /**
  * The generic interpreter (ADR-0018): a single, Workflow-agnostic loop that
@@ -35,11 +34,6 @@ export interface InterpreterDeps {
 	resolveModel: (workflow: WorkerManifest["workflow"]) => Model<string>;
 	/** The LLM call. Production injects the access token here; tests pass plain streamSimple. */
 	streamFn: StreamFn;
-	/**
-	 * Round-trip a tool call to Core (ADR-0018). Required for a Workflow whose
-	 * manifest carries tool descriptors; absent → the loop runs with no tools.
-	 */
-	callTool?: CallTool;
 }
 
 /** Production deps: real model registry + token-injecting streamSimple (ADR-0023). */
@@ -129,8 +123,9 @@ function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
  * message with `stopReason: "error" | "aborted"`).
  *
  * Tools (ADR-0018): the Workflow's tool descriptors become `pi-agent-core`
- * proxies whose `execute` round-trips to Core via `deps.callTool`. A manifest
- * with no tools (or no `callTool`) runs chat-only.
+ * proxies whose `execute` round-trips to Core via the transport's `callTool`
+ * (the bidirectional Tool Protocol channel, ADR-0006). A manifest with no
+ * tools runs chat-only.
  *
  * Mode (ADR-0025): `manifest.mode === "resume"` continues a reconstructed
  * transcript via `runAgentLoopContinue` — the manifest's `messages` ARE the
@@ -144,10 +139,11 @@ export function runInterpreter(
 	signal?: AbortSignal,
 ): Effect.Effect<void, never, WorkerTransport> {
 	return Effect.gen(function* () {
-		// Source the Run Event sink from the transport seam (ADR-0027) once at
-		// the top and close over the synchronous `emit` for pi's `onEvent`
-		// callback, which runs outside the Effect context (ADR-0027 push-shape).
-		const { emit } = yield* WorkerTransport;
+		// Source both transport channels from the seam (ADR-0027) once at the
+		// top: the synchronous `emit` (Run Events) and the request/response
+		// `callTool` (Tool Protocol). Both feed pi's callbacks, which run
+		// outside the Effect context (ADR-0027 push-shape).
+		const { emit, callTool } = yield* WorkerTransport;
 
 		const model = deps.resolveModel(manifest.workflow);
 		const prompt: AgentMessage = {
@@ -157,8 +153,8 @@ export function runInterpreter(
 		};
 
 		const tools =
-			manifest.workflow.tools.length > 0 && deps.callTool !== undefined
-				? makeProxyTools(manifest.workflow.tools, deps.callTool)
+			manifest.workflow.tools.length > 0
+				? makeProxyTools(manifest.workflow.tools, callTool)
 				: [];
 
 		// Inject the OAuth access token (if present) as the provider apiKey for

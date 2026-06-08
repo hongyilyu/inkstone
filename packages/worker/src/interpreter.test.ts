@@ -7,7 +7,10 @@ import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { type InterpreterDeps, runInterpreter } from "./interpreter.js";
-import { InMemoryTransport } from "./transport-memory.js";
+import {
+	type CapturedToolRequest,
+	InMemoryTransport,
+} from "./transport-memory.js";
 
 // Each test registers a fresh faux provider and tears it down after, so the
 // pi-ai global api-registry never leaks a provider across tests.
@@ -139,16 +142,9 @@ describe("generic interpreter (faux provider)", () => {
 			},
 		]);
 
-		// If the seeded tool were re-executed, this callTool would fire; the
-		// resume path must NOT invoke it.
-		let callToolInvoked = false;
 		const deps: InterpreterDeps = {
 			resolveModel: () => faux.getModel(),
 			streamFn: streamSimple,
-			callTool: async () => {
-				callToolInvoked = true;
-				return { ok: { content: [{ type: "text", text: "unexpected" }] } };
-			},
 		};
 
 		const manifest = fauxManifest({
@@ -190,7 +186,15 @@ describe("generic interpreter (faux provider)", () => {
 			],
 		});
 
-		const events = await runChat(manifest, deps);
+		// Drive through the seam directly so the test can assert no tool was
+		// round-tripped: an empty scripted result table plus a `requests` log.
+		const events: RunEvent[] = [];
+		const requests: CapturedToolRequest[] = [];
+		await Effect.runPromise(
+			runInterpreter(manifest, deps).pipe(
+				Effect.provide(InMemoryTransport(events, { results: {}, requests })),
+			),
+		);
 
 		// Exactly one terminal `done`, no error.
 		const terminal = events[events.length - 1];
@@ -213,8 +217,9 @@ describe("generic interpreter (faux provider)", () => {
 		expect(sawToolResult).toBe(true);
 		expect(pairedToPrecedingToolCall).toBe(true);
 
-		// The seeded tool was NOT re-executed on resume.
-		expect(callToolInvoked).toBe(false);
+		// The seeded tool was NOT re-executed on resume: the seam saw no
+		// outbound tool_request.
+		expect(requests).toHaveLength(0);
 	});
 
 	it("passes prior history into the loop context", async () => {
