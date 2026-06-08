@@ -46,3 +46,4 @@ A reviewer who proposes "also port the DB for symmetry" should be answered: the 
 - [ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md) — the exactly-once gate this seam leaves inside the loop.
 - [ADR-0025](./0025-proposal-park-and-resume.md) — park is `Exit::Parked`; resume orchestration stays outside the loop.
 - [ADR-0009](./0009-protocol-strategy.md) — the hand-mirrored wire types (`WorkerStdout`, `ToolResult`, `WorkerManifest`) the port speaks unchanged.
+- [ADR-0027](./0027-worker-interpreter-transport-seam.md) — the Worker-side counterpart: the interpreter's end of the same pipe behind a `WorkerTransport` seam (push, not pull).
