@@ -5,103 +5,31 @@
 //! single writer. The Client learns the outcome by re-querying
 //! `provider/status`. Driven offline by a stub login helper (no real :1455).
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::{SinkExt, StreamExt};
-use tempfile::TempDir;
+use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core")
-        .to_path_buf()
-}
+mod common;
+use common::{CoreHandle, Workspace, Ws, next_text};
 
-fn tsx() -> PathBuf {
-    let p = repo_root().join("packages/worker/node_modules/.bin/tsx");
-    if !p.exists() {
-        panic!("worker tsx not installed — run `pnpm install`");
-    }
-    p
-}
-
-struct CoreChild(Option<Child>);
-impl Drop for CoreChild {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
-fn spawn_core(db_path: &Path, creds_dir: &Path, login_error: Option<&str>) -> (CoreChild, String) {
-    let root = repo_root();
-    let login_helper = root.join("crates/core/tests/fixtures/login-helper.ts");
-    let login_cmd = format!("{} {} login", tsx().display(), login_helper.display());
-
-    let mut cmd = std::process::Command::cargo_bin("core").expect("core binary exists");
-    cmd.current_dir(&root)
-        .env("INKSTONE_PORT", "0")
-        .env("INKSTONE_DB_PATH", db_path)
+/// Spawn Core wired to the stub login helper as the Provider Helper. No Worker
+/// is needed (login never starts a Run). `login_error`, when set, makes the
+/// stub emit a sanitized error line instead of an authorize URL.
+fn login_core(workspace: &Workspace, creds_dir: &Path, login_error: Option<&str>) -> CoreHandle {
+    let mut builder = workspace
+        .core()
         .env("INKSTONE_CREDENTIALS_DIR", creds_dir)
-        .env("INKSTONE_PROVIDER_LOGIN_CMD", &login_cmd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .env(
+            "INKSTONE_PROVIDER_LOGIN_CMD",
+            common::fixture_cmd("login-helper.ts", &["login"]),
+        );
     // Failure-path tests inject a helper error via the stub's env flag.
     if let Some(message) = login_error {
-        cmd.env("INKSTONE_LOGIN_STUB_ERROR", message);
+        builder = builder.env("INKSTONE_LOGIN_STUB_ERROR", message);
     }
-    let mut child = cmd.spawn().expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-    let deadline = Instant::now() + Duration::from_secs(8);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
-    (CoreChild(Some(child)), ws_url)
-}
-
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
-
-async fn next_text(ws: &mut Ws) -> String {
-    let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
-        .await
-        .expect("frame within 10s")
-        .expect("frame present")
-        .expect("frame ok");
-    match frame {
-        Message::Text(t) => t.to_string(),
-        other => panic!("expected text frame, got {other:?}"),
-    }
+    builder.spawn()
 }
 
 async fn codex_connected(ws: &mut Ws, id: u64) -> bool {
@@ -121,11 +49,10 @@ async fn codex_connected(ws: &mut Ws, id: u64) -> bool {
 
 #[test]
 fn login_start_returns_authorize_url_then_persists() {
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let creds_dir = tmp.path().join("credentials");
+    let workspace = Workspace::new();
+    let creds_dir = workspace.path().join("credentials");
 
-    let (_child, ws_url) = spawn_core(&db_path, &creds_dir, None);
+    let core = login_core(&workspace, &creds_dir, None);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -133,9 +60,7 @@ fn login_start_returns_authorize_url_then_persists() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake");
+        let mut ws = core.connect().await;
 
         // Disconnected to start.
         assert!(!codex_connected(&mut ws, 1).await, "disconnected before login");
@@ -189,12 +114,11 @@ fn login_start_returns_authorize_url_then_persists() {
 
 #[test]
 fn login_start_helper_error_surfaces_provider_login_failed() {
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let creds_dir = tmp.path().join("credentials");
+    let workspace = Workspace::new();
+    let creds_dir = workspace.path().join("credentials");
 
     // The stub helper emits a sanitized error line before any authorize URL.
-    let (_child, ws_url) = spawn_core(&db_path, &creds_dir, Some("account is locked"));
+    let core = login_core(&workspace, &creds_dir, Some("account is locked"));
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -202,9 +126,7 @@ fn login_start_helper_error_surfaces_provider_login_failed() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake");
+        let mut ws = core.connect().await;
 
         let req = r#"{"jsonrpc":"2.0","id":1,"method":"provider/login_start","params":{"provider":"openai-codex"}}"#;
         ws.send(Message::Text(req.into())).await.expect("send login_start");

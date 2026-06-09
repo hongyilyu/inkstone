@@ -4,51 +4,16 @@
 //! the EOF path) flips every `messages.status='streaming'` for that Run to
 //! `'incomplete'` — all in one transaction.
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
-use std::sync::{Mutex, MutexGuard};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
 
-fn repo_root() -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core")
-        .to_path_buf()
-}
-
-fn worker_cmd_real() -> String {
-    let repo_root = repo_root();
-    let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let cli = repo_root.join("crates/core/tests/fixtures/slow-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
-    if !cli.exists() {
-        panic!("worker cli not found at {}", cli.display());
-    }
-    format!("{} {}", tsx.display(), cli.display())
-}
-
-/// Core binds a fixed port (8765); both tests in this binary must run
-/// serially or they collide. Cargo runs tests within a binary in parallel
-/// by default, so we acquire this lock for the full Core lifetime.
-fn port_lock() -> MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(|p| p.into_inner())
-}
+mod common;
+use common::{Workspace, next_text};
 
 fn false_binary() -> &'static str {
     if Path::new("/usr/bin/false").exists() {
@@ -60,73 +25,11 @@ fn false_binary() -> &'static str {
     }
 }
 
-/// Drop guard around `Child` that SIGKILLs and reaps on drop. Without this,
-/// a panicking test would leak Core (which holds the fixed port 8765 and
-/// blocks subsequent test runs).
-struct CoreChild(Option<Child>);
-
-impl Drop for CoreChild {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
-/// Spawn Core with the given env, block on its stdout until INKSTONE_LISTENING
-/// appears, and return (child, ws_url).
-fn spawn_core(worker_cmd: &str, db_path: &Path) -> (CoreChild, String) {
-    let repo_root = repo_root();
-    let mut child = std::process::Command::cargo_bin("core")
-        .expect("core binary exists")
-        .current_dir(&repo_root)
-        .env("INKSTONE_WORKER_CMD", worker_cmd)
-        .env("INKSTONE_DB_PATH", db_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
-
-    (CoreChild(Some(child)), ws_url)
-}
-
 #[test]
 fn done_event_completes_run() {
-    let _guard = port_lock();
-    let worker_cmd = worker_cmd_real();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
+    let workspace = Workspace::new();
 
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+    let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -134,31 +37,13 @@ fn done_event_completes_run() {
         .expect("tokio runtime builds");
 
     let run_id = rt.block_on(async {
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake succeeds");
+        let mut ws = core.connect().await;
 
         let request =
             r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#;
         ws.send(Message::Text(request.into()))
             .await
             .expect("send request frame");
-
-        async fn next_text(
-            ws: &mut tokio_tungstenite::WebSocketStream<
-                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-            >,
-        ) -> String {
-            let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
-                .await
-                .expect("frame within 5s")
-                .expect("frame present")
-                .expect("frame ok");
-            match frame {
-                Message::Text(t) => t.to_string(),
-                other => panic!("expected text frame, got {other:?}"),
-            }
-        }
 
         let response_body = next_text(&mut ws).await;
 
@@ -207,7 +92,7 @@ fn done_event_completes_run() {
     // alive — the terminal tx already committed during the 200ms sleep above
     // so a fresh ro pool sees the final state regardless.
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
@@ -260,12 +145,9 @@ fn done_event_completes_run() {
 
 #[test]
 fn worker_eof_errors_run_and_marks_message_incomplete() {
-    let _guard = port_lock();
-    let worker_cmd = false_binary().to_string();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
+    let workspace = Workspace::new();
 
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+    let core = workspace.core().worker_cmd(false_binary()).spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -273,9 +155,7 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
         .expect("tokio runtime builds");
 
     let run_id = rt.block_on(async {
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake succeeds");
+        let mut ws = core.connect().await;
 
         let request =
             r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#;
@@ -283,15 +163,7 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
             .await
             .expect("send request frame");
 
-        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
-            .await
-            .expect("response frame within 5s")
-            .expect("response frame present")
-            .expect("response frame ok");
-        let body = match frame {
-            Message::Text(t) => t.to_string(),
-            other => panic!("expected text frame, got {other:?}"),
-        };
+        let body = next_text(&mut ws).await;
 
         let v: serde_json::Value = serde_json::from_str(&body)
             .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"));
@@ -302,7 +174,7 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
 
         // Worker exits immediately with no stdout — no text_delta, no done.
         // Poll the DB until the run leaves the 'running' state.
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
@@ -337,7 +209,7 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
 
     // _child's Drop kills + reaps Core whenever this fn returns/panics.
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
@@ -402,13 +274,14 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
 /// ADR-0017's atomic recovery invariant.
 #[test]
 fn worker_spawn_failure_errors_run() {
-    let _guard = port_lock();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
+    let workspace = Workspace::new();
 
     // Path that doesn't exist → tokio::process::Command::spawn() returns
     // Err, hitting the second pre-loop early-return path in run_worker.
-    let (_child, ws_url) = spawn_core("/nonexistent/inkstone-test-worker", &db_path);
+    let core = workspace
+        .core()
+        .worker_cmd("/nonexistent/inkstone-test-worker")
+        .spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -416,9 +289,7 @@ fn worker_spawn_failure_errors_run() {
         .expect("tokio runtime builds");
 
     let run_id = rt.block_on(async {
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake succeeds");
+        let mut ws = core.connect().await;
 
         let request =
             r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#;
@@ -426,15 +297,7 @@ fn worker_spawn_failure_errors_run() {
             .await
             .expect("send request frame");
 
-        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
-            .await
-            .expect("response frame within 5s")
-            .expect("response frame present")
-            .expect("response frame ok");
-        let body = match frame {
-            Message::Text(t) => t.to_string(),
-            other => panic!("expected text frame, got {other:?}"),
-        };
+        let body = next_text(&mut ws).await;
         let v: serde_json::Value = serde_json::from_str(&body)
             .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"));
         let run_id = v["result"]["run_id"]
@@ -443,7 +306,7 @@ fn worker_spawn_failure_errors_run() {
             .to_string();
 
         // Worker never ran; poll for terminal status.
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
@@ -473,7 +336,7 @@ fn worker_spawn_failure_errors_run() {
     });
 
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)

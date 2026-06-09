@@ -1,57 +1,23 @@
 use std::collections::BTreeSet;
-use std::io::{BufRead, BufReader};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
 
-use assert_cmd::cargo::CommandCargoExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
+
+mod common;
+use common::Workspace;
 
 #[test]
 fn migration_creates_all_tables() {
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
+    let workspace = Workspace::new();
 
-    let mut child = std::process::Command::cargo_bin("core")
-        .expect("core binary exists")
-        .env("INKSTONE_DB_PATH", &db_path)
-        .env("INKSTONE_PORT", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if trimmed.starts_with("INKSTONE_LISTENING ") {
-            break;
-        }
-    }
-
-    let _ = child.kill();
-    let _ = child.wait();
+    // Spawning to INKSTONE_LISTENING means `sqlx::migrate!()` ran successfully.
+    let core = workspace.core().spawn();
+    drop(core);
 
     assert!(
-        db_path.exists(),
+        workspace.db_path().exists(),
         "Core should have created the DB file at {}",
-        db_path.display()
+        workspace.db_path().display()
     );
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -60,7 +26,7 @@ fn migration_creates_all_tables() {
         .expect("tokio runtime builds");
 
     let actual: BTreeSet<String> = rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)

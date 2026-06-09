@@ -9,121 +9,19 @@
 //! `INKSTONE_WORKER_CMD`: spawn 1 proposes & blocks (park); spawn 2 detects
 //! `mode === "resume"` and finishes (a `text_delta` + `done`).
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core")
-        .to_path_buf()
-}
-
-fn propose_worker_cmd() -> String {
-    let repo_root = repo_root();
-    let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let fixture = repo_root.join("crates/core/tests/fixtures/propose-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
-    format!("{} {}", tsx.display(), fixture.display())
-}
-
-struct CoreChild(Option<Child>);
-
-impl Drop for CoreChild {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
-fn spawn_core(worker_cmd: &str, db_path: &Path) -> (CoreChild, String) {
-    spawn_core_with_env(worker_cmd, db_path, &[])
-}
-
-fn spawn_core_with_env(
-    worker_cmd: &str,
-    db_path: &Path,
-    extra_env: &[(&str, &str)],
-) -> (CoreChild, String) {
-    let repo_root = repo_root();
-    let mut cmd = std::process::Command::cargo_bin("core").expect("core binary exists");
-    cmd.current_dir(&repo_root)
-        .env("INKSTONE_WORKER_CMD", worker_cmd)
-        .env("INKSTONE_DB_PATH", db_path)
-        .env("INKSTONE_PORT", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    for (k, v) in extra_env {
-        cmd.env(k, v);
-    }
-    let mut child = cmd.spawn().expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
-    (CoreChild(Some(child)), ws_url)
-}
-
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
-
-async fn next_text(ws: &mut Ws) -> String {
-    let frame = tokio::time::timeout(Duration::from_secs(8), ws.next())
-        .await
-        .expect("frame within 8s")
-        .expect("frame present")
-        .expect("frame ok");
-    match frame {
-        Message::Text(t) => t.to_string(),
-        other => panic!("expected text frame, got {other:?}"),
-    }
-}
+mod common;
+use common::{CoreHandle, Workspace, next_text};
 
 /// Open a fresh socket, send a single request, return the response body.
-async fn rpc(ws_url: &str, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
-    let (mut ws, _resp) = tokio_tungstenite::connect_async(ws_url)
-        .await
-        .expect("ws handshake succeeds");
+async fn rpc(core: &CoreHandle, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
+    let mut ws = core.connect().await;
     let req = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -140,9 +38,9 @@ async fn rpc(ws_url: &str, id: u64, method: &str, params: serde_json::Value) -> 
 
 /// Drive a Run to a park: thread/create, then poll run/subscribe until
 /// status=parked. Returns the run_id.
-async fn create_and_park(ws_url: &str) -> String {
+async fn create_and_park(core: &CoreHandle) -> String {
     let resp = rpc(
-        ws_url,
+        core,
         1,
         "thread/create",
         serde_json::json!({ "prompt": "remember to buy milk" }),
@@ -159,7 +57,7 @@ async fn create_and_park(ws_url: &str) -> String {
             panic!("timed out waiting for run to park");
         }
         let resp = rpc(
-            ws_url,
+            core,
             2,
             "run/subscribe",
             serde_json::json!({ "run_id": run_id }),
@@ -175,14 +73,14 @@ async fn create_and_park(ws_url: &str) -> String {
 
 /// Poll run/subscribe until the Run reaches `completed` (terminal). Panics on
 /// timeout.
-async fn await_completed(ws_url: &str, run_id: &str) {
+async fn await_completed(core: &CoreHandle, run_id: &str) {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if Instant::now() > deadline {
             panic!("timed out waiting for run to complete");
         }
         let resp = rpc(
-            ws_url,
+            core,
             9,
             "run/subscribe",
             serde_json::json!({ "run_id": run_id }),
@@ -197,10 +95,8 @@ async fn await_completed(ws_url: &str, run_id: &str) {
 
 #[test]
 fn accept_applies_and_resumes() {
-    let worker_cmd = propose_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -208,11 +104,11 @@ fn accept_applies_and_resumes() {
         .expect("tokio runtime builds");
 
     let (run_id, entity_id) = rt.block_on(async {
-        let run_id = create_and_park(&ws_url).await;
+        let run_id = create_and_park(&core).await;
 
         // Learn the proposal_id.
         let resp = rpc(
-            &ws_url,
+            &core,
             3,
             "proposal/get",
             serde_json::json!({ "run_id": run_id }),
@@ -225,7 +121,7 @@ fn accept_applies_and_resumes() {
 
         // Decide: accept.
         let resp = rpc(
-            &ws_url,
+            &core,
             4,
             "proposal/decide",
             serde_json::json!({
@@ -247,14 +143,14 @@ fn accept_applies_and_resumes() {
             .to_string();
 
         // The Run resumes in a fresh Worker and reaches completed.
-        await_completed(&ws_url, &run_id).await;
+        await_completed(&core, &run_id).await;
 
         (run_id, entity_id)
     });
 
     // White-box DB assertions.
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
@@ -330,10 +226,8 @@ fn accept_applies_and_resumes() {
 /// `completed` (the model reads the decline and wraps up conversationally).
 #[test]
 fn reject_resumes_without_applying() {
-    let worker_cmd = propose_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -341,11 +235,11 @@ fn reject_resumes_without_applying() {
         .expect("tokio runtime builds");
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&ws_url).await;
+        let run_id = create_and_park(&core).await;
 
         // Learn the proposal_id.
         let resp = rpc(
-            &ws_url,
+            &core,
             3,
             "proposal/get",
             serde_json::json!({ "run_id": run_id }),
@@ -358,7 +252,7 @@ fn reject_resumes_without_applying() {
 
         // Decide: reject.
         let resp = rpc(
-            &ws_url,
+            &core,
             4,
             "proposal/decide",
             serde_json::json!({
@@ -380,13 +274,13 @@ fn reject_resumes_without_applying() {
         );
 
         // The Run resumes in a fresh Worker and reaches completed.
-        await_completed(&ws_url, &run_id).await;
+        await_completed(&core, &run_id).await;
         run_id
     });
 
     // White-box DB assertions.
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
@@ -453,10 +347,8 @@ fn reject_resumes_without_applying() {
 
 #[test]
 fn accept_is_idempotent() {
-    let worker_cmd = propose_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -464,10 +356,10 @@ fn accept_is_idempotent() {
         .expect("tokio runtime builds");
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&ws_url).await;
+        let run_id = create_and_park(&core).await;
 
         let resp = rpc(
-            &ws_url,
+            &core,
             3,
             "proposal/get",
             serde_json::json!({ "run_id": run_id }),
@@ -479,7 +371,7 @@ fn accept_is_idempotent() {
             .to_string();
 
         let first = rpc(
-            &ws_url,
+            &core,
             4,
             "proposal/decide",
             serde_json::json!({
@@ -494,11 +386,11 @@ fn accept_is_idempotent() {
             .unwrap_or_else(|| panic!("first decide entity_id — body: {first}"))
             .to_string();
 
-        await_completed(&ws_url, &run_id).await;
+        await_completed(&core, &run_id).await;
 
         // Second decide, same key → same result, no second entity.
         let second = rpc(
-            &ws_url,
+            &core,
             5,
             "proposal/decide",
             serde_json::json!({
@@ -523,7 +415,7 @@ fn accept_is_idempotent() {
     });
 
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
@@ -551,10 +443,8 @@ fn accept_is_idempotent() {
 /// created entity must carry the EDIT.
 #[test]
 fn edit_applies_edited_payload() {
-    let worker_cmd = propose_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -562,10 +452,10 @@ fn edit_applies_edited_payload() {
         .expect("tokio runtime builds");
 
     let (run_id, entity_id) = rt.block_on(async {
-        let run_id = create_and_park(&ws_url).await;
+        let run_id = create_and_park(&core).await;
 
         let resp = rpc(
-            &ws_url,
+            &core,
             3,
             "proposal/get",
             serde_json::json!({ "run_id": run_id }),
@@ -578,7 +468,7 @@ fn edit_applies_edited_payload() {
 
         // Decide: edit with a new title.
         let resp = rpc(
-            &ws_url,
+            &core,
             4,
             "proposal/decide",
             serde_json::json!({
@@ -600,12 +490,12 @@ fn edit_applies_edited_payload() {
             .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
             .to_string();
 
-        await_completed(&ws_url, &run_id).await;
+        await_completed(&core, &run_id).await;
         (run_id, entity_id)
     });
 
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
@@ -661,10 +551,8 @@ fn edit_applies_edited_payload() {
 /// Proposal stays `pending`, and the Run stays `parked` (re-decidable).
 #[test]
 fn edit_rejects_invalid_payload() {
-    let worker_cmd = propose_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -672,10 +560,10 @@ fn edit_rejects_invalid_payload() {
         .expect("tokio runtime builds");
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&ws_url).await;
+        let run_id = create_and_park(&core).await;
 
         let resp = rpc(
-            &ws_url,
+            &core,
             3,
             "proposal/get",
             serde_json::json!({ "run_id": run_id }),
@@ -688,7 +576,7 @@ fn edit_rejects_invalid_payload() {
 
         // Decide: edit with an empty title → invalid_params, no apply.
         let resp = rpc(
-            &ws_url,
+            &core,
             4,
             "proposal/decide",
             serde_json::json!({
@@ -708,7 +596,7 @@ fn edit_rejects_invalid_payload() {
     });
 
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
@@ -760,10 +648,12 @@ fn edit_rejects_invalid_payload() {
 /// well-formed.
 #[test]
 fn accept_resumes_after_multistep_transcript() {
-    let worker_cmd = propose_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let (_child, ws_url) = spawn_core_with_env(&worker_cmd, &db_path, &[("INKSTONE_MULTISTEP", "1")]);
+    let workspace = Workspace::new();
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_MULTISTEP", "1")
+        .spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -771,10 +661,10 @@ fn accept_resumes_after_multistep_transcript() {
         .expect("tokio runtime builds");
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&ws_url).await;
+        let run_id = create_and_park(&core).await;
 
         let resp = rpc(
-            &ws_url,
+            &core,
             3,
             "proposal/get",
             serde_json::json!({ "run_id": run_id }),
@@ -786,7 +676,7 @@ fn accept_resumes_after_multistep_transcript() {
             .to_string();
 
         let resp = rpc(
-            &ws_url,
+            &core,
             4,
             "proposal/decide",
             serde_json::json!({
@@ -804,14 +694,14 @@ fn accept_resumes_after_multistep_transcript() {
 
         // The Run resumes from the reconstructed MULTI-step transcript and
         // reaches completed — proving the transcript is provider-valid.
-        await_completed(&ws_url, &run_id).await;
+        await_completed(&core, &run_id).await;
         run_id
     });
 
     // White-box: the read_thread tool_call AND the propose tool_call both
     // resolved (no orphan), and the run completed.
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)

@@ -9,119 +9,33 @@
 //! `done` → `worker_disconnected`): here the worker emits an explicit
 //! `error` and Core records THAT message with `terminal_reason='errored'`.
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
-use std::sync::{Mutex, MutexGuard};
-use std::time::{Duration, Instant};
-
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
 
-fn repo_root() -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core")
-        .to_path_buf()
-}
-
-fn slow_worker_cmd() -> String {
-    let repo_root = repo_root();
-    let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let fixture = repo_root.join("crates/core/tests/fixtures/slow-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
-    format!("{} {}", tsx.display(), fixture.display())
-}
-
-fn port_lock() -> MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(|p| p.into_inner())
-}
-
-struct CoreChild(Option<Child>);
-
-impl Drop for CoreChild {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
-fn spawn_core(worker_cmd: &str, db_path: &Path, error_message: &str, gate_path: &Path) -> (CoreChild, String) {
-    let repo_root = repo_root();
-    let mut child = std::process::Command::cargo_bin("core")
-        .expect("core binary exists")
-        .current_dir(&repo_root)
-        .env("INKSTONE_WORKER_CMD", worker_cmd)
-        .env("INKSTONE_DB_PATH", db_path)
-        .env("INKSTONE_FIXTURE_ERROR", error_message)
-        // CHUNKS=2 + GATE makes the stream provably pause mid-flight: the
-        // fixture emits chunk 1, blocks until the gate file appears, then
-        // emits chunk 2 + the terminal error. The test creates the gate file
-        // only AFTER subscribing, so the error is delivered strictly after
-        // the subscriber attaches — deterministic live-stream assertion with
-        // no reliance on tsx cold-start timing.
-        .env("INKSTONE_FIXTURE_CHUNKS", "2")
-        .env("INKSTONE_FIXTURE_GATE", gate_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
-
-    (CoreChild(Some(child)), ws_url)
-}
+mod common;
+use common::{Workspace, next_text};
 
 #[test]
 fn worker_error_event_marks_run_errored_with_message() {
-    let _guard = port_lock();
-    let worker_cmd = slow_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let gate_path = tmp.path().join("gate");
+    let workspace = Workspace::new();
+    let gate_path = workspace.path().join("gate");
     let error_message = "provider rejected the request";
 
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, error_message, &gate_path);
+    // CHUNKS=2 + GATE makes the stream provably pause mid-flight: the fixture
+    // emits chunk 1, blocks until the gate file appears, then emits chunk 2 +
+    // the terminal error. The test creates the gate file only AFTER
+    // subscribing, so the error is delivered strictly after the subscriber
+    // attaches — deterministic live-stream assertion with no reliance on tsx
+    // cold-start timing.
+    let core = workspace
+        .core()
+        .worker_fixture("slow-worker.ts")
+        .env("INKSTONE_FIXTURE_ERROR", error_message)
+        .env("INKSTONE_FIXTURE_CHUNKS", "2")
+        .env("INKSTONE_FIXTURE_GATE", &gate_path)
+        .spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -129,31 +43,13 @@ fn worker_error_event_marks_run_errored_with_message() {
         .expect("tokio runtime builds");
 
     let (run_id, saw_error_on_stream) = rt.block_on(async {
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake succeeds");
+        let mut ws = core.connect().await;
 
         let request =
             r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#;
         ws.send(Message::Text(request.into()))
             .await
             .expect("send request frame");
-
-        async fn next_text(
-            ws: &mut tokio_tungstenite::WebSocketStream<
-                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-            >,
-        ) -> String {
-            let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
-                .await
-                .expect("frame within 5s")
-                .expect("frame present")
-                .expect("frame ok");
-            match frame {
-                Message::Text(t) => t.to_string(),
-                other => panic!("expected text frame, got {other:?}"),
-            }
-        }
 
         let response_body = next_text(&mut ws).await;
         let response: serde_json::Value = serde_json::from_str(&response_body)
@@ -203,14 +99,14 @@ fn worker_error_event_marks_run_errored_with_message() {
         }
 
         ws.close(None).await.ok();
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         (run_id, saw_error)
     });
 
     assert!(saw_error_on_stream, "subscribe stream delivered the error event");
 
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)

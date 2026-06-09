@@ -17,162 +17,13 @@
 //! + a gate) to hold the Run mid-stream while `thread/get` is issued on a
 //! SECOND connection (no subscribe on it, so its only frame is the response).
 
-use std::io::{BufRead, BufReader};
-use std::path::Path;
-use std::process::{Child, Stdio};
-use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::{SinkExt, StreamExt};
-use tempfile::TempDir;
+use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
-/// Core binds a fixed port (8765); the tests in this binary must run
-/// serially or they collide. Each acquires this lock for Core's lifetime.
-fn port_lock() -> MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(|p| p.into_inner())
-}
-
-/// Drop guard around `Child` that SIGKILLs and reaps on drop, so a panicking
-/// test cannot leak Core (which holds the fixed port and blocks reruns).
-struct CoreChild(Option<Child>);
-
-impl Drop for CoreChild {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
-fn repo_root() -> &'static Path {
-    // <repo>/crates/core/tests/thread_get.rs → CARGO_MANIFEST_DIR = <repo>/crates/core
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    Box::leak(
-        manifest_dir
-            .parent()
-            .and_then(Path::parent)
-            .expect("repo root resolves from <repo>/crates/core")
-            .to_path_buf()
-            .into_boxed_path(),
-    )
-}
-
-/// Block on Core's stdout until `INKSTONE_LISTENING` appears; return the
-/// reaped-on-drop child guard and the `ws://…/ws` URL.
-fn await_listening(mut child: Child) -> (CoreChild, String) {
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
-
-    (CoreChild(Some(child)), ws_url)
-}
-
-/// Spawn Core wired to the slow-worker fixture (the deterministic echo
-/// stand-in after the slice-4 cutover — reads the manifest's `.prompt` and
-/// emits `echo: <prompt>`, ADR-0019).
-fn spawn_core_real(db_path: &Path) -> (CoreChild, String) {
-    let root = repo_root();
-    let tsx = root.join("packages/worker/node_modules/.bin/tsx");
-    let cli = root.join("crates/core/tests/fixtures/slow-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
-    if !cli.exists() {
-        panic!("worker fixture not found at {}", cli.display());
-    }
-    let worker_cmd = format!("{} {}", tsx.display(), cli.display());
-
-    let child = std::process::Command::cargo_bin("core")
-        .expect("core binary exists")
-        .current_dir(root)
-        .env("INKSTONE_WORKER_CMD", &worker_cmd)
-        .env("INKSTONE_DB_PATH", db_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("core spawns");
-
-    await_listening(child)
-}
-
-/// Spawn Core wired to the slice-0 slow-worker fixture (chunks + gate).
-fn spawn_core_fixture(db_path: &Path, gate_path: &Path, chunks: &str) -> (CoreChild, String) {
-    let root = repo_root();
-    let tsx = root.join("packages/worker/node_modules/.bin/tsx");
-    let fixture = root.join("crates/core/tests/fixtures/slow-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
-    if !fixture.exists() {
-        panic!("slow-worker fixture not found at {}", fixture.display());
-    }
-    let worker_cmd = format!("{} {}", tsx.display(), fixture.display());
-
-    let child = std::process::Command::cargo_bin("core")
-        .expect("core binary exists")
-        .current_dir(root)
-        .env("INKSTONE_WORKER_CMD", &worker_cmd)
-        .env("INKSTONE_DB_PATH", db_path)
-        .env("INKSTONE_FIXTURE_CHUNKS", chunks)
-        .env("INKSTONE_FIXTURE_GATE", gate_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("core spawns");
-
-    await_listening(child)
-}
-
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
-
-/// Read the next text frame, bounded by a 5s timeout so a hang fails fast.
-async fn next_text(ws: &mut Ws) -> String {
-    let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
-        .await
-        .expect("frame within 5s")
-        .expect("frame present")
-        .expect("frame ok");
-    match frame {
-        Message::Text(t) => t.to_string(),
-        other => panic!("expected text frame, got {other:?}"),
-    }
-}
+mod common;
+use common::{Workspace, Ws, next_text};
 
 /// Read frames (bounded) until one whose `id` matches `want_id`, skipping
 /// any interleaved `run/event` notifications. Returns the parsed response.
@@ -195,12 +46,9 @@ async fn send(ws: &mut Ws, frame: String) {
 
 #[test]
 fn thread_get_completed_run_returns_full_text() {
-    let _guard = port_lock();
+    let workspace = Workspace::new();
 
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-
-    let (_core, ws_url) = spawn_core_real(&db_path);
+    let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -208,9 +56,7 @@ fn thread_get_completed_run_returns_full_text() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake succeeds");
+        let mut ws = core.connect().await;
 
         // ---- thread/create{prompt:"hi"} → {thread_id, run_id} ----
         send(
@@ -347,16 +193,18 @@ fn thread_get_completed_run_returns_full_text() {
 
 #[test]
 fn thread_get_midstream_run_returns_streaming_partial() {
-    let _guard = port_lock();
-
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let gate_path = tmp.path().join("gate");
+    let workspace = Workspace::new();
+    let gate_path = workspace.path().join("gate");
     assert!(!gate_path.exists(), "gate must not exist before release");
 
     // chunks=2: "echo: hello" → chunk1 "echo: ", BLOCK on gate, chunk2
     // "hello" + done. Holding the gate keeps the Run mid-stream.
-    let (_core, ws_url) = spawn_core_fixture(&db_path, &gate_path, "2");
+    let core = workspace
+        .core()
+        .worker_fixture("slow-worker.ts")
+        .env("INKSTONE_FIXTURE_CHUNKS", "2")
+        .env("INKSTONE_FIXTURE_GATE", &gate_path)
+        .spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -365,14 +213,10 @@ fn thread_get_midstream_run_returns_streaming_partial() {
 
     rt.block_on(async {
         // Connection A: create + subscribe (held mid-stream on the gate).
-        let (mut ws_a, _resp_a) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws A handshake succeeds");
+        let mut ws_a = core.connect().await;
         // Connection B: pre-open; thread/get runs here with NO subscribe, so
         // its only frame is the thread/get response (no interleaved events).
-        let (mut ws_b, _resp_b) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws B handshake succeeds");
+        let mut ws_b = core.connect().await;
 
         // ---- thread/create{prompt:"hello"} → {thread_id, run_id} ----
         send(
