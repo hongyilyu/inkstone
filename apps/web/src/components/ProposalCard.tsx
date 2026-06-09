@@ -1,12 +1,82 @@
-import { Check, ListTodo, Loader2, Pencil, RotateCcw } from "lucide-react";
+import {
+	Box,
+	Check,
+	ListTodo,
+	Loader2,
+	type LucideIcon,
+	Pencil,
+	RotateCcw,
+	User,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { PendingProposal } from "@/store/chat";
 import { cn } from "@/lib/utils.js";
 import { Card } from "./ui/card.js";
 import { Input } from "./ui/input.js";
 
-/** A human label for an entity kind (todo → "todo"); falls back to the raw kind. */
-const KIND_NOUN: Record<string, string> = { todo: "todo" };
+/** The two edited-payload shapes the card builds; the wire stays opaque. */
+type TodoPayload = { title: string; done: boolean; due?: string };
+type PersonPayload = { name: string; note?: string };
+
+/**
+ * Per-Entity-Type presentation: how a proposed entity of `kind` is labelled,
+ * iconned, and turned into an edited payload. The card edits the PRIMARY field
+ * and shows the SECONDARY field(s) read-only.
+ */
+interface Presenter {
+	/** Singular noun for the header, e.g. "todo" / "person". */
+	noun: string;
+	/** Plural collection name for the accept copy, e.g. "Todos" / "People". */
+	collection: string;
+	icon: LucideIcon;
+	/** The single editable field (todo→title, person→name). */
+	primary: { key: string; label: string };
+	/** Read-only field(s) shown alongside (todo→due, person→note). */
+	secondary: ReadonlyArray<{ key: string; label: string }>;
+	/** Build the apply-in-one-step edit payload from the edited primary value. */
+	buildPayload: (value: string, data: unknown) => TodoPayload | PersonPayload;
+}
+
+const PRESENTERS: Record<string, Presenter> = {
+	todo: {
+		noun: "todo",
+		collection: "Todos",
+		icon: ListTodo,
+		primary: { key: "title", label: "Title" },
+		secondary: [{ key: "due", label: "Due" }],
+		buildPayload: (value, data) => {
+			const due = field(data, "due");
+			return due
+				? { title: value, done: false, due }
+				: { title: value, done: false };
+		},
+	},
+	person: {
+		noun: "person",
+		collection: "People",
+		icon: User,
+		primary: { key: "name", label: "Name" },
+		secondary: [{ key: "note", label: "Note" }],
+		buildPayload: (value, data) => {
+			const note = field(data, "note");
+			return note ? { name: value, note } : { name: value };
+		},
+	},
+};
+
+/** The presenter for a kind; an unknown kind falls back to a generic card. */
+function presenterFor(kind: string): Presenter {
+	return (
+		PRESENTERS[kind] ?? {
+			noun: kind,
+			collection: kind,
+			icon: Box,
+			primary: { key: "title", label: "Title" },
+			secondary: [],
+			buildPayload: (value) => ({ title: value, done: false }),
+		}
+	);
+}
 
 /** Pull a string field off the opaque proposed-entity payload, if present. */
 function field(data: unknown, key: string): string | undefined {
@@ -21,8 +91,11 @@ function field(data: unknown, key: string): string | undefined {
  * The interactive review card for a parked Run's pending Proposal (ADR-0016 /
  * ADR-0025). NOT a code diff — a `create` has no "before"; it shows a labelled
  * field list of the proposed entity plus the model's rationale. The footer
- * actions ration the single Ink Magenta to the primary "Add to Todos" (One Ink
- * Rule, DESIGN.md); Edit is a chip (wired in slice 10); Dismiss is a ghost.
+ * actions ration the single Ink Magenta to the primary "Add to {collection}"
+ * (One Ink Rule, DESIGN.md); Edit is a chip; Dismiss is a ghost. The card is
+ * Entity-Type-agnostic: a {@link Presenter} keyed by `kind` supplies the noun,
+ * icon, field labels, accept copy, and edit-payload builder (todo / person
+ * today; an unknown kind gets a generic fallback).
  *
  * States (PRODUCT.md "show the state"): `pending` (actions live) · `deciding`
  * (the chosen action shows a spinner + progress label, the others disabled) ·
@@ -31,10 +104,10 @@ function field(data: unknown, key: string): string | undefined {
  * pair an icon with a word, never colour alone.
  *
  * Edit is local-only: the chip swaps the body for an inline form (no modal,
- * product register) pre-filled from the proposed `data`. Save edits AND accepts
- * in one step (`onDecide("edit", editedPayload)`, ADR-0025); Cancel returns to
- * pending. Save stays the single Ink Magenta primary in the editing state (One
- * Ink Rule).
+ * product register) pre-filled from the proposed `data`. It edits the PRIMARY
+ * field; secondary fields stay read-only. Save edits AND accepts in one step
+ * (`onDecide("edit", editedPayload)`, ADR-0025); Cancel returns to pending.
+ * Save stays the single Ink Magenta primary in the editing state (One Ink Rule).
  */
 export function ProposalCard({
 	proposal,
@@ -43,13 +116,14 @@ export function ProposalCard({
 	proposal: PendingProposal;
 	onDecide: (
 		decision: "accept" | "reject" | "edit",
-		editedPayload?: { title: string; done: boolean; due?: string },
+		editedPayload?: TodoPayload | PersonPayload,
 	) => void;
 }) {
 	const { status, data, rationale, kind } = proposal;
-	const noun = KIND_NOUN[kind] ?? kind;
-	const title = field(data, "title") ?? `New ${noun}`;
-	const due = field(data, "due");
+	const presenter = presenterFor(kind);
+	const Icon = presenter.icon;
+	const primaryValue =
+		field(data, presenter.primary.key) ?? `New ${presenter.noun}`;
 
 	// Track which action the user chose so the spinner lands on THAT button
 	// while the decide is in flight (the store's `deciding` status doesn't
@@ -64,21 +138,21 @@ export function ProposalCard({
 	};
 
 	// The inline edit form (local-only): the Edit chip opens it pre-filled from
-	// the proposed values; Save applies-in-one-step, Cancel returns to pending.
+	// the proposed primary value; Save applies-in-one-step, Cancel returns.
 	const [editing, setEditing] = useState(false);
-	const [editTitle, setEditTitle] = useState(title);
-	const titleRef = useRef<HTMLInputElement>(null);
+	const [editValue, setEditValue] = useState(primaryValue);
+	const valueRef = useRef<HTMLInputElement>(null);
 	const openEdit = () => {
-		setEditTitle(title);
+		setEditValue(primaryValue);
 		setEditing(true);
 	};
 	useEffect(() => {
-		if (editing) titleRef.current?.focus();
+		if (editing) valueRef.current?.focus();
 	}, [editing]);
 	const saveEdit = () => {
-		const trimmed = editTitle.trim();
+		const trimmed = editValue.trim();
 		if (trimmed.length === 0) return;
-		onDecide("edit", { title: trimmed, done: false, ...(due ? { due } : {}) });
+		onDecide("edit", presenter.buildPayload(trimmed, data));
 	};
 
 	if (status === "accepted" || status === "rejected") {
@@ -93,7 +167,7 @@ export function ProposalCard({
 					<Check className="size-4 text-card-foreground/60" aria-hidden />
 				) : null}
 				<span aria-live="polite">
-					{accepted ? "Added to Todos." : "Dismissed."}
+					{accepted ? `Added to ${presenter.collection}.` : "Dismissed."}
 				</span>
 			</Card>
 		);
@@ -113,14 +187,14 @@ export function ProposalCard({
 					className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-secondary-foreground"
 					aria-hidden
 				>
-					<ListTodo className="size-4" />
+					<Icon className="size-4" />
 				</span>
 				<div className="min-w-0">
 					<p className="text-xs font-medium text-muted-foreground">
-						Inkstone wants to add a {noun}.
+						Inkstone wants to add a {presenter.noun}.
 					</p>
 					<p className="truncate text-sm font-semibold text-card-foreground">
-						{title}
+						{primaryValue}
 					</p>
 				</div>
 			</header>
@@ -133,35 +207,46 @@ export function ProposalCard({
 					}}
 					className="flex flex-col gap-3 border-border border-t pt-3"
 				>
-					<label className="flex flex-col gap-1.5" htmlFor="proposal-edit-title">
+					<label
+						className="flex flex-col gap-1.5"
+						htmlFor="proposal-edit-primary"
+					>
 						<span className="text-xs font-medium text-muted-foreground">
-							Title
+							{presenter.primary.label}
 						</span>
 						<Input
-							id="proposal-edit-title"
-							ref={titleRef}
-							value={editTitle}
-							onChange={(e) => setEditTitle(e.target.value)}
+							id="proposal-edit-primary"
+							ref={valueRef}
+							value={editValue}
+							onChange={(e) => setEditValue(e.target.value)}
 							className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
 						/>
 					</label>
-					{due ? (
-						<label className="flex flex-col gap-1.5" htmlFor="proposal-edit-due">
-							<span className="text-xs font-medium text-muted-foreground">
-								Due
-							</span>
-							<Input
-								id="proposal-edit-due"
-								value={due}
-								readOnly
-								className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-muted-foreground"
-							/>
-						</label>
-					) : null}
+					{presenter.secondary.map((s) => {
+						const value = field(data, s.key);
+						if (!value) return null;
+						return (
+							<label
+								key={s.key}
+								className="flex flex-col gap-1.5"
+								htmlFor={`proposal-edit-${s.key}`}
+							>
+								<span className="text-xs font-medium text-muted-foreground">
+									{s.label}
+								</span>
+								<Input
+									id={`proposal-edit-${s.key}`}
+									value={value}
+									readOnly
+									className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-muted-foreground"
+								/>
+							</label>
+						);
+					})}
 					<footer className="flex items-center gap-2 pt-1">
 						<button
 							type="submit"
-							disabled={editTitle.trim().length === 0}
+							disabled={editValue.trim().length === 0}
 							className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>
 							<Check className="size-4" aria-hidden />
@@ -179,8 +264,13 @@ export function ProposalCard({
 			) : (
 				<>
 					<dl className="flex flex-col gap-1.5 border-border border-t pt-3 text-sm">
-						<Field label="Title" value={title} />
-						{due ? <Field label="Due" value={due} /> : null}
+						<Field label={presenter.primary.label} value={primaryValue} />
+						{presenter.secondary.map((s) => {
+							const value = field(data, s.key);
+							return value ? (
+								<Field key={s.key} label={s.label} value={value} />
+							) : null;
+						})}
 					</dl>
 
 					{rationale ? (
@@ -225,7 +315,7 @@ export function ProposalCard({
 								) : (
 									<>
 										<Check className="size-4" aria-hidden />
-										Add to Todos
+										Add to {presenter.collection}
 									</>
 								)}
 							</button>

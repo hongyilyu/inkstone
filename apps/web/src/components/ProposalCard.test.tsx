@@ -13,6 +13,16 @@ const base: PendingProposal = {
 	status: "pending",
 };
 
+const personBase: PendingProposal = {
+	proposal_id: "prop-2",
+	run_id: "run-2",
+	kind: "person",
+	change_kind: "create",
+	data: { name: "Alice", note: "met at the daycare" },
+	rationale: "the user mentioned a new contact",
+	status: "pending",
+};
+
 describe("ProposalCard", () => {
 	afterEach(cleanup);
 
@@ -161,5 +171,36 @@ describe("ProposalCard", () => {
 		expect(
 			screen.queryByRole("button", { name: /save changes/i }),
 		).not.toBeInTheDocument();
+	});
+
+	// --- Person proposals (the card generalizes per Entity Type) -------------
+
+	it("renders a Person proposal with Person fields and an Add to People action", () => {
+		render(<ProposalCard proposal={personBase} onDecide={() => {}} />);
+		expect(screen.getAllByText("Alice").length).toBeGreaterThan(0);
+		// The primary field is labelled "Name", not the Todo "Title".
+		expect(screen.getByText("Name")).toBeInTheDocument();
+		expect(screen.queryByText("Title")).not.toBeInTheDocument();
+		// The primary action adds to the People collection.
+		expect(
+			screen.getByRole("button", { name: /add to people/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /add to todos/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("edits the Person name and saves via onDecide('edit', { name })", () => {
+		const onDecide = vi.fn();
+		render(<ProposalCard proposal={personBase} onDecide={onDecide} />);
+		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+		const name = screen.getByRole("textbox", { name: /name/i });
+		expect(name).toHaveValue("Alice");
+		fireEvent.change(name, { target: { value: "Alice Whitman" } });
+		fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+		expect(onDecide).toHaveBeenCalledWith("edit", {
+			name: "Alice Whitman",
+			note: "met at the daycare",
+		});
 	});
 });

@@ -2,17 +2,17 @@ import { WsClient } from "@inkstone/ui-sdk";
 import { useQuery } from "@tanstack/react-query";
 import { Effect } from "effect";
 import { entities } from "@/data/mock/entities";
-import type { Todo } from "@/lib/entities";
+import type { Person, Todo } from "@/lib/entities";
 import { useRuntime } from "@/runtime";
 
 /**
  * The Library's accepted Entities (slice 11).
  *
- * Todos go LIVE: read from Core via `entity/list` and mapped to the
- * Library `Todo` view model. People / Projects / Recipes stay on the
- * `@/data/mock/entities` fixture until those entity types exist in Core (Core
- * only ever creates Todos today) — so this hook merges the live Todos with the
- * non-todo mock entities. The query key stays `["entities"]` so a proposal
+ * Todos and People go LIVE: read from Core via `entity/list` and mapped to the
+ * Library `Todo` / `Person` view models. Projects / Recipes stay on the
+ * `@/data/mock/entities` fixture until those entity types exist in Core — so
+ * this hook merges the live Todos and People with the remaining (project /
+ * recipe) mock entities. The query key stays `["entities"]` so a proposal
  * accept can invalidate it (see `store/bridge.ts`).
  */
 export function useEntities() {
@@ -22,13 +22,18 @@ export function useEntities() {
 		queryFn: async () => {
 			const program = Effect.gen(function* () {
 				const client = yield* WsClient;
-				return yield* client.listEntities("todo");
+				const todos = yield* client.listEntities("todo");
+				const people = yield* client.listEntities("person");
+				return { todos: todos.entities, people: people.entities };
 			});
-			const { entities: rows } = await runtime.runPromise(program);
-			const liveTodos = rows.map(toLibraryTodo);
-			// Keep the non-todo mock collections working; only Todos are live.
-			const nonTodoMocks = entities.filter((e) => e.kind !== "todo");
-			return [...liveTodos, ...nonTodoMocks];
+			const { todos, people } = await runtime.runPromise(program);
+			const liveTodos = todos.map(toLibraryTodo);
+			const livePeople = people.map(toLibraryPerson);
+			// Keep the still-mock collections working; Todos + People are live.
+			const otherMocks = entities.filter(
+				(e) => e.kind !== "todo" && e.kind !== "person",
+			);
+			return [...liveTodos, ...livePeople, ...otherMocks];
 		},
 	});
 }
@@ -68,4 +73,34 @@ function toLibraryTodo(row: {
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Todo;
+}
+
+/** The Person `data` shape Core stores (CONTEXT.md): `{name, note?}`. */
+interface PersonData {
+	name?: unknown;
+	note?: unknown;
+}
+
+/**
+ * Map a live `entity/list` row to the Library `Person` view model. Mirrors
+ * {@link toLibraryTodo}: `name` / `note` come straight from `data`; `recency`
+ * is `created_at` (newest sorts first) and `createdAt` its localized date. The
+ * mock-only relationship fields (`role`, `relationship`, `email`, `projectIds`,
+ * `needsReview`, `source`) are left undefined — the live store does not produce
+ * them this slice (project↔person relations are out of scope).
+ */
+function toLibraryPerson(row: {
+	readonly id: string;
+	readonly data: unknown;
+	readonly created_at: number;
+}): Person {
+	const data = (row.data ?? {}) as PersonData;
+	return {
+		id: row.id,
+		kind: "person",
+		name: typeof data.name === "string" ? data.name : "Unnamed",
+		note: typeof data.note === "string" ? data.note : undefined,
+		recency: row.created_at,
+		createdAt: new Date(row.created_at).toLocaleDateString(),
+	} satisfies Person;
 }

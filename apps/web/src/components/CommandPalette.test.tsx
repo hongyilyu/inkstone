@@ -19,13 +19,28 @@ const dieStream = (): Stream.Stream<never, WsError> =>
 	Stream.fromEffect(Effect.die("unused")) as Stream.Stream<never, WsError>;
 
 // Core may be offline; the palette degrades to entities-only. threadList just
-// returns an empty set so the (enabled-on-open) query resolves cleanly.
+// returns an empty set so the (enabled-on-open) query resolves cleanly. People
+// are read live now (slice 3) — seed Alice so ⌘K can still find her.
 const stub = WsClient.of({
 	threadCreate: die,
 	postMessage: die,
 	threadList: () => Effect.succeed({ threads: [] }),
 	threadGet: die,
-	listEntities: () => Effect.succeed({ entities: [] }),
+	listEntities: (type) =>
+		Effect.succeed({
+			entities:
+				type === "person"
+					? [
+							{
+								id: "person_alice",
+								type: "person",
+								data: { name: "Alice Whitman" },
+								created_at: 1_700_000_000_000,
+								updated_at: 1_700_000_000_000,
+							},
+						]
+					: [],
+		}),
 	subscribeRun: dieStream,
 	providerStatus: die,
 	providerLoginStart: die,
