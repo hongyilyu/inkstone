@@ -5,6 +5,7 @@
 	"type": "module",
 	"description": "Full-system end-to-end Test Harness (ADR-0019): spawns a real Core serving the real Web Client in headless Chromium.",
 	"scripts": {
+		"check": "tsc --noEmit",
 		"test:e2e": "playwright test",
 		"test:e2e:install": "playwright install chromium"
 	},

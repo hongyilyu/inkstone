@@ -88,7 +88,7 @@ test("accepted todo appears in the library", async ({ chat, core, page }) => {
 	await card.getByRole("button", { name: /add to todos/i }).click();
 	await expect(card).toContainText(/added to todos/i, { timeout: 15_000 });
 
-	// The Library's Todos collection reads live from Core via entity/list_todos
+	// The Library's Todos collection reads live from Core via entity/list
 	// (slice 11): the accepted "buy milk" Todo is listed there.
 	await page.goto(`${core.url}/library/todos`);
 	await expect(
