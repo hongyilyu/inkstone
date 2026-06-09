@@ -1241,7 +1241,7 @@ mod tests {
             &proposal_id,
             "tool-accept",
             "todo",
-            crate::entities::TODO_SCHEMA_VERSION,
+            99,
             &serde_json::json!({"title": "milk"}),
             None,
             Some("idem-accept"),
@@ -1251,6 +1251,16 @@ mod tests {
         .await
         .expect("apply");
         assert!(!entity_id.is_empty());
+        // The caller-supplied schema_version is persisted verbatim (a sentinel,
+        // not the Todo default), so this fails if apply_proposal ever ignores
+        // the argument and re-hardcodes the old constant.
+        let stored_schema_version: i64 =
+            sqlx::query_scalar("SELECT schema_version FROM entities WHERE id = ?1")
+                .bind(&entity_id)
+                .fetch_one(&pool)
+                .await
+                .expect("entity schema_version");
+        assert_eq!(stored_schema_version, 99);
         assert_eq!(
             run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
             1

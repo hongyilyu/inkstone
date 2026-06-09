@@ -32,7 +32,10 @@ pub(crate) fn render_accept(kind: &str, data: &Value) -> String {
     let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
     match kind {
         "todo" => format!("Accepted. Created Todo {title:?}."),
-        other => format!("Accepted. Created {other} {title:?}."),
+        // `validate` rejects unknown Entity Types before any apply path reaches
+        // here, so a non-todo kind is a Core bug — fail loud rather than
+        // fabricate a confirmation for an unsupported type.
+        other => unreachable!("render_accept for unvalidated entity kind {other:?}"),
     }
 }
 
@@ -41,10 +44,10 @@ pub(crate) fn render_accept(kind: &str, data: &Value) -> String {
 pub(crate) fn schema_version(kind: &str) -> i64 {
     match kind {
         "todo" => TODO_SCHEMA_VERSION,
-        // Only the Todo Entity Type exists today, and `validate` rejects unknown
-        // kinds before any apply path reaches this — so the catch-all is an
-        // unreachable default, not a real per-type version.
-        _ => TODO_SCHEMA_VERSION,
+        // `validate` rejects unknown Entity Types before any apply path reaches
+        // here. Reaching this arm would persist a fabricated version (e.g. stamp
+        // a Person as Todo v1), so it is a Core bug — fail loud, don't synthesize.
+        other => unreachable!("schema_version for unvalidated entity kind {other:?}"),
     }
 }
 
