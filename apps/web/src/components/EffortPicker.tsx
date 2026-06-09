@@ -58,7 +58,7 @@ export function EffortPicker() {
 			/>
 			<Popover.Portal>
 				<Popover.Positioner side="top" align="start" sideOffset={8}>
-					<Popover.Popup className="flex w-[320px] flex-col gap-2 rounded-xl border border-border bg-popover p-3 text-popover-foreground shadow-lg outline-none">
+					<Popover.Popup className="flex w-[360px] flex-col gap-2 rounded-xl border border-border bg-popover p-3 text-popover-foreground shadow-lg outline-none">
 						<div className="font-medium text-sm">Reasoning effort</div>
 						<EffortControl value={effort} onChange={change} />
 						<p className="text-muted-foreground text-xs">

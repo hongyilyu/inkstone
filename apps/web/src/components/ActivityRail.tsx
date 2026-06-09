@@ -41,9 +41,9 @@ export function ActivityRail() {
 	return (
 		<aside
 			aria-label="Activity"
-			className="flex flex-col gap-2 overflow-x-hidden overflow-y-auto bg-sidebar p-3 pt-10 text-sm text-sidebar-foreground"
+			className="flex h-full flex-col overflow-x-hidden bg-sidebar text-sm text-sidebar-foreground"
 		>
-			<div className="flex gap-1 text-xs">
+			<div className="flex h-14 shrink-0 items-center gap-1 px-3 text-xs">
 				{(["all", "edits", "automations"] as Filter[]).map((f) => (
 					<Button
 						key={f}
@@ -58,9 +58,11 @@ export function ActivityRail() {
 				))}
 			</div>
 
-			<Section label="Today" rows={groups.today} />
-			<Section label="Yesterday" rows={groups.yesterday} />
-			<Section label="Earlier" rows={groups.earlier} />
+			<div className="flex flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3">
+				<Section label="Today" rows={groups.today} />
+				<Section label="Yesterday" rows={groups.yesterday} />
+				<Section label="Earlier" rows={groups.earlier} />
+			</div>
 		</aside>
 	);
 }
@@ -68,7 +70,7 @@ export function ActivityRail() {
 function Section({ label, rows }: { label: string; rows: Row[] }) {
 	return (
 		<div className="flex flex-col gap-1">
-			<div className="px-2 font-semibold text-[11px] text-sidebar-foreground/90">
+			<div className="px-2 font-semibold text-sidebar-foreground/90 text-xs">
 				{label}
 			</div>
 			{rows.length === 0 ? (

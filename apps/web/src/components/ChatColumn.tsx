@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { RotateCcw } from "lucide-react";
+import { RotateCcw, Sparkles } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRuntime } from "@/runtime";
 import { send, sendNewThread, startProposalStream } from "@/store/bridge";
@@ -14,6 +14,7 @@ import { ChatMarkdown } from "./ChatMarkdown.js";
 import { ComposeFooter } from "./ComposeFooter.js";
 import { CopyButton } from "./CopyButton.js";
 import { ToolActivity } from "./ToolActivity.js";
+import { EmptyState } from "./ui/empty-state.js";
 
 export function ChatColumn() {
 	const scrollerRef = useRef<HTMLDivElement>(null);
@@ -22,6 +23,13 @@ export function ChatColumn() {
 	const focusedThreadId = useFocusedThreadId();
 	const messages = useThreadMessages(focusedThreadId ?? "");
 	const [sendError, setSendError] = useState<string | null>(null);
+
+	// Nothing to show yet: with no thread focused it's a fresh chat (welcome the
+	// user and teach the loop); with a thread focused it's mid-hydration (a
+	// skeleton, never a blank panel) — PRODUCT.md "show the state, not a spinner".
+	const noMessages = messages.length === 0;
+	const showWelcome = focusedThreadId === null && noMessages;
+	const showHydrating = focusedThreadId !== null && noMessages;
 
 	// On focus change to a non-null, not-yet-live thread: thread/get → load →
 	// resubscribe-if-streaming. Locally-originated threads are pre-marked so this
@@ -58,23 +66,29 @@ export function ChatColumn() {
 	return (
 		<main className="flex h-full flex-col overflow-hidden bg-chat-bg">
 			<div ref={scrollerRef} className="flex-1 overflow-y-auto px-6 pt-14 pb-6">
-				<ol className="mx-auto flex max-w-3xl flex-col gap-6">
-					{messages.map((message, i) =>
-						message.role === "user" ? (
-							<UserBubble key={message.id} message={message} />
-						) : (
-							<AssistantBubble
-								key={message.id}
-								message={message}
-								onRetry={
-									focusedThreadId !== null && messages[i - 1]?.role === "user"
-										? () => retry(messages[i - 1].text)
-										: undefined
-								}
-							/>
-						),
-					)}
-				</ol>
+				{showWelcome ? (
+					<ChatWelcome />
+				) : showHydrating ? (
+					<ChatHydrating />
+				) : (
+					<ol className="mx-auto flex max-w-3xl flex-col gap-6">
+						{messages.map((message, i) =>
+							message.role === "user" ? (
+								<UserBubble key={message.id} message={message} />
+							) : (
+								<AssistantBubble
+									key={message.id}
+									message={message}
+									onRetry={
+										focusedThreadId !== null && messages[i - 1]?.role === "user"
+											? () => retry(messages[i - 1].text)
+											: undefined
+									}
+								/>
+							),
+						)}
+					</ol>
+				)}
 			</div>
 			{sendError !== null && (
 				<p
@@ -102,6 +116,42 @@ export function ChatColumn() {
 				}}
 			/>
 		</main>
+	);
+}
+
+/** First-run / fresh-chat welcome: teaches the chat → Proposal → Library loop,
+ *  mirroring the Library's own empty state so the two surfaces greet alike. */
+function ChatWelcome() {
+	return (
+		<div className="mx-auto flex min-h-full max-w-3xl flex-col items-center justify-center motion-safe:animate-rise">
+			<EmptyState
+				icon={Sparkles}
+				tone="brand"
+				size="lg"
+				title="Start a chat"
+				description="Type below to begin. Inkstone drafts the people, projects, todos, and recipes it notices, and they land in your Library once you approve them."
+			/>
+		</div>
+	);
+}
+
+/** Shown while a selected thread hydrates: placeholder bubbles, not a spinner. */
+function ChatHydrating() {
+	return (
+		<div
+			role="status"
+			aria-label="Loading conversation"
+			className="mx-auto flex max-w-3xl flex-col gap-6"
+		>
+			<div className="flex justify-end">
+				<div className="h-12 w-2/5 animate-pulse rounded-xl bg-secondary/60" />
+			</div>
+			<div className="flex flex-col gap-2">
+				<div className="h-4 w-3/4 animate-pulse rounded bg-secondary/50" />
+				<div className="h-4 w-5/6 animate-pulse rounded bg-secondary/50" />
+				<div className="h-4 w-1/2 animate-pulse rounded bg-secondary/50" />
+			</div>
+		</div>
 	);
 }
 

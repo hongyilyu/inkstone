@@ -1,48 +1,27 @@
-import { WsClient } from "@inkstone/ui-sdk";
-import { useQuery } from "@tanstack/react-query";
-import { Effect } from "effect";
-import {
-	Copy,
-	Library,
-	PanelLeftClose,
-	UserPlus,
-	WandSparkles,
-} from "lucide-react";
+import { Copy, Library } from "lucide-react";
 import { useState } from "react";
-import { useRuntime } from "@/runtime";
+import { NavShell, navRow } from "@/components/ui/nav-shell";
+import { useThreads } from "@/lib/hooks/useThreads";
 import {
 	clearFocusedThread,
 	setFocusedThread,
 	useFocusedThreadId,
 } from "@/store/chat";
 import { cn } from "../lib/utils.js";
-import { Button } from "./ui/button.js";
 import { SearchField } from "./ui/search-field.js";
 
 export function Sidebar({
-	onToggleCollapse,
 	onOpenLibrary,
 }: {
-	onToggleCollapse?: () => void;
 	onOpenLibrary?: () => void;
 } = {}) {
-	const runtime = useRuntime();
 	const focusedThreadId = useFocusedThreadId();
 	const [query, setQuery] = useState("");
 
 	// Reads run on the runtime via TanStack Query (loading/error/success free);
 	// the live stream stays on the store+bridge (ADR-0020). `data` is undefined
 	// while loading or on error → render an empty list, never throw.
-	const { data } = useQuery({
-		queryKey: ["threads"],
-		queryFn: () =>
-			runtime.runPromise(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.threadList();
-				}),
-			),
-	});
+	const { data } = useThreads();
 
 	const threads = data?.threads ?? [];
 	const filtered = threads.filter((t) =>
@@ -55,67 +34,41 @@ export function Sidebar({
 	};
 
 	return (
-		<aside
-			aria-label="Sidebar"
-			className="flex h-full flex-col bg-sidebar text-sm text-sidebar-foreground"
-		>
-			<div className="grid h-14 grid-cols-3 items-center px-3">
-				<Button
-					variant="icon"
-					size="icon"
-					aria-label="Toggle sidebar"
-					onClick={onToggleCollapse}
-				>
-					<PanelLeftClose className="size-4" />
-				</Button>
-				<div className="text-center text-base font-bold text-foreground">
-					Inkstone
-				</div>
-				<Button
-					variant="icon"
-					size="icon"
-					className="justify-self-end"
-					aria-label="New thread"
+		<NavShell as="aside" ariaLabel="Sidebar">
+			<div className="flex flex-col gap-0.5">
+				<button
+					type="button"
 					onClick={newChat}
+					className="flex h-9 cursor-pointer items-center justify-center rounded-lg bg-primary font-semibold text-primary-foreground text-sm shadow-sm transition-colors hover:bg-primary/90"
 				>
-					<WandSparkles className="size-4" />
-				</Button>
+					New Chat
+				</button>
+				<button
+					type="button"
+					onClick={onOpenLibrary}
+					className={cn(navRow, "w-full")}
+				>
+					<Library className="size-4 shrink-0" aria-hidden />
+					Library
+				</button>
 			</div>
 
-			<button
-				type="button"
-				onClick={newChat}
-				className="mx-3 my-2 cursor-pointer rounded-lg bg-primary py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary/90"
-			>
-				New Chat
-			</button>
-
-			<button
-				type="button"
-				onClick={onOpenLibrary}
-				className="mx-3 mb-1 flex h-9 cursor-pointer items-center gap-2.5 rounded-lg px-3 text-sm text-sidebar-foreground/90 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground"
-			>
-				<Library className="size-4 shrink-0" aria-hidden />
-				Library
-			</button>
+			<div className="mx-3 my-3 border-border border-t" />
 
 			<SearchField
 				variant="divider"
 				tone="sidebar"
-				wrapperClassName="mx-3"
 				aria-label="Search your threads"
 				placeholder="Search your threads…"
 				value={query}
 				onChange={(e) => setQuery(e.target.value)}
 			/>
 
-			<div className="mx-3 mt-2 border-t border-border" />
-
-			<div className="px-3 py-2 text-xs font-semibold text-muted-foreground">
+			<div className="px-3 pt-3 pb-1 font-semibold text-muted-foreground text-xs">
 				Last 30 days
 			</div>
 
-			<ul className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2">
+			<ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
 				{filtered.length === 0 ? (
 					<li className="px-3 py-2 text-muted-foreground text-xs">
 						No threads match.
@@ -133,7 +86,7 @@ export function Sidebar({
 								type="button"
 								onClick={() => setFocusedThread(item.id)}
 								aria-current={item.id === focusedThreadId ? "true" : undefined}
-								className="h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg px-3 text-left text-sm text-sidebar-foreground"
+								className="h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg px-3 text-left text-sidebar-foreground text-sm"
 							>
 								{item.title}
 							</button>
@@ -152,19 +105,6 @@ export function Sidebar({
 					))
 				)}
 			</ul>
-
-			<div className="flex items-center justify-between border-t border-border px-3 py-3">
-				<button
-					type="button"
-					aria-label="Account"
-					className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-full bg-primary text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
-				>
-					H
-				</button>
-				<Button variant="icon" size="icon" aria-label="Invite">
-					<UserPlus className="size-4" />
-				</Button>
-			</div>
-		</aside>
+		</NavShell>
 	);
 }

@@ -43,10 +43,11 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 
 	return (
 		<div className="px-4 pt-2 pb-4">
+			{/* biome-ignore lint/a11y/useKeyWithClickEvents: clicking the composer chrome forwards focus to the textarea; keyboard users tab straight to it, so there is no keyboard analog */}
 			<form
 				onSubmit={handleSubmit}
 				onClick={focusTextarea}
-				className="cursor-text rounded-2xl border border-border bg-card/40 p-4 backdrop-blur-lg"
+				className="cursor-text rounded-2xl border border-border bg-card p-4"
 			>
 				<textarea
 					ref={textareaRef}

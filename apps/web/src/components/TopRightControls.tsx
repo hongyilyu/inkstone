@@ -1,11 +1,4 @@
-import {
-	Moon,
-	PanelRightClose,
-	PanelRightOpen,
-	Settings2,
-	Sun,
-} from "lucide-react";
-import { useTheme } from "@/lib/hooks/useTheme";
+import { PanelRightClose, PanelRightOpen, Settings2 } from "lucide-react";
 import { Button } from "./ui/button.js";
 
 export interface TopRightControlsProps {
@@ -19,22 +12,8 @@ export function TopRightControls({
 	onToggleRail,
 	railCollapsed = false,
 }: TopRightControlsProps = {}) {
-	const { theme, toggle } = useTheme();
-
 	return (
 		<div className="flex items-center gap-1 px-2 py-1 text-sm">
-			<Button
-				variant="icon"
-				size="icon"
-				aria-label="Toggle theme"
-				onClick={toggle}
-			>
-				{theme === "dark" ? (
-					<Sun className="h-3.5 w-3.5" aria-hidden />
-				) : (
-					<Moon className="h-3.5 w-3.5" aria-hidden />
-				)}
-			</Button>
 			<Button
 				variant="icon"
 				size="icon"

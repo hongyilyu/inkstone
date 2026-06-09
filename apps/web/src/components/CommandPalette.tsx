@@ -1,8 +1,5 @@
 import { Dialog } from "@base-ui-components/react/dialog";
-import { WsClient } from "@inkstone/ui-sdk";
-import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Effect } from "effect";
 import { CornerDownLeft, MessageSquareText } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
@@ -15,8 +12,8 @@ import {
 	searchEntities,
 } from "@/lib/entities";
 import { useEntities } from "@/lib/hooks/useEntities";
+import { useThreads } from "@/lib/hooks/useThreads";
 import { cn } from "@/lib/utils.js";
-import { useRuntime } from "@/runtime";
 import { setFocusedThread } from "@/store/chat";
 import { closeCommand, toggleCommand, useCommandOpen } from "@/store/command";
 import { EntityGlyph } from "./library/EntityGlyph.js";
@@ -41,7 +38,6 @@ interface Group {
 export function CommandPalette() {
 	const open = useCommandOpen();
 	const navigate = useNavigate();
-	const runtime = useRuntime();
 	const { data: entities } = useEntities();
 	const [query, setQuery] = useState("");
 	const [active, setActive] = useState(0);
@@ -63,17 +59,7 @@ export function CommandPalette() {
 
 	// Threads only matter while the palette is open (lazy; shares the sidebar's
 	// cache by key). Errors → empty list, never a throw (Core may be offline).
-	const { data: threadData } = useQuery({
-		queryKey: ["threads"],
-		enabled: open,
-		queryFn: () =>
-			runtime.runPromise(
-				Effect.gen(function* () {
-					const client = yield* WsClient;
-					return yield* client.threadList();
-				}),
-			),
-	});
+	const { data: threadData } = useThreads({ enabled: open });
 
 	const groups = useMemo<Group[]>(() => {
 		const all = entities ?? [];
