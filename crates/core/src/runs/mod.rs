@@ -66,8 +66,8 @@ pub async fn dispatch(
             // The combinator (ADR-0029) owns decode + framing; pass raw params.
             thread_get::handle(pool, req.id, req.params, out_tx).await;
         }
-        "entity/list_todos" => {
-            entity::handle_list_todos(pool, req.id, req.params, out_tx).await;
+        "entity/list" => {
+            entity::handle_list(pool, req.id, req.params, out_tx).await;
         }
         "proposal/get" => {
             proposal::handle_get(pool, req.id, req.params, out_tx).await;

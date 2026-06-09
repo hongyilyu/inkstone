@@ -145,7 +145,7 @@ describe("WsClient", () => {
 		}
 	});
 
-	it("listTodos round-trips the canonical EntityListResult", async () => {
+	it("listEntities(type) sends entity/list with { type } and round-trips EntityListResult", async () => {
 		const expected = {
 			entities: [
 				{
@@ -158,8 +158,10 @@ describe("WsClient", () => {
 			],
 		};
 
+		let observed: WireRequest | undefined;
 		const server = await makeServer((ws, req) => {
-			if (req.method === "entity/list_todos") {
+			if (req.method === "entity/list") {
+				observed = req;
 				ws.send(
 					JSON.stringify({
 						jsonrpc: "2.0",
@@ -172,12 +174,14 @@ describe("WsClient", () => {
 
 		const program = Effect.gen(function* () {
 			const client = yield* WsClient;
-			return yield* client.listTodos();
+			return yield* client.listEntities("todo");
 		});
 
 		try {
 			const result = await Effect.runPromise(provide(server.url)(program));
 			expect(result).toEqual(expected);
+			expect(observed?.method).toBe("entity/list");
+			expect(observed?.params).toEqual({ type: "todo" });
 		} finally {
 			await server.close();
 		}

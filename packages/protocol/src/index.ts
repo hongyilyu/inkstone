@@ -177,15 +177,20 @@ export type ProposalChangedNotification = S.Schema.Type<
 	typeof ProposalChangedNotification
 >;
 
-// --- entity/* (ADR-0004): the accepted Entities the Library reads. Only the
-// Todo type goes live this slice (the one type the engine creates today).
+// --- entity/* (ADR-0004): the accepted Entities the Library reads. `entity/list`
+// is type-parameterized (see EntityListParams) — one Entity type per call, e.g.
+// `todo` or `person`.
+
+/** `entity/list` params: the Entity type to list (one type per call). */
+export const EntityListParams = S.Struct({ type: S.String });
+export type EntityListParams = S.Schema.Type<typeof EntityListParams>;
 
 /**
- * One Entity row in an `entity/list_todos` result: the raw tier-2 `entities`
+ * One Entity row in an `entity/list` result: the raw tier-2 `entities`
  * columns (ADR-0004). `data` is the opaque entity JSON (for a Todo,
- * `{title, done, due?}`); `type` is the entity type (`todo`). `created_at` /
- * `updated_at` are ms-epoch stamps. The Client maps these to its Library view
- * model.
+ * `{title, done, due?}`); `type` is the entity type (e.g. `todo` or
+ * `person`). `created_at` / `updated_at` are ms-epoch stamps. The Client
+ * maps these to its Library view model.
  */
 export const EntityRow = S.Struct({
 	id: S.String,
@@ -197,9 +202,10 @@ export const EntityRow = S.Struct({
 export type EntityRow = S.Schema.Type<typeof EntityRow>;
 
 /**
- * `entity/list_todos` result: the accepted Todos, newest-first. Object-wrapper
- * shape (`{entities: [...]}`) so the result stays forward-extensible and the
- * Rust mirror is a struct (mirrors `thread/list`'s `{threads: [...]}`).
+ * `entity/list` result: the accepted Entities of the requested type,
+ * newest-first. Object-wrapper shape (`{entities: [...]}`) so the result stays
+ * forward-extensible and the Rust mirror is a struct (mirrors `thread/list`'s
+ * `{threads: [...]}`).
  */
 export const EntityListResult = S.Struct({ entities: S.Array(EntityRow) });
 export type EntityListResult = S.Schema.Type<typeof EntityListResult>;

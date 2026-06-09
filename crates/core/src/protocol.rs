@@ -181,7 +181,17 @@ pub struct ThreadListResult {
     pub threads: Vec<ThreadSummary>,
 }
 
-/// One Entity row in an `entity/list_todos` result (ADR-0004): the raw tier-2
+/// `entity/list` params: the Entity `type` to list (one type per call, e.g.
+/// `"todo"` or `"person"`). The wire field is `type`; `r#type` is the raw
+/// identifier escape and serde maps it to `"type"` automatically (same
+/// convention as `EntityRow`). Deserialize-only — Core consumes it. Mirrors the
+/// TS `EntityListParams`.
+#[derive(Debug, Deserialize)]
+pub struct EntityListParams {
+    pub r#type: String,
+}
+
+/// One Entity row in an `entity/list` result (ADR-0004): the raw tier-2
 /// `entities` columns. `r#type` serializes as `"type"`; `data` is the opaque
 /// entity JSON (for a Todo, `{title, done, due?}`); `created_at`/`updated_at`
 /// are ms-epoch stamps. Serialize-only — Core produces it. Mirrors the TS
@@ -195,10 +205,10 @@ pub struct EntityRow {
     pub updated_at: i64,
 }
 
-/// `entity/list_todos` result: the accepted Todos, newest-first. Object-wrapper
-/// shape (`{entities: [...]}`) so the result stays forward-extensible and the
-/// TS mirror is a `Schema.Struct` (mirrors `thread/list`'s `{threads: [...]}`).
-/// Serialize-only — Core produces it.
+/// `entity/list` result: the accepted Entities of the requested type,
+/// newest-first. Object-wrapper shape (`{entities: [...]}`) so the result stays
+/// forward-extensible and the TS mirror is a `Schema.Struct` (mirrors
+/// `thread/list`'s `{threads: [...]}`). Serialize-only — Core produces it.
 #[derive(Debug, Serialize)]
 pub struct EntityListResult {
     pub entities: Vec<EntityRow>,
@@ -565,6 +575,13 @@ mod mirror_tests {
         let wire = json!({ "run_id": UUID_A });
         let p: SubscribeParams = serde_json::from_value(wire).unwrap();
         assert_eq!(p.run_id.to_string(), UUID_A);
+    }
+
+    #[test]
+    fn entity_list_params_decodes_type() {
+        let wire = json!({ "type": "person" });
+        let p: EntityListParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.r#type, "person");
     }
 
     #[test]

@@ -22,7 +22,7 @@ Slash-style names, taking cues from LSP and Zed's ACP. They are not literal ACP/
 - `thread/*` — Thread CRUD and history. `thread/list`, `thread/create`, `thread/get`, `thread/subscribe_changes`.
 - `run/*` — Runs. `run/post_message` (creates and starts a Run, returns `run_id`), `run/get`, `run/get_history`, `run/cancel`, `run/subscribe`.
 - `proposal/*` — Proposal review. `proposal/get`, `proposal/decide` (accept | reject | edit), `proposal/subscribe`.
-- `entity/*` — Accepted Entity reads. `entity/list_todos`, `entity/list_people`, `entity/subscribe_changes`, etc., shaped per the schema ADR.
+- `entity/*` — Accepted Entity reads. `entity/list` (type-parameterized — one Entity Type per call, e.g. `entity/list(type:"todo")` / `entity/list(type:"person")`), `entity/subscribe_changes`, etc., shaped per the schema ADR.
 - `provider/*` — LLM-provider credential connection. `provider/status` (which providers are connected), `provider/login_start` (begin an OAuth login, returns the authorize URL). Added by [ADR-0023](./0023-provider-oauth-core-owned-credentials.md); see the as-built amendment below. Named `provider/*`, not `auth/*`, because [ADR-0007](./0007-local-first-single-user.md) reserves "auth" for the (absent) human-auth concern.
 
 Subscribe verbs are typed and per-resource — there is no generic `session/subscribe` with topic strings. The set of subscribe methods is small and obvious; adding one when the slice needs it is cheaper than registering topics.
@@ -63,7 +63,7 @@ After a WebSocket drop, the Client:
 
 1. Opens a new WebSocket.
 2. Sends `session/hello` with `protocol_version` and a `client_id`.
-3. Refetches relevant state via normal queries (`thread/list`, `thread/get` for the open Thread, `entity/list_*`, `proposal/get` for the pending Proposal if any).
+3. Refetches relevant state via normal queries (`thread/list`, `thread/get` for the open Thread, `entity/list` per Entity Type, `proposal/get` for the pending Proposal if any).
 4. Resubscribes to live updates.
 5. **For an active Run**, calls `run/get_history(run_id, since_run_seq)` to fetch any Run Events emitted while disconnected, then `run/subscribe(run_id)` to resume the live stream.
 

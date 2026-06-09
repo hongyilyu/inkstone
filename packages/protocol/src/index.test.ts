@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
 	AgentToolResult,
 	CoreToolDescriptor,
+	EntityListParams,
 	EntityListResult,
 	EntityRow,
 	MessageView,
@@ -474,6 +475,27 @@ describe("EntityListResult", () => {
 		expect(S.decodeUnknownSync(EntityListResult)({ entities: [] })).toEqual({
 			entities: [],
 		});
+	});
+});
+
+describe("EntityListParams", () => {
+	it("decodes a type and encodes back to the same wire shape", () => {
+		const wire = { type: "person" };
+		const decoded = S.decodeUnknownSync(EntityListParams)(wire);
+		expect(decoded).toEqual(wire);
+		// The Client ENCODES this param onto the wire, so guard the encode
+		// mirror too (the Rust side decodes it).
+		expect(S.encodeSync(EntityListParams)(decoded)).toEqual(wire);
+	});
+
+	it("rejects a missing type", () => {
+		expect(() => S.decodeUnknownSync(EntityListParams)({})).toThrow();
+	});
+
+	it("rejects a non-string type", () => {
+		expect(() =>
+			S.decodeUnknownSync(EntityListParams)({ type: 42 }),
+		).toThrow();
 	});
 });
 

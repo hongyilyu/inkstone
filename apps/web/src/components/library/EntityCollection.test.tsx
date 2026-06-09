@@ -9,17 +9,42 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { EntityCollection } from "./EntityCollection";
 
-// Stub WsClient whose `entity/list_todos` returns `todos`. `useEntities` reads
-// the live Todos via this method (slice 11) and merges them with the non-todo
-// mock collections; the unused methods die if exercised.
-function makeRuntime(todos: EntityListResult["entities"]) {
+// Live People rows the stub serves for `type === "person"` (slice 3). The
+// People collection reads these from Core now; the static mock people
+// (Priya/Marco/…) are no longer merged in.
+const livePeople: EntityListResult["entities"] = [
+	{
+		id: "01900000-0000-7000-8000-0000000000a1",
+		type: "person",
+		data: { name: "Ada Lovelace", note: "met at the analytical engine demo" },
+		created_at: 1_700_000_100_000,
+		updated_at: 1_700_000_100_000,
+	},
+	{
+		id: "01900000-0000-7000-8000-0000000000a2",
+		type: "person",
+		data: { name: "Grace Hopper" },
+		created_at: 1_700_000_000_000,
+		updated_at: 1_700_000_000_000,
+	},
+];
+
+// Stub WsClient whose `entity/list` answers by type: People for `"person"`,
+// Todos for everything else. `useEntities` reads BOTH live Todos and live
+// People (slice 3) and merges them with the remaining (project/recipe) mocks;
+// the unused methods die if exercised.
+function makeRuntime(
+	people: EntityListResult["entities"],
+	todos: EntityListResult["entities"],
+) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
 		threadCreate: () => unused,
 		postMessage: () => unused,
 		threadList: () => unused,
 		threadGet: () => unused,
-		listTodos: () => Effect.succeed({ entities: todos }),
+		listEntities: (type) =>
+			Effect.succeed({ entities: type === "person" ? people : todos }),
 		subscribeRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
@@ -35,10 +60,13 @@ function makeRuntime(todos: EntityListResult["entities"]) {
 
 function renderCollection(
 	kind: "person" | "todo",
-	todos: EntityListResult["entities"],
+	rows: {
+		people?: EntityListResult["entities"];
+		todos?: EntityListResult["entities"];
+	},
 	overrides?: { selectedId?: string | null; onSelect?: (id: string) => void },
 ) {
-	const runtime = makeRuntime(todos);
+	const runtime = makeRuntime(rows.people ?? [], rows.todos ?? []);
 	const client = new QueryClient({
 		defaultOptions: {
 			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
@@ -63,23 +91,27 @@ function renderCollection(
 afterEach(cleanup);
 
 describe("EntityCollection", () => {
-	it("lists every entity of the kind (people stay on mock)", async () => {
-		renderCollection("person", []);
-		expect(await screen.findByText("Priya Nair")).toBeInTheDocument();
-		// Six people in the mock workspace, one selectable row each.
-		expect(screen.getAllByRole("button")).toHaveLength(6);
+	it("lists live People read from entity/list (mock people no longer merged)", async () => {
+		renderCollection("person", { people: livePeople });
+		// The seeded live People are listed…
+		expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
+		expect(screen.getByText("Grace Hopper")).toBeInTheDocument();
+		// …and the static mock person is gone (People are live this slice).
+		expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
 	});
 
-	it("renders live Todos read from entity/list_todos", async () => {
-		renderCollection("todo", [
-			{
-				id: "01900000-0000-7000-8000-000000000030",
-				type: "todo",
-				data: { title: "buy milk", done: false },
-				created_at: 1_700_000_000_000,
-				updated_at: 1_700_000_000_000,
-			},
-		]);
+	it("renders live Todos read from entity/list", async () => {
+		renderCollection("todo", {
+			todos: [
+				{
+					id: "01900000-0000-7000-8000-000000000030",
+					type: "todo",
+					data: { title: "buy milk", done: false },
+					created_at: 1_700_000_000_000,
+					updated_at: 1_700_000_000_000,
+				},
+			],
+		});
 		// The live Todo's title is rendered from `data.title`.
 		expect(await screen.findByText("buy milk")).toBeInTheDocument();
 		// The mock Todos are NOT shown — Todos are live this slice.
@@ -90,22 +122,22 @@ describe("EntityCollection", () => {
 
 	it("filters as you search", async () => {
 		const user = userEvent.setup();
-		renderCollection("person", []);
-		await screen.findByText("Priya Nair");
+		renderCollection("person", { people: livePeople });
+		await screen.findByText("Grace Hopper");
 
 		await user.type(
 			screen.getByRole("textbox", { name: /search people/i }),
-			"marco",
+			"grace",
 		);
 
-		expect(screen.getByText("Marco Reyes")).toBeInTheDocument();
-		expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
+		expect(screen.getByText("Grace Hopper")).toBeInTheDocument();
+		expect(screen.queryByText("Ada Lovelace")).not.toBeInTheDocument();
 	});
 
 	it("teaches an empty result instead of going blank", async () => {
 		const user = userEvent.setup();
-		renderCollection("person", []);
-		await screen.findByText("Priya Nair");
+		renderCollection("person", { people: livePeople });
+		await screen.findByText("Ada Lovelace");
 
 		await user.type(
 			screen.getByRole("textbox", { name: /search people/i }),
@@ -113,16 +145,18 @@ describe("EntityCollection", () => {
 		);
 
 		expect(screen.getByText(/no matches/i)).toBeInTheDocument();
-		expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
+		expect(screen.queryByText("Ada Lovelace")).not.toBeInTheDocument();
 	});
 
 	it("reports the selected row id", async () => {
 		const onSelect = vi.fn();
 		const user = userEvent.setup();
-		renderCollection("person", [], { onSelect });
-		await screen.findByText("Priya Nair");
+		renderCollection("person", { people: livePeople }, { onSelect });
+		await screen.findByText("Ada Lovelace");
 
-		await user.click(screen.getByRole("button", { name: /priya nair/i }));
-		expect(onSelect).toHaveBeenCalledWith("person_priya");
+		await user.click(screen.getByRole("button", { name: /ada lovelace/i }));
+		expect(onSelect).toHaveBeenCalledWith(
+			"01900000-0000-7000-8000-0000000000a1",
+		);
 	});
 });

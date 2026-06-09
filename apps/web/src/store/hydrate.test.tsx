@@ -46,7 +46,7 @@ describe("refresh-durable hydration", () => {
 			threadCreate: () => Effect.die("unused"),
 			postMessage: () => Effect.die("unused"),
 			threadList: () => Effect.die("unused"),
-			listTodos: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tA" ? Effect.succeed(result) : Effect.die("unknown thread"),
 			subscribeRun,
@@ -105,7 +105,7 @@ describe("refresh-durable hydration", () => {
 			threadCreate: () => Effect.die("unused"),
 			postMessage: () => Effect.die("unused"),
 			threadList: () => Effect.die("unused"),
-			listTodos: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
 			threadGet: (id) =>
 				id === "tB" ? Effect.succeed(result) : Effect.die("unknown thread"),
 			subscribeRun,

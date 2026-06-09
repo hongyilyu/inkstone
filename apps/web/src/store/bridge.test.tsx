@@ -15,7 +15,7 @@ function makeFailingThreadCreateRuntime() {
 		postMessage: () => unused,
 		threadList: () => unused,
 		threadGet: () => unused,
-		listTodos: () => unused,
+		listEntities: () => unused,
 		subscribeRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
