@@ -1,9 +1,7 @@
-import { cleanup, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { renderWithQuery } from "@/test-utils/renderWithQuery";
-import App from "../App.js";
-import { RuntimeProvider } from "../runtime.js";
+import { NavShell } from "./nav-shell.js";
 
 // Node 26's experimental localStorage is gated by --localstorage-file, leaving
 // jsdom's window.localStorage undefined. Provide an in-memory polyfill so the
@@ -32,7 +30,7 @@ function installLocalStorage() {
 	});
 }
 
-describe("TopRightControls", () => {
+describe("NavShell", () => {
 	beforeEach(() => {
 		installLocalStorage();
 		document.documentElement.dataset.theme = "light";
@@ -44,15 +42,12 @@ describe("TopRightControls", () => {
 		localStorage.clear();
 	});
 
-	it("theme toggle flips data-theme + localStorage", async () => {
+	// The theme toggle lives at the top of the shared shell (alongside the
+	// wordmark), so both the chat Sidebar and the Library nav inherit it.
+	// Clicking it flips data-theme and persists the choice.
+	it("toggles the theme from the shared header", async () => {
 		const user = userEvent.setup();
-		// App now mounts ChatColumn + Sidebar, which call useRuntime() — wrap in
-		// a RuntimeProvider (stub url, lazy → no socket at mount).
-		renderWithQuery(
-			<RuntimeProvider config={{ url: "ws://stub/ws" }}>
-				<App />
-			</RuntimeProvider>,
-		);
+		render(<NavShell ariaLabel="Sidebar">{null}</NavShell>);
 		const toggle = screen.getByRole("button", { name: /toggle theme/i });
 
 		await user.click(toggle);
@@ -62,5 +57,13 @@ describe("TopRightControls", () => {
 		await user.click(toggle);
 		expect(document.documentElement.dataset.theme).toBe("light");
 		expect(localStorage.getItem("inkstone-theme")).toBe("light");
+	});
+
+	it("renders the brand wordmark and the theme toggle", () => {
+		render(<NavShell ariaLabel="Sidebar">{null}</NavShell>);
+		expect(screen.getByText("Inkstone")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /toggle theme/i }),
+		).toBeInTheDocument();
 	});
 });

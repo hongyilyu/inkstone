@@ -109,6 +109,44 @@ describe("ChatColumn", () => {
 		await runtime.dispose();
 	});
 
+	it("welcomes the user when no thread is focused and there are no messages", async () => {
+		const runtime = makeStubRuntime({ runId: "run-welcome", events: [] });
+		// No focused thread → fresh-chat welcome (teaches the Library loop).
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(
+			screen.getByRole("heading", { name: /start a chat/i }),
+		).toBeInTheDocument();
+		expect(screen.getByText(/land in your library/i)).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("shows a loading skeleton while a focused thread hydrates", async () => {
+		const runtime = makeStubRuntime({ runId: "run-hydrate", events: [] });
+		// A focused thread with no messages yet → hydrating skeleton, not a blank.
+		setFocusedThread("threadA");
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		expect(
+			screen.getByRole("status", { name: /loading conversation/i }),
+		).toBeInTheDocument();
+		// The fresh-chat welcome must NOT show for an existing thread.
+		expect(screen.queryByRole("heading", { name: /start a chat/i })).toBeNull();
+
+		await runtime.dispose();
+	});
+
 	it("mints a new thread on the first send when none is focused", async () => {
 		const user = userEvent.setup();
 		const runtime = makeStubRuntime({
