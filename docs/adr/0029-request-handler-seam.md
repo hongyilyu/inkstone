@@ -8,7 +8,7 @@ UUID-bearing params are typed as `Uuid` **at decode** (not `String` parsed insid
 
 The ~12 **request→response** methods, the ones whose whole job is "one request in, one Response out":
 
-`run/post_message`, `run/cancel`, `thread/create`, `thread/list`, `thread/get`, `entity/list_todos`, `proposal/get`, `provider/status`, `model/catalog`, `settings/get`, `settings/set`, `provider/login_start`.
+`run/post_message`, `run/cancel`, `thread/create`, `thread/list`, `thread/get`, `entity/list`, `proposal/get`, `provider/status`, `model/catalog`, `settings/get`, `settings/set`, `provider/login_start`.
 
 Two methods are **deliberately out** (see below): `run/subscribe` and `proposal/decide`.
 
