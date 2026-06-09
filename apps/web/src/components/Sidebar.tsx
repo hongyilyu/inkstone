@@ -12,8 +12,10 @@ import { SearchField } from "./ui/search-field.js";
 
 export function Sidebar({
 	onOpenLibrary,
+	onOpenSettings,
 }: {
 	onOpenLibrary?: () => void;
+	onOpenSettings?: () => void;
 } = {}) {
 	const focusedThreadId = useFocusedThreadId();
 	const [query, setQuery] = useState("");
@@ -34,7 +36,7 @@ export function Sidebar({
 	};
 
 	return (
-		<NavShell as="aside" ariaLabel="Sidebar">
+		<NavShell as="aside" ariaLabel="Sidebar" onOpenSettings={onOpenSettings}>
 			<div className="flex flex-col gap-0.5">
 				<button
 					type="button"

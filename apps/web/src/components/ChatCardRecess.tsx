@@ -2,19 +2,18 @@
  * Builds a CSS clip-path that carves a smooth recess out of the chat
  * card's top edge for the TopRightControls icon cluster. The recess is a
  * "bay": chat-card's top edge dips down with a single smooth concave arc
- * on the left, then runs flat all the way to the right edge. The right
- * side has NO curl back up — the chat card's right edge meets the
- * activity rail (same chrome color) so the chrome continues seamlessly,
- * matching t3's reference.
+ * on the left, then runs flat to the right, where the top-right corner
+ * rounds off into the right edge that meets the activity rail.
  *
  * Apply via inline style on the chat-card wrapper:
  *   <div style={{ clipPath: makeChatCardClipPath(w, h) }} ... />
  */
 
-const RECESS_W = 134; // recess width, right-anchored (matches t3 reference)
+const RECESS_W = 92; // recess width, right-anchored; hugs the single control button
 const RECESS_DEPTH = 44; // how far the bay drops below y=0
-const ARC = 46; // horizontal span of the concave taper (matches t3 reference)
+const ARC = 46; // horizontal span of the concave taper
 const TL_RADIUS = 16; // top-left corner radius (matches rounded-tl-2xl)
+const TR_RADIUS = 16; // top-right corner radius where the bay floor meets the right edge
 
 /**
  * Returns the path() definition string. Trace clockwise from the top-left
@@ -35,19 +34,19 @@ export function chatCardPath(width: number, height: number): string {
 
 		// left shoulder of bay: smooth S-curve from (recessLeft, 0) to
 		// (recessLeft + ARC, RECESS_DEPTH). Cubic Bezier with both control
-		// points placed at the curve's horizontal midpoint so the tangent is
-		// horizontal at BOTH ends — flush with flat top, flush with flat
-		// floor. Matches t3's gradual taper.
+		// points at the curve's horizontal midpoint so the tangent is
+		// horizontal at BOTH ends: flush with flat top, flush with flat floor.
 		`C ${recessLeft + ARC / 2} 0 ${recessLeft + ARC / 2} ${RECESS_DEPTH} ${recessLeft + ARC} ${RECESS_DEPTH}`,
 
-		// flat bottom of the bay, all the way to the right edge
-		`H ${W}`,
+		// flat floor of the bay, up to where the top-right corner rounds
+		`H ${W - TR_RADIUS}`,
 
-		// down the right edge from RECESS_DEPTH to bottom
+		// round the top-right corner, then run down the right edge to the bottom
+		`Q ${W} ${RECESS_DEPTH} ${W} ${RECESS_DEPTH + TR_RADIUS}`,
 		`V ${H}`,
 		// across the bottom
 		`H 0`,
-		// up the left edge — closes back to (0, TL_RADIUS) via Z
+		// up the left edge, closes back to (0, TL_RADIUS) via Z
 		`Z`,
 	].join(" ");
 }

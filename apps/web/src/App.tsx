@@ -58,7 +58,7 @@ export default function App({
 			}}
 		>
 			<div className="overflow-hidden">
-				<Sidebar onOpenLibrary={onOpenLibrary} />
+				<Sidebar onOpenLibrary={onOpenLibrary} onOpenSettings={onOpenSettings} />
 			</div>
 			<div className="relative min-h-0 pt-2">
 				<div className="relative h-full">
@@ -90,7 +90,6 @@ export default function App({
 					</svg>
 					<div className="absolute top-1.5 right-3 z-10">
 						<TopRightControls
-							onOpenSettings={onOpenSettings}
 							railCollapsed={rightRailCollapsed}
 							onToggleRail={() => setRightRailCollapsed((prev) => !prev)}
 						/>

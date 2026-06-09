@@ -1,4 +1,4 @@
-import { Moon, Sun } from "lucide-react";
+import { Moon, Settings2, Sun } from "lucide-react";
 import type { ElementType, ReactNode } from "react";
 import { useTheme } from "@/lib/hooks/useTheme";
 
@@ -15,18 +15,20 @@ export const navRowActive =
 /**
  * The shared left-nav shell both the chat Sidebar and the Library nav render
  * into, so the two surfaces wear identical chrome: the "Inkstone" wordmark with
- * the theme toggle alongside it, a body slot, and a pinned account glyph. Only
- * the landmark element differs — chat passes `as="aside"` to keep the
- * `complementary` role its tests and the e2e page object assert; Library keeps
- * the `navigation` role via the default `nav`.
+ * the theme toggle alongside it, a body slot, and a pinned account glyph with
+ * an optional Settings button. Only the landmark element differs: chat passes
+ * `as="aside"` to keep the `complementary` role its tests and the e2e page
+ * object assert; Library keeps the `navigation` role via the default `nav`.
  */
 export function NavShell({
 	as: Tag = "nav",
 	ariaLabel,
+	onOpenSettings,
 	children,
 }: {
 	as?: ElementType;
 	ariaLabel: string;
+	onOpenSettings?: () => void;
 	children: ReactNode;
 }) {
 	const { theme, toggle } = useTheme();
@@ -55,13 +57,23 @@ export function NavShell({
 
 			<div className="mt-3 flex min-h-0 flex-1 flex-col">{children}</div>
 
-			<div className="flex items-center px-1 pt-2">
+			<div className="flex items-center justify-between px-1 pt-2">
 				<span
 					className="flex size-8 items-center justify-center rounded-full bg-primary font-medium text-primary-foreground text-sm"
 					aria-hidden
 				>
 					H
 				</span>
+				{onOpenSettings && (
+					<button
+						type="button"
+						onClick={onOpenSettings}
+						aria-label="Settings"
+						className="flex size-8 items-center justify-center rounded-lg text-sidebar-foreground/60 transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+					>
+						<Settings2 className="size-5" aria-hidden />
+					</button>
+				)}
 			</div>
 		</Tag>
 	);
