@@ -231,24 +231,14 @@ pub(super) async fn handle_decide(
     // payload is validated (not the model's proposed data); an invalid edit is
     // rejected BEFORE any write, leaving the Proposal pending + Run parked
     // (re-decidable). Reject applies nothing, so there is no payload to
-    // validate. Slice 3 models only `todo`.
-    if !is_reject {
-        if proposal.kind == "todo" {
-            if let Err(reason) = crate::entities::validate_todo(applied_data) {
-                handler::frame_error(out_tx, id, HandlerError::InvalidParams(format!("invalid todo: {reason}")));
-                return;
-            }
-        } else {
-            handler::frame_error(
-                out_tx,
-                id,
-                HandlerError::InvalidParams(format!(
-                    "entity kind {:?} not supported",
-                    proposal.kind
-                )),
-            );
-            return;
-        }
+    // validate. Dispatch through `entities::validate` keeps this handler
+    // Entity-Type-agnostic; an unsupported Entity Type comes back as its own
+    // `invalid_params` reason.
+    if !is_reject
+        && let Err(reason) = crate::entities::validate(&proposal.kind, applied_data)
+    {
+        handler::frame_error(out_tx, id, HandlerError::InvalidParams(reason));
+        return;
     }
 
     // The Decision rendered as the awaited tool's result text — what the model
@@ -300,7 +290,7 @@ pub(super) async fn handle_decide(
         // validated `edited_payload` (apply-in-one-step, ADR-0025); the
         // rendered Decision the model reads on resume shows the FINAL (edited)
         // values. `edited_payload` is recorded on the `proposals` row.
-        let decision_text = render_accept_decision(&proposal.kind, applied_data);
+        let decision_text = crate::entities::render_accept(&proposal.kind, applied_data);
         let decision_payload = serde_json::json!({
             "decision": "accept",
             "content": decision_text,
@@ -313,6 +303,7 @@ pub(super) async fn handle_decide(
             &proposal_id,
             &proposal.tool_call_id,
             &proposal.kind,
+            crate::entities::schema_version(&proposal.kind),
             &proposal.data,
             edited_payload,
             params.decision_idempotency_key.as_deref(),
@@ -399,17 +390,6 @@ async fn recover_resume_if_parked(
     match db::run_status(pool, run_id).await? {
         Some(ref s) if s == "parked" => crate::worker::resume(run_id, pool, hubs).await,
         _ => Ok(()),
-    }
-}
-
-/// Render the human-readable Decision text the model reads on resume as the
-/// awaited tool's result (ADR-0025). For an accepted Todo: a short confirmation
-/// naming the created entity.
-fn render_accept_decision(kind: &str, data: &serde_json::Value) -> String {
-    let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("");
-    match kind {
-        "todo" => format!("Accepted. Created Todo {title:?}."),
-        other => format!("Accepted. Created {other} {title:?}."),
     }
 }
 
