@@ -5,113 +5,19 @@
 //! This is a cross-restart durability check. Slices 1–4 already realize each
 //! individual write; slice 5 proves they survive process exit and re-open.
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
 
-fn repo_root() -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core")
-        .to_path_buf()
-}
-
-fn worker_cmd_real() -> String {
-    let repo_root = repo_root();
-    let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let cli = repo_root.join("crates/core/tests/fixtures/slow-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
-    if !cli.exists() {
-        panic!("worker cli not found at {}", cli.display());
-    }
-    format!("{} {}", tsx.display(), cli.display())
-}
-
-/// Drop guard around `Child` that SIGKILLs and reaps on drop. Without this, a
-/// panicking test would leak Core (which holds a fixed port and blocks the
-/// next spawn).
-struct CoreChild(Option<Child>);
-
-impl CoreChild {
-    fn kill_and_wait(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
-impl Drop for CoreChild {
-    fn drop(&mut self) {
-        self.kill_and_wait();
-    }
-}
-
-/// Spawn Core with the given env, block on its stdout until INKSTONE_LISTENING
-/// appears, and return (child, ws_url).
-fn spawn_core(worker_cmd: &str, db_path: &Path) -> (CoreChild, String) {
-    let repo_root = repo_root();
-    let mut child = std::process::Command::cargo_bin("core")
-        .expect("core binary exists")
-        .current_dir(&repo_root)
-        .env("INKSTONE_WORKER_CMD", worker_cmd)
-        .env("INKSTONE_DB_PATH", db_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
-
-    (CoreChild(Some(child)), ws_url)
-}
+mod common;
+use common::{Workspace, next_text};
 
 #[test]
 fn run_history_survives_restart() {
-    let worker_cmd = worker_cmd_real();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
+    let workspace = Workspace::new();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -120,34 +26,16 @@ fn run_history_survives_restart() {
 
     // ---- First Core spawn: post a message, await done, kill Core ----
     let run_id = {
-        let (mut child, ws_url) = spawn_core(&worker_cmd, &db_path);
+        let mut core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
         let run_id = rt.block_on(async {
-            let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
-                .await
-                .expect("ws handshake succeeds");
+            let mut ws = core.connect().await;
 
             let request =
                 r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#;
             ws.send(Message::Text(request.into()))
                 .await
                 .expect("send request frame");
-
-            async fn next_text(
-                ws: &mut tokio_tungstenite::WebSocketStream<
-                    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-                >,
-            ) -> String {
-                let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
-                    .await
-                    .expect("frame within 5s")
-                    .expect("frame present")
-                    .expect("frame ok");
-                match frame {
-                    Message::Text(t) => t.to_string(),
-                    other => panic!("expected text frame, got {other:?}"),
-                }
-            }
 
             let response_body = next_text(&mut ws).await;
 
@@ -189,22 +77,22 @@ fn run_history_survives_restart() {
             run_id
         });
 
-        child.kill_and_wait();
+        core.kill();
         run_id
     };
 
     // ---- Second Core spawn: prove migration is a no-op, then exit ----
     {
-        let (mut child, _ws_url) = spawn_core(&worker_cmd, &db_path);
-        // The mere fact that spawn_core returned means INKSTONE_LISTENING was
+        let mut core = workspace.core().worker_fixture("slow-worker.ts").spawn();
+        // The mere fact that spawn returned means INKSTONE_LISTENING was
         // emitted, which means `sqlx::migrate!()` succeeded against the
         // already-migrated DB. Nothing else to do here.
-        child.kill_and_wait();
+        core.kill();
     }
 
     // ---- Assert against the on-disk DB via a fresh read-only pool ----
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)

@@ -8,125 +8,20 @@
 //! Driven by `tests/fixtures/propose-worker.ts` over `INKSTONE_WORKER_CMD`,
 //! spawned by Core exactly as the real Worker would be.
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
-use assert_cmd::cargo::CommandCargoExt;
 use futures_util::{SinkExt, StreamExt};
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core")
-        .to_path_buf()
-}
-
-fn propose_worker_cmd() -> String {
-    let repo_root = repo_root();
-    let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let fixture = repo_root.join("crates/core/tests/fixtures/propose-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
-    format!("{} {}", tsx.display(), fixture.display())
-}
-
-struct CoreChild(Option<Child>);
-
-impl Drop for CoreChild {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
-fn spawn_core(worker_cmd: &str, db_path: &Path) -> (CoreChild, String) {
-    spawn_core_env(worker_cmd, db_path, &[])
-}
-
-/// Like [`spawn_core`] but with extra env vars on the Core process. Core
-/// spawns the Worker as a child, which inherits Core's env — so this is how a
-/// test reaches the fixture Worker (e.g. `INKSTONE_PROPOSE_DELAY_MS`).
-fn spawn_core_env(
-    worker_cmd: &str,
-    db_path: &Path,
-    extra_env: &[(&str, &str)],
-) -> (CoreChild, String) {
-    let repo_root = repo_root();
-    let mut cmd = std::process::Command::cargo_bin("core").expect("core binary exists");
-    cmd.current_dir(&repo_root)
-        .env("INKSTONE_WORKER_CMD", worker_cmd)
-        .env("INKSTONE_DB_PATH", db_path)
-        .env("INKSTONE_PORT", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    for (k, v) in extra_env {
-        cmd.env(k, v);
-    }
-    let mut child = cmd.spawn().expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
-    (CoreChild(Some(child)), ws_url)
-}
-
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
-
-async fn next_text(ws: &mut Ws) -> String {
-    let frame = tokio::time::timeout(Duration::from_secs(8), ws.next())
-        .await
-        .expect("frame within 8s")
-        .expect("frame present")
-        .expect("frame ok");
-    match frame {
-        Message::Text(t) => t.to_string(),
-        other => panic!("expected text frame, got {other:?}"),
-    }
-}
+mod common;
+use common::{CoreHandle, Workspace, next_text};
 
 /// Open a fresh socket, send a single request, and return the response body
 /// (the first text frame).
-async fn rpc(ws_url: &str, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
-    let (mut ws, _resp) = tokio_tungstenite::connect_async(ws_url)
-        .await
-        .expect("ws handshake succeeds");
+async fn rpc(core: &CoreHandle, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
+    let mut ws = core.connect().await;
     let req = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -143,10 +38,8 @@ async fn rpc(ws_url: &str, id: u64, method: &str, params: serde_json::Value) -> 
 
 #[test]
 fn parks_on_propose_entity() {
-    let worker_cmd = propose_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -156,7 +49,7 @@ fn parks_on_propose_entity() {
     let run_id = rt.block_on(async {
         // Start a Run via thread/create.
         let resp = rpc(
-            &ws_url,
+            &core,
             1,
             "thread/create",
             serde_json::json!({ "prompt": "remember to buy milk" }),
@@ -175,7 +68,7 @@ fn parks_on_propose_entity() {
                 panic!("timed out waiting for run to park");
             }
             let resp = rpc(
-                &ws_url,
+                &core,
                 2,
                 "run/subscribe",
                 serde_json::json!({ "run_id": run_id }),
@@ -189,9 +82,7 @@ fn parks_on_propose_entity() {
 
         // Subscribe again and assert NO done/error event arrives within a
         // short window (the park is not a terminal Run Event).
-        let (mut ws, _r) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake");
+        let mut ws = core.connect().await;
         let sub = serde_json::json!({
             "jsonrpc": "2.0", "id": 3, "method": "run/subscribe",
             "params": { "run_id": run_id },
@@ -229,7 +120,7 @@ fn parks_on_propose_entity() {
 
         // proposal/get returns the pending Todo proposal.
         let resp = rpc(
-            &ws_url,
+            &core,
             4,
             "proposal/get",
             serde_json::json!({ "run_id": run_id }),
@@ -247,7 +138,7 @@ fn parks_on_propose_entity() {
 
     // White-box DB assertions over the same SQLite file.
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
@@ -304,16 +195,14 @@ fn parks_on_propose_entity() {
 /// which is the slice's stated reason to exist.
 #[test]
 fn parked_run_emits_no_false_done_to_attached_subscriber() {
-    let worker_cmd = propose_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
+    let workspace = Workspace::new();
     // The fixture emits a `text_delta` then waits 1.5s before proposing, so a
     // subscribe lands on the LIVE hub before the park.
-    let (_child, ws_url) = spawn_core_env(
-        &worker_cmd,
-        &db_path,
-        &[("INKSTONE_PROPOSE_DELAY_MS", "1500")],
-    );
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_DELAY_MS", "1500")
+        .spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -322,7 +211,7 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
 
     rt.block_on(async {
         let resp = rpc(
-            &ws_url,
+            &core,
             1,
             "thread/create",
             serde_json::json!({ "prompt": "remember to buy milk" }),
@@ -336,9 +225,7 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
         // Subscribe immediately — attach to the live hub during the fixture's
         // pre-propose delay. `status:"running"` proves we took the streaming
         // (hub-present) path, not the no-hub parked branch.
-        let (mut ws, _r) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake");
+        let mut ws = core.connect().await;
         let sub = serde_json::json!({
             "jsonrpc": "2.0", "id": 2, "method": "run/subscribe",
             "params": { "run_id": run_id },
@@ -388,7 +275,7 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
         // Confirm the Run actually parked within the window (so the assertion
         // above genuinely covered the park transition).
         let resp = rpc(
-            &ws_url,
+            &core,
             3,
             "proposal/get",
             serde_json::json!({ "run_id": run_id }),
@@ -410,16 +297,14 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
 /// `done`/`error`.
 #[test]
 fn attached_subscriber_gets_proposal_pending_on_park() {
-    let worker_cmd = propose_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
+    let workspace = Workspace::new();
     // The fixture emits a `text_delta` then waits 1.5s before proposing, so a
     // subscribe lands on the LIVE hub before the park.
-    let (_child, ws_url) = spawn_core_env(
-        &worker_cmd,
-        &db_path,
-        &[("INKSTONE_PROPOSE_DELAY_MS", "1500")],
-    );
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_DELAY_MS", "1500")
+        .spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -428,7 +313,7 @@ fn attached_subscriber_gets_proposal_pending_on_park() {
 
     rt.block_on(async {
         let resp = rpc(
-            &ws_url,
+            &core,
             1,
             "thread/create",
             serde_json::json!({ "prompt": "remember to buy milk" }),
@@ -440,9 +325,7 @@ fn attached_subscriber_gets_proposal_pending_on_park() {
             .to_string();
 
         // Attach to the live hub during the fixture's pre-propose delay.
-        let (mut ws, _r) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake");
+        let mut ws = core.connect().await;
         let sub = serde_json::json!({
             "jsonrpc": "2.0", "id": 2, "method": "run/subscribe",
             "params": { "run_id": run_id },

@@ -11,119 +11,15 @@
 //! received as a `text_delta` so the round-trip is observable on the
 //! subscribe stream as well as in the DB.
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core")
-        .to_path_buf()
-}
-
-fn tool_worker_cmd() -> String {
-    let repo_root = repo_root();
-    let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let fixture = repo_root.join("crates/core/tests/fixtures/tool-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
-    format!("{} {}", tsx.display(), fixture.display())
-}
-
-struct CoreChild(Option<Child>);
-
-impl Drop for CoreChild {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
-/// Spawn Core on an ephemeral port (`INKSTONE_PORT=0`) so tests don't
-/// contend a fixed port. `tool` optionally overrides the tool the fixture
-/// requests (off-allowlist case); `id_file` points the fixture at a file
-/// holding the `thread_id` to read.
-fn spawn_core(
-    worker_cmd: &str,
-    db_path: &Path,
-    tool: Option<&str>,
-    id_file: Option<&Path>,
-) -> (CoreChild, String) {
-    let repo_root = repo_root();
-    let mut cmd = std::process::Command::cargo_bin("core").expect("core binary exists");
-    cmd.current_dir(&repo_root)
-        .env("INKSTONE_WORKER_CMD", worker_cmd)
-        .env("INKSTONE_DB_PATH", db_path)
-        .env("INKSTONE_PORT", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    if let Some(t) = tool {
-        cmd.env("INKSTONE_TOOLWORKER_TOOL", t);
-    }
-    if let Some(f) = id_file {
-        cmd.env("INKSTONE_TOOLWORKER_THREAD_ID_FILE", f);
-    }
-    let mut child = cmd.spawn().expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
-    (CoreChild(Some(child)), ws_url)
-}
-
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
-
-async fn next_text(ws: &mut Ws) -> String {
-    let frame = tokio::time::timeout(Duration::from_secs(8), ws.next())
-        .await
-        .expect("frame within 8s")
-        .expect("frame present")
-        .expect("frame ok");
-    match frame {
-        Message::Text(t) => t.to_string(),
-        other => panic!("expected text frame, got {other:?}"),
-    }
-}
+mod common;
+use common::{CoreHandle, Workspace, next_text};
 
 /// Create a Thread with `prompt`, subscribe to its Run, drain to `done`, and
 /// return (thread_id, run_id, concatenated text deltas, tool_call boundaries).
@@ -131,12 +27,10 @@ async fn next_text(ws: &mut Ws) -> String {
 /// the Worker boots tsx (hundreds of ms) long after this subscribe attaches,
 /// so the ephemeral `tool_call` events are reliably observed on the live tail.
 async fn run_and_collect(
-    ws_url: &str,
+    core: &CoreHandle,
     prompt: &str,
 ) -> (String, String, String, Vec<(String, String)>) {
-    let (mut ws, _resp) = tokio_tungstenite::connect_async(ws_url)
-        .await
-        .expect("ws handshake succeeds");
+    let mut ws = core.connect().await;
 
     let request = format!(
         r#"{{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{{"prompt":"{prompt}"}}}}"#
@@ -197,11 +91,13 @@ async fn run_and_collect(
 
 #[test]
 fn read_thread_returns_another_threads_messages() {
-    let worker_cmd = tool_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let id_file = tmp.path().join("tid");
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, None, Some(&id_file));
+    let workspace = Workspace::new();
+    let id_file = workspace.path().join("tid");
+    let core = workspace
+        .core()
+        .worker_fixture("tool-worker.ts")
+        .env("INKSTONE_TOOLWORKER_THREAD_ID_FILE", &id_file)
+        .spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -213,11 +109,11 @@ fn read_thread_returns_another_threads_messages() {
         // with the default unknown id (the id-file doesn't exist yet) → an
         // error outcome it ignores; we just need A persisted.
         let (thread_a, _run_a, _text_a, _tools_a) =
-            run_and_collect(&ws_url, "alpha-secret-123").await;
+            run_and_collect(&core, "alpha-secret-123").await;
 
         // Point the fixture at A, then run Thread B — B's Run reads A.
         std::fs::write(&id_file, &thread_a).expect("write id file");
-        let (_thread_b, run_b, text_b, tools_b) = run_and_collect(&ws_url, "beta").await;
+        let (_thread_b, run_b, text_b, tools_b) = run_and_collect(&core, "beta").await;
 
         assert!(
             text_b.contains("tool_outcome=ok:"),
@@ -241,7 +137,7 @@ fn read_thread_returns_another_threads_messages() {
     });
 
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
@@ -278,12 +174,10 @@ fn read_thread_returns_another_threads_messages() {
 
 #[test]
 fn unknown_thread_id_returns_error_outcome() {
-    let worker_cmd = tool_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
+    let workspace = Workspace::new();
     // No id-file → the fixture reads the unknown "t-dummy"; read_thread must
     // return an error outcome and the Run must still complete cleanly.
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, None, None);
+    let core = workspace.core().worker_fixture("tool-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -291,7 +185,7 @@ fn unknown_thread_id_returns_error_outcome() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        let (_thread, _run, text, tools) = run_and_collect(&ws_url, "hi").await;
+        let (_thread, _run, text, tools) = run_and_collect(&core, "hi").await;
         assert!(
             text.contains("tool_outcome=err:"),
             "unknown thread id yields an error outcome — got {text:?}"
@@ -311,12 +205,14 @@ fn unknown_thread_id_returns_error_outcome() {
 
 #[test]
 fn off_allowlist_tool_returns_error_outcome() {
-    let worker_cmd = tool_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
+    let workspace = Workspace::new();
     // The fixture requests a tool not in the Workflow allowlist; Core must
     // reject it with an `err` outcome rather than dispatching.
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, Some("nonexistent"), None);
+    let core = workspace
+        .core()
+        .worker_fixture("tool-worker.ts")
+        .env("INKSTONE_TOOLWORKER_TOOL", "nonexistent")
+        .spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -324,7 +220,7 @@ fn off_allowlist_tool_returns_error_outcome() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        let (_thread, _run, text, tools) = run_and_collect(&ws_url, "hi").await;
+        let (_thread, _run, text, tools) = run_and_collect(&core, "hi").await;
         assert!(
             text.contains("tool_outcome=err:"),
             "off-allowlist tool yields an error outcome — got {text:?}"

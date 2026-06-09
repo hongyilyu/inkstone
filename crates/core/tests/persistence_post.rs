@@ -3,80 +3,18 @@
 //! one user `message_parts` row, one `run_steps` row, and one `run_events`
 //! row — all in a single transaction with deferred FK enforcement.
 
-use std::io::{BufRead, BufReader};
-use std::path::Path;
-use std::process::Stdio;
-use std::time::{Duration, Instant};
-
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use sqlx::Row;
 use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
+
+mod common;
+use common::{Workspace, next_text};
 
 #[test]
 fn post_message_writes_initial_rows() {
-    // Resolve worker tsx + cli paths from this crate's manifest dir so the
-    // test passes regardless of cargo's CWD.
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core");
-    let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let cli = repo_root.join("crates/core/tests/fixtures/slow-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
-    if !cli.exists() {
-        panic!("worker cli not found at {}", cli.display());
-    }
-    let worker_cmd = format!("{} {}", tsx.display(), cli.display());
-
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-
-    let mut child = std::process::Command::cargo_bin("core")
-        .expect("core binary exists")
-        .current_dir(repo_root)
-        .env("INKSTONE_WORKER_CMD", &worker_cmd)
-        .env("INKSTONE_DB_PATH", &db_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -84,9 +22,7 @@ fn post_message_writes_initial_rows() {
         .expect("tokio runtime builds");
 
     let run_id = rt.block_on(async {
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake succeeds");
+        let mut ws = core.connect().await;
 
         let request =
             r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hello"}}"#;
@@ -94,15 +30,7 @@ fn post_message_writes_initial_rows() {
             .await
             .expect("send request frame");
 
-        let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
-            .await
-            .expect("response frame within 5s")
-            .expect("response frame present")
-            .expect("response frame ok");
-        let body = match frame {
-            Message::Text(t) => t.to_string(),
-            other => panic!("expected text frame, got {other:?}"),
-        };
+        let body = next_text(&mut ws).await;
 
         ws.close(None).await.ok();
 
@@ -114,12 +42,11 @@ fn post_message_writes_initial_rows() {
             .to_string()
     });
 
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(core);
 
     // Open the DB read-only and assert via direct queries.
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)

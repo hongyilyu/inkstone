@@ -9,109 +9,18 @@
 //! spawn 1 proposes & blocks (park). No resume Worker runs — cancel is pure
 //! tier-2 (the parked Worker is already torn down on park).
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use sqlx::sqlite::SqlitePoolOptions;
-use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core")
-        .to_path_buf()
-}
-
-fn propose_worker_cmd() -> String {
-    let repo_root = repo_root();
-    let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let fixture = repo_root.join("crates/core/tests/fixtures/propose-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
-    format!("{} {}", tsx.display(), fixture.display())
-}
-
-struct CoreChild(Option<Child>);
-
-impl Drop for CoreChild {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
-fn spawn_core(worker_cmd: &str, db_path: &Path) -> (CoreChild, String) {
-    let repo_root = repo_root();
-    let mut cmd = std::process::Command::cargo_bin("core").expect("core binary exists");
-    cmd.current_dir(&repo_root)
-        .env("INKSTONE_WORKER_CMD", worker_cmd)
-        .env("INKSTONE_DB_PATH", db_path)
-        .env("INKSTONE_PORT", "0")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
-    let mut child = cmd.spawn().expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
-    (CoreChild(Some(child)), ws_url)
-}
-
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
-
-async fn next_text(ws: &mut Ws) -> String {
-    let frame = tokio::time::timeout(Duration::from_secs(8), ws.next())
-        .await
-        .expect("frame within 8s")
-        .expect("frame present")
-        .expect("frame ok");
-    match frame {
-        Message::Text(t) => t.to_string(),
-        other => panic!("expected text frame, got {other:?}"),
-    }
-}
+mod common;
+use common::{CoreHandle, Workspace, next_text};
 
 /// Open a fresh socket, send a single request, return the response body.
-async fn rpc(ws_url: &str, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
-    let (mut ws, _resp) = tokio_tungstenite::connect_async(ws_url)
-        .await
-        .expect("ws handshake succeeds");
+async fn rpc(core: &CoreHandle, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
+    let mut ws = core.connect().await;
     let req = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -128,9 +37,9 @@ async fn rpc(ws_url: &str, id: u64, method: &str, params: serde_json::Value) -> 
 
 /// Drive a Run to a park: thread/create, then poll run/subscribe until
 /// status=parked. Returns the run_id.
-async fn create_and_park(ws_url: &str) -> String {
+async fn create_and_park(core: &CoreHandle) -> String {
     let resp = rpc(
-        ws_url,
+        core,
         1,
         "thread/create",
         serde_json::json!({ "prompt": "remember to buy milk" }),
@@ -147,7 +56,7 @@ async fn create_and_park(ws_url: &str) -> String {
             panic!("timed out waiting for run to park");
         }
         let resp = rpc(
-            ws_url,
+            core,
             2,
             "run/subscribe",
             serde_json::json!({ "run_id": run_id }),
@@ -163,10 +72,8 @@ async fn create_and_park(ws_url: &str) -> String {
 
 #[test]
 fn cancel_parked_run() {
-    let worker_cmd = propose_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path);
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -174,11 +81,11 @@ fn cancel_parked_run() {
         .expect("tokio runtime builds");
 
     let run_id = rt.block_on(async {
-        let run_id = create_and_park(&ws_url).await;
+        let run_id = create_and_park(&core).await;
 
         // Learn the proposal_id (used to attempt a post-cancel decide).
         let resp = rpc(
-            &ws_url,
+            &core,
             3,
             "proposal/get",
             serde_json::json!({ "run_id": run_id }),
@@ -191,7 +98,7 @@ fn cancel_parked_run() {
 
         // run/cancel the parked Run → outcome accepted.
         let resp = rpc(
-            &ws_url,
+            &core,
             4,
             "run/cancel",
             serde_json::json!({ "run_id": run_id }),
@@ -205,7 +112,7 @@ fn cancel_parked_run() {
 
         // A subsequent proposal/decide{accept} → proposal_not_pending.
         let resp = rpc(
-            &ws_url,
+            &core,
             5,
             "proposal/decide",
             serde_json::json!({
@@ -226,7 +133,7 @@ fn cancel_parked_run() {
 
     // White-box DB assertions over the same SQLite file.
     rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", db_path.display());
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)

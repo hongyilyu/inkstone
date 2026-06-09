@@ -12,68 +12,15 @@
 //! Unset (or a release build) → the current bare `"Inkstone Core"` string, so
 //! production cannot serve arbitrary files from disk.
 
-use std::io::{BufRead, BufReader};
-use std::process::{Child, Stdio};
-use std::time::{Duration, Instant};
-
-use assert_cmd::cargo::CommandCargoExt;
-use tempfile::TempDir;
-
-struct CoreChild(Option<Child>);
-
-impl Drop for CoreChild {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
-/// Spawn Core with `INKSTONE_WEB_DIR` set to `web_dir`, on an ephemeral port,
-/// and block on stdout until it announces its URL. Returns the reaped-on-drop
-/// guard and the base `http://127.0.0.1:<port>` URL.
-fn spawn_core_with_web_dir(db_path: &std::path::Path, web_dir: &std::path::Path) -> (CoreChild, String) {
-    let mut child = std::process::Command::cargo_bin("core")
-        .expect("core binary exists")
-        .env("INKSTONE_DB_PATH", db_path)
-        .env("INKSTONE_PORT", "0")
-        .env("INKSTONE_WEB_DIR", web_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-    let guard = CoreChild(Some(child));
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let url = loop {
-        if Instant::now() > deadline {
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-
-    (guard, url)
-}
+mod common;
+use common::Workspace;
 
 #[test]
 fn serves_spa_from_web_dir() {
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
+    let workspace = Workspace::new();
 
     // A minimal on-disk "SPA": index.html with a recognizable marker + an asset.
-    let web_dir = tmp.path().join("dist");
+    let web_dir = workspace.path().join("dist");
     std::fs::create_dir_all(web_dir.join("assets")).expect("mk assets dir");
     std::fs::write(
         web_dir.join("index.html"),
@@ -83,10 +30,11 @@ fn serves_spa_from_web_dir() {
     std::fs::write(web_dir.join("assets").join("app.js"), "console.log('hi')")
         .expect("write asset");
 
-    let (_core, base) = spawn_core_with_web_dir(&db_path, &web_dir);
+    let core = workspace.core().env("INKSTONE_WEB_DIR", &web_dir).spawn();
+    let base = core.http_url();
 
     // GET / → the on-disk index.html (NOT the bare "Inkstone Core" string).
-    let root = reqwest::blocking::get(&base).expect("GET / succeeds");
+    let root = reqwest::blocking::get(base).expect("GET / succeeds");
     assert_eq!(root.status().as_u16(), 200, "GET / is 200");
     let root_body = root.text().expect("body decodes");
     assert!(
@@ -111,17 +59,11 @@ fn serves_spa_from_web_dir() {
     );
 
     // /ws must still upgrade — the fallback must not swallow the WebSocket route.
-    let ws_url = base
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("http:// prefix");
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("runtime");
     rt.block_on(async {
-        tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("/ws still upgrades to a WebSocket");
+        core.connect().await;
     });
 }

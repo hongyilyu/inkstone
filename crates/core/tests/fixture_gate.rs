@@ -12,32 +12,19 @@
 //! remaining `text_delta`(s) + `done` arrive and reassemble to `echo: hello`.
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
 use std::process::Stdio;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread;
 use std::time::Duration;
 
+mod common;
+
 #[test]
 fn slow_worker_fixture_pauses_until_gate_then_completes() {
-    // Resolve repo paths from this crate's manifest dir so the test works
-    // regardless of cargo's CWD. Mirror end_to_end.rs:15-19.
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core");
-
     // tsx is a worker dev-dependency; pnpm's isolated mode lands the binary
     // under packages/worker/node_modules/.bin/tsx (not the workspace root).
-    let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    let fixture = repo_root.join("crates/core/tests/fixtures/slow-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
+    let tsx = common::tsx_bin();
+    let fixture = common::fixture_path("slow-worker.ts");
 
     // Gate path inside a TempDir that does NOT yet exist; creating it is the
     // test-controlled release.

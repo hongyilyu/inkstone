@@ -1,83 +1,18 @@
-use std::io::{BufRead, BufReader};
-use std::path::Path;
-use std::process::Stdio;
-use std::time::{Duration, Instant};
-
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::{SinkExt, StreamExt};
-use tempfile::TempDir;
+use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
+
+mod common;
+use common::{Workspace, next_text};
 
 #[test]
 fn end_to_end_post_message_streams_text_delta_then_done() {
-    // Resolve repo paths from this crate's manifest dir so tests work regardless
-    // of cargo's CWD (cargo runs integration tests with CWD = crate directory).
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core");
+    let workspace = Workspace::new();
 
-    // tsx is a worker dev-dependency; pnpm's isolated mode lands the binary
-    // under packages/worker/node_modules/.bin/tsx (not the workspace root).
-    let tsx = repo_root.join("packages/worker/node_modules/.bin/tsx");
-    // Slice 4 cut cli.ts over to the generic interpreter (real providers).
-    // The echo-shaped assertions in this test now ride the slow-worker
-    // fixture, which reads the manifest's `.prompt` and emits `echo: <prompt>`
-    // — the deterministic stand-in (ADR-0019). Real providers are manual smoke.
-    let cli = repo_root.join("crates/core/tests/fixtures/slow-worker.ts");
-    if !tsx.exists() {
-        panic!(
-            "worker tsx not installed at {} — run `pnpm install` at repo root",
-            tsx.display()
-        );
-    }
-    if !cli.exists() {
-        panic!("worker cli not found at {}", cli.display());
-    }
-
-    let worker_cmd = format!("{} {}", tsx.display(), cli.display());
-
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-
-    let mut child = std::process::Command::cargo_bin("core")
-        .expect("core binary exists")
-        .current_dir(repo_root)
-        .env("INKSTONE_WORKER_CMD", &worker_cmd)
-        .env("INKSTONE_DB_PATH", &db_path)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING line");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
+    // Slice 4 cut cli.ts over to the generic interpreter (real providers). The
+    // echo-shaped assertions in this test now ride the slow-worker fixture,
+    // which reads the manifest's `.prompt` and emits `echo: <prompt>` — the
+    // deterministic stand-in (ADR-0019). Real providers are manual smoke.
+    let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -85,31 +20,13 @@ fn end_to_end_post_message_streams_text_delta_then_done() {
         .expect("tokio runtime builds");
 
     let outcome = rt.block_on(async {
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake succeeds");
+        let mut ws = core.connect().await;
 
         let request =
             r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hello"}}"#;
         ws.send(Message::Text(request.into()))
             .await
             .expect("send request frame");
-
-        async fn next_text(
-            ws: &mut tokio_tungstenite::WebSocketStream<
-                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-            >,
-        ) -> String {
-            let frame = tokio::time::timeout(Duration::from_secs(5), ws.next())
-                .await
-                .expect("frame within 5s")
-                .expect("frame present")
-                .expect("frame ok");
-            match frame {
-                Message::Text(t) => t.to_string(),
-                other => panic!("expected text frame, got {other:?}"),
-            }
-        }
 
         // Pure-subscribe (ADR-0022): post_message returns {run_id} only — no
         // events on the response frame. Read the response, then subscribe by
@@ -149,8 +66,7 @@ fn end_to_end_post_message_streams_text_delta_then_done() {
         (response, sub_response, run_id, events)
     });
 
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(core);
 
     let (response_body, sub_response_body, run_id, event_bodies) = outcome;
 

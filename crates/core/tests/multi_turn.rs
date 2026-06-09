@@ -6,43 +6,13 @@
 //! which Core sourced from the manifest history it built. Run 1 establishes
 //! the history; Run 2's streamed reply must contain Run 1's prompt.
 
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
-use std::time::{Duration, Instant};
+use std::path::Path;
 
-use assert_cmd::cargo::CommandCargoExt;
-use futures_util::{SinkExt, StreamExt};
-use tempfile::TempDir;
+use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("repo root resolves from <repo>/crates/core")
-        .to_path_buf()
-}
-
-fn interpreter_worker_cmd() -> String {
-    let root = repo_root();
-    let tsx = root.join("packages/worker/node_modules/.bin/tsx");
-    let cli = root.join("packages/worker/src/cli.ts");
-    if !tsx.exists() {
-        panic!("worker tsx not installed — run `pnpm install`");
-    }
-    format!("{} {}", tsx.display(), cli.display())
-}
-
-struct CoreChild(Option<Child>);
-impl Drop for CoreChild {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
+mod common;
+use common::{Workspace, Ws, next_text};
 
 fn write_faux_workflow(dir: &Path) {
     std::fs::create_dir_all(dir).expect("create workflows dir");
@@ -59,65 +29,6 @@ tools = []
 "#,
     )
     .expect("write faux default.toml");
-}
-
-fn spawn_core(worker_cmd: &str, db_path: &Path, workflows_dir: &Path) -> (CoreChild, String) {
-    let mut child = std::process::Command::cargo_bin("core")
-        .expect("core binary exists")
-        .current_dir(repo_root())
-        .env("INKSTONE_PORT", "0")
-        .env("INKSTONE_WORKER_CMD", worker_cmd)
-        .env("INKSTONE_DB_PATH", db_path)
-        .env("INKSTONE_WORKFLOWS_DIR", workflows_dir)
-        // History-echo mode: faux replies with the prior user texts it saw.
-        .env("INKSTONE_FAUX_ECHO_HISTORY", "1")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("core spawns");
-
-    let stdout = child.stdout.take().expect("piped stdout");
-    let mut reader = BufReader::new(stdout);
-    let deadline = Instant::now() + Duration::from_secs(8);
-    let http_url = loop {
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("timed out waiting for INKSTONE_LISTENING");
-        }
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).expect("read stdout");
-        if read == 0 {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("core stdout closed before announcing INKSTONE_LISTENING");
-        }
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-            break rest.to_string();
-        }
-    };
-    let ws_url = http_url
-        .strip_prefix("http://")
-        .map(|host| format!("ws://{host}/ws"))
-        .expect("INKSTONE_LISTENING URL has http:// prefix");
-    (CoreChild(Some(child)), ws_url)
-}
-
-type Ws = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
-
-async fn next_text(ws: &mut Ws) -> String {
-    let frame = tokio::time::timeout(Duration::from_secs(10), ws.next())
-        .await
-        .expect("frame within 10s")
-        .expect("frame present")
-        .expect("frame ok");
-    match frame {
-        Message::Text(t) => t.to_string(),
-        other => panic!("expected text frame, got {other:?}"),
-    }
 }
 
 /// Drain a run's subscribe stream, returning the reassembled text at `done`.
@@ -147,13 +58,17 @@ async fn run_to_text(ws: &mut Ws, run_id: &str) -> String {
 
 #[test]
 fn second_run_sees_prior_exchange() {
-    let worker_cmd = interpreter_worker_cmd();
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("db.sqlite");
-    let workflows_dir = tmp.path().join("workflows");
+    let workspace = Workspace::new();
+    let workflows_dir = workspace.path().join("workflows");
     write_faux_workflow(&workflows_dir);
 
-    let (_child, ws_url) = spawn_core(&worker_cmd, &db_path, &workflows_dir);
+    let core = workspace
+        .core()
+        .worker_interpreter()
+        .env("INKSTONE_WORKFLOWS_DIR", &workflows_dir)
+        // History-echo mode: faux replies with the prior user texts it saw.
+        .env("INKSTONE_FAUX_ECHO_HISTORY", "1")
+        .spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -161,9 +76,7 @@ fn second_run_sees_prior_exchange() {
         .expect("tokio runtime builds");
 
     let run2_text = rt.block_on(async {
-        let (mut ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
-            .await
-            .expect("ws handshake");
+        let mut ws = core.connect().await;
 
         // Run 1: create the thread with a memorable prompt, drain to done so
         // its user+assistant messages are `completed` before run 2 starts.
