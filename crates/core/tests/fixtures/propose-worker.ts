@@ -3,8 +3,10 @@
 // Speaks the bidirectional Worker stdio protocol so it is a drop-in for the
 // real worker via `INKSTONE_WORKER_CMD`:
 //   - stdin (line 1): the full WorkerManifest JSON (one line).
-//   - stdout:         one `propose_entity` `tool_request` line (a Todo
-//                     payload), then it BLOCKS reading stdin forever.
+//   - stdout:         one `propose_entity` `tool_request` line (a Todo payload
+//                     by default; a Person payload when
+//                     INKSTONE_PROPOSE_KIND=person), then it BLOCKS reading
+//                     stdin forever.
 //
 // Park semantics (ADR-0025): when the Worker emits a `propose_entity`
 // tool_request, Core persists the Proposal + tool_call, sets the Run to
@@ -93,21 +95,31 @@ const main = async (): Promise<void> => {
 		await new Promise<void>((r) => setTimeout(r, delayMs));
 	}
 
-	// Emit one propose_entity tool_request for a Todo. `run_id` is
-	// Core-ignored (Core uses the spawn's authoritative run id); send "" to
-	// keep the wire shape. The tool_call_id is per-process (one worker per
-	// Run) so it is unique across Runs.
+	// Emit one propose_entity tool_request. `run_id` is Core-ignored (Core uses
+	// the spawn's authoritative run id); send "" to keep the wire shape. The
+	// tool_call_id is per-process (one worker per Run) so it is unique across
+	// Runs. The proposed Entity Type is gated on INKSTONE_PROPOSE_KIND: "person"
+	// emits a Person payload (slice 1); unset/"todo" stays the original Todo
+	// behavior so the existing tests are unaffected.
 	const toolCallId = `tc_${process.pid}`;
+	const params =
+		process.env.INKSTONE_PROPOSE_KIND === "person"
+			? {
+					type: "person",
+					data: { name: "Alice", note: "met at the daycare" },
+					rationale: "the user mentioned someone worth remembering",
+				}
+			: {
+					type: "todo",
+					data: { title: "buy milk", done: false },
+					rationale: "the user asked to remember this",
+				};
 	emit({
 		kind: "tool_request",
 		run_id: "",
 		tool_call_id: toolCallId,
 		name: "propose_entity",
-		params: {
-			type: "todo",
-			data: { title: "buy milk", done: false },
-			rationale: "the user asked to remember this",
-		},
+		params,
 	});
 
 	// Block forever — Core parks the Run and tears this process down by

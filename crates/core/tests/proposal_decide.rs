@@ -219,6 +219,120 @@ fn accept_applies_and_resumes() {
     });
 }
 
+/// Slice 1 (Person Entity Type): the same accept→apply→resume loop as
+/// `accept_applies_and_resumes`, but the worker proposes a **person**
+/// (`INKSTONE_PROPOSE_KIND=person`). Proves Core's generic entity path
+/// generalizes beyond `todo`: an accepted `{type:"person", data:{name,note}}`
+/// lands as an `entities` row of `type='person'` with a seq-1 revision, and the
+/// decide result is `accepted` + a non-empty `entity_id`.
+#[test]
+fn accept_applies_person() {
+    let workspace = Workspace::new();
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_KIND", "person")
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let entity_id = rt.block_on(async {
+        let run_id = create_and_park(&core).await;
+
+        // The parked Proposal is a Person.
+        let resp = rpc(
+            &core,
+            3,
+            "proposal/get",
+            serde_json::json!({ "run_id": run_id }),
+        )
+        .await;
+        assert_eq!(
+            resp["result"]["kind"].as_str(),
+            Some("person"),
+            "parked proposal kind is person — body: {resp}"
+        );
+        let proposal_id = resp["result"]["proposal_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
+            .to_string();
+
+        // Decide: accept.
+        let resp = rpc(
+            &core,
+            4,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "accept",
+                "decision_idempotency_key": "p1",
+            }),
+        )
+        .await;
+        let result = &resp["result"];
+        assert_eq!(
+            result["status"].as_str(),
+            Some("accepted"),
+            "decide result status — body: {resp}"
+        );
+        let entity_id = result["entity_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
+            .to_string();
+        assert!(!entity_id.is_empty(), "entity_id is non-empty — body: {resp}");
+
+        // The Run resumes in a fresh Worker and reaches completed.
+        await_completed(&core, &run_id).await;
+
+        entity_id
+    });
+
+    // White-box DB assertions.
+    rt.block_on(async {
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+
+        // One person entity, created via the proposal, data.name="Alice".
+        let row = sqlx::query(
+            "SELECT type, data, created_by, created_via_proposal_id FROM entities WHERE id = ?1",
+        )
+        .bind(&entity_id)
+        .fetch_one(&pool)
+        .await
+        .expect("entity row exists");
+        let etype: String = row.get("type");
+        let data: String = row.get("data");
+        let created_by: String = row.get("created_by");
+        let via: Option<String> = row.get("created_via_proposal_id");
+        assert_eq!(etype, "person", "entity type is person");
+        assert_eq!(created_by, "proposal", "entity created_by=proposal");
+        assert!(via.is_some(), "entity carries created_via_proposal_id");
+        let data_json: serde_json::Value = serde_json::from_str(&data).expect("entity data is JSON");
+        assert_eq!(
+            data_json["name"].as_str(),
+            Some("Alice"),
+            "entity data.name — got {data}"
+        );
+
+        // entity_revisions seq 1.
+        let rev_seq: i64 = sqlx::query_scalar(
+            "SELECT seq FROM entity_revisions WHERE entity_id = ?1 ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(&entity_id)
+        .fetch_one(&pool)
+        .await
+        .expect("entity_revision row exists");
+        assert_eq!(rev_seq, 1, "first entity revision is seq 1");
+    });
+}
+
 /// Slice 4 (Proposal reject): `proposal/decide{decision:"reject"}` on a parked
 /// Run resolves the Decision WITHOUT applying — no entity lands in tier 2, the
 /// Proposal becomes `rejected`, the awaited tool_call resolves as a NORMAL
