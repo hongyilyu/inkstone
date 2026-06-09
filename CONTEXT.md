@@ -120,6 +120,10 @@ _Avoid_: extracted entity (ambiguous with the accepted form), suggestion.
 **Accepted Entity**:
 An Entity record in tier 2 — created either by user action or by accepting a Proposal.
 
+**Entity Type**:
+The kind of structured concept an Entity is — Todo, Person, Project, Recipe, etc. Determines how the Entity's content is validated, versioned, and described back to the Worker when a Proposal that creates it is accepted. Distinct from the *change* a Proposal makes (create / update / delete): the Entity Type is *what the thing is*, the change is *what is being done to it*.
+_Avoid_: kind (overloaded across unrelated discriminators), entity class, entity category.
+
 ### Agents
 
 **Workflow**:

@@ -605,13 +605,18 @@ impl std::fmt::Display for ApplyError {
 }
 
 /// Apply an accepted Proposal in ONE atomic transaction (ADR-0016, ADR-0025).
-/// All-or-nothing: insert the `entities` row (`created_by='proposal'`,
-/// `created_via_proposal_id`), its `entity_revisions` seq-1 snapshot, flip the
-/// `proposals` row to `accepted` (+ `decided_by='user'`, `decided_at`,
-/// `applied_at`, `decision_idempotency_key`, `edited_payload`), and resolve the
-/// awaited `tool_calls` row to `completed` with `result_payload` = the Decision
+/// All-or-nothing: insert the `entities` row (`type`=`entity_type`,
+/// `schema_version`, `created_by='proposal'`, `created_via_proposal_id`), its
+/// `entity_revisions` seq-1 snapshot, flip the `proposals` row to `accepted`
+/// (+ `decided_by='user'`, `decided_at`, `applied_at`,
+/// `decision_idempotency_key`, `edited_payload`), and resolve the awaited
+/// `tool_calls` row to `completed` with `result_payload` = the Decision
 /// rendered for the model to read on resume. No durable change exists before
 /// this commits. Returns the new `entity_id`.
+///
+/// `entity_type` and `schema_version` are resolved by the caller through the
+/// `entities` module (by Entity Type), so this layer names no specific Entity
+/// Type; the `Uuid::now_v7()` id-mint stays here (kind-agnostic).
 ///
 /// EDIT (ADR-0025): when `edited_payload` is `Some`, the entity `data` is the
 /// EDITED payload (Core-validated by the caller), not the model's proposed
@@ -631,6 +636,7 @@ pub async fn apply_proposal(
     proposal_id: &str,
     tool_call_id: &str,
     entity_type: &str,
+    schema_version: i64,
     data: &serde_json::Value,
     edited_payload: Option<&serde_json::Value>,
     decision_idempotency_key: Option<&str>,
@@ -669,7 +675,7 @@ pub async fn apply_proposal(
         &mut *tx,
         &entity_id,
         entity_type,
-        crate::entities::TODO_SCHEMA_VERSION,
+        schema_version,
         &data_str,
         proposal_id,
         now_ms,
@@ -1235,6 +1241,7 @@ mod tests {
             &proposal_id,
             "tool-accept",
             "todo",
+            99,
             &serde_json::json!({"title": "milk"}),
             None,
             Some("idem-accept"),
@@ -1244,6 +1251,16 @@ mod tests {
         .await
         .expect("apply");
         assert!(!entity_id.is_empty());
+        // The caller-supplied schema_version is persisted verbatim (a sentinel,
+        // not the Todo default), so this fails if apply_proposal ever ignores
+        // the argument and re-hardcodes the old constant.
+        let stored_schema_version: i64 =
+            sqlx::query_scalar("SELECT schema_version FROM entities WHERE id = ?1")
+                .bind(&entity_id)
+                .fetch_one(&pool)
+                .await
+                .expect("entity schema_version");
+        assert_eq!(stored_schema_version, 99);
         assert_eq!(
             run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
             1
@@ -1260,6 +1277,7 @@ mod tests {
             &proposal_id,
             "tool-accept",
             "todo",
+            crate::entities::TODO_SCHEMA_VERSION,
             &serde_json::json!({"title": "milk"}),
             None,
             Some("idem-accept-2"),

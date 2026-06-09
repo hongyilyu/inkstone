@@ -1,5 +1,6 @@
 mod credentials;
 mod db;
+mod decide;
 mod dispatcher;
 mod entities;
 mod hub;
