@@ -49,7 +49,7 @@ test("accepts a Person proposal and it appears in the library", async ({
 	).toBeVisible({ timeout: 15_000 });
 });
 
-test("edits the Person name then resumes", async ({ chat }) => {
+test("edits the Person name then resumes", async ({ chat, core, page }) => {
 	await chat.goto();
 
 	await chat.send("remember Alice from daycare");
@@ -69,4 +69,11 @@ test("edits the Person name then resumes", async ({ chat }) => {
 	// accepted and the Run resumes to completion.
 	await expect(card).toContainText(/added to people/i, { timeout: 15_000 });
 	await chat.waitForAssistantText(/done — added it/i);
+
+	// The EDITED name (not the model's "Alice") is what persisted: it is the
+	// Person listed in the Library's live People collection.
+	await page.goto(`${core.url}/library/people`);
+	const people = page.getByRole("region", { name: /people/i });
+	await expect(people.getByText("Alicia")).toBeVisible({ timeout: 15_000 });
+	await expect(people.getByText("Alice", { exact: true })).toHaveCount(0);
 });

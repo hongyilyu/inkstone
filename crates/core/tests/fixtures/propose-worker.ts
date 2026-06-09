@@ -44,6 +44,22 @@ const main = async (): Promise<void> => {
 		return;
 	}
 
+	// The proposed entity payload, gated on INKSTONE_PROPOSE_KIND ("person" → a
+	// Person; unset/"todo" → the original Todo). Shared by BOTH the multistep
+	// and single-step propose paths so each honors the kind.
+	const proposeParams =
+		process.env.INKSTONE_PROPOSE_KIND === "person"
+			? {
+					type: "person",
+					data: { name: "Alice", note: "met at the daycare" },
+					rationale: "the user mentioned someone worth remembering",
+				}
+			: {
+					type: "todo",
+					data: { title: "buy milk", done: false },
+					rationale: "the user asked to remember this",
+				};
+
 	// Multi-step fresh path (INKSTONE_MULTISTEP=1): prove Core reconstructs a
 	// provider-valid MULTI-step transcript on resume (ADR-0025). The worker
 	// FIRST emits an assistant text turn + a real `read_thread` tool_request,
@@ -72,11 +88,7 @@ const main = async (): Promise<void> => {
 			run_id: "",
 			tool_call_id: toolCallId,
 			name: "propose_entity",
-			params: {
-				type: "todo",
-				data: { title: "buy milk", done: false },
-				rationale: "the user asked to remember this",
-			},
+			params: proposeParams,
 		});
 		// Block forever — Core parks and tears us down (drops stdin → EOF).
 		await new Promise<void>(() => {});
@@ -98,28 +110,14 @@ const main = async (): Promise<void> => {
 	// Emit one propose_entity tool_request. `run_id` is Core-ignored (Core uses
 	// the spawn's authoritative run id); send "" to keep the wire shape. The
 	// tool_call_id is per-process (one worker per Run) so it is unique across
-	// Runs. The proposed Entity Type is gated on INKSTONE_PROPOSE_KIND: "person"
-	// emits a Person payload (slice 1); unset/"todo" stays the original Todo
-	// behavior so the existing tests are unaffected.
+	// Runs. The proposed Entity Type is `proposeParams` (INKSTONE_PROPOSE_KIND).
 	const toolCallId = `tc_${process.pid}`;
-	const params =
-		process.env.INKSTONE_PROPOSE_KIND === "person"
-			? {
-					type: "person",
-					data: { name: "Alice", note: "met at the daycare" },
-					rationale: "the user mentioned someone worth remembering",
-				}
-			: {
-					type: "todo",
-					data: { title: "buy milk", done: false },
-					rationale: "the user asked to remember this",
-				};
 	emit({
 		kind: "tool_request",
 		run_id: "",
 		tool_call_id: toolCallId,
 		name: "propose_entity",
-		params,
+		params: proposeParams,
 	});
 
 	// Block forever — Core parks the Run and tears this process down by

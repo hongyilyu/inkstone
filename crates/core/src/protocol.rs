@@ -578,6 +578,13 @@ mod mirror_tests {
     }
 
     #[test]
+    fn entity_list_params_decodes_type() {
+        let wire = json!({ "type": "person" });
+        let p: EntityListParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.r#type, "person");
+    }
+
+    #[test]
     fn subscribe_result_encodes_run_id_and_status() {
         let r = SubscribeResult {
             run_id: UUID_A.to_string(),

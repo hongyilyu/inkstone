@@ -22,8 +22,12 @@ export function useEntities() {
 		queryFn: async () => {
 			const program = Effect.gen(function* () {
 				const client = yield* WsClient;
-				const todos = yield* client.listEntities("todo");
-				const people = yield* client.listEntities("person");
+				// Independent reads — fetch concurrently (Effect.all is sequential
+				// by default, so set concurrency explicitly).
+				const [todos, people] = yield* Effect.all(
+					[client.listEntities("todo"), client.listEntities("person")],
+					{ concurrency: 2 },
+				);
 				return { todos: todos.entities, people: people.entities };
 			});
 			const { todos, people } = await runtime.runPromise(program);

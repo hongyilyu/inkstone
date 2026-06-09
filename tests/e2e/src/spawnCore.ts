@@ -222,6 +222,20 @@ export async function spawnCore(
 		INKSTONE_WEB_DIR: opts.webDir ?? WEB_DIST,
 	};
 
+	// Faux mode is fully determined by `opts` below. Strip any inherited
+	// INKSTONE_FAUX_* (a prior run, the parent shell) so an ambient value can't
+	// leak one test's mode into another — e.g. flip a `faux:"propose"` (Todo)
+	// run into person mode via a stray INKSTONE_FAUX_PROPOSE_KIND.
+	for (const key of [
+		"INKSTONE_FAUX_RESPONSE",
+		"INKSTONE_FAUX_ERROR",
+		"INKSTONE_FAUX_TOOL_CALL",
+		"INKSTONE_FAUX_PROPOSE",
+		"INKSTONE_FAUX_PROPOSE_KIND",
+	]) {
+		delete env[key];
+	}
+
 	const workerCmd =
 		opts.workerCmd !== undefined ? opts.workerCmd : GATE_WORKER_CMD;
 	if (workerCmd) {
