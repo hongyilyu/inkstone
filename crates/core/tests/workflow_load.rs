@@ -94,3 +94,26 @@ fn missing_workflow_file_fails_fast() {
         "core must fail to boot when default.toml is missing, got: {outcome:?}"
     );
 }
+
+/// Slice 5 (person-entity-type): the *shipped* default Workflow nudges the
+/// model to propose a Person when the user mentions someone worth remembering.
+/// Unlike the boot tests above, this is a static content guard — it reads the
+/// real `crates/core/workflows/default.toml` (not a fixture) and asserts on its
+/// `system_prompt`, so it never boots Core. Real-model behavior is
+/// non-deterministic, so this guards the prompt text only.
+#[test]
+fn default_workflow_prompts_for_people() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("workflows/default.toml");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read shipped default.toml at {}: {e}", path.display()));
+    let doc: toml::Value = toml::from_str(&raw).expect("shipped default.toml parses as TOML");
+    let system_prompt = doc
+        .get("system_prompt")
+        .and_then(|v| v.as_str())
+        .expect("shipped default.toml has a string system_prompt");
+    let lower = system_prompt.to_lowercase();
+    assert!(
+        lower.contains("propose") && lower.contains("person"),
+        "default.toml system_prompt must nudge proposing a Person, got: {system_prompt:?}"
+    );
+}
