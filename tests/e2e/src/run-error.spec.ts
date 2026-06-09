@@ -1,4 +1,4 @@
-import { INTERPRETER_WORKER_CMD } from "./spawnCore.js";
+import { FAUX_WORKER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
 
 /**
@@ -10,7 +10,7 @@ import { expect, test } from "./fixtures.js";
  */
 test.use({
 	coreOptions: {
-		workerCmd: INTERPRETER_WORKER_CMD,
+		workerCmd: FAUX_WORKER_CMD,
 		fauxError: "the provider is unavailable",
 	},
 });

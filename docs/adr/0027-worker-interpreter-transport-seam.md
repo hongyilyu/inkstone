@@ -32,7 +32,7 @@ A consequence of running the interpreter inside `Effect.gen` while `pi-agent-cor
 
 ## Scope: transport seam only
 
-This change builds the seam and converts `main` to `Effect.gen`. It does **not** evict the five `INKSTONE_FAUX_*` branches in `depsFor` — those script the faux *provider* (the provider seam), not transport, and [ADR-0019](./0019-test-harness-architecture.md) wants that scripting driven from the manifest/fixture rather than runtime env flags in the shipping bundle. That eviction is a named follow-up, deliberately deferred to keep this change surgical (one seam at a time). The ADR-0019 gap — runtime-env-gated test code in the production entry point — remains open until then.
+This change builds the seam and converts `main` to `Effect.gen`. It does **not** evict the five `INKSTONE_FAUX_*` branches in `depsFor` — those script the faux *provider* (the provider seam), not transport, and [ADR-0019](./0019-test-harness-architecture.md) wants that scripting driven from the manifest/fixture rather than runtime env flags in the shipping bundle. That eviction is a named follow-up, deliberately deferred to keep this change surgical (one seam at a time). The ADR-0019 gap — runtime-env-gated test code in the production entry point — remained open until then. **(Resolved later: the five branches were evicted to a test-only Worker entry, `faux-worker.ts`, over a shared `runWorkerMain` — not a manifest field. See [ADR-0019](./0019-test-harness-architecture.md) "faux scripting lives in a test-only Worker entry".)**
 
 ## Considered and rejected
 
@@ -40,7 +40,7 @@ This change builds the seam and converts `main` to `Effect.gen`. It does **not**
 - **Plain injected object instead of a `Layer`.** Smaller diff, but violates ADR-0020's Effect-entry-to-exit commitment and leaves `cli.ts` the one non-Effect TypeScript module. Rejected.
 - **Split into `RunEventSink` + `ToolChannel`.** The most literal reading of ADR-0006; isolates correlation state; lets a chat-only Workflow depend only on the Run Event side. Rejected as machinery a single interpreter consumer doesn't earn — two methods on one tag already honor the separate-concepts rule. Revisit if a second consumer appears.
 - **A literal `WorkerPort` `recv()` mirror.** Impossible without inverting `pi-agent-core`'s ownership of the loop. The Worker is driven, so the seam is push + request/response.
-- **Evict `depsFor` in the same change.** Closes the ADR-0019 gap but conflates a provider-seam refactor with the transport seam. Deferred to a follow-up.
+- **Evict `depsFor` in the same change.** Closes the ADR-0019 gap but conflates a provider-seam refactor with the transport seam. Deferred to a follow-up — since completed in its own change (a test-only `faux-worker.ts` entry, see [ADR-0019](./0019-test-harness-architecture.md)).
 
 ## How this refines earlier ADRs
 
@@ -48,7 +48,7 @@ This change builds the seam and converts `main` to `Effect.gen`. It does **not**
 - **[ADR-0006](./0006-run-events-vs-tool-protocol.md):** `emit` (Run Events) and `callTool` (Tool Protocol) are the two logical channels, kept as separate concepts via two methods on the one transport.
 - **[ADR-0013](./0013-worker-process-lifecycle-and-transport.md):** unchanged in substance — manifest-first stdin, kept-open stdin for `tool_result` writes, stdout NDJSON. This pins how the Worker expresses that transport in code: behind `WorkerTransport`, with `StdioTransportLive` the sole `process.stdin`/`stdout` site.
 - **[ADR-0018](./0018-workflow-and-tools-definition.md):** the generic interpreter stays the deep module; it now requires `WorkerTransport` from context instead of taking loose `emit`/`callTool` parameters.
-- **[ADR-0019](./0019-test-harness-architecture.md):** faux provider scripting via `depsFor`'s env branches stays for now; moving it out of the shipping bundle is a named follow-up, not done here.
+- **[ADR-0019](./0019-test-harness-architecture.md):** faux provider scripting via `depsFor`'s env branches stayed for the transport-seam change; it was **subsequently evicted** to a test-only Worker entry (`faux-worker.ts`) over a shared `runWorkerMain`, so the shipping `cli.ts` carries no test code — see ADR-0019's as-built amendment.
 - **[ADR-0020](./0020-effect-across-typescript.md):** `main` becomes `Effect.gen` entry-to-exit and the transport is a `Context.Tag` provided by a `Layer`, matching `ui-sdk`'s `WsClient`. Closes the gap where `cli.ts` was the one TypeScript module on raw promises and callbacks.
 
 ## As-built notes
@@ -66,5 +66,5 @@ Recorded after the four-slice implementation to keep the decision honest:
 - [ADR-0006](./0006-run-events-vs-tool-protocol.md) — the Run Event / Tool Protocol split the two methods honor.
 - [ADR-0013](./0013-worker-process-lifecycle-and-transport.md) — the stdio transport this expresses in code.
 - [ADR-0018](./0018-workflow-and-tools-definition.md) — the generic interpreter that depends on the seam.
-- [ADR-0019](./0019-test-harness-architecture.md) — the `depsFor` eviction left as a follow-up.
+- [ADR-0019](./0019-test-harness-architecture.md) — the `depsFor` eviction, since completed (faux scripting moved to a test-only Worker entry).
 - [ADR-0020](./0020-effect-across-typescript.md) — the Effect `Layer` idiom this adopts for the seam.

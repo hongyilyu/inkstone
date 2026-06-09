@@ -159,11 +159,12 @@ impl<'a> CoreBuilder<'a> {
         self
     }
 
-    /// Point `INKSTONE_WORKER_CMD` at the real generic interpreter
-    /// (`packages/worker/src/cli.ts`) — the offline `faux` provider path, not a
-    /// fixture worker.
-    pub fn worker_interpreter(mut self) -> Self {
-        let cli = repo_root().join("packages/worker/src/cli.ts");
+    /// Point `INKSTONE_WORKER_CMD` at the test-only faux interpreter entry
+    /// (`packages/worker/src/faux-worker.ts`) — the offline `faux` provider path
+    /// that drives the *real* interpreter, NOT the production `cli.ts` (which
+    /// carries no faux code) and not a dumb fixture worker.
+    pub fn worker_faux(mut self) -> Self {
+        let cli = repo_root().join("packages/worker/src/faux-worker.ts");
         self.worker_cmd = Some(format!("{} {}", tsx_bin().display(), cli.display()));
         self
     }

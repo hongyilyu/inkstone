@@ -1,4 +1,4 @@
-import { INTERPRETER_WORKER_CMD } from "./spawnCore.js";
+import { FAUX_WORKER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
 
 /**
@@ -43,7 +43,7 @@ const SCREENSHOT_DIR =
 
 test.use({
 	coreOptions: {
-		workerCmd: INTERPRETER_WORKER_CMD,
+		workerCmd: FAUX_WORKER_CMD,
 		fauxResponse: RICH_MARKDOWN_REPLY,
 	},
 });

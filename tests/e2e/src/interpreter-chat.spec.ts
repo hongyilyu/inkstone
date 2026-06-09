@@ -1,10 +1,11 @@
-import { INTERPRETER_WORKER_CMD } from "./spawnCore.js";
+import { FAUX_WORKER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
 
 /**
  * Real-interpreter chat acceptance flow (real-worker-codex slices 2/4/5,
- * ADR-0018): Core spawns the GENERIC pi-agent-core interpreter
- * (packages/worker/src/cli.ts), not the echo fixture, and a user's message
+ * ADR-0018): Core spawns the GENERIC pi-agent-core interpreter via the
+ * test-only faux entry (packages/worker/src/faux-worker.ts), not the echo
+ * fixture, and a user's message
  * streams a real agent-loop completion back into the chat.
  *
  * Runs fully offline via the faux provider (ADR-0019 as-built): the Workflow
@@ -14,7 +15,7 @@ import { expect, test } from "./fixtures.js";
  */
 test.use({
 	coreOptions: {
-		workerCmd: INTERPRETER_WORKER_CMD,
+		workerCmd: FAUX_WORKER_CMD,
 		fauxResponse: "the codex says hello",
 	},
 });

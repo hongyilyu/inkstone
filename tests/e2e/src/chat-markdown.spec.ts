@@ -1,10 +1,10 @@
-import { INTERPRETER_WORKER_CMD } from "./spawnCore.js";
+import { FAUX_WORKER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
 
 /**
  * Markdown-rendering acceptance flow (chat-markdown-rendering slice 1, ADR-0021).
  * The faux provider streams a markdown completion through the real interpreter
- * (INTERPRETER_WORKER_CMD), and we assert through the real Chromium DOM that the
+ * (FAUX_WORKER_CMD), and we assert through the real Chromium DOM that the
  * assistant bubble rendered it as formatted HTML — a real <h1>, a real GFM
  * <table>, and a real <a target="_blank"> with rel containing noreferrer — not
  * a literal string. A screenshot of the bubble is captured as a human-review
@@ -40,7 +40,7 @@ const COPY_SCREENSHOT_PATH =
 
 test.use({
 	coreOptions: {
-		workerCmd: INTERPRETER_WORKER_CMD,
+		workerCmd: FAUX_WORKER_CMD,
 		fauxResponse: MARKDOWN_REPLY,
 	},
 });
@@ -150,7 +150,7 @@ test.describe("copy button", () => {
 
 	test.use({
 		coreOptions: {
-			workerCmd: INTERPRETER_WORKER_CMD,
+			workerCmd: FAUX_WORKER_CMD,
 			fauxResponse: COPY_REPLY,
 		},
 	});

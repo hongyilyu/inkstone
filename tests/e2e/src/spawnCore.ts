@@ -58,21 +58,23 @@ const LOGIN_HELPER_FIXTURE = path.join(
  */
 export const LOGIN_HELPER_CMD = `${TSX_BIN} ${LOGIN_HELPER_FIXTURE} login`;
 
-const INTERPRETER_CLI = path.join(
+const FAUX_WORKER_TS = path.join(
 	REPO_ROOT,
 	"packages",
 	"worker",
 	"src",
-	"cli.ts",
+	"faux-worker.ts",
 );
 
 /**
- * The REAL generic interpreter worker command (packages/worker/src/cli.ts),
- * as opposed to the slow-worker echo fixture. Paired with a faux workflow +
- * `fauxResponse`, it drives the real pi-agent-core loop offline through the
- * browser. Use via `coreOptions.workerCmd = INTERPRETER_WORKER_CMD`.
+ * The TEST-ONLY faux interpreter worker command
+ * (packages/worker/src/faux-worker.ts), as opposed to the slow-worker echo
+ * fixture. It drives the REAL pi-agent-core loop offline with an env-scripted
+ * faux provider; the production entry (`cli.ts`) carries no faux code. Paired
+ * with a faux workflow + `fauxResponse`/`fauxError`/`fauxToolCall`/`faux`, use
+ * via `coreOptions.workerCmd = FAUX_WORKER_CMD`.
  */
-export const INTERPRETER_WORKER_CMD = `${TSX_BIN} ${INTERPRETER_CLI}`;
+export const FAUX_WORKER_CMD = `${TSX_BIN} ${FAUX_WORKER_TS}`;
 
 export interface SpawnCoreOptions {
 	/** Bind port. Default 0 → OS-assigned ephemeral (avoids cross-test collisions). */
@@ -100,14 +102,14 @@ export interface SpawnCoreOptions {
 	 * When set, write a faux Workflow (`provider="faux"`) into a per-test
 	 * workflows dir and feed the faux provider this canned response via
 	 * `INKSTONE_FAUX_RESPONSE`. Combined with `workerCmd =
-	 * INTERPRETER_WORKER_CMD`, this drives the real pi-agent-core loop offline
+	 * FAUX_WORKER_CMD`, this drives the real pi-agent-core loop offline
 	 * so a browser test can assert a real interpreter completion (not echo).
 	 */
 	readonly fauxResponse?: string;
 	/**
 	 * When set, the faux provider FAILS the turn with this message
 	 * (`stopReason: "error"`) instead of replying. Combined with `workerCmd =
-	 * INTERPRETER_WORKER_CMD`, this produces the same `error` Run Event a real
+	 * FAUX_WORKER_CMD`, this produces the same `error` Run Event a real
 	 * provider/network failure would — letting a browser test assert the
 	 * error surfaces in the UI. Maps to `INKSTONE_FAUX_ERROR`.
 	 */
@@ -117,13 +119,13 @@ export interface SpawnCoreOptions {
 	 * and drive the faux provider in tool-call mode (`INKSTONE_FAUX_TOOL_CALL`):
 	 * turn 1 calls `read_thread` with a thread id extracted from the user's
 	 * prompt, turn 2 echoes the tool result. Paired with `workerCmd =
-	 * INTERPRETER_WORKER_CMD` this exercises the full Tool Protocol round-trip
+	 * FAUX_WORKER_CMD` this exercises the full Tool Protocol round-trip
 	 * (Worker proxy ↔ Core registry) end-to-end through the browser.
 	 */
 	readonly fauxToolCall?: boolean;
 	/**
 	 * Drive a higher-level faux interpreter mode by name (paired with `workerCmd
-	 * = INTERPRETER_WORKER_CMD`). `"propose"` writes a faux Workflow allowlisting
+	 * = FAUX_WORKER_CMD`). `"propose"` writes a faux Workflow allowlisting
 	 * `propose_entity` and runs the worker in propose mode
 	 * (`INKSTONE_FAUX_PROPOSE`): turn 1 proposes a Todo (`buy milk`) so Core
 	 * parks the Run; on accept/reject the Run resumes to a short completion. This
@@ -234,7 +236,7 @@ export async function spawnCore(
 
 	// Faux-interpreter mode: write a provider="faux" Workflow into a per-test
 	// workflows dir and feed the canned response to the faux provider. Paired
-	// with workerCmd = INTERPRETER_WORKER_CMD this drives the real
+	// with workerCmd = FAUX_WORKER_CMD this drives the real
 	// pi-agent-core loop offline (ADR-0019 faux seam). `fauxError` instead
 	// makes the faux provider fail the turn (stopReason error) — the same
 	// `error` Run Event a real provider/network failure produces.

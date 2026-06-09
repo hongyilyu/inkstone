@@ -64,7 +64,7 @@ fn second_run_sees_prior_exchange() {
 
     let core = workspace
         .core()
-        .worker_interpreter()
+        .worker_faux()
         .env("INKSTONE_WORKFLOWS_DIR", &workflows_dir)
         // History-echo mode: faux replies with the prior user texts it saw.
         .env("INKSTONE_FAUX_ECHO_HISTORY", "1")

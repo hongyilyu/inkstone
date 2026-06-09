@@ -23,6 +23,16 @@ Consequences for this ADR's original mock plan:
 - Offline determinism for the real-interpreter slices comes from `faux`. The `slow-worker.ts` gate fixture remains for the Core-level mid-stream/pause flows that predate the interpreter.
 - The real `openai-codex` provider is exercised only by **manual smoke** (a real ChatGPT login + completion), never in the automated suite — consistent with "no test ever touches a real provider."
 
+## As-built amendment: faux scripting lives in a test-only Worker entry, not the shipping path
+
+The faux script selection above (`INKSTONE_FAUX_*` env branches) originally lived in `depsFor` inside the **production** Worker entry `packages/worker/src/cli.ts` — runtime-env-gated test code in the shipping bundle, the open gap [ADR-0027](./0027-worker-interpreter-transport-seam.md) named and deferred. It is now evicted:
+
+- **`cli.ts` is production-only:** read the manifest, build `defaultInterpreterDeps()`, run the interpreter. No faux imports, no `INKSTONE_FAUX_*` reads.
+- **A test-only entry `packages/worker/src/faux-worker.ts`** owns the faux scripting (the five modes, reading `INKSTONE_FAUX_*` — legitimate, because it *is* test code now). Both entries call a shared `runWorkerMain(buildDeps)` that holds the manifest read and the terminal-event guarantee, so the faux entry still drives the **real** `pi-agent-core` interpreter — the whole point of the faux seam (it is not a stand-in for the loop). It sits in `packages/worker/src/` as a test-only sibling of `cli.ts`, the same role `transport-memory.ts` (the `InMemoryTransport`) already fills.
+- **Selection is by `INKSTONE_WORKER_CMD`:** Core spawns whichever entry a test points at (`faux-worker.ts` for faux runs, `cli.ts` in production). "Only Core spawns Worker" (ADR-0001/0013) is unchanged.
+
+**Why a test-only entry, not a manifest `faux_script` field.** Carrying the script on `WorkerManifest` was considered and rejected: it would put test-only data on the **production wire protocol** (`packages/protocol`), violating "test stays at test." A dedicated entry keeps every byte of faux scripting in test territory while leaving the protocol and Core untouched. So the faux *script* does not ride "the manifest" (as the amendment above loosely allowed) — it rides the test-only entry; the manifest still carries `provider = "faux"` so pi-ai resolves the faux provider, and `faux-worker.ts` reads the script from `INKSTONE_FAUX_*`.
+
 ## Core decisions
 
 - **Top-level `tests/` package**, registered in `pnpm-workspace.yaml`. Runs under Playwright's test runner with a `test:e2e` script. Not under `apps/` (it's not a product Client) and not under `packages/` (it's not a library). It's a `Test Harness` per the term in `CONTEXT.md`. The boundary with `bridges/` (per [ADR-0008](./0008-monorepo-shape.md)): `bridges/` holds protocol-level contract tests — Rust↔TS serialization round-trips, one shape per test, no spawned processes. `tests/` holds full-system behavioral tests through the Web Client. If a test could pass without rendering DOM, it belongs in `bridges/`.
