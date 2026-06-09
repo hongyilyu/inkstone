@@ -1,5 +1,6 @@
 //! Slice 4 (real-worker-codex): the Core cutover. Core spawns the generic
-//! `pi-agent-core` interpreter (packages/worker/src/cli.ts) with a manifest
+//! `pi-agent-core` interpreter (the test-only faux entry
+//! packages/worker/src/faux-worker.ts) with a manifest
 //! on stdin, and a real agent-loop Run streams a completion back through the
 //! hub end-to-end. Determinism comes from pi-ai's `faux` provider
 //! (ADR-0019 as-built): the workflow declares `provider="faux"` and the
@@ -44,7 +45,7 @@ fn faux_completion_streams_through_core() {
 
     let core = workspace
         .core()
-        .worker_interpreter()
+        .worker_faux()
         .env("INKSTONE_WORKFLOWS_DIR", &workflows_dir)
         // Inherited by the spawned Worker; the faux provider replies with it.
         .env("INKSTONE_FAUX_RESPONSE", faux_response)

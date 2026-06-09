@@ -1,10 +1,11 @@
-import { INTERPRETER_WORKER_CMD } from "./spawnCore.js";
+import { FAUX_WORKER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
 
 /**
  * Tool Protocol capstone (ADR-0018): the full cross-thread read, end-to-end
- * through the real stack — real Core, the real generic interpreter Worker
- * (packages/worker/src/cli.ts), and the real built Web Client in the browser.
+ * through the real stack — real Core, the real generic interpreter Worker via
+ * the test-only faux entry (packages/worker/src/faux-worker.ts), and the real
+ * built Web Client in the browser.
  *
  * Offline via the faux provider in tool-call mode (ADR-0019): the Workflow
  * allowlists `read_thread`; the faux "model" extracts a thread id from the
@@ -14,7 +15,7 @@ import { expect, test } from "./fixtures.js";
  */
 test.use({
 	coreOptions: {
-		workerCmd: INTERPRETER_WORKER_CMD,
+		workerCmd: FAUX_WORKER_CMD,
 		fauxToolCall: true,
 	},
 });
