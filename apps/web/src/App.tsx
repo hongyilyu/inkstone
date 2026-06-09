@@ -88,7 +88,7 @@ export default function App({
 							strokeWidth="2"
 						/>
 					</svg>
-					<div className="absolute top-3 right-3 z-10">
+					<div className="absolute top-1.5 right-3 z-10">
 						<TopRightControls
 							onOpenSettings={onOpenSettings}
 							railCollapsed={rightRailCollapsed}
