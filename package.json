@@ -5,6 +5,7 @@
 	"main": "index.js",
 	"scripts": {
 		"test": "echo \"Error: no test specified\" && exit 1",
+		"dev": "concurrently -k -n core,web -c blue,green \"cargo run --manifest-path crates/core/Cargo.toml\" \"pnpm dev:web\"",
 		"dev:web": "pnpm --filter @inkstone/web dev",
 		"check:ts": "pnpm -r --if-present check",
 		"check:rust": "cargo check --manifest-path crates/core/Cargo.toml",
@@ -27,7 +28,8 @@
 	},
 	"type": "module",
 	"devDependencies": {
-		"@biomejs/biome": "2.4.15"
+		"@biomejs/biome": "2.4.15",
+		"concurrently": "^9.1.2"
 	},
 	"private": true
 }

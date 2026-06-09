@@ -3,3 +3,13 @@ packages:
   - "packages/*"
   - "bridges/*"
   - "tests/*"
+allowBuilds:
+  '@google/genai': set this to true or false
+  esbuild: set this to true or false
+  msgpackr-extract: set this to true or false
+  protobufjs: set this to true or false
+onlyBuiltDependencies:
+  - "@google/genai"
+  - esbuild
+  - msgpackr-extract
+  - protobufjs
