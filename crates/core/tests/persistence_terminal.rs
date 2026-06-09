@@ -88,7 +88,7 @@ fn done_event_completes_run() {
         run_id
     });
 
-    // _child's Drop kills + reaps Core. Run assertions while Core is still
+    // core's Drop kills + reaps Core. Run assertions while Core is still
     // alive — the terminal tx already committed during the 200ms sleep above
     // so a fresh ro pool sees the final state regardless.
     rt.block_on(async {
@@ -207,7 +207,7 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
         run_id
     });
 
-    // _child's Drop kills + reaps Core whenever this fn returns/panics.
+    // core's Drop kills + reaps Core whenever this fn returns/panics.
     rt.block_on(async {
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()

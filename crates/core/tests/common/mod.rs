@@ -78,6 +78,13 @@ pub fn fixture_path(file: &str) -> PathBuf {
 pub fn fixture_cmd(file: &str, args: &[&str]) -> String {
     let mut cmd = format!("{} {}", tsx_bin().display(), fixture_path(file).display());
     for arg in args {
+        // Core whitespace-splits the command, so an arg containing a space would
+        // be parsed as two — guard future callers (all current args are single
+        // tokens, and the repo path is space-free).
+        debug_assert!(
+            !arg.contains(char::is_whitespace),
+            "fixture_cmd arg {arg:?} contains whitespace; Core would mis-split the command"
+        );
         cmd.push(' ');
         cmd.push_str(arg);
     }
@@ -202,37 +209,71 @@ impl<'a> CoreBuilder<'a> {
 
         let mut child = cmd.spawn().map_err(SpawnError::Spawn)?;
         let stdout = child.stdout.take().expect("piped stdout");
-        let mut reader = BufReader::new(stdout);
+
+        // Read Core's stdout on a dedicated thread that forwards each line over
+        // a channel. This keeps `try_spawn` synchronous (tests build their own
+        // runtime afterward) while making `listen_timeout` enforceable even when
+        // Core stays alive but SILENT: a blocking `read_line` on this thread
+        // would never observe the deadline, so a boot deadlock would hang CI
+        // indefinitely instead of failing fast. The thread runs until it reads
+        // the announce line, hits EOF (Core exited), or the receiver goes away;
+        // a `kill()` unblocks it via EOF, so it never outlives Core.
+        let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<String>>();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break, // EOF: Core closed stdout.
+                    Ok(_) => {
+                        if tx.send(Ok(line)).is_err() {
+                            break; // receiver dropped — URL found (or spawn aborted).
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e));
+                        break;
+                    }
+                }
+            }
+        });
 
         let deadline = Instant::now() + self.listen_timeout;
         let http_url = loop {
-            if Instant::now() > deadline {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(SpawnError::Timeout);
-            }
-            let mut line = String::new();
-            let read = match reader.read_line(&mut line) {
-                Ok(n) => n,
-                Err(e) => {
+            };
+            match rx.recv_timeout(remaining) {
+                Ok(Ok(line)) => {
+                    let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+                    if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
+                        break rest.to_string();
+                    }
+                    // Any other line (Core diagnostics): keep waiting.
+                }
+                Ok(Err(e)) => {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(SpawnError::Io(e));
                 }
-            };
-            if read == 0 {
-                // stdout closed before announcing → Core exited (fail-fast boot).
-                let status = child.wait().ok();
-                return Err(SpawnError::ExitedBeforeListening(status));
-            }
-            let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-            if let Some(rest) = trimmed.strip_prefix("INKSTONE_LISTENING ") {
-                break rest.to_string();
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(SpawnError::Timeout);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    // The reader thread ended without announcing → Core closed
+                    // stdout before listening (fail-fast boot).
+                    let status = child.wait().ok();
+                    return Err(SpawnError::ExitedBeforeListening(status));
+                }
             }
         };
-        // Close the read end now that we have the URL; Core logs to stderr, not
-        // stdout, after announcing (matches the long-standing per-test behavior).
-        drop(reader);
+        // The reader thread keeps draining stdout until Core exits; dropping the
+        // receiver makes its next send fail so it stops once Core is gone.
+        drop(rx);
 
         let ws_url = http_url
             .strip_prefix("http://")
