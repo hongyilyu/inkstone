@@ -1,4 +1,4 @@
-import { Copy, Library } from "lucide-react";
+import { Copy, Library, Plus } from "lucide-react";
 import { useState } from "react";
 import { NavShell, navRow } from "@/components/ui/nav-shell";
 import { useThreads } from "@/lib/hooks/useThreads";
@@ -39,8 +39,9 @@ export function Sidebar({
 				<button
 					type="button"
 					onClick={newChat}
-					className="flex h-9 cursor-pointer items-center justify-center rounded-lg bg-primary font-semibold text-primary-foreground text-sm shadow-sm transition-colors hover:bg-primary/90"
+					className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-lg bg-secondary px-3 text-left font-semibold text-secondary-foreground text-sm transition-colors hover:bg-[color-mix(in_oklab,var(--primary)_12%,var(--secondary))]"
 				>
+					<Plus className="size-4 shrink-0" aria-hidden />
 					New Chat
 				</button>
 				<button
@@ -68,41 +69,55 @@ export function Sidebar({
 				Last 30 days
 			</div>
 
-			<ul className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+			<ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
 				{filtered.length === 0 ? (
 					<li className="px-3 py-2 text-muted-foreground text-xs">
 						No threads match.
 					</li>
 				) : (
-					filtered.map((item) => (
-						<li
-							key={item.id}
-							className={cn(
-								"group flex h-9 items-center rounded-lg pr-1 transition-colors hover:bg-sidebar-accent",
-								item.id === focusedThreadId && "bg-sidebar-accent",
-							)}
-						>
-							<button
-								type="button"
-								onClick={() => setFocusedThread(item.id)}
-								aria-current={item.id === focusedThreadId ? "true" : undefined}
-								className="h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg px-3 text-left text-sidebar-foreground text-sm"
+					filtered.map((item) => {
+						const isCurrent = item.id === focusedThreadId;
+						return (
+							<li
+								key={item.id}
+								className={cn(
+									"group relative flex h-10 items-center rounded-lg pr-1 transition-colors",
+									isCurrent ? "bg-secondary/70" : "hover:bg-primary/10",
+								)}
 							>
-								{item.title}
-							</button>
-							<button
-								type="button"
-								aria-label={`Copy thread id for ${item.title}`}
-								title="Copy thread id"
-								onClick={() => {
-									void navigator.clipboard?.writeText(item.id);
-								}}
-								className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover:opacity-100"
-							>
-								<Copy className="size-3.5" />
-							</button>
-						</li>
-					))
+								{isCurrent && (
+									<span
+										aria-hidden="true"
+										className="pointer-events-none absolute top-1/2 left-2 size-[5px] -translate-y-1/2 rounded-full bg-primary"
+									/>
+								)}
+								<button
+									type="button"
+									onClick={() => setFocusedThread(item.id)}
+									aria-current={isCurrent ? "true" : undefined}
+									className={cn(
+										"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm",
+										isCurrent
+											? "font-semibold text-secondary-foreground"
+											: "text-sidebar-foreground",
+									)}
+								>
+									{item.title}
+								</button>
+								<button
+									type="button"
+									aria-label={`Copy thread id for ${item.title}`}
+									title="Copy thread id"
+									onClick={() => {
+										void navigator.clipboard?.writeText(item.id);
+									}}
+									className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+								>
+									<Copy className="size-3.5" />
+								</button>
+							</li>
+						);
+					})
 				)}
 			</ul>
 		</NavShell>
