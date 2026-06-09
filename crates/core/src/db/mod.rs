@@ -110,10 +110,10 @@ pub async fn list_threads(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String
     queries::list_threads(pool).await
 }
 
-/// One accepted Entity for `entity/list_todos` (slice 11): the raw tier-2
-/// `entities` columns. `data` is parsed from the stored JSON snapshot; a
-/// malformed row degrades to `data: null` rather than failing the whole read.
-/// The handler maps this straight onto the wire `EntityRow`.
+/// One accepted Entity for `entity/list`: the raw tier-2 `entities` columns.
+/// `data` is parsed from the stored JSON snapshot; a malformed row degrades to
+/// `data: null` rather than failing the whole read. The handler maps this
+/// straight onto the wire `EntityRow`.
 pub struct EntityRow {
     pub id: String,
     pub r#type: String,
@@ -122,11 +122,11 @@ pub struct EntityRow {
     pub updated_at: i64,
 }
 
-/// Read every accepted Todo for `entity/list_todos`, newest-first. Maps each
-/// `entities` row of `type='todo'` to an [`EntityRow`], parsing the stored
+/// Read every accepted Entity of `entity_type` for `entity/list`, newest-first.
+/// Maps each matching `entities` row to an [`EntityRow`], parsing the stored
 /// `data` JSON. Read-only.
-pub async fn list_todos(pool: &SqlitePool) -> sqlx::Result<Vec<EntityRow>> {
-    let rows = queries::list_todos(pool).await?;
+pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<Vec<EntityRow>> {
+    let rows = queries::list_by_type(pool, entity_type).await?;
     Ok(rows
         .into_iter()
         .map(|(id, r#type, data, created_at, updated_at)| EntityRow {

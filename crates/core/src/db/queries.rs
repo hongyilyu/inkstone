@@ -370,20 +370,22 @@ where
 
 // ─── entities + entity_revisions (ADR-0004) ───────────────────────────
 
-/// Read every accepted Todo for `entity/list_todos` (slice 11), newest-first.
+/// Read every accepted Entity of `entity_type` for `entity/list`, newest-first.
 /// Returns the raw `entities` columns `(id, type, data, created_at, updated_at)`
-/// for `type='todo'` rows; the handler parses `data` and maps each to the wire
-/// `EntityRow`. Read-only — no FK/transaction concerns.
-pub(super) async fn list_todos<'e, E>(
+/// for rows of the requested `type`; the handler parses `data` and maps each to
+/// the wire `EntityRow`. Read-only — no FK/transaction concerns.
+pub(super) async fn list_by_type<'e, E>(
     executor: E,
+    entity_type: &str,
 ) -> sqlx::Result<Vec<(String, String, String, i64, i64)>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(
         "SELECT id, type, data, created_at, updated_at \
-         FROM entities WHERE type = 'todo' ORDER BY created_at DESC",
+         FROM entities WHERE type = ?1 ORDER BY created_at DESC",
     )
+    .bind(entity_type)
     .fetch_all(executor)
     .await
 }

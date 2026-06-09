@@ -25,7 +25,7 @@ const stub = WsClient.of({
 	postMessage: die,
 	threadList: () => Effect.succeed({ threads: [] }),
 	threadGet: die,
-	listTodos: () => Effect.succeed({ entities: [] }),
+	listEntities: () => Effect.succeed({ entities: [] }),
 	subscribeRun: dieStream,
 	providerStatus: die,
 	providerLoginStart: die,

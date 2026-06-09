@@ -1,27 +1,29 @@
-//! `entity/list_todos` handler (slice 11, ADR-0004 read path): the live read
-//! the Library's Todos collection consumes.
+//! `entity/list` handler (ADR-0004 read path): the live read the Library's
+//! collections consume.
 //!
-//! No params — read every accepted Todo newest-first from tier 2, map each row
-//! to a wire [`EntityRow`], and frame an `{entities: [...]}` result. A DB read
-//! error surfaces as an internal error (-32603) via the combinator (ADR-0029);
-//! read-only, so there are no client-input error cases to validate. Mirrors
-//! [`super::thread_list`].
+//! Decode `EntityListParams` through the combinator (a missing/non-string
+//! `type` → `invalid_params`, ADR-0029), read every accepted Entity of that
+//! type newest-first from tier 2, map each row to a wire [`EntityRow`], and
+//! frame an `{entities: [...]}` result. A DB read error surfaces as an internal
+//! error (-32603) via the combinator. Mirrors [`super::thread_get`] (params
+//! decoded through the seam) and [`super::thread_list`] (rows mapped to the
+//! wire shape).
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use crate::db;
-use crate::protocol::{EntityListResult, EntityRow};
+use crate::protocol::{EntityListParams, EntityListResult, EntityRow};
 
-pub(super) async fn handle_list_todos(
+pub(super) async fn handle_list(
     pool: &SqlitePool,
     id: serde_json::Value,
     params: serde_json::Value,
     out_tx: &UnboundedSender<String>,
 ) {
-    handler::handle(id, params, out_tx, |_p: serde_json::Value| async move {
-        let rows = db::list_todos(pool)
+    handler::handle(id, params, out_tx, |params: EntityListParams| async move {
+        let rows = db::list_by_type(pool, &params.r#type)
             .await
             .map_err(|e| HandlerError::Internal(e.into()))?;
 

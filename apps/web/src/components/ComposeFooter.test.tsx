@@ -20,7 +20,7 @@ function makeRuntime() {
 		postMessage: die,
 		threadList: die,
 		threadGet: die,
-		listTodos: die,
+		listEntities: die,
 		subscribeRun: dieStream,
 		providerStatus: die,
 		providerLoginStart: die,

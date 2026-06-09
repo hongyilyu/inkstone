@@ -129,7 +129,9 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly threadGet: (
 			threadId: string,
 		) => Effect.Effect<ThreadGetResult, WsError>;
-		readonly listTodos: () => Effect.Effect<EntityListResult, WsError>;
+		readonly listEntities: (
+			type: string,
+		) => Effect.Effect<EntityListResult, WsError>;
 		readonly subscribeRun: (
 			runId: RunId,
 		) => Stream.Stream<RunEventValue, WsError>;
@@ -375,10 +377,13 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			): Effect.Effect<ThreadGetResult, WsError> =>
 				request("thread/get", { thread_id: threadId }, ThreadGetResult);
 
-			// entity/* (ADR-0004): the live read the Library's Todos collection
-			// consumes. No params (read path); returns the accepted Todos.
-			const listTodos = (): Effect.Effect<EntityListResult, WsError> =>
-				request("entity/list_todos", {}, EntityListResult);
+			// entity/* (ADR-0004): the live read the Library's collections
+			// consume. `entity/list` is type-parameterized — one Entity type per
+			// call (e.g. `todo` or `person`); returns the accepted Entities.
+			const listEntities = (
+				type: string,
+			): Effect.Effect<EntityListResult, WsError> =>
+				request("entity/list", { type }, EntityListResult);
 
 			// subscribeRun is request-driven (pure-subscribe): send run/subscribe,
 			// await its correlated response, THEN stream the run's events from the
@@ -439,7 +444,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				postMessage,
 				threadList,
 				threadGet,
-				listTodos,
+				listEntities,
 				subscribeRun,
 				providerStatus,
 				providerLoginStart,

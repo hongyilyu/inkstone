@@ -8,7 +8,7 @@ import { useRuntime } from "@/runtime";
 /**
  * The Library's accepted Entities (slice 11).
  *
- * Todos go LIVE: read from Core via `entity/list_todos` and mapped to the
+ * Todos go LIVE: read from Core via `entity/list` and mapped to the
  * Library `Todo` view model. People / Projects / Recipes stay on the
  * `@/data/mock/entities` fixture until those entity types exist in Core (Core
  * only ever creates Todos today) — so this hook merges the live Todos with the
@@ -22,7 +22,7 @@ export function useEntities() {
 		queryFn: async () => {
 			const program = Effect.gen(function* () {
 				const client = yield* WsClient;
-				return yield* client.listTodos();
+				return yield* client.listEntities("todo");
 			});
 			const { entities: rows } = await runtime.runPromise(program);
 			const liveTodos = rows.map(toLibraryTodo);
@@ -41,7 +41,7 @@ interface TodoData {
 }
 
 /**
- * Map a live `entity/list_todos` row to the Library `Todo` view model. The view
+ * Map a live `entity/list` row to the Library `Todo` view model. The view
  * model carries fields the mock fixture invented for richer rendering
  * (`recency`, `createdAt`, `dueInDays`, …) that the live entity store does not
  * yet have; we derive the few that matter and default the rest minimally:

@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { EntityCollection } from "./EntityCollection";
 
-// Stub WsClient whose `entity/list_todos` returns `todos`. `useEntities` reads
+// Stub WsClient whose `entity/list` returns `todos`. `useEntities` reads
 // the live Todos via this method (slice 11) and merges them with the non-todo
 // mock collections; the unused methods die if exercised.
 function makeRuntime(todos: EntityListResult["entities"]) {
@@ -19,7 +19,7 @@ function makeRuntime(todos: EntityListResult["entities"]) {
 		postMessage: () => unused,
 		threadList: () => unused,
 		threadGet: () => unused,
-		listTodos: () => Effect.succeed({ entities: todos }),
+		listEntities: () => Effect.succeed({ entities: todos }),
 		subscribeRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
@@ -70,7 +70,7 @@ describe("EntityCollection", () => {
 		expect(screen.getAllByRole("button")).toHaveLength(6);
 	});
 
-	it("renders live Todos read from entity/list_todos", async () => {
+	it("renders live Todos read from entity/list", async () => {
 		renderCollection("todo", [
 			{
 				id: "01900000-0000-7000-8000-000000000030",

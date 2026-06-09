@@ -1,13 +1,15 @@
-//! Slice 11 RED test (`entity/list_todos`): after a proposed Todo is accepted
-//! (the ADR-0025 park → `proposal/decide{accept}` path), `entity/list_todos`
-//! returns it as an `EntityListResult { entities: [...] }` row carrying the
-//! Todo's `id`, `type='todo'`, its `data` JSON (`{title:"buy milk", …}`), and
-//! the `created_at`/`updated_at` stamps. This is the read the Library's Todos
-//! collection consumes live (replacing the mock).
+//! Slice 2 RED test (`entity/list`): after a proposed Entity is accepted (the
+//! ADR-0025 park → `proposal/decide{accept}` path), `entity/list({type})`
+//! returns the accepted Entities of that `type`, newest-first, as an
+//! `EntityListResult { entities: [...] }`. Each row carries the Entity's `id`,
+//! its `type`, its `data` JSON, and the `created_at`/`updated_at` stamps. The
+//! read filters by `type`: listing the OTHER type returns no rows. This is the
+//! read the Library's collections consume live (replacing the mock).
 //!
-//! Reuses the (two-spawn) `tests/fixtures/propose-worker.ts` over
-//! `INKSTONE_WORKER_CMD` to mint the accepted Todo end-to-end, then reads it
-//! back over the same wire with the new method.
+//! The faux `tests/fixtures/propose-worker.ts` proposes ONE kind per Core
+//! instance (env `INKSTONE_PROPOSE_KIND`), so the two tests prove filtering in
+//! both directions: a todo Core lists its Todo (and zero People), a person Core
+//! lists its Person (and zero Todos).
 
 use std::time::{Duration, Instant};
 
@@ -69,10 +71,45 @@ async fn create_and_park(core: &CoreHandle) -> String {
     run_id
 }
 
-/// Slice 11: an accepted Todo is returned by `entity/list_todos`. Mint it via
-/// the park → accept path, then read it back over the new method and assert the
-/// row carries `type='todo'`, the Todo `data` (`title="buy milk"`), and the
-/// timestamps.
+/// Drive park → accept and return the created entity_id. Reused by both tests.
+async fn park_and_accept(core: &CoreHandle, idempotency_key: &str) -> String {
+    let run_id = create_and_park(core).await;
+
+    // Learn the proposal_id and accept it (creates the entity).
+    let resp = rpc(
+        core,
+        3,
+        "proposal/get",
+        serde_json::json!({ "run_id": run_id }),
+    )
+    .await;
+    let proposal_id = resp["result"]["proposal_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
+        .to_string();
+
+    let resp = rpc(
+        core,
+        4,
+        "proposal/decide",
+        serde_json::json!({
+            "proposal_id": proposal_id,
+            "decision": "accept",
+            "decision_idempotency_key": idempotency_key,
+        }),
+    )
+    .await;
+    resp["result"]["entity_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
+        .to_string()
+}
+
+/// Slice 2: an accepted Todo is returned by `entity/list({type:"todo"})`. Mint
+/// it via the park → accept path, then read it back over the type-parameterized
+/// method and assert the row carries `type='todo'`, the Todo `data`
+/// (`title="buy milk"`), and the timestamps. Listing `{type:"person"}` then
+/// returns no rows — the read filters by type.
 #[test]
 fn list_todos_returns_accepted() {
     let workspace = Workspace::new();
@@ -84,39 +121,10 @@ fn list_todos_returns_accepted() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        let run_id = create_and_park(&core).await;
+        let entity_id = park_and_accept(&core, "k1").await;
 
-        // Learn the proposal_id and accept it (creates the Todo entity).
-        let resp = rpc(
-            &core,
-            3,
-            "proposal/get",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        let proposal_id = resp["result"]["proposal_id"]
-            .as_str()
-            .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
-            .to_string();
-
-        let resp = rpc(
-            &core,
-            4,
-            "proposal/decide",
-            serde_json::json!({
-                "proposal_id": proposal_id,
-                "decision": "accept",
-                "decision_idempotency_key": "k1",
-            }),
-        )
-        .await;
-        let entity_id = resp["result"]["entity_id"]
-            .as_str()
-            .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
-            .to_string();
-
-        // The accepted Todo is now visible to `entity/list_todos`.
-        let resp = rpc(&core, 5, "entity/list_todos", serde_json::json!({})).await;
+        // The accepted Todo is now visible to `entity/list({type:"todo"})`.
+        let resp = rpc(&core, 5, "entity/list", serde_json::json!({ "type": "todo" })).await;
         let entities = resp["result"]["entities"]
             .as_array()
             .unwrap_or_else(|| panic!("result.entities is an array — body: {resp}"));
@@ -141,6 +149,78 @@ fn list_todos_returns_accepted() {
         assert!(
             row["updated_at"].is_number(),
             "row carries a numeric updated_at — body: {resp}"
+        );
+
+        // Listing the OTHER type returns no rows — the read filters by type.
+        let resp = rpc(&core, 6, "entity/list", serde_json::json!({ "type": "person" })).await;
+        let entities = resp["result"]["entities"]
+            .as_array()
+            .unwrap_or_else(|| panic!("result.entities is an array — body: {resp}"));
+        assert!(
+            entities.is_empty(),
+            "no People listed in a todo workspace — body: {resp}"
+        );
+    });
+}
+
+/// Slice 2 (Person Entity Type): an accepted Person is returned by
+/// `entity/list({type:"person"})`. The worker proposes a Person
+/// (`INKSTONE_PROPOSE_KIND=person`); after accept, the row carries
+/// `type='person'` and the Person `data` (`name="Alice"`). Listing
+/// `{type:"todo"}` returns no rows — filtering excludes the other type.
+#[test]
+fn list_person_returns_accepted() {
+    let workspace = Workspace::new();
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_KIND", "person")
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let entity_id = park_and_accept(&core, "p1").await;
+
+        // The accepted Person is visible to `entity/list({type:"person"})`.
+        let resp = rpc(&core, 5, "entity/list", serde_json::json!({ "type": "person" })).await;
+        let entities = resp["result"]["entities"]
+            .as_array()
+            .unwrap_or_else(|| panic!("result.entities is an array — body: {resp}"));
+        assert_eq!(entities.len(), 1, "exactly one Person listed — body: {resp}");
+
+        let row = &entities[0];
+        assert_eq!(
+            row["id"].as_str(),
+            Some(entity_id.as_str()),
+            "row id matches the accepted entity — body: {resp}"
+        );
+        assert_eq!(row["type"].as_str(), Some("person"), "row type is person");
+        assert_eq!(
+            row["data"]["name"].as_str(),
+            Some("Alice"),
+            "row data.name is the proposed Person name — body: {resp}"
+        );
+        assert!(
+            row["created_at"].is_number(),
+            "row carries a numeric created_at — body: {resp}"
+        );
+        assert!(
+            row["updated_at"].is_number(),
+            "row carries a numeric updated_at — body: {resp}"
+        );
+
+        // Listing the OTHER type returns no rows — filtering excludes Todos.
+        let resp = rpc(&core, 6, "entity/list", serde_json::json!({ "type": "todo" })).await;
+        let entities = resp["result"]["entities"]
+            .as_array()
+            .unwrap_or_else(|| panic!("result.entities is an array — body: {resp}"));
+        assert!(
+            entities.is_empty(),
+            "no Todos listed in a person workspace — body: {resp}"
         );
     });
 }
