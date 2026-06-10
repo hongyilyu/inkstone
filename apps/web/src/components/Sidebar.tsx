@@ -29,6 +29,7 @@ export function Sidebar({
 	const filtered = threads.filter((t) =>
 		t.title.toLowerCase().includes(query.trim().toLowerCase()),
 	);
+	const groups = groupByRecency(filtered);
 
 	const newChat = () => {
 		clearFocusedThread();
@@ -67,61 +68,102 @@ export function Sidebar({
 				onChange={(e) => setQuery(e.target.value)}
 			/>
 
-			<div className="px-3 pt-3 pb-1 font-semibold text-muted-foreground text-xs">
-				Last 30 days
-			</div>
-
-			<ul className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+			<div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
 				{filtered.length === 0 ? (
-					<li className="px-3 py-2 text-muted-foreground text-xs">
+					<p className="px-3 pt-3 text-muted-foreground text-xs">
 						No threads match.
-					</li>
+					</p>
 				) : (
-					filtered.map((item) => {
-						const isCurrent = item.id === focusedThreadId;
-						return (
-							<li
-								key={item.id}
-								className={cn(
-									"group relative flex h-10 items-center rounded-lg pr-1 transition-colors",
-									isCurrent ? "bg-secondary/70" : "hover:bg-primary/10",
-								)}
-							>
-								{isCurrent && (
-									<span
-										aria-hidden="true"
-										className="pointer-events-none absolute top-1/2 left-2 size-[5px] -translate-y-1/2 rounded-full bg-primary"
-									/>
-								)}
-								<button
-									type="button"
-									onClick={() => setFocusedThread(item.id)}
-									aria-current={isCurrent ? "true" : undefined}
-									className={cn(
-										"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm",
-										isCurrent
-											? "font-semibold text-secondary-foreground"
-											: "text-sidebar-foreground",
-									)}
-								>
-									{item.title}
-								</button>
-								<button
-									type="button"
-									aria-label={`Copy thread id for ${item.title}`}
-									title="Copy thread id"
-									onClick={() => {
-										void navigator.clipboard?.writeText(item.id);
-									}}
-									className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-								>
-									<Copy className="size-3.5" />
-								</button>
-							</li>
-						);
-					})
+					groups.map((group) => (
+						<section key={group.label}>
+							<h2 className="sticky top-0 z-10 bg-sidebar px-3 pt-3 pb-1 font-semibold text-muted-foreground text-xs">
+								{group.label}
+							</h2>
+							<ul className="flex flex-col gap-1">
+								{group.threads.map((item) => {
+									const isCurrent = item.id === focusedThreadId;
+									return (
+										<li
+											key={item.id}
+											className={cn(
+												"group relative flex h-10 items-center rounded-lg pr-1 transition-colors",
+												isCurrent ? "bg-secondary/70" : "hover:bg-primary/10",
+											)}
+										>
+											{isCurrent && (
+												<span
+													aria-hidden="true"
+													className="pointer-events-none absolute top-1/2 left-2 size-[5px] -translate-y-1/2 rounded-full bg-primary"
+												/>
+											)}
+											<button
+												type="button"
+												onClick={() => setFocusedThread(item.id)}
+												aria-current={isCurrent ? "true" : undefined}
+												className={cn(
+													"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm",
+													isCurrent
+														? "font-semibold text-secondary-foreground"
+														: "text-sidebar-foreground",
+												)}
+											>
+												{item.title}
+											</button>
+											<button
+												type="button"
+												aria-label={`Copy thread id for ${item.title}`}
+												title="Copy thread id"
+												onClick={() => {
+													void navigator.clipboard?.writeText(item.id);
+												}}
+												className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+											>
+												<Copy className="size-3.5" />
+											</button>
+										</li>
+									);
+								})}
+							</ul>
+						</section>
+					))
 				)}
-			</ul>
+			</div>
 		</NavShell>
 	);
+}
+
+type Thread = { id: string; title: string; last_activity_at: number };
+
+/**
+ * Bucket threads by how recently they were active, newest group first. Labels
+ * read like a person describing time ("Today", "Earlier this week") rather than
+ * a fixed window ("Last 30 days"). Boundaries are local calendar days: today,
+ * yesterday, the rest of the last 7 days, then everything older. Empty groups
+ * are dropped so the sidebar only shows headers that have threads.
+ */
+function groupByRecency(
+	threads: readonly Thread[],
+	now: number = Date.now(),
+): { label: string; threads: Thread[] }[] {
+	const startOfToday = new Date(now).setHours(0, 0, 0, 0);
+	const dayMs = 86_400_000;
+	const startOfYesterday = startOfToday - dayMs;
+	const startOfWeek = startOfToday - 6 * dayMs;
+
+	const groups: { label: string; threads: Thread[] }[] = [
+		{ label: "Today", threads: [] },
+		{ label: "Yesterday", threads: [] },
+		{ label: "Earlier this week", threads: [] },
+		{ label: "Older", threads: [] },
+	];
+
+	for (const t of threads) {
+		const at = t.last_activity_at;
+		if (at >= startOfToday) groups[0].threads.push(t);
+		else if (at >= startOfYesterday) groups[1].threads.push(t);
+		else if (at >= startOfWeek) groups[2].threads.push(t);
+		else groups[3].threads.push(t);
+	}
+
+	return groups.filter((g) => g.threads.length > 0);
 }
