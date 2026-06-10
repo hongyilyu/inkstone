@@ -54,7 +54,11 @@ export default function App({
 		<div
 			className="grid h-full bg-sidebar text-sidebar-foreground motion-safe:transition-[grid-template-columns] motion-safe:duration-300 motion-safe:ease-out-quint"
 			style={{
-				gridTemplateColumns: `16rem 1fr ${rightRailCollapsed ? "0px" : "320px"}`,
+				// Collapsed: keep a thin strip of chrome (not 0px) so the chat
+				// card's rounded right edge stays visible against the sidebar —
+				// the boundary reads the same as when the rail is open. The rail's
+				// own px-3 padding means this sliver only ever shows bg, no content.
+				gridTemplateColumns: `16rem 1fr ${rightRailCollapsed ? "0.5rem" : "320px"}`,
 			}}
 		>
 			<div className="overflow-hidden">
