@@ -7,3 +7,4 @@ target
 .DS_Store
 .claude/worktrees
 .agents/runs
+**/.codex

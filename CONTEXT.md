@@ -114,8 +114,16 @@ _Avoid_: run events (that names the wire stream), audit log, event stream, run t
 ### Domain
 
 **Entity**:
-A structured concept Inkstone tracks for query and reasoning — a Person, Project, Todo, Recipe, etc. An Entity has a lifecycle: it begins as an *extraction candidate* in tier 3 (projection) or as a user creation, becomes a Proposal in tier 2, and on acceptance becomes a canonical Entity record in tier 2. Threads, Runs, and Proposals are not Entities — they are application state.
+A structured concept Inkstone tracks for query and reasoning — a Journal Entry, Person, Project, Todo, Recipe, etc. An Entity has a lifecycle: it begins as an *extraction candidate* in tier 3 (projection) or as a user creation, becomes a Proposal in tier 2, and on acceptance becomes a canonical Entity record in tier 2. Threads, Runs, and Proposals are not Entities — they are application state.
 _Avoid_: object, record, item.
+
+**Journal Entry**:
+A canonical event/evidence Entity refined from one or more user source Messages. One Message may produce multiple Journal Entries, and one Journal Entry may later be refined by user Messages from multiple Threads. A Journal Entry records what happened, when it happened, and the accepted wording the user wants Inkstone to remember. Person, Project, and Todo Entities may be extracted from a Journal Entry, but they own their own current state after acceptance.
+_Avoid_: raw chat log, daily note row.
+
+**Daily Note**:
+A derived date-grouped view over Journal Entries, grouped by the entries' occurred time. It is not an Entity in the first model: editing, referencing, and provenance happen on the underlying Journal Entries and related Entities, and the Daily Note renders the current collection for a local day.
+_Avoid_: daily entity, daily document as source of truth.
 
 **Extraction Candidate**:
 A possible Entity surfaced by parsing or agent extraction, living in tier 3. Not yet ratified. Becomes an Accepted Entity only after passing through a Proposal.
@@ -125,8 +133,16 @@ _Avoid_: extracted entity (ambiguous with the accepted form), suggestion.
 An Entity record in tier 2 — created either by user action or by accepting a Proposal.
 
 **Entity Type**:
-The kind of structured concept an Entity is — Todo, Person, Project, Recipe, etc. Determines how the Entity's content is validated, versioned, and described back to the Worker when a Proposal that creates it is accepted. Distinct from the *change* a Proposal makes (create / update / delete): the Entity Type is *what the thing is*, the change is *what is being done to it*.
+The kind of structured concept an Entity is — Journal Entry, Todo, Person, Project, Recipe, etc. Determines how the Entity's content is validated, versioned, and described back to the Worker when a Proposal that creates it is accepted. Distinct from the *change* a Proposal makes (create / update / delete): the Entity Type is *what the thing is*, the change is *what is being done to it*.
 _Avoid_: kind (overloaded across unrelated discriminators), entity class, entity category.
+
+**Entity Source**:
+A provenance relationship that explains where an Entity came from or what evidence supports it. A Journal Entry can source from one or more user Messages; a Person, Project, or Todo extracted from a journal flow can source from the Journal Entry. Entity Sources answer "why does this Entity exist?" Assistant Messages are Thread context, not Entity Sources.
+_Avoid_: audit log, link.
+
+**Entity Reference**:
+A Journal Entry inline reference to an Accepted Entity. Entity References are addressed from Journal Entry body nodes and let the rendered entry point at the referenced Person, Project, or Todo while keeping the referenced Entity's data independent. They power backlinks and reference queries for journal entries in the first model.
+_Avoid_: source, mention, generic link.
 
 ### Agents
 
@@ -155,7 +171,7 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 >
 > **A:** Okay, then what?
 >
-> **B:** Your Message starts a **Run**. The **Dispatcher** picks a **Workflow**, the **Worker** drives the Run, and during a **Turn** it notices "Alice" and "Friday" look like a Person and a Todo worth tracking. Those are **Extraction Candidates** — possible Entities, living in tier 3.
+> **B:** Your Message starts a **Run**. The **Dispatcher** picks a **Workflow**, the **Worker** drives the Run, and the journaling Workflow first proposes a **Journal Entry** if the Message is worth capturing as an event. Once that Journal Entry is accepted, the Worker notices "Alice" and "Friday" look like a Person and a Todo worth tracking. Those are **Extraction Candidates** — possible Entities, living in tier 3.
 >
 > **A:** Wait — Alice becomes an Entity?
 >
@@ -163,7 +179,7 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 >
 > **A:** Who creates the Proposal?
 >
-> **B:** The Worker, during the Run. The Workflow submits a Proposal asking you to confirm: "Create Person 'Alice', set Todo 'Send Alice the schedule, due Friday'."
+> **B:** The Worker, during the Run. The Workflow submits Proposals one at a time: first "Create this Journal Entry," then, after it is accepted, "Create Person 'Alice'" or "Create Todo 'Send Alice the schedule, due Friday'." The accepted Journal Entry becomes the provenance source for the extracted Entities.
 >
 > **A:** And the Proposal is one of those Run Events?
 >
@@ -171,11 +187,10 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 >
 > **A:** I accept the Proposal. Now what?
 >
-> **B:** Core applies the change atomically. The Person record and the Todo land in tier 2 as **Accepted Entities**. Anything derived — search index, backlinks, the Vault export's Person and Todo pages if the export is configured to render them — gets rebuilt in tier 3.
+> **B:** Core applies each accepted change atomically. The Journal Entry, Person record, and Todo land in tier 2 as **Accepted Entities**. Core records **Entity Sources** so the Person and Todo point back to the Journal Entry, and **Entity References** so reference queries can find inline journal references. Anything derived — search index, backlinks, the Vault export's rendered pages if the export is configured to render them — gets rebuilt in tier 3.
 >
 > **A:** And later when I query "what do I owe Alice?"
 >
 > **B:** That hits tier 3 — an FTS or backlink lookup. If we ever lost tier 3 we could rebuild it from tier 2. We couldn't rebuild *Alice herself* that way, because the decision to create her happened through a Proposal you approved, and that decision is tier 2.
 
-Notable disambiguations the dialogue exercises: tier 2 vs tier 3 authority; Vault as derived export, not source; Extraction Candidate vs Accepted Entity; Proposal vs Run Event.
-
+Notable disambiguations the dialogue exercises: tier 2 vs tier 3 authority; Vault as derived export, not source; Journal Entry as accepted event record vs Message as chat input; Extraction Candidate vs Accepted Entity; Proposal vs Run Event.
