@@ -1,4 +1,4 @@
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { House, MessageSquareText, Search } from "lucide-react";
 import { NavShell, navRow, navRowActive } from "@/components/ui/nav-shell";
 import { KIND_META, KIND_ORDER, kindCounts } from "@/lib/entities";
@@ -8,11 +8,16 @@ import { openCommand } from "@/store/command";
 
 /** Left nav for the Library takeover: return-to-chat, search, the kinds. */
 export function LibraryNav() {
+	const navigate = useNavigate();
 	const { data } = useEntities();
 	const counts = kindCounts(data ?? []);
 
 	return (
-		<NavShell as="nav" ariaLabel="Library">
+		<NavShell
+			as="nav"
+			ariaLabel="Library"
+			onOpenSettings={() => navigate({ to: "/settings/models" })}
+		>
 			<div className="flex flex-col gap-0.5">
 				<Link to="/" className={navRow}>
 					<MessageSquareText className="size-4 shrink-0" aria-hidden />
