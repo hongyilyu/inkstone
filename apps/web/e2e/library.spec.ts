@@ -18,6 +18,9 @@ test("opens the Library from the sidebar and shows Today", async ({ page }) => {
 
 	await expect(page).toHaveURL(/\/library$/);
 	await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+	// The Library renders through the shared WorkspaceShell, so it carries the
+	// same framed middle region (a single `main` landmark) as the chat surface.
+	await expect(page.getByRole("main")).toBeVisible();
 	// Library nav lists the four kinds with counts.
 	const nav = page.getByRole("navigation", { name: /library/i });
 	await expect(nav.getByRole("link", { name: /people/i })).toBeVisible();
@@ -93,6 +96,58 @@ test("toggles a todo done", async ({ page }) => {
 		page.getByRole("button", {
 			name: 'Mark "Book the overdue dental cleaning" not done',
 		}),
+	).toBeVisible();
+});
+
+test("opens an entity in the shared collapsible rail, then closes it", async ({
+	page,
+}) => {
+	// Recipes stay mock-backed, so they render without Core (unlike People/Todos).
+	await page.goto("/library/recipes");
+	await page.getByRole("button", { name: /weeknight ragù/i }).click();
+	await expect(page).toHaveURL(/\/library\/recipes\?id=recipe_ragu/);
+
+	// The detail opens in the shared right rail — a complementary landmark, the
+	// same region kind the chat surface's rail uses.
+	const panel = page.getByRole("complementary", {
+		name: /weeknight ragù details/i,
+	});
+	await expect(
+		panel.getByRole("heading", { name: /weeknight ragù/i }),
+	).toBeVisible();
+
+	// The shared collapse control (the bay toggle) hides the rail: aria-pressed
+	// flips. We assert the semantic state, not pixels. There is no separate close
+	// button on the inspector — the rail's collapse control is the only dismiss.
+	const toggle = page.getByRole("button", { name: /details panel/i });
+	await expect(toggle).toHaveAttribute("aria-pressed", "false");
+	await toggle.click();
+	await expect(toggle).toHaveAttribute("aria-pressed", "true");
+	await toggle.click();
+	await expect(toggle).toHaveAttribute("aria-pressed", "false");
+});
+
+test("opens a Today entry in the rail without leaving Today", async ({
+	page,
+}) => {
+	await page.goto("/library");
+	await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+
+	// Click an in-focus project (Projects stay mock-backed, so present in preview).
+	await page
+		.getByRole("button", { name: /API v2 migration/i })
+		.first()
+		.click();
+
+	// Stays on Today (overview heading remains) — the detail opens in the shared
+	// rail in place, rather than switching to the collection view.
+	await expect(page).toHaveURL(/\/library\?id=/);
+	await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+	const panel = page.getByRole("complementary", {
+		name: /API v2 migration details/i,
+	});
+	await expect(
+		panel.getByRole("heading", { name: /API v2 migration/i }),
 	).toBeVisible();
 });
 

@@ -82,7 +82,6 @@ function renderCollection(
 			kind={kind}
 			selectedId={overrides?.selectedId ?? null}
 			onSelect={overrides?.onSelect ?? (() => {})}
-			onClose={() => {}}
 		/>,
 		{ wrapper: Wrapper },
 	);

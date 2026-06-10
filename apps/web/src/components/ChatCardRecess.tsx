@@ -17,11 +17,35 @@ const TR_RADIUS = 16; // top-right corner radius where the bay floor meets the r
 
 /**
  * Returns the path() definition string. Trace clockwise from the top-left
- * corner's start, around the perimeter of the visible chat-card shape.
+ * corner's start, around the perimeter of the visible card shape. With
+ * `bay: false` the top edge stays flat with both corners rounded — the plain
+ * framed surface a page uses when it has no right rail (and so no floating
+ * control to carve a recess for).
  */
-export function chatCardPath(width: number, height: number): string {
+export function chatCardPath(
+	width: number,
+	height: number,
+	opts: { bay?: boolean } = {},
+): string {
+	const { bay = true } = opts;
 	const W = width;
 	const H = height;
+
+	if (!bay) {
+		return [
+			// top-left corner
+			`M 0 ${TL_RADIUS}`,
+			`Q 0 0 ${TL_RADIUS} 0`,
+			// flat top edge across to the top-right corner
+			`H ${W - TR_RADIUS}`,
+			`Q ${W} 0 ${W} ${TR_RADIUS}`,
+			// down the right edge, across the bottom, up the left, close
+			`V ${H}`,
+			`H 0`,
+			`Z`,
+		].join(" ");
+	}
+
 	const recessLeft = W - RECESS_W;
 
 	return [

@@ -47,9 +47,6 @@ function KindRoute() {
 					search: { id: next },
 				})
 			}
-			onClose={() =>
-				navigate({ to: "/library/$kind", params: { kind: slug }, search: {} })
-			}
 		/>
 	);
 }

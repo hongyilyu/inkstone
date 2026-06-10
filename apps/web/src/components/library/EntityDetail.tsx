@@ -1,9 +1,8 @@
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, MessageSquareText, X } from "lucide-react";
+import { ArrowUpRight, MessageSquareText } from "lucide-react";
 import type { ReactNode } from "react";
 import { CopyButton } from "@/components/CopyButton.js";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button.js";
 import type { Entity, Person, Project, Recipe, Todo } from "@/lib/entities";
 import {
 	entitySubtitle,
@@ -24,16 +23,15 @@ import { EntityGlyph } from "./EntityGlyph.js";
 /**
  * The detail "Inspector" (ui-mock `/2` lineage): a focused panel for one
  * entity, its relations as deep links, and a path back to the Run that captured
- * it. `allEntities` resolves relations; `onClose` clears the selection.
+ * it. `allEntities` resolves relations. Dismissing the panel is the shell's job
+ * (the rail's collapse control), so the inspector has no close button of its own.
  */
 export function EntityDetail({
 	entity,
 	allEntities,
-	onClose,
 }: {
 	entity: Entity;
 	allEntities: Entity[];
-	onClose: () => void;
 }) {
 	const navigate = useNavigate();
 
@@ -62,14 +60,6 @@ export function EntityDetail({
 						{KIND_META[entity.kind].label} · {entitySubtitle(entity)}
 					</p>
 				</div>
-				<Button
-					variant="icon"
-					size="icon"
-					aria-label="Close details"
-					onClick={onClose}
-				>
-					<X className="size-4" aria-hidden />
-				</Button>
 			</header>
 
 			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">

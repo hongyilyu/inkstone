@@ -24,14 +24,10 @@ export function TodayOverview() {
 	const navigate = useNavigate();
 	const confirmed = useConfirmedReviews();
 
+	// Select in place: set `?id` on Today itself so the shell rail shows the
+	// detail without navigating away to the entity's collection.
 	const open = (id: string) => {
-		const entity = data?.find((e) => e.id === id);
-		if (!entity) return;
-		navigate({
-			to: "/library/$kind",
-			params: { kind: KIND_META[entity.kind].slug },
-			search: { id },
-		});
+		navigate({ to: "/library", search: { id } });
 	};
 
 	if (isPending) {
