@@ -7,7 +7,11 @@ const badgeVariants = cva(
 	{
 		variants: {
 			variant: {
-				secondary: "bg-secondary text-secondary-foreground",
+				// A hairline in the chip's own plum hue gives the pill a readable
+				// edge on low-contrast surfaces (e.g. the inspector's pink rail), where
+				// the soft-pink fill alone barely separates from the background.
+				secondary:
+					"border border-secondary-foreground/25 bg-secondary text-secondary-foreground",
 				primary: "bg-primary/10 text-primary",
 				destructive: "bg-destructive/12 text-destructive",
 			},

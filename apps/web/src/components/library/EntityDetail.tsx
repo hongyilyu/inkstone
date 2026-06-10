@@ -50,7 +50,7 @@ export function EntityDetail({
 
 	return (
 		<div className="flex h-full flex-col">
-			<header className="flex items-start gap-3 border-border border-b px-5 py-4">
+			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
 				<EntityGlyph entity={entity} size="lg" />
 				<div className="min-w-0 flex-1 pt-0.5">
 					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
@@ -88,7 +88,7 @@ export function EntityDetail({
 			</div>
 
 			{entity.source ? (
-				<footer className="border-border border-t p-2">
+				<footer className="border-foreground/15 border-t p-2">
 					<button
 						type="button"
 						onClick={openSource}

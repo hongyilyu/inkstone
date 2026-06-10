@@ -75,67 +75,73 @@ export function EntityCollection({
 	return (
 		<section aria-label={meta.plural} className="flex h-full min-h-0 flex-col">
 			<header className="shrink-0 px-6 pt-6 pb-4">
-				<div className="flex items-baseline gap-2">
-					<h1 className="font-bold text-2xl text-foreground tracking-tight">
-						{meta.plural}
-					</h1>
-					<span className="text-muted-foreground text-sm">{ofKind.length}</span>
+				<div className="mx-auto w-full max-w-3xl">
+					<div className="flex items-baseline gap-2">
+						<h1 className="font-bold text-2xl text-foreground tracking-tight">
+							{meta.plural}
+						</h1>
+						<span className="text-muted-foreground text-sm">
+							{ofKind.length}
+						</span>
+					</div>
+					<SearchField
+						variant="box"
+						wrapperClassName="mt-4"
+						value={query}
+						onChange={(e) => setQuery(e.target.value)}
+						onClear={() => setQuery("")}
+						aria-label={`Search ${meta.plural.toLowerCase()}`}
+						placeholder={`Search ${meta.plural.toLowerCase()}…`}
+					/>
 				</div>
-				<SearchField
-					variant="box"
-					wrapperClassName="mt-4"
-					value={query}
-					onChange={(e) => setQuery(e.target.value)}
-					onClear={() => setQuery("")}
-					aria-label={`Search ${meta.plural.toLowerCase()}`}
-					placeholder={`Search ${meta.plural.toLowerCase()}…`}
-				/>
 			</header>
 
-			<div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6">
-				{isPending ? (
-					<EntitySkeleton rows={8} />
-				) : isError ? (
-					<EmptyState
-						icon={meta.icon}
-						tone="danger"
-						title={`Couldn't load ${meta.plural.toLowerCase()}`}
-						description="Something went wrong reading your workspace. Try reloading."
-					/>
-				) : ofKind.length === 0 ? (
-					<EmptyState
-						icon={meta.icon}
-						title={`No ${meta.plural.toLowerCase()} yet`}
-						description={`${meta.plural} appear here as Inkstone notices them in your chats and you accept the Proposal.`}
-					/>
-				) : items.length === 0 ? (
-					<EmptyState
-						icon={Search}
-						title="No matches"
-						description={`Nothing in ${meta.plural.toLowerCase()} matches "${query.trim()}". Try a different search.`}
-					/>
-				) : (
-					<ul className="flex flex-col gap-0.5">
-						{items.map((entity) =>
-							entity.kind === "todo" ? (
-								<TodoRow
-									key={entity.id}
-									todo={entity}
-									selected={entity.id === selectedId}
-									onSelect={onSelect}
-								/>
-							) : (
-								<li key={entity.id}>
-									<EntityRow
-										entity={entity}
+			<div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
+				<div className="mx-auto w-full max-w-3xl">
+					{isPending ? (
+						<EntitySkeleton rows={8} />
+					) : isError ? (
+						<EmptyState
+							icon={meta.icon}
+							tone="danger"
+							title={`Couldn't load ${meta.plural.toLowerCase()}`}
+							description="Something went wrong reading your workspace. Try reloading."
+						/>
+					) : ofKind.length === 0 ? (
+						<EmptyState
+							icon={meta.icon}
+							title={`No ${meta.plural.toLowerCase()} yet`}
+							description={`${meta.plural} appear here as Inkstone notices them in your chats and you accept the Proposal.`}
+						/>
+					) : items.length === 0 ? (
+						<EmptyState
+							icon={Search}
+							title="No matches"
+							description={`Nothing in ${meta.plural.toLowerCase()} matches "${query.trim()}". Try a different search.`}
+						/>
+					) : (
+						<ul className="flex flex-col gap-0.5">
+							{items.map((entity) =>
+								entity.kind === "todo" ? (
+									<TodoRow
+										key={entity.id}
+										todo={entity}
 										selected={entity.id === selectedId}
 										onSelect={onSelect}
 									/>
-								</li>
-							),
-						)}
-					</ul>
-				)}
+								) : (
+									<li key={entity.id}>
+										<EntityRow
+											entity={entity}
+											selected={entity.id === selectedId}
+											onSelect={onSelect}
+										/>
+									</li>
+								),
+							)}
+						</ul>
+					)}
+				</div>
 			</div>
 		</section>
 	);
