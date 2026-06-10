@@ -41,6 +41,16 @@ The verbs are the single natural place to append the lifecycle event, so complet
 - Reversal cost is the re-scattering of those `UPDATE`s across the handlers and the loop; recorded as load-bearing rather than provisional.
 - No `packages/protocol` change: `run_events` is internal tier-2, not on the wire.
 
+## As-built amendment — Run Log: one writer (run-log-one-writer)
+
+A later refactor sharpened this area; the decisions above stand, with these deltas:
+
+- **`run_events` is renamed `run_log`** and named as a first-class concept — the **Run Log**, Core's durable record of a Run's lifecycle milestones — to end the collision with the wire **Run Event** (Worker-emitted, observational, never persisted). See CONTEXT.md *Run Log* / *Run Event*.
+- **The `kind` CHECK drops the never-written `tool_request`/`tool_result`.** Tool history lives in `tool_calls` + `run_steps` (surfaced by `read_run_timeline`), not the Run Log; those two kinds were anticipation reality routed elsewhere (ADR-0017 §"`run_events` is the durable backing"). The live set is exactly the seven written kinds: `running`, `parked`, `done`, `error`, `cancelled`, `proposal_pending`, `proposal_decided`.
+- **The run-creation event's kind is `running`, not `status`** (empty payload), so every entry names its moment directly like its siblings; `RunLogKind`'s members are the five Run-status moments plus the two proposal milestones.
+- **Sequence allocation + insert funnel through one verb, `run_log::append`.** The transition verbs (point (e) above) and the two non-transition writers (run creation; `park_on_proposal`'s `proposal_pending`) all call it; it owns `next_run_seq` + insert, removing the per-site boilerplate and the lone hardcoded `run_seq = 0` at creation. This refines (e): the verbs still decide *when* and *which kind*; `run_log` owns *how to append* and *what kinds exist*. It is not a state-machine/legality layer — the guard stays in the verbs — so it does not reopen "legality lives in the guard".
+- Migration edited in place (pre-release).
+
 ## Considered and rejected
 
 - **Event-sourced status (project from `run_events`).** Closest to the "auto-derive" intuition, but requires completing the writer + a projection + a reader, re-inventing the guard's concurrency role, and pays event-sourcing's complexity for benefits a single-user tool does not collect. Rejected.

@@ -2,13 +2,14 @@
 //!
 //! Status is materialized in tier 2, but every change funnels through these
 //! guarded verbs. The SQL `WHERE status = ...` clause is both the legality
-//! check and the race choke; each verb owns the fields and run_events row that
+//! check and the race choke; each verb owns the fields and run_log row that
 //! must move with the status.
 
 use sqlx::SqliteConnection;
 use uuid::Uuid;
 
 use super::queries;
+use super::run_log::{self, RunLogKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Moved {
@@ -88,8 +89,7 @@ impl RunStatus {
         }
 
         queries::mark_assistant_messages_completed(&mut *conn, run_id, now_ms).await?;
-        let next_seq = queries::next_run_seq(&mut *conn, run_id).await?;
-        queries::insert_run_event(&mut *conn, run_id, next_seq, "done", None, now_ms).await?;
+        run_log::append(&mut *conn, run_id, RunLogKind::Done, None, now_ms).await?;
         Ok(moved)
     }
 
@@ -121,16 +121,7 @@ impl RunStatus {
         queries::mark_streaming_messages_incomplete(&mut *conn, run_id, now_ms).await?;
         let payload =
             serde_json::json!({ "code": error_code, "message": error_message }).to_string();
-        let next_seq = queries::next_run_seq(&mut *conn, run_id).await?;
-        queries::insert_run_event(
-            &mut *conn,
-            run_id,
-            next_seq,
-            "error",
-            Some(&payload),
-            now_ms,
-        )
-        .await?;
+        run_log::append(&mut *conn, run_id, RunLogKind::Error, Some(&payload), now_ms).await?;
         Ok(moved)
     }
 
@@ -151,16 +142,7 @@ impl RunStatus {
 
         let payload =
             serde_json::json!({ "awaiting_tool_call_id": awaiting_tool_call_id }).to_string();
-        let next_seq = queries::next_run_seq(&mut *conn, run_id).await?;
-        queries::insert_run_event(
-            &mut *conn,
-            run_id,
-            next_seq,
-            "parked",
-            Some(&payload),
-            now_ms,
-        )
-        .await?;
+        run_log::append(&mut *conn, run_id, RunLogKind::Parked, Some(&payload), now_ms).await?;
         Ok(moved)
     }
 
@@ -192,16 +174,7 @@ impl RunStatus {
         }
 
         let payload = serde_json::json!({ "target": "run" }).to_string();
-        let next_seq = queries::next_run_seq(&mut *conn, run_id).await?;
-        queries::insert_run_event(
-            &mut *conn,
-            run_id,
-            next_seq,
-            "cancelled",
-            Some(&payload),
-            now_ms,
-        )
-        .await?;
+        run_log::append(&mut *conn, run_id, RunLogKind::Cancelled, Some(&payload), now_ms).await?;
         Ok(moved)
     }
 }
@@ -305,16 +278,7 @@ impl ProposalStatus {
             "proposal_id": proposal_id,
         })
         .to_string();
-        let next_seq = queries::next_run_seq(&mut *conn, run_id).await?;
-        queries::insert_run_event(
-            &mut *conn,
-            run_id,
-            next_seq,
-            "cancelled",
-            Some(&payload),
-            now_ms,
-        )
-        .await?;
+        run_log::append(&mut *conn, run_id, RunLogKind::Cancelled, Some(&payload), now_ms).await?;
         Ok(moved)
     }
 }
@@ -331,14 +295,5 @@ async fn insert_proposal_decided_event(
         "status": status.as_str(),
     })
     .to_string();
-    let next_seq = queries::next_run_seq(&mut *conn, run_id).await?;
-    queries::insert_run_event(
-        &mut *conn,
-        run_id,
-        next_seq,
-        "proposal_decided",
-        Some(&payload),
-        now_ms,
-    )
-    .await
+    run_log::append(&mut *conn, run_id, RunLogKind::ProposalDecided, Some(&payload), now_ms).await
 }

@@ -1,6 +1,6 @@
 //! SQLite tier-2 storage (ADR-0017). Resolves the DB path, opens a pool,
 //! and runs the embedded migration. The pool is the durable home for
-//! Threads, Runs, Messages, Run Events, Tool Calls, Proposals, and
+//! Threads, Runs, Messages, Run Log, Tool Calls, Proposals, and
 //! Entities.
 //!
 //! All SQL strings live in [`queries`]; this module owns the high-level
@@ -9,6 +9,7 @@
 
 mod lifecycle;
 mod queries;
+mod run_log;
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -330,15 +331,7 @@ async fn insert_initial_run_rows(
     queries::insert_message_run_step(&mut **tx, run_id, 0, user_message_id, now_ms).await?;
     queries::insert_message_run_step(&mut **tx, run_id, 1, assistant_message_id, now_ms).await?;
 
-    queries::insert_run_event(
-        &mut **tx,
-        run_id,
-        0,
-        "status",
-        Some(r#"{"status":"running"}"#),
-        now_ms,
-    )
-    .await?;
+    run_log::append(&mut **tx, run_id, run_log::RunLogKind::Running, None, now_ms).await?;
 
     queries::touch_thread_activity(&mut **tx, thread_id, now_ms).await
 }
@@ -442,12 +435,10 @@ pub async fn park_on_proposal(
         "change_kind": change_kind,
     })
     .to_string();
-    let next_seq = queries::next_run_seq(&mut *tx, run_id).await?;
-    queries::insert_run_event(
+    run_log::append(
         &mut *tx,
         run_id,
-        next_seq,
-        "proposal_pending",
+        run_log::RunLogKind::ProposalPending,
         Some(&payload),
         now_ms,
     )
@@ -765,7 +756,7 @@ pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<M
 /// changes through their guarded verbs: `ProposalStatus::cancel` (guard
 /// `status='pending'`) and `RunStatus::cancel` (guard `status='parked'`, owning
 /// `terminal_reason='cancelled'` + `ended_at`). Each verb appends its own
-/// `cancelled` `run_events` row in the same transaction.
+/// `cancelled` `run_log` row in the same transaction.
 /// Returns whether the Run was actually cancelled — `false` (tx rolled back,
 /// nothing changed) when the Run has no pending Proposal, or a concurrent
 /// decide/cancel already moved the Proposal off `pending` / the Run off
@@ -894,7 +885,7 @@ pub async fn select_run_snapshot(
 
 /// Slice 4: clean termination. Worker emitted `done`; flip `runs` to
 /// `completed`, the assistant `messages` row from `streaming` to
-/// `completed`, and append a terminal `run_events` row with `kind='done'`.
+/// `completed`, and append a terminal `run_log` row with `kind='done'`.
 /// All three writes happen in one transaction so a reader sees either the
 /// pre-terminal or post-terminal state, never an in-between mix.
 pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Moved> {
@@ -909,7 +900,7 @@ pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx:
 /// `terminal_reason='worker_disconnected'`, every `messages.status='streaming'`
 /// row for this Run to `'incomplete'` (the ADR-0017 invariant — no Message
 /// is left dangling at `'streaming'` after its Run terminates), and append
-/// a terminal `run_events` row with `kind='error'`. One transaction.
+/// a terminal `run_log` row with `kind='error'`. One transaction.
 pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Moved> {
     error_run_with_message(
         pool,
@@ -925,7 +916,7 @@ pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Re
 /// Worker emitted an explicit `error` Run Event (ADR-0006 lists errors as a
 /// Run Event subtype; this is the real-provider error path). Same terminal shape as [`error_run`] but with a
 /// caller-supplied `terminal_reason`, `error_code`, and `error_message`
-/// carried into both the `runs` row and the terminal `run_events` payload.
+/// carried into both the `runs` row and the terminal `run_log` payload.
 /// `terminal_reason` must satisfy the `runs` CHECK constraint
 /// (`worker_disconnected` for a disconnect, `errored` for a worker-emitted
 /// error). One transaction so a reader sees the pre- or post-terminal
@@ -1119,7 +1110,7 @@ mod tests {
     }
 
     async fn run_event_count(pool: &SqlitePool, run_id: &str, kind: &str) -> i64 {
-        sqlx::query_scalar("SELECT COUNT(*) FROM run_events WHERE run_id = ?1 AND kind = ?2")
+        sqlx::query_scalar("SELECT COUNT(*) FROM run_log WHERE run_id = ?1 AND kind = ?2")
             .bind(run_id)
             .bind(kind)
             .fetch_one(pool)

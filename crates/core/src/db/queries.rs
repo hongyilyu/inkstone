@@ -963,21 +963,21 @@ where
     .await
 }
 
-// ─── run_events ───────────────────────────────────────────────────────
+// ─── run_log ──────────────────────────────────────────────────────────
 
 pub(super) async fn next_run_seq<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<i64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_scalar(
-        "SELECT COALESCE(MAX(run_seq), -1) + 1 FROM run_events WHERE run_id = ?",
+        "SELECT COALESCE(MAX(run_seq), -1) + 1 FROM run_log WHERE run_id = ?",
     )
     .bind(run_id.to_string())
     .fetch_one(executor)
     .await
 }
 
-pub(super) async fn insert_run_event<'e, E>(
+pub(super) async fn insert_run_log_entry<'e, E>(
     executor: E,
     run_id: Uuid,
     run_seq: i64,
@@ -989,7 +989,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
-        "INSERT INTO run_events (run_id, run_seq, kind, payload, created_at) \
+        "INSERT INTO run_log (run_id, run_seq, kind, payload, created_at) \
          VALUES (?, ?, ?, ?, ?)",
     )
     .bind(run_id.to_string())
