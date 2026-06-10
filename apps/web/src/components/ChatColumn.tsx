@@ -129,7 +129,7 @@ function ChatWelcome() {
 				tone="brand"
 				size="lg"
 				title="Start a chat"
-				description="Type below to begin. Inkstone drafts the people, projects, todos, and recipes it notices, and they land in your Library once you approve them."
+				description="Type below to begin. Inkstone drafts journal entries and the structured items it notices, and they land in your Library once you approve them."
 			/>
 		</div>
 	);

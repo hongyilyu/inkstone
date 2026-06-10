@@ -97,8 +97,8 @@ export const RunEvent = S.Union(
 export type RunEvent = S.Schema.Type<typeof RunEvent>;
 
 // --- proposal/* (ADR-0025): a Proposal is a Tool Request awaiting a human
-// Decision. When the Worker emits a `propose_entity` tool_request, Core parks
-// the Run and persists a pending Proposal. The Proposal lifecycle rides this
+// Decision. When the Worker emits a `propose_workspace_mutation` tool_request,
+// Core parks the Run and persists a pending Proposal. The Proposal lifecycle rides this
 // `proposal/*` channel, NOT a new RunEvent variant (the wire RunEvent enum
 // stays frozen at text_delta/tool_call/done/error).
 
@@ -107,17 +107,16 @@ export const ProposalGetParams = S.Struct({ run_id: S.String });
 export type ProposalGetParams = S.Schema.Type<typeof ProposalGetParams>;
 
 /**
- * `proposal/get` result: the Run's pending Proposal. `kind` is the proposed
- * entity type (e.g. `todo`); `change_kind` is create|update|delete; `data` is
- * the opaque proposed entity payload; `rationale` is the model's reason (may
- * be null); `status` is the Proposal's lifecycle state.
+ * `proposal/get` result: the Run's pending Proposal. `mutation_kind` is the
+ * logical Workspace mutation; `payload` is the opaque mutation-specific body;
+ * `rationale` is the model's reason (may be null); `status` is the Proposal's
+ * lifecycle state.
  */
 export const ProposalGetResult = S.Struct({
 	proposal_id: S.String,
 	run_id: S.String,
-	kind: S.String,
-	change_kind: S.String,
-	data: S.Unknown,
+	mutation_kind: S.String,
+	payload: S.Unknown,
 	rationale: S.NullOr(S.String),
 	status: S.String,
 });

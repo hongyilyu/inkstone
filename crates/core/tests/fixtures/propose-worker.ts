@@ -3,12 +3,11 @@
 // Speaks the bidirectional Worker stdio protocol so it is a drop-in for the
 // real worker via `INKSTONE_WORKER_CMD`:
 //   - stdin (line 1): the full WorkerManifest JSON (one line).
-//   - stdout:         one `propose_entity` `tool_request` line (a Todo payload
-//                     by default; a Person payload when
-//                     INKSTONE_PROPOSE_KIND=person), then it BLOCKS reading
+//   - stdout:         one `propose_workspace_mutation` `tool_request` line,
+//                     then it BLOCKS reading
 //                     stdin forever.
 //
-// Park semantics (ADR-0025): when the Worker emits a `propose_entity`
+// Park semantics (ADR-0025): when the Worker emits a `propose_workspace_mutation`
 // tool_request, Core persists the Proposal + tool_call, sets the Run to
 // `parked`, and tears this Worker down (drops stdin → EOF). This fixture
 // therefore never receives a tool_result; it just emits the request and
@@ -44,27 +43,20 @@ const main = async (): Promise<void> => {
 		return;
 	}
 
-	// The proposed entity payload, gated on INKSTONE_PROPOSE_KIND ("person" → a
-	// Person; unset/"todo" → the original Todo). Shared by BOTH the multistep
-	// and single-step propose paths so each honors the kind.
-	const proposeParams =
-		process.env.INKSTONE_PROPOSE_KIND === "person"
-			? {
-					type: "person",
-					data: { name: "Alice", note: "met at the daycare" },
-					rationale: "the user mentioned someone worth remembering",
-				}
-			: {
-					type: "todo",
-					data: { title: "buy milk", done: false },
-					rationale: "the user asked to remember this",
-				};
+	const proposeParams = {
+		mutation_kind: "create_journal_entry",
+		payload: {
+			occurred_at: "2026-06-10T10:30:00",
+			body: [{ type: "text", text: "Bought milk after daycare pickup." }],
+		},
+		rationale: "the user shared a journal-worthy moment",
+	};
 
 	// Multi-step fresh path (INKSTONE_MULTISTEP=1): prove Core reconstructs a
 	// provider-valid MULTI-step transcript on resume (ADR-0025). The worker
 	// FIRST emits an assistant text turn + a real `read_thread` tool_request,
 	// which Core executes synchronously and resolves (a resolved tool_call →
-	// rendered as a paired `tool_result`), THEN emits `propose_entity` (which
+	// rendered as a paired `tool_result`), THEN emits `propose_workspace_mutation` (which
 	// parks). On resume Core must rebuild: assistant{text} → assistant{tool_call
 	// read_thread} → tool_result(read_thread) → assistant{tool_call propose} →
 	// tool_result(Decision) — with NO orphan tool_result. We pass a valid-but-
@@ -87,7 +79,7 @@ const main = async (): Promise<void> => {
 			kind: "tool_request",
 			run_id: "",
 			tool_call_id: toolCallId,
-			name: "propose_entity",
+			name: "propose_workspace_mutation",
 			params: proposeParams,
 		});
 		// Block forever — Core parks and tears us down (drops stdin → EOF).
@@ -107,16 +99,16 @@ const main = async (): Promise<void> => {
 		await new Promise<void>((r) => setTimeout(r, delayMs));
 	}
 
-	// Emit one propose_entity tool_request. `run_id` is Core-ignored (Core uses
+	// Emit one propose_workspace_mutation tool_request. `run_id` is Core-ignored (Core uses
 	// the spawn's authoritative run id); send "" to keep the wire shape. The
 	// tool_call_id is per-process (one worker per Run) so it is unique across
-	// Runs. The proposed Entity Type is `proposeParams` (INKSTONE_PROPOSE_KIND).
+	// Runs.
 	const toolCallId = `tc_${process.pid}`;
 	emit({
 		kind: "tool_request",
 		run_id: "",
 		tool_call_id: toolCallId,
-		name: "propose_entity",
+		name: "propose_workspace_mutation",
 		params: proposeParams,
 	});
 

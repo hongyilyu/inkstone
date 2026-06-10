@@ -1,4 +1,5 @@
 import {
+	BookOpenText,
 	ChefHat,
 	FolderKanban,
 	ListTodo,
@@ -17,6 +18,7 @@ import {
 export type {
 	Entity,
 	EntityKind,
+	JournalEntry,
 	Person,
 	Project,
 	Recipe,
@@ -33,10 +35,22 @@ interface KindMeta {
 	icon: LucideIcon;
 }
 
-/** Display order is deliberate: people and projects anchor the workspace. */
-export const KIND_ORDER: EntityKind[] = ["person", "project", "todo", "recipe"];
+/** Display order is deliberate: journal captures first, then structured Entities. */
+export const KIND_ORDER: EntityKind[] = [
+	"journal_entry",
+	"person",
+	"project",
+	"todo",
+	"recipe",
+];
 
 export const KIND_META: Record<EntityKind, KindMeta> = {
+	journal_entry: {
+		label: "Journal Entry",
+		plural: "Journal",
+		slug: "journal",
+		icon: BookOpenText,
+	},
 	person: { label: "Person", plural: "People", slug: "people", icon: User },
 	project: {
 		label: "Project",
@@ -54,6 +68,7 @@ export const KIND_META: Record<EntityKind, KindMeta> = {
 };
 
 const SLUG_TO_KIND: Record<string, EntityKind> = {
+	journal: "journal_entry",
 	people: "person",
 	projects: "project",
 	todos: "todo",
@@ -66,12 +81,15 @@ export function kindForSlug(slug: string): EntityKind | undefined {
 
 /** The user-facing title of any entity (people use `name`, the rest `title`). */
 export function entityTitle(e: Entity): string {
+	if (e.kind === "journal_entry") return e.body;
 	return e.kind === "person" || e.kind === "project" ? e.name : e.title;
 }
 
 /** A one-line subtitle for list rows and search results. */
 export function entitySubtitle(e: Entity): string {
 	switch (e.kind) {
+		case "journal_entry":
+			return e.occurredAt;
 		case "person":
 			return e.role ?? e.relationship ?? "Person";
 		case "project":
@@ -105,6 +123,7 @@ export function entitiesOfKind(kind: EntityKind): Entity[] {
 
 export function kindCounts(all: Entity[]): Record<EntityKind, number> {
 	const counts: Record<EntityKind, number> = {
+		journal_entry: 0,
 		person: 0,
 		project: 0,
 		todo: 0,

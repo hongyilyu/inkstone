@@ -104,8 +104,7 @@ CREATE TABLE run_log (
 CREATE TABLE proposals (
   id                       TEXT PRIMARY KEY,
   tool_call_id             TEXT NOT NULL UNIQUE REFERENCES tool_calls(id) ON DELETE CASCADE,
-  kind                     TEXT NOT NULL,
-  change_kind              TEXT NOT NULL CHECK (change_kind IN ('create','update','delete')),
+  mutation_kind            TEXT NOT NULL,
   status                   TEXT NOT NULL CHECK (status IN ('pending','accepted','rejected','cancelled')),
   decided_by               TEXT CHECK (decided_by IN ('user','auto')),
   decided_at               INTEGER,
@@ -118,7 +117,7 @@ CREATE INDEX idx_proposals_status ON proposals(status) WHERE status = 'pending';
 -- Entities and revisions -----------------------------------------------
 CREATE TABLE entities (
   id                       TEXT PRIMARY KEY,
-  type                     TEXT NOT NULL,            -- person / todo / project / …
+  type                     TEXT NOT NULL,            -- journal_entry / person / todo / project / …
   schema_version           INTEGER NOT NULL,
   data                     TEXT NOT NULL,            -- JSON; current state (= revisions.data of latest seq)
   created_by               TEXT NOT NULL CHECK (created_by IN ('user','proposal')),
@@ -137,6 +136,22 @@ CREATE TABLE entity_revisions (
   created_at   INTEGER NOT NULL,
   PRIMARY KEY (entity_id, seq)
 );
+
+CREATE TABLE entity_sources (
+  id                 TEXT PRIMARY KEY,
+  entity_id          TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  source_entity_id   TEXT REFERENCES entities(id) ON DELETE CASCADE,
+  source_message_id  TEXT REFERENCES messages(id) ON DELETE CASCADE,
+  relation           TEXT NOT NULL CHECK (relation IN ('created_from','updated_from','evidenced_by')),
+  created_at         INTEGER NOT NULL,
+  CHECK (
+    (source_entity_id IS NOT NULL AND source_message_id IS NULL) OR
+    (source_entity_id IS NULL AND source_message_id IS NOT NULL)
+  )
+);
+CREATE INDEX idx_entity_sources_entity ON entity_sources(entity_id);
+CREATE INDEX idx_entity_sources_message ON entity_sources(source_message_id);
+CREATE INDEX idx_entity_sources_source_entity ON entity_sources(source_entity_id);
 
 -- Tier 3 ---------------------------------------------------------------
 CREATE VIRTUAL TABLE fts USING fts5(

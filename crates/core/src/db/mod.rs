@@ -50,7 +50,9 @@ pub(crate) fn resolve_db_path() -> Result<PathBuf> {
 #[cfg(target_os = "macos")]
 fn os_data_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").context("$HOME not set")?;
-    Ok(PathBuf::from(home).join("Library").join("Application Support"))
+    Ok(PathBuf::from(home)
+        .join("Library")
+        .join("Application Support"))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -331,7 +333,14 @@ async fn insert_initial_run_rows(
     queries::insert_message_run_step(&mut **tx, run_id, 0, user_message_id, now_ms).await?;
     queries::insert_message_run_step(&mut **tx, run_id, 1, assistant_message_id, now_ms).await?;
 
-    run_log::append(&mut **tx, run_id, run_log::RunLogKind::Running, None, now_ms).await?;
+    run_log::append(
+        &mut **tx,
+        run_id,
+        run_log::RunLogKind::Running,
+        None,
+        now_ms,
+    )
+    .await?;
 
     queries::touch_thread_activity(&mut **tx, thread_id, now_ms).await
 }
@@ -414,14 +423,13 @@ pub async fn park_on_proposal(
     tool_call_id: &str,
     name: &str,
     request_payload: &str,
-    kind: &str,
-    change_kind: &str,
+    mutation_kind: &str,
     now_ms: i64,
 ) -> sqlx::Result<Moved> {
     let mut tx = pool.begin().await?;
 
     persist_tool_call_rows(&mut tx, run_id, tool_call_id, name, request_payload, now_ms).await?;
-    queries::insert_proposal(&mut *tx, proposal_id, tool_call_id, kind, change_kind).await?;
+    queries::insert_proposal(&mut *tx, proposal_id, tool_call_id, mutation_kind).await?;
 
     let moved = RunStatus::park(&mut *tx, run_id, tool_call_id, now_ms).await?;
     if !moved.won() {
@@ -431,8 +439,7 @@ pub async fn park_on_proposal(
     let payload = serde_json::json!({
         "proposal_id": proposal_id,
         "tool_call_id": tool_call_id,
-        "kind": kind,
-        "change_kind": change_kind,
+        "mutation_kind": mutation_kind,
     })
     .to_string();
     run_log::append(
@@ -455,16 +462,15 @@ pub async fn run_status(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Option<
     queries::run_status(pool, run_id).await
 }
 
-/// A Run's pending Proposal for `proposal/get` (ADR-0025). `data` and
-/// `rationale` are extracted from the Proposal tool call's stored
-/// `request_payload` (the `{type, data, rationale}` the model sent); `kind`,
-/// `change_kind`, and `status` come from the `proposals` row.
+/// A Run's pending Proposal for `proposal/get` (ADR-0025). The mutation
+/// `payload` and `rationale` are extracted from the Proposal tool call's stored
+/// `request_payload` (the `{mutation_kind, payload, rationale}` the model
+/// sent); `mutation_kind` and `status` come from the `proposals` row.
 pub struct ProposalRow {
     pub proposal_id: String,
-    pub kind: String,
-    pub change_kind: String,
+    pub mutation_kind: String,
     pub status: String,
-    pub data: serde_json::Value,
+    pub payload: serde_json::Value,
     pub rationale: Option<String>,
 }
 
@@ -476,15 +482,15 @@ pub async fn get_pending_proposal_for_run(
     pool: &SqlitePool,
     run_id: Uuid,
 ) -> sqlx::Result<Option<ProposalRow>> {
-    let Some((proposal_id, kind, change_kind, status, request_payload)) =
+    let Some((proposal_id, mutation_kind, status, request_payload)) =
         queries::pending_proposal_for_run(pool, run_id).await?
     else {
         return Ok(None);
     };
     let payload: serde_json::Value =
         serde_json::from_str(&request_payload).unwrap_or(serde_json::Value::Null);
-    let data = payload
-        .get("data")
+    let proposal_payload = payload
+        .get("payload")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     let rationale = payload
@@ -493,19 +499,18 @@ pub async fn get_pending_proposal_for_run(
         .map(str::to_string);
     Ok(Some(ProposalRow {
         proposal_id,
-        kind,
-        change_kind,
+        mutation_kind,
         status,
-        data,
+        payload: proposal_payload,
         rationale,
     }))
 }
 
 /// Auto-approve seam (ADR-0025, ADR-0016): whether a Proposal should be
 /// approved automatically (skipping the park). Returns `false` for now — every
-/// Proposal is manual, so every `propose_entity` parks the Run. A later policy
-/// slice gives this a real body; the Worker is oblivious to auto vs manual
-/// either way.
+/// Proposal is manual, so every `propose_workspace_mutation` parks the Run. A
+/// later policy slice gives this a real body; the Worker is oblivious to auto
+/// vs manual either way.
 pub fn should_auto_approve() -> bool {
     false
 }
@@ -517,22 +522,20 @@ pub fn should_auto_approve() -> bool {
 pub struct DecidableProposal {
     pub run_id: Uuid,
     pub tool_call_id: String,
-    pub kind: String,
-    #[allow(dead_code)]
-    pub change_kind: String,
+    pub mutation_kind: String,
     pub status: String,
-    pub data: serde_json::Value,
+    pub payload: serde_json::Value,
     pub decision_idempotency_key: Option<String>,
 }
 
 /// Load a Proposal by id for `proposal/decide`. `None` when no Proposal with
-/// that id exists. The proposed `data` is parsed from the awaited tool call's
+/// that id exists. The proposed `payload` is parsed from the awaited tool call's
 /// `request_payload`; a malformed payload degrades to `Value::Null`.
 pub async fn load_proposal_for_decide(
     pool: &SqlitePool,
     proposal_id: &str,
 ) -> sqlx::Result<Option<DecidableProposal>> {
-    let Some((run_id, tool_call_id, kind, change_kind, status, request_payload, idem)) =
+    let Some((run_id, tool_call_id, mutation_kind, status, request_payload, idem)) =
         queries::proposal_by_id(pool, proposal_id).await?
     else {
         return Ok(None);
@@ -542,17 +545,16 @@ pub async fn load_proposal_for_decide(
     };
     let payload: serde_json::Value =
         serde_json::from_str(&request_payload).unwrap_or(serde_json::Value::Null);
-    let data = payload
-        .get("data")
+    let proposal_payload = payload
+        .get("payload")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
     Ok(Some(DecidableProposal {
         run_id,
         tool_call_id,
-        kind,
-        change_kind,
+        mutation_kind,
         status,
-        data,
+        payload: proposal_payload,
         decision_idempotency_key: idem,
     }))
 }
@@ -628,8 +630,9 @@ pub async fn apply_proposal(
     tool_call_id: &str,
     entity_type: &str,
     schema_version: i64,
-    data: &serde_json::Value,
+    payload: &serde_json::Value,
     edited_payload: Option<&serde_json::Value>,
+    source_relation_from_user_message: Option<&str>,
     decision_idempotency_key: Option<&str>,
     decision_result_payload: &str,
     now_ms: i64,
@@ -640,7 +643,7 @@ pub async fn apply_proposal(
     // the model's proposed `data` (accept). The resolved tool_call's rendered
     // result and the entity snapshot both use this effective data so the model
     // reads the FINAL values on resume.
-    let applied_data = edited_payload.unwrap_or(data);
+    let applied_data = edited_payload.unwrap_or(payload);
     let data_str = applied_data.to_string();
 
     let mut tx = pool.begin().await?;
@@ -672,7 +675,21 @@ pub async fn apply_proposal(
         now_ms,
     )
     .await?;
-    queries::insert_entity_revision(&mut *tx, &entity_id, 1, &data_str, proposal_id, now_ms).await?;
+    queries::insert_entity_revision(&mut *tx, &entity_id, 1, &data_str, proposal_id, now_ms)
+        .await?;
+    if let Some(relation) = source_relation_from_user_message {
+        let source_id = queries::user_message_id_for_run(&mut *tx, run_id).await?;
+        let source_row_id = Uuid::now_v7().to_string();
+        queries::insert_entity_source_from_message(
+            &mut *tx,
+            &source_row_id,
+            &entity_id,
+            &source_id,
+            relation,
+            now_ms,
+        )
+        .await?;
+    }
     queries::resolve_tool_call(
         &mut *tx,
         tool_call_id,
@@ -764,8 +781,7 @@ pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<M
 pub async fn cancel_parked_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<bool> {
     let mut tx = pool.begin().await?;
 
-    let Some((proposal_id, _, _, _, _)) =
-        queries::pending_proposal_for_run(&mut *tx, run_id).await?
+    let Some((proposal_id, _, _, _)) = queries::pending_proposal_for_run(&mut *tx, run_id).await?
     else {
         // tx drops here without commit → rollback. The Run had no pending
         // Proposal, so a concurrent decide/cancel likely won.
@@ -819,10 +835,7 @@ pub enum TimelineStep {
 /// Read a Run's ordered timeline for resume transcript reconstruction
 /// (ADR-0025): each `run_steps` row, resolving message text from parts and
 /// the tool call's name/request/result. Ordered by `run_steps.seq`.
-pub async fn read_run_timeline(
-    pool: &SqlitePool,
-    run_id: Uuid,
-) -> sqlx::Result<Vec<TimelineStep>> {
+pub async fn read_run_timeline(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Vec<TimelineStep>> {
     let rows = queries::run_timeline(pool, run_id).await?;
     let mut steps = Vec::with_capacity(rows.len());
     for (kind, message_id, role, tool_call_id, tc_name, request_payload, result_payload) in rows {
@@ -957,12 +970,9 @@ pub async fn error_run_with_message(
 /// Core restart. Returns the count of Runs swept, for boot logging.
 pub async fn recover_interrupted_runs(pool: &SqlitePool, now_ms: i64) -> sqlx::Result<u64> {
     let mut tx = pool.begin().await?;
-    let swept = queries::recover_interrupted_runs(
-        &mut *tx,
-        "core restarted while run in flight",
-        now_ms,
-    )
-    .await?;
+    let swept =
+        queries::recover_interrupted_runs(&mut *tx, "core restarted while run in flight", now_ms)
+            .await?;
     queries::mark_recovered_streaming_messages_incomplete(&mut *tx, now_ms).await?;
     tx.commit().await?;
     Ok(swept)
@@ -1100,7 +1110,10 @@ mod tests {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(swept_msg, "incomplete", "swept Run's streaming message → incomplete");
+        assert_eq!(
+            swept_msg, "incomplete",
+            "swept Run's streaming message → incomplete"
+        );
         let parked_msg: String =
             sqlx::query_scalar("SELECT status FROM messages WHERE run_id = 'run-parked'")
                 .fetch_one(&pool)
@@ -1141,7 +1154,10 @@ mod tests {
 
         assert_eq!(moved, Moved::Lost);
         assert_eq!(run_status_of(&pool, &run_id.to_string()).await, "parked");
-        assert_eq!(run_event_count(&pool, &run_id.to_string(), "error").await, 0);
+        assert_eq!(
+            run_event_count(&pool, &run_id.to_string(), "error").await,
+            0
+        );
     }
 
     #[tokio::test]
@@ -1155,10 +1171,9 @@ mod tests {
             run_id,
             "proposal-1",
             "tool-1",
-            "propose_entity",
-            r#"{"type":"todo","data":{"title":"milk"}}"#,
-            "todo",
-            "create",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"Bought milk."}]}}"#,
+            "create_journal_entry",
             42,
         )
         .await
@@ -1180,10 +1195,9 @@ mod tests {
             run_id,
             "proposal-2",
             "tool-2",
-            "propose_entity",
-            r#"{"type":"todo","data":{"title":"eggs"}}"#,
-            "todo",
-            "create",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:31:00","body":[{"type":"text","text":"Bought eggs."}]}}"#,
+            "create_journal_entry",
             43,
         )
         .await
@@ -1203,8 +1217,8 @@ mod tests {
             &mut *tx,
             tool_call_id,
             run_id,
-            "propose_entity",
-            r#"{"type":"todo","data":{"title":"milk"}}"#,
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"Bought milk."}]}}"#,
             2,
         )
         .await
@@ -1212,7 +1226,7 @@ mod tests {
         queries::insert_tool_call_run_step(&mut *tx, run_id, 2, tool_call_id, 2)
             .await
             .expect("insert tool step");
-        queries::insert_proposal(&mut *tx, &proposal_id, tool_call_id, "todo", "create")
+        queries::insert_proposal(&mut *tx, &proposal_id, tool_call_id, "create_journal_entry")
             .await
             .expect("insert proposal");
         tx.commit().await.expect("commit proposal seed");
@@ -1231,10 +1245,14 @@ mod tests {
             run_id,
             &proposal_id,
             "tool-accept",
-            "todo",
+            "journal_entry",
             99,
-            &serde_json::json!({"title": "milk"}),
+            &serde_json::json!({
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Bought milk." }]
+            }),
             None,
+            Some("created_from"),
             Some("idem-accept"),
             r#"{"decision":"accept","content":"Accepted."}"#,
             42,
@@ -1243,7 +1261,7 @@ mod tests {
         .expect("apply");
         assert!(!entity_id.is_empty());
         // The caller-supplied schema_version is persisted verbatim (a sentinel,
-        // not the Todo default), so this fails if apply_proposal ever ignores
+        // not the Journal Entry default), so this fails if apply_proposal ever ignores
         // the argument and re-hardcodes the old constant.
         let stored_schema_version: i64 =
             sqlx::query_scalar("SELECT schema_version FROM entities WHERE id = ?1")
@@ -1267,10 +1285,14 @@ mod tests {
             run_id,
             &proposal_id,
             "tool-accept",
-            "todo",
-            crate::entities::TODO_SCHEMA_VERSION,
-            &serde_json::json!({"title": "milk"}),
+            "journal_entry",
+            crate::entities::JOURNAL_ENTRY_SCHEMA_VERSION,
+            &serde_json::json!({
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Bought milk." }]
+            }),
             None,
+            Some("created_from"),
             Some("idem-accept-2"),
             r#"{"decision":"accept","content":"Accepted."}"#,
             43,

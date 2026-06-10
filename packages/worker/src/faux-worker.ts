@@ -10,15 +10,15 @@
 // production path).
 // =============================================================================
 
-import type { WorkerManifest } from "@inkstone/protocol";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
 	fauxAssistantMessage,
 	fauxToolCall,
 	registerFauxProvider,
 	streamSimple,
 } from "@earendil-works/pi-ai";
-import { realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import type { WorkerManifest } from "@inkstone/protocol";
 import type { InterpreterDeps } from "./interpreter.js";
 import { runWorkerMain } from "./worker-main.js";
 
@@ -50,10 +50,8 @@ const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
  * - `INKSTONE_FAUX_ERROR` (non-empty)   → a single error message.
  * - `INKSTONE_FAUX_TOOL_CALL === "1"`   → turn 1 `read_thread` on the pasted
  *   thread id, turn 2 echoes the tool result.
- * - `INKSTONE_FAUX_PROPOSE === "1"`     → `propose_entity` (fresh) / short
- *   completion (resume), the ADR-0025 park/resume dance. The fresh payload's
- *   entity kind follows `INKSTONE_FAUX_PROPOSE_KIND` (`"person"` → a Person;
- *   else a Todo).
+ * - `INKSTONE_FAUX_PROPOSE === "1"`     → `propose_workspace_mutation` (fresh) / short
+ *   completion (resume), the ADR-0025 park/resume dance.
  * - `INKSTONE_FAUX_ECHO_HISTORY === "1"`→ echo the prior turns' roles+text.
  * - else                                → `INKSTONE_FAUX_RESPONSE` (or a
  *   default) as a plain assistant reply.
@@ -93,10 +91,10 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 			},
 		]);
 	} else if (process.env.INKSTONE_FAUX_PROPOSE === "1") {
-		// Propose mode (e2e, ADR-0025): the fresh turn calls `propose_entity`
-		// with a Todo by default, or a Person when
-		// `INKSTONE_FAUX_PROPOSE_KIND === "person"`, which Core round-trips,
-		// persists as a pending Proposal, and PARKS (tearing this Worker down).
+		// Propose mode (e2e, ADR-0025): the fresh turn calls
+		// `propose_workspace_mutation` with a Journal Entry payload, which Core
+		// round-trips, persists as a pending Proposal, and PARKS (tearing this
+		// Worker down).
 		// On resume (`mode:"resume"`) Core re-spawns with the reconstructed
 		// transcript ending in the Decision tool_result; the loop continues with
 		// a short completion. The faux provider state is per-process, so the
@@ -104,27 +102,22 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 		// propose-worker.ts at the protocol level).
 		if (manifest.mode === "resume") {
 			faux.setResponses([fauxAssistantMessage("Done — added it.")]);
-		} else if (process.env.INKSTONE_FAUX_PROPOSE_KIND === "person") {
-			faux.setResponses([
-				fauxAssistantMessage(
-					[
-						fauxToolCall("propose_entity", {
-							type: "person",
-							data: { name: "Alice", note: "met at the daycare" },
-							rationale: "the user mentioned someone worth remembering",
-						}),
-					],
-					{ stopReason: "toolUse" },
-				),
-			]);
 		} else {
 			faux.setResponses([
 				fauxAssistantMessage(
 					[
-						fauxToolCall("propose_entity", {
-							type: "todo",
-							data: { title: "buy milk", done: false },
-							rationale: "the user asked to remember this",
+						fauxToolCall("propose_workspace_mutation", {
+							mutation_kind: "create_journal_entry",
+							payload: {
+								occurred_at: "2026-06-10T10:30:00",
+								body: [
+									{
+										type: "text",
+										text: "Bought milk after daycare pickup.",
+									},
+								],
+							},
+							rationale: "the user shared a journal-worthy moment",
 						}),
 					],
 					{ stopReason: "toolUse" },

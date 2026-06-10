@@ -32,12 +32,10 @@ fn migration_creates_all_tables() {
             .connect(&url)
             .await
             .expect("connect to migrated DB");
-        let rows = sqlx::query(
-            "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-        )
-        .fetch_all(&pool)
-        .await
-        .expect("read sqlite_master");
+        let rows = sqlx::query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .fetch_all(&pool)
+            .await
+            .expect("read sqlite_master");
         rows.into_iter()
             .map(|r| r.get::<String, _>("name"))
             .collect()
@@ -47,6 +45,7 @@ fn migration_creates_all_tables() {
         "_sqlx_migrations",
         "entities",
         "entity_revisions",
+        "entity_sources",
         "fts",
         "message_parts",
         "messages",

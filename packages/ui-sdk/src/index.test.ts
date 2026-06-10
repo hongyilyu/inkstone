@@ -435,9 +435,11 @@ describe("WsClient", () => {
 		const expected = {
 			proposal_id: "01900000-0000-7000-8000-000000000010",
 			run_id: runId,
-			kind: "todo",
-			change_kind: "create",
-			data: { title: "buy milk", done: false },
+			mutation_kind: "create_journal_entry",
+			payload: {
+				occurred_at: "2026-06-10T10:30:00",
+				body: [{ type: "text", text: "Bought milk." }],
+			},
 			rationale: "the user asked",
 			status: "pending",
 		};

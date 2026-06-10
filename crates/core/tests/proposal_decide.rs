@@ -1,6 +1,6 @@
 //! Slice 3 RED test (Proposal accept): `proposal/decide{decision:"accept"}` on
-//! a parked Run applies the Proposal atomically (a Todo entity lands in tier 2)
-//! and resumes the Run in a FRESH Worker seeded with the reconstructed
+//! a parked Run applies the Proposal atomically (a Journal Entry entity lands
+//! in tier 2) and resumes the Run in a FRESH Worker seeded with the reconstructed
 //! transcript (ending in the Decision `tool_result`). The Run reaches
 //! `completed`. A second decide with the same `decision_idempotency_key`
 //! returns the prior result and does NOT double-apply.
@@ -20,7 +20,12 @@ mod common;
 use common::{CoreHandle, Workspace, next_text};
 
 /// Open a fresh socket, send a single request, return the response body.
-async fn rpc(core: &CoreHandle, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
+async fn rpc(
+    core: &CoreHandle,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
     let mut ws = core.connect().await;
     let req = serde_json::json!({
         "jsonrpc": "2.0",
@@ -157,7 +162,7 @@ fn accept_applies_and_resumes() {
             .await
             .expect("connect to migrated DB");
 
-        // One todo entity, created via the proposal, data.title="buy milk".
+        // One Journal Entry entity, created via the proposal.
         let row = sqlx::query(
             "SELECT type, data, created_by, created_via_proposal_id FROM entities WHERE id = ?1",
         )
@@ -169,14 +174,31 @@ fn accept_applies_and_resumes() {
         let data: String = row.get("data");
         let created_by: String = row.get("created_by");
         let via: Option<String> = row.get("created_via_proposal_id");
-        assert_eq!(etype, "todo", "entity type is todo");
+        assert_eq!(etype, "journal_entry", "entity type is journal_entry");
         assert_eq!(created_by, "proposal", "entity created_by=proposal");
         assert!(via.is_some(), "entity carries created_via_proposal_id");
-        let data_json: serde_json::Value = serde_json::from_str(&data).expect("entity data is JSON");
+        let data_json: serde_json::Value =
+            serde_json::from_str(&data).expect("entity data is JSON");
         assert_eq!(
-            data_json["title"].as_str(),
-            Some("buy milk"),
-            "entity data.title — got {data}"
+            data_json["body"][0]["text"].as_str(),
+            Some("Bought milk after daycare pickup."),
+            "entity body text — got {data}"
+        );
+
+        // entity_sources records the source user Message.
+        let source_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM entity_sources es \
+             JOIN runs r ON r.user_message_id = es.source_message_id \
+             WHERE es.entity_id = ?1 AND r.id = ?2 AND es.relation = 'created_from'",
+        )
+        .bind(&entity_id)
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count entity_sources");
+        assert_eq!(
+            source_count, 1,
+            "Journal Entry is sourced from the user Message"
         );
 
         // entity_revisions seq 1.
@@ -216,120 +238,6 @@ fn accept_applies_and_resumes() {
             .await
             .expect("run row exists");
         assert_eq!(run_status, "completed", "run completed");
-    });
-}
-
-/// Slice 1 (Person Entity Type): the same accept→apply→resume loop as
-/// `accept_applies_and_resumes`, but the worker proposes a **person**
-/// (`INKSTONE_PROPOSE_KIND=person`). Proves Core's generic entity path
-/// generalizes beyond `todo`: an accepted `{type:"person", data:{name,note}}`
-/// lands as an `entities` row of `type='person'` with a seq-1 revision, and the
-/// decide result is `accepted` + a non-empty `entity_id`.
-#[test]
-fn accept_applies_person() {
-    let workspace = Workspace::new();
-    let core = workspace
-        .core()
-        .worker_fixture("propose-worker.ts")
-        .env("INKSTONE_PROPOSE_KIND", "person")
-        .spawn();
-
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime builds");
-
-    let entity_id = rt.block_on(async {
-        let run_id = create_and_park(&core).await;
-
-        // The parked Proposal is a Person.
-        let resp = rpc(
-            &core,
-            3,
-            "proposal/get",
-            serde_json::json!({ "run_id": run_id }),
-        )
-        .await;
-        assert_eq!(
-            resp["result"]["kind"].as_str(),
-            Some("person"),
-            "parked proposal kind is person — body: {resp}"
-        );
-        let proposal_id = resp["result"]["proposal_id"]
-            .as_str()
-            .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
-            .to_string();
-
-        // Decide: accept.
-        let resp = rpc(
-            &core,
-            4,
-            "proposal/decide",
-            serde_json::json!({
-                "proposal_id": proposal_id,
-                "decision": "accept",
-                "decision_idempotency_key": "p1",
-            }),
-        )
-        .await;
-        let result = &resp["result"];
-        assert_eq!(
-            result["status"].as_str(),
-            Some("accepted"),
-            "decide result status — body: {resp}"
-        );
-        let entity_id = result["entity_id"]
-            .as_str()
-            .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
-            .to_string();
-        assert!(!entity_id.is_empty(), "entity_id is non-empty — body: {resp}");
-
-        // The Run resumes in a fresh Worker and reaches completed.
-        await_completed(&core, &run_id).await;
-
-        entity_id
-    });
-
-    // White-box DB assertions.
-    rt.block_on(async {
-        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .expect("connect to migrated DB");
-
-        // One person entity, created via the proposal, data.name="Alice".
-        let row = sqlx::query(
-            "SELECT type, data, created_by, created_via_proposal_id FROM entities WHERE id = ?1",
-        )
-        .bind(&entity_id)
-        .fetch_one(&pool)
-        .await
-        .expect("entity row exists");
-        let etype: String = row.get("type");
-        let data: String = row.get("data");
-        let created_by: String = row.get("created_by");
-        let via: Option<String> = row.get("created_via_proposal_id");
-        assert_eq!(etype, "person", "entity type is person");
-        assert_eq!(created_by, "proposal", "entity created_by=proposal");
-        assert!(via.is_some(), "entity carries created_via_proposal_id");
-        let data_json: serde_json::Value = serde_json::from_str(&data).expect("entity data is JSON");
-        assert_eq!(
-            data_json["name"].as_str(),
-            Some("Alice"),
-            "entity data.name — got {data}"
-        );
-
-        // entity_revisions seq 1.
-        let rev_seq: i64 = sqlx::query_scalar(
-            "SELECT seq FROM entity_revisions WHERE entity_id = ?1 ORDER BY seq DESC LIMIT 1",
-        )
-        .bind(&entity_id)
-        .fetch_one(&pool)
-        .await
-        .expect("entity_revision row exists");
-        assert_eq!(rev_seq, 1, "first entity revision is seq 1");
     });
 }
 
@@ -545,16 +453,17 @@ fn accept_is_idempotent() {
         .fetch_one(&pool)
         .await
         .expect("count entities");
-        assert_eq!(entity_count, 1, "idempotent decide created exactly one entity");
+        assert_eq!(
+            entity_count, 1,
+            "idempotent decide created exactly one entity"
+        );
     });
 }
 
 /// Slice 5 (Proposal edit): `proposal/decide{decision:"edit", edited_payload}`
-/// on a parked Run validates the edited Todo, applies the EDITED values (not
-/// the model's proposed data), records `proposals.edited_payload`, and resumes
-/// the Run in a fresh Worker to `completed`. The model proposed
-/// `title:"buy milk"`; the user edits to `title:"buy oat milk"`, and the
-/// created entity must carry the EDIT.
+/// on a parked Run validates the edited Journal Entry, applies the EDITED
+/// payload, records `proposals.edited_payload`, and resumes the Run in a fresh
+/// Worker to `completed`.
 #[test]
 fn edit_applies_edited_payload() {
     let workspace = Workspace::new();
@@ -580,7 +489,7 @@ fn edit_applies_edited_payload() {
             .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
             .to_string();
 
-        // Decide: edit with a new title.
+        // Decide: edit with a new body.
         let resp = rpc(
             &core,
             4,
@@ -588,7 +497,10 @@ fn edit_applies_edited_payload() {
             serde_json::json!({
                 "proposal_id": proposal_id,
                 "decision": "edit",
-                "edited_payload": { "title": "buy oat milk", "done": false },
+                "edited_payload": {
+                    "occurred_at": "2026-06-10T10:35:00",
+                    "body": [{ "type": "text", "text": "Bought oat milk after daycare pickup." }]
+                },
                 "decision_idempotency_key": "e1",
             }),
         )
@@ -616,17 +528,18 @@ fn edit_applies_edited_payload() {
             .await
             .expect("connect to migrated DB");
 
-        // The entity carries the EDITED title, not the model's "buy milk".
+        // The entity carries the EDITED body.
         let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
             .bind(&entity_id)
             .fetch_one(&pool)
             .await
             .expect("entity row exists");
-        let data_json: serde_json::Value = serde_json::from_str(&data).expect("entity data is JSON");
+        let data_json: serde_json::Value =
+            serde_json::from_str(&data).expect("entity data is JSON");
         assert_eq!(
-            data_json["title"].as_str(),
-            Some("buy oat milk"),
-            "entity data.title is the EDIT — got {data}"
+            data_json["body"][0]["text"].as_str(),
+            Some("Bought oat milk after daycare pickup."),
+            "entity body text is the EDIT — got {data}"
         );
 
         // proposals.status='accepted' AND edited_payload recorded.
@@ -645,9 +558,24 @@ fn edit_applies_edited_payload() {
         let edited_json: serde_json::Value =
             serde_json::from_str(&edited).expect("edited_payload is JSON");
         assert_eq!(
-            edited_json["title"].as_str(),
-            Some("buy oat milk"),
+            edited_json["body"][0]["text"].as_str(),
+            Some("Bought oat milk after daycare pickup."),
             "edited_payload carries the edit — got {edited}"
+        );
+
+        let source_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM entity_sources es \
+             JOIN runs r ON r.user_message_id = es.source_message_id \
+             WHERE es.entity_id = ?1 AND r.id = ?2 AND es.relation = 'created_from'",
+        )
+        .bind(&entity_id)
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count entity_sources");
+        assert_eq!(
+            source_count, 1,
+            "edited Journal Entry is still sourced from the original user Message"
         );
 
         // runs.status='completed'.
@@ -660,7 +588,7 @@ fn edit_applies_edited_payload() {
     });
 }
 
-/// Slice 5: an invalid `edited_payload` (empty title fails `validate_todo`) is
+/// Slice 5: an invalid `edited_payload` (empty body text fails validation) is
 /// rejected with `invalid_params` BEFORE any DB write — no entity lands, the
 /// Proposal stays `pending`, and the Run stays `parked` (re-decidable).
 #[test]
@@ -688,7 +616,7 @@ fn edit_rejects_invalid_payload() {
             .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
             .to_string();
 
-        // Decide: edit with an empty title → invalid_params, no apply.
+        // Decide: edit with an empty body -> invalid_params, no apply.
         let resp = rpc(
             &core,
             4,
@@ -696,7 +624,10 @@ fn edit_rejects_invalid_payload() {
             serde_json::json!({
                 "proposal_id": proposal_id,
                 "decision": "edit",
-                "edited_payload": { "title": "" },
+                "edited_payload": {
+                    "occurred_at": "2026-06-10T10:35:00",
+                    "body": [{ "type": "text", "text": "" }]
+                },
                 "decision_idempotency_key": "bad1",
             }),
         )
@@ -738,7 +669,10 @@ fn edit_rejects_invalid_payload() {
         .fetch_one(&pool)
         .await
         .expect("proposal row exists");
-        assert_eq!(prop_status, "pending", "proposal still pending after invalid edit");
+        assert_eq!(
+            prop_status, "pending",
+            "proposal still pending after invalid edit"
+        );
 
         // runs.status still 'parked' (no resume).
         let run_status: String = sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
@@ -752,7 +686,7 @@ fn edit_rejects_invalid_payload() {
 
 /// Multi-step reconstruction (ADR-0025 core risk): the worker's first spawn
 /// does a real `read_thread` tool_call (Core executes + resolves it
-/// synchronously) BEFORE the `propose_entity` that parks. On accept the Run
+/// synchronously) BEFORE the `propose_workspace_mutation` that parks. On accept the Run
 /// resumes, and Core must rebuild a provider-valid MULTI-step transcript — a
 /// prior resolved tool_call rendered as a paired `tool_result`, the
 /// text-then-tool_call assistant split, and the Decision `tool_result` last,

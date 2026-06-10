@@ -15,6 +15,11 @@
 
 import { createInterface } from "node:readline";
 
+process.stdout.on("error", (error: NodeJS.ErrnoException) => {
+	if (error.code === "EPIPE") process.exit(0);
+	throw error;
+});
+
 /** Write one NDJSON frame to stdout (one event per line). */
 export const emit = (frame: unknown): void => {
 	process.stdout.write(`${JSON.stringify(frame)}\n`);

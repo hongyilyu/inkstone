@@ -12,8 +12,8 @@ import { ProposalCard } from "./ProposalCard.js";
  * Run. Renders nothing until a Proposal is attached.
  *
  * On an accept/edit (which creates an Entity in Core) we invalidate the
- * `["entities"]` query so the Library reflects the new Todo without a manual
- * reload (slice 11). A reject creates nothing, so it is not invalidated.
+ * `["entities"]` query so the Library reflects the new Journal Entry without a
+ * manual reload. A reject creates nothing, so it is not invalidated.
  */
 export function AssistantProposals({ runId }: { runId: string }) {
 	const runtime = useRuntime();

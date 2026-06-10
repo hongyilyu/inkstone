@@ -1,10 +1,10 @@
-import { WsClient, type RunId, type WsError } from "@inkstone/ui-sdk";
+import { type RunId, WsClient, type WsError } from "@inkstone/ui-sdk";
 import { Effect, Fiber, Stream } from "effect";
 import type { WsRuntime } from "../runtime.js";
 import {
 	appendUserMessage,
-	attachRun,
 	applyEvent,
+	attachRun,
 	getChatState,
 	markMessageIncomplete,
 	nextMessageId,
@@ -213,9 +213,8 @@ export function startProposalStream(runtime: WsRuntime): void {
 					setPendingProposal({
 						proposal_id: p.proposal_id,
 						run_id: p.run_id,
-						kind: p.kind,
-						change_kind: p.change_kind,
-						data: p.data,
+						mutation_kind: p.mutation_kind,
+						payload: p.payload,
 						rationale: p.rationale,
 						status: "pending",
 					});
@@ -238,10 +237,10 @@ export function startProposalStream(runtime: WsRuntime): void {
  * running → completed, ADR-0022 snapshot-then-tail) streams into the assistant
  * bubble. A failed decide flips the card to `error` so the user can retry.
  *
- * An `edit` carries the user's `editedPayload` (the Todo `data`); Core
- * re-validates it and applies-in-one-step (ADR-0025), so the resume tail
- * behaves exactly like an accept. A decide already in flight short-circuits (no
- * double-submit); the stale parked stream fiber is interrupted before
+ * An `edit` carries the user's `editedPayload`; Core re-validates it and
+ * applies in one step (ADR-0025), so the resume tail behaves exactly like an
+ * accept. A decide already in flight short-circuits (no double-submit); the
+ * stale parked stream fiber is interrupted before
  * re-subscribing so the resume tail has a single consumer.
  */
 export async function decideProposal(
