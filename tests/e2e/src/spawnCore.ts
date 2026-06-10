@@ -144,11 +144,10 @@ export interface SpawnCoreOptions {
 	 * exercising the full park -> decide -> resume loop end-to-end (ADR-0025).
 	 */
 	readonly faux?: "propose";
-	/**
-	 * Direct propose-worker fixture knob. Emits a malformed Journal Entry payload
-	 * so browser tests can pin the "do not apply until edited" UI behavior.
-	 */
-	readonly invalidJournalProposal?: boolean;
+	/** Direct propose-worker fixture knob. Emits params loaded from this JSON file. */
+	readonly proposalParamsFile?: string;
+	/** Optional JSONL path where Worker proxy writes model tool-call params. */
+	readonly workerToolCallLogPath?: string;
 	/** Milliseconds to wait for the listening line before failing. Default 30s. */
 	readonly startupTimeoutMs?: number;
 }
@@ -249,7 +248,8 @@ export async function spawnCore(
 		"INKSTONE_FAUX_TOOL_CALL",
 		"INKSTONE_FAUX_PROPOSE",
 		"INKSTONE_FAUX_ECHO_HISTORY",
-		"INKSTONE_PROPOSE_INVALID_JOURNAL",
+		"INKSTONE_PROPOSE_PARAMS_FILE",
+		"INKSTONE_WORKER_TOOL_CALL_LOG",
 	]) {
 		delete env[key];
 	}
@@ -260,8 +260,11 @@ export async function spawnCore(
 		env.INKSTONE_WORKER_CMD = workerCmd;
 		env.INKSTONE_FIXTURE_CHUNKS = String(chunks);
 		if (gatePath) env.INKSTONE_FIXTURE_GATE = gatePath;
-		if (opts.invalidJournalProposal) {
-			env.INKSTONE_PROPOSE_INVALID_JOURNAL = "1";
+		if (opts.proposalParamsFile !== undefined) {
+			env.INKSTONE_PROPOSE_PARAMS_FILE = opts.proposalParamsFile;
+		}
+		if (opts.workerToolCallLogPath !== undefined) {
+			env.INKSTONE_WORKER_TOOL_CALL_LOG = opts.workerToolCallLogPath;
 		}
 	}
 

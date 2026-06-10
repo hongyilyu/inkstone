@@ -1,5 +1,6 @@
+import path from "node:path";
 import { expect, test } from "./fixtures.js";
-import { PROPOSE_WORKER_CMD } from "./spawnCore.js";
+import { PROPOSE_WORKER_CMD, REPO_ROOT } from "./spawnCore.js";
 
 /**
  * Regression for a real-model failure shape: the worker parks a Journal Entry
@@ -9,7 +10,10 @@ import { PROPOSE_WORKER_CMD } from "./spawnCore.js";
 test.use({
 	coreOptions: {
 		workerCmd: PROPOSE_WORKER_CMD,
-		invalidJournalProposal: true,
+		proposalParamsFile: path.join(
+			REPO_ROOT,
+			"tests/e2e/fixtures/invalid-empty-journal-proposal.json",
+		),
 	},
 });
 

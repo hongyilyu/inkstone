@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { CoreToolDescriptor } from "@inkstone/protocol";
@@ -38,6 +39,23 @@ export type CallTool = (
 	signal?: AbortSignal,
 ) => Promise<ToolCallResponse>;
 
+function captureToolCall(
+	toolCallId: string,
+	name: string,
+	params: unknown,
+): void {
+	const path = process.env.INKSTONE_WORKER_TOOL_CALL_LOG;
+	if (path === undefined || path.length === 0) return;
+	appendFileSync(
+		path,
+		`${JSON.stringify({
+			tool_call_id: toolCallId,
+			name,
+			params,
+		})}\n`,
+	);
+}
+
 /**
  * Build `AgentTool` proxies from Core's tool descriptors. Each proxy carries
  * the descriptor's metadata and a `json_schema` (TypeBox's `TSchema` is
@@ -62,6 +80,7 @@ export function makeProxyTools(
 					params: unknown,
 					signal?: AbortSignal,
 				): Promise<AgentToolResult<unknown>> => {
+					captureToolCall(toolCallId, desc.name, params);
 					const resp = await callTool(toolCallId, desc.name, params, signal);
 					if ("err" in resp) {
 						throw new Error(resp.err.message);
