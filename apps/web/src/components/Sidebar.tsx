@@ -1,5 +1,4 @@
-import { Copy, Library, Plus } from "lucide-react";
-import { useState } from "react";
+import { Copy, Library, Plus, Search } from "lucide-react";
 import { NavShell, navRow } from "@/components/ui/nav-shell";
 import { useThreads } from "@/lib/hooks/useThreads";
 import {
@@ -7,8 +6,8 @@ import {
 	setFocusedThread,
 	useFocusedThreadId,
 } from "@/store/chat";
+import { openCommand } from "@/store/command";
 import { cn } from "../lib/utils.js";
-import { SearchField } from "./ui/search-field.js";
 
 export function Sidebar({
 	onOpenLibrary,
@@ -18,7 +17,6 @@ export function Sidebar({
 	onOpenSettings?: () => void;
 } = {}) {
 	const focusedThreadId = useFocusedThreadId();
-	const [query, setQuery] = useState("");
 
 	// Reads run on the runtime via TanStack Query (loading/error/success free);
 	// the live stream stays on the store+bridge (ADR-0020). `data` is undefined
@@ -26,27 +24,15 @@ export function Sidebar({
 	const { data } = useThreads();
 
 	const threads = data?.threads ?? [];
-	const filtered = threads.filter((t) =>
-		t.title.toLowerCase().includes(query.trim().toLowerCase()),
-	);
-	const groups = groupByRecency(filtered);
+	const groups = groupByRecency(threads);
 
 	const newChat = () => {
 		clearFocusedThread();
-		setQuery("");
 	};
 
 	return (
 		<NavShell as="aside" ariaLabel="Sidebar" onOpenSettings={onOpenSettings}>
 			<div className="flex flex-col gap-0.5">
-				<button
-					type="button"
-					onClick={newChat}
-					className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-lg bg-secondary px-3 text-left font-semibold text-secondary-foreground text-sm transition-colors hover:bg-[color-mix(in_oklab,var(--primary)_12%,var(--secondary))]"
-				>
-					<Plus className="size-4 shrink-0" aria-hidden />
-					New Chat
-				</button>
 				<button
 					type="button"
 					onClick={onOpenLibrary}
@@ -55,23 +41,34 @@ export function Sidebar({
 					<Library className="size-4 shrink-0" aria-hidden />
 					Library
 				</button>
+				<button
+					type="button"
+					onClick={openCommand}
+					className={cn(navRow, "w-full")}
+				>
+					<Search className="size-4 shrink-0" aria-hidden />
+					<span className="flex-1 text-left">Search</span>
+					<kbd className="rounded border border-sidebar-foreground/15 px-1.5 py-0.5 font-medium font-sans text-[10px] text-sidebar-foreground/50">
+						⌘K
+					</kbd>
+				</button>
 			</div>
 
 			<div className="mx-3 my-3 border-border border-t" />
 
-			<SearchField
-				variant="divider"
-				tone="sidebar"
-				aria-label="Search your threads"
-				placeholder="Search your threads…"
-				value={query}
-				onChange={(e) => setQuery(e.target.value)}
-			/>
+			<button
+				type="button"
+				onClick={newChat}
+				className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-lg bg-secondary px-3 text-left font-semibold text-secondary-foreground text-sm transition-colors hover:bg-[color-mix(in_oklab,var(--primary)_12%,var(--secondary))]"
+			>
+				<Plus className="size-4 shrink-0" aria-hidden />
+				New Chat
+			</button>
 
 			<div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-				{filtered.length === 0 ? (
+				{threads.length === 0 ? (
 					<p className="px-3 pt-3 text-muted-foreground text-xs">
-						No threads match.
+						No threads yet.
 					</p>
 				) : (
 					groups.map((group) => (

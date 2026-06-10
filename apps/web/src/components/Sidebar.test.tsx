@@ -145,7 +145,7 @@ describe("Sidebar", () => {
 		);
 
 		// Initially the list is empty (no threads created yet).
-		expect(await screen.findByText(/no threads match/i)).toBeInTheDocument();
+		expect(await screen.findByText(/no threads yet/i)).toBeInTheDocument();
 
 		// Send the first message with no focused thread → mints "thread-new".
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
