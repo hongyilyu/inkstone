@@ -57,7 +57,10 @@ export function NavShell({
 
 			<div className="mt-3 flex min-h-0 flex-1 flex-col">{children}</div>
 
-			<div className="flex items-center justify-between px-1 pt-2">
+			{/* `pb-5` lifts this row 32px off the grid bottom (12px shell + 20px),
+			    matching the chat composer's control row (16px footer + 16px card
+			    padding) so the account glyph lines up with Select model / Effort. */}
+			<div className="flex items-center justify-between px-1 pt-2 pb-5">
 				<span
 					className="flex size-8 items-center justify-center rounded-full bg-primary font-medium text-primary-foreground text-sm"
 					aria-hidden
