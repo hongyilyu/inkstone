@@ -1,6 +1,6 @@
 //! Slice 2 RED test: posting a message via `run/post_message` writes one
 //! Thread, one Run (`status='running'`), one user Message (`status='completed'`),
-//! one user `message_parts` row, one `run_steps` row, and one `run_events`
+//! one user `message_parts` row, one `run_steps` row, and one `run_log`
 //! row — all in a single transaction with deferred FK enforcement.
 
 use futures_util::SinkExt;
@@ -154,14 +154,14 @@ fn post_message_writes_initial_rows() {
             "run_steps[seq=0].message_id is the user message"
         );
 
-        // Run events -------------------------------------------------------
+        // Run Log ----------------------------------------------------------
         let event_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM run_events WHERE run_id = ?1 AND kind='status'",
+            "SELECT COUNT(*) FROM run_log WHERE run_id = ?1 AND kind='running'",
         )
         .bind(&run_id)
         .fetch_one(&pool)
         .await
-        .expect("count run_events");
-        assert!(event_count >= 1, "at least one status run_event");
+        .expect("count run_log");
+        assert!(event_count >= 1, "creation logs kind='running' in run_log");
     });
 }

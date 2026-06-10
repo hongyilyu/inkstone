@@ -153,7 +153,7 @@ fn worker_error_event_marks_run_errored_with_message() {
 
         // exactly one terminal error run_event
         let error_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM run_events WHERE run_id = ?1 AND kind='error'",
+            "SELECT COUNT(*) FROM run_log WHERE run_id = ?1 AND kind='error'",
         )
         .bind(&run_id)
         .fetch_one(&pool)

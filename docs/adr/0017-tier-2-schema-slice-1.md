@@ -177,6 +177,8 @@ What lands in this table is the **coarse** event log — status transitions, too
 
 Per-Run monotonic `run_seq` is the cursor; `UNIQUE(run_id, run_seq)` is enforced by the composite primary key.
 
+**Amended (ADR-0028):** this table is the **Run Log**, renamed `run_log`; the never-written `tool_request`/`tool_result` kinds were dropped (tool boundaries live in `tool_calls`/`run_steps`, surfaced by `read_run_timeline`, not here), and the creation event's kind is `running`, not `status`. See CONTEXT.md *Run Log*.
+
 ### No `turns` table
 
 Three of four reviewers (and t3code, and the inkstone-poc, and the OpenAI Assistants API, and LangGraph, and Temporal) confirmed: Turn boundaries are agent-loop implementation detail, not durable identity. The user thinks in terms of "I asked X, the agent did stuff and said Y" — that is one Run, with one or more `messages` + `tool_calls` interleaved by `run_steps`. A row-per-Turn would be addressable but unused.

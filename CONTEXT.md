@@ -64,8 +64,8 @@ _Avoid_: state (too generic), phase, stage.
 ### Protocol
 
 **Run Event**:
-A one-way message emitted by the Worker to Core during a Run, describing what is happening. Subtypes include `text_delta`, `status`, `done`, and `error`. Run Events are observational — Core consumes, persists, and forwards them; the Worker does not await a response.
-_Avoid_: event (too generic), output, stream item.
+A one-way, observational message emitted by the Worker to Core during a Run. Subtypes are `text_delta`, `tool_call` (Core-synthesized from a Tool Request), `done`, and `error`; the Worker does not await a response. Distinct from the **Run Log**: a Run Event is the ephemeral wire signal Core forwards to Clients, the Run Log is Core's durable record of a milestone.
+_Avoid_: event (too generic), output, stream item; Run Log (the durable Core-authored record — a different concept).
 
 **Tool Request**:
 A message from the Worker to Core asking Core to perform a Core-owned action — query indexed entities, submit a Proposal for user approval, etc. Always paired with a Tool Result.
@@ -106,6 +106,10 @@ A tier-2 storage record for one bubble in the chat UI — a user prompt, an assi
 
 **Message Part**:
 One ordered chunk inside a Message — a text block, an attachment reference, a marker for an inline tool call, etc. Composite key `(message_id, seq)`. Polymorphic by `type`; payloads beyond plain text are JSON. Tool calls and tool results are *not* Message Parts — they live in their own table and are interleaved with Messages at render time via Run Steps.
+
+**Run Log**:
+Core's durable tier-2 record of a Run's lifecycle milestones — one ordered row per milestone, keyed `(run_id, run_seq)`, discriminated by a **Run Log Kind** (`running`, `parked`, `done`, `error`, `cancelled`, `proposal_pending`, `proposal_decided`). Written by the Run status transition verbs (ADR-0028) as each change commits; authoritative for nothing and read by nothing yet — it pre-pays a future `run/get_history`. Distinct from a **Run Event** (the ephemeral wire stream) and from Run status (the materialized cell whose changes it records).
+_Avoid_: run events (that names the wire stream), audit log, event stream, run timeline (that's the rendered Message / Tool Call sequence).
 
 ### Domain
 
@@ -163,7 +167,7 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 >
 > **A:** And the Proposal is one of those Run Events?
 >
-> **B:** No — that's the disambiguation that gets people. A **Run Event** is one-way Worker → Core: text deltas, status, errors. The Worker doesn't await anything. A **Proposal** isn't fire-and-forget; the Worker needs your decision before it can continue. So a Proposal rides the **Tool Protocol** — it's a **Tool Request**, and Core will return a **Tool Result** carrying your accept / reject / edit.
+> **B:** No — that's the disambiguation that gets people. A **Run Event** is one-way Worker → Core: text deltas, tool-call markers, completion, errors. The Worker doesn't await anything. A **Proposal** isn't fire-and-forget; the Worker needs your decision before it can continue. So a Proposal rides the **Tool Protocol** — it's a **Tool Request**, and Core will return a **Tool Result** carrying your accept / reject / edit.
 >
 > **A:** I accept the Proposal. Now what?
 >

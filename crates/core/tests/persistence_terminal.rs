@@ -1,6 +1,6 @@
 //! Slice 4 RED tests: whichever way the Worker exits — clean `done` event
 //! or stdout EOF without `done` — Core writes the terminal `runs.status`,
-//! the matching `terminal_reason`, the terminal `run_events` row, and (for
+//! the matching `terminal_reason`, the terminal `run_log` row, and (for
 //! the EOF path) flips every `messages.status='streaming'` for that Run to
 //! `'incomplete'` — all in one transaction.
 
@@ -131,9 +131,9 @@ fn done_event_completes_run() {
             "assistant message flipped to completed"
         );
 
-        // run_events ---------------------------------------------------
+        // run_log ---------------------------------------------------
         let done_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM run_events WHERE run_id = ?1 AND kind='done'",
+            "SELECT COUNT(*) FROM run_log WHERE run_id = ?1 AND kind='done'",
         )
         .bind(&run_id)
         .fetch_one(&pool)
@@ -254,9 +254,9 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
             "assistant message flipped to incomplete"
         );
 
-        // run_events ---------------------------------------------------
+        // run_log ---------------------------------------------------
         let error_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM run_events WHERE run_id = ?1 AND kind='error'",
+            "SELECT COUNT(*) FROM run_log WHERE run_id = ?1 AND kind='error'",
         )
         .bind(&run_id)
         .fetch_one(&pool)

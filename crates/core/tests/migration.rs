@@ -51,7 +51,7 @@ fn migration_creates_all_tables() {
         "message_parts",
         "messages",
         "proposals",
-        "run_events",
+        "run_log",
         "run_steps",
         "runs",
         "settings",

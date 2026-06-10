@@ -182,22 +182,22 @@ fn run_history_survives_restart() {
         assert_eq!(asst_type, "text");
         assert_eq!(asst_text.as_deref(), Some("echo: hi"));
 
-        // run_events ---------------------------------------------------
+        // run_log ------------------------------------------------------
         let event_kinds: Vec<String> = sqlx::query_scalar(
-            "SELECT kind FROM run_events WHERE run_id = ?1 ORDER BY run_seq",
+            "SELECT kind FROM run_log WHERE run_id = ?1 ORDER BY run_seq",
         )
         .bind(&run_id)
         .fetch_all(&pool)
         .await
-        .expect("read run_events");
+        .expect("read run_log");
         assert!(
             event_kinds.len() >= 2,
-            "at least two run_events: status (slice 2) + done (slice 4); got {event_kinds:?}"
+            "at least two run_log rows: running (slice 2) + done (slice 4); got {event_kinds:?}"
         );
         assert_eq!(
             event_kinds.first().map(String::as_str),
-            Some("status"),
-            "first run_event is the slice-2 status row"
+            Some("running"),
+            "first run_log row is the slice-2 running row"
         );
         assert_eq!(
             event_kinds.last().map(String::as_str),

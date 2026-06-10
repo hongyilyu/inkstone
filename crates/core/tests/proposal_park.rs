@@ -176,12 +176,12 @@ fn parks_on_propose_entity() {
         assert_eq!(tc_count, 1, "exactly one pending tool_call");
 
         let terminal_events: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM run_events WHERE run_id = ?1 AND kind IN ('done','error')",
+            "SELECT COUNT(*) FROM run_log WHERE run_id = ?1 AND kind IN ('done','error')",
         )
         .bind(&run_id)
         .fetch_one(&pool)
         .await
-        .expect("count terminal run_events");
+        .expect("count terminal run_log");
         assert_eq!(terminal_events, 0, "no done/error run_event for a parked run");
     });
 }

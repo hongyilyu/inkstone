@@ -82,19 +82,19 @@ CREATE TABLE run_steps (
   )
 );
 
--- Run Events (durable per ADR-0014) ------------------------------------
--- Append-only. Backs `run/get_history(run_id, since_run_seq)` for
--- reconnect replay. Per-token text deltas are NOT in this table — those
--- are projected onto message_parts.text via the streaming UPSERT pattern.
--- This table holds coarser events: status transitions, tool boundaries,
--- proposal lifecycle markers, errors, completion.
-CREATE TABLE run_events (
+-- Run Log (durable per ADR-0014/0028) ----------------------------------
+-- Core's durable record of a Run's lifecycle milestones (CONTEXT.md: Run
+-- Log). Append-only; pre-pays a future `run/get_history` (no reader yet).
+-- Distinct from the wire Run Event (Worker-emitted, never persisted).
+-- Per-token text deltas are NOT here — those are projected onto
+-- message_parts.text via the streaming UPSERT. Tool history lives in
+-- tool_calls/run_steps, not here.
+CREATE TABLE run_log (
   run_id      TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
   run_seq     INTEGER NOT NULL,                    -- monotonic per Run
   kind        TEXT NOT NULL CHECK (kind IN
-                ('status','tool_request','tool_result',
-                 'proposal_pending','proposal_decided',
-                 'parked','done','error','cancelled')),
+                ('running','parked','done','error','cancelled',
+                 'proposal_pending','proposal_decided')),
   payload     TEXT,                                -- JSON; shape depends on kind
   created_at  INTEGER NOT NULL,
   PRIMARY KEY (run_id, run_seq)
