@@ -4,13 +4,11 @@ import {
 	useParams,
 	useSearch,
 } from "@tanstack/react-router";
-import { PanelRight } from "lucide-react";
 import { useEffect, useState } from "react";
 import { EntityDetail } from "@/components/library/EntityDetail";
 import { LibraryNav } from "@/components/library/LibraryNav";
-import { EmptyState } from "@/components/ui/empty-state";
 import { WorkspaceShell } from "@/components/ui/workspace-shell";
-import { entityTitle, KIND_META, kindForSlug } from "@/lib/entities";
+import { entityTitle, kindForSlug } from "@/lib/entities";
 import { useEntities } from "@/lib/hooks/useEntities";
 
 /**
@@ -18,13 +16,15 @@ import { useEntities } from "@/lib/hooks/useEntities";
  * `WorkspaceShell` (ADR-0021): the same framed middle as the chat surface, plus
  * the same collapsible right rail.
  *
- * Every Library surface — the Today overview (`/library`) and each collection
- * (`/library/$kind`) — mounts the rail, so the card's framed shape and bay are
- * constant everywhere. Selecting a row sets `?id` on the *current* route, so the
- * detail Inspector opens in place rather than switching views. The rail stays
- * collapsed until something is selected (then it opens); a manual toggle wins
- * until the selection changes. Dismissing is the rail's collapse control — the
- * inspector has no separate close button.
+ * The rail mounts only when a row is selected. Selecting a row sets `?id` on the
+ * *current* route, so the detail Inspector opens in place rather than switching
+ * views — and only then does the card carry the carved bay and its collapse
+ * toggle. With nothing selected the shell renders a plain framed card (no bay,
+ * no toggle), so the bay/toggle always signal "there is content here". On
+ * selection the rail opens; the collapse toggle then hides it to a sliver while
+ * keeping the selection (the bay stays), and a manual toggle wins until the
+ * selection changes. The bay disappears again once nothing is selected (e.g.
+ * navigating to another collection).
  */
 function LibraryLayout() {
 	const params = useParams({ strict: false });
@@ -42,16 +42,19 @@ function LibraryLayout() {
 			null)
 		: null;
 
-	// Collapse follows selection (open on select, collapsed with none); a manual
-	// toggle overrides until the selection changes, when it resets to follow again.
+	// Default to open when a row is selected; a manual collapse overrides until
+	// the selection changes, when it resets to open again.
 	const [manualCollapsed, setManualCollapsed] = useState<boolean | null>(null);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset keyed on the selection id.
 	useEffect(() => {
 		setManualCollapsed(null);
 	}, [selected?.id]);
 
-	// The rail is the pink chrome (`bg-sidebar`), matching the chat surface's
-	// activity rail and the bay — not the white reading surface of the card.
+	// The rail mounts only when a row is selected — that's when there's real
+	// content, and so when the card carries the carved bay + collapse toggle.
+	// With nothing selected we pass `null`, and the shell renders a plain framed
+	// card. The rail is the pink chrome (`bg-sidebar`), matching the chat
+	// surface's activity rail and the bay — not the white reading surface.
 	const rail = selected ? (
 		<aside
 			aria-label={`${entityTitle(selected)} details`}
@@ -63,22 +66,7 @@ function LibraryLayout() {
 				allEntities={data ?? []}
 			/>
 		</aside>
-	) : (
-		<aside
-			aria-label="Details"
-			className="grid h-full place-items-center bg-sidebar px-6"
-		>
-			<EmptyState
-				icon={kind ? KIND_META[kind].icon : PanelRight}
-				title="Nothing selected"
-				description={
-					kind
-						? `Pick a ${KIND_META[kind].label.toLowerCase()} from the list to see its details here.`
-						: "Pick an item from your library to see its details here."
-				}
-			/>
-		</aside>
-	);
+	) : null;
 
 	return (
 		<WorkspaceShell
@@ -86,7 +74,7 @@ function LibraryLayout() {
 			rightRail={rail}
 			rightRailWidth="400px"
 			railLabel="details panel"
-			collapsed={manualCollapsed ?? !selected}
+			collapsed={manualCollapsed ?? false}
 			onCollapsedChange={setManualCollapsed}
 		>
 			<main className="relative h-full">

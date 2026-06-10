@@ -21,8 +21,8 @@ export interface WorkspaceShellProps {
 	railLabel?: string;
 	/**
 	 * Controlled collapse. Omit both to let the shell own the state (e.g. chat's
-	 * persistent rail). Provide both to drive it (e.g. the Library opens the rail
-	 * on selection and collapses it when nothing is selected).
+	 * persistent rail). Provide both to drive it (e.g. the Library mounts the rail
+	 * on selection — omitting it otherwise — and lets the user collapse it).
 	 */
 	collapsed?: boolean;
 	onCollapsedChange?: (next: boolean) => void;
@@ -91,12 +91,13 @@ export function WorkspaceShell({
 		<div
 			className="grid h-full bg-sidebar text-sidebar-foreground motion-safe:transition-[grid-template-columns] motion-safe:duration-300 motion-safe:ease-out-quint"
 			style={{
-				// Collapsed: keep a thin strip of chrome (not 0px) so the card's
-				// rounded right edge stays visible against the sidebar — the boundary
-				// reads the same as when the rail is open. The rail's own padding means
-				// this sliver only ever shows bg, no content. No rail → no third track.
+				// Always keep a thin strip of chrome on the right (never 0px) so the
+				// card's rounded right edge and its frame stay visible against the
+				// sidebar — the boundary reads the same whether the rail is open,
+				// collapsed to a sliver, or absent entirely (the Library with nothing
+				// selected). The strip only ever shows bg, no content.
 				gridTemplateColumns: `16rem 1fr ${
-					hasRail ? (railCollapsed ? "0.5rem" : rightRailWidth) : "0px"
+					hasRail ? (railCollapsed ? "0.5rem" : rightRailWidth) : "0.5rem"
 				}`,
 			}}
 		>
@@ -105,6 +106,7 @@ export function WorkspaceShell({
 				<div className="relative h-full">
 					<div
 						ref={cardRef}
+						data-testid="workspace-card"
 						className="absolute inset-0 overflow-hidden bg-chat-bg"
 					>
 						<div
