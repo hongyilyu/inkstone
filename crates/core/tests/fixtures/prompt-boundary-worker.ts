@@ -6,6 +6,8 @@
 // normally. This keeps the e2e guard at the same boundary the model sees while
 // avoiding nondeterministic real-model assertions in CI.
 
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { emit, stdinLines } from "./transport.js";
 
 const BAD_REMINDER_PROPOSAL = {
@@ -17,7 +19,9 @@ const BAD_REMINDER_PROPOSAL = {
 	rationale: "Save the user's reminder as a journal entry.",
 };
 
-function hasReminderBoundary(systemPrompt: string): boolean {
+// Keep these exact phrases in sync with the shipped prompt. The fixture should
+// fail if the model-visible boundary is softened by wording drift.
+export function hasReminderBoundary(systemPrompt: string): boolean {
 	const lower = systemPrompt.toLowerCase();
 	return (
 		lower.includes("do not propose a journal entry") &&
@@ -68,7 +72,13 @@ const main = async (): Promise<void> => {
 	emit({ kind: "done" });
 };
 
-main().catch((err) => {
-	console.error(err);
-	process.exit(1);
-});
+const entryPath = process.argv[1];
+if (
+	entryPath !== undefined &&
+	realpathSync(entryPath) === realpathSync(fileURLToPath(import.meta.url))
+) {
+	main().catch((err) => {
+		console.error(err);
+		process.exit(1);
+	});
+}

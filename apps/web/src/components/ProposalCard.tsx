@@ -70,6 +70,7 @@ function journalPayloadIssue(
 		return "ended at must use YYYY-MM-DDTHH:MM:SS";
 	}
 	if (ended.length > 0 && ended < occurred) {
+		// Lexicographic order matches chronological order for YYYY-MM-DDTHH:MM:SS.
 		return "ended at must be after occurred at";
 	}
 	if (bodyText.trim().length === 0) {

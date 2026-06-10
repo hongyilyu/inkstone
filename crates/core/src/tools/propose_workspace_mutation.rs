@@ -5,6 +5,7 @@
 
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::protocol::CoreToolDescriptor;
 
@@ -68,18 +69,93 @@ pub enum JournalEntryBodyNodeType {
 }
 
 pub fn descriptor() -> CoreToolDescriptor {
+    let mut json_schema = serde_json::to_value(schemars::schema_for!(Input))
+        .expect("propose_workspace_mutation Input schema serializes");
+    disallow_null_for_property(&mut json_schema, "ended_at");
     CoreToolDescriptor {
         name: NAME.to_string(),
         description: DESCRIPTION.to_string(),
         label: LABEL.to_string(),
-        json_schema: serde_json::to_value(schemars::schema_for!(Input))
-            .expect("propose_workspace_mutation Input schema serializes"),
+        json_schema,
+    }
+}
+
+fn disallow_null_for_property(schema: &mut Value, property: &str) {
+    match schema {
+        Value::Object(obj) => {
+            if let Some(properties) = obj.get_mut("properties").and_then(Value::as_object_mut) {
+                if let Some(property_schema) = properties.get_mut(property) {
+                    remove_null_type(property_schema);
+                }
+            }
+            for child in obj.values_mut() {
+                disallow_null_for_property(child, property);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                disallow_null_for_property(child, property);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn remove_null_type(schema: &mut Value) {
+    let Some(obj) = schema.as_object_mut() else {
+        return;
+    };
+    if let Some(schema_type) = obj.get_mut("type") {
+        match schema_type {
+            Value::Array(types) => {
+                types.retain(|item| item != "null");
+                if types.len() == 1 {
+                    *schema_type = types[0].clone();
+                }
+            }
+            Value::String(t) if t == "null" => {
+                obj.remove("type");
+            }
+            _ => {}
+        }
+    }
+    for key in ["anyOf", "oneOf"] {
+        if let Some(Value::Array(variants)) = obj.get_mut(key) {
+            variants.retain(|variant| variant.get("type").and_then(Value::as_str) != Some("null"));
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn property_schema<'a>(schema: &'a Value, property: &str) -> Option<&'a Value> {
+        match schema {
+            Value::Object(obj) => {
+                if let Some(properties) = obj.get("properties").and_then(Value::as_object) {
+                    if let Some(property_schema) = properties.get(property) {
+                        return Some(property_schema);
+                    }
+                }
+                obj.values()
+                    .find_map(|child| property_schema(child, property))
+            }
+            Value::Array(items) => items
+                .iter()
+                .find_map(|child| property_schema(child, property)),
+            _ => None,
+        }
+    }
+
+    fn mentions_null(schema: &Value) -> bool {
+        match schema {
+            Value::String(s) => s == "null",
+            Value::Array(items) => items.iter().any(mentions_null),
+            Value::Object(obj) => obj.values().any(mentions_null),
+            _ => false,
+        }
+    }
 
     #[test]
     fn descriptor_has_name_and_object_schema() {
@@ -122,6 +198,17 @@ mod tests {
             schema.contains("minItems"),
             "schema must require at least one body text node, got {}",
             d.json_schema
+        );
+    }
+
+    #[test]
+    fn descriptor_disallows_null_ended_at() {
+        let d = descriptor();
+        let ended_at = property_schema(&d.json_schema, "ended_at")
+            .expect("schema describes ended_at when present");
+        assert!(
+            !mentions_null(ended_at),
+            "ended_at may be omitted, but must not be nullable: {ended_at}"
         );
     }
 
