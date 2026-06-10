@@ -9,7 +9,7 @@ use serde::Deserialize;
 use crate::protocol::CoreToolDescriptor;
 
 pub const NAME: &str = "propose_workspace_mutation";
-const DESCRIPTION: &str = "Propose a Workspace mutation for user review before anything is saved.";
+const DESCRIPTION: &str = "Propose a Workspace mutation for user review before saving a journal-worthy lived event or reflection. Do not use for reminders, todos, tasks, or future obligations.";
 const LABEL: &str = "Propose Workspace mutation";
 
 /// Closed first-slice set of Core-known Workspace mutations.
@@ -122,6 +122,18 @@ mod tests {
             schema.contains("minItems"),
             "schema must require at least one body text node, got {}",
             d.json_schema
+        );
+    }
+
+    #[test]
+    fn descriptor_excludes_reminders_from_journal_entries() {
+        let description = descriptor().description.to_lowercase();
+        assert!(
+            description.contains("journal-worthy")
+                && description.contains("reminders")
+                && description.contains("todos")
+                && description.contains("tasks"),
+            "tool description must keep reminders/tasks out of Journal Entry proposals, got {description:?}"
         );
     }
 }

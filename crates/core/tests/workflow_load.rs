@@ -96,13 +96,13 @@ fn missing_workflow_file_fails_fast() {
 }
 
 /// The shipped default Workflow nudges the model to propose a Journal Entry
-/// when the user shares something worth remembering.
+/// only when the user shares journal-worthy material.
 /// Unlike the boot tests above, this is a static content guard — it reads the
 /// real `crates/core/workflows/default.toml` (not a fixture) and asserts on its
 /// `system_prompt`, so it never boots Core. Real-model behavior is
 /// non-deterministic, so this guards the prompt text only.
 #[test]
-fn default_workflow_prompts_for_journal_entries() {
+fn default_workflow_prompts_for_journal_entry_boundary() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("workflows/default.toml");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read shipped default.toml at {}: {e}", path.display()));
@@ -115,6 +115,22 @@ fn default_workflow_prompts_for_journal_entries() {
     assert!(
         lower.contains("propose") && lower.contains("journal entry"),
         "default.toml system_prompt must nudge proposing a Journal Entry, got: {system_prompt:?}"
+    );
+    assert!(
+        lower.contains("logged experience")
+            && lower.contains("observation")
+            && lower.contains("reflection")
+            && lower.contains("event"),
+        "default.toml system_prompt must define what counts as a Journal Entry, got: {system_prompt:?}"
+    );
+    assert!(
+        lower.contains("do not propose a journal entry")
+            && lower.contains("reminders")
+            && lower.contains("tasks")
+            && lower.contains("todos")
+            && lower.contains("future obligations")
+            && lower.contains("without implying the reminder was saved"),
+        "default.toml system_prompt must exclude reminders/tasks from Journal Entries, got: {system_prompt:?}"
     );
     let tools = doc
         .get("tools")

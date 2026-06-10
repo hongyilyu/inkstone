@@ -1045,7 +1045,7 @@ mod mirror_tests {
             prompt: "",
             messages: vec![
                 ManifestMessage::User {
-                    text: "remember to buy milk",
+                    text: "I bought milk after daycare pickup and felt relieved.",
                 },
                 ManifestMessage::Assistant {
                     text: None,
@@ -1075,7 +1075,7 @@ mod mirror_tests {
         assert_eq!(
             v["messages"],
             json!([
-                { "role": "user", "text": "remember to buy milk" },
+                { "role": "user", "text": "I bought milk after daycare pickup and felt relieved." },
                 {
                     "role": "assistant",
                     "tool_calls": [{

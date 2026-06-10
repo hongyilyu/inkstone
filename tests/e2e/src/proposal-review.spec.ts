@@ -17,7 +17,7 @@ test("renders a pending Journal Entry proposal and accept resumes the run", asyn
 }) => {
 	await chat.goto();
 
-	await chat.send("remember buying milk after daycare pickup");
+	await chat.send("I bought milk after daycare pickup and felt relieved.");
 
 	const card = chat.proposalCard();
 	await expect(card).toBeVisible({ timeout: 15_000 });
@@ -32,7 +32,7 @@ test("renders a pending Journal Entry proposal and accept resumes the run", asyn
 test("edit changes the Journal Entry then resumes", async ({ chat }) => {
 	await chat.goto();
 
-	await chat.send("remember buying milk after daycare pickup");
+	await chat.send("I bought milk after daycare pickup and felt relieved.");
 
 	const card = chat.proposalCard();
 	await expect(card).toBeVisible({ timeout: 15_000 });
@@ -50,7 +50,7 @@ test("edit changes the Journal Entry then resumes", async ({ chat }) => {
 test("dismiss rejects and resumes", async ({ chat }) => {
 	await chat.goto();
 
-	await chat.send("remember buying milk after daycare pickup");
+	await chat.send("I bought milk after daycare pickup and felt relieved.");
 
 	const card = chat.proposalCard();
 	await expect(card).toBeVisible({ timeout: 15_000 });
@@ -69,7 +69,7 @@ test("accepted Journal Entry appears in the library", async ({
 }) => {
 	await chat.goto();
 
-	await chat.send("remember buying milk after daycare pickup");
+	await chat.send("I bought milk after daycare pickup and felt relieved.");
 
 	const card = chat.proposalCard();
 	await expect(card).toBeVisible({ timeout: 15_000 });

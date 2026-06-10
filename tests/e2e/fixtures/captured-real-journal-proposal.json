@@ -5,9 +5,9 @@
 		"body": [
 			{
 				"type": "text",
-				"text": "Remember to buy milk after daycare pickup."
+				"text": "I bought milk after daycare pickup and felt relieved."
 			}
 		]
 	},
-	"rationale": "Save the user's reminder as a journal entry."
+	"rationale": "The user shared a brief lived event and reflection they may want in their personal record."
 }

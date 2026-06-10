@@ -53,6 +53,18 @@ const PROPOSE_WORKER_TS = path.join(
 /** Direct Worker fixture that emits `propose_workspace_mutation` without LLM validation. */
 export const PROPOSE_WORKER_CMD = `${TSX_BIN} ${PROPOSE_WORKER_TS}`;
 
+const PROMPT_BOUNDARY_WORKER_TS = path.join(
+	REPO_ROOT,
+	"crates",
+	"core",
+	"tests",
+	"fixtures",
+	"prompt-boundary-worker.ts",
+);
+
+/** Worker fixture that guards the shipped prompt's reminder-vs-journal boundary. */
+export const PROMPT_BOUNDARY_WORKER_CMD = `${TSX_BIN} ${PROMPT_BOUNDARY_WORKER_TS}`;
+
 const LOGIN_HELPER_FIXTURE = path.join(
 	REPO_ROOT,
 	"crates",

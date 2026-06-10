@@ -22,7 +22,7 @@ test("invalid Journal Entry proposal must be edited before applying", async ({
 }) => {
 	await chat.goto();
 
-	await chat.send("remember buying milk after daycare pickup");
+	await chat.send("I bought milk after daycare pickup and felt relieved.");
 
 	const card = chat.proposalCard();
 	await expect(card).toBeVisible({ timeout: 15_000 });

@@ -22,16 +22,16 @@ test("captured real Journal Entry proposal applies cleanly", async ({
 }) => {
 	await chat.goto();
 
-	await chat.send("remember buying milk after daycare pickup");
+	await chat.send("I bought milk after daycare pickup and felt relieved.");
 
 	const card = chat.proposalCard();
 	await expect(card).toBeVisible({ timeout: 15_000 });
 	await expect(card).toContainText(
-		"Remember to buy milk after daycare pickup.",
+		"I bought milk after daycare pickup and felt relieved.",
 	);
 	await expect(card).toContainText("2026-06-10T00:00:00");
 	await expect(card).toContainText(
-		"Save the user's reminder as a journal entry.",
+		"The user shared a brief lived event and reflection they may want in their personal record.",
 	);
 
 	const add = card.getByRole("button", { name: /add journal entry/i });

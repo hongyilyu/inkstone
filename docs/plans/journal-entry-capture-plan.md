@@ -239,6 +239,7 @@ The Proposal UI should show the normalized time clearly and allow correction.
    - Replace `propose_entity` with `propose_workspace_mutation`.
    - `propose_workspace_mutation` accepts a closed enum of Core-known domain mutations, not generic table-level CRUD.
    - The existing default Workflow proposes Journal Entries when prompted or when the Message is clearly journal-like.
+   - Reminder/task/todo-shaped Messages are not Journal Entries in the first slice; until Todo extraction exists, the assistant replies conversationally and does not create a Proposal for them.
    - Worker proposes one or more Journal Entries from the user Message.
    - Core applies accepted Journal Entry and Entity Source to the user Message.
 
