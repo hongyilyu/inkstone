@@ -101,7 +101,15 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 		// resume spawn freshly applies the resume response (mirrors
 		// propose-worker.ts at the protocol level).
 		if (manifest.mode === "resume") {
-			faux.setResponses([fauxAssistantMessage("Done — added it.")]);
+			const toolResult = [...manifest.messages]
+				.reverse()
+				.find((message) => message.role === "tool_result");
+			const dismissed = /declined|reject/i.test(toolResult?.content ?? "");
+			faux.setResponses([
+				fauxAssistantMessage(
+					dismissed ? "Done — dismissed it." : "Done — added it.",
+				),
+			]);
 		} else {
 			faux.setResponses([
 				fauxAssistantMessage(

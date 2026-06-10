@@ -31,14 +31,24 @@ const main = async (): Promise<void> => {
 	// the Decision and is re-spawning us with the reconstructed transcript
 	// (ending in the Decision tool_result). DON'T propose again — emit a short
 	// completion and `done` so the Run reaches `completed`.
-	let manifest: { mode?: string } = {};
+	let manifest: {
+		mode?: string;
+		messages?: Array<{ role?: string; content?: string }>;
+	} = {};
 	try {
 		manifest = JSON.parse(manifestLine);
 	} catch {
 		// Malformed manifest — fall through to the fresh (propose) path.
 	}
 	if (manifest.mode === "resume") {
-		emit({ kind: "text_delta", delta: "Done — added it." });
+		const toolResult = [...(manifest.messages ?? [])]
+			.reverse()
+			.find((message) => message.role === "tool_result");
+		const dismissed = /declined|reject/i.test(toolResult?.content ?? "");
+		emit({
+			kind: "text_delta",
+			delta: dismissed ? "Done — dismissed it." : "Done — added it.",
+		});
 		emit({ kind: "done" });
 		return;
 	}

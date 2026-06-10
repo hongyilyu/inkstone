@@ -231,6 +231,7 @@ export async function spawnCore(
 		"INKSTONE_FAUX_ERROR",
 		"INKSTONE_FAUX_TOOL_CALL",
 		"INKSTONE_FAUX_PROPOSE",
+		"INKSTONE_FAUX_ECHO_HISTORY",
 	]) {
 		delete env[key];
 	}

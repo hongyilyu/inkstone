@@ -116,4 +116,15 @@ fn default_workflow_prompts_for_journal_entries() {
         lower.contains("propose") && lower.contains("journal entry"),
         "default.toml system_prompt must nudge proposing a Journal Entry, got: {system_prompt:?}"
     );
+    let tools = doc
+        .get("tools")
+        .and_then(|v| v.as_array())
+        .expect("shipped default.toml has a tools array");
+    assert!(
+        tools
+            .iter()
+            .filter_map(|tool| tool.as_str())
+            .any(|tool| tool == "propose_workspace_mutation"),
+        "default.toml must include 'propose_workspace_mutation' in tools"
+    );
 }

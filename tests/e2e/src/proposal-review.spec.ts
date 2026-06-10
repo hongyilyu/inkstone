@@ -59,7 +59,7 @@ test("dismiss rejects and resumes", async ({ chat }) => {
 	await card.getByRole("button", { name: /dismiss/i }).click();
 
 	await expect(card).toContainText(/dismissed/i, { timeout: 15_000 });
-	await chat.waitForAssistantText(/done.*added it/i);
+	await chat.waitForAssistantText(/done.*dismissed it/i);
 });
 
 test("accepted Journal Entry appears in the library", async ({

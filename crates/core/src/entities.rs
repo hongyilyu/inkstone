@@ -22,10 +22,32 @@ pub(crate) fn validate(mutation_kind: &str, payload: &Value) -> Result<(), Strin
 
 /// Render the human-readable Decision text the model reads on resume as the
 /// awaited tool's result (ADR-0025), dispatched on mutation kind.
-pub(crate) fn render_accept(mutation_kind: &str, _payload: &Value) -> String {
+pub(crate) fn render_accept(mutation_kind: &str, payload: &Value) -> String {
     match mutation_kind {
-        "create_journal_entry" => "Accepted. Created Journal Entry.".to_string(),
+        "create_journal_entry" => {
+            let occurred_at = payload
+                .get("occurred_at")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let body = journal_body_text(payload);
+            format!("Accepted. Created Journal Entry (occurred_at={occurred_at}, body={body}).")
+        }
         other => unreachable!("render_accept for unvalidated mutation_kind {other:?}"),
+    }
+}
+
+fn journal_body_text(payload: &Value) -> String {
+    let Some(body) = payload.get("body").and_then(Value::as_array) else {
+        return "unknown".to_string();
+    };
+    let text = body
+        .iter()
+        .filter_map(|node| node.get("text").and_then(Value::as_str))
+        .collect::<String>();
+    if text.trim().is_empty() {
+        "unknown".to_string()
+    } else {
+        text
     }
 }
 
@@ -331,10 +353,18 @@ mod tests {
 
     #[test]
     fn render_accept_journal_entry_confirms_creation() {
-        let text = render_accept("create_journal_entry", &json!({}));
+        let text = render_accept(
+            "create_journal_entry",
+            &json!({
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Bought milk." }]
+            }),
+        );
         assert!(
-            text.contains("Journal Entry"),
-            "confirmation names the created Journal Entry: {text}"
+            text.contains("Journal Entry")
+                && text.contains("2026-06-10T10:30:00")
+                && text.contains("Bought milk."),
+            "confirmation names the created Journal Entry fields: {text}"
         );
     }
 

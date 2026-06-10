@@ -69,7 +69,9 @@ export function ProposalCard({
 	const isJournalEntry = mutation_kind === "create_journal_entry";
 	const title = isJournalEntry ? "Journal Entry" : mutation_kind;
 
-	const [inFlight, setInFlight] = useState<"accept" | "reject" | null>(null);
+	const [inFlight, setInFlight] = useState<"accept" | "reject" | "edit" | null>(
+		null,
+	);
 	useEffect(() => {
 		if (proposal.status !== "deciding") setInFlight(null);
 	}, [proposal.status]);
@@ -93,9 +95,12 @@ export function ProposalCard({
 		if (editing) bodyRef.current?.focus();
 	}, [editing]);
 	const saveEdit = () => {
+		if (inFlight !== null || proposal.status === "deciding") return;
 		if (editOccurredAt.trim().length === 0 || editBody.trim().length === 0) {
 			return;
 		}
+		setInFlight("edit");
+		setEditing(false);
 		onDecide("edit", journalPayload(editOccurredAt, editBody, editEndedAt));
 	};
 
@@ -118,6 +123,7 @@ export function ProposalCard({
 	}
 
 	const deciding = status === "deciding";
+	const submitting = deciding || inFlight !== null;
 	const isError = status === "error";
 
 	return (
@@ -195,6 +201,7 @@ export function ProposalCard({
 						<button
 							type="submit"
 							disabled={
+								submitting ||
 								editOccurredAt.trim().length === 0 ||
 								editBody.trim().length === 0
 							}
@@ -205,8 +212,9 @@ export function ProposalCard({
 						</button>
 						<button
 							type="button"
+							disabled={submitting}
 							onClick={() => setEditing(false)}
-							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>
 							Cancel
 						</button>
@@ -245,7 +253,7 @@ export function ProposalCard({
 						) : (
 							<button
 								type="button"
-								disabled={deciding}
+								disabled={submitting}
 								onClick={() => decide("accept")}
 								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
@@ -268,7 +276,7 @@ export function ProposalCard({
 
 						<button
 							type="button"
-							disabled={deciding || isError}
+							disabled={submitting || isError}
 							onClick={openEdit}
 							className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-input px-3 py-1.5 font-medium text-foreground/80 text-sm transition-colors hover:bg-secondary/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>
@@ -278,7 +286,7 @@ export function ProposalCard({
 
 						<button
 							type="button"
-							disabled={deciding}
+							disabled={submitting}
 							onClick={() => decide("reject")}
 							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>

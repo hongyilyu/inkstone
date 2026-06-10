@@ -150,6 +150,10 @@ describe("ProposalCard", () => {
 			occurred_at: "2026-06-10T10:30:00",
 			body: [{ type: "text", text: "Bought oat milk after daycare pickup." }],
 		});
+		expect(onDecide).toHaveBeenCalledTimes(1);
+		expect(
+			screen.queryByRole("button", { name: /save changes/i }),
+		).not.toBeInTheDocument();
 	});
 
 	it("disables Save when required fields are empty", () => {

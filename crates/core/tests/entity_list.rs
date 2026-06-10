@@ -64,7 +64,7 @@ async fn create_and_park(core: &CoreHandle) -> String {
     run_id
 }
 
-async fn park_and_accept(core: &CoreHandle, idempotency_key: &str) -> String {
+async fn park_and_accept(core: &CoreHandle, idempotency_key: &str, body_text: &str) -> String {
     let run_id = create_and_park(core).await;
 
     let resp = rpc(
@@ -85,7 +85,11 @@ async fn park_and_accept(core: &CoreHandle, idempotency_key: &str) -> String {
         "proposal/decide",
         serde_json::json!({
             "proposal_id": proposal_id,
-            "decision": "accept",
+            "decision": "edit",
+            "edited_payload": {
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": body_text }]
+            },
             "decision_idempotency_key": idempotency_key,
         }),
     )
@@ -107,7 +111,8 @@ fn list_journal_entries_returns_accepted() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        let entity_id = park_and_accept(&core, "k1").await;
+        let first_entity_id = park_and_accept(&core, "k1", "First journal entry.").await;
+        let second_entity_id = park_and_accept(&core, "k2", "Second journal entry.").await;
 
         let resp = rpc(
             &core,
@@ -121,33 +126,49 @@ fn list_journal_entries_returns_accepted() {
             .unwrap_or_else(|| panic!("result.entities is an array - body: {resp}"));
         assert_eq!(
             entities.len(),
-            1,
-            "exactly one Journal Entry listed - body: {resp}"
+            2,
+            "two Journal Entries listed - body: {resp}"
         );
 
-        let row = &entities[0];
+        let newest = &entities[0];
+        let oldest = &entities[1];
         assert_eq!(
-            row["id"].as_str(),
-            Some(entity_id.as_str()),
-            "row id matches the accepted entity - body: {resp}"
+            newest["id"].as_str(),
+            Some(second_entity_id.as_str()),
+            "newest row is first - body: {resp}"
         );
         assert_eq!(
-            row["type"].as_str(),
+            oldest["id"].as_str(),
+            Some(first_entity_id.as_str()),
+            "oldest row is second - body: {resp}"
+        );
+        assert_eq!(
+            newest["type"].as_str(),
             Some("journal_entry"),
-            "row type is journal_entry"
+            "newest row type is journal_entry"
         );
         assert_eq!(
-            row["data"]["body"][0]["text"].as_str(),
-            Some("Bought milk after daycare pickup."),
-            "row data body text is the proposed Journal Entry - body: {resp}"
+            oldest["type"].as_str(),
+            Some("journal_entry"),
+            "oldest row type is journal_entry"
+        );
+        assert_eq!(
+            newest["data"]["body"][0]["text"].as_str(),
+            Some("Second journal entry."),
+            "newest row data body text is the second Journal Entry - body: {resp}"
+        );
+        assert_eq!(
+            oldest["data"]["body"][0]["text"].as_str(),
+            Some("First journal entry."),
+            "oldest row data body text is the first Journal Entry - body: {resp}"
         );
         assert!(
-            row["created_at"].is_number(),
-            "row carries a numeric created_at - body: {resp}"
+            newest["created_at"].is_number(),
+            "newest row carries a numeric created_at - body: {resp}"
         );
         assert!(
-            row["updated_at"].is_number(),
-            "row carries a numeric updated_at - body: {resp}"
+            newest["updated_at"].is_number(),
+            "newest row carries a numeric updated_at - body: {resp}"
         );
 
         let resp = rpc(

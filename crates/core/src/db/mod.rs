@@ -1260,6 +1260,20 @@ mod tests {
         .await
         .expect("apply");
         assert!(!entity_id.is_empty());
+        let source_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM entity_sources es \
+             JOIN runs r ON r.user_message_id = es.source_message_id \
+             WHERE es.entity_id = ?1 AND es.relation = 'created_from' AND r.id = ?2",
+        )
+        .bind(&entity_id)
+        .bind(run_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count entity_sources");
+        assert_eq!(
+            source_count, 1,
+            "accepted entity records its source Message"
+        );
         // The caller-supplied schema_version is persisted verbatim (a sentinel,
         // not the Journal Entry default), so this fails if apply_proposal ever ignores
         // the argument and re-hardcodes the old constant.
