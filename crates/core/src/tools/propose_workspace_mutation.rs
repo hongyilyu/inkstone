@@ -24,12 +24,47 @@ pub enum WorkspaceMutationKind {
 /// logical Workspace mutation; `payload` is the mutation-specific body Core
 /// validates on Decision. The first supported kind is `create_journal_entry`.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
 #[allow(dead_code)]
 pub struct Input {
     pub mutation_kind: WorkspaceMutationKind,
-    pub payload: serde_json::Value,
+    pub payload: CreateJournalEntryPayload,
     #[serde(default)]
     pub rationale: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct CreateJournalEntryPayload {
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub occurred_at: String,
+    /// Optional local wall-clock end time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub ended_at: Option<String>,
+    #[schemars(length(min = 1))]
+    pub body: Vec<JournalEntryBodyNode>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct JournalEntryBodyNode {
+    pub r#type: JournalEntryBodyNodeType,
+    #[schemars(length(min = 1))]
+    pub text: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum JournalEntryBodyNodeType {
+    Text,
 }
 
 pub fn descriptor() -> CoreToolDescriptor {
@@ -65,6 +100,27 @@ mod tests {
         assert!(
             d.json_schema["properties"].get("payload").is_some(),
             "schema describes payload, got {}",
+            d.json_schema
+        );
+    }
+
+    #[test]
+    fn descriptor_describes_create_journal_entry_payload() {
+        let d = descriptor();
+        let schema = d.json_schema.to_string();
+        assert!(
+            schema.contains("occurred_at"),
+            "schema must tell the worker to emit occurred_at, got {}",
+            d.json_schema
+        );
+        assert!(
+            schema.contains("YYYY-MM-DDTHH:MM:SS"),
+            "schema must tell the worker to emit a full local timestamp, got {}",
+            d.json_schema
+        );
+        assert!(
+            schema.contains("minItems"),
+            "schema must require at least one body text node, got {}",
             d.json_schema
         );
     }
