@@ -41,6 +41,18 @@ const FIXTURE = path.join(
 /** The worker command Core spawns: tsx running the gate fixture. */
 export const GATE_WORKER_CMD = `${TSX_BIN} ${FIXTURE}`;
 
+const PROPOSE_WORKER_TS = path.join(
+	REPO_ROOT,
+	"crates",
+	"core",
+	"tests",
+	"fixtures",
+	"propose-worker.ts",
+);
+
+/** Direct Worker fixture that emits `propose_workspace_mutation` without LLM validation. */
+export const PROPOSE_WORKER_CMD = `${TSX_BIN} ${PROPOSE_WORKER_TS}`;
+
 const LOGIN_HELPER_FIXTURE = path.join(
 	REPO_ROOT,
 	"crates",
@@ -132,6 +144,11 @@ export interface SpawnCoreOptions {
 	 * exercising the full park -> decide -> resume loop end-to-end (ADR-0025).
 	 */
 	readonly faux?: "propose";
+	/**
+	 * Direct propose-worker fixture knob. Emits a malformed Journal Entry payload
+	 * so browser tests can pin the "do not apply until edited" UI behavior.
+	 */
+	readonly invalidJournalProposal?: boolean;
 	/** Milliseconds to wait for the listening line before failing. Default 30s. */
 	readonly startupTimeoutMs?: number;
 }
@@ -232,6 +249,7 @@ export async function spawnCore(
 		"INKSTONE_FAUX_TOOL_CALL",
 		"INKSTONE_FAUX_PROPOSE",
 		"INKSTONE_FAUX_ECHO_HISTORY",
+		"INKSTONE_PROPOSE_INVALID_JOURNAL",
 	]) {
 		delete env[key];
 	}
@@ -242,6 +260,9 @@ export async function spawnCore(
 		env.INKSTONE_WORKER_CMD = workerCmd;
 		env.INKSTONE_FIXTURE_CHUNKS = String(chunks);
 		if (gatePath) env.INKSTONE_FIXTURE_GATE = gatePath;
+		if (opts.invalidJournalProposal) {
+			env.INKSTONE_PROPOSE_INVALID_JOURNAL = "1";
+		}
 	}
 
 	// Per-test credential store (isolated tempdir) so provider/status starts
