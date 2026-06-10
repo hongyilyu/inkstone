@@ -123,8 +123,133 @@ test("opens an entity in the shared collapsible rail, then closes it", async ({
 	await expect(toggle).toHaveAttribute("aria-pressed", "false");
 	await toggle.click();
 	await expect(toggle).toHaveAttribute("aria-pressed", "true");
+
+	// Model A: collapsing hides the panel but keeps the selection — the `?id`
+	// stays in the URL, the row stays current, and the bay/toggle remain so it
+	// can be reopened. (The bay only disappears when nothing is selected.)
+	await expect(page).toHaveURL(/\/library\/recipes\?id=recipe_ragu/);
+	await expect(
+		page.getByRole("button", { name: /weeknight ragù/i }),
+	).toHaveAttribute("aria-current", "true");
+	await expect(toggle).toBeVisible();
+
 	await toggle.click();
 	await expect(toggle).toHaveAttribute("aria-pressed", "false");
+});
+
+test("hides the bay toggle when nothing is selected, keeping the card frame inset", async ({
+	page,
+}) => {
+	await page.goto("/library");
+	await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
+
+	// Nothing selected → no rail content → no carved bay → no collapse toggle.
+	await expect(
+		page.getByRole("button", { name: /details panel/i }),
+	).toHaveCount(0);
+
+	// The framed card still floats against the pink chrome: its right edge sits a
+	// gutter's width inside the viewport, never flush — so the frame/border stays
+	// fully visible even with no rail. (jsdom has no CSS, so this lives in e2e.)
+	const box = await page.getByTestId("workspace-card").boundingBox();
+	const viewport = page.viewportSize();
+	expect(box).not.toBeNull();
+	expect(viewport).not.toBeNull();
+	if (box && viewport) {
+		expect(box.x + box.width).toBeLessThanOrEqual(viewport.width - 6);
+	}
+});
+
+test("reveals the bay toggle only after a collection row is selected", async ({
+	page,
+}) => {
+	// Recipes stay mock-backed, so this runs without Core.
+	await page.goto("/library/recipes");
+	await expect(
+		page.getByRole("heading", { name: "Recipes", level: 1 }),
+	).toBeVisible();
+
+	// Nothing selected yet → plain framed card, no bay toggle.
+	const toggle = page.getByRole("button", { name: /details panel/i });
+	await expect(toggle).toHaveCount(0);
+
+	// Selecting a row reveals the bay toggle and opens the detail panel.
+	await page.getByRole("button", { name: /weeknight ragù/i }).click();
+	await expect(toggle).toBeVisible();
+	await expect(
+		page.getByRole("complementary", { name: /weeknight ragù details/i }),
+	).toBeVisible();
+});
+
+test("drops the bay when navigating away deselects", async ({ page }) => {
+	await page.goto("/library/recipes?id=recipe_ragu");
+	const toggle = page.getByRole("button", { name: /details panel/i });
+	await expect(toggle).toBeVisible();
+
+	// Navigating to another collection clears `?id` (the nav links carry no
+	// selection) → nothing selected → the bay + toggle disappear again.
+	await page
+		.getByRole("navigation", { name: /library/i })
+		.getByRole("link", { name: /projects/i })
+		.click();
+	await expect(page).toHaveURL(/\/library\/projects$/);
+	await expect(toggle).toHaveCount(0);
+
+	const box = await page.getByTestId("workspace-card").boundingBox();
+	const viewport = page.viewportSize();
+	expect(box).not.toBeNull();
+	expect(viewport).not.toBeNull();
+	if (box && viewport) {
+		expect(box.x + box.width).toBeLessThanOrEqual(viewport.width - 6);
+	}
+});
+
+test("shows the bay toggle for a deep-linked selection on load", async ({
+	page,
+}) => {
+	await page.goto("/library/recipes?id=recipe_ragu");
+
+	await expect(
+		page.getByRole("button", { name: /details panel/i }),
+	).toBeVisible();
+	await expect(
+		page
+			.getByRole("complementary", { name: /weeknight ragù details/i })
+			.getByRole("heading", { name: /weeknight ragù/i }),
+	).toBeVisible();
+});
+
+test("keeps the framed card border in dark theme with nothing selected", async ({
+	page,
+}) => {
+	await page.goto("/library");
+	await page.getByRole("button", { name: /toggle theme/i }).click();
+	await expect
+		.poll(() => page.evaluate(() => document.documentElement.dataset.theme))
+		.toBe("dark");
+
+	// Still no bay toggle, and the card frame still floats inside the viewport.
+	await expect(
+		page.getByRole("button", { name: /details panel/i }),
+	).toHaveCount(0);
+	const box = await page.getByTestId("workspace-card").boundingBox();
+	const viewport = page.viewportSize();
+	expect(box).not.toBeNull();
+	expect(viewport).not.toBeNull();
+	if (box && viewport) {
+		expect(box.x + box.width).toBeLessThanOrEqual(viewport.width - 6);
+	}
+});
+
+test("keeps the activity-rail toggle on the chat surface (regression)", async ({
+	page,
+}) => {
+	// The homepage rail is always present, so its bay + toggle always show —
+	// independent of Core (the rail mounts regardless of data).
+	await page.goto("/");
+	await expect(
+		page.getByRole("button", { name: /activity rail/i }),
+	).toBeVisible();
 });
 
 test("opens a Today entry in the rail without leaving Today", async ({
