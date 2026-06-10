@@ -1,5 +1,7 @@
-import { createRootRoute, Outlet } from "@tanstack/react-router";
+import { createRootRoute, Outlet, useRouterState } from "@tanstack/react-router";
+import { useEffect } from "react";
 import { CommandPalette } from "@/components/CommandPalette";
+import { noteNonSettingsLocation } from "@/store/settings-origin";
 
 /**
  * Root route (ADR-0024 file-based routing). Renders the active route's
@@ -8,11 +10,23 @@ import { CommandPalette } from "@/components/CommandPalette";
  * in `main.tsx` above `RouterProvider`, so route components read them via
  * context.
  */
-export const Route = createRootRoute({
-	component: () => (
+function RootLayout() {
+	// Track the last non-settings location so Esc inside the settings takeover
+	// returns there rather than to a previously-viewed tab (see
+	// `store/settings-origin`).
+	const href = useRouterState({ select: (s) => s.location.href });
+	useEffect(() => {
+		noteNonSettingsLocation(href);
+	}, [href]);
+
+	return (
 		<>
 			<Outlet />
 			<CommandPalette />
 		</>
-	),
+	);
+}
+
+export const Route = createRootRoute({
+	component: RootLayout,
 });

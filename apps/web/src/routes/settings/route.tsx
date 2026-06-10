@@ -1,5 +1,13 @@
-import { Link, Outlet, createFileRoute } from "@tanstack/react-router";
+import {
+	Link,
+	Outlet,
+	createFileRoute,
+	useRouter,
+} from "@tanstack/react-router";
 import { ArrowLeft } from "lucide-react";
+import { useEffect } from "react";
+import { useCommandOpen } from "@/store/command";
+import { settingsExitHref } from "@/store/settings-origin";
 
 /**
  * Settings shell (ADR-0024): the t3-styled chrome around every `/settings/*`
@@ -8,6 +16,23 @@ import { ArrowLeft } from "lucide-react";
  * section today; the pill bar keeps t3's structure so more can be added.
  */
 function SettingsLayout() {
+	const router = useRouter();
+	const commandOpen = useCommandOpen();
+
+	// Esc dismisses the settings takeover, returning to wherever it was opened
+	// from (Chat or Library) — tracked in `store/settings-origin`, so it exits
+	// the whole takeover rather than stepping back through visited tabs. Only
+	// while the command palette is closed, so a first Esc dismisses an open
+	// palette (Base UI owns that) and the next one exits.
+	useEffect(() => {
+		if (commandOpen) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") router.history.push(settingsExitHref());
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [commandOpen, router]);
+
 	return (
 		<main
 			aria-label="Settings"
