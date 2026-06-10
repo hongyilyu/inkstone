@@ -1,0 +1,8 @@
+{
+	"mutation_kind": "create_journal_entry",
+	"payload": {
+		"occurred_at": "2026-06-10",
+		"body": []
+	},
+	"rationale": "Capture the logged moment as a journal entry."
+}

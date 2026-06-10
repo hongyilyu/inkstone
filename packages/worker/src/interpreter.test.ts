@@ -172,7 +172,10 @@ describe("generic interpreter (faux provider)", () => {
 				],
 			},
 			messages: [
-				{ role: "user", text: "remember to buy milk" },
+				{
+					role: "user",
+					text: "I bought milk after daycare pickup and felt relieved.",
+				},
 				{
 					role: "assistant",
 					tool_calls: [

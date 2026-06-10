@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import {
 	fauxAssistantMessage,
 	fauxToolCall,
@@ -17,6 +20,7 @@ import {
 const registrations: Array<{ unregister: () => void }> = [];
 afterEach(() => {
 	for (const r of registrations.splice(0)) r.unregister();
+	delete process.env.INKSTONE_WORKER_TOOL_CALL_LOG;
 });
 
 function manifestWithReadThread(): WorkerManifest {
@@ -48,6 +52,11 @@ function manifestWithReadThread(): WorkerManifest {
 
 describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 	it("round-trips a model tool call through the transport's callTool and feeds the scripted result back to the loop", async () => {
+		const tmp = mkdtempSync(path.join(tmpdir(), "inkstone-tool-log-"));
+		process.env.INKSTONE_WORKER_TOOL_CALL_LOG = path.join(
+			tmp,
+			"tool-calls.jsonl",
+		);
 		const faux = registerFauxProvider({ provider: "faux" });
 		registrations.push(faux);
 		// Turn 1: the model calls read_thread. Turn 2 (after the tool result):
@@ -95,6 +104,21 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 		expect(requests).toEqual([
 			{ toolCallId: "tc1", name: "read_thread", params: { thread_id: "T-1" } },
 		]);
+		const logged = readFileSync(
+			process.env.INKSTONE_WORKER_TOOL_CALL_LOG,
+			"utf8",
+		)
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(logged).toEqual([
+			{
+				tool_call_id: "tc1",
+				name: "read_thread",
+				params: { thread_id: "T-1" },
+			},
+		]);
+		rmSync(tmp, { recursive: true, force: true });
 
 		// (b) The loop fed the scripted result back; the follow-up answer reflects it.
 		const text = events
