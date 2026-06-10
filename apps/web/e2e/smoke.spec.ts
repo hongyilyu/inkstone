@@ -29,9 +29,9 @@ test("loads the chat shell and degrades gracefully without Core", async ({
 	await expect(
 		sidebar.getByRole("button", { name: /^library$/i }),
 	).toBeVisible();
-	await expect(sidebar.getByText(/Last 30 Days/i)).toBeVisible();
-	// No Core in preview → the thread/list read resolves empty, not a throw.
-	await expect(sidebar.getByText(/no threads match/i)).toBeVisible();
+	// No Core in preview → the thread/list read resolves empty (not a throw), so
+	// the sidebar shows its empty-state copy rather than any grouped rows.
+	await expect(sidebar.getByText(/no threads yet/i)).toBeVisible();
 
 	// Composer.
 	await expect(page.getByRole("textbox", { name: /message/i })).toBeVisible();
