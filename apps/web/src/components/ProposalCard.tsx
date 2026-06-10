@@ -52,6 +52,33 @@ function journalPayload(
 	};
 }
 
+function isLocalDateTime(value: string): boolean {
+	return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(value.trim());
+}
+
+function journalPayloadIssue(
+	occurredAt: string,
+	bodyText: string,
+	endedAt: string,
+): string | null {
+	const occurred = occurredAt.trim();
+	const ended = endedAt.trim();
+	if (!isLocalDateTime(occurred)) {
+		return "occurred at must use YYYY-MM-DDTHH:MM:SS";
+	}
+	if (ended.length > 0 && !isLocalDateTime(ended)) {
+		return "ended at must use YYYY-MM-DDTHH:MM:SS";
+	}
+	if (ended.length > 0 && ended < occurred) {
+		// Lexicographic order matches chronological order for YYYY-MM-DDTHH:MM:SS.
+		return "ended at must be after occurred at";
+	}
+	if (bodyText.trim().length === 0) {
+		return "body must not be empty";
+	}
+	return null;
+}
+
 export function ProposalCard({
 	proposal,
 	onDecide,
@@ -68,6 +95,10 @@ export function ProposalCard({
 	const bodyText = journalBody(payload);
 	const isJournalEntry = mutation_kind === "create_journal_entry";
 	const title = isJournalEntry ? "Journal Entry" : mutation_kind;
+	const payloadIssue = isJournalEntry
+		? journalPayloadIssue(occurredAt, bodyText, endedAt)
+		: null;
+	const canApply = payloadIssue === null;
 
 	const [inFlight, setInFlight] = useState<"accept" | "reject" | "edit" | null>(
 		null,
@@ -84,6 +115,9 @@ export function ProposalCard({
 	const [editOccurredAt, setEditOccurredAt] = useState(occurredAt);
 	const [editEndedAt, setEditEndedAt] = useState(endedAt);
 	const [editBody, setEditBody] = useState(bodyText);
+	const editIssue = isJournalEntry
+		? journalPayloadIssue(editOccurredAt, editBody, editEndedAt)
+		: null;
 	const bodyRef = useRef<HTMLTextAreaElement>(null);
 	const openEdit = () => {
 		setEditOccurredAt(occurredAt);
@@ -96,9 +130,7 @@ export function ProposalCard({
 	}, [editing]);
 	const saveEdit = () => {
 		if (inFlight !== null || proposal.status === "deciding") return;
-		if (editOccurredAt.trim().length === 0 || editBody.trim().length === 0) {
-			return;
-		}
+		if (editIssue !== null) return;
 		setInFlight("edit");
 		setEditing(false);
 		onDecide("edit", journalPayload(editOccurredAt, editBody, editEndedAt));
@@ -197,14 +229,15 @@ export function ProposalCard({
 							className="min-h-24 rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 						/>
 					</label>
+					{editIssue ? (
+						<p role="alert" className="text-sm text-destructive">
+							Edit required fields: {editIssue}.
+						</p>
+					) : null}
 					<footer className="flex items-center gap-2 pt-1">
 						<button
 							type="submit"
-							disabled={
-								submitting ||
-								editOccurredAt.trim().length === 0 ||
-								editBody.trim().length === 0
-							}
+							disabled={submitting || editIssue !== null}
 							className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>
 							<Check className="size-4" aria-hidden />
@@ -236,7 +269,13 @@ export function ProposalCard({
 
 					{isError ? (
 						<p role="alert" className="text-sm text-destructive">
-							Couldn't apply. Try again.
+							{payloadIssue
+								? `Edit required fields: ${payloadIssue}.`
+								: "Couldn't apply. Try again."}
+						</p>
+					) : payloadIssue ? (
+						<p role="alert" className="text-sm text-destructive">
+							Edit required fields: {payloadIssue}.
 						</p>
 					) : null}
 
@@ -244,8 +283,9 @@ export function ProposalCard({
 						{isError ? (
 							<button
 								type="button"
+								disabled={!canApply}
 								onClick={() => decide("accept")}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<RotateCcw className="size-4" aria-hidden />
 								Try again
@@ -253,7 +293,7 @@ export function ProposalCard({
 						) : (
 							<button
 								type="button"
-								disabled={submitting}
+								disabled={submitting || !canApply}
 								onClick={() => decide("accept")}
 								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
@@ -276,7 +316,7 @@ export function ProposalCard({
 
 						<button
 							type="button"
-							disabled={submitting || isError}
+							disabled={submitting}
 							onClick={openEdit}
 							className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-input px-3 py-1.5 font-medium text-foreground/80 text-sm transition-colors hover:bg-secondary/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>

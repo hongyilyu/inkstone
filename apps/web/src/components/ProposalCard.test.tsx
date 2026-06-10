@@ -113,6 +113,44 @@ describe("ProposalCard", () => {
 		expect(onDecide).toHaveBeenCalledWith("accept");
 	});
 
+	it("blocks applying an invalid Journal Entry proposal until edited", () => {
+		render(
+			<ProposalCard
+				proposal={{
+					...base,
+					payload: {
+						occurred_at: "2026-06-10",
+						body: [],
+					},
+				}}
+				onDecide={() => {}}
+			/>,
+		);
+		expect(
+			screen.getByRole("button", { name: /add journal entry/i }),
+		).toBeDisabled();
+		expect(screen.getByRole("button", { name: /edit/i })).not.toBeDisabled();
+		expect(screen.getByText(/edit required fields/i)).toBeInTheDocument();
+	});
+
+	it("keeps Edit available when an invalid proposal is in the error state", () => {
+		render(
+			<ProposalCard
+				proposal={{
+					...base,
+					status: "error",
+					payload: {
+						occurred_at: "2026-06-10",
+						body: [],
+					},
+				}}
+				onDecide={() => {}}
+			/>,
+		);
+		expect(screen.getByRole("button", { name: /try again/i })).toBeDisabled();
+		expect(screen.getByRole("button", { name: /edit/i })).not.toBeDisabled();
+	});
+
 	it("opens the inline edit form with the proposed fields pre-filled", () => {
 		render(<ProposalCard proposal={base} onDecide={() => {}} />);
 		fireEvent.click(screen.getByRole("button", { name: /edit/i }));

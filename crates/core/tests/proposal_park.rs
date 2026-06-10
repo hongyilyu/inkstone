@@ -57,7 +57,7 @@ fn parks_on_propose_workspace_mutation() {
             &core,
             1,
             "thread/create",
-            serde_json::json!({ "prompt": "remember to buy milk" }),
+            serde_json::json!({ "prompt": "I bought milk after daycare pickup and felt relieved." }),
         )
         .await;
         let run_id = resp["result"]["run_id"]
@@ -237,7 +237,7 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
             &core,
             1,
             "thread/create",
-            serde_json::json!({ "prompt": "remember to buy milk" }),
+            serde_json::json!({ "prompt": "I bought milk after daycare pickup and felt relieved." }),
         )
         .await;
         let run_id = resp["result"]["run_id"]
@@ -339,7 +339,7 @@ fn attached_subscriber_gets_proposal_pending_on_park() {
             &core,
             1,
             "thread/create",
-            serde_json::json!({ "prompt": "remember to buy milk" }),
+            serde_json::json!({ "prompt": "I bought milk after daycare pickup and felt relieved." }),
         )
         .await;
         let run_id = resp["result"]["run_id"]

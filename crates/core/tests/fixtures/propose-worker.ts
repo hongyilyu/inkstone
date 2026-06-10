@@ -16,6 +16,7 @@
 // Node builtins ONLY (no @inkstone/protocol, no npm deps) so it runs
 // standalone via tsx, matching the tool-worker.ts convention.
 
+import { readFileSync } from "node:fs";
 import { emit, stdinLines } from "./transport.js";
 
 const main = async (): Promise<void> => {
@@ -53,14 +54,18 @@ const main = async (): Promise<void> => {
 		return;
 	}
 
-	const proposeParams = {
-		mutation_kind: "create_journal_entry",
-		payload: {
-			occurred_at: "2026-06-10T10:30:00",
-			body: [{ type: "text", text: "Bought milk after daycare pickup." }],
-		},
-		rationale: "the user shared a journal-worthy moment",
-	};
+	const paramsFile = process.env.INKSTONE_PROPOSE_PARAMS_FILE;
+	const proposeParams =
+		paramsFile !== undefined && paramsFile.length > 0
+			? JSON.parse(readFileSync(paramsFile, "utf8"))
+			: {
+					mutation_kind: "create_journal_entry",
+					payload: {
+						occurred_at: "2026-06-10T10:30:00",
+						body: [{ type: "text", text: "Bought milk after daycare pickup." }],
+					},
+					rationale: "the user shared a journal-worthy moment",
+				};
 
 	// Multi-step fresh path (INKSTONE_MULTISTEP=1): prove Core reconstructs a
 	// provider-valid MULTI-step transcript on resume (ADR-0025). The worker

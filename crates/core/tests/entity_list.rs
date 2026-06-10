@@ -36,7 +36,7 @@ async fn create_and_park(core: &CoreHandle) -> String {
         core,
         1,
         "thread/create",
-        serde_json::json!({ "prompt": "remember buying milk after daycare pickup" }),
+        serde_json::json!({ "prompt": "I bought milk after daycare pickup and felt relieved." }),
     )
     .await;
     let run_id = resp["result"]["run_id"]
