@@ -379,7 +379,8 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 
 			// entity/* (ADR-0004): the live read the Library's collections
 			// consume. `entity/list` is type-parameterized — one Entity type per
-			// call (e.g. `todo` or `person`); returns the accepted Entities.
+			// call (e.g. `journal_entry`, `todo`, or `person`); returns the
+			// accepted Entities.
 			const listEntities = (
 				type: string,
 			): Effect.Effect<EntityListResult, WsError> =>

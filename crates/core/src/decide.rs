@@ -11,9 +11,9 @@
 //! takes no dependency on the `worker` subsystem (ADR-0026); production passes
 //! `|run_id| worker::resume(run_id, pool, hubs)`.
 //!
-//! Entity-Type dispatch (validate, schema version, accept-decision text) stays
+//! Mutation dispatch (validate, schema version, accept-decision text) stays
 //! behind [`crate::entities`], so neither this module nor the handler matches on
-//! a kind string.
+//! a mutation string.
 
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -52,7 +52,7 @@ pub enum DecideError {
     /// decided and not recoverable, or its Run is not parked).
     NotDecidable(String),
     /// The inputs are invalid (unknown decision, edit without payload, or the
-    /// applied data fails entity validation).
+    /// applied payload fails mutation validation).
     Invalid(String),
     /// An internal fault (a DB error, or a DB inconsistency). Logged
     /// server-side by the handler; never surfaced verbatim to the client.
@@ -275,8 +275,9 @@ async fn apply_or_reject(
     // `Invalid` (no write) — checked HERE on the fresh path, NOT at parse time,
     // so a payload-less `edit` retry of an already-decided Proposal replays via
     // the branches above instead of erroring. A plain accept ignores any wire
-    // payload (`None`), matching the original. The applied data is the edited
-    // payload for an edit, else the model's proposed data; validate it first.
+    // payload (`None`), matching the original. The applied payload is the
+    // edited payload for an edit, else the model's proposed payload; validate
+    // it first.
     let edited_payload: Option<&serde_json::Value> = match decision {
         Decision::Edit => match edited_payload {
             Some(payload) => Some(payload),
@@ -288,25 +289,27 @@ async fn apply_or_reject(
         },
         _ => None,
     };
-    let applied_data = edited_payload.unwrap_or(&proposal.data);
+    let applied_payload = edited_payload.unwrap_or(&proposal.payload);
 
-    entities::validate(&proposal.kind, applied_data).map_err(DecideError::Invalid)?;
+    entities::validate(&proposal.mutation_kind, applied_payload).map_err(DecideError::Invalid)?;
 
     let decision_payload = serde_json::json!({
         "decision": "accept",
-        "content": entities::render_accept(&proposal.kind, applied_data),
+        "content": entities::render_accept(&proposal.mutation_kind, applied_payload),
     })
     .to_string();
 
+    let mutation_kind = &proposal.mutation_kind;
     match db::apply_proposal(
         pool,
         run_id,
         proposal_id,
         &proposal.tool_call_id,
-        &proposal.kind,
-        entities::schema_version(&proposal.kind),
-        &proposal.data,
+        entities::entity_type(mutation_kind),
+        entities::schema_version(mutation_kind),
+        &proposal.payload,
         edited_payload,
+        entities::source_relation_from_user_message(mutation_kind),
         idempotency_key,
         &decision_payload,
         db::now_ms(),
@@ -357,8 +360,7 @@ mod tests {
         pool
     }
 
-    /// Seed a parked Run + assistant Message + a pending `todo` Proposal (its
-    /// awaited `propose_entity` tool_call carrying `{type, data, rationale}`).
+    /// Seed a parked Run + assistant Message + a pending Journal Entry Proposal.
     /// Returns `(run_id, proposal_id)`. The `awaiting_tool_call_id` waitpoint is
     /// set by a trailing UPDATE because that FK is non-deferrable while the
     /// `tool_calls.run_id` FK points back at the Run (a chicken-and-egg the
@@ -429,19 +431,19 @@ mod tests {
 
         sqlx::query(
             "INSERT INTO tool_calls (id, run_id, name, request_payload, status, requested_at) \
-             VALUES (?, ?, 'propose_entity', ?, 'pending', ?)",
+             VALUES (?, ?, 'propose_workspace_mutation', ?, 'pending', ?)",
         )
         .bind(&tool_call_id)
         .bind(&run)
-        .bind(r#"{"type":"todo","data":{"title":"buy milk"},"rationale":"track the errand"}"#)
+        .bind(r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"Bought milk."}]},"rationale":"track the moment"}"#)
         .bind(now)
         .execute(&mut *tx)
         .await
         .expect("insert tool_call");
 
         sqlx::query(
-            "INSERT INTO proposals (id, tool_call_id, kind, change_kind, status) \
-             VALUES (?, ?, 'todo', 'create', 'pending')",
+            "INSERT INTO proposals (id, tool_call_id, mutation_kind, status) \
+             VALUES (?, ?, 'create_journal_entry', 'pending')",
         )
         .bind(proposal_id.to_string())
         .bind(&tool_call_id)
@@ -548,10 +550,10 @@ mod tests {
             "INSERT INTO entities \
              (id, type, schema_version, data, created_by, created_via_proposal_id, \
               created_at, updated_at) \
-             VALUES (?, 'todo', 1, ?, 'proposal', ?, ?, ?)",
+             VALUES (?, 'journal_entry', 1, ?, 'proposal', ?, ?, ?)",
         )
         .bind(&entity_id)
-        .bind(r#"{"title":"buy milk"}"#)
+        .bind(r#"{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"Bought milk."}]}"#)
         .bind(proposal_id)
         .bind(now)
         .bind(now)
@@ -630,7 +632,10 @@ mod tests {
             Some(true),
             "decline is a NORMAL (non-error) tool result"
         );
-        assert!(resumed.load(Ordering::SeqCst), "reject resumes the parked run");
+        assert!(
+            resumed.load(Ordering::SeqCst),
+            "reject resumes the parked run"
+        );
     }
 
     // 3. edit → Accepted; the entity data holds the EDITED values; resume invoked.
@@ -644,7 +649,10 @@ mod tests {
             &pool,
             proposal_id,
             "edit",
-            Some(serde_json::json!({ "title": "buy oat milk" })),
+            Some(serde_json::json!({
+                "occurred_at": "2026-06-10T10:35:00",
+                "body": [{ "type": "text", "text": "Bought oat milk." }]
+            })),
             Some("e1".to_string()),
             resume_closure(pool.clone(), resumed.clone()),
         )
@@ -656,12 +664,19 @@ mod tests {
             other => panic!("expected Accepted, got {other:?}"),
         };
         assert_eq!(
-            entity_data(&pool, &entity_id).await["title"],
-            "buy oat milk",
-            "entity carries the EDITED title, not the model's proposed data"
+            entity_data(&pool, &entity_id).await["body"][0]["text"],
+            "Bought oat milk.",
+            "entity carries the EDITED body, not the model's proposed payload"
         );
-        assert_eq!(entity_count(&pool).await, 1, "edit lands exactly one entity");
-        assert!(resumed.load(Ordering::SeqCst), "edit resumes the parked run");
+        assert_eq!(
+            entity_count(&pool).await,
+            1,
+            "edit lands exactly one entity"
+        );
+        assert!(
+            resumed.load(Ordering::SeqCst),
+            "edit resumes the parked run"
+        );
     }
 
     // 4. same-key replay → the second decide returns the prior Accepted{same
@@ -705,7 +720,10 @@ mod tests {
         .expect("second accept (replay)");
         match second {
             DecideOutcome::Accepted { entity_id, .. } => {
-                assert_eq!(entity_id, first_entity, "replay returns the prior entity id");
+                assert_eq!(
+                    entity_id, first_entity,
+                    "replay returns the prior entity id"
+                );
             }
             other => panic!("expected Accepted replay, got {other:?}"),
         }
@@ -791,7 +809,10 @@ mod tests {
 
         match outcome {
             DecideOutcome::Accepted { entity_id, .. } => {
-                assert_eq!(entity_id, prior_entity, "recovery returns the prior entity id");
+                assert_eq!(
+                    entity_id, prior_entity,
+                    "recovery returns the prior entity id"
+                );
             }
             other => panic!("expected prior Accepted, got {other:?}"),
         }
@@ -830,7 +851,10 @@ mod tests {
 
         match outcome {
             DecideOutcome::Accepted { entity_id, .. } => {
-                assert_eq!(entity_id, prior_entity, "keyed replay returns the prior entity id");
+                assert_eq!(
+                    entity_id, prior_entity,
+                    "keyed replay returns the prior entity id"
+                );
             }
             other => panic!("expected prior Accepted, got {other:?}"),
         }
@@ -870,7 +894,10 @@ mod tests {
 
         match outcome {
             DecideOutcome::Accepted { entity_id, .. } => {
-                assert_eq!(entity_id, prior_entity, "recovery returns the prior entity id");
+                assert_eq!(
+                    entity_id, prior_entity,
+                    "recovery returns the prior entity id"
+                );
             }
             other => panic!("expected prior Accepted, got {other:?}"),
         }

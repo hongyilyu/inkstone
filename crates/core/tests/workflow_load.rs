@@ -95,14 +95,14 @@ fn missing_workflow_file_fails_fast() {
     );
 }
 
-/// Slice 5 (person-entity-type): the *shipped* default Workflow nudges the
-/// model to propose a Person when the user mentions someone worth remembering.
+/// The shipped default Workflow nudges the model to propose a Journal Entry
+/// when the user shares something worth remembering.
 /// Unlike the boot tests above, this is a static content guard — it reads the
 /// real `crates/core/workflows/default.toml` (not a fixture) and asserts on its
 /// `system_prompt`, so it never boots Core. Real-model behavior is
 /// non-deterministic, so this guards the prompt text only.
 #[test]
-fn default_workflow_prompts_for_people() {
+fn default_workflow_prompts_for_journal_entries() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("workflows/default.toml");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read shipped default.toml at {}: {e}", path.display()));
@@ -113,7 +113,18 @@ fn default_workflow_prompts_for_people() {
         .expect("shipped default.toml has a string system_prompt");
     let lower = system_prompt.to_lowercase();
     assert!(
-        lower.contains("propose") && lower.contains("person"),
-        "default.toml system_prompt must nudge proposing a Person, got: {system_prompt:?}"
+        lower.contains("propose") && lower.contains("journal entry"),
+        "default.toml system_prompt must nudge proposing a Journal Entry, got: {system_prompt:?}"
+    );
+    let tools = doc
+        .get("tools")
+        .and_then(|v| v.as_array())
+        .expect("shipped default.toml has a tools array");
+    assert!(
+        tools
+            .iter()
+            .filter_map(|tool| tool.as_str())
+            .any(|tool| tool == "propose_workspace_mutation"),
+        "default.toml must include 'propose_workspace_mutation' in tools"
     );
 }

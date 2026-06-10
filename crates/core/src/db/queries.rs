@@ -246,34 +246,31 @@ where
 /// Read a Run's `status` by id (ADR-0025). `None` when the Run does not exist.
 /// Backs `run/subscribe`'s parked branch: with no live hub, the persisted
 /// status decides whether to emit a terminal `done` or report `parked`.
-pub(super) async fn run_status<'e, E>(
-    executor: E,
-    run_id: Uuid,
-) -> sqlx::Result<Option<String>>
+pub(super) async fn run_status<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<Option<String>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
-    .bind(run_id.to_string())
-    .fetch_optional(executor)
-    .await
+        .bind(run_id.to_string())
+        .fetch_optional(executor)
+        .await
 }
 
 /// Load a Proposal by id for `proposal/decide` (ADR-0025): its lifecycle
 /// columns, the owning Run, the proposed payload (from the tool call's
 /// `request_payload`), and the recorded `decision_idempotency_key`. `None`
-/// when no Proposal with that id exists. Returns `(run_id, tool_call_id, kind,
-/// change_kind, status, request_payload, decision_idempotency_key)`.
+/// when no Proposal with that id exists. Returns `(run_id, tool_call_id,
+/// mutation_kind, status, request_payload, decision_idempotency_key)`.
 #[allow(clippy::type_complexity)]
 pub(super) async fn proposal_by_id<'e, E>(
     executor: E,
     proposal_id: &str,
-) -> sqlx::Result<Option<(String, String, String, String, String, String, Option<String>)>>
+) -> sqlx::Result<Option<(String, String, String, String, String, Option<String>)>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(
-        "SELECT tc.run_id, p.tool_call_id, p.kind, p.change_kind, p.status, \
+        "SELECT tc.run_id, p.tool_call_id, p.mutation_kind, p.status, \
                 tc.request_payload, p.decision_idempotency_key \
          FROM proposals p \
          JOIN tool_calls tc ON tc.id = p.tool_call_id \
@@ -446,6 +443,45 @@ where
     .bind(seq)
     .bind(data)
     .bind(proposal_id)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+pub(super) async fn user_message_id_for_run<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<String>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT user_message_id FROM runs WHERE id = ?1")
+        .bind(run_id.to_string())
+        .fetch_one(executor)
+        .await
+}
+
+pub(super) async fn insert_entity_source_from_message<'e, E>(
+    executor: E,
+    id: &str,
+    entity_id: &str,
+    source_message_id: &str,
+    relation: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO entity_sources \
+         (id, entity_id, source_message_id, relation, created_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(entity_id)
+    .bind(source_message_id)
+    .bind(relation)
     .bind(now_ms)
     .execute(executor)
     .await
@@ -910,49 +946,44 @@ where
 // ─── proposals (ADR-0025) ─────────────────────────────────────────────
 
 /// Insert a `proposals` row in the `pending` state, sidecar to the Proposal's
-/// `tool_calls` row. `kind` is the proposed entity type (from the proposed
-/// `type`); `change_kind` is create|update|delete. The proposed `data` and
-/// `rationale` are stored as a JSON sidecar in `edited_payload`'s sibling — for
-/// now Core keeps the proposed payload on the tool_call's `request_payload`, so
-/// this row carries only the lifecycle columns. `decision_idempotency_key` is
-/// NULL until a Decision is made (a later slice).
+/// `tool_calls` row. `mutation_kind` is the logical Workspace mutation. The
+/// proposed payload and rationale stay on the tool_call's `request_payload`, so
+/// this row carries only the lifecycle columns.
 pub(super) async fn insert_proposal<'e, E>(
     executor: E,
     id: &str,
     tool_call_id: &str,
-    kind: &str,
-    change_kind: &str,
+    mutation_kind: &str,
 ) -> sqlx::Result<()>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
-        "INSERT INTO proposals (id, tool_call_id, kind, change_kind, status) \
-         VALUES (?, ?, ?, ?, 'pending')",
+        "INSERT INTO proposals (id, tool_call_id, mutation_kind, status) \
+         VALUES (?, ?, ?, 'pending')",
     )
     .bind(id)
     .bind(tool_call_id)
-    .bind(kind)
-    .bind(change_kind)
+    .bind(mutation_kind)
     .execute(executor)
     .await
     .map(|_| ())
 }
 
 /// A Run's pending Proposal for `proposal/get` (ADR-0025): the proposal id,
-/// kind, change_kind, lifecycle status, plus the Proposal tool call's stored
-/// `request_payload` (carrying the proposed `type`/`data`/`rationale`). Joined
+/// mutation_kind, lifecycle status, plus the Proposal tool call's stored
+/// `request_payload` (carrying the proposed payload and rationale). Joined
 /// through `tool_calls` on `run_id`. `None` when the Run has no pending
 /// Proposal.
 pub(super) async fn pending_proposal_for_run<'e, E>(
     executor: E,
     run_id: Uuid,
-) -> sqlx::Result<Option<(String, String, String, String, String)>>
+) -> sqlx::Result<Option<(String, String, String, String)>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(
-        "SELECT p.id, p.kind, p.change_kind, p.status, tc.request_payload \
+        "SELECT p.id, p.mutation_kind, p.status, tc.request_payload \
          FROM proposals p \
          JOIN tool_calls tc ON tc.id = p.tool_call_id \
          WHERE tc.run_id = ?1 AND p.status = 'pending' \
@@ -969,12 +1000,10 @@ pub(super) async fn next_run_seq<'e, E>(executor: E, run_id: Uuid) -> sqlx::Resu
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_scalar(
-        "SELECT COALESCE(MAX(run_seq), -1) + 1 FROM run_log WHERE run_id = ?",
-    )
-    .bind(run_id.to_string())
-    .fetch_one(executor)
-    .await
+    sqlx::query_scalar("SELECT COALESCE(MAX(run_seq), -1) + 1 FROM run_log WHERE run_id = ?")
+        .bind(run_id.to_string())
+        .fetch_one(executor)
+        .await
 }
 
 pub(super) async fn insert_run_log_entry<'e, E>(

@@ -75,18 +75,17 @@ pub struct ProposalGetParams {
     pub run_id: uuid::Uuid,
 }
 
-/// `proposal/get` result (ADR-0025): the Run's pending Proposal. `kind` is the
-/// proposed entity type (e.g. `todo`); `change_kind` is create|update|delete;
-/// `data` is the opaque proposed entity payload; `rationale` is the model's
-/// reason (may be `null`); `status` is the Proposal's lifecycle state.
+/// `proposal/get` result (ADR-0025): the Run's pending Proposal.
+/// `mutation_kind` is the logical Workspace mutation; `payload` is the opaque
+/// mutation-specific payload; `rationale` is the model's reason (may be
+/// `null`); `status` is the Proposal's lifecycle state.
 /// Serialize-only — Core produces it.
 #[derive(Debug, Serialize)]
 pub struct ProposalGetResult {
     pub proposal_id: String,
     pub run_id: String,
-    pub kind: String,
-    pub change_kind: String,
-    pub data: serde_json::Value,
+    pub mutation_kind: String,
+    pub payload: serde_json::Value,
     pub rationale: Option<String>,
     pub status: String,
 }
@@ -628,9 +627,11 @@ mod mirror_tests {
         let r = ProposalGetResult {
             proposal_id: UUID_B.to_string(),
             run_id: UUID_A.to_string(),
-            kind: "todo".to_string(),
-            change_kind: "create".to_string(),
-            data: json!({ "title": "buy milk", "done": false }),
+            mutation_kind: "create_journal_entry".to_string(),
+            payload: json!({
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Bought milk." }]
+            }),
             rationale: Some("because".to_string()),
             status: "pending".to_string(),
         };
@@ -639,9 +640,11 @@ mod mirror_tests {
             json!({
                 "proposal_id": UUID_B,
                 "run_id": UUID_A,
-                "kind": "todo",
-                "change_kind": "create",
-                "data": { "title": "buy milk", "done": false },
+                "mutation_kind": "create_journal_entry",
+                "payload": {
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [{ "type": "text", "text": "Bought milk." }]
+                },
                 "rationale": "because",
                 "status": "pending"
             }),
@@ -653,9 +656,8 @@ mod mirror_tests {
         let r = ProposalGetResult {
             proposal_id: UUID_B.to_string(),
             run_id: UUID_A.to_string(),
-            kind: "todo".to_string(),
-            change_kind: "create".to_string(),
-            data: json!({}),
+            mutation_kind: "create_journal_entry".to_string(),
+            payload: json!({}),
             rationale: None,
             status: "pending".to_string(),
         };
@@ -687,11 +689,17 @@ mod mirror_tests {
         let edit: ProposalDecideParams = serde_json::from_value(json!({
             "proposal_id": UUID_B,
             "decision": "edit",
-            "edited_payload": { "title": "buy oat milk" }
+            "edited_payload": {
+                "occurred_at": "2026-06-10T10:35:00",
+                "body": [{ "type": "text", "text": "Bought oat milk." }]
+            }
         }))
         .unwrap();
         assert_eq!(edit.decision, "edit");
-        assert_eq!(edit.edited_payload.unwrap()["title"], json!("buy oat milk"));
+        assert_eq!(
+            edit.edited_payload.unwrap()["body"][0]["text"],
+            json!("Bought oat milk.")
+        );
     }
 
     #[test]
@@ -1043,13 +1051,19 @@ mod mirror_tests {
                     text: None,
                     tool_calls: Some(vec![ManifestToolCall {
                         id: "tc_1",
-                        name: "propose_entity",
-                        arguments: json!({ "type": "todo", "data": { "title": "buy milk" } }),
+                        name: "propose_workspace_mutation",
+                        arguments: json!({
+                            "mutation_kind": "create_journal_entry",
+                            "payload": {
+                                "occurred_at": "2026-06-10T10:30:00",
+                                "body": [{ "type": "text", "text": "Bought milk." }]
+                            }
+                        }),
                     }]),
                 },
                 ManifestMessage::ToolResult {
                     tool_call_id: "tc_1",
-                    content: "Accepted. Created Todo \"buy milk\".",
+                    content: "Accepted. Created Journal Entry.",
                     is_error: None,
                 },
             ],
@@ -1066,14 +1080,20 @@ mod mirror_tests {
                     "role": "assistant",
                     "tool_calls": [{
                         "id": "tc_1",
-                        "name": "propose_entity",
-                        "arguments": { "type": "todo", "data": { "title": "buy milk" } }
+                        "name": "propose_workspace_mutation",
+                        "arguments": {
+                            "mutation_kind": "create_journal_entry",
+                            "payload": {
+                                "occurred_at": "2026-06-10T10:30:00",
+                                "body": [{ "type": "text", "text": "Bought milk." }]
+                            }
+                        }
                     }]
                 },
                 {
                     "role": "tool_result",
                     "tool_call_id": "tc_1",
-                    "content": "Accepted. Created Todo \"buy milk\"."
+                    "content": "Accepted. Created Journal Entry."
                 }
             ]),
         );
@@ -1161,7 +1181,12 @@ mod mirror_tests {
         });
         let ev: WorkerStdout = serde_json::from_value(wire).unwrap();
         match ev {
-            WorkerStdout::ToolRequest { tool_call_id, name, params, .. } => {
+            WorkerStdout::ToolRequest {
+                tool_call_id,
+                name,
+                params,
+                ..
+            } => {
                 assert_eq!(tool_call_id, "tc_01");
                 assert_eq!(name, "read_thread");
                 assert_eq!(params["thread_id"], json!(UUID_A));

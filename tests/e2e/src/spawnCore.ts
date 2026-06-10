@@ -125,16 +125,13 @@ export interface SpawnCoreOptions {
 	readonly fauxToolCall?: boolean;
 	/**
 	 * Drive a higher-level faux interpreter mode by name (paired with `workerCmd
-	 * = FAUX_WORKER_CMD`). Both variants write a faux Workflow allowlisting
-	 * `propose_entity` and run the worker in propose mode
-	 * (`INKSTONE_FAUX_PROPOSE`): turn 1 proposes an entity so Core parks the
-	 * Run; on accept/reject the Run resumes to a short completion, exercising
-	 * the full park → decide → resume loop end-to-end (ADR-0025). `"propose"`
-	 * proposes a Todo (`buy milk`); `"propose-person"` additionally sets
-	 * `INKSTONE_FAUX_PROPOSE_KIND = "person"` so turn 1 proposes a Person
-	 * (`Alice`) instead.
+	 * = FAUX_WORKER_CMD`). Writes a faux Workflow allowlisting
+	 * `propose_workspace_mutation` and runs the worker in propose mode
+	 * (`INKSTONE_FAUX_PROPOSE`): turn 1 proposes a Journal Entry so Core parks
+	 * the Run; on accept/reject the Run resumes to a short completion,
+	 * exercising the full park -> decide -> resume loop end-to-end (ADR-0025).
 	 */
-	readonly faux?: "propose" | "propose-person";
+	readonly faux?: "propose";
 	/** Milliseconds to wait for the listening line before failing. Default 30s. */
 	readonly startupTimeoutMs?: number;
 }
@@ -162,7 +159,11 @@ function awaitListening(
 		const timer = setTimeout(() => {
 			if (settled) return;
 			settled = true;
-			reject(new Error(`Core did not announce INKSTONE_LISTENING within ${timeoutMs}ms`));
+			reject(
+				new Error(
+					`Core did not announce INKSTONE_LISTENING within ${timeoutMs}ms`,
+				),
+			);
 		}, timeoutMs);
 
 		const finish = (fn: () => void) => {
@@ -224,14 +225,13 @@ export async function spawnCore(
 
 	// Faux mode is fully determined by `opts` below. Strip any inherited
 	// INKSTONE_FAUX_* (a prior run, the parent shell) so an ambient value can't
-	// leak one test's mode into another — e.g. flip a `faux:"propose"` (Todo)
-	// run into person mode via a stray INKSTONE_FAUX_PROPOSE_KIND.
+	// leak one test's mode into another.
 	for (const key of [
 		"INKSTONE_FAUX_RESPONSE",
 		"INKSTONE_FAUX_ERROR",
 		"INKSTONE_FAUX_TOOL_CALL",
 		"INKSTONE_FAUX_PROPOSE",
-		"INKSTONE_FAUX_PROPOSE_KIND",
+		"INKSTONE_FAUX_ECHO_HISTORY",
 	]) {
 		delete env[key];
 	}
@@ -267,8 +267,8 @@ export async function spawnCore(
 		mkdirSync(workflowsDir, { recursive: true });
 		const tools = opts.fauxToolCall
 			? '["read_thread"]'
-			: opts.faux === "propose" || opts.faux === "propose-person"
-				? '["propose_entity"]'
+			: opts.faux === "propose"
+				? '["propose_workspace_mutation"]'
 				: "[]";
 		writeFileSync(
 			path.join(workflowsDir, "default.toml"),
@@ -291,11 +291,8 @@ export async function spawnCore(
 		env.INKSTONE_WORKFLOWS_DIR = workflowsDir;
 		if (opts.fauxToolCall) {
 			env.INKSTONE_FAUX_TOOL_CALL = "1";
-		} else if (opts.faux === "propose" || opts.faux === "propose-person") {
+		} else if (opts.faux === "propose") {
 			env.INKSTONE_FAUX_PROPOSE = "1";
-			if (opts.faux === "propose-person") {
-				env.INKSTONE_FAUX_PROPOSE_KIND = "person";
-			}
 		} else if (opts.fauxError !== undefined) {
 			env.INKSTONE_FAUX_ERROR = opts.fauxError;
 		} else if (opts.fauxResponse !== undefined) {

@@ -6,34 +6,26 @@ import { ProposalCard } from "./ProposalCard.js";
 const base: PendingProposal = {
 	proposal_id: "prop-1",
 	run_id: "run-1",
-	kind: "todo",
-	change_kind: "create",
-	data: { title: "buy milk", done: false },
-	rationale: "the user asked to remember this",
-	status: "pending",
-};
-
-const personBase: PendingProposal = {
-	proposal_id: "prop-2",
-	run_id: "run-2",
-	kind: "person",
-	change_kind: "create",
-	data: { name: "Alice", note: "met at the daycare" },
-	rationale: "the user mentioned a new contact",
+	mutation_kind: "create_journal_entry",
+	payload: {
+		occurred_at: "2026-06-10T10:30:00",
+		body: [{ type: "text", text: "Bought milk after daycare pickup." }],
+	},
+	rationale: "the user shared a journal-worthy moment",
 	status: "pending",
 };
 
 describe("ProposalCard", () => {
 	afterEach(cleanup);
 
-	it("renders the pending proposal with its title, rationale, and the three actions", () => {
+	it("renders a Journal Entry proposal with its body, rationale, and actions", () => {
 		render(<ProposalCard proposal={base} onDecide={() => {}} />);
-		expect(screen.getAllByText("buy milk").length).toBeGreaterThan(0);
+		expect(screen.getAllByText(/bought milk/i).length).toBeGreaterThan(0);
 		expect(
-			screen.getByText("the user asked to remember this"),
+			screen.getByText("the user shared a journal-worthy moment"),
 		).toBeInTheDocument();
 		expect(
-			screen.getByRole("button", { name: /add to todos/i }),
+			screen.getByRole("button", { name: /add journal entry/i }),
 		).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: /edit/i })).toBeInTheDocument();
 		expect(
@@ -41,10 +33,10 @@ describe("ProposalCard", () => {
 		).toBeInTheDocument();
 	});
 
-	it("calls onDecide('accept') when Add to Todos is clicked", () => {
+	it("calls onDecide('accept') when Add Journal Entry is clicked", () => {
 		const onDecide = vi.fn();
 		render(<ProposalCard proposal={base} onDecide={onDecide} />);
-		fireEvent.click(screen.getByRole("button", { name: /add to todos/i }));
+		fireEvent.click(screen.getByRole("button", { name: /add journal entry/i }));
 		expect(onDecide).toHaveBeenCalledWith("accept");
 	});
 
@@ -62,19 +54,18 @@ describe("ProposalCard", () => {
 				onDecide={() => {}}
 			/>,
 		);
-		expect(screen.getByRole("button", { name: /add to todos/i })).toBeDisabled();
+		expect(
+			screen.getByRole("button", { name: /add journal entry/i }),
+		).toBeDisabled();
 		expect(screen.getByRole("button", { name: /dismiss/i })).toBeDisabled();
 	});
 
-	it("shows a progress affordance on the chosen action while deciding (m1)", () => {
-		// Render pending, click Add to Todos, then re-render as deciding: the
-		// spinner/progress label lands on the chosen (accept) action, while the
-		// others stay disabled with their resting labels.
+	it("shows a progress affordance on the chosen action while deciding", () => {
 		const onDecide = vi.fn();
 		const { rerender } = render(
 			<ProposalCard proposal={base} onDecide={onDecide} />,
 		);
-		fireEvent.click(screen.getByRole("button", { name: /add to todos/i }));
+		fireEvent.click(screen.getByRole("button", { name: /add journal entry/i }));
 		rerender(
 			<ProposalCard
 				proposal={{ ...base, status: "deciding" }}
@@ -83,8 +74,6 @@ describe("ProposalCard", () => {
 		);
 		const accept = screen.getByRole("button", { name: /adding/i });
 		expect(accept).toBeDisabled();
-		expect(accept).toHaveTextContent(/adding/i);
-		// The unchosen action keeps its resting label and stays disabled.
 		expect(screen.getByRole("button", { name: /dismiss/i })).toBeDisabled();
 	});
 
@@ -95,9 +84,9 @@ describe("ProposalCard", () => {
 				onDecide={() => {}}
 			/>,
 		);
-		expect(screen.getByText(/added to todos/i)).toBeInTheDocument();
+		expect(screen.getByText(/added to journal/i)).toBeInTheDocument();
 		expect(
-			screen.queryByRole("button", { name: /add to todos/i }),
+			screen.queryByRole("button", { name: /add journal entry/i }),
 		).not.toBeInTheDocument();
 	});
 
@@ -109,9 +98,6 @@ describe("ProposalCard", () => {
 			/>,
 		);
 		expect(screen.getByText(/dismissed/i)).toBeInTheDocument();
-		expect(
-			screen.queryByRole("button", { name: /add to todos/i }),
-		).not.toBeInTheDocument();
 	});
 
 	it("offers a retry in the error state", () => {
@@ -127,80 +113,57 @@ describe("ProposalCard", () => {
 		expect(onDecide).toHaveBeenCalledWith("accept");
 	});
 
-	it("opens the inline edit form with the proposed title pre-filled", () => {
+	it("opens the inline edit form with the proposed fields pre-filled", () => {
 		render(<ProposalCard proposal={base} onDecide={() => {}} />);
 		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-		const title = screen.getByRole("textbox", { name: /title/i });
-		expect(title).toHaveValue("buy milk");
+		expect(screen.getByRole("textbox", { name: /occurred at/i })).toHaveValue(
+			"2026-06-10T10:30:00",
+		);
+		expect(screen.getByRole("textbox", { name: /body/i })).toHaveValue(
+			"Bought milk after daycare pickup.",
+		);
 		expect(
 			screen.getByRole("button", { name: /save changes/i }),
 		).toBeInTheDocument();
-		expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
 	});
 
-	it("saves the edited title via onDecide('edit', {title})", () => {
-		const onDecide = vi.fn();
-		render(<ProposalCard proposal={base} onDecide={onDecide} />);
-		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-		const title = screen.getByRole("textbox", { name: /title/i });
-		fireEvent.change(title, { target: { value: "buy oat milk" } });
-		fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
-		expect(onDecide).toHaveBeenCalledWith("edit", {
-			title: "buy oat milk",
-			done: false,
-		});
-	});
-
-	it("disables Save when the title is empty", () => {
-		render(<ProposalCard proposal={base} onDecide={() => {}} />);
-		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-		const title = screen.getByRole("textbox", { name: /title/i });
-		fireEvent.change(title, { target: { value: "" } });
-		expect(screen.getByRole("button", { name: /save changes/i })).toBeDisabled();
-	});
-
-	it("Cancel restores the pending actions without deciding", () => {
+	it("closes the inline edit form without deciding when Cancel is clicked", () => {
 		const onDecide = vi.fn();
 		render(<ProposalCard proposal={base} onDecide={onDecide} />);
 		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
 		fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
-		expect(onDecide).not.toHaveBeenCalled();
 		expect(
-			screen.getByRole("button", { name: /add to todos/i }),
-		).toBeInTheDocument();
+			screen.queryByRole("button", { name: /save changes/i }),
+		).not.toBeInTheDocument();
+		expect(onDecide).not.toHaveBeenCalled();
+	});
+
+	it("saves the edited payload via onDecide('edit', payload)", () => {
+		const onDecide = vi.fn();
+		render(<ProposalCard proposal={base} onDecide={onDecide} />);
+		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+		fireEvent.change(screen.getByRole("textbox", { name: /body/i }), {
+			target: { value: "Bought oat milk after daycare pickup." },
+		});
+		fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+		expect(onDecide).toHaveBeenCalledWith("edit", {
+			occurred_at: "2026-06-10T10:30:00",
+			body: [{ type: "text", text: "Bought oat milk after daycare pickup." }],
+		});
+		expect(onDecide).toHaveBeenCalledTimes(1);
 		expect(
 			screen.queryByRole("button", { name: /save changes/i }),
 		).not.toBeInTheDocument();
 	});
 
-	// --- Person proposals (the card generalizes per Entity Type) -------------
-
-	it("renders a Person proposal with Person fields and an Add to People action", () => {
-		render(<ProposalCard proposal={personBase} onDecide={() => {}} />);
-		expect(screen.getAllByText("Alice").length).toBeGreaterThan(0);
-		// The primary field is labelled "Name", not the Todo "Title".
-		expect(screen.getByText("Name")).toBeInTheDocument();
-		expect(screen.queryByText("Title")).not.toBeInTheDocument();
-		// The primary action adds to the People collection.
-		expect(
-			screen.getByRole("button", { name: /add to people/i }),
-		).toBeInTheDocument();
-		expect(
-			screen.queryByRole("button", { name: /add to todos/i }),
-		).not.toBeInTheDocument();
-	});
-
-	it("edits the Person name and saves via onDecide('edit', { name })", () => {
-		const onDecide = vi.fn();
-		render(<ProposalCard proposal={personBase} onDecide={onDecide} />);
+	it("disables Save when required fields are empty", () => {
+		render(<ProposalCard proposal={base} onDecide={() => {}} />);
 		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-		const name = screen.getByRole("textbox", { name: /name/i });
-		expect(name).toHaveValue("Alice");
-		fireEvent.change(name, { target: { value: "Alice Whitman" } });
-		fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
-		expect(onDecide).toHaveBeenCalledWith("edit", {
-			name: "Alice Whitman",
-			note: "met at the daycare",
+		fireEvent.change(screen.getByRole("textbox", { name: /body/i }), {
+			target: { value: "" },
 		});
+		expect(
+			screen.getByRole("button", { name: /save changes/i }),
+		).toBeDisabled();
 	});
 });

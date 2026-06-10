@@ -1,16 +1,9 @@
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
+import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
- * Interactive proposal review (slice 9, ADR-0016/0025) end-to-end through the
- * real stack — real Core, the real generic interpreter Worker, the real built
- * Web Client in the browser.
- *
- * Offline via the faux provider in propose mode (ADR-0019): turn 1 the faux
- * "model" calls `propose_entity` with a Todo (`buy milk`), so Core parks the
- * Run and pushes a `proposal/pending` notification. The chat surface renders
- * the review card. Deciding (accept/reject) calls `proposal/decide`; Core
- * resumes the Run, which streams to a final completion.
+ * Journal Entry Proposal review end-to-end through the real stack: Core, the
+ * generic interpreter Worker with faux provider, and the built Web Client.
  */
 test.use({
 	coreOptions: {
@@ -19,79 +12,76 @@ test.use({
 	},
 });
 
-test("renders a pending proposal and accept resumes the run", async ({
+test("renders a pending Journal Entry proposal and accept resumes the run", async ({
 	chat,
 }) => {
 	await chat.goto();
 
-	await chat.send("remember to buy milk");
+	await chat.send("remember buying milk after daycare pickup");
 
-	// The review card surfaces with the proposed Todo.
 	const card = chat.proposalCard();
 	await expect(card).toBeVisible({ timeout: 15_000 });
-	await expect(card).toContainText("buy milk");
+	await expect(card).toContainText("Bought milk after daycare pickup.");
 
-	// Accept: Add to Todos.
-	await card.getByRole("button", { name: /add to todos/i }).click();
+	await card.getByRole("button", { name: /add journal entry/i }).click();
 
-	// Card transitions to its accepted state and the Run resumes to completion.
-	await expect(card).toContainText(/added to todos/i, { timeout: 15_000 });
-	await chat.waitForAssistantText(/done — added it/i);
+	await expect(card).toContainText(/added to journal/i, { timeout: 15_000 });
+	await chat.waitForAssistantText(/done.*added it/i);
 });
 
-test("edit changes the todo then resumes", async ({ chat }) => {
+test("edit changes the Journal Entry then resumes", async ({ chat }) => {
 	await chat.goto();
 
-	await chat.send("remember to buy milk");
+	await chat.send("remember buying milk after daycare pickup");
 
 	const card = chat.proposalCard();
 	await expect(card).toBeVisible({ timeout: 15_000 });
-	await expect(card).toContainText("buy milk");
+	await expect(card).toContainText("Bought milk after daycare pickup.");
 
-	// Edit: open the inline form, retype the title, save.
 	await card.getByRole("button", { name: /edit/i }).click();
-	const title = card.getByRole("textbox", { name: /title/i });
-	await title.fill("buy oat milk");
+	const body = card.getByRole("textbox", { name: /body/i });
+	await body.fill("Bought oat milk after daycare pickup.");
 	await card.getByRole("button", { name: /save changes/i }).click();
 
-	// The edit decides AND accepts in one step (ADR-0025); the card reaches
-	// accepted and the Run resumes to completion.
-	await expect(card).toContainText(/added to todos/i, { timeout: 15_000 });
-	await chat.waitForAssistantText(/done — added it/i);
+	await expect(card).toContainText(/added to journal/i, { timeout: 15_000 });
+	await chat.waitForAssistantText(/done.*added it/i);
 });
 
 test("dismiss rejects and resumes", async ({ chat }) => {
 	await chat.goto();
 
-	await chat.send("remember to buy milk");
+	await chat.send("remember buying milk after daycare pickup");
 
 	const card = chat.proposalCard();
 	await expect(card).toBeVisible({ timeout: 15_000 });
-	await expect(card).toContainText("buy milk");
+	await expect(card).toContainText("Bought milk after daycare pickup.");
 
 	await card.getByRole("button", { name: /dismiss/i }).click();
 
 	await expect(card).toContainText(/dismissed/i, { timeout: 15_000 });
-	await chat.waitForAssistantText(/done — added it/i);
+	await chat.waitForAssistantText(/done.*dismissed it/i);
 });
 
-test("accepted todo appears in the library", async ({ chat, core, page }) => {
+test("accepted Journal Entry appears in the library", async ({
+	chat,
+	core,
+	page,
+}) => {
 	await chat.goto();
 
-	await chat.send("remember to buy milk");
+	await chat.send("remember buying milk after daycare pickup");
 
 	const card = chat.proposalCard();
 	await expect(card).toBeVisible({ timeout: 15_000 });
-	await expect(card).toContainText("buy milk");
+	await expect(card).toContainText("Bought milk after daycare pickup.");
 
-	// Accept: the Todo is created in Core.
-	await card.getByRole("button", { name: /add to todos/i }).click();
-	await expect(card).toContainText(/added to todos/i, { timeout: 15_000 });
+	await card.getByRole("button", { name: /add journal entry/i }).click();
+	await expect(card).toContainText(/added to journal/i, { timeout: 15_000 });
 
-	// The Library's Todos collection reads live from Core via entity/list
-	// (slice 11): the accepted "buy milk" Todo is listed there.
-	await page.goto(`${core.url}/library/todos`);
+	await page.goto(`${core.url}/library/journal`);
 	await expect(
-		page.getByRole("region", { name: /todos/i }).getByText("buy milk"),
+		page
+			.getByRole("region", { name: /journal/i })
+			.getByText("Bought milk after daycare pickup."),
 	).toBeVisible({ timeout: 15_000 });
 });

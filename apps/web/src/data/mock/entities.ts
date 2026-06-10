@@ -1,14 +1,19 @@
-// Mock Accepted Entities (CONTEXT.md domain: Person / Project / Todo / Recipe).
+// Mock Accepted Entities (CONTEXT.md domain: Journal Entry / Person / Project / Todo / Recipe).
 //
-// VISUAL ONLY — there is no entity store in Core yet. This is the stand-in that
-// the Library surface renders against, mirroring how ActivityRail / proposals
-// render from mock data. The shapes follow CONTEXT.md vocabulary so the future
-// live wiring maps cleanly; the data is one coherent personal workspace (the
-// account is "H" — Hongyi) and deliberately overlaps the API-migration project
-// already referenced in `proposals.ts` and the Alice / daycare example from
-// CONTEXT.md's dialogue.
+// VISUAL ONLY for entity types not read live from Core yet. The Library hook
+// overlays live Core rows for implemented types and keeps this fixture for the
+// rest, mirroring how ActivityRail renders from mock data. The shapes follow
+// CONTEXT.md vocabulary so the future live wiring maps cleanly; the data is one
+// coherent personal workspace (the account is "H" — Hongyi) and deliberately
+// overlaps the API-migration project already referenced in `proposals.ts` and
+// the Alice / daycare example from CONTEXT.md's dialogue.
 
-export type EntityKind = "person" | "project" | "todo" | "recipe";
+export type EntityKind =
+	| "journal_entry"
+	| "person"
+	| "project"
+	| "todo"
+	| "recipe";
 
 /** Where an Entity was captured from — the Run that proposed it (CONTEXT.md). */
 export interface EntitySource {
@@ -37,6 +42,12 @@ export interface Person extends EntityBase {
 	email?: string;
 	note?: string;
 	projectIds?: string[];
+}
+
+export interface JournalEntry extends EntityBase {
+	kind: "journal_entry";
+	occurredAt: string;
+	body: string;
 }
 
 export type ProjectStatus = "active" | "review" | "paused" | "done";
@@ -73,7 +84,7 @@ export interface Recipe extends EntityBase {
 	steps?: string[];
 }
 
-export type Entity = Person | Project | Todo | Recipe;
+export type Entity = JournalEntry | Person | Project | Todo | Recipe;
 
 // --- people -----------------------------------------------------------------
 

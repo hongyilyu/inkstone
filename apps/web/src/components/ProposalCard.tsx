@@ -1,114 +1,57 @@
 import {
-	Box,
+	BookOpenText,
+	CalendarDays,
 	Check,
-	ListTodo,
 	Loader2,
-	type LucideIcon,
 	Pencil,
 	RotateCcw,
-	User,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { PendingProposal } from "@/store/chat";
-import { cn } from "@/lib/utils.js";
 import { Card } from "./ui/card.js";
 import { Input } from "./ui/input.js";
 
-/** The two edited-payload shapes the card builds; the wire stays opaque. */
-type TodoPayload = { title: string; done: boolean; due?: string };
-type PersonPayload = { name: string; note?: string };
-
-/**
- * Per-Entity-Type presentation: how a proposed entity of `kind` is labelled,
- * iconned, and turned into an edited payload. The card edits the PRIMARY field
- * and shows the SECONDARY field(s) read-only.
- */
-interface Presenter {
-	/** Singular noun for the header, e.g. "todo" / "person". */
-	noun: string;
-	/** Plural collection name for the accept copy, e.g. "Todos" / "People". */
-	collection: string;
-	icon: LucideIcon;
-	/** The single editable field (todo→title, person→name). */
-	primary: { key: string; label: string };
-	/** Read-only field(s) shown alongside (todo→due, person→note). */
-	secondary: ReadonlyArray<{ key: string; label: string }>;
-	/** Build the apply-in-one-step edit payload from the edited primary value. */
-	buildPayload: (value: string, data: unknown) => TodoPayload | PersonPayload;
-}
-
-const PRESENTERS: Record<string, Presenter> = {
-	todo: {
-		noun: "todo",
-		collection: "Todos",
-		icon: ListTodo,
-		primary: { key: "title", label: "Title" },
-		secondary: [{ key: "due", label: "Due" }],
-		buildPayload: (value, data) => {
-			const due = field(data, "due");
-			return due
-				? { title: value, done: false, due }
-				: { title: value, done: false };
-		},
-	},
-	person: {
-		noun: "person",
-		collection: "People",
-		icon: User,
-		primary: { key: "name", label: "Name" },
-		secondary: [{ key: "note", label: "Note" }],
-		buildPayload: (value, data) => {
-			const note = field(data, "note");
-			return note ? { name: value, note } : { name: value };
-		},
-	},
+type JournalEntryPayload = {
+	occurred_at: string;
+	ended_at?: string;
+	body: Array<{ type: "text"; text: string }>;
 };
 
-/** The presenter for a kind; an unknown kind falls back to a generic card. */
-function presenterFor(kind: string): Presenter {
-	return (
-		PRESENTERS[kind] ?? {
-			noun: kind,
-			collection: kind,
-			icon: Box,
-			primary: { key: "title", label: "Title" },
-			secondary: [],
-			buildPayload: (value) => ({ title: value, done: false }),
-		}
-	);
-}
-
-/** Pull a string field off the opaque proposed-entity payload, if present. */
-function field(data: unknown, key: string): string | undefined {
-	if (data && typeof data === "object" && key in data) {
-		const v = (data as Record<string, unknown>)[key];
-		if (typeof v === "string" && v.length > 0) return v;
+function textField(payload: unknown, key: string): string {
+	if (payload && typeof payload === "object" && key in payload) {
+		const value = (payload as Record<string, unknown>)[key];
+		return typeof value === "string" ? value : "";
 	}
-	return undefined;
+	return "";
 }
 
-/**
- * The interactive review card for a parked Run's pending Proposal (ADR-0016 /
- * ADR-0025). NOT a code diff — a `create` has no "before"; it shows a labelled
- * field list of the proposed entity plus the model's rationale. The footer
- * actions ration the single Ink Magenta to the primary "Add to {collection}"
- * (One Ink Rule, DESIGN.md); Edit is a chip; Dismiss is a ghost. The card is
- * Entity-Type-agnostic: a {@link Presenter} keyed by `kind` supplies the noun,
- * icon, field labels, accept copy, and edit-payload builder (todo / person
- * today; an unknown kind gets a generic fallback).
- *
- * States (PRODUCT.md "show the state"): `pending` (actions live) · `deciding`
- * (the chosen action shows a spinner + progress label, the others disabled) ·
- * `accepted` / `rejected` (collapse to a quiet decided line) · `error` (inline
- * message + retry). The decision is announced via a live region; accept/reject
- * pair an icon with a word, never colour alone.
- *
- * Edit is local-only: the chip swaps the body for an inline form (no modal,
- * product register) pre-filled from the proposed `data`. It edits the PRIMARY
- * field; secondary fields stay read-only. Save edits AND accepts in one step
- * (`onDecide("edit", editedPayload)`, ADR-0025); Cancel returns to pending.
- * Save stays the single Ink Magenta primary in the editing state (One Ink Rule).
- */
+function journalBody(payload: unknown): string {
+	if (!payload || typeof payload !== "object") return "";
+	const body = (payload as Record<string, unknown>).body;
+	if (!Array.isArray(body)) return "";
+	return body
+		.map((node) => {
+			if (!node || typeof node !== "object") return "";
+			const record = node as Record<string, unknown>;
+			return record.type === "text" && typeof record.text === "string"
+				? record.text
+				: "";
+		})
+		.join("");
+}
+
+function journalPayload(
+	occurredAt: string,
+	bodyText: string,
+	endedAt: string,
+): JournalEntryPayload {
+	return {
+		occurred_at: occurredAt.trim(),
+		...(endedAt.trim() ? { ended_at: endedAt.trim() } : {}),
+		body: [{ type: "text", text: bodyText.trim() }],
+	};
+}
+
 export function ProposalCard({
 	proposal,
 	onDecide,
@@ -116,19 +59,19 @@ export function ProposalCard({
 	proposal: PendingProposal;
 	onDecide: (
 		decision: "accept" | "reject" | "edit",
-		editedPayload?: TodoPayload | PersonPayload,
+		editedPayload?: JournalEntryPayload,
 	) => void;
 }) {
-	const { status, data, rationale, kind } = proposal;
-	const presenter = presenterFor(kind);
-	const Icon = presenter.icon;
-	const primaryValue =
-		field(data, presenter.primary.key) ?? `New ${presenter.noun}`;
+	const { status, payload, rationale, mutation_kind } = proposal;
+	const occurredAt = textField(payload, "occurred_at");
+	const endedAt = textField(payload, "ended_at");
+	const bodyText = journalBody(payload);
+	const isJournalEntry = mutation_kind === "create_journal_entry";
+	const title = isJournalEntry ? "Journal Entry" : mutation_kind;
 
-	// Track which action the user chose so the spinner lands on THAT button
-	// while the decide is in flight (the store's `deciding` status doesn't
-	// carry the decision). Reset once the decide settles (left `deciding`).
-	const [inFlight, setInFlight] = useState<"accept" | "reject" | null>(null);
+	const [inFlight, setInFlight] = useState<"accept" | "reject" | "edit" | null>(
+		null,
+	);
 	useEffect(() => {
 		if (proposal.status !== "deciding") setInFlight(null);
 	}, [proposal.status]);
@@ -137,22 +80,28 @@ export function ProposalCard({
 		onDecide(decision);
 	};
 
-	// The inline edit form (local-only): the Edit chip opens it pre-filled from
-	// the proposed primary value; Save applies-in-one-step, Cancel returns.
 	const [editing, setEditing] = useState(false);
-	const [editValue, setEditValue] = useState(primaryValue);
-	const valueRef = useRef<HTMLInputElement>(null);
+	const [editOccurredAt, setEditOccurredAt] = useState(occurredAt);
+	const [editEndedAt, setEditEndedAt] = useState(endedAt);
+	const [editBody, setEditBody] = useState(bodyText);
+	const bodyRef = useRef<HTMLTextAreaElement>(null);
 	const openEdit = () => {
-		setEditValue(primaryValue);
+		setEditOccurredAt(occurredAt);
+		setEditEndedAt(endedAt);
+		setEditBody(bodyText);
 		setEditing(true);
 	};
 	useEffect(() => {
-		if (editing) valueRef.current?.focus();
+		if (editing) bodyRef.current?.focus();
 	}, [editing]);
 	const saveEdit = () => {
-		const trimmed = editValue.trim();
-		if (trimmed.length === 0) return;
-		onDecide("edit", presenter.buildPayload(trimmed, data));
+		if (inFlight !== null || proposal.status === "deciding") return;
+		if (editOccurredAt.trim().length === 0 || editBody.trim().length === 0) {
+			return;
+		}
+		setInFlight("edit");
+		setEditing(false);
+		onDecide("edit", journalPayload(editOccurredAt, editBody, editEndedAt));
 	};
 
 	if (status === "accepted" || status === "rejected") {
@@ -167,13 +116,14 @@ export function ProposalCard({
 					<Check className="size-4 text-card-foreground/60" aria-hidden />
 				) : null}
 				<span aria-live="polite">
-					{accepted ? `Added to ${presenter.collection}.` : "Dismissed."}
+					{accepted ? "Added to Journal." : "Dismissed."}
 				</span>
 			</Card>
 		);
 	}
 
 	const deciding = status === "deciding";
+	const submitting = deciding || inFlight !== null;
 	const isError = status === "error";
 
 	return (
@@ -187,66 +137,74 @@ export function ProposalCard({
 					className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-secondary-foreground"
 					aria-hidden
 				>
-					<Icon className="size-4" />
+					<BookOpenText className="size-4" />
 				</span>
 				<div className="min-w-0">
 					<p className="text-xs font-medium text-muted-foreground">
-						Inkstone wants to add a {presenter.noun}.
+						Inkstone wants to create a {title}.
 					</p>
 					<p className="truncate text-sm font-semibold text-card-foreground">
-						{primaryValue}
+						{bodyText || "Untitled entry"}
 					</p>
 				</div>
 			</header>
 
 			{editing ? (
 				<form
-					onSubmit={(e) => {
-						e.preventDefault();
+					onSubmit={(event) => {
+						event.preventDefault();
 						saveEdit();
 					}}
 					className="flex flex-col gap-3 border-border border-t pt-3"
 				>
 					<label
 						className="flex flex-col gap-1.5"
-						htmlFor="proposal-edit-primary"
+						htmlFor="proposal-edit-occurred-at"
 					>
 						<span className="text-xs font-medium text-muted-foreground">
-							{presenter.primary.label}
+							Occurred at
 						</span>
 						<Input
-							id="proposal-edit-primary"
-							ref={valueRef}
-							value={editValue}
-							onChange={(e) => setEditValue(e.target.value)}
+							id="proposal-edit-occurred-at"
+							value={editOccurredAt}
+							onChange={(event) => setEditOccurredAt(event.target.value)}
 							className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
 						/>
 					</label>
-					{presenter.secondary.map((s) => {
-						const value = field(data, s.key);
-						if (!value) return null;
-						return (
-							<label
-								key={s.key}
-								className="flex flex-col gap-1.5"
-								htmlFor={`proposal-edit-${s.key}`}
-							>
-								<span className="text-xs font-medium text-muted-foreground">
-									{s.label}
-								</span>
-								<Input
-									id={`proposal-edit-${s.key}`}
-									value={value}
-									readOnly
-									className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-muted-foreground"
-								/>
-							</label>
-						);
-					})}
+					<label
+						className="flex flex-col gap-1.5"
+						htmlFor="proposal-edit-ended-at"
+					>
+						<span className="text-xs font-medium text-muted-foreground">
+							Ended at
+						</span>
+						<Input
+							id="proposal-edit-ended-at"
+							value={editEndedAt}
+							onChange={(event) => setEditEndedAt(event.target.value)}
+							className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
+						/>
+					</label>
+					<label className="flex flex-col gap-1.5" htmlFor="proposal-edit-body">
+						<span className="text-xs font-medium text-muted-foreground">
+							Body
+						</span>
+						<textarea
+							id="proposal-edit-body"
+							ref={bodyRef}
+							value={editBody}
+							onChange={(event) => setEditBody(event.target.value)}
+							className="min-h-24 rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+						/>
+					</label>
 					<footer className="flex items-center gap-2 pt-1">
 						<button
 							type="submit"
-							disabled={editValue.trim().length === 0}
+							disabled={
+								submitting ||
+								editOccurredAt.trim().length === 0 ||
+								editBody.trim().length === 0
+							}
 							className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>
 							<Check className="size-4" aria-hidden />
@@ -254,8 +212,9 @@ export function ProposalCard({
 						</button>
 						<button
 							type="button"
+							disabled={submitting}
 							onClick={() => setEditing(false)}
-							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>
 							Cancel
 						</button>
@@ -264,13 +223,9 @@ export function ProposalCard({
 			) : (
 				<>
 					<dl className="flex flex-col gap-1.5 border-border border-t pt-3 text-sm">
-						<Field label={presenter.primary.label} value={primaryValue} />
-						{presenter.secondary.map((s) => {
-							const value = field(data, s.key);
-							return value ? (
-								<Field key={s.key} label={s.label} value={value} />
-							) : null;
-						})}
+						<Field label="Occurred" value={occurredAt || "Unknown"} />
+						{endedAt ? <Field label="Ended" value={endedAt} /> : null}
+						<Field label="Body" value={bodyText || "Empty"} />
 					</dl>
 
 					{rationale ? (
@@ -298,11 +253,9 @@ export function ProposalCard({
 						) : (
 							<button
 								type="button"
-								disabled={deciding}
+								disabled={submitting}
 								onClick={() => decide("accept")}
-								className={cn(
-									"inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
-								)}
+								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								{deciding && inFlight === "accept" ? (
 									<>
@@ -310,12 +263,12 @@ export function ProposalCard({
 											className="size-4 motion-safe:animate-spin"
 											aria-hidden
 										/>
-										Adding…
+										Adding...
 									</>
 								) : (
 									<>
-										<Check className="size-4" aria-hidden />
-										Add to {presenter.collection}
+										<CalendarDays className="size-4" aria-hidden />
+										Add Journal Entry
 									</>
 								)}
 							</button>
@@ -323,7 +276,7 @@ export function ProposalCard({
 
 						<button
 							type="button"
-							disabled={deciding || isError}
+							disabled={submitting || isError}
 							onClick={openEdit}
 							className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-input px-3 py-1.5 font-medium text-foreground/80 text-sm transition-colors hover:bg-secondary/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>
@@ -333,7 +286,7 @@ export function ProposalCard({
 
 						<button
 							type="button"
-							disabled={deciding}
+							disabled={submitting}
 							onClick={() => decide("reject")}
 							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>
@@ -343,7 +296,7 @@ export function ProposalCard({
 										className="size-3.5 motion-safe:animate-spin"
 										aria-hidden
 									/>
-									Dismissing…
+									Dismissing...
 								</>
 							) : (
 								"Dismiss"
@@ -359,7 +312,7 @@ export function ProposalCard({
 function Field({ label, value }: { label: string; value: string }) {
 	return (
 		<div className="flex gap-2">
-			<dt className="w-16 shrink-0 text-xs font-medium text-muted-foreground">
+			<dt className="w-20 shrink-0 text-xs font-medium text-muted-foreground">
 				{label}
 			</dt>
 			<dd className="min-w-0 text-card-foreground">{value}</dd>

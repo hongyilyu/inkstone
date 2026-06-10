@@ -24,6 +24,8 @@ const PROJECT_STATUS_RANK: Record<Project["status"], number> = {
 
 function compareForKind(kind: EntityKind): (a: Entity, b: Entity) => number {
 	switch (kind) {
+		case "journal_entry":
+			return (a, b) => b.recency - a.recency;
 		case "person":
 			return (a, b) => entityTitle(a).localeCompare(entityTitle(b));
 		case "project":

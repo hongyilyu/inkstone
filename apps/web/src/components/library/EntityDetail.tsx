@@ -3,7 +3,14 @@ import { ArrowUpRight, MessageSquareText } from "lucide-react";
 import type { ReactNode } from "react";
 import { CopyButton } from "@/components/CopyButton.js";
 import { Badge } from "@/components/ui/badge";
-import type { Entity, Person, Project, Recipe, Todo } from "@/lib/entities";
+import type {
+	Entity,
+	JournalEntry,
+	Person,
+	Project,
+	Recipe,
+	Todo,
+} from "@/lib/entities";
 import {
 	entitySubtitle,
 	entityTitle,
@@ -63,6 +70,9 @@ export function EntityDetail({
 			</header>
 
 			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+				{entity.kind === "journal_entry" && (
+					<JournalEntryBody journalEntry={entity} />
+				)}
 				{entity.kind === "person" && (
 					<PersonBody
 						person={entity}
@@ -177,6 +187,17 @@ function StatusBadge({ status }: { status: Project["status"] }) {
 }
 
 // --- per-kind bodies --------------------------------------------------------
+
+function JournalEntryBody({ journalEntry }: { journalEntry: JournalEntry }) {
+	return (
+		<>
+			<Field label="Occurred at">{journalEntry.occurredAt}</Field>
+			<Field label="Body">
+				<p className="text-pretty">{journalEntry.body}</p>
+			</Field>
+		</>
+	);
+}
 
 function PersonBody({
 	person,

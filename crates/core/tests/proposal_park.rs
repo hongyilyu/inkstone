@@ -1,9 +1,9 @@
-//! Slice 1 RED test (Proposal park): when the Worker emits a `propose_entity`
+//! Slice 1 RED test (Proposal park): when the Worker emits a `propose_workspace_mutation`
 //! `tool_request`, Core persists a Proposal (`pending`) + a `tool_calls` row,
 //! sets `runs.status='parked'` + `awaiting_tool_call_id`, and tears the Worker
 //! down WITHOUT erroring the Run (ADR-0025: park is a third Worker exit). A
 //! Client that subscribes sees `status:"parked"` and NO `done`/`error`;
-//! `proposal/get(run_id)` returns the pending Todo Proposal.
+//! `proposal/get(run_id)` returns the pending Journal Entry Proposal.
 //!
 //! Driven by `tests/fixtures/propose-worker.ts` over `INKSTONE_WORKER_CMD`,
 //! spawned by Core exactly as the real Worker would be.
@@ -20,7 +20,12 @@ use common::{CoreHandle, Workspace, next_text};
 
 /// Open a fresh socket, send a single request, and return the response body
 /// (the first text frame).
-async fn rpc(core: &CoreHandle, id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
+async fn rpc(
+    core: &CoreHandle,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
     let mut ws = core.connect().await;
     let req = serde_json::json!({
         "jsonrpc": "2.0",
@@ -37,7 +42,7 @@ async fn rpc(core: &CoreHandle, id: u64, method: &str, params: serde_json::Value
 }
 
 #[test]
-fn parks_on_propose_entity() {
+fn parks_on_propose_workspace_mutation() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
@@ -61,7 +66,7 @@ fn parks_on_propose_entity() {
             .to_string();
 
         // Poll run/subscribe until the Run reports status:"parked" (the Worker
-        // boots tsx, then emits the propose_entity request, then Core parks).
+        // boots tsx, then emits the propose_workspace_mutation request, then Core parks).
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if Instant::now() > deadline {
@@ -118,7 +123,7 @@ fn parks_on_propose_entity() {
         }
         ws.close(None).await.ok();
 
-        // proposal/get returns the pending Todo proposal.
+        // proposal/get returns the pending Journal Entry proposal.
         let resp = rpc(
             &core,
             4,
@@ -127,11 +132,26 @@ fn parks_on_propose_entity() {
         )
         .await;
         let p = &resp["result"];
-        assert_eq!(p["kind"].as_str(), Some("todo"), "proposal kind — {resp}");
-        assert_eq!(p["status"].as_str(), Some("pending"), "proposal status — {resp}");
-        assert_eq!(p["run_id"].as_str(), Some(run_id.as_str()), "proposal run_id — {resp}");
-        assert_eq!(p["change_kind"].as_str(), Some("create"), "change_kind — {resp}");
-        assert_eq!(p["data"]["title"].as_str(), Some("buy milk"), "data.title — {resp}");
+        assert_eq!(
+            p["mutation_kind"].as_str(),
+            Some("create_journal_entry"),
+            "proposal mutation_kind — {resp}"
+        );
+        assert_eq!(
+            p["status"].as_str(),
+            Some("pending"),
+            "proposal status — {resp}"
+        );
+        assert_eq!(
+            p["run_id"].as_str(),
+            Some(run_id.as_str()),
+            "proposal run_id — {resp}"
+        );
+        assert_eq!(
+            p["payload"]["body"][0]["text"].as_str(),
+            Some("Bought milk after daycare pickup."),
+            "payload body text — {resp}"
+        );
 
         run_id
     });
@@ -182,7 +202,10 @@ fn parks_on_propose_entity() {
         .fetch_one(&pool)
         .await
         .expect("count terminal run_log");
-        assert_eq!(terminal_events, 0, "no done/error run_event for a parked run");
+        assert_eq!(
+            terminal_events, 0,
+            "no done/error run_event for a parked run"
+        );
     });
 }
 
@@ -190,7 +213,7 @@ fn parks_on_propose_entity() {
 /// subscribes to a live, streaming Run (`status:"running"`) and is still
 /// attached when the Run parks must NOT receive a synthesized `done` — the
 /// forwarder's channel-close path suppresses it for a parked Run. The
-/// `parks_on_propose_entity` test can only hit the no-hub branch (it polls
+/// `parks_on_propose_workspace_mutation` test can only hit the no-hub branch (it polls
 /// until parked first), so this is the only coverage of the forwarder path,
 /// which is the slice's stated reason to exist.
 #[test]

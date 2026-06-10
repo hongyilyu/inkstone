@@ -2,18 +2,15 @@ import { WsClient } from "@inkstone/ui-sdk";
 import { useQuery } from "@tanstack/react-query";
 import { Effect } from "effect";
 import { entities } from "@/data/mock/entities";
-import type { Person, Todo } from "@/lib/entities";
+import type { JournalEntry, Person, Todo } from "@/lib/entities";
 import { useRuntime } from "@/runtime";
 
 /**
  * The Library's accepted Entities (slice 11).
  *
- * Todos and People go LIVE: read from Core via `entity/list` and mapped to the
- * Library `Todo` / `Person` view models. Projects / Recipes stay on the
- * `@/data/mock/entities` fixture until those entity types exist in Core — so
- * this hook merges the live Todos and People with the remaining (project /
- * recipe) mock entities. The query key stays `["entities"]` so a proposal
- * accept can invalidate it (see `store/bridge.ts`).
+ * Journal Entries go live in this slice. People and Todos keep their mock
+ * fallback until extraction can populate them again; when Core has live rows
+ * for either type, those live rows replace that type's mock fixture.
  */
 export function useEntities() {
 	const runtime = useRuntime();
@@ -24,22 +21,77 @@ export function useEntities() {
 				const client = yield* WsClient;
 				// Independent reads — fetch concurrently (Effect.all is sequential
 				// by default, so set concurrency explicitly).
-				const [todos, people] = yield* Effect.all(
-					[client.listEntities("todo"), client.listEntities("person")],
+				const [journalEntries, todos, people] = yield* Effect.all(
+					[
+						client.listEntities("journal_entry"),
+						client.listEntities("todo"),
+						client.listEntities("person"),
+					],
 					{ concurrency: 2 },
 				);
-				return { todos: todos.entities, people: people.entities };
+				return {
+					journalEntries: journalEntries.entities,
+					todos: todos.entities,
+					people: people.entities,
+				};
 			});
-			const { todos, people } = await runtime.runPromise(program);
+			const { journalEntries, todos, people } =
+				await runtime.runPromise(program);
+			const liveJournalEntries = journalEntries.map(toLibraryJournalEntry);
 			const liveTodos = todos.map(toLibraryTodo);
 			const livePeople = people.map(toLibraryPerson);
-			// Keep the still-mock collections working; Todos + People are live.
+			const hasLiveTodos = liveTodos.length > 0;
+			const hasLivePeople = livePeople.length > 0;
+			// Keep interim mock collections working while creation is journal-only.
 			const otherMocks = entities.filter(
-				(e) => e.kind !== "todo" && e.kind !== "person",
+				(e) =>
+					e.kind !== "journal_entry" &&
+					(e.kind !== "todo" || !hasLiveTodos) &&
+					(e.kind !== "person" || !hasLivePeople),
 			);
-			return [...liveTodos, ...livePeople, ...otherMocks];
+			return [
+				...liveJournalEntries,
+				...liveTodos,
+				...livePeople,
+				...otherMocks,
+			];
 		},
 	});
+}
+
+interface JournalEntryData {
+	occurred_at?: unknown;
+	body?: unknown;
+}
+
+function toLibraryJournalEntry(row: {
+	readonly id: string;
+	readonly data: unknown;
+	readonly created_at: number;
+}): JournalEntry {
+	const data = (row.data ?? {}) as JournalEntryData;
+	const body = Array.isArray(data.body)
+		? data.body
+				.map((node) => {
+					if (!node || typeof node !== "object") return "";
+					const record = node as Record<string, unknown>;
+					return record.type === "text" && typeof record.text === "string"
+						? record.text
+						: "";
+				})
+				.join("")
+		: "Untitled entry";
+	const title = body.trim() || "Untitled entry";
+	const occurredAt =
+		typeof data.occurred_at === "string" ? data.occurred_at : "Unknown time";
+	return {
+		id: row.id,
+		kind: "journal_entry",
+		occurredAt,
+		body: title,
+		recency: row.created_at,
+		createdAt: new Date(row.created_at).toLocaleDateString(),
+	} satisfies JournalEntry;
 }
 
 /** The Todo `data` shape Core stores (ADR-0004): `{title, done, due?}`. */

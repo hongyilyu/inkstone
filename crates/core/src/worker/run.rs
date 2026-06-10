@@ -194,8 +194,15 @@ async fn handle_tool_request(
     // reflects an in-flight tool call (ADR-0017). A persistence failure is
     // logged but does not abort the call.
     let request_payload = params.to_string();
-    if let Err(e) =
-        db::persist_tool_call(pool, run_id, tool_call_id, name, &request_payload, db::now_ms()).await
+    if let Err(e) = db::persist_tool_call(
+        pool,
+        run_id,
+        tool_call_id,
+        name,
+        &request_payload,
+        db::now_ms(),
+    )
+    .await
     {
         eprintln!("persist_tool_call failed for {tool_call_id}: {e}");
     }
@@ -241,8 +248,8 @@ async fn park_on_proposal(
     let now = db::now_ms();
     let request_payload = params.to_string();
 
-    let kind = params
-        .get("type")
+    let mutation_kind = params
+        .get("mutation_kind")
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     let proposal_id = Uuid::now_v7().to_string();
@@ -254,8 +261,7 @@ async fn park_on_proposal(
         tool_call_id,
         name,
         &request_payload,
-        kind,
-        "create",
+        mutation_kind,
         now,
     )
     .await
@@ -368,7 +374,11 @@ mod tests {
         }
     }
 
-    fn fixtures() -> (Hubs, broadcast::Sender<RunEvent>, Arc<tokio::sync::Mutex<()>>) {
+    fn fixtures() -> (
+        Hubs,
+        broadcast::Sender<RunEvent>,
+        Arc<tokio::sync::Mutex<()>>,
+    ) {
         let (tx, _rx) = broadcast::channel(64);
         (
             crate::hub::new_hubs(),
@@ -384,15 +394,23 @@ mod tests {
         let (run_id, _thread_id, amid) = seed_run(&pool, &wf).await;
         let (hubs, tx, gate) = fixtures();
         let (worker, _sent, _sd) = ScriptedWorker::new(vec![
-            WorkerStdout::TextDelta { delta: "hi".to_string() },
+            WorkerStdout::TextDelta {
+                delta: "hi".to_string(),
+            },
             WorkerStdout::Done,
         ]);
 
         let exit = run_loop(worker, run_id, wf, pool.clone(), amid, hubs, tx, gate).await;
 
         assert_eq!(exit, Exit::Done);
-        assert_eq!(db::run_status(&pool, run_id).await.unwrap().as_deref(), Some("completed"));
-        let snap = db::select_run_snapshot(&pool, run_id).await.unwrap().unwrap();
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            Some("completed")
+        );
+        let snap = db::select_run_snapshot(&pool, run_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(snap.text, "hi");
     }
 
@@ -409,7 +427,10 @@ mod tests {
         let exit = run_loop(worker, run_id, wf, pool.clone(), _amid, hubs, tx, gate).await;
 
         assert_eq!(exit, Exit::Errored("boom".to_string()));
-        assert_eq!(db::run_status(&pool, run_id).await.unwrap().as_deref(), Some("errored"));
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            Some("errored")
+        );
     }
 
     #[tokio::test]
@@ -419,13 +440,17 @@ mod tests {
         let (run_id, _t, amid) = seed_run(&pool, &wf).await;
         let (hubs, tx, gate) = fixtures();
         // One delta, then the script is exhausted → recv returns None (EOF).
-        let (worker, _sent, _sd) =
-            ScriptedWorker::new(vec![WorkerStdout::TextDelta { delta: "x".to_string() }]);
+        let (worker, _sent, _sd) = ScriptedWorker::new(vec![WorkerStdout::TextDelta {
+            delta: "x".to_string(),
+        }]);
 
         let exit = run_loop(worker, run_id, wf, pool.clone(), amid, hubs, tx, gate).await;
 
         assert_eq!(exit, Exit::Disconnected);
-        assert_eq!(db::run_status(&pool, run_id).await.unwrap().as_deref(), Some("errored"));
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            Some("errored")
+        );
     }
 
     #[tokio::test]
@@ -455,22 +480,34 @@ mod tests {
     #[tokio::test]
     async fn proposal_request_parks_without_terminal_tx() {
         let pool = memory_pool().await;
-        let wf = test_workflow(&["propose_entity"]);
+        let wf = test_workflow(&["propose_workspace_mutation"]);
         let (run_id, _t, amid) = seed_run(&pool, &wf).await;
         let (hubs, tx, gate) = fixtures();
         let (worker, _sent, _sd) = ScriptedWorker::new(vec![WorkerStdout::ToolRequest {
             run_id: String::new(),
             tool_call_id: "tc-prop".to_string(),
-            name: "propose_entity".to_string(),
-            params: serde_json::json!({ "type": "todo", "data": { "title": "milk" } }),
+            name: "propose_workspace_mutation".to_string(),
+            params: serde_json::json!({
+                "mutation_kind": "create_journal_entry",
+                "payload": {
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [{ "type": "text", "text": "Bought milk." }]
+                }
+            }),
         }]);
 
         let exit = run_loop(worker, run_id, wf, pool.clone(), amid, hubs, tx, gate).await;
 
         assert_eq!(exit, Exit::Parked);
-        assert_eq!(db::run_status(&pool, run_id).await.unwrap().as_deref(), Some("parked"));
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            Some("parked")
+        );
         assert!(
-            db::get_pending_proposal_for_run(&pool, run_id).await.unwrap().is_some(),
+            db::get_pending_proposal_for_run(&pool, run_id)
+                .await
+                .unwrap()
+                .is_some(),
             "a pending Proposal is persisted on park"
         );
     }

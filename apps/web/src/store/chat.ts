@@ -54,10 +54,10 @@ interface ChatState {
 	readonly focusedThreadId?: string;
 	/**
 	 * Pending (and decided) Proposals keyed by the parked Run's id (ADR-0025).
-	 * A `propose_entity` parks a Run; the chat surface renders the review card
-	 * under that Run's assistant turn (which carries the same `run_id`). The
-	 * UI `status` is the review lifecycle, distinct from the wire Proposal
-	 * status: `deciding` and `error` are local-only (no wire equivalent).
+	 * A `propose_workspace_mutation` parks a Run; the chat surface renders the
+	 * review card under that Run's assistant turn (which carries the same
+	 * `run_id`). The UI `status` is the review lifecycle, distinct from the wire
+	 * Proposal status: `deciding` and `error` are local-only (no wire equivalent).
 	 */
 	readonly proposals: Record<string, PendingProposal>;
 }
@@ -71,9 +71,8 @@ interface ChatState {
 export interface PendingProposal {
 	readonly proposal_id: string;
 	readonly run_id: string;
-	readonly kind: string;
-	readonly change_kind: string;
-	readonly data: unknown;
+	readonly mutation_kind: string;
+	readonly payload: unknown;
 	readonly rationale: string | null;
 	readonly status: "pending" | "deciding" | "accepted" | "rejected" | "error";
 }
@@ -227,8 +226,8 @@ export function attachRun(
 		if (thread === undefined) {
 			return s;
 		}
-		const messages = thread.messages.map((m): Message =>
-			m.id === messageId ? { ...m, run_id: runId } : m,
+		const messages = thread.messages.map(
+			(m): Message => (m.id === messageId ? { ...m, run_id: runId } : m),
 		);
 		return withThread(s, threadId, (t) => ({
 			...t,
@@ -275,8 +274,8 @@ export function markMessageIncomplete(
 		if (thread === undefined) {
 			return s;
 		}
-		const messages = thread.messages.map((m): Message =>
-			m.id === messageId ? { ...m, status: "incomplete" } : m,
+		const messages = thread.messages.map(
+			(m): Message => (m.id === messageId ? { ...m, status: "incomplete" } : m),
 		);
 		return withThread(s, threadId, (t) => ({ ...t, messages }));
 	});
@@ -324,10 +323,11 @@ export function applyEvent(
 
 		if (event.kind === "text_delta") {
 			const applied = thread.snapshotApplied?.[runId] ?? false;
-			const messages = thread.messages.map((m): Message =>
-				m.role === "assistant" && m.run_id === runId
-					? { ...m, text: applied ? m.text + event.delta : event.delta }
-					: m,
+			const messages = thread.messages.map(
+				(m): Message =>
+					m.role === "assistant" && m.run_id === runId
+						? { ...m, text: applied ? m.text + event.delta : event.delta }
+						: m,
 			);
 			return withThread(s, threadId, (t) => ({
 				...t,
@@ -352,10 +352,7 @@ export function applyEvent(
 					? existing.map((tc) =>
 							tc.id === event.tool_call_id ? { ...tc, status } : tc,
 						)
-					: [
-							...existing,
-							{ id: event.tool_call_id, name: event.name, status },
-						];
+					: [...existing, { id: event.tool_call_id, name: event.name, status }];
 				return { ...m, toolCalls };
 			});
 			return withThread(s, threadId, (t) => ({ ...t, messages }));
@@ -366,15 +363,16 @@ export function applyEvent(
 			// assistant message to `incomplete`, attach the error message so
 			// the bubble can surface it (a failed Run must never be a silent
 			// blank), and clear the active run.
-			const messages = thread.messages.map((m): Message =>
-				m.role === "assistant" && m.run_id === runId
-					? {
-							...m,
-							status: "incomplete",
-							error: event.message,
-							toolCalls: settleRunningToolCalls(m.toolCalls, "error"),
-						}
-					: m,
+			const messages = thread.messages.map(
+				(m): Message =>
+					m.role === "assistant" && m.run_id === runId
+						? {
+								...m,
+								status: "incomplete",
+								error: event.message,
+								toolCalls: settleRunningToolCalls(m.toolCalls, "error"),
+							}
+						: m,
 			);
 			return withThread(s, threadId, (t) => ({
 				...t,
@@ -384,14 +382,15 @@ export function applyEvent(
 		}
 
 		// done → finalize the assistant message and clear the active run.
-		const messages = thread.messages.map((m): Message =>
-			m.role === "assistant" && m.run_id === runId
-				? {
-						...m,
-						status: "completed",
-						toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
-					}
-				: m,
+		const messages = thread.messages.map(
+			(m): Message =>
+				m.role === "assistant" && m.run_id === runId
+					? {
+							...m,
+							status: "completed",
+							toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
+						}
+					: m,
 		);
 		return withThread(s, threadId, (t) => ({
 			...t,

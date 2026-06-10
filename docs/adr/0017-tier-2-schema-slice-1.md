@@ -113,8 +113,7 @@ CREATE TABLE run_events (
 CREATE TABLE proposals (
   id                       TEXT PRIMARY KEY,
   tool_call_id             TEXT NOT NULL UNIQUE REFERENCES tool_calls(id) ON DELETE CASCADE,
-  kind                     TEXT NOT NULL,
-  change_kind              TEXT NOT NULL CHECK (change_kind IN ('create','update','delete')),
+  mutation_kind            TEXT NOT NULL,
   status                   TEXT NOT NULL CHECK (status IN ('pending','accepted','rejected')),
   decided_by               TEXT CHECK (decided_by IN ('user','auto')),
   decided_at               INTEGER,
@@ -127,7 +126,7 @@ CREATE INDEX idx_proposals_status ON proposals(status) WHERE status = 'pending';
 -- Entities and revisions -----------------------------------------------
 CREATE TABLE entities (
   id                       TEXT PRIMARY KEY,
-  type                     TEXT NOT NULL,            -- person / todo / project / …
+  type                     TEXT NOT NULL,            -- journal_entry / person / todo / project / …
   schema_version           INTEGER NOT NULL,
   data                     TEXT NOT NULL,            -- JSON; current state (= revisions.data of latest seq)
   created_by               TEXT NOT NULL CHECK (created_by IN ('user','proposal')),
@@ -263,9 +262,9 @@ OpenAI's Assistants Runs persist `model` for the same reason. Inkstone owns the 
 
 A single freeform `error TEXT` column would conflate these. Splitting them keeps the wire taxonomy queryable and matches OpenAI's `last_error: {code, message}` shape.
 
-### `proposals.change_kind` distinguishes create / update / delete
+### `proposals.mutation_kind` names the Workspace mutation
 
-[ADR-0016](./0016-proposal-application-policy.md) lists "Create / update / delete an Accepted Entity" as Proposal-gated mutations. Without `change_kind`, a delete-Person Proposal looks identical to a create-Person Proposal in the table — the apply step has to introspect `payload` to decide what to do, and audit queries ("show me all delete Proposals from last week") become payload-scans.
+[ADR-0025](./0025-proposal-park-and-resume.md) amends the first entity-only Proposal shape for journal capture: the Proposal row stores a closed `mutation_kind` such as `create_journal_entry`, not an Entity Type `kind` plus a separate `change_kind`. The mutation kind names the operation Core will apply without requiring payload introspection.
 
 ### `proposals.status` is `pending / accepted / rejected` only
 
@@ -304,7 +303,7 @@ The inkstone-poc's `messages` table uses Bun's `randomUUIDv7()`. We follow the s
 - **Migration tooling** (Drizzle, sqlx-migrate, Diesel). Decided at code-write time.
 - **Specific shapes for `entities.data` per `type`.** Each Entity type's JSON schema is defined in code, not in this ADR. `entities.schema_version` lets shapes evolve.
 - **Whether tier-3 grows beyond `fts`** in slice 2 (backlinks, extraction candidates, dashboards). Out of scope.
-- **Vault ingestion bookkeeping** (`vault_files`, `snapshots`, `ingestion_log`). Removed: there is no Vault ingestion. The Vault is export-only per [ADR-0004](./0004-three-tier-storage-authority.md) and [ADR-0005](./0005-snapshot-and-hash-ingestion.md). The canonical content table(s) for non-chat content are left open pending use-case exploration; `proposals.kind + payload JSON` polymorphism can carry future content-creation Proposals when their shape is decided.
+- **Vault ingestion bookkeeping** (`vault_files`, `snapshots`, `ingestion_log`). Removed: there is no Vault ingestion. The Vault is export-only per [ADR-0004](./0004-three-tier-storage-authority.md) and [ADR-0005](./0005-snapshot-and-hash-ingestion.md). The canonical content table(s) for non-chat content are left open pending use-case exploration; `proposals.mutation_kind` plus tool-call payload JSON can carry future content-creation Proposals when their shape is decided.
 - **A Workflows table.** Workflows are pure code in slice 1 per [ADR-0011](./0011-per-run-workflow-dispatch.md); `runs.workflow_name + workflow_version` is a string identifier resolved against in-process code.
 - **Parallel Proposals in one Turn.** `runs.awaiting_tool_call_id` is singular: a Run can park on at most one Proposal at a time. CONTEXT.md allows a Turn to emit multiple tool calls, but slice 1 Workflows submit at most one Proposal per Turn. When a Workflow needs parallel Proposals, generalise to `awaiting_tool_call_ids JSON` and adjust the resume logic to track per-call decisions.
 - **Token / cost accounting** (`runs.usage`). Slice 1 has no billing or quotas. Deferred until needed.

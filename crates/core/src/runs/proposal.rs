@@ -2,8 +2,8 @@
 //!
 //! Pull-path observability of a park: a Client that learns a Run is `parked`
 //! (via `run/subscribe`'s response status) follows with `proposal/get(run_id)`
-//! to retrieve the awaiting Proposal — its kind, change_kind, proposed data,
-//! rationale, and status. The `proposal/pending` push Notification + its
+//! to retrieve the awaiting Proposal — its mutation_kind, payload, rationale,
+//! and status. The `proposal/pending` push Notification + its
 //! workspace bus arrive in a later (UI) slice; this slice makes the park fully
 //! observable through the pull path alone.
 //!
@@ -21,7 +21,9 @@ use super::reply::{send_proposal_changed, send_response};
 use crate::db;
 use crate::decide::{DecideError, DecideOutcome};
 use crate::hub::Hubs;
-use crate::protocol::{ProposalDecideParams, ProposalDecideResult, ProposalGetParams, ProposalGetResult};
+use crate::protocol::{
+    ProposalDecideParams, ProposalDecideResult, ProposalGetParams, ProposalGetResult,
+};
 
 pub(super) async fn handle_get(
     pool: &SqlitePool,
@@ -41,9 +43,8 @@ pub(super) async fn handle_get(
         Ok(ProposalGetResult {
             proposal_id: p.proposal_id,
             run_id: run_id.to_string(),
-            kind: p.kind,
-            change_kind: p.change_kind,
-            data: p.data,
+            mutation_kind: p.mutation_kind,
+            payload: p.payload,
             rationale: p.rationale,
             status: p.status,
         })

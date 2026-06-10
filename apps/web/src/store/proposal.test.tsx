@@ -26,7 +26,10 @@ import {
 	seedAssistantMessage,
 } from "./chat.js";
 
-const TODO = { title: "buy milk", done: false };
+const JOURNAL_ENTRY = {
+	occurred_at: "2026-06-10T10:30:00",
+	body: [{ type: "text", text: "Bought milk after daycare pickup." }],
+};
 
 /**
  * A stub WsClient driven by in-memory queues: one for the global
@@ -72,9 +75,8 @@ function makeStubRuntime(opts: {
 			Effect.succeed({
 				proposal_id: "prop-1",
 				run_id: runId,
-				kind: "todo",
-				change_kind: "create",
-				data: TODO,
+				mutation_kind: "create_journal_entry",
+				payload: JOURNAL_ENTRY,
 				rationale: "the user asked to remember this",
 				status: "pending",
 			}),
@@ -120,7 +122,7 @@ describe("proposal stream + decide", () => {
 
 		const proposal = getChatState().proposals["run-1"];
 		expect(proposal?.status).toBe("pending");
-		expect(proposal?.data).toEqual(TODO);
+		expect(proposal?.payload).toEqual(JOURNAL_ENTRY);
 
 		await runtime.dispose();
 	});
@@ -313,7 +315,7 @@ describe("proposal stream + decide", () => {
 		// The ORIGINAL subscribe streams the pre-park prose. Its FIRST delta is
 		// the cumulative snapshot (SET), marking `snapshotApplied[run-1] = true`
 		// — exactly what production does on every first subscribe. The model
-		// streams prose, then parks on `propose_entity` (NO terminal event, so
+		// streams prose, then parks on `propose_workspace_mutation` (NO terminal event, so
 		// the fiber stays blocked — this is the parked state).
 		Queue.unsafeOffer(parkedQueue, {
 			kind: "text_delta",

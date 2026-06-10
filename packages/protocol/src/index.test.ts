@@ -182,9 +182,11 @@ describe("ProposalGetResult", () => {
 	const wire = {
 		proposal_id: "01900000-0000-7000-8000-000000000010",
 		run_id: "01900000-0000-7000-8000-000000000000",
-		kind: "todo",
-		change_kind: "create",
-		data: { title: "buy milk", done: false },
+		mutation_kind: "create_journal_entry",
+		payload: {
+			occurred_at: "2026-06-10T10:30:00",
+			body: [{ type: "text", text: "Bought milk." }],
+		},
 		rationale: "the user asked to remember this",
 		status: "pending",
 	};
@@ -493,9 +495,7 @@ describe("EntityListParams", () => {
 	});
 
 	it("rejects a non-string type", () => {
-		expect(() =>
-			S.decodeUnknownSync(EntityListParams)({ type: 42 }),
-		).toThrow();
+		expect(() => S.decodeUnknownSync(EntityListParams)({ type: 42 })).toThrow();
 	});
 });
 
@@ -793,15 +793,21 @@ describe("WorkerManifest", () => {
 					tool_calls: [
 						{
 							id: "tc_1",
-							name: "propose_entity",
-							arguments: { type: "todo", data: { title: "buy milk" } },
+							name: "propose_workspace_mutation",
+							arguments: {
+								mutation_kind: "create_journal_entry",
+								payload: {
+									occurred_at: "2026-06-10T10:30:00",
+									body: [{ type: "text", text: "Bought milk." }],
+								},
+							},
 						},
 					],
 				},
 				{
 					role: "tool_result",
 					tool_call_id: "tc_1",
-					content: 'Accepted. Created Todo "buy milk".',
+					content: "Accepted. Created Journal Entry.",
 				},
 			],
 		};

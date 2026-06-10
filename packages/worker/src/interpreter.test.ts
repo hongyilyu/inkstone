@@ -97,7 +97,10 @@ describe("generic interpreter (faux provider)", () => {
 		// ends in a `tool_result` drives `runAgentLoopContinue`. The seeded
 		// transcript is provider-valid: the assistant `tool_call` precedes its
 		// `tool_result`, ids match. The seeded tool is NOT re-executed.
-		const faux = registerFauxProvider({ provider: "faux", tokenSize: { min: 1, max: 2 } });
+		const faux = registerFauxProvider({
+			provider: "faux",
+			tokenSize: { min: 1, max: 2 },
+		});
 		registrations.push(faux);
 
 		let sawToolResult = false;
@@ -126,17 +129,19 @@ describe("generic interpreter (faux provider)", () => {
 					pairedToPrecedingToolCall =
 						typeof resultId === "string" &&
 						resultId.length > 0 &&
-						msgs.slice(0, trIdx).some(
-							(m) =>
-								m.role === "assistant" &&
-								Array.isArray(m.content) &&
-								m.content.some(
-									(c) =>
-										"type" in c &&
-										c.type === "toolCall" &&
-										(c as { id?: string }).id === resultId,
-								),
-						);
+						msgs
+							.slice(0, trIdx)
+							.some(
+								(m) =>
+									m.role === "assistant" &&
+									Array.isArray(m.content) &&
+									m.content.some(
+										(c) =>
+											"type" in c &&
+											c.type === "toolCall" &&
+											(c as { id?: string }).id === resultId,
+									),
+							);
 				}
 				return fauxAssistantMessage("Done — added it.");
 			},
@@ -159,9 +164,9 @@ describe("generic interpreter (faux provider)", () => {
 				thinking_level: "off",
 				tools: [
 					{
-						name: "propose_entity",
-						description: "Propose an entity for approval.",
-						label: "Propose entity",
+						name: "propose_workspace_mutation",
+						description: "Propose a Workspace mutation for approval.",
+						label: "Propose Workspace mutation",
 						json_schema: { type: "object", properties: {} },
 					},
 				],
@@ -173,15 +178,21 @@ describe("generic interpreter (faux provider)", () => {
 					tool_calls: [
 						{
 							id: "tc_1",
-							name: "propose_entity",
-							arguments: { type: "todo", data: { title: "buy milk" } },
+							name: "propose_workspace_mutation",
+							arguments: {
+								mutation_kind: "create_journal_entry",
+								payload: {
+									occurred_at: "2026-06-10T10:30:00",
+									body: [{ type: "text", text: "Bought milk." }],
+								},
+							},
 						},
 					],
 				},
 				{
 					role: "tool_result",
 					tool_call_id: "tc_1",
-					content: 'Accepted. Created Todo "buy milk".',
+					content: "Accepted. Created Journal Entry.",
 				},
 			],
 		});
@@ -204,7 +215,10 @@ describe("generic interpreter (faux provider)", () => {
 
 		// The faux continuation streamed as text deltas.
 		const text = events
-			.filter((e): e is { kind: "text_delta"; delta: string } => e.kind === "text_delta")
+			.filter(
+				(e): e is { kind: "text_delta"; delta: string } =>
+					e.kind === "text_delta",
+			)
 			.map((e) => e.delta)
 			.join("");
 		expect(text).toBe("Done — added it.");
