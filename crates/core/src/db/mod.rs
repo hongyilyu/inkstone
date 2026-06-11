@@ -151,6 +151,29 @@ pub struct CurrentThreadJournalEntryRow {
     pub data: serde_json::Value,
 }
 
+/// One accepted Journal Entry returned by `proposal/get` review context.
+/// `data` is the current `entities.data` snapshot for the requested entity id.
+pub struct CurrentJournalEntryRow {
+    pub entity_id: String,
+    pub data: serde_json::Value,
+}
+
+/// Read one accepted Journal Entry by id from the canonical `entities` row.
+/// Returns `None` when the entity does not exist or is not a journal entry.
+pub async fn current_journal_entry_by_id(
+    pool: &SqlitePool,
+    entity_id: &str,
+) -> sqlx::Result<Option<CurrentJournalEntryRow>> {
+    let Some((entity_id, data)) = queries::current_journal_entry_by_id(pool, entity_id).await?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(CurrentJournalEntryRow {
+        entity_id,
+        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+    }))
+}
+
 /// Read accepted Journal Entries originally created from `run_id`'s Thread,
 /// ordered newest-first by each Entity's latest revision time.
 pub async fn current_thread_journal_entries(

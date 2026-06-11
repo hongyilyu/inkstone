@@ -78,8 +78,30 @@ pub struct ProposalGetParams {
 /// `proposal/get` result (ADR-0025): the Run's pending Proposal.
 /// `mutation_kind` is the logical Workspace mutation; `payload` is the opaque
 /// mutation-specific payload; `rationale` is the model's reason (may be
-/// `null`); `status` is the Proposal's lifecycle state.
+/// `null`); `review_context` is optional display-only context for review
+/// surfaces; `status` is the Proposal's lifecycle state.
 /// Serialize-only — Core produces it.
+#[derive(Debug, Serialize)]
+pub struct JournalEntryBodyTextNode {
+    pub r#type: &'static str,
+    pub text: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProposalReviewCurrentJournalEntry {
+    pub entity_id: String,
+    pub occurred_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<String>,
+    pub body: Vec<JournalEntryBodyTextNode>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ProposalReviewContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_journal_entry: Option<ProposalReviewCurrentJournalEntry>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ProposalGetResult {
     pub proposal_id: String,
@@ -87,6 +109,8 @@ pub struct ProposalGetResult {
     pub mutation_kind: String,
     pub payload: serde_json::Value,
     pub rationale: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_context: Option<ProposalReviewContext>,
     pub status: String,
 }
 
@@ -631,6 +655,7 @@ mod mirror_tests {
                 "body": [{ "type": "text", "text": "Bought milk." }]
             }),
             rationale: Some("because".to_string()),
+            review_context: None,
             status: "pending".to_string(),
         };
         assert_eq!(
@@ -657,10 +682,61 @@ mod mirror_tests {
             mutation_kind: "create_journal_entry".to_string(),
             payload: json!({}),
             rationale: None,
+            review_context: None,
             status: "pending".to_string(),
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["rationale"], json!(null));
+    }
+
+    #[test]
+    fn proposal_get_result_encodes_review_context() {
+        let r = ProposalGetResult {
+            proposal_id: UUID_B.to_string(),
+            run_id: UUID_A.to_string(),
+            mutation_kind: "update_journal_entry".to_string(),
+            payload: json!({
+                "entity_id": UUID_B,
+                "occurred_at": "2026-06-10T11:00:00",
+                "body": [{ "type": "text", "text": "Bought oat milk." }]
+            }),
+            rationale: Some("because".to_string()),
+            review_context: Some(ProposalReviewContext {
+                current_journal_entry: Some(ProposalReviewCurrentJournalEntry {
+                    entity_id: UUID_B.to_string(),
+                    occurred_at: "2026-06-10T10:30:00".to_string(),
+                    ended_at: Some("2026-06-10T10:45:00".to_string()),
+                    body: vec![JournalEntryBodyTextNode {
+                        r#type: "text",
+                        text: "Bought milk.".to_string(),
+                    }],
+                }),
+            }),
+            status: "pending".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({
+                "proposal_id": UUID_B,
+                "run_id": UUID_A,
+                "mutation_kind": "update_journal_entry",
+                "payload": {
+                    "entity_id": UUID_B,
+                    "occurred_at": "2026-06-10T11:00:00",
+                    "body": [{ "type": "text", "text": "Bought oat milk." }]
+                },
+                "rationale": "because",
+                "review_context": {
+                    "current_journal_entry": {
+                        "entity_id": UUID_B,
+                        "occurred_at": "2026-06-10T10:30:00",
+                        "ended_at": "2026-06-10T10:45:00",
+                        "body": [{ "type": "text", "text": "Bought milk." }]
+                    }
+                },
+                "status": "pending"
+            }),
+        );
     }
 
     #[test]

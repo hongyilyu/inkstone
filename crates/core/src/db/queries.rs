@@ -414,6 +414,21 @@ where
     .await
 }
 
+/// Read one accepted Journal Entry's current snapshot by id from the canonical
+/// `entities` row. `None` when the id does not exist or is not a journal entry.
+pub(super) async fn current_journal_entry_by_id<'e, E>(
+    executor: E,
+    entity_id: &str,
+) -> sqlx::Result<Option<(String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as("SELECT id, data FROM entities WHERE id = ?1 AND type = 'journal_entry'")
+        .bind(entity_id)
+        .fetch_optional(executor)
+        .await
+}
+
 /// Read accepted Journal Entries originally created from the current Run's
 /// Thread. Returns `(entity_id, latest_revision_data)` ordered by the latest
 /// revision timestamp descending; the caller shapes the compact tool payload.
