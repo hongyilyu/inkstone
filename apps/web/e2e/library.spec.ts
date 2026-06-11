@@ -59,7 +59,7 @@ test("filters a collection and teaches an empty result", async ({ page }) => {
 	await expect(page.getByText(/no matches/i)).toBeVisible();
 });
 
-test("command palette searches and navigates to an entity", async ({
+test("command palette searches and navigates to a Library item", async ({
 	page,
 }) => {
 	await page.goto("/library");
@@ -99,7 +99,7 @@ test("toggles a todo done", async ({ page }) => {
 	).toBeVisible();
 });
 
-test("opens an entity in the shared collapsible rail, then closes it", async ({
+test("opens a Library item in the shared collapsible rail, then closes it", async ({
 	page,
 }) => {
 	// Recipes stay mock-backed, so they render without Core (unlike People/Todos).
@@ -259,10 +259,10 @@ test("opens a Today entry in the rail without leaving Today", async ({
 	await expect(page.getByRole("heading", { name: "Today" })).toBeVisible();
 
 	// Click an in-focus project (Projects stay mock-backed, so present in preview).
-	await page
-		.getByRole("button", { name: /API v2 migration/i })
-		.first()
-		.click();
+	const inFocus = page
+		.getByRole("heading", { name: /In focus/i })
+		.locator("xpath=ancestor::section");
+	await inFocus.getByRole("button", { name: /API v2 migration/i }).click();
 
 	// Stays on Today (overview heading remains) — the detail opens in the shared
 	// rail in place, rather than switching to the collection view.

@@ -1,5 +1,5 @@
-import type { Entity } from "@/lib/entities";
-import { KIND_META } from "@/lib/entities";
+import type { LibraryItem } from "@/lib/libraryItems";
+import { KIND_META } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
 
 function initials(name: string): string {
@@ -26,7 +26,7 @@ export function EntityGlyph({
 	size = "md",
 	className,
 }: {
-	entity: Entity;
+	entity: LibraryItem;
 	size?: keyof typeof SIZES;
 	className?: string;
 }) {

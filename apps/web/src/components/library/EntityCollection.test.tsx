@@ -6,12 +6,13 @@ import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { LibraryItemKind } from "@/lib/libraryItems";
 import { RuntimeProvider } from "@/runtime";
 import { EntityCollection } from "./EntityCollection";
 
-// Live People rows the stub serves for `type === "person"` (slice 3). The
-// People collection reads these from Core now; the static mock people
-// (Priya/Marco/…) are no longer merged in.
+// Live People rows the stub serves for `type === "person"`. The People
+// collection reads these from Core now; the static preview people
+// (Priya/Marco/...) are no longer merged in.
 const livePeople: EntityListResult["entities"] = [
 	{
 		id: "01900000-0000-7000-8000-0000000000a1",
@@ -29,13 +30,13 @@ const livePeople: EntityListResult["entities"] = [
 	},
 ];
 
-// Stub WsClient whose `entity/list` answers by type: People for `"person"`,
-// Todos for everything else. `useEntities` reads BOTH live Todos and live
-// People (slice 3) and merges them with the remaining (project/recipe) mocks;
+// Stub WsClient whose `entity/list` answers by type. `useLibraryItems` reads
+// live rows and merges them with the remaining preview items;
 // the unused methods die if exercised.
 function makeRuntime(
 	people: EntityListResult["entities"],
 	todos: EntityListResult["entities"],
+	journalEntries: EntityListResult["entities"],
 ) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -43,8 +44,35 @@ function makeRuntime(
 		postMessage: () => unused,
 		threadList: () => unused,
 		threadGet: () => unused,
-		listEntities: (type) =>
-			Effect.succeed({ entities: type === "person" ? people : todos }),
+		listEntities: (type) => {
+			if (type === "person") return Effect.succeed({ entities: people });
+			if (type === "todo") return Effect.succeed({ entities: todos });
+			if (type === "journal_entry") {
+				return Effect.succeed({ entities: journalEntries });
+			}
+			return Effect.succeed({ entities: [] });
+		},
+		subscribeRun: () => unused,
+		providerStatus: () => unused,
+		providerLoginStart: () => unused,
+		modelCatalog: () => unused,
+		settingsGet: () => unused,
+		settingsSet: () => unused,
+		proposalGet: () => unused,
+		proposalDecide: () => unused,
+		proposalNotifications: () => unused,
+	});
+	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+}
+
+function makeUnavailableRuntime() {
+	const unused = Effect.die("not exercised in this test");
+	const stub = WsClient.of({
+		threadCreate: () => unused,
+		postMessage: () => unused,
+		threadList: () => unused,
+		threadGet: () => unused,
+		listEntities: () => Effect.die("Core unavailable"),
 		subscribeRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
@@ -59,14 +87,19 @@ function makeRuntime(
 }
 
 function renderCollection(
-	kind: "person" | "todo",
+	kind: LibraryItemKind,
 	rows: {
+		journalEntries?: EntityListResult["entities"];
 		people?: EntityListResult["entities"];
 		todos?: EntityListResult["entities"];
 	},
 	overrides?: { selectedId?: string | null; onSelect?: (id: string) => void },
 ) {
-	const runtime = makeRuntime(rows.people ?? [], rows.todos ?? []);
+	const runtime = makeRuntime(
+		rows.people ?? [],
+		rows.todos ?? [],
+		rows.journalEntries ?? [],
+	);
 	const client = new QueryClient({
 		defaultOptions: {
 			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
@@ -87,15 +120,41 @@ function renderCollection(
 	);
 }
 
+function renderCollectionWithRuntime(
+	kind: LibraryItemKind,
+	runtime: ReturnType<typeof makeRuntime>,
+) {
+	const client = new QueryClient({
+		defaultOptions: {
+			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
+		},
+	});
+	const Wrapper = ({ children }: { children: ReactNode }) => (
+		<QueryClientProvider client={client}>
+			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
+		</QueryClientProvider>
+	);
+	return render(
+		<EntityCollection kind={kind} selectedId={null} onSelect={() => {}} />,
+		{ wrapper: Wrapper },
+	);
+}
+
 afterEach(cleanup);
 
 describe("EntityCollection", () => {
-	it("lists live People read from entity/list (mock people no longer merged)", async () => {
+	it("keeps preview collections visible when Core cannot be read", async () => {
+		renderCollectionWithRuntime("recipe", makeUnavailableRuntime());
+
+		expect(await screen.findByText(/Weeknight ragù/i)).toBeInTheDocument();
+	});
+
+	it("lists live People read from entity/list (preview people no longer merged)", async () => {
 		renderCollection("person", { people: livePeople });
 		// The seeded live People are listed…
 		expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
 		expect(screen.getByText("Grace Hopper")).toBeInTheDocument();
-		// …and the static mock person is gone (People are live this slice).
+		// ...and the static preview person is gone.
 		expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
 	});
 
@@ -113,7 +172,7 @@ describe("EntityCollection", () => {
 		});
 		// The live Todo's title is rendered from `data.title`.
 		expect(await screen.findByText("buy milk")).toBeInTheDocument();
-		// The mock Todos are NOT shown — Todos are live this slice.
+		// The preview Todos are NOT shown — Todos are live for this read.
 		expect(
 			screen.queryByText("Backfill /v2/contacts before the cutover window"),
 		).not.toBeInTheDocument();
@@ -157,5 +216,24 @@ describe("EntityCollection", () => {
 		expect(onSelect).toHaveBeenCalledWith(
 			"01900000-0000-7000-8000-0000000000a1",
 		);
+	});
+
+	it("shows an error for malformed live Journal Entry rows", async () => {
+		renderCollection("journal_entry", {
+			journalEntries: [
+				{
+					id: "01900000-0000-7000-8000-0000000000b1",
+					type: "journal_entry",
+					data: { body: [{ type: "text", text: "missing occurred time" }] },
+					created_at: 1_700_000_000_000,
+					updated_at: 1_700_000_000_000,
+				},
+			],
+		});
+
+		expect(
+			await screen.findByText(/couldn't load journal/i),
+		).toBeInTheDocument();
+		expect(screen.queryByText("missing occurred time")).not.toBeInTheDocument();
 	});
 });

@@ -2,16 +2,16 @@ import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SearchField } from "@/components/ui/search-field";
+import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
-	type Entity,
-	type EntityKind,
-	entityTitle,
 	KIND_META,
+	type LibraryItem,
+	type LibraryItemKind,
+	libraryItemTitle,
 	type Project,
-	searchEntities,
+	searchLibraryItems,
 	type Todo,
-} from "@/lib/entities";
-import { useEntities } from "@/lib/hooks/useEntities";
+} from "@/lib/libraryItems";
 import { EntityRow, TodoRow } from "./EntityRow.js";
 import { EntitySkeleton } from "./EntitySkeleton.js";
 
@@ -22,12 +22,14 @@ const PROJECT_STATUS_RANK: Record<Project["status"], number> = {
 	done: 3,
 };
 
-function compareForKind(kind: EntityKind): (a: Entity, b: Entity) => number {
+function compareForKind(
+	kind: LibraryItemKind,
+): (a: LibraryItem, b: LibraryItem) => number {
 	switch (kind) {
 		case "journal_entry":
 			return (a, b) => b.recency - a.recency;
 		case "person":
-			return (a, b) => entityTitle(a).localeCompare(entityTitle(b));
+			return (a, b) => libraryItemTitle(a).localeCompare(libraryItemTitle(b));
 		case "project":
 			return (a, b) =>
 				PROJECT_STATUS_RANK[(a as Project).status] -
@@ -47,7 +49,7 @@ function compareForKind(kind: EntityKind): (a: Entity, b: Entity) => number {
 }
 
 /**
- * Browse one entity kind: a searchable, scannable list. Selecting a row reports
+ * Browse one Library item kind: a searchable, scannable list. Selecting a row reports
  * its id (the route sets `?id`); the detail Inspector itself renders in the
  * shared workspace rail (see `routes/library/route.tsx`), not here.
  */
@@ -56,11 +58,11 @@ export function EntityCollection({
 	selectedId,
 	onSelect,
 }: {
-	kind: EntityKind;
+	kind: LibraryItemKind;
 	selectedId: string | null;
 	onSelect: (id: string) => void;
 }) {
-	const { data, isPending, isError } = useEntities();
+	const { data, isPending, isError } = useLibraryItems();
 	const [query, setQuery] = useState("");
 	const meta = KIND_META[kind];
 
@@ -70,7 +72,7 @@ export function EntityCollection({
 	);
 
 	const items = useMemo(() => {
-		if (query.trim()) return searchEntities(ofKind, query);
+		if (query.trim()) return searchLibraryItems(ofKind, query);
 		return [...ofKind].sort(compareForKind(kind));
 	}, [ofKind, kind, query]);
 
@@ -123,19 +125,20 @@ export function EntityCollection({
 						/>
 					) : (
 						<ul className="flex flex-col gap-0.5">
-							{items.map((entity) =>
-								entity.kind === "todo" ? (
+							{items.map((item) =>
+								item.kind === "todo" ? (
 									<TodoRow
-										key={entity.id}
-										todo={entity}
-										selected={entity.id === selectedId}
+										key={item.id}
+										todo={item}
+										allItems={data ?? []}
+										selected={item.id === selectedId}
 										onSelect={onSelect}
 									/>
 								) : (
-									<li key={entity.id}>
+									<li key={item.id}>
 										<EntityRow
-											entity={entity}
-											selected={entity.id === selectedId}
+											entity={item}
+											selected={item.id === selectedId}
 											onSelect={onSelect}
 										/>
 									</li>

@@ -2,20 +2,36 @@ import { WsClient } from "@inkstone/ui-sdk";
 import { useQuery } from "@tanstack/react-query";
 import { Effect } from "effect";
 import { entities } from "@/data/mock/entities";
-import type { JournalEntry, Person, Todo } from "@/lib/entities";
+import type {
+	JournalEntry,
+	LibraryItem,
+	Person,
+	Todo,
+} from "@/lib/libraryItems";
 import { useRuntime } from "@/runtime";
 
+const previewItems: LibraryItem[] = entities.filter(
+	(e) => e.kind !== "journal_entry",
+);
+
+interface LiveEntityRow {
+	readonly id: string;
+	readonly data: unknown;
+	readonly created_at: number;
+}
+
 /**
- * The Library's accepted Entities (slice 11).
+ * The Library's displayed items.
  *
- * Journal Entries go live in this slice. People and Todos keep their mock
- * fallback until extraction can populate them again; when Core has live rows
- * for either type, those live rows replace that type's mock fixture.
+ * Journal Entries, People, and Todos are read from Core when present. Preview
+ * rows keep the rest of the Library populated until live data covers the whole
+ * surface; live rows replace preview rows per kind.
  */
-export function useEntities() {
+export function useLibraryItems() {
 	const runtime = useRuntime();
 	return useQuery({
-		queryKey: ["entities"],
+		queryKey: ["library-items"],
+		placeholderData: previewItems,
 		queryFn: async () => {
 			const program = Effect.gen(function* () {
 				const client = yield* WsClient;
@@ -35,17 +51,26 @@ export function useEntities() {
 					people: people.entities,
 				};
 			});
-			const { journalEntries, todos, people } =
-				await runtime.runPromise(program);
+			let rows: {
+				journalEntries: readonly LiveEntityRow[];
+				todos: readonly LiveEntityRow[];
+				people: readonly LiveEntityRow[];
+			};
+			try {
+				rows = await runtime.runPromise(program);
+			} catch {
+				// Web preview runs without Core. Keep preview items in that case;
+				// strict live row validation stays below this read boundary.
+				return previewItems;
+			}
+			const { journalEntries, todos, people } = rows;
 			const liveJournalEntries = journalEntries.map(toLibraryJournalEntry);
 			const liveTodos = todos.map(toLibraryTodo);
 			const livePeople = people.map(toLibraryPerson);
 			const hasLiveTodos = liveTodos.length > 0;
 			const hasLivePeople = livePeople.length > 0;
-			// Keep interim mock collections working while creation is journal-only.
-			const otherMocks = entities.filter(
+			const remainingPreviewItems = previewItems.filter(
 				(e) =>
-					e.kind !== "journal_entry" &&
 					(e.kind !== "todo" || !hasLiveTodos) &&
 					(e.kind !== "person" || !hasLivePeople),
 			);
@@ -53,7 +78,7 @@ export function useEntities() {
 				...liveJournalEntries,
 				...liveTodos,
 				...livePeople,
-				...otherMocks,
+				...remainingPreviewItems,
 			];
 		},
 	});
@@ -64,31 +89,47 @@ interface JournalEntryData {
 	body?: unknown;
 }
 
-function toLibraryJournalEntry(row: {
-	readonly id: string;
-	readonly data: unknown;
-	readonly created_at: number;
-}): JournalEntry {
+const LOCAL_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
+
+function toLibraryJournalEntry(row: LiveEntityRow): JournalEntry {
 	const data = (row.data ?? {}) as JournalEntryData;
-	const body = Array.isArray(data.body)
-		? data.body
-				.map((node) => {
-					if (!node || typeof node !== "object") return "";
-					const record = node as Record<string, unknown>;
-					return record.type === "text" && typeof record.text === "string"
-						? record.text
-						: "";
-				})
-				.join("")
-		: "Untitled entry";
-	const title = body.trim() || "Untitled entry";
-	const occurredAt =
-		typeof data.occurred_at === "string" ? data.occurred_at : "Unknown time";
+	if (
+		typeof data.occurred_at !== "string" ||
+		!LOCAL_DATETIME_RE.test(data.occurred_at)
+	) {
+		throw new Error(
+			`Invalid journal_entry ${row.id}: occurred_at must use YYYY-MM-DDTHH:MM:SS`,
+		);
+	}
+	if (!Array.isArray(data.body) || data.body.length === 0) {
+		throw new Error(`Invalid journal_entry ${row.id}: body must not be empty`);
+	}
+	const body = data.body
+		.map((node) => {
+			if (!node || typeof node !== "object") {
+				throw new Error(
+					`Invalid journal_entry ${row.id}: body nodes must be objects`,
+				);
+			}
+			const record = node as Record<string, unknown>;
+			if (record.type !== "text") {
+				throw new Error(
+					`Invalid journal_entry ${row.id}: body supports only text nodes`,
+				);
+			}
+			if (typeof record.text !== "string" || record.text.trim() === "") {
+				throw new Error(
+					`Invalid journal_entry ${row.id}: body text must not be empty`,
+				);
+			}
+			return record.text;
+		})
+		.join("");
 	return {
 		id: row.id,
 		kind: "journal_entry",
-		occurredAt,
-		body: title,
+		occurredAt: data.occurred_at,
+		body,
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies JournalEntry;
@@ -103,22 +144,18 @@ interface TodoData {
 
 /**
  * Map a live `entity/list` row to the Library `Todo` view model. The view
- * model carries fields the mock fixture invented for richer rendering
+ * model carries fields the preview fixture invented for richer rendering
  * (`recency`, `createdAt`, `dueInDays`, …) that the live entity store does not
  * yet have; we derive the few that matter and default the rest minimally:
  *  - `title` / `done` / `due` come straight from `data`.
  *  - `recency` = `created_at` (ms-epoch) so newest sorts first, matching the
- *    mock's "higher = more recent" convention.
+ *    preview fixture's "higher = more recent" convention.
  *  - `createdAt` = the localized date of `created_at` (a human label).
- *  - `dueInDays`, `projectId`, `owner`, `note`, `needsReview`, `source` are
+ *  - `dueInDays`, `projectId`, `owner`, `note`, `needsReview`, `capturedFrom` are
  *    left undefined — derived relationship/recency metadata the live store does
  *    not produce this slice.
  */
-function toLibraryTodo(row: {
-	readonly id: string;
-	readonly data: unknown;
-	readonly created_at: number;
-}): Todo {
+function toLibraryTodo(row: LiveEntityRow): Todo {
 	const data = (row.data ?? {}) as TodoData;
 	return {
 		id: row.id,
@@ -141,15 +178,11 @@ interface PersonData {
  * Map a live `entity/list` row to the Library `Person` view model. Mirrors
  * {@link toLibraryTodo}: `name` / `note` come straight from `data`; `recency`
  * is `created_at` (newest sorts first) and `createdAt` its localized date. The
- * mock-only relationship fields (`role`, `relationship`, `email`, `projectIds`,
- * `needsReview`, `source`) are left undefined — the live store does not produce
+ * preview-only relationship fields (`role`, `relationship`, `email`, `projectIds`,
+ * `needsReview`, `capturedFrom`) are left undefined — the live store does not produce
  * them this slice (project↔person relations are out of scope).
  */
-function toLibraryPerson(row: {
-	readonly id: string;
-	readonly data: unknown;
-	readonly created_at: number;
-}): Person {
+function toLibraryPerson(row: LiveEntityRow): Person {
 	const data = (row.data ?? {}) as PersonData;
 	return {
 		id: row.id,

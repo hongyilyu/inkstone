@@ -1,6 +1,6 @@
-// Mock Accepted Entities (CONTEXT.md domain: Journal Entry / Person / Project / Todo / Recipe).
+// Preview Library items (CONTEXT.md domain: Journal Entry / Person / Project / Todo / Recipe).
 //
-// VISUAL ONLY for entity types not read live from Core yet. The Library hook
+// VISUAL ONLY for item types not read live from Core yet. The Library hook
 // overlays live Core rows for implemented types and keeps this fixture for the
 // rest, mirroring how ActivityRail renders from mock data. The shapes follow
 // CONTEXT.md vocabulary so the future live wiring maps cleanly; the data is one
@@ -8,83 +8,13 @@
 // overlaps the API-migration project already referenced in `proposals.ts` and
 // the Alice / daycare example from CONTEXT.md's dialogue.
 
-export type EntityKind =
-	| "journal_entry"
-	| "person"
-	| "project"
-	| "todo"
-	| "recipe";
-
-/** Where an Entity was captured from — the Run that proposed it (CONTEXT.md). */
-export interface EntitySource {
-	threadId: string;
-	threadTitle: string;
-	when: string;
-}
-
-interface EntityBase {
-	id: string;
-	kind: EntityKind;
-	/** Human label for when it was accepted, e.g. "Today, 10:42" or "May 21". */
-	createdAt: string;
-	/** Higher = more recently captured. Drives "Recently captured" ordering. */
-	recency: number;
-	/** Accepted but not yet confirmed by the user — surfaces in "Needs review". */
-	needsReview?: boolean;
-	source?: EntitySource;
-}
-
-export interface Person extends EntityBase {
-	kind: "person";
-	name: string;
-	role?: string;
-	relationship?: string;
-	email?: string;
-	note?: string;
-	projectIds?: string[];
-}
-
-export interface JournalEntry extends EntityBase {
-	kind: "journal_entry";
-	occurredAt: string;
-	body: string;
-}
-
-export type ProjectStatus = "active" | "review" | "paused" | "done";
-
-export interface Project extends EntityBase {
-	kind: "project";
-	name: string;
-	status: ProjectStatus;
-	summary?: string;
-	personIds?: string[];
-	todoIds?: string[];
-}
-
-export interface Todo extends EntityBase {
-	kind: "todo";
-	title: string;
-	done: boolean;
-	/** Human due label, e.g. "Today", "Fri", "May 30". Undefined = no due date. */
-	due?: string;
-	/** Days from today: negative = overdue, 0 = today, positive = upcoming. */
-	dueInDays?: number;
-	projectId?: string;
-	owner?: string;
-	note?: string;
-}
-
-export interface Recipe extends EntityBase {
-	kind: "recipe";
-	title: string;
-	tags?: string[];
-	time?: string;
-	servings?: number;
-	ingredients: string[];
-	steps?: string[];
-}
-
-export type Entity = JournalEntry | Person | Project | Todo | Recipe;
+import type {
+	LibraryItem,
+	Person,
+	Project,
+	Recipe,
+	Todo,
+} from "@/lib/libraryItems";
 
 // --- people -----------------------------------------------------------------
 
@@ -101,7 +31,7 @@ export const people: Person[] = [
 		createdAt: "Today, 10:42",
 		recency: 95,
 		needsReview: true,
-		source: {
+		capturedFrom: {
 			threadId: "th_standup",
 			threadTitle: "Migration standup notes",
 			when: "Today, 10:41",
@@ -117,7 +47,7 @@ export const people: Person[] = [
 		createdAt: "Today, 09:12",
 		recency: 90,
 		needsReview: true,
-		source: {
+		capturedFrom: {
 			threadId: "th_daycare",
 			threadTitle: "Daycare transition",
 			when: "Today, 09:12",
@@ -134,7 +64,7 @@ export const people: Person[] = [
 		projectIds: ["proj_garden"],
 		createdAt: "Yesterday",
 		recency: 70,
-		source: {
+		capturedFrom: {
 			threadId: "th_garden",
 			threadTitle: "Garden rebuild planning",
 			when: "Yesterday, 18:30",
@@ -151,7 +81,7 @@ export const people: Person[] = [
 		projectIds: ["proj_inkstone"],
 		createdAt: "May 28",
 		recency: 50,
-		source: {
+		capturedFrom: {
 			threadId: "th_inkstone_ux",
 			threadTitle: "Library UX review",
 			when: "May 28, 14:05",
@@ -165,7 +95,7 @@ export const people: Person[] = [
 		note: "Coming for dinner Saturday. Vegetarian, no mushrooms.",
 		createdAt: "May 26",
 		recency: 40,
-		source: {
+		capturedFrom: {
 			threadId: "th_dinner",
 			threadTitle: "Saturday dinner plan",
 			when: "May 26, 20:10",
@@ -180,7 +110,7 @@ export const people: Person[] = [
 		note: "Six-month cleaning overdue. Office prefers Tuesday mornings.",
 		createdAt: "May 20",
 		recency: 30,
-		source: {
+		capturedFrom: {
 			threadId: "th_health",
 			threadTitle: "Health admin",
 			when: "May 20, 08:40",
@@ -202,7 +132,7 @@ export const projects: Project[] = [
 		todoIds: ["todo_backfill", "todo_sdk", "todo_cutover"],
 		createdAt: "Today, 10:42",
 		recency: 92,
-		source: {
+		capturedFrom: {
 			threadId: "th_standup",
 			threadTitle: "Migration standup notes",
 			when: "Today, 10:42",
@@ -219,7 +149,7 @@ export const projects: Project[] = [
 		todoIds: ["todo_library", "todo_empty_states"],
 		createdAt: "May 28",
 		recency: 55,
-		source: {
+		capturedFrom: {
 			threadId: "th_inkstone_ux",
 			threadTitle: "Library UX review",
 			when: "May 28, 14:05",
@@ -236,7 +166,7 @@ export const projects: Project[] = [
 		todoIds: ["todo_estimate"],
 		createdAt: "Yesterday",
 		recency: 68,
-		source: {
+		capturedFrom: {
 			threadId: "th_garden",
 			threadTitle: "Garden rebuild planning",
 			when: "Yesterday, 18:30",
@@ -252,7 +182,7 @@ export const projects: Project[] = [
 		todoIds: ["todo_flights"],
 		createdAt: "May 24",
 		recency: 38,
-		source: {
+		capturedFrom: {
 			threadId: "th_lisbon",
 			threadTitle: "Lisbon planning",
 			when: "May 24, 21:15",
@@ -276,7 +206,7 @@ export const todos: Todo[] = [
 		createdAt: "Today, 10:42",
 		recency: 94,
 		needsReview: true,
-		source: {
+		capturedFrom: {
 			threadId: "th_standup",
 			threadTitle: "Migration standup notes",
 			when: "Today, 10:42",
@@ -292,7 +222,7 @@ export const todos: Todo[] = [
 		owner: "Hongyi",
 		createdAt: "Today, 09:12",
 		recency: 89,
-		source: {
+		capturedFrom: {
 			threadId: "th_daycare",
 			threadTitle: "Daycare transition",
 			when: "Today, 09:12",
@@ -309,7 +239,7 @@ export const todos: Todo[] = [
 		owner: "Priya",
 		createdAt: "Today, 10:42",
 		recency: 88,
-		source: {
+		capturedFrom: {
 			threadId: "th_standup",
 			threadTitle: "Migration standup notes",
 			when: "Today, 10:42",
@@ -325,7 +255,7 @@ export const todos: Todo[] = [
 		createdAt: "May 20",
 		recency: 31,
 		note: "Tuesday mornings preferred.",
-		source: {
+		capturedFrom: {
 			threadId: "th_health",
 			threadTitle: "Health admin",
 			when: "May 20, 08:40",
@@ -341,7 +271,7 @@ export const todos: Todo[] = [
 		projectId: "proj_lisbon",
 		createdAt: "May 24",
 		recency: 37,
-		source: {
+		capturedFrom: {
 			threadId: "th_lisbon",
 			threadTitle: "Lisbon planning",
 			when: "May 24, 21:15",
@@ -357,7 +287,7 @@ export const todos: Todo[] = [
 		projectId: "proj_garden",
 		createdAt: "Yesterday",
 		recency: 66,
-		source: {
+		capturedFrom: {
 			threadId: "th_garden",
 			threadTitle: "Garden rebuild planning",
 			when: "Yesterday, 18:30",
@@ -371,7 +301,7 @@ export const todos: Todo[] = [
 		projectId: "proj_inkstone",
 		createdAt: "May 28",
 		recency: 54,
-		source: {
+		capturedFrom: {
 			threadId: "th_inkstone_ux",
 			threadTitle: "Library UX review",
 			when: "May 28, 14:05",
@@ -387,7 +317,7 @@ export const todos: Todo[] = [
 		createdAt: "May 26",
 		recency: 41,
 		note: "Sam is vegetarian, no mushrooms.",
-		source: {
+		capturedFrom: {
 			threadId: "th_dinner",
 			threadTitle: "Saturday dinner plan",
 			when: "May 26, 20:10",
@@ -401,7 +331,7 @@ export const todos: Todo[] = [
 		projectId: "proj_apiv2",
 		createdAt: "Today, 10:43",
 		recency: 86,
-		source: {
+		capturedFrom: {
 			threadId: "th_standup",
 			threadTitle: "Migration standup notes",
 			when: "Today, 10:43",
@@ -415,7 +345,7 @@ export const todos: Todo[] = [
 		projectId: "proj_inkstone",
 		createdAt: "May 28",
 		recency: 52,
-		source: {
+		capturedFrom: {
 			threadId: "th_inkstone_ux",
 			threadTitle: "Library UX review",
 			when: "May 28, 14:05",
@@ -429,7 +359,7 @@ export const todos: Todo[] = [
 		projectId: "proj_lisbon",
 		createdAt: "May 24",
 		recency: 36,
-		source: {
+		capturedFrom: {
 			threadId: "th_lisbon",
 			threadTitle: "Lisbon planning",
 			when: "May 24, 21:16",
@@ -461,7 +391,7 @@ export const recipes: Recipe[] = [
 		],
 		createdAt: "May 26",
 		recency: 42,
-		source: {
+		capturedFrom: {
 			threadId: "th_dinner",
 			threadTitle: "Saturday dinner plan",
 			when: "May 26, 20:12",
@@ -486,7 +416,7 @@ export const recipes: Recipe[] = [
 		],
 		createdAt: "May 22",
 		recency: 34,
-		source: {
+		capturedFrom: {
 			threadId: "th_dinner",
 			threadTitle: "Weeknight dinners",
 			when: "May 22, 19:30",
@@ -513,7 +443,7 @@ export const recipes: Recipe[] = [
 		createdAt: "May 18",
 		recency: 28,
 		needsReview: true,
-		source: {
+		capturedFrom: {
 			threadId: "th_baking",
 			threadTitle: "Sourdough notes",
 			when: "May 18, 09:00",
@@ -535,7 +465,7 @@ export const recipes: Recipe[] = [
 		steps: ["Whisk wet and dry separately.", "Fold; rest 10 min; griddle."],
 		createdAt: "May 11",
 		recency: 18,
-		source: {
+		capturedFrom: {
 			threadId: "th_breakfast",
 			threadTitle: "Weekend breakfasts",
 			when: "May 11, 08:30",
@@ -557,7 +487,7 @@ export const recipes: Recipe[] = [
 		steps: ["Stir over ice 20 turns.", "Strain over a big cube; express peel."],
 		createdAt: "May 9",
 		recency: 12,
-		source: {
+		capturedFrom: {
 			threadId: "th_dinner",
 			threadTitle: "Saturday dinner plan",
 			when: "May 9, 21:00",
@@ -565,8 +495,8 @@ export const recipes: Recipe[] = [
 	},
 ];
 
-/** All entities in one array (stable identity for the query layer). */
-export const entities: Entity[] = [
+/** All preview Library items in one array (stable identity for the query layer). */
+export const entities: LibraryItem[] = [
 	...people,
 	...projects,
 	...todos,

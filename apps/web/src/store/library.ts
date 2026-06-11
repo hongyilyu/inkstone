@@ -10,7 +10,7 @@ import { createStore } from "zustand/vanilla";
 interface LibraryState {
 	/** Per-todo done overrides on top of the mock's static `done`. */
 	doneOverrides: Record<string, boolean>;
-	/** Entity ids the user has confirmed out of the "Needs review" digest. */
+	/** Library item ids the user has confirmed out of the "Needs review" digest. */
 	confirmed: Record<string, true>;
 }
 

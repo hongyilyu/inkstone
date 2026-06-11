@@ -4,24 +4,24 @@ import type { ReactNode } from "react";
 import { CopyButton } from "@/components/CopyButton.js";
 import { Badge } from "@/components/ui/badge";
 import type {
-	Entity,
 	JournalEntry,
+	LibraryItem,
 	Person,
 	Project,
 	Recipe,
 	Todo,
-} from "@/lib/entities";
+} from "@/lib/libraryItems";
 import {
-	entitySubtitle,
-	entityTitle,
 	KIND_META,
+	libraryItemSubtitle,
+	libraryItemTitle,
 	PROJECT_STATUS_LABEL,
 	peopleForProject,
 	projectForTodo,
 	projectProgress,
 	projectsForPerson,
 	todosForProject,
-} from "@/lib/entities";
+} from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
 import { setFocusedThread } from "@/store/chat";
 import { setTodoDone, useTodoDone } from "@/store/library";
@@ -29,20 +29,21 @@ import { EntityGlyph } from "./EntityGlyph.js";
 
 /**
  * The detail "Inspector" (ui-mock `/2` lineage): a focused panel for one
- * entity, its relations as deep links, and a path back to the Run that captured
- * it. `allEntities` resolves relations. Dismissing the panel is the shell's job
- * (the rail's collapse control), so the inspector has no close button of its own.
+ * Library item, its relations as deep links, and a path back to the Run that
+ * captured it. `allEntities` resolves relations. Dismissing the panel is the
+ * shell's job (the rail's collapse control), so the inspector has no close
+ * button of its own.
  */
 export function EntityDetail({
 	entity,
 	allEntities,
 }: {
-	entity: Entity;
-	allEntities: Entity[];
+	entity: LibraryItem;
+	allEntities: LibraryItem[];
 }) {
 	const navigate = useNavigate();
 
-	const goToEntity = (e: Entity) =>
+	const goToEntity = (e: LibraryItem) =>
 		navigate({
 			to: "/library/$kind",
 			params: { kind: KIND_META[e.kind].slug },
@@ -50,8 +51,8 @@ export function EntityDetail({
 		});
 
 	const openSource = () => {
-		if (!entity.source) return;
-		setFocusedThread(entity.source.threadId);
+		if (!entity.capturedFrom) return;
+		setFocusedThread(entity.capturedFrom.threadId);
 		navigate({ to: "/" });
 	};
 
@@ -61,10 +62,10 @@ export function EntityDetail({
 				<EntityGlyph entity={entity} size="lg" />
 				<div className="min-w-0 flex-1 pt-0.5">
 					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
-						{entityTitle(entity)}
+						{libraryItemTitle(entity)}
 					</h2>
 					<p className="truncate text-muted-foreground text-sm">
-						{KIND_META[entity.kind].label} · {entitySubtitle(entity)}
+						{KIND_META[entity.kind].label} · {libraryItemSubtitle(entity)}
 					</p>
 				</div>
 			</header>
@@ -97,7 +98,7 @@ export function EntityDetail({
 				{entity.kind === "recipe" && <RecipeBody recipe={entity} />}
 			</div>
 
-			{entity.source ? (
+			{entity.capturedFrom ? (
 				<footer className="border-foreground/15 border-t p-2">
 					<button
 						type="button"
@@ -110,10 +111,10 @@ export function EntityDetail({
 						/>
 						<span className="min-w-0 flex-1">
 							<span className="block text-muted-foreground text-xs">
-								Captured from · {entity.source.when}
+								Captured from · {entity.capturedFrom.when}
 							</span>
 							<span className="block truncate text-foreground text-sm">
-								{entity.source.threadTitle}
+								{entity.capturedFrom.threadTitle}
 							</span>
 						</span>
 						<ArrowUpRight
@@ -142,8 +143,8 @@ function RelatedRow({
 	entity,
 	onOpen,
 }: {
-	entity: Entity;
-	onOpen: (e: Entity) => void;
+	entity: LibraryItem;
+	onOpen: (e: LibraryItem) => void;
 }) {
 	return (
 		<button
@@ -154,10 +155,10 @@ function RelatedRow({
 			<EntityGlyph entity={entity} size="sm" />
 			<span className="min-w-0 flex-1">
 				<span className="block truncate text-foreground text-sm">
-					{entityTitle(entity)}
+					{libraryItemTitle(entity)}
 				</span>
 				<span className="block truncate text-muted-foreground text-xs">
-					{entitySubtitle(entity)}
+					{libraryItemSubtitle(entity)}
 				</span>
 			</span>
 			<ArrowUpRight
@@ -205,8 +206,8 @@ function PersonBody({
 	onOpen,
 }: {
 	person: Person;
-	allEntities: Entity[];
-	onOpen: (e: Entity) => void;
+	allEntities: LibraryItem[];
+	onOpen: (e: LibraryItem) => void;
 }) {
 	const projects = projectsForPerson(allEntities, person);
 	return (
@@ -252,8 +253,8 @@ function ProjectBody({
 	onOpen,
 }: {
 	project: Project;
-	allEntities: Entity[];
-	onOpen: (e: Entity) => void;
+	allEntities: LibraryItem[];
+	onOpen: (e: LibraryItem) => void;
 }) {
 	const people = peopleForProject(allEntities, project);
 	const todos = todosForProject(allEntities, project);
@@ -314,8 +315,8 @@ function TodoBody({
 	onOpen,
 }: {
 	todo: Todo;
-	allEntities: Entity[];
-	onOpen: (e: Entity) => void;
+	allEntities: LibraryItem[];
+	onOpen: (e: LibraryItem) => void;
 }) {
 	const done = useTodoDone(todo.id, todo.done);
 	const project = projectForTodo(allEntities, todo);

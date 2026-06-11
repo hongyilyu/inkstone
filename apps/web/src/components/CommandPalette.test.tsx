@@ -18,9 +18,9 @@ const die = (): Effect.Effect<never, never> => Effect.die("unused");
 const dieStream = (): Stream.Stream<never, WsError> =>
 	Stream.fromEffect(Effect.die("unused")) as Stream.Stream<never, WsError>;
 
-// Core may be offline; the palette degrades to entities-only. threadList just
-// returns an empty set so the (enabled-on-open) query resolves cleanly. People
-// are read live now (slice 3) — seed Alice so ⌘K can still find her.
+// Core may be offline; the palette degrades to Library-items only. threadList
+// just returns an empty set so the (enabled-on-open) query resolves cleanly.
+// People are read live now, so seed Alice to keep the command result stable.
 const stub = WsClient.of({
 	threadCreate: die,
 	postMessage: die,
