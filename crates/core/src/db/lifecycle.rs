@@ -173,6 +173,33 @@ impl RunStatus {
             return Ok(moved);
         }
 
+        queries::mark_streaming_messages_incomplete(&mut *conn, run_id, now_ms).await?;
+        let payload = serde_json::json!({ "target": "run" }).to_string();
+        run_log::append(&mut *conn, run_id, RunLogKind::Cancelled, Some(&payload), now_ms).await?;
+        Ok(moved)
+    }
+
+    pub(super) async fn cancel_running(
+        conn: &mut SqliteConnection,
+        run_id: Uuid,
+        now_ms: i64,
+    ) -> sqlx::Result<Moved> {
+        debug_assert_eq!(Self::Running.as_str(), "running");
+        debug_assert_eq!(Self::Cancelled.as_str(), "cancelled");
+        let moved = Moved::from_rows(
+            queries::mark_running_run_cancelled(
+                &mut *conn,
+                run_id,
+                TerminalReason::Cancelled.as_str(),
+                now_ms,
+            )
+            .await?,
+        );
+        if !moved.won() {
+            return Ok(moved);
+        }
+
+        queries::mark_streaming_messages_incomplete(&mut *conn, run_id, now_ms).await?;
         let payload = serde_json::json!({ "target": "run" }).to_string();
         run_log::append(&mut *conn, run_id, RunLogKind::Cancelled, Some(&payload), now_ms).await?;
         Ok(moved)

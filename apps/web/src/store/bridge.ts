@@ -24,8 +24,9 @@ import { markThreadHydrated } from "./hydration-set.js";
  *
  * Structured cancellation (Q18 A′): each run's stream fiber is retained keyed by
  * run id so it can be interrupted on unmount. A run's stream is bounded by
- * `Stream.takeUntil(done)`, so on `done` the `runForEach` completes and the
- * fiber finishes on its own — independent of the focused thread.
+ * `Stream.takeUntil` on the terminal set (`done`/`error`/`cancelled`), so on any
+ * terminal event the `runForEach` completes and the fiber finishes on its own —
+ * independent of the focused thread.
  */
 const fibers = new Map<RunId, Fiber.RuntimeFiber<void, WsError>>();
 
@@ -72,8 +73,9 @@ function seedTurn(threadId: string, text: string): string {
 
 /**
  * Fork the SDK stream for `runId` and drive each event into the store. The
- * fiber is retained keyed by run id and removed when the stream completes (on
- * `done`, via `takeUntil`) so it survives focus changes until its own `done`.
+ * fiber is retained keyed by run id and removed when the stream completes (on a
+ * terminal `done`/`error`/`cancelled`, via `takeUntil`) so it survives focus
+ * changes until its own terminal event.
  */
 export function startRunStream(
 	runtime: WsRuntime,
@@ -87,7 +89,10 @@ export function startRunStream(
 				.subscribeRun(runId)
 				.pipe(
 					Stream.takeUntil(
-						(event) => event.kind === "done" || event.kind === "error",
+						(event) =>
+							event.kind === "done" ||
+							event.kind === "error" ||
+							event.kind === "cancelled",
 					),
 				),
 			(event) => Effect.sync(() => applyEvent(threadId, runId, event)),
@@ -282,8 +287,8 @@ export async function decideProposal(
 		if (threadId !== undefined) {
 			// Stale-fiber guard (M2): a parked Run's forwarder closes with NO
 			// terminal event, so the original `subscribeRun` fiber (bounded by
-			// `takeUntil(done|error)`) never completed and is still blocked on
-			// the per-run queue. Interrupt it BEFORE re-subscribing so exactly
+			// `takeUntil` on the terminal set) never completed and is still
+			// blocked on the per-run queue. Interrupt it BEFORE re-subscribing so exactly
 			// one consumer drains the resume tail — two consumers would split a
 			// multi-chunk continuation between them and corrupt the text.
 			interruptRun(runtime, runId);

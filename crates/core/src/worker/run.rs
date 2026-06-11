@@ -4,13 +4,13 @@
 //! transaction. Generic over the port: production spawns a
 //! [`super::child::ChildWorker`]; tests drive an in-memory `ScriptedWorker`.
 //!
-//! This is the former `stream_worker` body, unchanged in behavior — only the
-//! `Child`/stdin/stdout are now reached through the [`WorkerPort`] seam.
+//! This is the former `stream_worker` body; the `Child`/stdin/stdout are now
+//! reached through the [`WorkerPort`] seam.
 
 use std::sync::Arc;
 
 use sqlx::SqlitePool;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
 use super::port::{Exit, WorkerPort};
@@ -37,12 +37,38 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
     hubs: Hubs,
     tx: broadcast::Sender<RunEvent>,
     gate: Arc<tokio::sync::Mutex<()>>,
+    mut cancel_rx: watch::Receiver<bool>,
 ) -> Exit {
     let mut saw_done = false;
     let mut worker_error: Option<String> = None;
     let mut parked = false;
+    let mut cancelled_by_core = false;
 
-    while let Some(msg) = worker.recv().await {
+    if *cancel_rx.borrow() {
+        worker.shutdown().await;
+        cancelled_by_core = true;
+    }
+
+    while !cancelled_by_core {
+        let Some(msg) = (tokio::select! {
+            changed = cancel_rx.changed() => {
+                if changed.is_ok() && *cancel_rx.borrow() {
+                    worker.shutdown().await;
+                    cancelled_by_core = true;
+                    None
+                } else {
+                    continue;
+                }
+            }
+            msg = worker.recv() => msg,
+        }) else {
+            break;
+        };
+        if *cancel_rx.borrow() {
+            worker.shutdown().await;
+            cancelled_by_core = true;
+            break;
+        }
         match msg {
             // Per-event critical section (ADR-0022 exactly-once): hold the
             // per-run gate across persist + publish so a concurrent
@@ -50,13 +76,17 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
             // the snapshot or wholly in the tail, never split or duplicated.
             WorkerStdout::TextDelta { delta } => {
                 let guard = gate.lock().await;
-                if let Err(e) = db::append_assistant_text(&pool, assistant_message_id, &delta).await
-                {
-                    eprintln!(
-                        "text_delta append failed for assistant message {assistant_message_id}: {e}"
-                    );
+                match db::append_assistant_text(&pool, assistant_message_id, &delta).await {
+                    Ok(true) => {
+                        let _ = tx.send(RunEvent::TextDelta { delta });
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        eprintln!(
+                            "text_delta append failed for assistant message {assistant_message_id}: {e}"
+                        );
+                    }
                 }
-                let _ = tx.send(RunEvent::TextDelta { delta });
                 drop(guard);
             }
             // Terminal events are recorded as flags and published AFTER the
@@ -84,19 +114,37 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 ..
             } => {
                 if crate::tools::is_proposal(&name) && !db::should_auto_approve() {
+                    let guard = gate.lock().await;
                     parked = park_on_proposal(&pool, run_id, &tool_call_id, &name, &params).await;
+                    drop(guard);
                     worker.shutdown().await;
                     break;
                 }
 
+                let guard = gate.lock().await;
+                if *cancel_rx.borrow() {
+                    drop(guard);
+                    worker.shutdown().await;
+                    cancelled_by_core = true;
+                    break;
+                }
                 let _ = tx.send(RunEvent::ToolCall {
                     tool_call_id: tool_call_id.clone(),
                     name: name.clone(),
                     status: ToolCallStatus::Started,
                 });
+                drop(guard);
+
                 let outcome =
                     handle_tool_request(&pool, run_id, &workflow, &tool_call_id, &name, params)
                         .await;
+                let guard = gate.lock().await;
+                if *cancel_rx.borrow() {
+                    drop(guard);
+                    worker.shutdown().await;
+                    cancelled_by_core = true;
+                    break;
+                }
                 let _ = tx.send(RunEvent::ToolCall {
                     tool_call_id: tool_call_id.clone(),
                     name,
@@ -105,12 +153,19 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                         ToolOutcome::Err { .. } => ToolCallStatus::Error,
                     },
                 });
+                drop(guard);
+
                 let result = ToolResult {
                     kind: "tool_result",
                     run_id: run_id.to_string(),
                     tool_call_id,
                     outcome,
                 };
+                if *cancel_rx.borrow() {
+                    worker.shutdown().await;
+                    cancelled_by_core = true;
+                    break;
+                }
                 worker.send_tool_result(result).await;
             }
         }
@@ -120,7 +175,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
     // takes precedence over the EOF-without-done path and carries its message.
     // Park (ADR-0025) short-circuits this entirely: a parked Run already
     // committed `status='parked'`, and park is NOT terminal.
-    if !parked {
+    if !parked && !cancelled_by_core {
         let now_ms = db::now_ms();
         let result = if let Some(ref message) = worker_error {
             db::error_run_with_message(&pool, run_id, "errored", "worker_error", message, now_ms)
@@ -130,21 +185,26 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
         } else {
             db::error_run(&pool, run_id, now_ms).await
         };
-        if let Err(e) = result {
+        if let Err(ref e) = result {
             eprintln!("terminal tx failed for run {run_id}: {e}");
         }
 
-        // Publish the terminal Run Event ONLY AFTER the terminal tx commits.
-        match (&worker_error, saw_done) {
-            (Some(message), _) => {
-                let _ = tx.send(RunEvent::Error {
-                    message: message.clone(),
-                });
-            }
-            (None, true) => {
-                let _ = tx.send(RunEvent::Done);
-            }
-            (None, false) => {}
+        // Publish the terminal Run Event ONLY AFTER this loop's terminal tx
+        // wins. If cancellation already committed, the guarded transition
+        // loses and `run/cancel` owns the terminal `cancelled` event.
+        match result {
+            Ok(moved) if moved.won() => match (&worker_error, saw_done) {
+                (Some(message), _) => {
+                    let _ = tx.send(RunEvent::Error {
+                        message: message.clone(),
+                    });
+                }
+                (None, true) => {
+                    let _ = tx.send(RunEvent::Done);
+                }
+                (None, false) => {}
+            },
+            _ => {}
         }
     }
 
@@ -155,7 +215,9 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
     // explicit `child.wait()`) — no orphan outlives the Run.
     crate::hub::remove(&hubs, run_id);
 
-    if parked {
+    if cancelled_by_core {
+        Exit::Cancelled
+    } else if parked {
         Exit::Parked
     } else if let Some(message) = worker_error {
         Exit::Errored(message)
@@ -374,17 +436,73 @@ mod tests {
         }
     }
 
-    fn fixtures() -> (
-        Hubs,
-        broadcast::Sender<RunEvent>,
-        Arc<tokio::sync::Mutex<()>>,
-    ) {
-        let (tx, _rx) = broadcast::channel(64);
-        (
-            crate::hub::new_hubs(),
-            tx,
-            Arc::new(tokio::sync::Mutex::new(())),
-        )
+    /// A [`WorkerPort`] that flips the run's cancel signal right before it
+    /// yields the frame at index `cancel_before`, forcing the loop's post-recv
+    /// cancel check to trip on that frame — the live-cancel-mid-stream race
+    /// (`run/cancel` wins the guard while the Worker is still streaming). Wraps
+    /// a cloned [`RunHub`] so `recv` can call `cancel()` exactly as the real
+    /// handler does. Records shutdowns and sent tool_result ids like
+    /// [`ScriptedWorker`].
+    struct CancelingWorker {
+        inbound: VecDeque<WorkerStdout>,
+        hub: crate::hub::RunHub,
+        cancel_before: usize,
+        idx: usize,
+        sent: Arc<Mutex<Vec<String>>>,
+        shutdowns: Arc<Mutex<u32>>,
+    }
+
+    impl CancelingWorker {
+        fn new(
+            frames: Vec<WorkerStdout>,
+            hub: crate::hub::RunHub,
+            cancel_before: usize,
+        ) -> (Self, Arc<Mutex<Vec<String>>>, Arc<Mutex<u32>>) {
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let shutdowns = Arc::new(Mutex::new(0));
+            let worker = Self {
+                inbound: frames.into(),
+                hub,
+                cancel_before,
+                idx: 0,
+                sent: sent.clone(),
+                shutdowns: shutdowns.clone(),
+            };
+            (worker, sent, shutdowns)
+        }
+    }
+
+    impl WorkerPort for CancelingWorker {
+        async fn recv(&mut self) -> Option<WorkerStdout> {
+            if self.idx == self.cancel_before {
+                self.hub.cancel();
+            }
+            self.idx += 1;
+            self.inbound.pop_front()
+        }
+
+        async fn send_tool_result(&mut self, result: ToolResult) {
+            self.sent.lock().unwrap().push(result.tool_call_id);
+        }
+
+        async fn shutdown(&mut self) {
+            *self.shutdowns.lock().unwrap() += 1;
+        }
+    }
+
+    /// Drain a broadcast receiver into a Vec without blocking.
+    fn drain(rx: &mut broadcast::Receiver<RunEvent>) -> Vec<RunEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    fn fixtures(run_id: Uuid) -> (Hubs, crate::hub::RunHub) {
+        let hubs = crate::hub::new_hubs();
+        let run_hub = crate::hub::create(&hubs, run_id);
+        (hubs, run_hub)
     }
 
     #[tokio::test]
@@ -392,7 +510,7 @@ mod tests {
         let pool = memory_pool().await;
         let wf = test_workflow(&[]);
         let (run_id, _thread_id, amid) = seed_run(&pool, &wf).await;
-        let (hubs, tx, gate) = fixtures();
+        let (hubs, run_hub) = fixtures(run_id);
         let (worker, _sent, _sd) = ScriptedWorker::new(vec![
             WorkerStdout::TextDelta {
                 delta: "hi".to_string(),
@@ -400,7 +518,18 @@ mod tests {
             WorkerStdout::Done,
         ]);
 
-        let exit = run_loop(worker, run_id, wf, pool.clone(), amid, hubs, tx, gate).await;
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
 
         assert_eq!(exit, Exit::Done);
         assert_eq!(
@@ -419,12 +548,23 @@ mod tests {
         let pool = memory_pool().await;
         let wf = test_workflow(&[]);
         let (run_id, _t, _amid) = seed_run(&pool, &wf).await;
-        let (hubs, tx, gate) = fixtures();
+        let (hubs, run_hub) = fixtures(run_id);
         let (worker, _sent, _sd) = ScriptedWorker::new(vec![WorkerStdout::Error {
             message: "boom".to_string(),
         }]);
 
-        let exit = run_loop(worker, run_id, wf, pool.clone(), _amid, hubs, tx, gate).await;
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            _amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
 
         assert_eq!(exit, Exit::Errored("boom".to_string()));
         assert_eq!(
@@ -438,13 +578,24 @@ mod tests {
         let pool = memory_pool().await;
         let wf = test_workflow(&[]);
         let (run_id, _t, amid) = seed_run(&pool, &wf).await;
-        let (hubs, tx, gate) = fixtures();
+        let (hubs, run_hub) = fixtures(run_id);
         // One delta, then the script is exhausted → recv returns None (EOF).
         let (worker, _sent, _sd) = ScriptedWorker::new(vec![WorkerStdout::TextDelta {
             delta: "x".to_string(),
         }]);
 
-        let exit = run_loop(worker, run_id, wf, pool.clone(), amid, hubs, tx, gate).await;
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
 
         assert_eq!(exit, Exit::Disconnected);
         assert_eq!(
@@ -458,7 +609,7 @@ mod tests {
         let pool = memory_pool().await;
         let wf = test_workflow(&["read_thread"]);
         let (run_id, thread_id, amid) = seed_run(&pool, &wf).await;
-        let (hubs, tx, gate) = fixtures();
+        let (hubs, run_hub) = fixtures(run_id);
         let (worker, sent, _sd) = ScriptedWorker::new(vec![
             WorkerStdout::ToolRequest {
                 run_id: String::new(),
@@ -469,7 +620,18 @@ mod tests {
             WorkerStdout::Done,
         ]);
 
-        let exit = run_loop(worker, run_id, wf, pool.clone(), amid, hubs, tx, gate).await;
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
 
         assert_eq!(exit, Exit::Done);
         // The loop dispatched the tool and wrote a Tool Result back, correlated
@@ -482,7 +644,7 @@ mod tests {
         let pool = memory_pool().await;
         let wf = test_workflow(&["propose_workspace_mutation"]);
         let (run_id, _t, amid) = seed_run(&pool, &wf).await;
-        let (hubs, tx, gate) = fixtures();
+        let (hubs, run_hub) = fixtures(run_id);
         let (worker, _sent, _sd) = ScriptedWorker::new(vec![WorkerStdout::ToolRequest {
             run_id: String::new(),
             tool_call_id: "tc-prop".to_string(),
@@ -496,7 +658,18 @@ mod tests {
             }),
         }]);
 
-        let exit = run_loop(worker, run_id, wf, pool.clone(), amid, hubs, tx, gate).await;
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
 
         assert_eq!(exit, Exit::Parked);
         assert_eq!(
@@ -509,6 +682,144 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "a pending Proposal is persisted on park"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_signalled_before_loop_exits_cancelled_without_terminal_tx() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&[]);
+        let (run_id, _t, _amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        // run/cancel already won the guarded transition before the loop starts.
+        run_hub.cancel();
+        let mut tail = run_hub.tx.subscribe();
+        let (worker, _sent, shutdowns) = ScriptedWorker::new(vec![
+            WorkerStdout::TextDelta {
+                delta: "late".to_string(),
+            },
+            WorkerStdout::Done,
+        ]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            _amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
+
+        assert_eq!(exit, Exit::Cancelled);
+        assert_eq!(*shutdowns.lock().unwrap(), 1, "the loop shut the Worker down");
+        // The loop owns NO terminal tx on cancel — run/cancel committed it.
+        // Here no transition ran at all, so the run stays `running` (the test
+        // does not flip it; the point is the loop did not complete/error it).
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            Some("running"),
+            "the loop committed neither complete_run nor error_run"
+        );
+        // No terminal Run Event was published by the loop.
+        assert!(
+            drain(&mut tail).is_empty(),
+            "the loop published no Done/Error after cancel"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_mid_stream_suppresses_late_done() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&[]);
+        let (run_id, _t, amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let mut tail = run_hub.tx.subscribe();
+        // First delta streams; the cancel signal flips before the 2nd recv (the
+        // Done frame), so the loop's post-recv check trips and Done is dropped.
+        let (worker, _sent, shutdowns) = CancelingWorker::new(
+            vec![
+                WorkerStdout::TextDelta {
+                    delta: "hi".to_string(),
+                },
+                WorkerStdout::Done,
+            ],
+            run_hub.clone(),
+            1,
+        );
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
+
+        assert_eq!(exit, Exit::Cancelled);
+        assert!(*shutdowns.lock().unwrap() >= 1, "the loop shut the Worker down");
+        // The first delta was published; NO Done followed it.
+        let events = drain(&mut tail);
+        assert!(
+            matches!(events.as_slice(), [RunEvent::TextDelta { delta }] if delta == "hi"),
+            "only the pre-cancel delta is published, no terminal Done — got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn loop_terminal_tx_loses_to_committed_cancel_and_publishes_nothing() {
+        // The cancel-LOSES-to-the-worker mirror: here the worker reaches `done`,
+        // but cancellation already committed `cancelled` in tier 2. The loop's
+        // guarded complete_run must lose (moved.won() == false) and publish NO
+        // Done, so run/cancel's `cancelled` stays the one terminal outcome.
+        let pool = memory_pool().await;
+        let wf = test_workflow(&[]);
+        let (run_id, _t, amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let mut tail = run_hub.tx.subscribe();
+        // Pre-commit the cancellation (as run/cancel would, racing ahead).
+        assert!(
+            db::cancel_running_run(&pool, run_id, db::now_ms())
+                .await
+                .unwrap()
+                .won(),
+            "cancel commits the running -> cancelled transition first"
+        );
+        // The worker still runs to `done` (it never observed the signal).
+        let (worker, _sent, _sd) = ScriptedWorker::new(vec![WorkerStdout::Done]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
+
+        assert_eq!(exit, Exit::Done, "the loop saw `done`");
+        // But the terminal tx lost the guard: status stays `cancelled`.
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            Some("cancelled"),
+            "a later completion does not overwrite a committed cancellation"
+        );
+        // And crucially, the loop published NO Done after losing the guard.
+        assert!(
+            drain(&mut tail).is_empty(),
+            "the loop publishes no Done when its terminal transition lost"
         );
     }
 }

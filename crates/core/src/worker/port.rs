@@ -29,6 +29,9 @@ pub(crate) enum Exit {
     /// A Proposal `tool_request` parked the Run (ADR-0025). Non-terminal: the
     /// loop committed no terminal transaction.
     Parked,
+    /// Core accepted cancellation and signalled the live Worker. The terminal
+    /// transaction and `cancelled` event were owned by `run/cancel`.
+    Cancelled,
 }
 
 /// Everything Core's run loop needs from a spawned Worker (ADR-0026). The

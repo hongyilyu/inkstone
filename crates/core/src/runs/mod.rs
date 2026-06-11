@@ -7,13 +7,13 @@
 //! process management is in [`crate::worker`]; the per-run hub is in
 //! [`crate::hub`].
 
+mod cancel;
+mod catalog;
+mod entity;
 mod handler;
 mod post_message;
 mod proposal;
-mod cancel;
 mod provider;
-mod catalog;
-mod entity;
 mod reply;
 mod settings;
 mod subscribe;
@@ -54,7 +54,7 @@ pub async fn dispatch(
             }
         }
         "run/cancel" => {
-            cancel::handle_cancel(pool, req.id, req.params, out_tx).await;
+            cancel::handle_cancel(pool, hubs, req.id, req.params, out_tx).await;
         }
         "thread/create" => {
             thread_create::handle(pool, hubs, req.id, req.params, out_tx).await;

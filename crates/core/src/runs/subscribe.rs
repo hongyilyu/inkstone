@@ -15,18 +15,16 @@
 //! `handle_socket`'s select loop free to keep draining `out_rx`.
 //!
 //! If the Run is already terminal/removed (no hub), read the snapshot from
-//! the DB, emit it as a `text_delta`, then a `done`, and close without
-//! attaching. An unknown run id is handled defensibly: respond, emit a
-//! `done`, do not panic.
+//! the DB, emit it as a `text_delta`, then the persisted terminal outcome, and
+//! close without attaching. An unknown run id is handled defensibly: respond,
+//! emit a `done`, do not panic.
 
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-use super::reply::{
-    send_proposal_pending, send_response, send_run_event, send_text_delta,
-};
+use super::reply::{send_proposal_pending, send_response, send_run_event, send_text_delta};
 use crate::db;
 use crate::hub::{self, Hubs};
 use crate::protocol::{RunEvent, SubscribeParams, SubscribeResult};
@@ -50,17 +48,19 @@ pub(super) async fn handle(
             let receiver = run_hub.tx.subscribe();
             drop(guard);
 
-            let snapshot_text = match snapshot {
-                Ok(Some(snap)) => snap.text,
-                Ok(None) => String::new(),
+            let (snapshot_text, status) = match snapshot {
+                Ok(Some(snap)) => (snap.text, snap.status),
+                Ok(None) => (String::new(), "running".to_string()),
                 Err(e) => {
                     eprintln!("snapshot read failed for run {run_id}: {e}");
-                    String::new()
+                    (String::new(), "running".to_string())
                 }
             };
 
-            // A live hub means the Run is actively streaming → `running`.
-            send_subscribe_response(out_tx, id, run_id, "running");
+            // Usually a live hub means `running`, but cancellation can commit
+            // before the Worker loop drops its hub clone. Report the persisted
+            // status observed under the gate.
+            send_subscribe_response(out_tx, id, run_id, &status);
             send_text_delta(out_tx, run_id, &snapshot_text);
             spawn_tail_forwarder(run_id, receiver, out_tx.clone(), pool.clone());
         }
@@ -89,18 +89,21 @@ pub(super) async fn handle(
                 }
             }
             // No-false-done (ADR-0025): a parked Run's Run Event stream stopped
-            // without a terminal event. Emit the snapshot, but NOT a `done` —
-            // the Client distinguishes `parked` via the response status. Only
-            // terminal/unknown runs get the synthesized `done`.
-            if status != "parked" {
-                send_run_event(out_tx, run_id, &RunEvent::Done);
-            } else {
+            // without a terminal event. Emit the snapshot, but NOT a terminal
+            // Run Event — the Client distinguishes `parked` via the response
+            // status. Cancelled Runs get their own terminal event; completed
+            // and the legacy unknown/errored fallback synthesize `done`.
+            if status == "parked" {
                 // Push `proposal/pending` (ADR-0025) so a fresh subscriber to an
                 // already-parked Run learns to show the review card without a
                 // separate `proposal/get` poll. Look up the Run's pending
                 // Proposal id; if none is found (race / read error), the Client
                 // still has the `parked` response status to fall back on.
                 emit_pending(out_tx, pool, run_id).await;
+            } else if status == "cancelled" {
+                send_run_event(out_tx, run_id, &RunEvent::Cancelled);
+            } else {
+                send_run_event(out_tx, run_id, &RunEvent::Done);
             }
         }
     }
@@ -162,17 +165,17 @@ fn send_subscribe_response(
 /// `text_delta`, then resumes the tail. Lag degrades to "re-read the truth,"
 /// never to lost text. A re-snapshot read error is logged and tolerated.
 ///
-/// Terminal-`done` guarantee: a subscribe can attach in the window between
-/// the Worker publishing `Done` (under the gate, then releasing it) and
+/// Terminal-event guarantee: a subscribe can attach in the window between a
+/// terminal event being published (under the gate, then releasing it) and
 /// `hub::remove` (after the terminal SQLite tx). A `tokio::broadcast`
 /// receiver created in that window is positioned AFTER the already-sent
-/// `Done` and would never see it — the stream would hang. The gate gives
-/// exactly-once for `text_delta`s but cannot protect a terminal message a
-/// late receiver structurally cannot replay. So the forwarder tracks
-/// whether it forwarded a `Done` from the tail and, on channel close (the
-/// connection still up), synthesizes one if it never did. This is the single
-/// guarantee point: every connected subscriber path ends with exactly one
-/// `done`.
+/// terminal event and would never see it — the stream would hang. The gate
+/// gives exactly-once for `text_delta`s but cannot protect a terminal message
+/// a late receiver structurally cannot replay. So the forwarder tracks whether
+/// it forwarded a terminal event from the tail and, on channel close (the
+/// connection still up), synthesizes the persisted terminal outcome if it never
+/// did. This is the single guarantee point: every connected subscriber path
+/// ends with exactly one terminal event.
 fn spawn_tail_forwarder(
     run_id: Uuid,
     mut receiver: broadcast::Receiver<RunEvent>,
@@ -193,12 +196,14 @@ fn spawn_tail_forwarder(
                 recv = receiver.recv() => {
                     match recv {
                         Ok(event) => {
-                            // Both `done` and `error` are terminal Run Events
-                            // (ADR-0006 lists errors as a Run Event). Tracking either as the
-                            // terminal marker means a worker that errored does
-                            // not also get a synthesized `done` appended after
-                            // its error on channel close.
-                            if matches!(event, RunEvent::Done | RunEvent::Error { .. }) {
+                            // `done`, `cancelled`, and `error` are terminal Run
+                            // Events. Tracking them prevents a synthesized
+                            // `done` after the real terminal event on channel
+                            // close.
+                            if matches!(
+                                event,
+                                RunEvent::Done | RunEvent::Cancelled | RunEvent::Error { .. }
+                            ) {
                                 saw_terminal = true;
                             }
                             send_run_event(&out_tx, run_id, &event);
@@ -219,14 +224,16 @@ fn spawn_tail_forwarder(
                             // instead PUSH a `proposal/pending` so the attached
                             // chat surface shows the review card without polling.
                             if !saw_terminal {
-                                let parked = matches!(
-                                    db::run_status(&pool, run_id).await,
-                                    Ok(Some(ref s)) if s == "parked"
-                                );
-                                if parked {
-                                    emit_pending(&out_tx, &pool, run_id).await;
-                                } else {
-                                    send_run_event(&out_tx, run_id, &RunEvent::Done);
+                                match db::run_status(&pool, run_id).await {
+                                    Ok(Some(ref s)) if s == "parked" => {
+                                        emit_pending(&out_tx, &pool, run_id).await;
+                                    }
+                                    Ok(Some(ref s)) if s == "cancelled" => {
+                                        send_run_event(&out_tx, run_id, &RunEvent::Cancelled);
+                                    }
+                                    _ => {
+                                        send_run_event(&out_tx, run_id, &RunEvent::Done);
+                                    }
                                 }
                             }
                             break;
@@ -258,4 +265,103 @@ fn spawn_tail_forwarder(
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use tokio::sync::mpsc;
+    use uuid::Uuid;
+
+    use super::*;
+
+    /// A migrated in-memory tier-2 pool (mirrors `db::open`'s migration so the
+    /// `runs` CHECK constraints are in force).
+    async fn memory_pool() -> SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    /// Seed a Thread + Run, then commit a `running -> cancelled` transition so
+    /// tier 2 reports `cancelled` (the state a late subscriber must read back).
+    async fn seed_cancelled_run(pool: &SqlitePool) -> Uuid {
+        let workflow = crate::workflow::Workflow {
+            name: "test".to_string(),
+            version: "1".to_string(),
+            provider: "faux".to_string(),
+            model: Some("m".to_string()),
+            system_prompt: "sp".to_string(),
+            thinking_level: Some("off".to_string()),
+            tools: Vec::new(),
+        };
+        let run_id = Uuid::now_v7();
+        db::persist_thread_with_first_run(
+            pool,
+            Uuid::now_v7(),
+            run_id,
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            &workflow,
+            "prompt",
+            "t",
+            1,
+        )
+        .await
+        .expect("seed run");
+        assert!(
+            db::cancel_running_run(pool, run_id, db::now_ms())
+                .await
+                .expect("cancel")
+                .won(),
+            "the seed transition wins running -> cancelled"
+        );
+        run_id
+    }
+
+    /// The terminal-event guarantee (ADR-0022): a subscriber that attaches AFTER
+    /// `run/cancel` already published `Cancelled` — its broadcast receiver is
+    /// positioned past the sent event — must still terminate with exactly one
+    /// `cancelled` when the channel closes, NOT a synthesized `done`. Models the
+    /// close-fallback arm by handing the forwarder a receiver that sees only the
+    /// channel close, with the persisted status already `cancelled`.
+    #[tokio::test]
+    async fn tail_forwarder_synthesizes_cancelled_on_close_for_a_late_subscriber() {
+        let pool = memory_pool().await;
+        let run_id = seed_cancelled_run(&pool).await;
+
+        // A receiver created after the terminal event: the sender is dropped
+        // with nothing buffered, so `recv()` yields `Closed` straight away.
+        let (event_tx, event_rx) = broadcast::channel::<RunEvent>(8);
+        drop(event_tx);
+
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+        spawn_tail_forwarder(run_id, event_rx, out_tx, pool.clone());
+
+        // Exactly one frame: a synthesized `cancelled`, then the channel closes.
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+            .await
+            .expect("forwarder emits within timeout")
+            .expect("a terminal frame is sent");
+        let frame: serde_json::Value = serde_json::from_str(&body).expect("frame is JSON");
+        assert_eq!(
+            frame["params"]["event"]["kind"].as_str(),
+            Some("cancelled"),
+            "a late subscriber to a cancelled Run gets `cancelled`, not `done` — body: {body}"
+        );
+        assert!(
+            out_rx.recv().await.is_none(),
+            "the forwarder sends exactly one terminal event then ends"
+        );
+    }
 }

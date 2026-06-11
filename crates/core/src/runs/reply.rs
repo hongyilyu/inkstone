@@ -60,7 +60,7 @@ pub(super) fn send_text_delta(out_tx: &UnboundedSender<String>, run_id: Uuid, te
 /// Queue a `proposal/pending` notification (ADR-0025) on the per-connection
 /// channel: the Run parked and `proposal_id` is its awaiting Proposal. A
 /// subscribed Client renders the review card on receipt. Rides the
-/// `proposal/*` channel, NOT a Run Event (the RunEvent enum stays frozen).
+/// `proposal/*` channel, NOT a Proposal-specific Run Event.
 pub(super) fn send_proposal_pending(
     out_tx: &UnboundedSender<String>,
     run_id: Uuid,

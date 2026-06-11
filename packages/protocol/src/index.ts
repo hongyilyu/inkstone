@@ -92,6 +92,7 @@ export const RunEvent = S.Union(
 		status: S.Literal("started", "completed", "error"),
 	}),
 	S.Struct({ kind: S.Literal("done") }),
+	S.Struct({ kind: S.Literal("cancelled") }),
 	S.Struct({ kind: S.Literal("error"), message: S.String }),
 );
 export type RunEvent = S.Schema.Type<typeof RunEvent>;
@@ -99,8 +100,7 @@ export type RunEvent = S.Schema.Type<typeof RunEvent>;
 // --- proposal/* (ADR-0025): a Proposal is a Tool Request awaiting a human
 // Decision. When the Worker emits a `propose_workspace_mutation` tool_request,
 // Core parks the Run and persists a pending Proposal. The Proposal lifecycle rides this
-// `proposal/*` channel, NOT a new RunEvent variant (the wire RunEvent enum
-// stays frozen at text_delta/tool_call/done/error).
+// `proposal/*` channel, NOT a RunEvent variant.
 
 /** `proposal/get` params: the parked Run whose pending Proposal to fetch. */
 export const ProposalGetParams = S.Struct({ run_id: S.String });
@@ -152,7 +152,7 @@ export type ProposalDecideResult = S.Schema.Type<typeof ProposalDecideResult>;
  * `proposal/pending` Notification: pushed to a Run's subscribers the moment
  * the Run parks (ADR-0025), so an already-attached chat surface learns to show
  * the review card without polling. Rides the `proposal/*` channel, not a new
- * RunEvent variant (the wire RunEvent enum stays frozen).
+ * Proposal-specific RunEvent variant.
  */
 export const ProposalPendingNotification = S.Struct({
 	run_id: S.String,
@@ -262,10 +262,10 @@ export const CoreToolDescriptor = S.Struct({
 });
 export type CoreToolDescriptor = S.Schema.Type<typeof CoreToolDescriptor>;
 
-// What the Worker writes to stdout. NOTE: the `tool_call` member of `RunEvent`
-// is Core-synthesized (Core publishes it to the Client hub when it receives a
-// `tool_request`); the Worker never emits it, so Core's stdout decoder ignores
-// that kind. The union is widened only because it reuses `RunEvent`.
+// What the Worker writes to stdout. NOTE: the `tool_call` and `cancelled`
+// members of `RunEvent` are Core-synthesized; the Worker never emits them, so
+// Core's stdout decoder ignores those kinds. The union is widened only because
+// it reuses `RunEvent`.
 export const WorkerOutbound = S.Union(RunEvent, ToolRequest);
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 

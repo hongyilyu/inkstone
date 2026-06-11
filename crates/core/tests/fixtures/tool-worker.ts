@@ -27,9 +27,25 @@
 //   the `thread_id` passed to read_thread (lets a test point the call at a
 //   real, just-created thread). Absent/missing → the default "t-dummy", which
 //   is an unknown id (→ Core returns a `not_found` error outcome).
+//
+// INKSTONE_TOOLWORKER_GATE
+//   A filesystem path. When set, the fixture BLOCKS after the tool round-trip
+//   (it has received Core's tool_result) and BEFORE emitting the final
+//   `text_delta`/`done`, polling until the path exists. Lets a test land a
+//   `run/cancel` deterministically after a real tool dispatch persisted its
+//   rows but before the turn completes. Unset => no pause.
 
 import { existsSync, readFileSync } from "node:fs";
 import { emit, stdinLines } from "./transport.js";
+
+const sleep = (ms: number): Promise<void> =>
+	new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitForGate = async (path: string): Promise<void> => {
+	while (!existsSync(path)) {
+		await sleep(10);
+	}
+};
 
 interface Manifest {
 	workflow?: { tools?: Array<{ name?: string }> };
@@ -99,6 +115,13 @@ const main = async (): Promise<void> => {
 		outcome = `err:${result.outcome.err.code ?? "?"}`;
 	} else {
 		outcome = "malformed";
+	}
+
+	// Optional pause AFTER the tool round-trip (rows persisted) and BEFORE the
+	// terminal events, so a test can cancel a live, mid-turn Run deterministically.
+	const gate = process.env.INKSTONE_TOOLWORKER_GATE;
+	if (gate !== undefined && gate.length > 0) {
+		await waitForGate(gate);
 	}
 
 	emit({ kind: "text_delta", delta: `tool_outcome=${outcome}` });

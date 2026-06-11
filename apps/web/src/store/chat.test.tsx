@@ -120,6 +120,33 @@ describe("chat store + stream bridge", () => {
 		await runtime.dispose();
 	});
 
+	it("cancelled event finalizes the run: partial text kept incomplete, fiber settles", async () => {
+		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime(queue, "run-cancel");
+		setFocusedThread("threadA");
+
+		await send(runtime, "threadA", "hi");
+
+		// Partial text streams, then the user cancels (ADR-0014). `cancelled` is
+		// terminal but NOT an error: takeUntil must release the fiber even though
+		// no `done`/`error` follows, and the partial text stays as an unfinished
+		// cancelled response (incomplete), not a clean `completed` answer.
+		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "partial" });
+		Queue.unsafeOffer(queue, { kind: "cancelled" });
+		// awaitRun resolves only if the fiber settled — i.e. takeUntil fired on
+		// `cancelled`. If cancelled weren't terminal this would hang forever.
+		await awaitRun(runtime, "run-cancel");
+
+		const threadA = getChatState().threads.threadA;
+		const assistant = threadA?.messages[1];
+		expect(assistant?.text).toBe("partial");
+		expect(assistant?.status).toBe("incomplete");
+		expect(assistant?.error).toBeUndefined();
+		expect(threadA?.activeRunId).toBeUndefined();
+
+		await runtime.dispose();
+	});
+
 	it("tool_call events upsert a running row then flip it to completed", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-tool");

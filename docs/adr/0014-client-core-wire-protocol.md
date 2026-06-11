@@ -1,6 +1,6 @@
 # Client↔Core wire protocol: a single loopback WebSocket carrying JSON-RPC 2.0
 
-Client ↔ Core is a bidirectional logical session. For the Web MVP, that session is implemented as one persistent **WebSocket** on loopback, carrying **JSON-RPC 2.0** Request / Response / Notification messages. Requests handle reads and mutations (including `run/cancel`). Notifications carry live Run progress, Proposal availability, and lightweight invalidation signals. **Run Events are durable in tier 2; invalidation Notifications are live-only.** After reconnect, the Client refetches state and resubscribes; for an active Run it queries history then resumes the live stream.
+Client ↔ Core is a bidirectional logical session. For the Web MVP, that session is implemented as one persistent **WebSocket** on loopback, carrying **JSON-RPC 2.0** Request / Response / Notification messages. Requests handle reads and mutations (including `run/cancel`). Notifications carry live Run progress, Proposal availability, and lightweight invalidation signals. **Run progress is durable in tier 2 through Message text and the Run Log; wire Run Events are live notifications.** After reconnect, the Client refetches state and resubscribes; active Runs resume through `run/subscribe`'s snapshot-then-tail path.
 
 There is no second transport. Core's HTTP listener also serves the Web Client's static assets on the same TCP port; that is asset hosting, not API, and is covered by [ADR-0015](./0015-web-client-packaging.md).
 
@@ -31,7 +31,7 @@ Subscribe verbs are typed and per-resource — there is no generic `session/subs
 
 Categories Core sends without a Client request:
 
-- **Run Events** — `run/event` notifications carrying `{run_id, run_seq, event}`. Subtypes per CONTEXT.md: `text_delta`, `status`, `done`, `error`. One stream per Run, identified by `run_id`. The `run_seq` is monotonic *per Run* and used to order events across a reconnect of an active Run's stream — it is not a workspace-wide cursor.
+- **Run Events** — `run/event` notifications carrying `{run_id, event}`. Subtypes per CONTEXT.md: `text_delta`, `tool_call`, `done`, `cancelled`, `error`. One stream per Run, identified by `run_id`. The durable Run Log has a monotonic `run_seq` per Run; the live wire event does not expose it today.
 - **Proposal pending** — `proposal/pending` Notification when a Run parks on a Proposal awaiting decision.
 - **Mutation events** — `entity/changed`, `thread/changed`, `proposal/changed`. One Notification per Core-side mutation, not coalesced. The Client uses these to invalidate cached views; tab B sees tab A's edits without polling. **These Notifications are live-only and not persisted.** A Client that misses one because it was disconnected refetches state on reconnect; it does not replay missed invalidation hints.
 
@@ -39,7 +39,7 @@ The `request_id` of the Request that *initiated* a stream is not reused as the s
 
 ## Durability boundaries
 
-- **Run Events**: durable in tier 2 alongside Run history (per [ADR-0012](./0012-run-lifecycle-ownership.md)). Available via `run/get_history` after the Run completes or while it is still running.
+- **Run history + Run Log**: durable in tier 2 (per [ADR-0012](./0012-run-lifecycle-ownership.md) and [ADR-0028](./0028-run-status-materialized-transitions.md)). The live `run/event` Notification is not itself the durable record; `run/subscribe` reconstitutes active-Run text from persisted Message text, and `run/get_history` remains deferred until a consumer needs durable coarse-event replay.
 - **Proposal state**: durable in tier 2.
 - **Thread / Run / Entity state**: durable in tier 2.
 - **Invalidation Notifications** (`entity/changed`, `thread/changed`, `proposal/changed`): live-only. Not persisted. The Client treats them as "refetch this view" hints, nothing more.
@@ -91,12 +91,16 @@ Errors live in JSON-RPC 2.0's `{code, message, data}` shape. Reserve a code rang
 ```
 Client → Core: Request run/cancel { run_id }
 Core   → Client: Response { result: "accepted" | "already_terminal" | "unknown_run" }
-Core   → Client (later, if accepted): Notification run/event { kind: "error", reason: "cancelled" }
+Core   → Client (later, if accepted): Notification run/event { kind: "cancelled" }
 ```
 
 The Response answers "did Core accept the cancel command?" — including the case where the Run had already finished before the cancel arrived (`already_terminal`), or the `run_id` was wrong. The terminal Notification answers "is the Run actually over?" Two distinct facts, two distinct messages.
 
 The Client's UX uses both: on Response `accepted`, show "cancelling…"; on terminal Notification, show "cancelled." On Response `already_terminal`, show "already complete" or just refresh the Run state. Silent fire-and-forget cancellation was rejected: the Response carries information the terminal Notification cannot (was the cancel redundant, was the run_id valid).
+
+Cancellation is a first-class terminal Run Event, not an `error` with a cancellation message. A cancelled Run is user-ended, not failed; keeping the wire shape distinct matches Run status and the Run Log and avoids making Clients parse cancellation out of error text.
+
+If the Worker already streamed assistant text before cancellation wins, Core keeps that partial text in the Thread and marks the assistant Message `incomplete`, not `completed`. The terminal Run Event is still `cancelled`; Clients render the partial text as an unfinished cancelled response rather than deleting it or treating it as a clean answer.
 
 ## `session/hello` is the version handshake
 

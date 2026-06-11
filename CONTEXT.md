@@ -58,13 +58,13 @@ Continuing a parked Run once its Decision is in: Core spawns a fresh Worker, rep
 _Avoid_: restart (that creates a new Run), retry, continue (overloaded).
 
 **Run status**:
-The materialized lifecycle state of a Run, authoritative in tier 2. One of: **running** (a Worker is driving it), **parked** (waiting on a Decision; non-terminal, survives a Core restart), **completed** (ended with a final answer), **errored** (ended in failure), **cancelled** (ended by user cancellation). A Run moves between these only through guarded *transitions*, never a free-form status write; the legal moves are `running → {completed, errored, parked}` and `parked → {running, cancelled}`. The parallel **Proposal status** (`pending → {accepted, rejected, cancelled}`) is the same shape. Derived from what the Worker did, then recorded — distinct from a Run Event, which only observes.
+The materialized lifecycle state of a Run, authoritative in tier 2. One of: **running** (a Worker is driving it), **parked** (waiting on a Decision; non-terminal, survives a Core restart), **completed** (ended with a final answer), **errored** (ended in failure), **cancelled** (ended by user cancellation). A Run moves between these only through guarded *transitions*, never a free-form status write; the legal moves are `running → {completed, errored, parked, cancelled}` and `parked → {running, cancelled}`. An accepted cancellation of a running Run wins the Run: a later completion does not change it to completed. The parallel **Proposal status** (`pending → {accepted, rejected, cancelled}`) is the same shape. Derived from what the Worker did, then recorded — distinct from a Run Event, which only observes.
 _Avoid_: state (too generic), phase, stage.
 
 ### Protocol
 
 **Run Event**:
-A one-way, observational message emitted by the Worker to Core during a Run. Subtypes are `text_delta`, `tool_call` (Core-synthesized from a Tool Request), `done`, and `error`; the Worker does not await a response. Distinct from the **Run Log**: a Run Event is the ephemeral wire signal Core forwards to Clients, the Run Log is Core's durable record of a milestone.
+A one-way, observational message emitted by the Worker to Core during a Run. Subtypes are `text_delta`, `tool_call` (Core-synthesized from a Tool Request), `done`, `cancelled`, and `error`; the Worker does not await a response. `cancelled` is terminal, but not an `error`. Distinct from the **Run Log**: a Run Event is the ephemeral wire signal Core forwards to Clients, the Run Log is Core's durable record of a milestone.
 _Avoid_: event (too generic), output, stream item; Run Log (the durable Core-authored record — a different concept).
 
 **Tool Request**:
@@ -183,7 +183,7 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 >
 > **A:** And the Proposal is one of those Run Events?
 >
-> **B:** No — that's the disambiguation that gets people. A **Run Event** is one-way Worker → Core: text deltas, tool-call markers, completion, errors. The Worker doesn't await anything. A **Proposal** isn't fire-and-forget; the Worker needs your decision before it can continue. So a Proposal rides the **Tool Protocol** — it's a **Tool Request**, and Core will return a **Tool Result** carrying your accept / reject / edit.
+> **B:** No — that's the disambiguation that gets people. A **Run Event** is one-way Worker → Core: text deltas, tool-call markers, completion, cancellation, errors. The Worker doesn't await anything. A **Proposal** isn't fire-and-forget; the Worker needs your decision before it can continue. So a Proposal rides the **Tool Protocol** — it's a **Tool Request**, and Core will return a **Tool Result** carrying your accept / reject / edit.
 >
 > **A:** I accept the Proposal. Now what?
 >

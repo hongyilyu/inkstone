@@ -579,6 +579,12 @@ describe("RunEvent", () => {
 		});
 	});
 
+	it("decodes a cancelled variant", () => {
+		expect(S.decodeUnknownSync(RunEvent)({ kind: "cancelled" })).toEqual({
+			kind: "cancelled",
+		});
+	});
+
 	it("decodes an error variant carrying a message", () => {
 		const event = { kind: "error", message: "provider rejected the request" };
 		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
@@ -647,6 +653,12 @@ describe("WorkerOutbound", () => {
 	it("aliases RunEvent and accepts done", () => {
 		expect(S.decodeUnknownSync(WorkerOutbound)({ kind: "done" })).toEqual({
 			kind: "done",
+		});
+	});
+
+	it("aliases RunEvent and accepts cancelled", () => {
+		expect(S.decodeUnknownSync(WorkerOutbound)({ kind: "cancelled" })).toEqual({
+			kind: "cancelled",
 		});
 	});
 });

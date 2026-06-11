@@ -381,6 +381,30 @@ export function applyEvent(
 			}));
 		}
 
+		if (event.kind === "cancelled") {
+			// User cancellation (ADR-0014) is terminal but NOT a failure: flip the
+			// assistant message to `incomplete` so its partial text renders as an
+			// unfinished cancelled response (never deleted, never a clean answer),
+			// settle any running tool calls, and clear the active run. No `error`
+			// is attached — cancellation is user-ended, not a worker fault. Core
+			// mirrors this server-side (mark_streaming_messages_incomplete).
+			const messages = thread.messages.map(
+				(m): Message =>
+					m.role === "assistant" && m.run_id === runId
+						? {
+								...m,
+								status: "incomplete",
+								toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
+							}
+						: m,
+			);
+			return withThread(s, threadId, (t) => ({
+				...t,
+				messages,
+				activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
+			}));
+		}
+
 		// done → finalize the assistant message and clear the active run.
 		const messages = thread.messages.map(
 			(m): Message =>
