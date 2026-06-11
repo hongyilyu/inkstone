@@ -20,6 +20,7 @@ const LABEL: &str = "Propose Workspace mutation";
 pub enum WorkspaceMutationKind {
     CreateJournalEntry,
     UpdateJournalEntry,
+    DeleteJournalEntry,
 }
 
 /// Wire arguments for `propose_workspace_mutation`. `mutation_kind` names the
@@ -36,6 +37,11 @@ pub enum Input {
     },
     UpdateJournalEntry {
         payload: UpdateJournalEntryPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    DeleteJournalEntry {
+        payload: DeleteJournalEntryPayload,
         #[serde(default)]
         rationale: Option<String>,
     },
@@ -72,6 +78,14 @@ pub struct UpdateJournalEntryPayload {
     pub ended_at: Option<String>,
     #[schemars(length(min = 1))]
     pub body: Vec<JournalEntryBodyNode>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct DeleteJournalEntryPayload {
+    pub entity_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -266,17 +280,39 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_binds_update_kind_to_entity_target() {
+    fn descriptor_binds_entity_target_only_for_update_and_delete() {
         let d = descriptor();
 
-        let create = top_level_variant(&d.json_schema, "create_journal_entry")
-            .unwrap_or_else(|| panic!("schema must bind create_journal_entry at top level: {}", d.json_schema));
-        let update = top_level_variant(&d.json_schema, "update_journal_entry")
-            .unwrap_or_else(|| panic!("schema must bind update_journal_entry at top level: {}", d.json_schema));
+        let create =
+            top_level_variant(&d.json_schema, "create_journal_entry").unwrap_or_else(|| {
+                panic!(
+                    "schema must bind create_journal_entry at top level: {}",
+                    d.json_schema
+                )
+            });
+        let update =
+            top_level_variant(&d.json_schema, "update_journal_entry").unwrap_or_else(|| {
+                panic!(
+                    "schema must bind update_journal_entry at top level: {}",
+                    d.json_schema
+                )
+            });
+        let delete =
+            top_level_variant(&d.json_schema, "delete_journal_entry").unwrap_or_else(|| {
+                panic!(
+                    "schema must bind delete_journal_entry at top level: {}",
+                    d.json_schema
+                )
+            });
 
         let create_required = payload_schema(&d.json_schema, create)["required"]
             .as_array()
-            .unwrap_or_else(|| panic!("create payload must declare required fields: {}", d.json_schema));
+            .unwrap_or_else(|| {
+                panic!(
+                    "create payload must declare required fields: {}",
+                    d.json_schema
+                )
+            });
         assert!(
             !create_required
                 .iter()
@@ -287,12 +323,33 @@ mod tests {
 
         let update_required = payload_schema(&d.json_schema, update)["required"]
             .as_array()
-            .unwrap_or_else(|| panic!("update payload must declare required fields: {}", d.json_schema));
+            .unwrap_or_else(|| {
+                panic!(
+                    "update payload must declare required fields: {}",
+                    d.json_schema
+                )
+            });
         assert!(
             update_required
                 .iter()
                 .any(|field| field.as_str() == Some("entity_id")),
             "update_journal_entry payload must require entity_id: {}",
+            d.json_schema
+        );
+
+        let delete_required = payload_schema(&d.json_schema, delete)["required"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!(
+                    "delete payload must declare required fields: {}",
+                    d.json_schema
+                )
+            });
+        assert!(
+            delete_required
+                .iter()
+                .any(|field| field.as_str() == Some("entity_id")),
+            "delete_journal_entry payload must require entity_id: {}",
             d.json_schema
         );
     }

@@ -15,6 +15,17 @@ const base: PendingProposal = {
 	status: "pending",
 };
 
+const deleteProposal: PendingProposal = {
+	proposal_id: "prop-2",
+	run_id: "run-2",
+	mutation_kind: "delete_journal_entry",
+	payload: {
+		entity_id: "entry-123",
+	},
+	rationale: "the user asked to remove this entry",
+	status: "pending",
+};
+
 describe("ProposalCard", () => {
 	afterEach(cleanup);
 
@@ -269,5 +280,54 @@ describe("ProposalCard", () => {
 		expect(
 			screen.getByRole("button", { name: /save changes/i }),
 		).toBeDisabled();
+	});
+
+	it("renders delete-specific copy and actions without Edit", () => {
+		render(<ProposalCard proposal={deleteProposal} onDecide={() => {}} />);
+		expect(
+			screen.getByText("Inkstone wants to delete a Journal Entry."),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("the user asked to remove this entry"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /delete journal entry/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /keep journal entry/i }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
+		expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+		expect(screen.queryByText("Empty")).not.toBeInTheDocument();
+	});
+
+	it("calls onDecide for delete proposal accept and reject actions", () => {
+		const onDecide = vi.fn();
+		render(<ProposalCard proposal={deleteProposal} onDecide={onDecide} />);
+		fireEvent.click(
+			screen.getByRole("button", { name: /delete journal entry/i }),
+		);
+		expect(onDecide).toHaveBeenCalledWith("accept");
+		cleanup();
+		render(<ProposalCard proposal={deleteProposal} onDecide={onDecide} />);
+		fireEvent.click(screen.getByRole("button", { name: /keep journal entry/i }));
+		expect(onDecide).toHaveBeenCalledWith("reject");
+	});
+
+	it("collapses accepted and rejected delete proposals to delete-specific copy", () => {
+		const { rerender } = render(
+			<ProposalCard
+				proposal={{ ...deleteProposal, status: "accepted" }}
+				onDecide={() => {}}
+			/>,
+		);
+		expect(screen.getByText(/deleted from journal/i)).toBeInTheDocument();
+		rerender(
+			<ProposalCard
+				proposal={{ ...deleteProposal, status: "rejected" }}
+				onDecide={() => {}}
+			/>,
+		);
+		expect(screen.getByText(/kept in journal/i)).toBeInTheDocument();
 	});
 });

@@ -93,12 +93,27 @@ export function ProposalCard({
 	const occurredAt = textField(payload, "occurred_at");
 	const endedAt = textField(payload, "ended_at");
 	const bodyText = journalBody(payload);
-	const isJournalEntry = mutation_kind === "create_journal_entry";
-	const title = isJournalEntry ? "Journal Entry" : mutation_kind;
-	const payloadIssue = isJournalEntry
+	const isCreateProposal = mutation_kind === "create_journal_entry";
+	const isDeleteProposal = mutation_kind === "delete_journal_entry";
+	const isJournalEntryProposal = isCreateProposal || isDeleteProposal;
+	const title = isJournalEntryProposal ? "Journal Entry" : mutation_kind;
+	const summary = isDeleteProposal ? "Delete Journal Entry" : bodyText || "Untitled entry";
+	const reviewCopy = isDeleteProposal
+		? "Inkstone wants to delete a Journal Entry."
+		: `Inkstone wants to create a ${title}.`;
+	const payloadIssue = isCreateProposal
 		? journalPayloadIssue(occurredAt, bodyText, endedAt)
 		: null;
 	const canApply = payloadIssue === null;
+	const canEdit = isCreateProposal;
+	const acceptedCopy = isDeleteProposal
+		? "Deleted from Journal."
+		: "Added to Journal.";
+	const rejectedCopy = isDeleteProposal ? "Kept in Journal." : "Dismissed.";
+	const acceptLabel = isDeleteProposal ? "Delete Journal Entry" : "Add Journal Entry";
+	const acceptBusyLabel = isDeleteProposal ? "Deleting..." : "Adding...";
+	const rejectLabel = isDeleteProposal ? "Keep Journal Entry" : "Dismiss";
+	const rejectBusyLabel = isDeleteProposal ? "Keeping..." : "Dismissing...";
 
 	const [inFlight, setInFlight] = useState<"accept" | "reject" | "edit" | null>(
 		null,
@@ -134,7 +149,7 @@ export function ProposalCard({
 	const [editOccurredAt, setEditOccurredAt] = useState(occurredAt);
 	const [editEndedAt, setEditEndedAt] = useState(endedAt);
 	const [editBody, setEditBody] = useState(bodyText);
-	const editIssue = isJournalEntry
+	const editIssue = isCreateProposal
 		? journalPayloadIssue(editOccurredAt, editBody, editEndedAt)
 		: null;
 	const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -169,7 +184,7 @@ export function ProposalCard({
 					<Check className="size-4 text-card-foreground/60" aria-hidden />
 				) : null}
 				<span aria-live="polite">
-					{accepted ? "Added to Journal." : "Dismissed."}
+					{accepted ? acceptedCopy : rejectedCopy}
 				</span>
 			</Card>
 		);
@@ -194,10 +209,10 @@ export function ProposalCard({
 				</span>
 				<div className="min-w-0">
 					<p className="text-xs font-medium text-muted-foreground">
-						Inkstone wants to create a {title}.
+						{reviewCopy}
 					</p>
 					<p className="truncate text-sm font-semibold text-card-foreground">
-						{bodyText || "Untitled entry"}
+						{summary}
 					</p>
 				</div>
 			</header>
@@ -276,11 +291,13 @@ export function ProposalCard({
 				</form>
 			) : (
 				<>
-					<dl className="flex flex-col gap-1.5 border-border border-t pt-3 text-sm">
-						<Field label="Occurred" value={occurredAt || "Unknown"} />
-						{endedAt ? <Field label="Ended" value={endedAt} /> : null}
-						<Field label="Body" value={bodyText || "Empty"} />
-					</dl>
+					{isCreateProposal ? (
+						<dl className="flex flex-col gap-1.5 border-border border-t pt-3 text-sm">
+							<Field label="Occurred" value={occurredAt || "Unknown"} />
+							{endedAt ? <Field label="Ended" value={endedAt} /> : null}
+							<Field label="Body" value={bodyText || "Empty"} />
+						</dl>
+					) : null}
 
 					{rationale ? (
 						<p className="text-sm leading-relaxed text-muted-foreground">
@@ -335,26 +352,28 @@ export function ProposalCard({
 											className="size-4 motion-safe:animate-spin"
 											aria-hidden
 										/>
-										Adding...
+										{acceptBusyLabel}
 									</>
 								) : (
 									<>
 										<CalendarDays className="size-4" aria-hidden />
-										Add Journal Entry
+										{acceptLabel}
 									</>
 								)}
 							</button>
 						)}
 
-						<button
-							type="button"
-							disabled={submitting}
-							onClick={openEdit}
-							className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-input px-3 py-1.5 font-medium text-foreground/80 text-sm transition-colors hover:bg-secondary/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-						>
-							<Pencil className="size-3.5" aria-hidden />
-							Edit
-						</button>
+						{canEdit ? (
+							<button
+								type="button"
+								disabled={submitting}
+								onClick={openEdit}
+								className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-input px-3 py-1.5 font-medium text-foreground/80 text-sm transition-colors hover:bg-secondary/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								<Pencil className="size-3.5" aria-hidden />
+								Edit
+							</button>
+						) : null}
 
 						<button
 							type="button"
@@ -368,10 +387,10 @@ export function ProposalCard({
 										className="size-3.5 motion-safe:animate-spin"
 										aria-hidden
 									/>
-									Dismissing...
+									{rejectBusyLabel}
 								</>
 							) : (
-								"Dismiss"
+								rejectLabel
 							)}
 						</button>
 					</footer>

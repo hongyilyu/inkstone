@@ -208,6 +208,10 @@ async fn prior_outcome(
             let entity_id = db::entity_id_for_proposal(pool, proposal_id)
                 .await
                 .map_err(|e| DecideError::Internal(e.into()))?
+                .or_else(|| {
+                    entities::target_entity_id(&proposal.mutation_kind, &proposal.payload)
+                        .map(str::to_string)
+                })
                 .ok_or_else(|| {
                     DecideError::Internal(anyhow::anyhow!(
                         "accepted proposal {proposal_id} has no entity"
@@ -278,6 +282,12 @@ async fn apply_or_reject(
     // payload (`None`), matching the original. The applied payload is the
     // edited payload for an edit, else the model's proposed payload; validate
     // it first.
+    if matches!(decision, Decision::Edit) && proposal.mutation_kind == "delete_journal_entry" {
+        return Err(DecideError::Invalid(
+            "delete_journal_entry does not support edit".to_string(),
+        ));
+    }
+
     let edited_payload = match decision {
         Decision::Edit => match edited_payload {
             Some(payload) => Some(preserve_update_target_entity_id(
@@ -297,8 +307,13 @@ async fn apply_or_reject(
     let applied_payload = edited_payload.unwrap_or(&proposal.payload);
 
     entities::validate(&proposal.mutation_kind, applied_payload).map_err(DecideError::Invalid)?;
-    validate_mutation_target(pool, proposal.run_id, &proposal.mutation_kind, applied_payload)
-        .await?;
+    validate_mutation_target(
+        pool,
+        proposal.run_id,
+        &proposal.mutation_kind,
+        applied_payload,
+    )
+    .await?;
 
     let decision_payload = serde_json::json!({
         "decision": "accept",
@@ -312,6 +327,7 @@ async fn apply_or_reject(
         run_id,
         proposal_id,
         &proposal.tool_call_id,
+        mutation_kind,
         entities::entity_type(mutation_kind),
         entities::schema_version(mutation_kind),
         entities::target_entity_id(mutation_kind, applied_payload),
@@ -336,23 +352,22 @@ async fn validate_mutation_target(
     mutation_kind: &str,
     payload: &serde_json::Value,
 ) -> Result<(), DecideError> {
-    if mutation_kind != "update_journal_entry" {
+    if mutation_kind != "update_journal_entry" && mutation_kind != "delete_journal_entry" {
         return Ok(());
     }
 
     let entity_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
-        DecideError::Invalid("entity_id is required for update_journal_entry".to_string())
+        DecideError::Invalid(format!("entity_id is required for {mutation_kind}"))
     })?;
-    let allowed = db::update_journal_entry_target_is_valid(pool, run_id, entity_id)
+    let allowed = db::journal_entry_target_is_valid(pool, run_id, entity_id)
         .await
         .map_err(|e| DecideError::Internal(e.into()))?;
     if allowed {
         Ok(())
     } else {
-        Err(DecideError::Invalid(
-            "update_journal_entry target must be a Journal Entry originally created_from a user Message in the current Thread"
-        .to_string(),
-        ))
+        Err(DecideError::Invalid(format!(
+            "{mutation_kind} target must be a Journal Entry originally created_from a user Message in the current Thread"
+        )))
     }
 }
 

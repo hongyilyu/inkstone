@@ -596,12 +596,12 @@ pub async fn entity_id_for_proposal(
     queries::entity_id_for_proposal(pool, proposal_id).await
 }
 
-pub async fn update_journal_entry_target_is_valid(
+pub async fn journal_entry_target_is_valid(
     pool: &SqlitePool,
     run_id: Uuid,
     entity_id: &str,
 ) -> sqlx::Result<bool> {
-    queries::update_journal_entry_target_is_valid(pool, run_id, entity_id).await
+    queries::journal_entry_target_is_valid(pool, run_id, entity_id).await
 }
 
 /// Outcome of [`apply_proposal`] that the caller must distinguish (review M1).
@@ -663,6 +663,7 @@ pub async fn apply_proposal(
     run_id: Uuid,
     proposal_id: &str,
     tool_call_id: &str,
+    mutation_kind: &str,
     entity_type: &str,
     schema_version: i64,
     target_entity_id: Option<&str>,
@@ -677,12 +678,15 @@ pub async fn apply_proposal(
         .map(str::to_string)
         .unwrap_or_else(|| Uuid::now_v7().to_string());
     let edited_str = edited_payload.map(|v| v.to_string());
-    // The applied entity data is the EDITED payload when present (edit), else
-    // the model's proposed `data` (accept). The resolved tool_call's rendered
-    // result and the entity snapshot both use this effective data so the model
-    // reads the FINAL values on resume.
-    let applied_data = edited_payload.unwrap_or(payload);
-    let data_str = applied_data.to_string();
+    let data_str = if mutation_kind == "delete_journal_entry" {
+        None
+    } else {
+        // The applied entity data is the EDITED payload when present (edit),
+        // else the model's proposed `data` (accept). The resolved tool_call's
+        // rendered result and the entity snapshot both use this effective data
+        // so the model reads the FINAL values on resume.
+        Some(edited_payload.unwrap_or(payload).to_string())
+    };
 
     let mut tx = pool.begin().await?;
 
@@ -703,35 +707,51 @@ pub async fn apply_proposal(
         return Err(ApplyError::NotPending);
     }
 
-    if target_entity_id.is_some() {
-        let updated =
-            queries::update_entity(&mut *tx, &entity_id, schema_version, &data_str, now_ms).await?;
-        if updated != 1 {
-            return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+    match mutation_kind {
+        "delete_journal_entry" => {
+            let deleted = queries::delete_entity(&mut *tx, &entity_id).await?;
+            if deleted != 1 {
+                return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+            }
         }
-        let next_seq = queries::next_entity_revision_seq(&mut *tx, &entity_id).await?;
-        queries::insert_entity_revision(
-            &mut *tx,
-            &entity_id,
-            next_seq,
-            &data_str,
-            proposal_id,
-            now_ms,
-        )
-        .await?;
-    } else {
-        queries::insert_entity(
-            &mut *tx,
-            &entity_id,
-            entity_type,
-            schema_version,
-            &data_str,
-            proposal_id,
-            now_ms,
-        )
-        .await?;
-        queries::insert_entity_revision(&mut *tx, &entity_id, 1, &data_str, proposal_id, now_ms)
+        _ if target_entity_id.is_some() => {
+            let data_str = data_str
+                .as_deref()
+                .expect("non-delete mutations always carry entity data");
+            let updated =
+                queries::update_entity(&mut *tx, &entity_id, schema_version, data_str, now_ms)
+                    .await?;
+            if updated != 1 {
+                return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+            }
+            let next_seq = queries::next_entity_revision_seq(&mut *tx, &entity_id).await?;
+            queries::insert_entity_revision(
+                &mut *tx,
+                &entity_id,
+                next_seq,
+                data_str,
+                proposal_id,
+                now_ms,
+            )
             .await?;
+        }
+        _ => {
+            let data_str = data_str
+                .as_deref()
+                .expect("non-delete mutations always carry entity data");
+            queries::insert_entity(
+                &mut *tx,
+                &entity_id,
+                entity_type,
+                schema_version,
+                data_str,
+                proposal_id,
+                now_ms,
+            )
+            .await?;
+            queries::insert_entity_revision(&mut *tx, &entity_id, 1, data_str, proposal_id, now_ms)
+                .await?;
+        }
     }
     if let Some(relation) = source_relation_from_user_message {
         let source_id = queries::user_message_id_for_run(&mut *tx, run_id).await?;
@@ -1315,6 +1335,7 @@ mod tests {
             run_id,
             &proposal_id,
             "tool-accept",
+            "create_journal_entry",
             "journal_entry",
             99,
             None,
@@ -1370,6 +1391,7 @@ mod tests {
             run_id,
             &proposal_id,
             "tool-accept",
+            "create_journal_entry",
             "journal_entry",
             crate::entities::JOURNAL_ENTRY_SCHEMA_VERSION,
             None,

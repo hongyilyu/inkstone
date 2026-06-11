@@ -320,9 +320,9 @@ where
              SELECT entity_id, created_at FROM entity_revisions WHERE proposal_id = ?1 \
          ) ORDER BY created_at DESC LIMIT 1",
     )
-        .bind(proposal_id)
-        .fetch_optional(executor)
-        .await
+    .bind(proposal_id)
+    .fetch_optional(executor)
+    .await
 }
 
 /// Accept a Proposal (ADR-0016 single atomic apply, ADR-0025): flip the
@@ -523,10 +523,12 @@ pub(super) async fn next_entity_revision_seq<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0) + 1 FROM entity_revisions WHERE entity_id = ?1")
-        .bind(entity_id)
-        .fetch_one(executor)
-        .await
+    sqlx::query_scalar(
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM entity_revisions WHERE entity_id = ?1",
+    )
+    .bind(entity_id)
+    .fetch_one(executor)
+    .await
 }
 
 pub(super) async fn update_entity<'e, E>(
@@ -539,16 +541,14 @@ pub(super) async fn update_entity<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query(
-        "UPDATE entities SET schema_version = ?, data = ?, updated_at = ? WHERE id = ?",
-    )
-    .bind(schema_version)
-    .bind(data)
-    .bind(now_ms)
-    .bind(entity_id)
-    .execute(executor)
-    .await
-    .map(|r| r.rows_affected())
+    sqlx::query("UPDATE entities SET schema_version = ?, data = ?, updated_at = ? WHERE id = ?")
+        .bind(schema_version)
+        .bind(data)
+        .bind(now_ms)
+        .bind(entity_id)
+        .execute(executor)
+        .await
+        .map(|r| r.rows_affected())
 }
 
 pub(super) async fn user_message_id_for_run<'e, E>(
@@ -590,7 +590,7 @@ where
     .map(|_| ())
 }
 
-pub(super) async fn update_journal_entry_target_is_valid<'e, E>(
+pub(super) async fn journal_entry_target_is_valid<'e, E>(
     executor: E,
     run_id: Uuid,
     entity_id: &str,
@@ -619,6 +619,17 @@ where
     .fetch_optional(executor)
     .await?;
     Ok(row.is_some())
+}
+
+pub(super) async fn delete_entity<'e, E>(executor: E, entity_id: &str) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM entities WHERE id = ?1 AND type = 'journal_entry'")
+        .bind(entity_id)
+        .execute(executor)
+        .await
+        .map(|r| r.rows_affected())
 }
 
 /// Flip a parked Run back to `running` on resume (ADR-0025): clear the
