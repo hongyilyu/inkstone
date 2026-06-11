@@ -26,6 +26,74 @@ const deleteProposal: PendingProposal = {
 	status: "pending",
 };
 
+const updateProposal: PendingProposal & {
+	review_context: {
+		current_journal_entry: {
+			entity_id: string;
+			occurred_at: string;
+			ended_at?: string;
+			body: Array<{ type: "text"; text: string }>;
+		};
+	};
+} = {
+	proposal_id: "prop-3",
+	run_id: "run-3",
+	mutation_kind: "update_journal_entry",
+	payload: {
+		entity_id: "entry-123",
+		occurred_at: "2026-06-10T11:00:00",
+		ended_at: "2026-06-10T11:15:00",
+		body: [{ type: "text", text: "Bought milk and bread after daycare pickup." }],
+	},
+	review_context: {
+		current_journal_entry: {
+			entity_id: "entry-123",
+			occurred_at: "2026-06-10T10:30:00",
+			body: [{ type: "text", text: "Bought milk after daycare pickup." }],
+		},
+	},
+	rationale: "the user corrected the original journal entry",
+	status: "pending",
+};
+
+const updateProposalMissingEntityId: PendingProposal & {
+	review_context: {
+		current_journal_entry: {
+			entity_id: string;
+			occurred_at: string;
+			ended_at?: string;
+			body: Array<{ type: "text"; text: string }>;
+		};
+	};
+} = {
+	...updateProposal,
+	payload: {
+		occurred_at: "2026-06-10T11:00:00",
+		ended_at: "2026-06-10T11:15:00",
+		body: [{ type: "text", text: "Bought milk and bread after daycare pickup." }],
+	},
+};
+
+const deleteProposalWithContext: PendingProposal & {
+	review_context: {
+		current_journal_entry: {
+			entity_id: string;
+			occurred_at: string;
+			ended_at?: string;
+			body: Array<{ type: "text"; text: string }>;
+		};
+	};
+} = {
+	...deleteProposal,
+	review_context: {
+		current_journal_entry: {
+			entity_id: "entry-123",
+			occurred_at: "2026-06-10T10:30:00",
+			body: [{ type: "text", text: "Bought milk after daycare pickup." }],
+		},
+	},
+};
+
 describe("ProposalCard", () => {
 	afterEach(cleanup);
 
@@ -283,9 +351,15 @@ describe("ProposalCard", () => {
 	});
 
 	it("renders delete-specific copy and actions without Edit", () => {
-		render(<ProposalCard proposal={deleteProposal} onDecide={() => {}} />);
+		render(
+			<ProposalCard proposal={deleteProposalWithContext} onDecide={() => {}} />,
+		);
 		expect(
 			screen.getByText("Inkstone wants to delete a Journal Entry."),
+		).toBeInTheDocument();
+		expect(screen.getByText("Current entry")).toBeInTheDocument();
+		expect(
+			screen.getByText("Bought milk after daycare pickup."),
 		).toBeInTheDocument();
 		expect(
 			screen.getByText("the user asked to remove this entry"),
@@ -297,19 +371,17 @@ describe("ProposalCard", () => {
 			screen.getByRole("button", { name: /keep journal entry/i }),
 		).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
-		expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
-		expect(screen.queryByText("Empty")).not.toBeInTheDocument();
 	});
 
 	it("calls onDecide for delete proposal accept and reject actions", () => {
 		const onDecide = vi.fn();
-		render(<ProposalCard proposal={deleteProposal} onDecide={onDecide} />);
+		render(<ProposalCard proposal={deleteProposalWithContext} onDecide={onDecide} />);
 		fireEvent.click(
 			screen.getByRole("button", { name: /delete journal entry/i }),
 		);
 		expect(onDecide).toHaveBeenCalledWith("accept");
 		cleanup();
-		render(<ProposalCard proposal={deleteProposal} onDecide={onDecide} />);
+		render(<ProposalCard proposal={deleteProposalWithContext} onDecide={onDecide} />);
 		fireEvent.click(screen.getByRole("button", { name: /keep journal entry/i }));
 		expect(onDecide).toHaveBeenCalledWith("reject");
 	});
@@ -329,5 +401,98 @@ describe("ProposalCard", () => {
 			/>,
 		);
 		expect(screen.getByText(/kept in journal/i)).toBeInTheDocument();
+	});
+
+	it("renders update proposals with current and proposed journal entry values", () => {
+		render(<ProposalCard proposal={updateProposal} onDecide={() => {}} />);
+		expect(
+			screen.getByText("Inkstone wants to update a Journal Entry."),
+		).toBeInTheDocument();
+		expect(screen.getByText("Current entry")).toBeInTheDocument();
+		expect(screen.getByText("Proposed entry")).toBeInTheDocument();
+		expect(
+			screen.getByText("the user corrected the original journal entry"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /update journal entry/i }),
+		).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /edit/i })).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /keep current entry/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Bought milk after daycare pickup."),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Bought milk and bread after daycare pickup."),
+		).toBeInTheDocument();
+		expect(screen.getByText("2026-06-10T10:30:00")).toBeInTheDocument();
+		expect(screen.getByText("2026-06-10T11:00:00")).toBeInTheDocument();
+		expect(screen.getByText("2026-06-10T11:15:00")).toBeInTheDocument();
+	});
+
+	it("submits the full edited update journal entry payload", () => {
+		const onDecide = vi.fn();
+		render(<ProposalCard proposal={updateProposal} onDecide={onDecide} />);
+		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+		fireEvent.change(screen.getByRole("textbox", { name: /occurred at/i }), {
+			target: { value: "2026-06-10T11:05:00" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: /ended at/i }), {
+			target: { value: "2026-06-10T11:20:00" },
+		});
+		fireEvent.change(screen.getByRole("textbox", { name: /body/i }), {
+			target: { value: "Bought milk, bread, and berries after daycare pickup." },
+		});
+		fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+		expect(onDecide).toHaveBeenCalledWith("edit", {
+			entity_id: "entry-123",
+			occurred_at: "2026-06-10T11:05:00",
+			ended_at: "2026-06-10T11:20:00",
+			body: [
+				{
+					type: "text",
+					text: "Bought milk, bread, and berries after daycare pickup.",
+				},
+			],
+		});
+	});
+
+	it("blocks update proposals missing entity_id from accept and edit submission", () => {
+		const onDecide = vi.fn();
+		render(
+			<ProposalCard
+				proposal={updateProposalMissingEntityId}
+				onDecide={onDecide}
+			/>,
+		);
+
+		expect(
+			screen.getByRole("button", { name: /update journal entry/i }),
+		).toBeDisabled();
+		expect(screen.getByText(/entity id must not be empty/i)).toBeInTheDocument();
+
+		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+		const save = screen.getByRole("button", { name: /save changes/i });
+		expect(save).toBeDisabled();
+		fireEvent.click(save);
+		expect(onDecide).not.toHaveBeenCalled();
+	});
+
+	it("disables retry for errored update proposals missing entity_id", () => {
+		const onDecide = vi.fn();
+		render(
+			<ProposalCard
+				proposal={{ ...updateProposalMissingEntityId, status: "error" }}
+				onDecide={onDecide}
+			/>,
+		);
+
+		const retry = screen.getByRole("button", { name: /try again/i });
+		expect(retry).toBeDisabled();
+		expect(screen.getByText(/entity id must not be empty/i)).toBeInTheDocument();
+
+		fireEvent.click(retry);
+		expect(onDecide).not.toHaveBeenCalled();
 	});
 });

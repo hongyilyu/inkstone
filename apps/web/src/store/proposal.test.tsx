@@ -1,6 +1,7 @@
 import type {
 	ProposalDecideParams,
 	ProposalDecideResult,
+	ProposalGetResult,
 } from "@inkstone/protocol";
 import {
 	type ProposalNotification,
@@ -31,6 +32,14 @@ const JOURNAL_ENTRY = {
 	body: [{ type: "text", text: "Bought milk after daycare pickup." }],
 };
 
+const JOURNAL_ENTRY_REVIEW_CONTEXT = {
+	current_journal_entry: {
+		entity_id: "entry-123",
+		occurred_at: "2026-06-10T10:15:00",
+		body: [{ type: "text", text: "Bought milk before daycare pickup." }],
+	},
+} satisfies NonNullable<ProposalGetResult["review_context"]>;
+
 /**
  * A stub WsClient driven by in-memory queues: one for the global
  * `proposalNotifications()` stream and one per run for `subscribeRun`. The
@@ -39,6 +48,7 @@ const JOURNAL_ENTRY = {
  */
 function makeStubRuntime(opts: {
 	proposalQueue: Queue.Queue<ProposalNotification>;
+	proposalGet?: (runId: RunId) => Effect.Effect<ProposalGetResult, WsError>;
 	runQueue?: Queue.Queue<RunEventValue>;
 	runQueues?: Queue.Queue<RunEventValue>[];
 	onDecide?: (
@@ -71,15 +81,17 @@ function makeStubRuntime(opts: {
 		modelCatalog: () => unused,
 		settingsGet: () => unused,
 		settingsSet: () => unused,
-		proposalGet: (runId: RunId) =>
-			Effect.succeed({
-				proposal_id: "prop-1",
-				run_id: runId,
-				mutation_kind: "create_journal_entry",
-				payload: JOURNAL_ENTRY,
-				rationale: "the user asked to remember this",
-				status: "pending",
-			}),
+		proposalGet:
+			opts.proposalGet ??
+			((runId: RunId) =>
+				Effect.succeed({
+					proposal_id: "prop-1",
+					run_id: runId,
+					mutation_kind: "create_journal_entry",
+					payload: JOURNAL_ENTRY,
+					rationale: "the user asked to remember this",
+					status: "pending",
+				})),
 		proposalDecide:
 			opts.onDecide ??
 			((params) =>
@@ -123,6 +135,43 @@ describe("proposal stream + decide", () => {
 		const proposal = getChatState().proposals["run-1"];
 		expect(proposal?.status).toBe("pending");
 		expect(proposal?.payload).toEqual(JOURNAL_ENTRY);
+
+		await runtime.dispose();
+	});
+
+	it("retains proposal review_context from proposal/get in the chat store", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			proposalGet: (runId) =>
+				Effect.succeed({
+					proposal_id: "prop-1",
+					run_id: runId,
+					mutation_kind: "update_journal_entry",
+					payload: {
+						entity_id: "entry-123",
+						occurred_at: "2026-06-10T10:30:00",
+						body: [{ type: "text", text: "Bought milk after daycare pickup." }],
+					},
+					rationale: "the user corrected the original journal entry",
+					review_context: JOURNAL_ENTRY_REVIEW_CONTEXT,
+					status: "pending",
+				}),
+		});
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		expect(getChatState().proposals["run-1"]?.review_context).toEqual(
+			JOURNAL_ENTRY_REVIEW_CONTEXT,
+		);
 
 		await runtime.dispose();
 	});

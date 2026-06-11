@@ -244,6 +244,7 @@ export function startProposalStream(runtime: WsRuntime): void {
 						mutation_kind: p.mutation_kind,
 						payload: p.payload,
 						rationale: p.rationale,
+						review_context: p.review_context,
 						status: "pending",
 					});
 				} else {

@@ -17,6 +17,10 @@ type JournalEntryPayload = {
 	body: Array<{ type: "text"; text: string }>;
 };
 
+type UpdateJournalEntryPayload = JournalEntryPayload & {
+	entity_id: string;
+};
+
 function textField(payload: unknown, key: string): string {
 	if (payload && typeof payload === "object" && key in payload) {
 		const value = (payload as Record<string, unknown>)[key];
@@ -60,7 +64,11 @@ function journalPayloadIssue(
 	occurredAt: string,
 	bodyText: string,
 	endedAt: string,
+	entityId?: string,
 ): string | null {
+	if (entityId !== undefined && entityId.trim().length === 0) {
+		return "entity id must not be empty";
+	}
 	const occurred = occurredAt.trim();
 	const ended = endedAt.trim();
 	if (!isLocalDateTime(occurred)) {
@@ -86,34 +94,71 @@ export function ProposalCard({
 	proposal: PendingProposal;
 	onDecide: (
 		decision: "accept" | "reject" | "edit",
-		editedPayload?: JournalEntryPayload,
+		editedPayload?: JournalEntryPayload | UpdateJournalEntryPayload,
 	) => void;
 }) {
 	const { status, payload, rationale, mutation_kind } = proposal;
 	const occurredAt = textField(payload, "occurred_at");
 	const endedAt = textField(payload, "ended_at");
 	const bodyText = journalBody(payload);
+	const entityId = textField(payload, "entity_id");
+	const currentJournalEntry = proposal.review_context?.current_journal_entry;
+	const currentOccurredAt = textField(currentJournalEntry, "occurred_at");
+	const currentEndedAt = textField(currentJournalEntry, "ended_at");
+	const currentBodyText = journalBody(currentJournalEntry);
 	const isCreateProposal = mutation_kind === "create_journal_entry";
+	const isUpdateProposal = mutation_kind === "update_journal_entry";
 	const isDeleteProposal = mutation_kind === "delete_journal_entry";
-	const isJournalEntryProposal = isCreateProposal || isDeleteProposal;
+	const isJournalEntryProposal =
+		isCreateProposal || isUpdateProposal || isDeleteProposal;
 	const title = isJournalEntryProposal ? "Journal Entry" : mutation_kind;
-	const summary = isDeleteProposal ? "Delete Journal Entry" : bodyText || "Untitled entry";
+	const summary = isDeleteProposal
+		? "Delete Journal Entry"
+		: isUpdateProposal
+			? "Update Journal Entry"
+			: bodyText || "Untitled entry";
 	const reviewCopy = isDeleteProposal
 		? "Inkstone wants to delete a Journal Entry."
-		: `Inkstone wants to create a ${title}.`;
+		: isUpdateProposal
+			? "Inkstone wants to update a Journal Entry."
+			: `Inkstone wants to create a ${title}.`;
 	const payloadIssue = isCreateProposal
 		? journalPayloadIssue(occurredAt, bodyText, endedAt)
-		: null;
+		: isUpdateProposal
+			? journalPayloadIssue(occurredAt, bodyText, endedAt, entityId)
+			: null;
 	const canApply = payloadIssue === null;
-	const canEdit = isCreateProposal;
+	const canEdit = isCreateProposal || isUpdateProposal;
 	const acceptedCopy = isDeleteProposal
 		? "Deleted from Journal."
-		: "Added to Journal.";
-	const rejectedCopy = isDeleteProposal ? "Kept in Journal." : "Dismissed.";
-	const acceptLabel = isDeleteProposal ? "Delete Journal Entry" : "Add Journal Entry";
-	const acceptBusyLabel = isDeleteProposal ? "Deleting..." : "Adding...";
-	const rejectLabel = isDeleteProposal ? "Keep Journal Entry" : "Dismiss";
-	const rejectBusyLabel = isDeleteProposal ? "Keeping..." : "Dismissing...";
+		: isUpdateProposal
+			? "Updated in Journal."
+			: "Added to Journal.";
+	const rejectedCopy = isDeleteProposal
+		? "Kept in Journal."
+		: isUpdateProposal
+			? "Kept current Journal Entry."
+			: "Dismissed.";
+	const acceptLabel = isDeleteProposal
+		? "Delete Journal Entry"
+		: isUpdateProposal
+			? "Update Journal Entry"
+			: "Add Journal Entry";
+	const acceptBusyLabel = isDeleteProposal
+		? "Deleting..."
+		: isUpdateProposal
+			? "Updating..."
+			: "Adding...";
+	const rejectLabel = isDeleteProposal
+		? "Keep Journal Entry"
+		: isUpdateProposal
+			? "Keep current entry"
+			: "Dismiss";
+	const rejectBusyLabel = isDeleteProposal
+		? "Keeping..."
+		: isUpdateProposal
+			? "Keeping current entry..."
+			: "Dismissing...";
 
 	const [inFlight, setInFlight] = useState<"accept" | "reject" | "edit" | null>(
 		null,
@@ -128,7 +173,7 @@ export function ProposalCard({
 	// retried as accept would silently revert the user's edits.
 	const lastAttempt = useRef<{
 		decision: "accept" | "reject" | "edit";
-		editedPayload?: JournalEntryPayload;
+		editedPayload?: JournalEntryPayload | UpdateJournalEntryPayload;
 	} | null>(null);
 	const decide = (decision: "accept" | "reject") => {
 		setInFlight(decision);
@@ -151,7 +196,9 @@ export function ProposalCard({
 	const [editBody, setEditBody] = useState(bodyText);
 	const editIssue = isCreateProposal
 		? journalPayloadIssue(editOccurredAt, editBody, editEndedAt)
-		: null;
+		: isUpdateProposal
+			? journalPayloadIssue(editOccurredAt, editBody, editEndedAt, entityId)
+			: null;
 	const bodyRef = useRef<HTMLTextAreaElement>(null);
 	const openEdit = () => {
 		setEditOccurredAt(occurredAt);
@@ -166,10 +213,13 @@ export function ProposalCard({
 		if (inFlight !== null || proposal.status === "deciding") return;
 		if (editIssue !== null) return;
 		const editedPayload = journalPayload(editOccurredAt, editBody, editEndedAt);
+		const decisionPayload = entityId
+			? { entity_id: entityId, ...editedPayload }
+			: editedPayload;
 		setInFlight("edit");
 		setEditing(false);
-		lastAttempt.current = { decision: "edit", editedPayload };
-		onDecide("edit", editedPayload);
+		lastAttempt.current = { decision: "edit", editedPayload: decisionPayload };
+		onDecide("edit", decisionPayload);
 	};
 
 	if (status === "accepted" || status === "rejected") {
@@ -291,12 +341,27 @@ export function ProposalCard({
 				</form>
 			) : (
 				<>
-					{isCreateProposal ? (
-						<dl className="flex flex-col gap-1.5 border-border border-t pt-3 text-sm">
-							<Field label="Occurred" value={occurredAt || "Unknown"} />
-							{endedAt ? <Field label="Ended" value={endedAt} /> : null}
-							<Field label="Body" value={bodyText || "Empty"} />
-						</dl>
+					{isCreateProposal || isUpdateProposal || currentJournalEntry ? (
+						<div className="flex flex-col gap-3 border-border border-t pt-3">
+							{isUpdateProposal || isDeleteProposal ? (
+								currentJournalEntry ? (
+									<EntrySection
+										title="Current entry"
+										occurredAt={currentOccurredAt}
+										endedAt={currentEndedAt}
+										bodyText={currentBodyText}
+									/>
+								) : null
+							) : null}
+							{isCreateProposal || isUpdateProposal ? (
+								<EntrySection
+									title="Proposed entry"
+									occurredAt={occurredAt}
+									endedAt={endedAt}
+									bodyText={bodyText}
+								/>
+							) : null}
+						</div>
 					) : null}
 
 					{rationale ? (
@@ -397,6 +462,31 @@ export function ProposalCard({
 				</>
 			)}
 		</Card>
+	);
+}
+
+function EntrySection({
+	title,
+	occurredAt,
+	endedAt,
+	bodyText,
+}: {
+	title: string;
+	occurredAt: string;
+	endedAt: string;
+	bodyText: string;
+}) {
+	return (
+		<section className="flex flex-col gap-2">
+			<p className="text-xs font-medium tracking-normal text-muted-foreground">
+				{title}
+			</p>
+			<dl className="flex flex-col gap-1.5 text-sm">
+				<Field label="Occurred" value={occurredAt || "Unknown"} />
+				{endedAt ? <Field label="Ended" value={endedAt} /> : null}
+				<Field label="Body" value={bodyText || "Empty"} />
+			</dl>
+		</section>
 	);
 }
 
