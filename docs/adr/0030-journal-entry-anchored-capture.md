@@ -4,7 +4,9 @@ Inkstone's chat input serves two different user intents: ordinary conversation a
 
 ## Decision
 
-Add **Journal Entry** as an Entity Type. A Journal Entry is the canonical event/evidence record refined from one or more user source Messages. One user Message may produce multiple Journal Entries, and one Journal Entry may later be refined by user Messages from multiple Threads. Person, Project, and Todo Entities extracted from a journal flow source from the accepted Journal Entry, not directly from the raw chat Message.
+Add **Journal Entry** as an Entity Type. A Journal Entry is the canonical event/evidence record refined from one or more user source Messages. One user Message may produce multiple Journal Entries, and one Journal Entry may later be refined by user Messages. Person, Project, and Todo Entities extracted from a journal flow source from the accepted Journal Entry, not directly from the raw chat Message.
+
+The first Journal Entry intake implementation intentionally limits update/delete to the original Thread: Core accepts an update/delete only when the target Journal Entry has a `created_from` Entity Source whose source user Message belongs to the current Thread. Cross-Thread refinement remains part of the long-term domain model, but is deferred until the Workflow has a dedicated disambiguation/search path for safely selecting entries outside the current Thread.
 
 Add two first-class domain associations:
 
@@ -46,7 +48,7 @@ Assistant Messages may provide conversational context for a Workflow, but Entity
 - Person, Project, and Todo Entities are not mere projections of Journal Entries. They may originate from a Journal Entry, but once accepted they own their current structured state.
 - Journal Entries are more authoritative as event/evidence records, not as the current state of every extracted Entity.
 - Daily Note rendering is a Client/export concern over accepted Journal Entries and reference data.
-- Cross-Thread refinement is allowed through additional user Message Entity Sources; the Journal Entry remains one current accepted record.
+- Cross-Thread refinement is allowed in the long-term model through additional user Message Entity Sources; the first intake implementation defers it and only permits update/delete from the Thread that originally created the Journal Entry.
 - Existing chat-driven architecture stays intact: Message starts a Run; Workflow proposes Workspace changes; Core applies accepted Proposals atomically.
 
 ## Considered and rejected

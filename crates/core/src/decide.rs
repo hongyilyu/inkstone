@@ -278,9 +278,13 @@ async fn apply_or_reject(
     // payload (`None`), matching the original. The applied payload is the
     // edited payload for an edit, else the model's proposed payload; validate
     // it first.
-    let edited_payload: Option<&serde_json::Value> = match decision {
+    let edited_payload = match decision {
         Decision::Edit => match edited_payload {
-            Some(payload) => Some(payload),
+            Some(payload) => Some(preserve_update_target_entity_id(
+                &proposal.mutation_kind,
+                &proposal.payload,
+                payload,
+            )),
             None => {
                 return Err(DecideError::Invalid(
                     "edit requires edited_payload".to_string(),
@@ -289,9 +293,12 @@ async fn apply_or_reject(
         },
         _ => None,
     };
+    let edited_payload = edited_payload.as_ref();
     let applied_payload = edited_payload.unwrap_or(&proposal.payload);
 
     entities::validate(&proposal.mutation_kind, applied_payload).map_err(DecideError::Invalid)?;
+    validate_mutation_target(pool, proposal.run_id, &proposal.mutation_kind, applied_payload)
+        .await?;
 
     let decision_payload = serde_json::json!({
         "decision": "accept",
@@ -307,6 +314,7 @@ async fn apply_or_reject(
         &proposal.tool_call_id,
         entities::entity_type(mutation_kind),
         entities::schema_version(mutation_kind),
+        entities::target_entity_id(mutation_kind, applied_payload),
         &proposal.payload,
         edited_payload,
         entities::source_relation_from_user_message(mutation_kind),
@@ -320,6 +328,55 @@ async fn apply_or_reject(
         Err(db::ApplyError::NotPending) => Err(DecideError::LostRace),
         Err(db::ApplyError::Sql(e)) => Err(DecideError::Internal(e.into())),
     }
+}
+
+async fn validate_mutation_target(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    mutation_kind: &str,
+    payload: &serde_json::Value,
+) -> Result<(), DecideError> {
+    if mutation_kind != "update_journal_entry" {
+        return Ok(());
+    }
+
+    let entity_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
+        DecideError::Invalid("entity_id is required for update_journal_entry".to_string())
+    })?;
+    let allowed = db::update_journal_entry_target_is_valid(pool, run_id, entity_id)
+        .await
+        .map_err(|e| DecideError::Internal(e.into()))?;
+    if allowed {
+        Ok(())
+    } else {
+        Err(DecideError::Invalid(
+            "update_journal_entry target must be a Journal Entry originally created_from a user Message in the current Thread"
+        .to_string(),
+        ))
+    }
+}
+
+fn preserve_update_target_entity_id(
+    mutation_kind: &str,
+    proposal_payload: &serde_json::Value,
+    edited_payload: &serde_json::Value,
+) -> serde_json::Value {
+    if mutation_kind != "update_journal_entry" || edited_payload.get("entity_id").is_some() {
+        return edited_payload.clone();
+    }
+
+    let Some(entity_id) = entities::target_entity_id(mutation_kind, proposal_payload) else {
+        return edited_payload.clone();
+    };
+    let Some(mut payload) = edited_payload.as_object().cloned() else {
+        return edited_payload.clone();
+    };
+
+    payload.insert(
+        "entity_id".to_string(),
+        serde_json::Value::String(entity_id.to_string()),
+    );
+    serde_json::Value::Object(payload)
 }
 
 /// Whether the Run currently reads `parked`. Backs both the pending-decide

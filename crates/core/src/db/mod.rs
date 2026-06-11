@@ -596,6 +596,14 @@ pub async fn entity_id_for_proposal(
     queries::entity_id_for_proposal(pool, proposal_id).await
 }
 
+pub async fn update_journal_entry_target_is_valid(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    entity_id: &str,
+) -> sqlx::Result<bool> {
+    queries::update_journal_entry_target_is_valid(pool, run_id, entity_id).await
+}
+
 /// Outcome of [`apply_proposal`] that the caller must distinguish (review M1).
 /// `NotPending` is the lost-race branch — a concurrent decide already accepted
 /// the Proposal, so the apply tx rolled back without a durable change and the
@@ -657,6 +665,7 @@ pub async fn apply_proposal(
     tool_call_id: &str,
     entity_type: &str,
     schema_version: i64,
+    target_entity_id: Option<&str>,
     payload: &serde_json::Value,
     edited_payload: Option<&serde_json::Value>,
     source_relation_from_user_message: Option<&str>,
@@ -664,7 +673,9 @@ pub async fn apply_proposal(
     decision_result_payload: &str,
     now_ms: i64,
 ) -> Result<String, ApplyError> {
-    let entity_id = Uuid::now_v7().to_string();
+    let entity_id = target_entity_id
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::now_v7().to_string());
     let edited_str = edited_payload.map(|v| v.to_string());
     // The applied entity data is the EDITED payload when present (edit), else
     // the model's proposed `data` (accept). The resolved tool_call's rendered
@@ -692,18 +703,36 @@ pub async fn apply_proposal(
         return Err(ApplyError::NotPending);
     }
 
-    queries::insert_entity(
-        &mut *tx,
-        &entity_id,
-        entity_type,
-        schema_version,
-        &data_str,
-        proposal_id,
-        now_ms,
-    )
-    .await?;
-    queries::insert_entity_revision(&mut *tx, &entity_id, 1, &data_str, proposal_id, now_ms)
+    if target_entity_id.is_some() {
+        let updated =
+            queries::update_entity(&mut *tx, &entity_id, schema_version, &data_str, now_ms).await?;
+        if updated != 1 {
+            return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+        }
+        let next_seq = queries::next_entity_revision_seq(&mut *tx, &entity_id).await?;
+        queries::insert_entity_revision(
+            &mut *tx,
+            &entity_id,
+            next_seq,
+            &data_str,
+            proposal_id,
+            now_ms,
+        )
         .await?;
+    } else {
+        queries::insert_entity(
+            &mut *tx,
+            &entity_id,
+            entity_type,
+            schema_version,
+            &data_str,
+            proposal_id,
+            now_ms,
+        )
+        .await?;
+        queries::insert_entity_revision(&mut *tx, &entity_id, 1, &data_str, proposal_id, now_ms)
+            .await?;
+    }
     if let Some(relation) = source_relation_from_user_message {
         let source_id = queries::user_message_id_for_run(&mut *tx, run_id).await?;
         let source_row_id = Uuid::now_v7().to_string();
@@ -1288,6 +1317,7 @@ mod tests {
             "tool-accept",
             "journal_entry",
             99,
+            None,
             &serde_json::json!({
                 "occurred_at": "2026-06-10T10:30:00",
                 "body": [{ "type": "text", "text": "Bought milk." }]
@@ -1342,6 +1372,7 @@ mod tests {
             "tool-accept",
             "journal_entry",
             crate::entities::JOURNAL_ENTRY_SCHEMA_VERSION,
+            None,
             &serde_json::json!({
                 "occurred_at": "2026-06-10T10:30:00",
                 "body": [{ "type": "text", "text": "Bought milk." }]

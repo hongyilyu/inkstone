@@ -313,7 +313,13 @@ pub(super) async fn entity_id_for_proposal<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_scalar("SELECT id FROM entities WHERE created_via_proposal_id = ?1 LIMIT 1")
+    sqlx::query_scalar(
+        "SELECT entity_id FROM ( \
+             SELECT id AS entity_id, created_at FROM entities WHERE created_via_proposal_id = ?1 \
+             UNION ALL \
+             SELECT entity_id, created_at FROM entity_revisions WHERE proposal_id = ?1 \
+         ) ORDER BY created_at DESC LIMIT 1",
+    )
         .bind(proposal_id)
         .fetch_optional(executor)
         .await
@@ -510,6 +516,41 @@ where
     .map(|_| ())
 }
 
+pub(super) async fn next_entity_revision_seq<'e, E>(
+    executor: E,
+    entity_id: &str,
+) -> sqlx::Result<i64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT COALESCE(MAX(seq), 0) + 1 FROM entity_revisions WHERE entity_id = ?1")
+        .bind(entity_id)
+        .fetch_one(executor)
+        .await
+}
+
+pub(super) async fn update_entity<'e, E>(
+    executor: E,
+    entity_id: &str,
+    schema_version: i64,
+    data: &str,
+    now_ms: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE entities SET schema_version = ?, data = ?, updated_at = ? WHERE id = ?",
+    )
+    .bind(schema_version)
+    .bind(data)
+    .bind(now_ms)
+    .bind(entity_id)
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
 pub(super) async fn user_message_id_for_run<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -547,6 +588,37 @@ where
     .execute(executor)
     .await
     .map(|_| ())
+}
+
+pub(super) async fn update_journal_entry_target_is_valid<'e, E>(
+    executor: E,
+    run_id: Uuid,
+    entity_id: &str,
+) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 \
+         FROM entities e \
+         JOIN entity_sources source \
+           ON source.entity_id = e.id \
+          AND source.relation = 'created_from' \
+         JOIN messages source_message \
+           ON source_message.id = source.source_message_id \
+         JOIN runs current_run \
+           ON current_run.id = ?2 \
+         WHERE e.id = ?1 \
+           AND e.type = 'journal_entry' \
+           AND source_message.role = 'user' \
+           AND source_message.thread_id = current_run.thread_id \
+         LIMIT 1",
+    )
+    .bind(entity_id)
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await?;
+    Ok(row.is_some())
 }
 
 /// Flip a parked Run back to `running` on resume (ADR-0025): clear the
