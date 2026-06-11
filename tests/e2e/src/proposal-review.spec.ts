@@ -129,6 +129,49 @@ test("create then update stays in-thread and resumes with an update confirmation
 	).toHaveCount(0);
 });
 
+test("rejecting an update keeps the current Journal Entry", async ({
+	chat,
+	core,
+	page,
+}) => {
+	await chat.goto();
+
+	await chat.send("I bought milk after daycare pickup and felt relieved.");
+
+	let card = chat.proposalCard();
+	await expect(card).toBeVisible({ timeout: 15_000 });
+	await card.getByRole("button", { name: /add journal entry/i }).click();
+	await expect(card).toContainText(/added to journal/i, { timeout: 15_000 });
+	await chat.waitForAssistantText(/done.*added it/i);
+
+	await chat.send("Actually, for that entry, make it oat milk.");
+
+	card = chat.page.locator('[data-proposal-status="pending"]').last();
+	await expect(card).toBeVisible({ timeout: 15_000 });
+	await expect(card).toContainText("Bought milk after daycare pickup.");
+	await expect(card).toContainText("Bought oat milk after daycare pickup.");
+	await card.getByRole("button", { name: /keep current entry/i }).click();
+
+	const rejectedCard = chat.page.locator('[data-proposal-status="rejected"]').last();
+	await expect(rejectedCard).toContainText(/kept current journal entry/i, {
+		timeout: 15_000,
+	});
+	await chat.waitForAssistantText(/done.*dismissed it/i);
+	await expect(chat.page.locator('[data-proposal-status="pending"]')).toHaveCount(0);
+
+	await page.goto(`${core.url}/library/journal`);
+	await expect(
+		page
+			.getByRole("region", { name: /journal/i })
+			.getByText("Bought milk after daycare pickup."),
+	).toBeVisible({ timeout: 15_000 });
+	await expect(
+		page
+			.getByRole("region", { name: /journal/i })
+			.getByText("Bought oat milk after daycare pickup."),
+	).toHaveCount(0);
+});
+
 test("create then delete stays in-thread and resumes with a delete confirmation", async ({
 	chat,
 	core,
