@@ -149,11 +149,13 @@ export interface SpawnCoreOptions {
 	readonly fauxToolCall?: boolean;
 	/**
 	 * Drive a higher-level faux interpreter mode by name (paired with `workerCmd
-	 * = FAUX_WORKER_CMD`). Writes a faux Workflow allowlisting
-	 * `propose_workspace_mutation` and runs the worker in propose mode
-	 * (`INKSTONE_FAUX_PROPOSE`): turn 1 proposes a Journal Entry so Core parks
-	 * the Run; on accept/reject the Run resumes to a short completion,
-	 * exercising the full park -> decide -> resume loop end-to-end (ADR-0025).
+	 * = FAUX_WORKER_CMD`). Writes a faux Workflow allowlisting the Journal Entry
+	 * intake tools and runs the worker in propose mode (`INKSTONE_FAUX_PROPOSE`):
+	 * a fresh turn proposes a create Journal Entry, while same-thread
+	 * correction/delete prompts first read current-thread Journal Entries before
+	 * proposing update/delete. On accept/reject the Run resumes to a short
+	 * confirmation, exercising the full park -> decide -> resume loop end-to-end
+	 * (ADR-0025).
 	 */
 	readonly faux?: "propose";
 	/** Direct propose-worker fixture knob. Emits params loaded from this JSON file. */
@@ -304,7 +306,7 @@ export async function spawnCore(
 		const tools = opts.fauxToolCall
 			? '["read_thread"]'
 			: opts.faux === "propose"
-				? '["propose_workspace_mutation"]'
+				? '["read_thread","read_current_thread_journal_entries","propose_workspace_mutation"]'
 				: "[]";
 		writeFileSync(
 			path.join(workflowsDir, "default.toml"),

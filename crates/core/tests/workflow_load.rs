@@ -132,15 +132,55 @@ fn default_workflow_prompts_for_journal_entry_boundary() {
             && lower.contains("without implying the reminder was saved"),
         "default.toml system_prompt must exclude reminders/tasks from Journal Entries, got: {system_prompt:?}"
     );
+    assert!(
+        lower.contains("create")
+            && lower.contains("update")
+            && lower.contains("delete")
+            && lower.contains("same original thread"),
+        "default.toml system_prompt must describe same-thread create/update/delete intake, got: {system_prompt:?}"
+    );
+    assert!(
+        lower.contains("read_current_thread_journal_entries")
+            && lower.contains("for that entry"),
+        "default.toml system_prompt must tell the model to read current-thread Journal Entries for same-thread corrections/deletions, got: {system_prompt:?}"
+    );
+    assert!(
+        lower.contains("read another thread by")
+            && lower.contains("id with read_thread")
+            && lower.contains("read_thread")
+            && lower.contains("must not do cross-thread")
+            && lower.contains("update/delete"),
+        "default.toml system_prompt must preserve read_thread while forbidding cross-thread Journal Entry update/delete, got: {system_prompt:?}"
+    );
+    assert!(
+        lower.contains("stop after journal entry intake")
+            && !lower.contains("person extraction")
+            && !lower.contains("project extraction")
+            && !lower.contains("todo extraction")
+            && !lower.contains("entity refs")
+            && !lower.contains("daily notes")
+            && !lower.contains("auto-approval")
+            && !lower.contains("router"),
+        "default.toml system_prompt must stop after intake and keep extraction/router behavior out of scope, got: {system_prompt:?}"
+    );
     let tools = doc
         .get("tools")
         .and_then(|v| v.as_array())
         .expect("shipped default.toml has a tools array");
-    assert!(
-        tools
-            .iter()
-            .filter_map(|tool| tool.as_str())
-            .any(|tool| tool == "propose_workspace_mutation"),
-        "default.toml must include 'propose_workspace_mutation' in tools"
+    let tool_names = tools
+        .iter()
+        .map(|tool| {
+            tool.as_str()
+                .unwrap_or_else(|| panic!("tool entry is a string - tools: {tools:?}"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tool_names,
+        vec![
+            "read_thread",
+            "read_current_thread_journal_entries",
+            "propose_workspace_mutation",
+        ],
+        "default.toml must allowlist only the exact Journal Entry intake tools"
     );
 }
