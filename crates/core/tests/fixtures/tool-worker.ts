@@ -41,8 +41,12 @@ import { emit, stdinLines } from "./transport.js";
 const sleep = (ms: number): Promise<void> =>
 	new Promise((resolve) => setTimeout(resolve, ms));
 
-const waitForGate = async (path: string): Promise<void> => {
+const waitForGate = async (path: string, timeoutMs = 10_000): Promise<void> => {
+	const deadline = Date.now() + timeoutMs;
 	while (!existsSync(path)) {
+		if (Date.now() >= deadline) {
+			throw new Error(`timed out waiting for INKSTONE_TOOLWORKER_GATE at ${path}`);
+		}
 		await sleep(10);
 	}
 };

@@ -57,12 +57,23 @@ pub(super) async fn handle(
                 }
             };
 
-            // Usually a live hub means `running`, but cancellation can commit
-            // before the Worker loop drops its hub clone. Report the persisted
-            // status observed under the gate.
+            // Usually a live hub means `running`, but a terminal transition can
+            // commit before the Worker loop drops its hub clone — most acutely a
+            // `run/cancel` win while the Worker is still parked in a long tool
+            // dispatch or its pre-spawn delay. A receiver attached now sits AFTER
+            // the already-published terminal event, and the Worker's still-alive
+            // sender keeps the channel open, so the tail forwarder would block on
+            // `recv()` indefinitely (never reaching the synthesize-on-`Closed`
+            // path). When the status observed under the gate is already terminal,
+            // emit the matching terminal event and close WITHOUT attaching — the
+            // same shape as the no-hub branch below.
             send_subscribe_response(out_tx, id, run_id, &status);
             send_text_delta(out_tx, run_id, &snapshot_text);
-            spawn_tail_forwarder(run_id, receiver, out_tx.clone(), pool.clone());
+            match status.as_str() {
+                "cancelled" => send_run_event(out_tx, run_id, &RunEvent::Cancelled),
+                "completed" | "errored" => send_run_event(out_tx, run_id, &RunEvent::Done),
+                _ => spawn_tail_forwarder(run_id, receiver, out_tx.clone(), pool.clone()),
+            }
         }
         // ---- No hub: terminal, parked, or unknown. Read the persisted
         // status to tell parked (ADR-0025) from terminal. ----
@@ -362,6 +373,48 @@ mod tests {
         assert!(
             out_rx.recv().await.is_none(),
             "the forwarder sends exactly one terminal event then ends"
+        );
+    }
+
+    /// A subscribe that finds a LIVE hub whose persisted status is already
+    /// `cancelled` (the Worker won the cancel but has not yet dropped its hub
+    /// clone — e.g. it is parked in a long tool dispatch). Attaching a tail here
+    /// would block forever: the receiver sits after the published `Cancelled`
+    /// and the Worker's sender keeps the channel open. The handler must instead
+    /// emit `cancelled` and close, so the Client's stream finalizes promptly.
+    #[tokio::test]
+    async fn live_hub_with_terminal_status_emits_cancelled_without_tailing() {
+        let pool = memory_pool().await;
+        let run_id = seed_cancelled_run(&pool).await;
+        // A live hub still registered (the Worker has not reached hub::remove).
+        let hubs = hub::new_hubs();
+        let _run_hub = hub::create(&hubs, run_id);
+
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+        handle(&pool, &hubs, serde_json::json!(7), SubscribeParams { run_id }, &out_tx).await;
+
+        // Subscribe response, then the snapshot text_delta, then `cancelled`.
+        let resp: serde_json::Value =
+            serde_json::from_str(&out_rx.recv().await.expect("subscribe response")).unwrap();
+        assert_eq!(resp["result"]["status"].as_str(), Some("cancelled"));
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&out_rx.recv().await.expect("snapshot")).unwrap();
+        assert_eq!(snapshot["params"]["event"]["kind"].as_str(), Some("text_delta"));
+        let terminal: serde_json::Value =
+            serde_json::from_str(&out_rx.recv().await.expect("terminal")).unwrap();
+        assert_eq!(
+            terminal["params"]["event"]["kind"].as_str(),
+            Some("cancelled"),
+            "a live-hub-but-cancelled subscribe terminates with cancelled"
+        );
+
+        // No tail forwarder was spawned: the only owner of out_tx is this scope,
+        // so once we drop it the channel closes immediately (a spawned forwarder
+        // holding a clone would keep it open).
+        drop(out_tx);
+        assert!(
+            out_rx.recv().await.is_none(),
+            "no forwarder attached — exactly three frames, then close"
         );
     }
 }

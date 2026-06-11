@@ -194,7 +194,7 @@ Following OpenAI's `run_steps` separation: tool calls are not parts of the assis
 
 This matters most when a Run produces interleaved output: text, tool call, text, tool call, text — `run_steps` orders the eight events as one query; `messages` only stores the three text bubbles.
 
-A **Proposal is a specialised tool call** with `name='propose_*'` and a sidecar `proposals` row. The `proposals` table carries the decision lifecycle (`pending/accepted/rejected/edited`), `decided_by` (user vs auto per [ADR-0016](./0016-proposal-application-policy.md)), `edited_payload`, and `applied_at`. The `tool_call.result_payload` carries the decision back to the Worker on resume — invisible to the Worker whether it came from a human or auto-approve.
+A **Proposal is a specialised tool call** with `name='propose_*'` and a sidecar `proposals` row. The `proposals` table carries the decision lifecycle (`pending/accepted/rejected/cancelled` — see "`proposals.status`" below; an *edit* is a decision, not a status), `decided_by` (user vs auto per [ADR-0016](./0016-proposal-application-policy.md)), `edited_payload`, and `applied_at`. The `tool_call.result_payload` carries the decision back to the Worker on resume — invisible to the Worker whether it came from a human or auto-approve.
 
 ### Live text streaming via `messages.status` + UPSERT (t3code pattern)
 
