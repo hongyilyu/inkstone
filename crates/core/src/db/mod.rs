@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use uuid::Uuid;
 
 use crate::workflow::Workflow;
@@ -82,10 +82,11 @@ pub async fn open() -> Result<SqlitePool> {
     let options = SqliteConnectOptions::new()
         .filename(&path)
         .create_if_missing(true)
-        .foreign_keys(true);
+        .foreign_keys(true)
+        .journal_mode(SqliteJournalMode::Wal);
 
     let pool = SqlitePoolOptions::new()
-        .max_connections(4)
+        .max_connections(1)
         .connect_with(options)
         .await
         .with_context(|| format!("open SQLite pool at {}", path.display()))?;
@@ -352,8 +353,10 @@ pub async fn append_assistant_text(
     pool: &SqlitePool,
     assistant_message_id: Uuid,
     delta: &str,
-) -> sqlx::Result<()> {
-    queries::append_text_part(pool, assistant_message_id, 0, delta).await
+) -> sqlx::Result<bool> {
+    queries::append_text_part(pool, assistant_message_id, 0, delta)
+        .await
+        .map(|rows| rows == 1)
 }
 
 /// Persist an incoming Tool Request (ADR-0017/0018): a `tool_calls` row in the
@@ -802,6 +805,20 @@ pub async fn cancel_parked_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> 
 
     tx.commit().await?;
     Ok(true)
+}
+
+/// Cancel a running Run in one guarded transition. Returns `Won` only if the
+/// Run was still `running`; a lost race means a Worker terminal transition got
+/// there first and the caller maps the cancel request to `already_terminal`.
+pub async fn cancel_running_run(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    now_ms: i64,
+) -> sqlx::Result<Moved> {
+    let mut tx = pool.begin().await?;
+    let moved = RunStatus::cancel_running(&mut *tx, run_id, now_ms).await?;
+    tx.commit().await?;
+    Ok(moved)
 }
 
 /// The run's assistant Message id (the seq-0 streaming row resume continues

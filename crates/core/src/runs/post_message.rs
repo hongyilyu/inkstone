@@ -96,8 +96,7 @@ pub(super) async fn handle(
             pool.clone(),
             assistant_message_id,
             hubs.clone(),
-            run_hub.tx,
-            run_hub.gate,
+            run_hub,
         );
 
         Ok(PostMessageResult {

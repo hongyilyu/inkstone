@@ -170,6 +170,27 @@ where
     .map(|r| r.rows_affected())
 }
 
+pub(super) async fn mark_running_run_cancelled<'e, E>(
+    executor: E,
+    run_id: Uuid,
+    terminal_reason: &str,
+    ended_at: i64,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "UPDATE runs SET status = 'cancelled', terminal_reason = ?, \
+         ended_at = ? WHERE id = ? AND status = 'running'",
+    )
+    .bind(terminal_reason)
+    .bind(ended_at)
+    .bind(run_id.to_string())
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
+}
+
 /// Boot recovery sweep (ADR-0012): error every Run interrupted mid-flight by a
 /// Core crash/restart — `status='running'` — stamping
 /// `terminal_reason='core_restarted'` + the error fields + `ended_at`. ONE
@@ -722,20 +743,23 @@ pub(super) async fn append_text_part<'e, E>(
     message_id: Uuid,
     seq: i64,
     delta: &str,
-) -> sqlx::Result<()>
+) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
         "UPDATE message_parts SET text = text || ?1 \
-         WHERE message_id = ?2 AND seq = ?3",
+         WHERE message_id = ?2 AND seq = ?3 \
+         AND EXISTS (SELECT 1 FROM messages m \
+                     WHERE m.id = message_parts.message_id \
+                     AND m.status = 'streaming')",
     )
     .bind(delta)
     .bind(message_id.to_string())
     .bind(seq)
     .execute(executor)
     .await
-    .map(|_| ())
+    .map(|r| r.rows_affected())
 }
 
 /// Read a Message's text parts for `thread/get`, ordered by `seq`. Returns

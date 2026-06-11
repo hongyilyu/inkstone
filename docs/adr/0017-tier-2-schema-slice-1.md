@@ -194,7 +194,7 @@ Following OpenAI's `run_steps` separation: tool calls are not parts of the assis
 
 This matters most when a Run produces interleaved output: text, tool call, text, tool call, text — `run_steps` orders the eight events as one query; `messages` only stores the three text bubbles.
 
-A **Proposal is a specialised tool call** with `name='propose_*'` and a sidecar `proposals` row. The `proposals` table carries the decision lifecycle (`pending/accepted/rejected/edited`), `decided_by` (user vs auto per [ADR-0016](./0016-proposal-application-policy.md)), `edited_payload`, and `applied_at`. The `tool_call.result_payload` carries the decision back to the Worker on resume — invisible to the Worker whether it came from a human or auto-approve.
+A **Proposal is a specialised tool call** with `name='propose_*'` and a sidecar `proposals` row. The `proposals` table carries the decision lifecycle (`pending/accepted/rejected/cancelled` — see "`proposals.status`" below; an *edit* is a decision, not a status), `decided_by` (user vs auto per [ADR-0016](./0016-proposal-application-policy.md)), `edited_payload`, and `applied_at`. The `tool_call.result_payload` carries the decision back to the Worker on resume — invisible to the Worker whether it came from a human or auto-approve.
 
 ### Live text streaming via `messages.status` + UPSERT (t3code pattern)
 
@@ -266,7 +266,7 @@ A single freeform `error TEXT` column would conflate these. Splitting them keeps
 
 [ADR-0025](./0025-proposal-park-and-resume.md) amends the first entity-only Proposal shape for journal capture: the Proposal row stores a closed `mutation_kind` such as `create_journal_entry`, not an Entity Type `kind` plus a separate `change_kind`. The mutation kind names the operation Core will apply without requiring payload introspection.
 
-### `proposals.status` is `pending / accepted / rejected` only
+### `proposals.status` is `pending / accepted / rejected / cancelled`
 
 A user can edit a Proposal before accepting (per [ADR-0016](./0016-proposal-application-policy.md)). The earlier draft modelled this as a separate `status='edited'` value, but that's not a terminal state — an edit followed by an accept *is* an `accepted` Proposal, just with the user's modified payload. The schema reflects this:
 
@@ -274,7 +274,7 @@ A user can edit a Proposal before accepting (per [ADR-0016](./0016-proposal-appl
 - `edited_payload IS NULL` means accepted unedited; populated means edited.
 - The `decided_by` column records who decided (user or auto).
 
-Drop the separate `'edited'` status; it created a state-machine dead-end.
+Drop the separate `'edited'` status; it created a state-machine dead-end. `cancelled` was added later for `run/cancel` on a parked Run: the pending Proposal is cancelled in the same transaction as the Run, and cannot be decided afterward.
 
 ### Deferred FK on `runs.user_message_id` ↔ `messages.run_id`
 

@@ -259,18 +259,15 @@ pub enum ToolCallStatus {
     Error,
 }
 
-/// Run Event emitted by the Worker over its stdout NDJSON stream
-/// (per ADR-0006). Core deserializes each line into this enum, takes
-/// the appropriate persistence action, and forwards it as a `run/event`
-/// Notification.
+/// Run Event forwarded to Clients as a `run/event` Notification. Most variants
+/// are emitted by the Worker over its stdout NDJSON stream (per ADR-0006);
+/// Core deserializes each line into this enum, takes the appropriate
+/// persistence action, and forwards it.
 ///
-/// `ToolCall` is the exception: it is NOT a Worker stdout line. Core
-/// SYNTHESIZES it when it receives a `tool_request` from the Worker (a
-/// separate stdio channel) and publishes it onto the same hub as the text
-/// stream, so the Client can surface "a tool is running" live. It is
-/// ephemeral — unlike `text_delta` it is not persisted, so it is not
-/// replayed on a `run/subscribe` snapshot/reconnect (ADR-0022:38 defers
-/// durable coarse-event replay to a future `run/get_history`).
+/// `ToolCall` and `Cancelled` are the exceptions: they are NOT Worker stdout
+/// lines. Core synthesizes `ToolCall` from `tool_request`s so the Client can
+/// surface "a tool is running" live; Core synthesizes `Cancelled` after it wins
+/// the guarded cancellation transition. Both are ephemeral wire events.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RunEvent {
@@ -283,6 +280,7 @@ pub enum RunEvent {
         status: ToolCallStatus,
     },
     Done,
+    Cancelled,
     Error {
         message: String,
     },
@@ -871,7 +869,7 @@ mod mirror_tests {
         );
     }
 
-    // --- RunEvent (Serialize + Deserialize): round-trip both variants (frozen). ---
+    // --- RunEvent (Serialize + Deserialize): round-trip wire variants. ---
 
     #[test]
     fn run_event_text_delta_round_trips() {
@@ -889,6 +887,14 @@ mod mirror_tests {
         let wire = json!({ "kind": "done" });
         let ev: RunEvent = serde_json::from_value(wire.clone()).unwrap();
         assert!(matches!(ev, RunEvent::Done));
+        assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
+    }
+
+    #[test]
+    fn run_event_cancelled_round_trips() {
+        let wire = json!({ "kind": "cancelled" });
+        let ev: RunEvent = serde_json::from_value(wire.clone()).unwrap();
+        assert!(matches!(ev, RunEvent::Cancelled));
         assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
     }
 

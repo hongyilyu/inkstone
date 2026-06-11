@@ -10,15 +10,12 @@ mod child;
 mod port;
 mod run;
 
-use std::sync::Arc;
-
 use sqlx::SqlitePool;
-use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::db;
-use crate::hub::{self, Hubs};
-use crate::protocol::{ManifestMessage, RunEvent, WorkerManifest, WorkflowManifest};
+use crate::hub::{self, Hubs, RunHub};
+use crate::protocol::{ManifestMessage, WorkerManifest, WorkflowManifest};
 use crate::workflow::Workflow;
 
 use child::ChildWorker;
@@ -49,16 +46,29 @@ pub fn spawn(
     pool: SqlitePool,
     assistant_message_id: Uuid,
     hubs: Hubs,
-    tx: broadcast::Sender<RunEvent>,
-    gate: Arc<tokio::sync::Mutex<()>>,
+    run_hub: RunHub,
 ) {
     tokio::spawn(async move {
+        pre_spawn_delay_if_configured().await;
+        if run_hub.is_cancelled() {
+            hub::remove(&hubs, run_id);
+            return;
+        }
         let Some(line) = fresh_manifest_line(&workflow, &prompt, &history).await else {
             finalize_error(&pool, &hubs, run_id).await;
             return;
         };
+        if run_hub.is_cancelled() {
+            hub::remove(&hubs, run_id);
+            return;
+        }
         match ChildWorker::spawn(&worker_cmd(), line).await {
             Ok(worker) => {
+                if run_hub.is_cancelled() {
+                    drop(worker);
+                    hub::remove(&hubs, run_id);
+                    return;
+                }
                 run_loop(
                     worker,
                     run_id,
@@ -66,8 +76,9 @@ pub fn spawn(
                     pool,
                     assistant_message_id,
                     hubs,
-                    tx,
-                    gate,
+                    run_hub.tx.clone(),
+                    run_hub.gate.clone(),
+                    run_hub.cancel_rx(),
                 )
                 .await;
             }
@@ -113,6 +124,11 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
     let pool = pool.clone();
     let hubs = hubs.clone();
     tokio::spawn(async move {
+        pre_spawn_delay_if_configured().await;
+        if run_hub.is_cancelled() {
+            hub::remove(&hubs, run_id);
+            return;
+        }
         let Some(line) = resume_manifest_line(&workflow, &transcript).await else {
             finalize_error(&pool, &hubs, run_id).await;
             return;
@@ -126,8 +142,9 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
                     pool,
                     assistant_message_id,
                     hubs,
-                    run_hub.tx,
-                    run_hub.gate,
+                    run_hub.tx.clone(),
+                    run_hub.gate.clone(),
+                    run_hub.cancel_rx(),
                 )
                 .await;
             }
@@ -214,6 +231,19 @@ fn serialize_manifest(manifest: &WorkerManifest<'_>) -> String {
     let mut line = serde_json::to_string(manifest).expect("WorkerManifest serializes");
     line.push('\n');
     line
+}
+
+async fn pre_spawn_delay_if_configured() {
+    // Test-only hook for forcing the cancel-before-worker-start race.
+    let Ok(raw) = std::env::var("INKSTONE_WORKER_PRE_SPAWN_DELAY_MS") else {
+        return;
+    };
+    let Ok(ms) = raw.parse::<u64>() else {
+        return;
+    };
+    if ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    }
 }
 
 /// Pre-loop spawn-failure path: the Worker never produced any output, so the

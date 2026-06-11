@@ -8,12 +8,13 @@
 //! text. A hub entry's whole job is the live tail of a currently-streaming
 //! Run: it is created when the Worker is spawned and removed when the Run
 //! reaches a terminal state. A subscribe to an already-removed Run reads
-//! the persisted snapshot and emits `done` without attaching.
+//! the persisted snapshot and emits the persisted terminal outcome without
+//! attaching.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
 use crate::protocol::RunEvent;
@@ -31,19 +32,36 @@ const HUB_BUFFER: usize = 256;
 /// `persist → publish` critical section mutually exclusive with the
 /// subscribe handler's `snapshot → attach`, so every delta falls wholly
 /// before or wholly after a subscribe instant (ADR-0022 exactly-once).
+/// `cancel_tx` is the in-memory signal Core flips after it has durably won a
+/// Run cancellation; the Worker loop observes it and stops doing useful work.
 #[derive(Clone)]
 pub struct RunHub {
     pub tx: broadcast::Sender<RunEvent>,
     pub gate: Arc<tokio::sync::Mutex<()>>,
+    cancel_tx: watch::Sender<bool>,
 }
 
 impl RunHub {
     fn new() -> Self {
         let (tx, _rx) = broadcast::channel(HUB_BUFFER);
+        let (cancel_tx, _cancel_rx) = watch::channel(false);
         Self {
             tx,
             gate: Arc::new(tokio::sync::Mutex::new(())),
+            cancel_tx,
         }
+    }
+
+    pub fn cancel_rx(&self) -> watch::Receiver<bool> {
+        self.cancel_tx.subscribe()
+    }
+
+    pub fn cancel(&self) {
+        self.cancel_tx.send_replace(true);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        *self.cancel_tx.borrow()
     }
 }
 
@@ -71,7 +89,8 @@ pub fn create(hubs: &Hubs, run_id: Uuid) -> RunHub {
 
 /// Look up the hub for `run_id`, cloning the handle if present. A `None`
 /// means the Run is terminal/removed (or never existed); the subscribe
-/// handler then serves a snapshot from tier 2 and emits `done`.
+/// handler then serves a snapshot from tier 2 and emits the persisted terminal
+/// outcome.
 pub fn get(hubs: &Hubs, run_id: Uuid) -> Option<RunHub> {
     hubs.lock()
         .expect("hubs mutex not poisoned")
