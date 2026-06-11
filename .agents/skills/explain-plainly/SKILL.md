@@ -1,57 +1,76 @@
 ---
 name: explain-plainly
 description: >
-  Explains a technical concept, system, or design in plain, jargon-free language
-  built on an everyday analogy, then renders it as a calm self-contained HTML page
-  opened in the browser — never a wall of terminal text. Use when the user says
-  "explain this", "ELI5", "explain like I'm five", "I don't understand", "I don't
-  get it", "break it down", "in plain English", "no jargon", "help me understand",
-  or "dumb it down".
+  Explains a technical concept, system, or design in plain, jargon-free language —
+  answered directly in chat, focused on the exact question asked. No analogies
+  unless the user asks for one. Use when the user says "explain this", "ELI5",
+  "explain like I'm five", "I don't understand", "I don't get it", "break it down",
+  "in plain English", "no jargon", "help me understand", or "dumb it down".
 ---
 
 # Explain plainly
 
-Make a hard idea click for someone who's lost. Lead with an everyday analogy,
-strip the jargon, render the result as a calm HTML page — not a terminal wall.
+Make a hard idea click for someone who's lost. Answer the actual question in plain
+English, right in the chat. No HTML, no pages — just the explanation.
 
 ## Principles
 
-1. **Analogy first.** Open with a concrete everyday analogy (order tracking,
-   mail, a kitchen line, a checklist) that matches the *shape* of the idea.
-   Shape before specifics.
-2. **Graph-led, less prose.** Every section carries a simple picture and earns
-   its words. Lead with the graph (a `A → B → C` sketch, or a before → after);
-   write a line only when the graph can't carry the point. More graph, less text.
-3. **No jargon up front.** Ban "seam / abstraction / leverage / polymorphism /
-   idempotent" and friends from the visible copy. Plain words only. Precise terms,
-   mechanics, and file paths live *only* inside the "Go deeper" expander.
+1. **Answer the question.** Explain the specific thing asked, not a general tour
+   of the surrounding area. If the question is narrow, keep the answer narrow.
+2. **Plain words only.** Strip the jargon. Ban "seam / abstraction / leverage /
+   polymorphism / idempotent" and friends from the explanation. If a precise term
+   is unavoidable, define it in plain words the first time you use it.
+3. **No analogy by default.** Explain the thing itself, directly. Reach for an
+   everyday analogy *only* if the user asks for one ("give me an analogy", "what's
+   it like").
 4. **Three beats.** *what it is → what's wrong today → what changes.* Keep each
-   beat short. Drop the middle beat if there's no problem to fix — then it's
+   beat short. Drop the middle beat if there's no problem to fix — then it's just
    *what it is → how it works.*
-5. **Map back.** After the analogy, connect it to the real things by name.
-6. **Inkstone surface.** Render in the project's look (the template bakes in
-   `DESIGN.md`'s palette + type): warm blush surfaces, deep-plum headings, one
-   rationed magenta accent, tonal layers over shadows. Calm and trustworthy.
-7. **Short lines.** Bold only the 2–3 words that carry the point.
-8. **Don't dump.** Keep the technical depth behind the "Go deeper" expander, and
-   end by offering 2–3 specific things the user can pull on. Pull, don't push.
+5. **Sketch the flow in ASCII.** When the idea has a flow, a pipeline, or a
+   before/after, draw a small ASCII diagram in a code block. Keep it simple — a
+   few boxes and arrows that carry the shape at a glance. Skip it when the answer
+   is a single fact with no moving parts; never force one.
+6. **Short.** Lead with the answer. Bold only the 2–3 words that carry the point.
+   No preamble, no "let me walk you through."
+7. **Offer depth, don't dump.** Give the clear first layer, then end by offering
+   2–3 specific things the user can pull on for more. Pull, don't push.
+
+## ASCII sketches
+
+Plain boxes and arrows, a few nodes at most. For a flow:
+
+```
+request ──▶ handler ──▶ database
+                │
+                ▼
+              cache
+```
+
+For a before → after:
+
+```
+  now                 after
+  ───                 ─────
+  A ─┐                A ─┐
+  B ─┼─▶ ???          B ─┼─▶ one clear path ─▶ result
+  C ─┘                C ─┘
+```
+
+Keep them readable: align arrows, label the nodes with real names, no legends.
 
 ## Workflow
 
-1. Find the single best everyday analogy *before* writing anything.
-2. Copy `TEMPLATE.html` and fill it in following the principles above.
-3. Write to a fresh temp file: resolve `$TMPDIR` (fallback `/tmp`, `%TEMP%` on
-   Windows), name it `explain-<slug>-<timestamp>.html`. Never write into the repo.
-4. Open it: `open` (macOS) / `xdg-open` (Linux) / `start` (Windows).
-5. In chat, output **only** the file path + one sentence. Do not re-explain in
-   the terminal — the page *is* the explanation.
+1. Pin down exactly what's being asked. If the question is ambiguous, ask before
+   answering.
+2. Answer in chat: plain English, the three beats, short lines, an ASCII sketch
+   if there's a flow worth showing.
+3. Keep the precise terms, mechanics, and file paths to a brief closing note or
+   the "want more?" offer — don't lead with them.
 
 ## Avoid
 
-- Jargon walls, dense or color-coded diagrams, legends — exactly what confuses
-  people.
-- Restating the whole thing in chat after opening the page.
-- Cramming every detail onto the page. The page is the first layer; the
-  "go deeper" options are the next.
-
-See [TEMPLATE.html](TEMPLATE.html) for the scaffold.
+- Jargon walls.
+- Analogies the user didn't ask for.
+- Preamble and meta-commentary about how you're going to explain it.
+- Restating the whole thing twice. Say it once, clearly.
+- Cramming every detail in. The first answer is the first layer; offer the rest.
