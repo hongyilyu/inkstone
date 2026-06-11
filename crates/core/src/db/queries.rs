@@ -408,6 +408,46 @@ where
     .await
 }
 
+/// Read accepted Journal Entries originally created from the current Run's
+/// Thread. Returns `(entity_id, latest_revision_data)` ordered by the latest
+/// revision timestamp descending; the caller shapes the compact tool payload.
+pub(super) async fn current_thread_journal_entries<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Vec<(String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "WITH latest_revisions AS ( \
+             SELECT entity_id, data, created_at, seq, \
+                    ROW_NUMBER() OVER ( \
+                        PARTITION BY entity_id ORDER BY created_at DESC, seq DESC \
+                    ) AS rn \
+             FROM entity_revisions \
+         ) \
+         SELECT e.id, lr.data \
+         FROM entities e \
+         JOIN latest_revisions lr ON lr.entity_id = e.id AND lr.rn = 1 \
+         WHERE e.type = 'journal_entry' \
+           AND EXISTS ( \
+               SELECT 1 \
+               FROM runs current_run \
+               JOIN messages source_message \
+                 ON source_message.thread_id = current_run.thread_id \
+               JOIN entity_sources source \
+                 ON source.source_message_id = source_message.id \
+               WHERE current_run.id = ?1 \
+                 AND source.entity_id = e.id \
+                 AND source.relation = 'created_from' \
+           ) \
+         ORDER BY lr.created_at DESC, lr.seq DESC, e.id DESC",
+    )
+    .bind(run_id.to_string())
+    .fetch_all(executor)
+    .await
+}
+
 /// Insert a freshly-created Entity (ADR-0004): `created_by='proposal'` with the
 /// originating `created_via_proposal_id`. `data` is the validated JSON snapshot;
 /// `schema_version` stamps the type's current shape. Runs inside the apply tx.

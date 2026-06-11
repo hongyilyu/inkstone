@@ -143,6 +143,30 @@ pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<
         .collect())
 }
 
+/// One Journal Entry returned to the Worker for same-Thread correction context.
+/// `data` is the latest accepted revision snapshot; the tool layer shapes the
+/// compact `{ entity_id, occurred_at, ended_at?, body }` payload.
+pub struct CurrentThreadJournalEntryRow {
+    pub entity_id: String,
+    pub data: serde_json::Value,
+}
+
+/// Read accepted Journal Entries originally created from `run_id`'s Thread,
+/// ordered newest-first by each Entity's latest revision time.
+pub async fn current_thread_journal_entries(
+    pool: &SqlitePool,
+    run_id: Uuid,
+) -> sqlx::Result<Vec<CurrentThreadJournalEntryRow>> {
+    let rows = queries::current_thread_journal_entries(pool, run_id).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(entity_id, data)| CurrentThreadJournalEntryRow {
+            entity_id,
+            data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+        })
+        .collect())
+}
+
 /// One Message in a `thread/get` read: its identity, `role`, `status`,
 /// owning `run_id`, and `text` already assembled (the concat of its text
 /// parts in `seq` order). Flat-text-no-parts[] per ADR-0017/Q15 — the handler
