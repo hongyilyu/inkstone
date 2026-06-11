@@ -4,28 +4,28 @@ import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button.js";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
-	activeProjects,
-	dueSoon,
-	entityTitle,
+	activeProjectItems,
+	dueSoonTodos,
+	itemsNeedingReview,
 	KIND_META,
-	needsReview,
+	libraryItemTitle,
 	projectProgress,
-	recentlyCaptured,
-} from "@/lib/entities";
-import { useEntities } from "@/lib/hooks/useEntities";
+	recentlyCapturedItems,
+} from "@/lib/libraryItems";
 import { confirmReview, useConfirmedReviews } from "@/store/library";
 import { EntityGlyph } from "./EntityGlyph.js";
 import { EntityRow, TodoRow } from "./EntityRow.js";
 import { EntitySkeleton } from "./EntitySkeleton.js";
 
 export function TodayOverview() {
-	const { data, isPending, isError } = useEntities();
+	const { data, isPending, isError } = useLibraryItems();
 	const navigate = useNavigate();
 	const confirmed = useConfirmedReviews();
 
 	// Select in place: set `?id` on Today itself so the shell rail shows the
-	// detail without navigating away to the entity's collection.
+	// detail without navigating away to the item's collection.
 	const open = (id: string) => {
 		navigate({ to: "/library", search: { id } });
 	};
@@ -63,7 +63,7 @@ export function TodayOverview() {
 					tone="brand"
 					size="lg"
 					title="Your library is empty"
-					description="Entities show up here as you chat. Inkstone drafts the people, projects, todos and recipes it notices, and they land here once you accept the Proposal."
+					description="Library items show up here as you chat. Inkstone drafts the people, projects, todos and recipes it notices, and they land here once you accept the Proposal."
 					action={
 						<Button
 							variant="primary-icon"
@@ -78,10 +78,10 @@ export function TodayOverview() {
 		);
 	}
 
-	const reviews = needsReview(data).filter((e) => !confirmed[e.id]);
-	const due = dueSoon(data);
-	const recent = recentlyCaptured(data, 6);
-	const projects = activeProjects(data).slice(0, 4);
+	const reviews = itemsNeedingReview(data).filter((e) => !confirmed[e.id]);
+	const due = dueSoonTodos(data);
+	const recent = recentlyCapturedItems(data, 6);
+	const projects = activeProjectItems(data).slice(0, 4);
 
 	const summary = [
 		due.length > 0 ? `${due.length} due soon` : null,
@@ -117,12 +117,12 @@ export function TodayOverview() {
 								<EntityGlyph entity={entity} size="sm" />
 								<div className="min-w-0 flex-1">
 									<p className="truncate font-medium text-foreground text-sm">
-										{entityTitle(entity)}
+										{libraryItemTitle(entity)}
 									</p>
 									<p className="truncate text-muted-foreground text-xs">
 										{KIND_META[entity.kind].label}
-										{entity.source
-											? ` · from ${entity.source.threadTitle}`
+										{entity.capturedFrom
+											? ` · from ${entity.capturedFrom.threadTitle}`
 											: ""}
 									</p>
 								</div>
@@ -163,7 +163,12 @@ export function TodayOverview() {
 				>
 					<ul className="-mx-2 flex flex-col">
 						{due.map((todo) => (
-							<TodoRow key={todo.id} todo={todo} onSelect={open} />
+							<TodoRow
+								key={todo.id}
+								todo={todo}
+								allItems={data}
+								onSelect={open}
+							/>
 						))}
 					</ul>
 				</Section>

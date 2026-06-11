@@ -8,8 +8,8 @@ import { useEffect, useState } from "react";
 import { EntityDetail } from "@/components/library/EntityDetail";
 import { LibraryNav } from "@/components/library/LibraryNav";
 import { WorkspaceShell } from "@/components/ui/workspace-shell";
-import { entityTitle, kindForSlug } from "@/lib/entities";
-import { useEntities } from "@/lib/hooks/useEntities";
+import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
+import { libraryItemKindForSlug, libraryItemTitle } from "@/lib/libraryItems";
 
 /**
  * Library shell (peer to Chat, reached from the sidebar). Composes the shared
@@ -29,14 +29,14 @@ import { useEntities } from "@/lib/hooks/useEntities";
 function LibraryLayout() {
 	const params = useParams({ strict: false });
 	const search = useSearch({ strict: false });
-	const { data } = useEntities();
+	const { data } = useLibraryItems();
 
 	const slug = typeof params.kind === "string" ? params.kind : undefined;
 	const id =
 		"id" in search && typeof search.id === "string" ? search.id : undefined;
 	// On a collection the selection is constrained to that kind; on Today there's
-	// no kind, so resolve by id across every entity.
-	const kind = slug ? kindForSlug(slug) : undefined;
+	// no kind, so resolve by id across every item.
+	const kind = slug ? libraryItemKindForSlug(slug) : undefined;
 	const selected = id
 		? (data?.find((e) => e.id === id && (kind ? e.kind === kind : true)) ??
 			null)
@@ -57,7 +57,7 @@ function LibraryLayout() {
 	// surface's activity rail and the bay — not the white reading surface.
 	const rail = selected ? (
 		<aside
-			aria-label={`${entityTitle(selected)} details`}
+			aria-label={`${libraryItemTitle(selected)} details`}
 			className="h-full bg-sidebar"
 		>
 			<EntityDetail

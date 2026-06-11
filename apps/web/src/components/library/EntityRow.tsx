@@ -2,12 +2,12 @@ import { AlertTriangle, Circle, CircleCheck } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
-	type Entity,
-	entitySubtitle,
-	entityTitle,
-	getEntity,
+	type LibraryItem,
+	libraryItemSubtitle,
+	libraryItemTitle,
+	projectForTodo,
 	type Todo,
-} from "@/lib/entities";
+} from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
 import { setTodoDone, useTodoDone } from "@/store/library";
 import { EntityGlyph } from "./EntityGlyph.js";
@@ -19,7 +19,7 @@ export function EntityRow({
 	onSelect,
 	trailing,
 }: {
-	entity: Entity;
+	entity: LibraryItem;
 	selected?: boolean;
 	onSelect: (id: string) => void;
 	trailing?: ReactNode;
@@ -38,10 +38,10 @@ export function EntityRow({
 			<EntityGlyph entity={entity} size="sm" />
 			<span className="min-w-0 flex-1">
 				<span className="block truncate font-medium text-foreground text-sm">
-					{entityTitle(entity)}
+					{libraryItemTitle(entity)}
 				</span>
 				<span className="block truncate text-muted-foreground text-xs">
-					{entitySubtitle(entity)}
+					{libraryItemSubtitle(entity)}
 				</span>
 			</span>
 			{trailing}
@@ -70,17 +70,19 @@ export function DueChip({ due, overdue }: { due: string; overdue: boolean }) {
  */
 export function TodoRow({
 	todo,
+	allItems = [],
 	selected,
 	onSelect,
 }: {
 	todo: Todo;
+	allItems?: LibraryItem[];
 	selected?: boolean;
 	onSelect: (id: string) => void;
 }) {
 	const done = useTodoDone(todo.id, todo.done);
 	const overdue = !done && todo.dueInDays !== undefined && todo.dueInDays < 0;
-	const project = todo.projectId ? getEntity(todo.projectId) : undefined;
-	const context = [project ? entityTitle(project) : null, todo.owner]
+	const project = projectForTodo(allItems, todo);
+	const context = [project ? libraryItemTitle(project) : null, todo.owner]
 		.filter(Boolean)
 		.join(" · ");
 

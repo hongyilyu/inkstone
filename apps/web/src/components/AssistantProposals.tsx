@@ -12,7 +12,7 @@ import { ProposalCard } from "./ProposalCard.js";
  * Run. Renders nothing until a Proposal is attached.
  *
  * On an accept/edit (which creates an Entity in Core) we invalidate the
- * `["entities"]` query so the Library reflects the new Journal Entry without a
+ * `["library-items"]` query so the Library reflects the new Journal Entry without a
  * manual reload. A reject creates nothing, so it is not invalidated.
  */
 export function AssistantProposals({ runId }: { runId: string }) {
@@ -29,7 +29,9 @@ export function AssistantProposals({ runId }: { runId: string }) {
 				onDecide={async (decision, editedPayload) => {
 					await decideProposal(runtime, runId, decision, editedPayload);
 					if (decision !== "reject") {
-						await queryClient.invalidateQueries({ queryKey: ["entities"] });
+						await queryClient.invalidateQueries({
+							queryKey: ["library-items"],
+						});
 					}
 				}}
 			/>

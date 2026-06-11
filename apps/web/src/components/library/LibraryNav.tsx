@@ -1,16 +1,20 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import { House, MessageSquareText, Search } from "lucide-react";
 import { NavShell, navRow, navRowActive } from "@/components/ui/nav-shell";
-import { KIND_META, KIND_ORDER, kindCounts } from "@/lib/entities";
-import { useEntities } from "@/lib/hooks/useEntities";
+import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
+import {
+	KIND_META,
+	KIND_ORDER,
+	libraryItemKindCounts,
+} from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
 import { openCommand } from "@/store/command";
 
 /** Left nav for the Library takeover: return-to-chat, search, the kinds. */
 export function LibraryNav() {
 	const navigate = useNavigate();
-	const { data } = useEntities();
-	const counts = kindCounts(data ?? []);
+	const { data } = useLibraryItems();
+	const counts = libraryItemKindCounts(data ?? []);
 
 	return (
 		<NavShell

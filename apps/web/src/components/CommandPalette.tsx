@@ -2,17 +2,17 @@ import { Dialog } from "@base-ui-components/react/dialog";
 import { useNavigate } from "@tanstack/react-router";
 import { CornerDownLeft, MessageSquareText } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
+import { useThreads } from "@/lib/hooks/useThreads";
 import {
-	type Entity,
-	entitySubtitle,
-	entityTitle,
 	KIND_META,
 	KIND_ORDER,
-	recentlyCaptured,
-	searchEntities,
-} from "@/lib/entities";
-import { useEntities } from "@/lib/hooks/useEntities";
-import { useThreads } from "@/lib/hooks/useThreads";
+	type LibraryItem,
+	libraryItemSubtitle,
+	libraryItemTitle,
+	recentlyCapturedItems,
+	searchLibraryItems,
+} from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
 import { setFocusedThread } from "@/store/chat";
 import { closeCommand, toggleCommand, useCommandOpen } from "@/store/command";
@@ -21,7 +21,7 @@ import { SearchField } from "./ui/search-field.js";
 
 type Result =
 	| { type: "thread"; id: string; title: string }
-	| { type: "entity"; entity: Entity };
+	| { type: "library-item"; item: LibraryItem };
 
 interface Group {
 	key: string;
@@ -31,14 +31,14 @@ interface Group {
 
 /**
  * Global command palette (⌘K / Ctrl+K). Searches recent Threads (live, like the
- * sidebar) and Accepted Entities (mock), grouped by type, fully keyboard
- * driven. Mounted once in `__root` so it's reachable from any surface; opened
- * via the `command` store so in-tree triggers don't need prop threading.
+ * sidebar) and displayed Library items, grouped by type, fully keyboard driven.
+ * Mounted once in `__root` so it's reachable from any surface; opened via the
+ * `command` store so in-tree triggers don't need prop threading.
  */
 export function CommandPalette() {
 	const open = useCommandOpen();
 	const navigate = useNavigate();
-	const { data: entities } = useEntities();
+	const { data: libraryItems } = useLibraryItems();
 	const [query, setQuery] = useState("");
 	const [active, setActive] = useState(0);
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -62,7 +62,7 @@ export function CommandPalette() {
 	const { data: threadData } = useThreads({ enabled: open });
 
 	const groups = useMemo<Group[]>(() => {
-		const all = entities ?? [];
+		const all = libraryItems ?? [];
 		const q = query.trim().toLowerCase();
 		const threads = threadData?.threads ?? [];
 		const threadItems: Result[] = (
@@ -71,7 +71,9 @@ export function CommandPalette() {
 			.slice(0, 5)
 			.map((t) => ({ type: "thread", id: t.id, title: t.title }));
 
-		const matched = q ? searchEntities(all, query) : recentlyCaptured(all, 8);
+		const matched = q
+			? searchLibraryItems(all, query)
+			: recentlyCapturedItems(all, 8);
 
 		const out: Group[] = [
 			{ key: "thread", label: "Threads", items: threadItems },
@@ -80,11 +82,11 @@ export function CommandPalette() {
 				label: KIND_META[kind].plural,
 				items: matched
 					.filter((e) => e.kind === kind)
-					.map((entity): Result => ({ type: "entity", entity })),
+					.map((item): Result => ({ type: "library-item", item })),
 			})),
 		];
 		return out.filter((g) => g.items.length > 0);
-	}, [entities, threadData, query]);
+	}, [libraryItems, threadData, query]);
 
 	const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
@@ -113,11 +115,11 @@ export function CommandPalette() {
 			navigate({ to: "/" });
 			return;
 		}
-		const entity = result.entity;
+		const item = result.item;
 		navigate({
 			to: "/library/$kind",
-			params: { kind: KIND_META[entity.kind].slug },
-			search: { id: entity.id },
+			params: { kind: KIND_META[item.kind].slug },
+			search: { id: item.id },
 		});
 	};
 
@@ -194,9 +196,7 @@ export function CommandPalette() {
 										return (
 											<button
 												key={
-													item.type === "thread"
-														? `t-${item.id}`
-														: item.entity.id
+													item.type === "thread" ? `t-${item.id}` : item.item.id
 												}
 												type="button"
 												id={`${listboxId}-opt-${index}`}
@@ -224,13 +224,13 @@ export function CommandPalette() {
 													</>
 												) : (
 													<>
-														<EntityGlyph entity={item.entity} size="sm" />
+														<EntityGlyph entity={item.item} size="sm" />
 														<span className="min-w-0 flex-1">
 															<span className="block truncate text-foreground text-sm">
-																{entityTitle(item.entity)}
+																{libraryItemTitle(item.item)}
 															</span>
 															<span className="block truncate text-muted-foreground text-xs">
-																{entitySubtitle(item.entity)}
+																{libraryItemSubtitle(item.item)}
 															</span>
 														</span>
 													</>

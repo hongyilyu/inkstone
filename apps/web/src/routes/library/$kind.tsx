@@ -3,7 +3,7 @@ import { Search } from "lucide-react";
 import { EntityCollection } from "@/components/library/EntityCollection";
 import { Button } from "@/components/ui/button.js";
 import { EmptyState } from "@/components/ui/empty-state";
-import { kindForSlug } from "@/lib/entities";
+import { libraryItemKindForSlug } from "@/lib/libraryItems";
 
 interface KindSearch {
 	id?: string;
@@ -13,7 +13,7 @@ function KindRoute() {
 	const { kind: slug } = Route.useParams();
 	const { id } = Route.useSearch();
 	const navigate = useNavigate();
-	const kind = kindForSlug(slug);
+	const kind = libraryItemKindForSlug(slug);
 
 	if (!kind) {
 		return (

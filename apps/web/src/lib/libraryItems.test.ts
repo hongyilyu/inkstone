@@ -1,18 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { entities, type Project, type Todo } from "@/data/mock/entities";
+import { entities } from "@/data/mock/entities";
 import {
-	dueSoon,
-	entitySubtitle,
-	entityTitle,
-	kindForSlug,
-	needsReview,
+	dueSoonTodos,
+	itemsNeedingReview,
+	libraryItemKindForSlug,
+	libraryItemSubtitle,
+	libraryItemTitle,
+	type Project,
 	peopleForProject,
 	projectForTodo,
 	projectProgress,
-	recentlyCaptured,
-	searchEntities,
+	recentlyCapturedItems,
+	searchLibraryItems,
+	type Todo,
 	todosForProject,
-} from "@/lib/entities";
+} from "@/lib/libraryItems";
 
 const byId = (id: string) => {
 	const e = entities.find((x) => x.id === id);
@@ -20,46 +22,46 @@ const byId = (id: string) => {
 	return e;
 };
 
-describe("entity helpers", () => {
+describe("library item helpers", () => {
 	it("titles and subtitles read the right field per kind", () => {
-		expect(entityTitle(byId("person_priya"))).toBe("Priya Nair");
-		expect(entityTitle(byId("proj_apiv2"))).toBe("API v2 migration");
-		expect(entityTitle(byId("todo_backfill"))).toContain("Backfill");
+		expect(libraryItemTitle(byId("person_priya"))).toBe("Priya Nair");
+		expect(libraryItemTitle(byId("proj_apiv2"))).toBe("API v2 migration");
+		expect(libraryItemTitle(byId("todo_backfill"))).toContain("Backfill");
 
-		expect(entitySubtitle(byId("person_priya"))).toBe(
+		expect(libraryItemSubtitle(byId("person_priya"))).toBe(
 			"Staff engineer, Platform",
 		);
-		expect(entitySubtitle(byId("todo_backfill"))).toBe("Due Today");
+		expect(libraryItemSubtitle(byId("todo_backfill"))).toBe("Due Today");
 	});
 
 	it("maps route slugs to kinds", () => {
-		expect(kindForSlug("people")).toBe("person");
-		expect(kindForSlug("projects")).toBe("project");
-		expect(kindForSlug("todos")).toBe("todo");
-		expect(kindForSlug("recipes")).toBe("recipe");
-		expect(kindForSlug("nope")).toBeUndefined();
+		expect(libraryItemKindForSlug("people")).toBe("person");
+		expect(libraryItemKindForSlug("projects")).toBe("project");
+		expect(libraryItemKindForSlug("todos")).toBe("todo");
+		expect(libraryItemKindForSlug("recipes")).toBe("recipe");
+		expect(libraryItemKindForSlug("nope")).toBeUndefined();
 	});
 
-	describe("searchEntities", () => {
+	describe("searchLibraryItems", () => {
 		it("ranks a title prefix match first", () => {
-			const results = searchEntities(entities, "priya");
+			const results = searchLibraryItems(entities, "priya");
 			expect(results[0]?.id).toBe("person_priya");
 		});
 
 		it("returns recents (recency-sorted) for an empty query", () => {
-			const results = searchEntities(entities, "");
+			const results = searchLibraryItems(entities, "");
 			expect(results).toHaveLength(8);
 			const recencies = results.map((e) => e.recency);
 			expect(recencies).toEqual([...recencies].sort((a, b) => b - a));
 		});
 
 		it("returns nothing for a non-match", () => {
-			expect(searchEntities(entities, "zzzznotathing")).toEqual([]);
+			expect(searchLibraryItems(entities, "zzzznotathing")).toEqual([]);
 		});
 	});
 
-	describe("dueSoon", () => {
-		const due = dueSoon(entities);
+	describe("dueSoonTodos", () => {
+		const due = dueSoonTodos(entities);
 
 		it("includes only open todos due within the window, overdue first", () => {
 			expect(due.map((t) => t.id)).toEqual([
@@ -78,8 +80,8 @@ describe("entity helpers", () => {
 		});
 	});
 
-	it("needsReview returns only flagged entities, newest first", () => {
-		const review = needsReview(entities);
+	it("itemsNeedingReview returns only flagged items, newest first", () => {
+		const review = itemsNeedingReview(entities);
 		expect(review.every((e) => e.needsReview)).toBe(true);
 		expect(review.map((e) => e.id).sort()).toEqual(
 			[
@@ -91,8 +93,8 @@ describe("entity helpers", () => {
 		);
 	});
 
-	it("recentlyCaptured honours the limit and recency order", () => {
-		const recent = recentlyCaptured(entities, 3);
+	it("recentlyCapturedItems honours the limit and recency order", () => {
+		const recent = recentlyCapturedItems(entities, 3);
 		expect(recent).toHaveLength(3);
 		const recencies = recent.map((e) => e.recency);
 		expect(recencies).toEqual([...recencies].sort((a, b) => b - a));
@@ -111,5 +113,10 @@ describe("entity helpers", () => {
 		]);
 		const backfill = byId("todo_backfill") as Todo;
 		expect(projectForTodo(entities, backfill)?.id).toBe("proj_apiv2");
+	});
+
+	it("does not resolve a relation target absent from the provided list", () => {
+		const backfill = byId("todo_backfill") as Todo;
+		expect(projectForTodo([backfill], backfill)).toBeUndefined();
 	});
 });
