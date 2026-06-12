@@ -1,0 +1,59 @@
+{
+  "_doc": "Per-source watermarks for /deep-review-learn. 'cursor' = created_at of the newest review comment already mined from that source; the next learn run only processes comments strictly newer than this. Managed by /deep-review-learn and /deep-review-status — safe to read, edit cautiously.",
+  "sources": {
+    "anomalyco/opencode": {
+      "kind": "github",
+      "cursor": "2026-06-12T00:14:33Z",
+      "last_checked": "2026-06-12T13:45:00Z",
+      "last_run": {
+        "comments_seen": 600,
+        "comments_processed": 541,
+        "new_rules": 148,
+        "reinforced": 0,
+        "noise": 0
+      },
+      "totals": {
+        "runs": 1,
+        "new_rules_contributed": 148,
+        "reinforced_contributed": 0
+      },
+      "note": "Bootstrap source. Cursor set to the newest comment in the bootstrap harvest."
+    },
+    "hongyilyu/inkstone": {
+      "kind": "github",
+      "cursor": "2026-06-12T17:18:12Z",
+      "last_checked": "2026-06-12T18:09:14Z",
+      "last_run": {
+        "comments_seen": 125,
+        "comments_processed": 122,
+        "new_rules": 70,
+        "reinforced": 23,
+        "noise": 3
+      },
+      "totals": {
+        "runs": 1,
+        "new_rules_contributed": 70,
+        "reinforced_contributed": 23
+      },
+      "note": "Reviewers: CodeRabbit, ChatGPT Codex, human (hongyilyu)."
+    },
+    "earendil-works/pi": {
+      "kind": "github",
+      "cursor": "2026-06-11T15:43:28Z",
+      "last_checked": "2026-06-12T14:30:00Z",
+      "last_run": {
+        "comments_seen": 388,
+        "comments_processed": 358,
+        "new_rules": 50,
+        "reinforced": 52,
+        "noise": 17
+      },
+      "totals": {
+        "runs": 1,
+        "new_rules_contributed": 50,
+        "reinforced_contributed": 52
+      },
+      "note": "Large TypeScript TUI/CLI app. Reviewers: GitHub Copilot + human maintainers (badlogic et al.)."
+    }
+  }
+}

@@ -1,0 +1,33 @@
+# Learned rules — Types (`types`)
+
+_6 rules. Loaded by the `dr-types` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+
+## Do not introduce `any`; prefer a precise type, a derived utility type, or `unknown`  ·  `no-any-prefer-precise-or-unknown`
+- **Severity:** important  ·  **Support:** 5  ·  **Seen in:** #42, #125, #1593, #2910, #23068, #25573
+- **Rule:** Reject newly added `any` (`: any`, `as any`, `Record<string, any>`) when a safer type is practical. For opaque/pass-through JSON use `Record<string, unknown>` or a schema; for parsed JSON use `unknown`; for overrides of typed globals derive from the target (e.g. `Parameters<typeof fetch>`). Only flag when a concrete shape or `unknown` would plausibly compile instead; do not flag where `any` is genuinely unavoidable (untyped third-party interop). Drop framework-specific `Schema.Any` references.
+- **Detect:** Grep changed hunks for `: any`, `as any`, `Record<string, any>`, or `Schema.Any` (and implicitly-typed params on function overrides). For each: ask whether a concrete shape, a utility type like `Parameters<typeof X>`, or `unknown` would compile instead.
+
+## Do not use `as` casts that suppress real type/signature mismatches  ·  `no-unsafe-cast-hiding-mismatch`
+- **Severity:** important  ·  **Support:** 5  ·  **Seen in:** #1147, #1536, #1694, #26825, #28610, #29208
+- **Rule:** Reject `as` casts that suppress an incompatibility the compiler would otherwise catch: `{} as <DomainType>` defaults (build defaults through the real constructor/schema), `as unknown as <FnType>` over a narrower implementation, and `as <Union>` while mapping over a broader element type (collect narrowed elements so new variants fail to compile). Per hunk, ask whether the value/implementation actually satisfies the asserted type. Treat Effect/framework-generic-channel examples as illustrative, not required.
+- **Detect:** Flag `{} as <Type>`, `as unknown as <FnType>`, `as any` on a callback, `as <SomeUnion>` inside a `.map()` over a broader element type, and casts that erase a generic type parameter (e.g. `as Effect.Effect<...>`). Ask per hunk: does the implementation/value actually satisfy the asserted type, or is the cast forcing it?
+
+## Read properties directly after narrowing instead of casting  ·  `no-redundant-cast-after-narrowing`
+- **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #120, #124, #3215, #26178, #26825, #28301
+- **Rule:** After a discriminant/status early-return or `"prop" in x` check has narrowed a union, access the property directly instead of adding an `as {...}` cast (ask: would direct access type-check without it?). Conversely, when reading a property off a value still typed `unknown`/`object` after `"prop" in x`, cast once to an explicit shape (e.g. `x as { code?: unknown }`) before reading. Flag both the redundant cast and the missing boundary cast.
+- **Detect:** Flag `as {...}` on a property accessed immediately after `if (x.status !== "...") return` / a switch that already narrows to the owning variant — ask: would direct access type-check without the cast? Separately, flag `error.code`/`error.x` read off a value typed `unknown`/`object` (post `"x" in error`) with no cast to a typed shape.
+
+## Make declared types match runtime reality at boundaries  ·  `type-matches-runtime-contract`
+- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #1694, #4636, #4750, #4759, #30571, #30722
+- **Rule:** Ensure declared types match runtime reality at boundaries. Flag `createContext<T>()` with no default where `T` excludes `undefined` (consumers get `undefined` with no provider — type it `T | undefined` or pass a default). Flag a `headers` field/param typed `Record<string, string>` that flows to `fetch`/an HTTP client — `HeadersInit` is the runtime contract. Keep narrow to these two well-defined patterns.
+- **Detect:** Flag `createContext<T>()` calls with no default argument where `T` does not include `undefined` (ask: can a consumer call `useContext` with no provider mounted?). Flag a `headers` field/param typed `Record<string, string>` that flows to fetch/an HTTP client (ask: is `HeadersInit` the correct type?).
+
+## Use literal-union types instead of broad strings narrowed by runtime allowlists  ·  `prefer-literal-union-over-string-plus-runtime-check`
+- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #132, #1694, #28610
+- **Rule:** When a field/param has a fixed set of valid values, type it as a literal union (TS `'a' | 'b'` or `Schema.Literal`/`Schema.Union`) rather than a broad `string` validated against a hardcoded allowlist and forwarded with `as any`. Flag `string`-typed fields immediately checked via `[...].includes(x)` against a literal array or cast with `as any`; suggest the literal union. Do not flag when the value set is genuinely open or runtime-derived.
+- **Detect:** Flag schema/param fields typed `String`/`string` that are immediately checked against a hardcoded array of allowed values (`[...].includes(x)`) or forwarded with `as any`; suggest a literal-union type.
+
+## Validate external/plugin input at runtime instead of trusting the declared type  ·  `validate-at-trust-boundaries-not-types`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #125, #4759, #26980
+- **Rule:** At trust boundaries (plugin/external/network input), do not rely on a declared TS type to guarantee a value's shape before calling type-specific methods; even `Partial<Record<...,string>>` can arrive `undefined`/non-string. Flag iteration (`Object.entries`/`values`) over an externally-supplied record whose values reach string methods (`startsWith`/`slice`/`trim`) with no preceding `typeof === 'string'`/truthiness guard. Only apply at actual external boundaries, not internally-constructed values.
+- **Detect:** Flag `Object.entries`/`Object.values` over an external- or plugin-provided record where each value is passed to a function that calls string methods (`startsWith`/`slice`/`trim`) without a preceding `typeof === 'string'` / truthiness check — especially when the declared type is `Partial<Record<...>>`.

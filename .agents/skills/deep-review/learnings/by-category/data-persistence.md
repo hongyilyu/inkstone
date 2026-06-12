@@ -1,0 +1,93 @@
+# Learned rules — Data & persistence (`data-persistence`)
+
+_18 rules. Loaded by the `dr-data-persistence` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+
+## Persist state-change side effects only after the operation they represent succeeds  ·  `persist-only-after-operation-succeeds`
+- **Severity:** blocking  ·  **Support:** 3  ·  **Seen in:** #26167, #27002, #28434
+- **Rule:** Do not write or mutate persisted state (state files, DB records, marker records) before the fallible operation it represents has succeeded. Order the persist after the create/connect/network/stream call, or use a bracket/ensuring pattern that restores prior state on failure. When retrying an operation that may have committed partial side effects (mid-stream upserts/DB writes), reset or discard the in-flight attempt's persisted partial records before retrying so a successful retry does not combine stale partial data with the retried result.
+- **Detect:** In a hunk, check whether a write/persist call (writeDisabledState, updateMessage/updatePart, file write) precedes a fallible create/connect/stream call whose value the persisted state represents. Also flag Effect.retry / retry wrappers around code that calls updatePart/upsert/DB writes while accumulating into closure-captured state — ask: does the retry clear previously persisted partial parts? Yes/no per hunk: if the operation fails, is persisted state left describing a state that never took effect?
+
+## Make schema/data migrations safe: defaults for NOT NULL, atomic exclusive transactions  ·  `migration-safety-defaults-and-exclusive-txn`
+- **Severity:** blocking  ·  **Support:** 3  ·  **Seen in:** #800, #28914, #30705
+- **Rule:** When adding a NOT NULL column to a table that may contain rows, provide a DEFAULT (or backfill before adding the constraint), and keep parallel migration artifacts (raw .sql vs ORM/.ts migration) in sync on DEFAULT/constraint clauses. Run id/data migrations in an immediate (exclusive) transaction and treat them as atomic one-shot operations: when both an old and new row exist, keep the new row authoritative and only move references rather than merging arbitrary mutable metadata fields.
+- **Detect:** Grep migration diffs for `ADD COLUMN ... NOT NULL` lacking `DEFAULT`, and compare paired .sql vs .ts migration files in the same PR for divergence in DEFAULT/constraint clauses. For id migrations that read both old and new rows, ask: is it in an immediate/exclusive transaction, and does it overwrite new-row fields from the old row? Flag merges of mutable metadata where the new row should stay authoritative.
+
+## Keep durable persistence of streamed output independent of live client delivery  ·  `decouple-durable-persistence-from-client-delivery`
+- **Severity:** blocking  ·  **Support:** 2  ·  **Seen in:** #23, #24
+- **Rule:** Do not gate DB writes (or the loop draining the worker) on WebSocket send success. A client disconnect must not stop the run's output from being read and persisted. Distinguish a downstream client/subscriber disconnect from an actual worker EOF/crash: a failed ws_sender.send only means the client went away — don't break the loop and persist 'errored'/'worker_disconnected' for a run that may still be producing output or have already buffered 'done'.
+- **Detect:** A loop reads worker events, does a DB UPDATE for a delta, then ws_sender.send(...) with break/return on send error; an else branch records errored/disconnect. Ask: if the WS send fails and breaks the loop, does that stop persistence or falsely mark the run errored?
+
+## Treat a malformed stored snapshot as an apply error, not a Null fallback  ·  `fail-on-malformed-snapshot-not-fallback-to-null`
+- **Severity:** blocking  ·  **Support:** 1  ·  **Seen in:** #130
+- **Rule:** When a stored DB snapshot must be parsed before re-applying a mutation, treat parse failure (or a non-object value) as an internal apply error and return Err — do not normalize to Value::Null / default. Parsing with .unwrap_or(Value::Null) and rebuilding the document from that fallback silently drops sibling fields (occurred_at/ended_at/body) and persists a partial document.
+- **Detect:** Grep for serde_json::from_str(...).unwrap_or(serde_json::Value::Null) (or .unwrap_or_default()) where the parsed value is then merged/written back to the DB. Flag: is parse failure mapped to an error, and is the value validated as an Object before use?
+
+## Invalidate or re-probe caches of state that can change outside the app  ·  `invalidate-cache-for-externally-mutable-state`
+- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #23407, #27936
+- **Rule:** State that can change outside the application (installed tool versions, external resources, deployed assets) must not be cached indefinitely (staleTime/gcTime Infinity, per-key cache maps with no deletion path) without an invalidation or forced re-probe on relevant triggers (step entry, selection/add/remove). After upgrading/reinstalling a binary or config that a long-lived process loaded into memory, restart or signal that process rather than relying on a version re-probe. Derive cache-version constants from a build identifier instead of a hand-edited literal.
+- **Detect:** Find query options with staleTime/gcTime set to Infinity, per-key cache maps written but with no deletion/invalidation path, upgrade/install functions that mutate on-disk artifacts followed only by a version re-probe (no process restart), or a literal CACHE_NAME/cache-version constant with no build-id/hash interpolation. Ask per hunk: can the underlying value change externally, and is there any reprobe/clear/restart/auto-roll path?
+
+## Apply normalization at every read/replay/emit path, not only at write-time ingestion  ·  `normalize-at-emit-and-replay-not-just-ingest`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #26401
+- **Rule:** When you normalize, resize, or sanitize data, apply the same transform everywhere the data flows out, not only at the inbound write path. Emit events and invoke plugin hooks with the normalized data so consumers observe what is actually persisted and sent downstream (do not publish raw pre-transform payloads). Also add the safeguard at the read/replay path (e.g. toModelMessages) so already-stored oversized/invalid records and bypassed paths are normalized before use.
+- **Detect:** Find where an event/hook is published with one variable (resolvedParts/parts) while the saved record just below uses a different transformed variable — flag pre-normalization payload divergence. Separately, when a diff adds normalization at the prompt/write path, ask: is there a corresponding read/replay path (toModelMessages) that still sends stored data without the same normalization? Flag the missing emit-time or replay-time guard.
+
+## Keep storage keys consistent across all paths and collision-safe under interpolation  ·  `keep-storage-keys-consistent-and-collision-safe`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #25710, #30678
+- **Rule:** When you change a storage key to include a new dimension (scope/tenant/version), update every reader, writer, AND cleanup/clear/migrate path to use the same keying scheme so reset operations do not orphan scoped state. When building composite keys by interpolation, use an unambiguous encoding (length-prefixed or null-byte-delimited helper) if any interpolated component (URL, path, scope) can itself contain the delimiter, so keys stay unique and parse-safe.
+- **Detect:** On a diff that introduces a templated persistence key (`${base}:${scope}`), grep for the old unscoped key in clear/delete/migrate functions and ask whether they were updated to match. Also flag template-literal composite keys joined by a delimiter (':' '/' '-') where an interpolated value can contain that delimiter; suggest a collision-safe encoder.
+
+## Do not retain phantom or stale persisted records; prune against live config  ·  `prune-and-reject-phantom-persisted-records`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #27785, #28434
+- **Rule:** When loading a persisted set/list of IDs from disk into in-memory state, filter it against the currently-known/configured keys before storing and re-persisting, so the state file does not accumulate stale entries re-written on every change. For persisted records, retain one only if it holds actual material (tokens, payload, verifier), not when only a pure-qualifier/index field (url/id) is set, since a lone qualifier surfaces as a phantom entry through list/all/enumeration paths.
+- **Detect:** Find a normalize/keep predicate that returns an entry whenever any field is set, including a pure-qualifier field that is not real data — ask: can this entry be retained with only its qualifier set and then show up via all()/list? Separately, when a set/list is loaded from disk into state, check whether it is filtered against live config keys before being stored and re-persisted.
+
+## Do not back-fill missing persisted fields by re-running current selection logic  ·  `no-current-logic-backfill-for-missing-historical-field`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #800, #26227
+- **Rule:** When a newly-added field is absent on older persisted records, do not infer it by re-running current runtime/selection logic (session-id hash, current default, feature flag, percentage rollout) — that retroactively relabels history with a value that may differ from what was actually used. Use a neutral/legacy label or the known historical default when the field is missing.
+- **Detect:** Look for code reading an optional persisted field (metadata.provider, version, type) and, when absent, computing a substitute from current runtime state. Ask per hunk: could records predating this field have had a different real value than what the fallback now infers?
+
+## Strip all addressing/transport-only fields from a payload before persisting the canonical snapshot  ·  `strip-addressing-and-transport-only-fields-before-persisting`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #123, #131
+- **Rule:** When a payload mixes addressing/transport-only fields (target entity_id, source_journal_entry_id, other provenance directives) with data fields, strip ALL non-data fields before serializing into the canonical entity snapshot/revision. Use the target id only to select the row; persist a clean payload matching the entity's data schema. Stripping only the obvious id leaves provenance/addressing keys polluting the stored row and corrupting list/revision reads.
+- **Detect:** An update branch clones payload.as_object() and removes only entity_id then serializes into a data/snapshot column (entities.data, entity_revisions.data). Ask: are all non-data fields (source_journal_entry_id, target ids) removed, or do addressing/provenance keys leak into the persisted JSON?
+
+## Write a terminal status to the durable row on every run outcome  ·  `persist-terminal-status-on-every-run-outcome`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #22, #122
+- **Rule:** Whenever an entity is durably persisted in a transient/running state, ensure every terminal outcome path (success, error, failed spawn, rollback) writes the terminal status back to the DB. Forwarding live events is not persistence. Also avoid moving a run into a parked/recovery state that the recovery query (which filters on pending) cannot observe, or the user is left with a decided card and a permanently stuck run.
+- **Detect:** An INSERT sets status='running'/'pending' but no UPDATE to 'completed'/'errored'/'failed' exists on the worker done/error path; or a rollback sets status back to 'parked' after a proposal decision was committed and notified. Ask: for every way a run can end, is there a DB write transitioning the persisted status, and can the recovery query still see it?
+
+## Make updates to tightly-coupled state atomic  ·  `atomic-updates-for-coupled-state`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #31736
+- **Rule:** Updates to closely-related pieces of the same entity's state should be atomic. Prefer a single API call that updates all coupled fields; if the API must stay split, sequence the calls with await and error handling so a partial failure is surfaced (and ideally rolled back) rather than letting the persisted state drift silently into an inconsistent partial-update.
+- **Detect:** Look for two or more back-to-back fire-and-forget server/API mutations updating related fields of the same entity with no await/error handling between them and no transaction. Ask: if the second call fails, is the persisted state left inconsistent?
+
+## Invalidate or refetch the cached list query after a create/mutation  ·  `invalidate-query-cache-after-mutating-cached-list`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #41
+- **Rule:** After a mutation that should change a cached list, invalidate or refetch the backing query key (queryClient.invalidateQueries(['threads'])). With staleTime: Infinity there is no automatic refetch, so a create that only updates a local store won't appear in the cached list view until a full reload.
+- **Detect:** A create/sendNew* handler updates a store but has no invalidateQueries/refetch/setQueryData for the list's queryKey; cross-check queryClient config for staleTime: Infinity. Ask: does this create path refresh the cached list query?
+
+## Tie a row update and its event-log write to a single authoritative key  ·  `tie-row-update-and-event-log-to-one-authoritative-key`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #104
+- **Rule:** When a lifecycle transition updates a row keyed by one id (proposal_id) but writes an associated event log (run_events) using a separately caller-supplied id (run_id), the two can diverge — one proposal is mutated while events are appended to a different run. Constrain the UPDATE by the joined run_id, or fetch the authoritative run_id from the DB for that proposal and use the same value for the event insert; do not trust a caller-supplied id that can diverge from the row being mutated.
+- **Detect:** A transition fn does `UPDATE proposals WHERE proposal_id = ?` but `INSERT INTO run_events (run_id, ...)` using a parameter run_id rather than one derived from the same proposal/tool_calls row. Ask: can the event-insert run_id differ from the proposal's true run_id?
+
+## Preserve the existing data/DB path for all platforms when changing path derivation  ·  `preserve-default-data-path-across-platforms-on-change`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #26
+- **Rule:** When changing how a default data/DB file path is resolved (e.g. replacing directories::ProjectDirs::data_dir() with raw %APPDATA%), preserve the previous resolved path on every platform, or add a migration/fallback from the old location. A silent path change (dropping a segment on one OS) makes upgraded users open a new empty store and appear to lose all persisted data.
+- **Detect:** Edits to data-dir resolution fns (ProjectDirs/data_dir -> hand-rolled env-var paths) that alter final path segments per OS. Ask: does the new default path match the old one on every platform, or is there a migration/fallback from the old location?
+
+## Don't ON DELETE CASCADE a row whose id is also referenced from a store the cascade can't reach  ·  `restrict-cascade-or-cover-all-stores-for-cross-store-refs`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #127
+- **Rule:** A FOREIGN KEY ... ON DELETE CASCADE that removes a row whose id is also persisted somewhere the cascade does not reach (a serialized JSON/text body, a denormalized snapshot column, another table) leaves a dangling reference. Either restrict the delete (ON DELETE RESTRICT / no cascade) so removal goes through an explicit mutation that rewrites all sources in one transaction, or ensure the cascade covers every place the id is stored. Detection: in .sql migrations grep for 'REFERENCES ... ON DELETE CASCADE'; for each, check whether the cascaded row's id is also stored in a JSON/text column or another table the cascade does not touch.
+- **Detect:** In .sql migrations grep for 'REFERENCES .* ON DELETE CASCADE'. For each cascading FK ask: is the cascaded row's id (or target id) also stored in a JSON/text body column or another table the cascade does not touch, while an ADR documents atomic removal? Flag the dangling-reference risk.
+
+## Wrap multi-field partial updates in a single transaction for all-or-nothing semantics  ·  `wrap-multi-field-partial-update-in-one-transaction`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #65
+- **Rule:** A multi-field partial-update handler that performs each optional field write as a separate non-transactional statement leaves settings/state partially mutated if a later write fails while still returning an error to the caller. Wrap the conditional upserts plus the final re-read in one transaction so the request is all-or-nothing.
+- **Detect:** A handler with sequential `if let Some(x) = params.x { db::set_...(pool, ...).await? }` for multiple fields, each using the pool directly (not a shared tx). Flag the missing wrapping transaction for an atomic partial update.
+
+## Don't reuse a display-only flattened string as the editable model for structured content  ·  `lossy-flattened-display-string-must-not-be-editable-model`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #129
+- **Rule:** Don't reuse a display-only flattened string (structured body nodes like entity_ref collapsed to text placeholders) as the editable model — the save path reserializes it as plain text and silently destroys the structured references. Keep a structured editable model that round-trips the nodes, or disable inline edit when the body contains structured nodes that flattening would corrupt.
+- **Detect:** A body array mapped to a single display string converting entity_ref/structured nodes to text, and that same string feeds a textarea whose save handler rebuilds body as [{type:'text'}]. Flag lossy round-trip; ask: are structured nodes preserved or is edit disabled when present?
