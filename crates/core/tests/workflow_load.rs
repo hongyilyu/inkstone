@@ -149,15 +149,17 @@ fn default_workflow_prompts_for_journal_entry_boundary() {
         "default.toml system_prompt must preserve read_thread while forbidding cross-thread Journal Entry update/delete, got: {system_prompt:?}"
     );
     assert!(
-        lower.contains("stop after journal entry intake")
-            && !lower.contains("person extraction")
-            && !lower.contains("project extraction")
-            && !lower.contains("todo extraction")
-            && !lower.contains("entity refs")
-            && !lower.contains("daily notes")
-            && !lower.contains("auto-approval")
-            && !lower.contains("router"),
-        "default.toml system_prompt must stop after intake and keep extraction/router behavior out of scope, got: {system_prompt:?}"
+        !lower.contains("stop after journal entry intake"),
+        "default.toml system_prompt must no longer stop after intake — extraction now follows an accepted Journal Entry, got: {system_prompt:?}"
+    );
+    assert!(
+        lower.contains("accepted journal entry")
+            && lower.contains("search_entities")
+            && lower.contains("create_person")
+            && lower.contains("create_project")
+            && lower.contains("create_todo")
+            && lower.contains("reference_existing_entity_from_journal_entry"),
+        "default.toml system_prompt must describe extracting People/Projects/Todos from an accepted Journal Entry and name search_entities, got: {system_prompt:?}"
     );
     let tools = doc
         .get("tools")
