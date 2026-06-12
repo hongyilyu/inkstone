@@ -28,11 +28,13 @@ afterEach(() => {
 	for (const key of FAUX_ENV_KEYS) delete process.env[key];
 });
 
-// Write a `{ journal_text, person_name }` scenario JSON to a tempfile and point
-// INKSTONE_FAUX_EXTRACT_PARAMS at it; remove the dir after the case.
+// Write a `{ journal_text, person_name?, project_name? }` scenario JSON to a
+// tempfile and point INKSTONE_FAUX_EXTRACT_PARAMS at it; remove the dir after
+// the case.
 function withExtractScenario(scenario: {
 	journal_text: string;
-	person_name: string;
+	person_name?: string;
+	project_name?: string;
 }): void {
 	const dir = mkdtempSync(path.join(tmpdir(), "faux-extract-"));
 	const file = path.join(dir, "scenario.json");
@@ -1086,5 +1088,311 @@ describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 				},
 			},
 		]);
+	});
+});
+
+describe("faux-worker extraction mode — Project target", () => {
+	it("fresh: proposes a create_journal_entry whose body mentions the project", async () => {
+		withExtractScenario({
+			journal_text: "Kicked off the API v2 migration today.",
+			project_name: "Ship API v2 migration",
+		});
+
+		const { requests } = await runChat(extractManifest(), {
+			tc_extract_journal: {
+				ok: {
+					content: [{ type: "text", text: "Accepted. Created Journal Entry." }],
+				},
+			},
+		});
+
+		const proposals = proposalsIn(requests);
+		expect(proposals).toHaveLength(1);
+		expect(proposals[0].mutation_kind).toBe("create_journal_entry");
+		expect(JSON.stringify(proposals[0].payload)).toContain("API v2 migration");
+	});
+
+	it("resume after JE accepted, search empty: reads then proposes create_project sourced from the JE", async () => {
+		withExtractScenario({
+			journal_text: "Kicked off the API v2 migration today.",
+			project_name: "Ship API v2 migration",
+		});
+
+		const { requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "Kicked off the API v2 migration." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=Kicked off the API v2 migration today.).",
+				),
+			]),
+			{
+				tc_extract_read: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "je-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [
+												{
+													type: "text",
+													text: "Kicked off the API v2 migration today.",
+												},
+											],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_search_initial: {
+					ok: {
+						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
+					},
+				},
+				tc_extract_project: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Created Project (name=Ship API v2 migration).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// read -> search -> propose, in order; the search targets projects.
+		expect(requests.map((r) => r.name)).toEqual([
+			"read_current_thread_journal_entries",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		expect(
+			requests.find((r) => r.name === "search_entities")?.params,
+		).toMatchObject({ type: "project", query: "Ship API v2 migration" });
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_project",
+				payload: {
+					name: "Ship API v2 migration",
+					source_journal_entry_id: "je-1",
+				},
+			},
+		]);
+	});
+
+	it("resume after JE accepted, search finds the project: proposes a reference to it", async () => {
+		withExtractScenario({
+			journal_text: "Kicked off the API v2 migration today.",
+			project_name: "Ship API v2 migration",
+		});
+
+		const { requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "Kicked off the API v2 migration." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=Kicked off the API v2 migration today.).",
+				),
+			]),
+			{
+				tc_extract_read: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "je-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [
+												{
+													type: "text",
+													text: "Kicked off the API v2 migration today.",
+												},
+											],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_search_initial: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									results: [
+										{
+											id: "proj-1",
+											type: "project",
+											label: "Ship API v2 migration",
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_reference: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=proj-1, body=Met .).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		expect(requests.map((r) => r.name)).toEqual([
+			"read_current_thread_journal_entries",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		expect(
+			requests.find((r) => r.name === "search_entities")?.params,
+		).toMatchObject({ type: "project", query: "Ship API v2 migration" });
+		const proposals = proposalsIn(requests);
+		expect(proposals).toHaveLength(1);
+		expect(proposals[0].mutation_kind).toBe(
+			"reference_existing_entity_from_journal_entry",
+		);
+		expect(proposals[0].payload).toMatchObject({
+			source_entity_id: "je-1",
+			target_entity_id: "proj-1",
+		});
+	});
+
+	it("resume after create_project accepted: re-searches with a distinct id, then proposes a reference using the JE id from the transcript", async () => {
+		withExtractScenario({
+			journal_text: "Kicked off the API v2 migration today.",
+			project_name: "Ship API v2 migration",
+		});
+
+		const { requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "Kicked off the API v2 migration." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=Kicked off the API v2 migration today.).",
+				),
+				assistantCall("tc_extract_read", "read_current_thread_journal_entries"),
+				readEntriesResult("tc_extract_read", [
+					{
+						entity_id: "je-1",
+						occurred_at: "2026-06-10T10:30:00",
+						body: [
+							{ type: "text", text: "Kicked off the API v2 migration today." },
+						],
+					},
+				]),
+				assistantCall("tc_extract_search_initial", "search_entities"),
+				searchResult("tc_extract_search_initial", []),
+				assistantCall("tc_extract_project", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_project",
+					"Accepted. Created Project (name=Ship API v2 migration).",
+				),
+			]),
+			{
+				tc_extract_search_recheck: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									results: [
+										{
+											id: "proj-new",
+											type: "project",
+											label: "Ship API v2 migration",
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_reference: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=proj-new, body=Met .).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// No fresh read this round — straight to search then propose.
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		expect(requests.find((r) => r.name === "search_entities")?.toolCallId).toBe(
+			"tc_extract_search_recheck",
+		);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "reference_existing_entity_from_journal_entry",
+				payload: {
+					source_entity_id: "je-1",
+					target_entity_id: "proj-new",
+					body: [
+						{ type: "text", text: "Met " },
+						{ type: "entity_ref" },
+						{ type: "text", text: "." },
+					],
+				},
+			},
+		]);
+	});
+
+	it("resume after JE accepted with NO extraction target: confirms, proposes nothing (category stays plain text)", async () => {
+		withExtractScenario({
+			journal_text: "Spent the morning on Work.",
+		});
+
+		const { events, requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "Spent the morning on Work." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=Spent the morning on Work.).",
+				),
+			]),
+		);
+
+		expect(requests).toEqual([]);
+		const text = events
+			.filter(
+				(e): e is { kind: "text_delta"; delta: string } =>
+					e.kind === "text_delta",
+			)
+			.map((e) => e.delta)
+			.join("");
+		expect(text).toContain("Done — added it.");
+		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 });

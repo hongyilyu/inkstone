@@ -228,9 +228,27 @@ function deleteJournalEntryProposal(entry: JournalEntrySnapshot) {
 // (INKSTONE_FAUX_EXTRACT_PARAMS), not parsed from NL — the worker still issues
 // REAL search_entities calls and branches on the REAL (empty vs non-empty) result.
 
+// Additive scenario shape (backward-compatible with slice-4's person-only
+// `{journal_text, person_name}`). Target precedence: `project_name` →
+// Project, else `person_name` → Person (slice-4 behavior, unchanged), else NO
+// extraction target (the "category stays plain text" path).
 interface ExtractScenario {
 	journal_text: string;
-	person_name: string;
+	person_name?: string;
+	project_name?: string;
+}
+
+type ExtractTarget = { kind: "person" | "project"; name: string };
+
+/** Resolve the extraction target by precedence, or `undefined` for no-target. */
+function extractTarget(scenario: ExtractScenario): ExtractTarget | undefined {
+	if (scenario.project_name !== undefined && scenario.project_name.length > 0) {
+		return { kind: "project", name: scenario.project_name };
+	}
+	if (scenario.person_name !== undefined && scenario.person_name.length > 0) {
+		return { kind: "person", name: scenario.person_name };
+	}
+	return undefined;
 }
 
 function readExtractScenario(): ExtractScenario {
@@ -241,7 +259,11 @@ function readExtractScenario(): ExtractScenario {
 		);
 	}
 	const parsed = JSON.parse(readFileSync(file, "utf8")) as ExtractScenario;
-	return { journal_text: parsed.journal_text, person_name: parsed.person_name };
+	return {
+		journal_text: parsed.journal_text,
+		person_name: parsed.person_name,
+		project_name: parsed.project_name,
+	};
 }
 
 interface SearchResultRow {
@@ -317,7 +339,7 @@ function latestSearchResults(
 type ExtractionPhase =
 	| "propose_journal"
 	| "after_journal"
-	| "after_create_person"
+	| "after_create_entity"
 	| "done"
 	| "dismiss";
 
@@ -343,7 +365,11 @@ export function extractionPhase(manifest: WorkerManifest): ExtractionPhase {
 	const accepted = (substr: string) =>
 		decisions.some((d) => d.content.includes(substr));
 	if (accepted("Accepted. Referenced Entity")) return "done";
-	if (accepted("Accepted. Created Person")) return "after_create_person";
+	if (
+		accepted("Accepted. Created Person") ||
+		accepted("Accepted. Created Project")
+	)
+		return "after_create_entity";
 	if (accepted("Accepted. Created Journal Entry")) return "after_journal";
 	// No relevant accepted Decision yet — confirm and stop rather than loop.
 	return "done";
@@ -360,33 +386,42 @@ function createJournalEntryForExtraction(scenario: ExtractScenario) {
 	};
 }
 
-function createPersonProposal(
-	scenario: ExtractScenario,
-	journalEntryId: string,
-) {
+// Per-kind labels keep the person path's prose byte-identical while letting the
+// project path reuse the same machine.
+const KIND_LABEL: Record<ExtractTarget["kind"], string> = {
+	person: "Person",
+	project: "Project",
+};
+
+function createEntityProposal(target: ExtractTarget, journalEntryId: string) {
 	return {
-		mutation_kind: "create_person",
+		mutation_kind:
+			target.kind === "project" ? "create_project" : "create_person",
 		payload: {
-			name: scenario.person_name,
+			name: target.name,
 			source_journal_entry_id: journalEntryId,
 		},
-		rationale: "the Journal Entry mentions a Person not yet in the Workspace",
+		rationale: `the Journal Entry mentions a ${KIND_LABEL[target.kind]} not yet in the Workspace`,
 	};
 }
 
-function referencePersonProposal(journalEntryId: string, personId: string) {
+function referenceEntityProposal(
+	target: ExtractTarget,
+	journalEntryId: string,
+	entityId: string,
+) {
 	return {
 		mutation_kind: "reference_existing_entity_from_journal_entry",
 		payload: {
 			source_entity_id: journalEntryId,
-			target_entity_id: personId,
+			target_entity_id: entityId,
 			body: [
 				{ type: "text", text: "Met " },
 				{ type: "entity_ref" },
 				{ type: "text", text: "." },
 			],
 		},
-		rationale: "link the accepted Person from this Journal Entry",
+		rationale: `link the accepted ${KIND_LABEL[target.kind]} from this Journal Entry`,
 	};
 }
 
@@ -396,11 +431,16 @@ function setExtractResponses(
 	manifest: WorkerManifest,
 ): void {
 	const scenario = readExtractScenario();
+	const target = extractTarget(scenario);
 	const phase = extractionPhase(manifest);
 
 	if (phase === "done") {
 		faux.setResponses([
-			fauxAssistantMessage(`Done — extracted ${scenario.person_name}.`),
+			fauxAssistantMessage(
+				target !== undefined
+					? `Done — extracted ${target.name}.`
+					: "Done — added it.",
+			),
 		]);
 		return;
 	}
@@ -425,8 +465,15 @@ function setExtractResponses(
 		return;
 	}
 
-	// Both "after_journal" and "after_create_person" end with a search → propose
-	// chain. after_journal first reads the JE to learn its id; after_create_person
+	// No-target / category case: the JE is accepted but the scenario names no
+	// entity to extract, so confirm and propose NOTHING (category stays plain text).
+	if (target === undefined) {
+		faux.setResponses([fauxAssistantMessage("Done — added it.")]);
+		return;
+	}
+
+	// Both "after_journal" and "after_create_entity" end with a search → propose
+	// chain. after_journal first reads the JE to learn its id; after_create_entity
 	// already has the JE id in the transcript and re-searches to resolve the new id.
 	const proposeFromSearch = (context: { messages: AnyMessage[] }) => {
 		const journalEntryId =
@@ -441,13 +488,14 @@ function setExtractResponses(
 		const found = results[0];
 		const proposal =
 			found !== undefined
-				? referencePersonProposal(journalEntryId, found.id)
-				: createPersonProposal(scenario, journalEntryId);
+				? referenceEntityProposal(target, journalEntryId, found.id)
+				: createEntityProposal(target, journalEntryId);
+		const createId =
+			target.kind === "project" ? "tc_extract_project" : "tc_extract_person";
 		return fauxAssistantMessage(
 			[
 				fauxToolCall("propose_workspace_mutation", proposal, {
-					id:
-						found !== undefined ? "tc_extract_reference" : "tc_extract_person",
+					id: found !== undefined ? "tc_extract_reference" : createId,
 				}),
 			],
 			{ stopReason: "toolUse" },
@@ -455,18 +503,18 @@ function setExtractResponses(
 	};
 	// `tool_calls.id` is a global PRIMARY KEY, so the two searches in the
 	// missing→create→reference Run must carry DISTINCT ids. Key the id off the
-	// phase: the after_journal search and the after_create_person re-search never
+	// phase: the after_journal search and the after_create_entity re-search never
 	// share a Run-step, so phase-distinct constants stay unique and deterministic.
 	const searchToolCallId =
-		phase === "after_create_person"
+		phase === "after_create_entity"
 			? "tc_extract_search_recheck"
 			: "tc_extract_search_initial";
-	const searchPerson = () =>
+	const searchEntity = () =>
 		fauxAssistantMessage(
 			[
 				fauxToolCall(
 					"search_entities",
-					{ type: "person", query: scenario.person_name },
+					{ type: target.kind, query: target.name },
 					{ id: searchToolCallId },
 				),
 			],
@@ -486,15 +534,15 @@ function setExtractResponses(
 				],
 				{ stopReason: "toolUse" },
 			),
-			searchPerson,
+			searchEntity,
 			proposeFromSearch,
 			finalConfirm,
 		]);
 		return;
 	}
 
-	// phase === "after_create_person"
-	faux.setResponses([searchPerson, proposeFromSearch, finalConfirm]);
+	// phase === "after_create_entity"
+	faux.setResponses([searchEntity, proposeFromSearch, finalConfirm]);
 }
 
 /** Build interpreter deps that script pi-ai's faux provider from `INKSTONE_FAUX_*` env vars — see docs/design/worker.md for the five modes. */
