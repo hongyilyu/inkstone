@@ -4,8 +4,10 @@ import { Effect } from "effect";
 import { entities } from "@/data/mock/entities";
 import type {
 	JournalEntry,
+	JournalEntryBodyNode,
 	LibraryItem,
 	Person,
+	Project,
 	Todo,
 } from "@/lib/libraryItems";
 import { useRuntime } from "@/runtime";
@@ -18,9 +20,19 @@ interface LiveEntityRow {
 	readonly id: string;
 	readonly data: unknown;
 	readonly created_at: number;
+	readonly refs?: readonly LiveResolvedEntityRef[];
 }
 
-/** The Library's displayed items — live Journal/People/Todo rows from Core, preview rows for the rest; live rows replace preview rows per kind. */
+interface LiveResolvedEntityRef {
+	readonly id: string;
+	readonly source_entity_id: string;
+	readonly target_entity_id: string;
+	readonly target_entity_type: "person" | "project" | "todo";
+	readonly target_title?: string;
+	readonly label_snapshot?: string;
+}
+
+/** The Library's displayed items — live Journal/People/Projects/Todo rows from Core, preview rows for the rest; live rows replace preview rows per kind. */
 export function useLibraryItems() {
 	const runtime = useRuntime();
 	return useQuery({
@@ -55,21 +67,37 @@ export function useLibraryItems() {
 				// Web preview runs without Core — keep preview items; strict live row validation stays below this read boundary.
 				return previewItems;
 			}
+			let projects: readonly LiveEntityRow[] = [];
+			try {
+				const projectRows = await runtime.runPromise(
+					Effect.gen(function* () {
+						const client = yield* WsClient;
+						return yield* client.listEntities("project");
+					}),
+				);
+				projects = projectRows.entities;
+			} catch {
+				// Projects are additive during this migration; keep the other live lists if only this read fails.
+			}
 			const { journalEntries, todos, people } = rows;
 			const liveJournalEntries = journalEntries.map(toLibraryJournalEntry);
 			const liveTodos = todos.map(toLibraryTodo);
 			const livePeople = people.map(toLibraryPerson);
+			const liveProjects = projects.map(toLibraryProject);
 			const hasLiveTodos = liveTodos.length > 0;
 			const hasLivePeople = livePeople.length > 0;
+			const hasLiveProjects = liveProjects.length > 0;
 			const remainingPreviewItems = previewItems.filter(
 				(e) =>
 					(e.kind !== "todo" || !hasLiveTodos) &&
-					(e.kind !== "person" || !hasLivePeople),
+					(e.kind !== "person" || !hasLivePeople) &&
+					(e.kind !== "project" || !hasLiveProjects),
 			);
 			return [
 				...liveJournalEntries,
 				...liveTodos,
 				...livePeople,
+				...liveProjects,
 				...remainingPreviewItems,
 			];
 		},
@@ -96,35 +124,42 @@ function toLibraryJournalEntry(row: LiveEntityRow): JournalEntry {
 	if (!Array.isArray(data.body) || data.body.length === 0) {
 		throw new Error(`Invalid journal_entry ${row.id}: body must not be empty`);
 	}
-	const body = data.body
-		.map((node) => {
-			if (!node || typeof node !== "object") {
+	const refsById = new Map((row.refs ?? []).map((ref) => [ref.id, ref]));
+	const body: JournalEntryBodyNode[] = data.body.map((node) => {
+		if (!node || typeof node !== "object") {
+			throw new Error(
+				`Invalid journal_entry ${row.id}: body nodes must be objects`,
+			);
+		}
+		const record = node as Record<string, unknown>;
+		if (record.type === "entity_ref") {
+			if (typeof record.ref_id !== "string" || record.ref_id.trim() === "") {
 				throw new Error(
-					`Invalid journal_entry ${row.id}: body nodes must be objects`,
+					`Invalid journal_entry ${row.id}: entity_ref ref_id must not be empty`,
 				);
 			}
-			const record = node as Record<string, unknown>;
-			if (record.type === "entity_ref") {
-				if (typeof record.ref_id !== "string" || record.ref_id.trim() === "") {
-					throw new Error(
-						`Invalid journal_entry ${row.id}: entity_ref ref_id must not be empty`,
-					);
-				}
-				return `[entity_ref:${record.ref_id}]`;
-			}
-			if (record.type !== "text") {
-				throw new Error(
-					`Invalid journal_entry ${row.id}: body supports only text or entity_ref nodes`,
-				);
-			}
-			if (typeof record.text !== "string" || record.text.trim() === "") {
-				throw new Error(
-					`Invalid journal_entry ${row.id}: body text must not be empty`,
-				);
-			}
-			return record.text;
-		})
-		.join("");
+			const ref = refsById.get(record.ref_id);
+			return {
+				type: "entity_ref",
+				refId: record.ref_id,
+				targetEntityId: ref?.target_entity_id,
+				targetKind: ref?.target_entity_type,
+				targetTitle: ref?.target_title,
+				labelSnapshot: ref?.label_snapshot,
+			};
+		}
+		if (record.type !== "text") {
+			throw new Error(
+				`Invalid journal_entry ${row.id}: body supports only text or entity_ref nodes`,
+			);
+		}
+		if (typeof record.text !== "string" || record.text.trim() === "") {
+			throw new Error(
+				`Invalid journal_entry ${row.id}: body text must not be empty`,
+			);
+		}
+		return { type: "text", text: record.text };
+	});
 	return {
 		id: row.id,
 		kind: "journal_entry",
@@ -173,4 +208,31 @@ function toLibraryPerson(row: LiveEntityRow): Person {
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Person;
+}
+
+/** The Project `data` shape Core stores: `{name, status?, summary?}`. */
+interface ProjectData {
+	name?: unknown;
+	status?: unknown;
+	summary?: unknown;
+}
+
+function toLibraryProject(row: LiveEntityRow): Project {
+	const data = (row.data ?? {}) as ProjectData;
+	const status =
+		data.status === "review" ||
+		data.status === "paused" ||
+		data.status === "done" ||
+		data.status === "active"
+			? data.status
+			: "active";
+	return {
+		id: row.id,
+		kind: "project",
+		name: typeof data.name === "string" ? data.name : "Untitled",
+		status,
+		summary: typeof data.summary === "string" ? data.summary : undefined,
+		recency: row.created_at,
+		createdAt: new Date(row.created_at).toLocaleDateString(),
+	} satisfies Project;
 }

@@ -9,7 +9,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use crate::db;
-use crate::protocol::{EntityListParams, EntityListResult, EntityRow};
+use crate::protocol::{EntityListParams, EntityListResult, EntityRow, ResolvedEntityRef};
 
 pub(super) async fn handle_list(
     pool: &SqlitePool,
@@ -30,6 +30,18 @@ pub(super) async fn handle_list(
                 data: row.data,
                 created_at: row.created_at,
                 updated_at: row.updated_at,
+                refs: row
+                    .refs
+                    .into_iter()
+                    .map(|r| ResolvedEntityRef {
+                        id: r.id,
+                        source_entity_id: r.source_entity_id,
+                        target_entity_id: r.target_entity_id,
+                        target_entity_type: r.target_entity_type,
+                        target_title: r.target_title,
+                        label_snapshot: r.label_snapshot,
+                    })
+                    .collect(),
             })
             .collect();
 

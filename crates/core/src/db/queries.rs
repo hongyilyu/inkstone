@@ -2,7 +2,7 @@
 //! and runs one statement — no business rules, no orchestration. `pub(super)`
 //! scopes the surface to the `db` module.
 
-use sqlx::{Executor, Sqlite};
+use sqlx::{Executor, QueryBuilder, Sqlite};
 use uuid::Uuid;
 
 // ─── threads ──────────────────────────────────────────────────────────
@@ -394,6 +394,49 @@ where
     .await
 }
 
+pub(super) async fn entity_type_by_id<'e, E>(
+    executor: E,
+    entity_id: &str,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT type FROM entities WHERE id = ?1")
+        .bind(entity_id)
+        .fetch_optional(executor)
+        .await
+}
+
+pub(super) async fn entity_refs_for_sources<'e, E>(
+    executor: E,
+    source_entity_ids: &[String],
+) -> sqlx::Result<Vec<(String, String, String, String, String, Option<String>)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    if source_entity_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT er.id, er.source_entity_id, er.target_entity_id, \
+                target.type, target.data, er.label_snapshot \
+         FROM entity_refs er \
+         JOIN entities target ON target.id = er.target_entity_id \
+         WHERE er.source_entity_id IN (",
+    );
+    let mut separated = query.separated(", ");
+    for source_entity_id in source_entity_ids {
+        separated.push_bind(source_entity_id);
+    }
+    separated.push_unseparated(
+        ") AND target.type IN ('person', 'project', 'todo') \
+         ORDER BY er.source_entity_id, er.created_at, er.id",
+    );
+
+    query.build_query_as().fetch_all(executor).await
+}
+
 /// Read one accepted Journal Entry's current snapshot by id from the canonical
 /// `entities` row. `None` when the id does not exist or is not a journal entry.
 pub(super) async fn current_journal_entry_by_id<'e, E>(
@@ -637,6 +680,52 @@ where
     .fetch_optional(executor)
     .await?;
     Ok(row.is_some())
+}
+
+pub(super) async fn entity_ref_id_for_source_target<'e, E>(
+    executor: E,
+    source_entity_id: &str,
+    target_entity_id: &str,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT id FROM entity_refs \
+         WHERE source_entity_id = ?1 AND target_entity_id = ?2 \
+         LIMIT 1",
+    )
+    .bind(source_entity_id)
+    .bind(target_entity_id)
+    .fetch_optional(executor)
+    .await
+}
+
+pub(super) async fn insert_entity_ref<'e, E>(
+    executor: E,
+    id: &str,
+    source_entity_id: &str,
+    target_entity_id: &str,
+    label_snapshot: Option<&str>,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO entity_refs \
+         (id, source_entity_id, target_entity_id, label_snapshot, created_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(source_entity_id, target_entity_id) DO NOTHING",
+    )
+    .bind(id)
+    .bind(source_entity_id)
+    .bind(target_entity_id)
+    .bind(label_snapshot)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
 }
 
 pub(super) async fn delete_entity<'e, E>(executor: E, entity_id: &str) -> sqlx::Result<u64>

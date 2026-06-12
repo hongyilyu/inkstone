@@ -42,7 +42,25 @@ export interface Person extends LibraryItemBase {
 export interface JournalEntry extends LibraryItemBase {
 	kind: "journal_entry";
 	occurredAt: string;
-	body: string;
+	body: JournalEntryBodyNode[];
+}
+
+export type JournalEntryBodyNode =
+	| JournalEntryBodyTextNode
+	| JournalEntryBodyEntityRefNode;
+
+export interface JournalEntryBodyTextNode {
+	type: "text";
+	text: string;
+}
+
+export interface JournalEntryBodyEntityRefNode {
+	type: "entity_ref";
+	refId: string;
+	targetEntityId?: string;
+	targetKind?: Extract<LibraryItemKind, "person" | "project" | "todo">;
+	targetTitle?: string;
+	labelSnapshot?: string;
 }
 
 export type ProjectStatus = "active" | "review" | "paused" | "done";
@@ -144,8 +162,18 @@ export function libraryItemKindForSlug(
 
 /** The user-facing title of any Library item. */
 export function libraryItemTitle(e: LibraryItem): string {
-	if (e.kind === "journal_entry") return e.body;
+	if (e.kind === "journal_entry") return journalEntryBodyText(e.body);
 	return e.kind === "person" || e.kind === "project" ? e.name : e.title;
+}
+
+export function journalEntryBodyText(body: JournalEntryBodyNode[]): string {
+	return body
+		.map((node) =>
+			node.type === "text"
+				? node.text
+				: (node.targetTitle ?? node.labelSnapshot ?? "Referenced entity"),
+		)
+		.join("");
 }
 
 /** A one-line subtitle for list rows and search results. */

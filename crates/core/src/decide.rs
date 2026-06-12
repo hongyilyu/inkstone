@@ -248,10 +248,14 @@ async fn apply_or_reject(
     // checked here so a payload-less retry replays via the branches above); a
     // plain accept ignores any wire payload. The applied payload is the edited
     // one for an edit, else the proposed payload; validate it first.
-    if matches!(decision, Decision::Edit) && proposal.mutation_kind == "delete_journal_entry" {
-        return Err(DecideError::Invalid(
-            "delete_journal_entry does not support edit".to_string(),
-        ));
+    if matches!(decision, Decision::Edit)
+        && (proposal.mutation_kind == "delete_journal_entry"
+            || proposal.mutation_kind == "reference_existing_entity_from_journal_entry")
+    {
+        return Err(DecideError::Invalid(format!(
+            "{} does not support edit",
+            proposal.mutation_kind
+        )));
     }
 
     let edited_payload = match decision {
@@ -319,13 +323,58 @@ async fn validate_mutation_target(
     mutation_kind: &str,
     payload: &serde_json::Value,
 ) -> Result<(), DecideError> {
-    if mutation_kind != "update_journal_entry" && mutation_kind != "delete_journal_entry" {
-        return Ok(());
+    match mutation_kind {
+        "update_journal_entry" | "delete_journal_entry" => {
+            let entity_id =
+                entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
+                    DecideError::Invalid(format!("entity_id is required for {mutation_kind}"))
+                })?;
+            validate_current_thread_journal_entry(pool, run_id, mutation_kind, entity_id).await?;
+        }
+        "reference_existing_entity_from_journal_entry" => {
+            let source_entity_id =
+                entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
+                    DecideError::Invalid(
+                        "source_entity_id is required for reference_existing_entity_from_journal_entry"
+                            .to_string(),
+                    )
+                })?;
+            validate_current_thread_journal_entry(pool, run_id, mutation_kind, source_entity_id)
+                .await?;
+
+            let target_entity_id =
+                entities::reference_target_entity_id(payload).ok_or_else(|| {
+                    DecideError::Invalid(
+                        "target_entity_id is required for reference_existing_entity_from_journal_entry"
+                            .to_string(),
+                    )
+                })?;
+            let Some(target_type) = db::entity_type_by_id(pool, target_entity_id)
+                .await
+                .map_err(|e| DecideError::Internal(e.into()))?
+            else {
+                return Err(DecideError::Invalid(
+                    "target_entity_id must be an existing accepted Entity".to_string(),
+                ));
+            };
+            if !matches!(target_type.as_str(), "person" | "project" | "todo") {
+                return Err(DecideError::Invalid(
+                    "target_entity_id must be a person, project, or todo".to_string(),
+                ));
+            }
+        }
+        _ => {}
     }
 
-    let entity_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
-        DecideError::Invalid(format!("entity_id is required for {mutation_kind}"))
-    })?;
+    Ok(())
+}
+
+async fn validate_current_thread_journal_entry(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    mutation_kind: &str,
+    entity_id: &str,
+) -> Result<(), DecideError> {
     let allowed = db::journal_entry_target_is_valid(pool, run_id, entity_id)
         .await
         .map_err(|e| DecideError::Internal(e.into()))?;
@@ -334,7 +383,6 @@ async fn validate_mutation_target(
             "{mutation_kind} target must be a Journal Entry originally created_from a user Message in the current Thread"
         )));
     }
-
     Ok(())
 }
 
@@ -1065,9 +1113,8 @@ mod tests {
 
         // First decide: accept applies, then the resume closure fails without
         // flipping the Run.
-        let failing_resume = |_run_id| {
-            async { Err(anyhow::anyhow!("token resolution failed")) }.boxed()
-        };
+        let failing_resume =
+            |_run_id| async { Err(anyhow::anyhow!("token resolution failed")) }.boxed();
         let first = apply(
             &pool,
             proposal_id,

@@ -15,7 +15,7 @@ type JournalEntryPayload = {
 	occurred_at: string;
 	ended_at?: string;
 	body: Array<
-		{ type: "text"; text: string } | { type: "entity_ref"; ref_id: string }
+		{ type: "text"; text: string } | { type: "entity_ref"; ref_id?: string }
 	>;
 };
 
@@ -39,9 +39,7 @@ function journalBody(payload: unknown): string {
 		.map((node) => {
 			if (!node || typeof node !== "object") return "";
 			const record = node as Record<string, unknown>;
-			if (record.type === "entity_ref" && typeof record.ref_id === "string") {
-				return `[entity_ref:${record.ref_id}]`;
-			}
+			if (record.type === "entity_ref") return "[entity_ref]";
 			return record.type === "text" && typeof record.text === "string"
 				? record.text
 				: "";
@@ -131,19 +129,28 @@ export function ProposalCard({
 	const isCreateProposal = mutation_kind === "create_journal_entry";
 	const isUpdateProposal = mutation_kind === "update_journal_entry";
 	const isDeleteProposal = mutation_kind === "delete_journal_entry";
+	const isReferenceProposal =
+		mutation_kind === "reference_existing_entity_from_journal_entry";
 	const isJournalEntryProposal =
-		isCreateProposal || isUpdateProposal || isDeleteProposal;
+		isCreateProposal ||
+		isUpdateProposal ||
+		isDeleteProposal ||
+		isReferenceProposal;
 	const title = isJournalEntryProposal ? "Journal Entry" : mutation_kind;
 	const summary = isDeleteProposal
 		? "Delete Journal Entry"
-		: isUpdateProposal
-			? "Update Journal Entry"
-			: bodyText || "Untitled entry";
+		: isReferenceProposal
+			? "Reference existing Entity"
+			: isUpdateProposal
+				? "Update Journal Entry"
+				: bodyText || "Untitled entry";
 	const reviewCopy = isDeleteProposal
 		? "Inkstone wants to delete a Journal Entry."
-		: isUpdateProposal
-			? "Inkstone wants to update a Journal Entry."
-			: `Inkstone wants to create a ${title}.`;
+		: isReferenceProposal
+			? "Inkstone wants to link an accepted Entity from this Journal Entry."
+			: isUpdateProposal
+				? "Inkstone wants to update a Journal Entry."
+				: `Inkstone wants to create a ${title}.`;
 	const payloadIssue = isCreateProposal
 		? journalPayloadIssue(occurredAt, bodyText, endedAt)
 		: isUpdateProposal
@@ -153,32 +160,38 @@ export function ProposalCard({
 	const canEdit = (isCreateProposal || isUpdateProposal) && !bodyHasEntityRef;
 	const acceptedCopy = isDeleteProposal
 		? "Deleted from Journal."
-		: isUpdateProposal
-			? "Updated in Journal."
-			: "Added to Journal.";
+		: isReferenceProposal
+			? "Linked in Journal."
+			: isUpdateProposal
+				? "Updated in Journal."
+				: "Added to Journal.";
 	const rejectedCopy = isDeleteProposal
 		? "Kept in Journal."
-		: isUpdateProposal
+		: isUpdateProposal || isReferenceProposal
 			? "Kept current Journal Entry."
 			: "Dismissed.";
 	const acceptLabel = isDeleteProposal
 		? "Delete Journal Entry"
-		: isUpdateProposal
-			? "Update Journal Entry"
-			: "Add Journal Entry";
+		: isReferenceProposal
+			? "Link Entity"
+			: isUpdateProposal
+				? "Update Journal Entry"
+				: "Add Journal Entry";
 	const acceptBusyLabel = isDeleteProposal
 		? "Deleting..."
-		: isUpdateProposal
-			? "Updating..."
-			: "Adding...";
+		: isReferenceProposal
+			? "Linking..."
+			: isUpdateProposal
+				? "Updating..."
+				: "Adding...";
 	const rejectLabel = isDeleteProposal
 		? "Keep Journal Entry"
-		: isUpdateProposal
+		: isUpdateProposal || isReferenceProposal
 			? "Keep current entry"
 			: "Dismiss";
 	const rejectBusyLabel = isDeleteProposal
 		? "Keeping..."
-		: isUpdateProposal
+		: isUpdateProposal || isReferenceProposal
 			? "Keeping current entry..."
 			: "Dismissing...";
 

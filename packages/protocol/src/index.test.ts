@@ -479,6 +479,37 @@ describe("EntityRow", () => {
 		expect(S.encodeSync(EntityRow)(decoded)).toEqual(wire);
 	});
 
+	it("decodes resolved Journal Entry refs when present", () => {
+		const withRefs = {
+			...wire,
+			type: "journal_entry",
+			data: {
+				occurred_at: "2026-06-10T10:30:00",
+				body: [
+					{ type: "text", text: "Met " },
+					{
+						type: "entity_ref",
+						ref_id: "01900000-0000-7000-8000-0000000000f1",
+					},
+				],
+			},
+			refs: [
+				{
+					id: "01900000-0000-7000-8000-0000000000f1",
+					source_entity_id: "01900000-0000-7000-8000-000000000030",
+					target_entity_id: "01900000-0000-7000-8000-0000000000a1",
+					target_entity_type: "person",
+					target_title: "Ada Lovelace",
+					label_snapshot: "Ada",
+				},
+			],
+		};
+
+		const decoded = S.decodeUnknownSync(EntityRow)(withRefs);
+		expect(decoded).toEqual(withRefs);
+		expect(S.encodeSync(EntityRow)(decoded)).toEqual(withRefs);
+	});
+
 	it("rejects a non-number created_at", () => {
 		expect(() =>
 			S.decodeUnknownSync(EntityRow)({ ...wire, created_at: "today" }),

@@ -492,11 +492,7 @@ describe("ProposalCard", () => {
 			<ProposalCard proposal={mixedContextProposal} onDecide={() => {}} />,
 		);
 
-		expect(
-			screen.getByText(
-				"Met [entity_ref:01900000-0000-7000-8000-000000000111] at school.",
-			),
-		).toBeInTheDocument();
+		expect(screen.getByText("Met [entity_ref] at school.")).toBeInTheDocument();
 	});
 
 	it("disables inline edit when a body contains entity_ref nodes", () => {

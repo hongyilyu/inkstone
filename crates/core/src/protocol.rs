@@ -203,6 +203,20 @@ pub struct EntityRow {
     pub data: serde_json::Value,
     pub created_at: i64,
     pub updated_at: i64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<ResolvedEntityRef>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResolvedEntityRef {
+    pub id: String,
+    pub source_entity_id: String,
+    pub target_entity_id: String,
+    pub target_entity_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label_snapshot: Option<String>,
 }
 
 /// `entity/list` result: the accepted Entities of the requested type,
