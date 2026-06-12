@@ -592,4 +592,367 @@ describe("ProposalCard", () => {
 		fireEvent.click(retry);
 		expect(onDecide).not.toHaveBeenCalled();
 	});
+
+	describe("create_person", () => {
+		const createPerson: PendingProposal = {
+			proposal_id: "prop-person",
+			run_id: "run-person",
+			mutation_kind: "create_person",
+			payload: {
+				name: "Alice Carter",
+				note: "Met at the conference.",
+				aliases: ["Ali", "AC"],
+			},
+			rationale: "the user mentioned a new person",
+			status: "pending",
+		};
+
+		it("renders a Person proposal with its name and detail fields", () => {
+			render(<ProposalCard proposal={createPerson} onDecide={() => {}} />);
+			expect(
+				screen.getByText("Inkstone wants to add a Person."),
+			).toBeInTheDocument();
+			expect(screen.getAllByText("Alice Carter").length).toBeGreaterThan(0);
+			expect(screen.getByText("Met at the conference.")).toBeInTheDocument();
+			expect(screen.getByText(/Ali, AC/)).toBeInTheDocument();
+			expect(
+				screen.getByText("the user mentioned a new person"),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: /^edit$/i }),
+			).not.toBeInTheDocument();
+		});
+
+		it("calls onDecide('accept') when Add Person is clicked", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={createPerson} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /add person/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept");
+		});
+
+		it("calls onDecide('reject') when Dismiss is clicked", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={createPerson} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+			expect(onDecide).toHaveBeenCalledWith("reject");
+		});
+	});
+
+	describe("create_project", () => {
+		const createProject: PendingProposal = {
+			proposal_id: "prop-project",
+			run_id: "run-project",
+			mutation_kind: "create_project",
+			payload: {
+				name: "Ship API v2 migration",
+				outcome: "All clients on v2 by Q3.",
+				status: "active",
+			},
+			rationale: "the user described an outcome-shaped project",
+			status: "pending",
+		};
+
+		it("renders a Project proposal with its name and detail fields", () => {
+			render(<ProposalCard proposal={createProject} onDecide={() => {}} />);
+			expect(
+				screen.getByText("Inkstone wants to add a Project."),
+			).toBeInTheDocument();
+			expect(
+				screen.getAllByText("Ship API v2 migration").length,
+			).toBeGreaterThan(0);
+			expect(screen.getByText("All clients on v2 by Q3.")).toBeInTheDocument();
+			expect(screen.getByText("active")).toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: /^edit$/i }),
+			).not.toBeInTheDocument();
+		});
+
+		it("calls onDecide('accept') when Add Project is clicked", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={createProject} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /add project/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept");
+		});
+
+		it("calls onDecide('reject') when Dismiss is clicked", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={createProject} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+			expect(onDecide).toHaveBeenCalledWith("reject");
+		});
+	});
+
+	describe("create_todo", () => {
+		const createTodo: PendingProposal = {
+			proposal_id: "prop-todo",
+			run_id: "run-todo",
+			mutation_kind: "create_todo",
+			payload: {
+				todo: {
+					title: "Email Alice about Project Y",
+					note: "Send the migration plan.",
+					project_id: "proj-1",
+				},
+				person_refs: [
+					{ person_id: "alice-1", role: "related" },
+					{ person_id: "bob-1", role: "waiting_on" },
+				],
+			},
+			rationale: "the user named an explicit obligation",
+			status: "pending",
+		};
+
+		it("renders a Todo proposal with its title, project link, and person refs", () => {
+			render(<ProposalCard proposal={createTodo} onDecide={() => {}} />);
+			expect(
+				screen.getByText("Inkstone wants to add a Todo."),
+			).toBeInTheDocument();
+			expect(
+				screen.getAllByText("Email Alice about Project Y").length,
+			).toBeGreaterThan(0);
+			expect(screen.getByText("Send the migration plan.")).toBeInTheDocument();
+			expect(screen.getByText(/proj-1/)).toBeInTheDocument();
+			expect(screen.getByText(/Related: alice-1/)).toBeInTheDocument();
+			expect(screen.getByText(/Waiting on: bob-1/)).toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: /^edit$/i }),
+			).not.toBeInTheDocument();
+		});
+
+		it("calls onDecide('accept') when Add Todo is clicked", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={createTodo} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /add todo/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept");
+		});
+
+		it("calls onDecide('reject') when Dismiss is clicked", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={createTodo} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+			expect(onDecide).toHaveBeenCalledWith("reject");
+		});
+	});
+
+	describe("update_todo", () => {
+		const updateTodo: PendingProposal = {
+			proposal_id: "prop-update-todo",
+			run_id: "run-update-todo",
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: "todo-7",
+				todo: { status: "completed", title: "Email Alice (done)" },
+				add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
+				remove_person_ids: ["bob-1"],
+			},
+			rationale: "the user marked the todo done",
+			status: "pending",
+		};
+
+		it("renders an update Todo proposal summarizing the supplied changes", () => {
+			render(<ProposalCard proposal={updateTodo} onDecide={() => {}} />);
+			expect(
+				screen.getByText("Inkstone wants to update a Todo."),
+			).toBeInTheDocument();
+			expect(screen.getByText(/todo-7/)).toBeInTheDocument();
+			expect(screen.getByText("Email Alice (done)")).toBeInTheDocument();
+			expect(screen.getByText("completed")).toBeInTheDocument();
+			expect(screen.getByText(/Waiting on: carol-1/)).toBeInTheDocument();
+			expect(screen.getByText(/bob-1/)).toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: /^edit$/i }),
+			).not.toBeInTheDocument();
+		});
+
+		it("calls onDecide('accept') when Update Todo is clicked", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /update todo/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept");
+		});
+
+		it("calls onDecide('reject') when Dismiss is clicked", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+			expect(onDecide).toHaveBeenCalledWith("reject");
+		});
+	});
+
+	// Core forwards the RAW, unvalidated model arguments to the card: park_on_proposal
+	// (crates/core/src/worker/run.rs) stores params verbatim, and the proposal-get path
+	// defaults a missing `payload` to null. A real LLM can omit `payload` or emit a
+	// wrong-typed field, so every GTD accessor must degrade — never crash on render.
+	describe("malformed GTD payloads degrade without crashing", () => {
+		it("renders a create_person with a null payload and keeps Add Person working", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard
+					proposal={{
+						proposal_id: "prop-bad-person",
+						run_id: "run-bad-person",
+						mutation_kind: "create_person",
+						payload: null,
+						rationale: null,
+						status: "pending",
+					}}
+					onDecide={onDecide}
+				/>,
+			);
+			const accept = screen.getByRole("button", { name: /add person/i });
+			expect(accept).toBeInTheDocument();
+			fireEvent.click(accept);
+			expect(onDecide).toHaveBeenCalledWith("accept");
+		});
+
+		it("renders a create_project with a null payload and keeps Add Project working", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard
+					proposal={{
+						proposal_id: "prop-bad-project",
+						run_id: "run-bad-project",
+						mutation_kind: "create_project",
+						payload: null,
+						rationale: null,
+						status: "pending",
+					}}
+					onDecide={onDecide}
+				/>,
+			);
+			const accept = screen.getByRole("button", { name: /add project/i });
+			expect(accept).toBeInTheDocument();
+			fireEvent.click(accept);
+			expect(onDecide).toHaveBeenCalledWith("accept");
+		});
+
+		it("renders a create_todo with a null payload and keeps Add Todo working", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard
+					proposal={{
+						proposal_id: "prop-bad-todo",
+						run_id: "run-bad-todo",
+						mutation_kind: "create_todo",
+						payload: null,
+						rationale: null,
+						status: "pending",
+					}}
+					onDecide={onDecide}
+				/>,
+			);
+			const accept = screen.getByRole("button", { name: /add todo/i });
+			expect(accept).toBeInTheDocument();
+			fireEvent.click(accept);
+			expect(onDecide).toHaveBeenCalledWith("accept");
+		});
+
+		it("renders a create_todo with an empty payload object without crashing", () => {
+			render(
+				<ProposalCard
+					proposal={{
+						proposal_id: "prop-empty-todo",
+						run_id: "run-empty-todo",
+						mutation_kind: "create_todo",
+						payload: {},
+						rationale: null,
+						status: "pending",
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(
+				screen.getByRole("button", { name: /add todo/i }),
+			).toBeInTheDocument();
+		});
+
+		it("renders a create_todo with person_refs as a non-array string without crashing", () => {
+			render(
+				<ProposalCard
+					proposal={{
+						proposal_id: "prop-bad-refs",
+						run_id: "run-bad-refs",
+						mutation_kind: "create_todo",
+						payload: {
+							todo: { title: "Ping Alice" },
+							person_refs: "alice",
+						},
+						rationale: null,
+						status: "pending",
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(screen.getAllByText("Ping Alice").length).toBeGreaterThan(0);
+			expect(
+				screen.getByRole("button", { name: /add todo/i }),
+			).toBeInTheDocument();
+		});
+
+		it("renders a create_person with aliases as a non-array without crashing", () => {
+			render(
+				<ProposalCard
+					proposal={{
+						proposal_id: "prop-bad-aliases",
+						run_id: "run-bad-aliases",
+						mutation_kind: "create_person",
+						payload: { name: "Alice", aliases: "Ali" },
+						rationale: null,
+						status: "pending",
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(screen.getAllByText("Alice").length).toBeGreaterThan(0);
+			expect(
+				screen.getByRole("button", { name: /add person/i }),
+			).toBeInTheDocument();
+		});
+
+		it("renders an update_todo with a null payload and keeps Update Todo working", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard
+					proposal={{
+						proposal_id: "prop-bad-update",
+						run_id: "run-bad-update",
+						mutation_kind: "update_todo",
+						payload: null,
+						rationale: null,
+						status: "pending",
+					}}
+					onDecide={onDecide}
+				/>,
+			);
+			const accept = screen.getByRole("button", { name: /update todo/i });
+			expect(accept).toBeInTheDocument();
+			fireEvent.click(accept);
+			expect(onDecide).toHaveBeenCalledWith("accept");
+		});
+
+		it("renders an update_todo with non-array ref fields without crashing", () => {
+			render(
+				<ProposalCard
+					proposal={{
+						proposal_id: "prop-bad-update-refs",
+						run_id: "run-bad-update-refs",
+						mutation_kind: "update_todo",
+						payload: {
+							todo_id: "todo-9",
+							set_person_refs: "carol",
+							add_person_refs: { person_id: "dave" },
+							remove_person_ids: "bob",
+						},
+						rationale: null,
+						status: "pending",
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(screen.getByText(/todo-9/)).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /update todo/i }),
+			).toBeInTheDocument();
+		});
+	});
 });
