@@ -96,10 +96,12 @@ export interface SpawnCoreOptions {
 	readonly fauxError?: string;
 	/** Drive the faux provider in `read_thread` tool-call mode (`INKSTONE_FAUX_TOOL_CALL`), exercising the full Tool Protocol round-trip. */
 	readonly fauxToolCall?: boolean;
-	/** Higher-level faux interpreter mode (`INKSTONE_FAUX_PROPOSE`): proposes Journal Entry mutations and resumes through the park -> decide -> resume loop (ADR-0025). */
-	readonly faux?: "propose";
+	/** Higher-level faux interpreter mode: `propose` (Journal Entry mutations, ADR-0025) or `extract` (Person extraction from an accepted Journal Entry, slice 4). Drives the park -> decide -> resume loop. */
+	readonly faux?: "propose" | "extract";
 	/** Direct propose-worker fixture knob. Emits params loaded from this JSON file. */
 	readonly proposalParamsFile?: string;
+	/** Faux extraction scenario (`INKSTONE_FAUX_EXTRACT_PARAMS`): `{ journal_text, person_name }` JSON file the extract mode reads. */
+	readonly extractParamsFile?: string;
 	/** Optional JSONL path where Worker proxy writes model tool-call params. */
 	readonly workerToolCallLogPath?: string;
 	/** Milliseconds to wait for the listening line before failing. Default 30s. */
@@ -199,6 +201,8 @@ export async function spawnCore(
 		"INKSTONE_FAUX_ERROR",
 		"INKSTONE_FAUX_TOOL_CALL",
 		"INKSTONE_FAUX_PROPOSE",
+		"INKSTONE_FAUX_EXTRACT",
+		"INKSTONE_FAUX_EXTRACT_PARAMS",
 		"INKSTONE_FAUX_ECHO_HISTORY",
 		"INKSTONE_PROPOSE_PARAMS_FILE",
 		"INKSTONE_WORKER_TOOL_CALL_LOG",
@@ -239,7 +243,9 @@ export async function spawnCore(
 			? '["read_thread"]'
 			: opts.faux === "propose"
 				? '["read_thread","read_current_thread_journal_entries","propose_workspace_mutation"]'
-				: "[]";
+				: opts.faux === "extract"
+					? '["read_thread","read_current_thread_journal_entries","search_entities","propose_workspace_mutation"]'
+					: "[]";
 		writeFileSync(
 			path.join(workflowsDir, "default.toml"),
 			[
@@ -258,6 +264,11 @@ export async function spawnCore(
 			env.INKSTONE_FAUX_TOOL_CALL = "1";
 		} else if (opts.faux === "propose") {
 			env.INKSTONE_FAUX_PROPOSE = "1";
+		} else if (opts.faux === "extract") {
+			env.INKSTONE_FAUX_EXTRACT = "1";
+			if (opts.extractParamsFile !== undefined) {
+				env.INKSTONE_FAUX_EXTRACT_PARAMS = opts.extractParamsFile;
+			}
 		} else if (opts.fauxError !== undefined) {
 			env.INKSTONE_FAUX_ERROR = opts.fauxError;
 		} else if (opts.fauxResponse !== undefined) {

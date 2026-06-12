@@ -1,6 +1,6 @@
 // TEST-ONLY Worker entry — never the production worker command — see docs/design/worker.md (ADR-0019)
 
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
 	fauxAssistantMessage,
@@ -220,6 +220,283 @@ function deleteJournalEntryProposal(entry: JournalEntrySnapshot) {
 	};
 }
 
+// ── Extraction mode (INKSTONE_FAUX_EXTRACT) ────────────────────────────────
+// Person extraction from an accepted Journal Entry. Each park→decide→resume
+// spawns a FRESH process, so the worker reconstructs its phase from
+// `manifest.messages` every invocation. See docs/design/worker.md + the slice-4
+// state machine. The target name + journal text are injected via a scenario file
+// (INKSTONE_FAUX_EXTRACT_PARAMS), not parsed from NL — the worker still issues
+// REAL search_entities calls and branches on the REAL (empty vs non-empty) result.
+
+interface ExtractScenario {
+	journal_text: string;
+	person_name: string;
+}
+
+function readExtractScenario(): ExtractScenario {
+	const file = process.env.INKSTONE_FAUX_EXTRACT_PARAMS;
+	if (file === undefined || file.length === 0) {
+		throw new Error(
+			"INKSTONE_FAUX_EXTRACT=1 requires INKSTONE_FAUX_EXTRACT_PARAMS to point at a scenario JSON file",
+		);
+	}
+	const parsed = JSON.parse(readFileSync(file, "utf8")) as ExtractScenario;
+	return { journal_text: parsed.journal_text, person_name: parsed.person_name };
+}
+
+interface SearchResultRow {
+	id: string;
+	type: string;
+	label: string | null;
+}
+
+/** Parse `results[]` out of a `search_entities` tool result JSON string. */
+function searchResultsFromToolResult(text: string): SearchResultRow[] {
+	try {
+		const payload = JSON.parse(text) as { results?: SearchResultRow[] };
+		return Array.isArray(payload.results) ? payload.results : [];
+	} catch {
+		return [];
+	}
+}
+
+/** A minimal view over both the resume transcript (`tool_result`/`content`) and
+ * the in-process pi context (`toolResult`/`content`). */
+type AnyMessage = { role: string; content?: unknown };
+
+/** Unwrap a tool_result content string to the tool's own inner payload text.
+ * In-process pi `toolResult`s flatten to the bare inner JSON, but a RESUME
+ * transcript carries Core's serialized `AgentToolResult` envelope verbatim
+ * (`{"content":[{"type":"text","text":"<inner>"}],…}` — see resume.rs
+ * render_result_content). Peel that envelope so the parse helpers see the inner
+ * `{entries|results …}` either way; leave already-bare text untouched. */
+function unwrapToolResultText(text: string): string {
+	try {
+		const parsed = JSON.parse(text) as { content?: unknown };
+		if (Array.isArray(parsed.content)) {
+			return textOf(parsed.content);
+		}
+	} catch {
+		// Not an envelope (already bare inner JSON) — fall through.
+	}
+	return text;
+}
+
+/** Newest-first scan for the latest tool_result content matching `predicate`. */
+function latestToolResultText(
+	messages: readonly AnyMessage[],
+	predicate: (text: string) => boolean,
+): string | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		if (m.role !== "tool_result" && m.role !== "toolResult") continue;
+		const text = unwrapToolResultText(textOf(m.content));
+		if (predicate(text)) return text;
+	}
+	return undefined;
+}
+
+/** The current-thread Journal Entry id from the latest read result, if any. */
+function journalEntryIdFrom(
+	messages: readonly AnyMessage[],
+): string | undefined {
+	const text = latestToolResultText(messages, (t) => t.includes('"entries"'));
+	if (text === undefined) return undefined;
+	return currentThreadEntriesFromToolResult(text)[0]?.entity_id;
+}
+
+/** The latest `search_entities` results, if a search result is present. */
+function latestSearchResults(
+	messages: readonly AnyMessage[],
+): SearchResultRow[] | undefined {
+	const text = latestToolResultText(messages, (t) => t.includes('"results"'));
+	if (text === undefined) return undefined;
+	return searchResultsFromToolResult(text);
+}
+
+type ExtractionPhase =
+	| "propose_journal"
+	| "after_journal"
+	| "after_create_person"
+	| "done"
+	| "dismiss";
+
+/** Reconstruct which extraction step to run from the manifest transcript.
+ * Pure over the message list + mode so it is unit-testable. */
+export function extractionPhase(manifest: WorkerManifest): ExtractionPhase {
+	if (manifest.mode !== "resume") return "propose_journal";
+
+	const decisions = manifest.messages.filter(
+		(m): m is Extract<typeof m, { role: "tool_result" }> =>
+			m.role === "tool_result" &&
+			(m.content.startsWith("Accepted.") ||
+				m.content === "User declined this proposal."),
+	);
+	const latest = decisions.at(-1);
+	if (
+		latest !== undefined &&
+		latest.content === "User declined this proposal."
+	) {
+		return "dismiss";
+	}
+
+	const accepted = (substr: string) =>
+		decisions.some((d) => d.content.includes(substr));
+	if (accepted("Accepted. Referenced Entity")) return "done";
+	if (accepted("Accepted. Created Person")) return "after_create_person";
+	if (accepted("Accepted. Created Journal Entry")) return "after_journal";
+	// No relevant accepted Decision yet — confirm and stop rather than loop.
+	return "done";
+}
+
+function createJournalEntryForExtraction(scenario: ExtractScenario) {
+	return {
+		mutation_kind: "create_journal_entry",
+		payload: {
+			occurred_at: "2026-06-10T10:30:00",
+			body: [{ type: "text", text: scenario.journal_text }],
+		},
+		rationale: "the user shared a journal-worthy moment",
+	};
+}
+
+function createPersonProposal(
+	scenario: ExtractScenario,
+	journalEntryId: string,
+) {
+	return {
+		mutation_kind: "create_person",
+		payload: {
+			name: scenario.person_name,
+			source_journal_entry_id: journalEntryId,
+		},
+		rationale: "the Journal Entry mentions a Person not yet in the Workspace",
+	};
+}
+
+function referencePersonProposal(journalEntryId: string, personId: string) {
+	return {
+		mutation_kind: "reference_existing_entity_from_journal_entry",
+		payload: {
+			source_entity_id: journalEntryId,
+			target_entity_id: personId,
+			body: [
+				{ type: "text", text: "Met " },
+				{ type: "entity_ref" },
+				{ type: "text", text: "." },
+			],
+		},
+		rationale: "link the accepted Person from this Journal Entry",
+	};
+}
+
+/** Script the faux provider for the extraction state machine for THIS process. */
+function setExtractResponses(
+	faux: ReturnType<typeof registerFauxProvider>,
+	manifest: WorkerManifest,
+): void {
+	const scenario = readExtractScenario();
+	const phase = extractionPhase(manifest);
+
+	if (phase === "done") {
+		faux.setResponses([
+			fauxAssistantMessage(`Done — extracted ${scenario.person_name}.`),
+		]);
+		return;
+	}
+	if (phase === "dismiss") {
+		faux.setResponses([fauxAssistantMessage("Dismissed.")]);
+		return;
+	}
+	if (phase === "propose_journal") {
+		faux.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall(
+						"propose_workspace_mutation",
+						createJournalEntryForExtraction(scenario),
+						{ id: "tc_extract_journal" },
+					),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("Journal Entry captured."),
+		]);
+		return;
+	}
+
+	// Both "after_journal" and "after_create_person" end with a search → propose
+	// chain. after_journal first reads the JE to learn its id; after_create_person
+	// already has the JE id in the transcript and re-searches to resolve the new id.
+	const proposeFromSearch = (context: { messages: AnyMessage[] }) => {
+		const journalEntryId =
+			journalEntryIdFrom(context.messages) ??
+			journalEntryIdFrom(manifest.messages);
+		const results = latestSearchResults(context.messages) ?? [];
+		if (journalEntryId === undefined) {
+			return fauxAssistantMessage(
+				"I couldn't find the Journal Entry to extract from.",
+			);
+		}
+		const found = results[0];
+		const proposal =
+			found !== undefined
+				? referencePersonProposal(journalEntryId, found.id)
+				: createPersonProposal(scenario, journalEntryId);
+		return fauxAssistantMessage(
+			[
+				fauxToolCall("propose_workspace_mutation", proposal, {
+					id:
+						found !== undefined ? "tc_extract_reference" : "tc_extract_person",
+				}),
+			],
+			{ stopReason: "toolUse" },
+		);
+	};
+	// `tool_calls.id` is a global PRIMARY KEY, so the two searches in the
+	// missing→create→reference Run must carry DISTINCT ids. Key the id off the
+	// phase: the after_journal search and the after_create_person re-search never
+	// share a Run-step, so phase-distinct constants stay unique and deterministic.
+	const searchToolCallId =
+		phase === "after_create_person"
+			? "tc_extract_search_recheck"
+			: "tc_extract_search_initial";
+	const searchPerson = () =>
+		fauxAssistantMessage(
+			[
+				fauxToolCall(
+					"search_entities",
+					{ type: "person", query: scenario.person_name },
+					{ id: searchToolCallId },
+				),
+			],
+			{ stopReason: "toolUse" },
+		);
+	const finalConfirm = () => fauxAssistantMessage("Awaiting your decision.");
+
+	if (phase === "after_journal") {
+		faux.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall(
+						"read_current_thread_journal_entries",
+						{},
+						{ id: "tc_extract_read" },
+					),
+				],
+				{ stopReason: "toolUse" },
+			),
+			searchPerson,
+			proposeFromSearch,
+			finalConfirm,
+		]);
+		return;
+	}
+
+	// phase === "after_create_person"
+	faux.setResponses([searchPerson, proposeFromSearch, finalConfirm]);
+}
+
 /** Build interpreter deps that script pi-ai's faux provider from `INKSTONE_FAUX_*` env vars — see docs/design/worker.md for the five modes. */
 export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 	const faux = registerFauxProvider({ provider: "faux" });
@@ -326,6 +603,11 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 				]);
 			}
 		}
+	} else if (process.env.INKSTONE_FAUX_EXTRACT === "1") {
+		// Extraction mode (e2e): after an accepted Journal Entry mentioning a Person,
+		// chain read -> search -> propose (create_person | reference) across resumes
+		// — see the slice-4 state machine + docs/design/worker.md (ADR-0030/0031).
+		setExtractResponses(faux, manifest);
 	} else if (process.env.INKSTONE_FAUX_ECHO_HISTORY === "1") {
 		// History-echo mode (multi-turn test): echo prior turns' roles+text — see docs/design/worker.md.
 		faux.setResponses([

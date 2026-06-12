@@ -1,9 +1,16 @@
-import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import type {
+	ManifestMessage,
+	RunEvent,
+	WorkerManifest,
+} from "@inkstone/protocol";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { fauxDepsFor } from "./faux-worker.js";
-import type { ToolCallResponse } from "./tool-proxy.js";
 import { runInterpreter } from "./interpreter.js";
+import type { ToolCallResponse } from "./tool-proxy.js";
 import type { CapturedToolRequest } from "./transport-memory.js";
 import { InMemoryTransport } from "./transport-memory.js";
 
@@ -14,10 +21,26 @@ const FAUX_ENV_KEYS = [
 	"INKSTONE_FAUX_TOOL_CALL",
 	"INKSTONE_FAUX_PROPOSE",
 	"INKSTONE_FAUX_ECHO_HISTORY",
+	"INKSTONE_FAUX_EXTRACT",
+	"INKSTONE_FAUX_EXTRACT_PARAMS",
 ] as const;
 afterEach(() => {
 	for (const key of FAUX_ENV_KEYS) delete process.env[key];
 });
+
+// Write a `{ journal_text, person_name }` scenario JSON to a tempfile and point
+// INKSTONE_FAUX_EXTRACT_PARAMS at it; remove the dir after the case.
+function withExtractScenario(scenario: {
+	journal_text: string;
+	person_name: string;
+}): void {
+	const dir = mkdtempSync(path.join(tmpdir(), "faux-extract-"));
+	const file = path.join(dir, "scenario.json");
+	writeFileSync(file, JSON.stringify(scenario));
+	process.env.INKSTONE_FAUX_EXTRACT = "1";
+	process.env.INKSTONE_FAUX_EXTRACT_PARAMS = file;
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+}
 
 function fauxManifest(overrides: Partial<WorkerManifest> = {}): WorkerManifest {
 	return {
@@ -71,6 +94,96 @@ function journalIntakeManifest(prompt: string): WorkerManifest {
 		},
 	});
 }
+
+const EXTRACT_TOOLS: WorkerManifest["workflow"]["tools"] = [
+	{
+		name: "read_current_thread_journal_entries",
+		description: "Read accepted Journal Entries from the current thread.",
+		label: "Read current thread journal entries",
+		json_schema: { type: "object", properties: {} },
+	},
+	{
+		name: "search_entities",
+		description: "Search accepted People, Projects, and Todos.",
+		label: "Search entities",
+		json_schema: { type: "object", properties: {} },
+	},
+	{
+		name: "propose_workspace_mutation",
+		description: "Propose a Workspace mutation for approval.",
+		label: "Propose Workspace mutation",
+		json_schema: { type: "object", properties: {} },
+	},
+];
+
+function extractManifest(
+	overrides: Partial<WorkerManifest> = {},
+): WorkerManifest {
+	return fauxManifest({
+		prompt: "I had coffee with Alice.",
+		workflow: {
+			name: "default",
+			version: "1.0.0",
+			provider: "faux",
+			model: "faux-1",
+			system_prompt: "You run the journal extraction loop.",
+			thinking_level: "off",
+			tools: EXTRACT_TOOLS,
+		},
+		...overrides,
+	});
+}
+
+// A resume manifest carrying the prior turns' transcript (mode="resume", empty prompt).
+function resumeExtractManifest(messages: ManifestMessage[]): WorkerManifest {
+	return extractManifest({ prompt: "", mode: "resume", messages });
+}
+
+// An assistant transcript message recording one prior tool call (args elided).
+const assistantCall = (id: string, name: string): ManifestMessage => ({
+	role: "assistant",
+	tool_calls: [{ id, name, arguments: {} }],
+});
+
+const decisionResult = (
+	tool_call_id: string,
+	content: string,
+): ManifestMessage => ({
+	role: "tool_result",
+	tool_call_id,
+	content,
+});
+
+// Core serializes a tool's AgentToolResult into the transcript verbatim, so a
+// RESUME tool_result's `content` is the envelope `{content:[{text:"<inner>"}],…}`
+// (see resume.rs render_result_content), NOT the bare inner JSON. Fixtures must
+// match that shape so the worker's unwrap path is exercised as in production.
+const resumeToolResult = (
+	tool_call_id: string,
+	inner: unknown,
+): ManifestMessage => ({
+	role: "tool_result",
+	tool_call_id,
+	content: JSON.stringify({
+		content: [{ type: "text", text: JSON.stringify(inner) }],
+		details: null,
+		terminate: null,
+	}),
+});
+
+const searchResult = (
+	tool_call_id: string,
+	results: Array<{ id: string; type: string; label: string }>,
+): ManifestMessage => resumeToolResult(tool_call_id, { results });
+
+const readEntriesResult = (
+	tool_call_id: string,
+	entries: Array<{
+		entity_id: string;
+		occurred_at: string;
+		body?: Array<{ type: string; text: string }>;
+	}>,
+): ManifestMessage => resumeToolResult(tool_call_id, { entries });
 
 // Drive the interpreter with the faux entry's deps through an InMemoryTransport (ADR-0027), returning captured Run Events.
 // `fauxDepsFor` registers a fresh faux provider per call (unique random `api`), so cases don't contaminate each other.
@@ -503,5 +616,475 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 				.map((e) => e.delta)
 				.join(""),
 		).toContain("Done — deleted it.");
+	});
+});
+
+// Helper: collect the captured propose_workspace_mutation requests, projecting
+// just mutation_kind + payload (rationale is prose, not asserted here).
+function proposalsIn(requests: CapturedToolRequest[]) {
+	return requests
+		.filter((r) => r.name === "propose_workspace_mutation")
+		.map((r) => {
+			const params = r.params as {
+				mutation_kind: string;
+				payload: unknown;
+			};
+			return { mutation_kind: params.mutation_kind, payload: params.payload };
+		});
+}
+
+describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
+	it("fresh: proposes a create_journal_entry whose body mentions the person", async () => {
+		withExtractScenario({
+			journal_text: "I had coffee with Alice this morning.",
+			person_name: "Alice",
+		});
+
+		const { requests } = await runChat(extractManifest(), {
+			tc_extract_journal: {
+				ok: {
+					content: [{ type: "text", text: "Accepted. Created Journal Entry." }],
+				},
+			},
+		});
+
+		const proposals = proposalsIn(requests);
+		expect(proposals).toHaveLength(1);
+		expect(proposals[0].mutation_kind).toBe("create_journal_entry");
+		expect(JSON.stringify(proposals[0].payload)).toContain("Alice");
+	});
+
+	it("resume after JE accepted, search empty: reads then proposes create_person sourced from the JE", async () => {
+		withExtractScenario({
+			journal_text: "I had coffee with Alice this morning.",
+			person_name: "Alice",
+		});
+
+		const { requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "I had coffee with Alice." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=I had coffee with Alice this morning.).",
+				),
+			]),
+			{
+				tc_extract_read: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "je-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [
+												{
+													type: "text",
+													text: "I had coffee with Alice this morning.",
+												},
+											],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_search_initial: {
+					ok: {
+						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
+					},
+				},
+				tc_extract_person: {
+					ok: {
+						content: [
+							{ type: "text", text: "Accepted. Created Person (name=Alice)." },
+						],
+					},
+				},
+			},
+		);
+
+		// read -> search -> propose, in order.
+		expect(requests.map((r) => r.name)).toEqual([
+			"read_current_thread_journal_entries",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_person",
+				payload: {
+					name: "Alice",
+					source_journal_entry_id: "je-1",
+				},
+			},
+		]);
+	});
+
+	it("resume after JE accepted, search finds the person: proposes a reference to it", async () => {
+		withExtractScenario({
+			journal_text: "I had coffee with Alice this morning.",
+			person_name: "Alice",
+		});
+
+		const { requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "I had coffee with Alice." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=I had coffee with Alice this morning.).",
+				),
+			]),
+			{
+				tc_extract_read: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "je-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [
+												{
+													type: "text",
+													text: "I had coffee with Alice this morning.",
+												},
+											],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_search_initial: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									results: [{ id: "alice-1", type: "person", label: "Alice" }],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_reference: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=alice-1, body=Met .).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		expect(requests.map((r) => r.name)).toEqual([
+			"read_current_thread_journal_entries",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toHaveLength(1);
+		expect(proposals[0].mutation_kind).toBe(
+			"reference_existing_entity_from_journal_entry",
+		);
+		expect(proposals[0].payload).toMatchObject({
+			source_entity_id: "je-1",
+			target_entity_id: "alice-1",
+		});
+	});
+
+	it("resume after create_person accepted: re-searches, then proposes a reference using the JE id from the transcript", async () => {
+		withExtractScenario({
+			journal_text: "I had coffee with Alice this morning.",
+			person_name: "Alice",
+		});
+
+		const { requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "I had coffee with Alice." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=I had coffee with Alice this morning.).",
+				),
+				// The earlier read result is in the transcript; this process must reuse the JE id from it.
+				assistantCall("tc_extract_read", "read_current_thread_journal_entries"),
+				readEntriesResult("tc_extract_read", [
+					{
+						entity_id: "je-1",
+						occurred_at: "2026-06-10T10:30:00",
+						body: [
+							{ type: "text", text: "I had coffee with Alice this morning." },
+						],
+					},
+				]),
+				assistantCall("tc_extract_search_initial", "search_entities"),
+				searchResult("tc_extract_search_initial", []),
+				assistantCall("tc_extract_person", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_person",
+					"Accepted. Created Person (name=Alice).",
+				),
+			]),
+			{
+				tc_extract_search_recheck: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									results: [
+										{ id: "alice-new", type: "person", label: "Alice" },
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_reference: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=alice-new, body=Met .).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// No fresh read this round — straight to search then propose.
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toHaveLength(1);
+		expect(proposals[0].mutation_kind).toBe(
+			"reference_existing_entity_from_journal_entry",
+		);
+		expect(proposals[0].payload).toMatchObject({
+			source_entity_id: "je-1",
+			target_entity_id: "alice-new",
+		});
+	});
+
+	it("resume after a reference accepted: emits a final confirmation, no tool call", async () => {
+		withExtractScenario({
+			journal_text: "I had coffee with Alice this morning.",
+			person_name: "Alice",
+		});
+
+		const { events, requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "I had coffee with Alice." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=I had coffee with Alice this morning.).",
+				),
+				assistantCall("tc_extract_reference", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_reference",
+					"Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=alice-1, body=Met .).",
+				),
+			]),
+		);
+
+		expect(requests).toEqual([]);
+		const text = events
+			.filter(
+				(e): e is { kind: "text_delta"; delta: string } =>
+					e.kind === "text_delta",
+			)
+			.map((e) => e.delta)
+			.join("");
+		expect(text).toContain("Done — extracted Alice.");
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	it("resume after a proposal was rejected: confirms dismissal, no tool call", async () => {
+		withExtractScenario({
+			journal_text: "I had coffee with Alice this morning.",
+			person_name: "Alice",
+		});
+
+		const { events, requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "I had coffee with Alice." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=I had coffee with Alice this morning.).",
+				),
+				assistantCall("tc_extract_person", "propose_workspace_mutation"),
+				decisionResult("tc_extract_person", "User declined this proposal."),
+			]),
+		);
+
+		expect(requests).toEqual([]);
+		const text = events
+			.filter(
+				(e): e is { kind: "text_delta"; delta: string } =>
+					e.kind === "text_delta",
+			)
+			.map((e) => e.delta)
+			.join("");
+		expect(text).toContain("Dismissed.");
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	// Regression: `tool_calls.id` is a global PRIMARY KEY, so the two searches in
+	// the missing→create→reference Run must carry DISTINCT ids — otherwise the
+	// second search collides on insert and the reference proposal never appears.
+	it("emits a DISTINCT search tool-call id in after_create_person vs after_journal", async () => {
+		withExtractScenario({
+			journal_text: "I had coffee with Alice this morning.",
+			person_name: "Alice",
+		});
+
+		// Phase 1: after_journal resume → first search.
+		const afterJournal = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "I had coffee with Alice." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=I had coffee with Alice this morning.).",
+				),
+			]),
+			{
+				tc_extract_read: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "je-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [
+												{
+													type: "text",
+													text: "I had coffee with Alice this morning.",
+												},
+											],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_search_initial: {
+					ok: {
+						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
+					},
+				},
+				tc_extract_person: {
+					ok: {
+						content: [
+							{ type: "text", text: "Accepted. Created Person (name=Alice)." },
+						],
+					},
+				},
+			},
+		);
+		const firstSearchId = afterJournal.requests.find(
+			(r) => r.name === "search_entities",
+		)?.toolCallId;
+
+		// Phase 2: after_create_person resume → second (re-check) search.
+		const afterCreate = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "I had coffee with Alice." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=I had coffee with Alice this morning.).",
+				),
+				assistantCall("tc_extract_read", "read_current_thread_journal_entries"),
+				readEntriesResult("tc_extract_read", [
+					{
+						entity_id: "je-1",
+						occurred_at: "2026-06-10T10:30:00",
+						body: [
+							{ type: "text", text: "I had coffee with Alice this morning." },
+						],
+					},
+				]),
+				assistantCall("tc_extract_search_initial", "search_entities"),
+				searchResult("tc_extract_search_initial", []),
+				assistantCall("tc_extract_person", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_person",
+					"Accepted. Created Person (name=Alice).",
+				),
+			]),
+			{
+				tc_extract_search_recheck: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									results: [
+										{ id: "alice-new", type: "person", label: "Alice" },
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_reference: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Referenced Entity (source_entity_id=je-1, target_entity_id=alice-new, body=Met .).",
+							},
+						],
+					},
+				},
+			},
+		);
+		const secondSearchId = afterCreate.requests.find(
+			(r) => r.name === "search_entities",
+		)?.toolCallId;
+
+		expect(firstSearchId).toBe("tc_extract_search_initial");
+		expect(secondSearchId).toBe("tc_extract_search_recheck");
+		expect(secondSearchId).not.toBe(firstSearchId);
+
+		// And the re-check search still resolves the JE id and proposes the reference.
+		expect(proposalsIn(afterCreate.requests)).toEqual([
+			{
+				mutation_kind: "reference_existing_entity_from_journal_entry",
+				payload: {
+					source_entity_id: "je-1",
+					target_entity_id: "alice-new",
+					body: [
+						{ type: "text", text: "Met " },
+						{ type: "entity_ref" },
+						{ type: "text", text: "." },
+					],
+				},
+			},
+		]);
 	});
 });
