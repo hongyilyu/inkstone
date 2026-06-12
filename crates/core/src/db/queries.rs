@@ -570,6 +570,7 @@ where
 pub(super) async fn update_entity<'e, E>(
     executor: E,
     entity_id: &str,
+    entity_type: &str,
     schema_version: i64,
     data: &str,
     now_ms: i64,
@@ -579,12 +580,13 @@ where
 {
     sqlx::query(
         "UPDATE entities SET schema_version = ?, data = ?, updated_at = ? \
-         WHERE id = ? AND type = 'journal_entry'",
+         WHERE id = ? AND type = ?",
     )
     .bind(schema_version)
     .bind(data)
     .bind(now_ms)
     .bind(entity_id)
+    .bind(entity_type)
     .execute(executor)
     .await
     .map(|r| r.rows_affected())
@@ -629,6 +631,37 @@ where
     .map(|_| ())
 }
 
+/// Insert an EntitySource row pointing at a SOURCE ENTITY (ADR-0030): used when a
+/// create carries a `source_journal_entry_id`, so the new Entity is `created_from`
+/// that Journal Entry. `source_message_id` is left NULL — the schema's CHECK
+/// requires exactly one of `source_entity_id`/`source_message_id`. Mirrors
+/// [`insert_entity_source_from_message`].
+pub(super) async fn insert_entity_source_from_entity<'e, E>(
+    executor: E,
+    id: &str,
+    entity_id: &str,
+    source_entity_id: &str,
+    relation: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO entity_sources \
+         (id, entity_id, source_entity_id, relation, created_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(entity_id)
+    .bind(source_entity_id)
+    .bind(relation)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
 pub(super) async fn journal_entry_target_is_valid<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -657,6 +690,23 @@ where
     .bind(run_id.to_string())
     .fetch_optional(executor)
     .await?;
+    Ok(row.is_some())
+}
+
+pub(super) async fn entity_is_type<'e, E>(
+    executor: E,
+    entity_id: &str,
+    entity_type: &str,
+) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM entities WHERE id = ?1 AND type = ?2 LIMIT 1")
+            .bind(entity_id)
+            .bind(entity_type)
+            .fetch_optional(executor)
+            .await?;
     Ok(row.is_some())
 }
 
@@ -728,12 +778,274 @@ where
     .map(|_| ())
 }
 
-pub(super) async fn delete_entity<'e, E>(executor: E, entity_id: &str) -> sqlx::Result<u64>
+/// Insert one Todo Person Reference (ADR-0031). The caller de-dups per
+/// `(todo_id, person_id)` in Rust before inserting (waiting_on wins), so this is
+/// a plain INSERT; the `(todo_id, person_id)` PRIMARY KEY is the backstop. Runs
+/// inside the apply tx.
+pub(super) async fn insert_todo_person_ref<'e, E>(
+    executor: E,
+    todo_id: &str,
+    person_id: &str,
+    role: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query("DELETE FROM entities WHERE id = ?1 AND type = 'journal_entry'")
+    sqlx::query(
+        "INSERT INTO todo_person_refs \
+         (todo_id, person_id, role, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(todo_id)
+    .bind(person_id)
+    .bind(role)
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Upsert one Todo Person Reference (ADR-0031), for `update_todo`'s
+/// `add_person_refs`: insert the `(todo_id, person_id, role)`, or on a
+/// `(todo_id, person_id)` conflict update the role with `waiting_on` winning —
+/// a stored `waiting_on` is NEVER downgraded to `related`, but a stored `related`
+/// upgrades to an incoming `waiting_on` (ADR-0031: `waiting_on` includes related
+/// semantics). Runs inside the apply tx.
+pub(super) async fn upsert_todo_person_ref<'e, E>(
+    executor: E,
+    todo_id: &str,
+    person_id: &str,
+    role: &str,
+    now_ms: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO todo_person_refs \
+         (todo_id, person_id, role, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?) \
+         ON CONFLICT(todo_id, person_id) DO UPDATE SET \
+         role = CASE WHEN todo_person_refs.role = 'waiting_on' THEN 'waiting_on' ELSE excluded.role END, \
+         updated_at = excluded.updated_at",
+    )
+    .bind(todo_id)
+    .bind(person_id)
+    .bind(role)
+    .bind(now_ms)
+    .bind(now_ms)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Delete EVERY Todo Person Reference for a Todo (ADR-0031), backing
+/// `update_todo`'s `set_person_refs` full replace. Runs inside the apply tx.
+pub(super) async fn delete_all_todo_person_refs<'e, E>(
+    executor: E,
+    todo_id: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM todo_person_refs WHERE todo_id = ?1")
+        .bind(todo_id)
+        .execute(executor)
+        .await
+        .map(|_| ())
+}
+
+/// Delete one Todo Person Reference by `(todo_id, person_id)` (ADR-0031),
+/// backing `update_todo`'s `remove_person_ids`. A missing pair is a no-op. Runs
+/// inside the apply tx.
+pub(super) async fn delete_todo_person_ref<'e, E>(
+    executor: E,
+    todo_id: &str,
+    person_id: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM todo_person_refs WHERE todo_id = ?1 AND person_id = ?2")
+        .bind(todo_id)
+        .bind(person_id)
+        .execute(executor)
+        .await
+        .map(|_| ())
+}
+
+/// Read a Todo's current `data` JSON by id (ADR-0031), for `update_todo`'s
+/// partial merge. `None` when the id does not exist or is not a `todo`. Runs
+/// inside the apply tx (the merge must see committed state under the tx).
+pub(super) async fn current_todo_data<'e, E>(
+    executor: E,
+    todo_id: &str,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1 AND type = 'todo'")
+        .bind(todo_id)
+        .fetch_optional(executor)
+        .await
+}
+
+/// Read every Todo that owns `project_id` (its `data.project_id` matches), for
+/// the `delete_project` cascade (ADR-0031). Returns `(todo_id, data)` rows so the
+/// caller can rewrite each Todo's JSON with `project_id` unset. `project_id`
+/// lives in the Todo JSON (not an FK column), so this is matched via SQLite's
+/// `json_extract`. Runs inside the apply tx.
+pub(super) async fn todos_with_project<'e, E>(
+    executor: E,
+    project_id: &str,
+) -> sqlx::Result<Vec<(String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, data FROM entities \
+         WHERE type = 'todo' AND json_extract(data, '$.project_id') = ?1",
+    )
+    .bind(project_id)
+    .fetch_all(executor)
+    .await
+}
+
+/// Read every Todo linked to `person_id` via `todo_person_refs` (ADR-0031),
+/// optionally filtered to `role`. Returns `(id, type, data, created_at,
+/// updated_at)` rows like [`list_by_type`], newest-first. Core-internal V0 read
+/// layer (Slice 11); V1 wires it to client APIs.
+#[allow(dead_code)]
+pub(super) async fn todos_by_person<'e, E>(
+    executor: E,
+    person_id: &str,
+    role: Option<&str>,
+) -> sqlx::Result<Vec<(String, String, String, i64, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT e.id, e.type, e.data, e.created_at, e.updated_at \
+         FROM entities e \
+         JOIN todo_person_refs r ON r.todo_id = e.id \
+         WHERE e.type = 'todo' AND r.person_id = ?1 \
+           AND (?2 IS NULL OR r.role = ?2) \
+         ORDER BY e.created_at DESC",
+    )
+    .bind(person_id)
+    .bind(role)
+    .fetch_all(executor)
+    .await
+}
+
+/// Read every Todo Person Reference on `todo_id` (ADR-0031) as `(person_id,
+/// role)` pairs. Core-internal V0 read layer (Slice 11).
+#[allow(dead_code)]
+pub(super) async fn person_refs_by_todo<'e, E>(
+    executor: E,
+    todo_id: &str,
+) -> sqlx::Result<Vec<(String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as("SELECT person_id, role FROM todo_person_refs WHERE todo_id = ?1")
+        .bind(todo_id)
+        .fetch_all(executor)
+        .await
+}
+
+/// Distinct People linked to `project_id` through that Project's Todos: Project
+/// -> Todos (json_extract project_id) -> `todo_person_refs` -> DISTINCT person_id
+/// (ADR-0031). Core-internal V0 read layer (Slice 11).
+#[allow(dead_code)]
+pub(super) async fn project_people<'e, E>(
+    executor: E,
+    project_id: &str,
+) -> sqlx::Result<Vec<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT DISTINCT r.person_id \
+         FROM entities e \
+         JOIN todo_person_refs r ON r.todo_id = e.id \
+         WHERE e.type = 'todo' AND json_extract(e.data, '$.project_id') = ?1 \
+         ORDER BY r.person_id",
+    )
+    .bind(project_id)
+    .fetch_all(executor)
+    .await
+}
+
+/// Distinct Projects linked to `person_id` through their Todos: Person ->
+/// `todo_person_refs` -> Todos -> DISTINCT json_extract project_id, excluding
+/// Todos with no project (ADR-0031). Core-internal V0 read layer (Slice 11).
+#[allow(dead_code)]
+pub(super) async fn person_projects<'e, E>(
+    executor: E,
+    person_id: &str,
+) -> sqlx::Result<Vec<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar(
+        "SELECT DISTINCT json_extract(e.data, '$.project_id') AS project_id \
+         FROM entities e \
+         JOIN todo_person_refs r ON r.todo_id = e.id \
+         WHERE e.type = 'todo' AND r.person_id = ?1 \
+           AND json_extract(e.data, '$.project_id') IS NOT NULL \
+         ORDER BY project_id",
+    )
+    .bind(person_id)
+    .fetch_all(executor)
+    .await
+}
+
+/// Read every reviewable Project due for review (ADR-0031): status in
+/// (`active`, `on_hold`) AND a non-null `next_review_at` at-or-before `now`
+/// (string compare — the wall-clock format sorts chronologically). Returns
+/// `(id, type, data, created_at, updated_at)` rows like [`list_by_type`].
+/// Core-internal V0 read layer (Slice 11).
+#[allow(dead_code)]
+pub(super) async fn projects_due_for_review<'e, E>(
+    executor: E,
+    now: &str,
+) -> sqlx::Result<Vec<(String, String, String, i64, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, type, data, created_at, updated_at \
+         FROM entities \
+         WHERE type = 'project' \
+           AND json_extract(data, '$.status') IN ('active', 'on_hold') \
+           AND json_extract(data, '$.next_review_at') IS NOT NULL \
+           AND json_extract(data, '$.next_review_at') <= ?1 \
+         ORDER BY created_at DESC",
+    )
+    .bind(now)
+    .fetch_all(executor)
+    .await
+}
+
+/// Delete an Entity by id, guarded on its `entity_type` (the caller resolves the
+/// type from the `mutation_kind`). The Entity's dependent rows — revisions,
+/// sources, and a Todo's/Person's `todo_person_refs` — cascade away via their FK
+/// `ON DELETE CASCADE`. Returns the affected row count so the caller asserts a
+/// single deletion. Runs inside the apply tx.
+pub(super) async fn delete_entity<'e, E>(
+    executor: E,
+    entity_id: &str,
+    entity_type: &str,
+) -> sqlx::Result<u64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM entities WHERE id = ?1 AND type = ?2")
         .bind(entity_id)
+        .bind(entity_type)
         .execute(executor)
         .await
         .map(|r| r.rows_affected())

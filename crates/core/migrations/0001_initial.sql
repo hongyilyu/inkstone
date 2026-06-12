@@ -163,6 +163,23 @@ CREATE TABLE entity_refs (
 );
 CREATE INDEX idx_entity_refs_target_entity ON entity_refs(target_entity_id);
 
+-- Todo Person References (ADR-0031) ------------------------------------
+-- A task-specific Person association on a Todo (not a generic relationship
+-- graph, not an Entity Reference). At most one row per (todo_id, person_id);
+-- `waiting_on` includes related semantics so no second `related` row is stored
+-- for the same Person. Both FKs cascade so deleting a Todo or a Person frees
+-- its refs.
+CREATE TABLE todo_person_refs (
+  todo_id    TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  person_id  TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  role       TEXT NOT NULL CHECK (role IN ('waiting_on','related')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (todo_id, person_id)
+);
+CREATE INDEX idx_todo_person_refs_person ON todo_person_refs(person_id);
+CREATE INDEX idx_todo_person_refs_role   ON todo_person_refs(role);
+
 -- Tier 3 ---------------------------------------------------------------
 CREATE VIRTUAL TABLE fts USING fts5(
   entity_id UNINDEXED,
