@@ -1,5 +1,11 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { House, Inbox, MessageSquareText, Search } from "lucide-react";
+import {
+	Hourglass,
+	House,
+	Inbox,
+	MessageSquareText,
+	Search,
+} from "lucide-react";
 import { NavShell, navRow, navRowActive } from "@/components/ui/nav-shell";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
@@ -7,6 +13,7 @@ import {
 	KIND_META,
 	KIND_ORDER,
 	libraryItemKindCounts,
+	waitingTodos,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
 import { openCommand } from "@/store/command";
@@ -18,6 +25,7 @@ export function LibraryNav() {
 	const items = data ?? [];
 	const counts = libraryItemKindCounts(items);
 	const inboxCount = inboxTodos(items).length;
+	const waitingCount = waitingTodos(items).length;
 
 	return (
 		<NavShell
@@ -64,6 +72,17 @@ export function LibraryNav() {
 					<span className="flex-1 truncate">Inbox</span>
 					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
 						{inboxCount}
+					</span>
+				</Link>
+				<Link
+					to="/library/waiting"
+					className={navRow}
+					activeProps={{ className: cn(navRow, navRowActive) }}
+				>
+					<Hourglass className="size-4 shrink-0" aria-hidden />
+					<span className="flex-1 truncate">Waiting</span>
+					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
+						{waitingCount}
 					</span>
 				</Link>
 				{KIND_ORDER.map((kind) => {

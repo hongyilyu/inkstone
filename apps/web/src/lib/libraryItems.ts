@@ -411,6 +411,22 @@ export function inboxTodos(all: LibraryItem[]): Todo[] {
 		.sort((a, b) => b.recency - a.recency);
 }
 
+/**
+ * Waiting / Follow-up: active Todos with at least one `waiting_on` Person
+ * Reference (ADR-0031). A `related`-only ref does not count. `defer_at` does
+ * not remove a Todo from this view. Newest first.
+ */
+export function waitingTodos(all: LibraryItem[]): Todo[] {
+	return all
+		.filter(
+			(e): e is Todo =>
+				e.kind === "todo" &&
+				e.status === "active" &&
+				e.personRefs.some((ref) => ref.role === "waiting_on"),
+		)
+		.sort((a, b) => b.recency - a.recency);
+}
+
 export function groupJournalEntriesByDay(
 	entries: JournalEntry[],
 ): JournalEntryDay[] {

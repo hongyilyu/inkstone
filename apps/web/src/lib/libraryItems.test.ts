@@ -25,6 +25,7 @@ import {
 	type Todo,
 	todosForPerson,
 	todosForProject,
+	waitingTodos,
 } from "@/lib/libraryItems";
 
 const byId = (id: string) => {
@@ -244,6 +245,48 @@ describe("library item helpers", () => {
 			expect(ids).toContain("todo_read_handbook");
 			// A todo with a project must not appear.
 			expect(ids).not.toContain("todo_backfill");
+		});
+	});
+
+	describe("waitingTodos (ADR-0031)", () => {
+		it("includes active todos with a waiting_on ref", () => {
+			const t = mkTodo("w", {
+				personRefs: [{ personId: "alice", role: "waiting_on" }],
+			});
+			expect(waitingTodos([t]).map((x) => x.id)).toEqual(["w"]);
+		});
+
+		it("excludes todos whose only ref is related", () => {
+			const t = mkTodo("r", {
+				personRefs: [{ personId: "bob", role: "related" }],
+			});
+			expect(waitingTodos([t])).toEqual([]);
+		});
+
+		it("includes a todo with mixed refs as long as one is waiting_on", () => {
+			const t = mkTodo("mix", {
+				personRefs: [
+					{ personId: "bob", role: "related" },
+					{ personId: "alice", role: "waiting_on" },
+				],
+			});
+			expect(waitingTodos([t]).map((x) => x.id)).toEqual(["mix"]);
+		});
+
+		it("excludes completed and dropped todos even when waiting_on", () => {
+			const done = mkTodo("c", {
+				status: "completed",
+				personRefs: [{ personId: "alice", role: "waiting_on" }],
+			});
+			expect(waitingTodos([done])).toEqual([]);
+		});
+
+		it("does not drop a deferred waiting todo (defer_at is availability only)", () => {
+			const t = mkTodo("def", {
+				deferAt: "2099-01-01T00:00:00",
+				personRefs: [{ personId: "alice", role: "waiting_on" }],
+			});
+			expect(waitingTodos([t]).map((x) => x.id)).toEqual(["def"]);
 		});
 	});
 

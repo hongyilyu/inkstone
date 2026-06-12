@@ -14,6 +14,7 @@ import { Route as LibraryRouteRouteImport } from './routes/library/route'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as LibraryIndexRouteImport } from './routes/library/index'
 import { Route as SettingsModelsRouteImport } from './routes/settings/models'
+import { Route as LibraryWaitingRouteImport } from './routes/library/waiting'
 import { Route as LibraryInboxRouteImport } from './routes/library/inbox'
 import { Route as LibraryKindRouteImport } from './routes/library/$kind'
 
@@ -42,6 +43,11 @@ const SettingsModelsRoute = SettingsModelsRouteImport.update({
   path: '/models',
   getParentRoute: () => SettingsRouteRoute,
 } as any)
+const LibraryWaitingRoute = LibraryWaitingRouteImport.update({
+  id: '/waiting',
+  path: '/waiting',
+  getParentRoute: () => LibraryRouteRoute,
+} as any)
 const LibraryInboxRoute = LibraryInboxRouteImport.update({
   id: '/inbox',
   path: '/inbox',
@@ -59,6 +65,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRouteRouteWithChildren
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
+  '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/library/': typeof LibraryIndexRoute
 }
@@ -67,6 +74,7 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRouteRouteWithChildren
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
+  '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/library': typeof LibraryIndexRoute
 }
@@ -77,6 +85,7 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRouteRouteWithChildren
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
+  '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/library/': typeof LibraryIndexRoute
 }
@@ -88,6 +97,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/library/$kind'
     | '/library/inbox'
+    | '/library/waiting'
     | '/settings/models'
     | '/library/'
   fileRoutesByTo: FileRoutesByTo
@@ -96,6 +106,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/library/$kind'
     | '/library/inbox'
+    | '/library/waiting'
     | '/settings/models'
     | '/library'
   id:
@@ -105,6 +116,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/library/$kind'
     | '/library/inbox'
+    | '/library/waiting'
     | '/settings/models'
     | '/library/'
   fileRoutesById: FileRoutesById
@@ -152,6 +164,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsModelsRouteImport
       parentRoute: typeof SettingsRouteRoute
     }
+    '/library/waiting': {
+      id: '/library/waiting'
+      path: '/waiting'
+      fullPath: '/library/waiting'
+      preLoaderRoute: typeof LibraryWaitingRouteImport
+      parentRoute: typeof LibraryRouteRoute
+    }
     '/library/inbox': {
       id: '/library/inbox'
       path: '/inbox'
@@ -172,12 +191,14 @@ declare module '@tanstack/react-router' {
 interface LibraryRouteRouteChildren {
   LibraryKindRoute: typeof LibraryKindRoute
   LibraryInboxRoute: typeof LibraryInboxRoute
+  LibraryWaitingRoute: typeof LibraryWaitingRoute
   LibraryIndexRoute: typeof LibraryIndexRoute
 }
 
 const LibraryRouteRouteChildren: LibraryRouteRouteChildren = {
   LibraryKindRoute: LibraryKindRoute,
   LibraryInboxRoute: LibraryInboxRoute,
+  LibraryWaitingRoute: LibraryWaitingRoute,
   LibraryIndexRoute: LibraryIndexRoute,
 }
 
