@@ -153,6 +153,16 @@ CREATE INDEX idx_entity_sources_entity ON entity_sources(entity_id);
 CREATE INDEX idx_entity_sources_message ON entity_sources(source_message_id);
 CREATE INDEX idx_entity_sources_source_entity ON entity_sources(source_entity_id);
 
+CREATE TABLE entity_refs (
+  id                 TEXT PRIMARY KEY,
+  source_entity_id   TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  target_entity_id   TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  label_snapshot     TEXT,
+  created_at         INTEGER NOT NULL,
+  UNIQUE (source_entity_id, target_entity_id)
+);
+CREATE INDEX idx_entity_refs_target_entity ON entity_refs(target_entity_id);
+
 -- Tier 3 ---------------------------------------------------------------
 CREATE VIRTUAL TABLE fts USING fts5(
   entity_id UNINDEXED,
