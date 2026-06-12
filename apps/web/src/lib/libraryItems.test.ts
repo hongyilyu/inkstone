@@ -4,6 +4,7 @@ import {
 	activeProjectItems,
 	dueSoonTodos,
 	groupJournalEntriesByDay,
+	inboxTodos,
 	itemsNeedingReview,
 	type JournalEntry,
 	journalEntryBodyText,
@@ -208,6 +209,41 @@ describe("library item helpers", () => {
 			};
 			const focus = activeProjectItems([onHold, completed]);
 			expect(focus.map((p) => p.id)).toEqual(["p_hold"]);
+		});
+	});
+
+	describe("inboxTodos (ADR-0031)", () => {
+		it("includes active todos with no project, due date, or person refs", () => {
+			const t = mkTodo("inbox_me");
+			expect(inboxTodos([t]).map((x) => x.id)).toEqual(["inbox_me"]);
+		});
+
+		it("excludes todos with a project, due date, or any person ref", () => {
+			const withProject = mkTodo("p", { projectId: "proj" });
+			const withDue = mkTodo("d", { dueAt: "2026-06-20T00:00:00" });
+			const withRef = mkTodo("r", {
+				personRefs: [{ personId: "x", role: "related" }],
+			});
+			expect(inboxTodos([withProject, withDue, withRef])).toEqual([]);
+		});
+
+		it("excludes completed and dropped todos", () => {
+			const completed = mkTodo("c", { status: "completed" });
+			const dropped = mkTodo("x", { status: "dropped" });
+			expect(inboxTodos([completed, dropped])).toEqual([]);
+		});
+
+		it("keeps a todo that only has a defer date (still inbox)", () => {
+			const deferred = mkTodo("def", { deferAt: "2026-07-01T00:00:00" });
+			expect(inboxTodos([deferred]).map((x) => x.id)).toEqual(["def"]);
+		});
+
+		it("finds the mock's unorganized errands", () => {
+			const ids = inboxTodos(entities).map((t) => t.id);
+			expect(ids).toContain("todo_buy_milk");
+			expect(ids).toContain("todo_read_handbook");
+			// A todo with a project must not appear.
+			expect(ids).not.toContain("todo_backfill");
 		});
 	});
 

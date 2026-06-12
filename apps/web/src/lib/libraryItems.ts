@@ -394,6 +394,23 @@ export function activeProjectItems(all: LibraryItem[]): Project[] {
 		.sort((a, b) => b.recency - a.recency);
 }
 
+/**
+ * Inbox: active Todos with no organizing metadata — no Project, no due date,
+ * and no Person References (ADR-0031). Derived, never stored. Newest first.
+ */
+export function inboxTodos(all: LibraryItem[]): Todo[] {
+	return all
+		.filter(
+			(e): e is Todo =>
+				e.kind === "todo" &&
+				e.status === "active" &&
+				e.projectId == null &&
+				e.dueAt == null &&
+				e.personRefs.length === 0,
+		)
+		.sort((a, b) => b.recency - a.recency);
+}
+
 export function groupJournalEntriesByDay(
 	entries: JournalEntry[],
 ): JournalEntryDay[] {
