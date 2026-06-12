@@ -499,6 +499,33 @@ describe("ProposalCard", () => {
 		).toBeInTheDocument();
 	});
 
+	it("disables inline edit when a body contains entity_ref nodes", () => {
+		const mixedBodyProposal: PendingProposal = {
+			...updateProposal,
+			payload: {
+				entity_id: "entry-123",
+				occurred_at: "2026-06-10T11:00:00",
+				body: [
+					{ type: "text", text: "Met " },
+					{
+						type: "entity_ref",
+						ref_id: "01900000-0000-7000-8000-000000000111",
+					},
+					{ type: "text", text: " at school." },
+				],
+			},
+		};
+
+		render(<ProposalCard proposal={mixedBodyProposal} onDecide={() => {}} />);
+
+		expect(
+			screen.queryByRole("button", { name: /edit/i }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /update journal entry/i }),
+		).toBeInTheDocument();
+	});
+
 	it("submits the full edited update journal entry payload", () => {
 		const onDecide = vi.fn();
 		render(<ProposalCard proposal={updateProposal} onDecide={onDecide} />);

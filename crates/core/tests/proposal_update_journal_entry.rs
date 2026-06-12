@@ -399,6 +399,19 @@ async fn updated_from_count_for_run(pool: &SqlitePool, entity_id: Uuid, run_id: 
     .expect("count updated_from sources")
 }
 
+async fn proposal_and_tool_status_for_run(pool: &SqlitePool, run_id: &str) -> (String, String) {
+    let row = sqlx::query(
+        "SELECT p.status, tc.status AS tool_status \
+         FROM proposals p JOIN tool_calls tc ON tc.id = p.tool_call_id \
+         WHERE tc.run_id = ?1",
+    )
+    .bind(run_id)
+    .fetch_one(pool)
+    .await
+    .expect("proposal row exists");
+    (row.get("status"), row.get("tool_status"))
+}
+
 #[test]
 fn same_thread_update_accept_and_edit_replace_payload() {
     let workspace = Workspace::new();
@@ -1029,6 +1042,16 @@ fn update_rejects_entity_ref_that_does_not_exist() {
             0,
             "invalid ref update writes no updated_from source"
         );
+        let (proposal_status, tool_status) =
+            proposal_and_tool_status_for_run(&pool, &invalid_run_id).await;
+        assert_eq!(
+            proposal_status, "pending",
+            "invalid ref update leaves proposal pending"
+        );
+        assert_eq!(
+            tool_status, "pending",
+            "invalid ref update leaves tool call unresolved"
+        );
     });
 }
 
@@ -1134,6 +1157,16 @@ fn update_rejects_entity_ref_that_belongs_to_another_entry() {
             updated_from_count_for_run(&pool, entity_id, &invalid_run_id).await,
             0,
             "wrong-source ref update writes no updated_from source"
+        );
+        let (proposal_status, tool_status) =
+            proposal_and_tool_status_for_run(&pool, &invalid_run_id).await;
+        assert_eq!(
+            proposal_status, "pending",
+            "wrong-source ref update leaves proposal pending"
+        );
+        assert_eq!(
+            tool_status, "pending",
+            "wrong-source ref update leaves tool call unresolved"
         );
     });
 }
