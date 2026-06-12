@@ -176,6 +176,7 @@ fn default_workflow_prompts_for_journal_entry_boundary() {
             "read_thread",
             "read_current_thread_journal_entries",
             "propose_workspace_mutation",
+            "search_entities",
         ],
         "default.toml must allowlist only the exact Journal Entry intake tools"
     );

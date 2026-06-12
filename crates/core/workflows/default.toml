@@ -33,4 +33,4 @@ journal entry text.
 Stop after Journal Entry intake.
 """
 
-tools = ["read_thread", "read_current_thread_journal_entries", "propose_workspace_mutation"]
+tools = ["read_thread", "read_current_thread_journal_entries", "propose_workspace_mutation", "search_entities"]

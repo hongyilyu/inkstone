@@ -6,6 +6,7 @@
 mod propose_workspace_mutation;
 mod read_current_thread_journal_entries;
 mod read_thread;
+mod search_entities;
 
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -28,6 +29,7 @@ fn descriptor_for(name: &str) -> Option<CoreToolDescriptor> {
             Some(read_current_thread_journal_entries::descriptor())
         }
         propose_workspace_mutation::NAME => Some(propose_workspace_mutation::descriptor()),
+        search_entities::NAME => Some(search_entities::descriptor()),
         _ => None,
     }
 }
@@ -69,6 +71,7 @@ pub async fn execute(
         read_current_thread_journal_entries::NAME => {
             read_current_thread_journal_entries::execute(pool, run_id, params).await
         }
+        search_entities::NAME => search_entities::execute(pool, params).await,
         // Proposal tools never reach dispatch (ADR-0025); reaching here means
         // the park interception was bypassed, so refuse defensively.
         propose_workspace_mutation::NAME => Err(ToolError {
