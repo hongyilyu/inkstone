@@ -229,13 +229,21 @@ function deleteJournalEntryProposal(entry: JournalEntrySnapshot) {
 // REAL search_entities calls and branches on the REAL (empty vs non-empty) result.
 
 // Additive scenario shape (backward-compatible with slice-4's person-only
-// `{journal_text, person_name}`). Target precedence: `project_name` →
-// Project, else `person_name` → Person (slice-4 behavior, unchanged), else NO
-// extraction target (the "category stays plain text" path).
+// `{journal_text, person_name}`). Target precedence: `todo` → Todo (this
+// slice — a DIRECT create whose links are resolved by search, no separate
+// reference step), else `project_name` → Project, else `person_name` → Person
+// (slice-4 behavior, unchanged), else NO extraction target (the "category stays
+// plain text" path).
 interface ExtractScenario {
 	journal_text: string;
 	person_name?: string;
 	project_name?: string;
+	todo?: {
+		title: string;
+		person_name?: string;
+		person_role?: "waiting_on" | "related";
+		project_name?: string;
+	};
 }
 
 type ExtractTarget = { kind: "person" | "project"; name: string };
@@ -263,6 +271,7 @@ function readExtractScenario(): ExtractScenario {
 		journal_text: parsed.journal_text,
 		person_name: parsed.person_name,
 		project_name: parsed.project_name,
+		todo: parsed.todo,
 	};
 }
 
@@ -336,6 +345,26 @@ function latestSearchResults(
 	return searchResultsFromToolResult(text);
 }
 
+/** The id of the first search-result row of `kind` across the transcript, or
+ * undefined if no such row was returned. The Todo flow issues a person search and
+ * a project search with distinct tool-call ids; both surface as `{results}` blocks,
+ * so we discriminate by the rows' own `type` rather than by which search was last.
+ * An empty search yields no rows of that kind → undefined → link omitted. */
+function searchedEntityIdOfKind(
+	messages: readonly AnyMessage[],
+	kind: "person" | "project",
+): string | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		if (m.role !== "tool_result" && m.role !== "toolResult") continue;
+		const text = unwrapToolResultText(textOf(m.content));
+		if (!text.includes('"results"')) continue;
+		const row = searchResultsFromToolResult(text).find((r) => r.type === kind);
+		if (row !== undefined) return row.id;
+	}
+	return undefined;
+}
+
 type ExtractionPhase =
 	| "propose_journal"
 	| "after_journal"
@@ -364,6 +393,9 @@ export function extractionPhase(manifest: WorkerManifest): ExtractionPhase {
 
 	const accepted = (substr: string) =>
 		decisions.some((d) => d.content.includes(substr));
+	// The Todo flow is a single create with no reference step, so an accepted
+	// create_todo Decision means the flow is complete.
+	if (accepted("Accepted. Created Todo")) return "done";
 	if (accepted("Accepted. Referenced Entity")) return "done";
 	if (
 		accepted("Accepted. Created Person") ||
@@ -425,6 +457,120 @@ function referenceEntityProposal(
 	};
 }
 
+/** Build the `create_todo` envelope, linking the Todo to a found Person/Project.
+ * Links are OMITTED (not nulled) when search returned no match so the envelope
+ * stays a valid plain-text Todo — Core's payload uses `deny_unknown_fields`. */
+function createTodoProposal(
+	todo: NonNullable<ExtractScenario["todo"]>,
+	journalEntryId: string,
+	personId: string | undefined,
+	projectId: string | undefined,
+) {
+	return {
+		mutation_kind: "create_todo",
+		payload: {
+			todo: {
+				title: todo.title,
+				...(projectId !== undefined ? { project_id: projectId } : {}),
+			},
+			...(personId !== undefined
+				? {
+						person_refs: [
+							{ person_id: personId, role: todo.person_role ?? "related" },
+						],
+					}
+				: {}),
+			source_journal_entry_id: journalEntryId,
+		},
+		rationale: "the Journal Entry records an obligation to track as a Todo",
+	};
+}
+
+/** Script the Todo flow (after_journal phase): read the JE id, then search for
+ * the named Person/Project (each search a distinct step), then propose ONE
+ * create_todo with whatever links resolved. No reference step. */
+function setExtractTodoResponses(
+	faux: ReturnType<typeof registerFauxProvider>,
+	manifest: WorkerManifest,
+	todo: NonNullable<ExtractScenario["todo"]>,
+): void {
+	const responses: Array<
+		| ReturnType<typeof fauxAssistantMessage>
+		| ((context: {
+				messages: AnyMessage[];
+		  }) => ReturnType<typeof fauxAssistantMessage>)
+	> = [
+		fauxAssistantMessage(
+			[
+				fauxToolCall(
+					"read_current_thread_journal_entries",
+					{},
+					{ id: "tc_extract_read" },
+				),
+			],
+			{ stopReason: "toolUse" },
+		),
+	];
+	if (todo.person_name !== undefined && todo.person_name.length > 0) {
+		responses.push(
+			fauxAssistantMessage(
+				[
+					fauxToolCall(
+						"search_entities",
+						{ type: "person", query: todo.person_name },
+						{ id: "tc_extract_search_person" },
+					),
+				],
+				{ stopReason: "toolUse" },
+			),
+		);
+	}
+	if (todo.project_name !== undefined && todo.project_name.length > 0) {
+		responses.push(
+			fauxAssistantMessage(
+				[
+					fauxToolCall(
+						"search_entities",
+						{ type: "project", query: todo.project_name },
+						{ id: "tc_extract_search_project" },
+					),
+				],
+				{ stopReason: "toolUse" },
+			),
+		);
+	}
+	responses.push((context) => {
+		const journalEntryId =
+			journalEntryIdFrom(context.messages) ??
+			journalEntryIdFrom(manifest.messages);
+		if (journalEntryId === undefined) {
+			return fauxAssistantMessage(
+				"I couldn't find the Journal Entry to extract from.",
+			);
+		}
+		const personId =
+			todo.person_name !== undefined && todo.person_name.length > 0
+				? searchedEntityIdOfKind(context.messages, "person")
+				: undefined;
+		const projectId =
+			todo.project_name !== undefined && todo.project_name.length > 0
+				? searchedEntityIdOfKind(context.messages, "project")
+				: undefined;
+		return fauxAssistantMessage(
+			[
+				fauxToolCall(
+					"propose_workspace_mutation",
+					createTodoProposal(todo, journalEntryId, personId, projectId),
+					{ id: "tc_extract_todo" },
+				),
+			],
+			{ stopReason: "toolUse" },
+		);
+	});
+	responses.push(fauxAssistantMessage("Awaiting your decision."));
+	faux.setResponses(responses);
+}
+
 /** Script the faux provider for the extraction state machine for THIS process. */
 function setExtractResponses(
 	faux: ReturnType<typeof registerFauxProvider>,
@@ -462,6 +608,15 @@ function setExtractResponses(
 			),
 			fauxAssistantMessage("Journal Entry captured."),
 		]);
+		return;
+	}
+
+	// Todo target (precedence over person/project): a Todo is created DIRECTLY in
+	// the after_journal phase, with its Person/Project links resolved by search —
+	// no separate reference step. (propose_journal/done/dismiss are handled above,
+	// target-agnostic.)
+	if (scenario.todo !== undefined && phase === "after_journal") {
+		setExtractTodoResponses(faux, manifest, scenario.todo);
 		return;
 	}
 

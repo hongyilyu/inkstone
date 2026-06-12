@@ -28,13 +28,19 @@ afterEach(() => {
 	for (const key of FAUX_ENV_KEYS) delete process.env[key];
 });
 
-// Write a `{ journal_text, person_name?, project_name? }` scenario JSON to a
-// tempfile and point INKSTONE_FAUX_EXTRACT_PARAMS at it; remove the dir after
+// Write a `{ journal_text, person_name?, project_name?, todo? }` scenario JSON to
+// a tempfile and point INKSTONE_FAUX_EXTRACT_PARAMS at it; remove the dir after
 // the case.
 function withExtractScenario(scenario: {
 	journal_text: string;
 	person_name?: string;
 	project_name?: string;
+	todo?: {
+		title: string;
+		person_name?: string;
+		person_role?: "waiting_on" | "related";
+		project_name?: string;
+	};
 }): void {
 	const dir = mkdtempSync(path.join(tmpdir(), "faux-extract-"));
 	const file = path.join(dir, "scenario.json");
@@ -1394,5 +1400,397 @@ describe("faux-worker extraction mode — Project target", () => {
 			.join("");
 		expect(text).toContain("Done — added it.");
 		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+});
+
+describe("faux-worker extraction mode — Todo target", () => {
+	it("fresh: proposes a create_journal_entry whose body mentions the obligation", async () => {
+		withExtractScenario({
+			journal_text: "I need to email Alice about Project Y.",
+			todo: {
+				title: "Email Alice about Project Y",
+				person_name: "Alice",
+				project_name: "Project Y",
+			},
+		});
+
+		const { requests } = await runChat(extractManifest(), {
+			tc_extract_journal: {
+				ok: {
+					content: [{ type: "text", text: "Accepted. Created Journal Entry." }],
+				},
+			},
+		});
+
+		const proposals = proposalsIn(requests);
+		expect(proposals).toHaveLength(1);
+		expect(proposals[0].mutation_kind).toBe("create_journal_entry");
+		expect(JSON.stringify(proposals[0].payload)).toContain(
+			"email Alice about Project Y",
+		);
+	});
+
+	it("resume after JE accepted (person+project found): read → search person → search project → ONE create_todo linked to both, sourced from the JE", async () => {
+		withExtractScenario({
+			journal_text: "I need to email Alice about Project Y.",
+			todo: {
+				title: "Email Alice about Project Y",
+				person_name: "Alice",
+				project_name: "Project Y",
+			},
+		});
+
+		const { requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "I need to email Alice about Project Y." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=I need to email Alice about Project Y.).",
+				),
+			]),
+			{
+				tc_extract_read: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "je-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [
+												{
+													type: "text",
+													text: "I need to email Alice about Project Y.",
+												},
+											],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_search_person: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									results: [{ id: "alice-1", type: "person", label: "Alice" }],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_search_project: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									results: [
+										{ id: "proj-1", type: "project", label: "Project Y" },
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_todo: {
+					ok: {
+						content: [
+							{ type: "text", text: "Accepted. Created Todo (title=…)." },
+						],
+					},
+				},
+			},
+		);
+
+		// read → search(person) → search(project) → propose, in order.
+		expect(requests.map((r) => r.name)).toEqual([
+			"read_current_thread_journal_entries",
+			"search_entities",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		const searches = requests.filter((r) => r.name === "search_entities");
+		expect(searches[0].params).toMatchObject({
+			type: "person",
+			query: "Alice",
+		});
+		expect(searches[1].params).toMatchObject({
+			type: "project",
+			query: "Project Y",
+		});
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_todo",
+				payload: {
+					todo: {
+						title: "Email Alice about Project Y",
+						project_id: "proj-1",
+					},
+					person_refs: [{ person_id: "alice-1", role: "related" }],
+					source_journal_entry_id: "je-1",
+				},
+			},
+		]);
+	});
+
+	it("resume after JE accepted, person search EMPTY: create_todo OMITS person_refs but keeps the found project link", async () => {
+		withExtractScenario({
+			journal_text: "I need to email Alice about Project Y.",
+			todo: {
+				title: "Email Alice about Project Y",
+				person_name: "Alice",
+				project_name: "Project Y",
+			},
+		});
+
+		const { requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "I need to email Alice about Project Y." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=I need to email Alice about Project Y.).",
+				),
+			]),
+			{
+				tc_extract_read: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "je-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [
+												{
+													type: "text",
+													text: "I need to email Alice about Project Y.",
+												},
+											],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_search_person: {
+					ok: {
+						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
+					},
+				},
+				tc_extract_search_project: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									results: [
+										{ id: "proj-1", type: "project", label: "Project Y" },
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_todo: {
+					ok: {
+						content: [
+							{ type: "text", text: "Accepted. Created Todo (title=…)." },
+						],
+					},
+				},
+			},
+		);
+
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_todo",
+				payload: {
+					todo: {
+						title: "Email Alice about Project Y",
+						project_id: "proj-1",
+					},
+					source_journal_entry_id: "je-1",
+				},
+			},
+		]);
+		expect(proposals[0].payload).not.toHaveProperty("person_refs");
+	});
+
+	it("resume after JE accepted, project search EMPTY: create_todo OMITS project_id but keeps the found person link", async () => {
+		withExtractScenario({
+			journal_text: "I need to email Alice about Project Y.",
+			todo: {
+				title: "Email Alice about Project Y",
+				person_name: "Alice",
+				project_name: "Project Y",
+			},
+		});
+
+		const { requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "I need to email Alice about Project Y." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=I need to email Alice about Project Y.).",
+				),
+			]),
+			{
+				tc_extract_read: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "je-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [
+												{
+													type: "text",
+													text: "I need to email Alice about Project Y.",
+												},
+											],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_search_person: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									results: [{ id: "alice-1", type: "person", label: "Alice" }],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_search_project: {
+					ok: {
+						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
+					},
+				},
+				tc_extract_todo: {
+					ok: {
+						content: [
+							{ type: "text", text: "Accepted. Created Todo (title=…)." },
+						],
+					},
+				},
+			},
+		);
+
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_todo",
+				payload: {
+					todo: { title: "Email Alice about Project Y" },
+					person_refs: [{ person_id: "alice-1", role: "related" }],
+					source_journal_entry_id: "je-1",
+				},
+			},
+		]);
+		expect(
+			(proposals[0].payload as { todo: Record<string, unknown> }).todo,
+		).not.toHaveProperty("project_id");
+	});
+
+	it("resume after JE accepted, role waiting_on: person_refs role is waiting_on; project-less when no project named", async () => {
+		withExtractScenario({
+			journal_text: "Wait for Bob to send Z.",
+			todo: {
+				title: "Wait for Bob to send Z",
+				person_name: "Bob",
+				person_role: "waiting_on",
+			},
+		});
+
+		const { requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "Wait for Bob to send Z." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (occurred_at=2026-06-10T10:30:00, body=Wait for Bob to send Z.).",
+				),
+			]),
+			{
+				tc_extract_read: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									entries: [
+										{
+											entity_id: "je-1",
+											occurred_at: "2026-06-10T10:30:00",
+											body: [{ type: "text", text: "Wait for Bob to send Z." }],
+										},
+									],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_search_person: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify({
+									results: [{ id: "bob-1", type: "person", label: "Bob" }],
+								}),
+							},
+						],
+					},
+				},
+				tc_extract_todo: {
+					ok: {
+						content: [
+							{ type: "text", text: "Accepted. Created Todo (title=…)." },
+						],
+					},
+				},
+			},
+		);
+
+		// No project named → no project search; read → search(person) → propose.
+		expect(requests.map((r) => r.name)).toEqual([
+			"read_current_thread_journal_entries",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_todo",
+				payload: {
+					todo: { title: "Wait for Bob to send Z" },
+					person_refs: [{ person_id: "bob-1", role: "waiting_on" }],
+					source_journal_entry_id: "je-1",
+				},
+			},
+		]);
 	});
 });
