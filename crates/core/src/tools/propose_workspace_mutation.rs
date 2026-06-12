@@ -21,6 +21,15 @@ pub enum WorkspaceMutationKind {
     UpdateJournalEntry,
     DeleteJournalEntry,
     ReferenceExistingEntityFromJournalEntry,
+    CreatePerson,
+    UpdatePerson,
+    DeletePerson,
+    CreateProject,
+    UpdateProject,
+    DeleteProject,
+    CreateTodo,
+    UpdateTodo,
+    DeleteTodo,
 }
 
 /// Wire arguments: `mutation_kind` names the mutation; `payload` is its body,
@@ -46,6 +55,51 @@ pub enum Input {
     },
     ReferenceExistingEntityFromJournalEntry {
         payload: ReferenceExistingEntityFromJournalEntryPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    CreatePerson {
+        payload: CreatePersonPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    UpdatePerson {
+        payload: UpdatePersonPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    DeletePerson {
+        payload: DeleteEntityPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    CreateProject {
+        payload: CreateProjectPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    UpdateProject {
+        payload: UpdateProjectPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    DeleteProject {
+        payload: DeleteEntityPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    CreateTodo {
+        payload: CreateTodoPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    UpdateTodo {
+        payload: UpdateTodoPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    DeleteTodo {
+        payload: DeleteEntityPayload,
         #[serde(default)]
         rationale: Option<String>,
     },
@@ -118,6 +172,299 @@ pub struct ReferenceExistingEntityFromJournalEntryPayload {
     pub body: Vec<ReferenceExistingEntityFromJournalEntryBodyNode>,
 }
 
+/// A delete targets a single Entity by its UUID `entity_id` and carries no data,
+/// shared by `delete_person`/`delete_project`/`delete_todo` (mirrors
+/// `validate_delete_entity`). The owning `Input` variant binds the `mutation_kind`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct DeleteEntityPayload {
+    pub entity_id: String,
+}
+
+/// `create_person` payload (mirrors `validate_person` + `source_journal_entry_id`).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct CreatePersonPayload {
+    #[schemars(length(min = 1))]
+    pub name: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub aliases: Option<Vec<String>>,
+    #[serde(default)]
+    pub source_journal_entry_id: Option<String>,
+}
+
+/// `update_person` payload: a required target `entity_id` plus the PersonData
+/// fields (mirrors `validate_update_person`).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct UpdatePersonPayload {
+    pub entity_id: String,
+    #[schemars(length(min = 1))]
+    pub name: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub aliases: Option<Vec<String>>,
+}
+
+/// A Project review cadence (mirrors `validate_review_every`).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct ReviewEvery {
+    #[schemars(range(min = 1))]
+    pub interval: u64,
+    pub unit: ReviewEveryUnit,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum ReviewEveryUnit {
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum ProjectStatus {
+    Active,
+    OnHold,
+    Completed,
+    Dropped,
+}
+
+/// `create_project` payload (mirrors `validate_project` + `source_journal_entry_id`).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct CreateProjectPayload {
+    #[schemars(length(min = 1))]
+    pub name: String,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub status: Option<ProjectStatus>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub defer_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub due_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub completed_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub dropped_at: Option<String>,
+    #[serde(default)]
+    pub review_every: Option<ReviewEvery>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub next_review_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub last_reviewed_at: Option<String>,
+    #[serde(default)]
+    pub source_journal_entry_id: Option<String>,
+}
+
+/// `update_project` payload: a required target `entity_id` plus the ProjectData
+/// fields (mirrors `validate_update_project`).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct UpdateProjectPayload {
+    pub entity_id: String,
+    #[schemars(length(min = 1))]
+    pub name: String,
+    #[serde(default)]
+    pub outcome: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub status: Option<ProjectStatus>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub defer_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub due_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub completed_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub dropped_at: Option<String>,
+    #[serde(default)]
+    pub review_every: Option<ReviewEvery>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub next_review_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub last_reviewed_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum TodoStatus {
+    Active,
+    Completed,
+    Dropped,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum PersonRefRole {
+    WaitingOn,
+    Related,
+}
+
+/// One `person_refs` element (mirrors `validate_person_ref`): a required
+/// `person_id` and an optional `role`. A missing role defaults to `related` at
+/// apply-time.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct PersonRef {
+    #[schemars(length(min = 1))]
+    pub person_id: String,
+    #[serde(default)]
+    pub role: Option<PersonRefRole>,
+}
+
+/// The `TodoData` sub-object (mirrors `validate_todo_data`).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct TodoData {
+    #[schemars(length(min = 1))]
+    pub title: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub status: Option<TodoStatus>,
+    #[serde(default)]
+    #[schemars(length(min = 1))]
+    pub project_id: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub defer_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub due_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub completed_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub dropped_at: Option<String>,
+}
+
+/// A `Partial<TodoData>` for `update_todo` (mirrors `validate_partial_todo_data`):
+/// every TodoData field optional.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct PartialTodoData {
+    #[serde(default)]
+    #[schemars(length(min = 1))]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub status: Option<TodoStatus>,
+    #[serde(default)]
+    #[schemars(length(min = 1))]
+    pub project_id: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub defer_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub due_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub completed_at: Option<String>,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub dropped_at: Option<String>,
+}
+
+/// `create_todo` ENVELOPE (mirrors `validate_todo`): a required `todo`, optional
+/// `person_refs`, and optional `source_journal_entry_id` provenance.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct CreateTodoPayload {
+    pub todo: TodoData,
+    #[serde(default)]
+    pub person_refs: Option<Vec<PersonRef>>,
+    #[serde(default)]
+    pub source_journal_entry_id: Option<String>,
+}
+
+/// `update_todo` ENVELOPE (mirrors `validate_update_todo`): a required `todo_id`
+/// target plus optional partial `todo` and person-ref ops.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct UpdateTodoPayload {
+    pub todo_id: String,
+    #[serde(default)]
+    pub todo: Option<PartialTodoData>,
+    #[serde(default)]
+    pub set_person_refs: Option<Vec<PersonRef>>,
+    #[serde(default)]
+    pub add_person_refs: Option<Vec<PersonRef>>,
+    #[serde(default)]
+    pub remove_person_ids: Option<Vec<String>>,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
@@ -157,11 +504,45 @@ pub enum ReferenceExistingEntityFromJournalEntryBodyNode {
     EntityRef {},
 }
 
+/// Optional payload fields the model should OMIT (not send `null`) when absent.
+/// schemars emits `Option<T>` as a nullable union; we strip the `null` so the
+/// advertised schema reads "omit, don't null" — matching how Core's validators
+/// treat an absent field as "not set" rather than "explicitly null".
+const OMITTABLE_PROPERTIES: &[&str] = &[
+    // Journal-entry kinds.
+    "ended_at",
+    "label_snapshot",
+    // Person.
+    "note",
+    "aliases",
+    // Project / Todo shared.
+    "outcome",
+    "status",
+    "project_id",
+    "review_every",
+    "defer_at",
+    "due_at",
+    "completed_at",
+    "dropped_at",
+    "next_review_at",
+    "last_reviewed_at",
+    // Todo envelope + person refs.
+    "todo",
+    "person_refs",
+    "role",
+    "set_person_refs",
+    "add_person_refs",
+    "remove_person_ids",
+    // Create provenance.
+    "source_journal_entry_id",
+];
+
 pub fn descriptor() -> CoreToolDescriptor {
     let mut json_schema = serde_json::to_value(schemars::schema_for!(Input))
         .expect("propose_workspace_mutation Input schema serializes");
-    disallow_null_for_property(&mut json_schema, "ended_at");
-    disallow_null_for_property(&mut json_schema, "label_snapshot");
+    for property in OMITTABLE_PROPERTIES {
+        disallow_null_for_property(&mut json_schema, property);
+    }
     CoreToolDescriptor {
         name: NAME.to_string(),
         description: DESCRIPTION.to_string(),
@@ -521,6 +902,243 @@ mod tests {
             "reference payload must require source and target ids: {}",
             d.json_schema
         );
+    }
+
+    #[test]
+    fn create_person_and_create_todo_round_trip_through_input() {
+        let je = "00000000-0000-4000-8000-000000000000";
+
+        let person: Input = serde_json::from_value(serde_json::json!({
+            "mutation_kind": "create_person",
+            "payload": { "name": "Alice", "source_journal_entry_id": je }
+        }))
+        .expect("create_person envelope deserializes into Input");
+        assert!(
+            matches!(person, Input::CreatePerson { .. }),
+            "create_person binds the CreatePerson variant"
+        );
+
+        let todo: Input = serde_json::from_value(serde_json::json!({
+            "mutation_kind": "create_todo",
+            "payload": {
+                "todo": { "title": "Email Alice" },
+                "person_refs": [{ "person_id": "p1", "role": "related" }],
+                "source_journal_entry_id": je
+            }
+        }))
+        .expect("create_todo envelope deserializes into Input");
+        assert!(
+            matches!(todo, Input::CreateTodo { .. }),
+            "create_todo binds the CreateTodo variant"
+        );
+    }
+
+    #[test]
+    fn descriptor_binds_all_nine_gtd_mutation_kinds() {
+        let d = descriptor();
+        for kind in [
+            "create_person",
+            "update_person",
+            "delete_person",
+            "create_project",
+            "update_project",
+            "delete_project",
+            "create_todo",
+            "update_todo",
+            "delete_todo",
+        ] {
+            assert!(
+                top_level_variant(&d.json_schema, kind).is_some(),
+                "schema must bind {kind} at top level: {}",
+                d.json_schema
+            );
+        }
+    }
+
+    #[test]
+    fn descriptor_create_todo_requires_title_and_allows_envelope_and_source() {
+        let d = descriptor();
+        let create_todo = top_level_variant(&d.json_schema, "create_todo")
+            .unwrap_or_else(|| panic!("schema must bind create_todo: {}", d.json_schema));
+        let payload = payload_schema(&d.json_schema, create_todo);
+
+        // The envelope requires `todo` and the nested TodoData requires `title`.
+        let required = payload["required"].as_array().unwrap_or_else(|| {
+            panic!(
+                "create_todo payload declares required fields: {}",
+                d.json_schema
+            )
+        });
+        assert!(
+            required.iter().any(|f| f.as_str() == Some("todo")),
+            "create_todo envelope must require `todo`: {}",
+            d.json_schema
+        );
+        let todo = resolve_ref(&d.json_schema, &payload["properties"]["todo"]);
+        let todo_required = todo["required"]
+            .as_array()
+            .unwrap_or_else(|| panic!("TodoData declares required fields: {}", d.json_schema));
+        assert!(
+            todo_required.iter().any(|f| f.as_str() == Some("title")),
+            "TodoData must require `title`: {}",
+            d.json_schema
+        );
+
+        // The envelope allows person_refs and source_journal_entry_id but does not
+        // require them.
+        assert!(
+            payload["properties"]["person_refs"].is_object(),
+            "create_todo envelope must allow person_refs: {}",
+            d.json_schema
+        );
+        assert!(
+            payload["properties"]["source_journal_entry_id"].is_object(),
+            "create_todo envelope must allow source_journal_entry_id: {}",
+            d.json_schema
+        );
+        assert!(
+            !required.iter().any(|f| matches!(
+                f.as_str(),
+                Some("person_refs") | Some("source_journal_entry_id")
+            )),
+            "person_refs and source_journal_entry_id are optional: {}",
+            d.json_schema
+        );
+    }
+
+    #[test]
+    fn descriptor_update_todo_requires_todo_id() {
+        let d = descriptor();
+        let update_todo = top_level_variant(&d.json_schema, "update_todo")
+            .unwrap_or_else(|| panic!("schema must bind update_todo: {}", d.json_schema));
+        let payload = payload_schema(&d.json_schema, update_todo);
+        let required = payload["required"].as_array().unwrap_or_else(|| {
+            panic!(
+                "update_todo payload declares required fields: {}",
+                d.json_schema
+            )
+        });
+        assert!(
+            required.iter().any(|f| f.as_str() == Some("todo_id")),
+            "update_todo must require todo_id: {}",
+            d.json_schema
+        );
+        assert!(
+            !required.iter().any(|f| f.as_str() == Some("entity_id")),
+            "update_todo targets todo_id, not entity_id: {}",
+            d.json_schema
+        );
+    }
+
+    fn payload_requires<'a>(schema: &'a Value, kind: &str) -> Vec<String> {
+        let variant = top_level_variant(schema, kind)
+            .unwrap_or_else(|| panic!("schema must bind {kind}: {schema}"));
+        payload_schema(schema, variant)["required"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{kind} payload declares required fields: {schema}"))
+            .iter()
+            .filter_map(|f| f.as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn descriptor_creates_require_name_updates_and_deletes_require_target() {
+        let d = descriptor();
+
+        for kind in ["create_person", "create_project"] {
+            let required = payload_requires(&d.json_schema, kind);
+            assert!(
+                required.iter().any(|f| f == "name"),
+                "{kind} must require name: {required:?}"
+            );
+            assert!(
+                !required.iter().any(|f| f == "entity_id"),
+                "{kind} must not require entity_id: {required:?}"
+            );
+        }
+
+        for kind in ["update_person", "update_project"] {
+            let required = payload_requires(&d.json_schema, kind);
+            assert!(
+                required.iter().any(|f| f == "entity_id"),
+                "{kind} must require entity_id: {required:?}"
+            );
+            assert!(
+                required.iter().any(|f| f == "name"),
+                "{kind} carries the entity data, which still requires name: {required:?}"
+            );
+        }
+
+        for kind in ["delete_person", "delete_project", "delete_todo"] {
+            let required = payload_requires(&d.json_schema, kind);
+            assert!(
+                required.iter().any(|f| f == "entity_id"),
+                "{kind} must require entity_id: {required:?}"
+            );
+        }
+    }
+
+    fn collect_property_schemas<'a>(schema: &'a Value, property: &str, out: &mut Vec<&'a Value>) {
+        match schema {
+            Value::Object(obj) => {
+                if let Some(properties) = obj.get("properties").and_then(Value::as_object) {
+                    if let Some(property_schema) = properties.get(property) {
+                        out.push(property_schema);
+                    }
+                }
+                for child in obj.values() {
+                    collect_property_schemas(child, property, out);
+                }
+            }
+            Value::Array(items) => {
+                for child in items {
+                    collect_property_schemas(child, property, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn descriptor_disallows_null_for_new_optional_fields() {
+        let d = descriptor();
+        // Every optional GTD field the model should OMIT rather than send as null
+        // must be non-nullable in the emitted schema (mirrors ended_at).
+        for property in [
+            "note",
+            "outcome",
+            "aliases",
+            "status",
+            "project_id",
+            "person_refs",
+            "role",
+            "source_journal_entry_id",
+            "review_every",
+            "todo",
+            "set_person_refs",
+            "add_person_refs",
+            "remove_person_ids",
+            "defer_at",
+            "due_at",
+            "completed_at",
+            "dropped_at",
+            "next_review_at",
+            "last_reviewed_at",
+        ] {
+            let mut occurrences = Vec::new();
+            collect_property_schemas(&d.json_schema, property, &mut occurrences);
+            assert!(
+                !occurrences.is_empty(),
+                "schema must describe {property} somewhere: {}",
+                d.json_schema
+            );
+            for occurrence in occurrences {
+                assert!(
+                    !mentions_null(occurrence),
+                    "{property} may be omitted, but must not be nullable: {occurrence}"
+                );
+            }
+        }
     }
 
     #[test]
