@@ -488,12 +488,16 @@ async fn open_readonly_pool(db_path: PathBuf) -> SqlitePool {
 }
 
 async fn entity_data(pool: &SqlitePool, entity_id: Uuid) -> serde_json::Value {
+    serde_json::from_str(&raw_entity_data(pool, entity_id).await).expect("entity data is JSON")
+}
+
+async fn raw_entity_data(pool: &SqlitePool, entity_id: Uuid) -> String {
     let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
         .bind(entity_id.to_string())
         .fetch_one(pool)
         .await
         .expect("entity row exists");
-    serde_json::from_str(&data).expect("entity data is JSON")
+    data
 }
 
 async fn max_revision_seq(pool: &SqlitePool, entity_id: Uuid) -> i64 {
@@ -1649,6 +1653,114 @@ fn reference_existing_entity_reuses_existing_ref_for_duplicate_pair() {
             "duplicate accept rewrites the body with the existing EntityRef id"
         );
     });
+}
+
+#[test]
+fn reference_existing_entity_accept_rejects_invalid_current_entry_snapshot() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    for (stored_data, expected_message, label) in [
+        ("not-json", "malformed JSON", "malformed-json"),
+        ("[]", "must be a JSON object", "non-object-json"),
+    ] {
+        let workspace = Workspace::new();
+        let params_path = workspace.path().join("reference-params.json");
+        let thread_id = Uuid::now_v7();
+
+        let (source_entity_id, target_entity_id) = rt.block_on(async {
+            let pool = migrated_pool(&workspace).await;
+            seed_thread(&pool, thread_id, "Journal thread", 1).await;
+            let source_entity_id = seed_accepted_journal_entry(
+                &pool,
+                thread_id,
+                "2026-06-10T10:30:00",
+                "Met Ada at school.",
+                2,
+            )
+            .await;
+            let target_entity_id = seed_accepted_entity(
+                &pool,
+                thread_id,
+                "person",
+                serde_json::json!({ "name": "Ada Lovelace" }),
+                3,
+            )
+            .await;
+            sqlx::query("UPDATE entities SET data = ?1 WHERE id = ?2")
+                .bind(stored_data)
+                .bind(source_entity_id.to_string())
+                .execute(&pool)
+                .await
+                .expect("corrupt current Journal Entry snapshot");
+            pool.close().await;
+            (source_entity_id, target_entity_id)
+        });
+
+        write_reference_params(&params_path, source_entity_id, target_entity_id);
+        let core = workspace
+            .core()
+            .worker_fixture("propose-worker.ts")
+            .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+            .spawn();
+
+        let run_id = rt.block_on(async {
+            let (run_id, proposal_id) =
+                park_reference_proposal(&core, thread_id, "Link Ada in that entry.").await;
+            let resp = rpc(
+                &core,
+                28,
+                "proposal/decide",
+                serde_json::json!({
+                    "proposal_id": proposal_id,
+                    "decision": "accept",
+                    "decision_idempotency_key": format!("reference-invalid-current-{label}"),
+                }),
+            )
+            .await;
+            assert_eq!(
+                resp["error"]["code"].as_i64(),
+                Some(-32602),
+                "{label} is invalid_params - body: {resp}"
+            );
+            assert!(
+                resp["error"]["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains(expected_message),
+                "{label} invalid reason names {expected_message} - body: {resp}"
+            );
+            run_id
+        });
+
+        rt.block_on(async {
+            let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+            assert_eq!(
+                entity_ref_count(&pool, source_entity_id, target_entity_id).await,
+                0,
+                "{label} rolls back EntityRef creation"
+            );
+            assert_eq!(
+                raw_entity_data(&pool, source_entity_id).await,
+                stored_data,
+                "{label} leaves the stored Journal Entry snapshot unchanged"
+            );
+            assert_eq!(
+                max_revision_seq(&pool, source_entity_id).await,
+                1,
+                "{label} writes no Journal Entry revision"
+            );
+            let (proposal_status, tool_status) =
+                proposal_and_tool_status_for_run(&pool, &run_id).await;
+            assert_eq!(
+                proposal_status, "pending",
+                "{label} leaves proposal pending"
+            );
+            assert_eq!(tool_status, "pending", "{label} leaves tool call pending");
+        });
+    }
 }
 
 #[test]

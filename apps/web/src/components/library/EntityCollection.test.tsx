@@ -84,6 +84,39 @@ function makeUnavailableRuntime() {
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
+function makeProjectUnavailableRuntime(
+	people: EntityListResult["entities"],
+	todos: EntityListResult["entities"],
+	journalEntries: EntityListResult["entities"],
+) {
+	const unused = Effect.die("not exercised in this test");
+	const stub = WsClient.of({
+		threadCreate: () => unused,
+		postMessage: () => unused,
+		threadList: () => unused,
+		threadGet: () => unused,
+		listEntities: (type) => {
+			if (type === "person") return Effect.succeed({ entities: people });
+			if (type === "todo") return Effect.succeed({ entities: todos });
+			if (type === "journal_entry") {
+				return Effect.succeed({ entities: journalEntries });
+			}
+			if (type === "project") return Effect.die("Projects unavailable");
+			return Effect.succeed({ entities: [] });
+		},
+		subscribeRun: () => unused,
+		providerStatus: () => unused,
+		providerLoginStart: () => unused,
+		modelCatalog: () => unused,
+		settingsGet: () => unused,
+		settingsSet: () => unused,
+		proposalGet: () => unused,
+		proposalDecide: () => unused,
+		proposalNotifications: () => unused,
+	});
+	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+}
+
 function renderCollection(
 	kind: LibraryItemKind,
 	rows: {
@@ -154,6 +187,17 @@ describe("EntityCollection", () => {
 		expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
 		expect(screen.getByText("Grace Hopper")).toBeInTheDocument();
 		// The static preview person is gone.
+		expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
+	});
+
+	it("keeps live rows when only Projects cannot be read", async () => {
+		renderCollectionWithRuntime(
+			"person",
+			makeProjectUnavailableRuntime(livePeople, [], []),
+		);
+
+		expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
+		expect(screen.getByText("Grace Hopper")).toBeInTheDocument();
 		expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
 	});
 

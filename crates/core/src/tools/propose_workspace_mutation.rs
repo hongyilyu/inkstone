@@ -97,9 +97,22 @@ pub struct DeleteJournalEntryPayload {
 #[schemars(deny_unknown_fields)]
 #[allow(dead_code)]
 pub struct ReferenceExistingEntityFromJournalEntryPayload {
+    #[schemars(
+        length(min = 36, max = 36),
+        regex(
+            pattern = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        )
+    )]
     pub source_entity_id: String,
+    #[schemars(
+        length(min = 36, max = 36),
+        regex(
+            pattern = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        )
+    )]
     pub target_entity_id: String,
     #[serde(default)]
+    #[schemars(length(min = 1))]
     pub label_snapshot: Option<String>,
     #[schemars(length(min = 1))]
     pub body: Vec<ReferenceExistingEntityFromJournalEntryBodyNode>,
@@ -148,6 +161,7 @@ pub fn descriptor() -> CoreToolDescriptor {
     let mut json_schema = serde_json::to_value(schemars::schema_for!(Input))
         .expect("propose_workspace_mutation Input schema serializes");
     disallow_null_for_property(&mut json_schema, "ended_at");
+    disallow_null_for_property(&mut json_schema, "label_snapshot");
     CoreToolDescriptor {
         name: NAME.to_string(),
         description: DESCRIPTION.to_string(),
@@ -356,6 +370,17 @@ mod tests {
         }
     }
 
+    fn reference_payload_schema(schema: &Value) -> &Value {
+        let reference = top_level_variant(schema, "reference_existing_entity_from_journal_entry")
+            .unwrap_or_else(|| {
+                panic!(
+                    "schema must bind reference_existing_entity_from_journal_entry at top level: {}",
+                    schema
+                )
+            });
+        payload_schema(schema, reference)
+    }
+
     #[test]
     fn descriptor_binds_entity_target_only_for_update_and_delete() {
         let d = descriptor();
@@ -495,6 +520,47 @@ mod tests {
                     .any(|field| field.as_str() == Some("target_entity_id")),
             "reference payload must require source and target ids: {}",
             d.json_schema
+        );
+    }
+
+    #[test]
+    fn descriptor_constrains_reference_payload_ids_and_label_snapshot() {
+        let d = descriptor();
+        let reference_payload = reference_payload_schema(&d.json_schema);
+
+        for field in ["source_entity_id", "target_entity_id"] {
+            let property = &reference_payload["properties"][field];
+            assert_eq!(
+                property["minLength"],
+                serde_json::json!(36),
+                "{field} must be exactly UUID-length: {}",
+                d.json_schema
+            );
+            assert_eq!(
+                property["maxLength"],
+                serde_json::json!(36),
+                "{field} must be exactly UUID-length: {}",
+                d.json_schema
+            );
+            assert!(
+                property["pattern"]
+                    .as_str()
+                    .is_some_and(|pattern| pattern.contains("[0-9a-fA-F]{8}")),
+                "{field} must carry a UUID pattern: {}",
+                d.json_schema
+            );
+        }
+
+        let label_snapshot = &reference_payload["properties"]["label_snapshot"];
+        assert_eq!(
+            label_snapshot["minLength"],
+            serde_json::json!(1),
+            "label_snapshot must be non-empty when present: {}",
+            d.json_schema
+        );
+        assert!(
+            !mentions_null(label_snapshot),
+            "label_snapshot may be omitted, but must not be nullable: {label_snapshot}"
         );
     }
 }

@@ -6,6 +6,7 @@ mod lifecycle;
 mod queries;
 mod run_log;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -137,19 +138,28 @@ pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<
         .collect::<Vec<_>>();
 
     if entity_type == "journal_entry" {
+        let source_entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+        let refs = resolved_entity_refs_for_sources(pool, &source_entity_ids).await?;
+        let mut refs_by_source = HashMap::<String, Vec<ResolvedEntityRef>>::new();
+        for entity_ref in refs {
+            refs_by_source
+                .entry(entity_ref.source_entity_id.clone())
+                .or_default()
+                .push(entity_ref);
+        }
         for row in &mut rows {
-            row.refs = resolved_entity_refs_for_source(pool, &row.id).await?;
+            row.refs = refs_by_source.remove(&row.id).unwrap_or_default();
         }
     }
 
     Ok(rows)
 }
 
-async fn resolved_entity_refs_for_source(
+async fn resolved_entity_refs_for_sources(
     pool: &SqlitePool,
-    source_entity_id: &str,
+    source_entity_ids: &[String],
 ) -> sqlx::Result<Vec<ResolvedEntityRef>> {
-    let rows = queries::entity_refs_for_source(pool, source_entity_id).await?;
+    let rows = queries::entity_refs_for_sources(pool, source_entity_ids).await?;
     Ok(rows
         .into_iter()
         .map(
@@ -838,8 +848,17 @@ pub async fn apply_proposal(
                 .await?
                 .ok_or(ApplyError::Sql(sqlx::Error::RowNotFound))?
                 .1;
-            let current_data =
-                serde_json::from_str(&current_data).unwrap_or(serde_json::Value::Null);
+            let current_data: serde_json::Value =
+                serde_json::from_str(&current_data).map_err(|e| {
+                    ApplyError::InvalidMutation(format!(
+                        "stored Journal Entry data is malformed JSON: {e}"
+                    ))
+                })?;
+            if !current_data.is_object() {
+                return Err(ApplyError::InvalidMutation(
+                    "stored Journal Entry data must be a JSON object".to_string(),
+                ));
+            }
             Some(
                 crate::entities::reference_existing_entity_data_payload(
                     &current_data,

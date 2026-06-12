@@ -39,9 +39,6 @@ function journalBody(payload: unknown): string {
 		.map((node) => {
 			if (!node || typeof node !== "object") return "";
 			const record = node as Record<string, unknown>;
-			if (record.type === "entity_ref" && typeof record.ref_id === "string") {
-				return `[entity_ref:${record.ref_id}]`;
-			}
 			if (record.type === "entity_ref") return "[entity_ref]";
 			return record.type === "text" && typeof record.text === "string"
 				? record.text

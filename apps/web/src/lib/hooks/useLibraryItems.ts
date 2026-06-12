@@ -42,12 +42,11 @@ export function useLibraryItems() {
 			const program = Effect.gen(function* () {
 				const client = yield* WsClient;
 				// Effect.all is sequential by default — set concurrency to fetch these reads concurrently.
-				const [journalEntries, todos, people, projects] = yield* Effect.all(
+				const [journalEntries, todos, people] = yield* Effect.all(
 					[
 						client.listEntities("journal_entry"),
 						client.listEntities("todo"),
 						client.listEntities("person"),
-						client.listEntities("project"),
 					],
 					{ concurrency: 2 },
 				);
@@ -55,14 +54,12 @@ export function useLibraryItems() {
 					journalEntries: journalEntries.entities,
 					todos: todos.entities,
 					people: people.entities,
-					projects: projects.entities,
 				};
 			});
 			let rows: {
 				journalEntries: readonly LiveEntityRow[];
 				todos: readonly LiveEntityRow[];
 				people: readonly LiveEntityRow[];
-				projects: readonly LiveEntityRow[];
 			};
 			try {
 				rows = await runtime.runPromise(program);
@@ -70,7 +67,19 @@ export function useLibraryItems() {
 				// Web preview runs without Core — keep preview items; strict live row validation stays below this read boundary.
 				return previewItems;
 			}
-			const { journalEntries, todos, people, projects } = rows;
+			let projects: readonly LiveEntityRow[] = [];
+			try {
+				const projectRows = await runtime.runPromise(
+					Effect.gen(function* () {
+						const client = yield* WsClient;
+						return yield* client.listEntities("project");
+					}),
+				);
+				projects = projectRows.entities;
+			} catch {
+				// Projects are additive during this migration; keep the other live lists if only this read fails.
+			}
+			const { journalEntries, todos, people } = rows;
 			const liveJournalEntries = journalEntries.map(toLibraryJournalEntry);
 			const liveTodos = todos.map(toLibraryTodo);
 			const livePeople = people.map(toLibraryPerson);

@@ -2,7 +2,7 @@
 //! and runs one statement — no business rules, no orchestration. `pub(super)`
 //! scopes the surface to the `db` module.
 
-use sqlx::{Executor, Sqlite};
+use sqlx::{Executor, QueryBuilder, Sqlite};
 use uuid::Uuid;
 
 // ─── threads ──────────────────────────────────────────────────────────
@@ -407,25 +407,34 @@ where
         .await
 }
 
-pub(super) async fn entity_refs_for_source<'e, E>(
+pub(super) async fn entity_refs_for_sources<'e, E>(
     executor: E,
-    source_entity_id: &str,
+    source_entity_ids: &[String],
 ) -> sqlx::Result<Vec<(String, String, String, String, String, Option<String>)>>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(
+    if source_entity_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT er.id, er.source_entity_id, er.target_entity_id, \
                 target.type, target.data, er.label_snapshot \
          FROM entity_refs er \
          JOIN entities target ON target.id = er.target_entity_id \
-         WHERE er.source_entity_id = ?1 \
-           AND target.type IN ('person', 'project', 'todo') \
-         ORDER BY er.created_at, er.id",
-    )
-    .bind(source_entity_id)
-    .fetch_all(executor)
-    .await
+         WHERE er.source_entity_id IN (",
+    );
+    let mut separated = query.separated(", ");
+    for source_entity_id in source_entity_ids {
+        separated.push_bind(source_entity_id);
+    }
+    separated.push_unseparated(
+        ") AND target.type IN ('person', 'project', 'todo') \
+         ORDER BY er.source_entity_id, er.created_at, er.id",
+    );
+
+    query.build_query_as().fetch_all(executor).await
 }
 
 /// Read one accepted Journal Entry's current snapshot by id from the canonical
