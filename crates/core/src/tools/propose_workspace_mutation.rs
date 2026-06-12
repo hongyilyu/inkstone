@@ -1,7 +1,6 @@
-//! The `propose_workspace_mutation` tool (ADR-0016, ADR-0025). A Proposal is
-//! a Tool Request whose Tool Result is a user Decision. Proposal tools have no
-//! `execute`: Core's Worker run loop intercepts them before dispatch, persists
-//! a pending Proposal, parks the Run, and resumes once the Decision arrives.
+//! The `propose_workspace_mutation` tool (ADR-0016, ADR-0025). A Proposal is a
+//! Tool Request whose Tool Result is a user Decision, so it has no `execute`:
+//! Core persists a pending Proposal, parks the Run, and resumes on Decision.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -23,9 +22,8 @@ pub enum WorkspaceMutationKind {
     DeleteJournalEntry,
 }
 
-/// Wire arguments for `propose_workspace_mutation`. `mutation_kind` names the
-/// logical Workspace mutation; `payload` is the mutation-specific body Core
-/// validates on Decision. The first supported kind is `create_journal_entry`.
+/// Wire arguments: `mutation_kind` names the mutation; `payload` is its body,
+/// validated by Core on Decision.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "mutation_kind", rename_all = "snake_case")]
 #[allow(dead_code)]

@@ -1,9 +1,8 @@
-//! Slice 8 (real-worker-codex): `provider/login_start` orchestration
-//! (ADR-0023, ADR-0014 amendment). Core spawns the Provider Helper in login
-//! mode, relays its authorize URL to the Client, and — when the helper later
-//! emits credentials (after the browser callback) — persists them as the
-//! single writer. The Client learns the outcome by re-querying
-//! `provider/status`. Driven offline by a stub login helper (no real :1455).
+//! `provider/login_start` orchestration (ADR-0023, ADR-0014). Core spawns the
+//! Provider Helper in login mode, relays its authorize URL to the Client, and
+//! persists the credentials the helper later emits as the single writer. The
+//! Client learns the outcome by re-querying `provider/status`. Driven offline
+//! by a stub login helper (no real :1455).
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -14,9 +13,9 @@ use tokio_tungstenite::tungstenite::Message;
 mod common;
 use common::{CoreHandle, Workspace, Ws, next_text};
 
-/// Spawn Core wired to the stub login helper as the Provider Helper. No Worker
-/// is needed (login never starts a Run). `login_error`, when set, makes the
-/// stub emit a sanitized error line instead of an authorize URL.
+/// Spawn Core wired to the stub login helper (no Worker — login never starts a
+/// Run). `login_error`, when set, makes the stub emit a sanitized error line
+/// instead of an authorize URL.
 fn login_core(workspace: &Workspace, creds_dir: &Path, login_error: Option<&str>) -> CoreHandle {
     let mut builder = workspace
         .core()
@@ -133,9 +132,8 @@ fn login_start_helper_error_surfaces_provider_login_failed() {
         let body = next_text(&mut ws).await;
         let v: serde_json::Value = serde_json::from_str(&body).expect("login_start json");
 
-        // The failure is a named provider-login error (-32003, ADR-0014), not a
-        // generic internal error — and it carries the helper's message so the
-        // settings UI can show why (PR #105 review).
+        // A named provider-login error (-32003, ADR-0014), not a generic
+        // internal error, carrying the helper's message for the settings UI.
         assert!(
             v.get("result").is_none(),
             "a failed login carries no result — body: {body}"

@@ -105,7 +105,6 @@ describe("Models settings page (ADR-0024)", () => {
 		});
 		renderPage(runtime);
 
-		// Effort loaded as "off".
 		await waitFor(() =>
 			expect(screen.getByRole("radio", { name: "Off" })).toHaveAttribute(
 				"aria-checked",
@@ -147,11 +146,9 @@ describe("Models settings page (ADR-0024)", () => {
 		const { runtime, settingsSet } = makeRuntime({ connected: true, models });
 		renderPage(runtime);
 
-		// Both catalog rows render.
 		const row = await screen.findByRole("row", { name: /GPT-5\.5/ });
 		expect(screen.getAllByRole("row")).toHaveLength(2);
 
-		// No model preferred yet → the row exposes a "Set as preferred" action.
 		await user.click(
 			within(row).getByRole("button", { name: /set as preferred/i }),
 		);
@@ -159,7 +156,6 @@ describe("Models settings page (ADR-0024)", () => {
 		await waitFor(() =>
 			expect(settingsSet).toHaveBeenCalledWith({ model: "gpt-5.5" }),
 		);
-		// The chosen row now shows the Preferred badge.
 		expect(
 			within(await screen.findByRole("row", { name: /GPT-5\.5/ })).getByText(
 				/preferred/i,

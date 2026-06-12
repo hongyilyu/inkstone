@@ -170,11 +170,7 @@ export function ProposalCard({
 	useEffect(() => {
 		if (proposal.status !== "deciding") setInFlight(null);
 	}, [proposal.status]);
-	// The last decision attempted, retained across the `deciding → error`
-	// transition (unlike `inFlight`, which clears) so "Try again" re-issues the
-	// SAME decision. Without this, a failed Dismiss/Save retried as a hardwired
-	// `accept` would create the Journal Entry the user rejected — and an edit
-	// retried as accept would silently revert the user's edits.
+	// Last decision attempted, retained across `deciding → error` so retry re-issues the SAME decision. See docs/design/web-chat-ui.md.
 	const lastAttempt = useRef<{
 		decision: "accept" | "reject" | "edit";
 		editedPayload?: JournalEntryPayload | UpdateJournalEntryPayload;
@@ -237,9 +233,7 @@ export function ProposalCard({
 				{accepted ? (
 					<Check className="size-4 text-card-foreground/60" aria-hidden />
 				) : null}
-				<span aria-live="polite">
-					{accepted ? acceptedCopy : rejectedCopy}
-				</span>
+				<span aria-live="polite">{accepted ? acceptedCopy : rejectedCopy}</span>
 			</Card>
 		);
 	}
@@ -388,11 +382,7 @@ export function ProposalCard({
 						{isError ? (
 							<button
 								type="button"
-								// Gate the retry on what it will actually re-send. A reject
-								// never depends on payload validity; a stored edit carries a
-								// payload already validated at save time; only a plain accept
-								// (or no prior attempt) falls back to the original payload's
-								// `canApply`.
+								// Gate retry on what it will re-send: reject always allowed; a stored edit on its payload; a plain accept on `canApply`. See docs/design/web-chat-ui.md.
 								disabled={
 									lastAttempt.current?.decision === "reject"
 										? false

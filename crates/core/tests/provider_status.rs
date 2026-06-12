@@ -1,9 +1,8 @@
-//! Slice 6 (real-worker-codex): the Credential Store + `provider/status`
-//! (ADR-0023). `provider/status` reports `openai-codex` disconnected when no
-//! credential file exists and connected once one does. Drives Core over the
-//! WebSocket with a per-test `INKSTONE_CREDENTIALS_DIR`. (The store's own
-//! `write()` 0600/0700 behavior is unit-tested in `credentials.rs`; here the
-//! test writes the fixture file directly to drive the status read.)
+//! Credential Store + `provider/status` (ADR-0023): reports `openai-codex`
+//! disconnected when no credential file exists, connected once one does. Uses a
+//! per-test `INKSTONE_CREDENTIALS_DIR` and writes the fixture file directly to
+//! drive the status read (the store's 0600/0700 `write()` is unit-tested in
+//! `credentials.rs`).
 
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;

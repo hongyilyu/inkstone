@@ -1,10 +1,7 @@
 import { expect, test } from "./fixtures.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
-/**
- * Journal Entry Proposal review end-to-end through the real stack: Core, the
- * generic interpreter Worker with faux provider, and the built Web Client.
- */
+/** Journal Entry Proposal review end-to-end: real Core + faux-provider interpreter Worker + built Web Client. */
 test.use({
 	coreOptions: {
 		workerCmd: FAUX_WORKER_CMD,
@@ -109,12 +106,16 @@ test("create then update stays in-thread and resumes with an update confirmation
 	await expect(card).toContainText("Bought oat milk after daycare pickup.");
 	await card.getByRole("button", { name: /update journal entry/i }).click();
 
-	const acceptedCard = chat.page.locator('[data-proposal-status="accepted"]').last();
+	const acceptedCard = chat.page
+		.locator('[data-proposal-status="accepted"]')
+		.last();
 	await expect(acceptedCard).toContainText(/updated in journal/i, {
 		timeout: 15_000,
 	});
 	await chat.waitForAssistantText(/done.*updated it/i);
-	await expect(chat.page.locator('[data-proposal-status="pending"]')).toHaveCount(0);
+	await expect(
+		chat.page.locator('[data-proposal-status="pending"]'),
+	).toHaveCount(0);
 
 	await page.goto(`${core.url}/library/journal`);
 	await expect(
@@ -152,12 +153,16 @@ test("rejecting an update keeps the current Journal Entry", async ({
 	await expect(card).toContainText("Bought oat milk after daycare pickup.");
 	await card.getByRole("button", { name: /keep current entry/i }).click();
 
-	const rejectedCard = chat.page.locator('[data-proposal-status="rejected"]').last();
+	const rejectedCard = chat.page
+		.locator('[data-proposal-status="rejected"]')
+		.last();
 	await expect(rejectedCard).toContainText(/kept current journal entry/i, {
 		timeout: 15_000,
 	});
 	await chat.waitForAssistantText(/done.*dismissed it/i);
-	await expect(chat.page.locator('[data-proposal-status="pending"]')).toHaveCount(0);
+	await expect(
+		chat.page.locator('[data-proposal-status="pending"]'),
+	).toHaveCount(0);
 
 	await page.goto(`${core.url}/library/journal`);
 	await expect(
@@ -194,12 +199,16 @@ test("create then delete stays in-thread and resumes with a delete confirmation"
 	await expect(card).toContainText("Bought milk after daycare pickup.");
 	await card.getByRole("button", { name: /delete journal entry/i }).click();
 
-	const acceptedCard = chat.page.locator('[data-proposal-status="accepted"]').last();
+	const acceptedCard = chat.page
+		.locator('[data-proposal-status="accepted"]')
+		.last();
 	await expect(acceptedCard).toContainText(/deleted from journal/i, {
 		timeout: 15_000,
 	});
 	await chat.waitForAssistantText(/done.*deleted it/i);
-	await expect(chat.page.locator('[data-proposal-status="pending"]')).toHaveCount(0);
+	await expect(
+		chat.page.locator('[data-proposal-status="pending"]'),
+	).toHaveCount(0);
 
 	await page.goto(`${core.url}/library/journal`);
 	await expect(

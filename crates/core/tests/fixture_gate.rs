@@ -1,15 +1,9 @@
-//! Proves the slow-worker fixture's gate primitive in isolation, before any
-//! hub code (slices 1/2/6) depends on it.
-//!
-//! The fixture (`fixtures/slow-worker.ts`) speaks the existing Worker NDJSON
-//! protocol on stdout (`{"kind":"text_delta","delta":...}` lines then
-//! `{"kind":"done"}`), reads one `{"prompt":...}` line on stdin, and pauses
-//! mid-stream until a test-controlled gate file appears. This test spawns it
-//! directly (NOT through Core, so it binds no port and can't collide with the
-//! existing `end_to_end`/`persistence_*` binaries), asserts the first
-//! `text_delta` arrives, asserts the stream is provably paused (a bounded read
-//! timeout elapsing is the pass signal), trips the gate, then asserts the
-//! remaining `text_delta`(s) + `done` arrive and reassemble to `echo: hello`.
+//! Proves the slow-worker fixture's gate primitive in isolation. The fixture
+//! (`fixtures/slow-worker.ts`) emits NDJSON on stdout, reads one `{"prompt"}`
+//! line, and pauses mid-stream until a test-controlled gate file appears. Spawn
+//! it directly (not through Core), assert the first `text_delta` arrives and
+//! the stream is then paused, trip the gate, and assert the remaining deltas +
+//! `done` reassemble to `echo: hello`.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::Stdio;
@@ -21,13 +15,10 @@ mod common;
 
 #[test]
 fn slow_worker_fixture_pauses_until_gate_then_completes() {
-    // tsx is a worker dev-dependency; pnpm's isolated mode lands the binary
-    // under packages/worker/node_modules/.bin/tsx (not the workspace root).
     let tsx = common::tsx_bin();
     let fixture = common::fixture_path("slow-worker.ts");
 
-    // Gate path inside a TempDir that does NOT yet exist; creating it is the
-    // test-controlled release.
+    // Gate path that does not yet exist; creating it is the release.
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let gate_path = tmp.path().join("gate");
     assert!(!gate_path.exists(), "gate must not exist before release");
@@ -48,12 +39,11 @@ fn slow_worker_fixture_pauses_until_gate_then_completes() {
         stdin
             .write_all(b"{\"prompt\":\"hello\"}\n")
             .expect("write prompt line");
-        // stdin dropped here -> EOF on the fixture's stdin.
     }
 
-    // One reader thread pumps every stdout line into a channel. The main thread
-    // uses recv_timeout to assert both "a line arrived" and "no line arrived"
-    // without ever blocking unbounded (keeps the test from hanging CI).
+    // A reader thread pumps stdout lines into a channel; the main thread uses
+    // recv_timeout to assert "a line arrived" / "no line arrived" without
+    // blocking unbounded.
     let stdout = child.stdout.take().expect("piped stdout");
     let (tx, rx) = mpsc::channel::<String>();
     let reader = thread::spawn(move || {
@@ -70,7 +60,7 @@ fn slow_worker_fixture_pauses_until_gate_then_completes() {
         }
     });
 
-    // --- Chunk 1: the first text_delta must arrive. ---
+    // Chunk 1: the first text_delta must arrive.
     let line1 = match rx.recv_timeout(Duration::from_secs(5)) {
         Ok(l) => l,
         Err(_) => {
@@ -97,9 +87,8 @@ fn slow_worker_fixture_pauses_until_gate_then_completes() {
             .unwrap_or_else(|| panic!("text_delta carries a string delta — body: {line1}")),
     );
 
-    // --- Paused: no further line until the gate is tripped. ---
-    // The timeout ELAPSING is the pass signal. A line arriving before the gate
-    // exists means the fixture didn't block -> fail.
+    // Paused: no further line until the gate is tripped. The timeout elapsing
+    // is the pass signal; a line before the gate means the fixture didn't block.
     match rx.recv_timeout(Duration::from_millis(300)) {
         Err(RecvTimeoutError::Timeout) => { /* paused mid-stream — correct */ }
         Ok(line) => {
@@ -114,12 +103,10 @@ fn slow_worker_fixture_pauses_until_gate_then_completes() {
         }
     }
 
-    // --- Release: create the gate file. ---
+    // Release: create the gate file.
     std::fs::write(&gate_path, b"go").expect("create gate file");
 
-    // --- Remaining text_delta(s) then a terminal done, in order. ---
-    // The loop only exits its `done` arm by `break`; every other path panics,
-    // so reaching the line after the loop proves the stream terminated cleanly.
+    // Remaining text_delta(s) then a terminal done, in order.
     loop {
         let line = match rx.recv_timeout(Duration::from_secs(5)) {
             Ok(l) => l,
@@ -148,14 +135,13 @@ fn slow_worker_fixture_pauses_until_gate_then_completes() {
         }
     }
 
-    // The reassembled (incremental) deltas equal the real worker's echo output,
-    // proving the chunking is faithful to `echo: <prompt>`.
+    // The incremental deltas reassemble to the real worker's echo output.
     assert_eq!(
         assembled, "echo: hello",
         "incremental deltas reassemble to the echo output"
     );
 
-    // Cleanup: reap the child and join the reader.
+    // Reap the child and join the reader.
     let _ = child.kill();
     let _ = child.wait();
     let _ = reader.join();

@@ -1,18 +1,8 @@
-//! Slice 3 RED test: `thread/create({prompt})` is message-first (ADR-0022).
-//!
-//! `thread/create` with a non-empty prompt mints a Thread, starts its first
-//! Run, and returns `{thread_id, run_id}` in one round trip — persisting
-//! exactly one Thread row (with a non-empty title derived from the prompt),
-//! one Run row carrying that `thread_id`, and the user Message + text part.
-//! Pure-subscribe (ADR-0022): the response carries only the ids; events
-//! arrive via `run/subscribe(run_id)`.
-//!
-//! A whitespace-only prompt is rejected with `invalid_params` (`-32602`,
-//! ADR-0014) BEFORE any row is written (Core is the authority — ADR-0002),
-//! so the DB shows zero `threads` and zero `runs` rows.
-//!
-//! Uses the REAL echo Worker (no fixture/gate) — this slice does not assert
-//! mid-stream, only the create round trip and the persisted rows.
+//! `thread/create({prompt})` with a non-empty prompt mints a Thread, starts its
+//! first Run, and returns `{thread_id, run_id}`, persisting one Thread (with a
+//! derived title), one Run, and the user Message + text part (ADR-0022). A
+//! whitespace-only prompt is rejected with `invalid_params` (-32602) before any
+//! row is written.
 
 use futures_util::SinkExt;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -34,7 +24,6 @@ fn thread_create_mints_thread_and_first_message() {
     let (thread_id, run_id) = rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // ---- thread/create: returns {thread_id, run_id}, no events ----
         let create =
             r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#;
         ws.send(Message::Text(create.into()))
@@ -79,14 +68,14 @@ fn thread_create_mints_thread_and_first_message() {
         );
 
         // Drain the run to `done` so the Worker finishes cleanly before we
-        // kill Core (subscribe is snapshot-then-tail per ADR-0022).
+        // kill Core.
         let subscribe = format!(
             r#"{{"jsonrpc":"2.0","id":2,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
         );
         ws.send(Message::Text(subscribe.into()))
             .await
             .expect("send run/subscribe frame");
-        let _sub_resp = next_text(&mut ws).await; // subscribe response
+        let _sub_resp = next_text(&mut ws).await;
         loop {
             let body = next_text(&mut ws).await;
             let v: serde_json::Value = serde_json::from_str(&body)
@@ -178,8 +167,8 @@ fn thread_create_empty_prompt_rejected() {
     rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // Whitespace-only prompt: rejected with invalid_params (-32602)
-        // BEFORE any row is written.
+        // Whitespace-only prompt: rejected with invalid_params (-32602) before
+        // any row is written.
         let create =
             r#"{"jsonrpc":"2.0","id":2,"method":"thread/create","params":{"prompt":"   "}}"#;
         ws.send(Message::Text(create.into()))
@@ -241,9 +230,8 @@ fn thread_create_malformed_params_rejected() {
     rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // Malformed params (prompt is the wrong type). Before ADR-0029 the
-        // dispatch silently dropped this (no reply); the combinator now frames
-        // it as invalid_params (-32602).
+        // Malformed params (prompt is the wrong type) → invalid_params (-32602)
+        // (ADR-0029; previously silently dropped).
         let create =
             r#"{"jsonrpc":"2.0","id":7,"method":"thread/create","params":{"prompt":123}}"#;
         ws.send(Message::Text(create.into()))

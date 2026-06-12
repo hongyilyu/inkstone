@@ -1,11 +1,9 @@
-//! Slice 3 (real-worker-codex): the Workflow TOML loader fails fast at Core
-//! boot on a malformed `default.toml`, an invalid `thinking_level`, or a
-//! missing file, and boots cleanly on a valid one. The loader lives in the
-//! `core` binary crate (no lib target), so these drive it through the real
-//! boot path: spawn Core with `INKSTONE_WORKFLOWS_DIR` pointed at a fixture
-//! dir and assert whether it reaches `INKSTONE_LISTENING` (boot succeeded)
-//! or exits first (fail-fast). Ephemeral port keeps a successful boot
-//! collision-free.
+//! The Workflow TOML loader fails fast at boot on a malformed `default.toml`,
+//! an invalid `thinking_level`, or a missing file, and boots cleanly on a valid
+//! one. The loader is in the binary crate (no lib target), so these drive it
+//! through the real boot path: spawn Core with `INKSTONE_WORKFLOWS_DIR` and
+//! assert whether it reaches `INKSTONE_LISTENING` (success) or exits first
+//! (fail-fast).
 
 use std::path::Path;
 
@@ -17,9 +15,9 @@ fn write_workflow(dir: &Path, body: &str) {
     std::fs::write(dir.join("default.toml"), body).expect("write default.toml");
 }
 
-/// Spawn Core with `INKSTONE_WORKFLOWS_DIR` pointed at `workflows_dir` and a
-/// throwaway Workspace. `Ok(())` if Core announced `INKSTONE_LISTENING` (boot
-/// succeeded), `Err` if it exited first (fail-fast). Core is reaped either way.
+/// Spawn Core pointed at `workflows_dir`. `Ok(())` if it announced
+/// `INKSTONE_LISTENING`, `Err` if it exited first (fail-fast). Core is reaped
+/// either way.
 fn boot_outcome(workflows_dir: &Path) -> Result<(), SpawnError> {
     let workspace = Workspace::new();
     workspace
@@ -95,11 +93,9 @@ fn missing_workflow_file_fails_fast() {
     );
 }
 
-/// The shipped default Workflow nudges the model to propose a Journal Entry
-/// only when the user shares journal-worthy material.
-/// Unlike the boot tests above, this is a static content guard — it reads the
-/// real `crates/core/workflows/default.toml` (not a fixture) and asserts on its
-/// `system_prompt`, so it never boots Core. Real-model behavior is
+/// Static content guard on the shipped `crates/core/workflows/default.toml`
+/// (not a fixture; never boots Core): its `system_prompt` must nudge proposing
+/// a Journal Entry only for journal-worthy material. Real-model behavior is
 /// non-deterministic, so this guards the prompt text only.
 #[test]
 fn default_workflow_prompts_for_journal_entry_boundary() {

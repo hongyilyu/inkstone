@@ -2,11 +2,7 @@ import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils.js";
 
-/**
- * Empty / first-run / error state. Teaches rather than apologising (PRODUCT.md
- * "show the state, not a spinner"): an icon, a plain-spoken line, and an
- * optional action. `tone="brand"` is the warmer first-run treatment.
- */
+/** Empty / first-run / error state (PRODUCT.md "show the state, not a spinner"): icon, a line, optional action. `tone="brand"` is the warmer first-run treatment. */
 export function EmptyState({
 	icon: Icon,
 	title,

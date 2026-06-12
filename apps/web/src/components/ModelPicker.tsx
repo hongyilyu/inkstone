@@ -8,11 +8,7 @@ import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
 import { Button } from "./ui/button.js";
 import { SearchField } from "./ui/search-field.js";
 
-/**
- * Composer model picker (ADR-0024). Reflects the real `model/catalog` and the
- * user's preferred model (`settings/get`); picking one persists it via
- * `settings/set` — the same preferred-model setting the settings page drives.
- */
+/** Composer model picker (ADR-0024). Reflects `model/catalog` and the preferred model (`settings/get`); picking one persists it via `settings/set`. */
 export function ModelPicker() {
 	const runtime = useRuntime();
 	const [models, setModels] = useState<readonly ModelInfo[]>([]);

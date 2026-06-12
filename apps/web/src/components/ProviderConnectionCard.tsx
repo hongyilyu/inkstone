@@ -12,12 +12,7 @@ export interface ProviderConnectionCardProps {
 	onConnect: () => void;
 }
 
-/**
- * One provider's connection row (ADR-0023/0024), styled as a t3-like card.
- * Presentational: the parent runs `provider/status` + `provider/login_start`
- * (via `store/providers`) and feeds the state in. Connecting opens the
- * authorize URL in a new tab; the parent re-queries status on focus.
- */
+/** One provider's connection row (ADR-0023/0024). Presentational: the parent runs `provider/status` + `provider/login_start` and feeds the state in. */
 export function ProviderConnectionCard({
 	name,
 	connected,

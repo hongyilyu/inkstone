@@ -14,6 +14,7 @@ function CostBadge({ cost }: { cost: number }) {
 					: { label: "High cost", dollars: 3, tone: "text-rose-500" };
 	return (
 		<span
+			role="img"
 			aria-label={label}
 			className="inline-flex items-center font-mono font-semibold text-[10px] tabular-nums tracking-tight"
 		>
@@ -38,12 +39,7 @@ export interface ModelCatalogTableProps {
 	disabled?: boolean;
 }
 
-/**
- * The model catalog as a t3-style table (ADR-0024): one row per model with its
- * name, cost tier, and capability chips. Exactly one row is "Preferred"; the
- * others reveal a "Set as preferred" action on hover/focus. Presentational —
- * the parent persists the choice via `settings/set`.
- */
+/** Model catalog as a table (ADR-0024): one row per model with name, cost tier, capability chips; one row is "Preferred", others reveal a "Set as preferred" action. Presentational. */
 export function ModelCatalogTable({
 	models,
 	selectedId,

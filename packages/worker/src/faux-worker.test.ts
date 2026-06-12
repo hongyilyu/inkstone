@@ -7,9 +7,7 @@ import { runInterpreter } from "./interpreter.js";
 import type { CapturedToolRequest } from "./transport-memory.js";
 import { InMemoryTransport } from "./transport-memory.js";
 
-// `fauxDepsFor` reads the `INKSTONE_FAUX_*` env vars at call time (it is the
-// test-only entry's dep-builder; reading them is legitimate test code). Clear
-// them after each case so one mode never bleeds into the next.
+// `fauxDepsFor` reads `INKSTONE_FAUX_*` env vars at call time; clear them after each case so modes don't bleed.
 const FAUX_ENV_KEYS = [
 	"INKSTONE_FAUX_RESPONSE",
 	"INKSTONE_FAUX_ERROR",
@@ -74,11 +72,8 @@ function journalIntakeManifest(prompt: string): WorkerManifest {
 	});
 }
 
-// Drive the interpreter with the deps the faux entry builds, through an
-// InMemoryTransport (ADR-0027), and return the Run Events the seam captured.
-// `fauxDepsFor` owns the faux-provider registration internally; each call
-// registers a fresh provider keyed by a unique random `api`, so cases don't
-// contaminate one another.
+// Drive the interpreter with the faux entry's deps through an InMemoryTransport (ADR-0027), returning captured Run Events.
+// `fauxDepsFor` registers a fresh faux provider per call (unique random `api`), so cases don't contaminate each other.
 function runChat(
 	manifest: WorkerManifest,
 	results: Record<string, ToolCallResponse> = {},
@@ -98,11 +93,7 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 
 		const { events } = await runChat(fauxManifest());
 
-		// The dep-builder seeded the faux provider with the env text; the
-		// interpreter streams it as one or more `text_delta` chunks (faux/
-		// streamSimple chunk boundaries are not fixed) then a terminal `done`.
-		// Reassemble the deltas (as faux_run.rs does) rather than asserting a
-		// single delta — the latter is chunk-order-dependent and flaky.
+		// Reassemble deltas (as faux_run.rs does); faux/streamSimple chunk boundaries aren't fixed, so per-delta asserts flake.
 		const text = events
 			.filter((e) => e.kind === "text_delta")
 			.map((e) => (e as { delta: string }).delta)
@@ -124,18 +115,23 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 	it("proposes a create_journal_entry directly for a normal journal prompt", async () => {
 		process.env.INKSTONE_FAUX_PROPOSE = "1";
 
-		const { events, requests } = await runChat(journalIntakeManifest("I bought milk after daycare pickup and felt relieved."), {
-			tc_create: {
-				ok: {
-					content: [
-						{
-							type: "text",
-							text: "Accepted. Created Journal Entry.",
-						},
-					],
+		const { events, requests } = await runChat(
+			journalIntakeManifest(
+				"I bought milk after daycare pickup and felt relieved.",
+			),
+			{
+				tc_create: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Created Journal Entry.",
+							},
+						],
+					},
 				},
 			},
-		});
+		);
 
 		expect(requests).toEqual([
 			{
@@ -159,7 +155,10 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 		expect(events.at(-1)).toEqual({ kind: "done" });
 		expect(
 			events
-				.filter((e): e is { kind: "text_delta"; delta: string } => e.kind === "text_delta")
+				.filter(
+					(e): e is { kind: "text_delta"; delta: string } =>
+						e.kind === "text_delta",
+				)
 				.map((e) => e.delta)
 				.join(""),
 		).toContain("Done — added it.");
@@ -206,7 +205,10 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 		expect(events.at(-1)).toEqual({ kind: "done" });
 		expect(
 			events
-				.filter((e): e is { kind: "text_delta"; delta: string } => e.kind === "text_delta")
+				.filter(
+					(e): e is { kind: "text_delta"; delta: string } =>
+						e.kind === "text_delta",
+				)
 				.map((e) => e.delta)
 				.join(""),
 		).toContain("Done — added it.");
@@ -282,7 +284,10 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 		expect(events.at(-1)).toEqual({ kind: "done" });
 		expect(
 			events
-				.filter((e): e is { kind: "text_delta"; delta: string } => e.kind === "text_delta")
+				.filter(
+					(e): e is { kind: "text_delta"; delta: string } =>
+						e.kind === "text_delta",
+				)
 				.map((e) => e.delta)
 				.join(""),
 		).toContain("Done — updated it.");
@@ -361,7 +366,9 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 		process.env.INKSTONE_FAUX_PROPOSE = "1";
 
 		const { requests } = await runChat(
-			journalIntakeManifest("Actually, for that entry, change the time to 11:00."),
+			journalIntakeManifest(
+				"Actually, for that entry, change the time to 11:00.",
+			),
 			{
 				tc_read_current: {
 					ok: {
@@ -489,7 +496,10 @@ describe("faux-worker dep-builder (test-only entry)", () => {
 		expect(events.at(-1)).toEqual({ kind: "done" });
 		expect(
 			events
-				.filter((e): e is { kind: "text_delta"; delta: string } => e.kind === "text_delta")
+				.filter(
+					(e): e is { kind: "text_delta"; delta: string } =>
+						e.kind === "text_delta",
+				)
 				.map((e) => e.delta)
 				.join(""),
 		).toContain("Done — deleted it.");

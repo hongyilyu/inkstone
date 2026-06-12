@@ -1,17 +1,10 @@
-//! `proposal/get` handler (ADR-0025): fetch a parked Run's pending Proposal.
+//! `proposal/get` (ADR-0025): fetch a parked Run's pending Proposal — its
+//! mutation_kind, payload, rationale, and status. A Client that learns a Run
+//! is `parked` (via `run/subscribe`) follows with `proposal/get(run_id)`.
 //!
-//! Pull-path observability of a park: a Client that learns a Run is `parked`
-//! (via `run/subscribe`'s response status) follows with `proposal/get(run_id)`
-//! to retrieve the awaiting Proposal — its mutation_kind, payload, rationale,
-//! and status. The `proposal/pending` push Notification + its
-//! workspace bus arrive in a later (UI) slice; this slice makes the park fully
-//! observable through the pull path alone.
-//!
-//! `proposal/decide` handler (ADR-0025, ADR-0016): apply a Decision on a
-//! pending Proposal then resume the parked Run. The decide transaction —
-//! idempotency, the guarded apply/reject, and resume + still-parked recovery —
-//! lives in the deep [`crate::decide`] module; this handler is the thin
-//! JSON-RPC shell: decode → `decide::apply` → map `DecideError` → notify.
+//! `proposal/decide` (ADR-0025, ADR-0016): apply a Decision then resume the
+//! parked Run. The decide transaction lives in [`crate::decide`]; this handler
+//! is the thin JSON-RPC shell (decode → `decide::apply` → map error → notify).
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -55,11 +48,9 @@ pub(super) async fn handle_get(
     .await;
 }
 
-/// `proposal/decide`: decode → [`crate::decide::apply`] (injecting
-/// `worker::resume` as the resume closure) → map the typed `DecideError` to a
-/// `HandlerError` at this one site → frame the result + push `proposal/changed`.
-/// `frame_error` logs `Internal` server-side, so there are no per-branch
-/// `eprintln!`s here.
+/// `proposal/decide`: apply via [`crate::decide::apply`] (injecting
+/// `worker::resume` as the resume closure), map the typed `DecideError` here,
+/// then frame the result + push `proposal/changed`.
 pub(super) async fn handle_decide(
     pool: &SqlitePool,
     hubs: &Hubs,
@@ -89,10 +80,9 @@ pub(super) async fn handle_decide(
     }
 }
 
-/// Map the decide module's typed failure to the handler's wire vocabulary
-/// (ADR-0014): a lost race and a not-decidable Proposal both surface as
-/// `proposal_not_pending` (`-32002`); invalid inputs as `invalid_params`
-/// (`-32602`); an internal fault as `-32603`.
+/// Map the decide module's typed failure to the wire vocabulary (ADR-0014):
+/// lost race and not-decidable both → `proposal_not_pending`; invalid input →
+/// `invalid_params`; everything else → internal.
 fn map_decide_error(e: DecideError) -> HandlerError {
     match e {
         DecideError::LostRace => {

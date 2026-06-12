@@ -15,12 +15,7 @@ const SIZES = {
 	lg: { box: "size-12 text-base", icon: "size-6" },
 } as const;
 
-/**
- * The visual mark for an entity: initials for People, the kind glyph for
- * everything else. Uniform secondary tint across kinds — kinds are
- * distinguished by glyph + adjacent label, never by colour alone (PRODUCT.md
- * a11y). Always `aria-hidden`; the entity's name sits beside it as text.
- */
+/** Visual mark for an entity: initials for People, kind glyph otherwise; kinds differ by glyph + label, never colour alone (PRODUCT.md a11y). */
 export function EntityGlyph({
 	entity,
 	size = "md",

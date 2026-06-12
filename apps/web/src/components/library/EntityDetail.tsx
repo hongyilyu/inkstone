@@ -27,13 +27,7 @@ import { setFocusedThread } from "@/store/chat";
 import { setTodoDone, useTodoDone } from "@/store/library";
 import { EntityGlyph } from "./EntityGlyph.js";
 
-/**
- * The detail "Inspector" (ui-mock `/2` lineage): a focused panel for one
- * Library item, its relations as deep links, and a path back to the Run that
- * captured it. `allEntities` resolves relations. Dismissing the panel is the
- * shell's job (the rail's collapse control), so the inspector has no close
- * button of its own.
- */
+/** Detail "Inspector" panel for one Library item: its relations as deep links and a path back to the capturing Run. */
 export function EntityDetail({
 	entity,
 	allEntities,
@@ -128,8 +122,6 @@ export function EntityDetail({
 	);
 }
 
-// --- field + relation primitives -------------------------------------------
-
 function Field({ label, children }: { label: string; children: ReactNode }) {
 	return (
 		<div className="flex flex-col gap-1.5">
@@ -186,8 +178,6 @@ function StatusBadge({ status }: { status: Project["status"] }) {
 		</Badge>
 	);
 }
-
-// --- per-kind bodies --------------------------------------------------------
 
 function JournalEntryBody({ journalEntry }: { journalEntry: JournalEntry }) {
 	return (

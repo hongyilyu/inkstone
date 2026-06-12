@@ -16,7 +16,7 @@ import {
 	InMemoryTransport,
 } from "./transport-memory.js";
 
-// Each test registers a fresh faux provider and tears it down after.
+// Fresh faux provider per test, torn down after.
 const registrations: Array<{ unregister: () => void }> = [];
 afterEach(() => {
 	for (const r of registrations.splice(0)) r.unregister();
@@ -59,8 +59,7 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 		);
 		const faux = registerFauxProvider({ provider: "faux" });
 		registrations.push(faux);
-		// Turn 1: the model calls read_thread. Turn 2 (after the tool result):
-		// a final text answer that reflects the scripted result.
+		// Turn 1: model calls read_thread. Turn 2: final text answer reflecting the scripted result.
 		faux.setResponses([
 			fauxAssistantMessage(
 				[fauxToolCall("read_thread", { thread_id: "T-1" }, { id: "tc1" })],
@@ -74,8 +73,7 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 			streamFn: streamSimple,
 		};
 
-		// The seam supplies the Tool Result (scripted, keyed by tool_call_id) and
-		// records the outbound tool_request — no loose `deps.callTool` (ADR-0027).
+		// The seam supplies the scripted Tool Result (keyed by tool_call_id) and records the outbound tool_request (ADR-0027).
 		const events: RunEvent[] = [];
 		const requests: CapturedToolRequest[] = [];
 		await Effect.runPromise(
@@ -100,7 +98,6 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 			),
 		);
 
-		// (a) The transport captured exactly the model's outbound tool_request.
 		expect(requests).toEqual([
 			{ toolCallId: "tc1", name: "read_thread", params: { thread_id: "T-1" } },
 		]);
@@ -120,7 +117,6 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 		]);
 		rmSync(tmp, { recursive: true, force: true });
 
-		// (b) The loop fed the scripted result back; the follow-up answer reflects it.
 		const text = events
 			.filter(
 				(e): e is { kind: "text_delta"; delta: string } =>
@@ -130,7 +126,6 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 			.join("");
 		expect(text).toContain("here is the thread");
 
-		// (c) The terminal event is done.
 		expect(events[events.length - 1]).toEqual({ kind: "done" });
 	});
 
@@ -165,9 +160,7 @@ describe("tool proxy round-trip via WorkerTransport (faux provider)", () => {
 			),
 		);
 
-		// The proxy round-tripped the request; the `err` outcome made the proxy
-		// throw, which pi converts into an error tool result the model recovered
-		// from — the Run still reaches a terminal event without crashing.
+		// The `err` outcome makes the proxy throw; pi converts it to an error tool result the model recovers from, so the Run still terminates.
 		expect(requests).toHaveLength(1);
 		const terminal = events[events.length - 1];
 		expect(terminal.kind === "done" || terminal.kind === "error").toBe(true);

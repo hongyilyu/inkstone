@@ -1,0 +1,55 @@
+# web-store design rationale
+
+Design rationale extracted from code comments during cleanup — keep in sync with the source.
+
+## apps/web/src/store/chat.ts — store (zustand vanilla)
+
+The store is a plain *vanilla* zustand store so the free action functions stay callable OUTSIDE React render — the bridge (`bridge.ts`) and hydration (`hydrate.ts`) drive these imperatively. The selector hooks wrap zustand's `useStore`, which is backed by `useSyncExternalStore`; returning stable references (e.g. `EMPTY_MESSAGES`) preserves selector identity across unrelated state changes. ADR-0020: Effect owns the wire; React state is plain (zustand, not `@effect/atom`).
+
+## apps/web/src/store/chat.ts — resetSnapshot
+
+Clear the snapshot-applied bit for `runId` (ADR-0025 resume re-subscribe). A parked Run's resume opens a FRESH `run/subscribe` whose first `text_delta` is again the cumulative snapshot (`subscribe.rs` always emits one). The original parked subscribe already marked `snapshotApplied[runId] = true`, so without this reset the resume snapshot would be treated as an incremental delta and APPENDed — duplicating any pre-park assistant text. Resetting the bit makes the next `text_delta` SET the authoritative cumulative text (which already contains the pre-park prefix). A no-op when the thread is unknown.
+
+## apps/web/src/store/chat.ts — loadThreadMessages
+
+CRITICAL (snapshot-vs-resubscribe interplay): this does NOT pre-mark `snapshotApplied[run_id]` for the streaming message. Leaving it unset means the resubscribe's FIRST `text_delta` (the cumulative snapshot) SETs the text to the authoritative cumulative value in `applyEvent` — the hydrated partial text is just an initial paint that the snapshot then supersedes. The orchestrator (`hydrate.ts#hydrateThread`) owns the thread/get → load → resubscribe flow; this action only loads.
+
+## apps/web/src/store/bridge.ts — bridge module
+
+The thin imperative seam between Effect (which owns the wire/streams/runtime) and the plain React store. Per ADR-0020, the bridge forks the SDK stream on the runtime and pushes events into the store via `applyEvent`. No Effect React-binding lib; the store stays plain.
+
+Structured cancellation (Q18 A′): each run's stream fiber is retained keyed by run id so it can be interrupted on unmount. A run's stream is bounded by `Stream.takeUntil` on the terminal set (`done`/`error`/`cancelled`), so on any terminal event the `runForEach` completes and the fiber finishes on its own — independent of the focused thread.
+
+## apps/web/src/store/bridge.ts — startRunStream
+
+Identity-aware cleanup (M2): on decide-resume, `interruptRun` deletes the old entry and `startRunStream` sets the new one BEFORE the interrupted old fiber's finalizer runs. A bare `fibers.delete(runId)` would then delete the NEW resume fiber's entry — leaving it untracked (unmount can't interrupt it; a second decide can't either, splitting the resume tail across two consumers). Deleting only when the map still points at THIS fiber makes a stale finalizer a no-op.
+
+## apps/web/src/store/bridge.ts — sendNewThread
+
+First-message path: no thread is focused yet, so mint one. `threadCreate` returns `{thread_id, run_id}` in a single round trip; we then focus the new thread, seed the same user + live-assistant pair as `send`, promote the assistant message onto the run, and fork its stream. Mirrors `send` but minting the thread first (the slice-11-deferred create-on-first-message path).
+
+Because the thread id only exists once `threadCreate` resolves, the optimistic seed happens after the await (unlike `send`, which seeds into a known thread up front). If `threadCreate` itself fails, nothing was minted or seeded, so there is no orphaned bubble to mark — the user can retry.
+
+## apps/web/src/store/bridge.ts — decideProposal
+
+Decide a parked Run's Proposal (accept/reject/edit) and resume the Run. Flips the card to `deciding`, calls `proposal/decide`, then on success sets the decided status AND re-subscribes to the Run so the resume tail (parked → running → completed, ADR-0022 snapshot-then-tail) streams into the assistant bubble. A failed decide flips the card to `error` so the user can retry.
+
+An `edit` carries the user's `editedPayload`; Core re-validates it and applies in one step (ADR-0025), so the resume tail behaves exactly like an accept. A decide already in flight short-circuits (no double-submit); the stale parked stream fiber is interrupted before re-subscribing so the resume tail has a single consumer.
+
+Double-submit guard (M1): a decide already in flight short-circuits. Returning stops a fast double-click from firing a second `proposal/decide` that races behind the first — the Run un-parks after the first decide, so the second hits Core as `proposal_not_pending` and its catch would stomp an accept that actually succeeded with a spurious `error`. Retry from `error` is still allowed (only `deciding` short-circuits).
+
+Stale-fiber guard (M2): a parked Run's forwarder closes with NO terminal event, so the original `subscribeRun` fiber (bounded by `takeUntil` on the terminal set) never completed and is still blocked on the per-run queue. Interrupt it BEFORE re-subscribing so exactly one consumer drains the resume tail — two consumers would split a multi-chunk continuation between them and corrupt the text. Then reset the snapshot bit: the original parked subscribe already marked `snapshotApplied[runId] = true` on its initial (possibly empty) snapshot delta; the resume's FIRST `text_delta` is again the cumulative snapshot (it re-includes any pre-park prose), so without the reset it would be APPENDed onto the on-screen text and duplicate the prefix. Clearing the bit makes it SET the authoritative cumulative text instead.
+
+## apps/web/src/store/hydrate.ts — toMessage
+
+Map a wire `MessageView` to the live `Message`, narrowing the wire `role`/`status` STRINGS to the live literal unions WITHOUT casts. The wire schema types both as `S.String` (packages/protocol), but Core only ever emits the known values. We narrow defensively via explicit guards: an unknown role defaults to `assistant`, an unknown status to `completed` — so a malformed frame paints as a finished assistant bubble rather than crashing or leaving a phantom streaming row.
+
+## apps/web/src/store/hydrate.ts — hydrateThread
+
+Hydrate a thread from `thread/get` and resume any streaming run (slice 13).
+
+Flow: run `threadGet(threadId)` on the runtime → map the wire messages to live `Message`s → `loadThreadMessages` → for every message with `status === "streaming"` AND a non-empty `run_id`, `startRunStream` to resubscribe (the resubscribe's first cumulative `text_delta` SETs the text, since `loadThreadMessages` left `snapshotApplied` unset).
+
+On failure (`WsError`) the effect's success branch never runs, so nothing is loaded — a no-op, not a throw. This is what keeps `App.test` green: its stub runtime returns a pending/erroring `threadGet`, so hydration quietly does nothing. Returns a Promise that always resolves (errors are swallowed).
+
+Became-live handling: the composer stays live under the loading skeleton, so the user can `send` into this thread DURING the in-flight `threadGet`. That seeds an optimistic user+assistant turn and (via `attachRun`) an `activeRunId`. An unconditional `loadThreadMessages` full-replace would then wipe the seeded turn AND orphan its streamed reply (the assistant message id the live `applyEvent` targets disappears). So when the thread became live we NON-destructively `prependHistory` the fetched (older) turns in front of the live turn instead of replacing — preserving prior conversation without clobbering the in-flight one — and skip resubscribing (the live turn already owns the active run; the fetched history is settled).

@@ -1,13 +1,8 @@
-//! Slice 1 (real-worker-codex): a worker-emitted `error` Run Event
-//! terminates the Run as `errored` with the worker's message persisted, and
-//! the subscribe stream delivers the `error` event then closes.
-//!
-//! Uses the slow-worker fixture in error mode (`INKSTONE_FIXTURE_ERROR`),
-//! spawned by Core exactly as the real Worker would be — the "only Core
-//! spawns Worker" invariant (ADR-0001/0013) holds. Distinct from
-//! `persistence_terminal.rs`'s `worker_eof_errors_run` (stdout EOF without
-//! `done` → `worker_disconnected`): here the worker emits an explicit
-//! `error` and Core records THAT message with `terminal_reason='errored'`.
+//! A worker-emitted `error` Run Event terminates the Run as `errored` with the
+//! worker's message persisted, and the subscribe stream delivers the `error`
+//! event then closes. Distinct from `persistence_terminal.rs`'s
+//! `worker_eof_errors_run` (stdout EOF → `worker_disconnected`): here the worker
+//! emits an explicit `error`, recorded with `terminal_reason='errored'`.
 
 use futures_util::SinkExt;
 use sqlx::Row;
@@ -23,12 +18,11 @@ fn worker_error_event_marks_run_errored_with_message() {
     let gate_path = workspace.path().join("gate");
     let error_message = "provider rejected the request";
 
-    // CHUNKS=2 + GATE makes the stream provably pause mid-flight: the fixture
-    // emits chunk 1, blocks until the gate file appears, then emits chunk 2 +
-    // the terminal error. The test creates the gate file only AFTER
-    // subscribing, so the error is delivered strictly after the subscriber
-    // attaches — deterministic live-stream assertion with no reliance on tsx
-    // cold-start timing.
+    // CHUNKS=2 + GATE pauses the stream mid-flight: the fixture emits chunk 1,
+    // blocks until the gate file appears, then emits chunk 2 + the terminal
+    // error. The test opens the gate only after subscribing, so the error is
+    // delivered strictly after the subscriber attaches (no reliance on tsx
+    // cold-start timing).
     let core = workspace
         .core()
         .worker_fixture("slow-worker.ts")
@@ -67,15 +61,12 @@ fn worker_error_event_marks_run_errored_with_message() {
             .expect("send subscribe frame");
         let _sub_response = next_text(&mut ws).await;
 
-        // Now that we've subscribed (and read the subscribe response), trip
-        // the gate so the fixture emits the remaining chunk + the terminal
-        // error. This guarantees the error is delivered AFTER the subscriber
-        // attached — the live-stream assertion can't be won by a race.
+        // Subscribed; trip the gate so the error is delivered after the
+        // subscriber attached.
         std::fs::write(&gate_path, b"go").expect("create gate file");
 
-        // Drain events; the stream must carry an `error` event and then close
-        // (terminal). The loop exits on the error arm; a `done` before any
-        // error is a failure (the worker errored, it must not also complete).
+        // The stream must carry an `error` event then close. A `done` before any
+        // error fails: a worker that errored must not also complete.
         let saw_error;
         loop {
             let body = next_text(&mut ws).await;

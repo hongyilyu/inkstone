@@ -1,9 +1,6 @@
 import { cn } from "@/lib/utils.js";
 
-/**
- * The six reasoning-effort levels (ADR-0024), mirroring Core's `THINKING_LEVELS`
- * (`off` + pi-ai's five). `off` means non-reasoning.
- */
+/** The six reasoning-effort levels (ADR-0024), mirroring Core's `THINKING_LEVELS` (`off` + pi-ai's five); `off` means non-reasoning. */
 export const EFFORT_LEVELS = [
 	"off",
 	"minimal",
@@ -30,11 +27,7 @@ export interface EffortControlProps {
 	disabled?: boolean;
 }
 
-/**
- * Global reasoning-effort selector — a segmented control styled in t3's pill
- * idiom (an inset track with a raised active segment). Presentational: the
- * parent owns the value and persistence (ADR-0024).
- */
+/** Global reasoning-effort selector — a segmented pill control. Presentational: the parent owns the value and persistence (ADR-0024). */
 export function EffortControl({
 	value,
 	onChange,

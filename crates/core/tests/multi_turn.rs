@@ -1,10 +1,8 @@
-//! Slice 5 (real-worker-codex): multi-turn. Core assembles the Thread's
-//! prior completed Messages into the second Run's manifest `messages[]`, so
-//! the model sees the earlier exchange. Proven offline with the faux
-//! provider in history-echo mode (`INKSTONE_FAUX_ECHO_HISTORY=1`): the faux
-//! response factory reports the prior USER texts it received in its context,
-//! which Core sourced from the manifest history it built. Run 1 establishes
-//! the history; Run 2's streamed reply must contain Run 1's prompt.
+//! Multi-turn: Core assembles the Thread's prior completed Messages into the
+//! second Run's manifest `messages[]`, so the model sees the earlier exchange.
+//! Proven offline with the faux provider in history-echo mode
+//! (`INKSTONE_FAUX_ECHO_HISTORY=1`), which reports the prior turns it saw in its
+//! context. Run 1 establishes the history; Run 2's reply must contain it.
 
 use std::path::Path;
 
@@ -78,8 +76,8 @@ fn second_run_sees_prior_exchange() {
     let run2_text = rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // Run 1: create the thread with a memorable prompt, drain to done so
-        // its user+assistant messages are `completed` before run 2 starts.
+        // Run 1: create the thread, drain to done so its user+assistant messages
+        // are `completed` before run 2 starts.
         let create =
             r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"remember pineapple"}}"#;
         ws.send(Message::Text(create.into()))
@@ -108,15 +106,11 @@ fn second_run_sees_prior_exchange() {
         text
     });
 
-    // The faux history-echo reply is `history:<role=text|...>` for every
-    // prior turn. Run 1's reply (no prior turns) is `history:`. Run 2's prior
-    // turns are run 1's user prompt AND run 1's assistant reply, so run 2's
-    // reply must contain BOTH:
-    //   - `user=remember pineapple`  (the prior user turn — always present)
-    //   - `assistant=history:`       (the prior ASSISTANT turn — only present
-    //                                 if run 1's assistant message was
-    //                                 `completed` before run 2's history read,
-    //                                 i.e. the slice-9 terminal-ordering fix)
+    // The faux reply is `history:<role=text|...>` for every prior turn; run 1's
+    // (no prior turns) is `history:`. Run 2's prior turns are run 1's user prompt
+    // and assistant reply, so run 2's reply must contain both. The
+    // `assistant=history:` half only appears if run 1's assistant message was
+    // `completed` before run 2's history read (the terminal-ordering fix).
     assert!(
         run2_text.contains("user=remember pineapple"),
         "run 2 must see run 1's user prompt in its assembled history; got {run2_text:?}"

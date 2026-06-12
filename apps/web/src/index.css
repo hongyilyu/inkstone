@@ -221,7 +221,8 @@
    opacity is pulsed by `tool-glow`. Sits as an absolutely-positioned layer
    under the icon, clipped to the glyph's circle. */
 .tool-glow {
-	box-shadow: 0 0 9px 1px color-mix(in oklab, var(--tool-glyph) 55%, transparent);
+	box-shadow: 0 0 9px 1px
+		color-mix(in oklab, var(--tool-glyph) 55%, transparent);
 }
 
 /* Motion tokens (extract): one easing + the entrance/activity animations,

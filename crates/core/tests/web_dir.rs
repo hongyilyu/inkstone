@@ -1,16 +1,12 @@
-//! Slice 2 RED test: Core serves the SPA from `INKSTONE_WEB_DIR` (debug-only).
-//!
-//! The harness (ADR-0019) builds `apps/web/dist/` and points Core at it via
-//! `INKSTONE_WEB_DIR` so the browser loads the real Web Client from the same
-//! Core it talks to (per ADR-0015's dev-serving path; production embeds the
-//! bundle instead). When the env var is set in a debug build, Core serves:
+//! Core serves the SPA from `INKSTONE_WEB_DIR` (debug-only; ADR-0015/ADR-0019).
+//! When set in a debug build, Core serves:
 //!   - `GET /`               → the dir's `index.html`
 //!   - `GET /assets/<file>`  → built assets
 //!   - `GET /<spa-route>`    → `index.html` (SPA client-side routing fallback)
-//!   - `GET /ws`             → WebSocket upgrade (keeps precedence over fallback)
+//!   - `GET /ws`             → WebSocket upgrade (precedence over the fallback)
 //!
-//! Unset (or a release build) → the current bare `"Inkstone Core"` string, so
-//! production cannot serve arbitrary files from disk.
+//! Unset (or release) → the bare `"Inkstone Core"` string, so production cannot
+//! serve arbitrary files from disk.
 
 mod common;
 use common::Workspace;

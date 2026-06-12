@@ -12,8 +12,7 @@ import {
 	InMemoryTransport,
 } from "./transport-memory.js";
 
-// Each test registers a fresh faux provider and tears it down after, so the
-// pi-ai global api-registry never leaks a provider across tests.
+// Fresh faux provider per test, torn down after, so the pi-ai global api-registry never leaks a provider across tests.
 const registrations: Array<{ unregister: () => void }> = [];
 afterEach(() => {
 	for (const r of registrations.splice(0)) r.unregister();
@@ -36,8 +35,7 @@ function fauxManifest(overrides: Partial<WorkerManifest> = {}): WorkerManifest {
 	};
 }
 
-// Drive the interpreter through an InMemoryTransport on a test runtime and
-// return the Run Events the seam captured (ADR-0027).
+// Drive the interpreter through an InMemoryTransport and return the Run Events the seam captured (ADR-0027).
 function runChat(
 	manifest: WorkerManifest,
 	deps: InterpreterDeps,
@@ -63,7 +61,6 @@ describe("generic interpreter (faux provider)", () => {
 
 		const events = await runChat(fauxManifest(), deps);
 
-		// The seam captured exactly the streamed delta then the terminal done.
 		expect(events).toEqual([
 			{ kind: "text_delta", delta: "hello" },
 			{ kind: "done" },
@@ -93,10 +90,7 @@ describe("generic interpreter (faux provider)", () => {
 	});
 
 	it("resumes from a tool_result transcript", async () => {
-		// ADR-0025: a `mode:"resume"` manifest whose typed-block transcript
-		// ends in a `tool_result` drives `runAgentLoopContinue`. The seeded
-		// transcript is provider-valid: the assistant `tool_call` precedes its
-		// `tool_result`, ids match. The seeded tool is NOT re-executed.
+		// resume-transcript invariant — see docs/design/worker-tests.md
 		const faux = registerFauxProvider({
 			provider: "faux",
 			tokenSize: { min: 1, max: 2 },
@@ -105,16 +99,10 @@ describe("generic interpreter (faux provider)", () => {
 
 		let sawToolResult = false;
 		let sawToolCall = false;
-		// Stronger than presence: the seeded `tool_result` must be paired to a
-		// `tool_call` of matching id in a PRECEDING assistant message — the exact
-		// ordering+id invariant a real provider enforces (an orphan/reordered
-		// `toolResult` is rejected). Guards slice 3's reconstruction.
+		// tool_result must be paired to a PRECEDING tool_call of matching id — see docs/design/worker-tests.md
 		let pairedToPrecedingToolCall = false;
 		faux.setResponses([
 			(context) => {
-				// Read the live context the REAL transform produced, proving
-				// the seeded transcript reached the model with NO orphan
-				// rejection.
 				const msgs = context.messages;
 				const trIdx = msgs.findIndex((m) => m.role === "toolResult");
 				sawToolResult = trIdx >= 0;
@@ -200,8 +188,7 @@ describe("generic interpreter (faux provider)", () => {
 			],
 		});
 
-		// Drive through the seam directly so the test can assert no tool was
-		// round-tripped: an empty scripted result table plus a `requests` log.
+		// Drive through the seam directly to assert no tool round-tripped: empty result table plus a `requests` log.
 		const events: RunEvent[] = [];
 		const requests: CapturedToolRequest[] = [];
 		await Effect.runPromise(
@@ -210,13 +197,11 @@ describe("generic interpreter (faux provider)", () => {
 			),
 		);
 
-		// Exactly one terminal `done`, no error.
 		const terminal = events[events.length - 1];
 		expect(terminal).toEqual({ kind: "done" });
 		expect(events.some((e) => e.kind === "error")).toBe(false);
 		expect(events.filter((e) => e.kind === "done")).toHaveLength(1);
 
-		// The faux continuation streamed as text deltas.
 		const text = events
 			.filter(
 				(e): e is { kind: "text_delta"; delta: string } =>
@@ -226,22 +211,17 @@ describe("generic interpreter (faux provider)", () => {
 			.join("");
 		expect(text).toBe("Done — added it.");
 
-		// The model saw the seeded transcript through the real transform: the
-		// assistant tool_call AND its tool_result both reached it (no orphan
-		// rejection), and the tool_result is paired to a PRECEDING tool_call of
-		// matching id — the ordering a real provider enforces.
+		// tool_call + tool_result both reached the model, paired by preceding id — see docs/design/worker-tests.md
 		expect(sawToolCall).toBe(true);
 		expect(sawToolResult).toBe(true);
 		expect(pairedToPrecedingToolCall).toBe(true);
 
-		// The seeded tool was NOT re-executed on resume: the seam saw no
-		// outbound tool_request.
+		// Seeded tool NOT re-executed on resume: no outbound tool_request.
 		expect(requests).toHaveLength(0);
 	});
 
 	it("passes prior history into the loop context", async () => {
-		// The faux response factory can inspect the context it received,
-		// proving the manifest's assembled history reached the provider.
+		// The faux response factory inspects its context, proving the manifest's assembled history reached the provider.
 		const faux = registerFauxProvider({ provider: "faux" });
 		registrations.push(faux);
 		let seenUserTexts: string[] = [];

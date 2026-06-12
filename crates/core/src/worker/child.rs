@@ -1,6 +1,6 @@
 //! Production Worker transport (ADR-0026): a child process over NDJSON stdio.
-//! This is the SOLE `Command::spawn` site in Core (ADR-0001/0013) — the run
-//! loop never sees a `Child`, `ChildStdin`, or a line reader.
+//! The sole `Command::spawn` site in Core (ADR-0001/0013) — the run loop never
+//! sees a `Child`, `ChildStdin`, or a line reader.
 
 use std::process::Stdio;
 
@@ -11,12 +11,11 @@ use super::port::WorkerPort;
 use crate::protocol::{ToolResult, WorkerStdout};
 
 /// A spawned Worker child process with its stdio framed as NDJSON. Holds the
-/// `Child` so the process stays alive for the Run; the child is spawned with
-/// `kill_on_drop(true)`, so when the loop returns and this is dropped the Worker
-/// is torn down (and reaped) — no worker that keeps running after its last frame
-/// can outlive the Run (replacing the former explicit `child.wait()`).
+/// `Child` so the process stays alive for the Run; spawned `kill_on_drop(true)`,
+/// so dropping this (when the loop returns) tears down and reaps the Worker —
+/// no orphan outlives the Run.
 pub(super) struct ChildWorker {
-    #[allow(dead_code)] // held to own the process lifetime; kill_on_drop tears it down on drop.
+    #[allow(dead_code)] // held to own the process lifetime; kill_on_drop tears it down.
     child: Child,
     /// Kept open across the Run for `tool_result` writes (ADR-0013); set to
     /// `None` by [`WorkerPort::shutdown`] to send the Worker EOF.
@@ -26,9 +25,9 @@ pub(super) struct ChildWorker {
 
 impl ChildWorker {
     /// Spawn the Worker from `cmd` (whitespace-split program + args), write the
-    /// already-serialized `manifest_line` to its stdin, and return the live
-    /// transport. `Err(())` on any pre-stream failure (empty cmd, spawn failure,
-    /// missing stdio) — the caller maps it to `finalize_error`.
+    /// serialized `manifest_line` to its stdin, and return the live transport.
+    /// `Err(())` on any pre-stream failure (empty cmd, spawn failure, missing
+    /// stdio) — the caller maps it to `finalize_error`.
     pub(super) async fn spawn(cmd: &str, manifest_line: String) -> Result<Self, ()> {
         let mut parts = cmd.split_whitespace();
         let Some(program) = parts.next() else {
@@ -61,8 +60,8 @@ impl ChildWorker {
             return Err(());
         }
         if let Err(e) = stdin.flush().await {
-            // The manifest is the Worker's first input; if it never flushes the
-            // Worker blocks forever. Fail fast → the caller runs finalize_error.
+            // The manifest is the Worker's first input; an unflushed manifest
+            // blocks it forever. Fail fast → the caller runs finalize_error.
             eprintln!("failed to flush worker manifest: {e}");
             return Err(());
         }
@@ -118,9 +117,8 @@ impl WorkerPort for ChildWorker {
     }
 
     async fn shutdown(&mut self) {
-        // Drop stdin → EOF: a Worker blocked on stdin awaiting a tool_result
-        // that will never come (or one that emitted `done`) exits and closes
-        // its stdout, ending the read loop.
+        // Drop stdin → EOF: the Worker (blocked awaiting a tool_result, or done)
+        // exits and closes stdout, ending the read loop.
         self.stdin = None;
     }
 }

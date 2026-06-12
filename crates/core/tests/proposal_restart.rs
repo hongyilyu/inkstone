@@ -1,20 +1,13 @@
-//! Slice 7 RED test (Parked Run survives a Core restart): a parked Run is
-//! durable across a real Core process restart on the same DB. Core #1 parks a
-//! Run on a `propose_workspace_mutation` Proposal; Core #1 is KILLED; Core #2 boots on the
-//! SAME `INKSTONE_DB_PATH`. The ADR-0012 boot recovery sweep errors any
-//! interrupted `running`/`pending` Runs but MUST preserve `parked` — so via
-//! Core #2 the Proposal is still `pending`, `runs.status` is still `parked`
-//! (NOT `errored`/`core_restarted`), and `proposal/decide{accept}` resumes the
-//! Run to `completed` with a Journal Entry entity in tier 2.
+//! A parked Run survives a Core restart on the same DB (ADR-0025). Core #1
+//! parks a Run on a Proposal and is killed; Core #2 boots on the same DB. The
+//! boot recovery sweep (ADR-0012) errors interrupted `running`/`pending` Runs
+//! but MUST preserve `parked` — so the Proposal is still `pending`, the Run is
+//! still `parked`, and `proposal/decide{accept}` resumes it to `completed` with
+//! a Journal Entry in tier 2. The sweep's `parked` exclusion is the unit under
+//! test.
 //!
-//! This is the property that justifies Strategy B over keep-alive (ADR-0025):
-//! durable park across a Core restart. The sweep's `parked` exclusion is the
-//! unit under test.
-//!
-//! Driven by `tests/fixtures/propose-worker.ts` over `INKSTONE_WORKER_CMD`
-//! (same fixture the park/decide slices use): spawn 1 proposes & blocks (park);
-//! the resume spawn detects `mode === "resume"` and finishes (a `text_delta` +
-//! `done`).
+//! Driven by `tests/fixtures/propose-worker.ts`: spawn 1 proposes & blocks; the
+//! resume spawn detects `mode === "resume"` and finishes.
 
 use std::time::{Duration, Instant};
 
@@ -114,12 +107,12 @@ fn parked_survives_restart() {
         .build()
         .expect("tokio runtime builds");
 
-    // ── Core #1: park a Run, then KILL the process. ──────────────────────
+    // Core #1: park a Run, then kill the process.
     let mut core1 = workspace.core().worker_fixture("propose-worker.ts").spawn();
     let run_id = rt.block_on(create_and_park(&core1));
     core1.kill();
 
-    // ── Core #2: boot on the SAME DB. The boot recovery sweep runs here. ──
+    // Core #2: boot on the same DB — the boot recovery sweep runs here.
     let core2 = workspace.core().worker_fixture("propose-worker.ts").spawn();
 
     let entity_id = rt.block_on(async {
@@ -141,8 +134,8 @@ fn parked_survives_restart() {
             .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
             .to_string();
 
-        // White-box (same sqlite file, ro): the boot sweep PRESERVED the
-        // parked Run — it is still `parked`, NOT swept to errored/core_restarted.
+        // White-box: the boot sweep preserved the parked Run (not swept to
+        // errored/core_restarted).
         {
             let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
             let pool = SqlitePoolOptions::new()
@@ -194,7 +187,7 @@ fn parked_survives_restart() {
         entity_id
     });
 
-    // ── White-box: Run completed and the Journal Entry exists in tier 2. ───
+    // White-box: Run completed and the Journal Entry exists in tier 2.
     rt.block_on(async {
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()

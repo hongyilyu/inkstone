@@ -1,13 +1,8 @@
 //! `entity/list` handler (ADR-0004 read path): the live read the Library's
-//! collections consume.
-//!
-//! Decode `EntityListParams` through the combinator (a missing/non-string
-//! `type` → `invalid_params`, ADR-0029), read every accepted Entity of that
-//! type newest-first from tier 2, map each row to a wire [`EntityRow`], and
-//! frame an `{entities: [...]}` result. A DB read error surfaces as an internal
-//! error (-32603) via the combinator. Mirrors [`super::thread_get`] (params
-//! decoded through the seam) and [`super::thread_list`] (rows mapped to the
-//! wire shape).
+//! collections consume. Read every accepted Entity of the requested `type`
+//! newest-first, map each row to a wire [`EntityRow`], and frame
+//! `{entities: [...]}`. A missing/non-string `type` → `invalid_params`
+//! (ADR-0029).
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;

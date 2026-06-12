@@ -1,16 +1,14 @@
 //! The request-handler seam (ADR-0029).
 //!
 //! [`handle`] is the combinator every request→response method routes through:
-//! decode `params` into `P`, run the body, frame `Ok(S)` as a JSON-RPC Response
-//! and `Err(HandlerError)` as a JSON-RPC error, and log internal faults. A
-//! handler body is therefore just `async fn(P) -> Result<S, HandlerError>` — the
-//! decode/validate/frame/log spine lives here once, not copied per method.
+//! decode `params` into `P`, run the body, frame `Ok(S)`/`Err(HandlerError)`,
+//! log internal faults. A handler body is therefore just
+//! `async fn(P) -> Result<S, HandlerError>`.
 //!
-//! [`HandlerError`] carries its own JSON-RPC `code` (the enumerated vocabulary
-//! of ADR-0014) and its own client-facing message, so the failure→wire-code map
-//! lives in one place. `run/subscribe` and `proposal/decide` are NOT request→
-//! response (a stream / an idempotent multi-step transaction) and stay
-//! hand-written; they frame their own error replies through [`frame_error`].
+//! [`HandlerError`] carries its own JSON-RPC `code` (ADR-0014) and client-facing
+//! message, so the failure→wire-code map lives in one place. `run/subscribe` and
+//! `proposal/decide` are not request→response and stay hand-written, framing
+//! their own errors through [`frame_error`].
 
 use std::future::Future;
 
@@ -21,9 +19,9 @@ use uuid::Uuid;
 
 use super::reply::{send_response, send_rpc_error};
 
-/// A protocol-level failure from a request handler body. Each variant owns its
-/// JSON-RPC code (ADR-0014) and client-facing message; [`frame_error`] is the
-/// only place that puts it on the wire.
+/// A protocol-level failure from a handler body. Each variant owns its JSON-RPC
+/// code (ADR-0014) and client-facing message; [`frame_error`] puts it on the
+/// wire.
 #[derive(Debug)]
 pub(super) enum HandlerError {
     /// `-32602`: malformed params — including a non-UUID id, which fails at
@@ -35,8 +33,7 @@ pub(super) enum HandlerError {
     /// parked).
     ProposalNotPending(String),
     /// `-32003`: a provider login could not start or complete. Carries a
-    /// sanitized, user-facing message (helper output, or "already in progress")
-    /// — NOT internal detail — so the settings UI can show why (ADR-0014).
+    /// sanitized message (not internal detail) for the settings UI (ADR-0014).
     ProviderLoginFailed(String),
     /// `-32603`: an internal fault. The full error is logged server-side; the
     /// client gets a generic message so SQL/internal detail never leaks.
@@ -44,7 +41,7 @@ pub(super) enum HandlerError {
 }
 
 impl HandlerError {
-    /// The JSON-RPC error code (ADR-0014). The single source of the map.
+    /// The JSON-RPC error code (ADR-0014).
     fn code(&self) -> i64 {
         match self {
             HandlerError::InvalidParams(_) => -32602,
@@ -55,9 +52,8 @@ impl HandlerError {
         }
     }
 
-    /// The client-facing message. `Internal` is deliberately generic — the full
-    /// error is logged, never sent over the wire. Every other variant carries a
-    /// sanitized, user-facing message.
+    /// The client-facing message. `Internal` is deliberately generic (full error
+    /// is logged, never sent); every other variant carries a sanitized message.
     fn client_message(&self) -> String {
         match self {
             HandlerError::InvalidParams(m) => m.clone(),
@@ -69,10 +65,9 @@ impl HandlerError {
     }
 }
 
-/// Frame a [`HandlerError`] onto the connection. Internal faults are logged in
-/// full here (the one site that replaces the per-handler `eprintln!`s); the
-/// client receives `code` + `client_message`. Hand-written handlers
-/// (`run/subscribe`, `proposal/decide`) call this directly.
+/// Frame a [`HandlerError`] onto the connection: internal faults are logged in
+/// full here, the client receives `code` + `client_message`. Hand-written
+/// handlers (`run/subscribe`, `proposal/decide`) call this directly.
 pub(super) fn frame_error(
     out_tx: &UnboundedSender<String>,
     id: serde_json::Value,
@@ -85,9 +80,8 @@ pub(super) fn frame_error(
 }
 
 /// Run a request→response handler body behind the seam: decode `params` into
-/// `P` (a decode failure is `invalid_params`), run `body`, then frame the
-/// outcome. The body never touches the wire — it returns a value or a
-/// [`HandlerError`].
+/// `P` (decode failure is `invalid_params`), run `body`, frame the outcome. The
+/// body never touches the wire — it returns a value or a [`HandlerError`].
 pub(super) async fn handle<P, S, F, Fut>(
     id: serde_json::Value,
     params: serde_json::Value,
@@ -110,8 +104,7 @@ pub(super) async fn handle<P, S, F, Fut>(
     match body(decoded).await {
         Ok(value) => match serde_json::to_value(value) {
             Ok(result) => send_response(out_tx, id, result),
-            // A result that fails to serialize is an internal fault, not a
-            // reason to panic and tear down the connection task.
+            // A result that fails to serialize is an internal fault, not a panic.
             Err(e) => frame_error(out_tx, id, HandlerError::Internal(anyhow::Error::new(e))),
         },
         Err(err) => frame_error(out_tx, id, err),

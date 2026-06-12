@@ -1,7 +1,6 @@
 //! Shared JSON-RPC wire framing for Run handlers: response, `run/event`
 //! notification, and error envelopes. All output is queued on the
-//! per-connection `out_tx`; frame order is preserved because the connection
-//! drains a single channel.
+//! per-connection `out_tx` (a single channel, so frame order is preserved).
 
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
@@ -25,9 +24,8 @@ pub(super) fn send_response(
     let _ = out_tx.send(body);
 }
 
-/// Queue a `run/event` notification for `event` on the per-connection
-/// channel. The ad-hoc shape `{run_id, event}` is the wire form the Client's
-/// ui-sdk decodes.
+/// Queue a `run/event` notification. The shape `{run_id, event}` is the wire
+/// form the Client's ui-sdk decodes.
 pub(super) fn send_run_event(
     out_tx: &UnboundedSender<String>,
     run_id: Uuid,
@@ -45,8 +43,8 @@ pub(super) fn send_run_event(
     let _ = out_tx.send(body);
 }
 
-/// Emit a cumulative-or-incremental `text_delta` Run Event (the snapshot
-/// rides as one of these per ADR-0022 §17).
+/// Emit a `text_delta` Run Event (the snapshot rides as one of these,
+/// ADR-0022 §17).
 pub(super) fn send_text_delta(out_tx: &UnboundedSender<String>, run_id: Uuid, text: &str) {
     send_run_event(
         out_tx,
@@ -57,10 +55,9 @@ pub(super) fn send_text_delta(out_tx: &UnboundedSender<String>, run_id: Uuid, te
     );
 }
 
-/// Queue a `proposal/pending` notification (ADR-0025) on the per-connection
-/// channel: the Run parked and `proposal_id` is its awaiting Proposal. A
-/// subscribed Client renders the review card on receipt. Rides the
-/// `proposal/*` channel, NOT a Proposal-specific Run Event.
+/// Queue a `proposal/pending` notification (ADR-0025): the Run parked and
+/// `proposal_id` is its awaiting Proposal. Rides the `proposal/*` channel, not
+/// a Run Event.
 pub(super) fn send_proposal_pending(
     out_tx: &UnboundedSender<String>,
     run_id: Uuid,
@@ -78,9 +75,9 @@ pub(super) fn send_proposal_pending(
     let _ = out_tx.send(body);
 }
 
-/// Queue a `proposal/changed` notification (ADR-0025) on the per-connection
-/// channel: the Proposal `proposal_id` for `run_id` was decided to `status`
-/// (`accepted`|`rejected`). Pushed on the deciding connection after the apply.
+/// Queue a `proposal/changed` notification (ADR-0025): `proposal_id` for
+/// `run_id` was decided to `status` (`accepted`|`rejected`). Pushed on the
+/// deciding connection after the apply.
 pub(super) fn send_proposal_changed(
     out_tx: &UnboundedSender<String>,
     run_id: Uuid,
@@ -100,10 +97,9 @@ pub(super) fn send_proposal_changed(
     let _ = out_tx.send(body);
 }
 
-/// Shared JSON-RPC error framer: builds the `{jsonrpc, id, error:{code,
-/// message}}` envelope and queues it on the per-connection channel. The
-/// failure→code map lives on [`super::handler::HandlerError`] (ADR-0029); this
-/// is the single wire framer it (and the hand-written handlers) call.
+/// Shared JSON-RPC error framer: builds and queues the `{jsonrpc, id,
+/// error:{code, message}}` envelope. The failure→code map lives on
+/// [`super::handler::HandlerError`] (ADR-0029).
 pub(super) fn send_rpc_error(
     out_tx: &UnboundedSender<String>,
     id: serde_json::Value,

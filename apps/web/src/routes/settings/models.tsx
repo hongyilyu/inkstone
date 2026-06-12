@@ -12,11 +12,7 @@ import {
 } from "@/store/providers";
 import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";
 
-/**
- * `/settings/models` (ADR-0024): provider connection (restyled OAuth), a global
- * effort control, and the t3-style model catalog table with a single Preferred
- * model. All persisted via `settings/*` + read from `model/catalog`.
- */
+/** `/settings/models` (ADR-0024): provider connection, global effort control, and the catalog table with one Preferred model — persisted via `settings/*`, read from `model/catalog`. */
 function ModelsSettings() {
 	const runtime = useRuntime();
 	const [connected, setConnected] = useState<boolean | null>(null);
@@ -31,8 +27,7 @@ function ModelsSettings() {
 			.catch(() => setConnected(false));
 	}, [runtime]);
 
-	// Connection: query on mount + on focus (the login tab is separate, so
-	// focus-return is when the outcome is known — same pattern as ADR-0023).
+	// Requery connection on mount + on focus — login happens in a separate tab, so focus-return is when the outcome is known (ADR-0023).
 	useEffect(() => {
 		refreshConnected();
 		const onFocus = () => refreshConnected();
@@ -40,7 +35,6 @@ function ModelsSettings() {
 		return () => window.removeEventListener("focus", onFocus);
 	}, [refreshConnected]);
 
-	// Load the persisted preferred model + global effort, and the catalog.
 	useEffect(() => {
 		let alive = true;
 		fetchSettings(runtime)

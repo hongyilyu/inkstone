@@ -34,8 +34,7 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 	};
 
 	const focusTextarea = (e: MouseEvent<HTMLFormElement>) => {
-		// Only steal focus when the click hits the form chrome itself, not a
-		// nested interactive element (chips, send button).
+		// Only steal focus when the click hits the form chrome, not a nested control.
 		if (e.target === e.currentTarget) {
 			textareaRef.current?.focus();
 		}

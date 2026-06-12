@@ -3,8 +3,8 @@
 //! build the spawn manifest (the only fresh-vs-resume difference), hand it to a
 //! [`child::ChildWorker`] (the sole `Command::spawn` site), and drive it with
 //! the shared generic [`run::run_loop`]. The loop publishes each Run Event into
-//! the Run's hub (ADR-0022) — the live stream is owned by Core and observable by
-//! any connection, not bound to the socket that issued `run/post_message`.
+//! the Run's hub (ADR-0022) — the live stream is owned by Core, observable by
+//! any connection, not bound to the issuing socket.
 
 mod child;
 mod port;
@@ -30,13 +30,10 @@ fn worker_cmd() -> String {
 }
 
 /// Spawn a Worker for `run_id` (fresh path). Returns immediately; a Tokio task
-/// builds the fresh-spawn manifest, spawns the Worker, and drives it to a
-/// terminal state via [`run::run_loop`]. A pre-spawn failure (token resolution
-/// or process spawn) terminates the Run via [`finalize_error`].
-///
-/// `pool` + `assistant_message_id` append each `text_delta` to the assistant
-/// `message_parts.text` row pre-inserted at `seq=0`; the per-event critical
-/// section (ADR-0022) lives inside `run_loop`.
+/// builds the manifest, spawns the Worker, and drives it via [`run::run_loop`].
+/// A pre-spawn failure (token resolution or process spawn) terminates the Run
+/// via [`finalize_error`]. `text_delta`s append to the assistant row
+/// pre-inserted at `seq=0`.
 #[allow(clippy::too_many_arguments)]
 pub fn spawn(
     run_id: Uuid,
@@ -88,18 +85,17 @@ pub fn spawn(
 }
 
 /// Resume a parked Run after its Proposal is decided (ADR-0025). Reconstructs
-/// the transcript from tier 2, flips the Run `parked → running` (self-guarded —
-/// bails if another resume already won the race), creates a FRESH per-run hub,
-/// and spawns a `mode:"resume"` Worker driven by the shared [`run::run_loop`].
+/// the transcript, flips `parked → running` (self-guarded — bails if another
+/// resume won the race), creates a fresh per-run hub, and spawns a
+/// `mode:"resume"` Worker driven by [`run::run_loop`].
 ///
-/// Returns an error only on a pre-spawn failure (assistant message missing).
-/// The caller has already committed the atomic apply, so a resume failure
-/// leaves a durably-accepted Proposal on a still-parked Run (an idempotent
-/// decide retry can re-resume).
+/// Errors only on a pre-spawn failure (assistant message missing). The atomic
+/// apply is already committed, so a resume failure leaves a durably-accepted
+/// Proposal on a still-parked Run (an idempotent decide retry re-resumes).
 pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Result<()> {
-    // Resolve the effective Workflow (ADR-0024) exactly as the fresh path does;
-    // the raw `default_workflow()` leaves model/thinking_level `None`, which the
-    // resume manifest would serialize as `""`/`off` and the real Worker rejects.
+    // Resolve the effective Workflow (ADR-0024) as the fresh path does; the raw
+    // `default_workflow()` leaves model/thinking_level `None`, which the resume
+    // manifest serializes as `""`/`off` and the real Worker rejects.
     let workflow =
         crate::dispatcher::resolve_effective_workflow(pool, crate::workflow::default_workflow())
             .await;
@@ -108,25 +104,23 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
         .await?
         .ok_or_else(|| anyhow::anyhow!("run {run_id} has no assistant message to resume into"))?;
 
-    // Reconstruct the transcript (ADR-0025): every tool_call resolved, the final
-    // message the Decision tool_result.
+    // Reconstruct the transcript (ADR-0025): every tool_call resolved, the
+    // final message the Decision tool_result.
     let transcript = crate::resume::reconstruct(pool, run_id).await?;
 
-    // Build the manifest line (token resolution + serialization) BEFORE the
-    // `parked → running` flip. This is the realistic pre-spawn failure (e.g. an
-    // expired credential), and doing it here lets it propagate as `Err` while
-    // the Run is still `parked`: `decide::apply` maps it to an error, so
-    // `proposal/decide` reports failure (no `proposal/changed`) and the Client
-    // retries — the still-parked recovery branch then re-resumes. Wedging the
-    // Run `errored` (the old behavior) instead stranded a durably-accepted
-    // Proposal whose model never saw the Decision (ADR-0025).
+    // Build the manifest line BEFORE the flip so the realistic pre-spawn
+    // failure (e.g. an expired credential) propagates as `Err` while still
+    // `parked`: `decide::apply` maps it to an error, `proposal/decide` reports
+    // failure, and the Client retries — the still-parked recovery branch then
+    // re-resumes. (Wedging the Run `errored` here would strand a
+    // durably-accepted Proposal whose model never saw the Decision.)
     let Some(line) = resume_manifest_line(&workflow, &transcript).await else {
         anyhow::bail!("resume manifest build failed for run {run_id} (token resolution)");
     };
 
-    // Flip parked → running BEFORE creating the hub/spawning. Self-guarded on
-    // `status = 'parked'`: if 0 rows matched, another resume already won the
-    // race — bail so exactly one resume Worker runs.
+    // Flip parked → running before creating the hub/spawning. Self-guarded on
+    // `status = 'parked'`: if 0 rows matched, another resume won the race —
+    // bail so exactly one resume Worker runs.
     let flipped = db::mark_run_running(pool, run_id).await?;
     if !flipped.won() {
         return Ok(());
@@ -156,14 +150,11 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
                 )
                 .await;
             }
-            // A post-flip ChildWorker::spawn failure is the rare residual case:
-            // the realistic pre-spawn failure (token/manifest) is handled BEFORE
-            // the flip above and propagates as `Err` while still parked. By the
-            // time we are here the decide RPC has already reported success, so
-            // re-parking would leave a decided card over a silently hung turn (no
-            // pending Proposal for `run/subscribe` to surface). Finalize `errored`
-            // instead: the synthesized terminal event makes the failure visible
-            // and the user can re-send, rather than the turn hanging forever.
+            // Rare residual case: a post-flip spawn failure (the realistic
+            // token/manifest failure is handled before the flip). The decide
+            // RPC already reported success, so re-parking would leave a decided
+            // card over a silently hung turn. Finalize `errored` instead so the
+            // failure is visible and the user can re-send.
             Err(()) => finalize_error(&pool, &hubs, run_id).await,
         }
     });
@@ -171,11 +162,10 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
     Ok(())
 }
 
-/// Build the fresh-spawn manifest line (ADR-0018): the Workflow fields, the
-/// current prompt, the assembled prior history as typed message blocks, the
-/// allowlisted tool descriptors, and — for OAuth providers — a short-lived
-/// access token (ADR-0023). `None` if token resolution fails (the caller
-/// terminates the Run via `finalize_error`).
+/// Build the fresh-spawn manifest line (ADR-0018): Workflow fields, prompt,
+/// prior history as typed message blocks, allowlisted tool descriptors, and —
+/// for OAuth providers — a short-lived access token (ADR-0023). `None` if token
+/// resolution fails (the caller runs `finalize_error`).
 async fn fresh_manifest_line(
     workflow: &Workflow,
     prompt: &str,
@@ -202,9 +192,8 @@ async fn fresh_manifest_line(
     Some(serialize_manifest(&manifest))
 }
 
-/// Build the resume manifest line (ADR-0025): an empty prompt, the reconstructed
-/// transcript as typed message blocks, and `mode:"resume"`. `None` on token
-/// failure.
+/// Build the resume manifest line (ADR-0025): empty prompt, reconstructed
+/// transcript as typed message blocks, `mode:"resume"`. `None` on token failure.
 async fn resume_manifest_line(
     workflow: &Workflow,
     transcript: &[crate::resume::Block],
@@ -262,10 +251,9 @@ async fn pre_spawn_delay_if_configured() {
     }
 }
 
-/// Pre-loop spawn-failure path: the Worker never produced any output, so the
-/// Run terminates immediately as `worker_disconnected` (ADR-0017 atomic
-/// recovery), then the hub entry is removed so a subscriber falls through to
-/// the persisted snapshot + `done`.
+/// Pre-loop spawn-failure path: the Worker produced no output, so terminate the
+/// Run as `worker_disconnected` (ADR-0017) and remove the hub so a subscriber
+/// falls through to the persisted snapshot + `done`.
 async fn finalize_error(pool: &SqlitePool, hubs: &Hubs, run_id: Uuid) {
     if let Err(e) = db::error_run(pool, run_id, db::now_ms()).await {
         eprintln!("error_run after pre-loop spawn failure for run {run_id}: {e}");

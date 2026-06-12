@@ -1,12 +1,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
-/**
- * Local, non-durable UI state for the Library (VISUAL ONLY). Real toggles will
- * flow through Core as Proposals; until then these keep interactions honest and
- * consistent across the overview and the collection routes (a todo ticked in
- * "Due soon" stays ticked when you open its collection). Resets on reload.
- */
+/** Local, non-durable UI state for the Library (VISUAL ONLY; resets on reload). */
 interface LibraryState {
 	/** Per-todo done overrides on top of the mock's static `done`. */
 	doneOverrides: Record<string, boolean>;

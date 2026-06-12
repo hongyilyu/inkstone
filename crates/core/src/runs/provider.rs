@@ -1,8 +1,7 @@
-//! `provider/status` + `provider/login_start` handlers (ADR-0023, ADR-0014
-//! amendment). Reports which LLM providers have stored credentials, and
-//! begins an OAuth login. Named `provider/*`, not `auth/*`, because ADR-0007
-//! reserves "auth" for the (absent) human-auth concern; this is LLM-provider
-//! connection.
+//! `provider/status` + `provider/login_start` handlers (ADR-0023): report
+//! which LLM providers have stored credentials, and begin an OAuth login.
+//! Named `provider/*`, not `auth/*` — "auth" is reserved for human-auth
+//! (ADR-0007); this is LLM-provider connection.
 
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,9 +23,8 @@ pub(super) async fn handle(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |_p: serde_json::Value| async move {
-        // ChatGPT/Codex is the only provider this feature supports. A corrupt
-        // credential file surfaces as an internal error rather than a
-        // misleading "connected: false".
+        // ChatGPT/Codex is the only supported provider. A corrupt credential
+        // file surfaces as an internal error, not a misleading "connected: false".
         let connected =
             credentials::is_connected(OPENAI_CODEX).map_err(|e| HandlerError::Internal(e.into()))?;
 
@@ -40,15 +38,13 @@ pub(super) async fn handle(
     .await;
 }
 
-/// At most one login flow runs at a time: the Provider Helper binds a fixed
-/// loopback port (`:1455`) for the OAuth callback, so a second concurrent
-/// login would fail to bind. Guard it here and reject overlap with a clear
-/// error rather than spawning a doomed second helper.
+/// At most one login flow at a time: the Provider Helper binds a fixed
+/// loopback port (`:1455`) for the OAuth callback, so a concurrent login would
+/// fail to bind. Reject overlap rather than spawn a doomed second helper.
 static LOGIN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 /// One structured line of the Provider Helper's `login`-mode stdout
-/// (ADR-0023): the authorize URL first, then the Core-shaped credentials on
-/// success, or an error.
+/// (ADR-0023): the authorize URL, then credentials on success, or an error.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum LoginLine {
@@ -79,8 +75,8 @@ pub(super) async fn handle_login_start(
             )));
         }
 
-        // Single in-flight login (the :1455 loopback binds once). A user-facing
-        // condition, not an internal fault — surface the reason.
+        // Single in-flight login (the :1455 loopback binds once). User-facing
+        // condition, not an internal fault.
         if LOGIN_IN_FLIGHT
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
@@ -128,8 +124,8 @@ pub(super) async fn handle_login_start(
         };
         let mut lines = BufReader::new(stdout).lines();
 
-        // Read until the authorize URL (the first structured line) so we can
-        // reply to the Client, which opens it in a new tab.
+        // Read until the authorize URL (first structured line) so we can reply
+        // to the Client, which opens it in a new tab.
         let authorize_url = loop {
             match lines.next_line().await {
                 Ok(Some(line)) => match serde_json::from_str::<LoginLine>(&line) {
@@ -163,10 +159,9 @@ pub(super) async fn handle_login_start(
             }
         };
 
-        // Continue draining the helper out-of-band: when it emits the
-        // credentials line (after the browser callback hits its :1455
-        // loopback), Core — the single writer — persists them. The Client
-        // learns the outcome by re-querying `provider/status` on focus.
+        // Drain the helper out-of-band: when it emits the credentials line
+        // (after the browser callback), Core persists them. The Client learns
+        // the outcome by re-querying `provider/status` on focus.
         tokio::spawn(async move {
             let result = read_login_credentials(&mut lines).await;
             match result {

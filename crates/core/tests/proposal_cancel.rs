@@ -1,13 +1,7 @@
-//! Slice 6 RED test (cancel a parked Run): `run/cancel{run_id}` on a parked
-//! Run cancels the Run and its pending Proposal in one transaction. The
-//! response is `{outcome:"accepted"}`; white-box, `runs.status='cancelled'` and
-//! the Proposal `status='cancelled'`. A subsequent `proposal/decide{accept}`
-//! then returns `proposal_not_pending` and creates NO entity (the Proposal is
-//! no longer pending — the decide validation reuses that gate).
-//!
-//! Driven by `tests/fixtures/propose-worker.ts` over `INKSTONE_WORKER_CMD`:
-//! spawn 1 proposes & blocks (park). No resume Worker runs — cancel is pure
-//! tier-2 (the parked Worker is already torn down on park).
+//! `run/cancel{run_id}` on a parked Run cancels the Run and its pending
+//! Proposal in one transaction, returning `{outcome:"accepted"}`. A subsequent
+//! `proposal/decide{accept}` then returns `proposal_not_pending` and creates no
+//! entity. Driven by `fixtures/propose-worker.ts`, which proposes and parks.
 
 use std::time::{Duration, Instant};
 
@@ -19,7 +13,7 @@ use tokio_tungstenite::tungstenite::Message;
 mod common;
 use common::{CoreHandle, Workspace, next_text};
 
-/// Open a fresh socket, send a single request, return the response body.
+/// Open a fresh socket, send one request, return the parsed response.
 async fn rpc(
     core: &CoreHandle,
     id: u64,
@@ -42,7 +36,7 @@ async fn rpc(
 }
 
 /// Drive a Run to a park: thread/create, then poll run/subscribe until
-/// status=parked. Returns the run_id.
+/// status=parked.
 async fn create_and_park(core: &CoreHandle) -> String {
     let resp = rpc(
         core,
@@ -89,7 +83,7 @@ fn cancel_parked_run() {
     let run_id = rt.block_on(async {
         let run_id = create_and_park(&core).await;
 
-        // Learn the proposal_id (used to attempt a post-cancel decide).
+        // Learn the proposal_id for the post-cancel decide attempt.
         let resp = rpc(
             &core,
             3,
@@ -102,7 +96,7 @@ fn cancel_parked_run() {
             .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
             .to_string();
 
-        // run/cancel the parked Run → outcome accepted.
+        // Cancel the parked Run → accepted.
         let resp = rpc(
             &core,
             4,
@@ -220,11 +214,11 @@ fn cancel_parked_run() {
     });
 }
 
-/// Cancelling a Run that is RESUMING (parked → decided → resume spawn) must be
-/// honored by the resume path's pre-spawn cancel guard (worker::resume), so the
-/// resumed Worker never produces its continuation. The `INKSTONE_WORKER_PRE_
-/// SPAWN_DELAY_MS` hook applies to resume too, holding the resume task in its
-/// pre-spawn window long enough for `run/cancel` to win `running → cancelled`.
+/// Cancelling a RESUMING Run (parked → decided → resume spawn) is honored by
+/// the resume path's pre-spawn cancel guard, so the resumed Worker never
+/// produces its continuation. `INKSTONE_WORKER_PRE_SPAWN_DELAY_MS` holds the
+/// resume task pre-spawn long enough for `run/cancel` to win running →
+/// cancelled.
 #[test]
 fn cancel_during_resume_pre_spawn_prevents_continuation() {
     let workspace = Workspace::new();
@@ -254,9 +248,8 @@ fn cancel_during_resume_pre_spawn_prevents_continuation() {
             .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
             .to_string();
 
-        // Accept → Core applies the Decision and re-drives resume: parked →
-        // running, a fresh hub, then the resume task sleeps in the pre-spawn
-        // delay before building the manifest / spawning the resumed Worker.
+        // Accept → resume re-drives parked → running, then the resume task
+        // sleeps in the pre-spawn delay before spawning the resumed Worker.
         let resp = rpc(
             &core,
             4,
@@ -274,8 +267,8 @@ fn cancel_during_resume_pre_spawn_prevents_continuation() {
             "decide accepted, resume is now in its pre-spawn window — body: {resp}"
         );
 
-        // Cancel while the resume task is still pre-spawn → wins running →
-        // cancelled and signals the resume hub, so the resumed Worker bails.
+        // Cancel while still pre-spawn → wins running → cancelled and signals
+        // the resume hub, so the resumed Worker bails.
         let resp = rpc(
             &core,
             5,
@@ -289,8 +282,8 @@ fn cancel_during_resume_pre_spawn_prevents_continuation() {
             "cancel of a resuming Run is accepted — body: {resp}"
         );
 
-        // Let the pre-spawn delay elapse so the resume task definitely woke,
-        // observed the cancel, and exited without spawning the Worker.
+        // Let the pre-spawn delay elapse so the resume task woke, observed the
+        // cancel, and exited without spawning the Worker.
         tokio::time::sleep(Duration::from_millis(950)).await;
         run_id
     });
@@ -310,8 +303,7 @@ fn cancel_during_resume_pre_spawn_prevents_continuation() {
             .expect("run row exists");
         assert_eq!(run_status, "cancelled", "resuming run ends cancelled");
 
-        // The resumed Worker never ran, so the assistant message has no
-        // continuation text and stays incomplete.
+        // The resumed Worker never ran: no continuation text, stays incomplete.
         let row = sqlx::query(
             "SELECT m.status AS message_status, mp.text AS text \
              FROM messages m \

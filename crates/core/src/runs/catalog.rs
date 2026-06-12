@@ -1,6 +1,6 @@
 //! `model/catalog` handler (ADR-0024): the models available per provider.
 //! Read-only, no params — the embedded catalog (`crate::models`) is the only
-//! input. Hand-mirrored from `pi-ai` and drift-tested in the Worker.
+//! input.
 
 use tokio::sync::mpsc::UnboundedSender;
 

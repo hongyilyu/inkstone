@@ -9,21 +9,12 @@ import { useEffect } from "react";
 import { useCommandOpen } from "@/store/command";
 import { settingsExitHref } from "@/store/settings-origin";
 
-/**
- * Settings shell (ADR-0024): the t3-styled chrome around every `/settings/*`
- * page — a "Back to Chat" affordance and the section tab nav — with the active
- * section rendered in the `<Outlet/>`. Inkstone surfaces only the Models
- * section today; the pill bar keeps t3's structure so more can be added.
- */
+/** Settings shell (ADR-0024): chrome around every `/settings/*` page — Back-to-Chat affordance, section tab nav, and the active section in the `<Outlet/>`. */
 function SettingsLayout() {
 	const router = useRouter();
 	const commandOpen = useCommandOpen();
 
-	// Esc dismisses the settings takeover, returning to wherever it was opened
-	// from (Chat or Library) — tracked in `store/settings-origin`, so it exits
-	// the whole takeover rather than stepping back through visited tabs. Only
-	// while the command palette is closed, so a first Esc dismisses an open
-	// palette (Base UI owns that) and the next one exits.
+	// Esc exits the takeover to its origin (`store/settings-origin`), but only while the palette is closed so a first Esc dismisses the palette.
 	useEffect(() => {
 		if (commandOpen) return;
 		const onKey = (e: KeyboardEvent) => {
@@ -38,8 +29,7 @@ function SettingsLayout() {
 			aria-label="Settings"
 			className="relative h-full w-full overflow-y-auto bg-sidebar text-sidebar-foreground"
 		>
-			{/* Subtle atmospheric backdrop (t3-style depth), theme-aware via the
-			    primary token. Decorative only. */}
+			{/* Decorative atmospheric backdrop, theme-aware via the primary token. */}
 			<div
 				aria-hidden
 				className="pointer-events-none fixed inset-0 -z-10"

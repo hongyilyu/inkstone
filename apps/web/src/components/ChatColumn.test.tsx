@@ -15,10 +15,7 @@ import {
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import { ChatColumn } from "./ChatColumn.js";
 
-// A stub WsClient driven through the slice-10 RuntimeProvider injection seam:
-// a runtime built from `ManagedRuntime.make(Layer.succeed(WsClient, stub))`
-// (no real socket). The send path runs `postMessage`/`threadCreate` on it; the
-// stream bridge forks `subscribeRun`, whose finite event list drives the store.
+// Stub WsClient injected via RuntimeProvider (no real socket); its finite subscribeRun event list drives the store.
 function makeStubRuntime(opts: {
 	readonly runId: string;
 	readonly events: readonly RunEventValue[];
@@ -103,7 +100,6 @@ describe("ChatColumn", () => {
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "   ");
 		await user.click(screen.getByRole("button", { name: /send/i }));
 
-		// ComposeFooter trims + guards → onSend never fires → no message appended.
 		expect(getChatState().threads.threadA?.messages ?? []).toHaveLength(0);
 
 		await runtime.dispose();
@@ -111,7 +107,6 @@ describe("ChatColumn", () => {
 
 	it("welcomes the user when no thread is focused and there are no messages", async () => {
 		const runtime = makeStubRuntime({ runId: "run-welcome", events: [] });
-		// No focused thread → fresh-chat welcome (teaches the Library loop).
 
 		renderWithQuery(
 			<RuntimeProvider runtime={runtime}>
@@ -129,7 +124,6 @@ describe("ChatColumn", () => {
 
 	it("shows a loading skeleton while a focused thread hydrates", async () => {
 		const runtime = makeStubRuntime({ runId: "run-hydrate", events: [] });
-		// A focused thread with no messages yet → hydrating skeleton, not a blank.
 		setFocusedThread("threadA");
 
 		renderWithQuery(
@@ -141,7 +135,6 @@ describe("ChatColumn", () => {
 		expect(
 			screen.getByRole("status", { name: /loading conversation/i }),
 		).toBeInTheDocument();
-		// The fresh-chat welcome must NOT show for an existing thread.
 		expect(screen.queryByRole("heading", { name: /start a chat/i })).toBeNull();
 
 		await runtime.dispose();
@@ -154,7 +147,6 @@ describe("ChatColumn", () => {
 			threadId: "thread-new",
 			events: [{ kind: "text_delta", delta: "echo: hello" }, { kind: "done" }],
 		});
-		// No focused thread → send should mint one via threadCreate.
 
 		renderWithQuery(
 			<RuntimeProvider runtime={runtime}>
@@ -334,10 +326,8 @@ describe("ChatColumn", () => {
 		const row = screen.getByTestId("tool-call");
 		expect(row).toHaveAttribute("data-status", "running");
 		expect(row).toHaveTextContent("Reading this thread");
-		// read_thread is observe-only; the row says so (privacy/control).
 		expect(row).toHaveTextContent(/read-only/i);
-		// The tool indicator is the activity signal while a tool runs, so the
-		// generic typing dots must not double up.
+		// A running tool row is the activity signal; the typing dots must not double up.
 		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 	});
 
@@ -436,14 +426,12 @@ describe("ChatColumn", () => {
 			</RuntimeProvider>,
 		);
 
-		// Brand-voice, reassuring fallback when no specific error is attached.
 		expect(screen.getByTestId("assistant-error")).toHaveTextContent(
 			/nothing was saved without your approval/i,
 		);
 
 		await user.click(screen.getByRole("button", { name: /try again/i }));
 
-		// The previous user turn is re-sent → a fresh assistant reply streams in.
 		expect(await screen.findByText("recovered")).toBeInTheDocument();
 
 		await runtime.dispose();

@@ -1,5 +1,4 @@
-// Convenience barrel for transitional safety. New code should import from
-// the per-feature files (e.g. "@/data/mock/types").
+// Transitional barrel; new code should import from the per-feature files (e.g. "@/data/mock/types").
 
 export * from "./automations.js";
 export * from "./conversation.js";

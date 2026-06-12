@@ -1,11 +1,6 @@
-//! SQLite tier-2 storage (ADR-0017). Resolves the DB path, opens a pool,
-//! and runs the embedded migration. The pool is the durable home for
-//! Threads, Runs, Messages, Run Log, Tool Calls, Proposals, and
-//! Entities.
-//!
-//! All SQL strings live in [`queries`]; this module owns the high-level
-//! operations and transaction boundaries. Outside `db::`, no caller
-//! writes SQL — they call these functions.
+//! SQLite tier-2 storage (ADR-0017): resolves the DB path, opens a pool, runs
+//! migrations. SQL lives in [`queries`]; this module owns the high-level
+//! operations and transaction boundaries.
 
 mod lifecycle;
 mod queries;
@@ -24,8 +19,7 @@ use crate::workflow::Workflow;
 pub use lifecycle::Moved;
 use lifecycle::{ProposalStatus, RunStatus, TerminalReason};
 
-/// Current wall-clock time as ms since UNIX_EPOCH. Used as `created_at` /
-/// `updated_at` / `started_at` / `ended_at` for tier-2 rows.
+/// Current wall-clock time as ms since UNIX_EPOCH (the `*_at` columns).
 pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -33,11 +27,8 @@ pub(crate) fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
-/// Resolve the DB path: `INKSTONE_DB_PATH` env override wins; otherwise
-/// land on `<OS data dir>/inkstone/db.sqlite`:
-/// - macOS:   `~/Library/Application Support/inkstone/db.sqlite`
-/// - Linux:   `$XDG_DATA_HOME/inkstone/db.sqlite` (or `~/.local/share/inkstone/...`)
-/// - Windows: `%APPDATA%/inkstone/db.sqlite`
+/// Resolve the DB path: `INKSTONE_DB_PATH` env override wins, else
+/// `<OS data dir>/inkstone/db.sqlite`.
 pub(crate) fn resolve_db_path() -> Result<PathBuf> {
     if let Some(env) = std::env::var_os("INKSTONE_DB_PATH") {
         return Ok(PathBuf::from(env));
@@ -45,8 +36,7 @@ pub(crate) fn resolve_db_path() -> Result<PathBuf> {
     Ok(os_data_dir()?.join("inkstone").join("db.sqlite"))
 }
 
-/// Per-OS application-data directory. Hand-rolled instead of pulling in a
-/// crate; the rules are short and the inputs are env vars + `$HOME`.
+/// Per-OS application-data directory (hand-rolled to avoid a crate dep).
 #[cfg(target_os = "macos")]
 fn os_data_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").context("$HOME not set")?;
@@ -70,8 +60,8 @@ fn os_data_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(appdata))
 }
 
-/// Open the SQLite pool, creating the file (and parent dir) if missing,
-/// and run the bundled migration. Returns a pool ready for queries.
+/// Open the SQLite pool (creating file + parent dir if missing) and run
+/// the bundled migrations.
 pub async fn open() -> Result<SqlitePool> {
     let path = resolve_db_path()?;
     if let Some(parent) = path.parent() {
@@ -99,25 +89,20 @@ pub async fn open() -> Result<SqlitePool> {
     Ok(pool)
 }
 
-/// Return whether a Thread row with `thread_id` exists. `run/post_message`
-/// is existing-thread-only (ADR-0022): it calls this before persisting a new
-/// Run so a well-formed-but-unknown `thread_id` is rejected with
-/// `unknown_thread` and writes zero rows.
+/// Whether a Thread row exists. `run/post_message` is existing-thread-only
+/// (ADR-0022); an unknown `thread_id` is rejected with `unknown_thread`.
 pub async fn thread_exists(pool: &SqlitePool, thread_id: Uuid) -> sqlx::Result<bool> {
     queries::thread_exists(pool, thread_id).await
 }
 
-/// Read all Threads for `thread/list` (ADR-0022 read path), ordered
-/// most-recent-activity-first. Returns `(id, title, last_activity_at)` rows;
-/// the handler maps them to the wire `ThreadSummary` shape.
+/// Read all Threads for `thread/list` (ADR-0022), most-recent-activity-first,
+/// as `(id, title, last_activity_at)` rows.
 pub async fn list_threads(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String, i64)>> {
     queries::list_threads(pool).await
 }
 
-/// One accepted Entity for `entity/list`: the raw tier-2 `entities` columns.
-/// `data` is parsed from the stored JSON snapshot; a malformed row degrades to
-/// `data: null` rather than failing the whole read. The handler maps this
-/// straight onto the wire `EntityRow`.
+/// One accepted Entity for `entity/list`. `data` is parsed from the stored
+/// JSON; a malformed row degrades to `null` rather than failing the read.
 pub struct EntityRow {
     pub id: String,
     pub r#type: String,
@@ -127,8 +112,6 @@ pub struct EntityRow {
 }
 
 /// Read every accepted Entity of `entity_type` for `entity/list`, newest-first.
-/// Maps each matching `entities` row to an [`EntityRow`], parsing the stored
-/// `data` JSON. Read-only.
 pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<Vec<EntityRow>> {
     let rows = queries::list_by_type(pool, entity_type).await?;
     Ok(rows
@@ -144,22 +127,21 @@ pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<
 }
 
 /// One Journal Entry returned to the Worker for same-Thread correction context.
-/// `data` is the latest accepted revision snapshot; the tool layer shapes the
-/// compact `{ entity_id, occurred_at, ended_at?, body }` payload.
+/// `data` is the latest accepted revision snapshot.
 pub struct CurrentThreadJournalEntryRow {
     pub entity_id: String,
     pub data: serde_json::Value,
 }
 
-/// One accepted Journal Entry returned by `proposal/get` review context.
-/// `data` is the current `entities.data` snapshot for the requested entity id.
+/// One accepted Journal Entry for `proposal/get` review context. `data` is the
+/// current `entities.data` snapshot.
 pub struct CurrentJournalEntryRow {
     pub entity_id: String,
     pub data: serde_json::Value,
 }
 
-/// Read one accepted Journal Entry by id from the canonical `entities` row.
-/// Returns `None` when the entity does not exist or is not a journal entry.
+/// Read one accepted Journal Entry by id. `None` when it does not exist or is
+/// not a journal entry.
 pub async fn current_journal_entry_by_id(
     pool: &SqlitePool,
     entity_id: &str,
@@ -190,10 +172,8 @@ pub async fn current_thread_journal_entries(
         .collect())
 }
 
-/// One Message in a `thread/get` read: its identity, `role`, `status`,
-/// owning `run_id`, and `text` already assembled (the concat of its text
-/// parts in `seq` order). Flat-text-no-parts[] per ADR-0017/Q15 — the handler
-/// maps this straight onto the wire `MessageView`.
+/// One Message in a `thread/get` read, with `text` already assembled (text
+/// parts concatenated in `seq` order). Flat-text-no-parts per ADR-0017.
 pub struct MessageRow {
     pub id: String,
     pub role: String,
@@ -202,13 +182,10 @@ pub struct MessageRow {
     pub text: String,
 }
 
-/// Read a Thread plus its Messages for `thread/get` (ADR-0022 read path).
-/// Returns `None` when the Thread does not exist (the title query is the
-/// existence check), so the handler maps that to `unknown_thread` (-32001).
-/// Otherwise `Some((title, messages))` where messages are in chronological
-/// order (`created_at, rowid` — the rowid tiebreaker keeps the user Message
-/// ahead of the assistant Message on a same-ms insert) and each Message's
-/// `text` is the concat of its text parts assembled in Rust.
+/// Read a Thread plus its Messages for `thread/get` (ADR-0022). `None` when the
+/// Thread does not exist (handler maps to `unknown_thread`). Messages are
+/// chronological by `(created_at, rowid)` — the rowid tiebreaker keeps the user
+/// Message ahead of the assistant Message on a same-ms insert.
 pub async fn get_thread_with_messages(
     pool: &SqlitePool,
     thread_id: Uuid,
@@ -233,12 +210,11 @@ pub async fn get_thread_with_messages(
     Ok(Some((title, messages)))
 }
 
-/// Assemble the prior-Run conversation history for a Run's manifest
-/// (ADR-0018 multi-turn). Returns `(role, text)` pairs for every
-/// `completed` Message in `thread_id` belonging to a Run OTHER than
-/// `exclude_run_id`, oldest-first, with each Message's text assembled from
-/// its parts. The current Run is excluded so the history is strictly the
-/// prior exchange; `completed`-only drops partial/errored assistant text.
+/// Assemble prior-Run conversation history for a Run's manifest (ADR-0018).
+/// `(role, text)` pairs for every `completed` Message in `thread_id` belonging
+/// to a Run other than `exclude_run_id`, oldest-first. Excluding the current
+/// Run keeps history to the prior exchange; `completed`-only drops
+/// partial/errored assistant text.
 pub async fn history_for_run(
     pool: &SqlitePool,
     thread_id: Uuid,
@@ -253,13 +229,10 @@ pub async fn history_for_run(
     Ok(history)
 }
 
-/// Single transaction with deferred FK enforcement. sqlx's `pool.begin()`
-/// issues `BEGIN` (deferred by default in SQLite), so the FK cycle between
-/// `runs.user_message_id` and `messages.run_id` resolves only at COMMIT.
-///
-/// Also pre-inserts the assistant `messages` row (`status='streaming'`)
-/// + an empty `message_parts` row at `seq=0` so each Worker `text_delta`
-/// event can append to it via [`append_assistant_text`].
+/// Persist a Run's initial rows in one deferred-FK transaction: the FK cycle
+/// between `runs.user_message_id` and `messages.run_id` resolves only at COMMIT.
+/// Pre-inserts the assistant `messages` row (`streaming`) + an empty `seq=0`
+/// text part for [`append_assistant_text`] to append into.
 pub async fn persist_initial_run(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -287,11 +260,9 @@ pub async fn persist_initial_run(
     tx.commit().await
 }
 
-/// Message-first thread creation (ADR-0022): mint a NEW Thread row (with a
-/// derived `title`) THEN the same initial-run rows `persist_initial_run`
-/// writes — all in ONE transaction. `thread/create` uses this so the Thread
-/// and its first message are born atomically. Deferred-FK ordering is
-/// identical to `persist_initial_run` (begin → inserts → commit).
+/// Message-first thread creation (ADR-0022): mint a new Thread row then the
+/// same initial-run rows as [`persist_initial_run`], all in one transaction, so
+/// `thread/create` births the Thread and its first message atomically.
 #[allow(clippy::too_many_arguments)]
 pub async fn persist_thread_with_first_run(
     pool: &SqlitePool,
@@ -323,13 +294,10 @@ pub async fn persist_thread_with_first_run(
     tx.commit().await
 }
 
-/// Shared initial-run inserts for a Thread that already exists in the open
-/// transaction: the Run row, the user Message + its `seq=0` text part, the
-/// assistant Message (`status='streaming'`) + an empty `seq=0` text part
-/// (so each Worker `text_delta` can append via [`append_assistant_text`]),
-/// the two `message_run_steps`, the `status` `run_event`, and the Thread
-/// activity touch. Runs inside the caller's transaction; the caller owns
-/// the `begin`/`commit` (and any preceding `insert_thread`).
+/// Shared initial-run inserts inside the caller's open transaction (caller owns
+/// begin/commit): the Run row, user Message + `seq=0` text part, assistant
+/// Message (`streaming`) + empty `seq=0` text part, the two run steps, the
+/// `running` run-log row, and the Thread activity touch.
 #[allow(clippy::too_many_arguments)]
 async fn insert_initial_run_rows(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -393,9 +361,8 @@ async fn insert_initial_run_rows(
     queries::touch_thread_activity(&mut **tx, thread_id, now_ms).await
 }
 
-/// Append a streaming `text_delta` to the assistant `message_parts.text`
-/// row that [`persist_initial_run`] pre-inserted at `seq=0`. Single
-/// statement; SQLite serializes writes, no UPSERT semantics needed.
+/// Append a streaming `text_delta` to the assistant's pre-inserted `seq=0`
+/// text part. Single statement; SQLite serializes writes.
 pub async fn append_assistant_text(
     pool: &SqlitePool,
     assistant_message_id: Uuid,
@@ -406,12 +373,10 @@ pub async fn append_assistant_text(
         .map(|rows| rows == 1)
 }
 
-/// Persist an incoming Tool Request (ADR-0017/0018): a `tool_calls` row in the
-/// `pending` state plus a `run_steps` row of kind `tool_call` interleaving it
-/// into the Run timeline — both in one transaction so the timeline never has a
-/// tool call that isn't addressable via `run_steps`. `tool_call_id` is the
-/// Worker-assigned id (the wire correlation key); `request_payload` is the
-/// serialized tool args.
+/// Persist an incoming Tool Request (ADR-0017/0018): a `pending` `tool_calls`
+/// row plus its `run_steps` timeline entry in one transaction, so the timeline
+/// never holds a tool call unaddressable via `run_steps`. `tool_call_id` is the
+/// Worker-assigned wire correlation key; `request_payload` is the serialized args.
 pub async fn persist_tool_call(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -446,9 +411,9 @@ async fn persist_tool_call_rows(
     queries::insert_tool_call_run_step(&mut **tx, run_id, seq, tool_call_id, now_ms).await
 }
 
-/// Resolve a previously-persisted Tool Request with its outcome (ADR-0017):
-/// flip the `tool_calls` row to `status` (`completed` for a normal result,
-/// `errored` for a tool failure) and store the serialized `result_payload`.
+/// Resolve a persisted Tool Request with its outcome (ADR-0017): flip the
+/// `tool_calls` row to `status` (`completed`/`errored`) and store the
+/// serialized `result_payload`.
 pub async fn resolve_tool_call(
     pool: &SqlitePool,
     tool_call_id: &str,
@@ -459,12 +424,11 @@ pub async fn resolve_tool_call(
     queries::resolve_tool_call(pool, tool_call_id, status, result_payload, now_ms).await
 }
 
-/// Park a Run on a Proposal tool request (ADR-0025): persist the `tool_calls`
-/// row + timeline step, persist the pending Proposal, then move the Run
-/// `running -> parked` with the waitpoint recorded. The lifecycle events
-/// (`parked`, `proposal_pending`) are appended in the same transaction. If the
-/// Run is no longer `running`, the guarded park loses and the whole transaction
-/// rolls back.
+/// Park a Run on a Proposal tool request (ADR-0025): persist the tool call +
+/// timeline step + pending Proposal, then move the Run `running -> parked` with
+/// the waitpoint and lifecycle events (`parked`, `proposal_pending`), all in one
+/// transaction. If the Run is no longer `running` the guarded park loses and the
+/// transaction rolls back.
 #[allow(clippy::too_many_arguments)]
 pub async fn park_on_proposal(
     pool: &SqlitePool,
@@ -505,17 +469,15 @@ pub async fn park_on_proposal(
     Ok(moved)
 }
 
-/// Read a Run's `status` (ADR-0025). `None` when the Run does not exist.
-/// Backs `run/subscribe`'s parked branch and the forwarder's no-false-done
-/// check.
+/// Read a Run's `status` (ADR-0025); `None` when the Run does not exist. Backs
+/// `run/subscribe`'s parked branch and the forwarder's no-false-done check.
 pub async fn run_status(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Option<String>> {
     queries::run_status(pool, run_id).await
 }
 
-/// A Run's pending Proposal for `proposal/get` (ADR-0025). The mutation
-/// `payload` and `rationale` are extracted from the Proposal tool call's stored
-/// `request_payload` (the `{mutation_kind, payload, rationale}` the model
-/// sent); `mutation_kind` and `status` come from the `proposals` row.
+/// A Run's pending Proposal for `proposal/get` (ADR-0025). `payload` and
+/// `rationale` come from the tool call's stored `request_payload`;
+/// `mutation_kind` and `status` from the `proposals` row.
 pub struct ProposalRow {
     pub proposal_id: String,
     pub mutation_kind: String,
@@ -524,10 +486,8 @@ pub struct ProposalRow {
     pub rationale: Option<String>,
 }
 
-/// Read the Run's pending Proposal, or `None` if it has none. Parses the
-/// tool call's `request_payload` to recover the proposed `data`/`rationale`;
-/// a malformed payload degrades to `data: null` / `rationale: None` rather
-/// than failing the read.
+/// Read the Run's pending Proposal, or `None`. A malformed `request_payload`
+/// degrades to `payload: null` / `rationale: None` rather than failing the read.
 pub async fn get_pending_proposal_for_run(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -556,19 +516,15 @@ pub async fn get_pending_proposal_for_run(
     }))
 }
 
-/// Auto-approve seam (ADR-0025, ADR-0016): whether a Proposal should be
-/// approved automatically (skipping the park). Returns `false` for now — every
-/// Proposal is manual, so every `propose_workspace_mutation` parks the Run. A
-/// later policy slice gives this a real body; the Worker is oblivious to auto
-/// vs manual either way.
+/// Auto-approve seam (ADR-0025, ADR-0016). Always `false` for now — every
+/// Proposal is manual, so every `propose_workspace_mutation` parks the Run.
 pub fn should_auto_approve() -> bool {
     false
 }
 
-/// A pending Proposal loaded by id for `proposal/decide` (ADR-0025). Carries
-/// the owning Run, the awaited `tool_call_id`, the Proposal lifecycle columns,
-/// the proposed `data` (parsed from the tool call's `request_payload`), and any
-/// already-recorded `decision_idempotency_key`.
+/// A Proposal loaded by id for `proposal/decide` (ADR-0025): owning Run, awaited
+/// `tool_call_id`, lifecycle columns, the proposed `payload` (from the tool
+/// call's `request_payload`), and any recorded `decision_idempotency_key`.
 pub struct DecidableProposal {
     pub run_id: Uuid,
     pub tool_call_id: String,
@@ -578,9 +534,8 @@ pub struct DecidableProposal {
     pub decision_idempotency_key: Option<String>,
 }
 
-/// Load a Proposal by id for `proposal/decide`. `None` when no Proposal with
-/// that id exists. The proposed `payload` is parsed from the awaited tool call's
-/// `request_payload`; a malformed payload degrades to `Value::Null`.
+/// Load a Proposal by id for `proposal/decide`; `None` when it does not exist.
+/// A malformed `request_payload` degrades the proposed `payload` to `null`.
 pub async fn load_proposal_for_decide(
     pool: &SqlitePool,
     proposal_id: &str,
@@ -610,8 +565,8 @@ pub async fn load_proposal_for_decide(
 }
 
 /// The `entities.id` already created via `proposal_id`, or `None`. Backs the
-/// idempotent-decide check: a repeated `proposal/decide` (same Proposal already
-/// accepted) returns the prior `entity_id` instead of re-applying.
+/// idempotent-decide check: a repeated accept returns the prior `entity_id`
+/// instead of re-applying.
 pub async fn entity_id_for_proposal(
     pool: &SqlitePool,
     proposal_id: &str,
@@ -627,19 +582,16 @@ pub async fn journal_entry_target_is_valid(
     queries::journal_entry_target_is_valid(pool, run_id, entity_id).await
 }
 
-/// Outcome of [`apply_proposal`] that the caller must distinguish (review M1).
-/// `NotPending` is the lost-race branch — a concurrent decide already accepted
-/// the Proposal, so the apply tx rolled back without a durable change and the
-/// caller returns `proposal_not_pending`. `Sql` is any other DB failure.
+/// Failure modes of [`apply_proposal`] the caller must distinguish (review M1).
 #[derive(Debug)]
 pub enum ApplyError {
-    /// The caller supplied an impossible mutation contract, such as an update
-    /// without a target entity id.
+    /// An impossible mutation contract, e.g. an update without a target id.
     InvalidMutation(String),
-    /// The `proposals` row was not `pending` when the guarded flip ran — a
-    /// concurrent decide won. The transaction rolled back; nothing was applied.
+    /// The guarded `proposals` flip found the row non-`pending` (a concurrent
+    /// decide won); the tx rolled back, nothing applied. Maps to
+    /// `proposal_not_pending`.
     NotPending,
-    /// An underlying SQL error inside the apply transaction.
+    /// Any other SQL error inside the apply transaction.
     Sql(sqlx::Error),
 }
 
@@ -675,31 +627,22 @@ fn journal_entry_data_payload(
     serde_json::Value::Object(data)
 }
 
-/// Apply an accepted Proposal in ONE atomic transaction (ADR-0016, ADR-0025).
-/// All-or-nothing: insert the `entities` row (`type`=`entity_type`,
-/// `schema_version`, `created_by='proposal'`, `created_via_proposal_id`), its
-/// `entity_revisions` seq-1 snapshot, flip the `proposals` row to `accepted`
-/// (+ `decided_by='user'`, `decided_at`, `applied_at`,
-/// `decision_idempotency_key`, `edited_payload`), and resolve the awaited
-/// `tool_calls` row to `completed` with `result_payload` = the Decision
-/// rendered for the model to read on resume. No durable change exists before
-/// this commits. Returns the new `entity_id`.
-///
-/// `entity_type` and `schema_version` are resolved by the caller through the
-/// `entities` module (by Entity Type), so this layer names no specific Entity
-/// Type; the `Uuid::now_v7()` id-mint stays here (kind-agnostic).
+/// Apply an accepted Proposal in one atomic transaction (ADR-0016, ADR-0025):
+/// write the `entities` row + seq-1 `entity_revisions` snapshot, flip the
+/// `proposals` row to `accepted`, and resolve the awaited `tool_calls` row to
+/// `completed` with the Decision the model reads on resume. Returns the new
+/// `entity_id`. `entity_type`/`schema_version` are caller-resolved, so this
+/// layer names no specific Entity Type.
 ///
 /// EDIT (ADR-0025): when `edited_payload` is `Some`, the entity `data` is the
-/// EDITED payload (Core-validated by the caller), not the model's proposed
-/// `data` — the edit is applied in one step. `proposals.edited_payload` records
-/// the edit; an unedited accept passes `None` and writes the proposed `data`.
+/// edited payload (Core-validated by the caller) and `proposals.edited_payload`
+/// records the edit; an unedited accept passes `None` and writes the proposed
+/// `data`.
 ///
-/// SELF-GUARDING against a double-apply (review M1): the `proposals` flip is
-/// `… WHERE id = ? AND status = 'pending'`. If it affects 0 rows the Proposal
-/// was already decided by a racing decide (keyed OR keyless), so the whole tx
-/// rolls back and [`ApplyError::NotPending`] is returned — exactly one of two
-/// concurrent decides applies. The caller maps `NotPending` to
-/// `proposal_not_pending`.
+/// Self-guarding (review M1): the `proposals` flip is guarded on
+/// `status='pending'`. On 0 rows a racing decide already won, so the tx rolls
+/// back and [`ApplyError::NotPending`] is returned — exactly one concurrent
+/// decide applies.
 #[allow(clippy::too_many_arguments)]
 pub async fn apply_proposal(
     pool: &SqlitePool,
@@ -741,11 +684,9 @@ pub async fn apply_proposal(
     let data_str = match mutation_kind {
         "delete_journal_entry" => None,
         "create_journal_entry" | "update_journal_entry" => {
-            // The applied entity data is the EDITED payload when present (edit),
-            // else the model's proposed `data` (accept). The resolved tool_call's
-            // rendered result and the entity snapshot both use this effective data
-            // so the model reads the FINAL values on resume. For updates,
-            // `entity_id` targets the row but is not part of Journal Entry data.
+            // Effective entity data: edited payload when present, else the
+            // proposed data. For updates, `entity_id` targets the row but is not
+            // part of Journal Entry data.
             Some(
                 journal_entry_data_payload(mutation_kind, edited_payload.unwrap_or(payload))
                     .to_string(),
@@ -756,9 +697,9 @@ pub async fn apply_proposal(
 
     let mut tx = pool.begin().await?;
 
-    // Flip the Proposal FIRST under the `status='pending'` guard — the single
-    // concurrency choke. If a racing decide already accepted it this affects 0
-    // rows; bail (rolling back the tx) before inserting a duplicate entity.
+    // Flip the Proposal first under the `status='pending'` guard (the single
+    // concurrency choke); on 0 rows a racing decide won, so bail before
+    // inserting a duplicate entity.
     let accepted = ProposalStatus::accept(
         &mut *tx,
         run_id,
@@ -769,7 +710,7 @@ pub async fn apply_proposal(
     )
     .await?;
     if !accepted.won() {
-        // tx drops here without commit → rollback. No entity was inserted.
+        // tx drops without commit → rollback; no entity inserted.
         return Err(ApplyError::NotPending);
     }
 
@@ -846,19 +787,12 @@ pub async fn apply_proposal(
     Ok(entity_id)
 }
 
-/// Reject a Proposal in ONE atomic transaction (ADR-0025). Applies NOTHING to
-/// the entity store: flip the `proposals` row to `rejected` (+ `decided_by`,
-/// `decided_at`, `decision_idempotency_key`) and resolve the awaited
-/// `tool_calls` row to `completed` with `result_payload` = the Decision the
-/// model reads on resume — a NORMAL (non-error) decline so it continues
-/// conversationally rather than retrying a failure. No `entities` /
-/// `entity_revisions` write.
-///
-/// SELF-GUARDING against a double-decide (review M1, mirrors [`apply_proposal`]):
-/// the `proposals` flip is `… WHERE id = ? AND status = 'pending'`. If it
-/// affects 0 rows the Proposal was already decided by a racing decide, so the
-/// whole tx rolls back and [`ApplyError::NotPending`] is returned. The caller
-/// maps `NotPending` to `proposal_not_pending`.
+/// Reject a Proposal in one atomic transaction (ADR-0025), touching no entity
+/// store: flip the `proposals` row to `rejected` and resolve the awaited
+/// `tool_calls` row to `completed` with the Decision the model reads on resume —
+/// a normal (non-error) decline so it continues conversationally. Self-guarding
+/// on `status='pending'` like [`apply_proposal`]: 0 rows → rollback +
+/// [`ApplyError::NotPending`].
 pub async fn reject_proposal(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -870,9 +804,8 @@ pub async fn reject_proposal(
 ) -> Result<(), ApplyError> {
     let mut tx = pool.begin().await?;
 
-    // Flip the Proposal FIRST under the `status='pending'` guard — the single
-    // concurrency choke. If a racing decide already decided it this affects 0
-    // rows; bail (rolling back the tx) before resolving the tool call.
+    // Flip the Proposal first under the `status='pending'` guard; on 0 rows a
+    // racing decide won, so bail before resolving the tool call.
     let rejected = ProposalStatus::reject(
         &mut *tx,
         run_id,
@@ -882,7 +815,7 @@ pub async fn reject_proposal(
     )
     .await?;
     if !rejected.won() {
-        // tx drops here without commit → rollback. Nothing was changed.
+        // tx drops without commit → rollback; nothing changed.
         return Err(ApplyError::NotPending);
     }
 
@@ -900,10 +833,9 @@ pub async fn reject_proposal(
 }
 
 /// Flip a parked Run back to `running` on resume (ADR-0025), clearing the
-/// waitpoint. Called after `apply_proposal` commits and before the resume
-/// Worker spawns, so a `run/subscribe` in the window sees `running`. Returns
-/// the affected row count (review M2): the caller bails on 0 (another resume
-/// already won the race) rather than spawning a duplicate resume Worker.
+/// waitpoint, between `apply_proposal`'s commit and the resume Worker spawn.
+/// Guarded (review M2): on a lost race the caller bails rather than spawning a
+/// duplicate resume Worker.
 pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Moved> {
     let mut tx = pool.begin().await?;
     let moved = RunStatus::resume(&mut *tx, run_id).await?;
@@ -911,35 +843,31 @@ pub async fn mark_run_running(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<M
     Ok(moved)
 }
 
-/// Cancel a parked Run and its pending Proposal in ONE transaction (ADR-0014,
-/// ADR-0028). Loads the Run's pending Proposal, then funnels both status
-/// changes through their guarded verbs: `ProposalStatus::cancel` (guard
-/// `status='pending'`) and `RunStatus::cancel` (guard `status='parked'`, owning
-/// `terminal_reason='cancelled'` + `ended_at`). Each verb appends its own
-/// `cancelled` `run_log` row in the same transaction.
-/// Returns whether the Run was actually cancelled — `false` (tx rolled back,
-/// nothing changed) when the Run has no pending Proposal, or a concurrent
-/// decide/cancel already moved the Proposal off `pending` / the Run off
-/// `parked`, which the caller maps to `already_terminal`.
+/// Cancel a parked Run and its pending Proposal in one transaction (ADR-0014,
+/// ADR-0028), funneling both status changes through guarded verbs
+/// (`ProposalStatus::cancel` on `status='pending'`, `RunStatus::cancel` on
+/// `status='parked'`), each appending its own `cancelled` `run_log` row.
+/// Returns whether the Run was cancelled — `false` (rollback) when there is no
+/// pending Proposal or a concurrent decide/cancel already won; the caller maps
+/// that to `already_terminal`.
 pub async fn cancel_parked_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<bool> {
     let mut tx = pool.begin().await?;
 
     let Some((proposal_id, _, _, _)) = queries::pending_proposal_for_run(&mut *tx, run_id).await?
     else {
-        // tx drops here without commit → rollback. The Run had no pending
-        // Proposal, so a concurrent decide/cancel likely won.
+        // No pending Proposal → a concurrent decide/cancel likely won. Rollback.
         return Ok(false);
     };
 
     let proposal_cancelled = ProposalStatus::cancel(&mut *tx, run_id, &proposal_id, now_ms).await?;
     if !proposal_cancelled.won() {
-        // tx drops here without commit → rollback. The Proposal was no longer pending.
+        // Proposal no longer pending. Rollback.
         return Ok(false);
     }
 
     let run_cancelled = RunStatus::cancel(&mut *tx, run_id, now_ms).await?;
     if !run_cancelled.won() {
-        // tx drops here without commit → rollback. The Run was no longer parked.
+        // Run no longer parked. Rollback.
         return Ok(false);
     }
 
@@ -971,11 +899,9 @@ pub async fn assistant_message_id_for_run(
     Ok(id.and_then(|s| Uuid::parse_str(&s).ok()))
 }
 
-/// One reconstructed turn-element of a Run's timeline for resume (ADR-0025).
-/// A `Message` carries the assembled text + role; a `ToolCall` carries the
-/// awaited tool's id/name/request and its resolved `result` (the persisted
-/// `result_payload`, `None` if still pending → a synthesized "not executed"
-/// result is emitted by the reconstruction).
+/// One element of a Run's timeline for resume reconstruction (ADR-0025).
+/// `ToolCall.result` is the persisted `result_payload`, `None` while pending
+/// (reconstruction synthesizes a "not executed" result).
 pub enum TimelineStep {
     Message {
         role: String,
@@ -1024,23 +950,20 @@ pub async fn read_run_timeline(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<
     Ok(steps)
 }
 
-/// A Run's snapshot for `run/subscribe` (ADR-0022): the assistant
-/// message's cumulative text at the subscribe instant plus the Run's
-/// status. `text` is empty for a Run that has streamed no delta yet.
+/// A Run's snapshot for `run/subscribe` (ADR-0022): the assistant message's
+/// cumulative text at the subscribe instant plus the Run's status. `text` is
+/// empty for a Run that has streamed no delta yet.
 pub struct RunSnapshot {
     pub text: String,
-    /// The Run's `runs.status` at the snapshot instant. Slice 1 keys
-    /// streaming-vs-terminal off hub presence, not this field; it is part
-    /// of the ADR-0022 snapshot shape and consumed by the `thread/get`
-    /// rehydration read in a later slice.
+    /// The Run's `runs.status`. Part of the ADR-0022 snapshot shape, consumed by
+    /// the `thread/get` rehydration read in a later slice.
     #[allow(dead_code)]
     pub status: String,
 }
 
-/// Read the snapshot-then-tail starting point for `run_id`: the assistant
-/// message's cumulative `message_parts.text` (seq 0) and the Run status.
-/// Returns `None` when the Run does not exist, so the subscribe handler can
-/// stay defensible against an unknown run id.
+/// Read the snapshot-then-tail starting point: the assistant message's
+/// cumulative `seq=0` text and the Run status. `None` when the Run does not
+/// exist (subscribe handler stays defensible against unknown run ids).
 pub async fn select_run_snapshot(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -1053,11 +976,9 @@ pub async fn select_run_snapshot(
         }))
 }
 
-/// Slice 4: clean termination. Worker emitted `done`; flip `runs` to
-/// `completed`, the assistant `messages` row from `streaming` to
-/// `completed`, and append a terminal `run_log` row with `kind='done'`.
-/// All three writes happen in one transaction so a reader sees either the
-/// pre-terminal or post-terminal state, never an in-between mix.
+/// Clean termination on the Worker's `done`: flip `runs` and the assistant
+/// `messages` row to `completed` and append a `done` `run_log` row, in one
+/// transaction so a reader never sees an in-between mix.
 pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Moved> {
     let mut tx = pool.begin().await?;
     let moved = RunStatus::complete(&mut *tx, run_id, now_ms).await?;
@@ -1065,12 +986,10 @@ pub async fn complete_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx:
     Ok(moved)
 }
 
-/// Slice 4: Worker stdout EOF without a `done` event (the worker died, was
-/// killed, or otherwise hung up). Flip `runs` to `errored` with
-/// `terminal_reason='worker_disconnected'`, every `messages.status='streaming'`
-/// row for this Run to `'incomplete'` (the ADR-0017 invariant — no Message
-/// is left dangling at `'streaming'` after its Run terminates), and append
-/// a terminal `run_log` row with `kind='error'`. One transaction.
+/// Worker stdout EOF without a `done` event (worker died/killed/hung up). Flip
+/// `runs` to `errored` (`terminal_reason='worker_disconnected'`), every
+/// `streaming` Message to `incomplete` (ADR-0017 invariant), and append an
+/// `error` `run_log` row. One transaction.
 pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Result<Moved> {
     error_run_with_message(
         pool,
@@ -1083,14 +1002,10 @@ pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Re
     .await
 }
 
-/// Worker emitted an explicit `error` Run Event (ADR-0006 lists errors as a
-/// Run Event subtype; this is the real-provider error path). Same terminal shape as [`error_run`] but with a
-/// caller-supplied `terminal_reason`, `error_code`, and `error_message`
-/// carried into both the `runs` row and the terminal `run_log` payload.
-/// `terminal_reason` must satisfy the `runs` CHECK constraint
-/// (`worker_disconnected` for a disconnect, `errored` for a worker-emitted
-/// error). One transaction so a reader sees the pre- or post-terminal
-/// state, never a mix.
+/// Worker emitted an explicit `error` Run Event (ADR-0006). Same terminal shape
+/// as [`error_run`] but with caller-supplied `terminal_reason`, `error_code`,
+/// and `error_message` carried into the `runs` row and `run_log` payload.
+/// `terminal_reason` must satisfy the `runs` CHECK constraint. One transaction.
 pub async fn error_run_with_message(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -1112,19 +1027,12 @@ pub async fn error_run_with_message(
     Ok(moved)
 }
 
-/// Boot recovery sweep (ADR-0012): on every Core start, after migrations and
-/// before serving, force-error every Run interrupted mid-flight by a prior
-/// Core crash/restart. A `running` Run has no live Worker after a restart, so
-/// it can never make progress on its own — it is transitioned to `errored`
-/// with `terminal_reason='core_restarted'`. Its `streaming`
-/// assistant Message is flipped to `incomplete` (ADR-0017 invariant) in the
-/// SAME transaction.
-///
-/// PRESERVES `parked` Runs (ADR-0025): a parked Run is durable and decidable
-/// across a restart — a Client can still `proposal/decide` it on the new Core
-/// to resume — so it is explicitly excluded from the sweep (as are the terminal
-/// states). This exclusion is the property that lets a parked Run survive a
-/// Core restart. Returns the count of Runs swept, for boot logging.
+/// Boot recovery sweep (ADR-0012): on Core start, force-error every `running`
+/// Run (no live Worker survives a restart) to `errored` with
+/// `terminal_reason='core_restarted'`, flipping its `streaming` Message to
+/// `incomplete` (ADR-0017) in the same transaction. Preserves `parked` Runs
+/// (ADR-0025) — they stay durable and decidable across a restart. Returns the
+/// swept count for boot logging.
 pub async fn recover_interrupted_runs(pool: &SqlitePool, now_ms: i64) -> sqlx::Result<u64> {
     let mut tx = pool.begin().await?;
     let swept =
@@ -1151,9 +1059,7 @@ pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Res
 mod tests {
     use super::*;
 
-    /// A migrated in-memory pool for the carve-out unit test. Mirrors `open()`'s
-    /// migration so the `runs` CHECK constraints (status/terminal_reason) are
-    /// in force.
+    /// A migrated in-memory pool so the `runs` CHECK constraints are in force.
     async fn memory_pool() -> SqlitePool {
         let options = SqliteConnectOptions::new()
             .filename(":memory:")
@@ -1170,10 +1076,8 @@ mod tests {
         pool
     }
 
-    /// Insert a Thread + a bare Run row in `status` directly (no Worker), so the
-    /// carve-out test can hand-craft a `running` and a `parked` Run. `started_at`
-    /// is set; `awaiting_tool_call_id` is left NULL (the FK is nullable and the
-    /// sweep does not read it).
+    /// Insert a Thread + a bare Run row in `status` directly (no Worker), to
+    /// hand-craft `running`/`parked` Runs for the tests.
     async fn insert_bare_run(pool: &SqlitePool, run_id: &str, status: &str) {
         let mut tx = pool.begin().await.expect("begin");
         sqlx::query(
@@ -1186,7 +1090,7 @@ mod tests {
         .execute(&mut *tx)
         .await
         .expect("insert thread");
-        // user_message_id FK is DEFERRABLE — resolved at COMMIT, so the run can
+        // user_message_id FK is DEFERRABLE (resolved at COMMIT), so the run can
         // reference a message inserted later in the same tx.
         sqlx::query(
             "INSERT INTO runs \
@@ -1225,11 +1129,9 @@ mod tests {
             .expect("run row")
     }
 
-    /// The boot recovery sweep (ADR-0012) errors an interrupted `running` Run
-    /// but PRESERVES a `parked` one — the carve-out that makes a parked Run
-    /// survive a Core restart (ADR-0025). It also flips the swept Run's
-    /// `streaming` assistant Message to `incomplete` (ADR-0017 invariant) while
-    /// leaving the parked Run's Message untouched.
+    /// The boot recovery sweep (ADR-0012) errors a `running` Run but preserves a
+    /// `parked` one (ADR-0025), flipping only the swept Run's `streaming` Message
+    /// to `incomplete` (ADR-0017).
     #[tokio::test]
     async fn recover_errors_running_preserves_parked() {
         let pool = memory_pool().await;
@@ -1434,8 +1336,7 @@ mod tests {
             "accepted entity records its source Message"
         );
         // The caller-supplied schema_version is persisted verbatim (a sentinel,
-        // not the Journal Entry default), so this fails if apply_proposal ever ignores
-        // the argument and re-hardcodes the old constant.
+        // not the default), so this catches apply_proposal re-hardcoding it.
         let stored_schema_version: i64 =
             sqlx::query_scalar("SELECT schema_version FROM entities WHERE id = ?1")
                 .bind(&entity_id)
@@ -1579,12 +1480,8 @@ mod tests {
     }
 
     /// `mark_run_running` is self-guarding on `status='parked'` (review M2): the
-    /// FIRST flip of a parked Run affects exactly one row; a SECOND flip (the
-    /// concurrent-resume retry / a decide racing `recover_resume_if_parked`)
-    /// affects ZERO — the Run is already `running`. A non-parked Run is also a
-    /// 0-row no-op. The caller bails on 0 so exactly one resume Worker spawns,
-    /// restoring the "exactly one resume" guarantee (mirrors the slice-3/4/6
-    /// self-guarded flips).
+    /// first flip wins (1 row); a second flip and a never-parked Run are both
+    /// 0-row no-ops, so the caller bails and exactly one resume Worker spawns.
     #[tokio::test]
     async fn mark_run_running_guards_on_parked() {
         let pool = memory_pool().await;
@@ -1593,13 +1490,12 @@ mod tests {
         insert_bare_run(&pool, &parked.to_string(), "parked").await;
         insert_bare_run(&pool, &running.to_string(), "running").await;
 
-        // First flip of the parked Run wins the race (1 row).
+        // First flip of the parked Run wins (1 row).
         let first = mark_run_running(&pool, parked).await.expect("first flip");
         assert_eq!(first, Moved::Won, "parked → running flips exactly one row");
         assert_eq!(run_status_of(&pool, &parked.to_string()).await, "running");
 
-        // Second flip (the concurrent retry) is a no-op — the Run already left
-        // `parked`, so the loser must bail instead of spawning a second Worker.
+        // Second flip is a no-op — the Run already left `parked`.
         let second = mark_run_running(&pool, parked).await.expect("second flip");
         assert_eq!(
             second,

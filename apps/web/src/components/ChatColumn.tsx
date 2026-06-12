@@ -24,21 +24,15 @@ export function ChatColumn() {
 	const messages = useThreadMessages(focusedThreadId ?? "");
 	const [sendError, setSendError] = useState<string | null>(null);
 
-	// Nothing to show yet: with no thread focused it's a fresh chat (welcome the
-	// user and teach the loop); with a thread focused it's mid-hydration (a
-	// skeleton, never a blank panel) — PRODUCT.md "show the state, not a spinner".
+	// No thread focused → fresh chat; thread focused but empty → mid-hydration skeleton (PRODUCT.md "show the state, not a spinner").
 	const noMessages = messages.length === 0;
 	const showWelcome = focusedThreadId === null && noMessages;
 	const showHydrating = focusedThreadId !== null && noMessages;
 
-	// On focus change to a non-null, not-yet-live thread: thread/get → load →
-	// resubscribe-if-streaming. Locally-originated threads are pre-marked so this
-	// is a no-op for them (no double-load / double-resubscribe).
+	// Hydrate on focus change; no-op for locally-originated (pre-marked) threads. See docs/design/web-chat-ui.md.
 	useHydrateFocusedThread(runtime, focusedThreadId);
 
-	// Consume the global proposal/* stream once for the chat surface: a parked
-	// Run pushes proposal/pending → the bridge fetches + attaches the Proposal,
-	// which the assistant turn's review card reads (ADR-0025). Idempotent.
+	// Consume the global proposal/* stream once for the chat surface (ADR-0025). Idempotent.
 	useEffect(() => {
 		startProposalStream(runtime);
 	}, [runtime]);
@@ -48,10 +42,7 @@ export function ChatColumn() {
 		if (el) el.scrollTop = el.scrollHeight;
 	}, []);
 
-	// Re-issue a previous user turn after a failed/interrupted Run (harden).
-	// The thread already exists (it holds the failed turn), so this always takes
-	// the `send` path, mirroring the composer's send (surface errors + bump the
-	// sidebar's last-activity order).
+	// Re-issue a previous user turn after a failed/interrupted Run; always the `send` path since the thread already exists.
 	const retry = (text: string) => {
 		if (focusedThreadId === null) return;
 		setSendError(null);
@@ -100,10 +91,7 @@ export function ChatColumn() {
 			)}
 			<ComposeFooter
 				onSend={async (text) => {
-					// Send into the focused thread, or mint a new one on the first
-					// message. Either way, refresh the sidebar's thread/list read so
-					// a freshly-created thread (or a bumped last-activity order) shows
-					// without a manual reload — the precondition for switching threads.
+					// Send into the focused thread, or mint a new one; then refresh the sidebar's thread/list read.
 					setSendError(null);
 					const result =
 						focusedThreadId !== null
@@ -119,8 +107,7 @@ export function ChatColumn() {
 	);
 }
 
-/** First-run / fresh-chat welcome: teaches the chat → Proposal → Library loop,
- *  mirroring the Library's own empty state so the two surfaces greet alike. */
+/** First-run / fresh-chat welcome: teaches the chat → Proposal → Library loop. */
 function ChatWelcome() {
 	return (
 		<div className="mx-auto flex min-h-full max-w-3xl flex-col items-center justify-center motion-safe:animate-rise">

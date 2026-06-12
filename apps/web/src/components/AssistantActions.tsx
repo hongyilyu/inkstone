@@ -19,10 +19,15 @@ export function AssistantActions({
 	if (!actions) return null;
 	return (
 		<div className="flex flex-wrap gap-1">
-			{actions.map((a, i) => {
+			{actions.map((a) => {
 				const I = ICON[a.kind];
 				return (
-					<Button key={i} variant="ghost" size="xs" data-action={a.kind}>
+					<Button
+						key={`${a.kind}-${a.label}`}
+						variant="ghost"
+						size="xs"
+						data-action={a.kind}
+					>
 						<I className="h-3 w-3" aria-hidden />
 						<span>{a.label}</span>
 					</Button>

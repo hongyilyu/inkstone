@@ -30,12 +30,7 @@ type SearchFieldProps = Omit<
 		wrapperClassName?: string;
 	};
 
-/**
- * Leading-icon search field: the wrapper chrome (bordered box / underline
- * divider / large dialog header) is a variant; everything else (value, aria,
- * keyboard handlers) is forwarded to the underlying Input so call sites keep
- * their own behaviour. `tone="sidebar"` swaps to the sidebar colour context.
- */
+/** Leading-icon search field: wrapper chrome is a variant (box / divider / dialog); all input props forward to the underlying Input. `tone="sidebar"` swaps colour context. */
 export function SearchField({
 	variant,
 	tone,

@@ -1,14 +1,6 @@
 //! User-settings registry (ADR-0024): the single source of truth for every key
-//! stored in the `settings` key-value table.
-//!
-//! The KV table is deliberate — it lets us add settings without a schema change
-//! while the feature set is still moving. This module is the price of that
-//! freedom: it is the *list* that keeps the scattered keys in one place, so a
-//! later switch to typed columns is mechanical (each entry below maps to one
-//! column) and the pre-release DB is simply recreated — no data migration.
-//!
-//! Every read/write of a setting goes through an accessor here; no other module
-//! spells a key literal. Value *validation* stays with its domain
+//! in the `settings` KV table. Every read/write goes through an accessor here;
+//! no other module spells a key literal. Validation stays with its domain
 //! (`workflow::is_valid_thinking_level`, `models::is_known_model`); this module
 //! owns only the keys and their defaults.
 //!
@@ -27,15 +19,13 @@ const EFFORT_KEY: &str = "effort";
 /// The global effort default when neither a setting nor a Workflow supplies one.
 pub const DEFAULT_EFFORT: &str = "off";
 
-/// The key holding the preferred model id for `workflow_name`. Keyed by
-/// Workflow so a second Workflow later needs no schema change (ADR-0024).
+/// The setting key holding the preferred model id for `workflow_name` (ADR-0024).
 fn model_key(workflow_name: &str) -> String {
     format!("model:{workflow_name}")
 }
 
-/// The stored global effort, or `None` when unset. Callers that want a concrete
-/// value apply their own fallback (the Run resolver falls back through the
-/// Workflow TOML before [`DEFAULT_EFFORT`]; `settings/get` defaults directly).
+/// The stored global effort, or `None` when unset. Callers apply their own
+/// fallback (the Run resolver via the Workflow TOML before [`DEFAULT_EFFORT`]).
 pub async fn effort_setting(pool: &SqlitePool) -> sqlx::Result<Option<String>> {
     crate::db::get_setting(pool, EFFORT_KEY).await
 }

@@ -14,7 +14,9 @@ const BAD_REMINDER_PROPOSAL = {
 	mutation_kind: "create_journal_entry",
 	payload: {
 		occurred_at: "2026-06-10T10:30:00",
-		body: [{ type: "text", text: "Remember to buy milk after daycare pickup." }],
+		body: [
+			{ type: "text", text: "Remember to buy milk after daycare pickup." },
+		],
 	},
 	rationale: "Save the user's reminder as a journal entry.",
 };
@@ -67,7 +69,8 @@ const main = async (): Promise<void> => {
 
 	emit({
 		kind: "text_delta",
-		delta: "That sounds like a reminder, so I won't save it as a Journal Entry.",
+		delta:
+			"That sounds like a reminder, so I won't save it as a Journal Entry.",
 	});
 	emit({ kind: "done" });
 };

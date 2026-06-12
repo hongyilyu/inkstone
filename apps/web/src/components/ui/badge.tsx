@@ -7,9 +7,7 @@ const badgeVariants = cva(
 	{
 		variants: {
 			variant: {
-				// A hairline in the chip's own plum hue gives the pill a readable
-				// edge on low-contrast surfaces (e.g. the inspector's pink rail), where
-				// the soft-pink fill alone barely separates from the background.
+				// Hairline border in the chip's own hue keeps the pill readable on low-contrast surfaces where the fill alone barely separates.
 				secondary:
 					"border border-secondary-foreground/25 bg-secondary text-secondary-foreground",
 				primary: "bg-primary/10 text-primary",
@@ -27,10 +25,7 @@ const badgeVariants = cva(
 export type BadgeProps = React.HTMLAttributes<HTMLSpanElement> &
 	VariantProps<typeof badgeVariants>;
 
-/**
- * Small status / metadata pill. Always pairs colour with text (and an icon when
- * it carries state, e.g. "Overdue"), never colour alone — see DESIGN.md.
- */
+/** Small status / metadata pill. Always pairs colour with text (never colour alone) — see DESIGN.md. */
 export function Badge({ className, variant, size, ...props }: BadgeProps) {
 	return (
 		<span

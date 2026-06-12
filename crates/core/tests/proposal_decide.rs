@@ -1,13 +1,9 @@
-//! Slice 3 RED test (Proposal accept): `proposal/decide{decision:"accept"}` on
-//! a parked Run applies the Proposal atomically (a Journal Entry entity lands
-//! in tier 2) and resumes the Run in a FRESH Worker seeded with the reconstructed
-//! transcript (ending in the Decision `tool_result`). The Run reaches
-//! `completed`. A second decide with the same `decision_idempotency_key`
-//! returns the prior result and does NOT double-apply.
+//! Proposal `accept`/`reject`/`edit` over `proposal/decide` on a parked Run:
+//! apply (or not) atomically, then resume in a fresh Worker to `completed`;
+//! decides are idempotent on `decision_idempotency_key` (ADR-0025).
 //!
-//! Driven by the (now two-spawn) `tests/fixtures/propose-worker.ts` over
-//! `INKSTONE_WORKER_CMD`: spawn 1 proposes & blocks (park); spawn 2 detects
-//! `mode === "resume"` and finishes (a `text_delta` + `done`).
+//! Driven by `tests/fixtures/propose-worker.ts`: spawn 1 proposes & parks;
+//! spawn 2 detects `mode === "resume"` and finishes.
 
 use std::time::{Duration, Instant};
 
@@ -41,8 +37,7 @@ async fn rpc(
     serde_json::from_str(&body).unwrap_or_else(|e| panic!("response is JSON: {e} — body: {body}"))
 }
 
-/// Drive a Run to a park: thread/create, then poll run/subscribe until
-/// status=parked. Returns the run_id.
+/// Create a Run and poll run/subscribe until it parks; returns the run_id.
 async fn create_and_park(core: &CoreHandle) -> String {
     let resp = rpc(
         core,
@@ -76,8 +71,7 @@ async fn create_and_park(core: &CoreHandle) -> String {
     run_id
 }
 
-/// Poll run/subscribe until the Run reaches `completed` (terminal). Panics on
-/// timeout.
+/// Poll run/subscribe until the Run reaches `completed`; panics on timeout.
 async fn await_completed(core: &CoreHandle, run_id: &str) {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
@@ -241,11 +235,9 @@ fn accept_applies_and_resumes() {
     });
 }
 
-/// Slice 4 (Proposal reject): `proposal/decide{decision:"reject"}` on a parked
-/// Run resolves the Decision WITHOUT applying — no entity lands in tier 2, the
-/// Proposal becomes `rejected`, the awaited tool_call resolves as a NORMAL
-/// (non-error) declined result, and the Run resumes in a fresh Worker to
-/// `completed` (the model reads the decline and wraps up conversationally).
+/// `reject` resolves the Decision without applying: no entity, Proposal
+/// `rejected`, the tool_call resolves as a NORMAL (non-error) decline, and the
+/// Run resumes to `completed` (ADR-0025).
 #[test]
 fn reject_resumes_without_applying() {
     let workspace = Workspace::new();
@@ -344,8 +336,8 @@ fn reject_resumes_without_applying() {
         let payload = result_payload.expect("tool_call carries a result_payload");
         let payload_json: serde_json::Value =
             serde_json::from_str(&payload).expect("result_payload is JSON");
-        // The decline result must NOT be flagged as an error (ADR-0025): a
-        // normal Tool Result so the resumed model continues conversationally.
+        // Decline must NOT be flagged as an error so the resumed model
+        // continues conversationally (ADR-0025).
         assert_ne!(
             payload_json["is_error"].as_bool(),
             Some(true),
@@ -460,10 +452,8 @@ fn accept_is_idempotent() {
     });
 }
 
-/// Slice 5 (Proposal edit): `proposal/decide{decision:"edit", edited_payload}`
-/// on a parked Run validates the edited Journal Entry, applies the EDITED
-/// payload, records `proposals.edited_payload`, and resumes the Run in a fresh
-/// Worker to `completed`.
+/// `edit` validates the edited Journal Entry, applies the EDITED payload,
+/// records `proposals.edited_payload`, and resumes to `completed`.
 #[test]
 fn edit_applies_edited_payload() {
     let workspace = Workspace::new();
@@ -588,9 +578,9 @@ fn edit_applies_edited_payload() {
     });
 }
 
-/// Slice 5: an invalid `edited_payload` (empty body text fails validation) is
-/// rejected with `invalid_params` BEFORE any DB write — no entity lands, the
-/// Proposal stays `pending`, and the Run stays `parked` (re-decidable).
+/// An invalid `edited_payload` (empty body text) is rejected with
+/// `invalid_params` BEFORE any DB write: no entity, Proposal stays `pending`,
+/// Run stays `parked` (re-decidable).
 #[test]
 fn edit_rejects_invalid_payload() {
     let workspace = Workspace::new();
@@ -684,16 +674,10 @@ fn edit_rejects_invalid_payload() {
     });
 }
 
-/// Multi-step reconstruction (ADR-0025 core risk): the worker's first spawn
-/// does a real `read_thread` tool_call (Core executes + resolves it
-/// synchronously) BEFORE the `propose_workspace_mutation` that parks. On accept the Run
-/// resumes, and Core must rebuild a provider-valid MULTI-step transcript — a
-/// prior resolved tool_call rendered as a paired `tool_result`, the
-/// text-then-tool_call assistant split, and the Decision `tool_result` last,
-/// with NO orphan `tool_result`. If reconstruction emitted an orphan or dropped
-/// a pair the resume Worker's provider would reject the transcript and the Run
-/// would not reach `completed`; reaching `completed` proves the transcript is
-/// well-formed.
+/// Multi-step transcript reconstruction (ADR-0025): the first spawn does a real
+/// `read_thread` tool_call before the `propose_workspace_mutation` that parks.
+/// On accept, Core must rebuild a provider-valid transcript (paired
+/// `tool_result`s, no orphans); reaching `completed` proves it is well-formed.
 #[test]
 fn accept_resumes_after_multistep_transcript() {
     let workspace = Workspace::new();
@@ -740,14 +724,12 @@ fn accept_resumes_after_multistep_transcript() {
             "decide result status — body: {resp}"
         );
 
-        // The Run resumes from the reconstructed MULTI-step transcript and
-        // reaches completed — proving the transcript is provider-valid.
+        // Reaching completed proves the reconstructed transcript is provider-valid.
         await_completed(&core, &run_id).await;
         run_id
     });
 
-    // White-box: the read_thread tool_call AND the propose tool_call both
-    // resolved (no orphan), and the run completed.
+    // Both the read_thread and propose tool_calls resolved (no orphan).
     rt.block_on(async {
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()

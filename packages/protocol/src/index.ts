@@ -12,13 +12,7 @@ export type PostMessageResult = S.Schema.Type<typeof PostMessageResult>;
 export const SubscribeParams = S.Struct({ run_id: S.String });
 export type SubscribeParams = S.Schema.Type<typeof SubscribeParams>;
 
-/**
- * `run/subscribe` result: the Run's `status` at the subscribe instant
- * (ADR-0022 + ADR-0025). `running` while a live stream (hub) exists, else the
- * persisted `runs.status` — notably `parked`, which a refreshed Client must
- * distinguish from a terminal `completed`/`errored` so it does not treat the
- * stopped Run Event stream as a false `done`.
- */
+/** `run/subscribe` result: the Run's `status` at the subscribe instant (ADR-0022 + ADR-0025). */
 export const SubscribeResult = S.Struct({
 	run_id: S.String,
 	status: S.String,
@@ -29,12 +23,7 @@ export type SubscribeResult = S.Schema.Type<typeof SubscribeResult>;
 export const RunCancelParams = S.Struct({ run_id: S.String });
 export type RunCancelParams = S.Schema.Type<typeof RunCancelParams>;
 
-/**
- * `run/cancel` result (ADR-0014): whether Core accepted the cancel command.
- * `accepted` — the Run was live/parked and is being cancelled; `already_terminal`
- * — the Run had already finished before the cancel arrived; `unknown_run` — the
- * `run_id` named no Run.
- */
+/** `run/cancel` result (ADR-0014): whether Core accepted the cancel command. */
 export const RunCancelResult = S.Struct({
 	outcome: S.Literal("accepted", "already_terminal", "unknown_run"),
 });
@@ -80,11 +69,7 @@ export type ThreadGetResult = S.Schema.Type<typeof ThreadGetResult>;
 
 export const RunEvent = S.Union(
 	S.Struct({ kind: S.Literal("text_delta"), delta: S.String }),
-	// Live tool-call boundary (ADR-0006): Core synthesizes these when it
-	// receives a `tool_request` from the Worker and publishes them on the Run
-	// Event hub so the Client can show a tool running. `started` precedes
-	// dispatch; the terminal `completed`/`error` mirrors the outcome. Ephemeral
-	// (not persisted), so not replayed on a snapshot/reconnect (ADR-0022).
+	// Core-synthesized, ephemeral tool-call boundary (ADR-0006) — see docs/design/protocol.md
 	S.Struct({
 		kind: S.Literal("tool_call"),
 		tool_call_id: S.String,
@@ -97,10 +82,7 @@ export const RunEvent = S.Union(
 );
 export type RunEvent = S.Schema.Type<typeof RunEvent>;
 
-// --- proposal/* (ADR-0025): a Proposal is a Tool Request awaiting a human
-// Decision. When the Worker emits a `propose_workspace_mutation` tool_request,
-// Core parks the Run and persists a pending Proposal. The Proposal lifecycle rides this
-// `proposal/*` channel, NOT a RunEvent variant.
+// proposal/* (ADR-0025): a Proposal is a Tool Request awaiting a human Decision — see docs/design/protocol.md
 
 /** `proposal/get` params: the parked Run whose pending Proposal to fetch. */
 export const ProposalGetParams = S.Struct({ run_id: S.String });
@@ -127,17 +109,9 @@ export type ProposalReviewCurrentJournalEntry = S.Schema.Type<
 export const ProposalReviewContext = S.Struct({
 	current_journal_entry: S.optional(ProposalReviewCurrentJournalEntry),
 });
-export type ProposalReviewContext = S.Schema.Type<
-	typeof ProposalReviewContext
->;
+export type ProposalReviewContext = S.Schema.Type<typeof ProposalReviewContext>;
 
-/**
- * `proposal/get` result: the Run's pending Proposal. `mutation_kind` is the
- * logical Workspace mutation; `payload` is the opaque mutation-specific body;
- * `rationale` is the model's reason (may be null); `review_context` is
- * optional display-only context for review surfaces; `status` is the Proposal's
- * lifecycle state.
- */
+/** `proposal/get` result: the Run's pending Proposal. */
 export const ProposalGetResult = S.Struct({
 	proposal_id: S.String,
 	run_id: S.String,
@@ -149,13 +123,7 @@ export const ProposalGetResult = S.Struct({
 });
 export type ProposalGetResult = S.Schema.Type<typeof ProposalGetResult>;
 
-/**
- * `proposal/decide` params: the user's Decision on a pending Proposal. The
- * full `decision` enum ships now (accept|reject|edit) so reject/edit are
- * Core-only follow-ups; `edited_payload` carries the user's edits for
- * `edit`. `decision_idempotency_key` makes a retried decide safe — a repeat
- * with the same key returns the prior result without re-applying.
- */
+/** `proposal/decide` params: the user's Decision on a pending Proposal. */
 export const ProposalDecideParams = S.Struct({
 	proposal_id: S.String,
 	decision: S.Literal("accept", "reject", "edit"),
@@ -164,23 +132,14 @@ export const ProposalDecideParams = S.Struct({
 });
 export type ProposalDecideParams = S.Schema.Type<typeof ProposalDecideParams>;
 
-/**
- * `proposal/decide` result: the Proposal's post-decision `status`
- * (accepted|rejected) and, for an accept/edit that created an Entity, its
- * `entity_id`. A reject carries no `entity_id`.
- */
+/** `proposal/decide` result: the Proposal's post-decision `status` and any created `entity_id`. */
 export const ProposalDecideResult = S.Struct({
 	status: S.Literal("accepted", "rejected"),
 	entity_id: S.optional(S.String),
 });
 export type ProposalDecideResult = S.Schema.Type<typeof ProposalDecideResult>;
 
-/**
- * `proposal/pending` Notification: pushed to a Run's subscribers the moment
- * the Run parks (ADR-0025), so an already-attached chat surface learns to show
- * the review card without polling. Rides the `proposal/*` channel, not a new
- * Proposal-specific RunEvent variant.
- */
+/** `proposal/pending` Notification: pushed to a Run's subscribers the moment the Run parks (ADR-0025). */
 export const ProposalPendingNotification = S.Struct({
 	run_id: S.String,
 	proposal_id: S.String,
@@ -189,11 +148,7 @@ export type ProposalPendingNotification = S.Schema.Type<
 	typeof ProposalPendingNotification
 >;
 
-/**
- * `proposal/changed` Notification: pushed when a pending Proposal is decided
- * (ADR-0025). `status` is the Proposal's post-decision lifecycle state
- * (accepted|rejected). Best-effort on the deciding connection this slice.
- */
+/** `proposal/changed` Notification: pushed when a pending Proposal is decided (ADR-0025). */
 export const ProposalChangedNotification = S.Struct({
 	run_id: S.String,
 	proposal_id: S.String,
@@ -203,21 +158,13 @@ export type ProposalChangedNotification = S.Schema.Type<
 	typeof ProposalChangedNotification
 >;
 
-// --- entity/* (ADR-0004): the accepted Entities the Library reads. `entity/list`
-// is type-parameterized (see EntityListParams) — one Entity type per call, e.g.
-// `todo` or `person`.
+// entity/* (ADR-0004): the accepted Entities the Library reads; `entity/list` is type-parameterized (one type per call).
 
 /** `entity/list` params: the Entity type to list (one type per call). */
 export const EntityListParams = S.Struct({ type: S.String });
 export type EntityListParams = S.Schema.Type<typeof EntityListParams>;
 
-/**
- * One Entity row in an `entity/list` result: the raw tier-2 `entities`
- * columns (ADR-0004). `data` is the opaque entity JSON (for a Todo,
- * `{title, done, due?}`); `type` is the entity type (e.g. `todo` or
- * `person`). `created_at` / `updated_at` are ms-epoch stamps. The Client
- * maps these to its Library view model.
- */
+/** One Entity row in an `entity/list` result: the raw tier-2 `entities` columns (ADR-0004). */
 export const EntityRow = S.Struct({
 	id: S.String,
 	type: S.String,
@@ -227,21 +174,11 @@ export const EntityRow = S.Struct({
 });
 export type EntityRow = S.Schema.Type<typeof EntityRow>;
 
-/**
- * `entity/list` result: the accepted Entities of the requested type,
- * newest-first. Object-wrapper shape (`{entities: [...]}`) so the result stays
- * forward-extensible and the Rust mirror is a struct (mirrors `thread/list`'s
- * `{threads: [...]}`).
- */
+/** `entity/list` result: the accepted Entities of the requested type, newest-first. */
 export const EntityListResult = S.Struct({ entities: S.Array(EntityRow) });
 export type EntityListResult = S.Schema.Type<typeof EntityListResult>;
 
-// --- tool protocol (ADR-0018): the Worker↔Core duplex for tool calls. The
-// Worker emits `tool_request` on its outbound stream (alongside RunEvents);
-// Core replies with `tool_result` on the post-manifest inbound stream.
-// `params` and `json_schema` are opaque JSON forwarded verbatim (the Worker
-// wraps `json_schema` in `Type.Unsafe`; Core re-validates `params`). The
-// descriptor list ships in the WorkflowManifest.
+// tool protocol (ADR-0018): the Worker<->Core duplex for tool calls — see docs/design/protocol.md
 
 /** The only `content` modality Core produces today (image is out of scope). */
 export const ToolTextContent = S.Struct({
@@ -289,10 +226,7 @@ export const CoreToolDescriptor = S.Struct({
 });
 export type CoreToolDescriptor = S.Schema.Type<typeof CoreToolDescriptor>;
 
-// What the Worker writes to stdout. NOTE: the `tool_call` and `cancelled`
-// members of `RunEvent` are Core-synthesized; the Worker never emits them, so
-// Core's stdout decoder ignores those kinds. The union is widened only because
-// it reuses `RunEvent`.
+// What the Worker writes to stdout; reuses `RunEvent`, so its `tool_call`/`cancelled` kinds are never emitted here — see docs/design/protocol.md
 export const WorkerOutbound = S.Union(RunEvent, ToolRequest);
 export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 
@@ -300,7 +234,7 @@ export type WorkerOutbound = S.Schema.Type<typeof WorkerOutbound>;
 export const WorkerInbound = ToolResult;
 export type WorkerInbound = S.Schema.Type<typeof WorkerInbound>;
 
-// --- provider/* (ADR-0023, ADR-0014 amendment): LLM-provider connection.
+// provider/* (ADR-0023, ADR-0014 amendment): LLM-provider connection.
 
 /** One provider's connection state in `provider/status`. */
 export const ProviderStatus = S.Struct({
@@ -327,9 +261,7 @@ export type ProviderLoginStartResult = S.Schema.Type<
 	typeof ProviderLoginStartResult
 >;
 
-// --- model/catalog (ADR-0024): the models available per provider. Static
-// data hand-mirrored from pi-ai's MODELS and embedded in Core; a Worker-side
-// drift test guards it. `openai-codex` is the only connectable provider today.
+// model/catalog (ADR-0024): the models available per provider, hand-mirrored from pi-ai's MODELS and guarded by a Worker-side drift test.
 
 /** One model in `model/catalog`. `input` is the modality list (`text`/`image`). */
 export const ModelInfo = S.Struct({
@@ -356,14 +288,9 @@ export const ModelCatalogResult = S.Struct({
 });
 export type ModelCatalogResult = S.Schema.Type<typeof ModelCatalogResult>;
 
-// --- settings/* (ADR-0024): the user's preferred model + global effort.
+// settings/* (ADR-0024): the user's preferred model + global effort.
 
-/**
- * `settings/get` / `settings/set` result: the effective model selection and
- * global effort for the default Workflow. `model` is `null` until the user
- * picks one (the resolver then falls back to the per-provider default);
- * `provider` is the Workflow's provider; `effort` is the global thinking level.
- */
+/** `settings/get` / `settings/set` result: the effective model selection and global effort for the default Workflow. */
 export const SettingsResult = S.Struct({
 	provider: S.String,
 	model: S.NullOr(S.String),
@@ -371,21 +298,14 @@ export const SettingsResult = S.Struct({
 });
 export type SettingsResult = S.Schema.Type<typeof SettingsResult>;
 
-/**
- * `settings/set` params: a partial update. An absent field is left unchanged;
- * `model` must be a known catalog id and `effort` a valid thinking level, else
- * the request is rejected with `invalid_params`.
- */
+/** `settings/set` params: a partial update; an absent field is left unchanged. */
 export const SettingsSetParams = S.Struct({
 	model: S.optional(S.String),
 	effort: S.optional(S.String),
 });
 export type SettingsSetParams = S.Schema.Type<typeof SettingsSetParams>;
 
-// --- Worker manifest (ADR-0018 as-built): the spawn payload Core ships to
-// the generic interpreter on stdin. Carries the Workflow definition, the
-// assembled conversation history, and — for OAuth providers — a short-lived
-// access token (ADR-0023). `tools` is empty until the tools slice.
+// Worker manifest (ADR-0018 as-built): the spawn payload Core ships to the generic interpreter on stdin — see docs/design/protocol.md
 
 /** One tool call inside an assistant manifest message (ADR-0025 resume). */
 export const ManifestToolCall = S.Struct({
@@ -395,14 +315,7 @@ export const ManifestToolCall = S.Struct({
 });
 export type ManifestToolCall = S.Schema.Type<typeof ManifestToolCall>;
 
-/**
- * One prior message in the assembled Thread history (ADR-0018 messages[]),
- * now a tagged union (ADR-0025). The fresh path emits `user{text}` and
- * `assistant{text}` exactly as before; the resume path (slice 3 produces it)
- * adds `assistant.tool_calls` and `tool_result` blocks so the reconstructed
- * transcript is provider-valid (an assistant `tool_call` precedes its
- * `tool_result`). This is a backward-compatible superset.
- */
+/** One prior message in the assembled Thread history, a tagged union (ADR-0018 messages[], ADR-0025) — see docs/design/protocol.md */
 export const ManifestMessage = S.Union(
 	S.Struct({ role: S.Literal("user"), text: S.String }),
 	S.Struct({
@@ -431,15 +344,7 @@ export const WorkflowManifest = S.Struct({
 });
 export type WorkflowManifest = S.Schema.Type<typeof WorkflowManifest>;
 
-/**
- * The full spawn manifest written to the Worker's stdin. `prompt` is the
- * current user turn; `messages` is the prior completed history (oldest
- * first, excluding the current prompt). `access_token` is present only for
- * OAuth providers (ADR-0023); absent for the `faux` test provider and any
- * env-key provider. `mode` selects the loop entry point (ADR-0025): `fresh`
- * (default/absent) starts a new prompt; `resume` continues a reconstructed
- * transcript whose last message is a `tool_result` (via `runAgentLoopContinue`).
- */
+/** The full spawn manifest written to the Worker's stdin (ADR-0018, ADR-0023, ADR-0025) — see docs/design/protocol.md */
 export const WorkerManifest = S.Struct({
 	workflow: WorkflowManifest,
 	prompt: S.String,

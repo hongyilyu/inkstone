@@ -1,13 +1,9 @@
-//! Slice 4 (real-worker-codex): the Core cutover. Core spawns the generic
-//! `pi-agent-core` interpreter (the test-only faux entry
-//! packages/worker/src/faux-worker.ts) with a manifest
-//! on stdin, and a real agent-loop Run streams a completion back through the
-//! hub end-to-end. Determinism comes from pi-ai's `faux` provider
-//! (ADR-0019 as-built): the workflow declares `provider="faux"` and the
-//! canned response rides `INKSTONE_FAUX_RESPONSE`, inherited Core → Worker.
-//!
-//! This proves the interpreter path (manifest parse → runAgentLoop tools=[]
-//! → message_update/text_delta → done) without touching a real provider.
+//! End-to-end interpreter path: Core spawns the generic `pi-agent-core`
+//! interpreter (test-only entry `packages/worker/src/faux-worker.ts`) with a
+//! manifest on stdin and a real agent-loop Run streams a completion back.
+//! Determinism comes from pi-ai's `faux` provider (ADR-0019): the workflow
+//! declares `provider="faux"` and the canned response rides
+//! `INKSTONE_FAUX_RESPONSE`, inherited Core → Worker.
 
 use std::path::Path;
 
@@ -17,8 +13,7 @@ use tokio_tungstenite::tungstenite::Message;
 mod common;
 use common::{Workspace, next_text};
 
-/// Write a faux workflow into a fixture dir so the interpreter takes the
-/// offline faux path (provider="faux").
+/// Write a faux workflow so the interpreter takes the offline faux path.
 fn write_faux_workflow(dir: &Path) {
     std::fs::create_dir_all(dir).expect("create workflows dir");
     std::fs::write(
@@ -81,8 +76,7 @@ fn faux_completion_streams_through_core() {
             .expect("send subscribe frame");
         let _sub_response = next_text(&mut ws).await;
 
-        // Reassemble text_delta payloads until the terminal done. The loop
-        // exits only via the done arm; an error event fails the test.
+        // Reassemble text_delta payloads until done; an error event fails.
         let mut assembled = String::new();
         loop {
             let body = next_text(&mut ws).await;

@@ -8,10 +8,9 @@ use common::{Workspace, next_text};
 fn end_to_end_post_message_streams_text_delta_then_done() {
     let workspace = Workspace::new();
 
-    // Slice 4 cut cli.ts over to the generic interpreter (real providers). The
-    // echo-shaped assertions in this test now ride the slow-worker fixture,
-    // which reads the manifest's `.prompt` and emits `echo: <prompt>` — the
-    // deterministic stand-in (ADR-0019). Real providers are manual smoke.
+    // The echo-shaped assertions ride the slow-worker fixture, which reads the
+    // manifest's `.prompt` and emits `echo: <prompt>` — the deterministic
+    // stand-in (ADR-0019). Real providers are manual smoke.
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -28,9 +27,8 @@ fn end_to_end_post_message_streams_text_delta_then_done() {
             .await
             .expect("send request frame");
 
-        // Pure-subscribe (ADR-0022): post_message returns {run_id} only — no
-        // events on the response frame. Read the response, then subscribe by
-        // run_id and reassemble the snapshot + tail.
+        // Pure-subscribe (ADR-0022): post_message returns {run_id} only; read
+        // the response, then subscribe and reassemble the snapshot + tail.
         let response = next_text(&mut ws).await;
 
         let resp_v: serde_json::Value = serde_json::from_str(&response)

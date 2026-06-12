@@ -1,21 +1,10 @@
-//! Slice 4 RED test: `run/post_message({thread_id, prompt})` adds a SECOND
-//! Run to an EXISTING Thread (ADR-0022 — post_message is existing-thread-only;
-//! `thread_id` is never optional).
-//!
-//! `post_message_starts_second_run_in_existing_thread`: `thread/create` mints
-//! a Thread + its first Run, then `run/post_message` against that `thread_id`
-//! starts a second Run in the SAME Thread (same `thread_id`, new `run_id`).
-//! The DB shows exactly one Thread and exactly two Runs, both carrying that
-//! `thread_id`, with the two distinct run ids the WS responses returned.
-//!
-//! `post_message_unknown_thread_rejected`: `run/post_message` with a
-//! well-formed but never-created `thread_id` is rejected with the
-//! `unknown_thread` error (code `-32001`, ADR-0014's `-32000..-32099` Inkstone
-//! server-error band) and writes ZERO rows — distinct from `invalid_params`
-//! (`-32602`), which is for a malformed thread_id.
-//!
-//! Uses the REAL echo Worker (no fixture/gate) — this slice asserts the
-//! create-then-post round trip and the persisted rows, not mid-stream timing.
+//! `run/post_message({thread_id, prompt})` adds a second Run to an existing
+//! Thread (ADR-0022 — `thread_id` is never optional). After `thread/create`
+//! mints a Thread + first Run, a post against that `thread_id` starts a second
+//! Run in the same Thread (one Thread, two Runs). A well-formed but
+//! never-created `thread_id` is rejected with `unknown_thread` (-32001) and
+//! writes zero rows — distinct from `invalid_params` (-32602) for a malformed
+//! id.
 
 use futures_util::SinkExt;
 use sqlx::sqlite::SqlitePoolOptions;
@@ -33,7 +22,7 @@ async fn drain_run_to_done(ws: &mut Ws, sub_id: u32, run_id: &str) {
     ws.send(Message::Text(subscribe.into()))
         .await
         .expect("send run/subscribe frame");
-    let _sub_resp = next_text(ws).await; // subscribe response
+    let _sub_resp = next_text(ws).await;
     loop {
         let body = next_text(ws).await;
         let v: serde_json::Value = serde_json::from_str(&body)
@@ -58,7 +47,7 @@ fn post_message_starts_second_run_in_existing_thread() {
     let (thread_id, run_id_1, run_id_2) = rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // ---- thread/create: mint the Thread + its first Run ----
+        // thread/create: mint the Thread + its first Run.
         let create =
             r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"first"}}"#;
         ws.send(Message::Text(create.into()))
@@ -80,7 +69,7 @@ fn post_message_starts_second_run_in_existing_thread() {
             .unwrap_or_else(|| panic!("result.run_id is a string — body: {create_body}"))
             .to_string();
 
-        // ---- post_message into that Thread: a SECOND Run, new run_id ----
+        // post_message into that Thread: a second Run, new run_id.
         let post = format!(
             r#"{{"jsonrpc":"2.0","id":2,"method":"run/post_message","params":{{"thread_id":"{thread_id}","prompt":"second"}}}}"#
         );
@@ -100,7 +89,7 @@ fn post_message_starts_second_run_in_existing_thread() {
             .unwrap_or_else(|| panic!("result.run_id is a string — body: {post_body}"))
             .to_string();
 
-        // The second Run's id is a fresh UUIDv7 distinct from the first.
+        // The second Run's id is a fresh UUIDv7, distinct from the first.
         let parsed_2 = uuid::Uuid::parse_str(&run_id_2).expect("run_id_2 parses as UUID");
         assert_eq!(
             parsed_2.get_version(),
@@ -140,8 +129,8 @@ fn post_message_starts_second_run_in_existing_thread() {
             .expect("count runs");
         assert_eq!(run_count, 2, "exactly two run rows in the existing thread");
 
-        // Both runs carry the same thread_id, and their ids are exactly the
-        // two run ids the WS responses returned.
+        // Both runs carry the same thread_id, and their ids are exactly the two
+        // run ids the WS responses returned.
         let rows: Vec<(String, String)> =
             sqlx::query_as("SELECT id, thread_id FROM runs ORDER BY id")
                 .fetch_all(&pool)

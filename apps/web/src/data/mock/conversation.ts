@@ -1,8 +1,6 @@
 import type { MockChatMessage } from "./types.js";
 
-// Multi-turn conversation. The latest assistant message streams in (its `text` is built up
-// progressively in the UI). Earlier messages are static history within the same thread.
-// Designs render this as bubbles, terminal lines, prose, etc.
+/** Multi-turn mock conversation; the latest assistant message streams in, earlier ones are static history. */
 export const conversation: MockChatMessage[] = [
 	{
 		role: "user",

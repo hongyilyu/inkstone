@@ -1,8 +1,7 @@
-//! Slice 4 RED tests: whichever way the Worker exits — clean `done` event
-//! or stdout EOF without `done` — Core writes the terminal `runs.status`,
-//! the matching `terminal_reason`, the terminal `run_log` row, and (for
-//! the EOF path) flips every `messages.status='streaming'` for that Run to
-//! `'incomplete'` — all in one transaction.
+//! However the Worker exits — clean `done` or stdout EOF without `done` — Core
+//! writes the terminal `runs.status`, matching `terminal_reason`, the terminal
+//! `run_log` row, and (for the EOF path) flips streaming messages to
+//! `incomplete`, all in one transaction.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -53,7 +52,7 @@ fn done_event_completes_run() {
             .as_str()
             .unwrap_or_else(|| panic!("result.run_id is a string — body: {response_body}"))
             .to_string();
-        // Pure-subscribe (ADR-0022): no events on the post_message response.
+        // Pure-subscribe (ADR-0022): no events on the response.
         assert!(
             response["params"].get("event").is_none(),
             "post_message response carries no event — body: {response_body}"
@@ -69,8 +68,6 @@ fn done_event_completes_run() {
 
         let _sub_response = next_text(&mut ws).await;
 
-        // The loop only exits via the `done` arm's `break`; reaching the line
-        // after it proves the subscribe stream ended with a `done`.
         loop {
             let body = next_text(&mut ws).await;
             let v: serde_json::Value = serde_json::from_str(&body)
@@ -81,16 +78,14 @@ fn done_event_completes_run() {
         }
 
         ws.close(None).await.ok();
-        // Give Core's per-Run task time to commit the terminal tx after the
-        // worker child reports stdout EOF.
+        // Give Core's per-Run task time to commit the terminal tx.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         run_id
     });
 
-    // core's Drop kills + reaps Core. Run assertions while Core is still
-    // alive — the terminal tx already committed during the 200ms sleep above
-    // so a fresh ro pool sees the final state regardless.
+    // The terminal tx already committed during the sleep, so a fresh ro pool
+    // sees the final state.
     rt.block_on(async {
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
@@ -172,17 +167,14 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
             .unwrap_or_else(|| panic!("result.run_id is a string — body: {body}"))
             .to_string();
 
-        // Worker exits immediately with no stdout — no text_delta, no done.
-        // Poll the DB until the run leaves the 'running' state.
+        // Worker exits immediately with no stdout. Poll the DB until the run
+        // leaves 'running' (bounded at 5s).
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect(&url)
             .await
             .expect("connect to migrated DB");
-        // Poll for terminal status. The terminal tx commits inside Core's
-        // per-Run task after the worker child reports stdout EOF; bound the
-        // wait at 5s.
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             let status: String = sqlx::query_scalar(
@@ -207,7 +199,6 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
         run_id
     });
 
-    // core's Drop kills + reaps Core whenever this fn returns/panics.
     rt.block_on(async {
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
@@ -266,18 +257,15 @@ fn worker_eof_errors_run_and_marks_message_incomplete() {
     });
 }
 
-/// Regression: a Worker process that fails to spawn (missing binary, empty
-/// `INKSTONE_WORKER_CMD`, etc.) hits one of `run_worker`'s pre-loop
-/// early-return paths. Without `finalize_error`, those paths skipped the
-/// terminal tx entirely and left `runs.status='running'` and the
-/// assistant `messages.status='streaming'` forever — a violation of
-/// ADR-0017's atomic recovery invariant.
+/// Regression: a Worker that fails to spawn hits a `run_worker` pre-loop
+/// early-return path. Without `finalize_error` those paths skipped the terminal
+/// tx and left the run `running` / assistant `streaming` forever (ADR-0017).
 #[test]
 fn worker_spawn_failure_errors_run() {
     let workspace = Workspace::new();
 
-    // Path that doesn't exist → tokio::process::Command::spawn() returns
-    // Err, hitting the second pre-loop early-return path in run_worker.
+    // Nonexistent path → spawn() returns Err, hitting the pre-loop
+    // early-return path in run_worker.
     let core = workspace
         .core()
         .worker_cmd("/nonexistent/inkstone-test-worker")
@@ -305,7 +293,7 @@ fn worker_spawn_failure_errors_run() {
             .unwrap_or_else(|| panic!("result.run_id is a string — body: {body}"))
             .to_string();
 
-        // Worker never ran; poll for terminal status.
+        // Poll for terminal status.
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)

@@ -1,8 +1,7 @@
-//! Slice 3 RED test: a `text_delta` Run Event from the Worker is appended
-//! to the assistant `message_parts.text` row inside a `messages` row with
-//! `role='assistant'`, `status='streaming'`, BEFORE Core forwards the WS
-//! `run/event` Notification — so a test that observes the WS frame can
-//! immediately query the DB and see the same delta committed.
+//! A `text_delta` Run Event is appended to the assistant `message_parts.text`
+//! row (`role='assistant'`, `status='streaming'`) before Core forwards the WS
+//! `run/event` Notification — so observing the WS frame guarantees the delta is
+//! already committed in the DB.
 
 use futures_util::SinkExt;
 use sqlx::Row;
@@ -45,7 +44,7 @@ fn text_delta_appends_to_message_parts() {
             "post_message response carries no event — body: {response_body}"
         );
 
-        // Subscribe by run_id, then drain the snapshot + tail until done.
+        // Subscribe, then drain the snapshot + tail until done.
         let subscribe = format!(
             r#"{{"jsonrpc":"2.0","id":2,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
         );
@@ -56,9 +55,6 @@ fn text_delta_appends_to_message_parts() {
         let _sub_response = next_text(&mut ws).await;
 
         let mut assembled = String::new();
-        // The loop only exits via the `done` arm's `break`; every other path
-        // panics, so reaching the line after it proves the terminal frame was
-        // a `done`.
         loop {
             let body = next_text(&mut ws).await;
             let v: serde_json::Value = serde_json::from_str(&body)
@@ -113,8 +109,8 @@ fn text_delta_appends_to_message_parts() {
                 .expect("read assistant message");
         let assistant_message_id: String = assistant_row.get("id");
         let status: String = assistant_row.get("status");
-        // slice 4: Core may finish the terminal tx before the test kills it, flipping
-        // assistant status='streaming' → 'completed'; both states are acceptable here.
+        // Core may finish the terminal tx before the test kills it, flipping
+        // 'streaming' → 'completed'; both are acceptable here.
         assert!(
             matches!(status.as_str(), "streaming" | "completed"),
             "assistant status is 'streaming' or 'completed' (slice-4 race), got {status:?}"

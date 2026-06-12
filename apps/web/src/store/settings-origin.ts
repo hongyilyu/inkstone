@@ -1,14 +1,7 @@
 import { createStore } from "zustand/vanilla";
 
-/**
- * Where the settings takeover exits to: the last location visited *outside*
- * `/settings`. The root route records every navigation here (skipping settings
- * paths), so moving between settings tabs never overwrites it — Esc inside
- * settings returns to wherever it was opened from (Chat or Library), not a
- * previously-viewed tab. Read imperatively by the Esc handler; defaults to chat
- * (e.g. a cold deep-link straight to `/settings/*`). Matches the zustand-vanilla
- * store pattern in `store/command.ts` (ADR-0020).
- */
+// Where the settings takeover exits to: the last location visited outside `/settings` (defaults to chat).
+// Recorded skipping settings paths so moving between tabs never overwrites it (ADR-0020 zustand-vanilla).
 const store = createStore<{ exitHref: string }>()(() => ({ exitHref: "/" }));
 
 export function noteNonSettingsLocation(href: string): void {

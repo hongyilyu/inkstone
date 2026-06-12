@@ -1,12 +1,4 @@
-// Preview Library items (CONTEXT.md domain: Journal Entry / Person / Project / Todo / Recipe).
-//
-// VISUAL ONLY for item types not read live from Core yet. The Library hook
-// overlays live Core rows for implemented types and keeps this fixture for the
-// rest, mirroring how ActivityRail renders from mock data. The shapes follow
-// CONTEXT.md vocabulary so the future live wiring maps cleanly; the data is one
-// coherent personal workspace (the account is "H" — Hongyi) and deliberately
-// overlaps the API-migration project already referenced in `proposals.ts` and
-// the Alice / daycare example from CONTEXT.md's dialogue.
+// Preview Library items — visual-only fixture for types not read live from Core yet; see docs/design/web-mock.md.
 
 import type {
 	LibraryItem,
@@ -15,8 +7,6 @@ import type {
 	Recipe,
 	Todo,
 } from "@/lib/libraryItems";
-
-// --- people -----------------------------------------------------------------
 
 export const people: Person[] = [
 	{
@@ -118,8 +108,6 @@ export const people: Person[] = [
 	},
 ];
 
-// --- projects ---------------------------------------------------------------
-
 export const projects: Project[] = [
 	{
 		id: "proj_apiv2",
@@ -189,8 +177,6 @@ export const projects: Project[] = [
 		},
 	},
 ];
-
-// --- todos ------------------------------------------------------------------
 
 export const todos: Todo[] = [
 	{
@@ -366,8 +352,6 @@ export const todos: Todo[] = [
 		},
 	},
 ];
-
-// --- recipes ----------------------------------------------------------------
 
 export const recipes: Recipe[] = [
 	{

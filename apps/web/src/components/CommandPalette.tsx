@@ -29,12 +29,7 @@ interface Group {
 	items: Result[];
 }
 
-/**
- * Global command palette (⌘K / Ctrl+K). Searches recent Threads (live, like the
- * sidebar) and displayed Library items, grouped by type, fully keyboard driven.
- * Mounted once in `__root` so it's reachable from any surface; opened via the
- * `command` store so in-tree triggers don't need prop threading.
- */
+/** Global command palette (⌘K / Ctrl+K) searching recent Threads and Library items, grouped and keyboard driven; mounted once in `__root`. */
 export function CommandPalette() {
 	const open = useCommandOpen();
 	const navigate = useNavigate();
@@ -45,7 +40,7 @@ export function CommandPalette() {
 	const listRef = useRef<HTMLDivElement>(null);
 	const listboxId = useId();
 
-	// Global shortcut. Toggle on ⌘K / Ctrl+K from anywhere.
+	// Toggle on ⌘K / Ctrl+K from anywhere.
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
 			if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
@@ -57,8 +52,7 @@ export function CommandPalette() {
 		return () => window.removeEventListener("keydown", onKey);
 	}, []);
 
-	// Threads only matter while the palette is open (lazy; shares the sidebar's
-	// cache by key). Errors → empty list, never a throw (Core may be offline).
+	// Lazy: fetch threads only while open (shares the sidebar cache); errors → empty list.
 	const { data: threadData } = useThreads({ enabled: open });
 
 	const groups = useMemo<Group[]>(() => {

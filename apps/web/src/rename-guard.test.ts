@@ -3,16 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// PR1 (slice 9) purged the chat-role identifiers from apps/web/src. This guard
-// reads every source file and asserts none reintroduce them, so the rename
-// stays complete as later slices stack on it.
-//
-// Scoped to the chat-role *identifiers* — NOT a blunt "agent" substring — so:
-//   - the automations domain ("agent run" comments + Automation/AutomationRun
-//     types in data/mock/types.ts) is intentionally NOT flagged, and
-//   - the user-facing "Turn standup action items…" prompt copy in
-//     data/mock/history.ts is intentionally NOT flagged.
-// The guard file itself is excluded from the scan (it names the banned tokens).
+// Banned chat-role *identifiers* (not a blunt "agent" substring) — see docs/design/web-component-tests.md.
 const BANNED = [
 	"ChatTurn",
 	"AgentBubble",
@@ -23,8 +14,7 @@ const BANNED = [
 	'data-role="agent"',
 ];
 
-// vitest runs with cwd = apps/web, so the source tree is <cwd>/src and this
-// guard file is the one we exclude from the scan.
+// vitest runs with cwd = apps/web, so the source tree is <cwd>/src.
 const SRC_DIR = join(process.cwd(), "src");
 const SELF = join(SRC_DIR, "rename-guard.test.ts");
 

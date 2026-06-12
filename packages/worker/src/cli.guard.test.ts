@@ -4,12 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// Production-entry guard (ADR-0019 as-built: faux scripting lives in the
-// test-only `faux-worker.ts`, never the shipping path). `cli.ts` is the
-// production Worker entry Core spawns in a real build; it must carry NO
-// test-only faux-provider code. This guard reads cli.ts and asserts none of the
-// faux tokens reappear, so the eviction stays complete as later work stacks on
-// it. (`faux-worker.ts` is the legitimate home for these — not scanned here.)
+// Production-entry guard: cli.ts must carry no faux/test-only provider code (ADR-0019) — see docs/design/worker-tests.md
 const BANNED = [
 	"INKSTONE_FAUX",
 	"registerFauxProvider",
@@ -25,9 +20,7 @@ describe("production entry guard", () => {
 		const text = readFileSync(CLI, "utf8");
 		const offenders = BANNED.filter((token) => text.includes(token));
 		expect(offenders).toEqual([]);
-		// Also catch direct wiring to the test-only entry: an import of
-		// `./faux-worker` would pull faux scripting into production without
-		// tripping any token above.
+		// Also catch a `./faux-worker` import, which would pull faux scripting into production without tripping a token above.
 		expect(text).not.toMatch(
 			/^\s*import\s+.*from\s+["']\.\/faux-worker(?:\.js)?["'];?/m,
 		);

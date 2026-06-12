@@ -1,21 +1,8 @@
-//! Slice 6 RED test: `thread/get(thread_id)` returns a Thread's messages
-//! with assembled text (ADR-0022 read path, ADR-0017 flat-text-no-parts[]).
-//!
-//! `thread/get` returns `{thread_id, title, messages: [{id, role, status,
-//! run_id, text}]}` in chronological order, where each message's `text` is
-//! the concatenation of its text parts. A COMPLETED Run yields the full user
-//! + assistant text; a MID-STREAM Run yields a `streaming` assistant message
-//! carrying its partial text and `run_id` (so a refreshed Client can
-//! resubscribe). This is the rehydration source for refresh-durability.
-//!
-//! Message ordering is `created_at, rowid` — the user message is inserted
-//! before the assistant message in the same ms, so the rowid tiebreaker keeps
-//! the user message first on a ms-tie.
-//!
-//! Test 1 uses the REAL echo Worker (drains to `done` for the completed
-//! case). Test 2 uses the slice-0 slow-worker fixture (`INKSTONE_FIXTURE_CHUNKS=2`
-//! + a gate) to hold the Run mid-stream while `thread/get` is issued on a
-//! SECOND connection (no subscribe on it, so its only frame is the response).
+//! `thread/get(thread_id)` returns `{thread_id, title, messages}` in
+//! chronological order (`created_at, rowid`) with each message's text assembled
+//! from its parts (ADR-0022, ADR-0017). Completed Runs yield full text;
+//! mid-stream Runs yield a `streaming` assistant message with partial text +
+//! `run_id` for resubscribe.
 
 use std::time::{Duration, Instant};
 
@@ -25,8 +12,8 @@ use tokio_tungstenite::tungstenite::Message;
 mod common;
 use common::{Workspace, Ws, next_text};
 
-/// Read frames (bounded) until one whose `id` matches `want_id`, skipping
-/// any interleaved `run/event` notifications. Returns the parsed response.
+/// Read frames until one whose `id` matches `want_id`, skipping interleaved
+/// `run/event` notifications.
 async fn read_response_with_id(ws: &mut Ws, want_id: i64) -> serde_json::Value {
     loop {
         let body = next_text(ws).await;
@@ -58,7 +45,6 @@ fn thread_get_completed_run_returns_full_text() {
     rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // ---- thread/create{prompt:"hi"} → {thread_id, run_id} ----
         send(
             &mut ws,
             r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#
@@ -75,8 +61,8 @@ fn thread_get_completed_run_returns_full_text() {
             .unwrap_or_else(|| panic!("result.run_id is a string — {create}"))
             .to_string();
 
-        // ---- subscribe + drain to done so the assistant text is fully
-        // persisted ("echo: hi") and its status flips to completed ----
+        // Subscribe + drain to done so the assistant text is persisted and its
+        // status flips to completed.
         send(
             &mut ws,
             format!(
@@ -94,13 +80,9 @@ fn thread_get_completed_run_returns_full_text() {
             }
         }
 
-        // ---- thread/get{thread_id} (distinct ids from 50). The subscribe
-        // `done` is published by the Worker BEFORE its terminal tx commits
-        // the status flip (worker.rs: publish under the gate, then
-        // `complete_run` after stdout EOF), so the assistant status may still
-        // read `streaming` for a beat after we observe `done`. Poll
-        // thread/get (bounded ~5s) until the assistant settles to
-        // `completed`; the text is already fully assembled. ----
+        // `done` is published before the terminal tx commits the status flip,
+        // so the assistant may still read `streaming` for a beat. Poll
+        // thread/get (~5s) until it settles to `completed`.
         let got = {
             let mut req_id = 50;
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -197,8 +179,8 @@ fn thread_get_midstream_run_returns_streaming_partial() {
     let gate_path = workspace.path().join("gate");
     assert!(!gate_path.exists(), "gate must not exist before release");
 
-    // chunks=2: "echo: hello" → chunk1 "echo: ", BLOCK on gate, chunk2
-    // "hello" + done. Holding the gate keeps the Run mid-stream.
+    // chunks=2: chunk1 "echo: ", block on gate, chunk2 "hello" + done. Holding
+    // the gate keeps the Run mid-stream.
     let core = workspace
         .core()
         .worker_fixture("slow-worker.ts")
@@ -214,11 +196,10 @@ fn thread_get_midstream_run_returns_streaming_partial() {
     rt.block_on(async {
         // Connection A: create + subscribe (held mid-stream on the gate).
         let mut ws_a = core.connect().await;
-        // Connection B: pre-open; thread/get runs here with NO subscribe, so
-        // its only frame is the thread/get response (no interleaved events).
+        // Connection B: thread/get runs here with NO subscribe, so its only
+        // frame is the response (no interleaved events).
         let mut ws_b = core.connect().await;
 
-        // ---- thread/create{prompt:"hello"} → {thread_id, run_id} ----
         send(
             &mut ws_a,
             r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hello"}}"#
@@ -235,10 +216,9 @@ fn thread_get_midstream_run_returns_streaming_partial() {
             .unwrap_or_else(|| panic!("result.run_id is a string — {create}"))
             .to_string();
 
-        // ---- subscribe on A; accumulate snapshot + tail text_deltas until
-        // chunk1 ("echo: ") has landed, which (persist-before-publish in the
-        // Worker) proves it is persisted. The gate is NOT tripped, so the
-        // Worker is blocked after chunk1 — no further frames arrive. ----
+        // Subscribe on A; accumulate text_deltas until chunk1 ("echo: ") lands,
+        // which (persist-before-publish) proves it is persisted. The gate is
+        // not tripped, so the Worker blocks after chunk1.
         send(
             &mut ws_a,
             format!(
@@ -261,7 +241,7 @@ fn thread_get_midstream_run_returns_streaming_partial() {
             }
         }
 
-        // ---- thread/get on B WITHOUT tripping the gate (distinct id 60) ----
+        // thread/get on B without tripping the gate.
         send(
             &mut ws_b,
             format!(
@@ -290,8 +270,8 @@ fn thread_get_midstream_run_returns_streaming_partial() {
         );
         assert_eq!(user["text"], serde_json::json!("hello"), "user text — {got}");
 
-        // assistant: streaming, text is a NON-EMPTY prefix of "echo: hello"
-        // that is NOT yet the full text, carrying run_id for resubscribe.
+        // assistant: streaming, text is a non-empty prefix of "echo: hello"
+        // (not the full text), carrying run_id for resubscribe.
         let asst = &messages[1];
         assert_eq!(
             asst["role"],
@@ -321,7 +301,7 @@ fn thread_get_midstream_run_returns_streaming_partial() {
             "assistant carries run_id so the Client can resubscribe — {got}"
         );
 
-        // ---- trip the gate + drain A to done so Core finishes cleanly ----
+        // Trip the gate + drain A to done so Core finishes cleanly.
         std::fs::write(&gate_path, b"go").expect("create gate file");
         loop {
             let body = next_text(&mut ws_a).await;

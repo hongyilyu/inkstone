@@ -3,12 +3,7 @@ import { WsClient } from "@inkstone/ui-sdk";
 import { Effect } from "effect";
 import type { WsRuntime } from "../runtime.js";
 
-/**
- * Imperative bridge between the React settings UI and the SDK `settings/*` +
- * `model/catalog` methods (ADR-0024). Mirrors `store/providers.ts`: no store
- * state of its own — components hold the values and call these to run the
- * Effects on the runtime.
- */
+// Imperative bridge between the settings UI and the SDK settings/* + model/catalog methods (ADR-0024); no store state of its own.
 
 /** Read the user's preferred model + global effort for the default Workflow. */
 export async function fetchSettings(
@@ -21,10 +16,7 @@ export async function fetchSettings(
 	return runtime.runPromise(program);
 }
 
-/**
- * Persist a partial settings update (preferred model and/or global effort).
- * Returns the updated settings as Core re-read them.
- */
+/** Persist a partial settings update (preferred model and/or global effort), returning the re-read settings. */
 export async function saveSettings(
 	runtime: WsRuntime,
 	params: { readonly model?: string; readonly effort?: string },

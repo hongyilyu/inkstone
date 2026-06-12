@@ -1,9 +1,7 @@
-//! Typed lifecycle transitions for Runs and Proposals.
-//!
-//! Status is materialized in tier 2, but every change funnels through these
-//! guarded verbs. The SQL `WHERE status = ...` clause is both the legality
-//! check and the race choke; each verb owns the fields and run_log row that
-//! must move with the status.
+//! Typed lifecycle transitions for Runs and Proposals. Every status change
+//! funnels through these guarded verbs; the SQL `WHERE status = ...` clause is
+//! both the legality check and the race choke. Each verb owns the fields and
+//! run_log row that move with the status.
 
 use sqlx::SqliteConnection;
 use uuid::Uuid;

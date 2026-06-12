@@ -3,9 +3,6 @@
 //! gate, dispatches or parks `tool_request`s, and commits the terminal
 //! transaction. Generic over the port: production spawns a
 //! [`super::child::ChildWorker`]; tests drive an in-memory `ScriptedWorker`.
-//!
-//! This is the former `stream_worker` body; the `Child`/stdin/stdout are now
-//! reached through the [`WorkerPort`] seam.
 
 use std::sync::Arc;
 
@@ -21,12 +18,11 @@ use crate::protocol::{
 };
 use crate::workflow::Workflow;
 
-/// Drive a spawned Worker to a terminal state through `worker` (the transport
-/// seam). Appends each `text_delta` under the per-run gate (ADR-0022), executes
-/// or parks `tool_request`s (ADR-0018/0025), commits the terminal tx
-/// (`complete_run`/`error_run`/`error_run_with_message`) unless the Run parked,
-/// publishes the terminal Run Event after the tx commits, and removes the hub.
-/// Returns the [`Exit`] the loop took.
+/// Drive a spawned Worker to a terminal state. Appends each `text_delta` under
+/// the per-run gate (ADR-0022), executes or parks `tool_request`s
+/// (ADR-0018/0025), commits the terminal tx unless the Run parked, publishes
+/// the terminal Run Event after the tx commits, removes the hub, and returns
+/// the [`Exit`] taken.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_loop<P: WorkerPort + Send>(
     mut worker: P,
@@ -72,8 +68,8 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
         match msg {
             // Per-event critical section (ADR-0022 exactly-once): hold the
             // per-run gate across persist + publish so a concurrent
-            // `run/subscribe` snapshot/attach sees this delta either wholly in
-            // the snapshot or wholly in the tail, never split or duplicated.
+            // `run/subscribe` sees this delta wholly in the snapshot or wholly
+            // in the tail, never split or duplicated.
             WorkerStdout::TextDelta { delta } => {
                 let guard = gate.lock().await;
                 match db::append_assistant_text(&pool, assistant_message_id, &delta).await {
@@ -89,9 +85,9 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 }
                 drop(guard);
             }
-            // Terminal events are recorded as flags and published AFTER the
-            // terminal tx commits (below). Shutting the Worker down sends it
-            // EOF so its stdout closes and this loop can break.
+            // Terminal events: record a flag, publish AFTER the terminal tx
+            // commits (below). Shutdown sends EOF so stdout closes and the loop
+            // breaks.
             WorkerStdout::Done => {
                 saw_done = true;
                 worker.shutdown().await;
@@ -101,12 +97,10 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 worker.shutdown().await;
             }
             // Tool Request (ADR-0018). Proposal tools park the Run instead of
-            // dispatching (ADR-0025): persist the tool_call + a pending
-            // Proposal, set the Run `parked`, then break with the `parked` flag
-            // so the post-loop branch runs neither `complete_run` nor
-            // `error_run` and publishes no terminal Run Event. Non-Proposal
-            // tools take the synchronous dispatch-and-reply path, bracketed by
-            // two ephemeral `tool_call` Run Events for live "tool is running".
+            // dispatching (ADR-0025), breaking with the `parked` flag so the
+            // post-loop branch commits no terminal tx. Non-Proposal tools take
+            // the synchronous dispatch-and-reply path, bracketed by two
+            // ephemeral `tool_call` Run Events for live "tool is running".
             WorkerStdout::ToolRequest {
                 tool_call_id,
                 name,
@@ -172,9 +166,8 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
     }
 
     // Terminal-state tx (ADR-0017 atomic recovery). A worker-emitted `error`
-    // takes precedence over the EOF-without-done path and carries its message.
-    // Park (ADR-0025) short-circuits this entirely: a parked Run already
-    // committed `status='parked'`, and park is NOT terminal.
+    // takes precedence over EOF-without-done and carries its message. Park
+    // (ADR-0025) short-circuits this entirely (it is non-terminal).
     if !parked && !cancelled_by_core {
         let now_ms = db::now_ms();
         let result = if let Some(ref message) = worker_error {
@@ -190,8 +183,8 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
         }
 
         // Publish the terminal Run Event ONLY AFTER this loop's terminal tx
-        // wins. If cancellation already committed, the guarded transition
-        // loses and `run/cancel` owns the terminal `cancelled` event.
+        // wins. If cancellation already committed, the guarded transition loses
+        // and `run/cancel` owns the terminal `cancelled` event.
         match result {
             Ok(moved) if moved.won() => match (&worker_error, saw_done) {
                 (Some(message), _) => {
@@ -208,11 +201,10 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
         }
     }
 
-    // Remove the hub entry after publishing the terminal event so attached
+    // Remove the hub after publishing the terminal event so attached
     // subscribers observe the channel close once they have drained the tail.
-    // `worker` is dropped when this function returns; the child is spawned
-    // `kill_on_drop`, so the Worker process is torn down then (the former
-    // explicit `child.wait()`) — no orphan outlives the Run.
+    // `worker` drops on return; the child is `kill_on_drop`, so no orphan
+    // outlives the Run.
     crate::hub::remove(&hubs, run_id);
 
     if cancelled_by_core {
@@ -229,10 +221,9 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
 }
 
 /// Handle one Tool Request (ADR-0018): enforce the Workflow's allowlist,
-/// persist the call, dispatch it to the Rust tool registry, persist the
-/// outcome, and return the `ToolOutcome` to write back to the Worker. A
-/// `tool_request` for a tool not in this Workflow's allowlist (or not
-/// registered) is rejected with an `err` outcome and persists nothing.
+/// persist the call, dispatch to the tool registry, persist the outcome, and
+/// return the `ToolOutcome`. A tool not allowlisted (or not registered) is
+/// rejected with an `err` outcome and persists nothing.
 async fn handle_tool_request(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -252,9 +243,9 @@ async fn handle_tool_request(
         };
     }
 
-    // Persist the pending call + its run_step before executing, so the timeline
-    // reflects an in-flight tool call (ADR-0017). A persistence failure is
-    // logged but does not abort the call.
+    // Persist the pending call before executing so the timeline reflects an
+    // in-flight tool call (ADR-0017). A persistence failure is logged, not
+    // fatal.
     let request_payload = params.to_string();
     if let Err(e) = db::persist_tool_call(
         pool,
@@ -296,10 +287,10 @@ async fn handle_tool_request(
     }
 }
 
-/// Park the Run on a Proposal tool request (ADR-0025). Persists the
-/// `tool_calls` row (`pending`), the sidecar `proposals` row, the guarded
-/// `running -> parked` move, and the `parked`/`proposal_pending` events in one
-/// transaction. Returns whether the terminal branch should be skipped.
+/// Park the Run on a Proposal tool request (ADR-0025). In one transaction:
+/// persist the pending `tool_calls` row, the sidecar `proposals` row, the
+/// guarded `running -> parked` move, and the `parked`/`proposal_pending`
+/// events. Returns whether the terminal branch should be skipped.
 async fn park_on_proposal(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -345,8 +336,7 @@ mod tests {
 
     use super::*;
 
-    /// A migrated in-memory tier-2 pool (mirrors `db::open`'s migration so the
-    /// `runs` CHECK constraints are in force).
+    /// A migrated in-memory tier-2 pool (so the `runs` CHECK constraints hold).
     async fn memory_pool() -> SqlitePool {
         let options = SqliteConnectOptions::new()
             .filename(":memory:")
@@ -375,9 +365,8 @@ mod tests {
         }
     }
 
-    /// Seed a Thread + initial Run (so an assistant `message_parts` row exists
-    /// at seq 0 for `run_loop` to append into). Returns `(run_id, thread_id,
-    /// assistant_message_id)`.
+    /// Seed a Thread + initial Run (so an assistant row at seq 0 exists for
+    /// `run_loop` to append into). Returns `(run_id, thread_id, assistant_id)`.
     async fn seed_run(pool: &SqlitePool, workflow: &Workflow) -> (Uuid, Uuid, Uuid) {
         let thread_id = Uuid::now_v7();
         let run_id = Uuid::now_v7();
@@ -399,10 +388,9 @@ mod tests {
         (run_id, thread_id, assistant_message_id)
     }
 
-    /// In-memory [`WorkerPort`]: yields scripted frames in order, records the
-    /// `tool_call_id` of every Tool Result the loop sends back, and never
-    /// spawns a process. `sent`/`shutdowns` are shared so the test can inspect
-    /// them after `run_loop` consumes the worker.
+    /// In-memory [`WorkerPort`]: yields scripted frames in order and records
+    /// the `tool_call_id` of every Tool Result sent back. `sent`/`shutdowns`
+    /// are shared so the test can inspect them after `run_loop` consumes it.
     struct ScriptedWorker {
         inbound: VecDeque<WorkerStdout>,
         sent: Arc<Mutex<Vec<String>>>,
@@ -436,12 +424,9 @@ mod tests {
         }
     }
 
-    /// A [`WorkerPort`] that flips the run's cancel signal right before it
-    /// yields the frame at index `cancel_before`, forcing the loop's post-recv
-    /// cancel check to trip on that frame — the live-cancel-mid-stream race
-    /// (`run/cancel` wins the guard while the Worker is still streaming). Wraps
-    /// a cloned [`RunHub`] so `recv` can call `cancel()` exactly as the real
-    /// handler does. Records shutdowns and sent tool_result ids like
+    /// A [`WorkerPort`] that flips the run's cancel signal just before yielding
+    /// the frame at index `cancel_before`, forcing the loop's post-recv cancel
+    /// check to trip — the live-cancel-mid-stream race. Otherwise behaves like
     /// [`ScriptedWorker`].
     struct CancelingWorker {
         inbound: VecDeque<WorkerStdout>,
@@ -634,8 +619,7 @@ mod tests {
         .await;
 
         assert_eq!(exit, Exit::Done);
-        // The loop dispatched the tool and wrote a Tool Result back, correlated
-        // by the same tool_call_id.
+        // Tool dispatched and a Tool Result written back, correlated by id.
         assert_eq!(sent.lock().unwrap().as_slice(), &["tc1".to_string()]);
     }
 
@@ -716,9 +700,8 @@ mod tests {
 
         assert_eq!(exit, Exit::Cancelled);
         assert_eq!(*shutdowns.lock().unwrap(), 1, "the loop shut the Worker down");
-        // The loop owns NO terminal tx on cancel — run/cancel committed it.
-        // Here no transition ran at all, so the run stays `running` (the test
-        // does not flip it; the point is the loop did not complete/error it).
+        // The loop owns no terminal tx on cancel; here no transition ran at
+        // all, so the run stays `running`.
         assert_eq!(
             db::run_status(&pool, run_id).await.unwrap().as_deref(),
             Some("running"),
@@ -738,8 +721,8 @@ mod tests {
         let (run_id, _t, amid) = seed_run(&pool, &wf).await;
         let (hubs, run_hub) = fixtures(run_id);
         let mut tail = run_hub.tx.subscribe();
-        // First delta streams; the cancel signal flips before the 2nd recv (the
-        // Done frame), so the loop's post-recv check trips and Done is dropped.
+        // First delta streams; cancel flips before the Done recv, so the
+        // post-recv check trips and Done is dropped.
         let (worker, _sent, shutdowns) = CancelingWorker::new(
             vec![
                 WorkerStdout::TextDelta {
@@ -776,10 +759,9 @@ mod tests {
 
     #[tokio::test]
     async fn loop_terminal_tx_loses_to_committed_cancel_and_publishes_nothing() {
-        // The cancel-LOSES-to-the-worker mirror: here the worker reaches `done`,
-        // but cancellation already committed `cancelled` in tier 2. The loop's
-        // guarded complete_run must lose (moved.won() == false) and publish NO
-        // Done, so run/cancel's `cancelled` stays the one terminal outcome.
+        // The worker reaches `done`, but cancellation already committed
+        // `cancelled`. The loop's guarded complete_run must lose and publish no
+        // Done, so `cancelled` stays the one terminal outcome.
         let pool = memory_pool().await;
         let wf = test_workflow(&[]);
         let (run_id, _t, amid) = seed_run(&pool, &wf).await;

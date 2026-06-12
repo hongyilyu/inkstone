@@ -20,13 +20,7 @@ interface LiveEntityRow {
 	readonly created_at: number;
 }
 
-/**
- * The Library's displayed items.
- *
- * Journal Entries, People, and Todos are read from Core when present. Preview
- * rows keep the rest of the Library populated until live data covers the whole
- * surface; live rows replace preview rows per kind.
- */
+/** The Library's displayed items — live Journal/People/Todo rows from Core, preview rows for the rest; live rows replace preview rows per kind. */
 export function useLibraryItems() {
 	const runtime = useRuntime();
 	return useQuery({
@@ -35,8 +29,7 @@ export function useLibraryItems() {
 		queryFn: async () => {
 			const program = Effect.gen(function* () {
 				const client = yield* WsClient;
-				// Independent reads — fetch concurrently (Effect.all is sequential
-				// by default, so set concurrency explicitly).
+				// Effect.all is sequential by default — set concurrency to fetch these reads concurrently.
 				const [journalEntries, todos, people] = yield* Effect.all(
 					[
 						client.listEntities("journal_entry"),
@@ -59,8 +52,7 @@ export function useLibraryItems() {
 			try {
 				rows = await runtime.runPromise(program);
 			} catch {
-				// Web preview runs without Core. Keep preview items in that case;
-				// strict live row validation stays below this read boundary.
+				// Web preview runs without Core — keep preview items; strict live row validation stays below this read boundary.
 				return previewItems;
 			}
 			const { journalEntries, todos, people } = rows;
@@ -142,19 +134,7 @@ interface TodoData {
 	due?: unknown;
 }
 
-/**
- * Map a live `entity/list` row to the Library `Todo` view model. The view
- * model carries fields the preview fixture invented for richer rendering
- * (`recency`, `createdAt`, `dueInDays`, …) that the live entity store does not
- * yet have; we derive the few that matter and default the rest minimally:
- *  - `title` / `done` / `due` come straight from `data`.
- *  - `recency` = `created_at` (ms-epoch) so newest sorts first, matching the
- *    preview fixture's "higher = more recent" convention.
- *  - `createdAt` = the localized date of `created_at` (a human label).
- *  - `dueInDays`, `projectId`, `owner`, `note`, `needsReview`, `capturedFrom` are
- *    left undefined — derived relationship/recency metadata the live store does
- *    not produce this slice.
- */
+/** Map a live `entity/list` row to the Library `Todo` view model — see docs/design/web-lib.md. */
 function toLibraryTodo(row: LiveEntityRow): Todo {
 	const data = (row.data ?? {}) as TodoData;
 	return {
@@ -174,14 +154,7 @@ interface PersonData {
 	note?: unknown;
 }
 
-/**
- * Map a live `entity/list` row to the Library `Person` view model. Mirrors
- * {@link toLibraryTodo}: `name` / `note` come straight from `data`; `recency`
- * is `created_at` (newest sorts first) and `createdAt` its localized date. The
- * preview-only relationship fields (`role`, `relationship`, `email`, `projectIds`,
- * `needsReview`, `capturedFrom`) are left undefined — the live store does not produce
- * them this slice (project↔person relations are out of scope).
- */
+/** Map a live `entity/list` row to the Library `Person` view model — see docs/design/web-lib.md. */
 function toLibraryPerson(row: LiveEntityRow): Person {
 	const data = (row.data ?? {}) as PersonData;
 	return {

@@ -1,19 +1,10 @@
-//! Slice 1 RED test: `run/post_message` is pure-subscribe and
-//! `run/subscribe(run_id)` is snapshot-then-tail (ADR-0022).
+//! `run/subscribe(run_id)` is snapshot-then-tail (ADR-0022): the cumulative
+//! `text_delta` snapshot, then live tail deltas, then a terminal `done`, with
+//! `post_message` carrying no events on its frame.
 //!
-//! After `run/post_message` returns `{run_id}` — with NO Run Events on the
-//! response frame — a subsequent `run/subscribe(run_id)` receives the
-//! assistant text as a cumulative `text_delta` snapshot, then the live tail
-//! deltas, then a terminal `done`. Worker events flow through a per-run hub,
-//! not the originating connection's channel.
-//!
-//! Determinism comes from the slice-0 slow-worker fixture: with
-//! `INKSTONE_FIXTURE_CHUNKS=2` it splits `echo: hello` into `"echo: "` +
-//! `"hello"`, emits chunk 1, then BLOCKS on a test-controlled gate file
-//! before emitting chunk 2 + `done`. The test trips the gate after it has
-//! subscribed, so the snapshot/tail boundary is exercised under control —
-//! `snapshot_cumulative_text ++ concat(tail incremental deltas)` must equal
-//! `echo: hello` with no loss or duplication (the per-run gate's job).
+//! The slow-worker fixture (`INKSTONE_FIXTURE_CHUNKS=2`) emits chunk 1 then
+//! blocks on a gate file before chunk 2 + `done`. The test trips the gate
+//! after subscribing, so `snapshot ++ tail` must equal `echo: hello` exactly.
 
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
@@ -39,9 +30,8 @@ fn subscribe_malformed_run_id_is_invalid_params() {
     rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // A malformed run_id. Before ADR-0029 subscribe framed this as an
-        // internal error (-32603); typed-at-decode (C2) makes it the same
-        // invalid_params (-32602) every other method returns.
+        // A malformed run_id must be invalid_params (-32602), not an internal
+        // error, like every other method (ADR-0029).
         let sub =
             r#"{"jsonrpc":"2.0","id":9,"method":"run/subscribe","params":{"run_id":"not-a-uuid"}}"#;
         ws.send(Message::Text(sub.into()))
@@ -82,7 +72,7 @@ fn subscribe_snapshot_then_tail() {
     rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // ---- post_message: returns {run_id}, NO events on the frame ----
+        // post_message: returns {run_id}, NO events on the frame.
         let post = r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hello"}}"#;
         ws.send(Message::Text(post.into()))
             .await
@@ -93,7 +83,7 @@ fn subscribe_snapshot_then_tail() {
             .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {response_body}"));
         assert_eq!(response["jsonrpc"], serde_json::json!("2.0"), "jsonrpc");
         assert_eq!(response["id"], serde_json::json!(1), "echoed id");
-        // The response frame carries ONLY the result — it is NOT a run/event.
+        // The response frame carries ONLY the result, not a run/event.
         assert!(
             response.get("method").is_none(),
             "post_message response has no method (not a notification) — body: {response_body}"
@@ -113,7 +103,7 @@ fn subscribe_snapshot_then_tail() {
             "run_id is UUIDv7"
         );
 
-        // ---- subscribe: response, then snapshot text_delta, then tail ----
+        // subscribe: response, then snapshot text_delta, then tail.
         let subscribe = format!(
             r#"{{"jsonrpc":"2.0","id":2,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
         );
@@ -121,7 +111,7 @@ fn subscribe_snapshot_then_tail() {
             .await
             .expect("send run/subscribe frame");
 
-        // First frame back is the subscribe RESPONSE (resolves the request).
+        // First frame back is the subscribe RESPONSE.
         let sub_resp_body = next_text(&mut ws).await;
         let sub_resp: serde_json::Value = serde_json::from_str(&sub_resp_body)
             .unwrap_or_else(|e| panic!("subscribe response is JSON: {e} — body: {sub_resp_body}"));
@@ -131,9 +121,8 @@ fn subscribe_snapshot_then_tail() {
             "subscribe response is a response, not a notification — body: {sub_resp_body}"
         );
 
-        // Next frame is the SNAPSHOT: a cumulative text_delta. Its content may
-        // be "" or "echo: " depending on whether the worker persisted chunk 1
-        // before the subscribe acquired the gate — do NOT hard-assert it.
+        // The SNAPSHOT: a cumulative text_delta. Its content may be "" or
+        // "echo: " depending on the gate race — do NOT hard-assert it.
         let snapshot_body = next_text(&mut ws).await;
         let snapshot: serde_json::Value = serde_json::from_str(&snapshot_body)
             .unwrap_or_else(|e| panic!("snapshot is JSON: {e} — body: {snapshot_body}"));
@@ -157,13 +146,11 @@ fn subscribe_snapshot_then_tail() {
             .unwrap_or_else(|| panic!("snapshot text_delta carries a string — body: {snapshot_body}"))
             .to_string();
 
-        // ---- trip the gate so the worker emits chunk 2 + done ----
+        // Trip the gate so the worker emits chunk 2 + done.
         std::fs::write(&gate_path, b"go").expect("create gate file");
 
-        // ---- read the tail: incremental text_deltas then a terminal done ----
-        // The loop only exits via the `done` arm's `break`; every other path
-        // panics, so reaching the line after the loop proves the terminal frame
-        // was a `done`.
+        // Read the tail. The loop only exits via the `done` arm's `break`, so
+        // reaching the line after it proves the terminal frame was a `done`.
         loop {
             let body = next_text(&mut ws).await;
             let v: serde_json::Value = serde_json::from_str(&body)
@@ -195,34 +182,21 @@ fn subscribe_snapshot_then_tail() {
     });
 }
 
-/// Regression (iteration 2): a `run/subscribe` that attaches at or after a
-/// Run's terminal `done` MUST still receive a terminal `done` and never hang.
+/// Regression: a `run/subscribe` that attaches at or after a Run's terminal
+/// `done` must still receive a `done` and never hang. The bug was a subscribe
+/// landing after `Done` was broadcast but before the hub entry was removed: it
+/// took the streaming branch and `tx.subscribe()`d past the (non-replayed)
+/// `Done`, blocking forever. Fix: the forwarder synthesizes a `done` on channel
+/// close if it never forwarded one.
 ///
-/// The bug: the Worker publishes `Done` to the broadcast channel under the
-/// gate, releases the gate, runs the terminal SQLite tx (multi-ms), and only
-/// THEN removes the hub entry. A subscribe landing in that window takes the
-/// streaming (`Some`) branch, calls `tx.subscribe()` — positioned AFTER the
-/// already-broadcast `Done`, which `tokio::broadcast` does not replay — and
-/// the forwarder would block forever, never delivering `done`. The fix:
-/// `spawn_tail_forwarder` synthesizes a `done` on channel close if it never
-/// forwarded one.
-///
-/// Determinism/bounding: the first subscribe drains to `done`, proving the
-/// Worker published it. A SECOND WS connection (pre-opened so there is zero
-/// setup latency) then subscribes to the SAME run_id the instant the first
-/// `done` is observed — landing at or just after terminal, which is exactly
-/// the race window. EVERY frame read is bounded by a timeout, so a
-/// regression (the hang) fails fast as a timeout rather than blocking CI.
-/// The late subscriber must deliver a snapshot `text_delta` (cumulative
-/// `echo: hello`) and a terminal `done`; this holds whether it lands in the
-/// `Some`-branch-after-done window (synthesize-on-close) or the already-
-/// removed `None` branch (which synthesizes `done` directly).
+/// Bounding: A drains to `done` (proving it was published), then a pre-opened B
+/// subscribes the instant that `done` is observed — landing in the race window.
+/// Every read is timeout-bounded, so a regression fails fast as a timeout.
 #[test]
 fn late_subscribe_after_terminal_still_gets_done() {
     let workspace = Workspace::new();
-    // chunks=1: the fixture emits the sole `echo: hello` chunk, then blocks on
-    // the gate, then emits `done`. Tripping the gate releases `done`, giving
-    // the test a controlled "Worker has now published done" instant.
+    // chunks=1: emit the sole chunk, block on the gate, then emit `done` —
+    // tripping the gate gives a controlled "done published" instant.
     let gate_path = workspace.path().join("gate");
 
     let core = workspace
@@ -238,12 +212,11 @@ fn late_subscribe_after_terminal_still_gets_done() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        // Connection A: post + first subscribe, drained to done.
+        // A: post + first subscribe, drained to done.
         let mut ws_a = core.connect().await;
 
-        // Connection B: pre-open so there is no setup latency between seeing
-        // the first `done` and issuing the late subscribe (maximizes the
-        // chance of landing in the Some-branch-after-done race window).
+        // B: pre-open so there is no setup latency before the late subscribe,
+        // maximizing the chance of landing in the race window.
         let mut ws_b = core.connect().await;
 
         let post = r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hello"}}"#;
@@ -258,9 +231,7 @@ fn late_subscribe_after_terminal_still_gets_done() {
             .unwrap_or_else(|| panic!("result.run_id is a string — body: {response_body}"))
             .to_string();
 
-        // First subscribe on A. With chunks=1 the fixture emits the sole
-        // chunk, then blocks on the gate before `done`; trip the gate so the
-        // Worker publishes `done`.
+        // First subscribe on A, then trip the gate so the Worker publishes `done`.
         let subscribe_a = format!(
             r#"{{"jsonrpc":"2.0","id":2,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
         );
@@ -282,10 +253,9 @@ fn late_subscribe_after_terminal_still_gets_done() {
             }
         }
 
-        // The INSTANT the first done is observed, issue the late subscribe on
-        // B. The Worker is now running its terminal tx (and has not yet
-        // removed the hub), so B's subscribe may take the Some branch and
-        // attach AFTER the broadcast `Done` — the exact race the fix closes.
+        // The instant A's done is observed, issue B's late subscribe: the
+        // Worker is mid terminal tx (hub not yet removed), so B may attach
+        // AFTER the broadcast `Done` — the exact race the fix closes.
         let subscribe_b = format!(
             r#"{{"jsonrpc":"2.0","id":3,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
         );
@@ -299,11 +269,9 @@ fn late_subscribe_after_terminal_still_gets_done() {
             .unwrap_or_else(|e| panic!("B subscribe response is JSON: {e} — body: {sub_b_resp_body}"));
         assert_eq!(sub_b_resp["id"], serde_json::json!(3), "B subscribe response id");
 
-        // B MUST receive a snapshot text_delta then a terminal done within the
-        // bounded timeout — never hang. (Before the fix, a Some-branch B
-        // hangs here and the timeout fails the test.) The loop only exits
-        // via the `done` arm's `break`; reaching the line after it proves a
-        // terminal `done` was delivered.
+        // B must receive a snapshot text_delta then a terminal done within the
+        // timeout, never hang. The loop only exits via the `done` arm's
+        // `break`, so reaching the line after it proves a `done` was delivered.
         let mut assembled = String::new();
         loop {
             let body = next_text(&mut ws_b).await;

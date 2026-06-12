@@ -26,9 +26,9 @@ test("loads the real SPA against real Core with a live WebSocket", async ({
 	// The thread/list read resolved over the same-origin WS → empty-state shows
 	// (a fresh Workspace has no threads). This only appears once the query
 	// settles, so it doubles as "the socket connected and answered".
-	await expect(
-		chat.sidebar().getByText(/no threads yet/i),
-	).toBeVisible({ timeout: 15_000 });
+	await expect(chat.sidebar().getByText(/no threads yet/i)).toBeVisible({
+		timeout: 15_000,
+	});
 
 	expect(errors, `page errors: ${errors.join("; ")}`).toEqual([]);
 });

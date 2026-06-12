@@ -18,9 +18,7 @@ const die = (): Effect.Effect<never, never> => Effect.die("unused");
 const dieStream = (): Stream.Stream<never, WsError> =>
 	Stream.fromEffect(Effect.die("unused")) as Stream.Stream<never, WsError>;
 
-// Core may be offline; the palette degrades to Library-items only. threadList
-// just returns an empty set so the (enabled-on-open) query resolves cleanly.
-// People are read live now, so seed Alice to keep the command result stable.
+// Stub: empty threadList so the open-triggered query resolves; Alice seeded as a stable live-People result.
 const stub = WsClient.of({
 	threadCreate: die,
 	postMessage: die,
@@ -65,9 +63,7 @@ function renderApp() {
 	return router;
 }
 
-// Real ⌘K: userEvent faithfully holds Meta while pressing k, so the window
-// keydown listener sees metaKey set (jsdom ignores the modifier on a hand-built
-// KeyboardEvent init).
+// userEvent holds Meta while pressing k so the keydown listener sees metaKey (jsdom drops it on hand-built events).
 const pressCmdK = () => userEvent.keyboard("{Meta>}k{/Meta}");
 const openPalette = () => act(() => openCommand());
 const PLACEHOLDER = /search threads, people, projects/i;
@@ -85,8 +81,7 @@ describe("CommandPalette (⌘K)", () => {
 		const input = await screen.findByPlaceholderText(PLACEHOLDER);
 		await userEvent.type(input, "alice");
 
-		// Scope to the palette's listbox: "Alice Whitman" and "People" also appear
-		// on the page behind the dialog.
+		// Scope to the palette listbox: these labels also appear on the page behind the dialog.
 		const results = screen.getByRole("listbox", { name: /results/i });
 		expect(
 			await within(results).findByText("Alice Whitman"),

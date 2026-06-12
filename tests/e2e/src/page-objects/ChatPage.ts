@@ -1,11 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 
-/**
- * Page object over the rendered chat surface (ADR-0019: tests assert through
- * the same DOM a user touches; selectors live here, not in specs). Methods are
- * behavior-level — `send`, `waitForAssistantText`, `newChat`, `openThread` —
- * so the specs read as user flows.
- */
+/** Page object over the rendered chat surface (ADR-0019): selectors live here so specs read as user flows. */
 export class ChatPage {
 	constructor(
 		readonly page: Page,
@@ -60,21 +55,21 @@ export class ChatPage {
 
 	/** Assert no assistant bubble yet contains `text` (e.g. the gated tail). */
 	async expectNoAssistantText(text: string): Promise<void> {
-		await expect(
-			this.assistantBubbles().filter({ hasText: text }),
-		).toHaveCount(0);
+		await expect(this.assistantBubbles().filter({ hasText: text })).toHaveCount(
+			0,
+		);
 	}
 
 	/** Click "New Chat" to clear focus so the next send mints a fresh thread. */
 	async newChat(): Promise<void> {
-		await this.sidebar().getByRole("button", { name: /new chat/i }).click();
+		await this.sidebar()
+			.getByRole("button", { name: /new chat/i })
+			.click();
 	}
 
 	/** Open the thread whose sidebar row title matches `title`. */
 	async openThread(title: string | RegExp): Promise<void> {
-		// Each row has a select button (named by title) AND a copy-id button
-		// (named "Copy thread id for …"). Scope to the row's first button (the
-		// selector) so the copy button never causes a strict-mode ambiguity.
+		// First button is the row selector; avoids strict-mode ambiguity with the copy-id button.
 		await this.sidebar()
 			.locator("ul li")
 			.filter({ hasText: title })
@@ -97,8 +92,7 @@ export class ChatPage {
 
 	/** Number of thread rows currently listed in the sidebar. */
 	async threadCount(): Promise<number> {
-		// One copy-id button per real thread row (the empty-state <li> has none),
-		// so this counts threads without double-counting the per-row buttons.
+		// One copy-id button per real thread row (empty-state <li> has none), so this counts threads without double-counting.
 		return this.sidebar()
 			.locator('ul button[aria-label^="Copy thread id"]')
 			.count();

@@ -3,20 +3,9 @@ import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { CoreToolDescriptor } from "@inkstone/protocol";
 
-/**
- * Worker-side tool proxies (ADR-0018). Tools are implemented once in Rust
- * (Core); the Worker builds thin `pi-agent-core` `AgentTool` proxies whose
- * `execute` round-trips a `tool_request`/`tool_result` to Core over stdio.
- * There is zero per-tool code here — the factory is generic over the
- * descriptors Core ships in the manifest.
- */
+// Worker-side tool proxies: thin AgentTool wrappers round-tripping to Core over stdio — see docs/design/worker.md (ADR-0018)
 
-/**
- * The `ok` outcome Core sends in a `tool_result`. Mirrors the Rust
- * `AgentToolResult` wire shape: `content` is required; `details`/`terminate`
- * are omitted when absent (Rust `skip_serializing_if`). Distinct from
- * `pi-agent-core`'s `AgentToolResult<T>`, which requires `details`.
- */
+/** The `ok` outcome Core sends in a `tool_result`; mirrors the Rust `AgentToolResult` wire shape. */
 export interface ToolResultOk {
 	content: TextContent[];
 	details?: unknown;
@@ -28,10 +17,7 @@ export type ToolCallResponse =
 	| { ok: ToolResultOk }
 	| { err: { code: string; message: string } };
 
-/**
- * Round-trip one tool call to Core. Production (cli.ts) writes a `tool_request`
- * to stdout and awaits the matching `tool_result` on stdin; tests stub it.
- */
+/** Round-trip one tool call to Core (stdout `tool_request` / stdin `tool_result`); tests stub it. */
 export type CallTool = (
 	toolCallId: string,
 	name: string,
@@ -56,14 +42,7 @@ function captureToolCall(
 	);
 }
 
-/**
- * Build `AgentTool` proxies from Core's tool descriptors. Each proxy carries
- * the descriptor's metadata and a `json_schema` (TypeBox's `TSchema` is
- * structurally a JSON Schema with a TS-only brand, ADR-0018:102, so the
- * Core-supplied schema satisfies it at runtime). `execute` delegates to
- * `callTool`; on an `err` outcome it THROWS — `pi-agent-core` signals a tool
- * error by `execute` throwing and converts it into an error tool result.
- */
+/** Build `AgentTool` proxies from Core's tool descriptors; `execute` delegates to `callTool` and throws on `err` (pi's tool-error signal). */
 export function makeProxyTools(
 	descriptors: readonly CoreToolDescriptor[],
 	callTool: CallTool,

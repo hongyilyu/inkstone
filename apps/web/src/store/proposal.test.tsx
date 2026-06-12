@@ -40,12 +40,7 @@ const JOURNAL_ENTRY_REVIEW_CONTEXT = {
 	},
 } satisfies NonNullable<ProposalGetResult["review_context"]>;
 
-/**
- * A stub WsClient driven by in-memory queues: one for the global
- * `proposalNotifications()` stream and one per run for `subscribeRun`. The
- * proposal/* request methods resolve from fixtures so the bridge's
- * fetch-on-pending and decide flows can be exercised offline.
- */
+/** Stub WsClient driven by in-memory queues so proposal flows run offline. */
 function makeStubRuntime(opts: {
 	proposalQueue: Queue.Queue<ProposalNotification>;
 	proposalGet?: (runId: RunId) => Effect.Effect<ProposalGetResult, WsError>;
@@ -57,9 +52,7 @@ function makeStubRuntime(opts: {
 	onSubscribe?: () => void;
 }) {
 	const unused = Effect.die("not exercised");
-	// Each `subscribeRun` call gets the next queue in `runQueues` (a fresh
-	// stream segment, as production does — a new subscribe is a new hub), or
-	// falls back to the single `runQueue` / an empty stream.
+	// Each subscribeRun gets the next queue in runQueues (a fresh hub per subscribe).
 	let subscribeIdx = 0;
 	const stub = WsClient.of({
 		threadCreate: () => unused,
@@ -210,7 +203,6 @@ describe("proposal stream + decide", () => {
 		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime({ proposalQueue, runQueue });
 
-		// Seed a pending proposal first.
 		startProposalStream(runtime);
 		Queue.unsafeOffer(proposalQueue, {
 			kind: "pending",
@@ -231,9 +223,7 @@ describe("proposal stream + decide", () => {
 			Queue.unbounded<ProposalNotification>(),
 		);
 		const runQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
-		// The first decide succeeds; a second (the double-click) would hit Core
-		// after the Run un-parked → `proposal_not_pending` → fail. The store
-		// guard must stop the second call entirely.
+		// Second decide (double-click) would fail proposal_not_pending; the store guard must stop it.
 		let decideCalls = 0;
 		const runtime = makeStubRuntime({
 			proposalQueue,
@@ -257,8 +247,7 @@ describe("proposal stream + decide", () => {
 		});
 		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
 
-		// Fire twice back-to-back (the double-click). The second observes the
-		// optimistic `deciding` status set by the first and short-circuits.
+		// Second observes the optimistic `deciding` status from the first and short-circuits.
 		const first = decideProposal(runtime, "run-1", "accept");
 		const second = decideProposal(runtime, "run-1", "accept");
 		await Promise.all([first, second]);
@@ -283,9 +272,7 @@ describe("proposal stream + decide", () => {
 			},
 		});
 
-		// Seed the assistant turn that holds run-1, then start the ORIGINAL
-		// parked stream (which never gets a terminal event, so its fiber stays
-		// blocked on the run queue — the stale fiber M2 is about).
+		// Seed run-1's turn + start the original parked stream (no terminal event → stale fiber, M2).
 		const assistantId = nextMessageId();
 		seedAssistantMessage("thread-1", {
 			id: assistantId,
@@ -307,13 +294,10 @@ describe("proposal stream + decide", () => {
 		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
 
 		await decideProposal(runtime, "run-1", "accept");
-		// The decide re-subscribed exactly once more (the original fiber was
-		// interrupted, not abandoned).
+		// Decide re-subscribed exactly once more (original fiber interrupted, not abandoned).
 		await waitFor(() => subscribeCount === 2);
 
-		// Stream a MULTI-chunk resume tail. With a single consumer the deltas
-		// concatenate cleanly; two consumers would split them and corrupt the
-		// text. The first delta is the cumulative snapshot (SET), the rest APPEND.
+		// Single-consumer resume tail: deltas concatenate cleanly; two consumers would split them.
 		Queue.unsafeOffer(runQueue, { kind: "text_delta", delta: "Done" });
 		Queue.unsafeOffer(runQueue, { kind: "text_delta", delta: ". " });
 		Queue.unsafeOffer(runQueue, { kind: "text_delta", delta: "added it." });
@@ -338,10 +322,7 @@ describe("proposal stream + decide", () => {
 		const proposalQueue = Effect.runSync(
 			Queue.unbounded<ProposalNotification>(),
 		);
-		// Two distinct stream segments: the original parked subscribe and the
-		// resume re-subscribe each get a fresh queue (production opens a new hub
-		// per subscribe, so the resume's first delta is again the cumulative
-		// snapshot).
+		// Distinct queues per subscribe (fresh hub each time) — see docs/design/web-store-tests.md
 		const parkedQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const resumeQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime({
@@ -349,7 +330,6 @@ describe("proposal stream + decide", () => {
 			runQueues: [parkedQueue, resumeQueue],
 		});
 
-		// Seed the assistant turn for run-1 and start the ORIGINAL parked stream.
 		const assistantId = nextMessageId();
 		seedAssistantMessage("thread-1", {
 			id: assistantId,
@@ -361,11 +341,7 @@ describe("proposal stream + decide", () => {
 		attachRun("thread-1", assistantId, "run-1");
 		startRunStream(runtime, "thread-1", "run-1");
 
-		// The ORIGINAL subscribe streams the pre-park prose. Its FIRST delta is
-		// the cumulative snapshot (SET), marking `snapshotApplied[run-1] = true`
-		// — exactly what production does on every first subscribe. The model
-		// streams prose, then parks on `propose_workspace_mutation` (NO terminal event, so
-		// the fiber stays blocked — this is the parked state).
+		// Original subscribe: first delta is the cumulative snapshot (SET), then parks (no terminal).
 		Queue.unsafeOffer(parkedQueue, {
 			kind: "text_delta",
 			delta: "Let me check the other thread. ",
@@ -377,9 +353,7 @@ describe("proposal stream + decide", () => {
 			return msg?.text === "Let me check the other thread. ";
 		});
 
-		// Park + decide → resume re-subscribe. The resume snapshot RE-INCLUDES
-		// the pre-park prose (the cumulative text Core reconstructed) and then
-		// appends the closing line.
+		// Park + decide → resume re-subscribe whose snapshot re-includes the pre-park prose.
 		startProposalStream(runtime);
 		Queue.unsafeOffer(proposalQueue, {
 			kind: "pending",
@@ -390,9 +364,7 @@ describe("proposal stream + decide", () => {
 
 		await decideProposal(runtime, "run-1", "accept");
 
-		// The resume tail (on the FRESH resume queue): the first delta is the
-		// cumulative snapshot (re-including the prefix) → must SET, not append.
-		// The remaining deltas APPEND.
+		// Resume tail: first delta is the cumulative snapshot → SET (not append); rest APPEND.
 		Queue.unsafeOffer(resumeQueue, {
 			kind: "text_delta",
 			delta: "Let me check the other thread. ",
@@ -413,9 +385,7 @@ describe("proposal stream + decide", () => {
 		const msg = getChatState().threads["thread-1"]?.messages.find(
 			(m) => m.run_id === "run-1",
 		);
-		// SET (correct): the snapshot replaced the on-screen prefix.
-		// Append (the M1 bug): "Let me check the other thread. Let me check the
-		// other thread. Done — added it." (duplicated prefix).
+		// SET replaces the on-screen prefix; the M1 bug appended → duplicated prefix.
 		expect(msg?.text).toBe("Let me check the other thread. Done — added it.");
 
 		await runtime.dispose();

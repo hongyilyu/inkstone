@@ -78,14 +78,17 @@ test("browser WebSocket sees running cancel accepted then cancelled", async ({
 
 					if (frame.id === 1) {
 						runId = frame.result?.run_id ?? "";
-						if (runId.length === 0) throw new Error("thread/create had no run_id");
+						if (runId.length === 0)
+							throw new Error("thread/create had no run_id");
 						send(2, "run/subscribe", { run_id: runId });
 						return;
 					}
 
 					if (frame.id === 2) {
 						if (frame.result?.status !== "running") {
-							throw new Error(`expected running subscribe status: ${message.data}`);
+							throw new Error(
+								`expected running subscribe status: ${message.data}`,
+							);
 						}
 						return;
 					}
@@ -113,7 +116,9 @@ test("browser WebSocket sees running cancel accepted then cancelled", async ({
 					}
 					if (event?.kind === "cancelled") {
 						if (!cancelAccepted) {
-							throw new Error("cancelled event arrived before accepted response");
+							throw new Error(
+								"cancelled event arrived before accepted response",
+							);
 						}
 						cancelled = true;
 						setTimeout(() => {
@@ -136,7 +141,7 @@ test("browser WebSocket sees running cancel accepted then cancelled", async ({
 	expect(result.outcome).toBe("accepted");
 	expect(result.terminal).toBe("cancelled");
 	expect(result.firstDelta.length).toBeGreaterThan(0);
-	expect(result.frames.some((frame) => frame.params?.event?.kind === "done")).toBe(
-		false,
-	);
+	expect(
+		result.frames.some((frame) => frame.params?.event?.kind === "done"),
+	).toBe(false);
 });

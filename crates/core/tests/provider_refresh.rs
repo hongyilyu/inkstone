@@ -1,13 +1,11 @@
-//! Slice 7 (real-worker-codex): Core-orchestrated, single-flight token
-//! refresh (ADR-0023). When the stored `openai-codex` token is expired, Core
-//! refreshes it exactly once even under concurrent Runs (global lock +
-//! double-checked expiry), persists the rotated credential (0600), and
-//! injects the fresh access token into each Run's manifest.
+//! Core-orchestrated single-flight token refresh (ADR-0023): when the stored
+//! `openai-codex` token is expired, Core refreshes it exactly once even under
+//! concurrent Runs (global lock + double-checked expiry), persists the rotated
+//! credential (0600), and injects the fresh access token into each manifest.
 //!
-//! Offline via two stubs: `refresh-helper.ts` (counts invocations, echoes a
-//! rotated token) stands in for the Provider Helper; `manifest-echo.ts`
-//! stands in for the Worker and streams back the `access_token` Core put in
-//! the manifest. No real OpenAI contact.
+//! Offline via two stubs: `refresh-helper.ts` (Provider Helper, counts
+//! invocations) and `manifest-echo.ts` (Worker, streams back the manifest's
+//! `access_token`).
 
 use std::path::Path;
 
@@ -49,8 +47,8 @@ fn write_credential(dir: &Path, access: &str, refresh: &str, expires: i64) {
     .expect("write credential");
 }
 
-/// thread/create on a fresh connection; return (run_id, ws) — the caller
-/// drains the stream. Using one connection per run lets the two runs race.
+/// thread/create on a fresh connection, returning the run_id. One connection
+/// per run lets the two runs race.
 async fn create_run(ws: &mut Ws, prompt: &str, id: u64) -> String {
     let req = format!(
         r#"{{"jsonrpc":"2.0","id":{id},"method":"thread/create","params":{{"prompt":"{prompt}"}}}}"#
@@ -83,10 +81,9 @@ async fn drain_to_token(ws: &mut Ws, run_id: &str) -> String {
     text
 }
 
-/// Count Provider-Helper invocations by counting marker files in the dir.
-/// File-counting is race-free: each helper invocation writes a UNIQUE file,
-/// so two concurrent refreshes (a single-flight bug) reliably yield 2 — a
-/// shared counter's read-modify-write could lose an update and mask the bug.
+/// Count Provider-Helper invocations via marker files. Each invocation writes a
+/// unique file, so this is race-free (a shared counter could lose an update and
+/// mask a single-flight bug).
 fn refresh_count(dir: &Path) -> usize {
     match std::fs::read_dir(dir) {
         Ok(entries) => entries.filter(|e| e.is_ok()).count(),
@@ -123,8 +120,8 @@ fn expired_token_refreshes_once_under_contention() {
         .expect("tokio runtime builds");
 
     let (t1, t2) = rt.block_on(async {
-        // Two concurrent runs, each on its own connection, both observing the
-        // expired token at nearly the same instant.
+        // Two concurrent runs, each on its own connection, observing the expired
+        // token at nearly the same instant.
         let mut wsa = core.connect().await;
         let mut wsb = core.connect().await;
         let run_a = create_run(&mut wsa, "one", 1).await;

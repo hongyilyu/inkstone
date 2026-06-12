@@ -1,11 +1,8 @@
-//! Dispatcher seam (per ADR-0011) + effective-Workflow resolution (ADR-0024).
+//! Dispatcher seam (ADR-0011) + effective-Workflow resolution (ADR-0024).
 //!
-//! [`dispatch`] picks the base Workflow for a Run (a one-liner today — the
-//! single default Workflow). [`resolve_effective_workflow`] is the new
-//! post-dispatch step: it overrides the base Workflow's `model` and
-//! `thinking_level` from the user's persisted settings, producing the owned
-//! Workflow the Run actually executes. The Dispatcher stays the seam that
-//! answers "which Workflow?"; resolution answers "with which model/effort?".
+//! [`dispatch`] answers "which Workflow?" (the single default today).
+//! [`resolve_effective_workflow`] answers "with which model/effort?", overriding
+//! the base Workflow's `model`/`thinking_level` from the user's settings.
 
 use sqlx::SqlitePool;
 
@@ -23,12 +20,9 @@ pub fn dispatch(_thread_id: uuid::Uuid, _prompt: &str) -> &'static Workflow {
 ///   - model:  user setting → `models::default_model(provider)` → TOML `model`
 ///   - effort: user setting → TOML `thinking_level` → `settings::DEFAULT_EFFORT`
 ///
-/// The setting keys/defaults live in `crate::settings` (the registry) and the
-/// per-provider default model in `crate::models` (the catalog domain); this
-/// function owns only the fallback ordering. The returned Workflow always
-/// carries a concrete `model`/`thinking_level` (the wire manifest requires
-/// them). A settings read error is treated as "unset" so a transient DB hiccup
-/// falls back to the default rather than failing the Run here.
+/// The returned Workflow always carries a concrete `model`/`thinking_level` (the
+/// wire manifest requires them). A settings read error is treated as "unset" so
+/// a transient DB hiccup falls back to the default rather than failing the Run.
 pub async fn resolve_effective_workflow(pool: &SqlitePool, base: &Workflow) -> Workflow {
     let model_setting = settings::preferred_model(pool, &base.name)
         .await
