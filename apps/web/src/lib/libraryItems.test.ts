@@ -192,24 +192,20 @@ describe("library item helpers", () => {
 			);
 		});
 
-		it("treats on_hold as in-focus, excludes completed/dropped", () => {
-			const onHold: Project = {
-				id: "p_hold",
-				kind: "project",
-				name: "Held",
-				status: "on_hold",
-				recency: 5,
-				createdAt: "fixture",
+		it("treats on_hold as in-focus, excludes completed and dropped", () => {
+			const onHold = {
+				...mkProject("p_hold", "Held"),
+				status: "on_hold" as const,
 			};
-			const completed: Project = {
-				id: "p_done",
-				kind: "project",
-				name: "Done",
-				status: "completed",
-				recency: 4,
-				createdAt: "fixture",
+			const completed = {
+				...mkProject("p_done", "Done"),
+				status: "completed" as const,
 			};
-			const focus = activeProjectItems([onHold, completed]);
+			const dropped = {
+				...mkProject("p_dropped", "Dropped"),
+				status: "dropped" as const,
+			};
+			const focus = activeProjectItems([onHold, completed, dropped]);
 			expect(focus.map((p) => p.id)).toEqual(["p_hold"]);
 		});
 	});
@@ -279,7 +275,11 @@ describe("library item helpers", () => {
 				status: "completed",
 				personRefs: [{ personId: "alice", role: "waiting_on" }],
 			});
-			expect(waitingTodos([done])).toEqual([]);
+			const dropped = mkTodo("x", {
+				status: "dropped",
+				personRefs: [{ personId: "alice", role: "waiting_on" }],
+			});
+			expect(waitingTodos([done, dropped])).toEqual([]);
 		});
 
 		it("does not drop a deferred waiting todo (defer_at is availability only)", () => {

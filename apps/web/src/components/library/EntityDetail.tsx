@@ -282,7 +282,12 @@ function PersonBody({
 }) {
 	const projects = projectsForPerson(allEntities, person);
 	const tasks = todosForPerson(allEntities, person);
-	const waiting = todosForPerson(allEntities, person, "waiting_on");
+	// "Waiting on" means actively waiting (ADR-0031: is_waiting requires
+	// status === "active"). A resolved waiting_on todo is historical and falls
+	// through to "Tasks" below, not this follow-up section.
+	const waiting = todosForPerson(allEntities, person, "waiting_on").filter(
+		(t) => t.status === "active",
+	);
 	const waitingIds = new Set(waiting.map((t) => t.id));
 	const otherTasks = tasks.filter((t) => !waitingIds.has(t.id));
 	return (
@@ -375,10 +380,12 @@ function ProjectBody({
 					<p className="text-pretty">{project.note}</p>
 				</Field>
 			) : null}
-			{project.nextReviewAt ? (
+			{project.nextReviewAt || project.lastReviewedAt ? (
 				<Field label="Review">
 					<p className="text-pretty">
-						Next review {project.nextReviewAt.slice(0, 10)}
+						{project.nextReviewAt
+							? `Next review ${project.nextReviewAt.slice(0, 10)}`
+							: "No next review scheduled"}
 						{project.lastReviewedAt
 							? ` · last reviewed ${project.lastReviewedAt.slice(0, 10)}`
 							: ""}

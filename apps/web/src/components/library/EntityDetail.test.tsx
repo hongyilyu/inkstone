@@ -237,6 +237,23 @@ describe("EntityDetail Person projection", () => {
 		expect(screen.getByText("Daycare move")).toBeInTheDocument();
 	});
 
+	it("keeps a resolved waiting_on todo out of 'Waiting on' (active only)", () => {
+		const alice = person("p_alice", "Alice");
+		const resolved = todoItem("t_done", {
+			title: "Already got the draft",
+			status: "completed",
+			completedAt: "2026-06-01T12:00:00",
+			personRefs: [{ personId: "p_alice", role: "waiting_on" }],
+		});
+		render(<EntityDetail entity={alice} allEntities={[alice, resolved]} />);
+
+		// The completed task is not a live follow-up — no "Waiting on" section.
+		expect(screen.queryByText("Waiting on")).not.toBeInTheDocument();
+		// It still appears as a (historical) task.
+		expect(screen.getByText("Tasks")).toBeInTheDocument();
+		expect(screen.getByText("Already got the draft")).toBeInTheDocument();
+	});
+
 	it("shows 'Mentioned in' journal entries that reference the person", () => {
 		const alice = person("p_alice", "Alice");
 		const journalEntry: JournalEntry = {
