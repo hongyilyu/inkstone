@@ -5,10 +5,16 @@ import {
 	WsClient,
 	type WsError,
 } from "@inkstone/ui-sdk";
-import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
+import { Deferred, Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitRun, resetBridge } from "./bridge.js";
-import { getChatState, resetChatStore } from "./chat.js";
+import {
+	appendUserMessage,
+	attachRun,
+	getChatState,
+	resetChatStore,
+	seedAssistantMessage,
+} from "./chat.js";
 import { hydrateThread, resetHydration } from "./hydrate.js";
 
 beforeEach(() => {
@@ -145,6 +151,89 @@ describe("refresh-durable hydration", () => {
 		expect(assistant?.text).toBe("echo: hello");
 		expect(assistant?.status).toBe("completed");
 		expect(resumed?.activeRunId).toBeUndefined();
+
+		await runtime.dispose();
+	});
+
+	it("preserves a turn sent during the in-flight thread/get and folds in history", async () => {
+		// threadGet resolves only after we release the latch, modeling the window
+		// where the composer stays live under the loading skeleton.
+		const gate = Effect.runSync(Deferred.make<ThreadGetResult, WsError>());
+		const subscribeRun = vi.fn(
+			(_runId: RunId): Stream.Stream<RunEventValue, WsError> => Stream.empty,
+		);
+		const history: ThreadGetResult = {
+			thread_id: "tC",
+			title: "T",
+			// An older, completed turn the server knows about.
+			messages: [
+				{ id: "s1", role: "user", status: "completed", run_id: "old", text: "earlier" },
+				{
+					id: "s2",
+					role: "assistant",
+					status: "completed",
+					run_id: "old",
+					text: "earlier reply",
+				},
+			],
+		};
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			threadGet: (id) =>
+				id === "tC" ? Deferred.await(gate) : Effect.die("unknown thread"),
+			subscribeRun,
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		// Start hydration; threadGet is parked on the latch.
+		const hydrating = hydrateThread(runtime, "tC");
+
+		// A send lands during the window: seed the optimistic turn + attach a run
+		// (exactly what bridge.send does once postMessage resolves).
+		appendUserMessage("tC", {
+			id: "u1",
+			role: "user",
+			status: "completed",
+			text: "live message",
+			run_id: "",
+		});
+		seedAssistantMessage("tC", {
+			id: "a1",
+			role: "assistant",
+			status: "streaming",
+			text: "",
+			run_id: "",
+		});
+		attachRun("tC", "a1", "live-run");
+
+		// Now let threadGet resolve with the (stale) server history.
+		Effect.runSync(Deferred.succeed(gate, history));
+		await hydrating;
+
+		// The seeded live turn survives AND the fetched history is folded in front
+		// of it (older turns first), so prior conversation is not lost.
+		const thread = getChatState().threads.tC;
+		expect(thread?.messages.map((m) => m.text)).toEqual([
+			"earlier",
+			"earlier reply",
+			"live message",
+			"",
+		]);
+		// The live turn keeps the active run; history did not steal it.
+		expect(thread?.activeRunId).toBe("live-run");
+		// And the settled history run was NOT resubscribed.
+		expect(subscribeRun).not.toHaveBeenCalled();
 
 		await runtime.dispose();
 	});

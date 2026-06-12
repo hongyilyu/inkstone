@@ -4,7 +4,12 @@ import { Effect } from "effect";
 import { useEffect } from "react";
 import type { WsRuntime } from "../runtime.js";
 import { startRunStream } from "./bridge.js";
-import { loadThreadMessages, type Message } from "./chat.js";
+import {
+	getChatState,
+	loadThreadMessages,
+	type Message,
+	prependHistory,
+} from "./chat.js";
 import { isThreadHydrated, markThreadHydrated } from "./hydration-set.js";
 
 export { markThreadHydrated, resetHydration } from "./hydration-set.js";
@@ -49,6 +54,17 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
  * loaded — a no-op, not a throw. This is what keeps `App.test` green: its stub
  * runtime returns a pending/erroring `threadGet`, so hydration quietly does
  * nothing. Returns a Promise that always resolves (errors are swallowed).
+ *
+ * Became-live handling: the composer stays live under the loading skeleton, so
+ * the user can `send` into this thread DURING the in-flight `threadGet`. That
+ * seeds an optimistic user+assistant turn and (via `attachRun`) an `activeRunId`.
+ * An unconditional `loadThreadMessages` full-replace would then wipe the seeded
+ * turn AND orphan its streamed reply (the assistant message id the live
+ * `applyEvent` targets disappears). So when the thread became live we
+ * NON-destructively {@link prependHistory} the fetched (older) turns in front of
+ * the live turn instead of replacing — preserving prior conversation without
+ * clobbering the in-flight one — and skip resubscribing (the live turn already
+ * owns the active run; the fetched history is settled).
  */
 export function hydrateThread(
 	runtime: WsRuntime,
@@ -59,6 +75,20 @@ export function hydrateThread(
 		const client = yield* WsClient;
 		const result = yield* client.threadGet(threadId);
 		const messages = result.messages.map(toMessage);
+		// Re-read state AFTER the await: a send during the fetch window may have
+		// turned this thread live. A live thread has an `activeRunId` (set once
+		// `postMessage`/`threadCreate` resolves) OR already-seeded messages (the
+		// optimistic pair, present even before the run id resolves).
+		const live = getChatState().threads[threadId];
+		const becameLive =
+			live?.activeRunId !== undefined || (live?.messages.length ?? 0) > 0;
+		if (becameLive) {
+			// Keep the live turn intact; fold the fetched history in front of it.
+			// Do NOT resubscribe a history run — its stream is settled, and the
+			// live turn's stream is already running.
+			prependHistory(threadId, messages);
+			return;
+		}
 		loadThreadMessages(threadId, messages);
 		for (const message of messages) {
 			if (message.status === "streaming" && message.run_id !== "") {

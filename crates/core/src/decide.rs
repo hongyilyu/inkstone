@@ -950,4 +950,82 @@ mod tests {
             "an Invalid edit does not resume"
         );
     }
+
+    /// H1 (resume pre-spawn failure recovery, ADR-0025): when the injected
+    /// `resume` fails BEFORE flipping the Run off `parked` (e.g. `worker::resume`
+    /// returns `Err` because token/manifest resolution failed), the accept stays
+    /// committed (entity landed, Proposal `accepted`) and the decide surfaces an
+    /// `Internal` error — but the Run is LEFT PARKED. A follow-up keyed replay
+    /// with a now-working resume must replay the prior result AND re-drive resume
+    /// via the still-parked recovery branch. This is the contract `worker::resume`
+    /// relies on by returning `Err` instead of wedging the Run `errored`.
+    #[tokio::test]
+    async fn resume_failure_leaves_run_parked_and_recovers_on_retry() {
+        use futures_util::FutureExt;
+
+        let pool = memory_pool().await;
+        let (run_id, proposal_id) = seed_parked_proposal(&pool).await;
+
+        // First decide: accept applies, then the resume closure FAILS without
+        // flipping the Run (models a pre-flip token/manifest failure).
+        let failing_resume = |_run_id| {
+            async { Err(anyhow::anyhow!("token resolution failed")) }.boxed()
+        };
+        let first = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-resume-fail".to_string()),
+            failing_resume,
+        )
+        .await;
+
+        assert!(
+            matches!(first, Err(DecideError::Internal(_))),
+            "a resume failure surfaces as Internal: {first:?}"
+        );
+        // The accept is durable: the entity landed exactly once and the Proposal
+        // is accepted — NOT rolled back, NOT errored.
+        assert_eq!(entity_count(&pool).await, 1, "the accept applied once");
+        assert_eq!(
+            proposal_status(&pool, &proposal_id.to_string()).await,
+            "accepted"
+        );
+        // Crucially, the Run is STILL PARKED (worker::resume returned Err before
+        // flipping), so the still-parked recovery branch is reachable.
+        assert_eq!(
+            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            Some("parked"),
+            "a failed resume leaves the Run parked, not errored"
+        );
+
+        // Retry with the SAME key and a working resume: keyed replay returns the
+        // prior result AND the trailing gate re-drives resume (run still parked).
+        let resumed = Arc::new(AtomicBool::new(false));
+        let second = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-resume-fail".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await
+        .expect("retry recovers");
+
+        assert!(
+            matches!(second, DecideOutcome::Accepted { .. }),
+            "retry replays the prior Accepted: {second:?}"
+        );
+        assert_eq!(
+            entity_count(&pool).await,
+            1,
+            "retry inserts no second entity"
+        );
+        assert!(
+            resumed.load(Ordering::SeqCst),
+            "the still-parked retry re-drives resume"
+        );
+    }
 }

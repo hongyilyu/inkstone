@@ -113,6 +113,72 @@ describe("ProposalCard", () => {
 		expect(onDecide).toHaveBeenCalledWith("accept");
 	});
 
+	it("retries a failed Dismiss as reject, not accept", () => {
+		const onDecide = vi.fn();
+		const { rerender } = render(
+			<ProposalCard proposal={base} onDecide={onDecide} />,
+		);
+		// Dismiss is attempted, the decide goes in flight, then fails.
+		fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+		expect(onDecide).toHaveBeenLastCalledWith("reject");
+		rerender(
+			<ProposalCard proposal={{ ...base, status: "error" }} onDecide={onDecide} />,
+		);
+		// "Try again" must re-issue the SAME decision (reject) — never a silent
+		// accept that would create the Journal Entry the user rejected.
+		fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+		expect(onDecide).toHaveBeenLastCalledWith("reject");
+		expect(onDecide).not.toHaveBeenCalledWith("accept");
+	});
+
+	it("retries a failed Save as edit with the same edited payload", () => {
+		const onDecide = vi.fn();
+		const { rerender } = render(
+			<ProposalCard proposal={base} onDecide={onDecide} />,
+		);
+		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+		fireEvent.change(screen.getByRole("textbox", { name: /body/i }), {
+			target: { value: "Bought oat milk after daycare pickup." },
+		});
+		fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+		const editedPayload = {
+			occurred_at: "2026-06-10T10:30:00",
+			body: [{ type: "text", text: "Bought oat milk after daycare pickup." }],
+		};
+		expect(onDecide).toHaveBeenLastCalledWith("edit", editedPayload);
+		rerender(
+			<ProposalCard proposal={{ ...base, status: "error" }} onDecide={onDecide} />,
+		);
+		// Retrying an edit must re-issue edit WITH the user's payload — not accept,
+		// which would silently revert the edits to the model's original.
+		fireEvent.click(screen.getByRole("button", { name: /try again/i }));
+		expect(onDecide).toHaveBeenLastCalledWith("edit", editedPayload);
+		expect(onDecide).not.toHaveBeenCalledWith("accept");
+	});
+
+	it("allows retrying a failed Dismiss even when the payload is invalid", () => {
+		const onDecide = vi.fn();
+		const invalid = {
+			...base,
+			payload: { occurred_at: "2026-06-10", body: [] },
+		};
+		const { rerender } = render(
+			<ProposalCard proposal={invalid} onDecide={onDecide} />,
+		);
+		fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+		rerender(
+			<ProposalCard
+				proposal={{ ...invalid, status: "error" }}
+				onDecide={onDecide}
+			/>,
+		);
+		// A reject retry does not depend on payload validity (only accept/edit do).
+		const retry = screen.getByRole("button", { name: /try again/i });
+		expect(retry).not.toBeDisabled();
+		fireEvent.click(retry);
+		expect(onDecide).toHaveBeenLastCalledWith("reject");
+	});
+
 	it("blocks applying an invalid Journal Entry proposal until edited", () => {
 		render(
 			<ProposalCard
