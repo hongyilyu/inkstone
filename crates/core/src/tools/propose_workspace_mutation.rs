@@ -12,7 +12,9 @@ pub const NAME: &str = "propose_workspace_mutation";
 const DESCRIPTION: &str = "Propose a Workspace mutation for user review before saving a journal-worthy lived event or reflection. Do not use for reminders, todos, tasks, or future obligations.";
 const LABEL: &str = "Propose Workspace mutation";
 
-/// Closed first-slice set of Core-known Workspace mutations.
+/// Closed set of Core-known Workspace mutation kinds (Journal Entry + GTD
+/// Person/Project/Todo). Documentation mirror of [`Input`]'s `mutation_kind`
+/// discriminants; the wire schema is generated from `Input`, not this enum.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
