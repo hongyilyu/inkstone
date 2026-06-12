@@ -4,7 +4,9 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { SearchField } from "@/components/ui/search-field";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
+	groupJournalEntriesByDay,
 	KIND_META,
+	type JournalEntry,
 	type LibraryItem,
 	type LibraryItemKind,
 	libraryItemTitle,
@@ -27,7 +29,10 @@ function compareForKind(
 ): (a: LibraryItem, b: LibraryItem) => number {
 	switch (kind) {
 		case "journal_entry":
-			return (a, b) => b.recency - a.recency;
+			return (a, b) =>
+				(b as JournalEntry).occurredAt.localeCompare(
+					(a as JournalEntry).occurredAt,
+				) || a.id.localeCompare(b.id);
 		case "person":
 			return (a, b) => libraryItemTitle(a).localeCompare(libraryItemTitle(b));
 		case "project":
@@ -119,6 +124,14 @@ export function EntityCollection({
 							title="No matches"
 							description={`Nothing in ${meta.plural.toLowerCase()} matches "${query.trim()}". Try a different search.`}
 						/>
+					) : kind === "journal_entry" ? (
+						<JournalEntryGroups
+							entries={items.filter(
+								(item): item is JournalEntry => item.kind === "journal_entry",
+							)}
+							selectedId={selectedId}
+							onSelect={onSelect}
+						/>
 					) : (
 						<ul className="flex flex-col gap-0.5">
 							{items.map((item) =>
@@ -145,5 +158,53 @@ export function EntityCollection({
 				</div>
 			</div>
 		</section>
+	);
+}
+
+function JournalEntryGroups({
+	entries,
+	selectedId,
+	onSelect,
+}: {
+	entries: JournalEntry[];
+	selectedId: string | null;
+	onSelect: (id: string) => void;
+}) {
+	return (
+		<div className="flex flex-col gap-6">
+			{groupJournalEntriesByDay(entries).map((day) => {
+				const headingId = `journal-day-${day.day}`;
+				return (
+					<section
+						key={day.day}
+						aria-labelledby={headingId}
+						className="flex flex-col gap-2"
+					>
+						<div className="flex items-baseline gap-2 border-border border-b pb-2">
+							<h2
+								id={headingId}
+								className="font-semibold text-foreground text-sm"
+							>
+								{day.day}
+							</h2>
+							<span className="text-muted-foreground text-xs">
+								{day.entries.length}
+							</span>
+						</div>
+						<ul className="flex flex-col gap-0.5">
+							{day.entries.map((entry) => (
+								<li key={entry.id}>
+									<EntityRow
+										entity={entry}
+										selected={entry.id === selectedId}
+										onSelect={onSelect}
+									/>
+								</li>
+							))}
+						</ul>
+					</section>
+				);
+			})}
+		</div>
 	);
 }
