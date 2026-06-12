@@ -188,6 +188,17 @@ export const ResolvedEntityRef = S.Struct({
 });
 export type ResolvedEntityRef = S.Schema.Type<typeof ResolvedEntityRef>;
 
+/**
+ * One Todo Person Reference on a Todo `entity/list` row (ADR-0031, ADR-0032):
+ * the task-relationship analogue of `refs`. `role` carries the GTD semantics
+ * (`waiting_on` ⊇ `related`). Clients derive Project↔Person↔Todo from these.
+ */
+export const TodoPersonRefView = S.Struct({
+	person_id: S.String,
+	role: S.Literal("waiting_on", "related"),
+});
+export type TodoPersonRefView = S.Schema.Type<typeof TodoPersonRefView>;
+
 /** One Entity row in an `entity/list` result: the raw tier-2 `entities` columns (ADR-0004). */
 export const EntityRow = S.Struct({
 	id: S.String,
@@ -196,6 +207,8 @@ export const EntityRow = S.Struct({
 	created_at: S.Number,
 	updated_at: S.Number,
 	refs: S.optional(S.Array(ResolvedEntityRef)),
+	/** Present on Todo rows: the Todo's Person References (ADR-0032). */
+	person_refs: S.optional(S.Array(TodoPersonRefView)),
 });
 export type EntityRow = S.Schema.Type<typeof EntityRow>;
 

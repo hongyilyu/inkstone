@@ -205,6 +205,10 @@ pub struct EntityRow {
     pub updated_at: i64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<ResolvedEntityRef>,
+    /// A Todo row's Person References (ADR-0031, ADR-0032). Empty (and omitted)
+    /// for non-Todo rows and Todos with no references.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub person_refs: Vec<TodoPersonRefView>,
 }
 
 #[derive(Debug, Serialize)]
@@ -217,6 +221,14 @@ pub struct ResolvedEntityRef {
     pub target_title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label_snapshot: Option<String>,
+}
+
+/// One Todo Person Reference on a Todo `entity/list` row (ADR-0032). `role` is
+/// `waiting_on` or `related` (`waiting_on` ⊇ `related`).
+#[derive(Debug, Serialize)]
+pub struct TodoPersonRefView {
+    pub person_id: String,
+    pub role: String,
 }
 
 /// `entity/list` result: the accepted Entities of the requested type,

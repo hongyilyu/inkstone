@@ -111,6 +111,9 @@ pub struct EntityRow {
     pub created_at: i64,
     pub updated_at: i64,
     pub refs: Vec<ResolvedEntityRef>,
+    /// `(person_id, role)` pairs for a Todo row's Person References (ADR-0032).
+    /// Empty for non-Todo rows and Todos with no references.
+    pub person_refs: Vec<(String, String)>,
 }
 
 pub struct ResolvedEntityRef {
@@ -134,6 +137,7 @@ pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<
             created_at,
             updated_at,
             refs: Vec::new(),
+            person_refs: Vec::new(),
         })
         .collect::<Vec<_>>();
 
@@ -149,6 +153,23 @@ pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<
         }
         for row in &mut rows {
             row.refs = refs_by_source.remove(&row.id).unwrap_or_default();
+        }
+    }
+
+    // Attach each Todo's Person References (ADR-0032), batched like journal refs
+    // above to avoid an N+1 over the listed Todos.
+    if entity_type == "todo" {
+        let todo_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+        let refs = queries::person_refs_for_todos(pool, &todo_ids).await?;
+        let mut refs_by_todo = HashMap::<String, Vec<(String, String)>>::new();
+        for (todo_id, person_id, role) in refs {
+            refs_by_todo
+                .entry(todo_id)
+                .or_default()
+                .push((person_id, role));
+        }
+        for row in &mut rows {
+            row.person_refs = refs_by_todo.remove(&row.id).unwrap_or_default();
         }
     }
 
@@ -1600,6 +1621,7 @@ fn entity_row(row: (String, String, String, i64, i64)) -> EntityRow {
         created_at,
         updated_at,
         refs: Vec::new(),
+        person_refs: Vec::new(),
     }
 }
 
@@ -2343,6 +2365,45 @@ mod tests {
             projects,
             vec!["proj-a".to_string(), "proj-b".to_string()],
             "distinct project ids, null project excluded"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_by_type_todo_attaches_person_refs() {
+        let pool = memory_pool().await;
+        seed_entity(&pool, "alice", "person", r#"{"name":"Alice"}"#).await;
+        seed_entity(&pool, "bob", "person", r#"{"name":"Bob"}"#).await;
+        seed_entity(&pool, "t1", "todo", r#"{"title":"t1","status":"active"}"#).await;
+        seed_entity(&pool, "t2", "todo", r#"{"title":"t2","status":"active"}"#).await;
+        seed_ref(&pool, "t1", "alice", "waiting_on").await;
+        seed_ref(&pool, "t1", "bob", "related").await;
+        // t2 has no refs.
+
+        let rows = list_by_type(&pool, "todo").await.expect("list todos");
+        let t1 = rows.iter().find(|r| r.id == "t1").expect("t1 present");
+        let mut t1_refs = t1.person_refs.clone();
+        t1_refs.sort();
+        assert_eq!(
+            t1_refs,
+            vec![
+                ("alice".to_string(), "waiting_on".to_string()),
+                ("bob".to_string(), "related".to_string()),
+            ],
+            "t1 carries both Person References with roles"
+        );
+
+        let t2 = rows.iter().find(|r| r.id == "t2").expect("t2 present");
+        assert!(t2.person_refs.is_empty(), "a Todo with no refs carries none");
+    }
+
+    #[tokio::test]
+    async fn list_by_type_non_todo_has_no_person_refs() {
+        let pool = memory_pool().await;
+        seed_entity(&pool, "alice", "person", r#"{"name":"Alice"}"#).await;
+        let rows = list_by_type(&pool, "person").await.expect("list people");
+        assert!(
+            rows.iter().all(|r| r.person_refs.is_empty()),
+            "non-Todo rows never carry person_refs"
         );
     }
 
