@@ -482,7 +482,28 @@ fn proposal_get_omits_review_context_for_cross_thread_journal_entry_targets() {
         .await;
         assert!(
             resp["result"].get("review_context").is_none(),
-            "cross-thread proposal/get must not expose current entry context - body: {resp}"
+            "cross-thread update proposal/get must not expose current entry context - body: {resp}"
+        );
+
+        write_params(
+            &params_path,
+            serde_json::json!({
+                "mutation_kind": "delete_journal_entry",
+                "payload": {
+                    "entity_id": entity_id.to_string()
+                },
+                "rationale": "the user wants to remove a Journal Entry from another Thread"
+            }),
+        );
+        let (_delete_run_id, delete_resp) = park_proposal(
+            &core,
+            other_thread_id,
+            "Actually, delete that earlier entry from the other thread.",
+        )
+        .await;
+        assert!(
+            delete_resp["result"].get("review_context").is_none(),
+            "cross-thread delete proposal/get must not expose current entry context - body: {delete_resp}"
         );
     });
 }

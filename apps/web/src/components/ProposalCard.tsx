@@ -341,7 +341,7 @@ export function ProposalCard({
 				</form>
 			) : (
 				<>
-					{isCreateProposal || isUpdateProposal || currentJournalEntry ? (
+					{isCreateProposal || isUpdateProposal || isDeleteProposal ? (
 						<div className="flex flex-col gap-3 border-border border-t pt-3">
 							{isUpdateProposal || isDeleteProposal ? (
 								currentJournalEntry ? (
@@ -351,6 +351,10 @@ export function ProposalCard({
 										endedAt={currentEndedAt}
 										bodyText={currentBodyText}
 									/>
+								) : isDeleteProposal ? (
+									<p className="text-muted-foreground text-sm">
+										Current entry details unavailable.
+									</p>
 								) : null
 							) : null}
 							{isCreateProposal || isUpdateProposal ? (

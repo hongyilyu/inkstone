@@ -294,7 +294,7 @@ async fn apply_or_reject(
                 &proposal.mutation_kind,
                 &proposal.payload,
                 payload,
-            )),
+            )?),
             None => {
                 return Err(DecideError::Invalid(
                     "edit requires edited_payload".to_string(),
@@ -375,23 +375,32 @@ fn preserve_update_target_entity_id(
     mutation_kind: &str,
     proposal_payload: &serde_json::Value,
     edited_payload: &serde_json::Value,
-) -> serde_json::Value {
-    if mutation_kind != "update_journal_entry" || edited_payload.get("entity_id").is_some() {
-        return edited_payload.clone();
+) -> Result<serde_json::Value, DecideError> {
+    if mutation_kind != "update_journal_entry" {
+        return Ok(edited_payload.clone());
     }
 
     let Some(entity_id) = entities::target_entity_id(mutation_kind, proposal_payload) else {
-        return edited_payload.clone();
+        return Ok(edited_payload.clone());
     };
+    if let Some(edited_entity_id) = entities::target_entity_id(mutation_kind, edited_payload) {
+        if edited_entity_id != entity_id {
+            return Err(DecideError::Invalid(
+                "update_journal_entry edit cannot change entity_id".to_string(),
+            ));
+        }
+        return Ok(edited_payload.clone());
+    }
+
     let Some(mut payload) = edited_payload.as_object().cloned() else {
-        return edited_payload.clone();
+        return Ok(edited_payload.clone());
     };
 
     payload.insert(
         "entity_id".to_string(),
         serde_json::Value::String(entity_id.to_string()),
     );
-    serde_json::Value::Object(payload)
+    Ok(serde_json::Value::Object(payload))
 }
 
 /// Whether the Run currently reads `parked`. Backs both the pending-decide

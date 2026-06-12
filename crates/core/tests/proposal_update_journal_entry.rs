@@ -638,6 +638,132 @@ fn edit_update_preserves_target_entity_id_when_payload_omits_it() {
 }
 
 #[test]
+fn edit_update_rejects_retargeting_to_another_entry() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("update-params.json");
+    let thread_id = Uuid::now_v7();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let (target_entity_id, other_entity_id) = rt.block_on(async {
+        let pool = migrated_pool(&workspace).await;
+        seed_thread(&pool, thread_id, "Journal thread", 1).await;
+        let target_entity_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T10:30:00",
+            "Bought milk after daycare pickup.",
+            2,
+        )
+        .await;
+        let other_entity_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T11:30:00",
+            "Picked up bread after work.",
+            3,
+        )
+        .await;
+        pool.close().await;
+        (target_entity_id, other_entity_id)
+    });
+
+    write_update_params(
+        &params_path,
+        target_entity_id,
+        "This worker payload should be replaced.",
+    );
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    let run_id = rt.block_on(async {
+        let (run_id, proposal_id) =
+            park_update_proposal(&core, thread_id, "Tighten that earlier entry.").await;
+
+        let resp = rpc(
+            &core,
+            10,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "edit",
+                "edited_payload": {
+                    "entity_id": other_entity_id.to_string(),
+                    "occurred_at": "2026-06-10T10:45:00",
+                    "body": [{ "type": "text", "text": "Bought oat milk after daycare pickup." }]
+                },
+                "decision_idempotency_key": "update-edit-retarget",
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp["error"]["code"].as_i64(),
+            Some(-32602),
+            "retargeting edit is invalid_params - body: {resp}"
+        );
+        assert!(
+            resp["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("cannot change entity_id"),
+            "invalid reason names immutable update target - body: {resp}"
+        );
+        run_id
+    });
+
+    rt.block_on(async {
+        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+
+        assert_eq!(
+            entity_data(&pool, target_entity_id).await["body"][0]["text"].as_str(),
+            Some("Bought milk after daycare pickup."),
+            "invalid retarget leaves original target unchanged"
+        );
+        assert_eq!(
+            entity_data(&pool, other_entity_id).await["body"][0]["text"].as_str(),
+            Some("Picked up bread after work."),
+            "invalid retarget leaves edited target unchanged"
+        );
+        assert_eq!(
+            max_revision_seq(&pool, target_entity_id).await,
+            1,
+            "invalid retarget writes no target revision"
+        );
+        assert_eq!(
+            max_revision_seq(&pool, other_entity_id).await,
+            1,
+            "invalid retarget writes no other-entry revision"
+        );
+
+        let row = sqlx::query(
+            "SELECT p.status, tc.status AS tool_status \
+             FROM proposals p JOIN tool_calls tc ON tc.id = p.tool_call_id \
+             WHERE tc.run_id = ?1",
+        )
+        .bind(&run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("retarget proposal row exists");
+        let proposal_status: String = row.get("status");
+        let tool_status: String = row.get("tool_status");
+        assert_eq!(
+            proposal_status, "pending",
+            "invalid edit leaves proposal pending"
+        );
+        assert_eq!(
+            tool_status, "pending",
+            "invalid edit leaves tool call unresolved"
+        );
+    });
+}
+
+#[test]
 fn cross_thread_update_is_invalid_and_leaves_entry_unchanged() {
     let workspace = Workspace::new();
     let params_path = workspace.path().join("update-params.json");

@@ -373,6 +373,24 @@ describe("ProposalCard", () => {
 		expect(screen.queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
 	});
 
+	it("keeps delete proposals legible when current-entry context is unavailable", () => {
+		render(<ProposalCard proposal={deleteProposal} onDecide={() => {}} />);
+
+		expect(
+			screen.getByText("Inkstone wants to delete a Journal Entry."),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Current entry details unavailable."),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /delete journal entry/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /keep journal entry/i }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
+	});
+
 	it("calls onDecide for delete proposal accept and reject actions", () => {
 		const onDecide = vi.fn();
 		render(<ProposalCard proposal={deleteProposalWithContext} onDecide={onDecide} />);

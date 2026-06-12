@@ -323,6 +323,7 @@ fn returns_current_thread_entries_in_latest_revision_order() {
     let revised_entry = Uuid::now_v7();
     let older_entry = Uuid::now_v7();
     let other_thread_entry = Uuid::now_v7();
+    let assistant_sourced_entry = Uuid::now_v7();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -363,6 +364,27 @@ fn returns_current_thread_entries_in_latest_revision_order() {
             5_000,
         )
         .await;
+        seed_accepted_journal_entry(
+            &pool,
+            thread_a,
+            assistant_sourced_entry,
+            "2026-06-10T12:00:00",
+            None,
+            "Assistant-sourced entry should stay out.",
+            7_000,
+        )
+        .await;
+        sqlx::query(
+            "UPDATE messages SET role = 'assistant' \
+             WHERE id = ( \
+               SELECT source_message_id FROM entity_sources \
+               WHERE entity_id = ?1 AND relation = 'created_from' \
+             )",
+        )
+        .bind(assistant_sourced_entry.to_string())
+        .execute(&pool)
+        .await
+        .expect("make source message assistant-authored");
         add_later_revision(
             &pool,
             revised_entry,
@@ -420,6 +442,12 @@ fn returns_current_thread_entries_in_latest_revision_order() {
                 .to_string()
                 .contains(&other_thread_entry.to_string()),
             "other Thread entry is excluded - payload: {payload}"
+        );
+        assert!(
+            !payload
+                .to_string()
+                .contains(&assistant_sourced_entry.to_string()),
+            "non-user created_from entry is excluded - payload: {payload}"
         );
 
         for entry in entries {

@@ -375,6 +375,27 @@ fn same_thread_delete_accept_hard_deletes_entry_and_cascades() {
             "delete accept returns the deleted entity id - body: {resp}"
         );
         await_run_status(&core, &run_id, "completed").await;
+        let replay = rpc(
+            &core,
+            5,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "accept",
+                "decision_idempotency_key": "delete-accept",
+            }),
+        )
+        .await;
+        assert_eq!(
+            replay["result"]["status"].as_str(),
+            Some("accepted"),
+            "delete accept replay returns the prior outcome - body: {replay}"
+        );
+        assert_eq!(
+            replay["result"]["entity_id"].as_str(),
+            Some(entity_id.to_string().as_str()),
+            "delete accept replay recovers the deleted target id - body: {replay}"
+        );
         run_id
     });
 

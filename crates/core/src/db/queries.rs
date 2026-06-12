@@ -461,6 +461,7 @@ where
                WHERE current_run.id = ?1 \
                  AND source.entity_id = e.id \
                  AND source.relation = 'created_from' \
+                 AND source_message.role = 'user' \
            ) \
          ORDER BY lr.created_at DESC, lr.seq DESC, e.id DESC",
     )
@@ -556,14 +557,17 @@ pub(super) async fn update_entity<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query("UPDATE entities SET schema_version = ?, data = ?, updated_at = ? WHERE id = ?")
-        .bind(schema_version)
-        .bind(data)
-        .bind(now_ms)
-        .bind(entity_id)
-        .execute(executor)
-        .await
-        .map(|r| r.rows_affected())
+    sqlx::query(
+        "UPDATE entities SET schema_version = ?, data = ?, updated_at = ? \
+         WHERE id = ? AND type = 'journal_entry'",
+    )
+    .bind(schema_version)
+    .bind(data)
+    .bind(now_ms)
+    .bind(entity_id)
+    .execute(executor)
+    .await
+    .map(|r| r.rows_affected())
 }
 
 pub(super) async fn user_message_id_for_run<'e, E>(
