@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { entities } from "@/data/mock/entities";
 import {
+	activeProjectItems,
 	dueSoonTodos,
 	groupJournalEntriesByDay,
 	itemsNeedingReview,
@@ -11,6 +12,7 @@ import {
 	libraryItemSubtitle,
 	libraryItemTitle,
 	type Project,
+	PROJECT_STATUS_LABEL,
 	peopleForProject,
 	projectForTodo,
 	projectProgress,
@@ -137,6 +139,44 @@ describe("library item helpers", () => {
 			"newer-created",
 			"late",
 		]);
+	});
+
+	describe("project GTD vocabulary (ADR-0031)", () => {
+		it("labels the GTD statuses, including on_hold", () => {
+			expect(PROJECT_STATUS_LABEL).toEqual({
+				active: "Active",
+				on_hold: "On hold",
+				completed: "Completed",
+				dropped: "Dropped",
+			});
+		});
+
+		it("subtitles a Project by its outcome", () => {
+			expect(libraryItemSubtitle(byId("proj_apiv2"))).toContain(
+				"Rename /contacts",
+			);
+		});
+
+		it("treats on_hold as in-focus, excludes completed/dropped", () => {
+			const onHold: Project = {
+				id: "p_hold",
+				kind: "project",
+				name: "Held",
+				status: "on_hold",
+				recency: 5,
+				createdAt: "fixture",
+			};
+			const completed: Project = {
+				id: "p_done",
+				kind: "project",
+				name: "Done",
+				status: "completed",
+				recency: 4,
+				createdAt: "fixture",
+			};
+			const focus = activeProjectItems([onHold, completed]);
+			expect(focus.map((p) => p.id)).toEqual(["p_hold"]);
+		});
 	});
 
 	it("computes project progress from its todos", () => {

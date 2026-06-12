@@ -113,9 +113,12 @@ export const projects: Project[] = [
 		id: "proj_apiv2",
 		kind: "project",
 		name: "API v2 migration",
-		status: "review",
-		summary:
+		status: "active",
+		outcome:
 			"Rename /contacts → /v2/contacts behind a 90-day alias. Cutover the weekend after the backfill completes.",
+		// Review overdue (before today 2026-06-12) — surfaces in the Review view.
+		nextReviewAt: "2026-06-07T20:00:00",
+		lastReviewedAt: "2026-05-31T20:00:00",
 		personIds: ["person_priya"],
 		todoIds: ["todo_backfill", "todo_sdk", "todo_cutover"],
 		createdAt: "Today, 10:42",
@@ -131,8 +134,10 @@ export const projects: Project[] = [
 		kind: "project",
 		name: "Inkstone",
 		status: "active",
-		summary:
+		outcome:
 			"Local-first thinking surface. Currently building the Library: a home for the knowledge chat accrues.",
+		// Review in the future — not yet due.
+		nextReviewAt: "2026-06-21T20:00:00",
 		personIds: ["person_dana"],
 		todoIds: ["todo_library", "todo_empty_states"],
 		createdAt: "May 28",
@@ -147,9 +152,11 @@ export const projects: Project[] = [
 		id: "proj_garden",
 		kind: "project",
 		name: "Garden rebuild",
-		status: "paused",
-		summary:
-			"Retaining wall plus a raised bed. Paused until Marco's revised estimate with the new drainage lands.",
+		status: "on_hold",
+		outcome:
+			"Retaining wall plus a raised bed. On hold until Marco's revised estimate with the new drainage lands.",
+		// On-hold and review overdue — surfaces in the Review view too.
+		nextReviewAt: "2026-06-08T20:00:00",
 		personIds: ["person_marco"],
 		todoIds: ["todo_estimate"],
 		createdAt: "Yesterday",
@@ -165,8 +172,9 @@ export const projects: Project[] = [
 		kind: "project",
 		name: "Lisbon trip",
 		status: "active",
-		summary:
+		outcome:
 			"Five days in late June. Flights to book this week; loose plan to base in Alfama.",
+		nextReviewAt: "2026-06-21T20:00:00",
 		todoIds: ["todo_flights"],
 		createdAt: "May 24",
 		recency: 38,

@@ -8,6 +8,7 @@ import type {
 	LibraryItem,
 	Person,
 	Project,
+	ProjectStatus,
 	Todo,
 	TodoStatus,
 } from "@/lib/libraryItems";
@@ -229,28 +230,33 @@ function toLibraryPerson(row: LiveEntityRow): Person {
 	} satisfies Person;
 }
 
-/** The Project `data` shape Core stores: `{name, status?, summary?}`. */
+/** The Project `data` shape Core stores (ADR-0031): GTD `status` + review metadata. */
 interface ProjectData {
 	name?: unknown;
 	status?: unknown;
-	summary?: unknown;
+	outcome?: unknown;
+	note?: unknown;
+	next_review_at?: unknown;
+	last_reviewed_at?: unknown;
+}
+
+function asProjectStatus(value: unknown): ProjectStatus {
+	return value === "on_hold" || value === "completed" || value === "dropped"
+		? value
+		: "active";
 }
 
 function toLibraryProject(row: LiveEntityRow): Project {
 	const data = (row.data ?? {}) as ProjectData;
-	const status =
-		data.status === "review" ||
-		data.status === "paused" ||
-		data.status === "done" ||
-		data.status === "active"
-			? data.status
-			: "active";
 	return {
 		id: row.id,
 		kind: "project",
-		name: typeof data.name === "string" ? data.name : "Untitled",
-		status,
-		summary: typeof data.summary === "string" ? data.summary : undefined,
+		name: asString(data.name) ?? "Untitled",
+		status: asProjectStatus(data.status),
+		outcome: asString(data.outcome),
+		note: asString(data.note),
+		nextReviewAt: asString(data.next_review_at),
+		lastReviewedAt: asString(data.last_reviewed_at),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Project;

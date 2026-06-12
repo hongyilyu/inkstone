@@ -19,9 +19,9 @@ import { EntitySkeleton } from "./EntitySkeleton.js";
 
 const PROJECT_STATUS_RANK: Record<Project["status"], number> = {
 	active: 0,
-	review: 1,
-	paused: 2,
-	done: 3,
+	on_hold: 1,
+	completed: 2,
+	dropped: 3,
 };
 
 function compareForKind(

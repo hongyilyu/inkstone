@@ -63,13 +63,18 @@ export interface JournalEntryBodyEntityRefNode {
 	labelSnapshot?: string;
 }
 
-export type ProjectStatus = "active" | "review" | "paused" | "done";
+export type ProjectStatus = "active" | "on_hold" | "completed" | "dropped";
 
 export interface Project extends LibraryItemBase {
 	kind: "project";
 	name: string;
 	status: ProjectStatus;
-	summary?: string;
+	/** The desired outcome of the Project (ADR-0031). */
+	outcome?: string;
+	note?: string;
+	/** Local wall-clock review timestamps (ADR-0031). */
+	nextReviewAt?: string;
+	lastReviewedAt?: string;
 	personIds?: string[];
 	todoIds?: string[];
 }
@@ -187,7 +192,7 @@ export function libraryItemSubtitle(e: LibraryItem): string {
 		case "person":
 			return e.role ?? e.relationship ?? "Person";
 		case "project":
-			return e.summary ?? PROJECT_STATUS_LABEL[e.status];
+			return e.outcome ?? PROJECT_STATUS_LABEL[e.status];
 		case "todo":
 			return e.dueAt
 				? `Due ${e.dueAt.slice(0, 10)}`
@@ -201,9 +206,9 @@ export function libraryItemSubtitle(e: LibraryItem): string {
 
 export const PROJECT_STATUS_LABEL: Record<Project["status"], string> = {
 	active: "Active",
-	review: "In review",
-	paused: "Paused",
-	done: "Done",
+	on_hold: "On hold",
+	completed: "Completed",
+	dropped: "Dropped",
 };
 
 export const TODO_STATUS_LABEL: Record<TodoStatus, string> = {
@@ -310,7 +315,11 @@ export function dueSoonTodos(
 
 export function activeProjectItems(all: LibraryItem[]): Project[] {
 	return all
-		.filter((e): e is Project => e.kind === "project" && e.status !== "done")
+		.filter(
+			(e): e is Project =>
+				e.kind === "project" &&
+				(e.status === "active" || e.status === "on_hold"),
+		)
 		.sort((a, b) => b.recency - a.recency);
 }
 

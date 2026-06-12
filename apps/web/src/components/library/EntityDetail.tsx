@@ -174,9 +174,9 @@ function StatusBadge({ status }: { status: Project["status"] }) {
 				className={cn(
 					"size-1.5 rounded-full",
 					status === "active" && "bg-primary",
-					status === "review" && "bg-primary/60",
-					status === "paused" && "bg-muted-foreground/50",
-					status === "done" && "bg-muted-foreground/30",
+					status === "on_hold" && "bg-primary/60",
+					status === "completed" && "bg-muted-foreground/50",
+					status === "dropped" && "bg-muted-foreground/30",
 				)}
 				aria-hidden
 			/>
@@ -334,9 +334,9 @@ function ProjectBody({
 			<div>
 				<StatusBadge status={project.status} />
 			</div>
-			{project.summary ? (
-				<Field label="Summary">
-					<p className="text-pretty">{project.summary}</p>
+			{project.outcome ? (
+				<Field label="Outcome">
+					<p className="text-pretty">{project.outcome}</p>
 				</Field>
 			) : null}
 			{total > 0 ? (
