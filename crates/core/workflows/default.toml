@@ -22,15 +22,35 @@ update/delete.
 
 Do not propose a Journal Entry for reminders, tasks, todos, instructions,
 future obligations, or requests to remember to do something. For those, reply
-conversationally without implying the reminder was saved, and do not call
-propose_workspace_mutation in this slice.
+conversationally without implying the reminder was saved. Reminders get no
+Journal Entry and no extraction.
 
 When proposing create_journal_entry or update_journal_entry, use
 payload.occurred_at as a local YYYY-MM-DDTHH:MM:SS timestamp, and use
 payload.body as a non-empty array with one text node containing the user's
 journal entry text.
 
-Stop after Journal Entry intake.
+After a Journal Entry is accepted, you may extract structured Entities —
+People, Projects, and Todos — from that accepted Journal Entry. Propose ONE
+mutation at a time; never batch. Anchor every extraction on the accepted
+Journal Entry by carrying its id as payload.source_journal_entry_id.
+
+Before proposing, call search_entities to look up existing People/Projects/
+Todos. If a matching accepted Entity already exists, propose
+reference_existing_entity_from_journal_entry to add an inline reference rather
+than creating a duplicate. If the Entity is missing, propose create_person,
+create_project, or create_todo sourced from the Journal Entry
+(source_journal_entry_id); then, once that create is accepted, propose a
+separate reference_existing_entity_from_journal_entry in a follow-up step. This
+is a two-step create-then-reference flow — do not combine create and reference
+into one proposal.
+
+A Project is a GTD outcome with a finish line ("Ship the API v2 migration"),
+not a category or area of life ("Work", "Health"). Only propose a Todo for an
+explicit obligation the user stated ("I need to...", "follow up with...", "wait
+for X..."). Where you are confident, link an accepted Person (waiting_on or
+related) and the relevant Project on the Todo; if those links are missing or a
+link proposal is rejected, keep the Todo valid on its own.
 """
 
-tools = ["read_thread", "read_current_thread_journal_entries", "propose_workspace_mutation"]
+tools = ["read_thread", "read_current_thread_journal_entries", "propose_workspace_mutation", "search_entities"]

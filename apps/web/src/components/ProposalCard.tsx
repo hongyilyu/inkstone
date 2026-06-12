@@ -2,14 +2,37 @@ import {
 	BookOpenText,
 	CalendarDays,
 	Check,
+	FolderKanban,
+	type LucideIcon,
+	ListTodo,
 	Loader2,
 	Pencil,
 	RotateCcw,
+	User,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { PendingProposal } from "@/store/chat";
 import { Card } from "./ui/card.js";
 import { Input } from "./ui/input.js";
+
+// The glyph for a proposal's mutation kind, matching the canonical entity
+// iconography (KIND_META in lib/libraryItems) so a Person proposal wears the
+// same mark it has in the Library, command palette, and detail panels. Kinds
+// differ by glyph + label, never colour alone (PRODUCT.md a11y). Journal-entry
+// mutations keep the journal book.
+function proposalGlyph(mutationKind: string): LucideIcon {
+	switch (mutationKind) {
+		case "create_person":
+			return User;
+		case "create_project":
+			return FolderKanban;
+		case "create_todo":
+		case "update_todo":
+			return ListTodo;
+		default:
+			return BookOpenText;
+	}
+}
 
 type JournalEntryPayload = {
 	occurred_at: string;
@@ -23,12 +46,41 @@ type UpdateJournalEntryPayload = JournalEntryPayload & {
 	entity_id: string;
 };
 
+// The wire payload is `unknown` — Core forwards the raw, unvalidated model
+// arguments (the GTD validators live in crates/core/src/entities.rs and run on
+// accept, not before the card renders). A malformed payload (missing fields,
+// null, wrong types) must degrade, so the renderers read every field through
+// the defensive helpers below rather than asserting a typed shape.
+
 function textField(payload: unknown, key: string): string {
 	if (payload && typeof payload === "object" && key in payload) {
 		const value = (payload as Record<string, unknown>)[key];
 		return typeof value === "string" ? value : "";
 	}
 	return "";
+}
+
+/** Read `key` as an object, degrading a missing/null/non-object value to null. */
+function objectField(
+	payload: unknown,
+	key: string,
+): Record<string, unknown> | null {
+	if (payload && typeof payload === "object" && key in payload) {
+		const value = (payload as Record<string, unknown>)[key];
+		if (value && typeof value === "object" && !Array.isArray(value)) {
+			return value as Record<string, unknown>;
+		}
+	}
+	return null;
+}
+
+/** Read `key` as an array, degrading a missing/null/non-array value to []. */
+function arrayField(payload: unknown, key: string): unknown[] {
+	if (payload && typeof payload === "object" && key in payload) {
+		const value = (payload as Record<string, unknown>)[key];
+		if (Array.isArray(value)) return value;
+	}
+	return [];
 }
 
 function journalBody(payload: unknown): string {
@@ -136,54 +188,108 @@ export function ProposalCard({
 		isUpdateProposal ||
 		isDeleteProposal ||
 		isReferenceProposal;
+	const isCreatePersonProposal = mutation_kind === "create_person";
+	const isCreateProjectProposal = mutation_kind === "create_project";
+	const isCreateTodoProposal = mutation_kind === "create_todo";
+	const isUpdateTodoProposal = mutation_kind === "update_todo";
+	const isGtdProposal =
+		isCreatePersonProposal ||
+		isCreateProjectProposal ||
+		isCreateTodoProposal ||
+		isUpdateTodoProposal;
+	// Header + accept-button glyph track the kind (Person/Project/Todo/Journal),
+	// so the mark always matches the thing being proposed.
+	const HeaderGlyph = proposalGlyph(mutation_kind);
+	const AcceptGlyph = isGtdProposal ? HeaderGlyph : CalendarDays;
 	const title = isJournalEntryProposal ? "Journal Entry" : mutation_kind;
+	const gtdSummary = isCreatePersonProposal
+		? textField(payload, "name") || "New Person"
+		: isCreateProjectProposal
+			? textField(payload, "name") || "New Project"
+			: isCreateTodoProposal
+				? textField(objectField(payload, "todo"), "title") || "New Todo"
+				: "Update Todo";
 	const summary = isDeleteProposal
 		? "Delete Journal Entry"
 		: isReferenceProposal
 			? "Reference existing Entity"
 			: isUpdateProposal
 				? "Update Journal Entry"
-				: bodyText || "Untitled entry";
+				: isGtdProposal
+					? gtdSummary
+					: bodyText || "Untitled entry";
+	const gtdReviewCopy = isCreatePersonProposal
+		? "Inkstone wants to add a Person."
+		: isCreateProjectProposal
+			? "Inkstone wants to add a Project."
+			: isCreateTodoProposal
+				? "Inkstone wants to add a Todo."
+				: "Inkstone wants to update a Todo.";
 	const reviewCopy = isDeleteProposal
 		? "Inkstone wants to delete a Journal Entry."
 		: isReferenceProposal
 			? "Inkstone wants to link an accepted Entity from this Journal Entry."
 			: isUpdateProposal
 				? "Inkstone wants to update a Journal Entry."
-				: `Inkstone wants to create a ${title}.`;
+				: isGtdProposal
+					? gtdReviewCopy
+					: `Inkstone wants to create a ${title}.`;
 	const payloadIssue = isCreateProposal
 		? journalPayloadIssue(occurredAt, bodyText, endedAt)
 		: isUpdateProposal
 			? journalPayloadIssue(occurredAt, bodyText, endedAt, entityId)
 			: null;
+	// GTD cards carry no journal-style payload validation — they are always applyable.
 	const canApply = payloadIssue === null;
+	// No GTD editor in V0; keep Edit hidden for GTD kinds (like delete/reference).
 	const canEdit = (isCreateProposal || isUpdateProposal) && !bodyHasEntityRef;
+	const gtdAcceptedCopy = isCreatePersonProposal
+		? "Added Person."
+		: isCreateProjectProposal
+			? "Added Project."
+			: isCreateTodoProposal
+				? "Added Todo."
+				: "Updated Todo.";
 	const acceptedCopy = isDeleteProposal
 		? "Deleted from Journal."
 		: isReferenceProposal
 			? "Linked in Journal."
 			: isUpdateProposal
 				? "Updated in Journal."
-				: "Added to Journal.";
+				: isGtdProposal
+					? gtdAcceptedCopy
+					: "Added to Journal.";
 	const rejectedCopy = isDeleteProposal
 		? "Kept in Journal."
 		: isUpdateProposal || isReferenceProposal
 			? "Kept current Journal Entry."
 			: "Dismissed.";
+	const gtdAcceptLabel = isCreatePersonProposal
+		? "Add Person"
+		: isCreateProjectProposal
+			? "Add Project"
+			: isCreateTodoProposal
+				? "Add Todo"
+				: "Update Todo";
 	const acceptLabel = isDeleteProposal
 		? "Delete Journal Entry"
 		: isReferenceProposal
 			? "Link Entity"
 			: isUpdateProposal
 				? "Update Journal Entry"
-				: "Add Journal Entry";
+				: isGtdProposal
+					? gtdAcceptLabel
+					: "Add Journal Entry";
+	const gtdAcceptBusyLabel = isUpdateTodoProposal ? "Updating..." : "Adding...";
 	const acceptBusyLabel = isDeleteProposal
 		? "Deleting..."
 		: isReferenceProposal
 			? "Linking..."
 			: isUpdateProposal
 				? "Updating..."
-				: "Adding...";
+				: isGtdProposal
+					? gtdAcceptBusyLabel
+					: "Adding...";
 	const rejectLabel = isDeleteProposal
 		? "Keep Journal Entry"
 		: isUpdateProposal || isReferenceProposal
@@ -285,7 +391,7 @@ export function ProposalCard({
 					className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-secondary-foreground"
 					aria-hidden
 				>
-					<BookOpenText className="size-4" />
+					<HeaderGlyph className="size-4" />
 				</span>
 				<div className="min-w-0">
 					<p className="text-xs font-medium text-muted-foreground">
@@ -392,6 +498,12 @@ export function ProposalCard({
 						</div>
 					) : null}
 
+					{isGtdProposal ? (
+						<div className="flex flex-col gap-3 border-border border-t pt-3">
+							<GtdSection mutationKind={mutation_kind} payload={payload} />
+						</div>
+					) : null}
+
 					{rationale ? (
 						<p className="text-sm leading-relaxed text-muted-foreground">
 							{rationale}
@@ -445,7 +557,7 @@ export function ProposalCard({
 									</>
 								) : (
 									<>
-										<CalendarDays className="size-4" aria-hidden />
+										<AcceptGlyph className="size-4" aria-hidden />
 										{acceptLabel}
 									</>
 								)}
@@ -522,5 +634,143 @@ function Field({ label, value }: { label: string; value: string }) {
 			</dt>
 			<dd className="min-w-0 text-card-foreground">{value}</dd>
 		</div>
+	);
+}
+
+// A person ref is itself unvalidated; read its id/role defensively. Returns null
+// when there is no usable person_id so the caller can skip rendering a blank row.
+function personRefLine(ref: unknown): string | null {
+	const personId = textField(ref, "person_id");
+	if (!personId) return null;
+	const role = textField(ref, "role");
+	return role === "waiting_on"
+		? `Waiting on: ${personId}`
+		: `Related: ${personId}`;
+}
+
+// Map an array field of (unvalidated) person refs to rendered rows. Rows are
+// static and presentational, so the post-filter index is a unique, stable key —
+// it avoids a duplicate-key collision when two refs share the same id + role
+// (reachable since the payload is raw, unvalidated model output).
+function personRefFields(
+	payload: unknown,
+	key: string,
+	prefix: string,
+	label: string,
+) {
+	// Key by the row's own value plus a per-value occurrence counter rather than a
+	// bare array index (Biome noArrayIndexKey): stable across payload reordering,
+	// and still unique when two unvalidated refs render the identical line.
+	const seen = new Map<string, number>();
+	return arrayField(payload, key)
+		.map((ref) => personRefLine(ref))
+		.filter((line): line is string => line !== null)
+		.map((line) => {
+			const nth = seen.get(line) ?? 0;
+			seen.set(line, nth + 1);
+			return (
+				<Field key={`${prefix}:${line}:${nth}`} label={label} value={line} />
+			);
+		});
+}
+
+function GtdSection({
+	mutationKind,
+	payload,
+}: {
+	mutationKind: string;
+	payload: unknown;
+}) {
+	if (mutationKind === "create_person") {
+		const note = textField(payload, "note");
+		const aliases = arrayField(payload, "aliases").filter(
+			(a): a is string => typeof a === "string",
+		);
+		return (
+			<section className="flex flex-col gap-2">
+				<p className="text-xs font-medium tracking-normal text-muted-foreground">
+					Person
+				</p>
+				<dl className="flex flex-col gap-1.5 text-sm">
+					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
+					{note ? <Field label="Note" value={note} /> : null}
+					{aliases.length > 0 ? (
+						<Field label="Aliases" value={aliases.join(", ")} />
+					) : null}
+				</dl>
+			</section>
+		);
+	}
+
+	if (mutationKind === "create_project") {
+		const outcome = textField(payload, "outcome");
+		const status = textField(payload, "status");
+		const note = textField(payload, "note");
+		return (
+			<section className="flex flex-col gap-2">
+				<p className="text-xs font-medium tracking-normal text-muted-foreground">
+					Project
+				</p>
+				<dl className="flex flex-col gap-1.5 text-sm">
+					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
+					{outcome ? <Field label="Outcome" value={outcome} /> : null}
+					{status ? <Field label="Status" value={status} /> : null}
+					{note ? <Field label="Note" value={note} /> : null}
+				</dl>
+			</section>
+		);
+	}
+
+	if (mutationKind === "create_todo") {
+		const todo = objectField(payload, "todo");
+		const note = textField(todo, "note");
+		const status = textField(todo, "status");
+		const projectId = textField(todo, "project_id");
+		return (
+			<section className="flex flex-col gap-2">
+				<p className="text-xs font-medium tracking-normal text-muted-foreground">
+					Todo
+				</p>
+				<dl className="flex flex-col gap-1.5 text-sm">
+					<Field label="Title" value={textField(todo, "title") || "Untitled"} />
+					{note ? <Field label="Note" value={note} /> : null}
+					{status ? <Field label="Status" value={status} /> : null}
+					{projectId ? <Field label="Project" value={projectId} /> : null}
+					{personRefFields(payload, "person_refs", "ref", "People")}
+				</dl>
+			</section>
+		);
+	}
+
+	// update_todo
+	const todo = objectField(payload, "todo");
+	const title = textField(todo, "title");
+	const note = textField(todo, "note");
+	const status = textField(todo, "status");
+	const projectId = textField(todo, "project_id");
+	const removeIds = arrayField(payload, "remove_person_ids").filter(
+		(id): id is string => typeof id === "string",
+	);
+	return (
+		<section className="flex flex-col gap-2">
+			<p className="text-xs font-medium tracking-normal text-muted-foreground">
+				Changes
+			</p>
+			<dl className="flex flex-col gap-1.5 text-sm">
+				<Field
+					label="Todo"
+					value={textField(payload, "todo_id") || "Unknown"}
+				/>
+				{title ? <Field label="Title" value={title} /> : null}
+				{note ? <Field label="Note" value={note} /> : null}
+				{status ? <Field label="Status" value={status} /> : null}
+				{projectId ? <Field label="Project" value={projectId} /> : null}
+				{personRefFields(payload, "set_person_refs", "set", "Set")}
+				{personRefFields(payload, "add_person_refs", "add", "Add")}
+				{removeIds.length > 0 ? (
+					<Field label="Remove" value={removeIds.join(", ")} />
+				) : null}
+			</dl>
+		</section>
 	);
 }
