@@ -756,6 +756,10 @@ fn entity_data_payload(
             };
             let mut data = obj.clone();
             data.remove("entity_id");
+            // `source_journal_entry_id` is a create-only provenance directive
+            // (honored solely for `created_from`); strip it so an update payload
+            // can never persist this transport field into entity data.
+            data.remove("source_journal_entry_id");
             serde_json::Value::Object(data)
         }
         "create_person" => {
@@ -1016,10 +1020,18 @@ pub async fn apply_proposal(
     };
     let edited_str = edited_payload.map(|v| v.to_string());
     let effective_payload = edited_payload.unwrap_or(payload);
+
+    let mut tx = pool.begin().await?;
+
     // The review-anchor offset seeds an active Project's default next_review_at.
-    // Read it from the pool before opening the tx to avoid borrowing the
-    // single-connection pool twice.
-    let review_anchor_offset = crate::settings::review_anchor_utc_offset_minutes(pool).await?;
+    // Read it INSIDE the tx (via the executor-generic query) so the derived
+    // default comes from the same serialized state we commit — a concurrent
+    // `settings/set` can't make us persist a stale offset.
+    let review_anchor_offset =
+        queries::get_setting(&mut *tx, crate::settings::REVIEW_ANCHOR_UTC_OFFSET_KEY)
+            .await?
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
     // Effective entity data: edited payload when present, else the proposed
     // data, run through the per-kind extraction seam. Delete kinds touch no
     // entity data; `update_todo` MERGES against current DB state inside the tx,
@@ -1035,8 +1047,6 @@ pub async fn apply_proposal(
                 .to_string(),
         ),
     };
-
-    let mut tx = pool.begin().await?;
 
     // Flip the Proposal first under the `status='pending'` guard (the single
     // concurrency choke); on 0 rows a racing decide won, so bail before
@@ -1594,25 +1604,18 @@ fn entity_row(row: (String, String, String, i64, i64)) -> EntityRow {
 }
 
 /// Read every Todo owning `project_id` (its `data.project_id` matches), reusing
-/// the `delete_project` cascade's `json_extract` query. Returns full
-/// [`EntityRow`]s; newest-first follows the underlying row order.
+/// the `json_extract` project match. Returns full [`EntityRow`]s with real
+/// `created_at`/`updated_at`, newest-first.
 #[allow(dead_code)]
 pub async fn todos_by_project(
     pool: &SqlitePool,
     project_id: &str,
 ) -> sqlx::Result<Vec<EntityRow>> {
-    let rows = queries::todos_with_project(pool, project_id).await?;
-    // `todos_with_project` returns only `(id, data)`; the relationship read does
-    // not need created_at/updated_at, so they are filled with 0.
+    let rows = queries::todos_by_project(pool, project_id).await?;
     Ok(rows
         .into_iter()
-        .map(|(id, data)| EntityRow {
-            id,
-            r#type: "todo".to_string(),
-            data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-            created_at: 0,
-            updated_at: 0,
-            refs: Vec::new(),
+        .map(|(id, data, created_at, updated_at)| {
+            entity_row((id, "todo".to_string(), data, created_at, updated_at))
         })
         .collect())
 }

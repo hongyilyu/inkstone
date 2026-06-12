@@ -893,12 +893,19 @@ pub(crate) fn validate_todo_data(payload: &Value) -> Result<(), String> {
         None => return Err("title is required".to_string()),
     }
 
-    for field in ["note", "project_id"] {
-        if let Some(value) = obj.get(field)
-            && !value.is_string()
-        {
-            return Err(format!("{field} must be a string"));
-        }
+    if let Some(note) = obj.get("note")
+        && !note.is_string()
+    {
+        return Err("note must be a string".to_string());
+    }
+    // `project_id`, when present, must be a non-empty string: a blank id would
+    // bypass the Accepted-Project reference check at decide and persist an empty
+    // string that is neither projectless nor a real link.
+    match obj.get("project_id") {
+        Some(Value::String(id)) if !id.trim().is_empty() => {}
+        Some(Value::String(_)) => return Err("project_id must not be empty".to_string()),
+        Some(_) => return Err("project_id must be a string".to_string()),
+        None => {}
     }
 
     // Status is optional here (absent ⇒ defaults to active in the apply path).
@@ -1044,12 +1051,18 @@ fn validate_partial_todo_data(payload: &Value) -> Result<(), String> {
         }
     }
 
-    for field in ["note", "project_id"] {
-        if let Some(value) = obj.get(field)
-            && !value.is_string()
-        {
-            return Err(format!("{field} must be a string"));
-        }
+    if let Some(note) = obj.get("note")
+        && !note.is_string()
+    {
+        return Err("note must be a string".to_string());
+    }
+    // A supplied `project_id` must be a non-empty string (see `validate_todo`);
+    // clearing the owning Project is not expressible via a blank string in V0.
+    match obj.get("project_id") {
+        Some(Value::String(id)) if !id.trim().is_empty() => {}
+        Some(Value::String(_)) => return Err("project_id must not be empty".to_string()),
+        Some(_) => return Err("project_id must be a string".to_string()),
+        None => {}
     }
 
     if let Some(status) = obj.get("status") {
@@ -2063,6 +2076,32 @@ mod tests {
                 "person_refs": [{ "person_id": "alice", "role": "waiting_on" }]
             }))
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_blank_todo_project_id() {
+        // A blank project_id would slip past the decide-time Accepted-Project
+        // check (which filters empty ids) and persist "" into Todo JSON, leaving
+        // the Todo neither projectless nor linked. Reject it at validate.
+        let reason = validate_todo(&json!({ "todo": { "title": "x", "project_id": "" } }))
+            .expect_err("blank project_id is rejected");
+        assert!(
+            reason.contains("project_id"),
+            "reason names project_id: {reason}"
+        );
+        let reason = validate_todo(&json!({ "todo": { "title": "x", "project_id": "   " } }))
+            .expect_err("whitespace project_id is rejected");
+        assert!(
+            reason.contains("project_id"),
+            "reason names project_id: {reason}"
+        );
+        // The same guard on the update_todo partial path.
+        let reason = validate_partial_todo_data(&json!({ "project_id": "" }))
+            .expect_err("blank project_id is rejected on update");
+        assert!(
+            reason.contains("project_id"),
+            "reason names project_id: {reason}"
         );
     }
 

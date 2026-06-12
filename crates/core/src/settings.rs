@@ -20,7 +20,7 @@ const EFFORT_KEY: &str = "effort";
 /// The minutes east of UTC for the Workspace review anchor (ADR-0031). Seeds the
 /// local wall clock used to compute a new active Project's default
 /// `next_review_at`; defaults to 0 (local == UTC) when unset or unparseable.
-const REVIEW_ANCHOR_UTC_OFFSET_KEY: &str = "review_anchor_utc_offset_minutes";
+pub(crate) const REVIEW_ANCHOR_UTC_OFFSET_KEY: &str = "review_anchor_utc_offset_minutes";
 
 /// The global effort default when neither a setting nor a Workflow supplies one.
 pub const DEFAULT_EFFORT: &str = "off";
@@ -60,7 +60,11 @@ pub async fn set_preferred_model(
 }
 
 /// The Workspace review-anchor UTC offset in minutes (ADR-0031), or `0` when the
-/// setting is unset or does not parse as an integer.
+/// setting is unset or does not parse as an integer. The Proposal apply path
+/// reads the offset inside its transaction (via `queries::get_setting`) to avoid
+/// a TOCTOU gap; this pool-level accessor backs out-of-transaction reads (V1
+/// review surfaces) and the settings tests.
+#[allow(dead_code)]
 pub async fn review_anchor_utc_offset_minutes(pool: &SqlitePool) -> sqlx::Result<i64> {
     Ok(crate::db::get_setting(pool, REVIEW_ANCHOR_UTC_OFFSET_KEY)
         .await?

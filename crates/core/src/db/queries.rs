@@ -913,6 +913,27 @@ where
     .await
 }
 
+/// Read every Todo owned by `project_id` as full `(id, data, created_at,
+/// updated_at)` rows for the relationship read (`todos_by_project`), newest
+/// first. Distinct from [`todos_with_project`], which returns only `(id, data)`
+/// for the delete-cascade rewrite.
+pub(super) async fn todos_by_project<'e, E>(
+    executor: E,
+    project_id: &str,
+) -> sqlx::Result<Vec<(String, String, i64, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, data, created_at, updated_at FROM entities \
+         WHERE type = 'todo' AND json_extract(data, '$.project_id') = ?1 \
+         ORDER BY created_at DESC",
+    )
+    .bind(project_id)
+    .fetch_all(executor)
+    .await
+}
+
 /// Read every Todo linked to `person_id` via `todo_person_refs` (ADR-0031),
 /// optionally filtered to `role`. Returns `(id, type, data, created_at,
 /// updated_at)` rows like [`list_by_type`], newest-first. Core-internal V0 read

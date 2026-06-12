@@ -302,24 +302,55 @@ fn create_person_with_non_journal_entry_source_is_rejected() {
         .expect("tokio runtime builds");
 
     rt.block_on(async {
-        // A syntactically valid UUID that is not any Journal Entry id.
-        let bogus_je = uuid::Uuid::now_v7().to_string();
+        // First create a real Person so we have an EXISTING non-Journal-Entry
+        // entity id. Using it as the source proves the check is `entity_is_type
+        // == journal_entry`, not mere existence (a random UUID would only prove
+        // the latter).
+        write_params(
+            &params_path,
+            serde_json::json!({
+                "mutation_kind": "create_person",
+                "payload": { "name": "Alice" },
+                "rationale": "a real non-journal-entry entity"
+            }),
+        );
+        let seed_run = create_and_park(&core, 1, "Remember Alice.").await;
+        let seed_proposal = proposal_id_for(&core, 2, &seed_run).await;
+        let seed_resp = rpc(
+            &core,
+            3,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": seed_proposal,
+                "decision": "accept",
+                "decision_idempotency_key": "seed-person",
+            }),
+        )
+        .await;
+        let existing_person_id = seed_resp["result"]["entity_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("seed person entity_id is a string — body: {seed_resp}"))
+            .to_string();
+        await_completed(&core, &seed_run).await;
+
+        // Now propose a create_person whose source_journal_entry_id points at the
+        // existing PERSON (a non-Journal-Entry id) → must be rejected.
         write_params(
             &params_path,
             serde_json::json!({
                 "mutation_kind": "create_person",
                 "payload": {
                     "name": "x",
-                    "source_journal_entry_id": bogus_je
+                    "source_journal_entry_id": existing_person_id
                 },
-                "rationale": "dangling journal-entry source"
+                "rationale": "source points at a Person, not a Journal Entry"
             }),
         );
-        let person_run = create_and_park(&core, 1, "Remember x.").await;
-        let person_proposal = proposal_id_for(&core, 3, &person_run).await;
+        let person_run = create_and_park(&core, 4, "Remember x.").await;
+        let person_proposal = proposal_id_for(&core, 5, &person_run).await;
         let resp = rpc(
             &core,
-            4,
+            6,
             "proposal/decide",
             serde_json::json!({
                 "proposal_id": person_proposal,
@@ -342,7 +373,10 @@ fn create_person_with_non_journal_entry_source_is_rejected() {
                 .fetch_one(&pool)
                 .await
                 .expect("count person entities");
-        assert_eq!(person_count, 0, "rejected create_person created no person");
+        assert_eq!(
+            person_count, 1,
+            "only the seeded Person exists; the rejected create_person added none"
+        );
     });
 }
 
