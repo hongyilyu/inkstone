@@ -317,16 +317,6 @@ export function projectsForPerson(
 	return projects;
 }
 
-/** People referenced by a single `todo`, in ref order (ADR-0032). */
-export function peopleForTodo(all: LibraryItem[], todo: Todo): Person[] {
-	const personById = new Map(
-		all.filter((e): e is Person => e.kind === "person").map((p) => [p.id, p]),
-	);
-	return todo.personRefs
-		.map((ref) => personById.get(ref.personId))
-		.filter((p): p is Person => p !== undefined);
-}
-
 /**
  * Journal Entries that inline-reference `target` via an Entity Reference
  * (ADR-0031 "Mentioned in"). Newest occurred first.

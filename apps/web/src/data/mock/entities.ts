@@ -30,6 +30,7 @@ export const people: Person[] = [
 		id: "person_alice",
 		kind: "person",
 		name: "Alice Whitman",
+		aliases: ["Allie"],
 		role: "Daycare coordinator",
 		relationship: "Family logistics",
 		note: "Handling the daycare transition. Needs the updated schedule by Friday.",

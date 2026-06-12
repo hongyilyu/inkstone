@@ -236,6 +236,33 @@ describe("EntityDetail Person projection", () => {
 		expect(screen.getByText("Schedule from Alice")).toBeInTheDocument();
 		expect(screen.getByText("Daycare move")).toBeInTheDocument();
 	});
+
+	it("shows 'Mentioned in' journal entries that reference the person", () => {
+		const alice = person("p_alice", "Alice");
+		const journalEntry: JournalEntry = {
+			id: "je_1",
+			kind: "journal_entry",
+			occurredAt: "2026-06-10T10:30:00",
+			body: [
+				{ type: "text", text: "Met " },
+				{
+					type: "entity_ref",
+					refId: "ref_1",
+					targetEntityId: "p_alice",
+					targetKind: "person",
+					targetTitle: "Alice",
+				},
+				{ type: "text", text: " about daycare." },
+			],
+			recency: 1,
+			createdAt: "fixture",
+		};
+		render(<EntityDetail entity={alice} allEntities={[alice, journalEntry]} />);
+
+		expect(screen.getByText("Mentioned in")).toBeInTheDocument();
+		// The referencing journal entry is listed as a related row.
+		expect(screen.getByText("Met Alice about daycare.")).toBeInTheDocument();
+	});
 });
 
 describe("EntityDetail Project projection", () => {
