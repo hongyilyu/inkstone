@@ -19,9 +19,9 @@ import { EntitySkeleton } from "./EntitySkeleton.js";
 
 const PROJECT_STATUS_RANK: Record<Project["status"], number> = {
 	active: 0,
-	review: 1,
-	paused: 2,
-	done: 3,
+	on_hold: 1,
+	completed: 2,
+	dropped: 3,
 };
 
 function compareForKind(
@@ -43,10 +43,13 @@ function compareForKind(
 			return (a, b) => {
 				const ta = a as Todo;
 				const tb = b as Todo;
-				if (ta.done !== tb.done) return ta.done ? 1 : -1;
-				const da = ta.dueInDays ?? Number.POSITIVE_INFINITY;
-				const db = tb.dueInDays ?? Number.POSITIVE_INFINITY;
-				return da - db || b.recency - a.recency;
+				// Active todos first, then by soonest due date, then most recent.
+				const aActive = ta.status === "active";
+				const bActive = tb.status === "active";
+				if (aActive !== bActive) return aActive ? -1 : 1;
+				const da = ta.dueAt ?? "￿";
+				const db = tb.dueAt ?? "￿";
+				return da.localeCompare(db) || b.recency - a.recency;
 			};
 		case "recipe":
 			return (a, b) => b.recency - a.recency;

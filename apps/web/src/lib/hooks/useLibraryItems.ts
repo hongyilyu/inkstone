@@ -8,7 +8,9 @@ import type {
 	LibraryItem,
 	Person,
 	Project,
+	ProjectStatus,
 	Todo,
+	TodoStatus,
 } from "@/lib/libraryItems";
 import { useRuntime } from "@/runtime";
 
@@ -21,6 +23,12 @@ interface LiveEntityRow {
 	readonly data: unknown;
 	readonly created_at: number;
 	readonly refs?: readonly LiveResolvedEntityRef[];
+	readonly person_refs?: readonly LiveTodoPersonRef[];
+}
+
+interface LiveTodoPersonRef {
+	readonly person_id: string;
+	readonly role: "waiting_on" | "related";
 }
 
 interface LiveResolvedEntityRef {
@@ -170,68 +178,100 @@ function toLibraryJournalEntry(row: LiveEntityRow): JournalEntry {
 	} satisfies JournalEntry;
 }
 
-/** The Todo `data` shape Core stores (ADR-0004): `{title, done, due?}`. */
+/** The Todo `data` shape Core stores (ADR-0031): GTD `status` + date fields. */
 interface TodoData {
 	title?: unknown;
-	done?: unknown;
-	due?: unknown;
+	note?: unknown;
+	status?: unknown;
+	project_id?: unknown;
+	defer_at?: unknown;
+	due_at?: unknown;
+	completed_at?: unknown;
+	dropped_at?: unknown;
 }
 
-/** Map a live `entity/list` row to the Library `Todo` view model — see docs/design/web-lib.md. */
+function asString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+function asTodoStatus(value: unknown): TodoStatus {
+	return value === "completed" || value === "dropped" ? value : "active";
+}
+
+/** Map a live `entity/list` row to the Library `Todo` view model (ADR-0031). */
 function toLibraryTodo(row: LiveEntityRow): Todo {
 	const data = (row.data ?? {}) as TodoData;
 	return {
 		id: row.id,
 		kind: "todo",
-		title: typeof data.title === "string" ? data.title : "Untitled",
-		done: data.done === true,
-		due: typeof data.due === "string" ? data.due : undefined,
+		title: asString(data.title) ?? "Untitled",
+		note: asString(data.note),
+		status: asTodoStatus(data.status),
+		projectId: asString(data.project_id),
+		deferAt: asString(data.defer_at),
+		dueAt: asString(data.due_at),
+		completedAt: asString(data.completed_at),
+		droppedAt: asString(data.dropped_at),
+		personRefs: (row.person_refs ?? []).map((ref) => ({
+			personId: ref.person_id,
+			role: ref.role,
+		})),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Todo;
 }
 
-/** The Person `data` shape Core stores (CONTEXT.md): `{name, note?}`. */
+/** The Person `data` shape Core stores (ADR-0031): `{name, note?, aliases?}`. */
 interface PersonData {
 	name?: unknown;
 	note?: unknown;
+	aliases?: unknown;
 }
 
-/** Map a live `entity/list` row to the Library `Person` view model — see docs/design/web-lib.md. */
+/** Map a live `entity/list` row to the Library `Person` view model (ADR-0031). */
 function toLibraryPerson(row: LiveEntityRow): Person {
 	const data = (row.data ?? {}) as PersonData;
+	const aliases = Array.isArray(data.aliases)
+		? data.aliases.filter((a): a is string => typeof a === "string")
+		: undefined;
 	return {
 		id: row.id,
 		kind: "person",
-		name: typeof data.name === "string" ? data.name : "Unnamed",
-		note: typeof data.note === "string" ? data.note : undefined,
+		name: asString(data.name) ?? "Unnamed",
+		note: asString(data.note),
+		aliases: aliases && aliases.length > 0 ? aliases : undefined,
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Person;
 }
 
-/** The Project `data` shape Core stores: `{name, status?, summary?}`. */
+/** The Project `data` shape Core stores (ADR-0031): GTD `status` + review metadata. */
 interface ProjectData {
 	name?: unknown;
 	status?: unknown;
-	summary?: unknown;
+	outcome?: unknown;
+	note?: unknown;
+	next_review_at?: unknown;
+	last_reviewed_at?: unknown;
+}
+
+function asProjectStatus(value: unknown): ProjectStatus {
+	return value === "on_hold" || value === "completed" || value === "dropped"
+		? value
+		: "active";
 }
 
 function toLibraryProject(row: LiveEntityRow): Project {
 	const data = (row.data ?? {}) as ProjectData;
-	const status =
-		data.status === "review" ||
-		data.status === "paused" ||
-		data.status === "done" ||
-		data.status === "active"
-			? data.status
-			: "active";
 	return {
 		id: row.id,
 		kind: "project",
-		name: typeof data.name === "string" ? data.name : "Untitled",
-		status,
-		summary: typeof data.summary === "string" ? data.summary : undefined,
+		name: asString(data.name) ?? "Untitled",
+		status: asProjectStatus(data.status),
+		outcome: asString(data.outcome),
+		note: asString(data.note),
+		nextReviewAt: asString(data.next_review_at),
+		lastReviewedAt: asString(data.last_reviewed_at),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Project;

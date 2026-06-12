@@ -32,11 +32,14 @@ interface LibraryItemBase {
 export interface Person extends LibraryItemBase {
 	kind: "person";
 	name: string;
+	/** Alternate names this Person is also known by (ADR-0031). */
+	aliases?: string[];
+	note?: string;
+	// Preview-only descriptive fields (no GTD V0 equivalent yet); kept for the
+	// static fixtures until People capture lands.
 	role?: string;
 	relationship?: string;
 	email?: string;
-	note?: string;
-	projectIds?: string[];
 }
 
 export interface JournalEntry extends LibraryItemBase {
@@ -63,28 +66,44 @@ export interface JournalEntryBodyEntityRefNode {
 	labelSnapshot?: string;
 }
 
-export type ProjectStatus = "active" | "review" | "paused" | "done";
+export type ProjectStatus = "active" | "on_hold" | "completed" | "dropped";
 
 export interface Project extends LibraryItemBase {
 	kind: "project";
 	name: string;
 	status: ProjectStatus;
-	summary?: string;
-	personIds?: string[];
-	todoIds?: string[];
+	/** The desired outcome of the Project (ADR-0031). */
+	outcome?: string;
+	note?: string;
+	/** Local wall-clock review timestamps (ADR-0031). */
+	nextReviewAt?: string;
+	lastReviewedAt?: string;
+}
+
+export type TodoStatus = "active" | "completed" | "dropped";
+
+export type TodoPersonRole = "waiting_on" | "related";
+
+/** A Todo's reference to a Person, with its GTD role (ADR-0031/0032). */
+export interface TodoPersonRef {
+	personId: string;
+	role: TodoPersonRole;
 }
 
 export interface Todo extends LibraryItemBase {
 	kind: "todo";
 	title: string;
-	done: boolean;
-	/** Human due label, e.g. "Today", "Fri", "May 30". Undefined = no due date. */
-	due?: string;
-	/** Days from today: negative = overdue, 0 = today, positive = upcoming. */
-	dueInDays?: number;
-	projectId?: string;
-	owner?: string;
 	note?: string;
+	status: TodoStatus;
+	projectId?: string;
+	/** "Not before" date — local wall-clock `YYYY-MM-DDTHH:MM:SS` (ADR-0031). */
+	deferAt?: string;
+	/** Hard deadline — local wall-clock `YYYY-MM-DDTHH:MM:SS` (ADR-0031). */
+	dueAt?: string;
+	completedAt?: string;
+	droppedAt?: string;
+	/** Person References (ADR-0032). Empty when the Todo links no People. */
+	personRefs: TodoPersonRef[];
 }
 
 export interface Recipe extends LibraryItemBase {
@@ -184,9 +203,11 @@ export function libraryItemSubtitle(e: LibraryItem): string {
 		case "person":
 			return e.role ?? e.relationship ?? "Person";
 		case "project":
-			return e.summary ?? PROJECT_STATUS_LABEL[e.status];
+			return e.outcome ?? PROJECT_STATUS_LABEL[e.status];
 		case "todo":
-			return e.due ? `Due ${e.due}` : (e.note ?? "No due date");
+			return e.dueAt
+				? `Due ${e.dueAt.slice(0, 10)}`
+				: (e.note ?? TODO_STATUS_LABEL[e.status]);
 		case "recipe":
 			return (
 				[e.time, e.tags?.join(", ")].filter(Boolean).join(" · ") || "Recipe"
@@ -196,9 +217,15 @@ export function libraryItemSubtitle(e: LibraryItem): string {
 
 export const PROJECT_STATUS_LABEL: Record<Project["status"], string> = {
 	active: "Active",
-	review: "In review",
-	paused: "Paused",
-	done: "Done",
+	on_hold: "On hold",
+	completed: "Completed",
+	dropped: "Dropped",
+};
+
+export const TODO_STATUS_LABEL: Record<TodoStatus, string> = {
+	active: "Active",
+	completed: "Completed",
+	dropped: "Dropped",
 };
 
 export function libraryItemKindCounts(
@@ -215,25 +242,99 @@ export function libraryItemKindCounts(
 	return counts;
 }
 
-export function todosForProject(all: LibraryItem[], project: Project): Todo[] {
-	const ids = new Set(project.todoIds ?? []);
-	return all.filter((e): e is Todo => e.kind === "todo" && ids.has(e.id));
+/** All Todos in `all` (used by the derivations below). */
+function allTodos(all: LibraryItem[]): Todo[] {
+	return all.filter((e): e is Todo => e.kind === "todo");
 }
 
+/** Todos owned by `project` via `Todo.project_id` (ADR-0031). */
+export function todosForProject(all: LibraryItem[], project: Project): Todo[] {
+	return allTodos(all).filter((t) => t.projectId === project.id);
+}
+
+/** Todos that reference `person`, optionally filtered to one role (ADR-0032). */
+export function todosForPerson(
+	all: LibraryItem[],
+	person: Person,
+	role?: TodoPersonRole,
+): Todo[] {
+	return allTodos(all).filter((t) =>
+		t.personRefs.some(
+			(ref) =>
+				ref.personId === person.id && (role == null || ref.role === role),
+		),
+	);
+}
+
+/**
+ * People involved in `project`, derived through the Project's Todos'
+ * Person References: Project → Todos → TodoPersonRef → Person (ADR-0031).
+ * Distinct, in first-seen order.
+ */
 export function peopleForProject(
 	all: LibraryItem[],
 	project: Project,
 ): Person[] {
-	const ids = new Set(project.personIds ?? []);
-	return all.filter((e): e is Person => e.kind === "person" && ids.has(e.id));
+	const personById = new Map(
+		all.filter((e): e is Person => e.kind === "person").map((p) => [p.id, p]),
+	);
+	const seen = new Set<string>();
+	const people: Person[] = [];
+	for (const todo of todosForProject(all, project)) {
+		for (const ref of todo.personRefs) {
+			if (seen.has(ref.personId)) continue;
+			const person = personById.get(ref.personId);
+			if (person) {
+				seen.add(ref.personId);
+				people.push(person);
+			}
+		}
+	}
+	return people;
 }
 
+/**
+ * Projects a `person` is involved in, derived through that Person's Todos:
+ * Person → TodoPersonRef → Todo → Project (ADR-0031). Distinct, first-seen order.
+ */
 export function projectsForPerson(
 	all: LibraryItem[],
 	person: Person,
 ): Project[] {
-	const ids = new Set(person.projectIds ?? []);
-	return all.filter((e): e is Project => e.kind === "project" && ids.has(e.id));
+	const projectById = new Map(
+		all.filter((e): e is Project => e.kind === "project").map((p) => [p.id, p]),
+	);
+	const seen = new Set<string>();
+	const projects: Project[] = [];
+	for (const todo of todosForPerson(all, person)) {
+		if (!todo.projectId || seen.has(todo.projectId)) continue;
+		const project = projectById.get(todo.projectId);
+		if (project) {
+			seen.add(todo.projectId);
+			projects.push(project);
+		}
+	}
+	return projects;
+}
+
+/**
+ * Journal Entries that inline-reference `target` via an Entity Reference
+ * (ADR-0031 "Mentioned in"). Newest occurred first.
+ */
+export function journalEntriesMentioning(
+	all: LibraryItem[],
+	target: LibraryItem,
+): JournalEntry[] {
+	return all
+		.filter(
+			(e): e is JournalEntry =>
+				e.kind === "journal_entry" &&
+				e.body.some(
+					(node) =>
+						node.type === "entity_ref" && node.targetEntityId === target.id,
+				),
+		)
+		.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
 }
 
 export function projectForTodo(
@@ -259,23 +360,105 @@ export function itemsNeedingReview(all: LibraryItem[]): LibraryItem[] {
 	return all.filter((e) => e.needsReview).sort((a, b) => b.recency - a.recency);
 }
 
-/** Open todos due within `withinDays`, overdue first, then by soonest. */
-export function dueSoonTodos(all: LibraryItem[], withinDays = 3): Todo[] {
+/** Local wall-clock "now" as the `YYYY-MM-DDTHH:MM:SS` string Core dates compare against. */
+export function localNowString(now: Date = new Date()): string {
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return (
+		`${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+		`T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
+	);
+}
+
+/** A Todo is overdue when active with a past due date (ADR-0031). */
+export function todoIsOverdue(todo: Todo, now = localNowString()): boolean {
+	return todo.status === "active" && todo.dueAt != null && todo.dueAt < now;
+}
+
+/**
+ * Active todos whose due *day* is at or before `now + withinDays`, overdue
+ * (and earlier) first. "Due soon" is a to-the-day notion, so this compares the
+ * date portion — a todo due later today still counts as due today.
+ */
+export function dueSoonTodos(
+	all: LibraryItem[],
+	withinDays = 3,
+	now: Date = new Date(),
+): Todo[] {
+	const horizon = new Date(now);
+	horizon.setDate(horizon.getDate() + withinDays);
+	const horizonDay = localNowString(horizon).slice(0, 10);
 	return all
 		.filter(
 			(e): e is Todo =>
 				e.kind === "todo" &&
-				!e.done &&
-				e.dueInDays !== undefined &&
-				e.dueInDays <= withinDays,
+				e.status === "active" &&
+				e.dueAt != null &&
+				e.dueAt.slice(0, 10) <= horizonDay,
 		)
-		.sort((a, b) => (a.dueInDays ?? 0) - (b.dueInDays ?? 0));
+		.sort((a, b) => (a.dueAt ?? "").localeCompare(b.dueAt ?? ""));
 }
 
 export function activeProjectItems(all: LibraryItem[]): Project[] {
 	return all
-		.filter((e): e is Project => e.kind === "project" && e.status !== "done")
+		.filter(
+			(e): e is Project =>
+				e.kind === "project" &&
+				(e.status === "active" || e.status === "on_hold"),
+		)
 		.sort((a, b) => b.recency - a.recency);
+}
+
+/**
+ * Inbox: active Todos with no organizing metadata — no Project, no due date,
+ * and no Person References (ADR-0031). Derived, never stored. Newest first.
+ */
+export function inboxTodos(all: LibraryItem[]): Todo[] {
+	return all
+		.filter(
+			(e): e is Todo =>
+				e.kind === "todo" &&
+				e.status === "active" &&
+				e.projectId == null &&
+				e.dueAt == null &&
+				e.personRefs.length === 0,
+		)
+		.sort((a, b) => b.recency - a.recency);
+}
+
+/**
+ * Waiting / Follow-up: active Todos with at least one `waiting_on` Person
+ * Reference (ADR-0031). A `related`-only ref does not count. `defer_at` does
+ * not remove a Todo from this view. Newest first.
+ */
+export function waitingTodos(all: LibraryItem[]): Todo[] {
+	return all
+		.filter(
+			(e): e is Todo =>
+				e.kind === "todo" &&
+				e.status === "active" &&
+				e.personRefs.some((ref) => ref.role === "waiting_on"),
+		)
+		.sort((a, b) => b.recency - a.recency);
+}
+
+/**
+ * Project Review: active or on-hold Projects whose `next_review_at` is at or
+ * before `now` (ADR-0031). Completed and dropped Projects are never reviewable.
+ * Soonest-due (most overdue) first. `now` is a local wall-clock string.
+ */
+export function projectsForReview(
+	all: LibraryItem[],
+	now: string = localNowString(),
+): Project[] {
+	return all
+		.filter(
+			(e): e is Project =>
+				e.kind === "project" &&
+				(e.status === "active" || e.status === "on_hold") &&
+				e.nextReviewAt != null &&
+				e.nextReviewAt <= now,
+		)
+		.sort((a, b) => (a.nextReviewAt ?? "").localeCompare(b.nextReviewAt ?? ""));
 }
 
 export function groupJournalEntriesByDay(
@@ -305,7 +488,10 @@ export function projectProgress(
 	project: Project,
 ): { done: number; total: number } {
 	const ts = todosForProject(all, project);
-	return { done: ts.filter((t) => t.done).length, total: ts.length };
+	return {
+		done: ts.filter((t) => t.status === "completed").length,
+		total: ts.length,
+	};
 }
 
 export interface LibraryItemMatch {

@@ -468,7 +468,7 @@ describe("EntityRow", () => {
 	const wire = {
 		id: "01900000-0000-7000-8000-000000000030",
 		type: "todo",
-		data: { title: "buy milk", done: false },
+		data: { title: "buy milk", status: "active" },
 		created_at: 1_700_000_000_000,
 		updated_at: 1_700_000_000_000,
 	};
@@ -508,6 +508,33 @@ describe("EntityRow", () => {
 		const decoded = S.decodeUnknownSync(EntityRow)(withRefs);
 		expect(decoded).toEqual(withRefs);
 		expect(S.encodeSync(EntityRow)(decoded)).toEqual(withRefs);
+	});
+
+	it("decodes Todo person_refs when present (ADR-0032)", () => {
+		const withPersonRefs = {
+			...wire,
+			data: { title: "Send Alice the schedule", status: "active" },
+			person_refs: [
+				{
+					person_id: "01900000-0000-7000-8000-0000000000a1",
+					role: "waiting_on",
+				},
+				{ person_id: "01900000-0000-7000-8000-0000000000a2", role: "related" },
+			],
+		};
+
+		const decoded = S.decodeUnknownSync(EntityRow)(withPersonRefs);
+		expect(decoded).toEqual(withPersonRefs);
+		expect(S.encodeSync(EntityRow)(decoded)).toEqual(withPersonRefs);
+	});
+
+	it("rejects a person_ref with an unknown role", () => {
+		expect(() =>
+			S.decodeUnknownSync(EntityRow)({
+				...wire,
+				person_refs: [{ person_id: "p1", role: "owner" }],
+			}),
+		).toThrow();
 	});
 
 	it("rejects a non-number created_at", () => {

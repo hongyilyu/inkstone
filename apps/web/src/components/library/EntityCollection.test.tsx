@@ -207,7 +207,7 @@ describe("EntityCollection", () => {
 				{
 					id: "01900000-0000-7000-8000-000000000030",
 					type: "todo",
-					data: { title: "buy milk", done: false },
+					data: { title: "buy milk", status: "active" },
 					created_at: 1_700_000_000_000,
 					updated_at: 1_700_000_000_000,
 				},
@@ -218,6 +218,42 @@ describe("EntityCollection", () => {
 		expect(
 			screen.queryByText("Backfill /v2/contacts before the cutover window"),
 		).not.toBeInTheDocument();
+	});
+
+	it("orders todos active-first, then earliest due, undated last", async () => {
+		const mk = (id: string, title: string, data: Record<string, unknown>) => ({
+			id,
+			type: "todo" as const,
+			data: { title, ...data },
+			created_at: 1_700_000_000_000,
+			updated_at: 1_700_000_000_000,
+		});
+		renderCollection("todo", {
+			todos: [
+				mk("done", "Zed completed", { status: "completed" }),
+				mk("undated", "Active no due", { status: "active" }),
+				mk("late", "Active due later", {
+					status: "active",
+					due_at: "2026-06-20T00:00:00",
+				}),
+				mk("soon", "Active due soon", {
+					status: "active",
+					due_at: "2026-06-13T00:00:00",
+				}),
+			],
+		});
+
+		await screen.findByText("Active due soon");
+		const titles = screen
+			.getAllByText(/^(Active|Zed)/)
+			.map((el) => el.textContent);
+		// Active dated (soon before late) → active undated → completed last.
+		expect(titles).toEqual([
+			"Active due soon",
+			"Active due later",
+			"Active no due",
+			"Zed completed",
+		]);
 	});
 
 	it("filters as you search", async () => {

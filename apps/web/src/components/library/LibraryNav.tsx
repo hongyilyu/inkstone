@@ -1,20 +1,34 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { House, MessageSquareText, Search } from "lucide-react";
+import {
+	CalendarClock,
+	Hourglass,
+	House,
+	Inbox,
+	MessageSquareText,
+	Search,
+} from "lucide-react";
 import { NavShell, navRow, navRowActive } from "@/components/ui/nav-shell";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
+	inboxTodos,
 	KIND_META,
 	KIND_ORDER,
 	libraryItemKindCounts,
+	projectsForReview,
+	waitingTodos,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
 import { openCommand } from "@/store/command";
 
-/** Left nav for the Library takeover: return-to-chat, search, the kinds. */
+/** Left nav for the Library takeover: return-to-chat, search, GTD views, the kinds. */
 export function LibraryNav() {
 	const navigate = useNavigate();
 	const { data } = useLibraryItems();
-	const counts = libraryItemKindCounts(data ?? []);
+	const items = data ?? [];
+	const counts = libraryItemKindCounts(items);
+	const inboxCount = inboxTodos(items).length;
+	const waitingCount = waitingTodos(items).length;
+	const reviewCount = projectsForReview(items).length;
 
 	return (
 		<NavShell
@@ -51,6 +65,39 @@ export function LibraryNav() {
 				>
 					<House className="size-4 shrink-0" aria-hidden />
 					<span className="flex-1 truncate">Today</span>
+				</Link>
+				<Link
+					to="/library/inbox"
+					className={navRow}
+					activeProps={{ className: cn(navRow, navRowActive) }}
+				>
+					<Inbox className="size-4 shrink-0" aria-hidden />
+					<span className="flex-1 truncate">Inbox</span>
+					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
+						{inboxCount}
+					</span>
+				</Link>
+				<Link
+					to="/library/waiting"
+					className={navRow}
+					activeProps={{ className: cn(navRow, navRowActive) }}
+				>
+					<Hourglass className="size-4 shrink-0" aria-hidden />
+					<span className="flex-1 truncate">Waiting</span>
+					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
+						{waitingCount}
+					</span>
+				</Link>
+				<Link
+					to="/library/review"
+					className={navRow}
+					activeProps={{ className: cn(navRow, navRowActive) }}
+				>
+					<CalendarClock className="size-4 shrink-0" aria-hidden />
+					<span className="flex-1 truncate">Review</span>
+					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
+						{reviewCount}
+					</span>
 				</Link>
 				{KIND_ORDER.map((kind) => {
 					const meta = KIND_META[kind];

@@ -1,4 +1,4 @@
-import { AlertTriangle, Circle, CircleCheck } from "lucide-react";
+import { AlertTriangle, Circle, CircleCheck, CircleSlash } from "lucide-react";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -7,9 +7,9 @@ import {
 	libraryItemTitle,
 	projectForTodo,
 	type Todo,
+	todoIsOverdue,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
-import { setTodoDone, useTodoDone } from "@/store/library";
 import { EntityGlyph } from "./EntityGlyph.js";
 
 /** Generic, selectable row: glyph + title + subtitle, optional trailing slot. */
@@ -63,7 +63,30 @@ export function DueChip({ due, overdue }: { due: string; overdue: boolean }) {
 	);
 }
 
-/** Todo row with an inline done toggle: checkbox and open-affordance are sibling buttons, never nested. */
+/** Read-only status mark for a Todo row — completed/dropped/active, label not colour alone. */
+function TodoStatusGlyph({ todo }: { todo: Todo }) {
+	if (todo.status === "completed") {
+		return (
+			<CircleCheck
+				className="size-[18px] text-primary"
+				aria-label="Completed"
+			/>
+		);
+	}
+	if (todo.status === "dropped") {
+		return (
+			<CircleSlash
+				className="size-[18px] text-muted-foreground"
+				aria-label="Dropped"
+			/>
+		);
+	}
+	return (
+		<Circle className="size-[18px] text-muted-foreground" aria-label="Active" />
+	);
+}
+
+/** Todo row: a read-only status mark plus the open affordance. Editing is deferred (ADR-0032). */
 export function TodoRow({
 	todo,
 	allItems = [],
@@ -75,30 +98,16 @@ export function TodoRow({
 	selected?: boolean;
 	onSelect: (id: string) => void;
 }) {
-	const done = useTodoDone(todo.id, todo.done);
-	const overdue = !done && todo.dueInDays !== undefined && todo.dueInDays < 0;
+	const resolved = todo.status !== "active";
+	const overdue = todoIsOverdue(todo);
 	const project = projectForTodo(allItems, todo);
-	const context = [project ? libraryItemTitle(project) : null, todo.owner]
-		.filter(Boolean)
-		.join(" · ");
+	const context = project ? libraryItemTitle(project) : null;
 
 	return (
 		<li className="group flex items-stretch gap-1">
-			<button
-				type="button"
-				aria-pressed={done}
-				aria-label={
-					done ? `Mark "${todo.title}" not done` : `Mark "${todo.title}" done`
-				}
-				onClick={() => setTodoDone(todo.id, !done)}
-				className="flex w-9 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-			>
-				{done ? (
-					<CircleCheck className="size-[18px] text-primary" aria-hidden />
-				) : (
-					<Circle className="size-[18px]" aria-hidden />
-				)}
-			</button>
+			<span className="flex w-9 shrink-0 items-center justify-center">
+				<TodoStatusGlyph todo={todo} />
+			</span>
 			<button
 				type="button"
 				onClick={() => onSelect(todo.id)}
@@ -113,7 +122,7 @@ export function TodoRow({
 					<span
 						className={cn(
 							"block truncate text-sm",
-							done
+							resolved
 								? "text-muted-foreground line-through"
 								: "font-medium text-foreground",
 						)}
@@ -124,7 +133,9 @@ export function TodoRow({
 						{context || "No project"}
 					</span>
 				</span>
-				{todo.due ? <DueChip due={todo.due} overdue={overdue} /> : null}
+				{todo.dueAt ? (
+					<DueChip due={todo.dueAt.slice(0, 10)} overdue={overdue} />
+				) : null}
 			</button>
 		</li>
 	);

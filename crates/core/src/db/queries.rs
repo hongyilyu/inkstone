@@ -977,6 +977,34 @@ where
         .await
 }
 
+/// Batch-read Todo Person References for many Todos at once (ADR-0032), returned
+/// as `(todo_id, person_id, role)` rows so the caller can group by Todo. Mirrors
+/// [`entity_refs_for_sources`]'s IN-clause shape to avoid an N+1 on the
+/// `entity/list` read path. Ordered by `(todo_id, created_at, person_id)` for a
+/// stable per-Todo ref order.
+pub(super) async fn person_refs_for_todos<'e, E>(
+    executor: E,
+    todo_ids: &[String],
+) -> sqlx::Result<Vec<(String, String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    if todo_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT todo_id, person_id, role FROM todo_person_refs WHERE todo_id IN (",
+    );
+    let mut separated = query.separated(", ");
+    for todo_id in todo_ids {
+        separated.push_bind(todo_id);
+    }
+    separated.push_unseparated(") ORDER BY todo_id, created_at, person_id");
+
+    query.build_query_as().fetch_all(executor).await
+}
+
 /// Distinct People linked to `project_id` through that Project's Todos: Project
 /// -> Todos (json_extract project_id) -> `todo_person_refs` -> DISTINCT person_id
 /// (ADR-0031). Core-internal V0 read layer (Slice 11).
