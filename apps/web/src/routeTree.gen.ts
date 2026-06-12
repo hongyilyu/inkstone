@@ -15,6 +15,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as LibraryIndexRouteImport } from './routes/library/index'
 import { Route as SettingsModelsRouteImport } from './routes/settings/models'
 import { Route as LibraryWaitingRouteImport } from './routes/library/waiting'
+import { Route as LibraryReviewRouteImport } from './routes/library/review'
 import { Route as LibraryInboxRouteImport } from './routes/library/inbox'
 import { Route as LibraryKindRouteImport } from './routes/library/$kind'
 
@@ -48,6 +49,11 @@ const LibraryWaitingRoute = LibraryWaitingRouteImport.update({
   path: '/waiting',
   getParentRoute: () => LibraryRouteRoute,
 } as any)
+const LibraryReviewRoute = LibraryReviewRouteImport.update({
+  id: '/review',
+  path: '/review',
+  getParentRoute: () => LibraryRouteRoute,
+} as any)
 const LibraryInboxRoute = LibraryInboxRouteImport.update({
   id: '/inbox',
   path: '/inbox',
@@ -65,6 +71,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRouteRouteWithChildren
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
+  '/library/review': typeof LibraryReviewRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/library/': typeof LibraryIndexRoute
@@ -74,6 +81,7 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRouteRouteWithChildren
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
+  '/library/review': typeof LibraryReviewRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/library': typeof LibraryIndexRoute
@@ -85,6 +93,7 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRouteRouteWithChildren
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
+  '/library/review': typeof LibraryReviewRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/library/': typeof LibraryIndexRoute
@@ -97,6 +106,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/library/$kind'
     | '/library/inbox'
+    | '/library/review'
     | '/library/waiting'
     | '/settings/models'
     | '/library/'
@@ -106,6 +116,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/library/$kind'
     | '/library/inbox'
+    | '/library/review'
     | '/library/waiting'
     | '/settings/models'
     | '/library'
@@ -116,6 +127,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/library/$kind'
     | '/library/inbox'
+    | '/library/review'
     | '/library/waiting'
     | '/settings/models'
     | '/library/'
@@ -171,6 +183,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryWaitingRouteImport
       parentRoute: typeof LibraryRouteRoute
     }
+    '/library/review': {
+      id: '/library/review'
+      path: '/review'
+      fullPath: '/library/review'
+      preLoaderRoute: typeof LibraryReviewRouteImport
+      parentRoute: typeof LibraryRouteRoute
+    }
     '/library/inbox': {
       id: '/library/inbox'
       path: '/inbox'
@@ -191,6 +210,7 @@ declare module '@tanstack/react-router' {
 interface LibraryRouteRouteChildren {
   LibraryKindRoute: typeof LibraryKindRoute
   LibraryInboxRoute: typeof LibraryInboxRoute
+  LibraryReviewRoute: typeof LibraryReviewRoute
   LibraryWaitingRoute: typeof LibraryWaitingRoute
   LibraryIndexRoute: typeof LibraryIndexRoute
 }
@@ -198,6 +218,7 @@ interface LibraryRouteRouteChildren {
 const LibraryRouteRouteChildren: LibraryRouteRouteChildren = {
   LibraryKindRoute: LibraryKindRoute,
   LibraryInboxRoute: LibraryInboxRoute,
+  LibraryReviewRoute: LibraryReviewRoute,
   LibraryWaitingRoute: LibraryWaitingRoute,
   LibraryIndexRoute: LibraryIndexRoute,
 }

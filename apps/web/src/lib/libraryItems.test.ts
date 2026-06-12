@@ -20,6 +20,7 @@ import {
 	projectForTodo,
 	projectProgress,
 	projectsForPerson,
+	projectsForReview,
 	recentlyCapturedItems,
 	searchLibraryItems,
 	type Todo,
@@ -287,6 +288,56 @@ describe("library item helpers", () => {
 				personRefs: [{ personId: "alice", role: "waiting_on" }],
 			});
 			expect(waitingTodos([t]).map((x) => x.id)).toEqual(["def"]);
+		});
+	});
+
+	describe("projectsForReview (ADR-0031)", () => {
+		const now = "2026-06-12T12:00:00";
+		const mkReviewable = (
+			id: string,
+			status: Project["status"],
+			nextReviewAt?: string,
+		): Project => ({ ...mkProject(id, id), status, nextReviewAt });
+
+		it("includes active and on_hold projects whose review is due", () => {
+			const world = [
+				mkReviewable("active_due", "active", "2026-06-10T20:00:00"),
+				mkReviewable("hold_due", "on_hold", "2026-06-12T00:00:00"),
+			];
+			expect(
+				projectsForReview(world, now)
+					.map((p) => p.id)
+					.sort(),
+			).toEqual(["active_due", "hold_due"]);
+		});
+
+		it("excludes future, completed, and dropped projects", () => {
+			const world = [
+				mkReviewable("future", "active", "2026-06-30T20:00:00"),
+				mkReviewable("done", "completed", "2026-06-01T20:00:00"),
+				mkReviewable("dropped", "dropped", "2026-06-01T20:00:00"),
+				mkReviewable("no_date", "active", undefined),
+			];
+			expect(projectsForReview(world, now)).toEqual([]);
+		});
+
+		it("orders most-overdue first", () => {
+			const world = [
+				mkReviewable("b", "active", "2026-06-11T20:00:00"),
+				mkReviewable("a", "active", "2026-06-05T20:00:00"),
+			];
+			expect(projectsForReview(world, now).map((p) => p.id)).toEqual([
+				"a",
+				"b",
+			]);
+		});
+
+		it("surfaces the mock's overdue projects", () => {
+			// today = 2026-06-12; apiv2 (06-07) and garden (06-08) are overdue.
+			const ids = projectsForReview(entities, now).map((p) => p.id);
+			expect(ids).toContain("proj_apiv2");
+			expect(ids).toContain("proj_garden");
+			expect(ids).not.toContain("proj_inkstone"); // 06-21 future
 		});
 	});
 

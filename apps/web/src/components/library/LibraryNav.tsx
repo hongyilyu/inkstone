@@ -1,5 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
+	CalendarClock,
 	Hourglass,
 	House,
 	Inbox,
@@ -13,6 +14,7 @@ import {
 	KIND_META,
 	KIND_ORDER,
 	libraryItemKindCounts,
+	projectsForReview,
 	waitingTodos,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
@@ -26,6 +28,7 @@ export function LibraryNav() {
 	const counts = libraryItemKindCounts(items);
 	const inboxCount = inboxTodos(items).length;
 	const waitingCount = waitingTodos(items).length;
+	const reviewCount = projectsForReview(items).length;
 
 	return (
 		<NavShell
@@ -83,6 +86,17 @@ export function LibraryNav() {
 					<span className="flex-1 truncate">Waiting</span>
 					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
 						{waitingCount}
+					</span>
+				</Link>
+				<Link
+					to="/library/review"
+					className={navRow}
+					activeProps={{ className: cn(navRow, navRowActive) }}
+				>
+					<CalendarClock className="size-4 shrink-0" aria-hidden />
+					<span className="flex-1 truncate">Review</span>
+					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
+						{reviewCount}
 					</span>
 				</Link>
 				{KIND_ORDER.map((kind) => {

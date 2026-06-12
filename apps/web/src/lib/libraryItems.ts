@@ -427,6 +427,26 @@ export function waitingTodos(all: LibraryItem[]): Todo[] {
 		.sort((a, b) => b.recency - a.recency);
 }
 
+/**
+ * Project Review: active or on-hold Projects whose `next_review_at` is at or
+ * before `now` (ADR-0031). Completed and dropped Projects are never reviewable.
+ * Soonest-due (most overdue) first. `now` is a local wall-clock string.
+ */
+export function projectsForReview(
+	all: LibraryItem[],
+	now: string = localNowString(),
+): Project[] {
+	return all
+		.filter(
+			(e): e is Project =>
+				e.kind === "project" &&
+				(e.status === "active" || e.status === "on_hold") &&
+				e.nextReviewAt != null &&
+				e.nextReviewAt <= now,
+		)
+		.sort((a, b) => (a.nextReviewAt ?? "").localeCompare(b.nextReviewAt ?? ""));
+}
+
 export function groupJournalEntriesByDay(
 	entries: JournalEntry[],
 ): JournalEntryDay[] {
