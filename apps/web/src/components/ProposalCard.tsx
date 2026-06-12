@@ -658,12 +658,20 @@ function personRefFields(
 	prefix: string,
 	label: string,
 ) {
+	// Key by the row's own value plus a per-value occurrence counter rather than a
+	// bare array index (Biome noArrayIndexKey): stable across payload reordering,
+	// and still unique when two unvalidated refs render the identical line.
+	const seen = new Map<string, number>();
 	return arrayField(payload, key)
 		.map((ref) => personRefLine(ref))
 		.filter((line): line is string => line !== null)
-		.map((line, i) => (
-			<Field key={`${prefix}:${i}`} label={label} value={line} />
-		));
+		.map((line) => {
+			const nth = seen.get(line) ?? 0;
+			seen.set(line, nth + 1);
+			return (
+				<Field key={`${prefix}:${line}:${nth}`} label={label} value={line} />
+			);
+		});
 }
 
 function GtdSection({

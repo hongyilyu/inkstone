@@ -291,9 +291,20 @@ function searchResultsFromToolResult(text: string): SearchResultRow[] {
 	}
 }
 
-/** A minimal view over both the resume transcript (`tool_result`/`content`) and
- * the in-process pi context (`toolResult`/`content`). */
-type AnyMessage = { role: string; content?: unknown };
+/** A minimal view over both the resume transcript (`tool_result`/`content`,
+ * snake_case `tool_call_id`) and the in-process pi context (`toolResult`/
+ * `content`, camelCase `toolCallId`). */
+type AnyMessage = {
+	role: string;
+	content?: unknown;
+	tool_call_id?: string;
+	toolCallId?: string;
+};
+
+/** The tool-call id a tool_result message answers, across both transcript forms. */
+function toolResultCallId(m: AnyMessage): string | undefined {
+	return m.tool_call_id ?? m.toolCallId;
+}
 
 /** Unwrap a tool_result content string to the tool's own inner payload text.
  * In-process pi `toolResult`s flatten to the bare inner JSON, but a RESUME
@@ -345,22 +356,22 @@ function latestSearchResults(
 	return searchResultsFromToolResult(text);
 }
 
-/** The id of the first search-result row of `kind` across the transcript, or
- * undefined if no such row was returned. The Todo flow issues a person search and
- * a project search with distinct tool-call ids; both surface as `{results}` blocks,
- * so we discriminate by the rows' own `type` rather than by which search was last.
- * An empty search yields no rows of that kind → undefined → link omitted. */
-function searchedEntityIdOfKind(
+/** The id of the first result row from the search issued under `searchCallId`,
+ * or undefined if that specific search returned no rows. Bound to the CURRENT
+ * phase's tool-call id (not a transcript-wide scan by row type) so that "empty
+ * search now" reliably means "omit the link now" — an earlier same-kind search
+ * from a prior step cannot bleed a stale id into this proposal. */
+function searchedEntityId(
 	messages: readonly AnyMessage[],
-	kind: "person" | "project",
+	searchCallId: string,
 ): string | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const m = messages[i];
 		if (m.role !== "tool_result" && m.role !== "toolResult") continue;
+		if (toolResultCallId(m) !== searchCallId) continue;
 		const text = unwrapToolResultText(textOf(m.content));
 		if (!text.includes('"results"')) continue;
-		const row = searchResultsFromToolResult(text).find((r) => r.type === kind);
-		if (row !== undefined) return row.id;
+		return searchResultsFromToolResult(text)[0]?.id;
 	}
 	return undefined;
 }
@@ -550,11 +561,11 @@ function setExtractTodoResponses(
 		}
 		const personId =
 			todo.person_name !== undefined && todo.person_name.length > 0
-				? searchedEntityIdOfKind(context.messages, "person")
+				? searchedEntityId(context.messages, "tc_extract_search_person")
 				: undefined;
 		const projectId =
 			todo.project_name !== undefined && todo.project_name.length > 0
-				? searchedEntityIdOfKind(context.messages, "project")
+				? searchedEntityId(context.messages, "tc_extract_search_project")
 				: undefined;
 		return fauxAssistantMessage(
 			[

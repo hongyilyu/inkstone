@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::protocol::CoreToolDescriptor;
 
 pub const NAME: &str = "propose_workspace_mutation";
-const DESCRIPTION: &str = "Propose a Workspace mutation for user review before saving a journal-worthy lived event or reflection. Do not use for reminders, todos, tasks, or future obligations.";
+const DESCRIPTION: &str = "Propose a Workspace mutation for user review: capture a journal-worthy lived event or reflection as a Journal Entry, or extract People/Projects/Todos from an already-accepted Journal Entry. Do not create a Journal Entry for a bare reminder, task, or future obligation the user only wants remembered.";
 const LABEL: &str = "Propose Workspace mutation";
 
 /// Closed set of Core-known Workspace mutation kinds (Journal Entry + GTD
@@ -708,14 +708,21 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_excludes_reminders_from_journal_entries() {
+    fn descriptor_supports_extraction_but_excludes_bare_reminders_from_journal_entries() {
         let description = descriptor().description.to_lowercase();
+        // Journal Entry capture is still gated on journal-worthy material, and a
+        // bare reminder/task must not become a Journal Entry…
         assert!(
             description.contains("journal-worthy")
-                && description.contains("reminders")
-                && description.contains("todos")
-                && description.contains("tasks"),
-            "tool description must keep reminders/tasks out of Journal Entry proposals, got {description:?}"
+                && description.contains("reminder")
+                && description.contains("do not create a journal entry"),
+            "tool description must keep bare reminders out of Journal Entry creation, got {description:?}"
+        );
+        // …but Todo (and Person/Project) extraction from an accepted Journal Entry
+        // is now a supported path, so the descriptor must not blanket-prohibit todos.
+        assert!(
+            description.contains("extract") && description.contains("todos"),
+            "tool description must advertise People/Projects/Todos extraction, got {description:?}"
         );
     }
 
