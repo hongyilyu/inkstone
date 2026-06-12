@@ -13,6 +13,7 @@ import type {
 	Todo,
 } from "@/lib/libraryItems";
 import {
+	journalEntriesMentioning,
 	KIND_META,
 	libraryItemSubtitle,
 	libraryItemTitle,
@@ -22,7 +23,9 @@ import {
 	projectProgress,
 	projectsForPerson,
 	TODO_STATUS_LABEL,
+	type TodoPersonRole,
 	todoIsOverdue,
+	todosForPerson,
 	todosForProject,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
@@ -278,12 +281,21 @@ function PersonBody({
 	onOpen: (e: LibraryItem) => void;
 }) {
 	const projects = projectsForPerson(allEntities, person);
+	const tasks = todosForPerson(allEntities, person);
+	const waiting = todosForPerson(allEntities, person, "waiting_on");
+	const waitingIds = new Set(waiting.map((t) => t.id));
+	const otherTasks = tasks.filter((t) => !waitingIds.has(t.id));
 	return (
 		<>
 			<div className="flex flex-wrap gap-2 text-sm">
 				{person.relationship ? <Badge>{person.relationship}</Badge> : null}
 				{person.role ? <Badge>{person.role}</Badge> : null}
 			</div>
+			{person.aliases && person.aliases.length > 0 ? (
+				<Field label="Also known as">
+					<p className="text-pretty">{person.aliases.join(", ")}</p>
+				</Field>
+			) : null}
 			{person.email ? (
 				<Field label="Email">
 					<span className="flex items-center gap-1">
@@ -302,6 +314,24 @@ function PersonBody({
 					<p className="text-pretty">{person.note}</p>
 				</Field>
 			) : null}
+			{waiting.length > 0 ? (
+				<Field label="Waiting on">
+					<div className="-mx-2 flex flex-col">
+						{waiting.map((t) => (
+							<RelatedRow key={t.id} entity={t} onOpen={onOpen} />
+						))}
+					</div>
+				</Field>
+			) : null}
+			{otherTasks.length > 0 ? (
+				<Field label="Tasks">
+					<div className="-mx-2 flex flex-col">
+						{otherTasks.map((t) => (
+							<RelatedRow key={t.id} entity={t} onOpen={onOpen} />
+						))}
+					</div>
+				</Field>
+			) : null}
 			{projects.length > 0 ? (
 				<Field label="Projects">
 					<div className="-mx-2 flex flex-col">
@@ -311,6 +341,7 @@ function PersonBody({
 					</div>
 				</Field>
 			) : null}
+			<MentionedIn entity={person} allEntities={allEntities} onOpen={onOpen} />
 		</>
 	);
 }
@@ -337,6 +368,21 @@ function ProjectBody({
 			{project.outcome ? (
 				<Field label="Outcome">
 					<p className="text-pretty">{project.outcome}</p>
+				</Field>
+			) : null}
+			{project.note ? (
+				<Field label="Note">
+					<p className="text-pretty">{project.note}</p>
+				</Field>
+			) : null}
+			{project.nextReviewAt ? (
+				<Field label="Review">
+					<p className="text-pretty">
+						Next review {project.nextReviewAt.slice(0, 10)}
+						{project.lastReviewedAt
+							? ` · last reviewed ${project.lastReviewedAt.slice(0, 10)}`
+							: ""}
+					</p>
 				</Field>
 			) : null}
 			{total > 0 ? (
@@ -377,6 +423,61 @@ function ProjectBody({
 	);
 }
 
+const ROLE_LABEL: Record<TodoPersonRole, string> = {
+	waiting_on: "Waiting on",
+	related: "Related",
+};
+
+/** A linked-Person row carrying its Todo Person Reference role (ADR-0032). */
+function PersonRefRow({
+	person,
+	role,
+	onOpen,
+}: {
+	person: Person;
+	role: TodoPersonRole;
+	onOpen: (e: LibraryItem) => void;
+}) {
+	return (
+		<button
+			type="button"
+			onClick={() => onOpen(person)}
+			className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-secondary/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+		>
+			<EntityGlyph entity={person} size="sm" />
+			<span className="min-w-0 flex-1 truncate text-foreground text-sm">
+				{libraryItemTitle(person)}
+			</span>
+			<Badge size="sm" variant="secondary">
+				{ROLE_LABEL[role]}
+			</Badge>
+		</button>
+	);
+}
+
+/** "Mentioned in" — Journal Entries that inline-reference this entity (ADR-0031). */
+function MentionedIn({
+	entity,
+	allEntities,
+	onOpen,
+}: {
+	entity: LibraryItem;
+	allEntities: LibraryItem[];
+	onOpen: (e: LibraryItem) => void;
+}) {
+	const mentions = journalEntriesMentioning(allEntities, entity);
+	if (mentions.length === 0) return null;
+	return (
+		<Field label="Mentioned in">
+			<div className="-mx-2 flex flex-col">
+				{mentions.map((entry: JournalEntry) => (
+					<RelatedRow key={entry.id} entity={entry} onOpen={onOpen} />
+				))}
+			</div>
+		</Field>
+	);
+}
+
 function TodoBody({
 	todo,
 	allEntities,
@@ -388,6 +489,18 @@ function TodoBody({
 }) {
 	const project = projectForTodo(allEntities, todo);
 	const overdue = todoIsOverdue(todo);
+	const personById = new Map(
+		allEntities
+			.filter((e): e is Person => e.kind === "person")
+			.map((p) => [p.id, p]),
+	);
+	const linkedPeople = todo.personRefs
+		.map((ref) => {
+			const person = personById.get(ref.personId);
+			return person ? { person, role: ref.role } : null;
+		})
+		.filter((x): x is { person: Person; role: TodoPersonRole } => x !== null);
+
 	return (
 		<>
 			<div className="flex flex-wrap gap-2">
@@ -400,6 +513,16 @@ function TodoBody({
 				) : null}
 				{todo.deferAt ? (
 					<Badge>Deferred to {todo.deferAt.slice(0, 10)}</Badge>
+				) : null}
+				{todo.status === "completed" && todo.completedAt ? (
+					<Badge variant="secondary">
+						Completed {todo.completedAt.slice(0, 10)}
+					</Badge>
+				) : null}
+				{todo.status === "dropped" && todo.droppedAt ? (
+					<Badge variant="secondary">
+						Dropped {todo.droppedAt.slice(0, 10)}
+					</Badge>
 				) : null}
 			</div>
 			{todo.note ? (
@@ -414,6 +537,21 @@ function TodoBody({
 					</div>
 				</Field>
 			) : null}
+			{linkedPeople.length > 0 ? (
+				<Field label="People">
+					<div className="-mx-2 flex flex-col">
+						{linkedPeople.map(({ person, role }) => (
+							<PersonRefRow
+								key={person.id}
+								person={person}
+								role={role}
+								onOpen={onOpen}
+							/>
+						))}
+					</div>
+				</Field>
+			) : null}
+			<MentionedIn entity={todo} allEntities={allEntities} onOpen={onOpen} />
 		</>
 	);
 }

@@ -32,10 +32,14 @@ interface LibraryItemBase {
 export interface Person extends LibraryItemBase {
 	kind: "person";
 	name: string;
+	/** Alternate names this Person is also known by (ADR-0031). */
+	aliases?: string[];
+	note?: string;
+	// Preview-only descriptive fields (no GTD V0 equivalent yet); kept for the
+	// static fixtures until People capture lands.
 	role?: string;
 	relationship?: string;
 	email?: string;
-	note?: string;
 }
 
 export interface JournalEntry extends LibraryItemBase {
@@ -321,6 +325,26 @@ export function peopleForTodo(all: LibraryItem[], todo: Todo): Person[] {
 	return todo.personRefs
 		.map((ref) => personById.get(ref.personId))
 		.filter((p): p is Person => p !== undefined);
+}
+
+/**
+ * Journal Entries that inline-reference `target` via an Entity Reference
+ * (ADR-0031 "Mentioned in"). Newest occurred first.
+ */
+export function journalEntriesMentioning(
+	all: LibraryItem[],
+	target: LibraryItem,
+): JournalEntry[] {
+	return all
+		.filter(
+			(e): e is JournalEntry =>
+				e.kind === "journal_entry" &&
+				e.body.some(
+					(node) =>
+						node.type === "entity_ref" && node.targetEntityId === target.id,
+				),
+		)
+		.sort((a, b) => b.occurredAt.localeCompare(a.occurredAt));
 }
 
 export function projectForTodo(

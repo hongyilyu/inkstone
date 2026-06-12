@@ -221,20 +221,25 @@ function toLibraryTodo(row: LiveEntityRow): Todo {
 	} satisfies Todo;
 }
 
-/** The Person `data` shape Core stores (CONTEXT.md): `{name, note?}`. */
+/** The Person `data` shape Core stores (ADR-0031): `{name, note?, aliases?}`. */
 interface PersonData {
 	name?: unknown;
 	note?: unknown;
+	aliases?: unknown;
 }
 
-/** Map a live `entity/list` row to the Library `Person` view model — see docs/design/web-lib.md. */
+/** Map a live `entity/list` row to the Library `Person` view model (ADR-0031). */
 function toLibraryPerson(row: LiveEntityRow): Person {
 	const data = (row.data ?? {}) as PersonData;
+	const aliases = Array.isArray(data.aliases)
+		? data.aliases.filter((a): a is string => typeof a === "string")
+		: undefined;
 	return {
 		id: row.id,
 		kind: "person",
-		name: typeof data.name === "string" ? data.name : "Unnamed",
-		note: typeof data.note === "string" ? data.note : undefined,
+		name: asString(data.name) ?? "Unnamed",
+		note: asString(data.note),
+		aliases: aliases && aliases.length > 0 ? aliases : undefined,
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Person;

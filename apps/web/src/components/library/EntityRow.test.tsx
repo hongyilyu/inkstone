@@ -44,6 +44,15 @@ describe("TodoRow", () => {
 		).not.toBeInTheDocument();
 	});
 
+	it("marks a dropped todo with its own glyph", () => {
+		render(
+			<ul>
+				<TodoRow todo={todo("todo_old_vendor")} onSelect={() => {}} />
+			</ul>,
+		);
+		expect(screen.getByLabelText("Dropped")).toBeInTheDocument();
+	});
+
 	it("opens detail when the row is clicked", async () => {
 		const user = userEvent.setup();
 		const onSelect = vi.fn();

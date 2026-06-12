@@ -354,6 +354,22 @@ export const todos: Todo[] = [
 		},
 	},
 	{
+		id: "todo_old_vendor",
+		personRefs: [],
+		kind: "todo",
+		title: "Evaluate the old payments vendor",
+		status: "dropped",
+		droppedAt: "2026-05-20T12:00:00",
+		note: "Superseded — staying on the current provider.",
+		createdAt: "May 18",
+		recency: 24,
+		capturedFrom: {
+			threadId: "th_dinner",
+			threadTitle: "Side notes",
+			when: "May 18, 10:00",
+		},
+	},
+	{
 		id: "todo_buy_milk",
 		kind: "todo",
 		title: "Buy milk",
