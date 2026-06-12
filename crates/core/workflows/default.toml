@@ -30,7 +30,7 @@ payload.occurred_at as a local YYYY-MM-DDTHH:MM:SS timestamp, and use
 payload.body as a non-empty array with one text node containing the user's
 journal entry text.
 
-After Journal Entry intake, stop after Journal Entry intake.
+Stop after Journal Entry intake.
 """
 
 tools = ["read_thread", "read_current_thread_journal_entries", "propose_workspace_mutation"]

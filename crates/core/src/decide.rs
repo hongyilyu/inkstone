@@ -232,7 +232,8 @@ async fn prior_outcome(
 /// result (what the resumed model reads), validate accept/edit (NOT reject) via
 /// [`crate::entities`], then ONE atomic [`db::apply_proposal`] / [`db::reject_proposal`].
 /// `ApplyError::NotPending` (the guarded flip lost a concurrent race) →
-/// `LostRace`; `ApplyError::Sql` → `Internal`.
+/// `LostRace`; `ApplyError::InvalidMutation` → `Invalid`;
+/// `ApplyError::Sql` → `Internal`.
 ///
 /// This is also where an `edit` WITHOUT an `edited_payload` is rejected as
 /// `Invalid` — LATE (only on the fresh path), matching the pre-extraction
@@ -270,6 +271,7 @@ async fn apply_or_reject(
         .await
         {
             Ok(()) => Ok(DecideOutcome::Rejected { run_id }),
+            Err(db::ApplyError::InvalidMutation(reason)) => Err(DecideError::Invalid(reason)),
             Err(db::ApplyError::NotPending) => Err(DecideError::LostRace),
             Err(db::ApplyError::Sql(e)) => Err(DecideError::Internal(e.into())),
         };
@@ -341,6 +343,7 @@ async fn apply_or_reject(
     .await
     {
         Ok(entity_id) => Ok(DecideOutcome::Accepted { run_id, entity_id }),
+        Err(db::ApplyError::InvalidMutation(reason)) => Err(DecideError::Invalid(reason)),
         Err(db::ApplyError::NotPending) => Err(DecideError::LostRace),
         Err(db::ApplyError::Sql(e)) => Err(DecideError::Internal(e.into())),
     }
@@ -381,7 +384,9 @@ fn preserve_update_target_entity_id(
     }
 
     let Some(entity_id) = entities::target_entity_id(mutation_kind, proposal_payload) else {
-        return Ok(edited_payload.clone());
+        return Err(DecideError::Invalid(
+            "update_journal_entry proposal is missing entity_id".to_string(),
+        ));
     };
     if let Some(edited_entity_id) = entities::target_entity_id(mutation_kind, edited_payload) {
         if edited_entity_id != entity_id {
@@ -757,6 +762,71 @@ mod tests {
         assert!(
             resumed.load(Ordering::SeqCst),
             "edit resumes the parked run"
+        );
+    }
+
+    #[tokio::test]
+    async fn edit_update_rejects_targetless_original_proposal() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        sqlx::query("UPDATE proposals SET mutation_kind = 'update_journal_entry' WHERE id = ?")
+            .bind(&proposal_id_str)
+            .execute(&pool)
+            .await
+            .expect("force update proposal kind");
+        sqlx::query(
+            "UPDATE tool_calls SET request_payload = ? \
+             WHERE id = (SELECT tool_call_id FROM proposals WHERE id = ?)",
+        )
+        .bind(
+            serde_json::json!({
+                "mutation_kind": "update_journal_entry",
+                "payload": {
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [{ "type": "text", "text": "Missing target." }]
+                },
+                "rationale": "malformed update proposal"
+            })
+            .to_string(),
+        )
+        .bind(&proposal_id_str)
+        .execute(&pool)
+        .await
+        .expect("force targetless proposal payload");
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "edit",
+            Some(serde_json::json!({
+                "entity_id": Uuid::now_v7().to_string(),
+                "occurred_at": "2026-06-10T10:35:00",
+                "body": [{ "type": "text", "text": "Retargeted edit." }]
+            })),
+            Some("targetless-update-edit".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+
+        let Err(DecideError::Invalid(reason)) = outcome else {
+            panic!("expected invalid targetless update edit, got {outcome:?}");
+        };
+        assert!(
+            reason.contains("missing entity_id"),
+            "invalid reason names missing proposal target: {reason}"
+        );
+        assert_eq!(entity_count(&pool).await, 0, "invalid edit applies nothing");
+        assert_eq!(
+            proposal_status(&pool, &proposal_id_str).await,
+            "pending",
+            "invalid edit leaves the proposal pending"
+        );
+        assert!(
+            !resumed.load(Ordering::SeqCst),
+            "invalid edit does not resume"
         );
     }
 

@@ -48,7 +48,7 @@ Assistant Messages may provide conversational context for a Workflow, but Entity
 - Person, Project, and Todo Entities are not mere projections of Journal Entries. They may originate from a Journal Entry, but once accepted they own their current structured state.
 - Journal Entries are more authoritative as event/evidence records, not as the current state of every extracted Entity.
 - Daily Note rendering is a Client/export concern over accepted Journal Entries and reference data.
-- Cross-Thread refinement is allowed in the long-term model through additional user Message Entity Sources; the first intake implementation defers it and only permits update/delete from the Thread that originally created the Journal Entry.
+- Cross-Thread refinement is allowed in the long-term model through additional user Message Entity Sources; the first intake implementation defers it and only permits update/delete from the Thread that created the Journal Entry.
 - Existing chat-driven architecture stays intact: Message starts a Run; Workflow proposes Workspace changes; Core applies accepted Proposals atomically.
 
 ## Considered and rejected

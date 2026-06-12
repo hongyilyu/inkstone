@@ -6,7 +6,7 @@ import {
 	Pencil,
 	RotateCcw,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { PendingProposal } from "@/store/chat";
 import { Card } from "./ui/card.js";
 import { Input } from "./ui/input.js";
@@ -97,6 +97,10 @@ export function ProposalCard({
 		editedPayload?: JournalEntryPayload | UpdateJournalEntryPayload,
 	) => void;
 }) {
+	const editFormId = useId();
+	const occurredAtInputId = `${editFormId}-proposal-edit-occurred-at`;
+	const endedAtInputId = `${editFormId}-proposal-edit-ended-at`;
+	const bodyInputId = `${editFormId}-proposal-edit-body`;
 	const { status, payload, rationale, mutation_kind } = proposal;
 	const occurredAt = textField(payload, "occurred_at");
 	const endedAt = textField(payload, "ended_at");
@@ -275,40 +279,34 @@ export function ProposalCard({
 					}}
 					className="flex flex-col gap-3 border-border border-t pt-3"
 				>
-					<label
-						className="flex flex-col gap-1.5"
-						htmlFor="proposal-edit-occurred-at"
-					>
+					<label className="flex flex-col gap-1.5" htmlFor={occurredAtInputId}>
 						<span className="text-xs font-medium text-muted-foreground">
 							Occurred at
 						</span>
 						<Input
-							id="proposal-edit-occurred-at"
+							id={occurredAtInputId}
 							value={editOccurredAt}
 							onChange={(event) => setEditOccurredAt(event.target.value)}
 							className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
 						/>
 					</label>
-					<label
-						className="flex flex-col gap-1.5"
-						htmlFor="proposal-edit-ended-at"
-					>
+					<label className="flex flex-col gap-1.5" htmlFor={endedAtInputId}>
 						<span className="text-xs font-medium text-muted-foreground">
 							Ended at
 						</span>
 						<Input
-							id="proposal-edit-ended-at"
+							id={endedAtInputId}
 							value={editEndedAt}
 							onChange={(event) => setEditEndedAt(event.target.value)}
 							className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
 						/>
 					</label>
-					<label className="flex flex-col gap-1.5" htmlFor="proposal-edit-body">
+					<label className="flex flex-col gap-1.5" htmlFor={bodyInputId}>
 						<span className="text-xs font-medium text-muted-foreground">
 							Body
 						</span>
 						<textarea
-							id="proposal-edit-body"
+							id={bodyInputId}
 							ref={bodyRef}
 							value={editBody}
 							onChange={(event) => setEditBody(event.target.value)}

@@ -346,6 +346,17 @@ async fn revision_text(pool: &SqlitePool, entity_id: Uuid, seq: i64) -> String {
         .to_string()
 }
 
+async fn revision_data(pool: &SqlitePool, entity_id: Uuid, seq: i64) -> serde_json::Value {
+    let data: String =
+        sqlx::query_scalar("SELECT data FROM entity_revisions WHERE entity_id = ?1 AND seq = ?2")
+            .bind(entity_id.to_string())
+            .bind(seq)
+            .fetch_one(pool)
+            .await
+            .expect("revision row exists");
+    serde_json::from_str(&data).expect("revision data JSON")
+}
+
 async fn updated_from_count_for_run(pool: &SqlitePool, entity_id: Uuid, run_id: &str) -> i64 {
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM entity_sources es \
@@ -464,10 +475,28 @@ fn same_thread_update_accept_and_edit_replace_payload() {
             Some("Bought oat milk and bread after daycare pickup."),
             "entity current data is the edited full payload"
         );
+        assert!(
+            data.get("entity_id").is_none(),
+            "entity current data does not persist the update target id"
+        );
         assert_eq!(
             max_revision_seq(&pool, entity_id).await,
             3,
             "accept adds seq 2 and edit adds seq 3"
+        );
+        assert!(
+            revision_data(&pool, entity_id, 2)
+                .await
+                .get("entity_id")
+                .is_none(),
+            "accepted update revision data does not persist the target id"
+        );
+        assert!(
+            revision_data(&pool, entity_id, 3)
+                .await
+                .get("entity_id")
+                .is_none(),
+            "edited update revision data does not persist the target id"
         );
         assert_eq!(
             revision_text(&pool, entity_id, 2).await,

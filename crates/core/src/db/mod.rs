@@ -633,6 +633,9 @@ pub async fn journal_entry_target_is_valid(
 /// caller returns `proposal_not_pending`. `Sql` is any other DB failure.
 #[derive(Debug)]
 pub enum ApplyError {
+    /// The caller supplied an impossible mutation contract, such as an update
+    /// without a target entity id.
+    InvalidMutation(String),
     /// The `proposals` row was not `pending` when the guarded flip ran — a
     /// concurrent decide won. The transaction rolled back; nothing was applied.
     NotPending,
@@ -649,10 +652,27 @@ impl From<sqlx::Error> for ApplyError {
 impl std::fmt::Display for ApplyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            ApplyError::InvalidMutation(reason) => write!(f, "{reason}"),
             ApplyError::NotPending => write!(f, "proposal is not pending (lost the apply race)"),
             ApplyError::Sql(e) => write!(f, "{e}"),
         }
     }
+}
+
+fn journal_entry_data_payload(
+    mutation_kind: &str,
+    payload: &serde_json::Value,
+) -> serde_json::Value {
+    if mutation_kind != "update_journal_entry" {
+        return payload.clone();
+    }
+
+    let Some(obj) = payload.as_object() else {
+        return payload.clone();
+    };
+    let mut data = obj.clone();
+    data.remove("entity_id");
+    serde_json::Value::Object(data)
 }
 
 /// Apply an accepted Proposal in ONE atomic transaction (ADR-0016, ADR-0025).
@@ -697,18 +717,41 @@ pub async fn apply_proposal(
     decision_result_payload: &str,
     now_ms: i64,
 ) -> Result<String, ApplyError> {
-    let entity_id = target_entity_id
-        .map(str::to_string)
-        .unwrap_or_else(|| Uuid::now_v7().to_string());
+    let entity_id = match mutation_kind {
+        "create_journal_entry" => {
+            if target_entity_id.is_some() {
+                return Err(ApplyError::InvalidMutation(
+                    "create_journal_entry must not target an existing entity".to_string(),
+                ));
+            }
+            Uuid::now_v7().to_string()
+        }
+        "update_journal_entry" | "delete_journal_entry" => {
+            target_entity_id.map(str::to_string).ok_or_else(|| {
+                ApplyError::InvalidMutation(format!("{mutation_kind} requires a target entity id"))
+            })?
+        }
+        _ => {
+            return Err(ApplyError::InvalidMutation(format!(
+                "unsupported mutation_kind {mutation_kind:?}"
+            )));
+        }
+    };
     let edited_str = edited_payload.map(|v| v.to_string());
-    let data_str = if mutation_kind == "delete_journal_entry" {
-        None
-    } else {
-        // The applied entity data is the EDITED payload when present (edit),
-        // else the model's proposed `data` (accept). The resolved tool_call's
-        // rendered result and the entity snapshot both use this effective data
-        // so the model reads the FINAL values on resume.
-        Some(edited_payload.unwrap_or(payload).to_string())
+    let data_str = match mutation_kind {
+        "delete_journal_entry" => None,
+        "create_journal_entry" | "update_journal_entry" => {
+            // The applied entity data is the EDITED payload when present (edit),
+            // else the model's proposed `data` (accept). The resolved tool_call's
+            // rendered result and the entity snapshot both use this effective data
+            // so the model reads the FINAL values on resume. For updates,
+            // `entity_id` targets the row but is not part of Journal Entry data.
+            Some(
+                journal_entry_data_payload(mutation_kind, edited_payload.unwrap_or(payload))
+                    .to_string(),
+            )
+        }
+        _ => unreachable!("mutation_kind validated above"),
     };
 
     let mut tx = pool.begin().await?;
@@ -737,7 +780,7 @@ pub async fn apply_proposal(
                 return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
             }
         }
-        _ if target_entity_id.is_some() => {
+        "update_journal_entry" => {
             let data_str = data_str
                 .as_deref()
                 .expect("non-delete mutations always carry entity data");
@@ -758,7 +801,7 @@ pub async fn apply_proposal(
             )
             .await?;
         }
-        _ => {
+        "create_journal_entry" => {
             let data_str = data_str
                 .as_deref()
                 .expect("non-delete mutations always carry entity data");
@@ -775,6 +818,7 @@ pub async fn apply_proposal(
             queries::insert_entity_revision(&mut *tx, &entity_id, 1, data_str, proposal_id, now_ms)
                 .await?;
         }
+        _ => unreachable!("mutation_kind validated above"),
     }
     if let Some(relation) = source_relation_from_user_message {
         let source_id = queries::user_message_id_for_run(&mut *tx, run_id).await?;

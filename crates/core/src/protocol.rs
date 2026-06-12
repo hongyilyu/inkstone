@@ -75,12 +75,6 @@ pub struct ProposalGetParams {
     pub run_id: uuid::Uuid,
 }
 
-/// `proposal/get` result (ADR-0025): the Run's pending Proposal.
-/// `mutation_kind` is the logical Workspace mutation; `payload` is the opaque
-/// mutation-specific payload; `rationale` is the model's reason (may be
-/// `null`); `review_context` is optional display-only context for review
-/// surfaces; `status` is the Proposal's lifecycle state.
-/// Serialize-only — Core produces it.
 #[derive(Debug, Serialize)]
 pub struct JournalEntryBodyTextNode {
     pub r#type: &'static str,
@@ -102,6 +96,12 @@ pub struct ProposalReviewContext {
     pub current_journal_entry: Option<ProposalReviewCurrentJournalEntry>,
 }
 
+/// `proposal/get` result (ADR-0025): the Run's pending Proposal.
+/// `mutation_kind` is the logical Workspace mutation; `payload` is the opaque
+/// mutation-specific payload; `rationale` is the model's reason (may be
+/// `null`); `review_context` is optional display-only context for review
+/// surfaces; `status` is the Proposal's lifecycle state.
+/// Serialize-only — Core produces it.
 #[derive(Debug, Serialize)]
 pub struct ProposalGetResult {
     pub proposal_id: String,

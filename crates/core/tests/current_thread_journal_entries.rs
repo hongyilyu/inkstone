@@ -1,6 +1,6 @@
 //! `read_current_thread_journal_entries`: a synchronous Core tool reads the
 //! current Run's Thread from tier 2, then returns only accepted Journal Entries
-//! originally created from that Thread, newest latest-revision first.
+//! originally created from that Thread, newest revision first.
 
 use std::path::Path;
 

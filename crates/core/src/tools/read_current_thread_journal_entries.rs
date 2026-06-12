@@ -12,7 +12,7 @@ use super::ToolError;
 use crate::protocol::{AgentToolResult, CoreToolDescriptor, ToolTextContent};
 
 pub const NAME: &str = "read_current_thread_journal_entries";
-const DESCRIPTION: &str = "Read accepted Journal Entries originally created from the current thread, newest latest revision first.";
+const DESCRIPTION: &str = "Read accepted Journal Entries originally created from the current thread, newest revision first.";
 const LABEL: &str = "Read current thread journal entries";
 
 /// Takes no model-supplied arguments. Serde's default unknown-field tolerance is
