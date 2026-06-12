@@ -658,6 +658,17 @@ pub async fn entity_type_by_id(pool: &SqlitePool, entity_id: &str) -> sqlx::Resu
     queries::entity_type_by_id(pool, entity_id).await
 }
 
+/// Whether an accepted Entity with `entity_id` exists and is of `entity_type`.
+/// Backs decide-time target-type checks (e.g. a Todo's `project_id` must point at
+/// a `project`).
+pub async fn entity_is_type(
+    pool: &SqlitePool,
+    entity_id: &str,
+    entity_type: &str,
+) -> sqlx::Result<bool> {
+    queries::entity_is_type(pool, entity_id, entity_type).await
+}
+
 /// Failure modes of [`apply_proposal`] the caller must distinguish (review M1).
 #[derive(Debug)]
 pub enum ApplyError {
@@ -687,20 +698,279 @@ impl std::fmt::Display for ApplyError {
     }
 }
 
-fn journal_entry_data_payload(
+/// Whether a `mutation_kind` creates a fresh entity (mints a new id) versus
+/// mutating an existing one (requires a target id). Drives the entity-id
+/// derivation generically so the apply path names no specific Entity Type.
+fn is_create_mutation(mutation_kind: &str) -> bool {
+    matches!(
+        mutation_kind,
+        "create_journal_entry" | "create_person" | "create_project" | "create_todo"
+    )
+}
+
+/// Whether a `mutation_kind` replaces an existing entity's data in place (writes
+/// a new revision), as opposed to creating or deleting one. The apply path runs
+/// the shared update branch (update_entity + revision) for every such kind.
+fn is_update_mutation(mutation_kind: &str) -> bool {
+    matches!(
+        mutation_kind,
+        "update_journal_entry" | "update_person" | "update_project"
+    )
+}
+
+/// Whether a `mutation_kind` removes an existing entity. The apply path runs the
+/// shared delete branch (delete the entity of the caller-supplied `entity_type`;
+/// dependent rows cascade via FK) for every such kind. `update_todo` is NOT a
+/// delete despite its ref-removal ops. `delete_project` is a delete for the
+/// data-payload/edit-guard classification, but takes a DEDICATED apply arm (its
+/// project_id-unset cascade) ahead of the generic plain-delete branch.
+fn is_delete_mutation(mutation_kind: &str) -> bool {
+    matches!(
+        mutation_kind,
+        "delete_journal_entry" | "delete_person" | "delete_project" | "delete_todo"
+    )
+}
+
+/// The entity `data` to store for a `mutation_kind`, given its effective
+/// payload. The per-kind extraction/normalization seam: every update kind
+/// (`update_journal_entry`/`update_person`/`update_project`) strips `entity_id`
+/// (it targets the row but is not entity data);
+/// `create_project` injects `status:"active"` when absent so the stored data
+/// always carries an explicit status (validate tolerates a missing status), and
+/// for a resulting active Project with no review fields supplied seeds the
+/// default weekly review ritual (`review_every` + `next_review_at`) from the
+/// review anchor (ADR-0031); `create_todo` unwraps the `{todo, person_refs?}`
+/// envelope to store `payload.todo` (the TodoData) and likewise injects
+/// `status:"active"` when absent; every other kind stores its payload as-is. The
+/// `now_ms`/`offset_minutes` inputs anchor that review-date default.
+fn entity_data_payload(
     mutation_kind: &str,
     payload: &serde_json::Value,
+    now_ms: i64,
+    offset_minutes: i64,
 ) -> serde_json::Value {
-    if mutation_kind != "update_journal_entry" {
-        return payload.clone();
+    match mutation_kind {
+        kind if is_update_mutation(kind) => {
+            let Some(obj) = payload.as_object() else {
+                return payload.clone();
+            };
+            let mut data = obj.clone();
+            data.remove("entity_id");
+            // `source_journal_entry_id` is a create-only provenance directive
+            // (honored solely for `created_from`); strip it so an update payload
+            // can never persist this transport field into entity data.
+            data.remove("source_journal_entry_id");
+            serde_json::Value::Object(data)
+        }
+        "create_person" => {
+            // `source_journal_entry_id` is a provenance directive, never Person
+            // data — strip it before storing (validate already accepted it).
+            let Some(obj) = payload.as_object() else {
+                return payload.clone();
+            };
+            let mut data = obj.clone();
+            data.remove("source_journal_entry_id");
+            serde_json::Value::Object(data)
+        }
+        "create_project" => {
+            let Some(obj) = payload.as_object() else {
+                return payload.clone();
+            };
+            let mut data = obj.clone();
+            // `source_journal_entry_id` is provenance, never Project data.
+            data.remove("source_journal_entry_id");
+            let status = data
+                .entry("status")
+                .or_insert_with(|| serde_json::json!("active"));
+            let is_active = status.as_str() == Some("active");
+            if is_active
+                && !data.contains_key("review_every")
+                && !data.contains_key("next_review_at")
+            {
+                data.insert(
+                    "review_every".to_string(),
+                    serde_json::json!({ "interval": 1, "unit": "week" }),
+                );
+                data.insert(
+                    "next_review_at".to_string(),
+                    serde_json::json!(crate::entities::next_review_at_local(now_ms, offset_minutes)),
+                );
+            }
+            serde_json::Value::Object(data)
+        }
+        "create_todo" => {
+            // Unwrap the `{todo, person_refs?}` envelope into Todo JSON;
+            // person_refs persist separately in `todo_person_refs`, never in
+            // `entities.data`.
+            let Some(todo) = payload.get("todo").and_then(|t| t.as_object()) else {
+                return payload.clone();
+            };
+            let mut data = todo.clone();
+            data.entry("status")
+                .or_insert_with(|| serde_json::json!("active"));
+            serde_json::Value::Object(data)
+        }
+        _ => payload.clone(),
+    }
+}
+
+/// De-dup a `create_todo` envelope's `person_refs` to at most one `(person_id,
+/// role)` per Person (ADR-0031). A missing role defaults to `related`;
+/// `waiting_on` wins over `related` when a Person appears twice (it includes
+/// related semantics). First-seen order is preserved. The decide path has
+/// already verified each `person_id` references an Accepted Person and the pure
+/// validator has checked each ref's shape.
+fn deduped_person_refs(envelope: &serde_json::Value) -> Vec<(String, &'static str)> {
+    let Some(refs) = envelope.get("person_refs").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut order: Vec<String> = Vec::new();
+    let mut roles: std::collections::HashMap<String, &'static str> =
+        std::collections::HashMap::new();
+    for person_ref in refs {
+        let Some(person_id) = person_ref
+            .get("person_id")
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let role = match person_ref.get("role").and_then(|v| v.as_str()) {
+            Some("waiting_on") => "waiting_on",
+            _ => "related",
+        };
+        match roles.get_mut(person_id) {
+            // waiting_on includes related — upgrade, never downgrade.
+            Some(existing) => {
+                if role == "waiting_on" {
+                    *existing = "waiting_on";
+                }
+            }
+            None => {
+                order.push(person_id.to_string());
+                roles.insert(person_id.to_string(), role);
+            }
+        }
+    }
+    order
+        .into_iter()
+        .map(|id| {
+            let role = roles[&id];
+            (id, role)
+        })
+        .collect()
+}
+
+/// De-dup an `update_todo` ref array (`set_person_refs`/`add_person_refs`) to at
+/// most one `(person_id, role)` per Person, mirroring [`deduped_person_refs`]:
+/// missing role ⇒ `related`; `waiting_on` wins over `related`; first-seen order
+/// preserved. The decide path has verified each `person_id` is an Accepted
+/// Person and the validator has checked each ref's shape.
+fn deduped_ref_array(refs: &serde_json::Value) -> Vec<(String, &'static str)> {
+    let Some(refs) = refs.as_array() else {
+        return Vec::new();
+    };
+    let mut order: Vec<String> = Vec::new();
+    let mut roles: std::collections::HashMap<String, &'static str> =
+        std::collections::HashMap::new();
+    for person_ref in refs {
+        let Some(person_id) = person_ref
+            .get("person_id")
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let role = match person_ref.get("role").and_then(|v| v.as_str()) {
+            Some("waiting_on") => "waiting_on",
+            _ => "related",
+        };
+        match roles.get_mut(person_id) {
+            Some(existing) => {
+                if role == "waiting_on" {
+                    *existing = "waiting_on";
+                }
+            }
+            None => {
+                order.push(person_id.to_string());
+                roles.insert(person_id.to_string(), role);
+            }
+        }
+    }
+    order
+        .into_iter()
+        .map(|id| {
+            let role = roles[&id];
+            (id, role)
+        })
+        .collect()
+}
+
+/// Apply an `update_todo` inside the caller's open tx (ADR-0031). MERGE: load the
+/// current Todo `data`, overlay each key of the supplied `payload["todo"]`
+/// partial (unset keys preserved; a supplied key sets that value — no
+/// explicit-clear semantics), then RE-VALIDATE the merged whole via
+/// [`crate::entities::validate_todo_data`] so the status↔timestamp invariants
+/// hold on the result. Write the entity update + next revision. Then the REF OPS,
+/// in a defined PRECEDENCE: `set_person_refs` (full replace: delete-all then
+/// insert the deduped set) FIRST, then `add_person_refs` (upsert/upgrade each
+/// deduped ref) — set replaces wholesale, add/remove adjust on top — then
+/// `remove_person_ids` (delete each). Refs live ONLY in `todo_person_refs`, never
+/// in the Todo JSON, so the merged data must not carry `person_refs`.
+async fn apply_update_todo(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    todo_id: &str,
+    payload: &serde_json::Value,
+    schema_version: i64,
+    proposal_id: &str,
+    now_ms: i64,
+) -> Result<(), ApplyError> {
+    let current = queries::current_todo_data(&mut **tx, todo_id)
+        .await?
+        .ok_or_else(|| {
+            ApplyError::InvalidMutation(format!("update_todo target {todo_id:?} is not a Todo"))
+        })?;
+    let mut merged: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&current)
+        .map_err(|e| ApplyError::InvalidMutation(format!("current Todo data is not JSON: {e}")))?;
+
+    if let Some(partial) = payload.get("todo").and_then(|t| t.as_object()) {
+        for (key, value) in partial {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    let merged = serde_json::Value::Object(merged);
+    crate::entities::validate_todo_data(&merged).map_err(ApplyError::InvalidMutation)?;
+    let data_str = merged.to_string();
+
+    let updated =
+        queries::update_entity(&mut **tx, todo_id, "todo", schema_version, &data_str, now_ms)
+            .await?;
+    if updated != 1 {
+        return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+    }
+    let next_seq = queries::next_entity_revision_seq(&mut **tx, todo_id).await?;
+    queries::insert_entity_revision(&mut **tx, todo_id, next_seq, &data_str, proposal_id, now_ms)
+        .await?;
+
+    // Ref-op precedence: set (wholesale replace) → add (upsert/upgrade) → remove.
+    if let Some(set_refs) = payload.get("set_person_refs") {
+        queries::delete_all_todo_person_refs(&mut **tx, todo_id).await?;
+        for (person_id, role) in deduped_ref_array(set_refs) {
+            queries::insert_todo_person_ref(&mut **tx, todo_id, &person_id, role, now_ms).await?;
+        }
+    }
+    if let Some(add_refs) = payload.get("add_person_refs") {
+        for (person_id, role) in deduped_ref_array(add_refs) {
+            queries::upsert_todo_person_ref(&mut **tx, todo_id, &person_id, role, now_ms).await?;
+        }
+    }
+    if let Some(remove) = payload.get("remove_person_ids").and_then(|v| v.as_array()) {
+        for person_id in remove.iter().filter_map(|v| v.as_str()) {
+            queries::delete_todo_person_ref(&mut **tx, todo_id, person_id).await?;
+        }
     }
 
-    let Some(obj) = payload.as_object() else {
-        return payload.clone();
-    };
-    let mut data = obj.clone();
-    data.remove("entity_id");
-    serde_json::Value::Object(data)
+    Ok(())
 }
 
 /// Apply an accepted Proposal in one atomic transaction (ADR-0016, ADR-0025):
@@ -736,38 +1006,47 @@ pub async fn apply_proposal(
     decision_result_payload: &str,
     now_ms: i64,
 ) -> Result<String, ApplyError> {
-    let entity_id = match mutation_kind {
-        "create_journal_entry" => {
-            if target_entity_id.is_some() {
-                return Err(ApplyError::InvalidMutation(
-                    "create_journal_entry must not target an existing entity".to_string(),
-                ));
-            }
-            Uuid::now_v7().to_string()
-        }
-        "update_journal_entry" | "delete_journal_entry" => {
-            target_entity_id.map(str::to_string).ok_or_else(|| {
-                ApplyError::InvalidMutation(format!("{mutation_kind} requires a target entity id"))
-            })?
-        }
-        "reference_existing_entity_from_journal_entry" => {
-            target_entity_id.map(str::to_string).ok_or_else(|| {
-                ApplyError::InvalidMutation(
-                    "reference_existing_entity_from_journal_entry requires a source entity id"
-                        .to_string(),
-                )
-            })?
-        }
-        _ => {
+    let entity_id = if is_create_mutation(mutation_kind) {
+        if target_entity_id.is_some() {
             return Err(ApplyError::InvalidMutation(format!(
-                "unsupported mutation_kind {mutation_kind:?}"
+                "{mutation_kind} must not target an existing entity"
             )));
         }
+        Uuid::now_v7().to_string()
+    } else {
+        target_entity_id.map(str::to_string).ok_or_else(|| {
+            ApplyError::InvalidMutation(format!("{mutation_kind} requires a target entity id"))
+        })?
     };
     let edited_str = edited_payload.map(|v| v.to_string());
     let effective_payload = edited_payload.unwrap_or(payload);
 
     let mut tx = pool.begin().await?;
+
+    // The review-anchor offset seeds an active Project's default next_review_at.
+    // Read it INSIDE the tx (via the executor-generic query) so the derived
+    // default comes from the same serialized state we commit — a concurrent
+    // `settings/set` can't make us persist a stale offset.
+    let review_anchor_offset =
+        queries::get_setting(&mut *tx, crate::settings::REVIEW_ANCHOR_UTC_OFFSET_KEY)
+            .await?
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(0);
+    // Effective entity data: edited payload when present, else the proposed
+    // data, run through the per-kind extraction seam. Delete kinds touch no
+    // entity data; `update_todo` MERGES against current DB state inside the tx,
+    // so it computes its data there, not here; the
+    // `reference_existing_entity_from_journal_entry` kind likewise rewrites the
+    // target Journal Entry body against current state inside the tx (it needs the
+    // freshly-minted entity_ref id), so it is computed there too.
+    let mut data_str = match mutation_kind {
+        "update_todo" | "reference_existing_entity_from_journal_entry" => None,
+        kind if is_delete_mutation(kind) => None,
+        _ => Some(
+            entity_data_payload(mutation_kind, effective_payload, now_ms, review_anchor_offset)
+                .to_string(),
+        ),
+    };
 
     // Flip the Proposal first under the `status='pending'` guard (the single
     // concurrency choke); on 0 rows a racing decide won, so bail before
@@ -832,59 +1111,118 @@ pub async fn apply_proposal(
         None
     };
 
-    let data_str = match mutation_kind {
-        "delete_journal_entry" => None,
-        "create_journal_entry" | "update_journal_entry" => {
-            // Effective entity data: edited payload when present, else the
-            // proposed data. For updates, `entity_id` targets the row but is not
-            // part of Journal Entry data.
-            Some(journal_entry_data_payload(mutation_kind, effective_payload).to_string())
+    // The reference kind's stored data is the target Journal Entry's CURRENT body
+    // with the new entity_ref placeholder rewritten to carry the freshly-minted
+    // `ref_id`. It needs committed state + that ref id, so it is computed here
+    // (the pre-tx seam left it `None`); every other kind already has its data_str.
+    if mutation_kind == "reference_existing_entity_from_journal_entry" {
+        let ref_id = reference_ref_id
+            .as_deref()
+            .expect("reference mutation creates or reuses an entity_ref");
+        let current_data = queries::current_journal_entry_by_id(&mut *tx, &entity_id)
+            .await?
+            .ok_or(ApplyError::Sql(sqlx::Error::RowNotFound))?
+            .1;
+        let current_data: serde_json::Value =
+            serde_json::from_str(&current_data).map_err(|e| {
+                ApplyError::InvalidMutation(format!(
+                    "stored Journal Entry data is malformed JSON: {e}"
+                ))
+            })?;
+        if !current_data.is_object() {
+            return Err(ApplyError::InvalidMutation(
+                "stored Journal Entry data must be a JSON object".to_string(),
+            ));
         }
-        "reference_existing_entity_from_journal_entry" => {
-            let ref_id = reference_ref_id
-                .as_deref()
-                .expect("reference mutation creates or reuses an entity_ref");
-            let current_data = queries::current_journal_entry_by_id(&mut *tx, &entity_id)
-                .await?
-                .ok_or(ApplyError::Sql(sqlx::Error::RowNotFound))?
-                .1;
-            let current_data: serde_json::Value =
-                serde_json::from_str(&current_data).map_err(|e| {
-                    ApplyError::InvalidMutation(format!(
-                        "stored Journal Entry data is malformed JSON: {e}"
-                    ))
-                })?;
-            if !current_data.is_object() {
-                return Err(ApplyError::InvalidMutation(
-                    "stored Journal Entry data must be a JSON object".to_string(),
-                ));
-            }
-            Some(
-                crate::entities::reference_existing_entity_data_payload(
-                    &current_data,
-                    effective_payload,
-                    ref_id,
-                )
-                .to_string(),
+        data_str = Some(
+            crate::entities::reference_existing_entity_data_payload(
+                &current_data,
+                effective_payload,
+                ref_id,
             )
-        }
-        _ => unreachable!("mutation_kind validated above"),
-    };
+            .to_string(),
+        );
+    }
 
     match mutation_kind {
-        "delete_journal_entry" => {
-            let deleted = queries::delete_entity(&mut *tx, &entity_id).await?;
+        // delete_project is the ONE non-FK cascade (ADR-0031): project_id lives in
+        // the Todo JSON, not an FK column. In THIS tx, unset project_id on every
+        // owning Todo (rewriting each Todo's data + a new revision) FIRST, then
+        // delete the Project entity. Only project_id is removed — the Todo's
+        // title/note and its todo_person_refs are untouched. Handled ahead of the
+        // generic delete arm so the plain delete does not also run for it.
+        "delete_project" => {
+            let affected = queries::todos_with_project(&mut *tx, &entity_id).await?;
+            for (todo_id, todo_data) in affected {
+                let mut data: serde_json::Map<String, serde_json::Value> =
+                    serde_json::from_str(&todo_data).map_err(|e| {
+                        ApplyError::InvalidMutation(format!("Todo data is not JSON: {e}"))
+                    })?;
+                data.remove("project_id");
+                let new_data = serde_json::Value::Object(data).to_string();
+                let updated = queries::update_entity(
+                    &mut *tx,
+                    &todo_id,
+                    "todo",
+                    crate::entities::TODO_SCHEMA_VERSION,
+                    &new_data,
+                    now_ms,
+                )
+                .await?;
+                if updated != 1 {
+                    return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+                }
+                let next_seq = queries::next_entity_revision_seq(&mut *tx, &todo_id).await?;
+                queries::insert_entity_revision(
+                    &mut *tx, &todo_id, next_seq, &new_data, proposal_id, now_ms,
+                )
+                .await?;
+            }
+            let deleted = queries::delete_entity(&mut *tx, &entity_id, "project").await?;
             if deleted != 1 {
                 return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
             }
         }
-        "update_journal_entry" | "reference_existing_entity_from_journal_entry" => {
+        // Delete kinds (journal_entry, person, todo): remove the entity of the
+        // caller-supplied `entity_type`. Its revisions/sources and a Person's or
+        // Todo's `todo_person_refs` rows cascade away via FK ON DELETE CASCADE —
+        // no explicit ref-delete SQL here.
+        kind if is_delete_mutation(kind) => {
+            let deleted = queries::delete_entity(&mut *tx, &entity_id, entity_type).await?;
+            if deleted != 1 {
+                return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+            }
+        }
+        // update_todo MERGES a Partial<TodoData> onto the current Todo, then
+        // performs its ref ops, all in THIS tx (ADR-0031 atomicity). The merge
+        // needs committed state, so it loads current data here rather than via
+        // the pre-tx `entity_data_payload` seam.
+        "update_todo" => {
+            apply_update_todo(&mut tx, &entity_id, effective_payload, schema_version, proposal_id, now_ms)
+                .await?;
+        }
+        // Update kinds (journal_entry, person, project): replace the target
+        // entity's data of the caller-supplied `entity_type` + append the next
+        // revision snapshot. The journal-entry body-ref check above is gated to
+        // journal kinds; person/project carry no body refs.
+        // `reference_existing_entity_from_journal_entry` also writes a new
+        // revision of the target Journal Entry (the body rewritten above to carry
+        // the new entity_ref placeholder), so it joins this update branch.
+        kind if is_update_mutation(kind)
+            || kind == "reference_existing_entity_from_journal_entry" =>
+        {
             let data_str = data_str
                 .as_deref()
                 .expect("non-delete mutations always carry entity data");
-            let updated =
-                queries::update_entity(&mut *tx, &entity_id, schema_version, data_str, now_ms)
-                    .await?;
+            let updated = queries::update_entity(
+                &mut *tx,
+                &entity_id,
+                entity_type,
+                schema_version,
+                data_str,
+                now_ms,
+            )
+            .await?;
             if updated != 1 {
                 return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
             }
@@ -899,7 +1237,10 @@ pub async fn apply_proposal(
             )
             .await?;
         }
-        "create_journal_entry" => {
+        // Create kinds (journal_entry, person, …): insert the entity of the
+        // caller-supplied `entity_type` + its seq-1 revision. The query is
+        // already generic on `entity_type`.
+        kind if is_create_mutation(kind) => {
             let data_str = data_str
                 .as_deref()
                 .expect("non-delete mutations always carry entity data");
@@ -915,21 +1256,51 @@ pub async fn apply_proposal(
             .await?;
             queries::insert_entity_revision(&mut *tx, &entity_id, 1, data_str, proposal_id, now_ms)
                 .await?;
+            if mutation_kind == "create_todo" {
+                // Persist the Todo's Person References (ADR-0031) in the SAME tx
+                // so the refs are atomic with the Todo entity. They live in
+                // `todo_person_refs`, NOT in the Todo JSON, so read them from the
+                // proposal envelope (`effective_payload`), not the stored data.
+                for (person_id, role) in deduped_person_refs(effective_payload) {
+                    queries::insert_todo_person_ref(&mut *tx, &entity_id, &person_id, role, now_ms)
+                        .await?;
+                }
+            }
         }
         _ => unreachable!("mutation_kind validated above"),
     }
     if let Some(relation) = source_relation_from_user_message {
-        let source_id = queries::user_message_id_for_run(&mut *tx, run_id).await?;
         let source_row_id = Uuid::now_v7().to_string();
-        queries::insert_entity_source_from_message(
-            &mut *tx,
-            &source_row_id,
-            &entity_id,
-            &source_id,
-            relation,
-            now_ms,
-        )
-        .await?;
+        // A create carrying `source_journal_entry_id` is sourced `created_from`
+        // that Journal Entry (source_entity_id), not the user Message. Absent the
+        // field, the Message-sourcing path is unchanged. JournalEntry provenance
+        // is `created_from` only (ADR-0030/0031): an `updated_from` source always
+        // points at the user Message, so the field is honored solely for creates.
+        if let Some(journal_entry_id) = (relation == "created_from")
+            .then(|| crate::entities::source_journal_entry_id(effective_payload))
+            .flatten()
+        {
+            queries::insert_entity_source_from_entity(
+                &mut *tx,
+                &source_row_id,
+                &entity_id,
+                journal_entry_id,
+                relation,
+                now_ms,
+            )
+            .await?;
+        } else {
+            let source_id = queries::user_message_id_for_run(&mut *tx, run_id).await?;
+            queries::insert_entity_source_from_message(
+                &mut *tx,
+                &source_row_id,
+                &entity_id,
+                &source_id,
+                relation,
+                now_ms,
+            )
+            .await?;
+        }
     }
     queries::resolve_tool_call(
         &mut *tx,
@@ -1210,6 +1581,88 @@ pub async fn get_setting(pool: &SqlitePool, key: &str) -> sqlx::Result<Option<St
 /// Upsert a user setting (ADR-0024). Single statement; backs `settings/set`.
 pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Result<()> {
     queries::set_setting(pool, key, value).await
+}
+
+// ─── GTD relationship read layer (Slice 11, ADR-0031) ──────────────────────
+//
+// Core-internal in V0 — exposed to client APIs in V1, so currently uncalled
+// (`#[allow(dead_code)]`). Entity-returning helpers map raw rows into
+// [`EntityRow`] like [`list_by_type`]: a malformed `data` JSON degrades to
+// `null` rather than failing the read.
+
+/// Map a raw `(id, type, data, created_at, updated_at)` row to an [`EntityRow`].
+fn entity_row(row: (String, String, String, i64, i64)) -> EntityRow {
+    let (id, r#type, data, created_at, updated_at) = row;
+    EntityRow {
+        id,
+        r#type,
+        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+        created_at,
+        updated_at,
+        refs: Vec::new(),
+    }
+}
+
+/// Read every Todo owning `project_id` (its `data.project_id` matches), reusing
+/// the `json_extract` project match. Returns full [`EntityRow`]s with real
+/// `created_at`/`updated_at`, newest-first.
+#[allow(dead_code)]
+pub async fn todos_by_project(
+    pool: &SqlitePool,
+    project_id: &str,
+) -> sqlx::Result<Vec<EntityRow>> {
+    let rows = queries::todos_by_project(pool, project_id).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, data, created_at, updated_at)| {
+            entity_row((id, "todo".to_string(), data, created_at, updated_at))
+        })
+        .collect())
+}
+
+/// Read every Todo linked to `person_id` via `todo_person_refs`, optionally
+/// filtered to `role` (ADR-0031). Returns full [`EntityRow`]s, newest-first.
+#[allow(dead_code)]
+pub async fn todos_by_person(
+    pool: &SqlitePool,
+    person_id: &str,
+    role: Option<&str>,
+) -> sqlx::Result<Vec<EntityRow>> {
+    let rows = queries::todos_by_person(pool, person_id, role).await?;
+    Ok(rows.into_iter().map(entity_row).collect())
+}
+
+/// Read every Todo Person Reference on `todo_id` as `(person_id, role)` pairs
+/// (ADR-0031).
+#[allow(dead_code)]
+pub async fn person_refs_by_todo(
+    pool: &SqlitePool,
+    todo_id: &str,
+) -> sqlx::Result<Vec<(String, String)>> {
+    queries::person_refs_by_todo(pool, todo_id).await
+}
+
+/// Distinct People linked to `project_id` through that Project's Todos (ADR-0031).
+#[allow(dead_code)]
+pub async fn project_people(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<String>> {
+    queries::project_people(pool, project_id).await
+}
+
+/// Distinct Projects linked to `person_id` through their Todos (ADR-0031).
+#[allow(dead_code)]
+pub async fn person_projects(pool: &SqlitePool, person_id: &str) -> sqlx::Result<Vec<String>> {
+    queries::person_projects(pool, person_id).await
+}
+
+/// Read reviewable Projects due for review: active/on_hold with a non-null
+/// `next_review_at` at-or-before `now` (ADR-0031). Returns full [`EntityRow`]s.
+#[allow(dead_code)]
+pub async fn projects_due_for_review(
+    pool: &SqlitePool,
+    now: &str,
+) -> sqlx::Result<Vec<EntityRow>> {
+    let rows = queries::projects_due_for_review(pool, now).await?;
+    Ok(rows.into_iter().map(entity_row).collect())
 }
 
 #[cfg(test)]
@@ -1539,6 +1992,84 @@ mod tests {
         );
     }
 
+    /// Defense-in-depth (ADR-0030/0031): `source_journal_entry_id` is honored
+    /// only for `created_from` (creates). An `updated_from` apply that somehow
+    /// carries the field still sources from the user Message — never from a
+    /// Journal Entry. (Update validators already reject the field at decide; this
+    /// guards the apply layer directly so a future allowlist relaxation can't
+    /// mis-source an update or FK-fail on a stray JE id.)
+    #[tokio::test]
+    async fn update_ignores_source_journal_entry_id_and_stays_message_sourced() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("99999999-9999-4999-8999-999999999999").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+
+        // An existing Person to update (created_by='user', no proposal needed).
+        let person_id = Uuid::now_v7().to_string();
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_via_proposal_id, \
+              created_at, updated_at) \
+             VALUES (?, 'person', ?, ?, 'user', NULL, ?, ?)",
+        )
+        .bind(&person_id)
+        .bind(crate::entities::PERSON_SCHEMA_VERSION)
+        .bind(r#"{"name":"Alice"}"#)
+        .bind(1_i64)
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("seed person");
+
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-update-src").await;
+
+        // The update payload smuggles a source_journal_entry_id pointing at a
+        // NON-existent entity. The buggy (pre-gate) path would route to
+        // insert_entity_source_from_entity and FK-fail; the gate keeps it on the
+        // Message path because relation == "updated_from".
+        let bogus_journal_entry_id = Uuid::now_v7().to_string();
+        let entity_id = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-update-src",
+            "update_person",
+            "person",
+            crate::entities::PERSON_SCHEMA_VERSION,
+            Some(&person_id),
+            &serde_json::json!({
+                "entity_id": person_id,
+                "name": "Alice Updated",
+                "source_journal_entry_id": bogus_journal_entry_id,
+            }),
+            None,
+            Some("updated_from"),
+            Some("idem-update-src"),
+            r#"{"decision":"accept","content":"Accepted."}"#,
+            42,
+        )
+        .await
+        .expect("update applies (must not FK-fail on the stray JE id)");
+        assert_eq!(entity_id, person_id);
+
+        // The updated_from source points at the user Message, NOT the Journal Entry.
+        let (msg_count, ent_count): (i64, i64) = sqlx::query_as(
+            "SELECT \
+               COUNT(*) FILTER (WHERE source_message_id IS NOT NULL AND source_entity_id IS NULL), \
+               COUNT(*) FILTER (WHERE source_entity_id IS NOT NULL) \
+             FROM entity_sources WHERE entity_id = ?1 AND relation = 'updated_from'",
+        )
+        .bind(&person_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count updated_from sources");
+        assert_eq!(msg_count, 1, "update is sourced from the user Message");
+        assert_eq!(
+            ent_count, 0,
+            "update is never sourced from a Journal Entry (source_journal_entry_id ignored on update)"
+        );
+    }
+
     #[tokio::test]
     async fn reject_records_proposal_decided_and_is_guarded() {
         let pool = memory_pool().await;
@@ -1668,6 +2199,211 @@ mod tests {
             non_parked,
             Moved::Lost,
             "flipping a non-parked Run affects no rows"
+        );
+    }
+
+    // ─── relationship read helpers (Slice 11, ADR-0031) ────────────────────
+
+    /// Insert an Entity row directly with the given `type` + `data` JSON, so the
+    /// relationship-read tests can seed Todos/Persons/Projects without a Proposal.
+    async fn seed_entity(pool: &SqlitePool, id: &str, entity_type: &str, data: &str) {
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_via_proposal_id, \
+              created_at, updated_at) \
+             VALUES (?, ?, 1, ?, 'user', NULL, 1, 1)",
+        )
+        .bind(id)
+        .bind(entity_type)
+        .bind(data)
+        .execute(pool)
+        .await
+        .expect("insert entity");
+    }
+
+    /// Insert one `todo_person_refs` row directly.
+    async fn seed_ref(pool: &SqlitePool, todo_id: &str, person_id: &str, role: &str) {
+        sqlx::query(
+            "INSERT INTO todo_person_refs \
+             (todo_id, person_id, role, created_at, updated_at) VALUES (?, ?, ?, 1, 1)",
+        )
+        .bind(todo_id)
+        .bind(person_id)
+        .bind(role)
+        .execute(pool)
+        .await
+        .expect("insert ref");
+    }
+
+    #[tokio::test]
+    async fn todos_by_project_returns_only_that_projects_todos() {
+        let pool = memory_pool().await;
+        seed_entity(&pool, "proj-a", "project", r#"{"name":"A"}"#).await;
+        seed_entity(&pool, "proj-b", "project", r#"{"name":"B"}"#).await;
+        seed_entity(&pool, "t1", "todo", r#"{"title":"t1","project_id":"proj-a"}"#).await;
+        seed_entity(&pool, "t2", "todo", r#"{"title":"t2","project_id":"proj-a"}"#).await;
+        seed_entity(&pool, "t3", "todo", r#"{"title":"t3","project_id":"proj-b"}"#).await;
+        seed_entity(&pool, "t4", "todo", r#"{"title":"t4"}"#).await;
+
+        let mut ids: Vec<String> = todos_by_project(&pool, "proj-a")
+            .await
+            .expect("todos_by_project")
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec!["t1".to_string(), "t2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn todos_by_person_optionally_filters_by_role() {
+        let pool = memory_pool().await;
+        seed_entity(&pool, "alice", "person", r#"{"name":"Alice"}"#).await;
+        seed_entity(&pool, "t1", "todo", r#"{"title":"t1"}"#).await;
+        seed_entity(&pool, "t2", "todo", r#"{"title":"t2"}"#).await;
+        seed_ref(&pool, "t1", "alice", "waiting_on").await;
+        seed_ref(&pool, "t2", "alice", "related").await;
+
+        let mut all: Vec<String> = todos_by_person(&pool, "alice", None)
+            .await
+            .expect("all roles")
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        all.sort();
+        assert_eq!(all, vec!["t1".to_string(), "t2".to_string()]);
+
+        let waiting: Vec<String> = todos_by_person(&pool, "alice", Some("waiting_on"))
+            .await
+            .expect("waiting only")
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        assert_eq!(waiting, vec!["t1".to_string()], "role filter keeps only waiting_on");
+    }
+
+    #[tokio::test]
+    async fn person_refs_by_todo_returns_person_role_pairs() {
+        let pool = memory_pool().await;
+        seed_entity(&pool, "alice", "person", r#"{"name":"Alice"}"#).await;
+        seed_entity(&pool, "bob", "person", r#"{"name":"Bob"}"#).await;
+        seed_entity(&pool, "t1", "todo", r#"{"title":"t1"}"#).await;
+        seed_ref(&pool, "t1", "alice", "waiting_on").await;
+        seed_ref(&pool, "t1", "bob", "related").await;
+
+        let mut refs = person_refs_by_todo(&pool, "t1").await.expect("refs");
+        refs.sort();
+        assert_eq!(
+            refs,
+            vec![
+                ("alice".to_string(), "waiting_on".to_string()),
+                ("bob".to_string(), "related".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn project_people_derive_only_through_that_projects_todos() {
+        let pool = memory_pool().await;
+        seed_entity(&pool, "alice", "person", r#"{"name":"Alice"}"#).await;
+        seed_entity(&pool, "bob", "person", r#"{"name":"Bob"}"#).await;
+        seed_entity(&pool, "proj-a", "project", r#"{"name":"A"}"#).await;
+        seed_entity(&pool, "proj-b", "project", r#"{"name":"B"}"#).await;
+        seed_entity(&pool, "t1", "todo", r#"{"title":"t1","project_id":"proj-a"}"#).await;
+        seed_entity(&pool, "t2", "todo", r#"{"title":"t2","project_id":"proj-b"}"#).await;
+        seed_ref(&pool, "t1", "alice", "waiting_on").await;
+        // bob is on a DIFFERENT project's todo — must NOT appear under proj-a.
+        seed_ref(&pool, "t2", "bob", "related").await;
+
+        let people = project_people(&pool, "proj-a").await.expect("project_people");
+        assert_eq!(
+            people,
+            vec!["alice".to_string()],
+            "only people linked through proj-a's todos"
+        );
+    }
+
+    #[tokio::test]
+    async fn person_projects_returns_distinct_project_ids() {
+        let pool = memory_pool().await;
+        seed_entity(&pool, "alice", "person", r#"{"name":"Alice"}"#).await;
+        // Two todos in proj-a (DISTINCT collapses), one in proj-b, one with no project.
+        seed_entity(&pool, "t1", "todo", r#"{"title":"t1","project_id":"proj-a"}"#).await;
+        seed_entity(&pool, "t2", "todo", r#"{"title":"t2","project_id":"proj-a"}"#).await;
+        seed_entity(&pool, "t3", "todo", r#"{"title":"t3","project_id":"proj-b"}"#).await;
+        seed_entity(&pool, "t4", "todo", r#"{"title":"t4"}"#).await;
+        seed_ref(&pool, "t1", "alice", "related").await;
+        seed_ref(&pool, "t2", "alice", "related").await;
+        seed_ref(&pool, "t3", "alice", "waiting_on").await;
+        seed_ref(&pool, "t4", "alice", "related").await;
+
+        let mut projects = person_projects(&pool, "alice").await.expect("person_projects");
+        projects.sort();
+        assert_eq!(
+            projects,
+            vec!["proj-a".to_string(), "proj-b".to_string()],
+            "distinct project ids, null project excluded"
+        );
+    }
+
+    #[tokio::test]
+    async fn projects_due_for_review_includes_reviewable_excludes_terminal_and_future() {
+        let pool = memory_pool().await;
+        let now = "2026-06-12T00:00:00";
+        seed_entity(
+            &pool,
+            "p-active-due",
+            "project",
+            r#"{"name":"active due","status":"active","next_review_at":"2026-06-11T20:00:00"}"#,
+        )
+        .await;
+        seed_entity(
+            &pool,
+            "p-onhold-due",
+            "project",
+            r#"{"name":"on_hold due","status":"on_hold","next_review_at":"2026-06-12T00:00:00"}"#,
+        )
+        .await;
+        seed_entity(
+            &pool,
+            "p-active-future",
+            "project",
+            r#"{"name":"active future","status":"active","next_review_at":"2026-06-30T20:00:00"}"#,
+        )
+        .await;
+        seed_entity(
+            &pool,
+            "p-completed",
+            "project",
+            r#"{"name":"done","status":"completed","completed_at":"2026-06-01T00:00:00","next_review_at":"2026-06-11T20:00:00"}"#,
+        )
+        .await;
+        seed_entity(
+            &pool,
+            "p-dropped",
+            "project",
+            r#"{"name":"dropped","status":"dropped","dropped_at":"2026-06-01T00:00:00","next_review_at":"2026-06-11T20:00:00"}"#,
+        )
+        .await;
+        seed_entity(
+            &pool,
+            "p-active-noreview",
+            "project",
+            r#"{"name":"active no review","status":"active"}"#,
+        )
+        .await;
+
+        let mut ids: Vec<String> = projects_due_for_review(&pool, now)
+            .await
+            .expect("projects_due_for_review")
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["p-active-due".to_string(), "p-onhold-due".to_string()],
+            "active/on_hold with next_review_at <= now; terminal and future excluded"
         );
     }
 }

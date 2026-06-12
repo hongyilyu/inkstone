@@ -5,16 +5,22 @@
 //! owns only the keys and their defaults.
 //!
 //! Registry:
-//!   key                    scope         default  values                      → typed column
-//!   ---------------------  ------------  -------  --------------------------  --------------------
-//!   effort                 global        "off"    off|minimal|low|medium|      settings.effort
-//!                                                 high|xhigh
-//!   model:<workflow_name>  per-Workflow  (none)   a model id in the catalog    workflow_prefs.model
+//!   key                               scope    default  values                  → typed column
+//!   --------------------------------  -------  -------  ----------------------  --------------------
+//!   effort                            global   "off"    off|minimal|low|medium|  settings.effort
+//!                                                       high|xhigh
+//!   model:<workflow_name>             per-WF   (none)   a model id in the catalog workflow_prefs.model
+//!   review_anchor_utc_offset_minutes  global   0        a signed integer         settings.value
 
 use sqlx::SqlitePool;
 
 /// The global effort (thinking level) key.
 const EFFORT_KEY: &str = "effort";
+
+/// The minutes east of UTC for the Workspace review anchor (ADR-0031). Seeds the
+/// local wall clock used to compute a new active Project's default
+/// `next_review_at`; defaults to 0 (local == UTC) when unset or unparseable.
+pub(crate) const REVIEW_ANCHOR_UTC_OFFSET_KEY: &str = "review_anchor_utc_offset_minutes";
 
 /// The global effort default when neither a setting nor a Workflow supplies one.
 pub const DEFAULT_EFFORT: &str = "off";
@@ -51,4 +57,78 @@ pub async fn set_preferred_model(
     model: &str,
 ) -> sqlx::Result<()> {
     crate::db::set_setting(pool, &model_key(workflow_name), model).await
+}
+
+/// The Workspace review-anchor UTC offset in minutes (ADR-0031), or `0` when the
+/// setting is unset or does not parse as an integer. The Proposal apply path
+/// reads the offset inside its transaction (via `queries::get_setting`) to avoid
+/// a TOCTOU gap; this pool-level accessor backs out-of-transaction reads (V1
+/// review surfaces) and the settings tests.
+#[allow(dead_code)]
+pub async fn review_anchor_utc_offset_minutes(pool: &SqlitePool) -> sqlx::Result<i64> {
+    Ok(crate::db::get_setting(pool, REVIEW_ANCHOR_UTC_OFFSET_KEY)
+        .await?
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    async fn memory_pool() -> SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    #[tokio::test]
+    async fn review_anchor_offset_defaults_to_zero_when_unset() {
+        let pool = memory_pool().await;
+        assert_eq!(
+            review_anchor_utc_offset_minutes(&pool)
+                .await
+                .expect("read offset"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn review_anchor_offset_reads_stored_value() {
+        let pool = memory_pool().await;
+        crate::db::set_setting(&pool, REVIEW_ANCHOR_UTC_OFFSET_KEY, "-480")
+            .await
+            .expect("store offset");
+        assert_eq!(
+            review_anchor_utc_offset_minutes(&pool)
+                .await
+                .expect("read offset"),
+            -480
+        );
+    }
+
+    #[tokio::test]
+    async fn review_anchor_offset_falls_back_on_unparseable() {
+        let pool = memory_pool().await;
+        crate::db::set_setting(&pool, REVIEW_ANCHOR_UTC_OFFSET_KEY, "not-a-number")
+            .await
+            .expect("store offset");
+        assert_eq!(
+            review_anchor_utc_offset_minutes(&pool)
+                .await
+                .expect("read offset"),
+            0
+        );
+    }
 }

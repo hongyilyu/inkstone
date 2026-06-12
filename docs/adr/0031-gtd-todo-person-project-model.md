@@ -224,6 +224,20 @@ If the Project is reviewed after Sunday 20:00 local, the next review is the foll
 
 `review_every` remains per Project so future UI can support custom cadence. V1 may expose only the default weekly review ritual while still storing the field.
 
+### Review anchor and timezone
+
+Computing "next Sunday 20:00 local" requires Core to turn `now` (epoch milliseconds) into a local civil date — the first time Core itself derives a local date, since `occurred_at`/`ended_at` are supplied by the Worker. Core today has no date library and stores naive local wall-clock strings (`YYYY-MM-DDTHH:MM:SS`, no offset).
+
+The review anchor is fixed in code: **weekday = Sunday, time = 20:00**. The only configurable input is the timezone, sourced from a Workspace setting:
+
+```text
+review_anchor_utc_offset_minutes   (integer, default 0)
+```
+
+Core computes the local civil date as `now_ms + offset_minutes`, then advances to the next Sunday 20:00 at that local wall clock, and stores the result as a naive local wall-clock string — matching the `occurred_at` convention. The arithmetic is hand-rolled civil-date math (proleptic Gregorian), mirroring the existing hand-rolled wall-clock *parser*; no date crate is added to Core.
+
+A fixed-offset setting (not an IANA zone) keeps the computation deterministic and testable without host-timezone flakiness, consistent with the single-user local-first stance (ADR-0007). DST transitions and named-zone support are deferred; when a real scheduler needs them, this setting is superseded. `next_review_at` stored on a Project is authoritative regardless of the anchor — the anchor only seeds the default for newly-created active Projects and advances the date on mark-reviewed.
+
 ## Capture and proposal flow
 
 Direct Entity creation from chat is allowed:
