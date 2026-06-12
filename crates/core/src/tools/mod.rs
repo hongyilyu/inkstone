@@ -9,6 +9,7 @@
 //! Slice 2 registers exactly one tool, `read_thread`, with a stub body.
 
 mod propose_workspace_mutation;
+mod read_current_thread_journal_entries;
 mod read_thread;
 
 use serde_json::Value;
@@ -30,6 +31,9 @@ pub struct ToolError {
 fn descriptor_for(name: &str) -> Option<CoreToolDescriptor> {
     match name {
         read_thread::NAME => Some(read_thread::descriptor()),
+        read_current_thread_journal_entries::NAME => {
+            Some(read_current_thread_journal_entries::descriptor())
+        }
         propose_workspace_mutation::NAME => Some(propose_workspace_mutation::descriptor()),
         _ => None,
     }
@@ -66,11 +70,15 @@ pub fn is_proposal(name: &str) -> bool {
 /// `unknown_tool` error.
 pub async fn execute(
     pool: &SqlitePool,
+    run_id: uuid::Uuid,
     name: &str,
     params: Value,
 ) -> Result<crate::protocol::AgentToolResult, ToolError> {
     match name {
         read_thread::NAME => read_thread::execute(pool, params).await,
+        read_current_thread_journal_entries::NAME => {
+            read_current_thread_journal_entries::execute(pool, run_id, params).await
+        }
         // Proposal tools never reach dispatch — the Worker run loop parks the
         // Run before `execute` (ADR-0025). A `propose_workspace_mutation` here
         // means the park interception was bypassed; refuse defensively rather
@@ -100,6 +108,7 @@ mod tests {
     #[test]
     fn is_registered_reflects_the_registry() {
         assert!(is_registered("read_thread"));
+        assert!(is_registered("read_current_thread_journal_entries"));
         assert!(!is_registered("nonexistent"));
     }
 }

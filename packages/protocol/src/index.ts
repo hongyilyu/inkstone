@@ -106,10 +106,36 @@ export type RunEvent = S.Schema.Type<typeof RunEvent>;
 export const ProposalGetParams = S.Struct({ run_id: S.String });
 export type ProposalGetParams = S.Schema.Type<typeof ProposalGetParams>;
 
+export const JournalEntryBodyTextNode = S.Struct({
+	type: S.Literal("text"),
+	text: S.String,
+});
+export type JournalEntryBodyTextNode = S.Schema.Type<
+	typeof JournalEntryBodyTextNode
+>;
+
+export const ProposalReviewCurrentJournalEntry = S.Struct({
+	entity_id: S.String,
+	occurred_at: S.String,
+	ended_at: S.optional(S.String),
+	body: S.Array(JournalEntryBodyTextNode),
+});
+export type ProposalReviewCurrentJournalEntry = S.Schema.Type<
+	typeof ProposalReviewCurrentJournalEntry
+>;
+
+export const ProposalReviewContext = S.Struct({
+	current_journal_entry: S.optional(ProposalReviewCurrentJournalEntry),
+});
+export type ProposalReviewContext = S.Schema.Type<
+	typeof ProposalReviewContext
+>;
+
 /**
  * `proposal/get` result: the Run's pending Proposal. `mutation_kind` is the
  * logical Workspace mutation; `payload` is the opaque mutation-specific body;
- * `rationale` is the model's reason (may be null); `status` is the Proposal's
+ * `rationale` is the model's reason (may be null); `review_context` is
+ * optional display-only context for review surfaces; `status` is the Proposal's
  * lifecycle state.
  */
 export const ProposalGetResult = S.Struct({
@@ -118,6 +144,7 @@ export const ProposalGetResult = S.Struct({
 	mutation_kind: S.String,
 	payload: S.Unknown,
 	rationale: S.NullOr(S.String),
+	review_context: S.optional(ProposalReviewContext),
 	status: S.String,
 });
 export type ProposalGetResult = S.Schema.Type<typeof ProposalGetResult>;

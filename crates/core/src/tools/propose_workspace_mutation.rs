@@ -19,20 +19,32 @@ const LABEL: &str = "Propose Workspace mutation";
 #[allow(dead_code)]
 pub enum WorkspaceMutationKind {
     CreateJournalEntry,
+    UpdateJournalEntry,
+    DeleteJournalEntry,
 }
 
 /// Wire arguments for `propose_workspace_mutation`. `mutation_kind` names the
 /// logical Workspace mutation; `payload` is the mutation-specific body Core
 /// validates on Decision. The first supported kind is `create_journal_entry`.
 #[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-#[schemars(deny_unknown_fields)]
+#[serde(tag = "mutation_kind", rename_all = "snake_case")]
 #[allow(dead_code)]
-pub struct Input {
-    pub mutation_kind: WorkspaceMutationKind,
-    pub payload: CreateJournalEntryPayload,
-    #[serde(default)]
-    pub rationale: Option<String>,
+pub enum Input {
+    CreateJournalEntry {
+        payload: CreateJournalEntryPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    UpdateJournalEntry {
+        payload: UpdateJournalEntryPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    DeleteJournalEntry {
+        payload: DeleteJournalEntryPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -49,6 +61,31 @@ pub struct CreateJournalEntryPayload {
     pub ended_at: Option<String>,
     #[schemars(length(min = 1))]
     pub body: Vec<JournalEntryBodyNode>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct UpdateJournalEntryPayload {
+    pub entity_id: String,
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub occurred_at: String,
+    /// Optional local wall-clock end time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub ended_at: Option<String>,
+    #[schemars(length(min = 1))]
+    pub body: Vec<JournalEntryBodyNode>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct DeleteJournalEntryPayload {
+    pub entity_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -162,20 +199,14 @@ mod tests {
         let d = descriptor();
         assert_eq!(d.name, "propose_workspace_mutation");
         assert_eq!(d.label, "Propose Workspace mutation");
-        assert_eq!(d.json_schema["type"], serde_json::json!("object"));
         assert!(
-            d.json_schema["properties"]["mutation_kind"].is_object(),
-            "schema describes mutation_kind, got {}",
+            d.json_schema["oneOf"].is_array(),
+            "schema binds mutation_kind at the top level, got {}",
             d.json_schema
         );
         assert!(
             d.json_schema.to_string().contains("create_journal_entry"),
             "schema exposes the closed mutation_kind set, got {}",
-            d.json_schema
-        );
-        assert!(
-            d.json_schema["properties"].get("payload").is_some(),
-            "schema describes payload, got {}",
             d.json_schema
         );
     }
@@ -221,6 +252,105 @@ mod tests {
                 && description.contains("todos")
                 && description.contains("tasks"),
             "tool description must keep reminders/tasks out of Journal Entry proposals, got {description:?}"
+        );
+    }
+
+    fn top_level_variant<'a>(schema: &'a Value, kind: &str) -> Option<&'a Value> {
+        schema
+            .get("oneOf")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|variant| {
+                variant["properties"]["mutation_kind"]["enum"]
+                    .as_array()
+                    .is_some_and(|values| values.iter().any(|value| value == kind))
+            })
+    }
+
+    fn payload_schema<'a>(schema: &'a Value, variant: &'a Value) -> &'a Value {
+        let payload = &variant["properties"]["payload"];
+        let Some(reference) = payload.get("$ref").and_then(Value::as_str) else {
+            return payload;
+        };
+        let Some(definition_name) = reference.strip_prefix("#/definitions/") else {
+            panic!("payload ref must target a local definition: {reference}");
+        };
+        &schema["definitions"][definition_name]
+    }
+
+    #[test]
+    fn descriptor_binds_entity_target_only_for_update_and_delete() {
+        let d = descriptor();
+
+        let create =
+            top_level_variant(&d.json_schema, "create_journal_entry").unwrap_or_else(|| {
+                panic!(
+                    "schema must bind create_journal_entry at top level: {}",
+                    d.json_schema
+                )
+            });
+        let update =
+            top_level_variant(&d.json_schema, "update_journal_entry").unwrap_or_else(|| {
+                panic!(
+                    "schema must bind update_journal_entry at top level: {}",
+                    d.json_schema
+                )
+            });
+        let delete =
+            top_level_variant(&d.json_schema, "delete_journal_entry").unwrap_or_else(|| {
+                panic!(
+                    "schema must bind delete_journal_entry at top level: {}",
+                    d.json_schema
+                )
+            });
+
+        let create_required = payload_schema(&d.json_schema, create)["required"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!(
+                    "create payload must declare required fields: {}",
+                    d.json_schema
+                )
+            });
+        assert!(
+            !create_required
+                .iter()
+                .any(|field| field.as_str() == Some("entity_id")),
+            "create_journal_entry payload must remain valid without entity_id: {}",
+            d.json_schema
+        );
+
+        let update_required = payload_schema(&d.json_schema, update)["required"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!(
+                    "update payload must declare required fields: {}",
+                    d.json_schema
+                )
+            });
+        assert!(
+            update_required
+                .iter()
+                .any(|field| field.as_str() == Some("entity_id")),
+            "update_journal_entry payload must require entity_id: {}",
+            d.json_schema
+        );
+
+        let delete_required = payload_schema(&d.json_schema, delete)["required"]
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!(
+                    "delete payload must declare required fields: {}",
+                    d.json_schema
+                )
+            });
+        assert!(
+            delete_required
+                .iter()
+                .any(|field| field.as_str() == Some("entity_id")),
+            "delete_journal_entry payload must require entity_id: {}",
+            d.json_schema
         );
     }
 }

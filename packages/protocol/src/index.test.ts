@@ -197,6 +197,35 @@ describe("ProposalGetResult", () => {
 		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(wire);
 	});
 
+	it("decodes review_context.current_journal_entry and encodes back unchanged", () => {
+		const withReviewContext = {
+			...wire,
+			mutation_kind: "update_journal_entry",
+			payload: {
+				entity_id: "01900000-0000-7000-8000-000000000099",
+				occurred_at: "2026-06-10T11:00:00",
+				body: [{ type: "text", text: "Bought oat milk." }],
+			},
+			review_context: {
+				current_journal_entry: {
+					entity_id: "01900000-0000-7000-8000-000000000099",
+					occurred_at: "2026-06-10T10:30:00",
+					ended_at: "2026-06-10T10:45:00",
+					body: [{ type: "text", text: "Bought milk." }],
+				},
+			},
+		};
+		const decoded = S.decodeUnknownSync(ProposalGetResult)(withReviewContext);
+		expect(decoded).toEqual(withReviewContext);
+		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(withReviewContext);
+	});
+
+	it("remains backward compatible when review_context is absent", () => {
+		const decoded = S.decodeUnknownSync(ProposalGetResult)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(wire);
+	});
+
 	it("decodes a null rationale", () => {
 		const noReason = { ...wire, rationale: null };
 		expect(S.decodeUnknownSync(ProposalGetResult)(noReason)).toEqual(noReason);

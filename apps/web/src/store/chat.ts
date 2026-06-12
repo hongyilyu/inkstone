@@ -1,3 +1,4 @@
+import type { ProposalReviewContext } from "@inkstone/protocol";
 import type { RunEventValue } from "@inkstone/ui-sdk";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -74,6 +75,7 @@ export interface PendingProposal {
 	readonly mutation_kind: string;
 	readonly payload: unknown;
 	readonly rationale: string | null;
+	readonly review_context?: ProposalReviewContext;
 	readonly status: "pending" | "deciding" | "accepted" | "rejected" | "error";
 }
 

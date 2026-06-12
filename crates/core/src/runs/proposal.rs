@@ -22,7 +22,8 @@ use crate::db;
 use crate::decide::{DecideError, DecideOutcome};
 use crate::hub::Hubs;
 use crate::protocol::{
-    ProposalDecideParams, ProposalDecideResult, ProposalGetParams, ProposalGetResult,
+    JournalEntryBodyTextNode, ProposalDecideParams, ProposalDecideResult, ProposalGetParams,
+    ProposalGetResult, ProposalReviewContext, ProposalReviewCurrentJournalEntry,
 };
 
 pub(super) async fn handle_get(
@@ -39,6 +40,7 @@ pub(super) async fn handle_get(
             .ok_or_else(|| {
                 HandlerError::ProposalNotPending(format!("no pending proposal for run {run_id}"))
             })?;
+        let review_context = review_context_for_proposal(pool, run_id, &p).await?;
 
         Ok(ProposalGetResult {
             proposal_id: p.proposal_id,
@@ -46,6 +48,7 @@ pub(super) async fn handle_get(
             mutation_kind: p.mutation_kind,
             payload: p.payload,
             rationale: p.rationale,
+            review_context,
             status: p.status,
         })
     })
@@ -116,4 +119,83 @@ fn send_decide_result(
         })
         .expect("ProposalDecideResult serializes"),
     );
+}
+
+async fn review_context_for_proposal(
+    pool: &SqlitePool,
+    run_id: uuid::Uuid,
+    proposal: &db::ProposalRow,
+) -> Result<Option<ProposalReviewContext>, HandlerError> {
+    if proposal.mutation_kind != "update_journal_entry"
+        && proposal.mutation_kind != "delete_journal_entry"
+    {
+        return Ok(None);
+    }
+
+    let Some(entity_id) = proposal
+        .payload
+        .get("entity_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let allowed = db::journal_entry_target_is_valid(pool, run_id, entity_id)
+        .await
+        .map_err(|e| HandlerError::Internal(e.into()))?;
+    if !allowed {
+        return Ok(None);
+    }
+
+    let Some(row) = db::current_journal_entry_by_id(pool, entity_id)
+        .await
+        .map_err(|e| HandlerError::Internal(e.into()))?
+    else {
+        return Ok(None);
+    };
+
+    let Some(current_journal_entry) = review_current_journal_entry(row.entity_id, &row.data) else {
+        return Ok(None);
+    };
+
+    Ok(Some(ProposalReviewContext {
+        current_journal_entry: Some(current_journal_entry),
+    }))
+}
+
+fn review_current_journal_entry(
+    entity_id: String,
+    data: &serde_json::Value,
+) -> Option<ProposalReviewCurrentJournalEntry> {
+    let occurred_at = data.get("occurred_at")?.as_str()?.to_string();
+    let ended_at = match data.get("ended_at") {
+        Some(serde_json::Value::String(value)) => Some(value.clone()),
+        Some(serde_json::Value::Null) | None => None,
+        Some(_) => return None,
+    };
+    let body = data
+        .get("body")?
+        .as_array()?
+        .iter()
+        .map(|node| {
+            let obj = node.as_object()?;
+            let node_type = obj.get("type")?.as_str()?;
+            if node_type != "text" {
+                return None;
+            }
+            let text = obj.get("text")?.as_str()?.to_string();
+            Some(JournalEntryBodyTextNode {
+                r#type: "text",
+                text,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    Some(ProposalReviewCurrentJournalEntry {
+        entity_id,
+        occurred_at,
+        ended_at,
+        body,
+    })
 }

@@ -4,6 +4,7 @@
 //! Entity plus provenance from the source user Message.
 
 use serde_json::Value;
+use uuid::Uuid;
 
 /// The schema version stamped onto a freshly-created Journal Entry + its first
 /// revision.
@@ -16,6 +17,8 @@ pub const JOURNAL_ENTRY_SCHEMA_VERSION: i64 = 1;
 pub(crate) fn validate(mutation_kind: &str, payload: &Value) -> Result<(), String> {
     match mutation_kind {
         "create_journal_entry" => validate_journal_entry(payload),
+        "update_journal_entry" => validate_update_journal_entry(payload),
+        "delete_journal_entry" => validate_delete_journal_entry(payload),
         _ => Err(format!("mutation_kind {mutation_kind:?} not supported")),
     }
 }
@@ -31,6 +34,21 @@ pub(crate) fn render_accept(mutation_kind: &str, payload: &Value) -> String {
                 .unwrap_or("unknown");
             let body = journal_body_text(payload);
             format!("Accepted. Created Journal Entry (occurred_at={occurred_at}, body={body}).")
+        }
+        "update_journal_entry" => {
+            let occurred_at = payload
+                .get("occurred_at")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let body = journal_body_text(payload);
+            format!("Accepted. Updated Journal Entry (occurred_at={occurred_at}, body={body}).")
+        }
+        "delete_journal_entry" => {
+            let entity_id = payload
+                .get("entity_id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            format!("Accepted. Deleted Journal Entry (entity_id={entity_id}).")
         }
         other => unreachable!("render_accept for unvalidated mutation_kind {other:?}"),
     }
@@ -55,14 +73,16 @@ fn journal_body_text(payload: &Value) -> String {
 /// Type + its first revision, dispatched on `mutation_kind`.
 pub(crate) fn schema_version(mutation_kind: &str) -> i64 {
     match mutation_kind {
-        "create_journal_entry" => JOURNAL_ENTRY_SCHEMA_VERSION,
+        "create_journal_entry" | "update_journal_entry" | "delete_journal_entry" => {
+            JOURNAL_ENTRY_SCHEMA_VERSION
+        }
         other => unreachable!("schema_version for unvalidated mutation_kind {other:?}"),
     }
 }
 
 pub(crate) fn entity_type(mutation_kind: &str) -> &'static str {
     match mutation_kind {
-        "create_journal_entry" => "journal_entry",
+        "create_journal_entry" | "update_journal_entry" | "delete_journal_entry" => "journal_entry",
         other => unreachable!("entity_type for unvalidated mutation_kind {other:?}"),
     }
 }
@@ -70,7 +90,19 @@ pub(crate) fn entity_type(mutation_kind: &str) -> &'static str {
 pub(crate) fn source_relation_from_user_message(mutation_kind: &str) -> Option<&'static str> {
     match mutation_kind {
         "create_journal_entry" => Some("created_from"),
+        "update_journal_entry" => Some("updated_from"),
+        "delete_journal_entry" => None,
         other => unreachable!("source relation for unvalidated mutation_kind {other:?}"),
+    }
+}
+
+pub(crate) fn target_entity_id<'a>(mutation_kind: &str, payload: &'a Value) -> Option<&'a str> {
+    match mutation_kind {
+        "update_journal_entry" | "delete_journal_entry" => {
+            payload.get("entity_id").and_then(Value::as_str)
+        }
+        "create_journal_entry" => None,
+        other => unreachable!("target entity for unvalidated mutation_kind {other:?}"),
     }
 }
 
@@ -132,6 +164,50 @@ fn validate_journal_entry(payload: &Value) -> Result<(), String> {
             Some(Value::String(_)) => return Err("body text must not be empty".to_string()),
             Some(_) => return Err("body text must be a string".to_string()),
             None => return Err("body text is required".to_string()),
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_update_journal_entry(payload: &Value) -> Result<(), String> {
+    let obj = payload
+        .as_object()
+        .ok_or_else(|| "journal entry payload must be a JSON object".to_string())?;
+
+    let entity_id = match obj.get("entity_id") {
+        Some(Value::String(value)) if !value.trim().is_empty() => value,
+        Some(Value::String(_)) => return Err("entity_id must not be empty".to_string()),
+        Some(_) => return Err("entity_id must be a string".to_string()),
+        None => return Err("entity_id is required".to_string()),
+    };
+    Uuid::parse_str(entity_id).map_err(|_| "entity_id must be a UUID".to_string())?;
+
+    let mut journal_payload = serde_json::Map::with_capacity(obj.len().saturating_sub(1));
+    for (key, value) in obj {
+        if key != "entity_id" {
+            journal_payload.insert(key.clone(), value.clone());
+        }
+    }
+    validate_journal_entry(&Value::Object(journal_payload))
+}
+
+fn validate_delete_journal_entry(payload: &Value) -> Result<(), String> {
+    let obj = payload
+        .as_object()
+        .ok_or_else(|| "delete_journal_entry payload must be a JSON object".to_string())?;
+
+    let entity_id = match obj.get("entity_id") {
+        Some(Value::String(value)) if !value.trim().is_empty() => value,
+        Some(Value::String(_)) => return Err("entity_id must not be empty".to_string()),
+        Some(_) => return Err("entity_id must be a string".to_string()),
+        None => return Err("entity_id is required".to_string()),
+    };
+    Uuid::parse_str(entity_id).map_err(|_| "entity_id must be a UUID".to_string())?;
+
+    for key in obj.keys() {
+        if key != "entity_id" {
+            return Err(format!("unsupported delete_journal_entry field {key:?}"));
         }
     }
 
@@ -339,6 +415,15 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(
+            validate(
+                "delete_journal_entry",
+                &json!({
+                    "entity_id": Uuid::now_v7().to_string()
+                })
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -369,9 +454,28 @@ mod tests {
     }
 
     #[test]
+    fn render_accept_delete_journal_entry_confirms_deletion() {
+        let entity_id = Uuid::now_v7().to_string();
+        let text = render_accept(
+            "delete_journal_entry",
+            &json!({
+                "entity_id": entity_id
+            }),
+        );
+        assert!(
+            text.contains("Deleted Journal Entry") && text.contains("entity_id="),
+            "confirmation names the deleted Journal Entry target: {text}"
+        );
+    }
+
+    #[test]
     fn schema_version_journal_entry_is_one() {
         assert_eq!(
             schema_version("create_journal_entry"),
+            JOURNAL_ENTRY_SCHEMA_VERSION
+        );
+        assert_eq!(
+            schema_version("delete_journal_entry"),
             JOURNAL_ENTRY_SCHEMA_VERSION
         );
         assert_eq!(schema_version("create_journal_entry"), 1);

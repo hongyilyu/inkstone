@@ -269,7 +269,7 @@ async fn handle_tool_request(
         eprintln!("persist_tool_call failed for {tool_call_id}: {e}");
     }
 
-    match crate::tools::execute(pool, name, params).await {
+    match crate::tools::execute(pool, run_id, name, params).await {
         Ok(result) => {
             let payload = serde_json::to_string(&result).unwrap_or_else(|_| "{}".to_string());
             if let Err(e) =
