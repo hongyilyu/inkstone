@@ -15,7 +15,7 @@ use crate::db;
 use crate::decide::{DecideError, DecideOutcome};
 use crate::hub::Hubs;
 use crate::protocol::{
-    JournalEntryBodyTextNode, ProposalDecideParams, ProposalDecideResult, ProposalGetParams,
+    JournalEntryBodyNode, ProposalDecideParams, ProposalDecideResult, ProposalGetParams,
     ProposalGetResult, ProposalReviewContext, ProposalReviewCurrentJournalEntry,
 };
 
@@ -171,14 +171,17 @@ fn review_current_journal_entry(
         .map(|node| {
             let obj = node.as_object()?;
             let node_type = obj.get("type")?.as_str()?;
-            if node_type != "text" {
-                return None;
+            match node_type {
+                "text" => {
+                    let text = obj.get("text")?.as_str()?.to_string();
+                    Some(JournalEntryBodyNode::Text { text })
+                }
+                "entity_ref" => {
+                    let ref_id = obj.get("ref_id")?.as_str()?.to_string();
+                    Some(JournalEntryBodyNode::EntityRef { ref_id })
+                }
+                _ => None,
             }
-            let text = obj.get("text")?.as_str()?.to_string();
-            Some(JournalEntryBodyTextNode {
-                r#type: "text",
-                text,
-            })
         })
         .collect::<Option<Vec<_>>>()?;
 

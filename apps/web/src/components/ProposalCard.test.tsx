@@ -469,6 +469,36 @@ describe("ProposalCard", () => {
 		expect(screen.getByText("2026-06-10T11:15:00")).toBeInTheDocument();
 	});
 
+	it("renders entity_ref placeholders in current-entry context", () => {
+		const mixedContextProposal: PendingProposal = {
+			...updateProposal,
+			review_context: {
+				current_journal_entry: {
+					entity_id: "entry-123",
+					occurred_at: "2026-06-10T10:30:00",
+					body: [
+						{ type: "text", text: "Met " },
+						{
+							type: "entity_ref",
+							ref_id: "01900000-0000-7000-8000-000000000111",
+						},
+						{ type: "text", text: " at school." },
+					],
+				},
+			},
+		};
+
+		render(
+			<ProposalCard proposal={mixedContextProposal} onDecide={() => {}} />,
+		);
+
+		expect(
+			screen.getByText(
+				"Met [entity_ref:01900000-0000-7000-8000-000000000111] at school.",
+			),
+		).toBeInTheDocument();
+	});
+
 	it("submits the full edited update journal entry payload", () => {
 		const onDecide = vi.fn();
 		render(<ProposalCard proposal={updateProposal} onDecide={onDecide} />);

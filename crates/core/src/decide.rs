@@ -329,13 +329,13 @@ async fn validate_mutation_target(
     let allowed = db::journal_entry_target_is_valid(pool, run_id, entity_id)
         .await
         .map_err(|e| DecideError::Internal(e.into()))?;
-    if allowed {
-        Ok(())
-    } else {
-        Err(DecideError::Invalid(format!(
+    if !allowed {
+        return Err(DecideError::Invalid(format!(
             "{mutation_kind} target must be a Journal Entry originally created_from a user Message in the current Thread"
-        )))
+        )));
     }
+
+    Ok(())
 }
 
 fn preserve_update_target_entity_id(

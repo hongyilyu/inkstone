@@ -58,7 +58,7 @@ pub struct CreateJournalEntryPayload {
     #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
     pub ended_at: Option<String>,
     #[schemars(length(min = 1))]
-    pub body: Vec<JournalEntryBodyNode>,
+    pub body: Vec<CreateJournalEntryBodyNode>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -75,7 +75,7 @@ pub struct UpdateJournalEntryPayload {
     #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
     pub ended_at: Option<String>,
     #[schemars(length(min = 1))]
-    pub body: Vec<JournalEntryBodyNode>,
+    pub body: Vec<UpdateJournalEntryBodyNode>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -87,20 +87,29 @@ pub struct DeleteJournalEntryPayload {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 #[allow(dead_code)]
-pub struct JournalEntryBodyNode {
-    pub r#type: JournalEntryBodyNodeType,
-    #[schemars(length(min = 1))]
-    pub text: String,
+pub enum CreateJournalEntryBodyNode {
+    Text {
+        #[schemars(length(min = 1))]
+        text: String,
+    },
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
 #[allow(dead_code)]
-pub enum JournalEntryBodyNodeType {
-    Text,
+pub enum UpdateJournalEntryBodyNode {
+    Text {
+        #[schemars(length(min = 1))]
+        text: String,
+    },
+    EntityRef {
+        #[schemars(length(min = 1))]
+        ref_id: String,
+    },
 }
 
 pub fn descriptor() -> CoreToolDescriptor {
@@ -277,6 +286,37 @@ mod tests {
         &schema["definitions"][definition_name]
     }
 
+    fn resolve_ref<'a>(schema: &'a Value, value: &'a Value) -> &'a Value {
+        let Some(reference) = value.get("$ref").and_then(Value::as_str) else {
+            return value;
+        };
+        let Some(definition_name) = reference.strip_prefix("#/definitions/") else {
+            panic!("schema ref must target a local definition: {reference}");
+        };
+        &schema["definitions"][definition_name]
+    }
+
+    fn body_item_schema<'a>(schema: &'a Value, payload: &'a Value) -> &'a Value {
+        resolve_ref(schema, &payload["properties"]["body"]["items"])
+    }
+
+    fn schema_tree_contains(schema: &Value, value: &Value, needle: &str) -> bool {
+        match value {
+            Value::String(text) => text == needle,
+            Value::Array(items) => items
+                .iter()
+                .any(|item| schema_tree_contains(schema, item, needle)),
+            Value::Object(obj) => {
+                if value.get("$ref").is_some() {
+                    return schema_tree_contains(schema, resolve_ref(schema, value), needle);
+                }
+                obj.values()
+                    .any(|item| schema_tree_contains(schema, item, needle))
+            }
+            _ => false,
+        }
+    }
+
     #[test]
     fn descriptor_binds_entity_target_only_for_update_and_delete() {
         let d = descriptor();
@@ -348,6 +388,40 @@ mod tests {
                 .iter()
                 .any(|field| field.as_str() == Some("entity_id")),
             "delete_journal_entry payload must require entity_id: {}",
+            d.json_schema
+        );
+    }
+
+    #[test]
+    fn descriptor_keeps_create_text_only_but_allows_update_entity_refs() {
+        let d = descriptor();
+
+        let create =
+            top_level_variant(&d.json_schema, "create_journal_entry").unwrap_or_else(|| {
+                panic!(
+                    "schema must bind create_journal_entry at top level: {}",
+                    d.json_schema
+                )
+            });
+        let update =
+            top_level_variant(&d.json_schema, "update_journal_entry").unwrap_or_else(|| {
+                panic!(
+                    "schema must bind update_journal_entry at top level: {}",
+                    d.json_schema
+                )
+            });
+
+        let create_body = body_item_schema(&d.json_schema, payload_schema(&d.json_schema, create));
+        let update_body = body_item_schema(&d.json_schema, payload_schema(&d.json_schema, update));
+
+        assert!(
+            !schema_tree_contains(&d.json_schema, create_body, "entity_ref"),
+            "create_journal_entry body must stay text-only: {}",
+            d.json_schema
+        );
+        assert!(
+            schema_tree_contains(&d.json_schema, update_body, "entity_ref"),
+            "update_journal_entry body must allow entity_ref nodes: {}",
             d.json_schema
         );
     }

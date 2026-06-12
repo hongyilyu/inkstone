@@ -211,7 +211,14 @@ describe("ProposalGetResult", () => {
 					entity_id: "01900000-0000-7000-8000-000000000099",
 					occurred_at: "2026-06-10T10:30:00",
 					ended_at: "2026-06-10T10:45:00",
-					body: [{ type: "text", text: "Bought milk." }],
+					body: [
+						{ type: "text", text: "Bought " },
+						{
+							type: "entity_ref",
+							ref_id: "01900000-0000-7000-8000-000000000111",
+						},
+						{ type: "text", text: "." },
+					],
 				},
 			},
 		};
