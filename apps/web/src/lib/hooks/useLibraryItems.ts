@@ -23,6 +23,12 @@ interface LiveEntityRow {
 	readonly data: unknown;
 	readonly created_at: number;
 	readonly refs?: readonly LiveResolvedEntityRef[];
+	readonly person_refs?: readonly LiveTodoPersonRef[];
+}
+
+interface LiveTodoPersonRef {
+	readonly person_id: string;
+	readonly role: "waiting_on" | "related";
 }
 
 interface LiveResolvedEntityRef {
@@ -206,6 +212,10 @@ function toLibraryTodo(row: LiveEntityRow): Todo {
 		dueAt: asString(data.due_at),
 		completedAt: asString(data.completed_at),
 		droppedAt: asString(data.dropped_at),
+		personRefs: (row.person_refs ?? []).map((ref) => ({
+			personId: ref.person_id,
+			role: ref.role,
+		})),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Todo;

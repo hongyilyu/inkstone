@@ -36,7 +36,6 @@ export interface Person extends LibraryItemBase {
 	relationship?: string;
 	email?: string;
 	note?: string;
-	projectIds?: string[];
 }
 
 export interface JournalEntry extends LibraryItemBase {
@@ -75,11 +74,17 @@ export interface Project extends LibraryItemBase {
 	/** Local wall-clock review timestamps (ADR-0031). */
 	nextReviewAt?: string;
 	lastReviewedAt?: string;
-	personIds?: string[];
-	todoIds?: string[];
 }
 
 export type TodoStatus = "active" | "completed" | "dropped";
+
+export type TodoPersonRole = "waiting_on" | "related";
+
+/** A Todo's reference to a Person, with its GTD role (ADR-0031/0032). */
+export interface TodoPersonRef {
+	personId: string;
+	role: TodoPersonRole;
+}
 
 export interface Todo extends LibraryItemBase {
 	kind: "todo";
@@ -93,6 +98,8 @@ export interface Todo extends LibraryItemBase {
 	dueAt?: string;
 	completedAt?: string;
 	droppedAt?: string;
+	/** Person References (ADR-0032). Empty when the Todo links no People. */
+	personRefs: TodoPersonRef[];
 }
 
 export interface Recipe extends LibraryItemBase {
@@ -231,25 +238,89 @@ export function libraryItemKindCounts(
 	return counts;
 }
 
-export function todosForProject(all: LibraryItem[], project: Project): Todo[] {
-	const ids = new Set(project.todoIds ?? []);
-	return all.filter((e): e is Todo => e.kind === "todo" && ids.has(e.id));
+/** All Todos in `all` (used by the derivations below). */
+function allTodos(all: LibraryItem[]): Todo[] {
+	return all.filter((e): e is Todo => e.kind === "todo");
 }
 
+/** Todos owned by `project` via `Todo.project_id` (ADR-0031). */
+export function todosForProject(all: LibraryItem[], project: Project): Todo[] {
+	return allTodos(all).filter((t) => t.projectId === project.id);
+}
+
+/** Todos that reference `person`, optionally filtered to one role (ADR-0032). */
+export function todosForPerson(
+	all: LibraryItem[],
+	person: Person,
+	role?: TodoPersonRole,
+): Todo[] {
+	return allTodos(all).filter((t) =>
+		t.personRefs.some(
+			(ref) =>
+				ref.personId === person.id && (role == null || ref.role === role),
+		),
+	);
+}
+
+/**
+ * People involved in `project`, derived through the Project's Todos'
+ * Person References: Project → Todos → TodoPersonRef → Person (ADR-0031).
+ * Distinct, in first-seen order.
+ */
 export function peopleForProject(
 	all: LibraryItem[],
 	project: Project,
 ): Person[] {
-	const ids = new Set(project.personIds ?? []);
-	return all.filter((e): e is Person => e.kind === "person" && ids.has(e.id));
+	const personById = new Map(
+		all.filter((e): e is Person => e.kind === "person").map((p) => [p.id, p]),
+	);
+	const seen = new Set<string>();
+	const people: Person[] = [];
+	for (const todo of todosForProject(all, project)) {
+		for (const ref of todo.personRefs) {
+			if (seen.has(ref.personId)) continue;
+			const person = personById.get(ref.personId);
+			if (person) {
+				seen.add(ref.personId);
+				people.push(person);
+			}
+		}
+	}
+	return people;
 }
 
+/**
+ * Projects a `person` is involved in, derived through that Person's Todos:
+ * Person → TodoPersonRef → Todo → Project (ADR-0031). Distinct, first-seen order.
+ */
 export function projectsForPerson(
 	all: LibraryItem[],
 	person: Person,
 ): Project[] {
-	const ids = new Set(person.projectIds ?? []);
-	return all.filter((e): e is Project => e.kind === "project" && ids.has(e.id));
+	const projectById = new Map(
+		all.filter((e): e is Project => e.kind === "project").map((p) => [p.id, p]),
+	);
+	const seen = new Set<string>();
+	const projects: Project[] = [];
+	for (const todo of todosForPerson(all, person)) {
+		if (!todo.projectId || seen.has(todo.projectId)) continue;
+		const project = projectById.get(todo.projectId);
+		if (project) {
+			seen.add(todo.projectId);
+			projects.push(project);
+		}
+	}
+	return projects;
+}
+
+/** People referenced by a single `todo`, in ref order (ADR-0032). */
+export function peopleForTodo(all: LibraryItem[], todo: Todo): Person[] {
+	const personById = new Map(
+		all.filter((e): e is Person => e.kind === "person").map((p) => [p.id, p]),
+	);
+	return todo.personRefs
+		.map((ref) => personById.get(ref.personId))
+		.filter((p): p is Person => p !== undefined);
 }
 
 export function projectForTodo(

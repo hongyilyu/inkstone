@@ -11,14 +11,18 @@ import {
 	libraryItemKindForSlug,
 	libraryItemSubtitle,
 	libraryItemTitle,
+	type Person,
 	type Project,
 	PROJECT_STATUS_LABEL,
 	peopleForProject,
+	peopleForTodo,
 	projectForTodo,
 	projectProgress,
+	projectsForPerson,
 	recentlyCapturedItems,
 	searchLibraryItems,
 	type Todo,
+	todosForPerson,
 	todosForProject,
 } from "@/lib/libraryItems";
 
@@ -40,6 +44,34 @@ const journalEntry = (
 	body: [{ type: "text", text: body }],
 	recency,
 	createdAt: "fixture",
+});
+
+const mkPerson = (id: string, name: string): Person => ({
+	id,
+	kind: "person",
+	name,
+	recency: 1,
+	createdAt: "fixture",
+});
+
+const mkProject = (id: string, name: string): Project => ({
+	id,
+	kind: "project",
+	name,
+	status: "active",
+	recency: 1,
+	createdAt: "fixture",
+});
+
+const mkTodo = (id: string, extra: Partial<Todo> = {}): Todo => ({
+	id,
+	kind: "todo",
+	title: id,
+	status: "active",
+	personRefs: [],
+	recency: 1,
+	createdAt: "fixture",
+	...extra,
 });
 
 describe("library item helpers", () => {
@@ -192,6 +224,73 @@ describe("library item helpers", () => {
 		]);
 		const backfill = byId("todo_backfill") as Todo;
 		expect(projectForTodo(entities, backfill)?.id).toBe("proj_apiv2");
+	});
+
+	describe("derives relations through person_refs (ADR-0031/0032)", () => {
+		// Synthetic graph: alice waits on a todo in projA; bob is related on a
+		// todo in projB. Project↔Person must derive ONLY through that project's
+		// todos — bob must never leak into projA.
+		const alice: Person = mkPerson("alice", "Alice");
+		const bob: Person = mkPerson("bob", "Bob");
+		const projA: Project = mkProject("projA", "Project A");
+		const projB: Project = mkProject("projB", "Project B");
+		const t1: Todo = mkTodo("t1", {
+			projectId: "projA",
+			personRefs: [{ personId: "alice", role: "waiting_on" }],
+		});
+		const t2: Todo = mkTodo("t2", {
+			projectId: "projB",
+			personRefs: [{ personId: "bob", role: "related" }],
+		});
+		const world = [alice, bob, projA, projB, t1, t2];
+
+		it("peopleForProject derives only through that project's todos", () => {
+			expect(peopleForProject(world, projA).map((p) => p.id)).toEqual([
+				"alice",
+			]);
+			// bob is on projB's todo — must NOT appear under projA.
+			expect(peopleForProject(world, projA).map((p) => p.id)).not.toContain(
+				"bob",
+			);
+		});
+
+		it("projectsForPerson derives through the person's todos", () => {
+			expect(projectsForPerson(world, alice).map((p) => p.id)).toEqual([
+				"projA",
+			]);
+			expect(projectsForPerson(world, bob).map((p) => p.id)).toEqual(["projB"]);
+		});
+
+		it("todosForPerson filters by role when asked", () => {
+			expect(todosForPerson(world, alice).map((t) => t.id)).toEqual(["t1"]);
+			expect(
+				todosForPerson(world, alice, "waiting_on").map((t) => t.id),
+			).toEqual(["t1"]);
+			expect(todosForPerson(world, alice, "related")).toEqual([]);
+		});
+
+		it("peopleForTodo returns referenced people in ref order", () => {
+			const t3 = mkTodo("t3", {
+				personRefs: [
+					{ personId: "bob", role: "related" },
+					{ personId: "alice", role: "waiting_on" },
+				],
+			});
+			expect(peopleForTodo([alice, bob, t3], t3).map((p) => p.id)).toEqual([
+				"bob",
+				"alice",
+			]);
+		});
+
+		it("dedupes a person referenced by two of a project's todos", () => {
+			const t1b = mkTodo("t1b", {
+				projectId: "projA",
+				personRefs: [{ personId: "alice", role: "related" }],
+			});
+			expect(
+				peopleForProject([alice, projA, t1, t1b], projA).map((p) => p.id),
+			).toEqual(["alice"]);
+		});
 	});
 
 	it("renders Journal Entry body text from mixed nodes", () => {

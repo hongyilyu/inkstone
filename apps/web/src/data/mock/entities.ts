@@ -17,7 +17,6 @@ export const people: Person[] = [
 		relationship: "Colleague",
 		email: "priya@acme.dev",
 		note: "Owns the SDK examples. Flagged the dual-write rewrite risk on the contacts rename; prefers the /v2 alias path.",
-		projectIds: ["proj_apiv2"],
 		createdAt: "Today, 10:42",
 		recency: 95,
 		needsReview: true,
@@ -51,7 +50,6 @@ export const people: Person[] = [
 		relationship: "Home",
 		email: "marco@reyesbuild.co",
 		note: "Quoted the garden retaining wall. Waiting on the revised estimate after the drainage change.",
-		projectIds: ["proj_garden"],
 		createdAt: "Yesterday",
 		recency: 70,
 		capturedFrom: {
@@ -68,7 +66,6 @@ export const people: Person[] = [
 		relationship: "Colleague",
 		email: "dana@acme.dev",
 		note: "Reviewing the Inkstone library surface. Likes the restrained pink direction; wants the empty states to teach.",
-		projectIds: ["proj_inkstone"],
 		createdAt: "May 28",
 		recency: 50,
 		capturedFrom: {
@@ -119,8 +116,6 @@ export const projects: Project[] = [
 		// Review overdue (before today 2026-06-12) — surfaces in the Review view.
 		nextReviewAt: "2026-06-07T20:00:00",
 		lastReviewedAt: "2026-05-31T20:00:00",
-		personIds: ["person_priya"],
-		todoIds: ["todo_backfill", "todo_sdk", "todo_cutover"],
 		createdAt: "Today, 10:42",
 		recency: 92,
 		capturedFrom: {
@@ -138,8 +133,6 @@ export const projects: Project[] = [
 			"Local-first thinking surface. Currently building the Library: a home for the knowledge chat accrues.",
 		// Review in the future — not yet due.
 		nextReviewAt: "2026-06-21T20:00:00",
-		personIds: ["person_dana"],
-		todoIds: ["todo_library", "todo_empty_states"],
 		createdAt: "May 28",
 		recency: 55,
 		capturedFrom: {
@@ -157,8 +150,6 @@ export const projects: Project[] = [
 			"Retaining wall plus a raised bed. On hold until Marco's revised estimate with the new drainage lands.",
 		// On-hold and review overdue — surfaces in the Review view too.
 		nextReviewAt: "2026-06-08T20:00:00",
-		personIds: ["person_marco"],
-		todoIds: ["todo_estimate"],
 		createdAt: "Yesterday",
 		recency: 68,
 		capturedFrom: {
@@ -175,7 +166,6 @@ export const projects: Project[] = [
 		outcome:
 			"Five days in late June. Flights to book this week; loose plan to base in Alfama.",
 		nextReviewAt: "2026-06-21T20:00:00",
-		todoIds: ["todo_flights"],
 		createdAt: "May 24",
 		recency: 38,
 		capturedFrom: {
@@ -189,6 +179,7 @@ export const projects: Project[] = [
 export const todos: Todo[] = [
 	{
 		id: "todo_backfill",
+		personRefs: [],
 		kind: "todo",
 		title: "Backfill /v2/contacts before the cutover window",
 		status: "active",
@@ -206,6 +197,7 @@ export const todos: Todo[] = [
 	},
 	{
 		id: "todo_schedule_alice",
+		personRefs: [{ personId: "person_alice", role: "related" }],
 		kind: "todo",
 		title: "Send Alice the updated daycare schedule",
 		status: "active",
@@ -220,6 +212,7 @@ export const todos: Todo[] = [
 	},
 	{
 		id: "todo_sdk",
+		personRefs: [{ personId: "person_priya", role: "related" }],
 		kind: "todo",
 		title: "Update SDK examples (ts, py, go, rb) to /v2/contacts",
 		status: "active",
@@ -235,6 +228,7 @@ export const todos: Todo[] = [
 	},
 	{
 		id: "todo_dentist",
+		personRefs: [],
 		kind: "todo",
 		title: "Book the overdue dental cleaning",
 		status: "active",
@@ -250,6 +244,7 @@ export const todos: Todo[] = [
 	},
 	{
 		id: "todo_flights",
+		personRefs: [],
 		kind: "todo",
 		title: "Book Lisbon flights",
 		status: "active",
@@ -265,6 +260,7 @@ export const todos: Todo[] = [
 	},
 	{
 		id: "todo_estimate",
+		personRefs: [{ personId: "person_marco", role: "waiting_on" }],
 		kind: "todo",
 		title: "Chase Marco for the revised wall estimate",
 		status: "active",
@@ -280,6 +276,7 @@ export const todos: Todo[] = [
 	},
 	{
 		id: "todo_library",
+		personRefs: [{ personId: "person_dana", role: "related" }],
 		kind: "todo",
 		title: "Ship the Library surface",
 		status: "active",
@@ -294,6 +291,7 @@ export const todos: Todo[] = [
 	},
 	{
 		id: "todo_groceries",
+		personRefs: [],
 		kind: "todo",
 		title: "Groceries for Saturday dinner",
 		status: "active",
@@ -309,6 +307,7 @@ export const todos: Todo[] = [
 	},
 	{
 		id: "todo_cutover",
+		personRefs: [],
 		kind: "todo",
 		title: "Schedule the cutover window with on-call",
 		status: "completed",
@@ -324,6 +323,7 @@ export const todos: Todo[] = [
 	},
 	{
 		id: "todo_empty_states",
+		personRefs: [],
 		kind: "todo",
 		title: "Design the Library empty + first-run states",
 		status: "completed",
@@ -339,6 +339,7 @@ export const todos: Todo[] = [
 	},
 	{
 		id: "todo_passport",
+		personRefs: [],
 		kind: "todo",
 		title: "Check passport expiry for Lisbon",
 		status: "completed",
@@ -350,6 +351,35 @@ export const todos: Todo[] = [
 			threadId: "th_lisbon",
 			threadTitle: "Lisbon planning",
 			when: "May 24, 21:16",
+		},
+	},
+	{
+		id: "todo_buy_milk",
+		kind: "todo",
+		title: "Buy milk",
+		status: "active",
+		personRefs: [],
+		createdAt: "Today, 08:00",
+		recency: 80,
+		capturedFrom: {
+			threadId: "th_errands",
+			threadTitle: "Quick errands",
+			when: "Today, 08:00",
+		},
+	},
+	{
+		id: "todo_read_handbook",
+		kind: "todo",
+		title: "Read the new TypeScript handbook",
+		status: "active",
+		note: "Skim the narrowing chapter first.",
+		personRefs: [],
+		createdAt: "May 30",
+		recency: 44,
+		capturedFrom: {
+			threadId: "th_learning",
+			threadTitle: "Learning backlog",
+			when: "May 30, 21:00",
 		},
 	},
 ];
