@@ -74,17 +74,20 @@ export interface Project extends LibraryItemBase {
 	todoIds?: string[];
 }
 
+export type TodoStatus = "active" | "completed" | "dropped";
+
 export interface Todo extends LibraryItemBase {
 	kind: "todo";
 	title: string;
-	done: boolean;
-	/** Human due label, e.g. "Today", "Fri", "May 30". Undefined = no due date. */
-	due?: string;
-	/** Days from today: negative = overdue, 0 = today, positive = upcoming. */
-	dueInDays?: number;
-	projectId?: string;
-	owner?: string;
 	note?: string;
+	status: TodoStatus;
+	projectId?: string;
+	/** "Not before" date — local wall-clock `YYYY-MM-DDTHH:MM:SS` (ADR-0031). */
+	deferAt?: string;
+	/** Hard deadline — local wall-clock `YYYY-MM-DDTHH:MM:SS` (ADR-0031). */
+	dueAt?: string;
+	completedAt?: string;
+	droppedAt?: string;
 }
 
 export interface Recipe extends LibraryItemBase {
@@ -186,7 +189,9 @@ export function libraryItemSubtitle(e: LibraryItem): string {
 		case "project":
 			return e.summary ?? PROJECT_STATUS_LABEL[e.status];
 		case "todo":
-			return e.due ? `Due ${e.due}` : (e.note ?? "No due date");
+			return e.dueAt
+				? `Due ${e.dueAt.slice(0, 10)}`
+				: (e.note ?? TODO_STATUS_LABEL[e.status]);
 		case "recipe":
 			return (
 				[e.time, e.tags?.join(", ")].filter(Boolean).join(" · ") || "Recipe"
@@ -199,6 +204,12 @@ export const PROJECT_STATUS_LABEL: Record<Project["status"], string> = {
 	review: "In review",
 	paused: "Paused",
 	done: "Done",
+};
+
+export const TODO_STATUS_LABEL: Record<TodoStatus, string> = {
+	active: "Active",
+	completed: "Completed",
+	dropped: "Dropped",
 };
 
 export function libraryItemKindCounts(
@@ -259,17 +270,42 @@ export function itemsNeedingReview(all: LibraryItem[]): LibraryItem[] {
 	return all.filter((e) => e.needsReview).sort((a, b) => b.recency - a.recency);
 }
 
-/** Open todos due within `withinDays`, overdue first, then by soonest. */
-export function dueSoonTodos(all: LibraryItem[], withinDays = 3): Todo[] {
+/** Local wall-clock "now" as the `YYYY-MM-DDTHH:MM:SS` string Core dates compare against. */
+export function localNowString(now: Date = new Date()): string {
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return (
+		`${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}` +
+		`T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`
+	);
+}
+
+/** A Todo is overdue when active with a past due date (ADR-0031). */
+export function todoIsOverdue(todo: Todo, now = localNowString()): boolean {
+	return todo.status === "active" && todo.dueAt != null && todo.dueAt < now;
+}
+
+/**
+ * Active todos whose due *day* is at or before `now + withinDays`, overdue
+ * (and earlier) first. "Due soon" is a to-the-day notion, so this compares the
+ * date portion — a todo due later today still counts as due today.
+ */
+export function dueSoonTodos(
+	all: LibraryItem[],
+	withinDays = 3,
+	now: Date = new Date(),
+): Todo[] {
+	const horizon = new Date(now);
+	horizon.setDate(horizon.getDate() + withinDays);
+	const horizonDay = localNowString(horizon).slice(0, 10);
 	return all
 		.filter(
 			(e): e is Todo =>
 				e.kind === "todo" &&
-				!e.done &&
-				e.dueInDays !== undefined &&
-				e.dueInDays <= withinDays,
+				e.status === "active" &&
+				e.dueAt != null &&
+				e.dueAt.slice(0, 10) <= horizonDay,
 		)
-		.sort((a, b) => (a.dueInDays ?? 0) - (b.dueInDays ?? 0));
+		.sort((a, b) => (a.dueAt ?? "").localeCompare(b.dueAt ?? ""));
 }
 
 export function activeProjectItems(all: LibraryItem[]): Project[] {
@@ -305,7 +341,10 @@ export function projectProgress(
 	project: Project,
 ): { done: number; total: number } {
 	const ts = todosForProject(all, project);
-	return { done: ts.filter((t) => t.done).length, total: ts.length };
+	return {
+		done: ts.filter((t) => t.status === "completed").length,
+		total: ts.length,
+	};
 }
 
 export interface LibraryItemMatch {

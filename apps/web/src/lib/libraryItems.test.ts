@@ -49,7 +49,7 @@ describe("library item helpers", () => {
 		expect(libraryItemSubtitle(byId("person_priya"))).toBe(
 			"Staff engineer, Platform",
 		);
-		expect(libraryItemSubtitle(byId("todo_backfill"))).toBe("Due Today");
+		expect(libraryItemSubtitle(byId("todo_backfill"))).toBe("Due 2026-06-12");
 	});
 
 	it("maps route slugs to kinds", () => {
@@ -79,22 +79,24 @@ describe("library item helpers", () => {
 	});
 
 	describe("dueSoonTodos", () => {
-		const due = dueSoonTodos(entities);
+		// Fixed "now" so absolute due dates are clock-independent (today = 2026-06-12).
+		const now = new Date("2026-06-12T12:00:00");
+		const due = dueSoonTodos(entities, 3, now);
 
-		it("includes only open todos due within the window, overdue first", () => {
+		it("includes only active todos due within the window, earliest first", () => {
 			expect(due.map((t) => t.id)).toEqual([
-				"todo_dentist", // -1 overdue
-				"todo_backfill", // 0
-				"todo_flights", // 1
-				"todo_schedule_alice", // 2
-				"todo_groceries", // 3
+				"todo_dentist", // 2026-06-11 overdue
+				"todo_backfill", // 2026-06-12 today
+				"todo_flights", // 2026-06-13
+				"todo_schedule_alice", // 2026-06-14
+				"todo_groceries", // 2026-06-15
 			]);
 		});
 
-		it("excludes done todos and anything past the window", () => {
-			expect(due.every((t) => !t.done)).toBe(true);
-			expect(due.some((t) => t.id === "todo_estimate")).toBe(false); // dueInDays 7
-			expect(due.some((t) => t.id === "todo_cutover")).toBe(false); // done
+		it("excludes resolved todos and anything past the window", () => {
+			expect(due.every((t) => t.status === "active")).toBe(true);
+			expect(due.some((t) => t.id === "todo_estimate")).toBe(false); // 2026-06-19
+			expect(due.some((t) => t.id === "todo_cutover")).toBe(false); // completed
 		});
 	});
 

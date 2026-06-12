@@ -21,11 +21,12 @@ import {
 	projectForTodo,
 	projectProgress,
 	projectsForPerson,
+	TODO_STATUS_LABEL,
+	todoIsOverdue,
 	todosForProject,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
 import { setFocusedThread } from "@/store/chat";
-import { setTodoDone, useTodoDone } from "@/store/library";
 import { EntityGlyph } from "./EntityGlyph.js";
 
 /** Detail "Inspector" panel for one Library item: its relations as deep links and a path back to the capturing Run. */
@@ -385,26 +386,21 @@ function TodoBody({
 	allEntities: LibraryItem[];
 	onOpen: (e: LibraryItem) => void;
 }) {
-	const done = useTodoDone(todo.id, todo.done);
 	const project = projectForTodo(allEntities, todo);
+	const overdue = todoIsOverdue(todo);
 	return (
 		<>
-			<button
-				type="button"
-				aria-pressed={done}
-				onClick={() => setTodoDone(todo.id, !done)}
-				className={cn(
-					"flex items-center gap-2.5 self-start rounded-full px-3.5 py-1.5 font-medium text-sm transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
-					done
-						? "bg-primary text-primary-foreground"
-						: "bg-secondary text-secondary-foreground hover:bg-secondary/70",
-				)}
-			>
-				{done ? "Done" : "Mark done"}
-			</button>
 			<div className="flex flex-wrap gap-2">
-				{todo.due ? <Badge>Due {todo.due}</Badge> : null}
-				{todo.owner ? <Badge>{todo.owner}</Badge> : null}
+				<Badge>{TODO_STATUS_LABEL[todo.status]}</Badge>
+				{todo.dueAt ? (
+					<Badge variant={overdue ? "destructive" : "secondary"}>
+						{overdue ? "Overdue · " : "Due "}
+						{todo.dueAt.slice(0, 10)}
+					</Badge>
+				) : null}
+				{todo.deferAt ? (
+					<Badge>Deferred to {todo.deferAt.slice(0, 10)}</Badge>
+				) : null}
 			</div>
 			{todo.note ? (
 				<Field label="Note">

@@ -9,6 +9,7 @@ import type {
 	Person,
 	Project,
 	Todo,
+	TodoStatus,
 } from "@/lib/libraryItems";
 import { useRuntime } from "@/runtime";
 
@@ -170,22 +171,40 @@ function toLibraryJournalEntry(row: LiveEntityRow): JournalEntry {
 	} satisfies JournalEntry;
 }
 
-/** The Todo `data` shape Core stores (ADR-0004): `{title, done, due?}`. */
+/** The Todo `data` shape Core stores (ADR-0031): GTD `status` + date fields. */
 interface TodoData {
 	title?: unknown;
-	done?: unknown;
-	due?: unknown;
+	note?: unknown;
+	status?: unknown;
+	project_id?: unknown;
+	defer_at?: unknown;
+	due_at?: unknown;
+	completed_at?: unknown;
+	dropped_at?: unknown;
 }
 
-/** Map a live `entity/list` row to the Library `Todo` view model — see docs/design/web-lib.md. */
+function asString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+function asTodoStatus(value: unknown): TodoStatus {
+	return value === "completed" || value === "dropped" ? value : "active";
+}
+
+/** Map a live `entity/list` row to the Library `Todo` view model (ADR-0031). */
 function toLibraryTodo(row: LiveEntityRow): Todo {
 	const data = (row.data ?? {}) as TodoData;
 	return {
 		id: row.id,
 		kind: "todo",
-		title: typeof data.title === "string" ? data.title : "Untitled",
-		done: data.done === true,
-		due: typeof data.due === "string" ? data.due : undefined,
+		title: asString(data.title) ?? "Untitled",
+		note: asString(data.note),
+		status: asTodoStatus(data.status),
+		projectId: asString(data.project_id),
+		deferAt: asString(data.defer_at),
+		dueAt: asString(data.due_at),
+		completedAt: asString(data.completed_at),
+		droppedAt: asString(data.dropped_at),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Todo;

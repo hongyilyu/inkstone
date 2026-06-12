@@ -1,8 +1,8 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { people, todos } from "@/data/mock/entities";
-import { resetLibraryStore } from "@/store/library";
+import type { Todo } from "@/lib/libraryItems";
 import { EntityRow, TodoRow } from "./EntityRow";
 
 const todo = (id: string) => {
@@ -16,29 +16,35 @@ const person = (id: string) => {
 	return p;
 };
 
-beforeEach(() => resetLibraryStore());
 afterEach(cleanup);
 
 describe("TodoRow", () => {
-	it("toggles done via the checkbox and reflects it", async () => {
-		const user = userEvent.setup();
+	it("shows status read-only — no done toggle (editing is deferred)", () => {
 		render(
 			<ul>
 				<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />
 			</ul>,
 		);
-
-		const checkbox = screen.getByRole("button", { name: /mark .* done/i });
-		expect(checkbox).toHaveAttribute("aria-pressed", "false");
-
-		await user.click(checkbox);
-
+		// The old "Mark done" toggle is gone; an active todo carries an Active mark.
 		expect(
-			screen.getByRole("button", { name: /mark .* not done/i }),
-		).toHaveAttribute("aria-pressed", "true");
+			screen.queryByRole("button", { name: /mark .* done/i }),
+		).not.toBeInTheDocument();
+		expect(screen.getByLabelText("Active")).toBeInTheDocument();
 	});
 
-	it("opens detail without toggling done", async () => {
+	it("marks a completed todo without offering a toggle", () => {
+		render(
+			<ul>
+				<TodoRow todo={todo("todo_cutover")} onSelect={() => {}} />
+			</ul>,
+		);
+		expect(screen.getByLabelText("Completed")).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /mark/i }),
+		).not.toBeInTheDocument();
+	});
+
+	it("opens detail when the row is clicked", async () => {
 		const user = userEvent.setup();
 		const onSelect = vi.fn();
 		render(
@@ -52,28 +58,33 @@ describe("TodoRow", () => {
 		);
 
 		expect(onSelect).toHaveBeenCalledWith("todo_schedule_alice");
-		// The open affordance must not flip done.
-		expect(
-			screen.getByRole("button", { name: /mark .* done/i }),
-		).toHaveAttribute("aria-pressed", "false");
 	});
 
-	it("flags an overdue todo with a label, not colour alone", () => {
+	it("flags an overdue active todo with a label, not colour alone", () => {
+		// Force a due date far in the past so the assertion is clock-proof.
+		const overdue: Todo = {
+			...todo("todo_dentist"),
+			dueAt: "2000-01-01T09:00:00",
+		};
 		render(
 			<ul>
-				<TodoRow todo={todo("todo_dentist")} onSelect={() => {}} />
+				<TodoRow todo={overdue} onSelect={() => {}} />
 			</ul>,
 		);
 		expect(screen.getByText("Overdue")).toBeInTheDocument();
 	});
 
-	it("shows the due label when not overdue", () => {
+	it("shows the due date when not overdue", () => {
+		const future: Todo = {
+			...todo("todo_schedule_alice"),
+			dueAt: "2999-01-02T17:00:00",
+		};
 		render(
 			<ul>
-				<TodoRow todo={todo("todo_schedule_alice")} onSelect={() => {}} />
+				<TodoRow todo={future} onSelect={() => {}} />
 			</ul>,
 		);
-		expect(screen.getByText("Fri")).toBeInTheDocument();
+		expect(screen.getByText("2999-01-02")).toBeInTheDocument();
 		expect(screen.queryByText("Overdue")).not.toBeInTheDocument();
 	});
 });

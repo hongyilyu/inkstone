@@ -207,7 +207,7 @@ describe("EntityCollection", () => {
 				{
 					id: "01900000-0000-7000-8000-000000000030",
 					type: "todo",
-					data: { title: "buy milk", done: false },
+					data: { title: "buy milk", status: "active" },
 					created_at: 1_700_000_000_000,
 					updated_at: 1_700_000_000_000,
 				},
