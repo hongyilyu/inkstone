@@ -6,6 +6,8 @@ Inkstone's chat input serves two different user intents: ordinary conversation a
 
 Add **Journal Entry** as an Entity Type. A Journal Entry is the canonical event/evidence record refined from one or more user source Messages. One user Message may produce multiple Journal Entries, and one Journal Entry may later be refined by user Messages. Person, Project, and Todo Entities extracted from a journal flow source from the accepted Journal Entry, not directly from the raw chat Message.
 
+This does not prohibit direct non-journal capture. If the user asks Inkstone to remember a Person, start a Project, or create a Todo without describing a journal-worthy event, the Workflow may propose that Entity directly from the user Message. The Journal Entry anchor is required for event/journal capture, not for every Entity creation path.
+
 The first Journal Entry intake implementation intentionally limits update/delete to the original Thread: Core accepts an update/delete only when the target Journal Entry has a `created_from` Entity Source whose source user Message belongs to the current Thread. Cross-Thread refinement remains part of the long-term domain model, but is deferred until the Workflow has a dedicated disambiguation/search path for safely selecting entries outside the current Thread.
 
 Add two first-class domain associations:
@@ -54,7 +56,7 @@ Assistant Messages may provide conversational context for a Workflow, but Entity
 ## Considered and rejected
 
 - **Use Messages as the only journal source.** Rejected: ordinary chat and journal capture share the same input surface, and raw chat text is not the refined event record the user wants to keep.
-- **Create Person/Project/Todo directly from Messages.** Rejected: loses the accepted Journal Entry as provenance and makes later "why does this entity exist?" queries point at chat implementation artifacts.
+- **Create Person/Project/Todo directly from journal-worthy Messages.** Rejected: event capture needs the accepted Journal Entry as provenance; otherwise later "why does this entity exist?" queries would point at chat implementation artifacts instead of the user's accepted event record. Direct non-journal capture is allowed and is covered by [ADR-0031](./0031-gtd-todo-person-project-model.md).
 - **Make Daily Note an Entity.** Rejected for the first model: the daily bucket is a collection view over entries, not independent source content.
 - **Store unresolved mentions as canonical state.** Rejected: unaccepted extraction output is speculative and belongs as tier-3 candidate/projection data until ratified through a Proposal.
 - **Batch Journal Entry and extracted Entities into one Proposal.** Rejected for now: ADR-0025 deliberately keeps one Proposal as one decision.
@@ -66,3 +68,4 @@ Assistant Messages may provide conversational context for a Workflow, but Entity
 - [ADR-0016](./0016-proposal-application-policy.md) — Worker-originated Workspace mutations go through Proposals.
 - [ADR-0017](./0017-tier-2-schema-slice-1.md) — Entities and revisions are canonical tier-2 state.
 - [ADR-0025](./0025-proposal-park-and-resume.md) — Proposals park/resume one decision at a time.
+- [ADR-0031](./0031-gtd-todo-person-project-model.md) — Todo, Person, and Project model for GTD-style capture.

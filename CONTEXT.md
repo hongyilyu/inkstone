@@ -125,6 +125,30 @@ _Avoid_: raw chat log, daily note row.
 A derived date-grouped view over Journal Entries, grouped by the entries' occurred time. It is not an Entity in the first model: editing, referencing, and provenance happen on the underlying Journal Entries and related Entities, and the Daily Note renders the current collection for a local day.
 _Avoid_: daily entity, daily document as source of truth.
 
+**Todo**:
+A GTD-style actionable Entity that tracks something the user is responsible for doing, waiting on, or deciding to drop. A Todo may originate directly from a user Message ("remind me to buy milk") or be extracted from an accepted Journal Entry. Todo data is plain operational text plus task metadata: title, optional note, status, optional Project ownership, defer date, due date, and resolution timestamps. Person involvement is not embedded in the Todo JSON; it is recorded through Todo Person References.
+_Avoid_: task object, reminder row.
+
+**Project**:
+A GTD-style outcome Entity that may require more than one Todo to complete. A Project is the user's desired outcome, not a generic category, area, or stakeholder container. Project status is manual: active, on hold, completed, or dropped. Projects carry review metadata so the Review view can prompt periodic reassessment; completing all Todos does not complete the Project automatically.
+_Avoid_: area, folder, tag, topic bucket.
+
+**Person**:
+A descriptive Entity for a real person the user wants Inkstone to remember. Person data stays small: name, optional note, and optional aliases. Tasks and Projects involving a Person are derived from Todo Person References; journal history is derived from Entity References in Journal Entries.
+_Avoid_: contact record as CRM source of truth.
+
+**Todo Person Reference**:
+A Todo-specific association from a Todo to an Accepted Person, with role `waiting_on` or `related`. It is distinct from Entity Reference: Entity Reference renders inline Journal Entry prose, while Todo Person Reference powers task views such as "waiting on Alice" and Person backlinks. A Todo may reference multiple People, but at most once per Person; `waiting_on` includes "related" semantics.
+_Avoid_: mention, generic entity link, Project-Person link.
+
+**Inbox**:
+A derived processing view over raw captured active Todos that still have no organizing metadata. In V1, a Todo is in Inbox when it is active and has no Project, no due date, and no Todo Person References; it may still have title, note, and defer date. Adding a Project, due date, or Person reference moves it out of Inbox. This means simple one-off tasks like "buy milk" remain in Inbox until future Tags/Contexts exist.
+_Avoid_: inbox entity, inbox boolean, standalone flag.
+
+**Project Review**:
+A GTD review workflow for active and on-hold Projects. Review state is Project metadata: review interval, next review time, and last reviewed time. The Workspace default review anchor is Sunday 20:00 local time; new active Projects default to weekly review at the next such anchor. Completed and dropped Projects are not reviewable.
+_Avoid_: recurring Todo, daily note review.
+
 **Extraction Candidate**:
 A possible Entity surfaced by parsing or agent extraction, living in tier 3. Not yet ratified. Becomes an Accepted Entity only after passing through a Proposal.
 _Avoid_: extracted entity (ambiguous with the accepted form), suggestion.
@@ -137,7 +161,7 @@ The kind of structured concept an Entity is — Journal Entry, Todo, Person, Pro
 _Avoid_: kind (overloaded across unrelated discriminators), entity class, entity category.
 
 **Entity Source**:
-A provenance relationship that explains where an Entity came from or what evidence supports it. A Journal Entry can source from one or more user Messages; a Person, Project, or Todo extracted from a journal flow can source from the Journal Entry. Entity Sources answer "why does this Entity exist?" Assistant Messages are Thread context, not Entity Sources.
+A provenance relationship that explains where an Entity came from or what evidence supports it. A Journal Entry can source from one or more user Messages. A Person, Project, or Todo extracted from a journal flow can source from the Journal Entry. A Person, Project, or Todo created directly from non-journal task/contact/project capture can source from the user Message. Entity Sources answer "why does this Entity exist?" Assistant Messages are Thread context, not Entity Sources.
 _Avoid_: audit log, link.
 
 **Entity Reference**:
@@ -194,3 +218,5 @@ A back-and-forth between two contributors walking through an extraction flow. Th
 > **B:** That hits tier 3 — an FTS or backlink lookup. If we ever lost tier 3 we could rebuild it from tier 2. We couldn't rebuild *Alice herself* that way, because the decision to create her happened through a Proposal you approved, and that decision is tier 2.
 
 Notable disambiguations the dialogue exercises: tier 2 vs tier 3 authority; Vault as derived export, not source; Journal Entry as accepted event record vs Message as chat input; Extraction Candidate vs Accepted Entity; Proposal vs Run Event.
+
+Direct non-journal capture uses the same Proposal and Entity Source vocabulary without forcing a Journal Entry. If the user says "Remind me to buy milk," the Workflow may propose a Todo sourced directly from that user Message. If the user says "Remember Alice is the daycare coordinator," it may propose a Person sourced directly from that Message. Journal Entry is required for journal-worthy event capture, not for every Person, Project, or Todo.

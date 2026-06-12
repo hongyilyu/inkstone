@@ -185,7 +185,8 @@ For the example input:
 5. `create todo`
    - only if the text contains an actual action
    - source: JournalEntry
-   - JournalEntry can reference the Todo as an action item; Todo-to-Person/Project relationships are deferred until Todo design
+   - JournalEntry can reference the Todo as an action item
+   - Todo-to-Person and Todo-to-Project semantics are defined by [ADR-0031](../adr/0031-gtd-todo-person-project-model.md) and [the GTD plan](./gtd-todo-person-project-plan.md)
 
 ## Rules
 
@@ -328,7 +329,7 @@ The first-slice `EntitySource` relation for `Message -> JournalEntry` is `create
 
 - Do not create Daily Note entities in v1; generate the view from Journal Entries.
 - Do not store unresolved mentions in tier 2.
-- Do not model Todo-to-Person or Todo-to-Project relationships in this slice.
+- Do not model Todo-to-Person or Todo-to-Project relationships in the Journal Entry anchor slice; implement those through the GTD Todo/Person/Project plan.
 - Do not add a generic relationship graph in this slice; `EntityRef` is only for inline Journal Entry body references.
 - Do not bypass Proposal policy for Worker-originated Journal Entry creation, Entity creation, or existing-entity reference mutations; Core may auto-approve according to policy.
 - Keep user Message evidence in `EntitySource`; assistant Messages are only Thread context.
