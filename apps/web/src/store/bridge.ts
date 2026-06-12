@@ -82,6 +82,8 @@ export function startRunStream(
 	threadId: string,
 	runId: RunId,
 ): void {
+	// Hold the fiber so the finalizer can delete ONLY its own map entry.
+	let self: Fiber.RuntimeFiber<void, WsError> | undefined;
 	const program = Effect.gen(function* () {
 		const client = yield* WsClient;
 		yield* Stream.runForEach(
@@ -97,9 +99,25 @@ export function startRunStream(
 				),
 			(event) => Effect.sync(() => applyEvent(threadId, runId, event)),
 		);
-	}).pipe(Effect.ensuring(Effect.sync(() => fibers.delete(runId))));
+	}).pipe(
+		// Identity-aware cleanup (M2): on decide-resume, `interruptRun` deletes the
+		// old entry and `startRunStream` sets the new one BEFORE the interrupted
+		// old fiber's finalizer runs. A bare `fibers.delete(runId)` would then
+		// delete the NEW resume fiber's entry — leaving it untracked (unmount can't
+		// interrupt it; a second decide can't either, splitting the resume tail
+		// across two consumers). Deleting only when the map still points at THIS
+		// fiber makes a stale finalizer a no-op.
+		Effect.ensuring(
+			Effect.sync(() => {
+				if (fibers.get(runId) === self) {
+					fibers.delete(runId);
+				}
+			}),
+		),
+	);
 
-	fibers.set(runId, runtime.runFork(program));
+	self = runtime.runFork(program);
+	fibers.set(runId, self);
 }
 
 /**
@@ -172,6 +190,11 @@ export async function sendNewThread(
 		// so the caller can tell the user (instead of silently swallowing it).
 		return { ok: false, error };
 	}
+}
+
+/** Whether a run's stream fiber is currently tracked — test helper (M2). */
+export function hasRunFiber(runId: RunId): boolean {
+	return fibers.has(runId);
 }
 
 /** Interrupt a run's stream fiber (unmount / structured cancellation, Q18 A′). */

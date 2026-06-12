@@ -106,9 +106,28 @@ export function ProposalCard({
 	useEffect(() => {
 		if (proposal.status !== "deciding") setInFlight(null);
 	}, [proposal.status]);
+	// The last decision attempted, retained across the `deciding → error`
+	// transition (unlike `inFlight`, which clears) so "Try again" re-issues the
+	// SAME decision. Without this, a failed Dismiss/Save retried as a hardwired
+	// `accept` would create the Journal Entry the user rejected — and an edit
+	// retried as accept would silently revert the user's edits.
+	const lastAttempt = useRef<{
+		decision: "accept" | "reject" | "edit";
+		editedPayload?: JournalEntryPayload;
+	} | null>(null);
 	const decide = (decision: "accept" | "reject") => {
 		setInFlight(decision);
+		lastAttempt.current = { decision };
 		onDecide(decision);
+	};
+	const retry = () => {
+		const attempt = lastAttempt.current ?? { decision: "accept" as const };
+		setInFlight(attempt.decision);
+		if (attempt.editedPayload !== undefined) {
+			onDecide(attempt.decision, attempt.editedPayload);
+		} else {
+			onDecide(attempt.decision);
+		}
 	};
 
 	const [editing, setEditing] = useState(false);
@@ -131,9 +150,11 @@ export function ProposalCard({
 	const saveEdit = () => {
 		if (inFlight !== null || proposal.status === "deciding") return;
 		if (editIssue !== null) return;
+		const editedPayload = journalPayload(editOccurredAt, editBody, editEndedAt);
 		setInFlight("edit");
 		setEditing(false);
-		onDecide("edit", journalPayload(editOccurredAt, editBody, editEndedAt));
+		lastAttempt.current = { decision: "edit", editedPayload };
+		onDecide("edit", editedPayload);
 	};
 
 	if (status === "accepted" || status === "rejected") {
@@ -283,8 +304,19 @@ export function ProposalCard({
 						{isError ? (
 							<button
 								type="button"
-								disabled={!canApply}
-								onClick={() => decide("accept")}
+								// Gate the retry on what it will actually re-send. A reject
+								// never depends on payload validity; a stored edit carries a
+								// payload already validated at save time; only a plain accept
+								// (or no prior attempt) falls back to the original payload's
+								// `canApply`.
+								disabled={
+									lastAttempt.current?.decision === "reject"
+										? false
+										: lastAttempt.current?.decision === "edit"
+											? lastAttempt.current.editedPayload === undefined
+											: !canApply
+								}
+								onClick={retry}
 								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<RotateCcw className="size-4" aria-hidden />

@@ -264,6 +264,36 @@ export function loadThreadMessages(
 	);
 }
 
+/**
+ * Non-destructively prepend fetched history to a thread that became live during
+ * an in-flight `thread/get` (a send seeded an optimistic turn under the loading
+ * skeleton). The fetched messages are the OLDER turns; the local messages are
+ * the live turn — so history goes in front, and any run already present locally
+ * is skipped so the seeded turn (and its in-flight stream) is never duplicated
+ * or clobbered. Leaves `activeRunId` untouched: the live turn keeps owning it.
+ */
+export function prependHistory(threadId: string, history: Message[]): void {
+	store.setState((s) => {
+		const thread = s.threads[threadId];
+		if (thread === undefined) {
+			return s;
+		}
+		const localRuns = new Set(
+			thread.messages.map((m) => m.run_id).filter((id) => id !== ""),
+		);
+		const older = history.filter(
+			(m) => m.run_id === "" || !localRuns.has(m.run_id),
+		);
+		if (older.length === 0) {
+			return s;
+		}
+		return withThread(s, threadId, (t) => ({
+			...t,
+			messages: [...older, ...t.messages],
+		}));
+	});
+}
+
 /** Mark a seeded assistant message failed by id (failed-send path, Q7). */
 export function markMessageIncomplete(
 	threadId: string,

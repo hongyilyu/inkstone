@@ -2,7 +2,15 @@ import { type RunEventValue, type RunId, WsClient } from "@inkstone/ui-sdk";
 import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "./bridge.js";
-import { getChatState, resetChatStore, setFocusedThread } from "./chat.js";
+import {
+	appendUserMessage,
+	getChatState,
+	type Message,
+	prependHistory,
+	resetChatStore,
+	seedAssistantMessage,
+	setFocusedThread,
+} from "./chat.js";
 
 // A stub WsClient backed by an in-memory Queue the test offers events to.
 // This is the slice-10 RuntimeProvider injection seam: a runtime built from
@@ -347,5 +355,54 @@ describe("chat store + stream bridge", () => {
 		]);
 
 		await runtime.dispose();
+	});
+});
+
+describe("prependHistory", () => {
+	const live = (id: string, run: string, text: string): Message => ({
+		id,
+		role: id.startsWith("u") ? "user" : "assistant",
+		status: "completed",
+		text,
+		run_id: run,
+	});
+
+	it("folds fetched history in front of the live turn, skipping runs already present", () => {
+		// A live turn is already seeded (e.g. a send during an in-flight thread/get).
+		appendUserMessage("t1", live("u-live", "live", "live msg"));
+		seedAssistantMessage("t1", {
+			id: "a-live",
+			role: "assistant",
+			status: "streaming",
+			text: "",
+			run_id: "live",
+		});
+
+		// Fetched history: an older turn (run "old") AND the live run again (the
+		// server already persisted it before the snapshot). The live run must be
+		// skipped; the older turn prepended.
+		prependHistory("t1", [
+			live("u-old", "old", "older msg"),
+			live("a-old", "old", "older reply"),
+			live("u-dup", "live", "dup user"),
+			live("a-dup", "live", "dup assistant"),
+		]);
+
+		const msgs = getChatState().threads.t1?.messages ?? [];
+		expect(msgs.map((m) => m.id)).toEqual([
+			"u-old",
+			"a-old",
+			"u-live",
+			"a-live",
+		]);
+	});
+
+	it("is a no-op on an unknown thread or when every fetched run is already present", () => {
+		prependHistory("missing", [live("x", "r", "x")]);
+		expect(getChatState().threads.missing).toBeUndefined();
+
+		appendUserMessage("t2", live("u", "r", "u"));
+		prependHistory("t2", [live("dup", "r", "dup")]);
+		expect(getChatState().threads.t2?.messages.map((m) => m.id)).toEqual(["u"]);
 	});
 });
