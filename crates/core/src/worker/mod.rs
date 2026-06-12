@@ -112,6 +112,18 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
     // message the Decision tool_result.
     let transcript = crate::resume::reconstruct(pool, run_id).await?;
 
+    // Build the manifest line (token resolution + serialization) BEFORE the
+    // `parked → running` flip. This is the realistic pre-spawn failure (e.g. an
+    // expired credential), and doing it here lets it propagate as `Err` while
+    // the Run is still `parked`: `decide::apply` maps it to an error, so
+    // `proposal/decide` reports failure (no `proposal/changed`) and the Client
+    // retries — the still-parked recovery branch then re-resumes. Wedging the
+    // Run `errored` (the old behavior) instead stranded a durably-accepted
+    // Proposal whose model never saw the Decision (ADR-0025).
+    let Some(line) = resume_manifest_line(&workflow, &transcript).await else {
+        anyhow::bail!("resume manifest build failed for run {run_id} (token resolution)");
+    };
+
     // Flip parked → running BEFORE creating the hub/spawning. Self-guarded on
     // `status = 'parked'`: if 0 rows matched, another resume already won the
     // race — bail so exactly one resume Worker runs.
@@ -129,10 +141,6 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
             hub::remove(&hubs, run_id);
             return;
         }
-        let Some(line) = resume_manifest_line(&workflow, &transcript).await else {
-            finalize_error(&pool, &hubs, run_id).await;
-            return;
-        };
         match ChildWorker::spawn(&worker_cmd(), line).await {
             Ok(worker) => {
                 run_loop(
@@ -148,6 +156,14 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
                 )
                 .await;
             }
+            // A post-flip ChildWorker::spawn failure is the rare residual case:
+            // the realistic pre-spawn failure (token/manifest) is handled BEFORE
+            // the flip above and propagates as `Err` while still parked. By the
+            // time we are here the decide RPC has already reported success, so
+            // re-parking would leave a decided card over a silently hung turn (no
+            // pending Proposal for `run/subscribe` to surface). Finalize `errored`
+            // instead: the synthesized terminal event makes the failure visible
+            // and the user can re-send, rather than the turn hanging forever.
             Err(()) => finalize_error(&pool, &hubs, run_id).await,
         }
     });
