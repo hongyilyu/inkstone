@@ -14,7 +14,9 @@ import { Input } from "./ui/input.js";
 type JournalEntryPayload = {
 	occurred_at: string;
 	ended_at?: string;
-	body: Array<{ type: "text"; text: string }>;
+	body: Array<
+		{ type: "text"; text: string } | { type: "entity_ref"; ref_id: string }
+	>;
 };
 
 type UpdateJournalEntryPayload = JournalEntryPayload & {
@@ -37,11 +39,24 @@ function journalBody(payload: unknown): string {
 		.map((node) => {
 			if (!node || typeof node !== "object") return "";
 			const record = node as Record<string, unknown>;
+			if (record.type === "entity_ref" && typeof record.ref_id === "string") {
+				return `[entity_ref:${record.ref_id}]`;
+			}
 			return record.type === "text" && typeof record.text === "string"
 				? record.text
 				: "";
 		})
 		.join("");
+}
+
+function journalBodyHasEntityRef(payload: unknown): boolean {
+	if (!payload || typeof payload !== "object") return false;
+	const body = (payload as Record<string, unknown>).body;
+	if (!Array.isArray(body)) return false;
+	return body.some((node) => {
+		if (!node || typeof node !== "object") return false;
+		return (node as Record<string, unknown>).type === "entity_ref";
+	});
 }
 
 function journalPayload(
@@ -110,6 +125,9 @@ export function ProposalCard({
 	const currentOccurredAt = textField(currentJournalEntry, "occurred_at");
 	const currentEndedAt = textField(currentJournalEntry, "ended_at");
 	const currentBodyText = journalBody(currentJournalEntry);
+	const bodyHasEntityRef =
+		journalBodyHasEntityRef(payload) ||
+		journalBodyHasEntityRef(currentJournalEntry);
 	const isCreateProposal = mutation_kind === "create_journal_entry";
 	const isUpdateProposal = mutation_kind === "update_journal_entry";
 	const isDeleteProposal = mutation_kind === "delete_journal_entry";
@@ -132,7 +150,7 @@ export function ProposalCard({
 			? journalPayloadIssue(occurredAt, bodyText, endedAt, entityId)
 			: null;
 	const canApply = payloadIssue === null;
-	const canEdit = isCreateProposal || isUpdateProposal;
+	const canEdit = (isCreateProposal || isUpdateProposal) && !bodyHasEntityRef;
 	const acceptedCopy = isDeleteProposal
 		? "Deleted from Journal."
 		: isUpdateProposal
@@ -201,6 +219,7 @@ export function ProposalCard({
 			: null;
 	const bodyRef = useRef<HTMLTextAreaElement>(null);
 	const openEdit = () => {
+		if (!canEdit) return;
 		setEditOccurredAt(occurredAt);
 		setEditEndedAt(endedAt);
 		setEditBody(bodyText);

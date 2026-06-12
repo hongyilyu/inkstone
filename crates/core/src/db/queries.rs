@@ -617,6 +617,28 @@ where
     Ok(row.is_some())
 }
 
+pub(super) async fn entity_ref_belongs_to_source<'e, E>(
+    executor: E,
+    source_entity_id: &str,
+    ref_id: &str,
+) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 \
+         FROM entity_refs \
+         WHERE id = ?1 \
+           AND source_entity_id = ?2 \
+         LIMIT 1",
+    )
+    .bind(ref_id)
+    .bind(source_entity_id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub(super) async fn delete_entity<'e, E>(executor: E, entity_id: &str) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,

@@ -59,12 +59,23 @@ fn journal_body_text(payload: &Value) -> String {
     };
     let text = body
         .iter()
-        .filter_map(|node| node.get("text").and_then(Value::as_str))
+        .filter_map(journal_body_node_text)
         .collect::<String>();
     if text.trim().is_empty() {
         "unknown".to_string()
     } else {
         text
+    }
+}
+
+fn journal_body_node_text(node: &Value) -> Option<String> {
+    match node.get("type").and_then(Value::as_str) {
+        Some("text") => node.get("text").and_then(Value::as_str).map(str::to_string),
+        Some("entity_ref") => node
+            .get("ref_id")
+            .and_then(Value::as_str)
+            .map(|ref_id| format!("[entity_ref:{ref_id}]")),
+        _ => None,
     }
 }
 
@@ -105,7 +116,20 @@ pub(crate) fn target_entity_id<'a>(mutation_kind: &str, payload: &'a Value) -> O
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BodyNodePolicy {
+    TextOnly,
+    TextOrEntityRef,
+}
+
 fn validate_journal_entry(payload: &Value) -> Result<(), String> {
+    validate_journal_entry_payload(payload, BodyNodePolicy::TextOnly)
+}
+
+fn validate_journal_entry_payload(
+    payload: &Value,
+    body_policy: BodyNodePolicy,
+) -> Result<(), String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| "journal entry payload must be a JSON object".to_string())?;
@@ -145,28 +169,68 @@ fn validate_journal_entry(payload: &Value) -> Result<(), String> {
         let node = node
             .as_object()
             .ok_or_else(|| "body nodes must be objects".to_string())?;
-        for key in node.keys() {
-            if key != "type" && key != "text" {
-                return Err(format!("unsupported body node field {key:?}"));
-            }
-        }
-        match node.get("type") {
-            Some(Value::String(t)) if t == "text" => {}
-            Some(Value::String(_)) => {
-                return Err("body supports only text nodes in this slice".to_string());
-            }
-            Some(_) => return Err("body node type must be a string".to_string()),
-            None => return Err("body node type is required".to_string()),
-        }
-        match node.get("text") {
-            Some(Value::String(t)) if !t.trim().is_empty() => {}
-            Some(Value::String(_)) => return Err("body text must not be empty".to_string()),
-            Some(_) => return Err("body text must be a string".to_string()),
-            None => return Err("body text is required".to_string()),
-        }
+        validate_body_node(node, body_policy)?;
     }
 
     Ok(())
+}
+
+fn validate_body_node(
+    node: &serde_json::Map<String, Value>,
+    body_policy: BodyNodePolicy,
+) -> Result<(), String> {
+    let node_type = match node.get("type") {
+        Some(Value::String(t)) => t.as_str(),
+        Some(_) => return Err("body node type must be a string".to_string()),
+        None => return Err("body node type is required".to_string()),
+    };
+
+    match node_type {
+        "text" => validate_text_body_node(node),
+        "entity_ref" if body_policy == BodyNodePolicy::TextOrEntityRef => {
+            validate_entity_ref_body_node(node)
+        }
+        "entity_ref" => Err("body supports only text nodes on create_journal_entry".to_string()),
+        _ if body_policy == BodyNodePolicy::TextOrEntityRef => {
+            Err("body node type must be text or entity_ref".to_string())
+        }
+        _ => Err("body supports only text nodes on create_journal_entry".to_string()),
+    }
+}
+
+fn validate_text_body_node(node: &serde_json::Map<String, Value>) -> Result<(), String> {
+    required_body_node_string(node, &["type", "text"], "text", "body text")?;
+    Ok(())
+}
+
+fn validate_entity_ref_body_node(node: &serde_json::Map<String, Value>) -> Result<(), String> {
+    let ref_id = required_body_node_string(
+        node,
+        &["type", "ref_id"],
+        "ref_id",
+        "entity_ref ref_id",
+    )?;
+    Uuid::parse_str(ref_id).map_err(|_| "entity_ref ref_id must be a UUID".to_string())?;
+    Ok(())
+}
+
+fn required_body_node_string<'a>(
+    node: &'a serde_json::Map<String, Value>,
+    allowed_keys: &[&str],
+    field: &str,
+    label: &str,
+) -> Result<&'a str, String> {
+    for key in node.keys() {
+        if !allowed_keys.contains(&key.as_str()) {
+            return Err(format!("unsupported body node field {key:?}"));
+        }
+    }
+    match node.get(field) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(value),
+        Some(Value::String(_)) => Err(format!("{label} must not be empty")),
+        Some(_) => Err(format!("{label} must be a string")),
+        None => Err(format!("{label} is required")),
+    }
 }
 
 fn validate_update_journal_entry(payload: &Value) -> Result<(), String> {
@@ -188,7 +252,21 @@ fn validate_update_journal_entry(payload: &Value) -> Result<(), String> {
             journal_payload.insert(key.clone(), value.clone());
         }
     }
-    validate_journal_entry(&Value::Object(journal_payload))
+    validate_journal_entry_payload(
+        &Value::Object(journal_payload),
+        BodyNodePolicy::TextOrEntityRef,
+    )
+}
+
+pub(crate) fn body_entity_ref_ids(payload: &Value) -> Vec<&str> {
+    payload
+        .get("body")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|node| node.get("type").and_then(Value::as_str) == Some("entity_ref"))
+        .filter_map(|node| node.get("ref_id").and_then(Value::as_str))
+        .collect()
 }
 
 fn validate_delete_journal_entry(payload: &Value) -> Result<(), String> {
@@ -371,10 +449,77 @@ mod tests {
             "occurred_at": "2026-06-10T10:30:00",
             "body": [{ "type": "entity_ref" }]
         }))
-        .expect_err("entity_ref nodes are not persisted in this slice");
+        .expect_err("fresh Journal Entry creates cannot include entity_ref nodes");
         assert!(
             reason.contains("text nodes"),
             "reason names text-only body: {reason}"
+        );
+    }
+
+    #[test]
+    fn update_accepts_mixed_text_and_entity_ref_body_nodes() {
+        assert!(
+            validate(
+                "update_journal_entry",
+                &json!({
+                    "entity_id": Uuid::now_v7().to_string(),
+                    "occurred_at": "2026-06-10T10:30:00",
+                    "body": [
+                        { "type": "text", "text": "Met " },
+                        { "type": "entity_ref", "ref_id": Uuid::now_v7().to_string() },
+                        { "type": "text", "text": " at school." }
+                    ]
+                })
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn update_rejects_entity_ref_nodes_without_ref_id() {
+        let reason = validate(
+            "update_journal_entry",
+            &json!({
+                "entity_id": Uuid::now_v7().to_string(),
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "entity_ref" }]
+            }),
+        )
+        .expect_err("entity_ref nodes require ref_id");
+        assert!(
+            reason.contains("ref_id"),
+            "reason names missing ref_id: {reason}"
+        );
+
+        let reason = validate(
+            "update_journal_entry",
+            &json!({
+                "entity_id": Uuid::now_v7().to_string(),
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "entity_ref", "ref_id": "  " }]
+            }),
+        )
+        .expect_err("entity_ref ref_id cannot be empty");
+        assert!(
+            reason.contains("ref_id"),
+            "reason names empty ref_id: {reason}"
+        );
+    }
+
+    #[test]
+    fn update_rejects_entity_ref_nodes_with_malformed_ref_id() {
+        let reason = validate(
+            "update_journal_entry",
+            &json!({
+                "entity_id": Uuid::now_v7().to_string(),
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "entity_ref", "ref_id": "not-a-uuid" }]
+            }),
+        )
+        .expect_err("entity_ref ref_id must be a UUID");
+        assert!(
+            reason.contains("UUID"),
+            "reason names malformed ref_id: {reason}"
         );
     }
 
@@ -449,6 +594,27 @@ mod tests {
                 && text.contains("2026-06-10T10:30:00")
                 && text.contains("Bought milk."),
             "confirmation names the created Journal Entry fields: {text}"
+        );
+    }
+
+    #[test]
+    fn render_accept_journal_entry_includes_entity_ref_placeholders() {
+        let ref_id = Uuid::now_v7().to_string();
+        let text = render_accept(
+            "update_journal_entry",
+            &json!({
+                "entity_id": Uuid::now_v7().to_string(),
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [
+                    { "type": "text", "text": "Met " },
+                    { "type": "entity_ref", "ref_id": ref_id },
+                    { "type": "text", "text": " at school." }
+                ]
+            }),
+        );
+        assert!(
+            text.contains("[entity_ref:") && text.contains(" at school."),
+            "confirmation keeps entity_ref nodes visible: {text}"
         );
     }
 

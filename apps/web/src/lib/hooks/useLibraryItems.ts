@@ -104,9 +104,17 @@ function toLibraryJournalEntry(row: LiveEntityRow): JournalEntry {
 				);
 			}
 			const record = node as Record<string, unknown>;
+			if (record.type === "entity_ref") {
+				if (typeof record.ref_id !== "string" || record.ref_id.trim() === "") {
+					throw new Error(
+						`Invalid journal_entry ${row.id}: entity_ref ref_id must not be empty`,
+					);
+				}
+				return `[entity_ref:${record.ref_id}]`;
+			}
 			if (record.type !== "text") {
 				throw new Error(
-					`Invalid journal_entry ${row.id}: body supports only text nodes`,
+					`Invalid journal_entry ${row.id}: body supports only text or entity_ref nodes`,
 				);
 			}
 			if (typeof record.text !== "string" || record.text.trim() === "") {

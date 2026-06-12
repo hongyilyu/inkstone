@@ -96,11 +96,25 @@ export type JournalEntryBodyTextNode = S.Schema.Type<
 	typeof JournalEntryBodyTextNode
 >;
 
+export const JournalEntryBodyEntityRefNode = S.Struct({
+	type: S.Literal("entity_ref"),
+	ref_id: S.String,
+});
+export type JournalEntryBodyEntityRefNode = S.Schema.Type<
+	typeof JournalEntryBodyEntityRefNode
+>;
+
+export const JournalEntryBodyNode = S.Union(
+	JournalEntryBodyTextNode,
+	JournalEntryBodyEntityRefNode,
+);
+export type JournalEntryBodyNode = S.Schema.Type<typeof JournalEntryBodyNode>;
+
 export const ProposalReviewCurrentJournalEntry = S.Struct({
 	entity_id: S.String,
 	occurred_at: S.String,
 	ended_at: S.optional(S.String),
-	body: S.Array(JournalEntryBodyTextNode),
+	body: S.Array(JournalEntryBodyNode),
 });
 export type ProposalReviewCurrentJournalEntry = S.Schema.Type<
 	typeof ProposalReviewCurrentJournalEntry

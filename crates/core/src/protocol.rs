@@ -69,9 +69,10 @@ pub struct ProposalGetParams {
 }
 
 #[derive(Debug, Serialize)]
-pub struct JournalEntryBodyTextNode {
-    pub r#type: &'static str,
-    pub text: String,
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum JournalEntryBodyNode {
+    Text { text: String },
+    EntityRef { ref_id: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -80,7 +81,7 @@ pub struct ProposalReviewCurrentJournalEntry {
     pub occurred_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
-    pub body: Vec<JournalEntryBodyTextNode>,
+    pub body: Vec<JournalEntryBodyNode>,
 }
 
 #[derive(Debug, Serialize)]
@@ -648,10 +649,17 @@ mod mirror_tests {
                     entity_id: UUID_B.to_string(),
                     occurred_at: "2026-06-10T10:30:00".to_string(),
                     ended_at: Some("2026-06-10T10:45:00".to_string()),
-                    body: vec![JournalEntryBodyTextNode {
-                        r#type: "text",
-                        text: "Bought milk.".to_string(),
-                    }],
+                    body: vec![
+                        JournalEntryBodyNode::Text {
+                            text: "Bought ".to_string(),
+                        },
+                        JournalEntryBodyNode::EntityRef {
+                            ref_id: UUID_A.to_string(),
+                        },
+                        JournalEntryBodyNode::Text {
+                            text: ".".to_string(),
+                        },
+                    ],
                 }),
             }),
             status: "pending".to_string(),
@@ -673,7 +681,11 @@ mod mirror_tests {
                         "entity_id": UUID_B,
                         "occurred_at": "2026-06-10T10:30:00",
                         "ended_at": "2026-06-10T10:45:00",
-                        "body": [{ "type": "text", "text": "Bought milk." }]
+                        "body": [
+                            { "type": "text", "text": "Bought " },
+                            { "type": "entity_ref", "ref_id": UUID_A },
+                            { "type": "text", "text": "." }
+                        ]
                     }
                 },
                 "status": "pending"

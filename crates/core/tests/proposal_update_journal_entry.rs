@@ -191,6 +191,14 @@ async fn seed_accepted_journal_entry_with_source_role(
 }
 
 fn write_update_params(path: &Path, entity_id: Uuid, body_text: &str) {
+    write_update_params_body(
+        path,
+        entity_id,
+        serde_json::json!([{ "type": "text", "text": body_text }]),
+    );
+}
+
+fn write_update_params_body(path: &Path, entity_id: Uuid, body: serde_json::Value) {
     std::fs::write(
         path,
         serde_json::json!({
@@ -198,13 +206,35 @@ fn write_update_params(path: &Path, entity_id: Uuid, body_text: &str) {
             "payload": {
                 "entity_id": entity_id.to_string(),
                 "occurred_at": "2026-06-10T10:45:00",
-                "body": [{ "type": "text", "text": body_text }]
+                "body": body
             },
             "rationale": "the user corrected a Journal Entry from this Thread"
         })
         .to_string(),
     )
     .expect("write update params");
+}
+
+async fn seed_entity_ref(
+    pool: &SqlitePool,
+    source_entity_id: Uuid,
+    target_entity_id: Uuid,
+    created_at: i64,
+) -> Uuid {
+    let ref_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO entity_refs \
+         (id, source_entity_id, target_entity_id, label_snapshot, created_at) \
+         VALUES (?1, ?2, ?3, 'Target snapshot', ?4)",
+    )
+    .bind(ref_id.to_string())
+    .bind(source_entity_id.to_string())
+    .bind(target_entity_id.to_string())
+    .bind(created_at)
+    .execute(pool)
+    .await
+    .expect("insert entity_ref");
+    ref_id
 }
 
 async fn rpc(
@@ -339,8 +369,7 @@ async fn revision_text(pool: &SqlitePool, entity_id: Uuid, seq: i64) -> String {
             .fetch_one(pool)
             .await
             .expect("revision row exists");
-    serde_json::from_str::<serde_json::Value>(&data)
-        .expect("revision data JSON")["body"][0]["text"]
+    serde_json::from_str::<serde_json::Value>(&data).expect("revision data JSON")["body"][0]["text"]
         .as_str()
         .expect("revision body text")
         .to_string()
@@ -370,6 +399,19 @@ async fn updated_from_count_for_run(pool: &SqlitePool, entity_id: Uuid, run_id: 
     .expect("count updated_from sources")
 }
 
+async fn proposal_and_tool_status_for_run(pool: &SqlitePool, run_id: &str) -> (String, String) {
+    let row = sqlx::query(
+        "SELECT p.status, tc.status AS tool_status \
+         FROM proposals p JOIN tool_calls tc ON tc.id = p.tool_call_id \
+         WHERE tc.run_id = ?1",
+    )
+    .bind(run_id)
+    .fetch_one(pool)
+    .await
+    .expect("proposal row exists");
+    (row.get("status"), row.get("tool_status"))
+}
+
 #[test]
 fn same_thread_update_accept_and_edit_replace_payload() {
     let workspace = Workspace::new();
@@ -396,7 +438,11 @@ fn same_thread_update_accept_and_edit_replace_payload() {
         entity_id
     });
 
-    write_update_params(&params_path, entity_id, "Bought milk and bread after daycare pickup.");
+    write_update_params(
+        &params_path,
+        entity_id,
+        "Bought milk and bread after daycare pickup.",
+    );
     let core = workspace
         .core()
         .worker_fixture("propose-worker.ts")
@@ -570,7 +616,11 @@ fn edit_update_preserves_target_entity_id_when_payload_omits_it() {
         entity_id
     });
 
-    write_update_params(&params_path, entity_id, "This worker payload should be replaced.");
+    write_update_params(
+        &params_path,
+        entity_id,
+        "This worker payload should be replaced.",
+    );
     let core = workspace
         .core()
         .worker_fixture("propose-worker.ts")
@@ -793,6 +843,335 @@ fn edit_update_rejects_retargeting_to_another_entry() {
 }
 
 #[test]
+fn update_accepts_mixed_body_when_ref_belongs_to_target_entry() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("update-params.json");
+    let thread_id = Uuid::now_v7();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let (entity_id, ref_id) = rt.block_on(async {
+        let pool = migrated_pool(&workspace).await;
+        seed_thread(&pool, thread_id, "Journal thread", 1).await;
+        let entity_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T10:30:00",
+            "Met Alice at school.",
+            2,
+        )
+        .await;
+        let target_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T09:30:00",
+            "Alice exists as a referenced entity stand-in.",
+            3,
+        )
+        .await;
+        let ref_id = seed_entity_ref(&pool, entity_id, target_id, 4).await;
+        pool.close().await;
+        (entity_id, ref_id)
+    });
+
+    write_update_params_body(
+        &params_path,
+        entity_id,
+        serde_json::json!([
+            { "type": "text", "text": "Met " },
+            { "type": "entity_ref", "ref_id": ref_id.to_string() },
+            { "type": "text", "text": " at school." }
+        ]),
+    );
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    let run_id = rt.block_on(async {
+        let (run_id, proposal_id) =
+            park_update_proposal(&core, thread_id, "Link Alice in the earlier entry.").await;
+        let resp = rpc(
+            &core,
+            11,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "accept",
+                "decision_idempotency_key": "update-mixed-body-ref",
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp["result"]["status"].as_str(),
+            Some("accepted"),
+            "mixed body update accepts - body: {resp}"
+        );
+        assert_eq!(
+            resp["result"]["entity_id"].as_str(),
+            Some(entity_id.to_string().as_str()),
+            "mixed body update returns target entity id - body: {resp}"
+        );
+        await_completed(&core, &run_id).await;
+        run_id
+    });
+
+    rt.block_on(async {
+        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+
+        let data = entity_data(&pool, entity_id).await;
+        assert_eq!(
+            data["body"][0]["text"].as_str(),
+            Some("Met "),
+            "text node remains strict text"
+        );
+        assert_eq!(
+            data["body"][1]["type"].as_str(),
+            Some("entity_ref"),
+            "entity_ref node is persisted in the Journal Entry body"
+        );
+        assert_eq!(
+            data["body"][1]["ref_id"].as_str(),
+            Some(ref_id.to_string().as_str()),
+            "entity_ref body node keeps the ref id"
+        );
+        assert!(
+            data.get("entity_id").is_none(),
+            "entity current data does not persist the update target id"
+        );
+        assert_eq!(
+            max_revision_seq(&pool, entity_id).await,
+            2,
+            "mixed update appends exactly one revision"
+        );
+        assert_eq!(
+            updated_from_count_for_run(&pool, entity_id, &run_id).await,
+            1,
+            "mixed update still sources from the current user Message"
+        );
+    });
+}
+
+#[test]
+fn update_rejects_entity_ref_that_does_not_exist() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("update-params.json");
+    let thread_id = Uuid::now_v7();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let entity_id = rt.block_on(async {
+        let pool = migrated_pool(&workspace).await;
+        seed_thread(&pool, thread_id, "Journal thread", 1).await;
+        let entity_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T10:30:00",
+            "Met Alice at school.",
+            2,
+        )
+        .await;
+        pool.close().await;
+        entity_id
+    });
+
+    write_update_params_body(
+        &params_path,
+        entity_id,
+        serde_json::json!([
+            { "type": "text", "text": "Met " },
+            { "type": "entity_ref", "ref_id": Uuid::now_v7().to_string() }
+        ]),
+    );
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    let invalid_run_id = rt.block_on(async {
+        let (run_id, proposal_id) =
+            park_update_proposal(&core, thread_id, "Link Alice in the earlier entry.").await;
+        let resp = rpc(
+            &core,
+            12,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "accept",
+                "decision_idempotency_key": "update-missing-ref",
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp["error"]["code"].as_i64(),
+            Some(-32602),
+            "missing entity_ref is invalid_params - body: {resp}"
+        );
+        assert!(
+            resp["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("entity_ref"),
+            "invalid reason names entity_ref - body: {resp}"
+        );
+        run_id
+    });
+
+    rt.block_on(async {
+        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        assert_eq!(
+            entity_data(&pool, entity_id).await["body"][0]["text"].as_str(),
+            Some("Met Alice at school."),
+            "invalid ref update leaves entity unchanged"
+        );
+        assert_eq!(
+            max_revision_seq(&pool, entity_id).await,
+            1,
+            "invalid ref update writes no new revision"
+        );
+        assert_eq!(
+            updated_from_count_for_run(&pool, entity_id, &invalid_run_id).await,
+            0,
+            "invalid ref update writes no updated_from source"
+        );
+        let (proposal_status, tool_status) =
+            proposal_and_tool_status_for_run(&pool, &invalid_run_id).await;
+        assert_eq!(
+            proposal_status, "pending",
+            "invalid ref update leaves proposal pending"
+        );
+        assert_eq!(
+            tool_status, "pending",
+            "invalid ref update leaves tool call unresolved"
+        );
+    });
+}
+
+#[test]
+fn update_rejects_entity_ref_that_belongs_to_another_entry() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("update-params.json");
+    let thread_id = Uuid::now_v7();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let (entity_id, other_ref_id) = rt.block_on(async {
+        let pool = migrated_pool(&workspace).await;
+        seed_thread(&pool, thread_id, "Journal thread", 1).await;
+        let entity_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T10:30:00",
+            "Met Alice at school.",
+            2,
+        )
+        .await;
+        let other_entry_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T11:30:00",
+            "Talked with Bob after lunch.",
+            3,
+        )
+        .await;
+        let target_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T09:30:00",
+            "Alice exists as a referenced entity stand-in.",
+            4,
+        )
+        .await;
+        let other_ref_id = seed_entity_ref(&pool, other_entry_id, target_id, 5).await;
+        pool.close().await;
+        (entity_id, other_ref_id)
+    });
+
+    write_update_params_body(
+        &params_path,
+        entity_id,
+        serde_json::json!([
+            { "type": "text", "text": "Met " },
+            { "type": "entity_ref", "ref_id": other_ref_id.to_string() }
+        ]),
+    );
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    let invalid_run_id = rt.block_on(async {
+        let (run_id, proposal_id) =
+            park_update_proposal(&core, thread_id, "Link Alice in the earlier entry.").await;
+        let resp = rpc(
+            &core,
+            13,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "accept",
+                "decision_idempotency_key": "update-wrong-source-ref",
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp["error"]["code"].as_i64(),
+            Some(-32602),
+            "wrong-source entity_ref is invalid_params - body: {resp}"
+        );
+        assert!(
+            resp["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("target Journal Entry"),
+            "invalid reason names the target Journal Entry ownership invariant - body: {resp}"
+        );
+        run_id
+    });
+
+    rt.block_on(async {
+        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        assert_eq!(
+            entity_data(&pool, entity_id).await["body"][0]["text"].as_str(),
+            Some("Met Alice at school."),
+            "wrong-source ref update leaves entity unchanged"
+        );
+        assert_eq!(
+            max_revision_seq(&pool, entity_id).await,
+            1,
+            "wrong-source ref update writes no new revision"
+        );
+        assert_eq!(
+            updated_from_count_for_run(&pool, entity_id, &invalid_run_id).await,
+            0,
+            "wrong-source ref update writes no updated_from source"
+        );
+        let (proposal_status, tool_status) =
+            proposal_and_tool_status_for_run(&pool, &invalid_run_id).await;
+        assert_eq!(
+            proposal_status, "pending",
+            "wrong-source ref update leaves proposal pending"
+        );
+        assert_eq!(
+            tool_status, "pending",
+            "wrong-source ref update leaves tool call unresolved"
+        );
+    });
+}
+
+#[test]
 fn cross_thread_update_is_invalid_and_leaves_entry_unchanged() {
     let workspace = Workspace::new();
     let params_path = workspace.path().join("update-params.json");
@@ -820,7 +1199,11 @@ fn cross_thread_update_is_invalid_and_leaves_entry_unchanged() {
         entity_id
     });
 
-    write_update_params(&params_path, entity_id, "Bought milk and bread after daycare pickup.");
+    write_update_params(
+        &params_path,
+        entity_id,
+        "Bought milk and bread after daycare pickup.",
+    );
     let core = workspace
         .core()
         .worker_fixture("propose-worker.ts")
@@ -891,8 +1274,14 @@ fn cross_thread_update_is_invalid_and_leaves_entry_unchanged() {
         .expect("cross-thread proposal row exists");
         let proposal_status: String = row.get("status");
         let tool_status: String = row.get("tool_status");
-        assert_eq!(proposal_status, "pending", "invalid decide leaves proposal pending");
-        assert_eq!(tool_status, "pending", "invalid decide leaves tool call unresolved");
+        assert_eq!(
+            proposal_status, "pending",
+            "invalid decide leaves proposal pending"
+        );
+        assert_eq!(
+            tool_status, "pending",
+            "invalid decide leaves tool call unresolved"
+        );
     });
 }
 
@@ -923,7 +1312,11 @@ fn non_user_created_from_update_is_invalid_and_leaves_entry_unchanged() {
         entity_id
     });
 
-    write_update_params(&params_path, entity_id, "Bought milk and bread after daycare pickup.");
+    write_update_params(
+        &params_path,
+        entity_id,
+        "Bought milk and bread after daycare pickup.",
+    );
     let core = workspace
         .core()
         .worker_fixture("propose-worker.ts")
@@ -990,7 +1383,13 @@ fn non_user_created_from_update_is_invalid_and_leaves_entry_unchanged() {
         .expect("non-user created_from proposal row exists");
         let proposal_status: String = row.get("status");
         let tool_status: String = row.get("tool_status");
-        assert_eq!(proposal_status, "pending", "invalid decide leaves proposal pending");
-        assert_eq!(tool_status, "pending", "invalid decide leaves tool call unresolved");
+        assert_eq!(
+            proposal_status, "pending",
+            "invalid decide leaves proposal pending"
+        );
+        assert_eq!(
+            tool_status, "pending",
+            "invalid decide leaves tool call unresolved"
+        );
     });
 }

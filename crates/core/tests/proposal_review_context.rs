@@ -266,6 +266,26 @@ async fn request_payload_for_run(pool: &SqlitePool, run_id: &str) -> serde_json:
     serde_json::from_str(&payload).expect("request_payload is JSON")
 }
 
+async fn replace_journal_entry_body(
+    pool: &SqlitePool,
+    entity_id: Uuid,
+    body: serde_json::Value,
+) {
+    let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
+        .bind(entity_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("entity row exists");
+    let mut data = serde_json::from_str::<serde_json::Value>(&data).expect("entity data JSON");
+    data["body"] = body;
+    sqlx::query("UPDATE entities SET data = ?1 WHERE id = ?2")
+        .bind(data.to_string())
+        .bind(entity_id.to_string())
+        .execute(pool)
+        .await
+        .expect("replace entity body");
+}
+
 #[test]
 fn proposal_get_returns_display_only_current_context_for_journal_entry_reviews() {
     let workspace = Workspace::new();
@@ -422,6 +442,78 @@ fn proposal_get_returns_display_only_current_context_for_journal_entry_reviews()
         assert!(
             create_request_payload.get("review_context").is_none(),
             "stored create tool payload omits review_context"
+        );
+    });
+}
+
+#[test]
+fn proposal_get_review_context_preserves_entity_ref_body_nodes() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("proposal-params.json");
+    let thread_id = Uuid::now_v7();
+    let ref_id = Uuid::now_v7();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let entity_id = rt.block_on(async {
+        let pool = migrated_pool(&workspace).await;
+        seed_thread(&pool, thread_id, "Journal thread", 1).await;
+        let entity_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T10:30:00",
+            None,
+            "Met Alice at school.",
+            2,
+        )
+        .await;
+        replace_journal_entry_body(
+            &pool,
+            entity_id,
+            serde_json::json!([
+                { "type": "text", "text": "Met " },
+                { "type": "entity_ref", "ref_id": ref_id.to_string() },
+                { "type": "text", "text": " at school." }
+            ]),
+        )
+        .await;
+        pool.close().await;
+        entity_id
+    });
+
+    write_params(
+        &params_path,
+        serde_json::json!({
+            "mutation_kind": "update_journal_entry",
+            "payload": {
+                "entity_id": entity_id.to_string(),
+                "occurred_at": "2026-06-10T11:00:00",
+                "body": [{ "type": "text", "text": "Met Alice and Bob at school." }]
+            },
+            "rationale": "the user corrected the note"
+        }),
+    );
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    rt.block_on(async {
+        let (_, resp) =
+            park_proposal(&core, thread_id, "Actually, mention Bob too.").await;
+        let body = &resp["result"]["review_context"]["current_journal_entry"]["body"];
+        assert_eq!(
+            body,
+            &serde_json::json!([
+                { "type": "text", "text": "Met " },
+                { "type": "entity_ref", "ref_id": ref_id.to_string() },
+                { "type": "text", "text": " at school." }
+            ]),
+            "review context keeps the full mixed body - body: {resp}"
         );
     });
 }

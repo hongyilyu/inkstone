@@ -681,16 +681,14 @@ pub async fn apply_proposal(
         }
     };
     let edited_str = edited_payload.map(|v| v.to_string());
+    let effective_payload = edited_payload.unwrap_or(payload);
     let data_str = match mutation_kind {
         "delete_journal_entry" => None,
         "create_journal_entry" | "update_journal_entry" => {
             // Effective entity data: edited payload when present, else the
             // proposed data. For updates, `entity_id` targets the row but is not
             // part of Journal Entry data.
-            Some(
-                journal_entry_data_payload(mutation_kind, edited_payload.unwrap_or(payload))
-                    .to_string(),
-            )
+            Some(journal_entry_data_payload(mutation_kind, effective_payload).to_string())
         }
         _ => unreachable!("mutation_kind validated above"),
     };
@@ -712,6 +710,18 @@ pub async fn apply_proposal(
     if !accepted.won() {
         // tx drops without commit → rollback; no entity inserted.
         return Err(ApplyError::NotPending);
+    }
+
+    if mutation_kind == "update_journal_entry" {
+        for ref_id in crate::entities::body_entity_ref_ids(effective_payload) {
+            let belongs =
+                queries::entity_ref_belongs_to_source(&mut *tx, &entity_id, ref_id).await?;
+            if !belongs {
+                return Err(ApplyError::InvalidMutation(format!(
+                    "entity_ref ref_id {ref_id:?} must exist and belong to the target Journal Entry"
+                )));
+            }
+        }
     }
 
     match mutation_kind {
