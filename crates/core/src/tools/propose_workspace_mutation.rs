@@ -198,6 +198,12 @@ pub struct CreatePersonPayload {
     #[serde(default)]
     pub aliases: Option<Vec<String>>,
     #[serde(default)]
+    #[schemars(
+        length(min = 36, max = 36),
+        regex(
+            pattern = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        )
+    )]
     pub source_journal_entry_id: Option<String>,
 }
 
@@ -289,6 +295,12 @@ pub struct CreateProjectPayload {
     #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
     pub last_reviewed_at: Option<String>,
     #[serde(default)]
+    #[schemars(
+        length(min = 36, max = 36),
+        regex(
+            pattern = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        )
+    )]
     pub source_journal_entry_id: Option<String>,
 }
 
@@ -446,6 +458,12 @@ pub struct CreateTodoPayload {
     #[serde(default)]
     pub person_refs: Option<Vec<PersonRef>>,
     #[serde(default)]
+    #[schemars(
+        length(min = 36, max = 36),
+        regex(
+            pattern = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        )
+    )]
     pub source_journal_entry_id: Option<String>,
 }
 
@@ -528,7 +546,10 @@ const OMITTABLE_PROPERTIES: &[&str] = &[
     "dropped_at",
     "next_review_at",
     "last_reviewed_at",
-    // Todo envelope + person refs.
+    // Todo envelope + person refs. `title` is required on TodoData (create) but
+    // optional on PartialTodoData (update_todo); stripping null only touches the
+    // optional occurrence, leaving the required create field untouched.
+    "title",
     "todo",
     "person_refs",
     "role",
@@ -1107,6 +1128,7 @@ mod tests {
         // Every optional GTD field the model should OMIT rather than send as null
         // must be non-nullable in the emitted schema (mirrors ended_at).
         for property in [
+            "title",
             "note",
             "outcome",
             "aliases",

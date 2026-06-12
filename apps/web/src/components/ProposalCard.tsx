@@ -639,20 +639,19 @@ function Field({ label, value }: { label: string; value: string }) {
 
 // A person ref is itself unvalidated; read its id/role defensively. Returns null
 // when there is no usable person_id so the caller can skip rendering a blank row.
-function personRefLine(ref: unknown): { key: string; line: string } | null {
+function personRefLine(ref: unknown): string | null {
 	const personId = textField(ref, "person_id");
 	if (!personId) return null;
 	const role = textField(ref, "role");
-	return {
-		key: `${role || "related"}:${personId}`,
-		line:
-			role === "waiting_on"
-				? `Waiting on: ${personId}`
-				: `Related: ${personId}`,
-	};
+	return role === "waiting_on"
+		? `Waiting on: ${personId}`
+		: `Related: ${personId}`;
 }
 
-// Map an array field of (unvalidated) person refs to rendered rows.
+// Map an array field of (unvalidated) person refs to rendered rows. Rows are
+// static and presentational, so the post-filter index is a unique, stable key —
+// it avoids a duplicate-key collision when two refs share the same id + role
+// (reachable since the payload is raw, unvalidated model output).
 function personRefFields(
 	payload: unknown,
 	key: string,
@@ -661,9 +660,9 @@ function personRefFields(
 ) {
 	return arrayField(payload, key)
 		.map((ref) => personRefLine(ref))
-		.filter((entry): entry is { key: string; line: string } => entry !== null)
-		.map((entry) => (
-			<Field key={`${prefix}:${entry.key}`} label={label} value={entry.line} />
+		.filter((line): line is string => line !== null)
+		.map((line, i) => (
+			<Field key={`${prefix}:${i}`} label={label} value={line} />
 		));
 }
 

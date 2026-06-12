@@ -742,6 +742,7 @@ describe("ProposalCard", () => {
 			payload: {
 				todo_id: "todo-7",
 				todo: { status: "completed", title: "Email Alice (done)" },
+				set_person_refs: [{ person_id: "dave-1", role: "related" }],
 				add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
 				remove_person_ids: ["bob-1"],
 			},
@@ -757,6 +758,10 @@ describe("ProposalCard", () => {
 			expect(screen.getByText(/todo-7/)).toBeInTheDocument();
 			expect(screen.getByText("Email Alice (done)")).toBeInTheDocument();
 			expect(screen.getByText("completed")).toBeInTheDocument();
+			// set_person_refs renders under the "Set" label — distinct from add/remove,
+			// so a dropped or mis-keyed set branch is caught, not just a missing line.
+			expect(screen.getByText("Set")).toBeInTheDocument();
+			expect(screen.getByText(/Related: dave-1/)).toBeInTheDocument();
 			expect(screen.getByText(/Waiting on: carol-1/)).toBeInTheDocument();
 			expect(screen.getByText(/bob-1/)).toBeInTheDocument();
 			expect(

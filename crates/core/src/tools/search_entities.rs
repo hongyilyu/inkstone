@@ -245,19 +245,30 @@ mod tests {
         assert_eq!(rows[0]["label"], "Alice Andrews");
         assert_eq!(rows[0]["aliases"], json!(["Al"]));
 
-        // Match by alias substring: "al" -> Alice (alias "Al").
-        let out = execute(&pool, json!({ "type": "person", "query": "Al" }))
+        // Match by alias ALONE: query a substring the NAME does not contain, so
+        // only the alias branch can produce the hit. "Alice Andrews" has no "ac";
+        // alias "AC" does. This isolates the alias-matching branch — a regression
+        // that ignored aliases would return zero rows here.
+        seed_entity(
+            &pool,
+            "00000000-0000-4000-8000-000000000005",
+            "person",
+            r#"{"name":"Grace Hopper","aliases":["AC"]}"#,
+        )
+        .await;
+        let out = execute(&pool, json!({ "type": "person", "query": "ac" }))
             .await
             .expect("search ok");
         let rows = results(&out);
         let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
-        assert!(
-            ids.contains(&"00000000-0000-4000-8000-000000000001"),
-            "alias match returns Alice, got {rows:?}"
+        assert_eq!(
+            rows.len(),
+            1,
+            "only the aliased Grace matches 'ac' (name has no 'ac'), got {rows:?}"
         );
         assert!(
-            !ids.contains(&"00000000-0000-4000-8000-000000000002"),
-            "Bob has no 'al' name/alias, got {rows:?}"
+            ids.contains(&"00000000-0000-4000-8000-000000000005"),
+            "alias-only match returns Grace, got {rows:?}"
         );
     }
 
@@ -324,6 +335,45 @@ mod tests {
             .await
             .expect("search ok");
         assert_eq!(results(&out).len(), 2, "limit caps the result count");
+    }
+
+    #[tokio::test]
+    async fn limit_defaults_to_20_and_clamps_at_50() {
+        let pool = memory_pool().await;
+        // Seed more than MAX_LIMIT so the default and the hard cap are observable
+        // (with ≤50 rows neither branch would be distinguishable).
+        for i in 0..60 {
+            seed_entity(
+                &pool,
+                &format!("00000000-0000-4000-8000-0000000003{i:02}"),
+                "person",
+                &format!(r#"{{"name":"Person {i:02}"}}"#),
+            )
+            .await;
+        }
+
+        // No `limit` → DEFAULT_LIMIT (20), not all 60.
+        let out = execute(&pool, json!({ "type": "person", "query": "" }))
+            .await
+            .expect("search ok");
+        assert_eq!(
+            results(&out).len(),
+            DEFAULT_LIMIT,
+            "absent limit returns DEFAULT_LIMIT rows"
+        );
+
+        // An over-large `limit` is clamped to MAX_LIMIT (50), never 1000.
+        let out = execute(
+            &pool,
+            json!({ "type": "person", "query": "", "limit": 1000 }),
+        )
+        .await
+        .expect("search ok");
+        assert_eq!(
+            results(&out).len(),
+            MAX_LIMIT,
+            "an over-large limit is clamped to MAX_LIMIT"
+        );
     }
 
     #[tokio::test]
