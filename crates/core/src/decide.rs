@@ -1,19 +1,9 @@
-//! `crate::decide`: the deep, idempotent Decision-application module (ADR-0025,
-//! ADR-0016).
+//! Idempotent Decision-application for `proposal/decide` (ADR-0025, ADR-0016).
 //!
-//! [`apply`] takes the decoded `proposal/decide` inputs (proposal id, decision
-//! string, optional edited payload, optional idempotency key) plus its plain
-//! deps — the pool and an injected `resume` closure — and returns a typed
-//! `Result<DecideOutcome, DecideError>`. It owns the whole transaction:
-//! idempotency precedence, the guarded apply/reject (a lost race is
-//! [`DecideError::LostRace`]), and the resume + still-parked recovery collapsed
-//! into ONE trailing resume gate. The `resume` seam is a closure so this module
-//! takes no dependency on the `worker` subsystem (ADR-0026); production passes
-//! `|run_id| worker::resume(run_id, pool, hubs)`.
-//!
-//! Mutation dispatch (validate, schema version, accept-decision text) stays
-//! behind [`crate::entities`], so neither this module nor the handler matches on
-//! a mutation string.
+//! [`apply`] owns the whole transaction: idempotency precedence, the guarded
+//! apply/reject (lost race → [`DecideError::LostRace`]), and one trailing resume
+//! gate. The `resume` seam is a closure so this module takes no `worker`
+//! dependency (ADR-0026). Mutation dispatch stays behind [`crate::entities`].
 
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -21,62 +11,51 @@ use uuid::Uuid;
 use crate::db;
 use crate::entities;
 
-/// The user's resolution of a Proposal, parsed from the wire `decision` string
-/// inside [`apply`] (the STRING only — an `edit`'s payload-PRESENCE requirement
-/// is enforced later, on the fresh apply path, NOT at parse time).
+/// The user's resolution of a Proposal, parsed from the wire `decision` string.
+/// An `edit`'s payload-presence is enforced later (fresh apply path), not here.
 enum Decision {
     Accept,
     Reject,
     Edit,
 }
 
-/// The successful outcome of a decide: the Proposal was accepted (an Entity
-/// landed — its id) or rejected (no Entity). Both carry the `run_id` so the
-/// handler can push `proposal/changed` without re-reading it.
+/// A successful decide: accepted (an Entity landed) or rejected. Both carry the
+/// `run_id` so the handler can push `proposal/changed` without re-reading it.
 #[derive(Debug)]
 pub enum DecideOutcome {
     Accepted { run_id: Uuid, entity_id: String },
     Rejected { run_id: Uuid },
 }
 
-/// The decide failure vocabulary, owned by this module (NOT the handler's
-/// `HandlerError`). The handler maps each to a wire code at one site:
+/// The decide failure vocabulary. The handler maps each to a wire code:
 /// `LostRace`/`NotDecidable` → `-32002`, `Invalid` → `-32602`, `Internal` →
 /// `-32603`.
 #[derive(Debug)]
 pub enum DecideError {
-    /// The guarded apply/reject flip affected 0 rows — a concurrent decide won
-    /// the race. Nothing was applied here.
+    /// The guarded apply/reject flip affected 0 rows — a concurrent decide won.
     LostRace,
     /// The Proposal cannot be decided in its current state (unknown id, already
     /// decided and not recoverable, or its Run is not parked).
     NotDecidable(String),
-    /// The inputs are invalid (unknown decision, edit without payload, or the
-    /// applied payload fails mutation validation).
+    /// Invalid inputs (unknown decision, edit without payload, or the applied
+    /// payload fails mutation validation).
     Invalid(String),
-    /// An internal fault (a DB error, or a DB inconsistency). Logged
-    /// server-side by the handler; never surfaced verbatim to the client.
+    /// A DB error or inconsistency. Logged server-side; never surfaced verbatim.
     Internal(anyhow::Error),
 }
 
-/// Apply a Decision on a Proposal (ADR-0025, ADR-0016) then re-drive resume if
-/// the Run is still parked. The collapsed transaction:
+/// Apply a Decision on a Proposal (ADR-0025, ADR-0016), then re-drive resume if
+/// the Run is still parked:
 ///
-/// 1. parse the `decision` STRING into a [`Decision`] (this module owns it); an
-///    unknown decision is `Invalid` — an `edit`'s payload PRESENCE is NOT
-///    checked here, only on the fresh path at step 3, so a payload-less `edit`
-///    retry of an already-decided Proposal still replays the prior result and
-///    re-drives recovery rather than erroring;
+/// 1. parse the `decision` string (unknown → `Invalid`);
 /// 2. load the Proposal (unknown id → `NotDecidable`);
-/// 3. compute the outcome — keyed idempotent replay, else already-decided
-///    recovery-if-still-parked, else a fresh guarded apply/reject (the fresh
-///    path is where an `edit` without a payload becomes `Invalid`);
-/// 4. ONE trailing resume gate: if the Run is still `parked`, re-drive the
-///    injected `resume` (covers a fresh decide, a keyed replay, and an
-///    already-decided-still-parked recovery; a no-op once the Run advanced).
+/// 3. compute the outcome — keyed replay, else already-decided
+///    recovery-if-still-parked, else a fresh guarded apply/reject;
+/// 4. one trailing resume gate: if the Run still reads `parked`, re-drive the
+///    injected `resume` (a no-op once the Run advanced).
 ///
-/// `worker::resume` self-guards the `parked → running` flip, so the trailing
-/// gate is safe to fire whenever the Run reads `parked`.
+/// `worker::resume` self-guards the `parked → running` flip, so the gate is safe
+/// to fire whenever the Run reads `parked`.
 pub async fn apply<F, Fut>(
     pool: &SqlitePool,
     proposal_id: Uuid,
@@ -107,8 +86,7 @@ where
     )
     .await?;
 
-    // Single resume gate (replaces the three scattered resume calls + both
-    // `recover_resume_if_parked` copies). Reached only on the Ok path.
+    // Single resume gate, reached only on the Ok path.
     if run_is_parked(pool, proposal.run_id).await? {
         resume(proposal.run_id)
             .await
@@ -118,12 +96,9 @@ where
     Ok(outcome)
 }
 
-/// Parse the wire `decision` string into a [`Decision`]. An unknown decision is
-/// [`DecideError::Invalid`] (no load, no write). This recognizes the STRING
-/// only — an `edit`'s payload-presence requirement is deferred to the fresh
-/// apply path ([`apply_or_reject`]), so a payload-less `edit` retry of an
-/// already-decided Proposal still replays the prior result + recovery rather
-/// than erroring before the idempotency/recovery branches.
+/// Parse the wire `decision` string; unknown → [`DecideError::Invalid`]. Only
+/// the string — an `edit`'s payload-presence is deferred to [`apply_or_reject`]
+/// so a payload-less `edit` retry still replays/recovers rather than erroring.
 fn parse_decision(decision: &str) -> Result<Decision, DecideError> {
     match decision {
         "accept" => Ok(Decision::Accept),
@@ -135,18 +110,17 @@ fn parse_decision(decision: &str) -> Result<Decision, DecideError> {
     }
 }
 
-/// The decide precedence (ADR-0025), collapsed into one flow:
+/// The decide precedence (ADR-0025):
 ///
-/// 1. **Keyed replay** — a repeat decide carrying the SAME recorded key returns
-///    the prior result (any Run status), no re-apply.
-/// 2. **Already decided** without a key match — if durable yet the Run is still
-///    parked, return the prior result (the recovery path; the trailing gate
-///    re-resumes). Otherwise it is genuinely not decidable.
-/// 3. **Pending** — the Run must be parked; then apply/reject under the guard
-///    (and ONLY here is an `edit` without a payload rejected as `Invalid`).
+/// 1. **Keyed replay** — a repeat decide with the SAME recorded key returns the
+///    prior result (any Run status), no re-apply.
+/// 2. **Already decided** without a key match — return the prior result if the
+///    Run is still parked (recovery; trailing gate re-resumes), else not
+///    decidable.
+/// 3. **Pending** — the Run must be parked, then apply/reject under the guard.
 ///
-/// Steps 1–2 never inspect `edited_payload`: a payload-less retry/replay of an
-/// already-decided Proposal replays/recovers, matching the pre-extraction handler.
+/// Steps 1–2 never inspect `edited_payload`, so a payload-less retry/replay
+/// recovers rather than erroring.
 async fn compute_outcome(
     pool: &SqlitePool,
     proposal_id: &str,
@@ -191,10 +165,9 @@ async fn compute_outcome(
     .await
 }
 
-/// The prior result of an already-decided Proposal (the keyed-replay / recovery
-/// branches): `rejected` → `Rejected`; `accepted` → its created `entity_id`
-/// (`entity_id_for_proposal`). An accepted Proposal with no Entity is a DB
-/// inconsistency → `Internal`. Callers only reach this for accepted/rejected.
+/// The prior result of an already-decided Proposal: `rejected` → `Rejected`;
+/// `accepted` → its created `entity_id`. An accepted Proposal with no Entity is
+/// a DB inconsistency → `Internal`. Only reached for accepted/rejected.
 async fn prior_outcome(
     pool: &SqlitePool,
     proposal_id: &str,
@@ -229,16 +202,11 @@ async fn prior_outcome(
 }
 
 /// The fresh guarded transaction: render the Decision as the awaited tool's
-/// result (what the resumed model reads), validate accept/edit (NOT reject) via
-/// [`crate::entities`], then ONE atomic [`db::apply_proposal`] / [`db::reject_proposal`].
-/// `ApplyError::NotPending` (the guarded flip lost a concurrent race) →
-/// `LostRace`; `ApplyError::InvalidMutation` → `Invalid`;
-/// `ApplyError::Sql` → `Internal`.
-///
-/// This is also where an `edit` WITHOUT an `edited_payload` is rejected as
-/// `Invalid` — LATE (only on the fresh path), matching the pre-extraction
-/// handler, so the keyed-replay / recovery branches upstream never depend on
-/// the retry carrying a payload.
+/// result, validate accept/edit (not reject) via [`crate::entities`], then one
+/// atomic [`db::apply_proposal`] / [`db::reject_proposal`]. `NotPending` →
+/// `LostRace`; `InvalidMutation` → `Invalid`; `Sql` → `Internal`. Also where an
+/// `edit` without an `edited_payload` is rejected as `Invalid` (late, so the
+/// recovery branches upstream never depend on the retry carrying a payload).
 async fn apply_or_reject(
     pool: &SqlitePool,
     proposal_id: &str,
@@ -250,9 +218,8 @@ async fn apply_or_reject(
     let run_id = proposal.run_id;
 
     if matches!(decision, Decision::Reject) {
-        // The decline MUST render as a NORMAL (non-error) tool result so the
-        // resumed model continues conversationally (byte-identical to the
-        // pre-extraction handler).
+        // A decline renders as a NORMAL (non-error) tool result so the resumed
+        // model continues conversationally.
         let decision_payload = serde_json::json!({
             "decision": "reject",
             "content": "User declined this proposal.",
@@ -277,13 +244,10 @@ async fn apply_or_reject(
         };
     }
 
-    // Accept OR edit. An `edit` REQUIRES an `edited_payload`; its absence is
-    // `Invalid` (no write) — checked HERE on the fresh path, NOT at parse time,
-    // so a payload-less `edit` retry of an already-decided Proposal replays via
-    // the branches above instead of erroring. A plain accept ignores any wire
-    // payload (`None`), matching the original. The applied payload is the
-    // edited payload for an edit, else the model's proposed payload; validate
-    // it first.
+    // Accept or edit. An `edit` requires an `edited_payload` (absence → `Invalid`,
+    // checked here so a payload-less retry replays via the branches above); a
+    // plain accept ignores any wire payload. The applied payload is the edited
+    // one for an edit, else the proposed payload; validate it first.
     if matches!(decision, Decision::Edit) && proposal.mutation_kind == "delete_journal_entry" {
         return Err(DecideError::Invalid(
             "delete_journal_entry does not support edit".to_string(),
@@ -408,7 +372,7 @@ fn preserve_update_target_entity_id(
     Ok(serde_json::Value::Object(payload))
 }
 
-/// Whether the Run currently reads `parked`. Backs both the pending-decide
+/// Whether the Run currently reads `parked`. Backs the pending-decide
 /// precondition and the trailing resume gate.
 async fn run_is_parked(pool: &SqlitePool, run_id: Uuid) -> Result<bool, DecideError> {
     Ok(db::run_status(pool, run_id)
@@ -429,7 +393,7 @@ mod tests {
     use uuid::Uuid;
 
     /// A migrated in-memory pool with `max_connections(1)` so the single
-    /// `:memory:` database persists across calls (mirrors `db::tests::memory_pool`).
+    /// `:memory:` database persists across calls.
     async fn memory_pool() -> SqlitePool {
         let options = SqliteConnectOptions::new()
             .filename(":memory:")
@@ -449,8 +413,7 @@ mod tests {
     /// Seed a parked Run + assistant Message + a pending Journal Entry Proposal.
     /// Returns `(run_id, proposal_id)`. The `awaiting_tool_call_id` waitpoint is
     /// set by a trailing UPDATE because that FK is non-deferrable while the
-    /// `tool_calls.run_id` FK points back at the Run (a chicken-and-egg the
-    /// production `park_on_proposal` avoids by inserting the tool_call first).
+    /// `tool_calls.run_id` FK points back at the Run.
     async fn seed_parked_proposal(pool: &SqlitePool) -> (Uuid, Uuid) {
         let run_id = Uuid::now_v7();
         let proposal_id = Uuid::now_v7();
@@ -474,8 +437,7 @@ mod tests {
         .expect("insert thread");
 
         // Run starts parked; awaiting_tool_call_id is set below once the
-        // tool_call exists. user_message_id's FK is DEFERRABLE (resolved at
-        // COMMIT against the message inserted next).
+        // tool_call exists. user_message_id's FK is DEFERRABLE (resolved at COMMIT).
         sqlx::query(
             "INSERT INTO runs \
              (id, thread_id, workflow_name, workflow_version, provider, model, \
@@ -548,9 +510,8 @@ mod tests {
         (run_id, proposal_id)
     }
 
-    /// A fake resume: records (via the shared flag) that it ran AND flips the
-    /// Run `parked → running` like the real `worker::resume`, so a follow-up
-    /// keyed replay / the resume gate observe an advanced Run.
+    /// A fake resume: sets the shared flag AND flips the Run `parked → running`
+    /// like the real `worker::resume`, so a follow-up observes an advanced Run.
     fn resume_closure(
         pool: SqlitePool,
         flag: Arc<AtomicBool>,
@@ -601,8 +562,8 @@ mod tests {
         serde_json::from_str(&data).expect("entity data json")
     }
 
-    /// Force a Proposal to `accepted` directly (simulating a prior decide), with
-    /// an optional recorded idempotency key.
+    /// Force a Proposal to `accepted` (simulating a prior decide), with an
+    /// optional recorded idempotency key.
     async fn force_proposal_accepted(pool: &SqlitePool, proposal_id: &str, key: Option<&str>) {
         let now = db::now_ms();
         sqlx::query(
@@ -628,7 +589,7 @@ mod tests {
     }
 
     /// Insert an accepted Entity created via `proposal_id` (so a recovery /
-    /// keyed replay's `entity_id_for_proposal` lookup finds it). Returns its id.
+    /// keyed-replay lookup finds it). Returns its id.
     async fn insert_accepted_entity(pool: &SqlitePool, proposal_id: &str) -> String {
         let entity_id = Uuid::now_v7().to_string();
         let now = db::now_ms();
@@ -889,19 +850,12 @@ mod tests {
         );
     }
 
-    // 5. lost race → a Proposal pre-decided by a concurrent decide (different
-    //    key) whose Run already advanced off `parked` is no longer decidable;
-    //    nothing is re-applied and resume is NOT invoked.
-    //
-    //    NOTE: `decide::apply` routes an already-decided Proposal through the
-    //    keyed-replay / recovery / not-decidable branches BEFORE the guarded DB
-    //    flip, so `DecideError::LostRace` (the `ApplyError::NotPending` mapping)
-    //    is reachable only under a genuine concurrent TOCTOU and cannot be forced
-    //    single-threaded. The deterministic stale-decide outcome here is
-    //    `NotDecidable` — which maps to the SAME wire code (`-32002`) as
-    //    `LostRace`. The `LostRace` arm itself is exercised by the db-layer
-    //    guarded-race tests (`apply_proposal`/`reject_proposal` returning
-    //    `NotPending`).
+    // 5. A Proposal pre-decided by a concurrent decide whose Run already advanced
+    //    off `parked` is no longer decidable; nothing re-applies, resume is NOT
+    //    invoked. `LostRace` itself needs a genuine TOCTOU (unreachable single-
+    //    threaded); the deterministic outcome here is `NotDecidable`, which maps
+    //    to the same wire code (`-32002`). `LostRace` is covered by the db-layer
+    //    guarded-race tests.
     #[tokio::test]
     async fn stale_decide_after_concurrent_winner_is_not_decidable() {
         let pool = memory_pool().await;
@@ -941,8 +895,7 @@ mod tests {
     async fn still_parked_recovery_returns_prior_and_re_resumes() {
         let pool = memory_pool().await;
         let (_run, proposal_id) = seed_parked_proposal(&pool).await;
-        // A prior decide accepted (the entity landed) but its resume failed
-        // before flipping the Run, leaving it durably accepted yet still parked.
+        // A prior decide accepted but its resume failed before flipping the Run.
         force_proposal_accepted(&pool, &proposal_id.to_string(), None).await;
         let prior_entity = insert_accepted_entity(&pool, &proposal_id.to_string()).await;
         let resumed = Arc::new(AtomicBool::new(false));
@@ -1015,19 +968,16 @@ mod tests {
         );
     }
 
-    // Regression (iter1 FAIL): a payload-less `edit` RETRY of an already-decided
-    // Proposal whose Run is still parked must RECOVER (replay the prior result +
-    // re-drive resume), NOT short-circuit to `Invalid`. The "edit requires
-    // edited_payload" check belongs on the FRESH apply path, AFTER the
-    // recovery/idempotency branches — hoisting it ahead of the load (iter1) wedged
-    // the Run forever on the ADR-0025 resume-failure recovery path.
+    // Regression: a payload-less `edit` retry of an already-decided Proposal whose
+    // Run is still parked must RECOVER (replay + re-drive resume), not short-circuit
+    // to `Invalid`. The "edit requires edited_payload" check belongs on the fresh
+    // path, after the recovery/idempotency branches.
     #[tokio::test]
     async fn still_parked_edit_retry_without_payload_recovers() {
         let pool = memory_pool().await;
         let (_run, proposal_id) = seed_parked_proposal(&pool).await;
-        // A prior decide accepted (the entity landed) but its resume failed before
-        // flipping the Run, leaving it durably accepted yet still parked. The retry
-        // re-sends `decision="edit"` but WITHOUT the payload.
+        // A prior decide accepted but its resume failed before flipping the Run.
+        // The retry re-sends `decision="edit"` but WITHOUT the payload.
         force_proposal_accepted(&pool, &proposal_id.to_string(), None).await;
         let prior_entity = insert_accepted_entity(&pool, &proposal_id.to_string()).await;
         let resumed = Arc::new(AtomicBool::new(false));
@@ -1063,8 +1013,7 @@ mod tests {
         );
     }
 
-    // The legitimate `Invalid` case (tests-reviewer advisory #2), now on the FRESH
-    // path: a fresh pending + parked Proposal decided `edit` WITHOUT a payload is
+    // A fresh pending + parked Proposal decided `edit` WITHOUT a payload is
     // `Invalid` — nothing applied, nothing resumed, Proposal stays re-decidable.
     #[tokio::test]
     async fn fresh_edit_without_payload_is_invalid() {
@@ -1102,14 +1051,11 @@ mod tests {
         );
     }
 
-    /// H1 (resume pre-spawn failure recovery, ADR-0025): when the injected
-    /// `resume` fails BEFORE flipping the Run off `parked` (e.g. `worker::resume`
-    /// returns `Err` because token/manifest resolution failed), the accept stays
-    /// committed (entity landed, Proposal `accepted`) and the decide surfaces an
-    /// `Internal` error — but the Run is LEFT PARKED. A follow-up keyed replay
-    /// with a now-working resume must replay the prior result AND re-drive resume
-    /// via the still-parked recovery branch. This is the contract `worker::resume`
-    /// relies on by returning `Err` instead of wedging the Run `errored`.
+    /// Resume pre-spawn failure recovery (ADR-0025): when `resume` fails BEFORE
+    /// flipping the Run off `parked`, the accept stays committed and the decide
+    /// surfaces `Internal`, but the Run is left parked. A follow-up keyed replay
+    /// with a working resume replays the prior result AND re-drives resume via the
+    /// still-parked recovery branch.
     #[tokio::test]
     async fn resume_failure_leaves_run_parked_and_recovers_on_retry() {
         use futures_util::FutureExt;
@@ -1117,8 +1063,8 @@ mod tests {
         let pool = memory_pool().await;
         let (run_id, proposal_id) = seed_parked_proposal(&pool).await;
 
-        // First decide: accept applies, then the resume closure FAILS without
-        // flipping the Run (models a pre-flip token/manifest failure).
+        // First decide: accept applies, then the resume closure fails without
+        // flipping the Run.
         let failing_resume = |_run_id| {
             async { Err(anyhow::anyhow!("token resolution failed")) }.boxed()
         };
@@ -1136,15 +1082,14 @@ mod tests {
             matches!(first, Err(DecideError::Internal(_))),
             "a resume failure surfaces as Internal: {first:?}"
         );
-        // The accept is durable: the entity landed exactly once and the Proposal
-        // is accepted — NOT rolled back, NOT errored.
+        // The accept is durable: entity landed once, Proposal accepted.
         assert_eq!(entity_count(&pool).await, 1, "the accept applied once");
         assert_eq!(
             proposal_status(&pool, &proposal_id.to_string()).await,
             "accepted"
         );
-        // Crucially, the Run is STILL PARKED (worker::resume returned Err before
-        // flipping), so the still-parked recovery branch is reachable.
+        // The Run is still parked (resume returned Err before flipping), so the
+        // still-parked recovery branch is reachable.
         assert_eq!(
             db::run_status(&pool, run_id).await.unwrap().as_deref(),
             Some("parked"),
@@ -1152,7 +1097,7 @@ mod tests {
         );
 
         // Retry with the SAME key and a working resume: keyed replay returns the
-        // prior result AND the trailing gate re-drives resume (run still parked).
+        // prior result AND the trailing gate re-drives resume.
         let resumed = Arc::new(AtomicBool::new(false));
         let second = apply(
             &pool,

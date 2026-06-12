@@ -178,9 +178,7 @@ test.describe("copy button", () => {
 		await copyButton.click();
 
 		// The clipboard write is async — poll until it settles on the reply text.
-		await expect
-			.poll(() => chat.clipboardText())
-			.toBe(COPY_REPLY);
+		await expect.poll(() => chat.clipboardText()).toBe(COPY_REPLY);
 
 		// Human-review artifact: snapshot the bubble in its copied state.
 		await bubble.screenshot({ path: COPY_SCREENSHOT_PATH });

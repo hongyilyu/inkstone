@@ -24,8 +24,7 @@ export function TodayOverview() {
 	const navigate = useNavigate();
 	const confirmed = useConfirmedReviews();
 
-	// Select in place: set `?id` on Today itself so the shell rail shows the
-	// detail without navigating away to the item's collection.
+	// Select in place: set `?id` on Today so the rail shows detail without leaving.
 	const open = (id: string) => {
 		navigate({ to: "/library", search: { id } });
 	};

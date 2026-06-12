@@ -1,7 +1,6 @@
 //! Workspace mutation schemas (ADR-0016, ADR-0025). A Proposal's payload is
-//! validated by `mutation_kind` before it is durably applied. The first
-//! supported mutation is `create_journal_entry`; it creates a `journal_entry`
-//! Entity plus provenance from the source user Message.
+//! validated by `mutation_kind` before it is durably applied. Supported
+//! mutations create/update/delete a `journal_entry` Entity (plus provenance).
 
 use serde_json::Value;
 use uuid::Uuid;
@@ -11,9 +10,9 @@ use uuid::Uuid;
 pub const JOURNAL_ENTRY_SCHEMA_VERSION: i64 = 1;
 
 /// Validate a proposed mutation payload against its schema (ADR-0016),
-/// dispatched on `mutation_kind`. An unsupported mutation is itself a
-/// validation failure. Returns `Err(reason)` describing the first
-/// violation — surfaced as the `invalid_params` message on `proposal/decide`.
+/// dispatched on `mutation_kind`. An unsupported mutation is a validation
+/// failure. `Err(reason)` is surfaced as the `invalid_params` message on
+/// `proposal/decide`.
 pub(crate) fn validate(mutation_kind: &str, payload: &Value) -> Result<(), String> {
     match mutation_kind {
         "create_journal_entry" => validate_journal_entry(payload),

@@ -1,12 +1,7 @@
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
-/**
- * Open-state for the global command palette (⌘K). A tiny vanilla store so the
- * keyboard handler (mounted once in `__root`) and any in-tree trigger (the
- * Library nav button) can drive the same overlay without prop threading —
- * matching the zustand-vanilla pattern in `store/chat.ts` (ADR-0020).
- */
+/** Open-state for the global command palette (⌘K); a tiny vanilla store driven without prop threading (ADR-0020). */
 interface CommandState {
 	open: boolean;
 }

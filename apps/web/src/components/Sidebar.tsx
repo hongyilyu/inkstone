@@ -18,9 +18,7 @@ export function Sidebar({
 } = {}) {
 	const focusedThreadId = useFocusedThreadId();
 
-	// Reads run on the runtime via TanStack Query (loading/error/success free);
-	// the live stream stays on the store+bridge (ADR-0020). `data` is undefined
-	// while loading or on error → render an empty list, never throw.
+	// Reads via TanStack Query; live stream stays on store+bridge (ADR-0020). `data` undefined while loading/error → empty list.
 	const { data } = useThreads();
 
 	const threads = data?.threads ?? [];
@@ -131,13 +129,7 @@ export function Sidebar({
 
 type Thread = { id: string; title: string; last_activity_at: number };
 
-/**
- * Bucket threads by how recently they were active, newest group first. Labels
- * read like a person describing time ("Today", "Earlier this week") rather than
- * a fixed window ("Last 30 days"). Boundaries are local calendar days: today,
- * yesterday, the rest of the last 7 days, then everything older. Empty groups
- * are dropped so the sidebar only shows headers that have threads.
- */
+/** Buckets threads by recency (newest first) into Today / Yesterday / Earlier this week / Older on local-calendar-day boundaries; empty groups dropped. */
 function groupByRecency(
 	threads: readonly Thread[],
 	now: number = Date.now(),

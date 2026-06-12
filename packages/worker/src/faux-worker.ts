@@ -1,14 +1,4 @@
-// =============================================================================
-// TEST-ONLY Worker entry — never the production worker command.
-//
-// This file fakes the LLM provider so Core/e2e integration tests can drive the
-// REAL generic interpreter offline and deterministically. It is selected by
-// tests via `INKSTONE_WORKER_CMD` (they spawn `tsx .../faux-worker.ts`); it is
-// never wired into a shipped build. Production uses `cli.ts`. Reading the
-// `INKSTONE_FAUX_*` env vars below is legitimate — this is test code (ADR-0019
-// as-built: faux scripting lives at a dedicated test-only entry, off the
-// production path).
-// =============================================================================
+// TEST-ONLY Worker entry — never the production worker command — see docs/design/worker.md (ADR-0019)
 
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -49,8 +39,12 @@ interface JournalEntrySnapshot {
 	body?: Array<{ type?: string; text?: string }>;
 }
 
-function lastUserText(messages: readonly { role: string; content?: unknown }[]): string {
-	const lastUser = [...messages].reverse().find((message) => message.role === "user");
+function lastUserText(
+	messages: readonly { role: string; content?: unknown }[],
+): string {
+	const lastUser = [...messages]
+		.reverse()
+		.find((message) => message.role === "user");
 	return textOf(lastUser?.content);
 }
 
@@ -82,7 +76,9 @@ function classifyJournalIntakePrompt(prompt: string): JournalIntakeAction {
 	return "create";
 }
 
-function currentThreadEntriesFromToolResult(text: string): JournalEntrySnapshot[] {
+function currentThreadEntriesFromToolResult(
+	text: string,
+): JournalEntrySnapshot[] {
 	try {
 		const payload = JSON.parse(text) as { entries?: JournalEntrySnapshot[] };
 		return Array.isArray(payload.entries) ? payload.entries : [];
@@ -104,7 +100,9 @@ function replacementTextFromPrompt(prompt: string): string | null {
 }
 
 function updatedOccurredAt(prompt: string, currentOccurredAt: string): string {
-	const timeMatch = prompt.match(/\b(?:change|set|make)\b.*\btime\b.*\bto\b\s*(\d{1,2}):(\d{2})\b/i);
+	const timeMatch = prompt.match(
+		/\b(?:change|set|make)\b.*\btime\b.*\bto\b\s*(\d{1,2}):(\d{2})\b/i,
+	);
 	if (timeMatch === null) {
 		return currentOccurredAt;
 	}
@@ -222,23 +220,7 @@ function deleteJournalEntryProposal(entry: JournalEntrySnapshot) {
 	};
 }
 
-/**
- * Build interpreter deps that script pi-ai's faux provider from the
- * `INKSTONE_FAUX_*` env vars, so Core/e2e tests drive the real interpreter
- * offline. This entry is ALWAYS faux (no `provider` guard — `cli.ts` is the
- * production path): every manifest gets a faux provider whose queued
- * response(s) are env-scripted.
- *
- * The five modes (first match wins):
- * - `INKSTONE_FAUX_ERROR` (non-empty)   → a single error message.
- * - `INKSTONE_FAUX_TOOL_CALL === "1"`   → turn 1 `read_thread` on the pasted
- *   thread id, turn 2 echoes the tool result.
- * - `INKSTONE_FAUX_PROPOSE === "1"`     → `propose_workspace_mutation` (fresh) / short
- *   completion (resume), the ADR-0025 park/resume dance.
- * - `INKSTONE_FAUX_ECHO_HISTORY === "1"`→ echo the prior turns' roles+text.
- * - else                                → `INKSTONE_FAUX_RESPONSE` (or a
- *   default) as a plain assistant reply.
- */
+/** Build interpreter deps that script pi-ai's faux provider from `INKSTONE_FAUX_*` env vars — see docs/design/worker.md for the five modes. */
 export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 	const faux = registerFauxProvider({ provider: "faux" });
 	const errorMessage = process.env.INKSTONE_FAUX_ERROR;
@@ -247,11 +229,7 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 			fauxAssistantMessage("", { stopReason: "error", errorMessage }),
 		]);
 	} else if (process.env.INKSTONE_FAUX_TOOL_CALL === "1") {
-		// Tool-call mode (e2e): turn 1 extracts a thread id from the latest
-		// user prompt and calls read_thread; turn 2 echoes the tool result so
-		// the assistant's reply reflects the read thread's content. Uses
-		// response factories so it reads the live context (the pasted id, then
-		// the tool result the proxy round-tripped back).
+		// Tool-call mode (e2e): turn 1 read_thread on the pasted id, turn 2 echoes the result.
 		faux.setResponses([
 			(context) => {
 				const lastUser = [...context.messages]
@@ -274,14 +252,7 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 			},
 		]);
 	} else if (process.env.INKSTONE_FAUX_PROPOSE === "1") {
-		// Propose mode (e2e, ADR-0025): the fresh turn calls
-		// the Journal Entry intake tools, which Core round-trips, persists as a
-		// pending Proposal, and PARKS (tearing this Worker down).
-		// On resume (`mode:"resume"`) Core re-spawns with the reconstructed
-		// transcript ending in the Decision tool_result; the loop continues with
-		// a short completion. The faux provider state is per-process, so the
-		// resume spawn freshly applies the resume response (mirrors
-		// propose-worker.ts at the protocol level).
+		// Propose mode (e2e): fresh turn proposes, Core parks; resume continues — see docs/design/worker.md (ADR-0025).
 		if (manifest.mode === "resume") {
 			const toolResult = [...manifest.messages]
 				.reverse()
@@ -356,17 +327,10 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 			}
 		}
 	} else if (process.env.INKSTONE_FAUX_ECHO_HISTORY === "1") {
-		// History-echo mode (multi-turn test): reply with the prior messages
-		// the loop passed in its context — both roles — so the test can prove
-		// Core assembled BOTH the prior user prompt AND the prior assistant
-		// reply into the manifest history (the assistant turn is the
-		// slice-9 race that this exercises). Uses a response factory so it
-		// reads the live context rather than a canned string.
+		// History-echo mode (multi-turn test): echo prior turns' roles+text — see docs/design/worker.md.
 		faux.setResponses([
 			(context) => {
-				// All prior turns except the current prompt (the last user
-				// message). Tag each with its role so the test can assert the
-				// assistant turn specifically.
+				// All prior turns except the current prompt (the last user message).
 				const prior = context.messages.slice(0, -1);
 				const parts = prior.map((m) => `${m.role}=${textOf(m.content)}`);
 				return fauxAssistantMessage(`history:${parts.join("|")}`);
@@ -383,11 +347,8 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 	};
 }
 
-// Run only when this file is the process entry (Core/e2e spawn it as
-// `tsx .../faux-worker.ts`), NOT when imported — `faux-worker.test.ts` imports
-// `fauxDepsFor` to unit-test the dep-builder and must not boot a Worker (which
-// would read stdin and `process.exit`). `realpathSync` both sides so the
-// macOS `/var`→`/private/var` symlink doesn't defeat the comparison.
+// Run only when this file is the process entry, not when imported — see docs/design/worker.md.
+// realpathSync both sides so the macOS /var→/private/var symlink doesn't defeat the comparison.
 const entryPath = process.argv[1];
 if (
 	entryPath !== undefined &&

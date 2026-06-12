@@ -1,7 +1,6 @@
-//! Slice 2 RED test: posting a message via `run/post_message` writes one
-//! Thread, one Run (`status='running'`), one user Message (`status='completed'`),
-//! one user `message_parts` row, one `run_steps` row, and one `run_log`
-//! row — all in a single transaction with deferred FK enforcement.
+//! Posting a message writes one Thread, one Run (`running`), one user Message
+//! (`completed`), one `message_parts` row, one `run_steps` row, and one
+//! `run_log` row — all in a single transaction with deferred FK enforcement.
 
 use futures_util::SinkExt;
 use sqlx::Row;
@@ -78,7 +77,8 @@ fn post_message_writes_initial_rows() {
         let id: String = r.get("id");
         assert_eq!(id, run_id, "runs.id matches response run_id");
         let status: String = r.get("status");
-        // slice 4: Core may finish the terminal tx before the test kills it; both states are acceptable here.
+        // Core may finish the terminal tx before the test kills it; both states
+        // are acceptable here.
         assert!(
             matches!(status.as_str(), "running" | "completed"),
             "runs.status is 'running' or 'completed' (slice-4 race), got {status:?}"

@@ -1,16 +1,11 @@
 //! Resume transcript reconstruction (ADR-0025). When a parked Run is decided,
-//! Core spawns a FRESH Worker whose manifest carries the Run's transcript
-//! rebuilt from tier 2 — `runs` → `run_steps` → `tool_calls` + message text.
-//! The transcript is a typed-block `ManifestMessage[]` (ADR-0018 as-built):
-//! `user{text}` / `assistant{text, tool_calls}` / `tool_result{…}`.
+//! Core spawns a fresh Worker whose manifest carries the Run's transcript
+//! rebuilt from tier 2 into a typed-block `ManifestMessage[]` (ADR-0018).
 //!
-//! Provider-validity invariant (ADR-0025): EVERY `tool_call` is paired with a
-//! `tool_result` — its persisted result if completed, the **Decision** for the
-//! just-decided parked call (persisted as that call's `result_payload` inside
-//! the atomic apply), or a synthesized "not executed" result for an
-//! unexecuted sibling. A `toolResult` is rejected by providers unless its
-//! `toolCall` precedes it, so an orphan would break resume. The FINAL message
-//! is the Decision `tool_result`.
+//! Provider-validity invariant: EVERY `tool_call` is paired with a `tool_result`
+//! — its persisted result if completed, the Decision for the just-decided parked
+//! call, or a synthesized "not executed" result for an unexecuted sibling.
+//! Providers reject an orphan `tool_result`. The final message is the Decision.
 
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -18,9 +13,9 @@ use uuid::Uuid;
 use crate::db::{self, TimelineStep};
 use crate::protocol::{ManifestMessage, ManifestToolCall};
 
-/// One reconstructed transcript block, owning its strings so the spawned
-/// resume task can borrow them into the (borrowing) [`ManifestMessage`] when
-/// it serializes the manifest. Mirrors the `ManifestMessage` union.
+/// One reconstructed transcript block, owning its strings so the spawned resume
+/// task can borrow them into the (borrowing) [`ManifestMessage`]. Mirrors that
+/// union.
 pub enum Block {
     User {
         text: String,
@@ -45,7 +40,7 @@ pub struct ToolCallBlock {
 
 impl Block {
     /// Borrow this owned block as a wire [`ManifestMessage`]. The arguments
-    /// Value is cloned (the manifest owns it); strings are borrowed.
+    /// Value is cloned; strings are borrowed.
     pub fn as_message(&self) -> ManifestMessage<'_> {
         match self {
             Block::User { text } => ManifestMessage::User { text },
@@ -79,20 +74,16 @@ impl Block {
     }
 }
 
-/// The synthesized result for a `tool_call` that has no persisted result — an
-/// unexecuted sibling left pending when the Run parked (ADR-0025). Keeps the
-/// transcript provider-valid (no orphan `tool_call`) while telling the model it
-/// did not run.
+/// The synthesized result for a `tool_call` with no persisted result — an
+/// unexecuted sibling left pending when the Run parked. Keeps the transcript
+/// provider-valid while telling the model it did not run.
 const NOT_EXECUTED: &str = "not executed; resubmit if still needed";
 
 /// Reconstruct a Run's resume transcript from tier 2 (ADR-0025). Walks the
-/// ordered timeline: a user/assistant message becomes a `user`/`assistant`
-/// block; each `tool_call` step is attached as a `tool_call` block on a
-/// trailing assistant block AND emits a paired `tool_result` block (its
-/// persisted result text, or the synthesized "not executed" placeholder). The
-/// final block is the Decision `tool_result` — guaranteed because the parked
-/// call's `result_payload` was set to the Decision in the atomic apply that
-/// precedes this read.
+/// ordered timeline: a message becomes a `user`/`assistant` block; each
+/// `tool_call` step is attached to a trailing assistant block AND emits a paired
+/// `tool_result` block (its persisted result, or the "not executed" placeholder).
+/// The final block is the Decision `tool_result`, set in the preceding atomic apply.
 pub async fn reconstruct(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Vec<Block>> {
     let steps = db::read_run_timeline(pool, run_id).await?;
     let mut blocks: Vec<Block> = Vec::new();
@@ -101,10 +92,8 @@ pub async fn reconstruct(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Vec<Bl
         match step {
             TimelineStep::Message { role, text } => {
                 if role == "assistant" {
-                    // Skip the empty seq-0 streaming assistant row (no text, no
-                    // tool calls yet) — it carries nothing for the transcript
-                    // and resume continues appending into it. A non-empty
-                    // assistant turn is preserved.
+                    // Skip the empty seq-0 streaming assistant row — it carries
+                    // nothing and resume continues appending into it.
                     if text.is_empty() {
                         continue;
                     }
@@ -122,9 +111,8 @@ pub async fn reconstruct(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Vec<Bl
                 request,
                 result,
             } => {
-                // Attach the tool_call to a trailing assistant block (reuse one
-                // with no text/only tool_calls; else open a fresh one), so the
-                // assistant turn that issued the call carries it.
+                // Attach the tool_call to a trailing assistant block (reuse a
+                // text-less one, else open a fresh one).
                 let attach = matches!(
                     blocks.last(),
                     Some(Block::Assistant { text, .. }) if text.is_none()
@@ -143,10 +131,9 @@ pub async fn reconstruct(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Vec<Bl
                     });
                 }
 
-                // Pair EVERY tool_call with a result (ADR-0025). The parked
-                // call's persisted result_payload is the Decision (set in the
-                // atomic apply); a completed sibling carries its own result; an
-                // unexecuted sibling gets the synthesized placeholder.
+                // Pair EVERY tool_call with a result (ADR-0025): the persisted
+                // result_payload (the parked call's is the Decision), else the
+                // synthesized placeholder.
                 let (content, is_error) = match result {
                     Some(payload) => (render_result_content(&payload), None),
                     None => (NOT_EXECUTED.to_string(), Some(false)),
@@ -163,11 +150,9 @@ pub async fn reconstruct(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Vec<Bl
     Ok(blocks)
 }
 
-/// Render a persisted `tool_calls.result_payload` into the `tool_result`
-/// content text the model reads. The Decision payload is
-/// `{"decision":…, "content":…}` — surface its `content`. A plain-string or
-/// other-shaped payload is passed through verbatim (a non-Proposal tool's
-/// result), so reconstruction never loses a sibling's output.
+/// Render a persisted `result_payload` into `tool_result` content. A Decision
+/// payload `{"decision":…, "content":…}` surfaces its `content`; any other shape
+/// passes through verbatim, so a non-Proposal tool's output is never lost.
 fn render_result_content(payload: &str) -> String {
     match serde_json::from_str::<serde_json::Value>(payload) {
         Ok(v) => v

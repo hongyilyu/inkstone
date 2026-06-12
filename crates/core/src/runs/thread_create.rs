@@ -1,20 +1,13 @@
-//! `thread/create` handler: message-first thread creation (ADR-0022).
+//! `thread/create` handler: message-first thread creation (ADR-0022). Mint a
+//! NEW Thread (title derived from the prompt) plus its first Run + user
+//! message in one transaction, then frame `{thread_id, run_id}`.
 //!
-//! Validate the prompt, mint a NEW Thread (with a title derived from the
-//! prompt) plus its first Run + user message in one transaction, create the
-//! per-run hub, spawn the Worker into it, then frame the `{thread_id,
-//! run_id}` response.
+//! Empty/whitespace-only prompts are rejected with `invalid_params` BEFORE any
+//! DB write — zero rows persisted (ADR-0014).
 //!
-//! Empty-prompt rejection (ADR-0002 — Core is the authority): if the prompt
-//! is empty or whitespace-only (`trim().is_empty()`), respond with
-//! `invalid_params` (-32602, ADR-0014) and RETURN before any DB write — zero
-//! rows persisted. This guard runs BEFORE `persist_thread_with_first_run`.
-//!
-//! Pure-subscribe (ADR-0022): the response carries ONLY `{thread_id,
-//! run_id}` — no Run Events ride the frame. The Client follows with
-//! `run/subscribe(run_id)`. The hub is created BEFORE the Worker spawns so a
-//! fast subscribe can never race a missing hub (same ordering as
-//! `post_message`).
+//! Pure-subscribe (ADR-0022): the response carries ONLY `{thread_id, run_id}`;
+//! the Client follows with `run/subscribe(run_id)`. Hub created before the
+//! Worker spawns (same ordering as `post_message`).
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -27,9 +20,8 @@ use crate::hub::{self, Hubs};
 use crate::protocol::{ThreadCreateParams, ThreadCreateResult};
 use crate::worker;
 
-/// Max length of a Thread title derived from its first prompt. The title is
-/// the trimmed prompt truncated to this many `char`s (counted by Unicode
-/// scalar, not bytes, so the cut never splits a multi-byte character).
+/// Max Thread-title length, in Unicode scalars (not bytes, so the cut never
+/// splits a multi-byte character).
 const TITLE_MAX_CHARS: usize = 80;
 
 pub(super) async fn handle(
@@ -40,8 +32,8 @@ pub(super) async fn handle(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |params: ThreadCreateParams| async move {
-        // Empty-prompt guard — runs BEFORE any persistence so a rejection
-        // writes zero rows (ADR-0002: Core is the authority).
+        // Empty-prompt guard — BEFORE any persistence so a rejection writes
+        // zero rows (ADR-0002).
         let trimmed = params.prompt.trim();
         if trimmed.is_empty() {
             return Err(HandlerError::InvalidParams(
@@ -49,8 +41,8 @@ pub(super) async fn handle(
             ));
         }
 
-        // Title derivation: the trimmed prompt, truncated to TITLE_MAX_CHARS
-        // Unicode scalars (never empty here — the guard above rejected blanks).
+        // Title: trimmed prompt truncated to TITLE_MAX_CHARS scalars (never
+        // empty — the guard above rejected blanks).
         let title: String = trimmed.chars().take(TITLE_MAX_CHARS).collect();
 
         let now = db::now_ms();
@@ -60,8 +52,8 @@ pub(super) async fn handle(
         let user_message_id = Uuid::now_v7();
         let assistant_message_id = Uuid::now_v7();
 
-        // Dispatcher seam (ADR-0011): pick a Workflow for this Run, then resolve
-        // its effective model/effort from user settings (ADR-0024).
+        // Pick a Workflow (ADR-0011), then resolve its effective model/effort
+        // from user settings (ADR-0024).
         let base = dispatcher::dispatch(thread_id, &params.prompt);
         let workflow = dispatcher::resolve_effective_workflow(pool, base).await;
 
@@ -79,8 +71,8 @@ pub(super) async fn handle(
         .await
         .map_err(|e| HandlerError::Internal(e.into()))?;
 
-        // Create the hub BEFORE spawning the Worker so a subscribe arriving the
-        // instant after the response cannot find a missing hub.
+        // Create the hub BEFORE spawning the Worker so a subscribe arriving
+        // right after the response can't find a missing hub.
         let run_hub = hub::create(hubs, run_id);
 
         worker::spawn(

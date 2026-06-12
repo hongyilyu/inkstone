@@ -1,17 +1,12 @@
 import { test as base } from "@playwright/test";
-import { type SpawnCoreOptions, type SpawnedCore, spawnCore } from "./spawnCore.js";
+import {
+	type SpawnCoreOptions,
+	type SpawnedCore,
+	spawnCore,
+} from "./spawnCore.js";
 import { ChatPage } from "./page-objects/ChatPage.js";
 
-/**
- * Full-system fixtures (ADR-0019). Each test gets a fresh Core (own tempdir
- * Workspace, ephemeral port) serving the real built SPA, plus a `ChatPage`
- * page-object bound to Playwright's `page`. Teardown shuts Core down and
- * removes the tempdir.
- *
- * Per-test Core config is set by tagging the test with `test.use({ coreOptions })`
- * — e.g. the acceptance specs request a gated 2-chunk fixture so they can pause
- * a Run mid-stream. The default (no options) is the fast, ungated echo path.
- */
+/** Full-system Playwright fixtures (ADR-0019): per-test fresh Core + served SPA + `ChatPage`. */
 interface HarnessFixtures {
 	/** Per-test Core spawn options (gate chunks, etc.). Override via `test.use`. */
 	coreOptions: SpawnCoreOptions;

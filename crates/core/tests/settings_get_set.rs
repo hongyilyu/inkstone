@@ -1,7 +1,7 @@
-//! Slice 2 (models-settings, ADR-0024): `settings/get` + `settings/set`.
-//! The user's preferred model and global effort persist in tier-2 and round-
-//! trip over the wire; an unknown model or invalid effort is rejected with
-//! `invalid_params` (-32602) and writes nothing. Drives a real Core.
+//! `settings/get` + `settings/set` (ADR-0024): the preferred model and global
+//! effort persist in tier-2 and round-trip over the wire; an unknown model or
+//! invalid effort is rejected with `invalid_params` (-32602) and writes
+//! nothing.
 
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
@@ -107,9 +107,8 @@ fn settings_set_malformed_params_rejected() {
     rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // Malformed params (model is the wrong type — fails to decode). Before
-        // ADR-0029 the dispatch silently dropped this (no reply); the combinator
-        // now frames it as invalid_params (-32602).
+        // Malformed params (wrong type, fails to decode) → invalid_params
+        // (-32602), where the pre-ADR-0029 dispatch silently dropped it.
         let bad = request(&mut ws, 1, "settings/set", serde_json::json!({ "model": 123 })).await;
         assert_eq!(bad["id"], serde_json::json!(1));
         assert!(

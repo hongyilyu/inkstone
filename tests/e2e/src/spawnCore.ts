@@ -4,18 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/**
- * Spawn-and-drive primitive for the full-system Test Harness (ADR-0019).
- *
- * Each call spawns one fresh `core` binary against a temporary Workspace on an
- * OS-assigned ephemeral port (`INKSTONE_PORT=0`), serving the built Web Client
- * from `apps/web/dist` (`INKSTONE_WEB_DIR`), with the Worker replaced by the
- * deterministic slow-worker gate fixture so a Run can be paused mid-stream
- * without wall-clock sleeps. Core is the only thing that spawns the Worker
- * (ADR-0001/0013); the harness only points it at the fixture via env.
- */
+/** Spawn-and-drive primitive for the full-system Test Harness (ADR-0019): fresh Core + built SPA + gate-fixture Worker. */
 
-// <repo>/tests/e2e/src/spawnCore.ts → repo root is three levels up.
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, "..", "..", "..");
 
@@ -74,12 +64,7 @@ const LOGIN_HELPER_FIXTURE = path.join(
 	"login-helper.ts",
 );
 
-/**
- * The provider-login helper command Core runs for `provider/login_start`:
- * the offline stub that emits an authorize URL then credentials (ADR-0019 /
- * ADR-0023). Use via `coreOptions.providerLoginCmd` so the Connect e2e never
- * touches the real OpenAI flow.
- */
+/** Offline provider-login helper Core runs for `provider/login_start` (ADR-0019/0023): emits authorize URL then credentials. */
 export const LOGIN_HELPER_CMD = `${TSX_BIN} ${LOGIN_HELPER_FIXTURE} login`;
 
 const FAUX_WORKER_TS = path.join(
@@ -90,14 +75,7 @@ const FAUX_WORKER_TS = path.join(
 	"faux-worker.ts",
 );
 
-/**
- * The TEST-ONLY faux interpreter worker command
- * (packages/worker/src/faux-worker.ts), as opposed to the slow-worker echo
- * fixture. It drives the REAL pi-agent-core loop offline with an env-scripted
- * faux provider; the production entry (`cli.ts`) carries no faux code. Paired
- * with a faux workflow + `fauxResponse`/`fauxError`/`fauxToolCall`/`faux`, use
- * via `coreOptions.workerCmd = FAUX_WORKER_CMD`.
- */
+/** TEST-ONLY faux interpreter worker command: drives the real pi-agent-core loop offline via an env-scripted faux provider. */
 export const FAUX_WORKER_CMD = `${TSX_BIN} ${FAUX_WORKER_TS}`;
 
 export interface SpawnCoreOptions {
@@ -107,56 +85,18 @@ export interface SpawnCoreOptions {
 	readonly webDir?: string;
 	/** Worker command. Default the gate fixture; set to undefined to use Core's default. */
 	readonly workerCmd?: string;
-	/**
-	 * Gate-fixture knobs. When `chunks` > 1, `echo: <prompt>` is split into that
-	 * many incremental deltas; `gatePath` (if set) makes the fixture pause after
-	 * the first chunk until that file exists. A per-Core tempdir gate path is
-	 * created automatically when `chunks` > 1 and no path is supplied.
-	 */
+	/** Gate-fixture chunk count: `chunks` > 1 splits `echo: <prompt>` into deltas and pauses after chunk 1 until the gate file exists. */
 	readonly chunks?: number;
 	readonly gatePath?: string;
-	/**
-	 * Provider-login helper command Core runs for `provider/login_start`
-	 * (ADR-0023). Set by the Connect-ChatGPT e2e to a stub that emits an
-	 * authorize URL then credentials, so the flow runs offline (no real
-	 * OpenAI / :1455). Maps to `INKSTONE_PROVIDER_LOGIN_CMD`.
-	 */
+	/** Provider-login helper Core runs for `provider/login_start` (ADR-0023); maps to `INKSTONE_PROVIDER_LOGIN_CMD`. */
 	readonly providerLoginCmd?: string;
-	/**
-	 * When set, write a faux Workflow (`provider="faux"`) into a per-test
-	 * workflows dir and feed the faux provider this canned response via
-	 * `INKSTONE_FAUX_RESPONSE`. Combined with `workerCmd =
-	 * FAUX_WORKER_CMD`, this drives the real pi-agent-core loop offline
-	 * so a browser test can assert a real interpreter completion (not echo).
-	 */
+	/** Canned faux-provider response (`INKSTONE_FAUX_RESPONSE`); with `FAUX_WORKER_CMD` drives a real offline interpreter completion. */
 	readonly fauxResponse?: string;
-	/**
-	 * When set, the faux provider FAILS the turn with this message
-	 * (`stopReason: "error"`) instead of replying. Combined with `workerCmd =
-	 * FAUX_WORKER_CMD`, this produces the same `error` Run Event a real
-	 * provider/network failure would — letting a browser test assert the
-	 * error surfaces in the UI. Maps to `INKSTONE_FAUX_ERROR`.
-	 */
+	/** Makes the faux provider fail the turn with this message (`INKSTONE_FAUX_ERROR`), producing a real `error` Run Event. */
 	readonly fauxError?: string;
-	/**
-	 * When true, write a faux Workflow whose tool allowlist is `["read_thread"]`
-	 * and drive the faux provider in tool-call mode (`INKSTONE_FAUX_TOOL_CALL`):
-	 * turn 1 calls `read_thread` with a thread id extracted from the user's
-	 * prompt, turn 2 echoes the tool result. Paired with `workerCmd =
-	 * FAUX_WORKER_CMD` this exercises the full Tool Protocol round-trip
-	 * (Worker proxy ↔ Core registry) end-to-end through the browser.
-	 */
+	/** Drive the faux provider in `read_thread` tool-call mode (`INKSTONE_FAUX_TOOL_CALL`), exercising the full Tool Protocol round-trip. */
 	readonly fauxToolCall?: boolean;
-	/**
-	 * Drive a higher-level faux interpreter mode by name (paired with `workerCmd
-	 * = FAUX_WORKER_CMD`). Writes a faux Workflow allowlisting the Journal Entry
-	 * intake tools and runs the worker in propose mode (`INKSTONE_FAUX_PROPOSE`):
-	 * a fresh turn proposes a create Journal Entry, while same-thread
-	 * correction/delete prompts first read current-thread Journal Entries before
-	 * proposing update/delete. On accept/reject the Run resumes to a short
-	 * confirmation, exercising the full park -> decide -> resume loop end-to-end
-	 * (ADR-0025).
-	 */
+	/** Higher-level faux interpreter mode (`INKSTONE_FAUX_PROPOSE`): proposes Journal Entry mutations and resumes through the park -> decide -> resume loop (ADR-0025). */
 	readonly faux?: "propose";
 	/** Direct propose-worker fixture knob. Emits params loaded from this JSON file. */
 	readonly proposalParamsFile?: string;
@@ -253,9 +193,7 @@ export async function spawnCore(
 		INKSTONE_WEB_DIR: opts.webDir ?? WEB_DIST,
 	};
 
-	// Faux mode is fully determined by `opts` below. Strip any inherited
-	// INKSTONE_FAUX_* (a prior run, the parent shell) so an ambient value can't
-	// leak one test's mode into another.
+	// Strip inherited INKSTONE_FAUX_* so an ambient value can't leak one test's mode into another.
 	for (const key of [
 		"INKSTONE_FAUX_RESPONSE",
 		"INKSTONE_FAUX_ERROR",
@@ -282,19 +220,13 @@ export async function spawnCore(
 		}
 	}
 
-	// Per-test credential store (isolated tempdir) so provider/status starts
-	// disconnected and a login e2e can observe it flip to connected.
+	// Per-test credential store so provider/status starts disconnected and a login e2e can observe it flip to connected.
 	env.INKSTONE_CREDENTIALS_DIR = path.join(workspaceDir, "credentials");
 	if (opts.providerLoginCmd !== undefined) {
 		env.INKSTONE_PROVIDER_LOGIN_CMD = opts.providerLoginCmd;
 	}
 
-	// Faux-interpreter mode: write a provider="faux" Workflow into a per-test
-	// workflows dir and feed the canned response to the faux provider. Paired
-	// with workerCmd = FAUX_WORKER_CMD this drives the real
-	// pi-agent-core loop offline (ADR-0019 faux seam). `fauxError` instead
-	// makes the faux provider fail the turn (stopReason error) — the same
-	// `error` Run Event a real provider/network failure produces.
+	// Faux-interpreter mode: write a provider="faux" Workflow and feed the canned response/error/mode to the faux provider (ADR-0019 faux seam).
 	if (
 		opts.fauxResponse !== undefined ||
 		opts.fauxError !== undefined ||
@@ -315,12 +247,7 @@ export async function spawnCore(
 				'version = "1.0.0"',
 				'provider = "faux"',
 				'model = "faux-1"',
-				// Deliberately NO `thinking_level` — mirrors the real
-				// crates/core/workflows/default.toml, which omits it and relies
-				// on settings resolution (DEFAULT_EFFORT = "off"). This exercises
-				// the resume path's `resolve_effective_workflow` through the real
-				// Worker: an unresolved `thinking_level` would serialize as "" and
-				// the manifest decode would reject it (regression guard).
+				// Deliberately NO `thinking_level` — regression guard for resume's `resolve_effective_workflow`; see docs/design/e2e-tests.md
 				'system_prompt = "You are a test assistant."',
 				`tools = ${tools}`,
 				"",
@@ -338,8 +265,7 @@ export async function spawnCore(
 		}
 	}
 
-	// Own process group (detached) so shutdown can hard-kill any orphaned
-	// Worker children along with Core if SIGTERM to Core alone leaves strays.
+	// Own process group (detached) so shutdown can hard-kill orphaned Worker children alongside Core.
 	const child = spawn(CORE_BIN, [], {
 		cwd: REPO_ROOT,
 		env,

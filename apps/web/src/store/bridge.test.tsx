@@ -24,10 +24,7 @@ import {
 	setPendingProposal,
 } from "./chat.js";
 
-// A stub WsClient whose `threadCreate` FAILS, exercised through the slice-10
-// RuntimeProvider injection seam: a runtime built from
-// `ManagedRuntime.make(Layer.succeed(WsClient, stub))` (no real socket). Only
-// `threadCreate` runs on the `sendNewThread` path; the rest are never reached.
+// Stub WsClient whose threadCreate fails; only that runs on the sendNewThread path.
 function makeFailingThreadCreateRuntime() {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -61,7 +58,6 @@ describe("sendNewThread failure handling", () => {
 		const result = await sendNewThread(runtime, "hi");
 
 		expect(result).toEqual({ ok: false, error: expect.anything() });
-		// No thread was minted and nothing got focused — nothing to clean up.
 		expect(Object.keys(getChatState().threads)).toHaveLength(0);
 		expect(getChatState().focusedThreadId).toBeUndefined();
 
@@ -71,8 +67,7 @@ describe("sendNewThread failure handling", () => {
 
 describe("decideProposal resume fiber tracking (M2)", () => {
 	it("leaves the resume fiber interruptible after the stale finalizer runs", async () => {
-		// Both subscribes return a never-terminating stream (a parked/resume tail
-		// with no terminal event yet), so a fiber ends ONLY via interruption.
+		// Both subscribes never terminate, so a fiber ends only via interruption.
 		const subscribeRun = vi.fn(
 			(_runId: RunId): Stream.Stream<RunEventValue, WsError> =>
 				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
@@ -96,7 +91,7 @@ describe("decideProposal resume fiber tracking (M2)", () => {
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
 
-		// Seed a parked run + its original (parked) subscribe fiber + a Proposal.
+		// Seed a parked run + its original (parked) subscribe fiber + a proposal.
 		const runId = "run-resume" as RunId;
 		appendUserMessage("t1", {
 			id: "u1",
@@ -123,20 +118,14 @@ describe("decideProposal resume fiber tracking (M2)", () => {
 			status: "pending",
 		});
 
-		// Accept → interruptRun(old) then startRunStream(resume). The interrupted
-		// old fiber's finalizer fires asynchronously AFTER the resume fiber is set.
+		// Accept → interruptRun(old) then startRunStream(resume); old finalizer fires after.
 		await decideProposal(runtime, runId, "accept");
 		expect(subscribeRun).toHaveBeenCalledTimes(2);
 
-		// Give the stale finalizer its chance to run (the clobber window). With the
-		// M2 bug it deletes the NEWLY-set resume fiber's entry; with the fix it is a
-		// no-op because the map no longer points at the interrupted fiber.
+		// Let the stale finalizer run (the clobber window).
 		await new Promise((r) => setTimeout(r, 0));
 
-		// The resume fiber must still be tracked. With the M2 clobber the stale
-		// finalizer deleted the resume fiber's entry, so it is untracked here — a
-		// leak the app can never interrupt (and a second decide would split the
-		// tail across two consumers). The fix keeps it tracked.
+		// Resume fiber must stay tracked — the M2 clobber, see docs/design/web-store-tests.md
 		expect(hasRunFiber(runId)).toBe(true);
 		// And it is genuinely interruptible: interruptRun removes the tracked entry.
 		interruptRun(runtime, runId);

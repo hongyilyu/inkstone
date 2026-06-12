@@ -48,11 +48,7 @@ function compareForKind(
 	}
 }
 
-/**
- * Browse one Library item kind: a searchable, scannable list. Selecting a row reports
- * its id (the route sets `?id`); the detail Inspector itself renders in the
- * shared workspace rail (see `routes/library/route.tsx`), not here.
- */
+/** Searchable list for one Library item kind; selecting a row reports its id (the route sets `?id`, Inspector renders in the shared rail). */
 export function EntityCollection({
 	kind,
 	selectedId,

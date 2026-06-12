@@ -1,9 +1,6 @@
-//! `thread/list` handler: the first pure-read method (ADR-0022 read path).
-//!
-//! No params — read every Thread newest-first from tier 2, map each row to a
-//! `ThreadSummary`, and frame a `{threads: [...]}` result. A DB read error
-//! surfaces as an internal error (-32603) via the combinator (ADR-0029);
-//! read-only, so there are no client-input error cases to validate.
+//! `thread/list` handler (ADR-0022 read path): no params — read every Thread
+//! newest-first, map each row to a `ThreadSummary`, frame `{threads: [...]}`.
+//! Read-only, so the only failure is an internal DB error (via the combinator).
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;

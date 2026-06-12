@@ -11,21 +11,7 @@ import { WorkspaceShell } from "@/components/ui/workspace-shell";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import { libraryItemKindForSlug, libraryItemTitle } from "@/lib/libraryItems";
 
-/**
- * Library shell (peer to Chat, reached from the sidebar). Composes the shared
- * `WorkspaceShell` (ADR-0021): the same framed middle as the chat surface, plus
- * the same collapsible right rail.
- *
- * The rail mounts only when a row is selected. Selecting a row sets `?id` on the
- * *current* route, so the detail Inspector opens in place rather than switching
- * views — and only then does the card carry the carved bay and its collapse
- * toggle. With nothing selected the shell renders a plain framed card (no bay,
- * no toggle), so the bay/toggle always signal "there is content here". On
- * selection the rail opens; the collapse toggle then hides it to a sliver while
- * keeping the selection (the bay stays), and a manual toggle wins until the
- * selection changes. The bay disappears again once nothing is selected (e.g.
- * navigating to another collection).
- */
+/** Library shell (ADR-0021): shared `WorkspaceShell` with a right rail that mounts only on selection — bay/rail/collapse behavior in docs/design/web-runtime.md. */
 function LibraryLayout() {
 	const params = useParams({ strict: false });
 	const search = useSearch({ strict: false });
@@ -50,11 +36,7 @@ function LibraryLayout() {
 		setManualCollapsed(null);
 	}, [selected?.id]);
 
-	// The rail mounts only when a row is selected — that's when there's real
-	// content, and so when the card carries the carved bay + collapse toggle.
-	// With nothing selected we pass `null`, and the shell renders a plain framed
-	// card. The rail is the pink chrome (`bg-sidebar`), matching the chat
-	// surface's activity rail and the bay — not the white reading surface.
+	// Rail mounts only on selection (else `null` → plain framed card) — see docs/design/web-runtime.md.
 	const rail = selected ? (
 		<aside
 			aria-label={`${libraryItemTitle(selected)} details`}

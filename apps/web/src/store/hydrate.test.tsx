@@ -128,8 +128,7 @@ describe("refresh-durable hydration", () => {
 
 		await hydrateThread(runtime, "tB");
 
-		// History loaded with the streaming message's partial paint; activeRunId
-		// set; snapshotApplied left unset so the resubscribe snapshot SETs.
+		// activeRunId set; snapshotApplied left unset so the resubscribe snapshot SETs.
 		const hydrated = getChatState().threads.tB;
 		expect(hydrated?.messages.map((m) => [m.role, m.text, m.status])).toEqual([
 			["user", "hello", "completed"],
@@ -137,14 +136,11 @@ describe("refresh-durable hydration", () => {
 		]);
 		expect(hydrated?.activeRunId).toBe("r2");
 
-		// The resubscribe's first text_delta is the cumulative snapshot (SET),
-		// then done finalizes. Offer to the queue, then join the stream fiber.
+		// The resubscribe's first text_delta is the cumulative snapshot (SET), then done finalizes.
 		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "echo: hello" });
 		Queue.unsafeOffer(queue, { kind: "done" });
 		await awaitRun(runtime, "r2");
 
-		// (a) resubscribe happened by run_id; (b) the assistant message resumed +
-		// finalized to the authoritative cumulative text.
 		expect(subscribeRun).toHaveBeenCalledWith("r2");
 		const resumed = getChatState().threads.tB;
 		const assistant = resumed?.messages[1];
@@ -156,8 +152,7 @@ describe("refresh-durable hydration", () => {
 	});
 
 	it("preserves a turn sent during the in-flight thread/get and folds in history", async () => {
-		// threadGet resolves only after we release the latch, modeling the window
-		// where the composer stays live under the loading skeleton.
+		// threadGet parks on the latch, modeling the live-composer-under-skeleton window.
 		const gate = Effect.runSync(Deferred.make<ThreadGetResult, WsError>());
 		const subscribeRun = vi.fn(
 			(_runId: RunId): Stream.Stream<RunEventValue, WsError> => Stream.empty,
@@ -165,9 +160,14 @@ describe("refresh-durable hydration", () => {
 		const history: ThreadGetResult = {
 			thread_id: "tC",
 			title: "T",
-			// An older, completed turn the server knows about.
 			messages: [
-				{ id: "s1", role: "user", status: "completed", run_id: "old", text: "earlier" },
+				{
+					id: "s1",
+					role: "user",
+					status: "completed",
+					run_id: "old",
+					text: "earlier",
+				},
 				{
 					id: "s2",
 					role: "assistant",
@@ -199,8 +199,7 @@ describe("refresh-durable hydration", () => {
 		// Start hydration; threadGet is parked on the latch.
 		const hydrating = hydrateThread(runtime, "tC");
 
-		// A send lands during the window: seed the optimistic turn + attach a run
-		// (exactly what bridge.send does once postMessage resolves).
+		// A send lands during the window: seed the optimistic turn + attach a run.
 		appendUserMessage("tC", {
 			id: "u1",
 			role: "user",
@@ -221,8 +220,7 @@ describe("refresh-durable hydration", () => {
 		Effect.runSync(Deferred.succeed(gate, history));
 		await hydrating;
 
-		// The seeded live turn survives AND the fetched history is folded in front
-		// of it (older turns first), so prior conversation is not lost.
+		// The seeded live turn survives; fetched history is folded in front (older first).
 		const thread = getChatState().threads.tC;
 		expect(thread?.messages.map((m) => m.text)).toEqual([
 			"earlier",

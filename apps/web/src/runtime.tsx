@@ -5,16 +5,7 @@ import { createContext, type ReactNode, useContext, useState } from "react";
 /** The single runtime the React tree runs SDK Effects + the stream bridge on. */
 export type WsRuntime = ManagedRuntime.ManagedRuntime<WsClient, never>;
 
-/**
- * Derive the Core WebSocket URL from the page's location, so a Core-served SPA
- * dials back the same Core that served it — on whatever (possibly ephemeral)
- * port that is. `http:` → `ws:`, `https:` → `wss:`, same host, `/ws` path.
- *
- * In Vite dev the page is served from Vite's port; its `/ws` is proxied to
- * Core (see `vite.config.ts`), so the same-origin URL still reaches Core.
- * Production embeds the SPA in Core, so location IS Core. The harness
- * (ADR-0019) relies on this to avoid hardcoding Core's port in the bundle.
- */
+/** Derive Core's same-origin WS URL from page location — see docs/design/web-runtime.md. */
 export const deriveWsUrl = (location: {
 	readonly protocol: string;
 	readonly host: string;
@@ -41,26 +32,7 @@ interface RuntimeProviderProps {
 	readonly children: ReactNode;
 }
 
-/**
- * Holds one {@link WsRuntime} for the React tree and exposes it via context.
- *
- * Injection seam (slices 11–13 drive a stub `WsClient` through here):
- *   - `runtime` prop → used directly
- *   - else `layer` prop → `ManagedRuntime.make(layer)`
- *   - else built from `config` (default: same-origin via {@link deriveWsUrl}) via {@link makeWsLayer}
- *
- * Laziness: `ManagedRuntime.make` does NOT run the layer — `WsClientLive` is
- * `Layer.scoped` and only opens the socket when the runtime first RUNS an
- * effect needing `WsClient`. Mounting opens ZERO sockets (we never call
- * `runFork`/`runPromise` here). The runtime is built once per mount via a lazy
- * `useState` initializer so re-renders don't rebuild it.
- *
- * Disposal: not wired here. The runtime is page-lifetime-scoped, and disposing
- * in a `useEffect` cleanup is NOT StrictMode-safe — StrictMode's mount→unmount→
- * remount would dispose the very runtime the persisted `useState` value still
- * holds. Since the runtime is lazy (no socket until an effect runs), an
- * undisposed-yet-unused runtime holds no resources anyway.
- */
+/** Holds one {@link WsRuntime} for the React tree and exposes it via context — laziness/disposal rationale in docs/design/web-runtime.md. */
 export function RuntimeProvider({
 	config,
 	layer,

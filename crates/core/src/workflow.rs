@@ -1,13 +1,10 @@
 //! Workflow primitive (ADR-0011, ADR-0018). A Workflow is declarative data
-//! loaded from a TOML file in `crates/core/workflows/` — name, version,
-//! provider, model, system prompt, thinking level, and tool allowlist. The
-//! Worker has no per-Workflow code; Core ships these fields in the spawn
-//! manifest (ADR-0018 as-built).
+//! loaded from a TOML file in `crates/core/workflows/`; Core ships its fields in
+//! the spawn manifest, the Worker has no per-Workflow code.
 //!
-//! Slice 3 loads exactly one file (`default.toml`) into a process-global
-//! `OnceLock` at boot and fails fast on malformed TOML or an invalid
-//! `thinking_level`. Hot reload and user-authored Workflows are out of scope
-//! (ADR-0018 "What this does not decide").
+//! Today exactly one file (`default.toml`) is loaded into a process-global
+//! `OnceLock` at boot, failing fast on malformed TOML or an invalid
+//! `thinking_level`. Hot reload and user-authored Workflows are out of scope.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -15,27 +12,22 @@ use std::sync::OnceLock;
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-/// The set of thinking levels the manifest's `thinking_level` may take,
-/// mirroring `pi-agent-core`'s `ThinkingLevel` (`off` + the five pi-ai
-/// levels). Validated at load so a typo in the TOML fails Core boot rather
-/// than a Run.
+/// The thinking levels `thinking_level` may take, mirroring `pi-agent-core`'s
+/// `ThinkingLevel`. Validated at load so a TOML typo fails boot, not a Run.
 const THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
 
-/// Whether `level` is one of the valid thinking levels (ADR-0024). Backs the
-/// `settings/set` effort validator, sharing the one allowed-set with the
-/// Workflow loader's `validate` so the wire and the TOML agree.
+/// Whether `level` is a valid thinking level (ADR-0024). Backs the `settings/set`
+/// effort validator, sharing one allowed-set with the loader's `validate`.
 pub fn is_valid_thinking_level(level: &str) -> bool {
     THINKING_LEVELS.contains(&level)
 }
 
-/// A loaded Workflow. Pure data deserialized from TOML via serde. `tools` is
-/// empty until the tools slice; `auto_approve`/`bootstrap` (ADR-0018) are not
-/// modeled yet (deferred per the as-built amendment).
+/// A loaded Workflow: pure data deserialized from TOML.
 ///
 /// `model` and `thinking_level` are optional (ADR-0024): production
-/// `default.toml` no longer authors them — they come from user settings with a
-/// per-provider default, resolved per-Run by `dispatcher::resolve_effective_workflow`.
-/// The TOML fields remain as an ultimate fallback (test fixtures still set them).
+/// `default.toml` no longer authors them — they come from user settings,
+/// resolved per-Run by `dispatcher::resolve_effective_workflow`. The TOML fields
+/// remain as an ultimate fallback (test fixtures still set them).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Workflow {
     pub name: String,
@@ -51,9 +43,8 @@ pub struct Workflow {
 }
 
 impl Workflow {
-    /// Validate invariants that serde's type-check can't express. Called
-    /// once at load. Currently: when present, `thinking_level` is one of the
-    /// allowed values (an absent level is resolved from settings later).
+    /// Validate invariants serde's type-check can't express. Currently: when
+    /// present, `thinking_level` is one of the allowed values.
     fn validate(&self) -> Result<()> {
         if let Some(ref level) = self.thinking_level {
             if !THINKING_LEVELS.contains(&level.as_str()) {
@@ -72,9 +63,8 @@ impl Workflow {
 static DEFAULT_WORKFLOW: OnceLock<Workflow> = OnceLock::new();
 
 /// The directory Workflows are loaded from. `INKSTONE_WORKFLOWS_DIR` overrides
-/// it (used by tests to point at a fixture dir); otherwise it is
-/// `crates/core/workflows/` resolved from the crate manifest dir so it works
-/// regardless of the process CWD.
+/// it (tests); otherwise `crates/core/workflows/` resolved from the crate
+/// manifest dir, so it works regardless of the process CWD.
 fn default_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("INKSTONE_WORKFLOWS_DIR") {
         return PathBuf::from(dir);
@@ -99,7 +89,7 @@ pub fn load_default_from(dir: &Path) -> Result<Workflow> {
 /// once at Core boot; a load failure aborts startup (fail-fast, ADR-0018).
 pub fn init() -> Result<()> {
     let workflow = load_default_from(&default_dir())?;
-    // OnceLock::set only errors if already set; in normal boot it is empty.
+    // `set` only errors if already set; in normal boot it is empty.
     let _ = DEFAULT_WORKFLOW.set(workflow);
     Ok(())
 }

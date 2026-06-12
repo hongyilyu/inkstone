@@ -16,18 +16,8 @@ import {
 } from "./chat.js";
 import { markThreadHydrated } from "./hydration-set.js";
 
-/**
- * The thin imperative seam between Effect (which owns the wire/streams/runtime)
- * and the plain React store. Per ADR-0020, the bridge forks the SDK stream on
- * the runtime and pushes events into the store via {@link applyEvent}. No
- * Effect React-binding lib; the store stays plain.
- *
- * Structured cancellation (Q18 A′): each run's stream fiber is retained keyed by
- * run id so it can be interrupted on unmount. A run's stream is bounded by
- * `Stream.takeUntil` on the terminal set (`done`/`error`/`cancelled`), so on any
- * terminal event the `runForEach` completes and the fiber finishes on its own —
- * independent of the focused thread.
- */
+// Thin imperative seam between Effect (owns wire/streams) and the plain React store — see docs/design/web-store.md (ADR-0020).
+// Each run's stream fiber is retained keyed by run id so it can be interrupted on unmount (structured cancellation, Q18 A′).
 const fibers = new Map<RunId, Fiber.RuntimeFiber<void, WsError>>();
 
 /** The global proposal-notification stream fiber, if started. */
@@ -39,19 +29,10 @@ export function resetBridge(): void {
 	proposalFiber = undefined;
 }
 
-/**
- * The outcome of a send. Default to a returned discriminated result (not an
- * `onError` callback) so callers learn of a failure synchronously off the
- * awaited promise (FEATURE-PLAN slice C).
- */
+/** The outcome of a send — a discriminated result so callers learn of failure off the awaited promise. */
 export type SendResult = { ok: true } | { ok: false; error: unknown };
 
-/**
- * Optimistically seed a turn into `threadId`: append the completed user message,
- * then a live (streaming) assistant message, returning the seeded assistant id.
- * Shared by {@link send} and {@link sendNewThread} — the ONLY ordering
- * difference is when it's called (see each caller), not what it does.
- */
+/** Optimistically seed a turn into `threadId` (completed user + live assistant), returning the seeded assistant id. */
 function seedTurn(threadId: string, text: string): string {
 	appendUserMessage(threadId, {
 		id: nextMessageId(),
@@ -71,12 +52,7 @@ function seedTurn(threadId: string, text: string): string {
 	return assistantId;
 }
 
-/**
- * Fork the SDK stream for `runId` and drive each event into the store. The
- * fiber is retained keyed by run id and removed when the stream completes (on a
- * terminal `done`/`error`/`cancelled`, via `takeUntil`) so it survives focus
- * changes until its own terminal event.
- */
+/** Fork the SDK stream for `runId` and drive each event into the store; the fiber is retained until its terminal event. */
 export function startRunStream(
 	runtime: WsRuntime,
 	threadId: string,
@@ -100,13 +76,7 @@ export function startRunStream(
 			(event) => Effect.sync(() => applyEvent(threadId, runId, event)),
 		);
 	}).pipe(
-		// Identity-aware cleanup (M2): on decide-resume, `interruptRun` deletes the
-		// old entry and `startRunStream` sets the new one BEFORE the interrupted
-		// old fiber's finalizer runs. A bare `fibers.delete(runId)` would then
-		// delete the NEW resume fiber's entry — leaving it untracked (unmount can't
-		// interrupt it; a second decide can't either, splitting the resume tail
-		// across two consumers). Deleting only when the map still points at THIS
-		// fiber makes a stale finalizer a no-op.
+		// Identity-aware cleanup (M2): delete only when the map still points at THIS fiber — see docs/design/web-store.md.
 		Effect.ensuring(
 			Effect.sync(() => {
 				if (fibers.get(runId) === self) {
@@ -120,18 +90,13 @@ export function startRunStream(
 	fibers.set(runId, self);
 }
 
-/**
- * Send a prompt into a (focused) thread: append the user message, seed a live
- * assistant message, start the Run, then fork its stream. A failed send flips
- * the assistant message to `incomplete` (Q7) and returns `{ ok: false, error }`.
- */
+/** Send a prompt into a focused thread: seed the turn, start the Run, fork its stream; a failed send returns `{ ok: false }`. */
 export async function send(
 	runtime: WsRuntime,
 	threadId: string,
 	text: string,
 ): Promise<SendResult> {
-	// The thread is now live locally — its messages + stream are seeded here, so
-	// the hydrate-on-focus effect must not re-hydrate it (slice 13 guard).
+	// Mark live so the hydrate-on-focus effect does not re-hydrate it (slice 13 guard).
 	markThreadHydrated(threadId);
 	const assistantId = seedTurn(threadId, text);
 
@@ -146,25 +111,13 @@ export async function send(
 		startRunStream(runtime, threadId, runId);
 		return { ok: true };
 	} catch (error) {
-		// postMessage failed (typed failure or defect surfaced as a rejected
-		// promise) → mark the seeded assistant message incomplete and surface it.
+		// postMessage failed: mark the seeded assistant message incomplete and surface it.
 		markMessageIncomplete(threadId, assistantId);
 		return { ok: false, error };
 	}
 }
 
-/**
- * First-message path: no thread is focused yet, so mint one. `threadCreate`
- * returns `{thread_id, run_id}` in a single round trip; we then focus the new
- * thread, seed the same user + live-assistant pair as {@link send}, promote the
- * assistant message onto the run, and fork its stream. Mirrors {@link send} but
- * minting the thread first (the slice-11-deferred create-on-first-message path).
- *
- * Because the thread id only exists once `threadCreate` resolves, the optimistic
- * seed happens after the await (unlike {@link send}, which seeds into a known
- * thread up front). If `threadCreate` itself fails, nothing was minted or
- * seeded, so there is no orphaned bubble to mark — the user can retry.
- */
+/** First-message path: mint a thread via `threadCreate`, then seed + stream like {@link send} — see docs/design/web-store.md. */
 export async function sendNewThread(
 	runtime: WsRuntime,
 	text: string,
@@ -177,17 +130,14 @@ export async function sendNewThread(
 	try {
 		const { thread_id, run_id } = await runtime.runPromise(create);
 		setFocusedThread(thread_id);
-		// The freshly-minted thread is live (seeded + streamed below); mark it so
-		// focusing it does NOT trigger a thread/get hydrate (slice 13 guard).
+		// Mark live so focusing it does NOT trigger a thread/get hydrate (slice 13 guard).
 		markThreadHydrated(thread_id);
 		const assistantId = seedTurn(thread_id, text);
 		attachRun(thread_id, assistantId, run_id);
 		startRunStream(runtime, thread_id, run_id);
 		return { ok: true };
 	} catch (error) {
-		// threadCreate failed before any thread was minted — nothing was seeded,
-		// so there is no orphaned bubble to mark incomplete. Surface the failure
-		// so the caller can tell the user (instead of silently swallowing it).
+		// threadCreate failed before any thread was minted — nothing seeded, no orphaned bubble. Surface the failure.
 		return { ok: false, error };
 	}
 }
@@ -219,15 +169,7 @@ export async function awaitRun(
 	await runtime.runPromise(Fiber.join(fiber));
 }
 
-// --- proposals (ADR-0025) ---------------------------------------------------
-
-/**
- * Fork the global `proposalNotifications()` stream and drive each notification
- * into the store. On `pending` → fetch the Proposal (`proposal/get`) and attach
- * it to its parked Run keyed by `run_id`; on `changed` → update its review
- * status. Started ONCE for the chat surface (idempotent — a second call while a
- * fiber is live is a no-op).
- */
+/** Fork the global `proposalNotifications()` stream into the store, fetching+attaching on `pending` (idempotent; ADR-0025). */
 export function startProposalStream(runtime: WsRuntime): void {
 	if (proposalFiber !== undefined) {
 		return;
@@ -250,8 +192,7 @@ export function startProposalStream(runtime: WsRuntime): void {
 				} else {
 					setProposalStatus(n.run_id, n.status);
 				}
-				// A `proposal/get` failure (rare; the Run un-parked between the
-				// notification and the fetch) must not tear down the whole stream.
+				// A `proposal/get` failure must not tear down the whole stream.
 			}).pipe(Effect.catchAll(() => Effect.void)),
 		);
 	}).pipe(Effect.ensuring(Effect.sync(() => (proposalFiber = undefined))));
@@ -259,19 +200,7 @@ export function startProposalStream(runtime: WsRuntime): void {
 	proposalFiber = runtime.runFork(program);
 }
 
-/**
- * Decide a parked Run's Proposal (accept/reject/edit) and resume the Run. Flips
- * the card to `deciding`, calls `proposal/decide`, then on success sets the
- * decided status AND re-subscribes to the Run so the resume tail (parked →
- * running → completed, ADR-0022 snapshot-then-tail) streams into the assistant
- * bubble. A failed decide flips the card to `error` so the user can retry.
- *
- * An `edit` carries the user's `editedPayload`; Core re-validates it and
- * applies in one step (ADR-0025), so the resume tail behaves exactly like an
- * accept. A decide already in flight short-circuits (no double-submit); the
- * stale parked stream fiber is interrupted before
- * re-subscribing so the resume tail has a single consumer.
- */
+/** Decide a parked Run's Proposal (accept/reject/edit) and re-subscribe for the resume tail — see docs/design/web-store.md (ADR-0025). */
 export async function decideProposal(
 	runtime: WsRuntime,
 	runId: RunId,
@@ -282,12 +211,7 @@ export async function decideProposal(
 	if (proposal === undefined) {
 		return;
 	}
-	// Double-submit guard (M1): a decide is already in flight. Returning here
-	// stops a fast double-click from firing a second `proposal/decide` that
-	// races behind the first — the Run un-parks after the first decide, so the
-	// second hits Core as `proposal_not_pending` and its catch would stomp an
-	// accept that actually succeeded with a spurious `error`. Retry from
-	// `error` is still allowed (only `deciding` short-circuits).
+	// Double-submit guard (M1): short-circuit a decide already in flight — see docs/design/web-store.md.
 	if (proposal.status === "deciding") {
 		return;
 	}
@@ -305,24 +229,11 @@ export async function decideProposal(
 	try {
 		const result = await runtime.runPromise(program);
 		setProposalStatus(runId, result.status);
-		// Re-subscribe to catch the resume tail. The thread that holds this run's
-		// assistant turn drives the subscribe; find it by run id.
 		const threadId = findThreadForRun(runId);
 		if (threadId !== undefined) {
-			// Stale-fiber guard (M2): a parked Run's forwarder closes with NO
-			// terminal event, so the original `subscribeRun` fiber (bounded by
-			// `takeUntil` on the terminal set) never completed and is still
-			// blocked on the per-run queue. Interrupt it BEFORE re-subscribing so exactly
-			// one consumer drains the resume tail — two consumers would split a
-			// multi-chunk continuation between them and corrupt the text.
+			// Stale-fiber + snapshot-reset guard (M2): interrupt the parked fiber, then
+			// reset the snapshot bit so the resume's first text_delta SETs — see docs/design/web-store.md.
 			interruptRun(runtime, runId);
-			// Reset the snapshot bit (review M1): the original parked subscribe
-			// already marked `snapshotApplied[runId] = true` on its initial
-			// (possibly empty) snapshot delta. The resume's FIRST `text_delta` is
-			// again the cumulative snapshot (it re-includes any pre-park prose);
-			// without this reset it would be APPENDed onto the on-screen text and
-			// duplicate the prefix. Clearing the bit makes it SET the
-			// authoritative cumulative text instead.
 			resetSnapshot(threadId, runId);
 			startRunStream(runtime, threadId, runId);
 		}

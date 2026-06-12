@@ -1,6 +1,5 @@
-//! Slice 1 (models-settings, ADR-0024): `model/catalog` serves the embedded
-//! `openai-codex` model catalog over the WebSocket. Read-only, no params.
-//! Drives a real Core over the wire; the catalog content is drift-tested
+//! `model/catalog` serves the embedded `openai-codex` model catalog over the
+//! WebSocket (read-only, no params; ADR-0024). Catalog content is drift-tested
 //! against `pi-ai` in `packages/worker/src/models-catalog.test.ts`.
 
 use futures_util::SinkExt;

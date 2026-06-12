@@ -8,9 +8,7 @@ afterEach(() => {
 
 describe("deriveWsUrl", () => {
 	it("derives a same-origin ws:// URL from an http location", () => {
-		// A Core-served SPA must dial the Core that served it, on whatever
-		// (possibly ephemeral) port that is — so the WS URL is derived from
-		// window.location's host, not a hardcoded port (ADR-0019 harness).
+		// WS URL derives from window.location host, not a hardcoded port (ADR-0019).
 		expect(deriveWsUrl({ protocol: "http:", host: "127.0.0.1:4321" })).toBe(
 			"ws://127.0.0.1:4321/ws",
 		);
@@ -25,12 +23,7 @@ describe("deriveWsUrl", () => {
 
 describe("RuntimeProvider", () => {
 	it("provides the runtime without opening a socket until an effect runs", () => {
-		// Spy on the WebSocket constructor BEFORE rendering. A lazy
-		// ManagedRuntime must not run the WsClientLive layer when it is merely
-		// built + provided, so a passive subtree that never runs an SDK effect
-		// constructs zero sockets. (App itself now reads thread/list on mount —
-		// that intentionally opens a socket; the laziness guarantee is about the
-		// runtime, proven here against a passive child.)
+		// Lazy ManagedRuntime: building + providing it runs no WsClientLive layer, so a passive child opens zero sockets.
 		const wsSpy = vi.fn();
 		vi.stubGlobal("WebSocket", wsSpy);
 
@@ -41,7 +34,6 @@ describe("RuntimeProvider", () => {
 		);
 
 		expect(screen.getByTestId("passive")).toBeInTheDocument();
-		// Lazy runtime: providing it ran no effect, so no socket opened.
 		expect(wsSpy).toHaveBeenCalledTimes(0);
 	});
 
@@ -68,8 +60,7 @@ describe("RuntimeProvider", () => {
 			return null;
 		}
 
-		// React surfaces the throw from the render; suppress the noisy
-		// error-boundary logging React emits for the expected throw.
+		// Suppress React's error-boundary logging for the expected render throw.
 		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		expect(() => render(<OrphanProbe />)).toThrow(
 			/useRuntime must be used within a RuntimeProvider/,

@@ -1,12 +1,7 @@
-//! Tool registry (ADR-0018). Tools are implemented once, in Rust. Each has a
-//! `name`/`description`/`label`, a `schemars`-derived input schema, and an
-//! async `execute`. At spawn, Core ships the descriptors (filtered by the
-//! Workflow's allowlist) in the manifest; the Worker builds proxy `AgentTool`s
-//! that round-trip `tool_request`/`tool_result` over stdio. Tool impls live
-//! here and nowhere else — the Worker has zero per-tool code (ADR-0003
-//! chokepoint).
-//!
-//! Slice 2 registers exactly one tool, `read_thread`, with a stub body.
+//! Tool registry (ADR-0018, ADR-0003). Tools are implemented once in Rust, each
+//! with a `name`/`description`/`label`, `schemars`-derived schema, and async
+//! `execute`. Core ships allowlist-filtered descriptors in the manifest; the
+//! Worker proxies `tool_request`/`tool_result` over stdio with zero per-tool code.
 
 mod propose_workspace_mutation;
 mod read_current_thread_journal_entries;
@@ -17,17 +12,15 @@ use sqlx::SqlitePool;
 
 use crate::protocol::CoreToolDescriptor;
 
-/// A tool execution failure. Becomes the `err` half of a `ToolResult` outcome
-/// (`{code, message}`); the Worker proxy throws so `pi-agent-core` feeds the
-/// error back to the model.
+/// A tool execution failure. Becomes the `err` half of a `ToolResult`
+/// (`{code, message}`), fed back to the model by the Worker proxy.
 #[derive(Debug)]
 pub struct ToolError {
     pub code: String,
     pub message: String,
 }
 
-/// The descriptor for a single registered tool by name, or `None` if no tool
-/// with that name is registered.
+/// The descriptor for a registered tool by name, or `None` if unregistered.
 fn descriptor_for(name: &str) -> Option<CoreToolDescriptor> {
     match name {
         read_thread::NAME => Some(read_thread::descriptor()),
@@ -40,9 +33,8 @@ fn descriptor_for(name: &str) -> Option<CoreToolDescriptor> {
 }
 
 /// Build the descriptor list for a Workflow's tool allowlist, in allowlist
-/// order. Unknown names are skipped (a Workflow naming a tool Core doesn't
-/// register simply doesn't expose it) — Core's authoritative registry, not the
-/// Workflow file, decides what exists.
+/// order. Unknown names are skipped — Core's registry, not the Workflow file,
+/// decides what exists.
 pub fn descriptors_for(allowlist: &[String]) -> Vec<CoreToolDescriptor> {
     allowlist
         .iter()
@@ -50,24 +42,22 @@ pub fn descriptors_for(allowlist: &[String]) -> Vec<CoreToolDescriptor> {
         .collect()
 }
 
-/// Whether `name` is a registered tool. Used for allowlist enforcement on a
-/// `tool_request` before dispatch (ADR-0018 "Tool allowlist enforcement").
+/// Whether `name` is a registered tool. Used for allowlist enforcement before
+/// dispatch (ADR-0018).
 pub fn is_registered(name: &str) -> bool {
     descriptor_for(name).is_some()
 }
 
-/// Whether `name` is a Proposal tool (ADR-0025). Core's Worker run loop
-/// intercepts a Proposal-tool `tool_request` BEFORE dispatch and parks the Run
-/// instead of executing it; non-Proposal tools take the synchronous
-/// dispatch-and-reply path. `propose_workspace_mutation` is the only Proposal
-/// tool today.
+/// Whether `name` is a Proposal tool (ADR-0025). Core intercepts a Proposal
+/// `tool_request` before dispatch and parks the Run instead of executing it;
+/// non-Proposal tools dispatch synchronously. `propose_workspace_mutation` is
+/// the only Proposal tool today.
 pub fn is_proposal(name: &str) -> bool {
     name == propose_workspace_mutation::NAME
 }
 
 /// Dispatch a `tool_request` to the named tool's `execute`. The caller has
-/// already enforced the allowlist; an unregistered name here is a defensive
-/// `unknown_tool` error.
+/// enforced the allowlist; an unregistered name is a defensive `unknown_tool`.
 pub async fn execute(
     pool: &SqlitePool,
     run_id: uuid::Uuid,
@@ -79,10 +69,8 @@ pub async fn execute(
         read_current_thread_journal_entries::NAME => {
             read_current_thread_journal_entries::execute(pool, run_id, params).await
         }
-        // Proposal tools never reach dispatch — the Worker run loop parks the
-        // Run before `execute` (ADR-0025). A `propose_workspace_mutation` here
-        // means the park interception was bypassed; refuse defensively rather
-        // than treat a Proposal as a synchronous tool.
+        // Proposal tools never reach dispatch (ADR-0025); reaching here means
+        // the park interception was bypassed, so refuse defensively.
         propose_workspace_mutation::NAME => Err(ToolError {
             code: "proposal_not_executable".to_string(),
             message: "propose_workspace_mutation parks the Run; it is not dispatched".to_string(),

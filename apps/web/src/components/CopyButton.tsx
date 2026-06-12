@@ -2,10 +2,7 @@ import { Check, Copy } from "lucide-react";
 import { useCopyToClipboard } from "@/lib/hooks/useCopyToClipboard.js";
 import { Button } from "./ui/button.js";
 
-/**
- * Copies `text` to the clipboard on click, swapping the Copy icon for a Check
- * while the copied flag is set (see {@link useCopyToClipboard}).
- */
+/** Copies `text` to the clipboard on click, swapping the Copy icon for a Check while copied (see {@link useCopyToClipboard}). */
 export function CopyButton({ text }: { text: string }) {
 	const { copied, copy } = useCopyToClipboard();
 

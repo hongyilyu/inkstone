@@ -150,8 +150,7 @@ export const automationRuns: AutomationRun[] = [
 	},
 ];
 
-// The full waterfall for `auto_standup` run "run_a_standup_12" today at 09:30.
-// /6 renders this as a single autonomous-thread page.
+/** Full step waterfall for the `auto_standup` run "run_a_standup_12", rendered by /6 as an autonomous-thread page. */
 export const automationThread = {
 	runId: "run_a_standup_12",
 	automationId: "auto_standup",

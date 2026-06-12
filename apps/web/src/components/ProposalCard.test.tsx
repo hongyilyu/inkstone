@@ -43,7 +43,9 @@ const updateProposal: PendingProposal & {
 		entity_id: "entry-123",
 		occurred_at: "2026-06-10T11:00:00",
 		ended_at: "2026-06-10T11:15:00",
-		body: [{ type: "text", text: "Bought milk and bread after daycare pickup." }],
+		body: [
+			{ type: "text", text: "Bought milk and bread after daycare pickup." },
+		],
 	},
 	review_context: {
 		current_journal_entry: {
@@ -70,7 +72,9 @@ const updateProposalMissingEntityId: PendingProposal & {
 	payload: {
 		occurred_at: "2026-06-10T11:00:00",
 		ended_at: "2026-06-10T11:15:00",
-		body: [{ type: "text", text: "Bought milk and bread after daycare pickup." }],
+		body: [
+			{ type: "text", text: "Bought milk and bread after daycare pickup." },
+		],
 	},
 };
 
@@ -201,7 +205,10 @@ describe("ProposalCard", () => {
 		fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
 		expect(onDecide).toHaveBeenLastCalledWith("reject");
 		rerender(
-			<ProposalCard proposal={{ ...base, status: "error" }} onDecide={onDecide} />,
+			<ProposalCard
+				proposal={{ ...base, status: "error" }}
+				onDecide={onDecide}
+			/>,
 		);
 		// "Try again" must re-issue the SAME decision (reject) — never a silent
 		// accept that would create the Journal Entry the user rejected.
@@ -226,7 +233,10 @@ describe("ProposalCard", () => {
 		};
 		expect(onDecide).toHaveBeenLastCalledWith("edit", editedPayload);
 		rerender(
-			<ProposalCard proposal={{ ...base, status: "error" }} onDecide={onDecide} />,
+			<ProposalCard
+				proposal={{ ...base, status: "error" }}
+				onDecide={onDecide}
+			/>,
 		);
 		// Retrying an edit must re-issue edit WITH the user's payload — not accept,
 		// which would silently revert the edits to the model's original.
@@ -370,7 +380,9 @@ describe("ProposalCard", () => {
 		expect(
 			screen.getByRole("button", { name: /keep journal entry/i }),
 		).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /edit/i }),
+		).not.toBeInTheDocument();
 	});
 
 	it("keeps delete proposals legible when current-entry context is unavailable", () => {
@@ -388,19 +400,27 @@ describe("ProposalCard", () => {
 		expect(
 			screen.getByRole("button", { name: /keep journal entry/i }),
 		).toBeInTheDocument();
-		expect(screen.queryByRole("button", { name: /edit/i })).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /edit/i }),
+		).not.toBeInTheDocument();
 	});
 
 	it("calls onDecide for delete proposal accept and reject actions", () => {
 		const onDecide = vi.fn();
-		render(<ProposalCard proposal={deleteProposalWithContext} onDecide={onDecide} />);
+		render(
+			<ProposalCard proposal={deleteProposalWithContext} onDecide={onDecide} />,
+		);
 		fireEvent.click(
 			screen.getByRole("button", { name: /delete journal entry/i }),
 		);
 		expect(onDecide).toHaveBeenCalledWith("accept");
 		cleanup();
-		render(<ProposalCard proposal={deleteProposalWithContext} onDecide={onDecide} />);
-		fireEvent.click(screen.getByRole("button", { name: /keep journal entry/i }));
+		render(
+			<ProposalCard proposal={deleteProposalWithContext} onDecide={onDecide} />,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /keep journal entry/i }),
+		);
 		expect(onDecide).toHaveBeenCalledWith("reject");
 	});
 
@@ -460,7 +480,9 @@ describe("ProposalCard", () => {
 			target: { value: "2026-06-10T11:20:00" },
 		});
 		fireEvent.change(screen.getByRole("textbox", { name: /body/i }), {
-			target: { value: "Bought milk, bread, and berries after daycare pickup." },
+			target: {
+				value: "Bought milk, bread, and berries after daycare pickup.",
+			},
 		});
 		fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
 		expect(onDecide).toHaveBeenCalledWith("edit", {
@@ -488,7 +510,9 @@ describe("ProposalCard", () => {
 		expect(
 			screen.getByRole("button", { name: /update journal entry/i }),
 		).toBeDisabled();
-		expect(screen.getByText(/entity id must not be empty/i)).toBeInTheDocument();
+		expect(
+			screen.getByText(/entity id must not be empty/i),
+		).toBeInTheDocument();
 
 		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
 		const save = screen.getByRole("button", { name: /save changes/i });
@@ -508,7 +532,9 @@ describe("ProposalCard", () => {
 
 		const retry = screen.getByRole("button", { name: /try again/i });
 		expect(retry).toBeDisabled();
-		expect(screen.getByText(/entity id must not be empty/i)).toBeInTheDocument();
+		expect(
+			screen.getByText(/entity id must not be empty/i),
+		).toBeInTheDocument();
 
 		fireEvent.click(retry);
 		expect(onDecide).not.toHaveBeenCalled();

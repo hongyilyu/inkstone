@@ -1,12 +1,10 @@
-//! Slice 1 RED test (Proposal park): when the Worker emits a `propose_workspace_mutation`
-//! `tool_request`, Core persists a Proposal (`pending`) + a `tool_calls` row,
-//! sets `runs.status='parked'` + `awaiting_tool_call_id`, and tears the Worker
-//! down WITHOUT erroring the Run (ADR-0025: park is a third Worker exit). A
-//! Client that subscribes sees `status:"parked"` and NO `done`/`error`;
-//! `proposal/get(run_id)` returns the pending Journal Entry Proposal.
+//! Proposal park (ADR-0025): a `propose_workspace_mutation` request makes Core
+//! persist a pending Proposal + tool_call, set `runs.status='parked'` +
+//! `awaiting_tool_call_id`, and tear the Worker down WITHOUT erroring the Run.
+//! Subscribers see `status:"parked"` and no `done`/`error`; `proposal/get`
+//! returns the pending Journal Entry Proposal.
 //!
-//! Driven by `tests/fixtures/propose-worker.ts` over `INKSTONE_WORKER_CMD`,
-//! spawned by Core exactly as the real Worker would be.
+//! Driven by `tests/fixtures/propose-worker.ts` over `INKSTONE_WORKER_CMD`.
 
 use std::time::{Duration, Instant};
 
@@ -18,8 +16,7 @@ use tokio_tungstenite::tungstenite::Message;
 mod common;
 use common::{CoreHandle, Workspace, next_text};
 
-/// Open a fresh socket, send a single request, and return the response body
-/// (the first text frame).
+/// Open a fresh socket, send a single request, return the response body.
 async fn rpc(
     core: &CoreHandle,
     id: u64,
@@ -52,7 +49,6 @@ fn parks_on_propose_workspace_mutation() {
         .expect("tokio runtime builds");
 
     let run_id = rt.block_on(async {
-        // Start a Run via thread/create.
         let resp = rpc(
             &core,
             1,
@@ -65,8 +61,7 @@ fn parks_on_propose_workspace_mutation() {
             .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
             .to_string();
 
-        // Poll run/subscribe until the Run reports status:"parked" (the Worker
-        // boots tsx, then emits the propose_workspace_mutation request, then Core parks).
+        // Poll run/subscribe until the Run reports status:"parked".
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if Instant::now() > deadline {
@@ -85,8 +80,7 @@ fn parks_on_propose_workspace_mutation() {
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
 
-        // Subscribe again and assert NO done/error event arrives within a
-        // short window (the park is not a terminal Run Event).
+        // Assert NO done/error event arrives — the park is not terminal.
         let mut ws = core.connect().await;
         let sub = serde_json::json!({
             "jsonrpc": "2.0", "id": 3, "method": "run/subscribe",
@@ -104,7 +98,7 @@ fn parks_on_propose_workspace_mutation() {
             "subscribe response carries status:parked — body: {sub_resp}"
         );
 
-        // Drain events for ~1.5s; none may be a terminal done/error.
+        // Drain ~1.5s; none may be a terminal done/error.
         let window = Instant::now() + Duration::from_millis(1500);
         while Instant::now() < window {
             match tokio::time::timeout(Duration::from_millis(300), ws.next()).await {
@@ -118,12 +112,12 @@ fn parks_on_propose_workspace_mutation() {
                 }
                 Ok(Some(Ok(_))) => {}
                 Ok(Some(Err(_))) | Ok(None) => break,
-                Err(_) => {} // timeout: no event, keep waiting out the window
+                Err(_) => {} // timeout: keep waiting out the window
             }
         }
         ws.close(None).await.ok();
 
-        // proposal/get returns the pending Journal Entry proposal.
+        // proposal/get returns the pending Journal Entry Proposal.
         let resp = rpc(
             &core,
             4,
@@ -209,18 +203,16 @@ fn parks_on_propose_workspace_mutation() {
     });
 }
 
-/// No-false-done for an ATTACHED subscriber (ADR-0025). A Client that
-/// subscribes to a live, streaming Run (`status:"running"`) and is still
-/// attached when the Run parks must NOT receive a synthesized `done` — the
-/// forwarder's channel-close path suppresses it for a parked Run. The
-/// `parks_on_propose_workspace_mutation` test can only hit the no-hub branch (it polls
-/// until parked first), so this is the only coverage of the forwarder path,
-/// which is the slice's stated reason to exist.
+/// No-false-done for an ATTACHED subscriber (ADR-0025): a Client still attached
+/// when the Run parks must NOT receive a synthesized `done` — the forwarder's
+/// channel-close path suppresses it. This is the only coverage of that
+/// forwarder path (`parks_on_propose_workspace_mutation` polls until parked, so
+/// it only hits the no-hub branch).
 #[test]
 fn parked_run_emits_no_false_done_to_attached_subscriber() {
     let workspace = Workspace::new();
-    // The fixture emits a `text_delta` then waits 1.5s before proposing, so a
-    // subscribe lands on the LIVE hub before the park.
+    // The fixture delays 1.5s before proposing, so a subscribe lands on the
+    // LIVE hub before the park.
     let core = workspace
         .core()
         .worker_fixture("propose-worker.ts")
@@ -245,9 +237,8 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
             .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
             .to_string();
 
-        // Subscribe immediately — attach to the live hub during the fixture's
-        // pre-propose delay. `status:"running"` proves we took the streaming
-        // (hub-present) path, not the no-hub parked branch.
+        // Attach to the live hub during the fixture's pre-propose delay.
+        // `status:"running"` proves we took the streaming (hub-present) path.
         let mut ws = core.connect().await;
         let sub = serde_json::json!({
             "jsonrpc": "2.0", "id": 2, "method": "run/subscribe",
@@ -265,10 +256,9 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
             "attached to a LIVE streaming hub before the park — body: {sub_resp}"
         );
 
-        // Drain across the park (fixture proposes at ~boot+1.5s). The hub closes
-        // when Core parks; the forwarder must suppress the synthesized `done`.
-        // Assert no terminal event ever arrives, and that we saw the live
-        // text_delta (confirming a real attached tail, not an empty snapshot).
+        // Drain across the park: the forwarder must suppress the synthesized
+        // `done`. Assert no terminal event arrives and we saw the live
+        // text_delta (a real attached tail, not an empty snapshot).
         let mut saw_text = false;
         let window = Instant::now() + Duration::from_secs(5);
         while Instant::now() < window {
@@ -285,7 +275,7 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
                     );
                 }
                 Ok(Some(Ok(_))) => {}
-                Ok(Some(Err(_))) | Ok(None) => break, // hub/conn closed without a done — acceptable
+                Ok(Some(Err(_))) | Ok(None) => break, // closed without a done — acceptable
                 Err(_) => {}                          // idle tick
             }
         }
@@ -295,8 +285,7 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
             "attached subscriber received the pre-propose text_delta (live tail)"
         );
 
-        // Confirm the Run actually parked within the window (so the assertion
-        // above genuinely covered the park transition).
+        // Confirm the Run actually parked, so the assertion above covered it.
         let resp = rpc(
             &core,
             3,
@@ -312,17 +301,15 @@ fn parked_run_emits_no_false_done_to_attached_subscriber() {
     });
 }
 
-/// Slice 8: an ATTACHED subscriber is PUSHED a `proposal/pending` Notification
-/// the moment the Run parks (ADR-0025) — so a chat surface already subscribed
-/// to the Run learns to show the review card without polling. The forwarder's
-/// channel-close→parked branch emits `proposal/pending {run_id, proposal_id}`
-/// instead of merely suppressing the synthesized `done`. Still NO terminal
+/// An ATTACHED subscriber is PUSHED a `proposal/pending {run_id, proposal_id}`
+/// notification the moment the Run parks (ADR-0025), so an already-subscribed
+/// chat surface shows the review card without polling. Still no terminal
 /// `done`/`error`.
 #[test]
 fn attached_subscriber_gets_proposal_pending_on_park() {
     let workspace = Workspace::new();
-    // The fixture emits a `text_delta` then waits 1.5s before proposing, so a
-    // subscribe lands on the LIVE hub before the park.
+    // The fixture delays 1.5s before proposing, so a subscribe lands on the
+    // LIVE hub before the park.
     let core = workspace
         .core()
         .worker_fixture("propose-worker.ts")
@@ -365,9 +352,8 @@ fn attached_subscriber_gets_proposal_pending_on_park() {
             "attached to a LIVE streaming hub before the park — body: {sub_resp}"
         );
 
-        // Drain across the park. We must observe a `proposal/pending`
-        // notification carrying this run_id (and a proposal_id), and NEVER a
-        // terminal done/error.
+        // Drain across the park: must observe a `proposal/pending` carrying
+        // this run_id (and a proposal_id), and NEVER a terminal done/error.
         let mut saw_pending = false;
         let window = Instant::now() + Duration::from_secs(5);
         while Instant::now() < window {

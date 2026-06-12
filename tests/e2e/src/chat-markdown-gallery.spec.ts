@@ -62,9 +62,7 @@ for (const theme of ["light", "dark"] as const) {
 
 		// Confirm the FOUC script actually applied the seeded theme.
 		await expect
-			.poll(() =>
-				page.evaluate(() => document.documentElement.dataset.theme),
-			)
+			.poll(() => page.evaluate(() => document.documentElement.dataset.theme))
 			.toBe(theme);
 
 		await chat.send("render markdown");
@@ -80,9 +78,7 @@ for (const theme of ["light", "dark"] as const) {
 		await expect(bubble.locator("table")).toHaveCount(1);
 		await expect(bubble.locator("table")).toBeVisible();
 
-		await expect(
-			bubble.locator("code").first(),
-		).toBeVisible();
+		await expect(bubble.locator("code").first()).toBeVisible();
 
 		// Human-review artifact: snapshot the rendered bubble for this theme.
 		// Existence is NOT an assertion — the structural checks above are.

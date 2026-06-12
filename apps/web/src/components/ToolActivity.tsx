@@ -8,16 +8,7 @@ import {
 import { cn } from "@/lib/utils.js";
 import type { ToolCall } from "@/store/chat";
 
-/**
- * Per-tool presentation. `active` is the present-tense label shown while the
- * tool runs ("Reading thread"); `done` is the settled past-tense label.
- * `access` records what the tool is allowed to touch: `read` tools only observe
- * durable state (writes never run live — they surface as a reviewable Proposal,
- * the "approval is sacred" contract), so the row says so. Unknown tools fall
- * back to a humanized name + a generic glyph and make NO access claim, so a
- * newly-registered Core tool still renders sensibly (and honestly) before it
- * gets an entry here.
- */
+/** Per-tool presentation: active/done labels, glyph, and optional access tag. See docs/design/web-chat-ui.md. */
 type ToolPresentation = {
 	active: string;
 	done: string;
@@ -47,15 +38,7 @@ function presentation(name: string): ToolPresentation {
 	return { active: label, done: label, Icon: Wrench };
 }
 
-/**
- * Live tool-call activity within an assistant turn (ADR-0006 tool_call Run
- * Events). Renders one compact row per call. The running row carries the
- * signature lamplight glow on its glyph; completed rows settle to a quiet
- * check; an errored row pairs an alert glyph with "failed". Read-only tools
- * say so, so the user can see the agent only observed. State is conveyed by
- * icon + label + a screen-reader status, never colour alone, and all motion is
- * gated behind `motion-safe` (DESIGN.md).
- */
+/** Live tool-call activity within an assistant turn, one compact row per call (ADR-0006). See docs/design/web-chat-ui.md. */
 export function ToolActivity({
 	toolCalls,
 }: {
@@ -131,9 +114,7 @@ function ToolCallRow({ call }: { call: ToolCall }) {
 				</span>
 			)}
 
-			{/* Single authoritative announcement per row (the visible label,
-			    read-only tag, and "failed" are aria-hidden so they don't
-			    double-speak in the live region). */}
+			{/* Single authoritative announcement per row; visible labels are aria-hidden to avoid double-speak. */}
 			<span className="sr-only">{srText}</span>
 		</li>
 	);

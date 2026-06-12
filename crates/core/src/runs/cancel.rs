@@ -1,15 +1,13 @@
 //! `run/cancel` handler (ADR-0014): cancel a Run and (if parked) its pending
-//! Proposal. The Response answers "did Core accept the cancel command?" —
-//! `accepted` (the Run was live/parked and is now being cancelled),
-//! `already_terminal` (the Run had already finished), or `unknown_run` (the id
-//! named no Run). A malformed `run_id` is `invalid_params`.
+//! Proposal. The Response outcome is `accepted` (was live/parked, now
+//! cancelling), `already_terminal` (already finished), or `unknown_run`. A
+//! malformed `run_id` is `invalid_params`.
 //!
-//! Parked cancellation is pure tier-2: `db::cancel_parked_run` flips the Run
-//! to `cancelled` and its pending Proposal to `cancelled` in one tx. Running
-//! cancellation first wins the guarded `running -> cancelled` transition, then
-//! publishes `RunEvent::Cancelled` and signals the live Worker through the
-//! in-memory hub. The Worker signal is cleanup; the DB transition is the user
-//! visible outcome.
+//! Parked cancellation is pure tier-2: one tx flips the Run and its pending
+//! Proposal to `cancelled`. Running cancellation first wins the guarded
+//! `running -> cancelled` transition, then publishes `RunEvent::Cancelled` and
+//! signals the live Worker via the hub (cleanup; the DB transition is the
+//! user-visible outcome).
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -46,10 +44,9 @@ pub(super) async fn handle_cancel(
             // Unknown run id — an ADR-0014 outcome value, not an error code.
             None => "unknown_run",
             Some(status) => match status.as_str() {
-                // Already over — the cancel is redundant.
                 "completed" | "errored" | "cancelled" => "already_terminal",
-                // The tested path: a parked Run has no live Worker, so cancel
-                // is a pure tier-2 flip of the Run + its pending Proposal.
+                // Parked Run has no live Worker: a pure tier-2 flip of the Run
+                // + its pending Proposal.
                 "parked" => {
                     match db::cancel_parked_run(pool, run_id, db::now_ms()).await {
                         Ok(true) => "accepted",

@@ -30,29 +30,23 @@ use crate::protocol::JsonRpcRequest;
 
 #[derive(Clone)]
 struct AppState {
-    /// Tier-2 SQLite pool (ADR-0017). Threads, Runs, Messages, Run Steps,
-    /// and Run Events are written here inside a single transaction with
-    /// deferred FK enforcement.
+    /// Tier-2 SQLite pool (ADR-0017).
     pool: SqlitePool,
-    /// Per-run event hubs (ADR-0022). `run_id → RunHub`; the Worker
-    /// publishes Run Events into the hub and `run/subscribe` attaches to
-    /// it. Shared across all connections so a Run's live stream outlives
-    /// the socket that started it.
+    /// Per-run event hubs (ADR-0022): `run_id → RunHub`, shared across all
+    /// connections so a Run's live stream outlives the socket that started it.
     hubs: Hubs,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load and validate the Workflow(s) before serving — a malformed
-    // default.toml or an invalid thinking_level aborts boot (fail-fast,
-    // ADR-0018) rather than failing the first Run.
+    // Validate the Workflow(s) before serving: a malformed default.toml aborts
+    // boot (fail-fast, ADR-0018) rather than failing the first Run.
     workflow::init()?;
 
     let pool = db::open().await?;
 
     // Boot recovery sweep (ADR-0012): error any Run left `running` by a prior
-    // Core crash/restart — it has no live Worker and cannot progress.
-    // PRESERVES `parked` Runs (ADR-0025): they stay decidable on this new Core.
+    // Core crash — it has no live Worker. Preserves `parked` Runs (ADR-0025).
     let recovered = db::recover_interrupted_runs(&pool, db::now_ms()).await?;
     if recovered > 0 {
         println!("INKSTONE_RECOVERED {recovered} interrupted run(s) errored as core_restarted");
@@ -67,14 +61,11 @@ async fn main() -> Result<()> {
         .route("/ws", get(ws_handler))
         .with_state(state);
 
-    // SPA serving (ADR-0015 dev path / ADR-0019 harness). When
-    // `INKSTONE_WEB_DIR` is set AND this is a debug build, serve the built Web
-    // Client from that directory: assets directly, every other non-`/ws` path
-    // falls back to `index.html` so the SPA's client-side router can take over.
-    // Release builds ignore the env var entirely, so a production binary can
-    // never serve arbitrary files from disk (production embeds the bundle
-    // instead — a future feature). With no web dir, `/` is the bare liveness
-    // string the integration tests assert against.
+    // SPA serving (ADR-0015 / ADR-0019). In debug builds with `INKSTONE_WEB_DIR`
+    // set, serve the built Web Client from that dir: assets directly, other
+    // non-`/ws` paths fall back to `index.html` for the client-side router.
+    // Release builds ignore the env var (never serve arbitrary files from disk).
+    // With no web dir, `/` is the bare liveness string the tests assert against.
     let app = match web_dir_for_serving() {
         Some(dir) => {
             let index = dir.join("index.html");
@@ -86,9 +77,8 @@ async fn main() -> Result<()> {
     };
 
     // Port resolution (ADR-0019): `INKSTONE_PORT` overrides the default 8765.
-    // `0` asks the OS for an ephemeral port so the test harness can spawn one
-    // fresh Core per test without collisions; the *resolved* port is read back
-    // from the bound listener and announced, never the literal 0.
+    // `0` asks the OS for an ephemeral port (per-test isolation); the resolved
+    // port is read back from the listener and announced, never the literal 0.
     let port: u16 = std::env::var("INKSTONE_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
@@ -101,9 +91,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// The directory to serve the SPA from, or `None` to serve the liveness
-/// string. Reads `INKSTONE_WEB_DIR`, but only honors it in debug builds — a
-/// release binary always returns `None` so it cannot serve files from disk.
+/// The directory to serve the SPA from, or `None` to serve the liveness string.
+/// Reads `INKSTONE_WEB_DIR` but honors it only in debug builds, so a release
+/// binary never serves files from disk.
 fn web_dir_for_serving() -> Option<PathBuf> {
     if !cfg!(debug_assertions) {
         return None;
@@ -120,9 +110,9 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
 
-    // Single-task multiplex: race between an incoming WS frame and an
-    // outbound frame on the per-connection channel. Response and
-    // Notifications share the channel so frame order is preserved.
+    // Single-task multiplex: race an incoming WS frame against an outbound frame
+    // on the per-connection channel. Responses and Notifications share the
+    // channel so frame order is preserved.
     loop {
         tokio::select! {
             biased;

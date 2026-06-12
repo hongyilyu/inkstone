@@ -3,19 +3,16 @@
 //! [`WorkerPort`] is the small interface Core's run loop depends on — pull the
 //! next Worker stdout frame, send a Tool Result back, shut the Worker down. The
 //! loop ([`super::run::run_loop`]) is generic over this trait, so the adapter is
-//! chosen at compile time (no runtime dispatch): production uses
-//! [`super::child::ChildWorker`] (the sole `Command::spawn` site); tests drive a
-//! scripted in-memory adapter. The port speaks the existing wire types
-//! ([`WorkerStdout`], [`ToolResult`]) unchanged.
+//! chosen at compile time: production uses [`super::child::ChildWorker`]; tests
+//! drive a scripted in-memory adapter.
 
 use std::future::Future;
 
 use crate::protocol::{ToolResult, WorkerStdout};
 
-/// Which terminal branch the run loop took. Returned by [`super::run::run_loop`]
-/// so callers and tests can assert the outcome directly; the loop still commits
-/// the matching terminal transaction itself (except [`Exit::Parked`], which is
-/// non-terminal per ADR-0025).
+/// Which terminal branch the run loop took, so callers and tests can assert the
+/// outcome. The loop commits the matching terminal transaction itself, except
+/// [`Exit::Parked`] (non-terminal per ADR-0025).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Exit {
     /// Worker emitted `done`; the loop committed `complete_run`.
@@ -34,17 +31,16 @@ pub(crate) enum Exit {
     Cancelled,
 }
 
-/// Everything Core's run loop needs from a spawned Worker (ADR-0026). The
-/// returned futures are `Send` so the generic loop can run inside
-/// `tokio::spawn`.
+/// Everything Core's run loop needs from a spawned Worker (ADR-0026). Futures
+/// are `Send` so the generic loop can run inside `tokio::spawn`.
 pub(crate) trait WorkerPort {
-    /// The next Worker stdout frame, or `None` once the Worker's stdout closes
-    /// (EOF) or faults. Frames that fail to decode are skipped by the adapter,
-    /// so the loop only ever sees well-formed [`WorkerStdout`] values.
+    /// The next Worker stdout frame, or `None` once stdout closes (EOF) or
+    /// faults. The adapter skips frames that fail to decode, so the loop only
+    /// sees well-formed [`WorkerStdout`] values.
     fn recv(&mut self) -> impl Future<Output = Option<WorkerStdout>> + Send;
 
-    /// Write a Tool Result back to the Worker over its kept-open stdin
-    /// (ADR-0013). A no-op once the Worker has been shut down.
+    /// Write a Tool Result back over the Worker's kept-open stdin (ADR-0013).
+    /// A no-op once the Worker has been shut down.
     fn send_tool_result(&mut self, result: ToolResult) -> impl Future<Output = ()> + Send;
 
     /// Shut the Worker down — drop stdin so the Worker sees EOF and exits

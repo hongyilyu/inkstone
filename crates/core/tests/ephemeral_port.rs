@@ -1,14 +1,7 @@
-//! Slice 1 RED test: Core binds an ephemeral port when `INKSTONE_PORT=0`.
-//!
-//! The harness (ADR-0019) spawns one fresh Core per test and needs each to
-//! bind a distinct port so parallel Playwright workers don't collide. Core
-//! already announces `INKSTONE_LISTENING <url>` on stdout; this test proves
-//! that with `INKSTONE_PORT=0` the announced port is OS-assigned (non-zero and
-//! not the fixed default `DEFAULT_PORT`) and the server is actually reachable
-//! there.
-//!
-//! Ephemeral is now the only port strategy (`common::Workspace` always sets
-//! `INKSTONE_PORT=0`); this test pins the guarantee the harness depends on.
+//! Core binds an ephemeral port when `INKSTONE_PORT=0` (ADR-0019): the
+//! announced `INKSTONE_LISTENING` port is OS-assigned (non-zero, not the fixed
+//! `DEFAULT_PORT`) and the server is reachable there — the guarantee parallel
+//! test workers depend on to avoid port collisions.
 
 mod common;
 use common::{DEFAULT_PORT, Workspace};

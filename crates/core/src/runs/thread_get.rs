@@ -1,18 +1,10 @@
-//! `thread/get` handler: rehydrate a Thread plus its Messages (ADR-0022 read
-//! path).
-//!
-//! Read the Thread title (existence check) and its Messages in chronological
-//! order, assemble each Message's `text` from its text parts
-//! (flat-text-no-parts[], ADR-0017/Q15), and frame `{thread_id, title,
-//! messages}`. This is the rehydration source for refresh-durability: a
-//! `streaming` assistant Message carries its partial text and `run_id` so a
+//! `thread/get` handler: rehydrate a Thread plus its Messages in chronological
+//! order (ADR-0022 read path). The rehydration source for refresh-durability:
+//! a `streaming` assistant Message carries its partial text and `run_id` so a
 //! refreshed Client can resubscribe.
 //!
-//! Validation (ADR-0014 error codes, mirrors `run/post_message`):
-//! - A malformed `thread_id` (not a UUID) → `invalid_params` (-32602).
-//! - A well-formed `thread_id` for a Thread that does not exist →
-//!   `unknown_thread` (-32001).
-//! A DB read error surfaces as an internal error (-32603) via the combinator.
+//! Validation (ADR-0014, mirrors `run/post_message`): a malformed `thread_id`
+//! → `invalid_params`; a well-formed but unknown one → `unknown_thread`.
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;

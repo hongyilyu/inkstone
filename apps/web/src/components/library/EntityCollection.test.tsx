@@ -10,9 +10,7 @@ import type { LibraryItemKind } from "@/lib/libraryItems";
 import { RuntimeProvider } from "@/runtime";
 import { EntityCollection } from "./EntityCollection";
 
-// Live People rows the stub serves for `type === "person"`. The People
-// collection reads these from Core now; the static preview people
-// (Priya/Marco/...) are no longer merged in.
+// Live People rows the stub serves for `type === "person"` (no static preview people merged in).
 const livePeople: EntityListResult["entities"] = [
 	{
 		id: "01900000-0000-7000-8000-0000000000a1",
@@ -30,9 +28,7 @@ const livePeople: EntityListResult["entities"] = [
 	},
 ];
 
-// Stub WsClient whose `entity/list` answers by type. `useLibraryItems` reads
-// live rows and merges them with the remaining preview items;
-// the unused methods die if exercised.
+// Stub WsClient whose `entity/list` answers by type; unused methods die if exercised.
 function makeRuntime(
 	people: EntityListResult["entities"],
 	todos: EntityListResult["entities"],
@@ -151,10 +147,9 @@ describe("EntityCollection", () => {
 
 	it("lists live People read from entity/list (preview people no longer merged)", async () => {
 		renderCollection("person", { people: livePeople });
-		// The seeded live People are listed…
 		expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
 		expect(screen.getByText("Grace Hopper")).toBeInTheDocument();
-		// ...and the static preview person is gone.
+		// The static preview person is gone.
 		expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
 	});
 
@@ -170,9 +165,8 @@ describe("EntityCollection", () => {
 				},
 			],
 		});
-		// The live Todo's title is rendered from `data.title`.
 		expect(await screen.findByText("buy milk")).toBeInTheDocument();
-		// The preview Todos are NOT shown — Todos are live for this read.
+		// Preview Todos are not shown — Todos are live for this read.
 		expect(
 			screen.queryByText("Backfill /v2/contacts before the cutover window"),
 		).not.toBeInTheDocument();

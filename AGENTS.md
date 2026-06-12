@@ -73,6 +73,22 @@ Inkstone is pre-release. There are no users, no production data, nothing to pres
 
 This holds until the first real user/data exists. Re-introduce migration discipline (append-only; never edit an applied migration) at that point — supersede this section then.
 
+### 6. Finish clean: format, lint, build, test
+
+Every task ends with the CI gate green. Before calling a task done, run — and fix what they surface:
+
+```
+pnpm format        # biome format --write . (scoped via biome.json; never touches .agents/.claude/.impeccable/generated)
+pnpm lint          # biome lint
+pnpm check         # tsc -b across the workspace + cargo check
+pnpm -r test       # vitest (web + packages)
+cargo test --manifest-path crates/core/Cargo.toml
+```
+
+- **Never run repo-wide formatters by hand** (`biome format .` over arbitrary paths, blanket `cargo fmt`). Use `pnpm format` — its scope lives in `biome.json`. If you must format a subset, pass explicit changed files. A formatting pass that reflows files your change never touched is scope-creep (violates §3).
+- **Format normalizes; it does not reason.** Confirm the only non-comment, non-whitespace edits trace to your task — `git diff -w` should show just your real changes.
+- Pre-existing failures unrelated to your change: name them, don't silently absorb them into your diff.
+
 ## Response style
 
 - Lead with the answer. No "let me work through this" preamble.
@@ -82,6 +98,22 @@ This holds until the first real user/data exists. Re-introduce migration discipl
 - Verdict + deltas only. Skip synthesis essays.
 - Cut meta-commentary about what you did or what's next.
 - Strong language ("wtf", "fking") = "you lost me, restart smaller."
+
+## Commits
+
+Subject line: `verb(component): concise description` — lowercase, imperative, no trailing period.
+
+- **verb** — `feat` · `fix` · `refactor` · `docs` · `test` · `chore`
+- **component** — the touched area: `core` · `web` · `worker` · `protocol` · `ui-sdk` · `adr` · `skills` · or a feature slice (`journal`, `proposal`). For a PR, the trailing `(#123)` issue ref is fine.
+
+```
+feat(web): model library items explicitly
+fix(core): resume re-park + proposal-decide correctness
+refactor(worker): collapse transport seam
+docs(adr): record client/core wire protocol
+```
+
+A change spanning packages takes the dominant component, or split into one commit per package (each is its own git repo where applicable).
 
 ## Pointers
 

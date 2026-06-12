@@ -45,7 +45,9 @@ const waitForGate = async (path: string, timeoutMs = 10_000): Promise<void> => {
 	const deadline = Date.now() + timeoutMs;
 	while (!existsSync(path)) {
 		if (Date.now() >= deadline) {
-			throw new Error(`timed out waiting for INKSTONE_TOOLWORKER_GATE at ${path}`);
+			throw new Error(
+				`timed out waiting for INKSTONE_TOOLWORKER_GATE at ${path}`,
+			);
 		}
 		await sleep(10);
 	}
@@ -82,7 +84,10 @@ const main = async (): Promise<void> => {
 			(t) => t?.name === "read_thread",
 		);
 		if (!present) {
-			emit({ kind: "error", message: "read_thread descriptor missing from manifest" });
+			emit({
+				kind: "error",
+				message: "read_thread descriptor missing from manifest",
+			});
 			return;
 		}
 	}
@@ -94,7 +99,9 @@ const main = async (): Promise<void> => {
 	// across Runs — `tool_calls.id` is a global primary key.
 	const idFile = process.env.INKSTONE_TOOLWORKER_THREAD_ID_FILE;
 	const threadId =
-		idFile && existsSync(idFile) ? readFileSync(idFile, "utf8").trim() : "t-dummy";
+		idFile && existsSync(idFile)
+			? readFileSync(idFile, "utf8").trim()
+			: "t-dummy";
 	const toolCallId = `tc_${process.pid}`;
 	emit({
 		kind: "tool_request",

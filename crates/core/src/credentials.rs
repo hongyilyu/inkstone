@@ -1,30 +1,20 @@
-//! Credential Store (ADR-0023): Core owns provider OAuth credential bytes
-//! on disk. A `0600` JSON file per provider beside the SQLite database
-//! (`<data-dir>/inkstone/credentials/<provider>.json`). Core is the single
-//! writer — the login helper and the refresh path (slice 7) hand Core the
-//! rotated bytes and Core persists them; no other process writes here, so no
-//! file-locking is needed.
-//!
-//! This sits OUTSIDE the three-tier storage model by design (ADR-0007 carves
-//! provider credentials out as "a separate concern"): neither tier-2
-//! canonical state nor a tier-3 projection.
+//! Credential Store (ADR-0023): Core owns provider OAuth credential bytes on
+//! disk as a `0600` JSON file per provider beside the SQLite database. Core is
+//! the single writer, so no file-locking is needed. Sits outside the three-tier
+//! storage model by design (ADR-0007).
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// The only provider this feature supports (ChatGPT/Codex). Kept as a const
-/// so the wire `id` and the on-disk filename share one source.
+/// The only provider this feature supports (ChatGPT/Codex). One source for both
+/// the wire `id` and the on-disk filename.
 pub const OPENAI_CODEX: &str = "openai-codex";
 
-/// Stored OAuth credentials for a provider (ADR-0023). Mirrors the shape
-/// `pi-ai`'s pure OAuth functions produce/consume: a long-lived refresh
-/// token, the current short-lived access token, an absolute expiry
-/// (ms-epoch), and the codex `account_id` decoded from the access-token JWT.
-///
-/// `Debug` is hand-implemented to REDACT the token fields — these bytes must
-/// never reach a log line. Only the non-secret `expires`/`account_id` print.
+/// Stored OAuth credentials for a provider (ADR-0023), mirroring the shape
+/// `pi-ai`'s pure OAuth functions use. `Debug` is hand-implemented to redact the
+/// token fields — they must never reach a log line.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Credentials {
     pub access: String,
@@ -46,18 +36,15 @@ impl std::fmt::Debug for Credentials {
 }
 
 impl Credentials {
-    /// Whether the access token is at or past its expiry at `now_ms`. The
-    /// refresh path consults this; status does not — an expired-but-present
-    /// credential still counts as "connected".
+    /// Whether the access token is at or past its expiry at `now_ms`. Consulted
+    /// by the refresh path; status treats an expired credential as "connected".
     pub fn is_expired(&self, now_ms: i64) -> bool {
         now_ms >= self.expires
     }
 }
 
 /// The directory credential files live in: `INKSTONE_CREDENTIALS_DIR` if set
-/// (tests), else `<dir of resolved DB path>/credentials`. Deriving from the
-/// DB path keeps credentials beside the rest of Core-managed state and makes
-/// per-test isolation a single env var.
+/// (tests), else `<dir of resolved DB path>/credentials`.
 fn credentials_dir() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("INKSTONE_CREDENTIALS_DIR") {
         return Ok(PathBuf::from(dir));
@@ -74,9 +61,8 @@ fn credential_path(provider: &str) -> Result<PathBuf> {
     Ok(credentials_dir()?.join(format!("{provider}.json")))
 }
 
-/// Read the stored credentials for `provider`, or `None` if no file exists.
-/// A present-but-unparseable file is an error (corrupt store) rather than a
-/// silent `None`, so it surfaces instead of masquerading as "not connected".
+/// Read the stored credentials for `provider`, or `None` if no file exists. A
+/// present-but-unparseable file is an error (corrupt store), not a silent `None`.
 pub fn read(provider: &str) -> Result<Option<Credentials>> {
     let path = credential_path(provider)?;
     match std::fs::read_to_string(&path) {
@@ -91,17 +77,14 @@ pub fn read(provider: &str) -> Result<Option<Credentials>> {
 }
 
 /// Whether a (parseable) credential file exists for `provider`. Expiry is not
-/// considered — an expired credential is still "connected" (the refresh path
-/// renews it). A corrupt file surfaces as an error.
+/// considered — an expired credential is still "connected" (refresh renews it).
 pub fn is_connected(provider: &str) -> Result<bool> {
     Ok(read(provider)?.is_some())
 }
 
-/// Persist `creds` for `provider` as a `0600` JSON file in a `0700` dir.
-/// Core is the single writer (ADR-0023). Used by the login result path and
-/// the refresh path. The file is created with mode 0600 from the start (no
-/// write-then-chmod window where it sits at the umask default), inside a
-/// 0700 dir.
+/// Persist `creds` for `provider` as a `0600` JSON file in a `0700` dir
+/// (ADR-0023). The file is created at mode 0600 from the start, so the secret
+/// never sits at the umask default.
 pub fn write(provider: &str, creds: &Credentials) -> Result<()> {
     let dir = credentials_dir()?;
     std::fs::create_dir_all(&dir)
@@ -115,8 +98,8 @@ pub fn write(provider: &str, creds: &Credentials) -> Result<()> {
     Ok(())
 }
 
-/// Write `bytes` to `path`, creating/truncating it with mode 0600 at open
-/// time on unix so the secret never exists at a broader mode.
+/// Write `bytes` to `path`, creating/truncating at mode 0600 on unix so the
+/// secret never exists at a broader mode.
 #[cfg(unix)]
 fn write_file_0600(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
@@ -143,8 +126,8 @@ mod tests {
     use super::*;
 
     /// `write()` round-trips through `read()` and lands the file at mode 0600
-    /// in a 0700 dir (ADR-0023). Uses INKSTONE_CREDENTIALS_DIR to isolate.
-    /// Serialized via a process-global lock because the env var is global.
+    /// in a 0700 dir (ADR-0023). Serialized via a process-global lock because
+    /// the `INKSTONE_CREDENTIALS_DIR` env var is global.
     #[test]
     fn write_then_read_round_trips_at_0600() {
         use std::sync::Mutex;

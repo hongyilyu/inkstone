@@ -168,8 +168,6 @@ export const PROJECT_STATUS_LABEL: Record<Project["status"], string> = {
 	done: "Done",
 };
 
-// --- lookups ----------------------------------------------------------------
-
 export function libraryItemKindCounts(
 	all: LibraryItem[],
 ): Record<LibraryItemKind, number> {
@@ -215,8 +213,6 @@ export function projectForTodo(
 	);
 }
 
-// --- derived views ----------------------------------------------------------
-
 /** Most recently captured items, newest first. */
 export function recentlyCapturedItems(
 	all: LibraryItem[],
@@ -256,8 +252,6 @@ export function projectProgress(
 	const ts = todosForProject(all, project);
 	return { done: ts.filter((t) => t.done).length, total: ts.length };
 }
-
-// --- search -----------------------------------------------------------------
 
 export interface LibraryItemMatch {
 	item: LibraryItem;

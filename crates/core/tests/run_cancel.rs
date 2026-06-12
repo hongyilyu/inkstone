@@ -1,7 +1,7 @@
 //! Live Run cancellation: `run/cancel` on a running Run is a real terminal
-//! transition, not just an accepted response. The test holds the Worker after
-//! its first `text_delta`, cancels through the public WebSocket API, and proves
-//! the Run stays `cancelled` even if the Worker gate is later released.
+//! transition, not just an accepted response. Holds the Worker after its first
+//! `text_delta`, cancels via the WebSocket API, and proves the Run stays
+//! `cancelled` even after the Worker gate is released.
 
 use std::time::Duration;
 
@@ -130,9 +130,8 @@ fn cancel_running_run_wins_and_suppresses_late_worker_done() {
             "running cancel emits terminal cancelled — body: {terminal}"
         );
 
-        // The Worker is still gated. If Core failed to signal the live Worker
-        // or suppress late terminal events, a later `done` would show up here
-        // after the gate is released.
+        // Worker still gated. If Core failed to signal it or suppress late
+        // terminal events, a `done` would appear after the gate is released.
         no_text_frame(&mut ws, Duration::from_millis(250)).await;
         std::fs::write(&gate_path, b"go").expect("release worker gate");
         no_text_frame(&mut ws, Duration::from_millis(500)).await;
@@ -302,13 +301,12 @@ fn cancel_before_worker_start_prevents_worker_output() {
 
 #[test]
 fn cancel_loses_to_completed_worker_is_already_terminal() {
-    // The mirror race: the Worker reaches `done` BEFORE run/cancel arrives, so
-    // the guarded `running -> cancelled` transition loses to the committed
-    // completion. The cancel command must report `already_terminal` and the
-    // Run must stay `completed` — "a later cancel does not un-complete a Run."
+    // Mirror race: the Worker reaches `done` before run/cancel arrives, so the
+    // guarded running -> cancelled transition loses. Cancel must report
+    // `already_terminal` and the Run stays `completed`.
     let workspace = Workspace::new();
 
-    // Ungated fixture: one chunk + done, no gate → the Run completes on its own.
+    // Ungated fixture: one chunk + done → the Run completes on its own.
     let core = workspace
         .core()
         .worker_fixture("slow-worker.ts")
@@ -347,8 +345,8 @@ fn cancel_loses_to_completed_worker_is_already_terminal() {
         ws.send(Message::Text(subscribe.to_string().into()))
             .await
             .expect("send run/subscribe");
-        // Drain subscribe response + events until the terminal `done` lands, so
-        // the Run is provably `completed` before we cancel.
+        // Drain until the terminal `done` lands, so the Run is provably
+        // `completed` before we cancel.
         loop {
             let frame = next_json(&mut ws).await;
             if frame["params"]["event"]["kind"].as_str() == Some("done") {
@@ -361,7 +359,7 @@ fn cancel_loses_to_completed_worker_is_already_terminal() {
             );
         }
 
-        // Now cancel the already-completed Run → already_terminal.
+        // Cancel the already-completed Run → already_terminal.
         let cancel = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 3,
@@ -399,7 +397,7 @@ fn cancel_loses_to_completed_worker_is_already_terminal() {
         assert_eq!(status, "completed", "run stays completed after a late cancel");
         assert_eq!(terminal_reason, "completed", "terminal reason unchanged");
 
-        // No cancellation was recorded in the Run Log.
+        // No cancellation recorded in the Run Log.
         let cancelled_logs: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM run_log WHERE run_id = ?1 AND kind = 'cancelled'",
         )
@@ -413,17 +411,16 @@ fn cancel_loses_to_completed_worker_is_already_terminal() {
 
 #[test]
 fn cancel_during_tool_dispatch_wins_and_keeps_tool_rows() {
-    // Cancel a Run mid-turn, AFTER a real tool dispatch persisted its rows but
-    // before the turn completes. Proves the run_loop's in-flight cancel checks
-    // (around the tool_request arm) release the gate and end the Run cancelled
-    // without a late `done`, and that the persisted tool history is preserved.
+    // Cancel a Run mid-turn, after a tool dispatch persisted its rows. Proves
+    // the run_loop's in-flight cancel checks end the Run cancelled without a
+    // late `done`, and that persisted tool history survives.
     let workspace = Workspace::new();
     let gate_path = workspace.path().join("tool-gate");
     assert!(!gate_path.exists(), "gate must not exist before release");
 
-    // tool-worker requests the allowlisted `read_thread` with the unknown
-    // "t-dummy" thread id → Core dispatches it (persisting a tool_calls row) and
-    // it resolves `errored`; the fixture then BLOCKS on the gate before `done`.
+    // tool-worker requests `read_thread` with an unknown thread id → Core
+    // dispatches it (persisting a tool_calls row), it resolves `errored`, then
+    // the fixture blocks on the gate before `done`.
     let core = workspace
         .core()
         .worker_fixture("tool-worker.ts")
@@ -469,10 +466,9 @@ fn cancel_during_tool_dispatch_wins_and_keeps_tool_rows() {
             "subscribe reports running before cancel — body: {sub_resp}"
         );
 
-        // Drain events until the tool dispatch FINISHED (its terminal `error`
-        // boundary). At that point the dispatch persisted + resolved its rows
-        // and the fixture is now blocked on the gate — a deterministic mid-turn
-        // hold. A premature `done`/`cancelled` here is a failure.
+        // Drain until the tool dispatch finishes (its terminal `error`
+        // boundary): rows are persisted + resolved and the fixture is now
+        // blocked on the gate. A premature `done`/`cancelled` here is a failure.
         loop {
             let event = next_json(&mut ws).await;
             assert_eq!(
@@ -515,8 +511,8 @@ fn cancel_during_tool_dispatch_wins_and_keeps_tool_rows() {
             "mid-dispatch cancel emits terminal cancelled — body: {terminal}"
         );
 
-        // Release the gate: the worker would now emit its `text_delta`/`done`.
-        // Core must have already shut it down — no late frame may arrive.
+        // Release the gate: the worker would now emit `text_delta`/`done`, but
+        // Core already shut it down — no late frame may arrive.
         no_text_frame(&mut ws, Duration::from_millis(250)).await;
         std::fs::write(&gate_path, b"go").expect("release worker gate");
         no_text_frame(&mut ws, Duration::from_millis(500)).await;
@@ -543,9 +539,8 @@ fn cancel_during_tool_dispatch_wins_and_keeps_tool_rows() {
         assert_eq!(status, "cancelled", "run cancelled mid-dispatch");
         assert_eq!(terminal_reason, "cancelled", "terminal reason");
 
-        // The dispatched tool's rows survive the cancellation: the call was
-        // persisted and resolved before the gate, so cancel does not erase
-        // in-flight tool history.
+        // The dispatched tool's rows survive: persisted + resolved before the
+        // gate, so cancel does not erase in-flight tool history.
         let row = sqlx::query(
             "SELECT name, status FROM tool_calls WHERE run_id = ?1",
         )
@@ -561,7 +556,7 @@ fn cancel_during_tool_dispatch_wins_and_keeps_tool_rows() {
             "the dispatch resolved before cancel (unknown thread id)"
         );
 
-        // Exactly one cancellation was recorded.
+        // Exactly one cancellation recorded.
         let cancelled_logs: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM run_log WHERE run_id = ?1 AND kind = 'cancelled'",
         )

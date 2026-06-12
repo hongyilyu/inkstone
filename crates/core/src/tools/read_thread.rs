@@ -1,8 +1,4 @@
 //! The `read_thread` tool (ADR-0018). Reads another Thread's messages by id.
-//! Slice 2 ships a STUB `execute` (returns `{"messages":[]}`); slice 3
-//! replaces the body with the real `messages` + `message_parts` query. The
-//! `Input` struct's `schemars`-derived JSON Schema becomes the descriptor
-//! Core ships in the manifest.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -18,17 +14,14 @@ const DESCRIPTION: &str =
     "Read the messages of another thread by its id. Returns the thread's title and its messages in order.";
 const LABEL: &str = "Read thread";
 
-/// `read_thread`'s arguments. The `thread_id` is the id of the Thread to read
-/// (e.g. copied from the sidebar). `schemars` derives the Draft-07 JSON Schema
-/// Core ships to the Worker; Core re-validates the model's args against this
-/// struct on receipt (ADR-0018 "Argument validation").
+/// `read_thread`'s arguments. Core re-validates the model's args against this
+/// struct on receipt (ADR-0018).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Input {
     pub thread_id: String,
 }
 
-/// The manifest descriptor for this tool: name/description/label + the
-/// `schemars`-derived input schema.
+/// The manifest descriptor for this tool.
 pub fn descriptor() -> CoreToolDescriptor {
     CoreToolDescriptor {
         name: NAME.to_string(),
@@ -39,12 +32,10 @@ pub fn descriptor() -> CoreToolDescriptor {
     }
 }
 
-/// Read the requested Thread's messages and return them as a JSON payload
-/// `{ thread_id, title, messages: [{ role, text }, …] }` in a single text
-/// content block. Reuses the same read path as `thread/get`
-/// ([`crate::db::get_thread_with_messages`]) — no new query. A malformed or
-/// unknown `thread_id` is a `not_found` ToolError (the Run continues; the
-/// model sees the error result, per ADR-0018).
+/// Read the Thread's messages as a JSON payload
+/// `{ thread_id, title, messages: [{ role, text }, …] }` in one text block,
+/// reusing [`crate::db::get_thread_with_messages`]. A malformed or unknown
+/// `thread_id` is a `not_found` ToolError (the Run continues; ADR-0018).
 pub async fn execute(pool: &SqlitePool, params: Value) -> Result<AgentToolResult, ToolError> {
     let input: Input = serde_json::from_value(params).map_err(|e| ToolError {
         code: "invalid_params".to_string(),
@@ -95,7 +86,6 @@ mod tests {
         let d = descriptor();
         assert_eq!(d.name, "read_thread");
         assert_eq!(d.label, "Read thread");
-        // schemars emits an object schema with a `thread_id` property.
         assert_eq!(d.json_schema["type"], serde_json::json!("object"));
         assert!(
             d.json_schema["properties"]["thread_id"].is_object(),

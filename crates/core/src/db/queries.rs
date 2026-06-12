@@ -1,10 +1,6 @@
-//! Every tier-2 SQL string lives here, exactly once. Each function takes
-//! a sqlx executor (`&SqlitePool`, `&mut SqliteConnection`, or
-//! `&mut Transaction<'_, Sqlite>`) and runs one statement. No business
-//! rules, no orchestration — those compose in [`super`].
-//!
-//! `pub(super)` keeps the surface scoped to the `db` module: callers
-//! outside `db::` cannot construct or hand-roll a SQL string.
+//! Every tier-2 SQL string, exactly once. Each function takes a sqlx executor
+//! and runs one statement — no business rules, no orchestration. `pub(super)`
+//! scopes the surface to the `db` module.
 
 use sqlx::{Executor, Sqlite};
 use uuid::Uuid;
@@ -60,9 +56,8 @@ where
         .map(|_| ())
 }
 
-/// Read every Thread for `thread/list`, ordered most-recent-activity-first.
-/// Returns `(id, title, last_activity_at)` rows; the handler maps them to
-/// `ThreadSummary`. Read-only — no FK/transaction concerns.
+/// Read every Thread for `thread/list`, most-recent-activity-first. Returns
+/// `(id, title, last_activity_at)` rows.
 pub(super) async fn list_threads<'e, E>(executor: E) -> sqlx::Result<Vec<(String, String, i64)>>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -73,7 +68,7 @@ where
 }
 
 /// Read a Thread's `title` by id for `thread/get`. `None` means the Thread
-/// does not exist — the handler maps that to `unknown_thread` (-32001).
+/// does not exist.
 pub(super) async fn thread_title<'e, E>(
     executor: E,
     thread_id: Uuid,
@@ -191,12 +186,10 @@ where
     .map(|r| r.rows_affected())
 }
 
-/// Boot recovery sweep (ADR-0012): error every Run interrupted mid-flight by a
-/// Core crash/restart — `status='running'` — stamping
-/// `terminal_reason='core_restarted'` + the error fields + `ended_at`. ONE
-/// statement. Explicitly EXCLUDES `parked` (decidable, durable per ADR-0025)
-/// and the terminal states (`completed`/`errored`/`cancelled`). Returns the
-/// affected row count so the caller can log how many Runs were recovered.
+/// Boot recovery sweep (ADR-0012): error every Run still `running` after a Core
+/// crash/restart, stamping `terminal_reason='core_restarted'` + error fields +
+/// `ended_at`. Excludes `parked` (decidable per ADR-0025) and terminal states.
+/// Returns the affected row count.
 pub(super) async fn recover_interrupted_runs<'e, E>(
     executor: E,
     error_message: &str,
@@ -217,12 +210,10 @@ where
     .map(|r| r.rows_affected())
 }
 
-/// Companion to [`recover_interrupted_runs`] (ADR-0017 invariant): flip every
-/// `streaming` Message whose Run was just swept (i.e. is now `errored` with
-/// `terminal_reason='core_restarted'`) to `incomplete`, so no Message dangles
-/// at `streaming` after its Run terminates. Runs in the same boot tx as the
-/// sweep. Scoped to the swept set via the run join — leaves `parked` Runs'
-/// Messages untouched.
+/// Companion to [`recover_interrupted_runs`] (ADR-0017): flip every `streaming`
+/// Message whose Run was just swept (now `errored` with
+/// `terminal_reason='core_restarted'`) to `incomplete`, so no Message dangles at
+/// `streaming` past its Run. Runs in the same boot tx; scoped to the swept set.
 pub(super) async fn mark_recovered_streaming_messages_incomplete<'e, E>(
     executor: E,
     now_ms: i64,
@@ -241,10 +232,9 @@ where
     .map(|_| ())
 }
 
-/// Park a Run (ADR-0025): set `status='parked'` and record the waitpoint in
-/// `awaiting_tool_call_id`. Park is a non-terminal state — no `ended_at`,
-/// `terminal_reason`, or error fields. `awaiting_tool_call_id` references the
-/// `tool_calls` row of the Proposal's tool call.
+/// Park a Run (ADR-0025): set `status='parked'`, recording the waitpoint in
+/// `awaiting_tool_call_id` (the Proposal's `tool_calls` row). Non-terminal — no
+/// `ended_at`/`terminal_reason`/error fields.
 pub(super) async fn mark_run_parked<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -265,8 +255,7 @@ where
 }
 
 /// Read a Run's `status` by id (ADR-0025). `None` when the Run does not exist.
-/// Backs `run/subscribe`'s parked branch: with no live hub, the persisted
-/// status decides whether to emit a terminal `done` or report `parked`.
+/// Backs `run/subscribe`'s parked branch when no live hub exists.
 pub(super) async fn run_status<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<Option<String>>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -277,11 +266,9 @@ where
         .await
 }
 
-/// Load a Proposal by id for `proposal/decide` (ADR-0025): its lifecycle
-/// columns, the owning Run, the proposed payload (from the tool call's
-/// `request_payload`), and the recorded `decision_idempotency_key`. `None`
-/// when no Proposal with that id exists. Returns `(run_id, tool_call_id,
-/// mutation_kind, status, request_payload, decision_idempotency_key)`.
+/// Load a Proposal by id for `proposal/decide` (ADR-0025). `None` when no such
+/// Proposal exists. Returns `(run_id, tool_call_id, mutation_kind, status,
+/// request_payload, decision_idempotency_key)`.
 #[allow(clippy::type_complexity)]
 pub(super) async fn proposal_by_id<'e, E>(
     executor: E,
@@ -303,9 +290,8 @@ where
 }
 
 /// The Entity created by a Proposal, for idempotent decide (ADR-0025): a
-/// repeated `proposal/decide` with the same `decision_idempotency_key` returns
-/// the already-created `entities.id` rather than applying again. `None` when
-/// no Entity was created via this Proposal.
+/// repeated decide returns the already-created `entities.id` rather than
+/// applying again. `None` when no Entity was created via this Proposal.
 pub(super) async fn entity_id_for_proposal<'e, E>(
     executor: E,
     proposal_id: &str,
@@ -325,17 +311,14 @@ where
     .await
 }
 
-/// Accept a Proposal (ADR-0016 single atomic apply, ADR-0025): flip the
-/// `proposals` row to `accepted`, stamp `decided_by='user'` + `decided_at` +
-/// `applied_at` + `decision_idempotency_key`, and record the `edited_payload`
-/// (NULL for an unedited accept). Runs inside the caller's apply transaction.
+/// Accept a Proposal (ADR-0016, ADR-0025): flip the `proposals` row to
+/// `accepted`, stamping `decided_by`/`decided_at`/`applied_at`/idempotency key
+/// and the `edited_payload` (NULL for an unedited accept). Runs in the apply tx.
 ///
-/// SELF-GUARDING (review M1): the `WHERE … AND status = 'pending'` clause makes
-/// this the single concurrency choke — two concurrent decides (with or WITHOUT
-/// an idempotency key) race here, and exactly one matches a still-pending row.
-/// Returns the affected row count so the caller can assert `== 1` inside the
-/// apply tx and roll back the loser (it returns `proposal_not_pending`), so the
-/// Proposal can never be applied twice.
+/// SELF-GUARDING: the `WHERE … AND status = 'pending'` clause is the single
+/// concurrency choke — exactly one of two racing decides matches a still-pending
+/// row. Returns the affected row count so the caller asserts `== 1` and rolls
+/// back the loser, so a Proposal is never applied twice.
 pub(super) async fn mark_proposal_accepted<'e, E>(
     executor: E,
     proposal_id: &str,
@@ -361,15 +344,14 @@ where
     .map(|r| r.rows_affected())
 }
 
-/// Reject a Proposal (ADR-0025): flip the `proposals` row to `rejected`, stamp
-/// `decided_by='user'` + `decided_at`. Runs inside the caller's reject
-/// transaction. NO `applied_at`/`edited_payload` — reject applies nothing.
+/// Reject a Proposal (ADR-0025): flip the `proposals` row to `rejected`,
+/// stamping `decided_by`/`decided_at`. Runs in the reject tx. No `applied_at`/
+/// `edited_payload` — reject applies nothing.
 ///
-/// SELF-GUARDING (review M1, mirrors [`mark_proposal_accepted`]): the
+/// SELF-GUARDING (mirrors [`mark_proposal_accepted`]): the
 /// `WHERE … AND status = 'pending'` clause is the single concurrency choke.
-/// Returns the affected row count so the caller asserts `== 1` inside the tx
-/// and rolls back the loser (it returns `proposal_not_pending`), so the
-/// Proposal can never be decided twice.
+/// Returns the affected row count so the caller asserts `== 1` and rolls back
+/// the loser, so a Proposal is never decided twice.
 pub(super) async fn mark_proposal_rejected<'e, E>(
     executor: E,
     proposal_id: &str,
@@ -395,9 +377,7 @@ where
 // ─── entities + entity_revisions (ADR-0004) ───────────────────────────
 
 /// Read every accepted Entity of `entity_type` for `entity/list`, newest-first.
-/// Returns the raw `entities` columns `(id, type, data, created_at, updated_at)`
-/// for rows of the requested `type`; the handler parses `data` and maps each to
-/// the wire `EntityRow`. Read-only — no FK/transaction concerns.
+/// Returns raw `(id, type, data, created_at, updated_at)` rows.
 pub(super) async fn list_by_type<'e, E>(
     executor: E,
     entity_type: &str,
@@ -429,9 +409,8 @@ where
         .await
 }
 
-/// Read accepted Journal Entries originally created from the current Run's
-/// Thread. Returns `(entity_id, latest_revision_data)` ordered by the latest
-/// revision timestamp descending; the caller shapes the compact tool payload.
+/// Read accepted Journal Entries created from the current Run's Thread. Returns
+/// `(entity_id, latest_revision_data)` ordered by latest revision, newest-first.
 pub(super) async fn current_thread_journal_entries<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -471,8 +450,7 @@ where
 }
 
 /// Insert a freshly-created Entity (ADR-0004): `created_by='proposal'` with the
-/// originating `created_via_proposal_id`. `data` is the validated JSON snapshot;
-/// `schema_version` stamps the type's current shape. Runs inside the apply tx.
+/// originating `created_via_proposal_id`. Runs inside the apply tx.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn insert_entity<'e, E>(
     executor: E,
@@ -504,8 +482,7 @@ where
     .map(|_| ())
 }
 
-/// Insert an Entity's revision (ADR-0004). A freshly-created Entity gets
-/// `seq=1` carrying the same `data` + the originating `proposal_id`. Runs
+/// Insert an Entity's revision (ADR-0004); a fresh Entity gets `seq=1`. Runs
 /// inside the apply tx.
 pub(super) async fn insert_entity_revision<'e, E>(
     executor: E,
@@ -651,18 +628,13 @@ where
         .map(|r| r.rows_affected())
 }
 
-/// Flip a parked Run back to `running` on resume (ADR-0025): clear the
-/// `awaiting_tool_call_id` waitpoint. The reverse of [`mark_run_parked`]; the
-/// Run goes parked→running before its resume Worker spawns.
+/// Flip a parked Run back to `running` on resume (ADR-0025), clearing the
+/// `awaiting_tool_call_id` waitpoint. The reverse of [`mark_run_parked`].
 ///
-/// SELF-GUARDING (review M2, mirrors [`mark_proposal_accepted`] /
-/// [`mark_parked_run_cancelled`]): the `WHERE … AND status = 'parked'` clause
-/// makes this the single concurrency choke for resume. Two concurrent resume
-/// attempts (a keyed idempotent retry racing a keyless one, or a decide racing
-/// `recover_resume_if_parked`) both read `parked`, but only one flip matches a
+/// SELF-GUARDING: the `WHERE … AND status = 'parked'` clause is the single
+/// concurrency choke for resume — only one of two racing resumes matches a
 /// still-parked row. Returns the affected row count so the caller asserts
-/// `== 1` and BAILS on 0 (another resume already won) rather than spawning a
-/// second resume Worker.
+/// `== 1` and bails on 0 rather than spawning a second resume Worker.
 pub(super) async fn mark_run_running<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<u64>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -677,11 +649,10 @@ where
     .map(|r| r.rows_affected())
 }
 
-/// Cancel a parked Run (ADR-0014, slice 6): flip `runs` to `cancelled` with
+/// Cancel a parked Run (ADR-0014): flip `runs` to `cancelled` with
 /// `terminal_reason='cancelled'` + `ended_at`. SELF-GUARDING on
-/// `status='parked'` (mirrors the slice 3/4 guarded flips): if the Run is no
-/// longer parked this affects 0 rows and the caller's tx rolls back. Returns
-/// the affected row count so the caller asserts `== 1`.
+/// `status='parked'`: if no longer parked this affects 0 rows and the caller's
+/// tx rolls back. Returns the affected row count.
 pub(super) async fn mark_parked_run_cancelled<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -703,10 +674,9 @@ where
     .map(|r| r.rows_affected())
 }
 
-/// Cancel a pending Proposal (ADR-0014): flip `status='pending'` to
-/// `status='cancelled'`. Runs inside the cancel tx alongside
-/// [`mark_parked_run_cancelled`]. Returns the affected row count so the caller
-/// can roll back if a concurrent decide already moved the Proposal.
+/// Cancel a pending Proposal (ADR-0014): flip `pending` to `cancelled`. Runs in
+/// the cancel tx alongside [`mark_parked_run_cancelled`]. Returns the affected
+/// row count so the caller rolls back if a concurrent decide already moved it.
 pub(super) async fn mark_proposal_cancelled<'e, E>(
     executor: E,
     proposal_id: &str,
@@ -724,8 +694,8 @@ where
     .map(|r| r.rows_affected())
 }
 
-/// Read the run's assistant Message id (the seq-0 streaming row resume
-/// continues appending into). `None` when the Run has no assistant message.
+/// Read the Run's assistant Message id (the seq-0 row resume appends into).
+/// `None` when the Run has no assistant message.
 pub(super) async fn assistant_message_id_for_run<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -812,12 +782,10 @@ where
     .map(|_| ())
 }
 
-/// Read a Thread's Messages for `thread/get`, in chronological order.
-/// Returns `(id, role, status, run_id)` rows. Ordered by `created_at, rowid`:
-/// the user and assistant Messages of the first Run are inserted in the same
-/// ms, so the monotonic `rowid` tiebreaker keeps the user Message (inserted
-/// first) ahead of the assistant Message on a ms-tie. The handler assembles
-/// each Message's text from its parts.
+/// Read a Thread's Messages for `thread/get`, chronological. Returns
+/// `(id, role, status, run_id)` rows. Ordered by `created_at, rowid`: the
+/// `rowid` tiebreaker keeps the user Message ahead of the assistant Message
+/// when both are inserted in the same ms.
 pub(super) async fn messages_by_thread<'e, E>(
     executor: E,
     thread_id: Uuid,
@@ -834,13 +802,11 @@ where
     .await
 }
 
-/// The `completed` Messages of a Thread that belong to Runs OTHER than
+/// The `completed` Messages of a Thread belonging to Runs other than
 /// `exclude_run_id`, oldest-first. Backs the multi-turn manifest history
-/// (ADR-0018 as-built): the current Run's just-inserted rows are excluded so
-/// the assembled history is strictly the prior exchange, and `status =
-/// 'completed'` drops any in-flight or errored partial assistant text.
-/// Returns `(id, role)` rows; the caller assembles each Message's text from
-/// its parts.
+/// (ADR-0018): excluding the current Run yields strictly the prior exchange,
+/// and `completed` drops in-flight or errored partial assistant text. Returns
+/// `(id, role)` rows.
 pub(super) async fn history_messages_for_run<'e, E>(
     executor: E,
     thread_id: Uuid,
@@ -904,10 +870,9 @@ where
     .map(|r| r.rows_affected())
 }
 
-/// Read a Message's text parts for `thread/get`, ordered by `seq`. Returns
-/// the `text` columns; the handler concatenates them into the Message's
-/// assembled wire text (flat-text-no-parts[], ADR-0017/Q15). The MVP has one
-/// text part per Message at `seq=0`, but the concat handles multi-part too.
+/// Read a Message's text parts for `thread/get`, ordered by `seq`. The handler
+/// concatenates them into the Message's wire text (ADR-0017). MVP has one part
+/// at `seq=0`, but the concat handles multi-part too.
 pub(super) async fn text_parts_by_message<'e, E>(
     executor: E,
     message_id: &str,
@@ -925,10 +890,9 @@ where
 }
 
 /// Read a Run's snapshot for `run/subscribe`: the assistant message's
-/// cumulative `message_parts.text` at `seq=0` plus the Run's `status`.
-/// Returns `None` when the Run does not exist. The text is `Some("")` for
-/// a Run that has begun streaming but persisted no delta yet; `None` only
-/// when there is no assistant message_part row at all.
+/// cumulative `message_parts.text` at `seq=0` plus the Run's `status`. Returns
+/// `None` when the Run does not exist. Text is `Some("")` once streaming begins
+/// but no delta is persisted; the outer `None` means no assistant part row.
 pub(super) async fn select_run_snapshot<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -975,9 +939,9 @@ where
     .map(|_| ())
 }
 
-/// The next `run_steps.seq` for a Run (`MAX(seq)+1`, or 0 for the first).
-/// The initial run inserts the user + assistant message steps at seq 0/1, so
-/// the first tool-call step lands at seq 2.
+/// The next `run_steps.seq` for a Run (`MAX(seq)+1`, or 0 for the first). The
+/// initial run inserts user/assistant message steps at seq 0/1, so the first
+/// tool-call step lands at seq 2.
 pub(super) async fn next_run_step_seq<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<i64>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -990,9 +954,9 @@ where
 
 // ─── tool_calls (ADR-0017) ────────────────────────────────────────────
 
-/// Insert a `tool_calls` row in the `pending` state with its request payload.
-/// `id` is the Worker-assigned `tool_call_id` (a string, not necessarily a
-/// UUID). Resolved later by [`complete_tool_call`].
+/// Insert a `pending` `tool_calls` row with its request payload. `id` is the
+/// Worker-assigned `tool_call_id` (a string, not necessarily a UUID). Resolved
+/// later by [`resolve_tool_call`].
 pub(super) async fn insert_tool_call<'e, E>(
     executor: E,
     id: &str,
@@ -1019,8 +983,8 @@ where
     .map(|_| ())
 }
 
-/// Flip a `tool_calls` row to `completed` with its result payload and resolve
-/// time. `status` is the terminal tool-call status (`completed` or `errored`).
+/// Resolve a `tool_calls` row with its result payload and time. `status` is the
+/// terminal tool-call status (`completed` or `errored`).
 pub(super) async fn resolve_tool_call<'e, E>(
     executor: E,
     id: &str,
@@ -1071,11 +1035,9 @@ where
 }
 
 /// Read a Run's ordered timeline for resume transcript reconstruction
-/// (ADR-0025): every `run_steps` row in `seq` order, joined to the message's
-/// role (when a message step) and to the tool call's name/payloads (when a
-/// tool_call step). One ordered query so the reconstruction walks the turn
-/// structure exactly as it was recorded. Returns `(kind, message_id, role,
-/// tool_call_id, tc_name, request_payload, result_payload)` tuples; the
+/// (ADR-0025): every `run_steps` row in `seq` order, joined to the message role
+/// or the tool call's name/payloads per step kind. Returns `(kind, message_id,
+/// role, tool_call_id, tc_name, request_payload, result_payload)` tuples; the
 /// caller assembles message text from parts separately.
 #[allow(clippy::type_complexity)]
 pub(super) async fn run_timeline<'e, E>(
@@ -1111,10 +1073,9 @@ where
 
 // ─── proposals (ADR-0025) ─────────────────────────────────────────────
 
-/// Insert a `proposals` row in the `pending` state, sidecar to the Proposal's
-/// `tool_calls` row. `mutation_kind` is the logical Workspace mutation. The
-/// proposed payload and rationale stay on the tool_call's `request_payload`, so
-/// this row carries only the lifecycle columns.
+/// Insert a `pending` `proposals` row, sidecar to the Proposal's `tool_calls`
+/// row. The proposed payload and rationale stay on the tool_call's
+/// `request_payload`, so this row carries only lifecycle columns.
 pub(super) async fn insert_proposal<'e, E>(
     executor: E,
     id: &str,
@@ -1136,11 +1097,9 @@ where
     .map(|_| ())
 }
 
-/// A Run's pending Proposal for `proposal/get` (ADR-0025): the proposal id,
-/// mutation_kind, lifecycle status, plus the Proposal tool call's stored
-/// `request_payload` (carrying the proposed payload and rationale). Joined
-/// through `tool_calls` on `run_id`. `None` when the Run has no pending
-/// Proposal.
+/// A Run's pending Proposal for `proposal/get` (ADR-0025): `(id, mutation_kind,
+/// status, request_payload)`, the payload carrying the proposed payload and
+/// rationale. `None` when the Run has no pending Proposal.
 pub(super) async fn pending_proposal_for_run<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -1199,8 +1158,7 @@ where
 
 // ─── settings ─────────────────────────────────────────────────────────
 
-/// Read a user setting's value by key (ADR-0024). `None` when the key is
-/// unset (the caller supplies the default).
+/// Read a user setting's value by key (ADR-0024). `None` when the key is unset.
 pub(super) async fn get_setting<'e, E>(executor: E, key: &str) -> sqlx::Result<Option<String>>
 where
     E: Executor<'e, Database = Sqlite>,
@@ -1211,8 +1169,7 @@ where
         .await
 }
 
-/// Upsert a user setting (ADR-0024). Insert-or-replace keyed by `key` so a
-/// repeated `settings/set` overwrites the prior value.
+/// Upsert a user setting (ADR-0024): insert-or-replace keyed by `key`.
 pub(super) async fn set_setting<'e, E>(executor: E, key: &str, value: &str) -> sqlx::Result<()>
 where
     E: Executor<'e, Database = Sqlite>,

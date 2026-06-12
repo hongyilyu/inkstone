@@ -1,12 +1,7 @@
 import type * as React from "react";
 import { cn } from "@/lib/utils.js";
 
-/**
- * A content surface: rounded-xl, hairline border, card fill. A pure surface
- * primitive — padding and background opacity are set by the caller via
- * `className` (e.g. `p-5`, `bg-card/50`) so one component covers review
- * containers, proposal cards, and provider rows. Never nest Cards.
- */
+/** Content surface (rounded-xl, hairline border, card fill). Pure primitive — caller sets padding/opacity via `className`. Never nest Cards. */
 export function Card({
 	className,
 	...props

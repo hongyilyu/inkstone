@@ -37,8 +37,7 @@ export type RunId = string;
 
 export type RunEventValue = S.Schema.Type<typeof RunEvent>;
 
-// --- Typed errors (ADR-0020): request-level failures live in the E channel.
-// Open-failure at Layer construction stays a defect (Effect.die) — see below.
+/** Request-level WS failure (ADR-0020: lives in the E channel). */
 export class WsRequestError extends Data.TaggedError("WsRequestError")<{
 	reason: string;
 	code?: number;
@@ -55,8 +54,7 @@ export class InvalidParamsError extends Data.TaggedError("InvalidParamsError")<{
 
 export type WsError = WsRequestError | UnknownThreadError | InvalidParamsError;
 
-// --- Wire envelope schema (replaces the JSON.parse(...) as {…} cast).
-// A frame is one of: response-with-result | response-with-error | notification.
+// Wire frame: response-with-result | response-with-error | notification.
 const WireError = S.Struct({ code: S.Number, message: S.String });
 
 const ResponseError = S.Struct({ id: S.Number, error: WireError });
@@ -80,8 +78,7 @@ const decodeProposalChanged = S.decodeUnknownEither(
 	ProposalChangedNotification,
 );
 
-// The consumer-facing shape the UI subscribes to: a tagged union over the two
-// proposal Notifications Core pushes onto a Run's subscribers (ADR-0025).
+/** Tagged union the UI subscribes to over Core's proposal notifications (ADR-0025). */
 export type ProposalNotification =
 	| {
 			readonly kind: "pending";
@@ -166,9 +163,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 
 			const pending = new Map<number, Deferred.Deferred<unknown, WsError>>();
 			const runQueues = new Map<RunId, Queue.Queue<RunEventValue>>();
-			// One shared queue for proposal/* notifications (ADR-0025); the UI
-			// reads them via `proposalNotifications()`. Lazily created so a Client
-			// that never subscribes pays nothing.
+			// Shared, lazily-created proposal/* queue (ADR-0025) — see docs/design/ui-sdk.md
 			let proposalQueue: Queue.Queue<ProposalNotification> | undefined;
 			let nextId = 1;
 
@@ -188,9 +183,8 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				return queue;
 			};
 
-			// Decode + dispatch a single inbound frame — identical to the previous
-			// addEventListener("message") body. Responses resolve `pending`
-			// Deferreds; run/event notifications offer onto per-run queues.
+			// Decode + dispatch one inbound frame: responses resolve `pending`
+			// Deferreds; notifications offer onto per-run/proposal queues.
 			const onFrame = (raw: string): void => {
 				const decoded = decodeEnvelope(JSON.parse(raw));
 				if (Either.isLeft(decoded)) {
@@ -243,26 +237,19 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				}
 			};
 
-			// Build the Socket on @effect/platform. makeWebSocket only constructs
-			// the Socket value; the connection is established when `runRaw` runs.
-			// Provide the WebSocketConstructor (browser/global WebSocket — present
-			// in Node 26 and the browser) internally so the public layer signature
-			// stays Layer<WsClient, never, WsClientConfig> (no R leak).
+			// Constructs the Socket value (connection opens at runRaw); global
+			// WebSocketConstructor provided internally to avoid an R leak — see docs/design/ui-sdk.md
 			const socket = yield* Socket.makeWebSocket(cfg.url).pipe(
 				Effect.provide(Socket.layerWebSocketConstructorGlobal),
 			);
 
-			// The writer is a function (chunk) => Effect<void, SocketError>; it
-			// blocks on an internal latch until the socket is open, so sends issued
-			// during a reconnect window wait for the fresh connection.
+			// writer blocks on an internal latch until open, so sends during a
+			// reconnect window wait for the fresh connection.
 			const write = yield* socket.writer;
 
 			const decoder = new TextDecoder();
 
-			// Fail every in-flight request with a typed connection_lost error and
-			// clear the map. No resubscribe-replay: runQueues persist (a future
-			// re-subscribe reuses the queue) but we do NOT auto-resend run/subscribe
-			// — stream recovery is slice-13 hydration's job.
+			// Fails in-flight requests with connection_lost; no resubscribe-replay — see docs/design/ui-sdk.md
 			const failPending = Effect.sync(() => {
 				for (const deferred of pending.values()) {
 					runFork(
@@ -275,9 +262,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				pending.clear();
 			});
 
-			// Open failure stays a defect (ADR-0020): the layer cannot construct.
-			// We track the first successful open; only AFTER it has opened once do
-			// we treat a disconnect as recoverable and bounded-retry.
+			// First-open failure stays a defect; only post-open drops are recoverable (ADR-0020) — see docs/design/ui-sdk.md
 			let hasOpened = false;
 			const firstOpen = yield* Deferred.make<void>();
 			const onOpen = Effect.sync(() => {
@@ -287,9 +272,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				Effect.asVoid,
 			);
 
-			// One connection lifetime. runRaw resolves only when the link ends
-			// (clean close => success; read/open/abnormal close => failure). Either
-			// way the connection is gone, so we fail it uniformly to drive retry.
+			// One connection lifetime; failed uniformly on end (incl. clean close) to drive retry — see docs/design/ui-sdk.md
 			const connection = socket
 				.runRaw(
 					(data) =>
@@ -298,10 +281,8 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				)
 				.pipe(Effect.zipRight(Effect.fail("dropped" as const)));
 
-			// On every drop, fail in-flight requests, then bounded-retry the
-			// reconnect. `while: hasOpened` ensures a FIRST-open failure is NOT
-			// retried (it propagates so the layer build can die); only mid-session
-			// drops reconnect. Capped at 5 attempts with exponential backoff.
+			// On drop: fail in-flight, then bounded-retry; `while: hasOpened` skips
+			// retry on a first-open failure so the layer build can die — see docs/design/ui-sdk.md
 			const supervised = connection.pipe(
 				Effect.tapError(() => failPending),
 				Effect.retry({
@@ -311,13 +292,10 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				}),
 			);
 
-			// Fork the receive/reconnect loop into the layer scope (interrupted on
-			// teardown, which closes the underlying socket — resource-safe).
+			// Fork the receive/reconnect loop into the layer scope (interrupted on teardown).
 			const fiber = yield* Effect.forkScoped(supervised);
 
-			// Block layer construction until the first open succeeds. If the loop
-			// ends before that (first open failed), the layer cannot construct:
-			// die, matching the previous Effect.die-on-open behavior.
+			// Block layer construction until first open; if the loop ends first, die.
 			yield* Deferred.await(firstOpen).pipe(
 				Effect.raceFirst(
 					Fiber.join(fiber).pipe(
@@ -377,19 +355,13 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			): Effect.Effect<ThreadGetResult, WsError> =>
 				request("thread/get", { thread_id: threadId }, ThreadGetResult);
 
-			// entity/* (ADR-0004): the live read the Library's collections
-			// consume. `entity/list` is type-parameterized — one Entity type per
-			// call (e.g. `journal_entry`, `todo`, or `person`); returns the
-			// accepted Entities.
+			// entity/list (ADR-0004): accepted Entities of one type (e.g. journal_entry, todo).
 			const listEntities = (
 				type: string,
 			): Effect.Effect<EntityListResult, WsError> =>
 				request("entity/list", { type }, EntityListResult);
 
-			// subscribeRun is request-driven (pure-subscribe): send run/subscribe,
-			// await its correlated response, THEN stream the run's events from the
-			// per-run queue. The queue is created before the request is sent so any
-			// run/event notifications that arrive after the ack are captured.
+			// Queue is created before run/subscribe is sent so post-ack events aren't dropped — see docs/design/ui-sdk.md
 			const subscribeRun = (
 				runId: RunId,
 			): Stream.Stream<RunEventValue, WsError> =>
@@ -410,8 +382,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			): Effect.Effect<ProviderLoginStartResult, WsError> =>
 				request("provider/login_start", { provider }, ProviderLoginStartResult);
 
-			// model/catalog + settings/* (ADR-0024): the model catalog and the
-			// user's preferred model + global effort.
+			// model/catalog + settings/* (ADR-0024): catalog, preferred model, global effort.
 			const modelCatalog = (): Effect.Effect<ModelCatalogResult, WsError> =>
 				request("model/catalog", {}, ModelCatalogResult);
 
@@ -424,9 +395,8 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			}): Effect.Effect<SettingsResult, WsError> =>
 				request("settings/set", { ...params }, SettingsResult);
 
-			// proposal/* (ADR-0025): fetch a parked Run's pending Proposal and
-			// decide it. `proposalNotifications` streams the pushed
-			// pending/changed notifications a subscribed Client receives.
+			// proposal/* (ADR-0025): get a parked Run's pending Proposal, decide it,
+			// and stream the pushed pending/changed notifications.
 			const proposalGet = (
 				runId: RunId,
 			): Effect.Effect<ProposalGetResult, WsError> =>

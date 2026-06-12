@@ -3,14 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { CORE_BIN, REPO_ROOT, WEB_DIST } from "./src/spawnCore.js";
 
-/**
- * Playwright global setup (ADR-0019): build the artifacts the harness spawns
- * once per run, before any test. Builds Core in debug mode and the Web Client
- * SPA so `spawnCore` can point a real Core at a real built bundle.
- *
- * Kept idempotent-ish: cargo + vite both no-op fast when nothing changed, so
- * re-running `pnpm test:e2e` doesn't pay a full rebuild.
- */
+/** Playwright global setup (ADR-0019): build debug Core + Web Client SPA once per run so `spawnCore` has real artifacts. */
 export default function globalSetup(): void {
 	const run = (cmd: string, args: string[]) => {
 		execFileSync(cmd, args, { cwd: REPO_ROOT, stdio: "inherit" });

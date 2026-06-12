@@ -2,11 +2,7 @@ import type * as React from "react";
 import { forwardRef } from "react";
 import { cn } from "@/lib/utils.js";
 
-/**
- * Base text input: transparent fill, no chrome of its own. The surrounding
- * field (border, divider, dialog) is the caller's or SearchField's job, so this
- * stays composable. Placeholder uses `muted-foreground` to hold contrast.
- */
+/** Base text input: transparent fill, no chrome of its own — the surrounding field (border/divider/dialog) is the caller's job, keeping this composable. */
 export const Input = forwardRef<
 	HTMLInputElement,
 	React.InputHTMLAttributes<HTMLInputElement>

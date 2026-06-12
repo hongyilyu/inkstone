@@ -3,12 +3,7 @@ import { ChatColumn } from "./components/ChatColumn.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { WorkspaceShell } from "./components/ui/workspace-shell.js";
 
-/**
- * The chat surface (`/` route). Presentational + router-free so it renders
- * standalone in tests; the `/` route injects `onOpenSettings` to navigate to
- * the settings route (ADR-0024). Layout chrome lives in `WorkspaceShell`, which
- * the Library surface shares (ADR-0021).
- */
+/** The chat surface (`/` route): presentational + router-free, with navigation injected as props (ADR-0024); layout chrome via shared `WorkspaceShell` (ADR-0021). */
 export default function App({
 	onOpenSettings = () => {},
 	onOpenLibrary = () => {},

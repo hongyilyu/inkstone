@@ -1,21 +1,13 @@
-//! Shared spawn/connect support for Core's black-box integration tests.
+//! Shared spawn/connect support for Core's black-box integration tests
+//! (ADR-0014): a per-test [`Workspace`], a [`CoreBuilder`] that wires
+//! worker/env, a reaped-on-drop [`CoreHandle`], and the [`Ws`] / [`next_text`]
+//! read helpers. Not the Playwright "Test Harness" (ADR-0019) — this is
+//! in-crate Rust support.
 //!
-//! Every test in `crates/core/tests/` drives the compiled `core` binary over a
-//! loopback WebSocket (JSON-RPC, ADR-0014). This module is the single home for
-//! the spawn → announce-poll → connect surface they all need: a per-test
-//! [`Workspace`] (on-disk state that outlives Core), a [`CoreBuilder`] that
-//! wires the worker/env, a reaped-on-drop [`CoreHandle`] (a running Core
-//! process), and the [`Ws`] / [`next_text`] read helpers.
-//!
-//! NOTE: this is NOT the "Test Harness" in the `CONTEXT.md` / ADR-0019 sense —
-//! that term is reserved for the Playwright `tests/e2e/` package that drives a
-//! real browser. This is in-crate support for Core's Rust integration tests.
-//!
-//! Port strategy (ADR-0019, as-built): always ephemeral — `INKSTONE_PORT=0`,
-//! then read the announced `INKSTONE_LISTENING <url>` from stdout. The former
-//! fixed-port (`DEFAULT_PORT`) + `port_lock` strategy is gone.
+//! Port strategy: always ephemeral (`INKSTONE_PORT=0`), then read the announced
+//! `INKSTONE_LISTENING <url>` from stdout.
 
-#![allow(dead_code)] // each test binary links only the subset of this module it uses.
+#![allow(dead_code)] // each test binary links only a subset of this module.
 
 use std::ffi::{OsStr, OsString};
 use std::io::{BufRead, BufReader};
@@ -28,19 +20,17 @@ use futures_util::StreamExt;
 use tempfile::TempDir;
 use tokio_tungstenite::tungstenite::Message;
 
-/// Core's default listening port (when `INKSTONE_PORT` is unset). Tests bind
-/// ephemeral (`0`) instead; this constant exists so the one test that proves
-/// ephemeral resolution (`ephemeral_port.rs`) can name the value it must NOT be.
+/// Core's default listening port. Tests bind ephemeral; this exists so
+/// `ephemeral_port.rs` can name the value it must NOT be.
 pub const DEFAULT_PORT: u16 = 8765;
 
-/// The websocket transport type every test threads through [`next_text`].
+/// The websocket transport every test threads through [`next_text`].
 pub type Ws = tokio_tungstenite::WebSocketStream<
     tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
 >;
 
-/// Default budget for the boot announce-poll and for [`next_text`]. Generous so
-/// the slow real-interpreter / provider-helper / boot paths never flake; no
-/// test asserts on this value — it is only a hang guard.
+/// Budget for the boot announce-poll and [`next_text`]. Generous so slow boot
+/// paths never flake; only a hang guard, never asserted on.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Repo root, resolved from this crate's manifest dir (`<repo>/crates/core`).
@@ -71,16 +61,13 @@ pub fn fixture_path(file: &str) -> PathBuf {
     fixture
 }
 
-/// Build a `tsx <fixtures/file> [args..]` command line (absolute paths) for an
-/// `INKSTONE_*_CMD` env var — a worker fixture or a Provider Helper stub. Core
-/// whitespace-splits these commands, so the absolute paths must be space-free
-/// (the repo path is).
+/// Build a `tsx <fixtures/file> [args..]` command line for an `INKSTONE_*_CMD`
+/// env var. Core whitespace-splits the command, so paths must be space-free.
 pub fn fixture_cmd(file: &str, args: &[&str]) -> String {
     let mut cmd = format!("{} {}", tsx_bin().display(), fixture_path(file).display());
     for arg in args {
-        // Core whitespace-splits the command, so an arg containing a space would
-        // be parsed as two — guard future callers (all current args are single
-        // tokens, and the repo path is space-free).
+        // Core whitespace-splits the command, so an arg with a space would be
+        // mis-parsed as two — guard future callers.
         debug_assert!(
             !arg.contains(char::is_whitespace),
             "fixture_cmd arg {arg:?} contains whitespace; Core would mis-split the command"
@@ -92,8 +79,8 @@ pub fn fixture_cmd(file: &str, args: &[&str]) -> String {
 }
 
 /// A per-test Workspace (ADR-0019): the on-disk state Core opens. Owns the
-/// tempdir, so it outlives the [`CoreHandle`] — a test can kill Core and then
-/// read the DB, or respawn a fresh Core against the same DB (the reload flows).
+/// tempdir so it outlives the [`CoreHandle`] — a test can kill Core, then read
+/// the DB or respawn against the same DB.
 pub struct Workspace {
     tmp: TempDir,
     db_path: PathBuf,
@@ -110,8 +97,8 @@ impl Workspace {
         Self { tmp, db_path }
     }
 
-    /// The tempdir root — join onto it for workflows / credentials / web / gate
-    /// dirs the test creates and points Core at via [`CoreBuilder::env`].
+    /// The tempdir root — join onto it for dirs the test points Core at via
+    /// [`CoreBuilder::env`].
     pub fn path(&self) -> &Path {
         self.tmp.path()
     }
@@ -133,9 +120,8 @@ impl Default for Workspace {
     }
 }
 
-/// Configures and spawns one Core process. Always binds ephemeral
-/// (`INKSTONE_PORT=0`) and runs with `current_dir` = repo root (so Core's
-/// default relative worker command resolves).
+/// Configures and spawns one Core process. Always binds ephemeral and runs with
+/// `current_dir` = repo root (so Core's default relative worker command resolves).
 pub struct CoreBuilder<'a> {
     ws: &'a Workspace,
     worker_cmd: Option<String>,
@@ -159,10 +145,9 @@ impl<'a> CoreBuilder<'a> {
         self
     }
 
-    /// Point `INKSTONE_WORKER_CMD` at the test-only faux interpreter entry
-    /// (`packages/worker/src/faux-worker.ts`) — the offline `faux` provider path
-    /// that drives the *real* interpreter, NOT the production `cli.ts` (which
-    /// carries no faux code) and not a dumb fixture worker.
+    /// Point `INKSTONE_WORKER_CMD` at the test-only faux interpreter entry — the
+    /// offline `faux` provider path that drives the *real* interpreter, not the
+    /// production `cli.ts` nor a dumb fixture worker.
     pub fn worker_faux(mut self) -> Self {
         let cli = repo_root().join("packages/worker/src/faux-worker.ts");
         self.worker_cmd = Some(format!("{} {}", tsx_bin().display(), cli.display()));
@@ -176,9 +161,7 @@ impl<'a> CoreBuilder<'a> {
     }
 
     /// Pass an arbitrary env var through to Core (and, by inheritance, the
-    /// Worker / Provider Helper it spawns) — `INKSTONE_FAUX_*`,
-    /// `INKSTONE_FIXTURE_*`, `INKSTONE_WORKFLOWS_DIR`, `INKSTONE_CREDENTIALS_DIR`,
-    /// `INKSTONE_WEB_DIR`, `INKSTONE_PROVIDER_*_CMD`, etc.
+    /// Worker / Provider Helper it spawns).
     pub fn env(mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Self {
         self.envs
             .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
@@ -192,8 +175,8 @@ impl<'a> CoreBuilder<'a> {
     }
 
     /// Spawn Core and block until it announces `INKSTONE_LISTENING`, or return
-    /// the boot failure. Used directly by tests that assert Core *fails* to boot
-    /// (e.g. `workflow_load.rs`); everything else calls [`Self::spawn`].
+    /// the boot failure. Used by tests that assert Core *fails* to boot;
+    /// everything else calls [`Self::spawn`].
     pub fn try_spawn(self) -> Result<CoreHandle, SpawnError> {
         let mut cmd = std::process::Command::cargo_bin("core").expect("core binary exists");
         cmd.current_dir(repo_root())
@@ -212,13 +195,11 @@ impl<'a> CoreBuilder<'a> {
         let stdout = child.stdout.take().expect("piped stdout");
 
         // Read Core's stdout on a dedicated thread that forwards each line over
-        // a channel. This keeps `try_spawn` synchronous (tests build their own
-        // runtime afterward) while making `listen_timeout` enforceable even when
-        // Core stays alive but SILENT: a blocking `read_line` on this thread
-        // would never observe the deadline, so a boot deadlock would hang CI
-        // indefinitely instead of failing fast. The thread runs until it reads
-        // the announce line, hits EOF (Core exited), or the receiver goes away;
-        // a `kill()` unblocks it via EOF, so it never outlives Core.
+        // a channel. This keeps `try_spawn` synchronous while making
+        // `listen_timeout` enforceable even when Core stays alive but SILENT (a
+        // blocking `read_line` would never observe the deadline, hanging CI).
+        // The thread ends on the announce line, EOF, or a dropped receiver, so
+        // it never outlives Core.
         let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<String>>();
         std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
@@ -265,15 +246,14 @@ impl<'a> CoreBuilder<'a> {
                     return Err(SpawnError::Timeout);
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    // The reader thread ended without announcing → Core closed
-                    // stdout before listening (fail-fast boot).
+                    // Reader ended without announcing → Core closed stdout
+                    // before listening (fail-fast boot).
                     let status = child.wait().ok();
                     return Err(SpawnError::ExitedBeforeListening(status));
                 }
             }
         };
-        // The reader thread keeps draining stdout until Core exits; dropping the
-        // receiver makes its next send fail so it stops once Core is gone.
+        // Drop the receiver so the reader's next send fails and it stops.
         drop(rx);
 
         let ws_url = http_url
@@ -311,8 +291,7 @@ pub enum SpawnError {
 }
 
 /// A running Core process. SIGKILLs and reaps the child on drop so a panicking
-/// test never leaks Core; [`Self::kill`] does the same eagerly so a test can
-/// stop Core, then read its DB or respawn against the same [`Workspace`].
+/// test never leaks Core; [`Self::kill`] does the same eagerly.
 pub struct CoreHandle {
     child: Option<Child>,
     http_url: String,
@@ -320,12 +299,12 @@ pub struct CoreHandle {
 }
 
 impl CoreHandle {
-    /// The `http://127.0.0.1:<port>` base URL (for `reqwest` GETs).
+    /// The `http://127.0.0.1:<port>` base URL.
     pub fn http_url(&self) -> &str {
         &self.http_url
     }
 
-    /// The `ws://127.0.0.1:<port>/ws` URL (for [`Self::connect`]).
+    /// The `ws://127.0.0.1:<port>/ws` URL.
     pub fn ws_url(&self) -> &str {
         &self.ws_url
     }

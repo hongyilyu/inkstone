@@ -1,20 +1,14 @@
-// Types shared by every mock slice. Kept here so feature files import types
-// without pulling in unrelated data.
+// Types shared by every mock slice, kept separate so feature files import types without unrelated data.
 
 export type ProposalKind = "todo" | "project" | "note" | "file";
 
-// Flat mock view of a chat message. NOTE: this shape is wrong vs ADR-0017 —
-// it collapses into one record what the tier-2 schema splits across
-// messages / message_parts / tool_calls / run_steps / proposals. It's a
-// stand-in for the design routes and is slated to be replaced by the live
-// `Message` type.
+/** Flat mock view of a chat message; stand-in for the live `Message` type (collapses ADR-0017 tier-2 schema into one record). */
 export type MockChatMessage =
 	| { role: "user"; t: string; text: string }
 	| {
 			role: "assistant";
 			t: string;
 			text: string;
-			// optional things the assistant did during this message
 			actions?: {
 				kind: "read" | "search" | "write" | "decide";
 				label: string;
@@ -22,9 +16,7 @@ export type MockChatMessage =
 			proposalIds?: string[];
 	  };
 
-// "Proposal" is now a misnomer — these are APPLIED edits the agent already made.
-// The user reviews them post-hoc (audit), can undo, or open the target. The shape
-// stays the same so existing routes still compile, but the semantics shifted.
+/** An APPLIED edit the agent already made, reviewed post-hoc (audit/undo/open) — despite the legacy "Proposal" name. */
 export type Proposal = {
 	id: string;
 	kind: ProposalKind;
@@ -36,7 +28,7 @@ export type Proposal = {
 	appliedAt?: string; // when the edit landed, e.g. "10:42:25"
 };
 
-// A scheduled or recurring agent run — used by /4 Automations and /5 Inbox.
+/** A scheduled or recurring agent run, used by /4 Automations and /5 Inbox. */
 export type Automation = {
 	id: string;
 	name: string;
@@ -54,7 +46,7 @@ export type Automation = {
 	createdAt: string;
 };
 
-// One automation run that produced edits or a summary.
+/** One automation run that produced edits or a summary. */
 export type AutomationRun = {
 	id: string;
 	automationId: string;
@@ -80,8 +72,7 @@ export type RunHistoryItem = {
 	changes: number;
 };
 
-// One step inside an automation thread waterfall. No user turns — this is a cron
-// run, fully autonomous. Steps are chronological and immutable.
+/** One chronological, immutable step inside an automation thread waterfall (no user turns — fully autonomous cron run). */
 export type AutomationStep =
 	| { kind: "thought"; t: string; text: string }
 	| { kind: "read"; t: string; label: string; detail?: string }

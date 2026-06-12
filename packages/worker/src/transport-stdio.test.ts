@@ -5,8 +5,7 @@ import { describe, expect, it } from "vitest";
 import { makeStdioTransport } from "./transport-stdio.js";
 import { ManifestParseError, WorkerTransport } from "./transport.js";
 
-// A Writable that records everything written to it, so the test can assert the
-// exact NDJSON frames the transport emitted.
+// A Writable that records everything written, so the test can assert the exact NDJSON frames the transport emitted.
 function capturingWritable(): { output: Writable; written: () => string } {
 	const chunks: string[] = [];
 	const output = new Writable({
@@ -42,14 +41,11 @@ describe("StdioTransportLive (over injected streams)", () => {
 		const program = Effect.gen(function* () {
 			const t = yield* WorkerTransport;
 
-			// readManifest decodes the first line via Schema.
 			const manifest = yield* t.readManifest;
 
-			// emit writes a one-way Run Event as NDJSON to stdout.
 			t.emit({ kind: "text_delta", delta: "hi" } satisfies RunEvent);
 
-			// callTool writes a tool_request, then resolves when the matching
-			// tool_result line arrives on stdin (bidirectional, ADR-0006).
+			// callTool writes a tool_request, then resolves when the matching tool_result line arrives on stdin (bidirectional, ADR-0006).
 			const respPromise = t.callTool("tc1", "read_thread", {
 				thread_id: "x",
 			});
@@ -69,11 +65,9 @@ describe("StdioTransportLive (over injected streams)", () => {
 			program.pipe(Effect.provide(makeStdioTransport(input, output))),
 		);
 
-		// readManifest decoded the manifest.
 		expect(manifest?.workflow.provider).toBe("faux");
 		expect(manifest?.prompt).toBe("hello");
 
-		// emit wrote the Run Event frame; callTool wrote the tool_request frame.
 		const frames = written()
 			.trim()
 			.split("\n")
@@ -87,7 +81,6 @@ describe("StdioTransportLive (over injected streams)", () => {
 			params: { thread_id: "x" },
 		});
 
-		// callTool resolved with the scripted Tool Result from the stdin line.
 		expect(resp).toEqual({ ok: { content: [{ type: "text", text: "ok" }] } });
 	});
 

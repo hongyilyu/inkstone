@@ -1,10 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-/**
- * Writes text to the clipboard and flags `copied` for a short window so the UI
- * can swap a copy affordance to a confirmation. Resets after `resetMs` and
- * clears the pending timer on unmount.
- */
+/** Writes text to the clipboard and flags `copied` for `resetMs`; clears the pending timer on unmount. */
 export function useCopyToClipboard(resetMs = 2000) {
 	const [copied, setCopied] = useState(false);
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);

@@ -1,8 +1,7 @@
-//! Slice 3 (models-settings, ADR-0024): a Run uses the user's selected model
-//! and global effort. After `settings/set`, a new Run's `runs.model` is the
-//! SELECTED model (not the per-provider default), and the WorkerManifest
-//! carries the selected model + effort — observed via a manifest-capture
-//! worker that echoes `model=<m>|effort=<e>`, which Core persists.
+//! A Run uses the user's selected model and global effort (ADR-0024). After
+//! `settings/set`, a new Run's `runs.model` is the selected model (not the
+//! per-provider default) and the manifest carries the selected model + effort —
+//! observed via a manifest-capture worker that echoes `model=<m>|effort=<e>`.
 
 use std::time::{Duration, Instant};
 
@@ -36,9 +35,8 @@ fn run_uses_selected_model_and_effort() {
     let run_id = rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // Pick a model that is NOT the per-provider default (gpt-5.5) + an
-        // effort that is NOT the default (off), so the assertions prove the
-        // selection won, not the fallback.
+        // A non-default model + effort, so the assertions prove the selection
+        // won, not the fallback.
         let set = request(
             &mut ws,
             1,
@@ -58,9 +56,9 @@ fn run_uses_selected_model_and_effort() {
         run_id
     });
 
-    // Poll the DB: the run row records the SELECTED model, and once the
-    // manifest-capture worker completes, the assistant text echoes the
-    // resolved model + effort the manifest carried.
+    // Poll the DB: the run row records the selected model, and once the worker
+    // completes, the assistant text echoes the model + effort the manifest
+    // carried.
     rt.block_on(async {
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()

@@ -15,12 +15,7 @@ const LABELS: Record<EffortLevel, string> = {
 	xhigh: "Max",
 };
 
-/**
- * Composer reasoning-effort control. Reflects the real global `effort`
- * (`settings/get`) and persists a change via `settings/set` — the same setting
- * the settings page drives (ADR-0024). The trigger chip shows the current
- * level; the popover reuses {@link EffortControl}.
- */
+/** Composer reasoning-effort control. Reflects the global `effort` (`settings/get`) and persists changes via `settings/set` (ADR-0024); popover reuses {@link EffortControl}. */
 export function EffortPicker() {
 	const runtime = useRuntime();
 	const [effort, setEffort] = useState<string>("off");

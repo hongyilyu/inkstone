@@ -3,21 +3,14 @@ import { Effect, Layer } from "effect";
 import type { ToolCallResponse } from "./tool-proxy.js";
 import { WorkerTransport } from "./transport.js";
 
-/**
- * One outbound Tool Request the interpreter pushed through the seam, recorded
- * so a test can assert on what the model asked Core to run.
- */
+/** One outbound Tool Request recorded by the in-memory seam so a test can assert what the model asked Core to run. */
 export interface CapturedToolRequest {
 	readonly toolCallId: string;
 	readonly name: string;
 	readonly params: unknown;
 }
 
-/**
- * The scripted Tool Protocol channel for {@link InMemoryTransport}: the test
- * supplies the Tool Results `callTool` returns (keyed by `tool_call_id`) and an
- * array the transport appends each received Tool Request to (for assertions).
- */
+/** Scripted Tool Protocol channel for {@link InMemoryTransport}: the Tool Results `callTool` returns plus an array of received Tool Requests, for assertions. */
 export interface InMemoryToolChannel {
 	/** Tool Results to return, keyed by `tool_call_id`. */
 	readonly results: Record<string, ToolCallResponse>;
@@ -25,23 +18,7 @@ export interface InMemoryToolChannel {
 	readonly requests: CapturedToolRequest[];
 }
 
-/**
- * Test `Layer` for {@link WorkerTransport} (ADR-0027). `emit` pushes each Run
- * Event into the caller's `captured` array; `callTool` records the Tool Request
- * into `tools.requests` and returns the scripted Tool Result from
- * `tools.results` (the bidirectional Tool Protocol channel, ADR-0006). Both
- * arrays plus the scripted table ARE the assertions — no process, no readline,
- * no stdout capture.
- *
- * A chat-only run passes no `tools`; its manifest has no tool descriptors, so
- * `callTool` is never invoked. If it ever is (a missing scripted result), the
- * returned `Promise` rejects so the test fails loudly rather than hanging.
- *
- * `readManifest` is a stub (`null`): the interpreter never reads the manifest
- * through the seam (it is handed the manifest by `main`), so in-process
- * interpreter tests don't exercise it. The real read+decode lives in
- * `StdioTransportLive` and is covered by `transport-stdio.test.ts`.
- */
+/** Test `Layer` for {@link WorkerTransport} (ADR-0027): `captured`/`tools` arrays are the assertions, no real stdio. See docs/design/worker-transport.md. */
 export const InMemoryTransport = (
 	captured: RunEvent[],
 	tools?: InMemoryToolChannel,

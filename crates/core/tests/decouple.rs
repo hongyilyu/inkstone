@@ -1,29 +1,20 @@
-//! Slice 2 tests: a dropped connection does not kill the live stream
-//! (connection-decouple) and the snapshot/tail boundary is exactly-once
-//! (ADR-0022 §19-28, ADR-0012).
+//! Connection-decouple at the WS level (ADR-0012, ADR-0022 §19-28): a dropped
+//! connection does not kill the live stream, and the snapshot/tail boundary is
+//! exactly-once.
 //!
-//! `dropped_connection_does_not_kill_run` is the headline "refresh
-//! mid-stream" behavior proven at the WS level: connection A starts a Run
-//! and subscribes, then drops BEFORE the Worker finishes (the fixture is
-//! blocked on its gate). Connection B re-subscribes to the same `run_id`,
-//! trips the gate, and must receive the partial snapshot plus the remaining
-//! tail plus a terminal `done`. The Worker keeps running and persisting
-//! across A's drop (ADR-0012: a dropped connection does not end a Run), and
-//! the final persisted assistant text is complete.
+//! `dropped_connection_does_not_kill_run`: A starts + subscribes, drops before
+//! the Worker finishes; B re-subscribes, trips the gate, and gets the snapshot
+//! + remaining tail + `done`. The Worker keeps running and persisting the full
+//! text across A's drop.
 //!
-//! `exactly_once_subscribe_during_inflight_persist` is the per-run-gate
-//! proof: subscribe while the Worker is mid-stream (gate held), trip the
-//! gate, drain to `done`, and assert the reassembled `snapshot ++ tail`
-//! equals `echo: hello` EXACTLY — every chunk present exactly once, no loss
-//! or duplication across the snapshot/tail boundary.
+//! `exactly_once_subscribe_during_inflight_persist`: subscribe mid-stream (gate
+//! held), drain to `done`, and assert `snapshot ++ tail` equals `echo: hello`
+//! exactly — no loss or duplication across the boundary.
 //!
-//! Determinism comes from the slice-0 slow-worker fixture: with
-//! `INKSTONE_FIXTURE_CHUNKS=3` it splits `echo: hello` into three
-//! INCREMENTAL pieces (`"echo"` + `": he"` + `"llo"`), emits chunk 1, then
-//! BLOCKS on a test-controlled gate file before emitting chunks 2-3 + `done`.
-//! Tripping the gate releases the rest. Every WS read is bounded by a timeout
-//! so a regression (e.g. the Worker dying when A drops → B never gets `done`)
-//! fails fast as a timeout rather than hanging CI.
+//! The slow-worker fixture (`INKSTONE_FIXTURE_CHUNKS=3`) splits `echo: hello`
+//! into three incremental pieces, emits chunk 1, then blocks on the gate before
+//! chunks 2-3 + `done`. Every WS read is timeout-bounded so a regression fails
+//! fast rather than hanging CI.
 
 use std::time::{Duration, Instant};
 
@@ -35,9 +26,6 @@ mod common;
 use common::{Workspace, Ws, next_text};
 
 /// Start a Run via `thread/create` on `ws` and return the minted `run_id`.
-/// (Slice 4: `run/post_message` now requires a `thread_id`; `thread/create`
-/// is the message-first entry that mints a Thread + its first Run and returns
-/// the same `run_id` shape, so the rest of each test is unchanged.)
 async fn post_message(ws: &mut Ws, id: u32) -> String {
     let post = format!(
         r#"{{"jsonrpc":"2.0","id":{id},"method":"thread/create","params":{{"prompt":"hello"}}}}"#
@@ -54,12 +42,10 @@ async fn post_message(ws: &mut Ws, id: u32) -> String {
         .to_string()
 }
 
-/// Send `run/subscribe(run_id)` on `ws`, read the subscribe RESPONSE and the
-/// snapshot `text_delta`, and return the cumulative snapshot text (the
-/// reassembly base). The snapshot may be `""` or a partial chunk depending on
-/// whether the Worker persisted chunk 1 before the subscribe took the gate —
-/// either way `snapshot ++ tail` reassembles to the full output (the gate's
-/// exactly-once guarantee), so callers must not hard-assert its content.
+/// Send `run/subscribe(run_id)`, read the subscribe RESPONSE and the snapshot
+/// `text_delta`, and return the cumulative snapshot text (the reassembly base).
+/// The snapshot may be `""` or a partial chunk depending on the gate race, so
+/// callers must not hard-assert its content.
 async fn subscribe_and_read_snapshot(ws: &mut Ws, id: u32, run_id: &str) -> String {
     let subscribe = format!(
         r#"{{"jsonrpc":"2.0","id":{id},"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
@@ -95,15 +81,13 @@ async fn subscribe_and_read_snapshot(ws: &mut Ws, id: u32, run_id: &str) -> Stri
         .to_string()
 }
 
-/// Drain `ws`'s tail starting from `base`, appending each incremental
-/// `text_delta`, until the terminal `done`. Returns the reassembled text.
+/// Drain `ws`'s tail from `base`, appending each incremental `text_delta` until
+/// the terminal `done`; returns the reassembled text.
 ///
-/// Simple concatenation is correct for the echo fixture: with the 256-slot
-/// broadcast buffer and ≤3 deltas, `RecvError::Lagged` never fires, so the
-/// server never re-snapshots (which would re-send cumulative text). Every
-/// tail frame is therefore an incremental append. The loop only exits via the
-/// `done` arm's `break`, so reaching the line after it proves the terminal
-/// frame was a `done`.
+/// Plain concatenation is correct here: with a 256-slot broadcast buffer and ≤3
+/// deltas, `Lagged` never fires, so every tail frame is an incremental append.
+/// The loop only exits via the `done` arm's `break`, so reaching the line after
+/// it proves the terminal frame was a `done`.
 async fn drain_tail_to_done(ws: &mut Ws, base: String) -> String {
     let mut assembled = base;
     loop {
@@ -130,17 +114,16 @@ async fn drain_tail_to_done(ws: &mut Ws, base: String) -> String {
     assembled
 }
 
-/// A dropped connection does not kill the Run: A starts + subscribes, drops
-/// before the gate trips, B re-subscribes and drains to `done`, and the
-/// persisted assistant text is complete (ADR-0012, ADR-0022).
+/// A dropped connection does not kill the Run: A drops before the gate trips,
+/// B re-subscribes and drains to `done`, and the persisted text is complete
+/// (ADR-0012, ADR-0022).
 #[test]
 fn dropped_connection_does_not_kill_run() {
     let workspace = Workspace::new();
     let gate_path = workspace.path().join("gate");
     assert!(!gate_path.exists(), "gate must not exist before release");
 
-    // chunks=3: the fixture emits chunk 1 (`"echo"`), then BLOCKS on the gate
-    // before chunks 2-3 (`": he"`, `"llo"`) + `done`.
+    // chunks=3: emit chunk 1, then block on the gate before chunks 2-3 + `done`.
     let core = workspace
         .core()
         .worker_fixture("slow-worker.ts")
@@ -154,19 +137,17 @@ fn dropped_connection_does_not_kill_run() {
         .expect("tokio runtime builds");
 
     let run_id = rt.block_on(async {
-        // ---- Connection A: post + subscribe, then DROP mid-run ----
+        // A: post + subscribe, then DROP mid-run.
         let mut ws_a = core.connect().await;
         let run_id = post_message(&mut ws_a, 1).await;
         let _a_snapshot = subscribe_and_read_snapshot(&mut ws_a, 2, &run_id).await;
 
-        // Drop A BEFORE tripping the gate. The Worker is still blocked on the
-        // gate (mid-run), so this proves it keeps running after the
-        // originating connection disappears. Closing sends a Close frame; Core
-        // sees it and tears down A's connection task + out_tx.
+        // Drop A BEFORE tripping the gate (Worker still blocked mid-run), so
+        // this proves it keeps running after the originating connection leaves.
         ws_a.close(None).await.ok();
         drop(ws_a);
 
-        // ---- Connection B: re-subscribe to the SAME run, drain to done ----
+        // B: re-subscribe to the SAME run, drain to done.
         let mut ws_b = core.connect().await;
         let b_base = subscribe_and_read_snapshot(&mut ws_b, 3, &run_id).await;
 
@@ -179,10 +160,8 @@ fn dropped_connection_does_not_kill_run() {
             "B's snapshot + tail reassembles to the full echo output despite A's drop"
         );
 
-        // Await the terminal tx commit against a live read-only pool. The
-        // Worker publishes `done` to the hub (which B observes) BEFORE running
-        // `complete_run`, so poll until the Run leaves 'running' rather than
-        // racing the commit. Bound at 5s.
+        // The Worker publishes `done` BEFORE running `complete_run`, so poll
+        // until the Run leaves 'running' rather than racing the commit.
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -209,9 +188,8 @@ fn dropped_connection_does_not_kill_run() {
         run_id
     });
 
-    // ---- Assert the persisted truth against a fresh read-only pool ----
-    // A's drop must not have truncated the Run: the assistant text is complete
-    // and the Run reached a terminal 'completed' state (ADR-0012).
+    // A's drop must not truncate the Run: assistant text complete and the Run
+    // reached 'completed' (ADR-0012).
     rt.block_on(async {
         let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
         let pool = SqlitePoolOptions::new()
@@ -243,20 +221,17 @@ fn dropped_connection_does_not_kill_run() {
     });
 }
 
-/// Exactly-once across the snapshot/tail boundary: subscribe while the Worker
-/// is mid-stream (gate held), trip the gate, drain to `done`, and assert the
-/// reassembled `snapshot ++ tail` equals `echo: hello` EXACTLY — each chunk
-/// present once, no loss or duplication (ADR-0022 §19-28 per-run gate).
+/// Exactly-once across the snapshot/tail boundary: subscribe mid-stream (gate
+/// held), drain to `done`, and assert `snapshot ++ tail` equals `echo: hello`
+/// exactly — no loss or duplication (ADR-0022 §19-28).
 #[test]
 fn exactly_once_subscribe_during_inflight_persist() {
     let workspace = Workspace::new();
     let gate_path = workspace.path().join("gate");
     assert!(!gate_path.exists(), "gate must not exist before release");
 
-    // chunks=3 splits `echo: hello` into three incremental pieces; the
-    // subscribe lands while the Worker is parked on the gate (after chunk 1,
-    // before chunks 2-3), so the snapshot/tail boundary is exercised under
-    // control.
+    // chunks=3: subscribe lands while the Worker is parked on the gate (after
+    // chunk 1), exercising the snapshot/tail boundary under control.
     let core = workspace
         .core()
         .worker_fixture("slow-worker.ts")

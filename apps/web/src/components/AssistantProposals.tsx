@@ -4,17 +4,7 @@ import { decideProposal } from "@/store/bridge";
 import { useProposalForRun } from "@/store/chat";
 import { ProposalCard } from "./ProposalCard.js";
 
-/**
- * Render the live pending Proposal (if any) for an assistant turn's Run. The
- * Proposal is keyed by `runId` in the chat store (a parked Run pushes a
- * `proposal/pending` notification → the bridge attaches it). Deciding routes
- * through {@link decideProposal}, which calls `proposal/decide` and resumes the
- * Run. Renders nothing until a Proposal is attached.
- *
- * On an accept/edit (which creates an Entity in Core) we invalidate the
- * `["library-items"]` query so the Library reflects the new Journal Entry without a
- * manual reload. A reject creates nothing, so it is not invalidated.
- */
+/** Renders the live pending Proposal (if any) for an assistant turn's Run, keyed by `runId`; deciding routes through {@link decideProposal}. See docs/design/web-chat-ui.md. */
 export function AssistantProposals({ runId }: { runId: string }) {
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
@@ -28,6 +18,7 @@ export function AssistantProposals({ runId }: { runId: string }) {
 				proposal={proposal}
 				onDecide={async (decision, editedPayload) => {
 					await decideProposal(runtime, runId, decision, editedPayload);
+					// accept/edit creates an Entity → refresh the Library; reject creates nothing.
 					if (decision !== "reject") {
 						await queryClient.invalidateQueries({
 							queryKey: ["library-items"],

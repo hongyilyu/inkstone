@@ -15,20 +15,9 @@ import type { Message, Model } from "@earendil-works/pi-ai";
 import { makeProxyTools } from "./tool-proxy.js";
 import { WorkerTransport } from "./transport.js";
 
-/**
- * The generic interpreter (ADR-0018): a single, Workflow-agnostic loop that
- * turns a {@link WorkerManifest} into a streamed conversation against a real
- * provider via `pi-agent-core`. There is NO per-Workflow code here — the
- * manifest is pure data.
- *
- * This module is provider-agnostic and dependency-injected so it can be
- * driven offline by `pi-ai`'s `faux` provider in tests (ADR-0019 as-built):
- * the caller supplies how to resolve a `Model` from the manifest and the
- * `streamFn` that issues the LLM call. Production wiring (real `getModel` +
- * token-injecting `streamSimple`) lives in {@link defaultInterpreterDeps};
- * tests pass a faux model + plain `streamSimple`.
- */
+// Generic Workflow-agnostic interpreter — see docs/design/worker.md (ADR-0018, ADR-0019)
 
+/** Dependency-injected hooks the interpreter needs (model resolution + LLM call). */
 export interface InterpreterDeps {
 	/** Resolve the provider model for this manifest's workflow. */
 	resolveModel: (workflow: WorkerManifest["workflow"]) => Model<string>;
@@ -44,28 +33,12 @@ export const defaultInterpreterDeps = (): InterpreterDeps => ({
 			workflow.model as never,
 		) as Model<string>,
 	streamFn: (model, context, options) => {
-		// access_token is injected per-call by the manifest closure in
-		// `runInterpreter`; here we just forward whatever options carry.
+		// access_token is injected per-call by the manifest closure in runInterpreter.
 		return streamSimple(model, context, options);
 	},
 });
 
-/**
- * Map the manifest's assembled history into pi `Message[]`. Handles the
- * tagged-union {@link WorkerManifest} message blocks (ADR-0025):
- * - `user` → a pi `UserMessage` carrying the text.
- * - `assistant` → a pi `AssistantMessage` whose `content` is the optional
- *   text block followed by any `tool_calls` as `toolCall` content blocks
- *   (so a resumed transcript carries the prior turn's tool requests).
- * - `tool_result` → a pi `ToolResultMessage` whose `toolCallId` matches the
- *   assistant's `toolCall.id` — the pairing that makes the transcript
- *   provider-valid (a `toolResult` is rejected unless its `toolCall`
- *   precedes it).
- *
- * History is oldest-first and, for the fresh path, excludes the current turn
- * (the prompt is appended separately). For the resume path the manifest's
- * `messages` IS the full transcript (ending in a `tool_result`).
- */
+/** Map the manifest's assembled history into pi `Message[]` — see docs/design/worker.md (ADR-0025). */
 function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
 	const now = Date.now();
 	const history: Message[] = manifest.messages.map((m): Message => {
@@ -82,7 +55,6 @@ function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
 				timestamp: now,
 			};
 		}
-		// assistant: optional text block, then any tool_call blocks.
 		const assistant: Message & { role: "assistant" } = {
 			role: "assistant",
 			content: [],
@@ -116,33 +88,14 @@ function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
 	return history as AgentMessage[];
 }
 
-/**
- * Drive one Run to completion. Emits `text_delta` Run Events as the model
- * streams, then exactly one terminal event: `done` on clean completion or
- * `error` if the model/stream failed (pi surfaces this as an assistant
- * message with `stopReason: "error" | "aborted"`).
- *
- * Tools (ADR-0018): the Workflow's tool descriptors become `pi-agent-core`
- * proxies whose `execute` round-trips to Core via the transport's `callTool`
- * (the bidirectional Tool Protocol channel, ADR-0006). A manifest with no
- * tools runs chat-only.
- *
- * Mode (ADR-0025): `manifest.mode === "resume"` continues a reconstructed
- * transcript via `runAgentLoopContinue` — the manifest's `messages` ARE the
- * full transcript (ending in a `tool_result`) and NO new prompt is added, so
- * the seeded tool call is not re-executed. Any other/absent mode is the fresh
- * path: `runAgentLoop([prompt], …)` as before.
- */
+/** Drive one Run to completion, emitting `text_delta` events then one terminal `done`/`error` — see docs/design/worker.md (ADR-0018, ADR-0025). */
 export function runInterpreter(
 	manifest: WorkerManifest,
 	deps: InterpreterDeps,
 	signal?: AbortSignal,
 ): Effect.Effect<void, never, WorkerTransport> {
 	return Effect.gen(function* () {
-		// Source both transport channels from the seam (ADR-0027) once at the
-		// top: the synchronous `emit` (Run Events) and the request/response
-		// `callTool` (Tool Protocol). Both feed pi's callbacks, which run
-		// outside the Effect context (ADR-0027 push-shape).
+		// Both channels feed pi's callbacks, which run outside the Effect context (ADR-0027).
 		const { emit, callTool } = yield* WorkerTransport;
 
 		const model = deps.resolveModel(manifest.workflow);
@@ -157,8 +110,7 @@ export function runInterpreter(
 				? makeProxyTools(manifest.workflow.tools, callTool)
 				: [];
 
-		// Inject the OAuth access token (if present) as the provider apiKey for
-		// every call this Run makes (ADR-0023). faux/env providers omit it.
+		// Inject the OAuth access token (if present) as the provider apiKey (ADR-0023).
 		const streamFn: StreamFn = (model_, context, options) =>
 			deps.streamFn(model_, context, {
 				...options,
@@ -169,10 +121,7 @@ export function runInterpreter(
 
 		let errorMessage: string | undefined;
 
-		// pi's functional loop takes `reasoning` (SimpleStreamOptions), not the
-		// stateful Agent's `thinkingLevel`. "off" means no reasoning → omit it;
-		// any other level maps straight through (pi-ai ThinkingLevel excludes
-		// "off").
+		// pi takes `reasoning` (SimpleStreamOptions): "off" → omit; any other level maps through.
 		const reasoning =
 			manifest.workflow.thinking_level === "off"
 				? undefined
@@ -214,8 +163,7 @@ export function runInterpreter(
 		};
 
 		if (manifest.mode === "resume") {
-			// Resume (ADR-0025): the manifest's transcript is already the context
-			// (last message is a `tool_result`); continue without a new prompt.
+			// Resume (ADR-0025): transcript is already the context; continue without a new prompt.
 			yield* Effect.promise(() =>
 				runAgentLoopContinue(context, config, onEvent, signal, streamFn),
 			);

@@ -2,13 +2,7 @@ import { WsClient } from "@inkstone/ui-sdk";
 import { Effect } from "effect";
 import type { WsRuntime } from "../runtime.js";
 
-/**
- * Thin imperative bridge between the React settings UI and the SDK
- * provider/* methods (ADR-0023). No store state of its own — the component
- * holds the connected flag; this module just runs the two Effects on the
- * runtime and exposes a `window.open` seam so tests can inject a spy.
- */
-
+// Thin imperative bridge between the settings UI and the SDK provider/* methods (ADR-0023); no store state of its own.
 export const PROVIDER_OPENAI_CODEX = "openai-codex";
 
 /** Query whether `provider` currently has stored credentials. */
@@ -31,11 +25,7 @@ const defaultOpenUrl: OpenUrl = (url) => {
 	window.open(url, "_blank", "noopener,noreferrer");
 };
 
-/**
- * Begin a provider login: ask Core for the authorize URL, then open it in a
- * new tab. The credential write + connection flip happen out-of-band; the
- * caller re-queries {@link fetchConnected} on window focus.
- */
+/** Begin a provider login: fetch the authorize URL and open it in a new tab (credential write happens out-of-band). */
 export async function startLogin(
 	runtime: WsRuntime,
 	provider: string,

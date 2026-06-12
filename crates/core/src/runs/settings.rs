@@ -1,11 +1,9 @@
 //! `settings/get` + `settings/set` handlers (ADR-0024): the user's preferred
-//! model (per Workflow) and the global effort level, persisted in tier-2.
+//! model (per Workflow) and global effort level, persisted in tier-2.
 //!
-//! Reads/writes the `settings` key-value table. `settings/set` is a partial
-//! update that validates a present `model` against the embedded catalog and a
-//! present `effort` against the thinking levels, rejecting bad input with
-//! `invalid_params` (ADR-0014) BEFORE any write — so a rejected request
-//! persists nothing. Both handlers return the full effective `SettingsResult`.
+//! `settings/set` is a partial update; a present `model`/`effort` is validated
+//! against the catalog/thinking levels and rejected with `invalid_params`
+//! BEFORE any write (ADR-0014). Both handlers return the full `SettingsResult`.
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
@@ -14,9 +12,8 @@ use super::handler::{self, HandlerError};
 use crate::protocol::{SettingsResult, SettingsSetParams};
 use crate::{models, settings, workflow};
 
-/// Read the effective settings for the default Workflow: its provider, the
-/// stored preferred model (`None` until picked), and the global effort. Keys
-/// and the effort default live in `crate::settings` (the registry).
+/// Read the effective settings for the default Workflow: provider, stored
+/// preferred model (`None` until picked), and global effort.
 async fn current(pool: &SqlitePool) -> sqlx::Result<SettingsResult> {
     let wf = workflow::default_workflow();
     let model = settings::preferred_model(pool, &wf.name).await?;
@@ -51,8 +48,7 @@ pub(super) async fn handle_set(
     out_tx: &UnboundedSender<String>,
 ) {
     handler::handle(id, params, out_tx, |params: SettingsSetParams| async move {
-        // Validate BEFORE any write (ADR-0002: Core is the authority) so a bad
-        // value persists nothing.
+        // Validate BEFORE any write so a bad value persists nothing (ADR-0002).
         if let Some(ref model) = params.model {
             if !models::is_known_model(model) {
                 return Err(HandlerError::InvalidParams(format!("unknown model {model:?}")));

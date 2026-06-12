@@ -10,8 +10,7 @@ import { renderWithQuery } from "@/test-utils/renderWithQuery";
 import { ChatColumn } from "./ChatColumn.js";
 import { Sidebar } from "./Sidebar.js";
 
-// Stub WsClient whose `threadList` returns a fixed set of threads. Sidebar reads
-// them via TanStack Query running the SDK Effect on the runtime (the reads path).
+// Stub WsClient whose `threadList` returns a fixed set of threads.
 function makeStubRuntime() {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -39,10 +38,7 @@ function makeStubRuntime() {
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
-// A stub whose thread list GROWS when `threadCreate` is called — modelling
-// Core minting a Thread row. `threadList` reads the mutable array, so a fresh
-// read after creation includes the new thread. Used to prove the sidebar
-// refreshes (query invalidation) once a new thread is created via the composer.
+// Stub whose thread list grows on `threadCreate`, so a fresh read after creation includes the new thread.
 function makeGrowingStubRuntime(opts: {
 	readonly newThreadId: string;
 	readonly runId: string;
@@ -116,7 +112,6 @@ describe("Sidebar", () => {
 			</RuntimeProvider>,
 		);
 
-		// Select a thread, then New Chat clears focus back to null.
 		await user.click(await screen.findByText("Standup digest"));
 		expect(getChatState().focusedThreadId).toBe("t-1");
 
@@ -134,9 +129,7 @@ describe("Sidebar", () => {
 			events: [{ kind: "text_delta", delta: "echo: hi" }, { kind: "done" }],
 		});
 
-		// Sidebar + ChatColumn share one runtime + QueryClient, so the
-		// composer's threadCreate and the sidebar's thread/list read go through
-		// the same query cache — exactly the real app wiring.
+		// Sidebar + ChatColumn share one runtime + QueryClient — the real app wiring.
 		renderWithQuery(
 			<RuntimeProvider runtime={runtime}>
 				<Sidebar />
@@ -144,16 +137,12 @@ describe("Sidebar", () => {
 			</RuntimeProvider>,
 		);
 
-		// Initially the list is empty (no threads created yet).
 		expect(await screen.findByText(/no threads yet/i)).toBeInTheDocument();
 
-		// Send the first message with no focused thread → mints "thread-new".
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
 		await user.click(screen.getByRole("button", { name: /send/i }));
 
-		// The sidebar must surface the freshly-minted thread — proving the
-		// thread/list query was invalidated on create (not stuck on the empty
-		// first read). Its title is the prompt text.
+		// Sidebar surfaces the minted thread (title = prompt), proving thread/list was invalidated on create.
 		expect(
 			await screen.findByRole("button", { name: "hi" }),
 		).toBeInTheDocument();
@@ -177,9 +166,7 @@ describe("Sidebar", () => {
 			</RuntimeProvider>,
 		);
 
-		// Each row exposes a copy-id control; clicking it writes that thread's
-		// id (not its title) to the clipboard so the user can paste it into a
-		// message for the read_thread tool.
+		// Copy-id control writes the thread id (not its title) to the clipboard.
 		const copyBtn = await screen.findByRole("button", {
 			name: /copy thread id for standup digest/i,
 		});

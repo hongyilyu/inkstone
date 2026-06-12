@@ -1,18 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-/**
- * Drift guard (ADR-0024): Core embeds the `openai-codex` model catalog as a
- * JSON file hand-mirrored from `pi-ai`'s `MODELS`. This test re-derives the
- * catalog from the installed `pi-ai` and asserts the committed JSON matches it
- * exactly — so a `pi-ai` bump that adds/removes/retypes an `openai-codex` model
- * fails CI here, prompting a regenerate of the JSON rather than silent drift.
- *
- * `pi-ai` does not re-export `MODELS` from its package entry, and its `exports`
- * map blocks the deep `dist/models.generated.js` path via specifier, so we
- * resolve the package's main entry and import the sibling generated file by
- * absolute URL (which bypasses the exports gate).
- */
+// Drift guard for the embedded openai-codex catalog (ADR-0024) — see docs/design/worker-tests.md
 describe("model catalog drift", () => {
 	it("crates/core/src/models/openai-codex.json equals pi-ai MODELS['openai-codex']", async () => {
 		const mainUrl = import.meta.resolve("@earendil-works/pi-ai");

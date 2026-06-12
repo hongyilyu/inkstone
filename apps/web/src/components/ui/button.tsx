@@ -7,12 +7,11 @@ const buttonVariants = cva(
 	{
 		variants: {
 			variant: {
-				ghost: "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+				ghost:
+					"text-muted-foreground hover:bg-accent hover:text-accent-foreground",
 				chip: "border border-input bg-transparent text-foreground/80 hover:bg-secondary/50 hover:text-foreground",
-				"sidebar-item":
-					"text-sidebar-foreground hover:bg-sidebar-accent",
-				"sidebar-item-active":
-					"bg-sidebar-accent text-sidebar-foreground",
+				"sidebar-item": "text-sidebar-foreground hover:bg-sidebar-accent",
+				"sidebar-item-active": "bg-sidebar-accent text-sidebar-foreground",
 				"primary-icon":
 					"justify-center bg-primary text-primary-foreground shadow-sm hover:bg-primary/90",
 				icon: "justify-center text-foreground/60 hover:bg-accent hover:text-accent-foreground",

@@ -3,26 +3,13 @@ import { expect, test } from "./fixtures.js";
 // Gated 2-chunk fixture so the Run can be held mid-stream while we navigate away.
 test.use({ coreOptions: { chunks: 2 } });
 
-/**
- * Slice 8 — acceptance: a Run is observable independent of which thread is
- * focused, so it keeps streaming in the background while the user is elsewhere.
- *
- *   send "hello"          → thread A starts a Run; partial "echo: " shows
- *   newChat()             → focus clears; A's bubble leaves the viewport
- *   core.tripGate()       → A's gated tail streams while A is OFF-screen
- *   openThread("hello")   → A shows the FULL "echo: hello" — it advanced while away
- *
- * The background run's stream fiber is keyed by run id and survives the focus
- * change (it is not torn down when the focused thread changes), so the store
- * for A keeps accumulating; reopening A just renders the already-complete text.
- */
+/** Slice 8: a background Run keeps streaming while another thread is focused — stream fiber keyed by run id survives the focus change; see docs/design/e2e-tests.md */
 test("a background Run keeps streaming while another thread is focused", async ({
 	chat,
 	core,
 }) => {
 	await chat.goto();
 
-	// Thread A: first send mints it (title = prompt "hello") and starts the Run.
 	await chat.send("hello");
 	await chat.waitForAssistantText(/echo:/);
 	await chat.expectNoAssistantText("echo: hello");
@@ -34,8 +21,7 @@ test("a background Run keeps streaming while another thread is focused", async (
 	// Release the gate while A is OFF-screen — its Run advances in the background.
 	core.tripGate();
 
-	// Come back to A. Its assistant bubble shows the FULL echo, proving the Run
-	// kept streaming into A's state while the user was on the New Chat surface.
+	// Reopening A shows the FULL echo, proving the Run kept streaming while off-screen.
 	await chat.openThread("hello");
 	await chat.waitForAssistantText("echo: hello");
 	await expect(chat.assistantBubbles()).toHaveCount(1);

@@ -1,17 +1,12 @@
-//! Provider credential resolution for a Run (ADR-0023). Core owns the
-//! credential bytes; before spawning a Worker it resolves a short-lived
-//! access token for the Run's provider and injects ONLY that into the
-//! manifest — the refresh token never crosses the process boundary.
+//! Provider credential resolution for a Run (ADR-0023). Before spawning a
+//! Worker, Core resolves a short-lived access token and injects only that into
+//! the manifest — the refresh token never crosses the process boundary.
 //!
-//! Refresh is Core-orchestrated and **single-flight**: a process-global
-//! async mutex serializes refreshes, and after acquiring the lock the stored
-//! expiry is re-checked (double-checked locking) so two concurrent Runs that
-//! both observed an expired token trigger exactly one refresh — the second
-//! reuses the token the first just persisted. This is the race ADR-0023
-//! rejects the Worker-side-refresh design over.
+//! Refresh is Core-orchestrated and single-flight: a process-global async mutex
+//! serializes refreshes, with double-checked expiry after acquiring the lock so
+//! concurrent Runs trigger exactly one refresh.
 //!
-//! Only `openai-codex` is OAuth in this feature. Any other provider (the
-//! `faux` test provider, a future env-key provider) has no stored credential
+//! Only `openai-codex` is OAuth; any other provider has no stored credential
 //! and resolves to `None`, so the manifest omits `access_token`.
 
 use std::process::Stdio;
@@ -26,26 +21,23 @@ use tokio::sync::Mutex;
 use crate::credentials::{self, Credentials, OPENAI_CODEX};
 
 /// Serializes credential refreshes across all in-flight Runs (single-flight,
-/// ADR-0023). One global lock is correct: refreshes are rare (only on expiry)
-/// and the rotated refresh token must not be used twice.
+/// ADR-0023), so the rotated refresh token is never used twice.
 fn refresh_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
-/// Resolve a fresh access token for `provider`, or `None` if the provider is
-/// not OAuth (no stored credential). For `openai-codex`: read the store; if
-/// the token is still valid, return it; if expired, refresh once under the
-/// global lock (double-checked) and persist the rotated credential first.
+/// Resolve a fresh access token for `provider`, or `None` if it is not OAuth.
+/// For `openai-codex`: return the stored token if valid, else refresh once under
+/// the single-flight lock (double-checked) and persist the rotated credential.
 pub async fn resolve_access_token(provider: &str, now_ms: i64) -> Result<Option<String>> {
     if provider != OPENAI_CODEX {
         return Ok(None);
     }
 
     let Some(creds) = credentials::read(OPENAI_CODEX)? else {
-        // No credential stored. The Run will proceed with no access token;
-        // the provider call will fail with an auth error the user sees as a
-        // Run error, prompting them to connect (slice 8).
+        // No credential stored: the Run proceeds tokenless and the provider
+        // call fails with an auth error, prompting the user to connect.
         return Ok(None);
     };
 
@@ -56,8 +48,7 @@ pub async fn resolve_access_token(provider: &str, now_ms: i64) -> Result<Option<
     // Expired → refresh under the single-flight lock.
     let _guard = refresh_lock().lock().await;
 
-    // Double-check: another Run may have refreshed while we waited for the
-    // lock. Re-read and reuse if it's now valid.
+    // Double-check: another Run may have refreshed while we waited.
     if let Some(fresh) = credentials::read(OPENAI_CODEX)? {
         if !fresh.is_expired(now_ms) {
             return Ok(Some(fresh.access));
@@ -69,8 +60,7 @@ pub async fn resolve_access_token(provider: &str, now_ms: i64) -> Result<Option<
     Ok(Some(rotated.access))
 }
 
-/// One line of the Provider Helper's stdout in `refresh` mode (ADR-0023):
-/// the Core-shaped rotated credentials (snake_case `account_id`).
+/// One line of the Provider Helper's stdout in `refresh` mode (ADR-0023).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum HelperLine {
@@ -86,7 +76,7 @@ enum HelperLine {
 }
 
 /// Spawn the Provider Helper in `refresh` mode, feed it the refresh token on
-/// stdin, and read back the rotated Core-shaped credentials. The command is
+/// stdin, and read back the rotated credentials. The command is
 /// `INKSTONE_PROVIDER_HELPER_CMD` (whitespace-split) or the default tsx
 /// invocation; tests point it at a stub.
 async fn refresh_via_helper(refresh_token: &str) -> Result<Credentials> {

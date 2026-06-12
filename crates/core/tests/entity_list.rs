@@ -1,6 +1,5 @@
-//! `entity/list`: after a Journal Entry Proposal is accepted, `entity/list`
-//! returns accepted Entities of the requested type newest-first and filters out
-//! other types.
+//! `entity/list` returns accepted Entities of the requested type newest-first
+//! and filters out other types.
 
 use std::time::{Duration, Instant};
 

@@ -3,47 +3,27 @@ import type { RunEventValue } from "@inkstone/ui-sdk";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
-/**
- * A tool call surfaced live within an assistant turn (ADR-0006 tool_call Run
- * Event). `id` is the wire `tool_call_id`; `status` is the UI lifecycle
- * (`running` while Core dispatches it, then a terminal `completed`/`error`).
- * The wire `started` status maps to `running` (see {@link applyEvent}).
- */
+/** A tool call surfaced live within an assistant turn (ADR-0006 tool_call Run Event). */
 export interface ToolCall {
 	readonly id: string;
 	readonly name: string;
 	readonly status: "running" | "completed" | "error";
 }
 
-/**
- * The canonical live UI message (distinct from the demoted `MockChatMessage`).
- * Mirrors the wire `MessageView` shape so slice-13 hydration maps cleanly.
- */
+/** The canonical live UI message; mirrors the wire `MessageView` shape. */
 export interface Message {
 	readonly id: string;
 	readonly role: "user" | "assistant";
 	readonly status: "streaming" | "completed" | "incomplete";
 	readonly text: string;
 	readonly run_id: string;
-	/**
-	 * Tool calls observed during this assistant turn, in arrival order. Driven
-	 * by `tool_call` Run Events (ADR-0006); ephemeral, so a Run rehydrated from
-	 * history starts without them (ADR-0022 defers durable replay).
-	 */
+	/** Tool calls observed during this assistant turn, in arrival order (ephemeral; ADR-0006). */
 	readonly toolCalls?: readonly ToolCall[];
-	/**
-	 * Set when a Run terminates with an `error` Run Event (ADR-0006): the
-	 * worker/provider failure message. Drives the error rendering in the
-	 * assistant bubble so a failed Run is never a silent blank.
-	 */
+	/** Worker/provider failure message when a Run terminates with an `error` event (ADR-0006). */
 	readonly error?: string;
 }
 
-/**
- * Per-thread state. `activeRunId` is the in-flight run, if any. `snapshotApplied`
- * tracks, per run, whether the first `text_delta` (the cumulative snapshot) has
- * been applied — that drives the SET-vs-APPEND rule in {@link applyEvent}.
- */
+/** Per-thread state; `snapshotApplied` drives the SET-vs-APPEND rule in {@link applyEvent}. */
 interface ThreadState {
 	readonly messages: Message[];
 	readonly activeRunId?: string;
@@ -53,22 +33,11 @@ interface ThreadState {
 interface ChatState {
 	readonly threads: Record<string, ThreadState>;
 	readonly focusedThreadId?: string;
-	/**
-	 * Pending (and decided) Proposals keyed by the parked Run's id (ADR-0025).
-	 * A `propose_workspace_mutation` parks a Run; the chat surface renders the
-	 * review card under that Run's assistant turn (which carries the same
-	 * `run_id`). The UI `status` is the review lifecycle, distinct from the wire
-	 * Proposal status: `deciding` and `error` are local-only (no wire equivalent).
-	 */
+	/** Pending (and decided) Proposals keyed by the parked Run's id (ADR-0025). */
 	readonly proposals: Record<string, PendingProposal>;
 }
 
-/**
- * A Proposal surfaced for review under its parked Run's assistant turn. Mirrors
- * `ProposalGetResult` (ADR-0025) plus a UI `status` driving the card's states:
- * `pending` (actions live) · `deciding` (decide in flight) · `accepted` /
- * `rejected` (decided) · `error` (decide failed — offer retry).
- */
+/** A Proposal surfaced for review under its parked Run's assistant turn (ADR-0025). */
 export interface PendingProposal {
 	readonly proposal_id: string;
 	readonly run_id: string;
@@ -79,16 +48,7 @@ export interface PendingProposal {
 	readonly status: "pending" | "deciding" | "accepted" | "rejected" | "error";
 }
 
-// ---------------------------------------------------------------------------
-// Zustand store (slice A migration). The store is a plain *vanilla* store so the
-// free action functions below stay callable OUTSIDE React render — the bridge
-// (`bridge.ts`) and hydration (`hydrate.ts`) drive these imperatively. The
-// selector hooks wrap zustand's `useStore`, which is backed by
-// `useSyncExternalStore`; returning stable references (e.g. `EMPTY_MESSAGES`)
-// preserves selector identity across unrelated state changes. ADR-0020: Effect
-// owns the wire; React state is plain (zustand, not `@effect/atom`).
-// ---------------------------------------------------------------------------
-
+// Plain *vanilla* zustand store so actions are callable outside React render — see docs/design/web-store.md
 const initialState = (): ChatState => ({ threads: {}, proposals: {} });
 
 const store = createStore<ChatState>()(() => initialState());
@@ -98,8 +58,7 @@ export function getChatState(): ChatState {
 	return store.getState();
 }
 
-/** Reset to empty state — for test isolation. Replace mode so stale threads
- * (and any `focusedThreadId`) don't leak between tests. */
+/** Reset to empty state (replace mode) — for test isolation. */
 export function resetChatStore(): void {
 	store.setState(initialState(), true);
 }
@@ -110,8 +69,6 @@ export function nextMessageId(): string {
 	idCounter += 1;
 	return `m${idCounter}`;
 }
-
-// --- internal immutable helper ---------------------------------------------
 
 function withThread(
 	s: ChatState,
@@ -125,8 +82,6 @@ function withThread(
 	};
 }
 
-// --- actions ----------------------------------------------------------------
-
 export function setFocusedThread(threadId: string): void {
 	store.setState((s) => ({ ...s, focusedThreadId: threadId }));
 }
@@ -136,14 +91,7 @@ export function clearFocusedThread(): void {
 	store.setState((s) => ({ ...s, focusedThreadId: undefined }));
 }
 
-// --- proposals (ADR-0025) ---------------------------------------------------
-
-/**
- * Attach (or replace) the pending Proposal for `runId`, keyed by the parked
- * Run's id. Driven by a `proposal/pending` notification → `proposal/get`
- * round-trip in the bridge. Always lands as `pending` — the review starts with
- * its actions live.
- */
+/** Attach (or replace) the pending Proposal for `runId`, keyed by the parked Run's id (ADR-0025). */
 export function setPendingProposal(proposal: PendingProposal): void {
 	store.setState((s) => ({
 		...s,
@@ -151,11 +99,7 @@ export function setPendingProposal(proposal: PendingProposal): void {
 	}));
 }
 
-/**
- * Move a Proposal to a new review `status` (deciding/accepted/rejected/error).
- * A no-op if no Proposal is attached for `runId` (a `proposal/changed` can race
- * ahead of the `proposal/get` that seeds the card).
- */
+/** Move a Proposal to a new review `status`; no-op if none is attached for `runId`. */
 export function setProposalStatus(
 	runId: string,
 	status: PendingProposal["status"],
@@ -172,16 +116,7 @@ export function setProposalStatus(
 	});
 }
 
-/**
- * Clear the snapshot-applied bit for `runId` (ADR-0025 resume re-subscribe).
- * A parked Run's resume opens a FRESH `run/subscribe` whose first `text_delta`
- * is again the cumulative snapshot (`subscribe.rs` always emits one). The
- * original parked subscribe already marked `snapshotApplied[runId] = true`, so
- * without this reset the resume snapshot would be treated as an incremental
- * delta and APPENDed — duplicating any pre-park assistant text. Resetting the
- * bit makes the next `text_delta` SET the authoritative cumulative text (which
- * already contains the pre-park prefix). A no-op when the thread is unknown.
- */
+/** Clear the snapshot-applied bit for `runId` so the resume snapshot SETs (not APPENDs) — see docs/design/web-store.md (ADR-0025). */
 export function resetSnapshot(threadId: string, runId: string): void {
 	store.setState((s) => {
 		const thread = s.threads[threadId];
@@ -202,12 +137,7 @@ export function appendUserMessage(threadId: string, message: Message): void {
 	);
 }
 
-/**
- * Append a live (streaming) assistant message. The bridge seeds this BEFORE the
- * run id is known (run_id `""`), then {@link attachRun} promotes it once
- * `postMessage` resolves. Keeping the bubble around lets the failed-send path
- * flip it to `incomplete` (Q7).
- */
+/** Append a live (streaming) assistant message before the run id is known; {@link attachRun} promotes it. */
 export function seedAssistantMessage(threadId: string, message: Message): void {
 	store.setState((s) =>
 		withThread(s, threadId, (t) => ({
@@ -244,13 +174,7 @@ export function attachRun(
  * with the wire→live mapped set and points `activeRunId` at the streaming
  * message's run, if any (else clears it).
  *
- * CRITICAL (snapshot-vs-resubscribe interplay): this does NOT pre-mark
- * `snapshotApplied[run_id]` for the streaming message. Leaving it unset means
- * the resubscribe's FIRST `text_delta` (the cumulative snapshot) SETs the text
- * to the authoritative cumulative value in {@link applyEvent} — the hydrated
- * partial text is just an initial paint that the snapshot then supersedes. The
- * orchestrator (`hydrate.ts#hydrateThread`) owns the thread/get → load →
- * resubscribe flow; this action only loads.
+ * Does NOT pre-mark `snapshotApplied` — snapshot-vs-resubscribe interplay, see docs/design/web-store.md.
  */
 export function loadThreadMessages(
 	threadId: string,
@@ -266,14 +190,7 @@ export function loadThreadMessages(
 	);
 }
 
-/**
- * Non-destructively prepend fetched history to a thread that became live during
- * an in-flight `thread/get` (a send seeded an optimistic turn under the loading
- * skeleton). The fetched messages are the OLDER turns; the local messages are
- * the live turn — so history goes in front, and any run already present locally
- * is skipped so the seeded turn (and its in-flight stream) is never duplicated
- * or clobbered. Leaves `activeRunId` untouched: the live turn keeps owning it.
- */
+/** Non-destructively fold fetched (older) history in front of a thread that became live mid-`thread/get`; skips runs already present locally. */
 export function prependHistory(threadId: string, history: Message[]): void {
 	store.setState((s) => {
 		const thread = s.threads[threadId];
@@ -313,13 +230,7 @@ export function markMessageIncomplete(
 	});
 }
 
-/**
- * Settle any tool call still marked `running` when its Run terminates. The
- * terminal `tool_call` boundary is ephemeral, so it can be lost to broadcast
- * lag (ADR-0022 does not replay it) or never arrive if Core ends mid-dispatch;
- * without this the indicator would animate forever on a finished turn. Returns
- * the same reference when nothing is running, preserving selector identity.
- */
+/** Settle any tool call still marked `running` when its Run terminates (the terminal `tool_call` boundary is ephemeral; ADR-0022). */
 function settleRunningToolCalls(
 	toolCalls: readonly ToolCall[] | undefined,
 	terminal: "completed" | "error",
@@ -337,10 +248,8 @@ function settleRunningToolCalls(
 
 /**
  * Apply a streamed run event to the thread's assistant message for `runId`.
- *
- * SET-vs-APPEND rule (slice 2/8): the FIRST `text_delta` after subscribe is the
- * cumulative snapshot → SET the text; subsequent deltas → APPEND. On `done`:
- * finalize (status `completed`) and clear `activeRunId` for that run.
+ * SET-vs-APPEND rule: the FIRST `text_delta` after subscribe is the cumulative
+ * snapshot → SET; subsequent deltas → APPEND. On `done` finalize + clear `activeRunId`.
  */
 export function applyEvent(
 	threadId: string,
@@ -369,10 +278,7 @@ export function applyEvent(
 		}
 
 		if (event.kind === "tool_call") {
-			// Upsert the tool call on the assistant message for this run: a
-			// `started` event appends a `running` row; a terminal event flips the
-			// matching row to `completed`/`error`. The wire `started` maps to the
-			// UI `running` vocabulary.
+			// Upsert: `started` appends a `running` row, terminal flips the matching row.
 			const status = event.status === "started" ? "running" : event.status;
 			const messages = thread.messages.map((m): Message => {
 				if (m.role !== "assistant" || m.run_id !== runId) {
@@ -391,10 +297,7 @@ export function applyEvent(
 		}
 
 		if (event.kind === "error") {
-			// A worker-emitted error (ADR-0006) is terminal: flip the
-			// assistant message to `incomplete`, attach the error message so
-			// the bubble can surface it (a failed Run must never be a silent
-			// blank), and clear the active run.
+			// Terminal worker error (ADR-0006): mark incomplete, attach the message, clear the active run.
 			const messages = thread.messages.map(
 				(m): Message =>
 					m.role === "assistant" && m.run_id === runId
@@ -414,12 +317,7 @@ export function applyEvent(
 		}
 
 		if (event.kind === "cancelled") {
-			// User cancellation (ADR-0014) is terminal but NOT a failure: flip the
-			// assistant message to `incomplete` so its partial text renders as an
-			// unfinished cancelled response (never deleted, never a clean answer),
-			// settle any running tool calls, and clear the active run. No `error`
-			// is attached — cancellation is user-ended, not a worker fault. Core
-			// mirrors this server-side (mark_streaming_messages_incomplete).
+			// Terminal but NOT a failure (ADR-0014): mark incomplete, no `error` attached. Core mirrors this server-side.
 			const messages = thread.messages.map(
 				(m): Message =>
 					m.role === "assistant" && m.run_id === runId
@@ -437,7 +335,7 @@ export function applyEvent(
 			}));
 		}
 
-		// done → finalize the assistant message and clear the active run.
+		// done: finalize the assistant message and clear the active run.
 		const messages = thread.messages.map(
 			(m): Message =>
 				m.role === "assistant" && m.run_id === runId
@@ -455,8 +353,6 @@ export function applyEvent(
 		}));
 	});
 }
-
-// --- selector hooks (slice 12 consumes these) ------------------------------
 
 const EMPTY_MESSAGES: Message[] = [];
 

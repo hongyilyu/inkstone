@@ -1,9 +1,5 @@
-//! Slice 3 (real-worker-codex): a Run records the loaded Workflow's
-//! `provider` and `model` in the `runs` row — no longer the hardcoded
-//! `echo`/`echo`. The echo worker is still spawned this slice (cutover is
-//! slice 4), so the Run streams `echo: <prompt>`; what this test pins is the
-//! persisted `runs.provider` / `runs.model`, sourced from the loaded
-//! `default.toml` via the Dispatcher.
+//! A Run records the loaded Workflow's `provider` and `model` in the `runs`
+//! row, sourced from `default.toml` via the Dispatcher (not hardcoded).
 
 use std::time::{Duration, Instant};
 
@@ -18,8 +14,8 @@ use common::{Workspace, next_text};
 #[test]
 fn run_row_records_workflow_provider_and_model() {
     let workspace = Workspace::new();
-    // Uses the crate's real `workflows/` dir (no INKSTONE_WORKFLOWS_DIR
-    // override) so the assertion pins the shipped default.toml's provider/model.
+    // No INKSTONE_WORKFLOWS_DIR override: pins the shipped default.toml's
+    // provider/model.
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()

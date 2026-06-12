@@ -12,10 +12,7 @@ import {
 	setFocusedThread,
 } from "./chat.js";
 
-// A stub WsClient backed by an in-memory Queue the test offers events to.
-// This is the slice-10 RuntimeProvider injection seam: a runtime built from
-// `ManagedRuntime.make(Layer.succeed(WsClient, stub))` (no real socket). Only
-// postMessage + subscribeRun are exercised here; the rest never run.
+// Stub WsClient backed by an in-memory Queue — see docs/design/web-store-tests.md
 function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
 	const unused = Effect.die("not used in slice 11");
 	const stub = WsClient.of({
@@ -48,7 +45,6 @@ describe("chat store + stream bridge", () => {
 		const runtime = makeStubRuntime(queue, "run-1");
 		setFocusedThread("threadA");
 
-		// send appends a user message and seeds a live assistant message.
 		await send(runtime, "threadA", "hi");
 
 		const seeded = getChatState().threads.threadA;
@@ -58,7 +54,6 @@ describe("chat store + stream bridge", () => {
 		]);
 		expect(seeded?.activeRunId).toBe("run-1");
 
-		// Drive the stream: one cumulative-snapshot text_delta, then done.
 		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "echo: hi" });
 		Queue.unsafeOffer(queue, { kind: "done" });
 		await awaitRun(runtime, "run-1");
@@ -79,17 +74,14 @@ describe("chat store + stream bridge", () => {
 
 		await send(runtime, "threadA", "hi");
 
-		// Switch focus to a different thread WHILE threadA's run is in flight.
+		// Switch focus while threadA's run is in flight; its fiber must stay alive.
 		setFocusedThread("threadB");
 
-		// threadA's run keeps streaming: SET (first delta) then APPEND, then done.
 		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "part1" });
 		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "-part2" });
 		Queue.unsafeOffer(queue, { kind: "done" });
 		await awaitRun(runtime, "run-A");
 
-		// The backgrounded run's fiber stayed alive across the focus change:
-		// its assistant message accumulated the full text and finalized.
 		const threadA = getChatState().threads.threadA;
 		const assistant = threadA?.messages[1];
 		expect(assistant?.text).toBe("part1-part2");
@@ -107,15 +99,12 @@ describe("chat store + stream bridge", () => {
 
 		await send(runtime, "threadA", "hi");
 
-		// Partial text streams, then the worker errors (ADR-0023). `error` is
-		// terminal: takeUntil must release the fiber even though no `done` follows.
+		// `error` is terminal: takeUntil releases the fiber with no `done` (ADR-0023).
 		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "partial" });
 		Queue.unsafeOffer(queue, {
 			kind: "error",
 			message: "provider rejected the request",
 		});
-		// awaitRun resolves only if the stream fiber settled — i.e. takeUntil
-		// fired on `error`. If error weren't treated as terminal this would hang.
 		await awaitRun(runtime, "run-err");
 
 		const threadA = getChatState().threads.threadA;
@@ -135,14 +124,9 @@ describe("chat store + stream bridge", () => {
 
 		await send(runtime, "threadA", "hi");
 
-		// Partial text streams, then the user cancels (ADR-0014). `cancelled` is
-		// terminal but NOT an error: takeUntil must release the fiber even though
-		// no `done`/`error` follows, and the partial text stays as an unfinished
-		// cancelled response (incomplete), not a clean `completed` answer.
+		// `cancelled` is terminal but not an error: fiber releases, text stays incomplete (ADR-0014).
 		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "partial" });
 		Queue.unsafeOffer(queue, { kind: "cancelled" });
-		// awaitRun resolves only if the fiber settled — i.e. takeUntil fired on
-		// `cancelled`. If cancelled weren't terminal this would hang forever.
 		await awaitRun(runtime, "run-cancel");
 
 		const threadA = getChatState().threads.threadA;
@@ -162,8 +146,6 @@ describe("chat store + stream bridge", () => {
 
 		await send(runtime, "threadA", "summarize my other thread");
 
-		// Core synthesizes a `started` boundary when it dispatches the tool, then
-		// a terminal `completed` when the outcome returns.
 		Queue.unsafeOffer(queue, {
 			kind: "tool_call",
 			tool_call_id: "tc_1",
@@ -184,7 +166,6 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-tool");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		// The same tool_call_id is upserted, not duplicated: one row, terminal.
 		expect(assistant?.toolCalls).toEqual([
 			{ id: "tc_1", name: "read_thread", status: "completed" },
 		]);
@@ -231,8 +212,7 @@ describe("chat store + stream bridge", () => {
 
 		await send(runtime, "threadA", "do two things");
 
-		// Two calls start; they resolve out of order. Each id is upserted
-		// independently and the rows keep their first-seen order.
+		// Two calls resolve out of order; each id upserts independently, rows keep first-seen order.
 		Queue.unsafeOffer(queue, {
 			kind: "tool_call",
 			tool_call_id: "a",
@@ -276,9 +256,7 @@ describe("chat store + stream bridge", () => {
 
 		await send(runtime, "threadA", "hi");
 
-		// `started` arrives, but the terminal `tool_call` is lost (broadcast lag,
-		// ADR-0022 does not replay it). `done` must still settle the row so the
-		// indicator doesn't animate forever on a finished turn.
+		// Terminal tool_call lost (broadcast lag, ADR-0022 no replay); `done` must still settle the row.
 		Queue.unsafeOffer(queue, {
 			kind: "tool_call",
 			tool_call_id: "x",
@@ -329,8 +307,7 @@ describe("chat store + stream bridge", () => {
 
 		await send(runtime, "threadA", "hi");
 
-		// A tool_call before the first text_delta must NOT consume the snapshot
-		// slot: the first delta still SETs, the second APPENDs.
+		// A tool_call before the first text_delta must not consume the snapshot slot.
 		Queue.unsafeOffer(queue, {
 			kind: "tool_call",
 			tool_call_id: "t",
@@ -368,7 +345,6 @@ describe("prependHistory", () => {
 	});
 
 	it("folds fetched history in front of the live turn, skipping runs already present", () => {
-		// A live turn is already seeded (e.g. a send during an in-flight thread/get).
 		appendUserMessage("t1", live("u-live", "live", "live msg"));
 		seedAssistantMessage("t1", {
 			id: "a-live",
@@ -378,9 +354,7 @@ describe("prependHistory", () => {
 			run_id: "live",
 		});
 
-		// Fetched history: an older turn (run "old") AND the live run again (the
-		// server already persisted it before the snapshot). The live run must be
-		// skipped; the older turn prepended.
+		// Fetched history includes the live run again; it must be skipped, older turn prepended.
 		prependHistory("t1", [
 			live("u-old", "old", "older msg"),
 			live("a-old", "old", "older reply"),

@@ -1,15 +1,10 @@
-//! Slice 2 RED test (Tool Protocol): Core keeps the Worker's stdin open,
-//! parses stdout as `RunEvent | ToolRequest`, dispatches a `tool_request` to
-//! the Rust tool registry, writes a `tool_result` back correlated by
-//! `tool_call_id`, and persists a `tool_calls` row + a `run_steps` row of
-//! kind `tool_call`. The `read_thread` tool is a stub here (returns
-//! `{"messages":[]}`); the real query lands in slice 3.
+//! Tool Protocol: Core dispatches a `tool_request` to the Rust tool registry,
+//! writes a `tool_result` correlated by `tool_call_id`, and persists a
+//! `tool_calls` row + a `tool_call` `run_steps` row.
 //!
-//! Driven by `tests/fixtures/tool-worker.ts` over `INKSTONE_WORKER_CMD`,
-//! spawned by Core exactly as the real Worker would be. The fixture emits a
-//! `tool_request`, blocks for the `tool_result`, then echoes the outcome it
-//! received as a `text_delta` so the round-trip is observable on the
-//! subscribe stream as well as in the DB.
+//! Driven by `tests/fixtures/tool-worker.ts`: emit a `tool_request`, block for
+//! the `tool_result`, then echo the outcome as a `text_delta` so the round-trip
+//! is observable on the subscribe stream and in the DB.
 
 use std::time::Duration;
 
@@ -21,11 +16,10 @@ use tokio_tungstenite::tungstenite::Message;
 mod common;
 use common::{CoreHandle, Workspace, next_text};
 
-/// Create a Thread with `prompt`, subscribe to its Run, drain to `done`, and
-/// return (thread_id, run_id, concatenated text deltas, tool_call boundaries).
-/// Each tool_call boundary is captured as `(name, status)` in arrival order —
-/// the Worker boots tsx (hundreds of ms) long after this subscribe attaches,
-/// so the ephemeral `tool_call` events are reliably observed on the live tail.
+/// Create a Thread, subscribe, drain to `done`; return (thread_id, run_id, text
+/// deltas, tool_call `(name, status)` boundaries in arrival order). tsx boots
+/// long after subscribe attaches, so the ephemeral `tool_call` events are
+/// reliably seen on the live tail.
 async fn run_and_collect(
     core: &CoreHandle,
     prompt: &str,
@@ -105,9 +99,8 @@ fn read_thread_returns_another_threads_messages() {
         .expect("tokio runtime builds");
 
     let run_b = rt.block_on(async {
-        // Thread A carries a distinctive prompt. Its own Run calls read_thread
-        // with the default unknown id (the id-file doesn't exist yet) → an
-        // error outcome it ignores; we just need A persisted.
+        // Thread A's own read_thread call fails (id-file absent) — we just need
+        // A persisted.
         let (thread_a, _run_a, _text_a, _tools_a) =
             run_and_collect(&core, "alpha-secret-123").await;
 
@@ -123,8 +116,7 @@ fn read_thread_returns_another_threads_messages() {
             text_b.contains("alpha-secret-123"),
             "read_thread returned A's message text — got {text_b:?}"
         );
-        // The live tool_call boundaries reach the subscribe stream: a `started`
-        // when Core dispatches read_thread, then a terminal `completed`.
+        // The live tool_call boundaries reach the stream: started → completed.
         assert_eq!(
             tools_b,
             vec![
@@ -175,8 +167,8 @@ fn read_thread_returns_another_threads_messages() {
 #[test]
 fn unknown_thread_id_returns_error_outcome() {
     let workspace = Workspace::new();
-    // No id-file → the fixture reads the unknown "t-dummy"; read_thread must
-    // return an error outcome and the Run must still complete cleanly.
+    // No id-file → the fixture reads an unknown id; read_thread must return an
+    // error outcome and the Run must still complete cleanly.
     let core = workspace.core().worker_fixture("tool-worker.ts").spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -190,8 +182,8 @@ fn unknown_thread_id_returns_error_outcome() {
             text.contains("tool_outcome=err:"),
             "unknown thread id yields an error outcome — got {text:?}"
         );
-        // The terminal `error` boundary reaches the stream (read_thread is
-        // allowlisted and dispatched, but the unknown thread id fails).
+        // read_thread is allowlisted and dispatched, but the unknown id fails:
+        // started → error.
         assert_eq!(
             tools,
             vec![
@@ -225,10 +217,8 @@ fn off_allowlist_tool_returns_error_outcome() {
             text.contains("tool_outcome=err:"),
             "off-allowlist tool yields an error outcome — got {text:?}"
         );
-        // The boundary still reaches the stream as started→error even though the
-        // tool is rejected before dispatch (Core emits `started` on arrival,
-        // then `error` from the allowlist refusal). The Client shows a brief
-        // running→failed flash, never a stuck row.
+        // Rejected before dispatch, but still surfaces started→error (Core emits
+        // `started` on arrival, then `error` from the allowlist refusal).
         assert_eq!(
             tools,
             vec![

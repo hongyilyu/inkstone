@@ -1,14 +1,5 @@
-/**
- * The set of threads that are already "live" in the store and must NOT be
- * hydrated-on-focus (slice 13): either already hydrated via `thread/get`, or
- * locally-originated (minted by `sendNewThread` / sent into by `send`). A
- * locally-originated thread already has its messages + an attached stream, so
- * re-hydrating it on focus would double up history and resubscribe its run.
- *
- * This lives in its own module so BOTH `bridge.ts` (marks locally-originated
- * threads) and `hydrate.ts` (consults + records on hydrate) import it without a
- * `bridge → hydrate → bridge` import cycle.
- */
+// Threads already "live" and excluded from hydrate-on-focus (slice 13). Its own module so
+// both bridge.ts and hydrate.ts import it without a bridge → hydrate → bridge cycle.
 const hydrated = new Set<string>();
 
 /** Mark a thread as already live (skips hydrate-on-focus). */

@@ -63,11 +63,7 @@ export function DueChip({ due, overdue }: { due: string; overdue: boolean }) {
 	);
 }
 
-/**
- * Todo row with an inline done toggle. The checkbox and the open-affordance are
- * sibling buttons (no nested interactives): the box toggles done, the rest of
- * the row opens detail.
- */
+/** Todo row with an inline done toggle: checkbox and open-affordance are sibling buttons, never nested. */
 export function TodoRow({
 	todo,
 	allItems = [],

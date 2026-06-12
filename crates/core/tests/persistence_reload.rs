@@ -1,9 +1,6 @@
-//! Slice 5 RED test: after Core handles a message and exits cleanly,
-//! restarting Core against the same DB file finds the prior Thread, Run, and
-//! Messages intact and starts cleanly (migration is a no-op the second time).
-//!
-//! This is a cross-restart durability check. Slices 1–4 already realize each
-//! individual write; slice 5 proves they survive process exit and re-open.
+//! Cross-restart durability: after Core handles a message and exits, a restart
+//! on the same DB file finds the prior Thread, Run, and Messages intact and the
+//! migration is a no-op the second time.
 
 use std::time::Duration;
 
@@ -46,8 +43,7 @@ fn run_history_survives_restart() {
                 .unwrap_or_else(|| panic!("result.run_id is a string — body: {response_body}"))
                 .to_string();
 
-            // Pure-subscribe (ADR-0022): post_message returns {run_id} only;
-            // subscribe by run_id and read until the terminal done.
+            // Pure-subscribe (ADR-0022): subscribe by run_id, read until done.
             let subscribe = format!(
                 r#"{{"jsonrpc":"2.0","id":2,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
             );
@@ -57,8 +53,6 @@ fn run_history_survives_restart() {
 
             let _sub_response = next_text(&mut ws).await;
 
-            // The loop only exits via the `done` arm's `break`; reaching the
-            // line after it proves the subscribe stream ended with a `done`.
             loop {
                 let body = next_text(&mut ws).await;
                 let v: serde_json::Value = serde_json::from_str(&body)
@@ -69,9 +63,8 @@ fn run_history_survives_restart() {
             }
 
             ws.close(None).await.ok();
-            // Slice-4 ordering: terminal tx commits in Core's per-Run task
-            // after the worker child reports stdout EOF. Sleep so the commit
-            // lands before we kill Core.
+            // The terminal tx commits after stdout EOF; sleep so it lands before
+            // we kill Core.
             tokio::time::sleep(Duration::from_millis(200)).await;
 
             run_id
@@ -84,9 +77,8 @@ fn run_history_survives_restart() {
     // ---- Second Core spawn: prove migration is a no-op, then exit ----
     {
         let mut core = workspace.core().worker_fixture("slow-worker.ts").spawn();
-        // The mere fact that spawn returned means INKSTONE_LISTENING was
-        // emitted, which means `sqlx::migrate!()` succeeded against the
-        // already-migrated DB. Nothing else to do here.
+        // spawn returning means INKSTONE_LISTENING fired, i.e. `sqlx::migrate!()`
+        // succeeded against the already-migrated DB.
         core.kill();
     }
 

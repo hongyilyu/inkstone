@@ -7,34 +7,18 @@ export interface WorkspaceShellProps {
 	nav: ReactNode;
 	/** Center content. Supplies its own landmark (e.g. a `<main>`). */
 	children: ReactNode;
-	/**
-	 * Right-rail content. When omitted the shell renders a plain framed card —
-	 * no carved bay and no collapse control, because there is nothing to
-	 * collapse. When present, the card's top edge always carries the recess for
-	 * the floating toggle and a collapsible third grid track holds the rail (so
-	 * the card's shape is constant whether the rail is open or collapsed).
-	 */
+	/** Right-rail content. Omitted: plain framed card, no bay or toggle. Present: card carries the recess and a collapsible third grid track. */
 	rightRail?: ReactNode;
 	/** Width of the open right rail. */
 	rightRailWidth?: string;
 	/** Names the collapse control: "Close <railLabel>" / "Open <railLabel>". */
 	railLabel?: string;
-	/**
-	 * Controlled collapse. Omit both to let the shell own the state (e.g. chat's
-	 * persistent rail). Provide both to drive it (e.g. the Library mounts the rail
-	 * on selection — omitting it otherwise — and lets the user collapse it).
-	 */
+	/** Controlled collapse. Omit both to let the shell own the state; provide both to drive it. */
 	collapsed?: boolean;
 	onCollapsedChange?: (next: boolean) => void;
 }
 
-/**
- * The three-region workspace frame shared by the chat (`/`) and Library
- * (`/library`) surfaces (ADR-0021): a fixed left nav, a framed middle "card",
- * and an optional collapsible right rail. Router-free and presentational so it
- * renders standalone in tests; pages pass the slots and decide the rail's
- * content.
- */
+/** Three-region workspace frame shared by chat and Library (ADR-0021): fixed left nav, framed middle card, optional collapsible right rail. */
 export function WorkspaceShell({
 	nav,
 	children,
@@ -56,15 +40,7 @@ export function WorkspaceShell({
 		onCollapsedChange?.(next);
 	};
 
-	// The card's top-right is carved into a "bay" that holds the floating control
-	// whenever a rail is present — present or collapsed, the card shape is the
-	// same, so the bay never pops in or out as the rail toggles. We measure the
-	// card and write the clip-path AND the matching border outline straight to
-	// the DOM inside the ResizeObserver (no React state). Routing it through state
-	// lagged a frame behind the width during the collapse animation, which made
-	// the carved edge flicker; a direct style/attr write lands in the same frame
-	// as the resize. With no rail at all (e.g. the Library's Today overview) the
-	// card is a plain rounded rectangle.
+	// Direct DOM write of clip-path + border (no React state) avoids a frame of flicker — see docs/design/web-ui-components.md
 	useLayoutEffect(() => {
 		const el = cardRef.current;
 		if (!el) return;
@@ -74,9 +50,7 @@ export function WorkspaceShell({
 			const clip = `path("${d}")`;
 			el.style.clipPath = clip;
 			borderRef.current?.setAttribute("d", d);
-			// Clip the border SVG to the SAME shape so only the INNER half of the
-			// stroke shows. Otherwise the stroke straddles the card edge and its
-			// outer half is cut off-screen when the card sits at the viewport edge.
+			// Clip the border SVG to the same shape so only the inner half of the stroke shows, never cut at the viewport edge.
 			const svg = borderRef.current?.ownerSVGElement;
 			if (svg) svg.style.clipPath = clip;
 		};
@@ -91,11 +65,7 @@ export function WorkspaceShell({
 		<div
 			className="grid h-full bg-sidebar text-sidebar-foreground motion-safe:transition-[grid-template-columns] motion-safe:duration-300 motion-safe:ease-out-quint"
 			style={{
-				// Always keep a thin strip of chrome on the right (never 0px) so the
-				// card's rounded right edge and its frame stay visible against the
-				// sidebar — the boundary reads the same whether the rail is open,
-				// collapsed to a sliver, or absent entirely (the Library with nothing
-				// selected). The strip only ever shows bg, no content.
+				// Keep a thin chrome strip on the right (never 0px) so the card's rounded edge and frame stay visible against the sidebar.
 				gridTemplateColumns: `16rem 1fr ${
 					hasRail ? (railCollapsed ? "0.5rem" : rightRailWidth) : "0.5rem"
 				}`,
@@ -119,9 +89,7 @@ export function WorkspaceShell({
 						/>
 						{children}
 					</div>
-					{/* Frame that follows the (possibly carved) card outline (a plain CSS
-					    border can't trace the clip-path). The SVG is clipped to the same
-					    path so only a crisp inner ~1px shows, never cut at the edge. */}
+					{/* Frame tracing the (possibly carved) card outline — a plain CSS border can't follow the clip-path. */}
 					<svg
 						className="pointer-events-none absolute inset-0 size-full text-foreground/40"
 						aria-hidden
@@ -149,8 +117,7 @@ export function WorkspaceShell({
 				<div
 					data-testid="workspace-right-rail"
 					className="overflow-hidden"
-					// Collapsed, the rail is a visual sliver only — drop it from the a11y
-					// tree and tab order so nothing hidden stays reachable.
+					// Collapsed: a visual sliver only — drop from the a11y tree and tab order.
 					aria-hidden={railCollapsed || undefined}
 					inert={railCollapsed || undefined}
 				>
