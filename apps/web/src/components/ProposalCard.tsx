@@ -2,14 +2,37 @@ import {
 	BookOpenText,
 	CalendarDays,
 	Check,
+	FolderKanban,
+	type LucideIcon,
+	ListTodo,
 	Loader2,
 	Pencil,
 	RotateCcw,
+	User,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { PendingProposal } from "@/store/chat";
 import { Card } from "./ui/card.js";
 import { Input } from "./ui/input.js";
+
+// The glyph for a proposal's mutation kind, matching the canonical entity
+// iconography (KIND_META in lib/libraryItems) so a Person proposal wears the
+// same mark it has in the Library, command palette, and detail panels. Kinds
+// differ by glyph + label, never colour alone (PRODUCT.md a11y). Journal-entry
+// mutations keep the journal book.
+function proposalGlyph(mutationKind: string): LucideIcon {
+	switch (mutationKind) {
+		case "create_person":
+			return User;
+		case "create_project":
+			return FolderKanban;
+		case "create_todo":
+		case "update_todo":
+			return ListTodo;
+		default:
+			return BookOpenText;
+	}
+}
 
 type JournalEntryPayload = {
 	occurred_at: string;
@@ -174,6 +197,10 @@ export function ProposalCard({
 		isCreateProjectProposal ||
 		isCreateTodoProposal ||
 		isUpdateTodoProposal;
+	// Header + accept-button glyph track the kind (Person/Project/Todo/Journal),
+	// so the mark always matches the thing being proposed.
+	const HeaderGlyph = proposalGlyph(mutation_kind);
+	const AcceptGlyph = isGtdProposal ? HeaderGlyph : CalendarDays;
 	const title = isJournalEntryProposal ? "Journal Entry" : mutation_kind;
 	const gtdSummary = isCreatePersonProposal
 		? textField(payload, "name") || "New Person"
@@ -364,7 +391,7 @@ export function ProposalCard({
 					className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-secondary-foreground"
 					aria-hidden
 				>
-					<BookOpenText className="size-4" />
+					<HeaderGlyph className="size-4" />
 				</span>
 				<div className="min-w-0">
 					<p className="text-xs font-medium text-muted-foreground">
@@ -530,7 +557,7 @@ export function ProposalCard({
 									</>
 								) : (
 									<>
-										<CalendarDays className="size-4" aria-hidden />
+										<AcceptGlyph className="size-4" aria-hidden />
 										{acceptLabel}
 									</>
 								)}
