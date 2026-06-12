@@ -81,6 +81,11 @@ export interface Recipe extends LibraryItemBase {
 
 export type LibraryItem = JournalEntry | Person | Project | Todo | Recipe;
 
+export interface JournalEntryDay {
+	day: string;
+	entries: JournalEntry[];
+}
+
 interface KindMeta {
 	/** Singular noun, e.g. "Person". */
 	label: string;
@@ -243,6 +248,28 @@ export function activeProjectItems(all: LibraryItem[]): Project[] {
 	return all
 		.filter((e): e is Project => e.kind === "project" && e.status !== "done")
 		.sort((a, b) => b.recency - a.recency);
+}
+
+export function groupJournalEntriesByDay(
+	entries: JournalEntry[],
+): JournalEntryDay[] {
+	const byDay = new Map<string, JournalEntry[]>();
+	for (const entry of entries) {
+		const day = entry.occurredAt.slice(0, 10);
+		const dayEntries = byDay.get(day);
+		if (dayEntries) dayEntries.push(entry);
+		else byDay.set(day, [entry]);
+	}
+
+	return [...byDay.entries()]
+		.sort(([a], [b]) => b.localeCompare(a))
+		.map(([day, dayEntries]) => ({
+			day,
+			entries: [...dayEntries].sort(
+				(a, b) =>
+					a.occurredAt.localeCompare(b.occurredAt) || a.id.localeCompare(b.id),
+			),
+		}));
 }
 
 export function projectProgress(

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { entities } from "@/data/mock/entities";
 import {
 	dueSoonTodos,
+	groupJournalEntriesByDay,
 	itemsNeedingReview,
+	type JournalEntry,
 	libraryItemKindForSlug,
 	libraryItemSubtitle,
 	libraryItemTitle,
@@ -21,6 +23,20 @@ const byId = (id: string) => {
 	if (!e) throw new Error(`missing fixture ${id}`);
 	return e;
 };
+
+const journalEntry = (
+	id: string,
+	occurredAt: string,
+	body: string,
+	recency: number,
+): JournalEntry => ({
+	id,
+	kind: "journal_entry",
+	occurredAt,
+	body,
+	recency,
+	createdAt: "fixture",
+});
 
 describe("library item helpers", () => {
 	it("titles and subtitles read the right field per kind", () => {
@@ -98,6 +114,25 @@ describe("library item helpers", () => {
 		expect(recent).toHaveLength(3);
 		const recencies = recent.map((e) => e.recency);
 		expect(recencies).toEqual([...recencies].sort((a, b) => b - a));
+	});
+
+	it("groups Journal Entries by occurred local day and sorts within each day by occurred time", () => {
+		const groups = groupJournalEntriesByDay([
+			journalEntry("late", "2026-06-10T18:30:00", "Late note", 40),
+			journalEntry("newer-created", "2026-06-10T09:00:00", "Morning note", 90),
+			journalEntry("next-day", "2026-06-11T08:00:00", "Next day", 10),
+			journalEntry("previous-day", "2026-06-09T20:00:00", "Previous day", 99),
+		]);
+
+		expect(groups.map((group) => group.day)).toEqual([
+			"2026-06-11",
+			"2026-06-10",
+			"2026-06-09",
+		]);
+		expect(groups[1]?.entries.map((entry) => entry.id)).toEqual([
+			"newer-created",
+			"late",
+		]);
 	});
 
 	it("computes project progress from its todos", () => {

@@ -212,6 +212,57 @@ describe("EntityCollection", () => {
 		);
 	});
 
+	it("groups Journal Entries by occurred day and orders rows by occurred time", async () => {
+		renderCollection("journal_entry", {
+			journalEntries: [
+				{
+					id: "01900000-0000-7000-8000-0000000000c1",
+					type: "journal_entry",
+					data: {
+						occurred_at: "2026-06-10T18:30:00",
+						body: [{ type: "text", text: "Evening retro" }],
+					},
+					created_at: 1_700_000_300_000,
+					updated_at: 1_700_000_300_000,
+				},
+				{
+					id: "01900000-0000-7000-8000-0000000000c2",
+					type: "journal_entry",
+					data: {
+						occurred_at: "2026-06-10T09:00:00",
+						body: [{ type: "text", text: "Morning sync" }],
+					},
+					created_at: 1_700_000_100_000,
+					updated_at: 1_700_000_100_000,
+				},
+				{
+					id: "01900000-0000-7000-8000-0000000000c3",
+					type: "journal_entry",
+					data: {
+						occurred_at: "2026-06-11T08:00:00",
+						body: [{ type: "text", text: "Next day note" }],
+					},
+					created_at: 1_700_000_000_000,
+					updated_at: 1_700_000_000_000,
+				},
+			],
+		});
+
+		expect(await screen.findByText("Next day note")).toBeInTheDocument();
+		expect(
+			screen
+				.getAllByRole("heading", { level: 2 })
+				.map((heading) => heading.textContent),
+		).toEqual(["2026-06-11", "2026-06-10"]);
+
+		const morning = screen.getByText("Morning sync");
+		const evening = screen.getByText("Evening retro");
+		expect(
+			morning.compareDocumentPosition(evening) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+	});
+
 	it("shows an error for malformed live Journal Entry rows", async () => {
 		renderCollection("journal_entry", {
 			journalEntries: [
