@@ -33,6 +33,7 @@ function makeRuntime(
 	people: EntityListResult["entities"],
 	todos: EntityListResult["entities"],
 	journalEntries: EntityListResult["entities"],
+	projects: EntityListResult["entities"] = [],
 ) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -46,6 +47,7 @@ function makeRuntime(
 			if (type === "journal_entry") {
 				return Effect.succeed({ entities: journalEntries });
 			}
+			if (type === "project") return Effect.succeed({ entities: projects });
 			return Effect.succeed({ entities: [] });
 		},
 		subscribeRun: () => unused,
@@ -88,6 +90,7 @@ function renderCollection(
 		journalEntries?: EntityListResult["entities"];
 		people?: EntityListResult["entities"];
 		todos?: EntityListResult["entities"];
+		projects?: EntityListResult["entities"];
 	},
 	overrides?: { selectedId?: string | null; onSelect?: (id: string) => void },
 ) {
@@ -95,6 +98,7 @@ function renderCollection(
 		rows.people ?? [],
 		rows.todos ?? [],
 		rows.journalEntries ?? [],
+		rows.projects ?? [],
 	);
 	const client = new QueryClient({
 		defaultOptions: {
@@ -261,6 +265,44 @@ describe("EntityCollection", () => {
 			morning.compareDocumentPosition(evening) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
+	});
+
+	it("lists mixed Journal Entry bodies using resolved ref labels in order", async () => {
+		renderCollection("journal_entry", {
+			journalEntries: [
+				{
+					id: "01900000-0000-7000-8000-0000000000d1",
+					type: "journal_entry",
+					data: {
+						occurred_at: "2026-06-10T18:30:00",
+						body: [
+							{ type: "text", text: "Met " },
+							{
+								type: "entity_ref",
+								ref_id: "01900000-0000-7000-8000-0000000000f1",
+							},
+							{ type: "text", text: " at school." },
+						],
+					},
+					refs: [
+						{
+							id: "01900000-0000-7000-8000-0000000000f1",
+							source_entity_id: "01900000-0000-7000-8000-0000000000d1",
+							target_entity_id: "01900000-0000-7000-8000-0000000000a1",
+							target_entity_type: "person",
+							target_title: "Ada Lovelace",
+							label_snapshot: "Ada",
+						},
+					],
+					created_at: 1_700_000_300_000,
+					updated_at: 1_700_000_300_000,
+				},
+			],
+		});
+
+		expect(
+			await screen.findByText("Met Ada Lovelace at school."),
+		).toBeInTheDocument();
 	});
 
 	it("shows an error for malformed live Journal Entry rows", async () => {

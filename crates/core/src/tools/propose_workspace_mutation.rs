@@ -20,6 +20,7 @@ pub enum WorkspaceMutationKind {
     CreateJournalEntry,
     UpdateJournalEntry,
     DeleteJournalEntry,
+    ReferenceExistingEntityFromJournalEntry,
 }
 
 /// Wire arguments: `mutation_kind` names the mutation; `payload` is its body,
@@ -40,6 +41,11 @@ pub enum Input {
     },
     DeleteJournalEntry {
         payload: DeleteJournalEntryPayload,
+        #[serde(default)]
+        rationale: Option<String>,
+    },
+    ReferenceExistingEntityFromJournalEntry {
+        payload: ReferenceExistingEntityFromJournalEntryPayload,
         #[serde(default)]
         rationale: Option<String>,
     },
@@ -87,6 +93,19 @@ pub struct DeleteJournalEntryPayload {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct ReferenceExistingEntityFromJournalEntryPayload {
+    pub source_entity_id: String,
+    pub target_entity_id: String,
+    #[serde(default)]
+    pub label_snapshot: Option<String>,
+    #[schemars(length(min = 1))]
+    pub body: Vec<ReferenceExistingEntityFromJournalEntryBodyNode>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
 #[allow(dead_code)]
@@ -110,6 +129,19 @@ pub enum UpdateJournalEntryBodyNode {
         #[schemars(length(min = 1))]
         ref_id: String,
     },
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub enum ReferenceExistingEntityFromJournalEntryBodyNode {
+    Text {
+        #[schemars(length(min = 1))]
+        text: String,
+    },
+    /// Placeholder rewritten by Core to the generated or reused EntityRef id.
+    EntityRef {},
 }
 
 pub fn descriptor() -> CoreToolDescriptor {
@@ -214,6 +246,13 @@ mod tests {
         assert!(
             d.json_schema.to_string().contains("create_journal_entry"),
             "schema exposes the closed mutation_kind set, got {}",
+            d.json_schema
+        );
+        assert!(
+            d.json_schema
+                .to_string()
+                .contains("reference_existing_entity_from_journal_entry"),
+            "schema exposes the reference mutation kind, got {}",
             d.json_schema
         );
     }
@@ -393,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_keeps_create_text_only_but_allows_update_entity_refs() {
+    fn descriptor_keeps_create_text_only_but_allows_update_and_reference_entity_refs() {
         let d = descriptor();
 
         let create =
@@ -410,9 +449,21 @@ mod tests {
                     d.json_schema
                 )
             });
+        let reference = top_level_variant(
+            &d.json_schema,
+            "reference_existing_entity_from_journal_entry",
+        )
+        .unwrap_or_else(|| {
+            panic!(
+                "schema must bind reference_existing_entity_from_journal_entry at top level: {}",
+                d.json_schema
+            )
+        });
 
         let create_body = body_item_schema(&d.json_schema, payload_schema(&d.json_schema, create));
         let update_body = body_item_schema(&d.json_schema, payload_schema(&d.json_schema, update));
+        let reference_payload = payload_schema(&d.json_schema, reference);
+        let reference_body = body_item_schema(&d.json_schema, reference_payload);
 
         assert!(
             !schema_tree_contains(&d.json_schema, create_body, "entity_ref"),
@@ -422,6 +473,27 @@ mod tests {
         assert!(
             schema_tree_contains(&d.json_schema, update_body, "entity_ref"),
             "update_journal_entry body must allow entity_ref nodes: {}",
+            d.json_schema
+        );
+        assert!(
+            schema_tree_contains(&d.json_schema, reference_body, "entity_ref"),
+            "reference_existing_entity_from_journal_entry body must allow an entity_ref placeholder: {}",
+            d.json_schema
+        );
+        let required = reference_payload["required"].as_array().unwrap_or_else(|| {
+            panic!(
+                "reference payload must declare required fields: {}",
+                d.json_schema
+            )
+        });
+        assert!(
+            required
+                .iter()
+                .any(|field| field.as_str() == Some("source_entity_id"))
+                && required
+                    .iter()
+                    .any(|field| field.as_str() == Some("target_entity_id")),
+            "reference payload must require source and target ids: {}",
             d.json_schema
         );
     }

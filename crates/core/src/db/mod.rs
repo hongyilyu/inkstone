@@ -109,12 +109,22 @@ pub struct EntityRow {
     pub data: serde_json::Value,
     pub created_at: i64,
     pub updated_at: i64,
+    pub refs: Vec<ResolvedEntityRef>,
+}
+
+pub struct ResolvedEntityRef {
+    pub id: String,
+    pub source_entity_id: String,
+    pub target_entity_id: String,
+    pub target_entity_type: String,
+    pub target_title: Option<String>,
+    pub label_snapshot: Option<String>,
 }
 
 /// Read every accepted Entity of `entity_type` for `entity/list`, newest-first.
 pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<Vec<EntityRow>> {
     let rows = queries::list_by_type(pool, entity_type).await?;
-    Ok(rows
+    let mut rows = rows
         .into_iter()
         .map(|(id, r#type, data, created_at, updated_at)| EntityRow {
             id,
@@ -122,8 +132,60 @@ pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<
             data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
             created_at,
             updated_at,
+            refs: Vec::new(),
         })
+        .collect::<Vec<_>>();
+
+    if entity_type == "journal_entry" {
+        for row in &mut rows {
+            row.refs = resolved_entity_refs_for_source(pool, &row.id).await?;
+        }
+    }
+
+    Ok(rows)
+}
+
+async fn resolved_entity_refs_for_source(
+    pool: &SqlitePool,
+    source_entity_id: &str,
+) -> sqlx::Result<Vec<ResolvedEntityRef>> {
+    let rows = queries::entity_refs_for_source(pool, source_entity_id).await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                id,
+                source_entity_id,
+                target_entity_id,
+                target_entity_type,
+                target_data,
+                label_snapshot,
+            )| {
+                let data = serde_json::from_str(&target_data).unwrap_or(serde_json::Value::Null);
+                ResolvedEntityRef {
+                    id,
+                    source_entity_id,
+                    target_entity_id,
+                    target_title: entity_title(&target_entity_type, &data),
+                    target_entity_type,
+                    label_snapshot,
+                }
+            },
+        )
         .collect())
+}
+
+fn entity_title(entity_type: &str, data: &serde_json::Value) -> Option<String> {
+    let field = match entity_type {
+        "person" | "project" => "name",
+        "todo" => "title",
+        _ => return None,
+    };
+    data.get(field)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// One Journal Entry returned to the Worker for same-Thread correction context.
@@ -582,6 +644,10 @@ pub async fn journal_entry_target_is_valid(
     queries::journal_entry_target_is_valid(pool, run_id, entity_id).await
 }
 
+pub async fn entity_type_by_id(pool: &SqlitePool, entity_id: &str) -> sqlx::Result<Option<String>> {
+    queries::entity_type_by_id(pool, entity_id).await
+}
+
 /// Failure modes of [`apply_proposal`] the caller must distinguish (review M1).
 #[derive(Debug)]
 pub enum ApplyError {
@@ -674,6 +740,14 @@ pub async fn apply_proposal(
                 ApplyError::InvalidMutation(format!("{mutation_kind} requires a target entity id"))
             })?
         }
+        "reference_existing_entity_from_journal_entry" => {
+            target_entity_id.map(str::to_string).ok_or_else(|| {
+                ApplyError::InvalidMutation(
+                    "reference_existing_entity_from_journal_entry requires a source entity id"
+                        .to_string(),
+                )
+            })?
+        }
         _ => {
             return Err(ApplyError::InvalidMutation(format!(
                 "unsupported mutation_kind {mutation_kind:?}"
@@ -682,16 +756,6 @@ pub async fn apply_proposal(
     };
     let edited_str = edited_payload.map(|v| v.to_string());
     let effective_payload = edited_payload.unwrap_or(payload);
-    let data_str = match mutation_kind {
-        "delete_journal_entry" => None,
-        "create_journal_entry" | "update_journal_entry" => {
-            // Effective entity data: edited payload when present, else the
-            // proposed data. For updates, `entity_id` targets the row but is not
-            // part of Journal Entry data.
-            Some(journal_entry_data_payload(mutation_kind, effective_payload).to_string())
-        }
-        _ => unreachable!("mutation_kind validated above"),
-    };
 
     let mut tx = pool.begin().await?;
 
@@ -724,6 +788,70 @@ pub async fn apply_proposal(
         }
     }
 
+    let reference_ref_id = if mutation_kind == "reference_existing_entity_from_journal_entry" {
+        let target_entity_id = crate::entities::reference_target_entity_id(effective_payload)
+            .ok_or_else(|| {
+                ApplyError::InvalidMutation(
+                    "reference_existing_entity_from_journal_entry requires a target entity id"
+                        .to_string(),
+                )
+            })?;
+        let label_snapshot = effective_payload
+            .get("label_snapshot")
+            .and_then(serde_json::Value::as_str);
+        let proposed_ref_id = Uuid::now_v7().to_string();
+        queries::insert_entity_ref(
+            &mut *tx,
+            &proposed_ref_id,
+            &entity_id,
+            target_entity_id,
+            label_snapshot,
+            now_ms,
+        )
+        .await?;
+        Some(
+            queries::entity_ref_id_for_source_target(&mut *tx, &entity_id, target_entity_id)
+                .await?
+                .ok_or_else(|| {
+                    ApplyError::InvalidMutation(
+                        "failed to create or find entity_ref for source and target".to_string(),
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+
+    let data_str = match mutation_kind {
+        "delete_journal_entry" => None,
+        "create_journal_entry" | "update_journal_entry" => {
+            // Effective entity data: edited payload when present, else the
+            // proposed data. For updates, `entity_id` targets the row but is not
+            // part of Journal Entry data.
+            Some(journal_entry_data_payload(mutation_kind, effective_payload).to_string())
+        }
+        "reference_existing_entity_from_journal_entry" => {
+            let ref_id = reference_ref_id
+                .as_deref()
+                .expect("reference mutation creates or reuses an entity_ref");
+            let current_data = queries::current_journal_entry_by_id(&mut *tx, &entity_id)
+                .await?
+                .ok_or(ApplyError::Sql(sqlx::Error::RowNotFound))?
+                .1;
+            let current_data =
+                serde_json::from_str(&current_data).unwrap_or(serde_json::Value::Null);
+            Some(
+                crate::entities::reference_existing_entity_data_payload(
+                    &current_data,
+                    effective_payload,
+                    ref_id,
+                )
+                .to_string(),
+            )
+        }
+        _ => unreachable!("mutation_kind validated above"),
+    };
+
     match mutation_kind {
         "delete_journal_entry" => {
             let deleted = queries::delete_entity(&mut *tx, &entity_id).await?;
@@ -731,7 +859,7 @@ pub async fn apply_proposal(
                 return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
             }
         }
-        "update_journal_entry" => {
+        "update_journal_entry" | "reference_existing_entity_from_journal_entry" => {
             let data_str = data_str
                 .as_deref()
                 .expect("non-delete mutations always carry entity data");

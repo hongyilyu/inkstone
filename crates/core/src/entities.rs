@@ -1,6 +1,7 @@
 //! Workspace mutation schemas (ADR-0016, ADR-0025). A Proposal's payload is
 //! validated by `mutation_kind` before it is durably applied. Supported
-//! mutations create/update/delete a `journal_entry` Entity (plus provenance).
+//! mutations create/update/delete a `journal_entry` Entity (plus provenance)
+//! and add inline references from Journal Entries to existing Entities.
 
 use serde_json::Value;
 use uuid::Uuid;
@@ -18,6 +19,9 @@ pub(crate) fn validate(mutation_kind: &str, payload: &Value) -> Result<(), Strin
         "create_journal_entry" => validate_journal_entry(payload),
         "update_journal_entry" => validate_update_journal_entry(payload),
         "delete_journal_entry" => validate_delete_journal_entry(payload),
+        "reference_existing_entity_from_journal_entry" => {
+            validate_reference_existing_entity_from_journal_entry(payload)
+        }
         _ => Err(format!("mutation_kind {mutation_kind:?} not supported")),
     }
 }
@@ -49,6 +53,20 @@ pub(crate) fn render_accept(mutation_kind: &str, payload: &Value) -> String {
                 .unwrap_or("unknown");
             format!("Accepted. Deleted Journal Entry (entity_id={entity_id}).")
         }
+        "reference_existing_entity_from_journal_entry" => {
+            let source_entity_id = payload
+                .get("source_entity_id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let target_entity_id = payload
+                .get("target_entity_id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let body = journal_body_text(payload);
+            format!(
+                "Accepted. Referenced Entity (source_entity_id={source_entity_id}, target_entity_id={target_entity_id}, body={body})."
+            )
+        }
         other => unreachable!("render_accept for unvalidated mutation_kind {other:?}"),
     }
 }
@@ -71,10 +89,12 @@ fn journal_body_text(payload: &Value) -> String {
 fn journal_body_node_text(node: &Value) -> Option<String> {
     match node.get("type").and_then(Value::as_str) {
         Some("text") => node.get("text").and_then(Value::as_str).map(str::to_string),
-        Some("entity_ref") => node
-            .get("ref_id")
-            .and_then(Value::as_str)
-            .map(|ref_id| format!("[entity_ref:{ref_id}]")),
+        Some("entity_ref") => Some(
+            node.get("ref_id")
+                .and_then(Value::as_str)
+                .map(|ref_id| format!("[entity_ref:{ref_id}]"))
+                .unwrap_or_else(|| "[entity_ref]".to_string()),
+        ),
         _ => None,
     }
 }
@@ -83,16 +103,20 @@ fn journal_body_node_text(node: &Value) -> Option<String> {
 /// Type + its first revision, dispatched on `mutation_kind`.
 pub(crate) fn schema_version(mutation_kind: &str) -> i64 {
     match mutation_kind {
-        "create_journal_entry" | "update_journal_entry" | "delete_journal_entry" => {
-            JOURNAL_ENTRY_SCHEMA_VERSION
-        }
+        "create_journal_entry"
+        | "update_journal_entry"
+        | "delete_journal_entry"
+        | "reference_existing_entity_from_journal_entry" => JOURNAL_ENTRY_SCHEMA_VERSION,
         other => unreachable!("schema_version for unvalidated mutation_kind {other:?}"),
     }
 }
 
 pub(crate) fn entity_type(mutation_kind: &str) -> &'static str {
     match mutation_kind {
-        "create_journal_entry" | "update_journal_entry" | "delete_journal_entry" => "journal_entry",
+        "create_journal_entry"
+        | "update_journal_entry"
+        | "delete_journal_entry"
+        | "reference_existing_entity_from_journal_entry" => "journal_entry",
         other => unreachable!("entity_type for unvalidated mutation_kind {other:?}"),
     }
 }
@@ -100,7 +124,9 @@ pub(crate) fn entity_type(mutation_kind: &str) -> &'static str {
 pub(crate) fn source_relation_from_user_message(mutation_kind: &str) -> Option<&'static str> {
     match mutation_kind {
         "create_journal_entry" => Some("created_from"),
-        "update_journal_entry" => Some("updated_from"),
+        "update_journal_entry" | "reference_existing_entity_from_journal_entry" => {
+            Some("updated_from")
+        }
         "delete_journal_entry" => None,
         other => unreachable!("source relation for unvalidated mutation_kind {other:?}"),
     }
@@ -111,15 +137,23 @@ pub(crate) fn target_entity_id<'a>(mutation_kind: &str, payload: &'a Value) -> O
         "update_journal_entry" | "delete_journal_entry" => {
             payload.get("entity_id").and_then(Value::as_str)
         }
+        "reference_existing_entity_from_journal_entry" => {
+            payload.get("source_entity_id").and_then(Value::as_str)
+        }
         "create_journal_entry" => None,
         other => unreachable!("target entity for unvalidated mutation_kind {other:?}"),
     }
 }
 
+pub(crate) fn reference_target_entity_id(payload: &Value) -> Option<&str> {
+    payload.get("target_entity_id").and_then(Value::as_str)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BodyNodePolicy {
     TextOnly,
-    TextOrEntityRef,
+    TextOrExistingEntityRef,
+    TextOrNewEntityRef,
 }
 
 fn validate_journal_entry(payload: &Value) -> Result<(), String> {
@@ -187,11 +221,14 @@ fn validate_body_node(
 
     match node_type {
         "text" => validate_text_body_node(node),
-        "entity_ref" if body_policy == BodyNodePolicy::TextOrEntityRef => {
+        "entity_ref" if body_policy == BodyNodePolicy::TextOrExistingEntityRef => {
             validate_entity_ref_body_node(node)
         }
+        "entity_ref" if body_policy == BodyNodePolicy::TextOrNewEntityRef => {
+            validate_new_entity_ref_body_node(node)
+        }
         "entity_ref" => Err("body supports only text nodes on create_journal_entry".to_string()),
-        _ if body_policy == BodyNodePolicy::TextOrEntityRef => {
+        _ if body_policy != BodyNodePolicy::TextOnly => {
             Err("body node type must be text or entity_ref".to_string())
         }
         _ => Err("body supports only text nodes on create_journal_entry".to_string()),
@@ -204,13 +241,18 @@ fn validate_text_body_node(node: &serde_json::Map<String, Value>) -> Result<(), 
 }
 
 fn validate_entity_ref_body_node(node: &serde_json::Map<String, Value>) -> Result<(), String> {
-    let ref_id = required_body_node_string(
-        node,
-        &["type", "ref_id"],
-        "ref_id",
-        "entity_ref ref_id",
-    )?;
+    let ref_id =
+        required_body_node_string(node, &["type", "ref_id"], "ref_id", "entity_ref ref_id")?;
     Uuid::parse_str(ref_id).map_err(|_| "entity_ref ref_id must be a UUID".to_string())?;
+    Ok(())
+}
+
+fn validate_new_entity_ref_body_node(node: &serde_json::Map<String, Value>) -> Result<(), String> {
+    for key in node.keys() {
+        if key != "type" {
+            return Err(format!("unsupported body node field {key:?}"));
+        }
+    }
     Ok(())
 }
 
@@ -254,8 +296,96 @@ fn validate_update_journal_entry(payload: &Value) -> Result<(), String> {
     }
     validate_journal_entry_payload(
         &Value::Object(journal_payload),
-        BodyNodePolicy::TextOrEntityRef,
+        BodyNodePolicy::TextOrExistingEntityRef,
     )
+}
+
+fn validate_reference_existing_entity_from_journal_entry(payload: &Value) -> Result<(), String> {
+    let obj = payload
+        .as_object()
+        .ok_or_else(|| "reference payload must be a JSON object".to_string())?;
+
+    for key in obj.keys() {
+        if !matches!(
+            key.as_str(),
+            "source_entity_id" | "target_entity_id" | "label_snapshot" | "body"
+        ) {
+            return Err(format!("unsupported reference field {key:?}"));
+        }
+    }
+
+    for field in ["source_entity_id", "target_entity_id"] {
+        let value = match obj.get(field) {
+            Some(Value::String(value)) if !value.trim().is_empty() => value,
+            Some(Value::String(_)) => return Err(format!("{field} must not be empty")),
+            Some(_) => return Err(format!("{field} must be a string")),
+            None => return Err(format!("{field} is required")),
+        };
+        Uuid::parse_str(value).map_err(|_| format!("{field} must be a UUID"))?;
+    }
+
+    if let Some(label_snapshot) = obj.get("label_snapshot") {
+        match label_snapshot {
+            Value::String(value) if !value.trim().is_empty() => {}
+            Value::String(_) => return Err("label_snapshot must not be empty".to_string()),
+            _ => return Err("label_snapshot must be a string".to_string()),
+        }
+    }
+
+    let body = obj
+        .get("body")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "body must be an array".to_string())?;
+    if body.is_empty() {
+        return Err("body must not be empty".to_string());
+    }
+    for node in body {
+        let node = node
+            .as_object()
+            .ok_or_else(|| "body nodes must be objects".to_string())?;
+        validate_body_node(node, BodyNodePolicy::TextOrNewEntityRef)?;
+    }
+
+    let ref_count = body
+        .iter()
+        .filter(|node| node.get("type").and_then(Value::as_str) == Some("entity_ref"))
+        .count();
+    if ref_count != 1 {
+        return Err("body must contain exactly one entity_ref node".to_string());
+    }
+
+    Ok(())
+}
+
+pub(crate) fn reference_existing_entity_data_payload(
+    current_data: &Value,
+    payload: &Value,
+    ref_id: &str,
+) -> Value {
+    let mut data = current_data.as_object().cloned().unwrap_or_default();
+    let Some(obj) = payload.as_object() else {
+        return Value::Object(data);
+    };
+
+    let body = obj
+        .get("body")
+        .and_then(Value::as_array)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .map(|node| {
+                    if node.get("type").and_then(Value::as_str) == Some("entity_ref") {
+                        serde_json::json!({ "type": "entity_ref", "ref_id": ref_id })
+                    } else {
+                        node.clone()
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    data.insert("body".to_string(), Value::Array(body));
+
+    Value::Object(data)
 }
 
 pub(crate) fn body_entity_ref_ids(payload: &Value) -> Vec<&str> {
@@ -524,6 +654,88 @@ mod tests {
     }
 
     #[test]
+    fn reference_existing_entity_accepts_one_new_entity_ref_placeholder() {
+        assert!(
+            validate(
+                "reference_existing_entity_from_journal_entry",
+                &json!({
+                    "source_entity_id": Uuid::now_v7().to_string(),
+                    "target_entity_id": Uuid::now_v7().to_string(),
+                    "label_snapshot": "Ada",
+                    "body": [
+                        { "type": "text", "text": "Met " },
+                        { "type": "entity_ref" },
+                        { "type": "text", "text": " at school." }
+                    ]
+                })
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn reference_existing_entity_rejects_missing_or_multiple_placeholders() {
+        let reason = validate(
+            "reference_existing_entity_from_journal_entry",
+            &json!({
+                "source_entity_id": Uuid::now_v7().to_string(),
+                "target_entity_id": Uuid::now_v7().to_string(),
+                "body": [{ "type": "text", "text": "Met Ada." }]
+            }),
+        )
+        .expect_err("reference mutation needs one placeholder");
+        assert!(
+            reason.contains("exactly one entity_ref"),
+            "reason names the placeholder count: {reason}"
+        );
+
+        let reason = validate(
+            "reference_existing_entity_from_journal_entry",
+            &json!({
+                "source_entity_id": Uuid::now_v7().to_string(),
+                "target_entity_id": Uuid::now_v7().to_string(),
+                "body": [
+                    { "type": "entity_ref" },
+                    { "type": "entity_ref" }
+                ]
+            }),
+        )
+        .expect_err("reference mutation allows one reference per payload");
+        assert!(
+            reason.contains("exactly one entity_ref"),
+            "reason names the placeholder count: {reason}"
+        );
+    }
+
+    #[test]
+    fn reference_existing_entity_data_payload_rewrites_placeholder() {
+        let ref_id = Uuid::now_v7().to_string();
+        let data = reference_existing_entity_data_payload(
+            &json!({
+                "occurred_at": "2026-06-10T10:00:00",
+                "ended_at": "2026-06-10T10:15:00",
+                "body": [{ "type": "text", "text": "Old body." }]
+            }),
+            &json!({
+                "source_entity_id": Uuid::now_v7().to_string(),
+                "target_entity_id": Uuid::now_v7().to_string(),
+                "label_snapshot": "Ada",
+                "body": [
+                    { "type": "text", "text": "Met " },
+                    { "type": "entity_ref" }
+                ]
+            }),
+            &ref_id,
+        );
+        assert!(data.get("source_entity_id").is_none());
+        assert!(data.get("target_entity_id").is_none());
+        assert!(data.get("label_snapshot").is_none());
+        assert_eq!(data["occurred_at"].as_str(), Some("2026-06-10T10:00:00"));
+        assert_eq!(data["ended_at"].as_str(), Some("2026-06-10T10:15:00"));
+        assert_eq!(data["body"][1]["ref_id"].as_str(), Some(ref_id.as_str()));
+    }
+
+    #[test]
     fn rejects_extra_body_node_fields_and_empty_ended_at() {
         let reason = validate_journal_entry(&json!({
             "occurred_at": "2026-06-10T10:30:00",
@@ -641,6 +853,10 @@ mod tests {
         );
         assert_eq!(
             schema_version("delete_journal_entry"),
+            JOURNAL_ENTRY_SCHEMA_VERSION
+        );
+        assert_eq!(
+            schema_version("reference_existing_entity_from_journal_entry"),
             JOURNAL_ENTRY_SCHEMA_VERSION
         );
         assert_eq!(schema_version("create_journal_entry"), 1);

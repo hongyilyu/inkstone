@@ -1,10 +1,11 @@
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, MessageSquareText } from "lucide-react";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import { CopyButton } from "@/components/CopyButton.js";
 import { Badge } from "@/components/ui/badge";
 import type {
 	JournalEntry,
+	JournalEntryBodyEntityRefNode,
 	LibraryItem,
 	Person,
 	Project,
@@ -66,7 +67,11 @@ export function EntityDetail({
 
 			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
 				{entity.kind === "journal_entry" && (
-					<JournalEntryBody journalEntry={entity} />
+					<JournalEntryBody
+						journalEntry={entity}
+						allEntities={allEntities}
+						onOpen={goToEntity}
+					/>
 				)}
 				{entity.kind === "person" && (
 					<PersonBody
@@ -179,14 +184,86 @@ function StatusBadge({ status }: { status: Project["status"] }) {
 	);
 }
 
-function JournalEntryBody({ journalEntry }: { journalEntry: JournalEntry }) {
+function JournalEntryBody({
+	journalEntry,
+	allEntities,
+	onOpen,
+}: {
+	journalEntry: JournalEntry;
+	allEntities: LibraryItem[];
+	onOpen: (e: LibraryItem) => void;
+}) {
+	const body = renderJournalEntryBodyNodes(
+		journalEntry.body,
+		allEntities,
+		onOpen,
+	);
 	return (
 		<>
 			<Field label="Occurred at">{journalEntry.occurredAt}</Field>
 			<Field label="Body">
-				<p className="text-pretty">{journalEntry.body}</p>
+				<p className="text-pretty">{body}</p>
 			</Field>
 		</>
+	);
+}
+
+function renderJournalEntryBodyNodes(
+	body: JournalEntry["body"],
+	allEntities: LibraryItem[],
+	onOpen: (e: LibraryItem) => void,
+): ReactNode[] {
+	const seen = new Map<string, number>();
+	return body.map((node) => {
+		const keyBase =
+			node.type === "text" ? `text:${node.text}` : `entity_ref:${node.refId}`;
+		const count = (seen.get(keyBase) ?? 0) + 1;
+		seen.set(keyBase, count);
+		const key = `${keyBase}:${count}`;
+		return node.type === "text" ? (
+			<Fragment key={key}>{node.text}</Fragment>
+		) : (
+			<EntityRefChip
+				key={key}
+				node={node}
+				allEntities={allEntities}
+				onOpen={onOpen}
+			/>
+		);
+	});
+}
+
+function EntityRefChip({
+	node,
+	allEntities,
+	onOpen,
+}: {
+	node: JournalEntryBodyEntityRefNode;
+	allEntities: LibraryItem[];
+	onOpen: (e: LibraryItem) => void;
+}) {
+	const target = node.targetEntityId
+		? allEntities.find((entity) => entity.id === node.targetEntityId)
+		: undefined;
+	const label =
+		target !== undefined
+			? libraryItemTitle(target)
+			: (node.targetTitle ?? node.labelSnapshot ?? "Referenced entity");
+	const className =
+		"mx-1 inline-flex max-w-full align-baseline items-center rounded-md border border-border bg-secondary px-1.5 py-0.5 font-medium text-[0.8125rem] text-foreground leading-tight";
+
+	if (target === undefined) {
+		return <span className={className}>{label}</span>;
+	}
+
+	return (
+		<button
+			type="button"
+			className={`${className} transition-colors hover:bg-secondary/70 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring`}
+			onClick={() => onOpen(target)}
+		>
+			{label}
+		</button>
 	);
 }
 

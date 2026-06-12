@@ -118,13 +118,20 @@ async fn review_context_for_proposal(
 ) -> Result<Option<ProposalReviewContext>, HandlerError> {
     if proposal.mutation_kind != "update_journal_entry"
         && proposal.mutation_kind != "delete_journal_entry"
+        && proposal.mutation_kind != "reference_existing_entity_from_journal_entry"
     {
         return Ok(None);
     }
 
+    let entity_id_field =
+        if proposal.mutation_kind == "reference_existing_entity_from_journal_entry" {
+            "source_entity_id"
+        } else {
+            "entity_id"
+        };
     let Some(entity_id) = proposal
         .payload
-        .get("entity_id")
+        .get(entity_id_field)
         .and_then(serde_json::Value::as_str)
         .filter(|value| !value.trim().is_empty())
     else {

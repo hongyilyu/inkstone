@@ -178,6 +178,16 @@ export type ProposalChangedNotification = S.Schema.Type<
 export const EntityListParams = S.Struct({ type: S.String });
 export type EntityListParams = S.Schema.Type<typeof EntityListParams>;
 
+export const ResolvedEntityRef = S.Struct({
+	id: S.String,
+	source_entity_id: S.String,
+	target_entity_id: S.String,
+	target_entity_type: S.Literal("person", "project", "todo"),
+	target_title: S.optional(S.String),
+	label_snapshot: S.optional(S.String),
+});
+export type ResolvedEntityRef = S.Schema.Type<typeof ResolvedEntityRef>;
+
 /** One Entity row in an `entity/list` result: the raw tier-2 `entities` columns (ADR-0004). */
 export const EntityRow = S.Struct({
 	id: S.String,
@@ -185,6 +195,7 @@ export const EntityRow = S.Struct({
 	data: S.Unknown,
 	created_at: S.Number,
 	updated_at: S.Number,
+	refs: S.optional(S.Array(ResolvedEntityRef)),
 });
 export type EntityRow = S.Schema.Type<typeof EntityRow>;
 

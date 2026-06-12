@@ -237,6 +237,112 @@ async fn seed_entity_ref(
     ref_id
 }
 
+async fn seed_accepted_entity(
+    pool: &SqlitePool,
+    thread_id: Uuid,
+    entity_type: &str,
+    data: serde_json::Value,
+    created_at: i64,
+) -> Uuid {
+    let entity_id = Uuid::now_v7();
+    let run_id = Uuid::now_v7();
+    let user_message_id = Uuid::now_v7();
+    let tool_call_id = format!("tc_{entity_id}");
+    let proposal_id = Uuid::now_v7().to_string();
+    let data_str = data.to_string();
+
+    let mut tx = pool.begin().await.expect("begin seed entity tx");
+    tx.execute(sqlx::query(
+        "INSERT INTO runs \
+         (id, thread_id, workflow_name, workflow_version, provider, model, user_message_id, status, started_at, ended_at, terminal_reason) \
+         VALUES (?1, ?2, 'default', '1.0.0', 'faux', 'fake-model', ?3, 'completed', ?4, ?4, 'completed')",
+    )
+    .bind(run_id.to_string())
+    .bind(thread_id.to_string())
+    .bind(user_message_id.to_string())
+    .bind(created_at))
+    .await
+    .expect("insert seed entity run");
+    tx.execute(
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, 'user', 'completed', ?4, ?4)",
+        )
+        .bind(user_message_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(run_id.to_string())
+        .bind(created_at),
+    )
+    .await
+    .expect("insert seed entity user message");
+    tx.execute(sqlx::query(
+        "INSERT INTO tool_calls (id, run_id, name, request_payload, status, result_payload, requested_at, resolved_at) \
+         VALUES (?1, ?2, 'propose_workspace_mutation', '{}', 'completed', '{}', ?3, ?3)",
+    )
+    .bind(&tool_call_id)
+    .bind(run_id.to_string())
+    .bind(created_at))
+    .await
+    .expect("insert seed entity tool call");
+    tx.execute(sqlx::query(
+        "INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, decided_at, applied_at) \
+         VALUES (?1, ?2, 'seed_entity', 'accepted', 'user', ?3, ?3)",
+    )
+    .bind(&proposal_id)
+    .bind(&tool_call_id)
+    .bind(created_at))
+    .await
+    .expect("insert seed entity proposal");
+    tx.execute(sqlx::query(
+        "INSERT INTO entities (id, type, schema_version, data, created_by, created_via_proposal_id, created_at, updated_at) \
+         VALUES (?1, ?2, 1, ?3, 'proposal', ?4, ?5, ?5)",
+    )
+    .bind(entity_id.to_string())
+    .bind(entity_type)
+    .bind(&data_str)
+    .bind(&proposal_id)
+    .bind(created_at))
+    .await
+    .expect("insert seed entity");
+    tx.execute(
+        sqlx::query(
+            "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
+             VALUES (?1, 1, ?2, ?3, ?4)",
+        )
+        .bind(entity_id.to_string())
+        .bind(&data_str)
+        .bind(&proposal_id)
+        .bind(created_at),
+    )
+    .await
+    .expect("insert seed entity revision");
+    tx.commit().await.expect("commit seed entity tx");
+
+    entity_id
+}
+
+fn write_reference_params(path: &Path, source_entity_id: Uuid, target_entity_id: Uuid) {
+    std::fs::write(
+        path,
+        serde_json::json!({
+            "mutation_kind": "reference_existing_entity_from_journal_entry",
+            "payload": {
+                "source_entity_id": source_entity_id.to_string(),
+                "target_entity_id": target_entity_id.to_string(),
+                "label_snapshot": "Ada snapshot",
+                "body": [
+                    { "type": "text", "text": "Met " },
+                    { "type": "entity_ref" },
+                    { "type": "text", "text": " at school." }
+                ]
+            },
+            "rationale": "link the accepted Person from this Journal Entry"
+        })
+        .to_string(),
+    )
+    .expect("write reference params");
+}
+
 async fn rpc(
     core: &CoreHandle,
     id: u64,
@@ -335,6 +441,43 @@ async fn park_update_proposal(
     (run_id, proposal_id)
 }
 
+async fn park_reference_proposal(
+    core: &CoreHandle,
+    thread_id: Uuid,
+    prompt: &str,
+) -> (String, String) {
+    let resp = rpc(
+        core,
+        21,
+        "run/post_message",
+        serde_json::json!({ "thread_id": thread_id, "prompt": prompt }),
+    )
+    .await;
+    let run_id = resp["result"]["run_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("result.run_id is a string - body: {resp}"))
+        .to_string();
+    await_parked(core, &run_id).await;
+
+    let resp = rpc(
+        core,
+        22,
+        "proposal/get",
+        serde_json::json!({ "run_id": run_id }),
+    )
+    .await;
+    let proposal_id = resp["result"]["proposal_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("proposal_id is a string - body: {resp}"))
+        .to_string();
+    assert_eq!(
+        resp["result"]["mutation_kind"].as_str(),
+        Some("reference_existing_entity_from_journal_entry"),
+        "parked Proposal references an existing Entity - body: {resp}"
+    );
+    (run_id, proposal_id)
+}
+
 async fn open_readonly_pool(db_path: PathBuf) -> SqlitePool {
     let url = format!("sqlite://{}?mode=ro", db_path.display());
     SqlitePoolOptions::new()
@@ -397,6 +540,29 @@ async fn updated_from_count_for_run(pool: &SqlitePool, entity_id: Uuid, run_id: 
     .fetch_one(pool)
     .await
     .expect("count updated_from sources")
+}
+
+async fn entity_ref_count(
+    pool: &SqlitePool,
+    source_entity_id: Uuid,
+    target_entity_id: Uuid,
+) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM entity_refs WHERE source_entity_id = ?1 AND target_entity_id = ?2",
+    )
+    .bind(source_entity_id.to_string())
+    .bind(target_entity_id.to_string())
+    .fetch_one(pool)
+    .await
+    .expect("count entity refs")
+}
+
+async fn target_entity_source_count(pool: &SqlitePool, target_entity_id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM entity_sources WHERE entity_id = ?1")
+        .bind(target_entity_id.to_string())
+        .fetch_one(pool)
+        .await
+        .expect("count target entity sources")
 }
 
 async fn proposal_and_tool_status_for_run(pool: &SqlitePool, run_id: &str) -> (String, String) {
@@ -1168,6 +1334,453 @@ fn update_rejects_entity_ref_that_belongs_to_another_entry() {
             tool_status, "pending",
             "wrong-source ref update leaves tool call unresolved"
         );
+    });
+}
+
+#[test]
+fn reference_existing_entity_accept_creates_ref_and_updates_journal_entry() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("reference-params.json");
+    let thread_id = Uuid::now_v7();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let (source_entity_id, target_entity_id) = rt.block_on(async {
+        let pool = migrated_pool(&workspace).await;
+        seed_thread(&pool, thread_id, "Journal thread", 1).await;
+        let source_entity_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T10:30:00",
+            "Met Ada at school.",
+            2,
+        )
+        .await;
+        let target_entity_id = seed_accepted_entity(
+            &pool,
+            thread_id,
+            "person",
+            serde_json::json!({ "name": "Ada Lovelace" }),
+            3,
+        )
+        .await;
+        pool.close().await;
+        (source_entity_id, target_entity_id)
+    });
+
+    write_reference_params(&params_path, source_entity_id, target_entity_id);
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    let run_id = rt.block_on(async {
+        let (run_id, proposal_id) =
+            park_reference_proposal(&core, thread_id, "Link Ada in that entry.").await;
+        let resp = rpc(
+            &core,
+            23,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "accept",
+                "decision_idempotency_key": "reference-existing-accept",
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp["result"]["status"].as_str(),
+            Some("accepted"),
+            "reference accept result - body: {resp}"
+        );
+        assert_eq!(
+            resp["result"]["entity_id"].as_str(),
+            Some(source_entity_id.to_string().as_str()),
+            "reference accept returns the source Journal Entry id - body: {resp}"
+        );
+        await_completed(&core, &run_id).await;
+        let list = rpc(
+            &core,
+            27,
+            "entity/list",
+            serde_json::json!({ "type": "journal_entry" }),
+        )
+        .await;
+        let listed_entry = list["result"]["entities"]
+            .as_array()
+            .and_then(|entities| {
+                entities.iter().find(|entity| {
+                    entity["id"].as_str() == Some(source_entity_id.to_string().as_str())
+                })
+            })
+            .unwrap_or_else(|| panic!("entity/list includes source entry - body: {list}"));
+        assert_eq!(
+            listed_entry["refs"][0]["target_entity_id"].as_str(),
+            Some(target_entity_id.to_string().as_str()),
+            "entity/list resolves the Journal Entry ref target - body: {list}"
+        );
+        assert_eq!(
+            listed_entry["refs"][0]["target_title"].as_str(),
+            Some("Ada Lovelace"),
+            "entity/list resolves the current target title - body: {list}"
+        );
+        run_id
+    });
+
+    rt.block_on(async {
+        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+
+        assert_eq!(
+            entity_ref_count(&pool, source_entity_id, target_entity_id).await,
+            1,
+            "accept creates exactly one EntityRef"
+        );
+        let ref_row = sqlx::query(
+            "SELECT id, label_snapshot FROM entity_refs \
+             WHERE source_entity_id = ?1 AND target_entity_id = ?2",
+        )
+        .bind(source_entity_id.to_string())
+        .bind(target_entity_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("entity_ref row exists");
+        let ref_id: String = ref_row.get("id");
+        let label_snapshot: Option<String> = ref_row.get("label_snapshot");
+        assert_eq!(
+            label_snapshot.as_deref(),
+            Some("Ada snapshot"),
+            "EntityRef stores the render fallback"
+        );
+
+        let data = entity_data(&pool, source_entity_id).await;
+        assert_eq!(
+            data["occurred_at"].as_str(),
+            Some("2026-06-10T10:30:00"),
+            "reference accept preserves the Journal Entry occurred_at"
+        );
+        assert_eq!(data["body"][0]["text"].as_str(), Some("Met "));
+        assert_eq!(data["body"][1]["type"].as_str(), Some("entity_ref"));
+        assert_eq!(data["body"][1]["ref_id"].as_str(), Some(ref_id.as_str()));
+        assert_eq!(data["body"][2]["text"].as_str(), Some(" at school."));
+        assert_eq!(
+            max_revision_seq(&pool, source_entity_id).await,
+            2,
+            "reference accept appends a Journal Entry revision"
+        );
+        assert_eq!(
+            updated_from_count_for_run(&pool, source_entity_id, &run_id).await,
+            1,
+            "reference update sources from the current user Message"
+        );
+        assert_eq!(
+            target_entity_source_count(&pool, target_entity_id).await,
+            0,
+            "referencing an existing target creates no EntitySource for the target"
+        );
+    });
+}
+
+#[test]
+fn reference_existing_entity_reject_creates_nothing_and_leaves_body() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("reference-params.json");
+    let thread_id = Uuid::now_v7();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let (source_entity_id, target_entity_id) = rt.block_on(async {
+        let pool = migrated_pool(&workspace).await;
+        seed_thread(&pool, thread_id, "Journal thread", 1).await;
+        let source_entity_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T10:30:00",
+            "Met Ada at school.",
+            2,
+        )
+        .await;
+        let target_entity_id = seed_accepted_entity(
+            &pool,
+            thread_id,
+            "person",
+            serde_json::json!({ "name": "Ada Lovelace" }),
+            3,
+        )
+        .await;
+        pool.close().await;
+        (source_entity_id, target_entity_id)
+    });
+
+    write_reference_params(&params_path, source_entity_id, target_entity_id);
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    rt.block_on(async {
+        let (run_id, proposal_id) =
+            park_reference_proposal(&core, thread_id, "Link Ada in that entry.").await;
+        let resp = rpc(
+            &core,
+            24,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "reject",
+                "decision_idempotency_key": "reference-existing-reject",
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp["result"]["status"].as_str(),
+            Some("rejected"),
+            "reference reject result - body: {resp}"
+        );
+        assert!(
+            resp["result"].get("entity_id").is_none(),
+            "reject result carries no entity id - body: {resp}"
+        );
+        await_completed(&core, &run_id).await;
+    });
+
+    rt.block_on(async {
+        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        assert_eq!(
+            entity_ref_count(&pool, source_entity_id, target_entity_id).await,
+            0,
+            "reject creates no EntityRef"
+        );
+        assert_eq!(
+            entity_data(&pool, source_entity_id).await["body"][0]["text"].as_str(),
+            Some("Met Ada at school."),
+            "reject leaves the Journal Entry body unchanged"
+        );
+        assert_eq!(
+            max_revision_seq(&pool, source_entity_id).await,
+            1,
+            "reject writes no Journal Entry revision"
+        );
+    });
+}
+
+#[test]
+fn reference_existing_entity_reuses_existing_ref_for_duplicate_pair() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("reference-params.json");
+    let thread_id = Uuid::now_v7();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let (source_entity_id, target_entity_id, existing_ref_id) = rt.block_on(async {
+        let pool = migrated_pool(&workspace).await;
+        seed_thread(&pool, thread_id, "Journal thread", 1).await;
+        let source_entity_id = seed_accepted_journal_entry(
+            &pool,
+            thread_id,
+            "2026-06-10T10:30:00",
+            "Met Ada at school.",
+            2,
+        )
+        .await;
+        let target_entity_id = seed_accepted_entity(
+            &pool,
+            thread_id,
+            "person",
+            serde_json::json!({ "name": "Ada Lovelace" }),
+            3,
+        )
+        .await;
+        let existing_ref_id = seed_entity_ref(&pool, source_entity_id, target_entity_id, 4).await;
+        pool.close().await;
+        (source_entity_id, target_entity_id, existing_ref_id)
+    });
+
+    write_reference_params(&params_path, source_entity_id, target_entity_id);
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    rt.block_on(async {
+        let (run_id, proposal_id) =
+            park_reference_proposal(&core, thread_id, "Link Ada in that entry.").await;
+        let resp = rpc(
+            &core,
+            25,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "accept",
+                "decision_idempotency_key": "reference-existing-duplicate",
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp["result"]["status"].as_str(),
+            Some("accepted"),
+            "duplicate reference pair still accepts by reusing the existing ref - body: {resp}"
+        );
+        await_completed(&core, &run_id).await;
+    });
+
+    rt.block_on(async {
+        let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+        assert_eq!(
+            entity_ref_count(&pool, source_entity_id, target_entity_id).await,
+            1,
+            "duplicate accept does not create a second EntityRef"
+        );
+        let data = entity_data(&pool, source_entity_id).await;
+        assert_eq!(
+            data["body"][1]["ref_id"].as_str(),
+            Some(existing_ref_id.to_string().as_str()),
+            "duplicate accept rewrites the body with the existing EntityRef id"
+        );
+    });
+}
+
+#[test]
+fn reference_existing_entity_rejects_invalid_source_target_type_and_thread() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("reference-params.json");
+    let source_thread_id = Uuid::now_v7();
+    let other_thread_id = Uuid::now_v7();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let (source_entity_id, valid_target_id, wrong_type_target_id) = rt.block_on(async {
+        let pool = migrated_pool(&workspace).await;
+        seed_thread(&pool, source_thread_id, "Source thread", 1).await;
+        seed_thread(&pool, other_thread_id, "Other thread", 2).await;
+        let source_entity_id = seed_accepted_journal_entry(
+            &pool,
+            source_thread_id,
+            "2026-06-10T10:30:00",
+            "Met Ada at school.",
+            3,
+        )
+        .await;
+        let valid_target_id = seed_accepted_entity(
+            &pool,
+            source_thread_id,
+            "person",
+            serde_json::json!({ "name": "Ada Lovelace" }),
+            4,
+        )
+        .await;
+        let wrong_type_target_id = seed_accepted_journal_entry(
+            &pool,
+            source_thread_id,
+            "2026-06-10T11:30:00",
+            "Wrong target type.",
+            5,
+        )
+        .await;
+        pool.close().await;
+        (source_entity_id, valid_target_id, wrong_type_target_id)
+    });
+
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    let invalid_cases = [
+        (
+            Uuid::now_v7(),
+            valid_target_id,
+            source_thread_id,
+            "missing source",
+            "current Thread",
+        ),
+        (
+            source_entity_id,
+            Uuid::now_v7(),
+            source_thread_id,
+            "missing target",
+            "existing accepted Entity",
+        ),
+        (
+            source_entity_id,
+            wrong_type_target_id,
+            source_thread_id,
+            "wrong target type",
+            "person, project, or todo",
+        ),
+        (
+            source_entity_id,
+            valid_target_id,
+            other_thread_id,
+            "cross thread source",
+            "current Thread",
+        ),
+    ];
+
+    rt.block_on(async {
+        for (source, target, thread, label, expected_message) in invalid_cases {
+            write_reference_params(&params_path, source, target);
+            let (run_id, proposal_id) =
+                park_reference_proposal(&core, thread, "Link Ada in that entry.").await;
+            let resp = rpc(
+                &core,
+                26,
+                "proposal/decide",
+                serde_json::json!({
+                    "proposal_id": proposal_id,
+                    "decision": "accept",
+                    "decision_idempotency_key": format!("reference-invalid-{label}"),
+                }),
+            )
+            .await;
+            assert_eq!(
+                resp["error"]["code"].as_i64(),
+                Some(-32602),
+                "{label} is invalid_params - body: {resp}"
+            );
+            assert!(
+                resp["error"]["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains(expected_message),
+                "{label} invalid reason names {expected_message} - body: {resp}"
+            );
+
+            let pool = open_readonly_pool(workspace.db_path().to_path_buf()).await;
+            assert_eq!(
+                entity_ref_count(&pool, source_entity_id, valid_target_id).await,
+                0,
+                "{label} writes no EntityRef"
+            );
+            assert_eq!(
+                entity_data(&pool, source_entity_id).await["body"][0]["text"].as_str(),
+                Some("Met Ada at school."),
+                "{label} leaves the Journal Entry unchanged"
+            );
+            let (proposal_status, tool_status) =
+                proposal_and_tool_status_for_run(&pool, &run_id).await;
+            assert_eq!(
+                proposal_status, "pending",
+                "{label} leaves proposal pending"
+            );
+            assert_eq!(tool_status, "pending", "{label} leaves tool call pending");
+            pool.close().await;
+        }
     });
 }
 

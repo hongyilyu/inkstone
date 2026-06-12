@@ -5,6 +5,8 @@ import {
 	groupJournalEntriesByDay,
 	itemsNeedingReview,
 	type JournalEntry,
+	journalEntryBodyText,
+	type JournalEntryBodyNode,
 	libraryItemKindForSlug,
 	libraryItemSubtitle,
 	libraryItemTitle,
@@ -33,7 +35,7 @@ const journalEntry = (
 	id,
 	kind: "journal_entry",
 	occurredAt,
-	body,
+	body: [{ type: "text", text: body }],
 	recency,
 	createdAt: "fixture",
 });
@@ -148,6 +150,27 @@ describe("library item helpers", () => {
 		]);
 		const backfill = byId("todo_backfill") as Todo;
 		expect(projectForTodo(entities, backfill)?.id).toBe("proj_apiv2");
+	});
+
+	it("renders Journal Entry body text from mixed nodes", () => {
+		const body: JournalEntryBodyNode[] = [
+			{ type: "text", text: "Met " },
+			{
+				type: "entity_ref",
+				refId: "ref-1",
+				targetTitle: "Ada Lovelace",
+				labelSnapshot: "Ada",
+			},
+			{ type: "text", text: " at school." },
+		];
+
+		expect(journalEntryBodyText(body)).toBe("Met Ada Lovelace at school.");
+		expect(
+			journalEntryBodyText([
+				{ type: "text", text: "Met " },
+				{ type: "entity_ref", refId: "ref-2", labelSnapshot: "Ada" },
+			]),
+		).toBe("Met Ada");
 	});
 
 	it("does not resolve a relation target absent from the provided list", () => {
