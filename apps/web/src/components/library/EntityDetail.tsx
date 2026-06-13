@@ -33,6 +33,7 @@ import {
 import { cn } from "@/lib/utils.js";
 import { setFocusedThread } from "@/store/chat";
 import { EntityGlyph } from "./EntityGlyph.js";
+import { JournalEntryEditor } from "./JournalEntryEditor.js";
 import { PersonEditor } from "./PersonEditor.js";
 import { ProjectEditor } from "./ProjectEditor.js";
 import { TodoEditor } from "./TodoEditor.js";
@@ -55,6 +56,11 @@ export function EntityDetail({
 	}
 	if (entity.kind === "project") {
 		return <ProjectDetail project={entity} allEntities={allEntities} />;
+	}
+	if (entity.kind === "journal_entry") {
+		return (
+			<JournalEntryDetail journalEntry={entity} allEntities={allEntities} />
+		);
 	}
 	return <EntityDetailView entity={entity} allEntities={allEntities} />;
 }
@@ -542,6 +548,141 @@ function ProjectDetail({
 	);
 }
 
+/**
+ * The Journal Entry inspector: view ↔ edit toggle + an inline delete confirm,
+ * mirroring `TodoDetail` (ADR-0033). Edit threads through `JournalEntryEditor`
+ * (text-body + keep/remove chips); delete sends `delete_journal_entry` and the
+ * rail returns to empty.
+ */
+function JournalEntryDetail({
+	journalEntry,
+	allEntities,
+}: {
+	journalEntry: JournalEntry;
+	allEntities: LibraryItem[];
+}) {
+	const navigate = useNavigate();
+	const [editing, setEditing] = useState(false);
+	const [confirmingDelete, setConfirmingDelete] = useState(false);
+	const del = useEntityMutation();
+
+	const goToEntity = (e: LibraryItem) =>
+		navigate({
+			to: "/library/$kind",
+			params: { kind: KIND_META[e.kind].slug },
+			search: { id: e.id },
+		});
+
+	if (editing) {
+		return (
+			<div className="flex h-full flex-col bg-sidebar">
+				<JournalEntryEditor
+					mode="edit"
+					journalEntry={journalEntry}
+					onDone={() => setEditing(false)}
+					onCancel={() => setEditing(false)}
+				/>
+			</div>
+		);
+	}
+
+	const deleteJournalEntry = () =>
+		del.mutate(
+			{
+				mutation_kind: "delete_journal_entry",
+				payload: { entity_id: journalEntry.id },
+			},
+			{
+				onSuccess: () =>
+					navigate({
+						to: "/library/$kind",
+						params: { kind: KIND_META.journal_entry.slug },
+						search: {},
+					}),
+			},
+		);
+
+	return (
+		<div className="flex h-full flex-col">
+			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
+				<EntityGlyph entity={journalEntry} size="lg" />
+				<div className="min-w-0 flex-1 pt-0.5">
+					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
+						{libraryItemTitle(journalEntry)}
+					</h2>
+					<p className="truncate text-muted-foreground text-sm">
+						{KIND_META.journal_entry.label} ·{" "}
+						{libraryItemSubtitle(journalEntry)}
+					</p>
+				</div>
+				<Button
+					variant="chip"
+					size="sm"
+					onClick={() => setEditing(true)}
+					aria-label="Edit Journal Entry"
+				>
+					<Pencil className="size-3.5" aria-hidden />
+					Edit
+				</Button>
+			</header>
+
+			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+				<JournalEntryBody
+					journalEntry={journalEntry}
+					allEntities={allEntities}
+					onOpen={goToEntity}
+				/>
+			</div>
+
+			<footer className="border-foreground/15 border-t px-5 py-4">
+				{del.error ? (
+					<p role="alert" className="mb-3 text-destructive text-sm">
+						{del.error instanceof Error
+							? del.error.message
+							: "Couldn't delete. Try again."}
+					</p>
+				) : null}
+				{confirmingDelete ? (
+					<div className="flex items-center justify-between gap-3">
+						<span className="text-foreground text-sm">
+							Delete this Journal Entry?
+						</span>
+						<div className="flex gap-2">
+							<Button
+								variant="chip"
+								size="pill"
+								onClick={() => setConfirmingDelete(false)}
+								disabled={del.isPending}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="primary-icon"
+								size="pill"
+								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								onClick={deleteJournalEntry}
+								disabled={del.isPending}
+							>
+								{del.isPending ? "Deleting…" : "Delete"}
+							</Button>
+						</div>
+					</div>
+				) : (
+					<Button
+						variant="ghost"
+						size="row"
+						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+						onClick={() => setConfirmingDelete(true)}
+					>
+						<Trash2 className="size-4" aria-hidden />
+						Delete Journal Entry
+					</Button>
+				)}
+			</footer>
+		</div>
+	);
+}
+
 function Field({ label, children }: { label: string; children: ReactNode }) {
 	return (
 		<div className="flex flex-col gap-1.5">
@@ -616,6 +757,9 @@ function JournalEntryBody({
 	return (
 		<>
 			<Field label="Occurred at">{journalEntry.occurredAt}</Field>
+			{journalEntry.endedAt ? (
+				<Field label="Ended at">{journalEntry.endedAt}</Field>
+			) : null}
 			<Field label="Body">
 				<p className="text-pretty">{body}</p>
 			</Field>

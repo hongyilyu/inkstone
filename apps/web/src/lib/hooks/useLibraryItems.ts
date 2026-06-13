@@ -114,6 +114,7 @@ export function useLibraryItems() {
 
 interface JournalEntryData {
 	occurred_at?: unknown;
+	ended_at?: unknown;
 	body?: unknown;
 }
 
@@ -172,6 +173,9 @@ function toLibraryJournalEntry(row: LiveEntityRow): JournalEntry {
 		id: row.id,
 		kind: "journal_entry",
 		occurredAt: data.occurred_at,
+		// Carry a stored `ended_at` so the editor's full-replace update can
+		// round-trip it instead of dropping it (slice-8 trap).
+		endedAt: typeof data.ended_at === "string" ? data.ended_at : undefined,
 		body,
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),

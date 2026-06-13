@@ -45,6 +45,13 @@ export interface Person extends LibraryItemBase {
 export interface JournalEntry extends LibraryItemBase {
 	kind: "journal_entry";
 	occurredAt: string;
+	/**
+	 * Optional end of the journaled interval (ADR-0030). Carried on the view model
+	 * so the editor's full-document-replace `update_journal_entry` can round-trip a
+	 * stored `ended_at` instead of silently dropping it (Core's update REPLACES the
+	 * whole entry — slice-8).
+	 */
+	endedAt?: string;
 	body: JournalEntryBodyNode[];
 }
 

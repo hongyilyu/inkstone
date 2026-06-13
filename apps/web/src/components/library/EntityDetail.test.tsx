@@ -110,7 +110,7 @@ function journal(body: JournalEntry["body"]): JournalEntry {
 
 describe("EntityDetail Journal Entry body", () => {
 	it("renders text-only Journal Entries normally", () => {
-		render(
+		renderDetail(
 			<EntityDetail
 				entity={journal([{ type: "text", text: "Bought milk." }])}
 				allEntities={[]}
@@ -121,7 +121,7 @@ describe("EntityDetail Journal Entry body", () => {
 	});
 
 	it("renders mixed text and inline ref chips in order", () => {
-		render(
+		renderDetail(
 			<EntityDetail
 				entity={journal([
 					{ type: "text", text: "Met " },
@@ -149,7 +149,7 @@ describe("EntityDetail Journal Entry body", () => {
 	});
 
 	it("falls back to label_snapshot when the target is not loaded", () => {
-		render(
+		renderDetail(
 			<EntityDetail
 				entity={journal([
 					{ type: "text", text: "Met " },
@@ -173,7 +173,7 @@ describe("EntityDetail Journal Entry body", () => {
 
 	it("opens a resolvable ref in the Library detail rail", async () => {
 		const user = userEvent.setup();
-		render(
+		renderDetail(
 			<EntityDetail
 				entity={journal([
 					{ type: "text", text: "Met " },
@@ -545,5 +545,41 @@ describe("EntityDetail Project delete", () => {
 			screen.queryByText(/delete this project\?/i),
 		).not.toBeInTheDocument();
 		expect(seen).toHaveLength(0);
+	});
+});
+
+describe("EntityDetail Journal Entry delete", () => {
+	it("confirms inline, deletes, and clears the rail selection", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		const entry = journal([{ type: "text", text: "Stale note." }]);
+		renderDetail(
+			<EntityDetail entity={entry} allEntities={[entry]} />,
+			makeRuntime((params) => {
+				seen.push(params);
+				return Effect.succeed({});
+			}),
+		);
+
+		// First click reveals the inline confirm, not a dialog.
+		await user.click(
+			screen.getByRole("button", { name: /delete journal entry/i }),
+		);
+		expect(
+			screen.getByText(/delete this journal entry\?/i),
+		).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: /^delete$/i }));
+
+		expect(seen).toEqual([
+			{
+				mutation_kind: "delete_journal_entry",
+				payload: { entity_id: entry.id },
+			},
+		]);
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/library/$kind",
+			params: { kind: "journal" },
+			search: {},
+		});
 	});
 });

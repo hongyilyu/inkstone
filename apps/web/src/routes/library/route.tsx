@@ -7,6 +7,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { EntityDetail } from "@/components/library/EntityDetail";
+import { JournalEntryEditor } from "@/components/library/JournalEntryEditor";
 import { LibraryNav } from "@/components/library/LibraryNav";
 import { PersonEditor } from "@/components/library/PersonEditor";
 import { ProjectEditor } from "@/components/library/ProjectEditor";
@@ -22,7 +23,16 @@ import {
 } from "@/lib/libraryItems";
 
 /** Kinds the rail can create inline via `?new=1` (ADR-0033). */
-const CREATABLE_KINDS = new Set<LibraryItemKind>(["todo", "person", "project"]);
+const CREATABLE_KINDS = new Set<LibraryItemKind>([
+	"todo",
+	"person",
+	"project",
+	"journal_entry",
+]);
+
+/** The default rail width; the Journal body editor wants more room (ADR-0033). */
+const RAIL_WIDTH_DEFAULT = "400px";
+const RAIL_WIDTH_JOURNAL = "520px";
 
 /** Library shell (ADR-0021): shared `WorkspaceShell` with a right rail that mounts only on selection — bay/rail/collapse behavior in docs/design/web-runtime.md. */
 function LibraryLayout() {
@@ -63,6 +73,13 @@ function LibraryLayout() {
 			search: { id: newId },
 		});
 
+	// The Journal Entry editor (create or edit) needs a wider rail for its body
+	// editor; everything else uses the default width.
+	const railWidth =
+		(creating && kind === "journal_entry") || selected?.kind === "journal_entry"
+			? RAIL_WIDTH_JOURNAL
+			: RAIL_WIDTH_DEFAULT;
+
 	// Rail mounts on a create intent or a selection (else `null` → plain framed card) — see docs/design/web-runtime.md.
 	const rail =
 		creating && kind && CREATABLE_KINDS.has(kind) ? (
@@ -94,7 +111,7 @@ function LibraryLayout() {
 		<WorkspaceShell
 			nav={<LibraryNav />}
 			rightRail={rail}
-			rightRailWidth="400px"
+			rightRailWidth={railWidth}
 			railLabel="details panel"
 			collapsed={manualCollapsed ?? false}
 			onCollapsedChange={setManualCollapsed}
@@ -123,6 +140,11 @@ function CreateEditor({
 	}
 	if (kind === "project") {
 		return <ProjectEditor mode="create" onDone={onDone} onCancel={onCancel} />;
+	}
+	if (kind === "journal_entry") {
+		return (
+			<JournalEntryEditor mode="create" onDone={onDone} onCancel={onCancel} />
+		);
 	}
 	return (
 		<TodoEditor
