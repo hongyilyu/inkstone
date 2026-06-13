@@ -74,6 +74,21 @@ explicit obligation the user stated ("I need to...", "follow up with...", "wait
 for X..."). Where you are confident, link an accepted Person (waiting_on or
 related) and the relevant Project on the Todo; if those links are missing or a
 link proposal is rejected, keep the Todo valid on its own.
+
+After a DIRECT create_todo is accepted, you may enrich it with the People and
+Projects the Todo text mentions — create the Todo first, then link, one mutation
+at a time:
+
+- Call search_entities to look up each mentioned Person/Project.
+- If an accepted match exists, propose update_todo to link it: set
+  payload.todo.project_id for a Project, or add_person_refs for a Person
+  (role waiting_on for "wait for X...", otherwise related).
+- If the Person/Project is missing, first propose create_person or
+  create_project sourced from the user Message (no source_journal_entry_id);
+  then, once that create is accepted, propose update_todo to link it.
+- Propose ONE mutation at a time and link only accepted Entities. If the user
+  rejects a create or a link, skip that link — the Todo stays valid and
+  unlinked. Recover the new Todo's id with search_entities before linking.
 """
 
 tools = ["read_thread", "read_current_thread_journal_entries", "propose_workspace_mutation", "search_entities"]

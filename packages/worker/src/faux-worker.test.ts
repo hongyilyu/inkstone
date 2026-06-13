@@ -2028,9 +2028,9 @@ describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
 			captureManifest({ prompt: "What should I focus on today?" }),
 		);
 
-		expect(requests.some((r) => r.name === "propose_workspace_mutation")).toBe(
-			false,
-		);
+		// A plain reply: NO tool calls at all — not just no proposal. A regression
+		// that issued search_entities would still be "no capture" yet wrong.
+		expect(requests).toEqual([]);
 		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 

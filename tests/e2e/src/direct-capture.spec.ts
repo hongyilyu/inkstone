@@ -117,8 +117,12 @@ test.describe("Direct capture intent matrix (faux capture mode)", () => {
 		expect(messageSourcedCount(dbPath, "person")).toBe("1");
 	});
 
-	test("conversation intent: a question proposes nothing", async ({ chat }) => {
+	test("conversation intent: a question proposes nothing", async ({
+		chat,
+		workspace,
+	}) => {
 		writeScenario({ intent: "conversation" });
+		const dbPath = path.join(workspace.path, "db.sqlite");
 
 		await chat.goto();
 		await chat.send("What should I focus on today?");
@@ -126,6 +130,12 @@ test.describe("Direct capture intent matrix (faux capture mode)", () => {
 		// A plain reply, no proposal card.
 		await chat.waitForAssistantText(/.+/);
 		await expect(chat.proposalCard()).toHaveCount(0);
+
+		// And no capture side effects: ordinary conversation persists nothing.
+		expect(countEntities(dbPath, "todo")).toBe("0");
+		expect(countEntities(dbPath, "project")).toBe("0");
+		expect(countEntities(dbPath, "person")).toBe("0");
+		expect(countEntities(dbPath, "journal_entry")).toBe("0");
 	});
 });
 
@@ -164,6 +174,8 @@ test.describe("Direct capture boundary: journal-worthy events still go to a Jour
 		// A Journal Entry landed; no direct Todo/Project/Person from this path.
 		expect(countEntities(dbPath, "journal_entry")).toBe("1");
 		expect(countEntities(dbPath, "todo")).toBe("0");
+		expect(countEntities(dbPath, "project")).toBe("0");
+		expect(countEntities(dbPath, "person")).toBe("0");
 	});
 });
 

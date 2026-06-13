@@ -157,6 +157,18 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
         lower.contains("propose nothing"),
         "default.toml system_prompt must tell the model to propose nothing for ordinary conversation, got: {system_prompt:?}"
     );
+    // Direct-Todo enrichment: after an accepted direct create_todo, the model must
+    // know to link existing OR newly-created People/Projects via update_todo, one
+    // at a time. Without this the production model never drives the enrichment the
+    // faux worker exercises (PR #134 review gap).
+    assert!(
+        lower.contains("after a direct create_todo is accepted")
+            && lower.contains("update_todo")
+            && lower.contains("add_person_refs")
+            && lower.contains("project_id")
+            && lower.contains("one mutation at a time"),
+        "default.toml system_prompt must describe enriching an accepted direct Todo with update_todo links, got: {system_prompt:?}"
+    );
     assert!(
         lower.contains("create")
             && lower.contains("update")
