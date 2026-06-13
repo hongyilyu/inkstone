@@ -213,9 +213,42 @@ pub(crate) async fn validate_mutation_target_refs(
 
     // reference_existing_entity_from_journal_entry: its `target_entity_id` must
     // name an existing Canonical Entity of a referenceable type (person/project/
-    // todo). The source-Journal-Entry same-thread guard is run-coupled and stays
-    // in `decide`.
+    // todo), and its `source_entity_id` must name an existing Journal Entry (the
+    // PRIMARY anchor the reference is woven into). The source-Journal-Entry
+    // same-thread guard is run-coupled and stays in `decide`.
     if mutation_kind == "reference_existing_entity_from_journal_entry" {
+        // Validate the source Journal Entry (the primary anchor) FIRST: the apply
+        // path inserts into `entity_refs` keyed on `source_entity_id` before it
+        // loads the source JE, so a deleted source trips the FK → an opaque
+        // internal error. A GONE source is a delete-race on the primary anchor
+        // (TargetMissing → NotDecidable on the accept path); a wrong-TYPE source
+        // is a payload error (Invalid).
+        let source_entity_id =
+            entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
+                TargetError::Invalid(
+                    "source_entity_id is required for reference_existing_entity_from_journal_entry"
+                        .to_string(),
+                )
+            })?;
+        match db::entity_type_by_id(pool, source_entity_id)
+            .await
+            .map_err(|e| TargetError::Internal(e.into()))?
+        {
+            None => {
+                return Err(TargetError::TargetMissing(
+                    "reference source_entity_id no longer references an Accepted Journal Entry"
+                        .to_string(),
+                ));
+            }
+            Some(actual) if actual != "journal_entry" => {
+                return Err(TargetError::Invalid(
+                    "reference source_entity_id must reference an Accepted Journal Entry"
+                        .to_string(),
+                ));
+            }
+            Some(_) => {}
+        }
+
         let target_entity_id = entities::reference_target_entity_id(payload).ok_or_else(|| {
             TargetError::Invalid(
                 "target_entity_id is required for reference_existing_entity_from_journal_entry"

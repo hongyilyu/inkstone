@@ -243,6 +243,31 @@ fn deduped_refs(refs: &[serde_json::Value]) -> Vec<(String, &'static str)> {
         .collect()
 }
 
+/// Re-check a Todo's `project_id` link inside the open tx (ADR-0031, ADR-0033).
+/// `project_id` lives in the Todo JSON, not an FK column, so a concurrent
+/// `delete_project` between the pre-apply validation and this commit could
+/// otherwise persist a dangling link. When `data` carries a non-empty
+/// `project_id`, confirm the Project still exists in THIS tx. This is an
+/// AUXILIARY reference (not the mutation's primary target), so a vanished Project
+/// is `InvalidMutation` (-32602), NOT `TargetMissing`.
+async fn recheck_todo_project_link(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    data: &serde_json::Value,
+) -> Result<(), ApplyError> {
+    let project_id = data
+        .get("project_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty());
+    if let Some(project_id) = project_id
+        && !queries::entity_is_type(&mut **tx, project_id, "project").await?
+    {
+        return Err(ApplyError::InvalidMutation(
+            "project_id no longer references an Accepted Project".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Apply an `update_todo` inside the caller's open tx (ADR-0031, ADR-0033).
 /// THREE-WAY MERGE: load the current Todo `data`, overlay each key of the supplied
 /// `payload["todo"]` partial — an absent key preserves the current value, a `null`
@@ -265,9 +290,10 @@ async fn apply_update_todo(
 ) -> Result<(), ApplyError> {
     let current = queries::current_todo_data(&mut **tx, todo_id)
         .await?
-        .ok_or_else(|| {
-            ApplyError::InvalidMutation(format!("update_todo target {todo_id:?} is not a Todo"))
-        })?;
+        // The target Todo vanished under the parked Proposal (a user deleted it):
+        // ADR-0033's target-gone case → TargetMissing (decide maps to
+        // NotDecidable/-32002), NOT InvalidMutation/-32602.
+        .ok_or(ApplyError::TargetMissing)?;
     let mut merged: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&current)
         .map_err(|e| ApplyError::InvalidMutation(format!("current Todo data is not JSON: {e}")))?;
 
@@ -285,6 +311,9 @@ async fn apply_update_todo(
     }
     let merged = serde_json::Value::Object(merged);
     crate::entities::validate_todo_data(&merged).map_err(ApplyError::InvalidMutation)?;
+    // Re-check the merged-data project link in THIS tx: a concurrent
+    // delete_project could otherwise persist a dangling project_id (ADR-0033).
+    recheck_todo_project_link(tx, &merged).await?;
     let data_str = merged.to_string();
 
     let updated = queries::update_entity(
@@ -592,6 +621,14 @@ pub(crate) async fn apply_entity_mutation(
             let data_str = data_str
                 .as_deref()
                 .expect("non-delete mutations always carry entity data");
+            if mutation_kind == "create_todo"
+                && let Some(todo) = effective_payload.get("todo")
+            {
+                // Re-check the new Todo's project link in THIS tx: a concurrent
+                // delete_project could otherwise persist a dangling project_id
+                // (ADR-0033). Auxiliary ref → InvalidMutation, not TargetMissing.
+                recheck_todo_project_link(tx, todo).await?;
+            }
             queries::insert_entity(
                 &mut **tx,
                 &entity_id,
@@ -754,6 +791,170 @@ mod tests {
         assert_eq!(
             source_count, 0,
             "a plain user create writes no entity_source row"
+        );
+    }
+
+    /// A user-path `create_*` spec through `apply_entity_mutation`, committed.
+    /// Returns the minted entity id.
+    async fn create(
+        pool: &SqlitePool,
+        mutation_kind: &str,
+        entity_type: &str,
+        payload: serde_json::Value,
+    ) -> String {
+        let mut tx = pool.begin().await.expect("begin");
+        let entity_id = apply_entity_mutation(
+            &mut tx,
+            EntityMutationSpec {
+                mutation_kind,
+                entity_type,
+                schema_version: 1,
+                target_entity_id: None,
+                payload: &payload,
+                edited_payload: None,
+                created_by: "user",
+                proposal_id: None,
+                source: None,
+                now_ms: 1,
+            },
+        )
+        .await
+        .expect("create succeeds");
+        tx.commit().await.expect("commit");
+        entity_id
+    }
+
+    /// FIX #9: an `update_todo` whose target Todo has vanished surfaces
+    /// `TargetMissing` (a user deleted it under the parked Proposal — ADR-0033),
+    /// NOT `InvalidMutation`. Decide maps TargetMissing → NotDecidable (-32002),
+    /// so the parked Run resolves cleanly rather than the model getting a -32602
+    /// it would try to "fix".
+    #[tokio::test]
+    async fn update_todo_vanished_target_is_target_missing() {
+        let pool = memory_pool().await;
+        let mut tx = pool.begin().await.expect("begin");
+        let missing_todo_id = Uuid::now_v7().to_string();
+
+        let result = apply_entity_mutation(
+            &mut tx,
+            EntityMutationSpec {
+                mutation_kind: "update_todo",
+                entity_type: "todo",
+                schema_version: 1,
+                target_entity_id: Some(&missing_todo_id),
+                payload: &serde_json::json!({
+                    "todo_id": missing_todo_id,
+                    "todo": { "title": "Edited" }
+                }),
+                edited_payload: None,
+                created_by: "user",
+                proposal_id: None,
+                source: None,
+                now_ms: 1,
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ApplyError::TargetMissing)),
+            "a vanished update_todo target is TargetMissing, not InvalidMutation: {result:?}"
+        );
+    }
+
+    /// FIX #8 (create_todo): a `create_todo` carrying a `project_id` whose Project
+    /// no longer exists at apply time persists no dangling link — the in-tx
+    /// re-check returns `InvalidMutation` (project_id is an AUXILIARY ref, not the
+    /// primary target, so -32602, not TargetMissing). Nothing is written.
+    #[tokio::test]
+    async fn create_todo_with_missing_project_is_invalid_mutation() {
+        let pool = memory_pool().await;
+        let missing_project_id = Uuid::now_v7().to_string();
+        let mut tx = pool.begin().await.expect("begin");
+
+        let result = apply_entity_mutation(
+            &mut tx,
+            EntityMutationSpec {
+                mutation_kind: "create_todo",
+                entity_type: "todo",
+                schema_version: 1,
+                target_entity_id: None,
+                payload: &serde_json::json!({
+                    "todo": { "title": "Ship it", "project_id": missing_project_id }
+                }),
+                edited_payload: None,
+                created_by: "user",
+                proposal_id: None,
+                source: None,
+                now_ms: 1,
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ApplyError::InvalidMutation(_))),
+            "a create_todo with a vanished project_id is InvalidMutation: {result:?}"
+        );
+        drop(tx);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
+            .fetch_one(&pool)
+            .await
+            .expect("count entities");
+        assert_eq!(count, 0, "nothing is written when the project is gone");
+    }
+
+    /// FIX #8 (update_todo): an `update_todo` whose merged data carries a
+    /// `project_id` whose Project was deleted in-tx surfaces `InvalidMutation`
+    /// (auxiliary ref). Seeds a real Todo so the merge proceeds, then deletes the
+    /// Project before the update so the in-tx re-check fires.
+    #[tokio::test]
+    async fn update_todo_with_deleted_project_is_invalid_mutation() {
+        let pool = memory_pool().await;
+        let project_id = create(
+            &pool,
+            "create_project",
+            "project",
+            serde_json::json!({ "name": "P" }),
+        )
+        .await;
+        let todo_id = create(
+            &pool,
+            "create_todo",
+            "todo",
+            serde_json::json!({ "todo": { "title": "Ship it" } }),
+        )
+        .await;
+
+        // The Project is deleted out from under the pending update.
+        sqlx::query("DELETE FROM entities WHERE id = ?1")
+            .bind(&project_id)
+            .execute(&pool)
+            .await
+            .expect("delete project");
+
+        let mut tx = pool.begin().await.expect("begin");
+        let result = apply_entity_mutation(
+            &mut tx,
+            EntityMutationSpec {
+                mutation_kind: "update_todo",
+                entity_type: "todo",
+                schema_version: 1,
+                target_entity_id: Some(&todo_id),
+                payload: &serde_json::json!({
+                    "todo_id": todo_id,
+                    "todo": { "project_id": project_id }
+                }),
+                edited_payload: None,
+                created_by: "user",
+                proposal_id: None,
+                source: None,
+                now_ms: 2,
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ApplyError::InvalidMutation(_))),
+            "an update_todo linking a vanished project is InvalidMutation: {result:?}"
         );
     }
 }

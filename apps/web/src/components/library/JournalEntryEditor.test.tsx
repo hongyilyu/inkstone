@@ -184,6 +184,34 @@ describe("JournalEntryEditor create", () => {
 		});
 	});
 
+	// Defense-in-depth (EntityEditorFrame guard): while a save is in flight, the
+	// Save button is disabled, but a form submit (Enter) must NOT fire a second
+	// mutation. Hold the first mutation pending so `saving` stays true, then submit
+	// again via Enter and assert exactly one write reached Core.
+	it("does not fire a second mutation while a save is in flight", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{ mode: "create", onDone: () => {}, onCancel: () => {} },
+			(params) => {
+				seen.push(params);
+				// Never resolves — the mutation stays pending (saving = true).
+				return Effect.never;
+			},
+		);
+
+		await user.clear(screen.getByLabelText(/occurred at/i));
+		await user.type(screen.getByLabelText(/occurred at/i), "2026-06-12T09:00");
+		const body = screen.getByLabelText(/^body$/i);
+		await user.type(body, "Quick note.");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		// Pressing Enter in the body re-submits the form; the in-flight guard drops it.
+		await user.type(body, "{Enter}");
+		expect(seen).toHaveLength(1);
+	});
+
 	it("prevents save when the body is empty", async () => {
 		const user = userEvent.setup();
 		const seen: EntityMutateParams[] = [];
@@ -426,6 +454,86 @@ describe("JournalEntryEditor add chip", () => {
 		expect(refNodes).toEqual([{ type: "entity_ref" }]);
 		expect(JSON.stringify(payload.body)).not.toContain("ref_id");
 		await waitFor(() => expect(onDone).toHaveBeenCalledWith(textOnlyEntry.id));
+	});
+
+	// The reference mutation carries NO occurred_at/ended_at — Core preserves the
+	// stored scalars and replaces only the body. So a date edit made in the SAME Save
+	// as staging a chip must NOT be silently dropped: the editor first emits an
+	// update_journal_entry for the scalar change, THEN the reference mutation — in order.
+	it("persists a date edit via update_journal_entry before referencing the chip", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		const onDone = vi.fn();
+		renderEditor(
+			{
+				mode: "edit",
+				journalEntry: textOnlyEntry,
+				allEntities,
+				onDone,
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: textOnlyEntry.id });
+			},
+		);
+
+		// Change the occurred time AND stage a new chip in the same edit.
+		await user.clear(screen.getByLabelText(/occurred at/i));
+		await user.type(screen.getByLabelText(/occurred at/i), "2026-06-11T08:15");
+		await user.click(screen.getByRole("button", { name: /add reference/i }));
+		await user.type(screen.getByLabelText(/link an entity/i), "Bob");
+		await user.click(screen.getByRole("option", { name: /bob/i }));
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		// Two mutations, IN ORDER: the scalar update first, then the reference.
+		await waitFor(() => expect(seen).toHaveLength(2));
+		expect(seen[0]).toEqual({
+			mutation_kind: "update_journal_entry",
+			payload: {
+				entity_id: textOnlyEntry.id,
+				occurred_at: "2026-06-11T08:15:00",
+				body: [{ type: "text", text: "Standup notes." }],
+			},
+		});
+		expect(seen[1].mutation_kind).toBe(
+			"reference_existing_entity_from_journal_entry",
+		);
+		const refPayload = seen[1].payload as {
+			target_entity_id: string;
+			occurred_at?: string;
+		};
+		expect(refPayload.target_entity_id).toBe(PERSON_BOB.id);
+		await waitFor(() => expect(onDone).toHaveBeenCalledWith(textOnlyEntry.id));
+	});
+
+	// No date edit ⇒ no spurious update: a chip add alone is a single reference mutation.
+	it("does not emit an update when only a chip is added (date untouched)", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{
+				mode: "edit",
+				journalEntry: textOnlyEntry,
+				allEntities,
+				onDone: () => {},
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: textOnlyEntry.id });
+			},
+		);
+
+		await user.click(screen.getByRole("button", { name: /add reference/i }));
+		await user.type(screen.getByLabelText(/link an entity/i), "Bob");
+		await user.click(screen.getByRole("option", { name: /bob/i }));
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		expect(seen[0].mutation_kind).toBe(
+			"reference_existing_entity_from_journal_entry",
+		);
 	});
 
 	// Core supports AT MOST ONE chip per JE via reference_existing (the body must

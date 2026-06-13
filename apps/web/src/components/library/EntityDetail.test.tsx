@@ -9,6 +9,7 @@ import {
 	type RenderResult,
 	render,
 	screen,
+	waitFor,
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -299,16 +300,20 @@ describe("EntityDetail Todo edit", () => {
 		await user.type(title, "New title");
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
-		expect(seen).toEqual([
-			{
-				mutation_kind: "update_todo",
-				payload: { todo_id: todo.id, todo: { title: "New title" } },
-			},
-		]);
+		await waitFor(() =>
+			expect(seen).toEqual([
+				{
+					mutation_kind: "update_todo",
+					payload: { todo_id: todo.id, todo: { title: "New title" } },
+				},
+			]),
+		);
 		// Back to view mode: the editor's Save button is gone.
-		expect(
-			screen.queryByRole("button", { name: /^save$/i }),
-		).not.toBeInTheDocument();
+		await waitFor(() =>
+			expect(
+				screen.queryByRole("button", { name: /^save$/i }),
+			).not.toBeInTheDocument(),
+		);
 	});
 });
 
@@ -330,14 +335,18 @@ describe("EntityDetail Todo delete", () => {
 		expect(screen.getByText(/delete this todo\?/i)).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: /^delete$/i }));
 
-		expect(seen).toEqual([
-			{ mutation_kind: "delete_todo", payload: { entity_id: todo.id } },
-		]);
-		expect(navigate).toHaveBeenCalledWith({
-			to: "/library/$kind",
-			params: { kind: "todos" },
-			search: {},
-		});
+		await waitFor(() =>
+			expect(seen).toEqual([
+				{ mutation_kind: "delete_todo", payload: { entity_id: todo.id } },
+			]),
+		);
+		await waitFor(() =>
+			expect(navigate).toHaveBeenCalledWith({
+				to: "/library/$kind",
+				params: { kind: "todos" },
+				search: {},
+			}),
+		);
 	});
 
 	it("can cancel the delete confirm without writing", async () => {
@@ -469,14 +478,18 @@ describe("EntityDetail Person delete", () => {
 		expect(screen.getByText(/delete this person\?/i)).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: /^delete$/i }));
 
-		expect(seen).toEqual([
-			{ mutation_kind: "delete_person", payload: { entity_id: alice.id } },
-		]);
-		expect(navigate).toHaveBeenCalledWith({
-			to: "/library/$kind",
-			params: { kind: "people" },
-			search: {},
-		});
+		await waitFor(() =>
+			expect(seen).toEqual([
+				{ mutation_kind: "delete_person", payload: { entity_id: alice.id } },
+			]),
+		);
+		await waitFor(() =>
+			expect(navigate).toHaveBeenCalledWith({
+				to: "/library/$kind",
+				params: { kind: "people" },
+				search: {},
+			}),
+		);
 	});
 
 	it("can cancel the delete confirm without writing", async () => {
@@ -516,14 +529,18 @@ describe("EntityDetail Project delete", () => {
 		expect(screen.getByText(/delete this project\?/i)).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: /^delete$/i }));
 
-		expect(seen).toEqual([
-			{ mutation_kind: "delete_project", payload: { entity_id: proj.id } },
-		]);
-		expect(navigate).toHaveBeenCalledWith({
-			to: "/library/$kind",
-			params: { kind: "projects" },
-			search: {},
-		});
+		await waitFor(() =>
+			expect(seen).toEqual([
+				{ mutation_kind: "delete_project", payload: { entity_id: proj.id } },
+			]),
+		);
+		await waitFor(() =>
+			expect(navigate).toHaveBeenCalledWith({
+				to: "/library/$kind",
+				params: { kind: "projects" },
+				search: {},
+			}),
+		);
 	});
 
 	it("can cancel the delete confirm without writing", async () => {
@@ -570,16 +587,20 @@ describe("EntityDetail Journal Entry delete", () => {
 		).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: /^delete$/i }));
 
-		expect(seen).toEqual([
-			{
-				mutation_kind: "delete_journal_entry",
-				payload: { entity_id: entry.id },
-			},
-		]);
-		expect(navigate).toHaveBeenCalledWith({
-			to: "/library/$kind",
-			params: { kind: "journal" },
-			search: {},
-		});
+		await waitFor(() =>
+			expect(seen).toEqual([
+				{
+					mutation_kind: "delete_journal_entry",
+					payload: { entity_id: entry.id },
+				},
+			]),
+		);
+		await waitFor(() =>
+			expect(navigate).toHaveBeenCalledWith({
+				to: "/library/$kind",
+				params: { kind: "journal" },
+				search: {},
+			}),
+		);
 	});
 });

@@ -133,7 +133,11 @@ export function EntityCollection({
 						<EmptyState
 							icon={meta.icon}
 							title={`No ${meta.plural.toLowerCase()} yet`}
-							description={`${meta.plural} appear here as Inkstone notices them in your chats and you accept the Proposal.`}
+							description={
+								onNew
+									? `Use New ${meta.label} to add one, or accept a proposal suggested from chats.`
+									: `${meta.plural} appear here as Inkstone notices them in your chats and you accept the Proposal.`
+							}
 						/>
 					) : items.length === 0 ? (
 						<EmptyState

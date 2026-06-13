@@ -158,6 +158,20 @@ function stagedNewChip(body: DraftBodyNode[]): DraftEntityRefNode | undefined {
 }
 
 /**
+ * Whether the draft's occurred_at/ended_at differ from the stored entry. The
+ * reference mutation (`buildReferenceParams`) carries NO scalars — Core preserves
+ * the stored occurred_at/ended_at and replaces only the body. So when a chip is
+ * staged AND the user also edited a date in the same Save, the scalar edit would
+ * be silently dropped unless we first emit an `update_journal_entry` for it.
+ */
+function scalarsDiffer(entry: JournalEntry, d: Draft): boolean {
+	if (emitWallClock(d.occurredAt, entry.occurredAt) !== entry.occurredAt)
+		return true;
+	const ended = d.endedAt ? emitWallClock(d.endedAt, entry.endedAt) : undefined;
+	return ended !== entry.endedAt;
+}
+
+/**
  * The wire body for a reference mutation: the JE's text nodes plus the ONE new
  * chip as a BARE `{type:"entity_ref"}` placeholder (Core mints its ref_id and
  * rewrites the placeholder). Core rejects any `ref_id` on a reference body node
@@ -253,33 +267,50 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 	const bodyEmpty = buildBody(draft.body).length === 0 && newChip === undefined;
 	const blocked = occurredEmpty || bodyEmpty;
 
+	const dropStagedPlaceholder = () =>
+		// Drop the just-saved placeholder so a follow-up chip is its OWN mutation —
+		// never two placeholders in one reference body (Core collapses them onto one
+		// minted ref_id ⇒ data loss).
+		setDraft((d) => ({
+			...d,
+			body: d.body.filter(
+				(node) => node.type === "text" || node.newTargetId === undefined,
+			),
+		}));
+
 	const submit = () => {
 		if (blocked) return;
 		// A staged new chip is its OWN reference mutation (mints a ref_id), distinct
 		// from update_journal_entry (whose entity_ref nodes need an existing ref_id).
 		const referencing = existing !== undefined && newChip !== undefined;
-		const params = referencing
-			? // biome-ignore lint/style/noNonNullAssertion: referencing guarantees both.
-				buildReferenceParams(existing!, draft, newChip!)
-			: existing
+		if (!referencing) {
+			const params = existing
 				? buildUpdateParams(existing, draft)
 				: buildCreateParams(draft);
-		mutation.mutate(params, {
-			onSuccess: (result) => {
-				// Drop the just-saved placeholder so a follow-up chip is its OWN
-				// mutation — never two placeholders in one reference body (Core
-				// collapses them onto one minted ref_id ⇒ data loss).
-				if (referencing) {
-					setDraft((d) => ({
-						...d,
-						body: d.body.filter(
-							(node) => node.type === "text" || node.newTargetId === undefined,
-						),
-					}));
-				}
-				onDone(result.entity_id ?? existing?.id ?? draft.occurredAt);
-			},
-		});
+			mutation.mutate(params, {
+				onSuccess: (result) =>
+					onDone(result.entity_id ?? existing?.id ?? draft.occurredAt),
+			});
+			return;
+		}
+		// biome-ignore lint/style/noNonNullAssertion: referencing guarantees both.
+		const entry = existing!;
+		// biome-ignore lint/style/noNonNullAssertion: referencing guarantees both.
+		const chip = newChip!;
+		// The reference mutation carries NO scalars, so a date edit made in the same
+		// Save would be lost. Persist it FIRST via update_journal_entry (awaited),
+		// THEN reference the chip — so the user never silently loses a date edit.
+		const referenceParams = buildReferenceParams(entry, draft, chip);
+		const run = async () => {
+			if (scalarsDiffer(entry, draft)) {
+				await mutation.mutateAsync(buildUpdateParams(entry, draft));
+			}
+			const result = await mutation.mutateAsync(referenceParams);
+			dropStagedPlaceholder();
+			onDone(result.entity_id ?? entry.id);
+		};
+		// A rejected mutation already surfaces via `mutation.error`; nothing more to do.
+		run().catch(() => {});
 	};
 
 	const error =

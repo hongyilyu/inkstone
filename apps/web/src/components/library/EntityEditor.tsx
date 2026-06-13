@@ -31,6 +31,9 @@ export function EntityEditorFrame({
 }) {
 	const submit = (e: FormEvent) => {
 		e.preventDefault();
+		// Defense-in-depth: the Save button is already disabled while saving, but a
+		// stray Enter/double-submit must not fire a second mutation.
+		if (saving) return;
 		onSubmit();
 	};
 	return (

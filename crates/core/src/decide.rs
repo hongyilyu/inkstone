@@ -240,9 +240,13 @@ async fn apply_or_reject(
             Ok(()) => Ok(DecideOutcome::Rejected { run_id }),
             Err(db::ApplyError::InvalidMutation(reason)) => Err(DecideError::Invalid(reason)),
             Err(db::ApplyError::NotPending) => Err(DecideError::LostRace),
-            Err(db::ApplyError::TargetMissing) => Err(DecideError::NotDecidable(
-                "proposal target no longer exists".to_string(),
-            )),
+            // `reject_proposal` touches no entity store (it only flips the
+            // proposal status + resolves the tool_call), so it can NEVER return
+            // TargetMissing — a reject is never wedged by a deleted target. The
+            // arm exists solely for match exhaustiveness.
+            Err(db::ApplyError::TargetMissing) => {
+                unreachable!("reject_proposal never touches an entity, so cannot miss a target")
+            }
             Err(db::ApplyError::Sql(e)) => Err(DecideError::Internal(e.into())),
         };
     }
@@ -1465,6 +1469,99 @@ mod tests {
         assert!(
             !resumed.load(Ordering::SeqCst),
             "a NotDecidable accept does not resume"
+        );
+    }
+
+    // FIX #2: a `reference_existing_entity_from_journal_entry` whose SOURCE Journal
+    // Entry (the reference's primary anchor) was deleted out from under the parked
+    // Proposal is NotDecidable (-32002), not Internal (-32603) — the shared
+    // validator now checks the source's existence run-independently, so the apply
+    // path never trips the entity_refs FK on a vanished source. A source that
+    // EXISTS but is the WRONG TYPE (not a journal_entry) stays Invalid (-32602).
+    #[tokio::test]
+    async fn reference_with_deleted_source_is_not_decidable_wrong_type_is_invalid() {
+        let pool = memory_pool().await;
+        let (run_id, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        // A valid referenceable target (a Person) for both sub-cases.
+        let target_person = insert_person(&pool).await;
+
+        // Sub-case A: deleted source → NotDecidable. Seed a Journal Entry anchored
+        // in the Run's own thread (so the same-thread guard would pass), then
+        // delete it before the decide.
+        let in_thread_user_msg = format!("umsg-{run_id}");
+        let source_je = insert_journal_entry(&pool, &in_thread_user_msg).await;
+        retarget_proposal(
+            &pool,
+            &proposal_id_str,
+            "reference_existing_entity_from_journal_entry",
+            serde_json::json!({
+                "source_entity_id": source_je,
+                "target_entity_id": target_person,
+                "label_snapshot": "Target Person",
+                "body": [
+                    { "type": "text", "text": "Linked " },
+                    { "type": "entity_ref" }
+                ]
+            }),
+        )
+        .await;
+        sqlx::query("DELETE FROM entities WHERE id = ?")
+            .bind(&source_je)
+            .execute(&pool)
+            .await
+            .expect("delete source journal entry");
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-ref-source-gone".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+        assert!(
+            matches!(outcome, Err(DecideError::NotDecidable(_))),
+            "a deleted reference source is NotDecidable (primary anchor delete-race), got {outcome:?}"
+        );
+        assert!(
+            !resumed.load(Ordering::SeqCst),
+            "a NotDecidable accept does not resume"
+        );
+
+        // Sub-case B: wrong-type source (a Person, not a Journal Entry) → Invalid.
+        let person_source = insert_person(&pool).await;
+        retarget_proposal(
+            &pool,
+            &proposal_id_str,
+            "reference_existing_entity_from_journal_entry",
+            serde_json::json!({
+                "source_entity_id": person_source,
+                "target_entity_id": target_person,
+                "label_snapshot": "Target Person",
+                "body": [
+                    { "type": "text", "text": "Linked " },
+                    { "type": "entity_ref" }
+                ]
+            }),
+        )
+        .await;
+        let resumed_b = Arc::new(AtomicBool::new(false));
+        let outcome_b = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-ref-source-wrong-type".to_string()),
+            resume_closure(pool.clone(), resumed_b.clone()),
+        )
+        .await;
+        assert!(
+            matches!(outcome_b, Err(DecideError::Invalid(_))),
+            "a wrong-type reference source is Invalid (payload error), got {outcome_b:?}"
         );
     }
 

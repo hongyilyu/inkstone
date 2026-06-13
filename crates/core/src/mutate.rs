@@ -54,6 +54,21 @@ pub async fn apply(
 ) -> Result<Outcome, MutateError> {
     entities::validate(mutation_kind, payload).map_err(MutateError::Invalid)?;
 
+    // A direct Library create is anchor-less by design (ADR-0033: "source row iff
+    // a real source" — the user path has no Run, user Message, or Journal-Entry
+    // anchor). `entities::validate` accepts `source_journal_entry_id` for the
+    // shared agent path, but the user path must REJECT it rather than silently
+    // validate provenance and persist no entity_sources row.
+    if matches!(
+        mutation_kind,
+        "create_person" | "create_project" | "create_todo"
+    ) && entities::source_journal_entry_id(payload).is_some()
+    {
+        return Err(MutateError::Invalid(
+            "source_journal_entry_id is not supported on direct user creates".to_string(),
+        ));
+    }
+
     mutation_target::validate_mutation_target_refs(pool, mutation_kind, payload)
         .await
         .map_err(|e| match e {
@@ -468,6 +483,52 @@ mod tests {
                 "{kind} null-on-required is Invalid, got: {err:?} ({payload})"
             );
         }
+    }
+
+    // FIX #10: a direct user create carrying `source_journal_entry_id` is REJECTED
+    // as `Invalid` (ADR-0033). The shared `entities::validate` accepts the field
+    // for the agent path, but the Library is anchor-less (no Run, no user Message,
+    // no Journal-Entry anchor), so the user path must reject it rather than
+    // validate provenance and then silently persist no entity_sources row. Covers
+    // all three create kinds.
+    #[tokio::test]
+    async fn create_with_source_journal_entry_id_is_rejected() {
+        let pool = memory_pool().await;
+        let je_id = uuid::Uuid::now_v7().to_string();
+
+        let cases = [
+            (
+                "create_person",
+                serde_json::json!({ "name": "Alice", "source_journal_entry_id": je_id }),
+            ),
+            (
+                "create_project",
+                serde_json::json!({ "name": "Roadmap", "source_journal_entry_id": je_id }),
+            ),
+            (
+                "create_todo",
+                serde_json::json!({
+                    "todo": { "title": "Ship it" },
+                    "source_journal_entry_id": je_id
+                }),
+            ),
+        ];
+
+        for (kind, payload) in cases {
+            let err = apply(&pool, kind, &payload)
+                .await
+                .expect_err("a user create with a source anchor is rejected");
+            assert!(
+                matches!(err, MutateError::Invalid(_)),
+                "{kind} with source_journal_entry_id is Invalid, got: {err:?}"
+            );
+        }
+
+        let entity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
+            .fetch_one(&pool)
+            .await
+            .expect("count entities");
+        assert_eq!(entity_count, 0, "a rejected user create writes nothing");
     }
 
     // A user `update_project` whose payload sets the optional `outcome` to JSON
