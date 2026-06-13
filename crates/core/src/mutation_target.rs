@@ -13,11 +13,22 @@ use sqlx::SqlitePool;
 use crate::db;
 use crate::entities;
 
-/// A run-independent target-validation failure. `Invalid` carries the
-/// client-facing reason; `Internal` wraps a DB fault. Each caller maps these
-/// into its own error vocabulary (`DecideError` / `MutateError`).
+/// A run-independent target-validation failure.
+///
+/// - `TargetMissing` — the PRIMARY target of an update/delete (the Entity the
+///   mutation operates ON) no longer exists. On the agent accept path this is a
+///   user having deleted the Entity out from under a parked Proposal (ADR-0033);
+///   `decide` maps it to `NotDecidable` (-32002) so the Run resolves cleanly. A
+///   bad REFERENCED Entity stays `Invalid` (it is a payload error, not "the thing
+///   I'm editing vanished").
+/// - `Invalid` — the client-facing payload reason (a bad reference, or a missing
+///   required target id).
+/// - `Internal` — a DB fault.
+///
+/// Each caller maps these into its own vocabulary (`DecideError`/`MutateError`).
 #[derive(Debug)]
 pub(crate) enum TargetError {
+    TargetMissing(String),
     Invalid(String),
     Internal(anyhow::Error),
 }
@@ -102,13 +113,24 @@ pub(crate) async fn validate_mutation_target_refs(
         let todo_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
             TargetError::Invalid("todo_id is required for update_todo".to_string())
         })?;
-        let is_todo = db::entity_is_type(pool, todo_id, "todo")
+        match db::entity_type_by_id(pool, todo_id)
             .await
-            .map_err(|e| TargetError::Internal(e.into()))?;
-        if !is_todo {
-            return Err(TargetError::Invalid(
-                "update_todo todo_id must reference an Accepted Todo".to_string(),
-            ));
+            .map_err(|e| TargetError::Internal(e.into()))?
+        {
+            // The Todo being edited is GONE — a primary-target miss, not a payload
+            // error (TargetMissing → NotDecidable on the accept path, ADR-0033).
+            None => {
+                return Err(TargetError::TargetMissing(
+                    "update_todo todo_id no longer references an Accepted Todo".to_string(),
+                ));
+            }
+            // The id resolves to a non-Todo Entity — a genuine payload error.
+            Some(actual) if actual != "todo" => {
+                return Err(TargetError::Invalid(
+                    "update_todo todo_id must reference an Accepted Todo".to_string(),
+                ));
+            }
+            Some(_) => {}
         }
 
         for field in ["set_person_refs", "add_person_refs"] {
@@ -166,13 +188,25 @@ pub(crate) async fn validate_mutation_target_refs(
         let entity_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
             TargetError::Invalid(format!("entity_id is required for {mutation_kind}"))
         })?;
-        let is_type = db::entity_is_type(pool, entity_id, target_type)
+        match db::entity_type_by_id(pool, entity_id)
             .await
-            .map_err(|e| TargetError::Internal(e.into()))?;
-        if !is_type {
-            return Err(TargetError::Invalid(format!(
-                "{mutation_kind} target must reference an Accepted {target_type}"
-            )));
+            .map_err(|e| TargetError::Internal(e.into()))?
+        {
+            // The Entity being updated/deleted is GONE — a primary-target miss, not
+            // a payload error (TargetMissing → NotDecidable on the accept path,
+            // ADR-0033). A wrong-TYPE id (e.g. delete_person against a Todo) still
+            // resolves to a row, so it stays Invalid below.
+            None => {
+                return Err(TargetError::TargetMissing(format!(
+                    "{mutation_kind} target no longer references an Accepted {target_type}"
+                )));
+            }
+            Some(actual) if actual != target_type => {
+                return Err(TargetError::Invalid(format!(
+                    "{mutation_kind} target must reference an Accepted {target_type}"
+                )));
+            }
+            Some(_) => {}
         }
         return Ok(());
     }

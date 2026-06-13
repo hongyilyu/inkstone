@@ -297,7 +297,9 @@ async fn apply_update_todo(
     )
     .await?;
     if updated != 1 {
-        return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+        // The target Todo row vanished (a user deleted it under the parked
+        // Proposal) — ADR-0033's target-gone case, distinct from a DB fault.
+        return Err(ApplyError::TargetMissing);
     }
     let next_seq = queries::next_entity_revision_seq(&mut **tx, todo_id).await?;
     queries::insert_entity_revision(&mut **tx, todo_id, next_seq, &data_str, proposal_id, now_ms)
@@ -452,7 +454,9 @@ pub(crate) async fn apply_entity_mutation(
             .expect("reference mutation creates or reuses an entity_ref");
         let current_data = queries::current_journal_entry_by_id(&mut **tx, &entity_id)
             .await?
-            .ok_or(ApplyError::Sql(sqlx::Error::RowNotFound))?
+            // The target Journal Entry vanished under the parked Proposal
+            // (ADR-0033) — surface TargetMissing, not an opaque DB fault.
+            .ok_or(ApplyError::TargetMissing)?
             .1;
         let current_data: serde_json::Value = serde_json::from_str(&current_data).map_err(|e| {
             ApplyError::InvalidMutation(format!("stored Journal Entry data is malformed JSON: {e}"))
@@ -498,7 +502,8 @@ pub(crate) async fn apply_entity_mutation(
                 )
                 .await?;
                 if updated != 1 {
-                    return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+                    // An owning Todo row vanished mid-cascade (ADR-0033 target-gone).
+                    return Err(ApplyError::TargetMissing);
                 }
                 let next_seq = queries::next_entity_revision_seq(&mut **tx, &todo_id).await?;
                 queries::insert_entity_revision(
@@ -513,7 +518,8 @@ pub(crate) async fn apply_entity_mutation(
             }
             let deleted = queries::delete_entity(&mut **tx, &entity_id, "project").await?;
             if deleted != 1 {
-                return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+                // The target Project vanished under the parked Proposal (ADR-0033).
+                return Err(ApplyError::TargetMissing);
             }
         }
         // Delete kinds (journal_entry, person, todo): remove the entity of the
@@ -523,7 +529,8 @@ pub(crate) async fn apply_entity_mutation(
         kind if is_delete_mutation(kind) => {
             let deleted = queries::delete_entity(&mut **tx, &entity_id, entity_type).await?;
             if deleted != 1 {
-                return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+                // The delete target vanished under the parked Proposal (ADR-0033).
+                return Err(ApplyError::TargetMissing);
             }
         }
         // update_todo MERGES a Partial<TodoData> onto the current Todo, then
@@ -564,7 +571,8 @@ pub(crate) async fn apply_entity_mutation(
             )
             .await?;
             if updated != 1 {
-                return Err(ApplyError::Sql(sqlx::Error::RowNotFound));
+                // The update target vanished under the parked Proposal (ADR-0033).
+                return Err(ApplyError::TargetMissing);
             }
             let next_seq = queries::next_entity_revision_seq(&mut **tx, &entity_id).await?;
             queries::insert_entity_revision(

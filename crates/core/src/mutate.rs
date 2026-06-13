@@ -57,7 +57,13 @@ pub async fn apply(
     mutation_target::validate_mutation_target_refs(pool, mutation_kind, payload)
         .await
         .map_err(|e| match e {
-            TargetError::Invalid(reason) => MutateError::Invalid(reason),
+            // On the USER path a vanished primary target is a client-correctable
+            // concurrent delete: Invalid (-32602), the same as a bad reference.
+            // (Only the agent accept path maps TargetMissing to NotDecidable per
+            // ADR-0033.)
+            TargetError::TargetMissing(reason) | TargetError::Invalid(reason) => {
+                MutateError::Invalid(reason)
+            }
             TargetError::Internal(err) => MutateError::Internal(err),
         })?;
 
@@ -77,6 +83,11 @@ pub async fn apply(
         // `NotPending` race is unreachable; treat it as an internal inconsistency.
         db::ApplyError::NotPending => {
             MutateError::Internal(anyhow::anyhow!("user mutation hit an unexpected pending guard"))
+        }
+        // The target was deleted between the pre-apply validation and the write
+        // (a concurrent delete). Client-correctable, so Invalid, not Internal.
+        db::ApplyError::TargetMissing => {
+            MutateError::Invalid("target entity no longer exists".to_string())
         }
         db::ApplyError::Sql(err) => MutateError::Internal(err.into()),
     })?;

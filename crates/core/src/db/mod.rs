@@ -700,6 +700,11 @@ pub enum ApplyError {
     /// decide won); the tx rolled back, nothing applied. Maps to
     /// `proposal_not_pending`.
     NotPending,
+    /// An update/delete found its target Entity row already gone (the
+    /// affected-0-rows case): a user deleted the Entity out from under a parked
+    /// Proposal (ADR-0033). Distinct from a genuine DB fault so the caller can
+    /// resolve the parked Run cleanly (decide maps it to `NotDecidable`).
+    TargetMissing,
     /// Any other SQL error inside the apply transaction.
     Sql(sqlx::Error),
 }
@@ -715,6 +720,7 @@ impl std::fmt::Display for ApplyError {
         match self {
             ApplyError::InvalidMutation(reason) => write!(f, "{reason}"),
             ApplyError::NotPending => write!(f, "proposal is not pending (lost the apply race)"),
+            ApplyError::TargetMissing => write!(f, "proposal target entity no longer exists"),
             ApplyError::Sql(e) => write!(f, "{e}"),
         }
     }
@@ -1623,6 +1629,105 @@ mod tests {
             ent_count, 0,
             "update is never sourced from a Journal Entry (source_journal_entry_id ignored on update)"
         );
+    }
+
+    /// A parked Proposal whose target Entity was deleted out from under it
+    /// (ADR-0033's user-delete-vs-parked-agent-proposal race): `apply_proposal`'s
+    /// update/delete affected-0-rows path surfaces a distinct
+    /// [`ApplyError::TargetMissing`], NOT an opaque [`ApplyError::Sql`], so the
+    /// caller can resolve the parked Run cleanly (decide maps it to
+    /// `NotDecidable` → `-32002`). Nothing is written and the Proposal's flip
+    /// rolls back with the tx.
+    #[tokio::test]
+    async fn apply_delete_with_vanished_target_is_target_missing() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-vanished").await;
+
+        // A delete_journal_entry whose `entity_id` names an Entity that does not
+        // exist — modeling the target deleted after the Proposal parked. The
+        // delete's affected-0-rows check fires.
+        let missing_entity_id = Uuid::now_v7().to_string();
+        let result = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-vanished",
+            "delete_journal_entry",
+            "journal_entry",
+            crate::entities::JOURNAL_ENTRY_SCHEMA_VERSION,
+            Some(&missing_entity_id),
+            &serde_json::json!({ "entity_id": missing_entity_id }),
+            None,
+            None,
+            Some("idem-vanished"),
+            r#"{"decision":"accept","content":"Accepted."}"#,
+            42,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ApplyError::TargetMissing)),
+            "a vanished delete target surfaces TargetMissing, not opaque Sql: {result:?}"
+        );
+        let entity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
+            .fetch_one(&pool)
+            .await
+            .expect("count entities");
+        assert_eq!(entity_count, 0, "nothing is written on a vanished target");
+        // The guarded Proposal flip rolled back with the tx — still pending.
+        let proposal_status: String =
+            sqlx::query_scalar("SELECT status FROM proposals WHERE id = ?1")
+                .bind(&proposal_id)
+                .fetch_one(&pool)
+                .await
+                .expect("proposal status");
+        assert_eq!(
+            proposal_status, "pending",
+            "the apply tx rolled back, leaving the Proposal pending"
+        );
+    }
+
+    /// The update affected-0-rows path also surfaces [`ApplyError::TargetMissing`]
+    /// (not opaque `Sql`): an `update_person` whose target Entity was deleted out
+    /// from under the parked Proposal. Covers the generic update arm alongside the
+    /// delete arm above.
+    #[tokio::test]
+    async fn apply_update_with_vanished_target_is_target_missing() {
+        let pool = memory_pool().await;
+        let run_id = Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap();
+        insert_bare_run(&pool, &run_id.to_string(), "parked").await;
+        let proposal_id = seed_pending_proposal(&pool, run_id, "tool-vanished-upd").await;
+
+        let missing_entity_id = Uuid::now_v7().to_string();
+        let result = apply_proposal(
+            &pool,
+            run_id,
+            &proposal_id,
+            "tool-vanished-upd",
+            "update_person",
+            "person",
+            crate::entities::PERSON_SCHEMA_VERSION,
+            Some(&missing_entity_id),
+            &serde_json::json!({ "entity_id": missing_entity_id, "name": "Ghost" }),
+            None,
+            Some("updated_from"),
+            Some("idem-vanished-upd"),
+            r#"{"decision":"accept","content":"Accepted."}"#,
+            42,
+        )
+        .await;
+
+        assert!(
+            matches!(result, Err(ApplyError::TargetMissing)),
+            "a vanished update target surfaces TargetMissing: {result:?}"
+        );
+        let entity_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities")
+            .fetch_one(&pool)
+            .await
+            .expect("count entities");
+        assert_eq!(entity_count, 0, "nothing is written on a vanished target");
     }
 
     #[tokio::test]
