@@ -1,6 +1,13 @@
 ---
 name: deep-review
-description: Self-improving local code reviewer (a CodeRabbit-class review that runs locally, no SaaS). Use when the user wants to review a diff/PR/branch before submitting, run a deep multi-agent code review, "deep review", catch bugs a single pass misses, OR to teach the reviewer from past PR review comments ("learn from the PRs", mine CodeRabbit/Copilot/Codex/human review comments into rules), OR to check learning status/watermarks. Three modes: run, learn, status.
+description: >-
+  Self-improving local code reviewer (a CodeRabbit-class review that runs
+  locally, no SaaS). Use when the user wants to review a diff/PR/branch before
+  submitting, run a deep multi-agent code review, "deep review", catch bugs a
+  single pass misses, OR to teach the reviewer from past PR review comments
+  ("learn from the PRs", mine CodeRabbit/Copilot/Codex/human review comments
+  into rules), OR to check learning status/watermarks. Three modes: run, learn,
+  status.
 ---
 
 # deep-review — self-improving local code reviewer
