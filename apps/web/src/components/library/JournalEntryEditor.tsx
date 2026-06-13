@@ -1,36 +1,49 @@
 import type { EntityMutateParams } from "@inkstone/protocol";
-import { X } from "lucide-react";
-import { useId, useState } from "react";
+import { Link2, X } from "lucide-react";
+import { useId, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import {
 	type JournalEntry,
 	type JournalEntryBodyNode,
+	type LibraryItem,
+	libraryItemSubtitle,
+	libraryItemTitle,
 	localNowString,
 } from "@/lib/libraryItems";
 import { EditorField, EditorInput, EntityEditorFrame } from "./EntityEditor.js";
+import { EntityGlyph } from "./EntityGlyph.js";
 
 type Props = (
-	| { mode: "create"; journalEntry?: undefined }
-	| { mode: "edit"; journalEntry: JournalEntry }
+	| { mode: "create"; journalEntry?: undefined; allEntities?: undefined }
+	| { mode: "edit"; journalEntry: JournalEntry; allEntities: LibraryItem[] }
 ) & {
 	/** Called with the affected Journal Entry id after a successful save. */
 	onDone: (id: string) => void;
 	onCancel: () => void;
 };
 
+/** The Entity kinds an inline chip may target (ADR-0030; never a Journal Entry). */
+type ReferenceableKind = "person" | "project" | "todo";
+const REFERENCEABLE_KINDS: ReferenceableKind[] = ["person", "project", "todo"];
+
 /**
- * The editable body: text segments are mutable strings; chips are immutable
- * references the user can only keep or remove (adding new chips is slice-9).
+ * The editable body: text segments are mutable strings; chips are references.
+ * Existing chips carry a real `refId`; a NEWLY added chip is a bare placeholder
+ * carrying its `targetEntityId` (no ref_id — Core mints one on the reference
+ * mutation). At most one new chip is staged at a time (one reference mutation
+ * per new chip — the hard contract).
  */
 interface DraftBodyNode {
 	type: "text" | "entity_ref";
 	/** For text nodes: the editable text. */
 	text?: string;
-	/** For entity_ref nodes: the stored `ref_id` (snake_case on the wire). */
+	/** For existing entity_ref nodes: the stored `ref_id` (snake_case on the wire). */
 	refId?: string;
 	/** A human label for the chip token. */
 	label?: string;
+	/** For a NEW chip: the picked Entity's id (the reference target). */
+	newTargetId?: string;
 }
 
 interface Draft {
@@ -135,9 +148,61 @@ function buildUpdateParams(entry: JournalEntry, d: Draft): EntityMutateParams {
 	return { mutation_kind: "update_journal_entry", payload };
 }
 
+/** The single staged new chip (the one bare placeholder), or undefined. */
+function stagedNewChip(body: DraftBodyNode[]): DraftBodyNode | undefined {
+	return body.find((node) => node.newTargetId !== undefined);
+}
+
+/**
+ * The wire body for a reference mutation: the JE's text nodes plus the ONE new
+ * chip as a BARE `{type:"entity_ref"}` placeholder (Core mints its ref_id and
+ * rewrites the placeholder). Core rejects any `ref_id` on a reference body node
+ * and rewrites EVERY placeholder to the same minted id, so this body carries no
+ * `ref_id` node and exactly one placeholder. Add-a-chip is gated to chip-free
+ * entries (see `AddReferenceField`), so no existing chip is ever present here.
+ */
+function buildReferenceBody(
+	body: DraftBodyNode[],
+): Array<{ type: "text"; text: string } | { type: "entity_ref" }> {
+	const nodes: Array<{ type: "text"; text: string } | { type: "entity_ref" }> =
+		[];
+	for (const node of body) {
+		if (node.type === "text") {
+			const text = node.text ?? "";
+			if (text.trim() !== "") nodes.push({ type: "text", text });
+		} else if (node.newTargetId !== undefined) {
+			nodes.push({ type: "entity_ref" });
+		}
+	}
+	return nodes;
+}
+
+/**
+ * `reference_existing_entity_from_journal_entry` for the ONE staged new chip:
+ * the JE is the source, the picked Entity the target, and the body carries
+ * exactly one bare placeholder for the new chip (ADR-0030/0033).
+ */
+function buildReferenceParams(
+	entry: JournalEntry,
+	d: Draft,
+	chip: DraftBodyNode,
+): EntityMutateParams {
+	const payload: Record<string, unknown> = {
+		source_entity_id: entry.id,
+		target_entity_id: chip.newTargetId,
+		body: buildReferenceBody(d.body),
+	};
+	if (chip.label) payload.label_snapshot = chip.label;
+	return {
+		mutation_kind: "reference_existing_entity_from_journal_entry",
+		payload,
+	};
+}
+
 /** Create / edit a Journal Entry inline in the (widened) Library rail (ADR-0033). */
 export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 	const existing = m.mode === "edit" ? m.journalEntry : undefined;
+	const allEntities = m.mode === "edit" ? m.allEntities : [];
 	const [draft, setDraft] = useState<Draft>(() =>
 		draftFromJournalEntry(existing),
 	);
@@ -157,18 +222,53 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 			body: d.body.filter((_, i) => i !== index),
 		}));
 
+	// Stage ONE new chip: append a placeholder carrying the picked target.
+	const addChip = (target: LibraryItem) =>
+		setDraft((d) => ({
+			...d,
+			body: [
+				...d.body,
+				{
+					type: "entity_ref",
+					newTargetId: target.id,
+					label: libraryItemTitle(target),
+				},
+			],
+		}));
+
+	const newChip = stagedNewChip(draft.body);
+	// Core supports at most one chip per JE via reference_existing (its body must
+	// carry exactly one bare placeholder and the mutation full-replaces the body).
+	// So add-a-chip is gated to chip-free entries.
+	const hasExistingChip = draft.body.some((node) => node.refId !== undefined);
 	const occurredEmpty = draft.occurredAt.trim() === "";
-	const bodyEmpty = buildBody(draft.body).length === 0;
+	const bodyEmpty = buildBody(draft.body).length === 0 && newChip === undefined;
 	const blocked = occurredEmpty || bodyEmpty;
 
 	const submit = () => {
 		if (blocked) return;
-		const params = existing
-			? buildUpdateParams(existing, draft)
-			: buildCreateParams(draft);
+		// A staged new chip is its OWN reference mutation (mints a ref_id), distinct
+		// from update_journal_entry (whose entity_ref nodes need an existing ref_id).
+		const referencing = existing !== undefined && newChip !== undefined;
+		const params = referencing
+			? // biome-ignore lint/style/noNonNullAssertion: referencing guarantees both.
+				buildReferenceParams(existing!, draft, newChip!)
+			: existing
+				? buildUpdateParams(existing, draft)
+				: buildCreateParams(draft);
 		mutation.mutate(params, {
-			onSuccess: (result) =>
-				onDone(result.entity_id ?? existing?.id ?? draft.occurredAt),
+			onSuccess: (result) => {
+				// Drop the just-saved placeholder so a follow-up chip is its OWN
+				// mutation — never two placeholders in one reference body (Core
+				// collapses them onto one minted ref_id ⇒ data loss).
+				if (referencing) {
+					setDraft((d) => ({
+						...d,
+						body: d.body.filter((node) => node.newTargetId === undefined),
+					}));
+				}
+				onDone(result.entity_id ?? existing?.id ?? draft.occurredAt);
+			},
 		});
 	};
 
@@ -212,7 +312,135 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 				onText={setText}
 				onRemoveChip={removeChip}
 			/>
+
+			{existing ? (
+				<AddReferenceField
+					allEntities={allEntities}
+					hasExistingChip={hasExistingChip}
+					hasStagedChip={newChip !== undefined}
+					onPick={addChip}
+				/>
+			) : null}
 		</EntityEditorFrame>
+	);
+}
+
+/**
+ * The "add a reference" affordance (edit only): a button opens a searchable pick
+ * of Person/Project/Todo (never a Journal Entry). Picking stages ONE new chip,
+ * which is its own reference mutation (a bare placeholder Core mints a ref_id
+ * for). Core supports at most one chip per JE through this mutation, so the
+ * affordance is gated to chip-FREE entries: an entry that already carries a chip
+ * shows a hint instead (the chip can still be removed/edited via update).
+ */
+function AddReferenceField({
+	allEntities,
+	hasExistingChip,
+	hasStagedChip,
+	onPick,
+}: {
+	allEntities: LibraryItem[];
+	hasExistingChip: boolean;
+	hasStagedChip: boolean;
+	onPick: (target: LibraryItem) => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const [query, setQuery] = useState("");
+	const inputId = useId();
+
+	const candidates = useMemo(
+		() =>
+			allEntities.filter((e): e is LibraryItem =>
+				REFERENCEABLE_KINDS.includes(e.kind as ReferenceableKind),
+			),
+		[allEntities],
+	);
+	const matches = useMemo(() => {
+		const q = query.trim().toLowerCase();
+		const pool = q
+			? candidates.filter((e) => libraryItemTitle(e).toLowerCase().includes(q))
+			: candidates;
+		return pool.slice(0, 8);
+	}, [candidates, query]);
+
+	if (hasExistingChip) {
+		// This JE already has a chip; Core takes one reference per entry. Remove
+		// the existing chip (an update) first to add a different one.
+		return (
+			<p className="text-muted-foreground text-xs">
+				One reference per entry for now.
+			</p>
+		);
+	}
+
+	if (hasStagedChip) {
+		// One new chip staged: it shows in the body above; save it to persist the
+		// reference. Core takes one reference per entry, so the picker stays closed.
+		return (
+			<p className="text-muted-foreground text-xs">
+				Save to add the reference.
+			</p>
+		);
+	}
+
+	if (!open) {
+		return (
+			<Button
+				type="button"
+				variant="chip"
+				size="sm"
+				className="self-start"
+				onClick={() => setOpen(true)}
+			>
+				<Link2 className="size-3.5" aria-hidden />
+				Add reference
+			</Button>
+		);
+	}
+
+	return (
+		<div className="flex flex-col gap-1.5">
+			<EditorInput
+				id={inputId}
+				aria-label="Link an entity"
+				placeholder="Search People, Projects, Todos…"
+				value={query}
+				onChange={(e) => setQuery(e.target.value)}
+			/>
+			<div className="flex flex-col gap-1" role="listbox">
+				{matches.length === 0 ? (
+					<p className="px-1 py-2 text-muted-foreground text-sm">
+						No matching entities.
+					</p>
+				) : (
+					matches.map((entity) => (
+						<button
+							key={entity.id}
+							type="button"
+							role="option"
+							aria-selected={false}
+							aria-label={libraryItemTitle(entity)}
+							className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-secondary/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+							onClick={() => {
+								onPick(entity);
+								setOpen(false);
+								setQuery("");
+							}}
+						>
+							<EntityGlyph entity={entity} size="sm" />
+							<span className="min-w-0 flex-1">
+								<span className="block truncate text-foreground text-sm">
+									{libraryItemTitle(entity)}
+								</span>
+								<span className="block truncate text-muted-foreground text-xs">
+									{libraryItemSubtitle(entity)}
+								</span>
+							</span>
+						</button>
+					))
+				)}
+			</div>
+		</div>
 	);
 }
 

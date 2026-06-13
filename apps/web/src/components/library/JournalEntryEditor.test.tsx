@@ -9,7 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { JournalEntry } from "@/lib/libraryItems";
+import type { JournalEntry, LibraryItem } from "@/lib/libraryItems";
 import { RuntimeProvider } from "@/runtime";
 import { JournalEntryEditor } from "./JournalEntryEditor";
 
@@ -87,6 +87,35 @@ const existing: JournalEntry = {
 		},
 		{ type: "text", text: " plans." },
 	],
+	recency: 1,
+	createdAt: "fixture",
+};
+
+const PERSON_BOB: LibraryItem = {
+	id: "01900000-0000-7000-8000-0000000000b1",
+	kind: "person",
+	name: "Bob",
+	recency: 2,
+	createdAt: "fixture",
+};
+
+const PROJECT_DEMO: LibraryItem = {
+	id: "01900000-0000-7000-8000-0000000000c1",
+	kind: "project",
+	name: "Demo project",
+	status: "active",
+	recency: 3,
+	createdAt: "fixture",
+};
+
+// A text-only Journal Entry to attach new chips to — keeps the add-chip body
+// assertions free of pre-existing chips so the ONE-placeholder rule is unambiguous.
+const textOnlyEntry: JournalEntry = {
+	id: "01900000-0000-7000-8000-0000000000e2",
+	kind: "journal_entry",
+	occurredAt: "2026-06-10T10:30:00",
+	endedAt: undefined,
+	body: [{ type: "text", text: "Standup notes." }],
 	recency: 1,
 	createdAt: "fixture",
 };
@@ -187,7 +216,13 @@ describe("JournalEntryEditor edit", () => {
 		const seen: EntityMutateParams[] = [];
 		const onDone = vi.fn();
 		renderEditor(
-			{ mode: "edit", journalEntry: existing, onDone, onCancel: () => {} },
+			{
+				mode: "edit",
+				journalEntry: existing,
+				allEntities: [],
+				onDone,
+				onCancel: () => {},
+			},
 			(params) => {
 				seen.push(params);
 				return Effect.succeed({ entity_id: existing.id });
@@ -227,6 +262,7 @@ describe("JournalEntryEditor edit", () => {
 			{
 				mode: "edit",
 				journalEntry: existing,
+				allEntities: [],
 				onDone: () => {},
 				onCancel: () => {},
 			},
@@ -259,6 +295,7 @@ describe("JournalEntryEditor edit", () => {
 			{
 				mode: "edit",
 				journalEntry: existing,
+				allEntities: [],
 				onDone: () => {},
 				onCancel: () => {},
 			},
@@ -293,6 +330,7 @@ describe("JournalEntryEditor edit", () => {
 			{
 				mode: "edit",
 				journalEntry: withSeconds,
+				allEntities: [],
 				onDone: () => {},
 				onCancel: () => {},
 			},
@@ -323,6 +361,7 @@ describe("JournalEntryEditor edit", () => {
 			{
 				mode: "edit",
 				journalEntry: textOnly,
+				allEntities: [],
 				onDone: () => {},
 				onCancel: () => {},
 			},
@@ -336,5 +375,76 @@ describe("JournalEntryEditor edit", () => {
 		await user.click(screen.getByRole("button", { name: /^save$/i }));
 
 		expect(seen).toHaveLength(0);
+	});
+});
+
+describe("JournalEntryEditor add chip", () => {
+	const allEntities: LibraryItem[] = [PERSON_BOB, PROJECT_DEMO, existing];
+
+	// Adding ONE new chip is its own reference mutation, NOT an update: it carries
+	// {source_entity_id (this JE), target_entity_id (the picked entity), body with
+	// EXACTLY ONE bare {type:"entity_ref"} placeholder for the new chip}.
+	it("adds a chip linking a Person via exactly one reference_existing mutation", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		const onDone = vi.fn();
+		renderEditor(
+			{
+				mode: "edit",
+				journalEntry: textOnlyEntry,
+				allEntities,
+				onDone,
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: textOnlyEntry.id });
+			},
+		);
+
+		// Open the picker, search for Bob, and pick him to stage a new chip.
+		await user.click(screen.getByRole("button", { name: /add reference/i }));
+		await user.type(screen.getByLabelText(/link an entity/i), "Bob");
+		await user.click(screen.getByRole("option", { name: /bob/i }));
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		expect(seen[0].mutation_kind).toBe(
+			"reference_existing_entity_from_journal_entry",
+		);
+		const payload = seen[0].payload as {
+			source_entity_id: string;
+			target_entity_id: string;
+			label_snapshot?: string;
+			body: Array<{ type: string; ref_id?: string }>;
+		};
+		expect(payload.source_entity_id).toBe(textOnlyEntry.id);
+		expect(payload.target_entity_id).toBe(PERSON_BOB.id);
+		expect(payload.label_snapshot).toBe("Bob");
+		// EXACTLY ONE placeholder — a bare entity_ref with NO ref_id (Core mints it).
+		const refNodes = payload.body.filter((n) => n.type === "entity_ref");
+		expect(refNodes).toEqual([{ type: "entity_ref" }]);
+		expect(JSON.stringify(payload.body)).not.toContain("ref_id");
+		await waitFor(() => expect(onDone).toHaveBeenCalledWith(textOnlyEntry.id));
+	});
+
+	// Core supports AT MOST ONE chip per JE via reference_existing (the body must
+	// carry exactly one bare placeholder and the mutation full-replaces the body).
+	// So the "Add reference" affordance is gated to chip-FREE entries: when the JE
+	// already has a chip, the affordance is absent (with a brief hint instead).
+	it("hides the add-reference affordance when the entry already has a chip", () => {
+		renderEditor({
+			mode: "edit",
+			journalEntry: existing, // body carries two existing entity_ref chips
+			allEntities,
+			onDone: () => {},
+			onCancel: () => {},
+		});
+
+		expect(
+			screen.queryByRole("button", { name: /add reference/i }),
+		).not.toBeInTheDocument();
+		// A brief hint explains the one-reference-per-entry limit.
+		expect(screen.getByText(/one reference per entry/i)).toBeInTheDocument();
 	});
 });

@@ -579,6 +579,7 @@ function JournalEntryDetail({
 				<JournalEntryEditor
 					mode="edit"
 					journalEntry={journalEntry}
+					allEntities={allEntities}
 					onDone={() => setEditing(false)}
 					onCancel={() => setEditing(false)}
 				/>
