@@ -1,6 +1,5 @@
-import { execFileSync } from "node:child_process";
-import path from "node:path";
 import { expect, test } from "./fixtures.js";
+import { dbPathFor, seedEntities } from "./seed.js";
 
 /**
  * Full-system GTD V1 read surfaces (ADR-0031/0032): seed Todos, People, a
@@ -23,7 +22,7 @@ test("GTD views derive Inbox, Waiting, Review and Todo detail from live data", a
 	core,
 	workspace,
 }) => {
-	const dbPath = path.join(workspace.path, "db.sqlite");
+	const dbPath = dbPathFor(workspace.path);
 	seedGtdWorkspace(dbPath);
 
 	// ── Inbox: the unorganized errand only ──────────────────────────────────
@@ -75,67 +74,57 @@ test("GTD views derive Inbox, Waiting, Review and Todo detail from live data", a
 });
 
 function seedGtdWorkspace(dbPath: string): void {
-	const now = Date.now();
-	const entity = (
-		id: string,
-		type: string,
-		data: unknown,
-	) => `INSERT INTO entities (id, type, schema_version, data, created_by, created_via_proposal_id, created_at, updated_at)
-		VALUES (${sqlValue(id)}, ${sqlValue(type)}, 1, ${jsonValue(data)}, 'user', NULL, ${now}, ${now});`;
-	const ref = (
-		todoId: string,
-		personId: string,
-		role: string,
-	) => `INSERT INTO todo_person_refs (todo_id, person_id, role, created_at, updated_at)
-		VALUES (${sqlValue(todoId)}, ${sqlValue(personId)}, ${sqlValue(role)}, ${now}, ${now});`;
-
-	sqlite(
+	seedEntities(
 		dbPath,
-		`
-		BEGIN IMMEDIATE;
-		${entity(PERSON_ALICE, "person", { name: "Alice", aliases: ["Allie"] })}
-		${entity(PERSON_BOB, "person", { name: "Bob" })}
-		${entity(PROJECT_MIGRATION, "project", {
-			name: "API migration",
-			status: "active",
-			outcome: "Move to /v2 behind an alias.",
-			next_review_at: "2000-01-01T20:00:00",
-		})}
-		${entity(TODO_INBOX, "todo", { title: "Buy stamps", status: "active" })}
-		${entity(TODO_WAITING, "todo", {
-			title: "Wait for Alice's draft",
-			status: "active",
-		})}
-		${entity(TODO_IN_PROJECT, "todo", {
-			title: "Cut over the API",
-			status: "active",
-			project_id: PROJECT_MIGRATION,
-		})}
-		${entity(TODO_DONE, "todo", {
-			title: "Old completed task",
-			status: "completed",
-			completed_at: "2026-06-01T12:00:00",
-		})}
-		${ref(TODO_WAITING, PERSON_ALICE, "waiting_on")}
-		${ref(TODO_IN_PROJECT, PERSON_BOB, "related")}
-		COMMIT;
-		`,
+		[
+			{
+				id: PERSON_ALICE,
+				type: "person",
+				data: { name: "Alice", aliases: ["Allie"] },
+			},
+			{ id: PERSON_BOB, type: "person", data: { name: "Bob" } },
+			{
+				id: PROJECT_MIGRATION,
+				type: "project",
+				data: {
+					name: "API migration",
+					status: "active",
+					outcome: "Move to /v2 behind an alias.",
+					next_review_at: "2000-01-01T20:00:00",
+				},
+			},
+			{
+				id: TODO_INBOX,
+				type: "todo",
+				data: { title: "Buy stamps", status: "active" },
+			},
+			{
+				id: TODO_WAITING,
+				type: "todo",
+				data: { title: "Wait for Alice's draft", status: "active" },
+			},
+			{
+				id: TODO_IN_PROJECT,
+				type: "todo",
+				data: {
+					title: "Cut over the API",
+					status: "active",
+					project_id: PROJECT_MIGRATION,
+				},
+			},
+			{
+				id: TODO_DONE,
+				type: "todo",
+				data: {
+					title: "Old completed task",
+					status: "completed",
+					completed_at: "2026-06-01T12:00:00",
+				},
+			},
+		],
+		[
+			{ todoId: TODO_WAITING, personId: PERSON_ALICE, role: "waiting_on" },
+			{ todoId: TODO_IN_PROJECT, personId: PERSON_BOB, role: "related" },
+		],
 	);
-}
-
-function sqlite(dbPath: string, input: string): string {
-	return execFileSync("sqlite3", [dbPath], {
-		input: `.timeout 5000
-PRAGMA foreign_keys = ON;
-${input}`,
-		encoding: "utf8",
-	});
-}
-
-function sqlValue(value: string): string {
-	return `'${value.replaceAll("'", "''")}'`;
-}
-
-function jsonValue(value: unknown): string {
-	return sqlValue(JSON.stringify(value));
 }
