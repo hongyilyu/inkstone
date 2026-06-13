@@ -680,34 +680,64 @@ function captureProposal(scenario: CaptureScenario) {
 	return undefined;
 }
 
-/** A capture resume's position, reconstructed from the transcript so a fresh
- * process can resume the right step (each park→decide→resume spawns anew). */
-type CapturePhase =
-	| "fresh" // not a resume — propose the create_todo/project/person
-	| "after_create" // create_todo accepted — start enrichment (or confirm)
-	| "after_link" // an update_todo link accepted — do the next step (or confirm)
-	| "done"; // declined, or nothing left — confirm, propose nothing
-
-function capturePhase(manifest: WorkerManifest): CapturePhase {
-	if (manifest.mode !== "resume") return "fresh";
-	const decisions = manifest.messages.filter(
-		(m): m is Extract<typeof m, { role: "tool_result" }> =>
-			m.role === "tool_result" &&
-			(m.content.startsWith("Accepted.") ||
-				m.content === "User declined this proposal."),
-	);
-	const latest = decisions.at(-1);
-	if (latest === undefined) return "done";
-	if (latest.content === "User declined this proposal.") return "done";
-	if (latest.content.includes("Updated Todo")) return "after_link";
-	if (latest.content.includes("Created Todo")) return "after_create";
-	return "done";
-}
-
 /** The recovered Todo id for enrichment: the first result of the todo-recovery
  * search (bound to its call id), if that search is already in the transcript. */
 function capturedTodoId(messages: readonly AnyMessage[]): string | undefined {
 	return searchedEntityId(messages, "tc_cap_todo");
+}
+
+// Per-step tool-call ids. Each enrichment step does up to four tool calls across
+// resumes — search existing, (if missing) create, re-search the created entity,
+// update_todo link — and `tool_calls.id` is a GLOBAL primary key, so the ids must
+// be distinct per kind AND per role (initial search vs post-create re-search).
+const STEP_IDS: Record<
+	EnrichStep["kind"],
+	{ search: string; create: string; research: string; update: string }
+> = {
+	project: {
+		search: "tc_cap_search_project",
+		create: "tc_cap_create_project",
+		research: "tc_cap_research_project",
+		update: "tc_cap_update_project",
+	},
+	person: {
+		search: "tc_cap_search_person",
+		create: "tc_cap_create_person",
+		research: "tc_cap_research_person",
+		update: "tc_cap_update_person",
+	},
+};
+
+/** Whether a Decision for a proposal under `callId` is present in the transcript,
+ * and if so whether it was accepted. */
+function decisionFor(
+	messages: readonly AnyMessage[],
+	callId: string,
+): "accepted" | "declined" | undefined {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		if (m.role !== "tool_result" && m.role !== "toolResult") continue;
+		if (toolResultCallId(m) !== callId) continue;
+		const text = textOf(m.content);
+		if (text.startsWith("Accepted.")) return "accepted";
+		if (text === "User declined this proposal.") return "declined";
+	}
+	return undefined;
+}
+
+/** A step is RESOLVED once a Decision for its link has landed (the user accepted
+ * OR declined the update_todo — either way that link is settled and the Todo
+ * stays valid), or its missing-entity create was declined (link abandoned).
+ * Otherwise it still needs work. */
+function stepResolved(
+	messages: readonly AnyMessage[],
+	step: EnrichStep,
+): boolean {
+	const ids = STEP_IDS[step.kind];
+	return (
+		decisionFor(messages, ids.update) !== undefined ||
+		decisionFor(messages, ids.create) === "declined"
+	);
 }
 
 /** Build the update_todo link proposal for an enrichment step + resolved id. */
@@ -734,27 +764,78 @@ function enrichLinkProposal(
 	};
 }
 
-/** Script the enrichment leg for one resume cycle: recover the Todo id (search
- * if not yet in the transcript), search the step's entity, then propose ONE
- * update_todo. `stepIndex` is how many links already landed. */
+/** Build the missing-entity create proposal, sourced from the user Message (no
+ * source_journal_entry_id — Core auto-sources from the triggering Message). */
+function enrichCreateProposal(step: EnrichStep) {
+	if (step.kind === "project") {
+		return {
+			mutation_kind: "create_project",
+			payload: { name: step.name },
+			rationale: "the Todo references a Project not yet in the Workspace",
+		};
+	}
+	return {
+		mutation_kind: "create_person",
+		payload: { name: step.name },
+		rationale: "the Todo references a Person not yet in the Workspace",
+	};
+}
+
+/** Script the enrichment leg for the FIRST unresolved step. Each resume advances
+ * one step (link an existing entity, or create-then-link a missing one), one
+ * proposal at a time. Steps already linked or abandoned (declined create) are
+ * skipped; when none remain, confirm and stop. */
 function setCaptureEnrichResponses(
 	faux: ReturnType<typeof registerFauxProvider>,
 	manifest: WorkerManifest,
 	scenario: CaptureScenario,
-	stepIndex: number,
 ): void {
 	const steps = enrichSteps(scenario);
-	const step = steps[stepIndex];
+	const step = steps.find((s) => !stepResolved(manifest.messages, s));
 	if (step === undefined || scenario.todo === undefined) {
 		// No (more) enrichment to do: confirm and stop.
 		faux.setResponses([fauxAssistantMessage("Done — added it.")]);
 		return;
 	}
 	const personRole = scenario.enrich?.person_role ?? "related";
-	const searchId =
-		step.kind === "project" ? "tc_cap_search_project" : "tc_cap_search_person";
-	const updateId =
-		step.kind === "project" ? "tc_cap_update_project" : "tc_cap_update_person";
+	const ids = STEP_IDS[step.kind];
+
+	// If this step's missing-entity create was already ACCEPTED, the entity now
+	// exists: re-search (distinct id) and propose the update_todo link.
+	if (decisionFor(manifest.messages, ids.create) === "accepted") {
+		faux.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall(
+						"search_entities",
+						{ type: step.kind, query: step.name },
+						{ id: ids.research },
+					),
+				],
+				{ stopReason: "toolUse" },
+			),
+			(context) => {
+				const todoId =
+					capturedTodoId(context.messages) ?? capturedTodoId(manifest.messages);
+				const entityId = searchedEntityId(context.messages, ids.research);
+				if (todoId === undefined || entityId === undefined) {
+					return fauxAssistantMessage("Done — added it.");
+				}
+				return fauxAssistantMessage(
+					[
+						fauxToolCall(
+							"propose_workspace_mutation",
+							enrichLinkProposal(step, todoId, entityId, personRole),
+							{ id: ids.update },
+						),
+					],
+					{ stopReason: "toolUse" },
+				);
+			},
+			fauxAssistantMessage("Awaiting your decision."),
+		]);
+		return;
+	}
 
 	const responses: Array<
 		| ReturnType<typeof fauxAssistantMessage>
@@ -780,35 +861,47 @@ function setCaptureEnrichResponses(
 			),
 		);
 	}
-	// Search the step's existing entity.
+	// Search the step's entity (existing-vs-missing branch resolves on the result).
 	responses.push(
 		fauxAssistantMessage(
 			[
 				fauxToolCall(
 					"search_entities",
 					{ type: step.kind, query: step.name },
-					{ id: searchId },
+					{ id: ids.search },
 				),
 			],
 			{ stopReason: "toolUse" },
 		),
 	);
-	// Propose ONE update_todo linking the found entity.
+	// FOUND -> propose update_todo link; MISSING -> propose create_* first.
 	responses.push((context) => {
 		const todoId =
 			capturedTodoId(context.messages) ?? capturedTodoId(manifest.messages);
-		const entityId = searchedEntityId(context.messages, searchId);
-		if (todoId === undefined || entityId === undefined) {
-			// Existing-entity branch: a missing match is slice 4's job — here we
-			// simply skip the link and confirm.
+		const entityId = searchedEntityId(context.messages, ids.search);
+		if (todoId === undefined) {
 			return fauxAssistantMessage("Done — added it.");
+		}
+		if (entityId === undefined) {
+			// Missing: create the entity first, Message-sourced. The link follows
+			// on the next resume once this create is accepted.
+			return fauxAssistantMessage(
+				[
+					fauxToolCall(
+						"propose_workspace_mutation",
+						enrichCreateProposal(step),
+						{ id: ids.create },
+					),
+				],
+				{ stopReason: "toolUse" },
+			);
 		}
 		return fauxAssistantMessage(
 			[
 				fauxToolCall(
 					"propose_workspace_mutation",
 					enrichLinkProposal(step, todoId, entityId, personRole),
-					{ id: updateId },
+					{ id: ids.update },
 				),
 			],
 			{ stopReason: "toolUse" },
@@ -825,30 +918,26 @@ function setCaptureResponses(
 	manifest: WorkerManifest,
 ): void {
 	const scenario = readCaptureScenario();
-	const phase = capturePhase(manifest);
 
-	if (phase === "done") {
-		faux.setResponses([fauxAssistantMessage("Done — added it.")]);
-		return;
-	}
-	if (phase === "after_create") {
-		// Todo accepted — link the first enrichment step (or confirm if none).
-		setCaptureEnrichResponses(faux, manifest, scenario, 0);
-		return;
-	}
-	if (phase === "after_link") {
-		// One link landed — do the next step. Count accepted "Updated Todo"
-		// decisions to know how many are already done.
-		const linksDone = manifest.messages.filter(
+	// Resume: drive enrichment as long as the Todo was created. The step-walk
+	// (stepResolved) decides what remains, so we don't need to distinguish
+	// after_create vs after_link — both resume into the enrichment leg.
+	if (manifest.mode === "resume") {
+		const todoCreated = manifest.messages.some(
 			(m) =>
 				m.role === "tool_result" &&
-				m.content.includes("Accepted. Updated Todo"),
-		).length;
-		setCaptureEnrichResponses(faux, manifest, scenario, linksDone);
+				m.content.includes("Accepted. Created Todo"),
+		);
+		if (todoCreated) {
+			setCaptureEnrichResponses(faux, manifest, scenario);
+		} else {
+			// The Todo create itself was declined (or no Todo) — nothing to enrich.
+			faux.setResponses([fauxAssistantMessage("Done — added it.")]);
+		}
 		return;
 	}
 
-	// phase === "fresh"
+	// Fresh run.
 	const proposal = captureProposal(scenario);
 	if (proposal === undefined) {
 		// Conversation intent (or a malformed scenario): reply, propose nothing.

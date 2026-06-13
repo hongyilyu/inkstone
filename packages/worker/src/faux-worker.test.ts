@@ -2298,3 +2298,284 @@ describe("faux-worker direct capture enrichment — existing entities (INKSTONE_
 		]);
 	});
 });
+
+describe("faux-worker direct capture enrichment — missing entities (INKSTONE_FAUX_CAPTURE)", () => {
+	const todoAcceptedTranscript = (title: string): ManifestMessage[] => [
+		{ role: "user", text: `Follow up with ${title}.` },
+		assistantCall("tc_capture", "propose_workspace_mutation"),
+		decisionResult(
+			"tc_capture",
+			`Accepted. Created Todo (title=${title}, status=active).`,
+		),
+	];
+
+	it("missing Person: empty search -> proposes create_person sourced from the Message (no JE)", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "follow up with NewPerson" },
+			enrich: { person_name: "NewPerson", person_role: "related" },
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest(todoAcceptedTranscript("follow up with NewPerson")),
+			{
+				tc_cap_todo: searchResultResponse([
+					{ id: "todo-1", type: "todo", label: "follow up with NewPerson" },
+				]),
+				// The person does NOT exist yet.
+				tc_cap_search_person: searchResultResponse([]),
+				tc_cap_create_person: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Created Person (name=NewPerson).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// recover todo id -> search (empty) -> propose create_person.
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_person",
+				payload: { name: "NewPerson" },
+			},
+		]);
+		// Missing-entity create is Message-sourced: no JE provenance.
+		expect(JSON.stringify(proposals[0].payload)).not.toContain(
+			"source_journal_entry_id",
+		);
+	});
+
+	it("after the missing Person is accepted: re-searches then proposes update_todo to link it", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "follow up with NewPerson" },
+			enrich: { person_name: "NewPerson", person_role: "related" },
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest([
+				...todoAcceptedTranscript("follow up with NewPerson"),
+				assistantCall("tc_cap_todo", "search_entities"),
+				searchResult("tc_cap_todo", [
+					{ id: "todo-1", type: "todo", label: "follow up with NewPerson" },
+				]),
+				assistantCall("tc_cap_search_person", "search_entities"),
+				searchResult("tc_cap_search_person", []),
+				assistantCall("tc_cap_create_person", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_cap_create_person",
+					"Accepted. Created Person (name=NewPerson).",
+				),
+			]),
+			{
+				// The re-search now finds the just-created Person (distinct call id).
+				tc_cap_research_person: searchResultResponse([
+					{ id: "newperson-1", type: "person", label: "NewPerson" },
+				]),
+				tc_cap_update_person: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Updated Todo (todo_id=todo-1).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// re-search (distinct id) -> ONE update_todo linking the new Person.
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "update_todo",
+				payload: {
+					todo_id: "todo-1",
+					add_person_refs: [{ person_id: "newperson-1", role: "related" }],
+				},
+			},
+		]);
+	});
+
+	it("rejected missing Person: no update_todo link follows (Todo stays unlinked)", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "follow up with NewPerson" },
+			enrich: { person_name: "NewPerson", person_role: "related" },
+		});
+
+		const { events, requests } = await runChat(
+			resumeCaptureManifest([
+				...todoAcceptedTranscript("follow up with NewPerson"),
+				assistantCall("tc_cap_todo", "search_entities"),
+				searchResult("tc_cap_todo", [
+					{ id: "todo-1", type: "todo", label: "follow up with NewPerson" },
+				]),
+				assistantCall("tc_cap_search_person", "search_entities"),
+				searchResult("tc_cap_search_person", []),
+				assistantCall("tc_cap_create_person", "propose_workspace_mutation"),
+				decisionResult("tc_cap_create_person", "User declined this proposal."),
+			]),
+		);
+
+		// Declined missing-entity create: no link proposal, run completes.
+		expect(requests.some((r) => r.name === "propose_workspace_mutation")).toBe(
+			false,
+		);
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	it("missing Project: empty search -> proposes create_project sourced from the Message", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "kick off Lisbon trip planning" },
+			enrich: { project_name: "Plan Lisbon trip" },
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest(
+				todoAcceptedTranscript("kick off Lisbon trip planning"),
+			),
+			{
+				tc_cap_todo: searchResultResponse([
+					{
+						id: "todo-1",
+						type: "todo",
+						label: "kick off Lisbon trip planning",
+					},
+				]),
+				tc_cap_search_project: searchResultResponse([]),
+				tc_cap_create_project: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Created Project (name=Plan Lisbon trip, status=active).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_project",
+				payload: { name: "Plan Lisbon trip" },
+			},
+		]);
+		expect(JSON.stringify(proposals[0].payload)).not.toContain(
+			"source_journal_entry_id",
+		);
+	});
+
+	it("after the missing Project is accepted: re-searches then proposes update_todo with project_id", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "kick off Lisbon trip planning" },
+			enrich: { project_name: "Plan Lisbon trip" },
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest([
+				...todoAcceptedTranscript("kick off Lisbon trip planning"),
+				assistantCall("tc_cap_todo", "search_entities"),
+				searchResult("tc_cap_todo", [
+					{
+						id: "todo-1",
+						type: "todo",
+						label: "kick off Lisbon trip planning",
+					},
+				]),
+				assistantCall("tc_cap_search_project", "search_entities"),
+				searchResult("tc_cap_search_project", []),
+				assistantCall("tc_cap_create_project", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_cap_create_project",
+					"Accepted. Created Project (name=Plan Lisbon trip, status=active).",
+				),
+			]),
+			{
+				// The re-search (distinct id) finds the just-created Project.
+				tc_cap_research_project: searchResultResponse([
+					{ id: "lisbon-1", type: "project", label: "Plan Lisbon trip" },
+				]),
+				tc_cap_update_project: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Updated Todo (todo_id=todo-1).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// re-search (distinct id) -> ONE update_todo linking the new Project via project_id.
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "update_todo",
+				payload: { todo_id: "todo-1", todo: { project_id: "lisbon-1" } },
+			},
+		]);
+	});
+
+	it("rejected missing Project: no update_todo link follows (Todo stays unlinked)", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "kick off Lisbon trip planning" },
+			enrich: { project_name: "Plan Lisbon trip" },
+		});
+
+		const { events, requests } = await runChat(
+			resumeCaptureManifest([
+				...todoAcceptedTranscript("kick off Lisbon trip planning"),
+				assistantCall("tc_cap_todo", "search_entities"),
+				searchResult("tc_cap_todo", [
+					{
+						id: "todo-1",
+						type: "todo",
+						label: "kick off Lisbon trip planning",
+					},
+				]),
+				assistantCall("tc_cap_search_project", "search_entities"),
+				searchResult("tc_cap_search_project", []),
+				assistantCall("tc_cap_create_project", "propose_workspace_mutation"),
+				decisionResult("tc_cap_create_project", "User declined this proposal."),
+			]),
+		);
+
+		// Declined missing-Project create: no link proposal, run completes.
+		expect(requests.some((r) => r.name === "propose_workspace_mutation")).toBe(
+			false,
+		);
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+});
