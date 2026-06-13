@@ -582,6 +582,114 @@ function setExtractTodoResponses(
 	faux.setResponses(responses);
 }
 
+// ── Direct capture mode (INKSTONE_FAUX_CAPTURE) ────────────────────────────
+// A user types task/project/person-shaped input directly into chat and gets ONE
+// create_* proposal sourced from the user Message — no Journal Entry (ADR-0030
+// allows direct non-journal capture; Core auto-sources from the triggering
+// Message when source_journal_entry_id is omitted). The intent + entity fields
+// are injected via a scenario file (INKSTONE_FAUX_CAPTURE_PARAMS), mirroring the
+// EXTRACT mode, rather than parsed from NL.
+
+interface CaptureScenario {
+	intent: "todo" | "project" | "person" | "conversation";
+	todo?: { title: string; note?: string; due_at?: string; defer_at?: string };
+	project?: { name: string; outcome?: string };
+	person?: { name: string; note?: string; aliases?: string[] };
+}
+
+function readCaptureScenario(): CaptureScenario {
+	const file = process.env.INKSTONE_FAUX_CAPTURE_PARAMS;
+	if (file === undefined || file.length === 0) {
+		throw new Error(
+			"INKSTONE_FAUX_CAPTURE=1 requires INKSTONE_FAUX_CAPTURE_PARAMS to point at a scenario JSON file",
+		);
+	}
+	return JSON.parse(readFileSync(file, "utf8")) as CaptureScenario;
+}
+
+/** Build the direct-capture create_* proposal for a scenario, or `undefined`
+ * for the conversation intent (nothing to propose). Links/status/provenance are
+ * OMITTED (never nulled): a direct capture carries no source_journal_entry_id
+ * (Core sources it from the user Message) and lets Core default Todo status. */
+function captureProposal(scenario: CaptureScenario) {
+	if (scenario.intent === "todo" && scenario.todo !== undefined) {
+		const { title, note, due_at, defer_at } = scenario.todo;
+		return {
+			mutation_kind: "create_todo",
+			payload: {
+				todo: {
+					title,
+					...(note !== undefined ? { note } : {}),
+					...(due_at !== undefined ? { due_at } : {}),
+					...(defer_at !== undefined ? { defer_at } : {}),
+				},
+			},
+			rationale: "the user asked to track a direct Todo",
+		};
+	}
+	if (scenario.intent === "project" && scenario.project !== undefined) {
+		const { name, outcome } = scenario.project;
+		return {
+			mutation_kind: "create_project",
+			payload: {
+				name,
+				...(outcome !== undefined ? { outcome } : {}),
+			},
+			rationale: "the user asked to start a Project outcome",
+		};
+	}
+	if (scenario.intent === "person" && scenario.person !== undefined) {
+		const { name, note, aliases } = scenario.person;
+		return {
+			mutation_kind: "create_person",
+			payload: {
+				name,
+				...(note !== undefined ? { note } : {}),
+				...(aliases !== undefined ? { aliases } : {}),
+			},
+			rationale: "the user asked to remember a Person",
+		};
+	}
+	return undefined;
+}
+
+/** Script the faux provider for direct capture for THIS process. A fresh run
+ * proposes once and parks; a resume after the Decision emits a confirmation. */
+function setCaptureResponses(
+	faux: ReturnType<typeof registerFauxProvider>,
+	manifest: WorkerManifest,
+): void {
+	const scenario = readCaptureScenario();
+
+	if (manifest.mode === "resume") {
+		faux.setResponses([fauxAssistantMessage("Done — added it.")]);
+		return;
+	}
+
+	const proposal = captureProposal(scenario);
+	if (proposal === undefined) {
+		// Conversation intent (or a malformed scenario): reply, propose nothing.
+		faux.setResponses([
+			fauxAssistantMessage(
+				"Happy to talk it through — nothing to capture here.",
+			),
+		]);
+		return;
+	}
+
+	faux.setResponses([
+		fauxAssistantMessage(
+			[
+				fauxToolCall("propose_workspace_mutation", proposal, {
+					id: "tc_capture",
+				}),
+			],
+			{ stopReason: "toolUse" },
+		),
+		fauxAssistantMessage("Done — added it."),
+	]);
+}
+
 /** Script the faux provider for the extraction state machine for THIS process. */
 function setExtractResponses(
 	faux: ReturnType<typeof registerFauxProvider>,
@@ -822,6 +930,10 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 		// chain read -> search -> propose (create_person | reference) across resumes
 		// — see the slice-4 state machine + docs/design/worker.md (ADR-0030/0031).
 		setExtractResponses(faux, manifest);
+	} else if (process.env.INKSTONE_FAUX_CAPTURE === "1") {
+		// Direct capture mode (e2e): task/project/person-shaped input proposes ONE
+		// create_* sourced from the user Message — no Journal Entry (ADR-0030/0031).
+		setCaptureResponses(faux, manifest);
 	} else if (process.env.INKSTONE_FAUX_ECHO_HISTORY === "1") {
 		// History-echo mode (multi-turn test): echo prior turns' roles+text — see docs/design/worker.md.
 		faux.setResponses([

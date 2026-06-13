@@ -23,6 +23,8 @@ const FAUX_ENV_KEYS = [
 	"INKSTONE_FAUX_ECHO_HISTORY",
 	"INKSTONE_FAUX_EXTRACT",
 	"INKSTONE_FAUX_EXTRACT_PARAMS",
+	"INKSTONE_FAUX_CAPTURE",
+	"INKSTONE_FAUX_CAPTURE_PARAMS",
 ] as const;
 afterEach(() => {
 	for (const key of FAUX_ENV_KEYS) delete process.env[key];
@@ -48,6 +50,49 @@ function withExtractScenario(scenario: {
 	process.env.INKSTONE_FAUX_EXTRACT = "1";
 	process.env.INKSTONE_FAUX_EXTRACT_PARAMS = file;
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+}
+
+// Direct-capture scenario (INKSTONE_FAUX_CAPTURE): a single intent that routes to
+// one create_* proposal sourced from the user Message — no Journal Entry. Mirrors
+// withExtractScenario's tempfile+env shape.
+function withCaptureScenario(scenario: {
+	intent: "todo" | "project" | "person" | "conversation";
+	todo?: { title: string; note?: string; due_at?: string; defer_at?: string };
+	project?: { name: string; outcome?: string };
+	person?: { name: string; note?: string; aliases?: string[] };
+}): void {
+	const dir = mkdtempSync(path.join(tmpdir(), "faux-capture-"));
+	const file = path.join(dir, "scenario.json");
+	writeFileSync(file, JSON.stringify(scenario));
+	process.env.INKSTONE_FAUX_CAPTURE = "1";
+	process.env.INKSTONE_FAUX_CAPTURE_PARAMS = file;
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+}
+
+// A manifest with the direct-capture tool allowlist (search_entities is present
+// for the enrichment slices; slice 2 only proposes a single create_*).
+function captureManifest(
+	overrides: Partial<WorkerManifest> = {},
+): WorkerManifest {
+	return fauxManifest({
+		prompt: "Remind me to buy milk.",
+		workflow: {
+			name: "default",
+			version: "1.0.0",
+			provider: "faux",
+			model: "faux-1",
+			system_prompt: "You run the direct capture loop.",
+			thinking_level: "off",
+			tools: EXTRACT_TOOLS,
+		},
+		...overrides,
+	});
+}
+
+// A resume capture manifest carrying the prior turn's transcript (mode="resume",
+// empty prompt) — the Decision arrives as the awaited proposal's tool_result.
+function resumeCaptureManifest(messages: ManifestMessage[]): WorkerManifest {
+	return captureManifest({ prompt: "", mode: "resume", messages });
 }
 
 function fauxManifest(overrides: Partial<WorkerManifest> = {}): WorkerManifest {
@@ -1792,5 +1837,207 @@ describe("faux-worker extraction mode — Todo target", () => {
 				},
 			},
 		]);
+	});
+});
+
+describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
+	it("intent=todo: proposes ONE create_todo sourced from the Message (no JE, no status, no links)", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "Buy milk" },
+		});
+
+		const { events, requests } = await runChat(
+			captureManifest({ prompt: "Remind me to buy milk." }),
+			{
+				tc_capture: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Created Todo (title=Buy milk).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// A direct Todo capture proposes exactly once and never touches the
+		// journal/extraction tools.
+		expect(requests.map((r) => r.name)).toEqual(["propose_workspace_mutation"]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_todo",
+				payload: { todo: { title: "Buy milk" } },
+			},
+		]);
+		// Provenance is the user Message: source_journal_entry_id must be ABSENT.
+		expect(JSON.stringify(proposals[0].payload)).not.toContain(
+			"source_journal_entry_id",
+		);
+		// Core defaults a new Todo to active, so status is omitted.
+		expect(JSON.stringify(proposals[0].payload)).not.toContain("status");
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	it("intent=todo: carries note + due_at when the scenario supplies them", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: {
+				title: "Renew passport",
+				note: "expires next month",
+				due_at: "2026-07-15T09:00:00",
+			},
+		});
+
+		const { requests } = await runChat(
+			captureManifest({ prompt: "Todo: renew passport, due 2026-07-15." }),
+			{
+				tc_capture: {
+					ok: { content: [{ type: "text", text: "Accepted. Created Todo." }] },
+				},
+			},
+		);
+
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "create_todo",
+				payload: {
+					todo: {
+						title: "Renew passport",
+						note: "expires next month",
+						due_at: "2026-07-15T09:00:00",
+					},
+				},
+			},
+		]);
+	});
+
+	it("intent=project: proposes ONE create_project sourced from the Message", async () => {
+		withCaptureScenario({
+			intent: "project",
+			project: { name: "Ship API v2 migration" },
+		});
+
+		const { requests } = await runChat(
+			captureManifest({ prompt: "Start a project for API v2 migration." }),
+			{
+				tc_capture: {
+					ok: {
+						content: [{ type: "text", text: "Accepted. Created Project." }],
+					},
+				},
+			},
+		);
+
+		expect(requests.map((r) => r.name)).toEqual(["propose_workspace_mutation"]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_project",
+				payload: { name: "Ship API v2 migration" },
+			},
+		]);
+		expect(JSON.stringify(proposals[0].payload)).not.toContain(
+			"source_journal_entry_id",
+		);
+	});
+
+	it("intent=person: proposes ONE create_person with descriptive note", async () => {
+		withCaptureScenario({
+			intent: "person",
+			person: { name: "Alice", note: "daycare coordinator" },
+		});
+
+		const { requests } = await runChat(
+			captureManifest({ prompt: "Remember Alice is the daycare coordinator." }),
+			{
+				tc_capture: {
+					ok: {
+						content: [{ type: "text", text: "Accepted. Created Person." }],
+					},
+				},
+			},
+		);
+
+		expect(requests.map((r) => r.name)).toEqual(["propose_workspace_mutation"]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_person",
+				payload: { name: "Alice", note: "daycare coordinator" },
+			},
+		]);
+		expect(JSON.stringify(proposals[0].payload)).not.toContain(
+			"source_journal_entry_id",
+		);
+	});
+
+	it("intent=person: carries aliases when the scenario supplies them", async () => {
+		withCaptureScenario({
+			intent: "person",
+			person: { name: "Priya", aliases: ["P", "Priyanka"] },
+		});
+
+		const { requests } = await runChat(
+			captureManifest({ prompt: "Add Priya (aka P, Priyanka)." }),
+			{
+				tc_capture: {
+					ok: {
+						content: [{ type: "text", text: "Accepted. Created Person." }],
+					},
+				},
+			},
+		);
+
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "create_person",
+				payload: { name: "Priya", aliases: ["P", "Priyanka"] },
+			},
+		]);
+	});
+
+	it("intent=conversation: replies and proposes nothing", async () => {
+		withCaptureScenario({ intent: "conversation" });
+
+		const { events, requests } = await runChat(
+			captureManifest({ prompt: "What should I focus on today?" }),
+		);
+
+		expect(requests.some((r) => r.name === "propose_workspace_mutation")).toBe(
+			false,
+		);
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	it("resume after the create_todo Decision: confirms with no tool call", async () => {
+		withCaptureScenario({ intent: "todo", todo: { title: "Buy milk" } });
+
+		const { events, requests } = await runChat(
+			resumeCaptureManifest([
+				{ role: "user", text: "Remind me to buy milk." },
+				assistantCall("tc_capture", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_capture",
+					"Accepted. Created Todo (title=Buy milk, status=active).",
+				),
+			]),
+		);
+
+		// The park→decide→resume cycle ends in a plain confirmation: no further
+		// proposal, run completes.
+		expect(requests).toEqual([]);
+		const text = events
+			.filter(
+				(e): e is { kind: "text_delta"; delta: string } =>
+					e.kind === "text_delta",
+			)
+			.map((e) => e.delta)
+			.join("");
+		expect(text).toContain("Done");
+		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 });
