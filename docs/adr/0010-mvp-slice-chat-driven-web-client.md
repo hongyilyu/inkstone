@@ -11,7 +11,7 @@ The first vertical slice is **chat-driven**: the user opens the Web Client, type
 - Run Events streamed Worker → Core → Web Client (text deltas, status, completion, errors).
 - Tool Protocol carrying both ordinary tool calls and Proposals (Tool Request → user decision → Tool Result).
 - A Proposal review surface inside the Web Client; approve-then-apply per [ADR-0004](./0004-three-tier-storage-authority.md).
-- Tier-2 persistence for Threads, Runs, Proposals, and Accepted Entities the slice creates.
+- Tier-2 persistence for Threads, Runs, Proposals, and Canonical Entities the slice creates.
 
 ## What's out of scope
 
