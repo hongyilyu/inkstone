@@ -476,6 +476,20 @@ export function projectsForReview(
 		.sort((a, b) => (a.nextReviewAt ?? "").localeCompare(b.nextReviewAt ?? ""));
 }
 
+/**
+ * Human label for a Project's review cadence, read from the verbatim stored
+ * `review_every` (`{interval, unit}`, ADR-0031) the projection doesn't surface.
+ * "Every week" for the weekly default; "Every 2 weeks" / "Every month" otherwise.
+ * `null` when the Project carries no cadence (nothing schedules its next review).
+ */
+export function reviewCadenceLabel(project: Project): string | null {
+	const every = project.data?.review_every;
+	if (!every || typeof every !== "object") return null;
+	const { interval, unit } = every as { interval?: unknown; unit?: unknown };
+	if (typeof interval !== "number" || typeof unit !== "string") return null;
+	return interval === 1 ? `Every ${unit}` : `Every ${interval} ${unit}s`;
+}
+
 export function groupJournalEntriesByDay(
 	entries: JournalEntry[],
 ): JournalEntryDay[] {

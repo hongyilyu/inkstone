@@ -5,13 +5,7 @@ import type {
 } from "@inkstone/protocol";
 import { InvalidParamsError, WsClient, type WsError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-	cleanup,
-	render,
-	screen,
-	waitFor,
-	within,
-} from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
@@ -62,6 +56,7 @@ function renderReview(
 	todos: Rows = [],
 	people: Rows = [],
 	entityMutate: EntityMutate = () => Effect.die("entityMutate not exercised"),
+	onSelect: (id: string) => void = () => {},
 ) {
 	const runtime = makeRuntime(projects, todos, people, entityMutate);
 	const client = new QueryClient({
@@ -74,7 +69,7 @@ function renderReview(
 			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
 		</QueryClientProvider>
 	);
-	return render(<ProjectReviewView selectedId={null} onSelect={() => {}} />, {
+	return render(<ProjectReviewView selectedId={null} onSelect={onSelect} />, {
 		wrapper: Wrapper,
 	});
 }
@@ -91,59 +86,106 @@ const project = (
 	updated_at: 1_700_000_000_000,
 });
 
+const todo = (
+	id: string,
+	title: string,
+	data: Record<string, unknown>,
+): Rows[number] => ({
+	id,
+	type: "todo",
+	data: { title, status: "active", ...data },
+	created_at: 1_700_000_000_000,
+	updated_at: 1_700_000_000_000,
+});
+
 // Past = unambiguously due regardless of real "now"; far future = never due.
 const PAST = "2000-01-01T20:00:00";
 const FUTURE = "2999-01-01T20:00:00";
 
 afterEach(cleanup);
 
-describe("ProjectReviewView", () => {
-	it("lists active/on_hold projects whose review is due, excludes future/terminal", async () => {
+describe("ProjectReviewView (focused queue)", () => {
+	it("focuses one due project with a position counter, excludes future/terminal", async () => {
 		renderReview([
-			project("p_active", "Active due", {
-				status: "active",
-				next_review_at: PAST,
-			}),
+			project("p_active", "Active due", { next_review_at: PAST }),
 			project("p_hold", "On hold due", {
 				status: "on_hold",
 				next_review_at: PAST,
 			}),
-			project("p_future", "Not yet due", {
-				status: "active",
-				next_review_at: FUTURE,
-			}),
+			project("p_future", "Not yet due", { next_review_at: FUTURE }),
 			project("p_done", "Completed", {
 				status: "completed",
-				next_review_at: PAST,
-			}),
-			project("p_dropped", "Dropped", {
-				status: "dropped",
+				completed_at: PAST,
 				next_review_at: PAST,
 			}),
 		]);
 
+		// Only the first due project is focused; the counter reflects the 2 due.
 		expect(await screen.findByText("Active due")).toBeInTheDocument();
-		expect(screen.getByText("On hold due")).toBeInTheDocument();
+		expect(screen.getByText("Project 1 of 2")).toBeInTheDocument();
+		expect(screen.queryByText("On hold due")).not.toBeInTheDocument();
 		expect(screen.queryByText("Not yet due")).not.toBeInTheDocument();
 		expect(screen.queryByText("Completed")).not.toBeInTheDocument();
-		expect(screen.queryByText("Dropped")).not.toBeInTheDocument();
 	});
 
-	it("shows whether a due project has active todos", async () => {
+	it("steps between projects with the up/down chevrons", async () => {
+		// Two due projects, ordered by next_review_at (soonest first).
+		renderReview([
+			project("p1", "First project", { next_review_at: "2000-01-01T20:00:00" }),
+			project("p2", "Second project", {
+				next_review_at: "2000-01-02T20:00:00",
+			}),
+		]);
+
+		expect(await screen.findByText("First project")).toBeInTheDocument();
+		expect(screen.getByText("Project 1 of 2")).toBeInTheDocument();
+		// At the first project, "previous" is disabled.
+		expect(
+			screen.getByRole("button", { name: /previous project/i }),
+		).toBeDisabled();
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /next project/i }),
+		);
+		expect(await screen.findByText("Second project")).toBeInTheDocument();
+		expect(screen.getByText("Project 2 of 2")).toBeInTheDocument();
+		// At the last project, "next" is disabled.
+		expect(
+			screen.getByRole("button", { name: /next project/i }),
+		).toBeDisabled();
+
+		// Step back up.
+		await userEvent.click(
+			screen.getByRole("button", { name: /previous project/i }),
+		);
+		expect(await screen.findByText("First project")).toBeInTheDocument();
+	});
+
+	it("renders the cadence label, last-reviewed, and the project's active todos", async () => {
 		renderReview(
-			[project("p1", "API migration", { next_review_at: PAST })],
 			[
-				{
-					id: "t1",
-					type: "todo",
-					data: { title: "do it", status: "active", project_id: "p1" },
-					created_at: 1,
-					updated_at: 1,
-				},
+				project("p1", "API migration", {
+					next_review_at: PAST,
+					last_reviewed_at: "2026-06-01T20:00:00",
+					review_every: { interval: 1, unit: "week" },
+				}),
+			],
+			[
+				todo("t1", "Cut over traffic", { project_id: "p1" }),
+				todo("t2", "Old done task", {
+					status: "completed",
+					completed_at: PAST,
+					project_id: "p1",
+				}),
 			],
 		);
+
 		expect(await screen.findByText("API migration")).toBeInTheDocument();
-		expect(screen.getByText("Has active todos")).toBeInTheDocument();
+		expect(screen.getByText("Every week")).toBeInTheDocument();
+		expect(screen.getByText(/Last reviewed 2026-06-01/)).toBeInTheDocument();
+		// Active todo shows; a long-completed one does not (only session-completed stay).
+		expect(screen.getByText("Cut over traffic")).toBeInTheDocument();
+		expect(screen.queryByText("Old done task")).not.toBeInTheDocument();
 	});
 
 	it("teaches the empty state when nothing is due", async () => {
@@ -151,7 +193,7 @@ describe("ProjectReviewView", () => {
 		expect(await screen.findByText("All caught up")).toBeInTheDocument();
 	});
 
-	it("marks a project reviewed with an entity_id-only mutation (ADR-0034)", async () => {
+	it("marks the focused project reviewed with an entity_id-only mutation (ADR-0034)", async () => {
 		const entityMutate = vi.fn<EntityMutate>(() =>
 			Effect.succeed({ entity_id: "p1" }),
 		);
@@ -162,12 +204,9 @@ describe("ProjectReviewView", () => {
 			entityMutate,
 		);
 
-		const card = (await screen.findByText("API migration")).closest("li");
-		expect(card).not.toBeNull();
+		await screen.findByText("API migration");
 		await userEvent.click(
-			within(card as HTMLElement).getByRole("button", {
-				name: /mark reviewed/i,
-			}),
+			screen.getByRole("button", { name: /mark reviewed/i }),
 		);
 
 		await waitFor(() => expect(entityMutate).toHaveBeenCalledTimes(1));
@@ -175,6 +214,45 @@ describe("ProjectReviewView", () => {
 			mutation_kind: "mark_project_reviewed",
 			payload: { entity_id: "p1" },
 		} satisfies EntityMutateParams);
+	});
+
+	it("completes a todo inline with its status circle (update_todo)", async () => {
+		const entityMutate = vi.fn<EntityMutate>(() =>
+			Effect.succeed({ entity_id: "t1" }),
+		);
+		renderReview(
+			[project("p1", "API migration", { next_review_at: PAST })],
+			[todo("t1", "Cut over traffic", { project_id: "p1" })],
+			[],
+			entityMutate,
+		);
+
+		await screen.findByText("Cut over traffic");
+		await userEvent.click(
+			screen.getByRole("button", { name: /mark todo complete/i }),
+		);
+
+		await waitFor(() => expect(entityMutate).toHaveBeenCalledTimes(1));
+		const call = entityMutate.mock.calls[0]?.[0] as EntityMutateParams;
+		expect(call.mutation_kind).toBe("update_todo");
+		expect((call.payload as { todo_id: string }).todo_id).toBe("t1");
+		expect((call.payload as { todo: { status: string } }).todo.status).toBe(
+			"completed",
+		);
+	});
+
+	it("selects a todo (opens the rail via ?id) when its body is clicked", async () => {
+		const onSelect = vi.fn();
+		renderReview(
+			[project("p1", "API migration", { next_review_at: PAST })],
+			[todo("t1", "Cut over traffic", { project_id: "p1" })],
+			[],
+			() => Effect.die("entityMutate not exercised"),
+			onSelect,
+		);
+
+		await userEvent.click(await screen.findByText("Cut over traffic"));
+		expect(onSelect).toHaveBeenCalledWith("t1");
 	});
 
 	it("surfaces a failed mark-reviewed as an inline alert", async () => {
@@ -192,16 +270,129 @@ describe("ProjectReviewView", () => {
 			entityMutate,
 		);
 
-		const card = (await screen.findByText("API migration")).closest("li");
+		await screen.findByText("API migration");
 		await userEvent.click(
-			within(card as HTMLElement).getByRole("button", {
-				name: /mark reviewed/i,
-			}),
+			screen.getByRole("button", { name: /mark reviewed/i }),
 		);
 
-		// The rejection surfaces as an alert; the project stays in the list.
-		const alert = await within(card as HTMLElement).findByRole("alert");
+		const alert = await screen.findByRole("alert");
 		expect(alert).toHaveTextContent(/not reviewable/i);
 		expect(screen.getByText("API migration")).toBeInTheDocument();
+	});
+
+	// Regression for the placeholder-snapshot freeze: while `useLibraryItems` is
+	// still serving its mock `placeholderData` (isPlaceholderData), the view must
+	// show the skeleton and NOT snapshot the queue off preview projects (whose ids
+	// vanish when live data lands). Gating on `isPending` would fail this — the
+	// hook reports isPending=false during the placeholder window.
+	it("shows the skeleton during the placeholder phase, not a snapshot of preview projects", () => {
+		// A runtime whose reads never resolve, so the query is stuck on placeholder.
+		const never = Effect.never;
+		const stub = WsClient.of({
+			threadCreate: () => never,
+			postMessage: () => never,
+			threadList: () => never,
+			threadGet: () => never,
+			listEntities: () => never,
+			entityMutate: () => never,
+			subscribeRun: () => Effect.never as never,
+			providerStatus: () => never,
+			providerLoginStart: () => never,
+			modelCatalog: () => never,
+			settingsGet: () => never,
+			settingsSet: () => never,
+			proposalGet: () => never,
+			proposalDecide: () => never,
+			proposalNotifications: () => Effect.never as never,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		const client = new QueryClient({
+			defaultOptions: {
+				queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
+			},
+		});
+		render(<ProjectReviewView selectedId={null} onSelect={() => {}} />, {
+			wrapper: ({ children }: { children: ReactNode }) => (
+				<QueryClientProvider client={client}>
+					<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
+				</QueryClientProvider>
+			),
+		});
+
+		// The skeleton renders; no preview project (e.g. the mock "API v2 migration")
+		// is focused, so the queue was never seeded from placeholder data.
+		expect(screen.getByTestId("entity-skeleton")).toBeInTheDocument();
+		expect(screen.queryByText("API v2 migration")).not.toBeInTheDocument();
+		expect(screen.queryByText(/Project \d+ of \d+/)).not.toBeInTheDocument();
+	});
+
+	// The session-snapshot mechanic (grill Q12): marking the focused project
+	// reviewed advances the cursor to the next due project, and the reviewed one
+	// stays in the snapshot so stepping back still reaches it.
+	it("advances the cursor after a review and keeps the reviewed project in the snapshot", async () => {
+		const entityMutate = vi.fn<EntityMutate>(() =>
+			Effect.succeed({ entity_id: "p1" }),
+		);
+		renderReview(
+			[
+				project("p1", "First project", {
+					next_review_at: "2000-01-01T20:00:00",
+				}),
+				project("p2", "Second project", {
+					next_review_at: "2000-01-02T20:00:00",
+				}),
+			],
+			[],
+			[],
+			entityMutate,
+		);
+
+		await screen.findByText("First project");
+		expect(screen.getByText("Project 1 of 2")).toBeInTheDocument();
+
+		// Mark the first reviewed → the cursor advances to the second.
+		await userEvent.click(
+			screen.getByRole("button", { name: /mark reviewed/i }),
+		);
+		expect(await screen.findByText("Second project")).toBeInTheDocument();
+		expect(screen.getByText("Project 2 of 2")).toBeInTheDocument();
+
+		// Step back: the reviewed first project is still in the snapshot (the count
+		// held at 2, and it re-renders), proving it was retained, not dropped.
+		await userEvent.click(
+			screen.getByRole("button", { name: /previous project/i }),
+		);
+		expect(await screen.findByText("First project")).toBeInTheDocument();
+		expect(screen.getByText("Project 1 of 2")).toBeInTheDocument();
+	});
+
+	// The session-completed todo stays visible CHECKED in place (grill Q13),
+	// driven by sessionDone — not by the live status, which the mock leaves
+	// 'active'. Removing the sessionDone branch would hide the row's completed
+	// presentation, failing this.
+	it("keeps an inline-completed todo visible with its completed mark", async () => {
+		const entityMutate = vi.fn<EntityMutate>(() =>
+			Effect.succeed({ entity_id: "t1" }),
+		);
+		renderReview(
+			[project("p1", "API migration", { next_review_at: PAST })],
+			[todo("t1", "Cut over traffic", { project_id: "p1" })],
+			[],
+			entityMutate,
+		);
+
+		await screen.findByText("Cut over traffic");
+		// Before: an active todo's circle is the "Mark todo complete" control.
+		await userEvent.click(
+			screen.getByRole("button", { name: /mark todo complete/i }),
+		);
+
+		// After: the row stays visible and flips to the completed presentation (the
+		// circle's aria-label becomes "Completed"). The mock's live row is still
+		// 'active', so only sessionDone can produce this.
+		expect(
+			await screen.findByRole("button", { name: /^completed$/i }),
+		).toBeInTheDocument();
+		expect(screen.getByText("Cut over traffic")).toBeInTheDocument();
 	});
 });
