@@ -1895,13 +1895,14 @@ describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
 		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 
-	it("intent=todo: carries note + due_at when the scenario supplies them", async () => {
+	it("intent=todo: carries note + due_at + defer_at when the scenario supplies them", async () => {
 		withCaptureScenario({
 			intent: "todo",
 			todo: {
 				title: "Renew passport",
 				note: "expires next month",
 				due_at: "2026-07-15T09:00:00",
+				defer_at: "2026-06-20T09:00:00",
 			},
 		});
 
@@ -1922,16 +1923,20 @@ describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
 						title: "Renew passport",
 						note: "expires next month",
 						due_at: "2026-07-15T09:00:00",
+						defer_at: "2026-06-20T09:00:00",
 					},
 				},
 			},
 		]);
 	});
 
-	it("intent=project: proposes ONE create_project sourced from the Message", async () => {
+	it("intent=project: proposes ONE create_project (with outcome) sourced from the Message", async () => {
 		withCaptureScenario({
 			intent: "project",
-			project: { name: "Ship API v2 migration" },
+			project: {
+				name: "Ship API v2 migration",
+				outcome: "API v2 fully migrated and old endpoints retired",
+			},
 		});
 
 		const { requests } = await runChat(
@@ -1950,7 +1955,10 @@ describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
 		expect(proposals).toEqual([
 			{
 				mutation_kind: "create_project",
-				payload: { name: "Ship API v2 migration" },
+				payload: {
+					name: "Ship API v2 migration",
+					outcome: "API v2 fully migrated and old endpoints retired",
+				},
 			},
 		]);
 		expect(JSON.stringify(proposals[0].payload)).not.toContain(
@@ -2576,6 +2584,30 @@ describe("faux-worker direct capture enrichment — missing entities (INKSTONE_F
 		expect(requests.some((r) => r.name === "propose_workspace_mutation")).toBe(
 			false,
 		);
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	it("declined initial create_todo: no enrichment runs (no search against a non-existent Todo)", async () => {
+		// The Todo itself is rejected — even though the scenario names enrichment,
+		// there is no Todo to enrich (and no recoverable id). The flow must stop:
+		// no search_entities, no update_todo. Exercises the todoCreated===false
+		// resume branch, which every other resume test skips (they accept the Todo).
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "follow up with NewPerson" },
+			enrich: { person_name: "NewPerson", person_role: "related" },
+		});
+
+		const { events, requests } = await runChat(
+			resumeCaptureManifest([
+				{ role: "user", text: "Follow up with NewPerson." },
+				assistantCall("tc_capture", "propose_workspace_mutation"),
+				decisionResult("tc_capture", "User declined this proposal."),
+			]),
+		);
+
+		// No tool calls at all — not even a recovery search.
+		expect(requests).toEqual([]);
 		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 });
