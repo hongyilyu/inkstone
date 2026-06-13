@@ -82,7 +82,11 @@ describe("useEntityMutation", () => {
 		});
 	});
 
-	it("surfaces a WsError as a rejected mutation", async () => {
+	// The mutation must reject with the ORIGINAL WsError, not Effect's FiberFailure
+	// wrapper. A WsRequestError's `.message` is "" (its text lives in `.reason`); the
+	// FiberFailure wrapper would replace that with the generic "An error has occurred",
+	// which callers reading `error.message` would then surface as user copy.
+	it("rejects with the original WsRequestError, not a FiberFailure wrapper", async () => {
 		const runtime = makeRuntime(() =>
 			Effect.fail(new WsRequestError({ reason: "boom" })),
 		);
@@ -103,5 +107,10 @@ describe("useEntityMutation", () => {
 		});
 
 		await waitFor(() => expect(result.current.isError).toBe(true));
+		const error = result.current.error;
+		expect(error).toBeInstanceOf(WsRequestError);
+		expect((error as WsRequestError).reason).toBe("boom");
+		// Not Effect's generic FiberFailure message.
+		expect((error as Error).message).not.toBe("An error has occurred");
 	});
 });

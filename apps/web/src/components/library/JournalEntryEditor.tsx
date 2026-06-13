@@ -7,6 +7,7 @@ import {
 	type JournalEntry,
 	type JournalEntryBodyNode,
 	type LibraryItem,
+	type LibraryItemKind,
 	libraryItemSubtitle,
 	libraryItemTitle,
 	localNowString,
@@ -32,19 +33,19 @@ const REFERENCEABLE_KINDS: ReferenceableKind[] = ["person", "project", "todo"];
  * Existing chips carry a real `refId`; a NEWLY added chip is a bare placeholder
  * carrying its `targetEntityId` (no ref_id — Core mints one on the reference
  * mutation). At most one new chip is staged at a time (one reference mutation
- * per new chip — the hard contract).
+ * per new chip — the hard contract). Discriminated on `type`.
  */
-interface DraftBodyNode {
-	type: "text" | "entity_ref";
-	/** For text nodes: the editable text. */
-	text?: string;
-	/** For existing entity_ref nodes: the stored `ref_id` (snake_case on the wire). */
+type DraftEntityRefNode = {
+	type: "entity_ref";
+	/** For existing chips: the stored `ref_id` (snake_case on the wire). */
 	refId?: string;
 	/** A human label for the chip token. */
 	label?: string;
 	/** For a NEW chip: the picked Entity's id (the reference target). */
 	newTargetId?: string;
-}
+};
+
+type DraftBodyNode = { type: "text"; text: string } | DraftEntityRefNode;
 
 interface Draft {
 	/** Local wall-clock `YYYY-MM-DDTHH:MM` (datetime-local value). */
@@ -115,8 +116,8 @@ function buildBody(
 	> = [];
 	for (const node of body) {
 		if (node.type === "text") {
-			const text = node.text ?? "";
-			if (text.trim() !== "") nodes.push({ type: "text", text });
+			if (node.text.trim() !== "")
+				nodes.push({ type: "text", text: node.text });
 		} else if (node.refId) {
 			nodes.push({ type: "entity_ref", ref_id: node.refId });
 		}
@@ -149,8 +150,11 @@ function buildUpdateParams(entry: JournalEntry, d: Draft): EntityMutateParams {
 }
 
 /** The single staged new chip (the one bare placeholder), or undefined. */
-function stagedNewChip(body: DraftBodyNode[]): DraftBodyNode | undefined {
-	return body.find((node) => node.newTargetId !== undefined);
+function stagedNewChip(body: DraftBodyNode[]): DraftEntityRefNode | undefined {
+	return body.find(
+		(node): node is DraftEntityRefNode =>
+			node.type === "entity_ref" && node.newTargetId !== undefined,
+	);
 }
 
 /**
@@ -168,8 +172,8 @@ function buildReferenceBody(
 		[];
 	for (const node of body) {
 		if (node.type === "text") {
-			const text = node.text ?? "";
-			if (text.trim() !== "") nodes.push({ type: "text", text });
+			if (node.text.trim() !== "")
+				nodes.push({ type: "text", text: node.text });
 		} else if (node.newTargetId !== undefined) {
 			nodes.push({ type: "entity_ref" });
 		}
@@ -185,7 +189,7 @@ function buildReferenceBody(
 function buildReferenceParams(
 	entry: JournalEntry,
 	d: Draft,
-	chip: DraftBodyNode,
+	chip: DraftEntityRefNode,
 ): EntityMutateParams {
 	const payload: Record<string, unknown> = {
 		source_entity_id: entry.id,
@@ -213,7 +217,9 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 	const setText = (index: number, text: string) =>
 		setDraft((d) => ({
 			...d,
-			body: d.body.map((node, i) => (i === index ? { ...node, text } : node)),
+			body: d.body.map((node, i) =>
+				i === index && node.type === "text" ? { ...node, text } : node,
+			),
 		}));
 
 	const removeChip = (index: number) =>
@@ -240,7 +246,9 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 	// Core supports at most one chip per JE via reference_existing (its body must
 	// carry exactly one bare placeholder and the mutation full-replaces the body).
 	// So add-a-chip is gated to chip-free entries.
-	const hasExistingChip = draft.body.some((node) => node.refId !== undefined);
+	const hasExistingChip = draft.body.some(
+		(node) => node.type === "entity_ref" && node.refId !== undefined,
+	);
 	const occurredEmpty = draft.occurredAt.trim() === "";
 	const bodyEmpty = buildBody(draft.body).length === 0 && newChip === undefined;
 	const blocked = occurredEmpty || bodyEmpty;
@@ -264,7 +272,9 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 				if (referencing) {
 					setDraft((d) => ({
 						...d,
-						body: d.body.filter((node) => node.newTargetId === undefined),
+						body: d.body.filter(
+							(node) => node.type === "text" || node.newTargetId === undefined,
+						),
 					}));
 				}
 				onDone(result.entity_id ?? existing?.id ?? draft.occurredAt);
@@ -275,7 +285,7 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 	const error =
 		mutation.error == null
 			? null
-			: mutation.error instanceof Error
+			: mutation.error instanceof Error && mutation.error.message
 				? mutation.error.message
 				: "Couldn't save. Try again.";
 
@@ -350,8 +360,8 @@ function AddReferenceField({
 
 	const candidates = useMemo(
 		() =>
-			allEntities.filter((e): e is LibraryItem =>
-				REFERENCEABLE_KINDS.includes(e.kind as ReferenceableKind),
+			allEntities.filter((e): e is LibraryItem & { kind: ReferenceableKind } =>
+				(REFERENCEABLE_KINDS as readonly LibraryItemKind[]).includes(e.kind),
 			),
 		[allEntities],
 	);

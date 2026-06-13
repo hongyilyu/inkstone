@@ -2,7 +2,7 @@ import type {
 	EntityMutateParams,
 	EntityMutateResult,
 } from "@inkstone/protocol";
-import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { WsClient, type WsError, WsRequestError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -165,6 +165,28 @@ describe("PersonEditor edit", () => {
 			},
 		});
 		await waitFor(() => expect(onDone).toHaveBeenCalledWith(withOptionals.id));
+	});
+
+	// A WsRequestError is an Error but its `.message` is "" (its text lives in
+	// `.reason`). The alert must fall through to the static copy, never render blank.
+	it("shows the static fallback when the mutation fails with a blank-message WsRequestError", async () => {
+		const user = userEvent.setup();
+		const onDone = vi.fn();
+		renderEditor(
+			{ mode: "edit", person: existing, onDone, onCancel: () => {} },
+			() => Effect.fail(new WsRequestError({ reason: "connection_lost" })),
+		);
+
+		const name = screen.getByLabelText(/name/i);
+		await user.clear(name);
+		await user.type(name, "Alice Smith");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("Couldn't save. Try again.");
+		// The raw WsRequestError `.reason` token must never surface as user copy.
+		expect(alert).not.toHaveTextContent("connection_lost");
+		expect(onDone).not.toHaveBeenCalled();
 	});
 
 	it("does nothing when no field changed", async () => {

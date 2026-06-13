@@ -123,7 +123,7 @@ export function PersonEditor({ onDone, onCancel, ...m }: Props) {
 	const error =
 		mutation.error == null
 			? null
-			: mutation.error instanceof Error
+			: mutation.error instanceof Error && mutation.error.message
 				? mutation.error.message
 				: "Couldn't save. Try again.";
 

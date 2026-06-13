@@ -246,7 +246,7 @@ function TodoDetail({
 			<footer className="border-foreground/15 border-t px-5 py-4">
 				{del.error ? (
 					<p role="alert" className="mb-3 text-destructive text-sm">
-						{del.error instanceof Error
+						{del.error instanceof Error && del.error.message
 							? del.error.message
 							: "Couldn't delete. Try again."}
 					</p>
@@ -258,7 +258,10 @@ function TodoDetail({
 							<Button
 								variant="chip"
 								size="pill"
-								onClick={() => setConfirmingDelete(false)}
+								onClick={() => {
+									del.reset();
+									setConfirmingDelete(false);
+								}}
 								disabled={del.isPending}
 							>
 								Cancel
@@ -374,7 +377,7 @@ function PersonDetail({
 			<footer className="border-foreground/15 border-t px-5 py-4">
 				{del.error ? (
 					<p role="alert" className="mb-3 text-destructive text-sm">
-						{del.error instanceof Error
+						{del.error instanceof Error && del.error.message
 							? del.error.message
 							: "Couldn't delete. Try again."}
 					</p>
@@ -386,7 +389,10 @@ function PersonDetail({
 							<Button
 								variant="chip"
 								size="pill"
-								onClick={() => setConfirmingDelete(false)}
+								onClick={() => {
+									del.reset();
+									setConfirmingDelete(false);
+								}}
 								disabled={del.isPending}
 							>
 								Cancel
@@ -502,7 +508,7 @@ function ProjectDetail({
 			<footer className="border-foreground/15 border-t px-5 py-4">
 				{del.error ? (
 					<p role="alert" className="mb-3 text-destructive text-sm">
-						{del.error instanceof Error
+						{del.error instanceof Error && del.error.message
 							? del.error.message
 							: "Couldn't delete. Try again."}
 					</p>
@@ -516,7 +522,10 @@ function ProjectDetail({
 							<Button
 								variant="chip"
 								size="pill"
-								onClick={() => setConfirmingDelete(false)}
+								onClick={() => {
+									del.reset();
+									setConfirmingDelete(false);
+								}}
 								disabled={del.isPending}
 							>
 								Cancel
@@ -638,7 +647,7 @@ function JournalEntryDetail({
 			<footer className="border-foreground/15 border-t px-5 py-4">
 				{del.error ? (
 					<p role="alert" className="mb-3 text-destructive text-sm">
-						{del.error instanceof Error
+						{del.error instanceof Error && del.error.message
 							? del.error.message
 							: "Couldn't delete. Try again."}
 					</p>
@@ -652,7 +661,10 @@ function JournalEntryDetail({
 							<Button
 								variant="chip"
 								size="pill"
-								onClick={() => setConfirmingDelete(false)}
+								onClick={() => {
+									del.reset();
+									setConfirmingDelete(false);
+								}}
 								disabled={del.isPending}
 							>
 								Cancel
