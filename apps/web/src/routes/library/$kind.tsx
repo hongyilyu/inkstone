@@ -49,9 +49,9 @@ function KindRoute() {
 					search: { id: next },
 				})
 			}
-			// Todo is the only manually-creatable kind this slice (ADR-0033).
+			// Todo, Person, and Project are manually-creatable in the rail (ADR-0033).
 			onNew={
-				kind === "todo"
+				kind === "todo" || kind === "person" || kind === "project"
 					? () =>
 							navigate({
 								to: "/library/$kind",

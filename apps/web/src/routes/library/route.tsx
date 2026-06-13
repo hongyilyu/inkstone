@@ -8,14 +8,21 @@ import {
 import { useEffect, useState } from "react";
 import { EntityDetail } from "@/components/library/EntityDetail";
 import { LibraryNav } from "@/components/library/LibraryNav";
+import { PersonEditor } from "@/components/library/PersonEditor";
+import { ProjectEditor } from "@/components/library/ProjectEditor";
 import { TodoEditor } from "@/components/library/TodoEditor";
 import { WorkspaceShell } from "@/components/ui/workspace-shell";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
 	KIND_META,
+	type LibraryItem,
+	type LibraryItemKind,
 	libraryItemKindForSlug,
 	libraryItemTitle,
 } from "@/lib/libraryItems";
+
+/** Kinds the rail can create inline via `?new=1` (ADR-0033). */
+const CREATABLE_KINDS = new Set<LibraryItemKind>(["todo", "person", "project"]);
 
 /** Library shell (ADR-0021): shared `WorkspaceShell` with a right rail that mounts only on selection — bay/rail/collapse behavior in docs/design/web-runtime.md. */
 function LibraryLayout() {
@@ -44,7 +51,7 @@ function LibraryLayout() {
 		setManualCollapsed(null);
 	}, [selected?.id, creating]);
 
-	// `?new=1` (Todo only this slice) closes the editor back to the bare collection.
+	// `?new=1` closes the editor back to the bare collection.
 	const closeCreate = () =>
 		slug &&
 		navigate({ to: "/library/$kind", params: { kind: slug }, search: {} });
@@ -58,13 +65,13 @@ function LibraryLayout() {
 
 	// Rail mounts on a create intent or a selection (else `null` → plain framed card) — see docs/design/web-runtime.md.
 	const rail =
-		creating && kind === "todo" ? (
+		creating && kind && CREATABLE_KINDS.has(kind) ? (
 			<aside
-				aria-label={`New ${KIND_META.todo.label}`}
+				aria-label={`New ${KIND_META[kind].label}`}
 				className="h-full bg-sidebar"
 			>
-				<TodoEditor
-					mode="create"
+				<CreateEditor
+					kind={kind}
 					allEntities={data ?? []}
 					onDone={openCreated}
 					onCancel={closeCreate}
@@ -96,6 +103,34 @@ function LibraryLayout() {
 				<Outlet />
 			</main>
 		</WorkspaceShell>
+	);
+}
+
+/** The blank create editor for a creatable kind, mounted in the rail on `?new=1`. */
+function CreateEditor({
+	kind,
+	allEntities,
+	onDone,
+	onCancel,
+}: {
+	kind: LibraryItemKind;
+	allEntities: LibraryItem[];
+	onDone: (id: string) => void;
+	onCancel: () => void;
+}) {
+	if (kind === "person") {
+		return <PersonEditor mode="create" onDone={onDone} onCancel={onCancel} />;
+	}
+	if (kind === "project") {
+		return <ProjectEditor mode="create" onDone={onDone} onCancel={onCancel} />;
+	}
+	return (
+		<TodoEditor
+			mode="create"
+			allEntities={allEntities}
+			onDone={onDone}
+			onCancel={onCancel}
+		/>
 	);
 }
 

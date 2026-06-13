@@ -78,6 +78,14 @@ export interface Project extends LibraryItemBase {
 	/** Local wall-clock review timestamps (ADR-0031). */
 	nextReviewAt?: string;
 	lastReviewedAt?: string;
+	/**
+	 * The complete stored Project `data` object, verbatim. The fields above are a
+	 * lossy projection — they omit server-managed fields like `review_every` and
+	 * `due_at`/`defer_at`. The editor needs every field to build a full-document
+	 * replace `update_project` without dropping any (Core's update REPLACES the
+	 * stored data, it does not merge — slice-7). Absent for static preview rows.
+	 */
+	data?: Record<string, unknown>;
 }
 
 export type TodoStatus = "active" | "completed" | "dropped";

@@ -33,6 +33,8 @@ import {
 import { cn } from "@/lib/utils.js";
 import { setFocusedThread } from "@/store/chat";
 import { EntityGlyph } from "./EntityGlyph.js";
+import { PersonEditor } from "./PersonEditor.js";
+import { ProjectEditor } from "./ProjectEditor.js";
 import { TodoEditor } from "./TodoEditor.js";
 
 /** Detail "Inspector" panel for one Library item: its relations as deep links and a path back to the capturing Run. */
@@ -43,10 +45,16 @@ export function EntityDetail({
 	entity: LibraryItem;
 	allEntities: LibraryItem[];
 }) {
-	// A Todo is the only editable kind this slice; it owns its own view↔edit↔delete
+	// Todo, Person, and Project are editable; each owns its own view↔edit↔delete
 	// state and the mutation hook, so non-editable kinds render hook-free.
 	if (entity.kind === "todo") {
 		return <TodoDetail todo={entity} allEntities={allEntities} />;
+	}
+	if (entity.kind === "person") {
+		return <PersonDetail person={entity} allEntities={allEntities} />;
+	}
+	if (entity.kind === "project") {
+		return <ProjectDetail project={entity} allEntities={allEntities} />;
 	}
 	return <EntityDetailView entity={entity} allEntities={allEntities} />;
 }
@@ -269,6 +277,264 @@ function TodoDetail({
 					>
 						<Trash2 className="size-4" aria-hidden />
 						Delete Todo
+					</Button>
+				)}
+			</footer>
+		</div>
+	);
+}
+
+/**
+ * The Person inspector: view ↔ edit toggle + an inline (non-modal) delete confirm
+ * in the footer, mirroring `TodoDetail` (ADR-0033). The mutation hook lives here so
+ * non-editable kinds render hook-free.
+ */
+function PersonDetail({
+	person,
+	allEntities,
+}: {
+	person: Person;
+	allEntities: LibraryItem[];
+}) {
+	const navigate = useNavigate();
+	const [editing, setEditing] = useState(false);
+	const [confirmingDelete, setConfirmingDelete] = useState(false);
+	const del = useEntityMutation();
+
+	const goToEntity = (e: LibraryItem) =>
+		navigate({
+			to: "/library/$kind",
+			params: { kind: KIND_META[e.kind].slug },
+			search: { id: e.id },
+		});
+
+	if (editing) {
+		return (
+			<div className="flex h-full flex-col bg-sidebar">
+				<PersonEditor
+					mode="edit"
+					person={person}
+					onDone={() => setEditing(false)}
+					onCancel={() => setEditing(false)}
+				/>
+			</div>
+		);
+	}
+
+	const deletePerson = () =>
+		del.mutate(
+			{ mutation_kind: "delete_person", payload: { entity_id: person.id } },
+			{
+				onSuccess: () =>
+					navigate({
+						to: "/library/$kind",
+						params: { kind: KIND_META.person.slug },
+						search: {},
+					}),
+			},
+		);
+
+	return (
+		<div className="flex h-full flex-col">
+			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
+				<EntityGlyph entity={person} size="lg" />
+				<div className="min-w-0 flex-1 pt-0.5">
+					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
+						{libraryItemTitle(person)}
+					</h2>
+					<p className="truncate text-muted-foreground text-sm">
+						{KIND_META.person.label} · {libraryItemSubtitle(person)}
+					</p>
+				</div>
+				<Button
+					variant="chip"
+					size="sm"
+					onClick={() => setEditing(true)}
+					aria-label="Edit Person"
+				>
+					<Pencil className="size-3.5" aria-hidden />
+					Edit
+				</Button>
+			</header>
+
+			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+				<PersonBody
+					person={person}
+					allEntities={allEntities}
+					onOpen={goToEntity}
+				/>
+			</div>
+
+			<footer className="border-foreground/15 border-t px-5 py-4">
+				{del.error ? (
+					<p role="alert" className="mb-3 text-destructive text-sm">
+						{del.error instanceof Error
+							? del.error.message
+							: "Couldn't delete. Try again."}
+					</p>
+				) : null}
+				{confirmingDelete ? (
+					<div className="flex items-center justify-between gap-3">
+						<span className="text-foreground text-sm">Delete this Person?</span>
+						<div className="flex gap-2">
+							<Button
+								variant="chip"
+								size="pill"
+								onClick={() => setConfirmingDelete(false)}
+								disabled={del.isPending}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="primary-icon"
+								size="pill"
+								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								onClick={deletePerson}
+								disabled={del.isPending}
+							>
+								{del.isPending ? "Deleting…" : "Delete"}
+							</Button>
+						</div>
+					</div>
+				) : (
+					<Button
+						variant="ghost"
+						size="row"
+						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+						onClick={() => setConfirmingDelete(true)}
+					>
+						<Trash2 className="size-4" aria-hidden />
+						Delete Person
+					</Button>
+				)}
+			</footer>
+		</div>
+	);
+}
+
+/**
+ * The Project inspector: view ↔ edit toggle + an inline delete confirm, mirroring
+ * `TodoDetail` (ADR-0033). Delete cascades server-side (Core unsets `project_id`
+ * on the owning Todos); the UI just sends `delete_project`.
+ */
+function ProjectDetail({
+	project,
+	allEntities,
+}: {
+	project: Project;
+	allEntities: LibraryItem[];
+}) {
+	const navigate = useNavigate();
+	const [editing, setEditing] = useState(false);
+	const [confirmingDelete, setConfirmingDelete] = useState(false);
+	const del = useEntityMutation();
+
+	const goToEntity = (e: LibraryItem) =>
+		navigate({
+			to: "/library/$kind",
+			params: { kind: KIND_META[e.kind].slug },
+			search: { id: e.id },
+		});
+
+	if (editing) {
+		return (
+			<div className="flex h-full flex-col bg-sidebar">
+				<ProjectEditor
+					mode="edit"
+					project={project}
+					onDone={() => setEditing(false)}
+					onCancel={() => setEditing(false)}
+				/>
+			</div>
+		);
+	}
+
+	const deleteProject = () =>
+		del.mutate(
+			{ mutation_kind: "delete_project", payload: { entity_id: project.id } },
+			{
+				onSuccess: () =>
+					navigate({
+						to: "/library/$kind",
+						params: { kind: KIND_META.project.slug },
+						search: {},
+					}),
+			},
+		);
+
+	return (
+		<div className="flex h-full flex-col">
+			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
+				<EntityGlyph entity={project} size="lg" />
+				<div className="min-w-0 flex-1 pt-0.5">
+					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
+						{libraryItemTitle(project)}
+					</h2>
+					<p className="truncate text-muted-foreground text-sm">
+						{KIND_META.project.label} · {libraryItemSubtitle(project)}
+					</p>
+				</div>
+				<Button
+					variant="chip"
+					size="sm"
+					onClick={() => setEditing(true)}
+					aria-label="Edit Project"
+				>
+					<Pencil className="size-3.5" aria-hidden />
+					Edit
+				</Button>
+			</header>
+
+			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+				<ProjectBody
+					project={project}
+					allEntities={allEntities}
+					onOpen={goToEntity}
+				/>
+			</div>
+
+			<footer className="border-foreground/15 border-t px-5 py-4">
+				{del.error ? (
+					<p role="alert" className="mb-3 text-destructive text-sm">
+						{del.error instanceof Error
+							? del.error.message
+							: "Couldn't delete. Try again."}
+					</p>
+				) : null}
+				{confirmingDelete ? (
+					<div className="flex items-center justify-between gap-3">
+						<span className="text-foreground text-sm">
+							Delete this Project? Its Todos lose their project.
+						</span>
+						<div className="flex gap-2">
+							<Button
+								variant="chip"
+								size="pill"
+								onClick={() => setConfirmingDelete(false)}
+								disabled={del.isPending}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="primary-icon"
+								size="pill"
+								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								onClick={deleteProject}
+								disabled={del.isPending}
+							>
+								{del.isPending ? "Deleting…" : "Delete"}
+							</Button>
+						</div>
+					</div>
+				) : (
+					<Button
+						variant="ghost"
+						size="row"
+						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+						onClick={() => setConfirmingDelete(true)}
+					>
+						<Trash2 className="size-4" aria-hidden />
+						Delete Project
 					</Button>
 				)}
 			</footer>

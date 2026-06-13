@@ -451,3 +451,99 @@ describe("EntityDetail Project projection", () => {
 		expect(screen.getByText("Alice")).toBeInTheDocument();
 	});
 });
+
+describe("EntityDetail Person delete", () => {
+	it("confirms inline, deletes, and clears the rail selection", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		const alice = person("p_del", "Alice");
+		renderDetail(
+			<EntityDetail entity={alice} allEntities={[alice]} />,
+			makeRuntime((params) => {
+				seen.push(params);
+				return Effect.succeed({});
+			}),
+		);
+
+		await user.click(screen.getByRole("button", { name: /delete person/i }));
+		expect(screen.getByText(/delete this person\?/i)).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: /^delete$/i }));
+
+		expect(seen).toEqual([
+			{ mutation_kind: "delete_person", payload: { entity_id: alice.id } },
+		]);
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/library/$kind",
+			params: { kind: "people" },
+			search: {},
+		});
+	});
+
+	it("can cancel the delete confirm without writing", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		const alice = person("p_keep", "Alice");
+		renderDetail(
+			<EntityDetail entity={alice} allEntities={[alice]} />,
+			makeRuntime((params) => {
+				seen.push(params);
+				return Effect.succeed({});
+			}),
+		);
+
+		await user.click(screen.getByRole("button", { name: /delete person/i }));
+		await user.click(screen.getByRole("button", { name: /cancel/i }));
+
+		expect(screen.queryByText(/delete this person\?/i)).not.toBeInTheDocument();
+		expect(seen).toHaveLength(0);
+	});
+});
+
+describe("EntityDetail Project delete", () => {
+	it("confirms inline, deletes, and clears the rail selection", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		const proj = project("pr_del", "Daycare move");
+		renderDetail(
+			<EntityDetail entity={proj} allEntities={[proj]} />,
+			makeRuntime((params) => {
+				seen.push(params);
+				return Effect.succeed({});
+			}),
+		);
+
+		await user.click(screen.getByRole("button", { name: /delete project/i }));
+		expect(screen.getByText(/delete this project\?/i)).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: /^delete$/i }));
+
+		expect(seen).toEqual([
+			{ mutation_kind: "delete_project", payload: { entity_id: proj.id } },
+		]);
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/library/$kind",
+			params: { kind: "projects" },
+			search: {},
+		});
+	});
+
+	it("can cancel the delete confirm without writing", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		const proj = project("pr_keep", "Daycare move");
+		renderDetail(
+			<EntityDetail entity={proj} allEntities={[proj]} />,
+			makeRuntime((params) => {
+				seen.push(params);
+				return Effect.succeed({});
+			}),
+		);
+
+		await user.click(screen.getByRole("button", { name: /delete project/i }));
+		await user.click(screen.getByRole("button", { name: /cancel/i }));
+
+		expect(
+			screen.queryByText(/delete this project\?/i),
+		).not.toBeInTheDocument();
+		expect(seen).toHaveLength(0);
+	});
+});
