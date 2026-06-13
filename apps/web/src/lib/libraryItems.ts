@@ -45,6 +45,13 @@ export interface Person extends LibraryItemBase {
 export interface JournalEntry extends LibraryItemBase {
 	kind: "journal_entry";
 	occurredAt: string;
+	/**
+	 * Optional end of the journaled interval (ADR-0030). Carried on the view model
+	 * so the editor's full-document-replace `update_journal_entry` can round-trip a
+	 * stored `ended_at` instead of silently dropping it (Core's update REPLACES the
+	 * whole entry — slice-8).
+	 */
+	endedAt?: string;
 	body: JournalEntryBodyNode[];
 }
 
@@ -78,6 +85,14 @@ export interface Project extends LibraryItemBase {
 	/** Local wall-clock review timestamps (ADR-0031). */
 	nextReviewAt?: string;
 	lastReviewedAt?: string;
+	/**
+	 * The complete stored Project `data` object, verbatim. The fields above are a
+	 * lossy projection — they omit server-managed fields like `review_every` and
+	 * `due_at`/`defer_at`. The editor needs every field to build a full-document
+	 * replace `update_project` without dropping any (Core's update REPLACES the
+	 * stored data, it does not merge — slice-7). Absent for static preview rows.
+	 */
+	data?: Record<string, unknown>;
 }
 
 export type TodoStatus = "active" | "completed" | "dropped";

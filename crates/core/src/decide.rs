@@ -240,6 +240,13 @@ async fn apply_or_reject(
             Ok(()) => Ok(DecideOutcome::Rejected { run_id }),
             Err(db::ApplyError::InvalidMutation(reason)) => Err(DecideError::Invalid(reason)),
             Err(db::ApplyError::NotPending) => Err(DecideError::LostRace),
+            // `reject_proposal` touches no entity store (it only flips the
+            // proposal status + resolves the tool_call), so it can NEVER return
+            // TargetMissing — a reject is never wedged by a deleted target. The
+            // arm exists solely for match exhaustiveness.
+            Err(db::ApplyError::TargetMissing) => {
+                unreachable!("reject_proposal never touches an entity, so cannot miss a target")
+            }
             Err(db::ApplyError::Sql(e)) => Err(DecideError::Internal(e.into())),
         };
     }
@@ -319,6 +326,12 @@ async fn apply_or_reject(
         Ok(entity_id) => Ok(DecideOutcome::Accepted { run_id, entity_id }),
         Err(db::ApplyError::InvalidMutation(reason)) => Err(DecideError::Invalid(reason)),
         Err(db::ApplyError::NotPending) => Err(DecideError::LostRace),
+        // A user deleted the target Entity out from under this parked Proposal
+        // (ADR-0033). Surface NotDecidable (-32002, "no longer pending") so the
+        // parked Run resolves cleanly, not an opaque Internal (-32603).
+        Err(db::ApplyError::TargetMissing) => Err(DecideError::NotDecidable(
+            "proposal target no longer exists".to_string(),
+        )),
         Err(db::ApplyError::Sql(e)) => Err(DecideError::Internal(e.into())),
     }
 }
@@ -329,213 +342,88 @@ async fn validate_mutation_target(
     mutation_kind: &str,
     payload: &serde_json::Value,
 ) -> Result<(), DecideError> {
-    // A create carrying `source_journal_entry_id` (ADR-0030/0031) must reference an
-    // Accepted Journal Entry; an absent field is fine (the Entity is then sourced
-    // from the user Message). Checked BEFORE apply so a bad source writes nothing.
-    if matches!(mutation_kind, "create_person" | "create_project" | "create_todo")
-        && let Some(journal_entry_id) = entities::source_journal_entry_id(payload)
-    {
-        let is_journal_entry = db::entity_is_type(pool, journal_entry_id, "journal_entry")
-            .await
-            .map_err(|e| DecideError::Internal(e.into()))?;
-        if !is_journal_entry {
-            return Err(DecideError::Invalid(
-                "source_journal_entry_id must reference an Accepted Journal Entry".to_string(),
-            ));
-        }
-    }
-
-    // A create_todo's `todo.project_id`, when present, must reference an Accepted
-    // Project; an absent project_id is fine (a standalone Todo).
-    if mutation_kind == "create_todo" {
-        let project_id = payload
-            .get("todo")
-            .and_then(|todo| todo.get("project_id"))
-            .and_then(serde_json::Value::as_str)
-            .filter(|id| !id.is_empty());
-        if let Some(project_id) = project_id {
-            let is_project = db::entity_is_type(pool, project_id, "project")
-                .await
-                .map_err(|e| DecideError::Internal(e.into()))?;
-            if !is_project {
-                return Err(DecideError::Invalid(
-                    "create_todo project_id must reference an Accepted Project".to_string(),
-                ));
-            }
-        }
-        // Every person_refs[].person_id must reference an Accepted Person; a bad
-        // one fails the whole mutation (-32602) before any write.
-        if let Some(person_refs) = payload
-            .get("person_refs")
-            .and_then(serde_json::Value::as_array)
-        {
-            for person_ref in person_refs {
-                let Some(person_id) = person_ref
-                    .get("person_id")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|id| !id.is_empty())
-                else {
-                    continue;
-                };
-                let is_person = db::entity_is_type(pool, person_id, "person")
-                    .await
-                    .map_err(|e| DecideError::Internal(e.into()))?;
-                if !is_person {
-                    return Err(DecideError::Invalid(
-                        "create_todo person_refs person_id must reference an Accepted Person"
-                            .to_string(),
-                    ));
-                }
-            }
-        }
-        return Ok(());
-    }
-
-    // update_todo: `todo_id` must reference an Accepted Todo; each person_id in
-    // set_person_refs/add_person_refs must reference an Accepted Person; a
-    // supplied `todo.project_id` (the partial may set it) must reference an
-    // Accepted Project. All checked BEFORE apply so a bad ref/target writes
+    // Run-INDEPENDENT target-reference checks are shared with the user path
+    // (`mutate`, ADR-0033): a create's `source_journal_entry_id` anchor, a Todo's
+    // `project_id`/person refs, an update/delete target's type, and a reference's
+    // `target_entity_id` type. Checked BEFORE apply so a bad reference writes
     // nothing.
-    if mutation_kind == "update_todo" {
-        let todo_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
-            DecideError::Invalid("todo_id is required for update_todo".to_string())
-        })?;
-        let is_todo = db::entity_is_type(pool, todo_id, "todo")
-            .await
-            .map_err(|e| DecideError::Internal(e.into()))?;
-        if !is_todo {
-            return Err(DecideError::Invalid(
-                "update_todo todo_id must reference an Accepted Todo".to_string(),
-            ));
-        }
-
-        for field in ["set_person_refs", "add_person_refs"] {
-            let Some(refs) = payload.get(field).and_then(serde_json::Value::as_array) else {
-                continue;
-            };
-            for person_ref in refs {
-                let Some(person_id) = person_ref
-                    .get("person_id")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|id| !id.is_empty())
-                else {
-                    continue;
-                };
-                let is_person = db::entity_is_type(pool, person_id, "person")
-                    .await
-                    .map_err(|e| DecideError::Internal(e.into()))?;
-                if !is_person {
-                    return Err(DecideError::Invalid(
-                        "update_todo person_refs person_id must reference an Accepted Person"
-                            .to_string(),
-                    ));
-                }
+    crate::mutation_target::validate_mutation_target_refs(pool, mutation_kind, payload)
+        .await
+        .map_err(|e| match e {
+            // The primary target Entity was deleted out from under this parked
+            // Proposal (ADR-0033). NotDecidable (-32002) so the Run resolves
+            // cleanly, not Invalid (-32602) which the model would try to "fix".
+            crate::mutation_target::TargetError::TargetMissing(_) => {
+                DecideError::NotDecidable("proposal target no longer exists".to_string())
             }
-        }
-
-        let project_id = payload
-            .get("todo")
-            .and_then(|todo| todo.get("project_id"))
-            .and_then(serde_json::Value::as_str)
-            .filter(|id| !id.is_empty());
-        if let Some(project_id) = project_id {
-            let is_project = db::entity_is_type(pool, project_id, "project")
-                .await
-                .map_err(|e| DecideError::Internal(e.into()))?;
-            if !is_project {
-                return Err(DecideError::Invalid(
-                    "update_todo project_id must reference an Accepted Project".to_string(),
-                ));
-            }
-        }
-        return Ok(());
-    }
-
-    // An update_person/update_project or delete_person/delete_todo's `entity_id`
-    // must reference an Accepted Entity of the matching type. These use this
-    // simple type check; journal entries keep the stricter same-thread guard
-    // below (delete_journal_entry included).
-    if let Some(target_type) = match mutation_kind {
-        "update_person" | "delete_person" => Some("person"),
-        "update_project" | "delete_project" => Some("project"),
-        "delete_todo" => Some("todo"),
-        _ => None,
-    } {
-        let entity_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
-            DecideError::Invalid(format!("entity_id is required for {mutation_kind}"))
+            crate::mutation_target::TargetError::Invalid(reason) => DecideError::Invalid(reason),
+            crate::mutation_target::TargetError::Internal(err) => DecideError::Internal(err),
         })?;
-        let is_type = db::entity_is_type(pool, entity_id, target_type)
-            .await
-            .map_err(|e| DecideError::Internal(e.into()))?;
-        if !is_type {
-            return Err(DecideError::Invalid(format!(
-                "{mutation_kind} target must reference an Accepted {target_type}"
-            )));
-        }
-        return Ok(());
-    }
 
-    // reference_existing_entity_from_journal_entry (PR #130): its `source_entity_id`
-    // must be a Journal Entry in the current Thread (same-thread guard), and its
-    // `target_entity_id` must name an existing Accepted Entity of a referenceable
-    // type (person/project/todo).
+    // The SAME-THREAD JOURNAL GUARD is run-coupled (keyed on `run_id`) and stays
+    // here. A reference's `source_entity_id` must be a Journal Entry in the
+    // current Thread; the shared helper already verified its `target_entity_id`.
+    // A reference's source is a model-supplied REFERENCE, not the Entity being
+    // mutated — a missing/non-thread source is a payload error (-32602), never a
+    // delete-race, so `missing_is_not_decidable: false`.
     if mutation_kind == "reference_existing_entity_from_journal_entry" {
-        let source_entity_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
-            DecideError::Invalid(
-                "source_entity_id is required for reference_existing_entity_from_journal_entry"
-                    .to_string(),
-            )
-        })?;
-        validate_current_thread_journal_entry(pool, run_id, mutation_kind, source_entity_id)
+        let source_entity_id =
+            entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
+                DecideError::Invalid(
+                    "source_entity_id is required for reference_existing_entity_from_journal_entry"
+                        .to_string(),
+                )
+            })?;
+        validate_current_thread_journal_entry(pool, run_id, mutation_kind, source_entity_id, false)
             .await?;
-
-        let target_entity_id = entities::reference_target_entity_id(payload).ok_or_else(|| {
-            DecideError::Invalid(
-                "target_entity_id is required for reference_existing_entity_from_journal_entry"
-                    .to_string(),
-            )
-        })?;
-        let Some(target_type) = db::entity_type_by_id(pool, target_entity_id)
-            .await
-            .map_err(|e| DecideError::Internal(e.into()))?
-        else {
-            return Err(DecideError::Invalid(
-                "target_entity_id must be an existing accepted Entity".to_string(),
-            ));
-        };
-        if !matches!(target_type.as_str(), "person" | "project" | "todo") {
-            return Err(DecideError::Invalid(
-                "target_entity_id must be a person, project, or todo".to_string(),
-            ));
-        }
         return Ok(());
     }
 
-    // The remaining kinds are the journal-entry update/delete, which keep the
-    // stricter same-thread guard: the target must be a Journal Entry originally
-    // created_from a user Message in the current Thread.
+    // A journal-entry update/delete keeps the stricter same-thread guard: the
+    // target must be a Journal Entry originally created_from a user Message in the
+    // current Thread.
     if mutation_kind != "update_journal_entry" && mutation_kind != "delete_journal_entry" {
         return Ok(());
     }
 
+    // Here the Journal Entry IS the primary target being mutated, so a GONE row is
+    // the delete-race (ADR-0033) → NotDecidable; `missing_is_not_decidable: true`.
     let entity_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
         DecideError::Invalid(format!("entity_id is required for {mutation_kind}"))
     })?;
-    validate_current_thread_journal_entry(pool, run_id, mutation_kind, entity_id).await?;
+    validate_current_thread_journal_entry(pool, run_id, mutation_kind, entity_id, true).await?;
 
     Ok(())
 }
 
+/// The same-thread Journal-Entry guard. `missing_is_not_decidable` selects how a
+/// GONE Journal Entry row is reported: as the primary update/delete target it is
+/// the delete-race (NotDecidable, ADR-0033); as a reference's source it is a
+/// payload error (Invalid). A Journal Entry that EXISTS but fails the thread
+/// check is always a cross-thread attempt → Invalid.
 async fn validate_current_thread_journal_entry(
     pool: &SqlitePool,
     run_id: Uuid,
     mutation_kind: &str,
     entity_id: &str,
+    missing_is_not_decidable: bool,
 ) -> Result<(), DecideError> {
     let allowed = db::journal_entry_target_is_valid(pool, run_id, entity_id)
         .await
         .map_err(|e| DecideError::Internal(e.into()))?;
     if !allowed {
+        // The guard fails for two distinct reasons; tell them apart with a cheap
+        // existence check.
+        if missing_is_not_decidable {
+            let exists = db::entity_is_type(pool, entity_id, "journal_entry")
+                .await
+                .map_err(|e| DecideError::Internal(e.into()))?;
+            if !exists {
+                return Err(DecideError::NotDecidable(
+                    "proposal target no longer exists".to_string(),
+                ));
+            }
+        }
         return Err(DecideError::Invalid(format!(
             "{mutation_kind} target must be a Journal Entry originally created_from a user Message in the current Thread"
         )));
@@ -775,6 +663,127 @@ mod tests {
             .await
             .expect("entity data");
         serde_json::from_str(&data).expect("entity data json")
+    }
+
+    /// Retarget a seeded pending Proposal to `mutation_kind` with `payload` as
+    /// its inner proposed payload (mirrors `load_proposal_for_decide`, which reads
+    /// the proposed payload from the tool_call `request_payload.payload`).
+    async fn retarget_proposal(
+        pool: &SqlitePool,
+        proposal_id: &str,
+        mutation_kind: &str,
+        payload: serde_json::Value,
+    ) {
+        sqlx::query("UPDATE proposals SET mutation_kind = ? WHERE id = ?")
+            .bind(mutation_kind)
+            .bind(proposal_id)
+            .execute(pool)
+            .await
+            .expect("retarget proposal kind");
+        sqlx::query(
+            "UPDATE tool_calls SET request_payload = ? \
+             WHERE id = (SELECT tool_call_id FROM proposals WHERE id = ?)",
+        )
+        .bind(
+            serde_json::json!({
+                "mutation_kind": mutation_kind,
+                "payload": payload,
+                "rationale": "retargeted in test",
+            })
+            .to_string(),
+        )
+        .bind(proposal_id)
+        .execute(pool)
+        .await
+        .expect("retarget proposal payload");
+    }
+
+    /// Insert a canonical Person Entity (created_by='user', no Proposal anchor).
+    /// Returns its id.
+    async fn insert_person(pool: &SqlitePool) -> String {
+        let entity_id = Uuid::now_v7().to_string();
+        let now = db::now_ms();
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_at, updated_at) \
+             VALUES (?, 'person', 1, ?, 'user', ?, ?)",
+        )
+        .bind(&entity_id)
+        .bind(r#"{"name":"Target Person"}"#)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("insert person");
+        entity_id
+    }
+
+    /// Insert a canonical Journal Entry Entity with a `created_from` source row
+    /// pointing at `source_message_id`. Used to seed an update/delete target the
+    /// same-thread guard accepts (in-thread message) or rejects (wrong-thread).
+    async fn insert_journal_entry(pool: &SqlitePool, source_message_id: &str) -> String {
+        let entity_id = Uuid::now_v7().to_string();
+        let now = db::now_ms();
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_at, updated_at) \
+             VALUES (?, 'journal_entry', 1, ?, 'user', ?, ?)",
+        )
+        .bind(&entity_id)
+        .bind(
+            r#"{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"Original."}]}"#,
+        )
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("insert journal entry");
+        sqlx::query(
+            "INSERT INTO entity_sources \
+             (id, entity_id, source_message_id, relation, created_at) \
+             VALUES (?, ?, ?, 'created_from', ?)",
+        )
+        .bind(Uuid::now_v7().to_string())
+        .bind(&entity_id)
+        .bind(source_message_id)
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("insert journal entry source");
+        entity_id
+    }
+
+    /// Seed a standalone thread with one completed user Message (its `run_id`
+    /// reuses `run_id`, an existing Run, only to satisfy the NOT NULL FK — the
+    /// thread differs, which is what the same-thread guard keys on). Returns the
+    /// message id. Used to anchor a wrong-thread Journal Entry.
+    async fn insert_foreign_thread_user_message(pool: &SqlitePool, run_id: Uuid) -> String {
+        let suffix = Uuid::now_v7();
+        let thread = format!("thr-foreign-{suffix}");
+        let message = format!("umsg-foreign-{suffix}");
+        let now = db::now_ms();
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, 't', ?, ?)",
+        )
+        .bind(&thread)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("insert foreign thread");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'user', 'completed', ?, ?)",
+        )
+        .bind(&message)
+        .bind(&thread)
+        .bind(run_id.to_string())
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("insert foreign user message");
+        message
     }
 
     /// Force a Proposal to `accepted` (simulating a prior decide), with an
@@ -1336,6 +1345,274 @@ mod tests {
         assert!(
             resumed.load(Ordering::SeqCst),
             "the still-parked retry re-drives resume"
+        );
+    }
+
+    // ADR-0033 "Delete vs. a parked Proposal": a user deletes the GTD Entity a
+    // parked Proposal targets, THEN accepts the Proposal. The decide must surface
+    // `NotDecidable` (-32002, "no longer pending") — NOT `Invalid` (-32602) and
+    // NOT `Internal` — so the parked Run resolves cleanly. The deleted primary
+    // target is caught at pre-validation (before apply), so this exercises the
+    // mutation_target TargetMissing → NotDecidable mapping, not the apply-layer
+    // TOCTOU path.
+    #[tokio::test]
+    async fn accept_with_deleted_gtd_target_is_not_decidable() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        let person_id = insert_person(&pool).await;
+        retarget_proposal(
+            &pool,
+            &proposal_id_str,
+            "delete_person",
+            serde_json::json!({ "entity_id": person_id }),
+        )
+        .await;
+
+        // The user deletes the target Person out from under the parked Proposal.
+        sqlx::query("DELETE FROM entities WHERE id = ?")
+            .bind(&person_id)
+            .execute(&pool)
+            .await
+            .expect("delete target person");
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-gtd-gone".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Err(DecideError::NotDecidable(_))),
+            "accepting a Proposal whose deleted GTD target is gone is NotDecidable, got {outcome:?}"
+        );
+        assert_eq!(
+            entity_count(&pool).await,
+            0,
+            "nothing is written when the target is gone"
+        );
+        assert_eq!(
+            proposal_status(&pool, &proposal_id_str).await,
+            "pending",
+            "the Proposal stays pending — the Run can still resolve it"
+        );
+        assert!(
+            !resumed.load(Ordering::SeqCst),
+            "a NotDecidable accept does not resume"
+        );
+    }
+
+    // ADR-0033 "Delete vs. a parked Proposal" for the JOURNAL kind: the target
+    // Journal Entry row is hard-deleted before the parked `update_journal_entry`
+    // Proposal is accepted. The same-thread guard must distinguish "JE row gone"
+    // (→ NotDecidable, the delete race) from "wrong thread" (→ Invalid, next test).
+    #[tokio::test]
+    async fn accept_with_deleted_journal_target_is_not_decidable() {
+        let pool = memory_pool().await;
+        let (run_id, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        // The seeded user Message `umsg-{run}` lives in the Run's own thread, so a
+        // JE created_from it satisfies the same-thread guard while it exists.
+        let in_thread_user_msg = format!("umsg-{run_id}");
+        let je_id = insert_journal_entry(&pool, &in_thread_user_msg).await;
+        retarget_proposal(
+            &pool,
+            &proposal_id_str,
+            "update_journal_entry",
+            serde_json::json!({
+                "entity_id": je_id,
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Edited." }]
+            }),
+        )
+        .await;
+
+        // The user deletes the target Journal Entry.
+        sqlx::query("DELETE FROM entities WHERE id = ?")
+            .bind(&je_id)
+            .execute(&pool)
+            .await
+            .expect("delete target journal entry");
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-je-gone".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Err(DecideError::NotDecidable(_))),
+            "accepting an update_journal_entry whose JE row was deleted is NotDecidable, got {outcome:?}"
+        );
+        assert_eq!(
+            entity_count(&pool).await,
+            0,
+            "nothing is written when the JE target is gone"
+        );
+        assert_eq!(
+            proposal_status(&pool, &proposal_id_str).await,
+            "pending",
+            "the Proposal stays pending"
+        );
+        assert!(
+            !resumed.load(Ordering::SeqCst),
+            "a NotDecidable accept does not resume"
+        );
+    }
+
+    // FIX #2: a `reference_existing_entity_from_journal_entry` whose SOURCE Journal
+    // Entry (the reference's primary anchor) was deleted out from under the parked
+    // Proposal is NotDecidable (-32002), not Internal (-32603) — the shared
+    // validator now checks the source's existence run-independently, so the apply
+    // path never trips the entity_refs FK on a vanished source. A source that
+    // EXISTS but is the WRONG TYPE (not a journal_entry) stays Invalid (-32602).
+    #[tokio::test]
+    async fn reference_with_deleted_source_is_not_decidable_wrong_type_is_invalid() {
+        let pool = memory_pool().await;
+        let (run_id, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        // A valid referenceable target (a Person) for both sub-cases.
+        let target_person = insert_person(&pool).await;
+
+        // Sub-case A: deleted source → NotDecidable. Seed a Journal Entry anchored
+        // in the Run's own thread (so the same-thread guard would pass), then
+        // delete it before the decide.
+        let in_thread_user_msg = format!("umsg-{run_id}");
+        let source_je = insert_journal_entry(&pool, &in_thread_user_msg).await;
+        retarget_proposal(
+            &pool,
+            &proposal_id_str,
+            "reference_existing_entity_from_journal_entry",
+            serde_json::json!({
+                "source_entity_id": source_je,
+                "target_entity_id": target_person,
+                "label_snapshot": "Target Person",
+                "body": [
+                    { "type": "text", "text": "Linked " },
+                    { "type": "entity_ref" }
+                ]
+            }),
+        )
+        .await;
+        sqlx::query("DELETE FROM entities WHERE id = ?")
+            .bind(&source_je)
+            .execute(&pool)
+            .await
+            .expect("delete source journal entry");
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-ref-source-gone".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+        assert!(
+            matches!(outcome, Err(DecideError::NotDecidable(_))),
+            "a deleted reference source is NotDecidable (primary anchor delete-race), got {outcome:?}"
+        );
+        assert!(
+            !resumed.load(Ordering::SeqCst),
+            "a NotDecidable accept does not resume"
+        );
+
+        // Sub-case B: wrong-type source (a Person, not a Journal Entry) → Invalid.
+        let person_source = insert_person(&pool).await;
+        retarget_proposal(
+            &pool,
+            &proposal_id_str,
+            "reference_existing_entity_from_journal_entry",
+            serde_json::json!({
+                "source_entity_id": person_source,
+                "target_entity_id": target_person,
+                "label_snapshot": "Target Person",
+                "body": [
+                    { "type": "text", "text": "Linked " },
+                    { "type": "entity_ref" }
+                ]
+            }),
+        )
+        .await;
+        let resumed_b = Arc::new(AtomicBool::new(false));
+        let outcome_b = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-ref-source-wrong-type".to_string()),
+            resume_closure(pool.clone(), resumed_b.clone()),
+        )
+        .await;
+        assert!(
+            matches!(outcome_b, Err(DecideError::Invalid(_))),
+            "a wrong-type reference source is Invalid (payload error), got {outcome_b:?}"
+        );
+    }
+
+    // Guards the gone-vs-wrong-thread distinction: a Journal Entry that EXISTS but
+    // was created_from a Message in a DIFFERENT thread is a genuine cross-thread
+    // attempt, not a delete race. It must stay `Invalid` (-32602), not become
+    // NotDecidable.
+    #[tokio::test]
+    async fn accept_with_wrong_thread_journal_target_is_invalid() {
+        let pool = memory_pool().await;
+        let (run_id, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        // JE exists, but its created_from Message is in a foreign thread.
+        let foreign_msg = insert_foreign_thread_user_message(&pool, run_id).await;
+        let je_id = insert_journal_entry(&pool, &foreign_msg).await;
+        retarget_proposal(
+            &pool,
+            &proposal_id_str,
+            "update_journal_entry",
+            serde_json::json!({
+                "entity_id": je_id,
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Edited." }]
+            }),
+        )
+        .await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-je-wrong-thread".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Err(DecideError::Invalid(_))),
+            "a wrong-thread JE target (still present) is Invalid, not NotDecidable, got {outcome:?}"
+        );
+        assert_eq!(
+            entity_count(&pool).await,
+            1,
+            "the wrong-thread JE remains; nothing else is written"
+        );
+        assert!(
+            !resumed.load(Ordering::SeqCst),
+            "an Invalid accept does not resume"
         );
     }
 }

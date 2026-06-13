@@ -1814,18 +1814,22 @@ fn reference_existing_entity_rejects_invalid_source_target_type_and_thread() {
         .spawn();
 
     let invalid_cases = [
+        // A GONE source Journal Entry is the reference's PRIMARY anchor → a
+        // delete-race (ADR-0033): NotDecidable (-32002), not invalid_params.
         (
             Uuid::now_v7(),
             valid_target_id,
             source_thread_id,
             "missing source",
-            "current Thread",
+            -32002,
+            "proposal target no longer exists",
         ),
         (
             source_entity_id,
             Uuid::now_v7(),
             source_thread_id,
             "missing target",
+            -32602,
             "existing accepted Entity",
         ),
         (
@@ -1833,6 +1837,7 @@ fn reference_existing_entity_rejects_invalid_source_target_type_and_thread() {
             wrong_type_target_id,
             source_thread_id,
             "wrong target type",
+            -32602,
             "person, project, or todo",
         ),
         (
@@ -1840,12 +1845,13 @@ fn reference_existing_entity_rejects_invalid_source_target_type_and_thread() {
             valid_target_id,
             other_thread_id,
             "cross thread source",
+            -32602,
             "current Thread",
         ),
     ];
 
     rt.block_on(async {
-        for (source, target, thread, label, expected_message) in invalid_cases {
+        for (source, target, thread, label, expected_code, expected_message) in invalid_cases {
             write_reference_params(&params_path, source, target);
             let (run_id, proposal_id) =
                 park_reference_proposal(&core, thread, "Link Ada in that entry.").await;
@@ -1862,8 +1868,8 @@ fn reference_existing_entity_rejects_invalid_source_target_type_and_thread() {
             .await;
             assert_eq!(
                 resp["error"]["code"].as_i64(),
-                Some(-32602),
-                "{label} is invalid_params - body: {resp}"
+                Some(expected_code),
+                "{label} error code - body: {resp}"
             );
             assert!(
                 resp["error"]["message"]

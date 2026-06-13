@@ -7,6 +7,8 @@ import { libraryItemKindForSlug } from "@/lib/libraryItems";
 
 interface KindSearch {
 	id?: string;
+	/** When true, the rail shows a blank editor to create a new item (ADR-0033). */
+	new?: boolean;
 }
 
 function KindRoute() {
@@ -47,6 +49,20 @@ function KindRoute() {
 					search: { id: next },
 				})
 			}
+			// Todo, Person, Project, and Journal Entry are manually-creatable in the rail (ADR-0033).
+			onNew={
+				kind === "todo" ||
+				kind === "person" ||
+				kind === "project" ||
+				kind === "journal_entry"
+					? () =>
+							navigate({
+								to: "/library/$kind",
+								params: { kind: slug },
+								search: { new: true },
+							})
+					: undefined
+			}
 		/>
 	);
 }
@@ -54,6 +70,7 @@ function KindRoute() {
 export const Route = createFileRoute("/library/$kind")({
 	validateSearch: (search: Record<string, unknown>): KindSearch => ({
 		id: typeof search.id === "string" ? search.id : undefined,
+		new: search.new === true || search.new === "true" ? true : undefined,
 	}),
 	component: KindRoute,
 });

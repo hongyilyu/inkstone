@@ -114,6 +114,7 @@ export function useLibraryItems() {
 
 interface JournalEntryData {
 	occurred_at?: unknown;
+	ended_at?: unknown;
 	body?: unknown;
 }
 
@@ -172,6 +173,9 @@ function toLibraryJournalEntry(row: LiveEntityRow): JournalEntry {
 		id: row.id,
 		kind: "journal_entry",
 		occurredAt: data.occurred_at,
+		// Carry a stored `ended_at` so the editor's full-replace update can
+		// round-trip it instead of dropping it (slice-8 trap).
+		endedAt: typeof data.ended_at === "string" ? data.ended_at : undefined,
 		body,
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
@@ -263,6 +267,13 @@ function asProjectStatus(value: unknown): ProjectStatus {
 
 function toLibraryProject(row: LiveEntityRow): Project {
 	const data = (row.data ?? {}) as ProjectData;
+	// Carry the complete stored object verbatim so the editor can build a
+	// full-document-replace `update_project` without dropping server-managed
+	// fields the projection above omits (slice-7).
+	const rawData =
+		row.data && typeof row.data === "object"
+			? { ...(row.data as Record<string, unknown>) }
+			: {};
 	return {
 		id: row.id,
 		kind: "project",
@@ -272,6 +283,7 @@ function toLibraryProject(row: LiveEntityRow): Project {
 		note: asString(data.note),
 		nextReviewAt: asString(data.next_review_at),
 		lastReviewedAt: asString(data.last_reviewed_at),
+		data: rawData,
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Project;

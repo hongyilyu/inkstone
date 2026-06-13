@@ -37,6 +37,7 @@ function makeRuntime(opts: {
 		threadList: die,
 		threadGet: die,
 		listEntities: die,
+		entityMutate: die,
 		subscribeRun: dieStream,
 		providerStatus: () =>
 			Effect.succeed({

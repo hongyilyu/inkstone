@@ -1,12 +1,13 @@
-import { Search } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Button } from "@/components/ui/button.js";
 import { EmptyState } from "@/components/ui/empty-state";
 import { SearchField } from "@/components/ui/search-field";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
 	groupJournalEntriesByDay,
-	KIND_META,
 	type JournalEntry,
+	KIND_META,
 	type LibraryItem,
 	type LibraryItemKind,
 	libraryItemTitle,
@@ -56,15 +57,17 @@ function compareForKind(
 	}
 }
 
-/** Searchable list for one Library item kind; selecting a row reports its id (the route sets `?id`, Inspector renders in the shared rail). */
+/** Searchable list for one Library item kind; selecting a row reports its id (the route sets `?id`, Inspector renders in the shared rail). `onNew`, when given, surfaces a header action that opens a blank editor in the rail (ADR-0033). */
 export function EntityCollection({
 	kind,
 	selectedId,
 	onSelect,
+	onNew,
 }: {
 	kind: LibraryItemKind;
 	selectedId: string | null;
 	onSelect: (id: string) => void;
+	onNew?: () => void;
 }) {
 	const { data, isPending, isError } = useLibraryItems();
 	const [query, setQuery] = useState("");
@@ -91,6 +94,17 @@ export function EntityCollection({
 						<span className="text-muted-foreground text-sm">
 							{ofKind.length}
 						</span>
+						{onNew ? (
+							<Button
+								variant="chip"
+								size="pill"
+								className="ml-auto"
+								onClick={onNew}
+							>
+								<Plus className="size-4" aria-hidden />
+								New {meta.label}
+							</Button>
+						) : null}
 					</div>
 					<SearchField
 						variant="box"
@@ -119,7 +133,11 @@ export function EntityCollection({
 						<EmptyState
 							icon={meta.icon}
 							title={`No ${meta.plural.toLowerCase()} yet`}
-							description={`${meta.plural} appear here as Inkstone notices them in your chats and you accept the Proposal.`}
+							description={
+								onNew
+									? `Use New ${meta.label} to add one, or accept a proposal suggested from chats.`
+									: `${meta.plural} appear here as Inkstone notices them in your chats and you accept the Proposal.`
+							}
 						/>
 					) : items.length === 0 ? (
 						<EmptyState

@@ -21,6 +21,7 @@ function makeRuntime() {
 		threadList: die,
 		threadGet: die,
 		listEntities: die,
+		entityMutate: die,
 		subscribeRun: dieStream,
 		providerStatus: die,
 		providerLoginStart: die,

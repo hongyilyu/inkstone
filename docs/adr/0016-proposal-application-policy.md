@@ -2,13 +2,15 @@
 
 Every Worker-initiated Workspace mutation is submitted as a **Proposal** through the Tool Protocol. Core decides per Proposal whether to apply it immediately (auto-approve) or to surface it for explicit user decision (manual approve). The decision is invisible to the Worker — the Tool Result it eventually receives carries `{decision: "accept" | "reject" | "edit", …}` regardless of who made it. There is one write path: Proposal in, atomic application out.
 
+> **Scope amendment ([ADR-0033](./0033-user-initiated-entity-crud-writes-directly.md)).** This policy governs the **agent (Worker) path**. A *user* editing their own Library writes directly via `entity/mutate` with no Proposal — the user is their own approver. Both paths converge on the shared `db::apply_entity_mutation` core, so "one write path" holds for the durable mutation; only the Proposal/Run bookkeeping is agent-specific.
+
 The set of auto-approve rules is **not pinned in this ADR**. Each Workflow declares which of its operations may auto-approve as part of the Workflow manifest. The mechanism exists; the policy table is data, not architecture.
 
 ## What counts as a "Workspace mutation"
 
 In scope (Proposal-gated):
 
-- Create / update / delete an Accepted Entity (Person, Todo, Project, …).
+- Create / update / delete a Canonical Entity (Person, Todo, Project, …) **when the Worker initiates it** (a user-initiated edit writes directly — ADR-0033).
 - Update Thread metadata (title, tags) when the Worker initiates it.
 
 Out of scope (not Proposals):

@@ -1,6 +1,8 @@
 import { Socket } from "@effect/platform";
 import {
 	EntityListResult,
+	type EntityMutateParams,
+	EntityMutateResult,
 	ModelCatalogResult,
 	PostMessageResult,
 	ProposalChangedNotification,
@@ -129,6 +131,9 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly listEntities: (
 			type: string,
 		) => Effect.Effect<EntityListResult, WsError>;
+		readonly entityMutate: (
+			params: EntityMutateParams,
+		) => Effect.Effect<EntityMutateResult, WsError>;
 		readonly subscribeRun: (
 			runId: RunId,
 		) => Stream.Stream<RunEventValue, WsError>;
@@ -361,6 +366,13 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			): Effect.Effect<EntityListResult, WsError> =>
 				request("entity/list", { type }, EntityListResult);
 
+			// entity/mutate (ADR-0033): a user-initiated CRUD request — same
+			// {mutation_kind, payload} envelope as the Worker's propose tool.
+			const entityMutate = (
+				params: EntityMutateParams,
+			): Effect.Effect<EntityMutateResult, WsError> =>
+				request("entity/mutate", { ...params }, EntityMutateResult);
+
 			// Queue is created before run/subscribe is sent so post-ack events aren't dropped — see docs/design/ui-sdk.md
 			const subscribeRun = (
 				runId: RunId,
@@ -416,6 +428,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				threadList,
 				threadGet,
 				listEntities,
+				entityMutate,
 				subscribeRun,
 				providerStatus,
 				providerLoginStart,

@@ -6,7 +6,7 @@ Inkstone has two persistence tiers. SQLite is authoritative for everything Core 
 
 | Tier | Storage | Authoritative for | Examples |
 |---|---|---|---|
-| 2. Canonical | SQLite (canonical tables) | All content and application state Inkstone durably owns | Threads, Runs, Proposals, Accepted Entities, approvals, captured content |
+| 2. Canonical | SQLite (canonical tables) | All content and application state Inkstone durably owns | Threads, Runs, Proposals, Canonical Entities, approvals, captured content |
 | 3. Derived | SQLite (derived tables/indexes) **+ Vault export** | Nothing canonical; rebuildable from tier 2 | FTS, backlinks, dashboards, denormalized views, exported documents in the Vault |
 
 ## Why

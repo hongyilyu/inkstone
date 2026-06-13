@@ -32,6 +32,7 @@ function makeStubRuntime(opts: {
 		threadList: () => unused,
 		threadGet: () => unused,
 		listEntities: () => unused,
+		entityMutate: () => unused,
 		subscribeRun: () => Stream.fromIterable(opts.events),
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,

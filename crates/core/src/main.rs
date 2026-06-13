@@ -5,6 +5,8 @@ mod dispatcher;
 mod entities;
 mod hub;
 mod models;
+mod mutate;
+mod mutation_target;
 mod protocol;
 mod provider_auth;
 mod resume;

@@ -239,6 +239,24 @@ pub struct EntityListResult {
     pub entities: Vec<EntityRow>,
 }
 
+/// `entity/mutate` params (ADR-0033): a user-initiated CRUD request. `payload` is
+/// the same discriminated `{mutation_kind, payload}` envelope the Worker's
+/// `propose_workspace_mutation` tool uses (minus `rationale`), so it stays opaque
+/// at the wire boundary — Core validates it per `mutation_kind`.
+#[derive(Debug, Deserialize)]
+pub struct EntityMutateParams {
+    pub mutation_kind: String,
+    pub payload: serde_json::Value,
+}
+
+/// `entity/mutate` result: the affected Entity id — present on create/update,
+/// absent on delete (which leaves no row).
+#[derive(Debug, Serialize)]
+pub struct EntityMutateResult {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+}
+
 /// `thread/get` params: the Thread to rehydrate. Malformed `thread_id` →
 /// `invalid_params` (-32602), unknown → `unknown_thread` (-32001), as in
 /// `run/post_message`.
@@ -572,6 +590,38 @@ mod mirror_tests {
         let wire = json!({ "type": "person" });
         let p: EntityListParams = serde_json::from_value(wire).unwrap();
         assert_eq!(p.r#type, "person");
+    }
+
+    #[test]
+    fn entity_mutate_params_decodes_kind_and_opaque_payload() {
+        let wire = json!({
+            "mutation_kind": "create_person",
+            "payload": { "name": "Alice" }
+        });
+        let p: EntityMutateParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.mutation_kind, "create_person");
+        assert_eq!(p.payload, json!({ "name": "Alice" }));
+    }
+
+    #[test]
+    fn entity_mutate_result_encodes_entity_id() {
+        let r = EntityMutateResult {
+            entity_id: Some(UUID_A.to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({ "entity_id": UUID_A }),
+        );
+    }
+
+    #[test]
+    fn entity_mutate_result_omits_entity_id_when_none() {
+        // A delete carries no surviving Entity, so `entity_id` is omitted (the TS
+        // mirror types it `S.optional`).
+        let r = EntityMutateResult { entity_id: None };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v, json!({}));
+        assert!(v.get("entity_id").is_none());
     }
 
     #[test]

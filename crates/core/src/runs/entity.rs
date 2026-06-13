@@ -1,16 +1,17 @@
-//! `entity/list` handler (ADR-0004 read path): the live read the Library's
-//! collections consume. Read every accepted Entity of the requested `type`
-//! newest-first, map each row to a wire [`EntityRow`], and frame
-//! `{entities: [...]}`. A missing/non-string `type` → `invalid_params`
-//! (ADR-0029).
+//! `entity/*` handlers: the read path (`entity/list`, ADR-0004) the Library's
+//! collections consume, and the user write path (`entity/mutate`, ADR-0033) that
+//! applies CRUD directly without a Proposal. Both follow the combinator seam
+//! (ADR-0029): decode params, run the body, frame the outcome.
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use crate::db;
+use crate::mutate::{self, MutateError};
 use crate::protocol::{
-    EntityListParams, EntityListResult, EntityRow, ResolvedEntityRef, TodoPersonRefView,
+    EntityListParams, EntityListResult, EntityMutateParams, EntityMutateResult, EntityRow,
+    ResolvedEntityRef, TodoPersonRefView,
 };
 
 pub(super) async fn handle_list(
@@ -53,6 +54,30 @@ pub(super) async fn handle_list(
             .collect();
 
         Ok(EntityListResult { entities })
+    })
+    .await;
+}
+
+/// `entity/mutate` handler (ADR-0033): a user-initiated CRUD write applied
+/// directly to tier 2 with no Proposal. Validate + apply via [`crate::mutate`],
+/// mapping its failures to wire codes (`Invalid → -32602`, `Internal → -32603`),
+/// and reply with the affected `entity_id` (absent on delete).
+pub(super) async fn handle_mutate(
+    pool: &SqlitePool,
+    id: serde_json::Value,
+    params: serde_json::Value,
+    out_tx: &UnboundedSender<String>,
+) {
+    handler::handle(id, params, out_tx, |params: EntityMutateParams| async move {
+        let outcome = mutate::apply(pool, &params.mutation_kind, &params.payload)
+            .await
+            .map_err(|e| match e {
+                MutateError::Invalid(reason) => HandlerError::InvalidParams(reason),
+                MutateError::Internal(err) => HandlerError::Internal(err),
+            })?;
+        Ok(EntityMutateResult {
+            entity_id: outcome.entity_id,
+        })
     })
     .await;
 }

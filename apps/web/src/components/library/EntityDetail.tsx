@@ -1,8 +1,10 @@
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, MessageSquareText } from "lucide-react";
-import { Fragment, type ReactNode } from "react";
+import { ArrowUpRight, MessageSquareText, Pencil, Trash2 } from "lucide-react";
+import { Fragment, type ReactNode, useState } from "react";
 import { CopyButton } from "@/components/CopyButton.js";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button.js";
+import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import type {
 	JournalEntry,
 	JournalEntryBodyEntityRefNode,
@@ -31,9 +33,39 @@ import {
 import { cn } from "@/lib/utils.js";
 import { setFocusedThread } from "@/store/chat";
 import { EntityGlyph } from "./EntityGlyph.js";
+import { JournalEntryEditor } from "./JournalEntryEditor.js";
+import { PersonEditor } from "./PersonEditor.js";
+import { ProjectEditor } from "./ProjectEditor.js";
+import { TodoEditor } from "./TodoEditor.js";
 
 /** Detail "Inspector" panel for one Library item: its relations as deep links and a path back to the capturing Run. */
 export function EntityDetail({
+	entity,
+	allEntities,
+}: {
+	entity: LibraryItem;
+	allEntities: LibraryItem[];
+}) {
+	// Todo, Person, and Project are editable; each owns its own view↔edit↔delete
+	// state and the mutation hook, so non-editable kinds render hook-free.
+	if (entity.kind === "todo") {
+		return <TodoDetail todo={entity} allEntities={allEntities} />;
+	}
+	if (entity.kind === "person") {
+		return <PersonDetail person={entity} allEntities={allEntities} />;
+	}
+	if (entity.kind === "project") {
+		return <ProjectDetail project={entity} allEntities={allEntities} />;
+	}
+	if (entity.kind === "journal_entry") {
+		return (
+			<JournalEntryDetail journalEntry={entity} allEntities={allEntities} />
+		);
+	}
+	return <EntityDetailView entity={entity} allEntities={allEntities} />;
+}
+
+function EntityDetailView({
 	entity,
 	allEntities,
 }: {
@@ -48,12 +80,6 @@ export function EntityDetail({
 			params: { kind: KIND_META[e.kind].slug },
 			search: { id: e.id },
 		});
-
-	const openSource = () => {
-		if (!entity.capturedFrom) return;
-		setFocusedThread(entity.capturedFrom.threadId);
-		navigate({ to: "/" });
-	};
 
 	return (
 		<div className="flex h-full flex-col">
@@ -91,42 +117,581 @@ export function EntityDetail({
 						onOpen={goToEntity}
 					/>
 				)}
-				{entity.kind === "todo" && (
-					<TodoBody
-						todo={entity}
-						allEntities={allEntities}
-						onOpen={goToEntity}
-					/>
-				)}
 				{entity.kind === "recipe" && <RecipeBody recipe={entity} />}
 			</div>
 
-			{entity.capturedFrom ? (
-				<footer className="border-foreground/15 border-t p-2">
-					<button
-						type="button"
-						onClick={openSource}
-						className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-secondary/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+			<CapturedFromFooter entity={entity} />
+		</div>
+	);
+}
+
+/** A link back to the Run that captured this Entity, when there is one. */
+function CapturedFromFooter({ entity }: { entity: LibraryItem }) {
+	const navigate = useNavigate();
+	if (!entity.capturedFrom) return null;
+	const captured = entity.capturedFrom;
+	const openSource = () => {
+		setFocusedThread(captured.threadId);
+		navigate({ to: "/" });
+	};
+	return (
+		<footer className="border-foreground/15 border-t p-2">
+			<button
+				type="button"
+				onClick={openSource}
+				className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-secondary/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+			>
+				<MessageSquareText
+					className="size-4 shrink-0 text-muted-foreground"
+					aria-hidden
+				/>
+				<span className="min-w-0 flex-1">
+					<span className="block text-muted-foreground text-xs">
+						Captured from · {captured.when}
+					</span>
+					<span className="block truncate text-foreground text-sm">
+						{captured.threadTitle}
+					</span>
+				</span>
+				<ArrowUpRight
+					className="size-4 shrink-0 text-muted-foreground"
+					aria-hidden
+				/>
+			</button>
+		</footer>
+	);
+}
+
+/**
+ * The Todo inspector: view ↔ edit toggle + an inline (non-modal) delete confirm
+ * in the footer (ADR-0033, PRODUCT.md "approval is sacred"). Edit/delete write via
+ * `entity/mutate`; on success the Library re-reads and the deleted Todo's rail
+ * closes (the route drops `?id`). The mutation hook lives here so non-editable
+ * kinds render hook-free.
+ */
+function TodoDetail({
+	todo,
+	allEntities,
+}: {
+	todo: Todo;
+	allEntities: LibraryItem[];
+}) {
+	const navigate = useNavigate();
+	const [editing, setEditing] = useState(false);
+	const [confirmingDelete, setConfirmingDelete] = useState(false);
+	const del = useEntityMutation();
+
+	const goToEntity = (e: LibraryItem) =>
+		navigate({
+			to: "/library/$kind",
+			params: { kind: KIND_META[e.kind].slug },
+			search: { id: e.id },
+		});
+
+	if (editing) {
+		return (
+			<div className="flex h-full flex-col bg-sidebar">
+				<TodoEditor
+					mode="edit"
+					todo={todo}
+					allEntities={allEntities}
+					onDone={() => setEditing(false)}
+					onCancel={() => setEditing(false)}
+				/>
+			</div>
+		);
+	}
+
+	const deleteTodo = () =>
+		del.mutate(
+			{ mutation_kind: "delete_todo", payload: { entity_id: todo.id } },
+			{
+				onSuccess: () =>
+					// Drop `?id` so the rail returns to empty for the now-gone Todo.
+					navigate({
+						to: "/library/$kind",
+						params: { kind: KIND_META.todo.slug },
+						search: {},
+					}),
+			},
+		);
+
+	return (
+		<div className="flex h-full flex-col">
+			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
+				<EntityGlyph entity={todo} size="lg" />
+				<div className="min-w-0 flex-1 pt-0.5">
+					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
+						{libraryItemTitle(todo)}
+					</h2>
+					<p className="truncate text-muted-foreground text-sm">
+						{KIND_META.todo.label} · {libraryItemSubtitle(todo)}
+					</p>
+				</div>
+				<Button
+					variant="chip"
+					size="sm"
+					onClick={() => setEditing(true)}
+					aria-label="Edit Todo"
+				>
+					<Pencil className="size-3.5" aria-hidden />
+					Edit
+				</Button>
+			</header>
+
+			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+				<TodoBody todo={todo} allEntities={allEntities} onOpen={goToEntity} />
+			</div>
+
+			<footer className="border-foreground/15 border-t px-5 py-4">
+				{del.error ? (
+					<p role="alert" className="mb-3 text-destructive text-sm">
+						{del.error instanceof Error && del.error.message
+							? del.error.message
+							: "Couldn't delete. Try again."}
+					</p>
+				) : null}
+				{confirmingDelete ? (
+					<div className="flex items-center justify-between gap-3">
+						<span className="text-foreground text-sm">Delete this Todo?</span>
+						<div className="flex gap-2">
+							<Button
+								variant="chip"
+								size="pill"
+								onClick={() => {
+									del.reset();
+									setConfirmingDelete(false);
+								}}
+								disabled={del.isPending}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="primary-icon"
+								size="pill"
+								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								onClick={deleteTodo}
+								disabled={del.isPending}
+							>
+								{del.isPending ? "Deleting…" : "Delete"}
+							</Button>
+						</div>
+					</div>
+				) : (
+					<Button
+						variant="ghost"
+						size="row"
+						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+						onClick={() => setConfirmingDelete(true)}
 					>
-						<MessageSquareText
-							className="size-4 shrink-0 text-muted-foreground"
-							aria-hidden
-						/>
-						<span className="min-w-0 flex-1">
-							<span className="block text-muted-foreground text-xs">
-								Captured from · {entity.capturedFrom.when}
-							</span>
-							<span className="block truncate text-foreground text-sm">
-								{entity.capturedFrom.threadTitle}
-							</span>
+						<Trash2 className="size-4" aria-hidden />
+						Delete Todo
+					</Button>
+				)}
+			</footer>
+		</div>
+	);
+}
+
+/**
+ * The Person inspector: view ↔ edit toggle + an inline (non-modal) delete confirm
+ * in the footer, mirroring `TodoDetail` (ADR-0033). The mutation hook lives here so
+ * non-editable kinds render hook-free.
+ */
+function PersonDetail({
+	person,
+	allEntities,
+}: {
+	person: Person;
+	allEntities: LibraryItem[];
+}) {
+	const navigate = useNavigate();
+	const [editing, setEditing] = useState(false);
+	const [confirmingDelete, setConfirmingDelete] = useState(false);
+	const del = useEntityMutation();
+
+	const goToEntity = (e: LibraryItem) =>
+		navigate({
+			to: "/library/$kind",
+			params: { kind: KIND_META[e.kind].slug },
+			search: { id: e.id },
+		});
+
+	if (editing) {
+		return (
+			<div className="flex h-full flex-col bg-sidebar">
+				<PersonEditor
+					mode="edit"
+					person={person}
+					onDone={() => setEditing(false)}
+					onCancel={() => setEditing(false)}
+				/>
+			</div>
+		);
+	}
+
+	const deletePerson = () =>
+		del.mutate(
+			{ mutation_kind: "delete_person", payload: { entity_id: person.id } },
+			{
+				onSuccess: () =>
+					navigate({
+						to: "/library/$kind",
+						params: { kind: KIND_META.person.slug },
+						search: {},
+					}),
+			},
+		);
+
+	return (
+		<div className="flex h-full flex-col">
+			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
+				<EntityGlyph entity={person} size="lg" />
+				<div className="min-w-0 flex-1 pt-0.5">
+					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
+						{libraryItemTitle(person)}
+					</h2>
+					<p className="truncate text-muted-foreground text-sm">
+						{KIND_META.person.label} · {libraryItemSubtitle(person)}
+					</p>
+				</div>
+				<Button
+					variant="chip"
+					size="sm"
+					onClick={() => setEditing(true)}
+					aria-label="Edit Person"
+				>
+					<Pencil className="size-3.5" aria-hidden />
+					Edit
+				</Button>
+			</header>
+
+			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+				<PersonBody
+					person={person}
+					allEntities={allEntities}
+					onOpen={goToEntity}
+				/>
+			</div>
+
+			<footer className="border-foreground/15 border-t px-5 py-4">
+				{del.error ? (
+					<p role="alert" className="mb-3 text-destructive text-sm">
+						{del.error instanceof Error && del.error.message
+							? del.error.message
+							: "Couldn't delete. Try again."}
+					</p>
+				) : null}
+				{confirmingDelete ? (
+					<div className="flex items-center justify-between gap-3">
+						<span className="text-foreground text-sm">Delete this Person?</span>
+						<div className="flex gap-2">
+							<Button
+								variant="chip"
+								size="pill"
+								onClick={() => {
+									del.reset();
+									setConfirmingDelete(false);
+								}}
+								disabled={del.isPending}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="primary-icon"
+								size="pill"
+								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								onClick={deletePerson}
+								disabled={del.isPending}
+							>
+								{del.isPending ? "Deleting…" : "Delete"}
+							</Button>
+						</div>
+					</div>
+				) : (
+					<Button
+						variant="ghost"
+						size="row"
+						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+						onClick={() => setConfirmingDelete(true)}
+					>
+						<Trash2 className="size-4" aria-hidden />
+						Delete Person
+					</Button>
+				)}
+			</footer>
+		</div>
+	);
+}
+
+/**
+ * The Project inspector: view ↔ edit toggle + an inline delete confirm, mirroring
+ * `TodoDetail` (ADR-0033). Delete cascades server-side (Core unsets `project_id`
+ * on the owning Todos); the UI just sends `delete_project`.
+ */
+function ProjectDetail({
+	project,
+	allEntities,
+}: {
+	project: Project;
+	allEntities: LibraryItem[];
+}) {
+	const navigate = useNavigate();
+	const [editing, setEditing] = useState(false);
+	const [confirmingDelete, setConfirmingDelete] = useState(false);
+	const del = useEntityMutation();
+
+	const goToEntity = (e: LibraryItem) =>
+		navigate({
+			to: "/library/$kind",
+			params: { kind: KIND_META[e.kind].slug },
+			search: { id: e.id },
+		});
+
+	if (editing) {
+		return (
+			<div className="flex h-full flex-col bg-sidebar">
+				<ProjectEditor
+					mode="edit"
+					project={project}
+					onDone={() => setEditing(false)}
+					onCancel={() => setEditing(false)}
+				/>
+			</div>
+		);
+	}
+
+	const deleteProject = () =>
+		del.mutate(
+			{ mutation_kind: "delete_project", payload: { entity_id: project.id } },
+			{
+				onSuccess: () =>
+					navigate({
+						to: "/library/$kind",
+						params: { kind: KIND_META.project.slug },
+						search: {},
+					}),
+			},
+		);
+
+	return (
+		<div className="flex h-full flex-col">
+			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
+				<EntityGlyph entity={project} size="lg" />
+				<div className="min-w-0 flex-1 pt-0.5">
+					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
+						{libraryItemTitle(project)}
+					</h2>
+					<p className="truncate text-muted-foreground text-sm">
+						{KIND_META.project.label} · {libraryItemSubtitle(project)}
+					</p>
+				</div>
+				<Button
+					variant="chip"
+					size="sm"
+					onClick={() => setEditing(true)}
+					aria-label="Edit Project"
+				>
+					<Pencil className="size-3.5" aria-hidden />
+					Edit
+				</Button>
+			</header>
+
+			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+				<ProjectBody
+					project={project}
+					allEntities={allEntities}
+					onOpen={goToEntity}
+				/>
+			</div>
+
+			<footer className="border-foreground/15 border-t px-5 py-4">
+				{del.error ? (
+					<p role="alert" className="mb-3 text-destructive text-sm">
+						{del.error instanceof Error && del.error.message
+							? del.error.message
+							: "Couldn't delete. Try again."}
+					</p>
+				) : null}
+				{confirmingDelete ? (
+					<div className="flex items-center justify-between gap-3">
+						<span className="text-foreground text-sm">
+							Delete this Project? Its Todos lose their project.
 						</span>
-						<ArrowUpRight
-							className="size-4 shrink-0 text-muted-foreground"
-							aria-hidden
-						/>
-					</button>
-				</footer>
-			) : null}
+						<div className="flex gap-2">
+							<Button
+								variant="chip"
+								size="pill"
+								onClick={() => {
+									del.reset();
+									setConfirmingDelete(false);
+								}}
+								disabled={del.isPending}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="primary-icon"
+								size="pill"
+								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								onClick={deleteProject}
+								disabled={del.isPending}
+							>
+								{del.isPending ? "Deleting…" : "Delete"}
+							</Button>
+						</div>
+					</div>
+				) : (
+					<Button
+						variant="ghost"
+						size="row"
+						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+						onClick={() => setConfirmingDelete(true)}
+					>
+						<Trash2 className="size-4" aria-hidden />
+						Delete Project
+					</Button>
+				)}
+			</footer>
+		</div>
+	);
+}
+
+/**
+ * The Journal Entry inspector: view ↔ edit toggle + an inline delete confirm,
+ * mirroring `TodoDetail` (ADR-0033). Edit threads through `JournalEntryEditor`
+ * (text-body + keep/remove chips); delete sends `delete_journal_entry` and the
+ * rail returns to empty.
+ */
+function JournalEntryDetail({
+	journalEntry,
+	allEntities,
+}: {
+	journalEntry: JournalEntry;
+	allEntities: LibraryItem[];
+}) {
+	const navigate = useNavigate();
+	const [editing, setEditing] = useState(false);
+	const [confirmingDelete, setConfirmingDelete] = useState(false);
+	const del = useEntityMutation();
+
+	const goToEntity = (e: LibraryItem) =>
+		navigate({
+			to: "/library/$kind",
+			params: { kind: KIND_META[e.kind].slug },
+			search: { id: e.id },
+		});
+
+	if (editing) {
+		return (
+			<div className="flex h-full flex-col bg-sidebar">
+				<JournalEntryEditor
+					mode="edit"
+					journalEntry={journalEntry}
+					allEntities={allEntities}
+					onDone={() => setEditing(false)}
+					onCancel={() => setEditing(false)}
+				/>
+			</div>
+		);
+	}
+
+	const deleteJournalEntry = () =>
+		del.mutate(
+			{
+				mutation_kind: "delete_journal_entry",
+				payload: { entity_id: journalEntry.id },
+			},
+			{
+				onSuccess: () =>
+					navigate({
+						to: "/library/$kind",
+						params: { kind: KIND_META.journal_entry.slug },
+						search: {},
+					}),
+			},
+		);
+
+	return (
+		<div className="flex h-full flex-col">
+			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
+				<EntityGlyph entity={journalEntry} size="lg" />
+				<div className="min-w-0 flex-1 pt-0.5">
+					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
+						{libraryItemTitle(journalEntry)}
+					</h2>
+					<p className="truncate text-muted-foreground text-sm">
+						{KIND_META.journal_entry.label} ·{" "}
+						{libraryItemSubtitle(journalEntry)}
+					</p>
+				</div>
+				<Button
+					variant="chip"
+					size="sm"
+					onClick={() => setEditing(true)}
+					aria-label="Edit Journal Entry"
+				>
+					<Pencil className="size-3.5" aria-hidden />
+					Edit
+				</Button>
+			</header>
+
+			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+				<JournalEntryBody
+					journalEntry={journalEntry}
+					allEntities={allEntities}
+					onOpen={goToEntity}
+				/>
+			</div>
+
+			<footer className="border-foreground/15 border-t px-5 py-4">
+				{del.error ? (
+					<p role="alert" className="mb-3 text-destructive text-sm">
+						{del.error instanceof Error && del.error.message
+							? del.error.message
+							: "Couldn't delete. Try again."}
+					</p>
+				) : null}
+				{confirmingDelete ? (
+					<div className="flex items-center justify-between gap-3">
+						<span className="text-foreground text-sm">
+							Delete this Journal Entry?
+						</span>
+						<div className="flex gap-2">
+							<Button
+								variant="chip"
+								size="pill"
+								onClick={() => {
+									del.reset();
+									setConfirmingDelete(false);
+								}}
+								disabled={del.isPending}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="primary-icon"
+								size="pill"
+								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								onClick={deleteJournalEntry}
+								disabled={del.isPending}
+							>
+								{del.isPending ? "Deleting…" : "Delete"}
+							</Button>
+						</div>
+					</div>
+				) : (
+					<Button
+						variant="ghost"
+						size="row"
+						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+						onClick={() => setConfirmingDelete(true)}
+					>
+						<Trash2 className="size-4" aria-hidden />
+						Delete Journal Entry
+					</Button>
+				)}
+			</footer>
 		</div>
 	);
 }
@@ -205,6 +770,9 @@ function JournalEntryBody({
 	return (
 		<>
 			<Field label="Occurred at">{journalEntry.occurredAt}</Field>
+			{journalEntry.endedAt ? (
+				<Field label="Ended at">{journalEntry.endedAt}</Field>
+			) : null}
 			<Field label="Body">
 				<p className="text-pretty">{body}</p>
 			</Field>
