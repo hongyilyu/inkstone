@@ -57,10 +57,24 @@ created_via_proposal_id IS NOT NULL` exemption, and `entity_revisions.proposal_i
 - **Manual journal edits are thread-less,** so ADR-0030's same-thread guard (which
   is keyed on a Run's Thread) does not apply to the user path; it stays on the
   agent path in `decide`.
+- **Per-entity update semantics differ — clients are coupled to this.** `update_todo`
+  is a three-way **merge** (load current, overlay the partial, re-validate the whole):
+  the editor sends only changed keys. `update_person`, `update_project`, and
+  `update_journal_entry` are **full-document replace**: the editor must send the
+  *complete* intended state, or omitted fields are dropped. A manual editor that sends
+  a diff to a replace-kind silently wipes unsent fields (the Project review ritual, a
+  Journal's `ended_at`). So each Library editor mirrors its entity's contract: Todo
+  diffs; Person/Project/Journal send the full document (Project/Journal carry the raw
+  stored fields the view model doesn't surface, to avoid dropping them).
 - **Clearing an optional field** is a first-class user action the agent never
-  needed. The partial-merge core gains a three-way: a key set to `null` in the
-  partial removes it, any value sets it, absence preserves. This upgrades the agent
-  path too (it could not clear before).
+  needed. On the merge path (Todo) the partial-merge core gains a three-way: a key set
+  to `null` removes it, any value sets it, absence preserves — this upgrades the agent
+  path too (it could not clear before). On the replace path (Person/Project/Journal)
+  omit ≡ null: a field absent from the full document is simply cleared.
+- **Status↔timestamp on edit (Todo, Project).** A status change must clear the
+  now-invalid terminal timestamp (e.g. `completed_at` when leaving `completed`), and a
+  non-status edit must NOT re-stamp an existing one — Core re-validates the
+  status↔timestamp invariant (ADR-0031) on the merged/replaced whole.
 - **Delete vs. a parked Proposal.** A user can delete an Entity that a parked agent
   Proposal targets. Accepting that Proposal now maps the "apply target gone" path to
   `DecideError::NotDecidable` (`-32002`, "no longer pending"), not an opaque
@@ -69,6 +83,15 @@ created_via_proposal_id IS NOT NULL` exemption, and `entity_revisions.proposal_i
   not dropped** — single-user (ADR-0007) is served by self-invalidation (the
   mutating client refetches; agent writes refresh via the existing `proposal/changed`
   stream). Reintroduce `entity/changed` when a second concurrent Client exists.
+- **One inline reference per add (Core limitation).**
+  `reference_existing_entity_from_journal_entry` requires a body with exactly one bare
+  `entity_ref` placeholder and rewrites *every* placeholder to the single minted
+  `ref_id`, then full-replaces the Journal Entry body. So adding a chip is one mutation
+  per new chip, and the Library gates the add-reference affordance to chip-free entries
+  (a JE that already has a chip can still be edited/have chips removed via
+  `update_journal_entry`). Supporting multiple chips per entry is a future Core change
+  (merge the new ref into the current body server-side), additive and out of this
+  feature's scope.
 
 ## Considered and rejected
 
