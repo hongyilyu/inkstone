@@ -492,8 +492,11 @@ where
     .await
 }
 
-/// Insert a freshly-created Entity (ADR-0004): `created_by='proposal'` with the
-/// originating `created_via_proposal_id`. Runs inside the apply tx.
+/// Insert a freshly-created Entity (ADR-0004), runs inside the apply tx.
+/// `created_by` is the origin marker (`'proposal'` for an accepted Proposal,
+/// `'user'` for a direct Library write); `created_via_proposal_id` is the
+/// proposal id for the proposal path and `None` for the user path (the schema's
+/// CHECK exempts `created_by='user'` rows from carrying one).
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn insert_entity<'e, E>(
     executor: E,
@@ -501,7 +504,8 @@ pub(super) async fn insert_entity<'e, E>(
     entity_type: &str,
     schema_version: i64,
     data: &str,
-    created_via_proposal_id: &str,
+    created_by: &str,
+    created_via_proposal_id: Option<&str>,
     now_ms: i64,
 ) -> sqlx::Result<()>
 where
@@ -511,12 +515,13 @@ where
         "INSERT INTO entities \
          (id, type, schema_version, data, created_by, created_via_proposal_id, \
           created_at, updated_at) \
-         VALUES (?, ?, ?, ?, 'proposal', ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(entity_type)
     .bind(schema_version)
     .bind(data)
+    .bind(created_by)
     .bind(created_via_proposal_id)
     .bind(now_ms)
     .bind(now_ms)
@@ -526,13 +531,14 @@ where
 }
 
 /// Insert an Entity's revision (ADR-0004); a fresh Entity gets `seq=1`. Runs
-/// inside the apply tx.
+/// inside the apply tx. `proposal_id` is `Some` for a proposal-born revision and
+/// `None` for a direct user edit (the column is nullable, ADR-0017/0033).
 pub(super) async fn insert_entity_revision<'e, E>(
     executor: E,
     entity_id: &str,
     seq: i64,
     data: &str,
-    proposal_id: &str,
+    proposal_id: Option<&str>,
     now_ms: i64,
 ) -> sqlx::Result<()>
 where
