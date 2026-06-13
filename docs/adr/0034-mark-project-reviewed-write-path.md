@@ -18,9 +18,11 @@ fields itself, in one transaction:
 - stamp `last_reviewed_at = now` (local wall-clock at the review anchor offset);
 - set `next_review_at` to the next Sunday 20:00 **strictly after now** (the
   Workspace anchor), via `entities::advance_review_at_local`;
-- ensure `review_every = {interval: 1, unit: "week"}` when absent, materializing
-  the default weekly cadence so a Project that had a bare `next_review_at` reads
-  consistently with a freshly-seeded one; an existing cadence is preserved.
+- normalize `review_every` to `{interval: 1, unit: "week"}`. The advance is
+  always the Sunday anchor (a weekly rhythm), so the stored cadence must be
+  weekly too — a Project carrying an agent-set non-weekly cadence (month/year,
+  reachable via the propose schema) would otherwise read "Every month" yet fall
+  due in a week. See "Seed vs. advance" below.
 
 It rides the existing user write path (ADR-0033): `entity/mutate` → `validate` →
 run-independent target check (`entity_id` must resolve to a Project) →
@@ -57,15 +59,18 @@ use distinct helpers:
 
 ## Why weekly-only advance (for now)
 
-The advance snaps to a Sunday 20:00 — coherent for the weekly cadence, which is
-the **only** cadence any Project can currently have: the UI can't set
-`review_every`, and create-time seeding only ever writes weekly. A non-weekly
-`review_every` (month/year) is reachable only if the agent sets it, which nothing
-does today. So `mark_project_reviewed` always advances to the next Sunday and
-ensures the weekly cadence, rather than building and testing arbitrary-interval
-calendar math for a case that cannot occur (per the repo's simplicity-first /
-early-stage principles). When a non-weekly Project becomes real, extend the
-advance to branch on `review_every.unit`; this ADR is the seam.
+The advance snaps to a Sunday 20:00 — the weekly rhythm of the Workspace anchor.
+A non-weekly `review_every` (month/year) **is** reachable: the agent's
+`propose_workspace_mutation` schema exposes `review_every` on create/update
+Project (and the validator accepts day/week/month/year), even though the UI can't
+set it and create-time seeding only ever writes weekly. Rather than build and
+test arbitrary-interval calendar math now (per the repo's simplicity-first /
+early-stage principles), `mark_project_reviewed` advances to the next Sunday and
+**normalizes** `review_every` to weekly — so the stored cadence and the computed
+date stay consistent (a monthly Project can't read "Every month" yet fall due in
+a week). When a non-weekly advance is actually wanted, replace the normalize with
+a branch on `review_every.unit` that computes the next date from the cadence;
+this ADR is the seam.
 
 ## Why a dedicated `mutation_kind`, not `update_project`
 

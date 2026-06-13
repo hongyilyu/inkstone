@@ -375,9 +375,11 @@ async fn apply_update_todo(
 /// - stamps `last_reviewed_at = now` (local wall-clock at the review anchor),
 /// - sets `next_review_at` to the next Sunday 20:00 STRICTLY AFTER now (the
 ///   Workspace review anchor; advance, not the create-time same-day seed),
-/// - ensures `review_every = {interval:1, unit:"week"}` so a Project that had a
-///   bare `next_review_at` but no cadence materializes the default weekly ritual
-///   (grill Q4b/Q5) and reads consistently with a freshly-seeded active Project.
+/// - NORMALIZES `review_every` to `{interval:1, unit:"week"}`. The advance is
+///   always weekly (Sunday anchor), so the stored cadence must be weekly too —
+///   preserving an agent-set non-weekly cadence (month/year, reachable via the
+///   propose schema) would read "Every month" yet fall due in a week. A
+///   non-weekly advance is deferred (ADR-0034); normalize until it exists.
 ///
 /// The merged data is re-validated as a whole before the write (defense in depth:
 /// the stored data should already be valid, but the recompute must not persist an
@@ -426,8 +428,15 @@ async fn apply_mark_project_reviewed(
             offset_minutes
         )),
     );
-    data.entry("review_every")
-        .or_insert_with(|| serde_json::json!({ "interval": 1, "unit": "week" }));
+    // Normalize the cadence to weekly. The advance always snaps to the Sunday
+    // anchor (a weekly rhythm), so an agent-set non-weekly cadence (month/year —
+    // reachable via the propose schema) would otherwise read "Every month" yet
+    // fall due in a week. Until a non-weekly advance exists, the stored cadence
+    // must match the always-Sunday advance (ADR-0034).
+    data.insert(
+        "review_every".to_string(),
+        serde_json::json!({ "interval": 1, "unit": "week" }),
+    );
 
     let merged = serde_json::Value::Object(data);
     crate::entities::validate_project_data(&merged).map_err(ApplyError::InvalidMutation)?;
@@ -1183,10 +1192,11 @@ mod tests {
         assert_eq!(max_seq, 2, "review write appends a second revision");
     }
 
-    /// mark_project_reviewed preserves an existing non-weekly cadence rather than
-    /// overwriting it with the weekly default (the default only fills an ABSENT one).
+    /// mark_project_reviewed NORMALIZES a non-weekly cadence to weekly: the advance
+    /// is always the Sunday anchor, so an agent-set monthly cadence must not survive
+    /// (it would read "Every month" yet fall due in a week). ADR-0034.
     #[tokio::test]
-    async fn mark_project_reviewed_preserves_existing_cadence() {
+    async fn mark_project_reviewed_normalizes_cadence_to_weekly() {
         let pool = memory_pool().await;
         let project_id = create(
             &pool,
@@ -1207,8 +1217,8 @@ mod tests {
         let after = project_data(&pool, &project_id).await;
         assert_eq!(
             after["review_every"],
-            serde_json::json!({ "interval": 1, "unit": "month" }),
-            "an existing cadence is preserved, not replaced by the weekly default"
+            serde_json::json!({ "interval": 1, "unit": "week" }),
+            "a non-weekly cadence is normalized to weekly to match the always-Sunday advance"
         );
     }
 

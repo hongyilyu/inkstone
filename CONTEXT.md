@@ -146,7 +146,7 @@ A derived processing view over raw captured active Todos that still have no orga
 _Avoid_: inbox entity, inbox boolean, standalone flag.
 
 **Project Review**:
-A GTD review workflow for active and on-hold Projects. Review state is Project metadata: review interval, next review time, and last reviewed time. The Workspace default review anchor is Sunday 20:00 local time; new active Projects default to weekly review at the next such anchor. Completed and dropped Projects are not reviewable. **Marking a Project reviewed** is a user action (ADR-0034) that stamps `last_reviewed_at`, advances `next_review_at` to the next anchor, and ensures the weekly cadence — Core owns the date math; the client sends only the Project id. The Project then drops off the Review view until it comes due again.
+A GTD review workflow for active and on-hold Projects. Review state is Project metadata: review interval, next review time, and last reviewed time. The Workspace default review anchor is Sunday 20:00 local time; new active Projects default to weekly review at the next such anchor. Completed and dropped Projects are not reviewable. **Marking a Project reviewed** is a user action (ADR-0034) that stamps `last_reviewed_at`, advances `next_review_at` to the next anchor, and normalizes the cadence to weekly (`review_every = {interval:1, unit:"week"}`) — Core owns the date math; the client sends only the Project id. The Project then drops off the Review view until it comes due again.
 _Avoid_: recurring Todo, daily note review.
 
 **Extraction Candidate**:

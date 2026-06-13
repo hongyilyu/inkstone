@@ -364,6 +364,10 @@ describe("ProjectReviewView (focused queue)", () => {
 		);
 		expect(await screen.findByText("First project")).toBeInTheDocument();
 		expect(screen.getByText("Project 1 of 2")).toBeInTheDocument();
+		// Its reviewed state survives the remount (session state is lifted to
+		// ReviewQueue, not held in the keyed FocusedProject): the button still reads
+		// "Reviewed" and is disabled, not re-enabled to "Mark reviewed".
+		expect(screen.getByRole("button", { name: "Reviewed" })).toBeDisabled();
 	});
 
 	// The session-completed todo stays visible CHECKED in place (grill Q13),

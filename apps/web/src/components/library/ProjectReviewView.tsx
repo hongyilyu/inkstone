@@ -146,6 +146,16 @@ function ReviewQueue({
 
 	const [cursor, setCursor] = useState(0);
 
+	// Session state lives HERE, not in FocusedProject: that child is keyed by
+	// project.id and remounts on every cursor move, so per-project state held
+	// there would reset on navigation (grill Q12/Q13 — the reviewed affordance
+	// and session-completed todos must survive stepping away and back).
+	// `reviewedIds`: Projects marked reviewed this session (stay shown as done).
+	// `sessionDone`: todo ids completed inline this session (todo ids are unique,
+	// so one flat Set suffices — no per-project map).
+	const [reviewedIds, setReviewedIds] = useState<Set<string>>(new Set());
+	const [sessionDone, setSessionDone] = useState<Set<string>>(new Set());
+
 	if (queue.length === 0) {
 		return (
 			<ReviewFrame count={0}>
@@ -175,9 +185,15 @@ function ReviewQueue({
 				total={queue.length}
 				selectedTodoId={selectedId}
 				onSelectTodo={onSelect}
+				reviewed={reviewedIds.has(project.id)}
+				sessionDone={sessionDone}
 				onPrev={() => goTo(index - 1)}
 				onNext={() => goTo(index + 1)}
-				onReviewed={() => goTo(index + 1)}
+				onReviewed={() => {
+					setReviewedIds((prev) => new Set(prev).add(project.id));
+					goTo(index + 1);
+				}}
+				onComplete={(id) => setSessionDone((prev) => new Set(prev).add(id))}
 			/>
 		</ReviewFrame>
 	);
@@ -192,9 +208,12 @@ function FocusedProject({
 	total,
 	selectedTodoId,
 	onSelectTodo,
+	reviewed,
+	sessionDone,
 	onPrev,
 	onNext,
 	onReviewed,
+	onComplete,
 }: {
 	project: Project;
 	allItems: LibraryItem[];
@@ -202,18 +221,21 @@ function FocusedProject({
 	total: number;
 	selectedTodoId: string | null;
 	onSelectTodo: (id: string) => void;
+	/** Marked reviewed this session (lifted to ReviewQueue so it survives nav). */
+	reviewed: boolean;
+	/** Todo ids completed inline this session (lifted, shared across projects). */
+	sessionDone: Set<string>;
 	onPrev: () => void;
 	onNext: () => void;
 	onReviewed: () => void;
+	onComplete: (id: string) => void;
 }) {
 	const mutation = useEntityMutation();
 	const cadence = reviewCadenceLabel(project);
-	const reviewed = mutation.isSuccess;
 
 	// Active todos, plus any completed in THIS session (so a just-ticked todo
 	// stays visible-but-checked rather than vanishing under the cursor — grill
-	// Q13). `sessionDone` holds ids completed via the inline toggle here.
-	const [sessionDone, setSessionDone] = useState<Set<string>>(new Set());
+	// Q13). `sessionDone` is owned by ReviewQueue, so it survives navigation.
 	const todos = todosForProject(allItems, project).filter(
 		(t) => t.status === "active" || sessionDone.has(t.id),
 	);
@@ -297,11 +319,10 @@ function FocusedProject({
 						<ReviewTodoRow
 							key={todo.id}
 							todo={todo}
+							doneThisSession={sessionDone.has(todo.id)}
 							selected={todo.id === selectedTodoId}
 							onSelect={onSelectTodo}
-							onCompleted={(id) =>
-								setSessionDone((prev) => new Set(prev).add(id))
-							}
+							onCompleted={onComplete}
 						/>
 					))}
 				</ul>
@@ -318,22 +339,26 @@ function FocusedProject({
  */
 function ReviewTodoRow({
 	todo,
+	doneThisSession,
 	selected,
 	onSelect,
 	onCompleted,
 }: {
 	todo: Todo;
+	/** Completed inline earlier this session (lifted to ReviewQueue) — keeps the
+	 * row CHECKED on revisit even if the live status hasn't refetched yet. */
+	doneThisSession: boolean;
 	selected: boolean;
 	onSelect: (id: string) => void;
 	onCompleted: (id: string) => void;
 }) {
 	const mutation = useEntityMutation();
-	// Render as done when the stored status is completed OR this row's own
-	// completion just succeeded (optimistic): the live `["library-items"]`
-	// refetch lands a tick later, so without this the just-ticked row would flash
-	// back to active. `sessionDone` (in the parent) keeps it VISIBLE; this keeps
-	// it CHECKED (grill Q13).
-	const done = todo.status === "completed" || mutation.isSuccess;
+	// Render as done when the stored status is completed, this row's completion
+	// just succeeded (optimistic, before the `["library-items"]` refetch lands),
+	// or it was completed earlier this session (survives navigation via the
+	// lifted `sessionDone`). Together: VISIBLE (parent filter) + CHECKED (grill Q13).
+	const done =
+		todo.status === "completed" || mutation.isSuccess || doneThisSession;
 
 	const toggle = () => {
 		if (done || mutation.isPending) return;
