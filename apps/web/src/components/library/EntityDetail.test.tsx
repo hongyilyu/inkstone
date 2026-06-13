@@ -1,5 +1,19 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import type {
+	EntityMutateParams,
+	EntityMutateResult,
+} from "@inkstone/protocol";
+import { WsClient, type WsError } from "@inkstone/ui-sdk";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	cleanup,
+	type RenderResult,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { Effect, Layer, ManagedRuntime } from "effect";
+import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
 	JournalEntry,
@@ -8,6 +22,7 @@ import type {
 	Project,
 	Todo,
 } from "@/lib/libraryItems";
+import { RuntimeProvider } from "@/runtime";
 import { EntityDetail } from "./EntityDetail";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
@@ -25,6 +40,53 @@ afterEach(() => {
 	cleanup();
 	navigate.mockReset();
 });
+
+// Stub WsClient whose `entityMutate` runs the handler; unused methods die.
+function makeRuntime(
+	entityMutate: (
+		params: EntityMutateParams,
+	) => Effect.Effect<EntityMutateResult, WsError> = () =>
+		Effect.succeed({ entity_id: "01900000-0000-7000-8000-000000000099" }),
+) {
+	const unused = Effect.die("not exercised in this test");
+	const stub = WsClient.of({
+		threadCreate: () => unused,
+		postMessage: () => unused,
+		threadList: () => unused,
+		threadGet: () => unused,
+		listEntities: () => unused,
+		entityMutate,
+		subscribeRun: () => unused,
+		providerStatus: () => unused,
+		providerLoginStart: () => unused,
+		modelCatalog: () => unused,
+		settingsGet: () => unused,
+		settingsSet: () => unused,
+		proposalGet: () => unused,
+		proposalDecide: () => unused,
+		proposalNotifications: () => unused,
+	});
+	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+}
+
+/** Render EntityDetail inside the runtime + QueryClient its edit/delete writes need. */
+function renderDetail(
+	ui: React.ReactElement,
+	runtime: ReturnType<typeof makeRuntime> = makeRuntime(),
+): RenderResult {
+	const client = new QueryClient({
+		defaultOptions: {
+			queries: { retry: false },
+			mutations: { retry: false },
+		},
+	});
+	const Wrapper = ({ children }: { children: ReactNode }) => (
+		<QueryClientProvider client={client}>
+			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
+		</QueryClientProvider>
+	);
+	return render(ui, { wrapper: Wrapper });
+}
 
 const ada: Person = {
 	id: "person_ada",
@@ -192,7 +254,7 @@ describe("EntityDetail Todo projection", () => {
 		});
 		const all: LibraryItem[] = [alice, proj, todo];
 
-		render(<EntityDetail entity={todo} allEntities={all} />);
+		renderDetail(<EntityDetail entity={todo} allEntities={all} />);
 
 		// Status + due also appear in the header subtitle, so allow >1.
 		expect(screen.getAllByText("Active").length).toBeGreaterThanOrEqual(1);
@@ -212,9 +274,89 @@ describe("EntityDetail Todo projection", () => {
 			status: "dropped",
 			droppedAt: "2026-05-20T12:00:00",
 		});
-		render(<EntityDetail entity={todo} allEntities={[todo]} />);
+		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
 		expect(screen.getByText("Dropped")).toBeInTheDocument();
 		expect(screen.getByText(/Dropped 2026-05-20/)).toBeInTheDocument();
+	});
+});
+
+describe("EntityDetail Todo edit", () => {
+	it("toggles to an edit form and saves a changed title as update_todo", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		const todo = todoItem("t_edit", { title: "Old title" });
+		renderDetail(
+			<EntityDetail entity={todo} allEntities={[todo]} />,
+			makeRuntime((params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: todo.id });
+			}),
+		);
+
+		await user.click(screen.getByRole("button", { name: /edit todo/i }));
+		const title = screen.getByLabelText(/title/i);
+		await user.clear(title);
+		await user.type(title, "New title");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		expect(seen).toEqual([
+			{
+				mutation_kind: "update_todo",
+				payload: { todo_id: todo.id, todo: { title: "New title" } },
+			},
+		]);
+		// Back to view mode: the editor's Save button is gone.
+		expect(
+			screen.queryByRole("button", { name: /^save$/i }),
+		).not.toBeInTheDocument();
+	});
+});
+
+describe("EntityDetail Todo delete", () => {
+	it("confirms inline, deletes, and clears the rail selection", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		const todo = todoItem("t_del", { title: "Stale task" });
+		renderDetail(
+			<EntityDetail entity={todo} allEntities={[todo]} />,
+			makeRuntime((params) => {
+				seen.push(params);
+				return Effect.succeed({});
+			}),
+		);
+
+		// First click reveals the inline confirm, not a dialog.
+		await user.click(screen.getByRole("button", { name: /delete todo/i }));
+		expect(screen.getByText(/delete this todo\?/i)).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: /^delete$/i }));
+
+		expect(seen).toEqual([
+			{ mutation_kind: "delete_todo", payload: { entity_id: todo.id } },
+		]);
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/library/$kind",
+			params: { kind: "todos" },
+			search: {},
+		});
+	});
+
+	it("can cancel the delete confirm without writing", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		const todo = todoItem("t_keep", { title: "Keep me" });
+		renderDetail(
+			<EntityDetail entity={todo} allEntities={[todo]} />,
+			makeRuntime((params) => {
+				seen.push(params);
+				return Effect.succeed({});
+			}),
+		);
+
+		await user.click(screen.getByRole("button", { name: /delete todo/i }));
+		await user.click(screen.getByRole("button", { name: /cancel/i }));
+
+		expect(screen.queryByText(/delete this todo\?/i)).not.toBeInTheDocument();
+		expect(seen).toHaveLength(0);
 	});
 });
 
@@ -229,7 +371,7 @@ describe("EntityDetail Person projection", () => {
 		});
 		const all: LibraryItem[] = [alice, proj, waitingTodo];
 
-		render(<EntityDetail entity={alice} allEntities={all} />);
+		renderDetail(<EntityDetail entity={alice} allEntities={all} />);
 
 		expect(screen.getByText(/Allie, A\./)).toBeInTheDocument();
 		// Waiting-on section lists the task; Projects derives pr_1 through the todo.
@@ -245,7 +387,9 @@ describe("EntityDetail Person projection", () => {
 			completedAt: "2026-06-01T12:00:00",
 			personRefs: [{ personId: "p_alice", role: "waiting_on" }],
 		});
-		render(<EntityDetail entity={alice} allEntities={[alice, resolved]} />);
+		renderDetail(
+			<EntityDetail entity={alice} allEntities={[alice, resolved]} />,
+		);
 
 		// The completed task is not a live follow-up — no "Waiting on" section.
 		expect(screen.queryByText("Waiting on")).not.toBeInTheDocument();
@@ -274,7 +418,9 @@ describe("EntityDetail Person projection", () => {
 			recency: 1,
 			createdAt: "fixture",
 		};
-		render(<EntityDetail entity={alice} allEntities={[alice, journalEntry]} />);
+		renderDetail(
+			<EntityDetail entity={alice} allEntities={[alice, journalEntry]} />,
+		);
 
 		expect(screen.getByText("Mentioned in")).toBeInTheDocument();
 		// The referencing journal entry is listed as a related row.
@@ -296,7 +442,7 @@ describe("EntityDetail Project projection", () => {
 		});
 		const all: LibraryItem[] = [alice, proj, todo];
 
-		render(<EntityDetail entity={proj} allEntities={all} />);
+		renderDetail(<EntityDetail entity={proj} allEntities={all} />);
 
 		expect(screen.getByText("Provider switch by August.")).toBeInTheDocument();
 		expect(screen.getByText(/Next review 2026-06-21/)).toBeInTheDocument();

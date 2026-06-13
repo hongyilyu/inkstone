@@ -1,8 +1,10 @@
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, MessageSquareText } from "lucide-react";
-import { Fragment, type ReactNode } from "react";
+import { ArrowUpRight, MessageSquareText, Pencil, Trash2 } from "lucide-react";
+import { Fragment, type ReactNode, useState } from "react";
 import { CopyButton } from "@/components/CopyButton.js";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button.js";
+import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import type {
 	JournalEntry,
 	JournalEntryBodyEntityRefNode,
@@ -31,9 +33,25 @@ import {
 import { cn } from "@/lib/utils.js";
 import { setFocusedThread } from "@/store/chat";
 import { EntityGlyph } from "./EntityGlyph.js";
+import { TodoEditor } from "./TodoEditor.js";
 
 /** Detail "Inspector" panel for one Library item: its relations as deep links and a path back to the capturing Run. */
 export function EntityDetail({
+	entity,
+	allEntities,
+}: {
+	entity: LibraryItem;
+	allEntities: LibraryItem[];
+}) {
+	// A Todo is the only editable kind this slice; it owns its own view↔edit↔delete
+	// state and the mutation hook, so non-editable kinds render hook-free.
+	if (entity.kind === "todo") {
+		return <TodoDetail todo={entity} allEntities={allEntities} />;
+	}
+	return <EntityDetailView entity={entity} allEntities={allEntities} />;
+}
+
+function EntityDetailView({
 	entity,
 	allEntities,
 }: {
@@ -48,12 +66,6 @@ export function EntityDetail({
 			params: { kind: KIND_META[e.kind].slug },
 			search: { id: e.id },
 		});
-
-	const openSource = () => {
-		if (!entity.capturedFrom) return;
-		setFocusedThread(entity.capturedFrom.threadId);
-		navigate({ to: "/" });
-	};
 
 	return (
 		<div className="flex h-full flex-col">
@@ -91,42 +103,175 @@ export function EntityDetail({
 						onOpen={goToEntity}
 					/>
 				)}
-				{entity.kind === "todo" && (
-					<TodoBody
-						todo={entity}
-						allEntities={allEntities}
-						onOpen={goToEntity}
-					/>
-				)}
 				{entity.kind === "recipe" && <RecipeBody recipe={entity} />}
 			</div>
 
-			{entity.capturedFrom ? (
-				<footer className="border-foreground/15 border-t p-2">
-					<button
-						type="button"
-						onClick={openSource}
-						className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-secondary/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+			<CapturedFromFooter entity={entity} />
+		</div>
+	);
+}
+
+/** A link back to the Run that captured this Entity, when there is one. */
+function CapturedFromFooter({ entity }: { entity: LibraryItem }) {
+	const navigate = useNavigate();
+	if (!entity.capturedFrom) return null;
+	const captured = entity.capturedFrom;
+	const openSource = () => {
+		setFocusedThread(captured.threadId);
+		navigate({ to: "/" });
+	};
+	return (
+		<footer className="border-foreground/15 border-t p-2">
+			<button
+				type="button"
+				onClick={openSource}
+				className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-secondary/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+			>
+				<MessageSquareText
+					className="size-4 shrink-0 text-muted-foreground"
+					aria-hidden
+				/>
+				<span className="min-w-0 flex-1">
+					<span className="block text-muted-foreground text-xs">
+						Captured from · {captured.when}
+					</span>
+					<span className="block truncate text-foreground text-sm">
+						{captured.threadTitle}
+					</span>
+				</span>
+				<ArrowUpRight
+					className="size-4 shrink-0 text-muted-foreground"
+					aria-hidden
+				/>
+			</button>
+		</footer>
+	);
+}
+
+/**
+ * The Todo inspector: view ↔ edit toggle + an inline (non-modal) delete confirm
+ * in the footer (ADR-0033, PRODUCT.md "approval is sacred"). Edit/delete write via
+ * `entity/mutate`; on success the Library re-reads and the deleted Todo's rail
+ * closes (the route drops `?id`). The mutation hook lives here so non-editable
+ * kinds render hook-free.
+ */
+function TodoDetail({
+	todo,
+	allEntities,
+}: {
+	todo: Todo;
+	allEntities: LibraryItem[];
+}) {
+	const navigate = useNavigate();
+	const [editing, setEditing] = useState(false);
+	const [confirmingDelete, setConfirmingDelete] = useState(false);
+	const del = useEntityMutation();
+
+	const goToEntity = (e: LibraryItem) =>
+		navigate({
+			to: "/library/$kind",
+			params: { kind: KIND_META[e.kind].slug },
+			search: { id: e.id },
+		});
+
+	if (editing) {
+		return (
+			<div className="flex h-full flex-col bg-sidebar">
+				<TodoEditor
+					mode="edit"
+					todo={todo}
+					allEntities={allEntities}
+					onDone={() => setEditing(false)}
+					onCancel={() => setEditing(false)}
+				/>
+			</div>
+		);
+	}
+
+	const deleteTodo = () =>
+		del.mutate(
+			{ mutation_kind: "delete_todo", payload: { entity_id: todo.id } },
+			{
+				onSuccess: () =>
+					// Drop `?id` so the rail returns to empty for the now-gone Todo.
+					navigate({
+						to: "/library/$kind",
+						params: { kind: KIND_META.todo.slug },
+						search: {},
+					}),
+			},
+		);
+
+	return (
+		<div className="flex h-full flex-col">
+			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
+				<EntityGlyph entity={todo} size="lg" />
+				<div className="min-w-0 flex-1 pt-0.5">
+					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
+						{libraryItemTitle(todo)}
+					</h2>
+					<p className="truncate text-muted-foreground text-sm">
+						{KIND_META.todo.label} · {libraryItemSubtitle(todo)}
+					</p>
+				</div>
+				<Button
+					variant="chip"
+					size="sm"
+					onClick={() => setEditing(true)}
+					aria-label="Edit Todo"
+				>
+					<Pencil className="size-3.5" aria-hidden />
+					Edit
+				</Button>
+			</header>
+
+			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+				<TodoBody todo={todo} allEntities={allEntities} onOpen={goToEntity} />
+			</div>
+
+			<footer className="border-foreground/15 border-t px-5 py-4">
+				{del.error ? (
+					<p role="alert" className="mb-3 text-destructive text-sm">
+						{del.error instanceof Error
+							? del.error.message
+							: "Couldn't delete. Try again."}
+					</p>
+				) : null}
+				{confirmingDelete ? (
+					<div className="flex items-center justify-between gap-3">
+						<span className="text-foreground text-sm">Delete this Todo?</span>
+						<div className="flex gap-2">
+							<Button
+								variant="chip"
+								size="pill"
+								onClick={() => setConfirmingDelete(false)}
+								disabled={del.isPending}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="primary-icon"
+								size="pill"
+								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								onClick={deleteTodo}
+								disabled={del.isPending}
+							>
+								{del.isPending ? "Deleting…" : "Delete"}
+							</Button>
+						</div>
+					</div>
+				) : (
+					<Button
+						variant="ghost"
+						size="row"
+						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+						onClick={() => setConfirmingDelete(true)}
 					>
-						<MessageSquareText
-							className="size-4 shrink-0 text-muted-foreground"
-							aria-hidden
-						/>
-						<span className="min-w-0 flex-1">
-							<span className="block text-muted-foreground text-xs">
-								Captured from · {entity.capturedFrom.when}
-							</span>
-							<span className="block truncate text-foreground text-sm">
-								{entity.capturedFrom.threadTitle}
-							</span>
-						</span>
-						<ArrowUpRight
-							className="size-4 shrink-0 text-muted-foreground"
-							aria-hidden
-						/>
-					</button>
-				</footer>
-			) : null}
+						<Trash2 className="size-4" aria-hidden />
+						Delete Todo
+					</Button>
+				)}
+			</footer>
 		</div>
 	);
 }
