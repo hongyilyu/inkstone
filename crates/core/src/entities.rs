@@ -553,13 +553,18 @@ fn validate_person(payload: &Value) -> Result<(), String> {
         None => return Err("name is required".to_string()),
     }
 
+    // `note`/`aliases` are clearable optional fields (ADR-0033): a `null` value is
+    // the sentinel-clear directive (the apply path drops the key), accepted here.
     if let Some(note) = obj.get("note")
+        && !note.is_null()
         && !note.is_string()
     {
         return Err("note must be a string".to_string());
     }
 
-    if let Some(aliases) = obj.get("aliases") {
+    if let Some(aliases) = obj.get("aliases")
+        && !aliases.is_null()
+    {
         let aliases = aliases
             .as_array()
             .ok_or_else(|| "aliases must be an array".to_string())?;
@@ -602,8 +607,11 @@ fn validate_project(payload: &Value) -> Result<(), String> {
         None => return Err("name is required".to_string()),
     }
 
+    // `outcome`/`note` are clearable optional fields (ADR-0033): `null` is the
+    // sentinel-clear directive (the apply path drops the key), accepted here.
     for field in ["outcome", "note"] {
         if let Some(value) = obj.get(field)
+            && !value.is_null()
             && !value.is_string()
         {
             return Err(format!("{field} must be a string"));
@@ -624,6 +632,8 @@ fn validate_project(payload: &Value) -> Result<(), String> {
         None => "active",
     };
 
+    // Timestamps are clearable optional fields: `null` is the sentinel-clear
+    // directive (ADR-0033) and is treated as absent for the invariants below.
     for field in [
         "defer_at",
         "due_at",
@@ -634,6 +644,7 @@ fn validate_project(payload: &Value) -> Result<(), String> {
     ] {
         if let Some(value) = obj.get(field) {
             match value {
+                Value::Null => {}
                 Value::String(t) if !t.trim().is_empty() => {
                     parse_local_datetime(t, field)?;
                 }
@@ -643,9 +654,10 @@ fn validate_project(payload: &Value) -> Result<(), String> {
         }
     }
 
-    // status↔timestamp invariants (absent status ⇒ treated as active).
-    let has_completed_at = obj.contains_key("completed_at");
-    let has_dropped_at = obj.contains_key("dropped_at");
+    // status↔timestamp invariants (absent status ⇒ treated as active). A `null`
+    // timestamp is a clear directive, so it counts as ABSENT here.
+    let has_completed_at = present_non_null(obj, "completed_at");
+    let has_dropped_at = present_non_null(obj, "dropped_at");
     match status {
         "active" | "on_hold" => {
             if has_completed_at {
@@ -674,11 +686,21 @@ fn validate_project(payload: &Value) -> Result<(), String> {
         _ => unreachable!("status validated above"),
     }
 
-    if let Some(review_every) = obj.get("review_every") {
+    // `review_every` is a clearable optional field (ADR-0033): `null` clears it.
+    if let Some(review_every) = obj.get("review_every")
+        && !review_every.is_null()
+    {
         validate_review_every(review_every)?;
     }
 
     Ok(())
+}
+
+/// Whether `key` is present in `obj` with a non-`null` value. A `null` value is
+/// the sentinel-clear directive (ADR-0033), so it counts as absent for the
+/// status↔timestamp invariants (the apply path drops null keys from stored data).
+fn present_non_null(obj: &serde_json::Map<String, Value>, key: &str) -> bool {
+    matches!(obj.get(key), Some(v) if !v.is_null())
 }
 
 /// Validate an `update_project` payload: a required UUID `entity_id` (the target)
@@ -1024,12 +1046,16 @@ fn validate_update_todo(payload: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate a `Partial<TodoData>` (ADR-0031): each SUPPLIED key must be a
-/// TodoData field and individually valid (title non-empty; status enum;
+/// Validate a `Partial<TodoData>` (ADR-0031, ADR-0033): each SUPPLIED key must be
+/// a TodoData field and individually valid (title non-empty; status enum;
 /// note/project_id strings; timestamps parseable). No field is required and the
 /// status↔timestamp invariants are deferred to the apply-time re-validation of
 /// the merged whole, so a partial that supplies only `status` or only a
-/// timestamp is accepted here.
+/// timestamp is accepted here. A `null` value on a CLEARABLE optional field
+/// (`note`, `project_id`, `defer_at`, `due_at`, `completed_at`, `dropped_at`) is
+/// the sentinel-clear directive — accepted here and translated to remove-the-key
+/// by the apply-time merge. `null` on the required, non-clearable `title`/`status`
+/// stays rejected (clearing them is meaningless).
 fn validate_partial_todo_data(payload: &Value) -> Result<(), String> {
     let obj = payload
         .as_object()
@@ -1052,13 +1078,15 @@ fn validate_partial_todo_data(payload: &Value) -> Result<(), String> {
     }
 
     if let Some(note) = obj.get("note")
+        && !note.is_null()
         && !note.is_string()
     {
         return Err("note must be a string".to_string());
     }
-    // A supplied `project_id` must be a non-empty string (see `validate_todo`);
-    // clearing the owning Project is not expressible via a blank string in V0.
+    // A supplied `project_id` is `null` (clear, ADR-0033) or a non-empty string;
+    // a blank string would bypass the Accepted-Project reference check.
     match obj.get("project_id") {
+        Some(Value::Null) => {}
         Some(Value::String(id)) if !id.trim().is_empty() => {}
         Some(Value::String(_)) => return Err("project_id must not be empty".to_string()),
         Some(_) => return Err("project_id must be a string".to_string()),
@@ -1078,6 +1106,8 @@ fn validate_partial_todo_data(payload: &Value) -> Result<(), String> {
     for field in ["defer_at", "due_at", "completed_at", "dropped_at"] {
         if let Some(value) = obj.get(field) {
             match value {
+                // `null` is the sentinel-clear directive (ADR-0033).
+                Value::Null => {}
                 Value::String(t) if !t.trim().is_empty() => {
                     parse_local_datetime(t, field)?;
                 }

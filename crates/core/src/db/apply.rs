@@ -113,6 +113,11 @@ fn entity_data_payload(
             // (honored solely for `created_from`); strip it so an update payload
             // can never persist this transport field into entity data.
             data.remove("source_journal_entry_id");
+            // Sentinel-null clear (ADR-0033): a `null`-valued optional field is a
+            // clear directive — drop the key rather than persist a JSON null. The
+            // person/project update is a full-document replace, so an omitted-or-
+            // null optional field is simply absent in the stored data.
+            data.retain(|_, value| !value.is_null());
             serde_json::Value::Object(data)
         }
         "create_person" => {
@@ -123,6 +128,8 @@ fn entity_data_payload(
             };
             let mut data = obj.clone();
             data.remove("source_journal_entry_id");
+            // A `null` optional field carries no value to store (ADR-0033).
+            data.retain(|_, value| !value.is_null());
             serde_json::Value::Object(data)
         }
         "create_project" => {
@@ -132,6 +139,10 @@ fn entity_data_payload(
             let mut data = obj.clone();
             // `source_journal_entry_id` is provenance, never Project data.
             data.remove("source_journal_entry_id");
+            // A `null` optional field carries no value to store (ADR-0033); drop it
+            // before the review-default seeding so a `null` review field is treated
+            // as absent (and thus seeded for an active Project).
+            data.retain(|_, value| !value.is_null());
             let status = data
                 .entry("status")
                 .or_insert_with(|| serde_json::json!("active"));
@@ -232,12 +243,13 @@ fn deduped_refs(refs: &[serde_json::Value]) -> Vec<(String, &'static str)> {
         .collect()
 }
 
-/// Apply an `update_todo` inside the caller's open tx (ADR-0031). MERGE: load the
-/// current Todo `data`, overlay each key of the supplied `payload["todo"]`
-/// partial (unset keys preserved; a supplied key sets that value — no
-/// explicit-clear semantics), then RE-VALIDATE the merged whole via
-/// [`crate::entities::validate_todo_data`] so the status↔timestamp invariants
-/// hold on the result. Write the entity update + next revision. Then the REF OPS,
+/// Apply an `update_todo` inside the caller's open tx (ADR-0031, ADR-0033).
+/// THREE-WAY MERGE: load the current Todo `data`, overlay each key of the supplied
+/// `payload["todo"]` partial — an absent key preserves the current value, a `null`
+/// value REMOVES the key (sentinel-clear), and any other value sets it — then
+/// RE-VALIDATE the merged whole via [`crate::entities::validate_todo_data`] so the
+/// status↔timestamp invariants hold on the result. Write the entity update + next
+/// revision. Then the REF OPS,
 /// in a defined PRECEDENCE: `set_person_refs` (full replace: delete-all then
 /// insert the deduped set) FIRST, then `add_person_refs` (upsert/upgrade each
 /// deduped ref) — set replaces wholesale, add/remove adjust on top — then
@@ -261,7 +273,14 @@ async fn apply_update_todo(
 
     if let Some(partial) = payload.get("todo").and_then(|t| t.as_object()) {
         for (key, value) in partial {
-            merged.insert(key.clone(), value.clone());
+            // Three-way overlay (ADR-0033): a `null` value clears the field
+            // (remove the key); any other value sets it. Absent keys never reach
+            // this loop, so they preserve the current value.
+            if value.is_null() {
+                merged.remove(key);
+            } else {
+                merged.insert(key.clone(), value.clone());
+            }
         }
     }
     let merged = serde_json::Value::Object(merged);
