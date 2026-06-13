@@ -91,7 +91,7 @@ _Avoid_: approval (covers only accept), response, verdict.
 Inkstone has two persistence tiers. SQLite is authoritative for everything Core durably owns; the Vault is a derived export.
 
 **SQLite Canonical State** (tier 2, authoritative):
-Authoritative for all content and Inkstone-managed durable application state — Threads, Runs, Proposals, Accepted Entities, approvals, and captured content.
+Authoritative for all content and Inkstone-managed durable application state — Threads, Runs, Proposals, Canonical Entities, approvals, and captured content.
 
 **Derived Projections** (tier 3, derived):
 Re-derivable indexes, views, and exports computed from tier 2 — FTS, extraction candidates, backlinks, dashboards, denormalized views, and the Vault's exported documents. Authoritative for nothing; lost projections can always be rebuilt.
@@ -114,7 +114,7 @@ _Avoid_: run events (that names the wire stream), audit log, event stream, run t
 ### Domain
 
 **Entity**:
-A structured concept Inkstone tracks for query and reasoning — a Journal Entry, Person, Project, Todo, Recipe, etc. An Entity has a lifecycle: it begins as an *extraction candidate* in tier 3 (projection) or as a user creation, becomes a Proposal in tier 2, and on acceptance becomes a canonical Entity record in tier 2. Threads, Runs, and Proposals are not Entities — they are application state.
+A structured concept Inkstone tracks for query and reasoning — a Journal Entry, Person, Project, Todo, Recipe, etc. An Entity enters tier 2 (becoming a **Canonical Entity**) one of two ways: the agent proposes it and the user accepts the Proposal, or the user creates or edits it directly from a Client. Before that, an agent-surfaced Entity exists only as an *extraction candidate* in tier 3. Threads, Runs, and Proposals are not Entities — they are application state.
 _Avoid_: object, record, item.
 
 **Journal Entry**:
@@ -138,7 +138,7 @@ A descriptive Entity for a real person the user wants Inkstone to remember. Pers
 _Avoid_: contact record as CRM source of truth.
 
 **Todo Person Reference**:
-A Todo-specific association from a Todo to an Accepted Person, with role `waiting_on` or `related`. It is distinct from Entity Reference: Entity Reference renders inline Journal Entry prose, while Todo Person Reference powers task views such as "waiting on Alice" and Person backlinks. A Todo may reference multiple People, but at most once per Person; `waiting_on` includes "related" semantics.
+A Todo-specific association from a Todo to a Canonical Person, with role `waiting_on` or `related`. It is distinct from Entity Reference: Entity Reference renders inline Journal Entry prose, while Todo Person Reference powers task views such as "waiting on Alice" and Person backlinks. A Todo may reference multiple People, but at most once per Person; `waiting_on` includes "related" semantics.
 _Avoid_: mention, generic entity link, Project-Person link.
 
 **Inbox**:
@@ -153,8 +153,12 @@ _Avoid_: recurring Todo, daily note review.
 A possible Entity surfaced by parsing or agent extraction, living in tier 3. Not yet ratified. Becomes an Accepted Entity only after passing through a Proposal.
 _Avoid_: extracted entity (ambiguous with the accepted form), suggestion.
 
+**Canonical Entity**:
+An Entity record in tier 2 — the authoritative thing the rest of the system reads, references, and renders. A Canonical Entity arrives by one of two paths: it is an **Accepted Entity** (born from a Proposal the user accepted) or a user-authored one (created or edited directly from a Client, no Proposal). The distinction is provenance, not authority — both are equally canonical. Use "Canonical Entity" (or just "Entity") for the tier-2 record; reserve "Accepted Entity" for the proposal-born subset.
+_Avoid_: accepted entity (as the umbrella — that term is the proposal-born subset only).
+
 **Accepted Entity**:
-An Entity record in tier 2 — created either by user action or by accepting a Proposal.
+A **Canonical Entity** that entered tier 2 by the user accepting a Proposal — the proposal-born subset, carrying a `created_via_proposal_id`. A user-authored Entity is canonical but *not* "accepted": there was no Proposal and nothing to accept (`created_by='user'`). Where the system needs to name a referenceable or stored Entity regardless of origin, the umbrella term is **Canonical Entity**.
 
 **Entity Type**:
 The kind of structured concept an Entity is — Journal Entry, Todo, Person, Project, Recipe, etc. Determines how the Entity's content is validated, versioned, and described back to the Worker when a Proposal that creates it is accepted. Distinct from the *change* a Proposal makes (create / update / delete): the Entity Type is *what the thing is*, the change is *what is being done to it*.
@@ -165,7 +169,7 @@ A provenance relationship that explains where an Entity came from or what eviden
 _Avoid_: audit log, link.
 
 **Entity Reference**:
-A Journal Entry inline reference to an Accepted Entity. Entity References are addressed from Journal Entry body nodes and let the rendered entry point at the referenced Person, Project, or Todo while keeping the referenced Entity's data independent. They power backlinks and reference queries for journal entries in the first model.
+A Journal Entry inline reference to a Canonical Entity. Entity References are addressed from Journal Entry body nodes and let the rendered entry point at the referenced Person, Project, or Todo while keeping the referenced Entity's data independent. They power backlinks and reference queries for journal entries in the first model.
 _Avoid_: source, mention, generic link.
 
 ### Agents
