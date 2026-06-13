@@ -223,6 +223,13 @@ pub(crate) async fn validate_mutation_target_refs(
         // internal error. A GONE source is a delete-race on the primary anchor
         // (TargetMissing → NotDecidable on the accept path); a wrong-TYPE source
         // is a payload error (Invalid).
+        //
+        // This pool-level read is sufficient (no in-tx re-check needed) because the
+        // pool is `max_connections(1)` (see `db::open`): every write path runs on
+        // the single shared, serialized connection, so no concurrent transaction
+        // can delete the source/target between this check and the `entity_refs`
+        // insert. It closes the validate→apply gap for THIS mutation, not a race
+        // against another writer (there is none).
         let source_entity_id =
             entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
                 TargetError::Invalid(

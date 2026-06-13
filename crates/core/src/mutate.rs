@@ -518,9 +518,17 @@ mod tests {
             let err = apply(&pool, kind, &payload)
                 .await
                 .expect_err("a user create with a source anchor is rejected");
-            assert!(
-                matches!(err, MutateError::Invalid(_)),
-                "{kind} with source_journal_entry_id is Invalid, got: {err:?}"
+            // Assert the SPECIFIC user-path policy message, not just `Invalid`: a
+            // random `source_journal_entry_id` would also be rejected by the
+            // downstream `validate_mutation_target_refs` anchor check, so matching
+            // only `Invalid(_)` would still pass if the explicit user-path branch
+            // regressed. Pinning the message proves THAT branch fired.
+            let MutateError::Invalid(reason) = &err else {
+                panic!("{kind} with source_journal_entry_id is Invalid, got: {err:?}");
+            };
+            assert_eq!(
+                reason, "source_journal_entry_id is not supported on direct user creates",
+                "{kind} must be rejected by the direct-user-create policy, not generic anchor validation"
             );
         }
 

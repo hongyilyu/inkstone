@@ -244,12 +244,19 @@ fn deduped_refs(refs: &[serde_json::Value]) -> Vec<(String, &'static str)> {
 }
 
 /// Re-check a Todo's `project_id` link inside the open tx (ADR-0031, ADR-0033).
-/// `project_id` lives in the Todo JSON, not an FK column, so a concurrent
-/// `delete_project` between the pre-apply validation and this commit could
-/// otherwise persist a dangling link. When `data` carries a non-empty
-/// `project_id`, confirm the Project still exists in THIS tx. This is an
-/// AUXILIARY reference (not the mutation's primary target), so a vanished Project
-/// is `InvalidMutation` (-32602), NOT `TargetMissing`.
+/// `project_id` lives in the Todo JSON, not an FK column, so an earlier
+/// pool-level validation does not guarantee the Project still exists at write
+/// time. When `data` carries a non-empty `project_id`, confirm the Project still
+/// exists in THIS tx. This is an AUXILIARY reference (not the mutation's primary
+/// target), so a vanished Project is `InvalidMutation` (-32602), NOT `TargetMissing`.
+///
+/// Why a same-tx read suffices (no `BEGIN IMMEDIATE` / writer-lock dance needed):
+/// the pool is `max_connections(1)` (see `db::open`), so every write path runs on
+/// the single shared connection and is fully serialized — no second transaction
+/// can `delete_project` between this read and the subsequent `update_entity` /
+/// `insert_entity` on the same connection. The check closes the validate→apply gap
+/// within one mutation; it is not defending against a concurrent writer (there
+/// isn't one).
 async fn recheck_todo_project_link(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     data: &serde_json::Value,
