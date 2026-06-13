@@ -60,6 +60,7 @@ function makeStubRuntime(opts: {
 		threadList: () => unused,
 		threadGet: () => unused,
 		listEntities: () => unused,
+		entityMutate: () => unused,
 		subscribeRun: () => {
 			opts.onSubscribe?.();
 			if (opts.runQueues) {

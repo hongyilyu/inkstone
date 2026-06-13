@@ -50,6 +50,7 @@ function makeRuntime(
 			if (type === "project") return Effect.succeed({ entities: projects });
 			return Effect.succeed({ entities: [] });
 		},
+		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
@@ -71,6 +72,7 @@ function makeUnavailableRuntime() {
 		threadList: () => unused,
 		threadGet: () => unused,
 		listEntities: () => Effect.die("Core unavailable"),
+		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
@@ -104,6 +106,7 @@ function makeProjectUnavailableRuntime(
 			if (type === "project") return Effect.die("Projects unavailable");
 			return Effect.succeed({ entities: [] });
 		},
+		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,

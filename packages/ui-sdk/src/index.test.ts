@@ -472,6 +472,41 @@ describe("WsClient", () => {
 		}
 	});
 
+	it("entityMutate sends entity/mutate with the mutation envelope and decodes the result", async () => {
+		const entityId = "01900000-0000-7000-8000-000000000020";
+		let captured: WireRequest["params"];
+
+		const server = await makeServer((ws, req) => {
+			if (req.method === "entity/mutate") {
+				captured = req.params;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { entity_id: entityId },
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.entityMutate({
+				mutation_kind: "create_person",
+				payload: { name: "A" },
+			});
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toEqual({ entity_id: entityId });
+			expect(captured?.mutation_kind).toBe("create_person");
+			expect(captured?.payload).toEqual({ name: "A" });
+		} finally {
+			await server.close();
+		}
+	});
+
 	it("proposalDecide sends the decision params and decodes the result", async () => {
 		const proposalId = "01900000-0000-7000-8000-000000000010";
 		const entityId = "01900000-0000-7000-8000-000000000020";

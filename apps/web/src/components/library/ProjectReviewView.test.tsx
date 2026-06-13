@@ -23,6 +23,7 @@ function makeRuntime(projects: Rows, todos: Rows = [], people: Rows = []) {
 			if (type === "person") return Effect.succeed({ entities: people });
 			return Effect.succeed({ entities: [] });
 		},
+		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,

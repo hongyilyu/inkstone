@@ -39,6 +39,7 @@ const stub = WsClient.of({
 						]
 					: [],
 		}),
+	entityMutate: die,
 	subscribeRun: dieStream,
 	providerStatus: die,
 	providerLoginStart: die,
