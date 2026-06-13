@@ -23,6 +23,8 @@ const FAUX_ENV_KEYS = [
 	"INKSTONE_FAUX_ECHO_HISTORY",
 	"INKSTONE_FAUX_EXTRACT",
 	"INKSTONE_FAUX_EXTRACT_PARAMS",
+	"INKSTONE_FAUX_CAPTURE",
+	"INKSTONE_FAUX_CAPTURE_PARAMS",
 ] as const;
 afterEach(() => {
 	for (const key of FAUX_ENV_KEYS) delete process.env[key];
@@ -48,6 +50,54 @@ function withExtractScenario(scenario: {
 	process.env.INKSTONE_FAUX_EXTRACT = "1";
 	process.env.INKSTONE_FAUX_EXTRACT_PARAMS = file;
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+}
+
+// Direct-capture scenario (INKSTONE_FAUX_CAPTURE): a single intent that routes to
+// one create_* proposal sourced from the user Message — no Journal Entry. Mirrors
+// withExtractScenario's tempfile+env shape.
+function withCaptureScenario(scenario: {
+	intent: "todo" | "project" | "person" | "conversation";
+	todo?: { title: string; note?: string; due_at?: string; defer_at?: string };
+	project?: { name: string; outcome?: string };
+	person?: { name: string; note?: string; aliases?: string[] };
+	enrich?: {
+		person_name?: string;
+		person_role?: "waiting_on" | "related";
+		project_name?: string;
+	};
+}): void {
+	const dir = mkdtempSync(path.join(tmpdir(), "faux-capture-"));
+	const file = path.join(dir, "scenario.json");
+	writeFileSync(file, JSON.stringify(scenario));
+	process.env.INKSTONE_FAUX_CAPTURE = "1";
+	process.env.INKSTONE_FAUX_CAPTURE_PARAMS = file;
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+}
+
+// A manifest with the direct-capture tool allowlist (search_entities is present
+// for the enrichment slices; slice 2 only proposes a single create_*).
+function captureManifest(
+	overrides: Partial<WorkerManifest> = {},
+): WorkerManifest {
+	return fauxManifest({
+		prompt: "Remind me to buy milk.",
+		workflow: {
+			name: "default",
+			version: "1.0.0",
+			provider: "faux",
+			model: "faux-1",
+			system_prompt: "You run the direct capture loop.",
+			thinking_level: "off",
+			tools: EXTRACT_TOOLS,
+		},
+		...overrides,
+	});
+}
+
+// A resume capture manifest carrying the prior turn's transcript (mode="resume",
+// empty prompt) — the Decision arrives as the awaited proposal's tool_result.
+function resumeCaptureManifest(messages: ManifestMessage[]): WorkerManifest {
+	return captureManifest({ prompt: "", mode: "resume", messages });
 }
 
 function fauxManifest(overrides: Partial<WorkerManifest> = {}): WorkerManifest {
@@ -183,6 +233,14 @@ const searchResult = (
 	tool_call_id: string,
 	results: Array<{ id: string; type: string; label: string }>,
 ): ManifestMessage => resumeToolResult(tool_call_id, { results });
+
+// A live (in-process) search_entities tool result for runChat's `results` map —
+// the bare inner `{results}` JSON the InMemoryTransport returns for a call id.
+const searchResultResponse = (
+	results: Array<{ id: string; type: string; label: string }>,
+): ToolCallResponse => ({
+	ok: { content: [{ type: "text", text: JSON.stringify({ results }) }] },
+});
 
 const readEntriesResult = (
 	tool_call_id: string,
@@ -1792,5 +1850,764 @@ describe("faux-worker extraction mode — Todo target", () => {
 				},
 			},
 		]);
+	});
+});
+
+describe("faux-worker direct capture mode (INKSTONE_FAUX_CAPTURE)", () => {
+	it("intent=todo: proposes ONE create_todo sourced from the Message (no JE, no status, no links)", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "Buy milk" },
+		});
+
+		const { events, requests } = await runChat(
+			captureManifest({ prompt: "Remind me to buy milk." }),
+			{
+				tc_capture: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Created Todo (title=Buy milk).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// A direct Todo capture proposes exactly once and never touches the
+		// journal/extraction tools.
+		expect(requests.map((r) => r.name)).toEqual(["propose_workspace_mutation"]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_todo",
+				payload: { todo: { title: "Buy milk" } },
+			},
+		]);
+		// Provenance is the user Message: source_journal_entry_id must be ABSENT.
+		expect(JSON.stringify(proposals[0].payload)).not.toContain(
+			"source_journal_entry_id",
+		);
+		// Core defaults a new Todo to active, so status is omitted.
+		expect(JSON.stringify(proposals[0].payload)).not.toContain("status");
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	it("intent=todo: carries note + due_at + defer_at when the scenario supplies them", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: {
+				title: "Renew passport",
+				note: "expires next month",
+				due_at: "2026-07-15T09:00:00",
+				defer_at: "2026-06-20T09:00:00",
+			},
+		});
+
+		const { requests } = await runChat(
+			captureManifest({ prompt: "Todo: renew passport, due 2026-07-15." }),
+			{
+				tc_capture: {
+					ok: { content: [{ type: "text", text: "Accepted. Created Todo." }] },
+				},
+			},
+		);
+
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "create_todo",
+				payload: {
+					todo: {
+						title: "Renew passport",
+						note: "expires next month",
+						due_at: "2026-07-15T09:00:00",
+						defer_at: "2026-06-20T09:00:00",
+					},
+				},
+			},
+		]);
+	});
+
+	it("intent=project: proposes ONE create_project (with outcome) sourced from the Message", async () => {
+		withCaptureScenario({
+			intent: "project",
+			project: {
+				name: "Ship API v2 migration",
+				outcome: "API v2 fully migrated and old endpoints retired",
+			},
+		});
+
+		const { requests } = await runChat(
+			captureManifest({ prompt: "Start a project for API v2 migration." }),
+			{
+				tc_capture: {
+					ok: {
+						content: [{ type: "text", text: "Accepted. Created Project." }],
+					},
+				},
+			},
+		);
+
+		expect(requests.map((r) => r.name)).toEqual(["propose_workspace_mutation"]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_project",
+				payload: {
+					name: "Ship API v2 migration",
+					outcome: "API v2 fully migrated and old endpoints retired",
+				},
+			},
+		]);
+		expect(JSON.stringify(proposals[0].payload)).not.toContain(
+			"source_journal_entry_id",
+		);
+	});
+
+	it("intent=person: proposes ONE create_person with descriptive note", async () => {
+		withCaptureScenario({
+			intent: "person",
+			person: { name: "Alice", note: "daycare coordinator" },
+		});
+
+		const { requests } = await runChat(
+			captureManifest({ prompt: "Remember Alice is the daycare coordinator." }),
+			{
+				tc_capture: {
+					ok: {
+						content: [{ type: "text", text: "Accepted. Created Person." }],
+					},
+				},
+			},
+		);
+
+		expect(requests.map((r) => r.name)).toEqual(["propose_workspace_mutation"]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_person",
+				payload: { name: "Alice", note: "daycare coordinator" },
+			},
+		]);
+		expect(JSON.stringify(proposals[0].payload)).not.toContain(
+			"source_journal_entry_id",
+		);
+	});
+
+	it("intent=person: carries aliases when the scenario supplies them", async () => {
+		withCaptureScenario({
+			intent: "person",
+			person: { name: "Priya", aliases: ["P", "Priyanka"] },
+		});
+
+		const { requests } = await runChat(
+			captureManifest({ prompt: "Add Priya (aka P, Priyanka)." }),
+			{
+				tc_capture: {
+					ok: {
+						content: [{ type: "text", text: "Accepted. Created Person." }],
+					},
+				},
+			},
+		);
+
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "create_person",
+				payload: { name: "Priya", aliases: ["P", "Priyanka"] },
+			},
+		]);
+	});
+
+	it("intent=conversation: replies and proposes nothing", async () => {
+		withCaptureScenario({ intent: "conversation" });
+
+		const { events, requests } = await runChat(
+			captureManifest({ prompt: "What should I focus on today?" }),
+		);
+
+		// A plain reply: NO tool calls at all — not just no proposal. A regression
+		// that issued search_entities would still be "no capture" yet wrong.
+		expect(requests).toEqual([]);
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	it("resume after the create_todo Decision: confirms with no tool call", async () => {
+		withCaptureScenario({ intent: "todo", todo: { title: "Buy milk" } });
+
+		const { events, requests } = await runChat(
+			resumeCaptureManifest([
+				{ role: "user", text: "Remind me to buy milk." },
+				assistantCall("tc_capture", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_capture",
+					"Accepted. Created Todo (title=Buy milk, status=active).",
+				),
+			]),
+		);
+
+		// The park→decide→resume cycle ends in a plain confirmation: no further
+		// proposal, run completes.
+		expect(requests).toEqual([]);
+		const text = events
+			.filter(
+				(e): e is { kind: "text_delta"; delta: string } =>
+					e.kind === "text_delta",
+			)
+			.map((e) => e.delta)
+			.join("");
+		expect(text).toContain("Done");
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+});
+
+describe("faux-worker direct capture enrichment — existing entities (INKSTONE_FAUX_CAPTURE)", () => {
+	// After a direct create_todo is accepted, the worker recovers the new Todo's
+	// id by search (Core's create_todo Decision carries title+status, not the id —
+	// crates/core/src/entities.rs:155), then links an EXISTING accepted
+	// Person/Project via one update_todo per resume cycle.
+	const todoAcceptedTranscript = (title: string): ManifestMessage[] => [
+		{ role: "user", text: `Remind me to ${title}.` },
+		assistantCall("tc_capture", "propose_workspace_mutation"),
+		decisionResult(
+			"tc_capture",
+			`Accepted. Created Todo (title=${title}, status=active).`,
+		),
+	];
+
+	it("existing Project found: recovers todo id then proposes ONE update_todo with project_id", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "email Alice about Project Y" },
+			enrich: { project_name: "Project Y" },
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest(
+				todoAcceptedTranscript("email Alice about Project Y"),
+			),
+			{
+				tc_cap_todo: searchResultResponse([
+					{ id: "todo-1", type: "todo", label: "email Alice about Project Y" },
+				]),
+				tc_cap_search_project: searchResultResponse([
+					{ id: "proj-1", type: "project", label: "Project Y" },
+				]),
+				tc_cap_update_project: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Updated Todo (todo_id=todo-1).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// recover todo id -> search project -> ONE update_todo link.
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "update_todo",
+				payload: { todo_id: "todo-1", todo: { project_id: "proj-1" } },
+			},
+		]);
+	});
+
+	it("existing Person found (related): proposes ONE update_todo with add_person_refs", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "email Alice" },
+			enrich: { person_name: "Alice", person_role: "related" },
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest(todoAcceptedTranscript("email Alice")),
+			{
+				tc_cap_todo: searchResultResponse([
+					{ id: "todo-1", type: "todo", label: "email Alice" },
+				]),
+				tc_cap_search_person: searchResultResponse([
+					{ id: "alice-1", type: "person", label: "Alice" },
+				]),
+				tc_cap_update_person: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Updated Todo (todo_id=todo-1).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "update_todo",
+				payload: {
+					todo_id: "todo-1",
+					add_person_refs: [{ person_id: "alice-1", role: "related" }],
+				},
+			},
+		]);
+	});
+
+	it("'wait for X' uses waiting_on role on the person ref", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "wait for Bob to send the schedule" },
+			enrich: { person_name: "Bob", person_role: "waiting_on" },
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest(
+				todoAcceptedTranscript("wait for Bob to send the schedule"),
+			),
+			{
+				tc_cap_todo: searchResultResponse([
+					{
+						id: "todo-1",
+						type: "todo",
+						label: "wait for Bob to send the schedule",
+					},
+				]),
+				tc_cap_search_person: searchResultResponse([
+					{ id: "bob-1", type: "person", label: "Bob" },
+				]),
+				tc_cap_update_person: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Updated Todo (todo_id=todo-1).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "update_todo",
+				payload: {
+					todo_id: "todo-1",
+					add_person_refs: [{ person_id: "bob-1", role: "waiting_on" }],
+				},
+			},
+		]);
+	});
+
+	it("rejected enrichment: confirms and proposes nothing further (Todo stays unlinked)", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "email Alice" },
+			enrich: { person_name: "Alice", person_role: "related" },
+		});
+
+		const { events, requests } = await runChat(
+			resumeCaptureManifest([
+				...todoAcceptedTranscript("email Alice"),
+				assistantCall("tc_cap_todo", "search_entities"),
+				searchResult("tc_cap_todo", [
+					{ id: "todo-1", type: "todo", label: "email Alice" },
+				]),
+				assistantCall("tc_cap_search_person", "search_entities"),
+				searchResult("tc_cap_search_person", [
+					{ id: "alice-1", type: "person", label: "Alice" },
+				]),
+				assistantCall("tc_cap_update_person", "propose_workspace_mutation"),
+				decisionResult("tc_cap_update_person", "User declined this proposal."),
+			]),
+		);
+
+		// A declined enrichment ends the flow: no further proposal, Todo unchanged.
+		expect(requests.some((r) => r.name === "propose_workspace_mutation")).toBe(
+			false,
+		);
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	it("project then person: after the project link is accepted, the next resume links the person (one at a time)", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "email Alice about Project Y" },
+			enrich: {
+				person_name: "Alice",
+				person_role: "related",
+				project_name: "Project Y",
+			},
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest([
+				...todoAcceptedTranscript("email Alice about Project Y"),
+				// cycle 1 (project) already happened and was accepted:
+				assistantCall("tc_cap_todo", "search_entities"),
+				searchResult("tc_cap_todo", [
+					{ id: "todo-1", type: "todo", label: "email Alice about Project Y" },
+				]),
+				assistantCall("tc_cap_search_project", "search_entities"),
+				searchResult("tc_cap_search_project", [
+					{ id: "proj-1", type: "project", label: "Project Y" },
+				]),
+				assistantCall("tc_cap_update_project", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_cap_update_project",
+					"Accepted. Updated Todo (todo_id=todo-1).",
+				),
+			]),
+			{
+				tc_cap_search_person: searchResultResponse([
+					{ id: "alice-1", type: "person", label: "Alice" },
+				]),
+				tc_cap_update_person: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Updated Todo (todo_id=todo-1).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// Todo id reused from the transcript's prior search (no re-search); straight
+		// to person search -> ONE update_todo for the person.
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "update_todo",
+				payload: {
+					todo_id: "todo-1",
+					add_person_refs: [{ person_id: "alice-1", role: "related" }],
+				},
+			},
+		]);
+	});
+});
+
+describe("faux-worker direct capture enrichment — missing entities (INKSTONE_FAUX_CAPTURE)", () => {
+	const todoAcceptedTranscript = (title: string): ManifestMessage[] => [
+		{ role: "user", text: `Follow up with ${title}.` },
+		assistantCall("tc_capture", "propose_workspace_mutation"),
+		decisionResult(
+			"tc_capture",
+			`Accepted. Created Todo (title=${title}, status=active).`,
+		),
+	];
+
+	it("missing Person: empty search -> proposes create_person sourced from the Message (no JE)", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "follow up with NewPerson" },
+			enrich: { person_name: "NewPerson", person_role: "related" },
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest(todoAcceptedTranscript("follow up with NewPerson")),
+			{
+				tc_cap_todo: searchResultResponse([
+					{ id: "todo-1", type: "todo", label: "follow up with NewPerson" },
+				]),
+				// The person does NOT exist yet.
+				tc_cap_search_person: searchResultResponse([]),
+				tc_cap_create_person: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Created Person (name=NewPerson).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// recover todo id -> search (empty) -> propose create_person.
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_person",
+				payload: { name: "NewPerson" },
+			},
+		]);
+		// Missing-entity create is Message-sourced: no JE provenance.
+		expect(JSON.stringify(proposals[0].payload)).not.toContain(
+			"source_journal_entry_id",
+		);
+	});
+
+	it("after the missing Person is accepted: re-searches then proposes update_todo to link it", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "follow up with NewPerson" },
+			enrich: { person_name: "NewPerson", person_role: "related" },
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest([
+				...todoAcceptedTranscript("follow up with NewPerson"),
+				assistantCall("tc_cap_todo", "search_entities"),
+				searchResult("tc_cap_todo", [
+					{ id: "todo-1", type: "todo", label: "follow up with NewPerson" },
+				]),
+				assistantCall("tc_cap_search_person", "search_entities"),
+				searchResult("tc_cap_search_person", []),
+				assistantCall("tc_cap_create_person", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_cap_create_person",
+					"Accepted. Created Person (name=NewPerson).",
+				),
+			]),
+			{
+				// The re-search now finds the just-created Person (distinct call id).
+				tc_cap_research_person: searchResultResponse([
+					{ id: "newperson-1", type: "person", label: "NewPerson" },
+				]),
+				tc_cap_update_person: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Updated Todo (todo_id=todo-1).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// re-search (distinct id) -> ONE update_todo linking the new Person.
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "update_todo",
+				payload: {
+					todo_id: "todo-1",
+					add_person_refs: [{ person_id: "newperson-1", role: "related" }],
+				},
+			},
+		]);
+	});
+
+	it("rejected missing Person: no update_todo link follows (Todo stays unlinked)", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "follow up with NewPerson" },
+			enrich: { person_name: "NewPerson", person_role: "related" },
+		});
+
+		const { events, requests } = await runChat(
+			resumeCaptureManifest([
+				...todoAcceptedTranscript("follow up with NewPerson"),
+				assistantCall("tc_cap_todo", "search_entities"),
+				searchResult("tc_cap_todo", [
+					{ id: "todo-1", type: "todo", label: "follow up with NewPerson" },
+				]),
+				assistantCall("tc_cap_search_person", "search_entities"),
+				searchResult("tc_cap_search_person", []),
+				assistantCall("tc_cap_create_person", "propose_workspace_mutation"),
+				decisionResult("tc_cap_create_person", "User declined this proposal."),
+			]),
+		);
+
+		// Declined missing-entity create: no link proposal, run completes.
+		expect(requests.some((r) => r.name === "propose_workspace_mutation")).toBe(
+			false,
+		);
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	it("missing Project: empty search -> proposes create_project sourced from the Message", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "kick off Lisbon trip planning" },
+			enrich: { project_name: "Plan Lisbon trip" },
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest(
+				todoAcceptedTranscript("kick off Lisbon trip planning"),
+			),
+			{
+				tc_cap_todo: searchResultResponse([
+					{
+						id: "todo-1",
+						type: "todo",
+						label: "kick off Lisbon trip planning",
+					},
+				]),
+				tc_cap_search_project: searchResultResponse([]),
+				tc_cap_create_project: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Created Project (name=Plan Lisbon trip, status=active).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		const proposals = proposalsIn(requests);
+		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_project",
+				payload: { name: "Plan Lisbon trip" },
+			},
+		]);
+		expect(JSON.stringify(proposals[0].payload)).not.toContain(
+			"source_journal_entry_id",
+		);
+	});
+
+	it("after the missing Project is accepted: re-searches then proposes update_todo with project_id", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "kick off Lisbon trip planning" },
+			enrich: { project_name: "Plan Lisbon trip" },
+		});
+
+		const { requests } = await runChat(
+			resumeCaptureManifest([
+				...todoAcceptedTranscript("kick off Lisbon trip planning"),
+				assistantCall("tc_cap_todo", "search_entities"),
+				searchResult("tc_cap_todo", [
+					{
+						id: "todo-1",
+						type: "todo",
+						label: "kick off Lisbon trip planning",
+					},
+				]),
+				assistantCall("tc_cap_search_project", "search_entities"),
+				searchResult("tc_cap_search_project", []),
+				assistantCall("tc_cap_create_project", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_cap_create_project",
+					"Accepted. Created Project (name=Plan Lisbon trip, status=active).",
+				),
+			]),
+			{
+				// The re-search (distinct id) finds the just-created Project.
+				tc_cap_research_project: searchResultResponse([
+					{ id: "lisbon-1", type: "project", label: "Plan Lisbon trip" },
+				]),
+				tc_cap_update_project: {
+					ok: {
+						content: [
+							{
+								type: "text",
+								text: "Accepted. Updated Todo (todo_id=todo-1).",
+							},
+						],
+					},
+				},
+			},
+		);
+
+		// re-search (distinct id) -> ONE update_todo linking the new Project via project_id.
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		expect(proposalsIn(requests)).toEqual([
+			{
+				mutation_kind: "update_todo",
+				payload: { todo_id: "todo-1", todo: { project_id: "lisbon-1" } },
+			},
+		]);
+	});
+
+	it("rejected missing Project: no update_todo link follows (Todo stays unlinked)", async () => {
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "kick off Lisbon trip planning" },
+			enrich: { project_name: "Plan Lisbon trip" },
+		});
+
+		const { events, requests } = await runChat(
+			resumeCaptureManifest([
+				...todoAcceptedTranscript("kick off Lisbon trip planning"),
+				assistantCall("tc_cap_todo", "search_entities"),
+				searchResult("tc_cap_todo", [
+					{
+						id: "todo-1",
+						type: "todo",
+						label: "kick off Lisbon trip planning",
+					},
+				]),
+				assistantCall("tc_cap_search_project", "search_entities"),
+				searchResult("tc_cap_search_project", []),
+				assistantCall("tc_cap_create_project", "propose_workspace_mutation"),
+				decisionResult("tc_cap_create_project", "User declined this proposal."),
+			]),
+		);
+
+		// Declined missing-Project create: no link proposal, run completes.
+		expect(requests.some((r) => r.name === "propose_workspace_mutation")).toBe(
+			false,
+		);
+		expect(events.at(-1)).toEqual({ kind: "done" });
+	});
+
+	it("declined initial create_todo: no enrichment runs (no search against a non-existent Todo)", async () => {
+		// The Todo itself is rejected — even though the scenario names enrichment,
+		// there is no Todo to enrich (and no recoverable id). The flow must stop:
+		// no search_entities, no update_todo. Exercises the todoCreated===false
+		// resume branch, which every other resume test skips (they accept the Todo).
+		withCaptureScenario({
+			intent: "todo",
+			todo: { title: "follow up with NewPerson" },
+			enrich: { person_name: "NewPerson", person_role: "related" },
+		});
+
+		const { events, requests } = await runChat(
+			resumeCaptureManifest([
+				{ role: "user", text: "Follow up with NewPerson." },
+				assistantCall("tc_capture", "propose_workspace_mutation"),
+				decisionResult("tc_capture", "User declined this proposal."),
+			]),
+		);
+
+		// No tool calls at all — not even a recovery search.
+		expect(requests).toEqual([]);
+		expect(events.at(-1)).toEqual({ kind: "done" });
 	});
 });

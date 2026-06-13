@@ -22,7 +22,10 @@ const BAD_REMINDER_PROPOSAL = {
 };
 
 // Keep these exact phrases in sync with the shipped prompt. The fixture should
-// fail if the model-visible boundary is softened by wording drift.
+// fail if the model-visible boundary is softened by wording drift. The boundary
+// now keeps reminders/tasks OUT of Journal Entries AND routes them to a direct
+// create_todo sourced from the user Message — so the guard requires both the
+// exclusion AND the redirect, not the old "drop it silently" wording.
 export function hasReminderBoundary(systemPrompt: string): boolean {
 	const lower = systemPrompt.toLowerCase();
 	return (
@@ -31,7 +34,8 @@ export function hasReminderBoundary(systemPrompt: string): boolean {
 		lower.includes("tasks") &&
 		lower.includes("todos") &&
 		lower.includes("future obligations") &&
-		lower.includes("without implying the reminder was saved")
+		lower.includes("create_todo") &&
+		lower.includes("do not create a journal entry first")
 	);
 }
 

@@ -96,12 +96,14 @@ export interface SpawnCoreOptions {
 	readonly fauxError?: string;
 	/** Drive the faux provider in `read_thread` tool-call mode (`INKSTONE_FAUX_TOOL_CALL`), exercising the full Tool Protocol round-trip. */
 	readonly fauxToolCall?: boolean;
-	/** Higher-level faux interpreter mode: `propose` (Journal Entry mutations, ADR-0025) or `extract` (Person extraction from an accepted Journal Entry, slice 4). Drives the park -> decide -> resume loop. */
-	readonly faux?: "propose" | "extract";
+	/** Higher-level faux interpreter mode: `propose` (Journal Entry mutations, ADR-0025), `extract` (Person/Project/Todo extraction from an accepted Journal Entry), or `capture` (direct GTD capture sourced from the user Message — no Journal Entry). Drives the park -> decide -> resume loop. */
+	readonly faux?: "propose" | "extract" | "capture";
 	/** Direct propose-worker fixture knob. Emits params loaded from this JSON file. */
 	readonly proposalParamsFile?: string;
 	/** Faux extraction scenario (`INKSTONE_FAUX_EXTRACT_PARAMS`): `{ journal_text, person_name }` JSON file the extract mode reads. */
 	readonly extractParamsFile?: string;
+	/** Faux direct-capture scenario (`INKSTONE_FAUX_CAPTURE_PARAMS`): `{ intent, todo?, project?, person?, enrich? }` JSON file the capture mode reads. */
+	readonly captureParamsFile?: string;
 	/** Optional JSONL path where Worker proxy writes model tool-call params. */
 	readonly workerToolCallLogPath?: string;
 	/** Milliseconds to wait for the listening line before failing. Default 30s. */
@@ -203,6 +205,8 @@ export async function spawnCore(
 		"INKSTONE_FAUX_PROPOSE",
 		"INKSTONE_FAUX_EXTRACT",
 		"INKSTONE_FAUX_EXTRACT_PARAMS",
+		"INKSTONE_FAUX_CAPTURE",
+		"INKSTONE_FAUX_CAPTURE_PARAMS",
 		"INKSTONE_FAUX_ECHO_HISTORY",
 		"INKSTONE_PROPOSE_PARAMS_FILE",
 		"INKSTONE_WORKER_TOOL_CALL_LOG",
@@ -243,7 +247,7 @@ export async function spawnCore(
 			? '["read_thread"]'
 			: opts.faux === "propose"
 				? '["read_thread","read_current_thread_journal_entries","propose_workspace_mutation"]'
-				: opts.faux === "extract"
+				: opts.faux === "extract" || opts.faux === "capture"
 					? '["read_thread","read_current_thread_journal_entries","search_entities","propose_workspace_mutation"]'
 					: "[]";
 		writeFileSync(
@@ -268,6 +272,11 @@ export async function spawnCore(
 			env.INKSTONE_FAUX_EXTRACT = "1";
 			if (opts.extractParamsFile !== undefined) {
 				env.INKSTONE_FAUX_EXTRACT_PARAMS = opts.extractParamsFile;
+			}
+		} else if (opts.faux === "capture") {
+			env.INKSTONE_FAUX_CAPTURE = "1";
+			if (opts.captureParamsFile !== undefined) {
+				env.INKSTONE_FAUX_CAPTURE_PARAMS = opts.captureParamsFile;
 			}
 		} else if (opts.fauxError !== undefined) {
 			env.INKSTONE_FAUX_ERROR = opts.fauxError;
