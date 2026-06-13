@@ -96,9 +96,9 @@ pub async fn apply(
         db::ApplyError::InvalidMutation(reason) => MutateError::Invalid(reason),
         // The user path opens its own tx with no Proposal flip, so the guarded
         // `NotPending` race is unreachable; treat it as an internal inconsistency.
-        db::ApplyError::NotPending => {
-            MutateError::Internal(anyhow::anyhow!("user mutation hit an unexpected pending guard"))
-        }
+        db::ApplyError::NotPending => MutateError::Internal(anyhow::anyhow!(
+            "user mutation hit an unexpected pending guard"
+        )),
         // The target was deleted between the pre-apply validation and the write
         // (a concurrent delete). Client-correctable, so Invalid, not Internal.
         db::ApplyError::TargetMissing => {
@@ -147,9 +147,13 @@ mod tests {
     async fn create_person_lands_user_authored_canonical_entity() {
         let pool = memory_pool().await;
 
-        let outcome = apply(&pool, "create_person", &serde_json::json!({ "name": "Alice" }))
-            .await
-            .expect("user create_person succeeds");
+        let outcome = apply(
+            &pool,
+            "create_person",
+            &serde_json::json!({ "name": "Alice" }),
+        )
+        .await
+        .expect("user create_person succeeds");
         let entity_id = outcome.entity_id.expect("create yields an entity id");
         assert!(!entity_id.is_empty(), "create yields a non-empty entity id");
 
@@ -230,8 +234,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("seeded todo data");
-        let seeded: serde_json::Value =
-            serde_json::from_str(&seeded).expect("seeded data is JSON");
+        let seeded: serde_json::Value = serde_json::from_str(&seeded).expect("seeded data is JSON");
         assert!(
             seeded.get("due_at").is_some(),
             "seeded Todo has a due_at: {seeded}"
@@ -250,8 +253,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("stored todo data");
-        let stored: serde_json::Value =
-            serde_json::from_str(&stored).expect("stored data is JSON");
+        let stored: serde_json::Value = serde_json::from_str(&stored).expect("stored data is JSON");
         assert!(
             stored.get("due_at").is_none(),
             "clearing via null removes the due_at key entirely: {stored}"
@@ -284,11 +286,15 @@ mod tests {
     async fn delete_person_removes_row() {
         let pool = memory_pool().await;
 
-        let entity_id = apply(&pool, "create_person", &serde_json::json!({ "name": "Bob" }))
-            .await
-            .expect("user create_person succeeds")
-            .entity_id
-            .expect("create yields an entity id");
+        let entity_id = apply(
+            &pool,
+            "create_person",
+            &serde_json::json!({ "name": "Bob" }),
+        )
+        .await
+        .expect("user create_person succeeds")
+        .entity_id
+        .expect("create yields an entity id");
 
         let outcome = apply(
             &pool,
@@ -348,8 +354,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("stored person data");
-        let stored: serde_json::Value =
-            serde_json::from_str(&stored).expect("stored data is JSON");
+        let stored: serde_json::Value = serde_json::from_str(&stored).expect("stored data is JSON");
         assert_eq!(
             stored.get("name").and_then(serde_json::Value::as_str),
             Some("X2"),
@@ -402,8 +407,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("stored person data");
-        let stored: serde_json::Value =
-            serde_json::from_str(&stored).expect("stored data is JSON");
+        let stored: serde_json::Value = serde_json::from_str(&stored).expect("stored data is JSON");
         assert!(
             stored.get("note").is_none(),
             "clearing via null removes the note key entirely: {stored}"
@@ -435,11 +439,15 @@ mod tests {
         .entity_id
         .expect("create yields an entity id");
 
-        let person_id = apply(&pool, "create_person", &serde_json::json!({ "name": "Dave" }))
-            .await
-            .expect("user create_person succeeds")
-            .entity_id
-            .expect("create yields an entity id");
+        let person_id = apply(
+            &pool,
+            "create_person",
+            &serde_json::json!({ "name": "Dave" }),
+        )
+        .await
+        .expect("user create_person succeeds")
+        .entity_id
+        .expect("create yields an entity id");
 
         let project_id = apply(
             &pool,
@@ -564,8 +572,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("seeded project data");
-        let seeded: serde_json::Value =
-            serde_json::from_str(&seeded).expect("seeded data is JSON");
+        let seeded: serde_json::Value = serde_json::from_str(&seeded).expect("seeded data is JSON");
         assert_eq!(
             seeded.get("outcome").and_then(serde_json::Value::as_str),
             Some("Ship v2"),
@@ -585,8 +592,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .expect("stored project data");
-        let stored: serde_json::Value =
-            serde_json::from_str(&stored).expect("stored data is JSON");
+        let stored: serde_json::Value = serde_json::from_str(&stored).expect("stored data is JSON");
         assert!(
             stored.get("outcome").is_none(),
             "clearing via null removes the outcome key entirely: {stored}"
@@ -609,6 +615,93 @@ mod tests {
         assert_eq!(
             rev_proposal, None,
             "a direct user edit writes a NULL-proposal revision"
+        );
+    }
+
+    // A user `mark_project_reviewed` through the full user path (validate →
+    // target-ref → apply) stamps the review fields and appends a NULL-proposal
+    // seq-2 revision (ADR-0034). The active create seeds review fields, so this
+    // also confirms the review timestamps actually advance.
+    #[tokio::test]
+    async fn mark_project_reviewed_user_path_stamps_review() {
+        let pool = memory_pool().await;
+
+        let entity_id = apply(
+            &pool,
+            "create_project",
+            &serde_json::json!({ "name": "Ship v1" }),
+        )
+        .await
+        .expect("user create_project succeeds")
+        .entity_id
+        .expect("create yields an entity id");
+
+        let outcome = apply(
+            &pool,
+            "mark_project_reviewed",
+            &serde_json::json!({ "entity_id": entity_id }),
+        )
+        .await
+        .expect("user mark_project_reviewed succeeds");
+        assert_eq!(
+            outcome.entity_id.as_deref(),
+            Some(entity_id.as_str()),
+            "mark reviewed returns the affected project id"
+        );
+
+        let stored: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
+            .bind(&entity_id)
+            .fetch_one(&pool)
+            .await
+            .expect("stored project data");
+        let stored: serde_json::Value = serde_json::from_str(&stored).expect("stored data is JSON");
+        assert!(
+            stored.get("last_reviewed_at").is_some(),
+            "review stamps last_reviewed_at: {stored}"
+        );
+        assert!(
+            stored
+                .get("next_review_at")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|s| s.ends_with("T20:00:00")),
+            "next_review_at advances to a 20:00 anchor: {stored}"
+        );
+
+        let (seq, rev_proposal): (i64, Option<String>) = sqlx::query_as(
+            "SELECT seq, proposal_id FROM entity_revisions \
+             WHERE entity_id = ?1 ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(&entity_id)
+        .fetch_one(&pool)
+        .await
+        .expect("latest revision row");
+        assert_eq!(seq, 2, "the review writes a second revision");
+        assert_eq!(
+            rev_proposal, None,
+            "a user review writes a NULL-proposal revision"
+        );
+    }
+
+    // mark_project_reviewed against a non-Project entity_id is Invalid (the
+    // target-ref check rejects a wrong-type target before any write).
+    #[tokio::test]
+    async fn mark_project_reviewed_wrong_type_is_invalid() {
+        let pool = memory_pool().await;
+        let person_id = apply(&pool, "create_person", &serde_json::json!({ "name": "Al" }))
+            .await
+            .expect("create person")
+            .entity_id
+            .expect("entity id");
+
+        let result = apply(
+            &pool,
+            "mark_project_reviewed",
+            &serde_json::json!({ "entity_id": person_id }),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(MutateError::Invalid(_))),
+            "marking a non-Project reviewed is Invalid: {result:?}"
         );
     }
 }
