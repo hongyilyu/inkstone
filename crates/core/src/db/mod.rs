@@ -837,6 +837,44 @@ pub async fn apply_proposal(
     Ok(entity_id)
 }
 
+/// Apply a user-initiated Entity mutation in one atomic transaction (ADR-0033):
+/// the user write-path's `begin → apply_entity_mutation → commit`, with no
+/// Proposal flip and no tool-call resolve (there is no Run). The shared core is
+/// driven with `created_by='user'`, `proposal_id=None`, and `source=None` — a
+/// plain Library write has no Run, user Message, or Journal-Entry anchor, so it
+/// writes no Entity Source row (ADR-0033 "source row iff a real source").
+/// `entity_type`/`schema_version`/`target_entity_id` are caller-resolved, so this
+/// layer names no specific Entity Type, mirroring [`apply_proposal`].
+pub async fn apply_user_mutation(
+    pool: &SqlitePool,
+    mutation_kind: &str,
+    entity_type: &str,
+    schema_version: i64,
+    target_entity_id: Option<&str>,
+    payload: &serde_json::Value,
+    now_ms: i64,
+) -> Result<String, ApplyError> {
+    let mut tx = pool.begin().await?;
+    let entity_id = apply::apply_entity_mutation(
+        &mut tx,
+        apply::EntityMutationSpec {
+            mutation_kind,
+            entity_type,
+            schema_version,
+            target_entity_id,
+            payload,
+            edited_payload: None,
+            created_by: "user",
+            proposal_id: None,
+            source: None,
+            now_ms,
+        },
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(entity_id)
+}
+
 /// Reject a Proposal in one atomic transaction (ADR-0025), touching no entity
 /// store: flip the `proposals` row to `rejected` and resolve the awaited
 /// `tool_calls` row to `completed` with the Decision the model reads on resume —

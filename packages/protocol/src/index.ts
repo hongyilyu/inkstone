@@ -216,6 +216,24 @@ export type EntityRow = S.Schema.Type<typeof EntityRow>;
 export const EntityListResult = S.Struct({ entities: S.Array(EntityRow) });
 export type EntityListResult = S.Schema.Type<typeof EntityListResult>;
 
+/**
+ * `entity/mutate` params (ADR-0033): a user-initiated CRUD request. `payload` is the
+ * same discriminated `{mutation_kind, payload}` envelope the Worker's
+ * `propose_workspace_mutation` tool uses (minus rationale), so it stays opaque at the
+ * wire boundary — Core validates it per `mutation_kind`.
+ */
+export const EntityMutateParams = S.Struct({
+	mutation_kind: S.String,
+	payload: S.Unknown,
+});
+export type EntityMutateParams = S.Schema.Type<typeof EntityMutateParams>;
+
+/** `entity/mutate` result: the affected Entity id — present on create/update, absent on delete. */
+export const EntityMutateResult = S.Struct({
+	entity_id: S.optional(S.String),
+});
+export type EntityMutateResult = S.Schema.Type<typeof EntityMutateResult>;
+
 // tool protocol (ADR-0018): the Worker<->Core duplex for tool calls — see docs/design/protocol.md
 
 /** The only `content` modality Core produces today (image is out of scope). */
