@@ -45,8 +45,10 @@ pub(crate) async fn validate_mutation_target_refs(
     // A create carrying `source_journal_entry_id` (ADR-0030/0031) must reference a
     // Canonical Journal Entry; an absent field is fine (the Entity is then sourced
     // from the user Message on the agent path, or unsourced on the user path).
-    if matches!(mutation_kind, "create_person" | "create_project" | "create_todo")
-        && let Some(journal_entry_id) = entities::source_journal_entry_id(payload)
+    if matches!(
+        mutation_kind,
+        "create_person" | "create_project" | "create_todo"
+    ) && let Some(journal_entry_id) = entities::source_journal_entry_id(payload)
     {
         let is_journal_entry = db::entity_is_type(pool, journal_entry_id, "journal_entry")
             .await
@@ -181,7 +183,7 @@ pub(crate) async fn validate_mutation_target_refs(
     // (delete_journal_entry included).
     if let Some(target_type) = match mutation_kind {
         "update_person" | "delete_person" => Some("person"),
-        "update_project" | "delete_project" => Some("project"),
+        "update_project" | "delete_project" | "mark_project_reviewed" => Some("project"),
         "delete_todo" => Some("todo"),
         _ => None,
     } {

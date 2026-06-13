@@ -1,16 +1,36 @@
-import type { EntityListResult } from "@inkstone/protocol";
-import { WsClient } from "@inkstone/ui-sdk";
+import type {
+	EntityListResult,
+	EntityMutateParams,
+	EntityMutateResult,
+} from "@inkstone/protocol";
+import { InvalidParamsError, WsClient, type WsError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { ProjectReviewView } from "./ProjectReviewView";
 
 type Rows = EntityListResult["entities"];
 
-function makeRuntime(projects: Rows, todos: Rows = [], people: Rows = []) {
+type EntityMutate = (
+	params: EntityMutateParams,
+) => Effect.Effect<EntityMutateResult, WsError>;
+
+function makeRuntime(
+	projects: Rows,
+	todos: Rows,
+	people: Rows,
+	entityMutate: EntityMutate,
+) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
 		threadCreate: () => unused,
@@ -23,7 +43,7 @@ function makeRuntime(projects: Rows, todos: Rows = [], people: Rows = []) {
 			if (type === "person") return Effect.succeed({ entities: people });
 			return Effect.succeed({ entities: [] });
 		},
-		entityMutate: () => unused,
+		entityMutate,
 		subscribeRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
@@ -37,8 +57,13 @@ function makeRuntime(projects: Rows, todos: Rows = [], people: Rows = []) {
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
-function renderReview(projects: Rows, todos: Rows = [], people: Rows = []) {
-	const runtime = makeRuntime(projects, todos, people);
+function renderReview(
+	projects: Rows,
+	todos: Rows = [],
+	people: Rows = [],
+	entityMutate: EntityMutate = () => Effect.die("entityMutate not exercised"),
+) {
+	const runtime = makeRuntime(projects, todos, people, entityMutate);
 	const client = new QueryClient({
 		defaultOptions: {
 			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
@@ -124,5 +149,59 @@ describe("ProjectReviewView", () => {
 	it("teaches the empty state when nothing is due", async () => {
 		renderReview([project("p_future", "Later", { next_review_at: FUTURE })]);
 		expect(await screen.findByText("All caught up")).toBeInTheDocument();
+	});
+
+	it("marks a project reviewed with an entity_id-only mutation (ADR-0034)", async () => {
+		const entityMutate = vi.fn<EntityMutate>(() =>
+			Effect.succeed({ entity_id: "p1" }),
+		);
+		renderReview(
+			[project("p1", "API migration", { next_review_at: PAST })],
+			[],
+			[],
+			entityMutate,
+		);
+
+		const card = (await screen.findByText("API migration")).closest("li");
+		expect(card).not.toBeNull();
+		await userEvent.click(
+			within(card as HTMLElement).getByRole("button", {
+				name: /mark reviewed/i,
+			}),
+		);
+
+		await waitFor(() => expect(entityMutate).toHaveBeenCalledTimes(1));
+		expect(entityMutate).toHaveBeenCalledWith({
+			mutation_kind: "mark_project_reviewed",
+			payload: { entity_id: "p1" },
+		} satisfies EntityMutateParams);
+	});
+
+	it("surfaces a failed mark-reviewed as an inline alert", async () => {
+		const entityMutate = vi.fn<EntityMutate>(() =>
+			Effect.fail(
+				new InvalidParamsError({
+					message: "a completed project is not reviewable",
+				}),
+			),
+		);
+		renderReview(
+			[project("p1", "API migration", { next_review_at: PAST })],
+			[],
+			[],
+			entityMutate,
+		);
+
+		const card = (await screen.findByText("API migration")).closest("li");
+		await userEvent.click(
+			within(card as HTMLElement).getByRole("button", {
+				name: /mark reviewed/i,
+			}),
+		);
+
+		// The rejection surfaces as an alert; the project stays in the list.
+		const alert = await within(card as HTMLElement).findByRole("alert");
+		expect(alert).toHaveTextContent(/not reviewable/i);
+		expect(screen.getByText("API migration")).toBeInTheDocument();
 	});
 });

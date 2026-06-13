@@ -157,7 +157,10 @@ fn entity_data_payload(
                 );
                 data.insert(
                     "next_review_at".to_string(),
-                    serde_json::json!(crate::entities::next_review_at_local(now_ms, offset_minutes)),
+                    serde_json::json!(crate::entities::next_review_at_local(
+                        now_ms,
+                        offset_minutes
+                    )),
                 );
             }
             serde_json::Value::Object(data)
@@ -362,6 +365,100 @@ async fn apply_update_todo(
     Ok(())
 }
 
+/// Apply `mark_project_reviewed` (ADR-0034): a read-modify-write that stamps a
+/// Project's review fields and appends a new revision, all in the caller's tx.
+///
+/// Loads the current Project `data`, then:
+/// - REJECTS a `completed`/`dropped` Project (`InvalidMutation`): only active and
+///   on-hold Projects are reviewable (ADR-0031), and the UI never offers the
+///   action for a terminal one, so such a request is a stale/buggy client.
+/// - stamps `last_reviewed_at = now` (local wall-clock at the review anchor),
+/// - sets `next_review_at` to the next Sunday 20:00 STRICTLY AFTER now (the
+///   Workspace review anchor; advance, not the create-time same-day seed),
+/// - ensures `review_every = {interval:1, unit:"week"}` so a Project that had a
+///   bare `next_review_at` but no cadence materializes the default weekly ritual
+///   (grill Q4b/Q5) and reads consistently with a freshly-seeded active Project.
+///
+/// The merged data is re-validated as a whole before the write (defense in depth:
+/// the stored data should already be valid, but the recompute must not persist an
+/// invalid Project).
+async fn apply_mark_project_reviewed(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    project_id: &str,
+    schema_version: i64,
+    proposal_id: Option<&str>,
+    now_ms: i64,
+    offset_minutes: i64,
+) -> Result<(), ApplyError> {
+    let current = queries::current_project_data(&mut **tx, project_id)
+        .await?
+        // The target Project vanished (a concurrent delete) — ADR-0033's
+        // target-gone case, distinct from a DB fault.
+        .ok_or(ApplyError::TargetMissing)?;
+    let mut data: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&current)
+        .map_err(|e| {
+            ApplyError::InvalidMutation(format!("current Project data is not JSON: {e}"))
+        })?;
+
+    // Only active/on-hold Projects are reviewable (ADR-0031). An absent status
+    // defaults to active (mirrors the create-time default).
+    let status = data
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("active");
+    if matches!(status, "completed" | "dropped") {
+        return Err(ApplyError::InvalidMutation(format!(
+            "a {status} project is not reviewable"
+        )));
+    }
+
+    data.insert(
+        "last_reviewed_at".to_string(),
+        serde_json::json!(crate::entities::now_local(now_ms, offset_minutes)),
+    );
+    // Advance (not seed): always the NEXT Sunday strictly after now, so a Project
+    // reviewed on a Sunday afternoon does not re-enter the Review view that same
+    // evening (ADR-0034). `next_review_at_local` is the create-time SEED variant.
+    data.insert(
+        "next_review_at".to_string(),
+        serde_json::json!(crate::entities::advance_review_at_local(
+            now_ms,
+            offset_minutes
+        )),
+    );
+    data.entry("review_every")
+        .or_insert_with(|| serde_json::json!({ "interval": 1, "unit": "week" }));
+
+    let merged = serde_json::Value::Object(data);
+    crate::entities::validate_project_data(&merged).map_err(ApplyError::InvalidMutation)?;
+    let data_str = merged.to_string();
+
+    let updated = queries::update_entity(
+        &mut **tx,
+        project_id,
+        "project",
+        schema_version,
+        &data_str,
+        now_ms,
+    )
+    .await?;
+    if updated != 1 {
+        return Err(ApplyError::TargetMissing);
+    }
+    let next_seq = queries::next_entity_revision_seq(&mut **tx, project_id).await?;
+    queries::insert_entity_revision(
+        &mut **tx,
+        project_id,
+        next_seq,
+        &data_str,
+        proposal_id,
+        now_ms,
+    )
+    .await?;
+
+    Ok(())
+}
+
 /// Apply one Entity mutation inside the caller's open tx (ADR-0016, ADR-0033):
 /// the run-independent half of the write. Mints (create) or resolves (update/
 /// delete) the `entity_id`, runs the per-kind data/revision/ref work, and writes
@@ -421,7 +518,12 @@ pub(crate) async fn apply_entity_mutation(
     // target Journal Entry body against current state inside the tx (it needs the
     // freshly-minted entity_ref id), so it is computed there too.
     let mut data_str = match mutation_kind {
-        "update_todo" | "reference_existing_entity_from_journal_entry" => None,
+        // `update_todo` MERGES, `mark_project_reviewed` recomputes from current
+        // state, and the reference kind rewrites the target body against current
+        // state — all compute their data inside the tx below, not at this seam.
+        "update_todo"
+        | "mark_project_reviewed"
+        | "reference_existing_entity_from_journal_entry" => None,
         kind if is_delete_mutation(kind) => None,
         _ => Some(
             entity_data_payload(
@@ -581,6 +683,21 @@ pub(crate) async fn apply_entity_mutation(
                 schema_version,
                 proposal_id,
                 now_ms,
+            )
+            .await?;
+        }
+        // mark_project_reviewed READS the current Project, stamps the review
+        // fields, and writes a new revision — all in THIS tx (ADR-0034). The
+        // recompute needs committed state + the in-tx review-anchor offset, so it
+        // loads current data here rather than via the pre-write seam.
+        "mark_project_reviewed" => {
+            apply_mark_project_reviewed(
+                tx,
+                &entity_id,
+                schema_version,
+                proposal_id,
+                now_ms,
+                review_anchor_offset,
             )
             .await?;
         }
@@ -962,6 +1079,209 @@ mod tests {
         assert!(
             matches!(result, Err(ApplyError::InvalidMutation(_))),
             "an update_todo linking a vanished project is InvalidMutation: {result:?}"
+        );
+    }
+
+    /// Apply a `mark_project_reviewed` against `project_id` at `now_ms`, returning
+    /// the apply result. Owns its own tx (begin/commit on success).
+    async fn mark_reviewed(
+        pool: &SqlitePool,
+        project_id: &str,
+        now_ms: i64,
+    ) -> Result<(), ApplyError> {
+        let mut tx = pool.begin().await.expect("begin");
+        let result = apply_entity_mutation(
+            &mut tx,
+            EntityMutationSpec {
+                mutation_kind: "mark_project_reviewed",
+                entity_type: "project",
+                schema_version: crate::entities::PROJECT_SCHEMA_VERSION,
+                target_entity_id: Some(project_id),
+                payload: &serde_json::json!({ "entity_id": project_id }),
+                edited_payload: None,
+                created_by: "user",
+                proposal_id: None,
+                source: None,
+                now_ms,
+            },
+        )
+        .await
+        .map(|_| ());
+        if result.is_ok() {
+            tx.commit().await.expect("commit");
+        }
+        result
+    }
+
+    async fn project_data(pool: &SqlitePool, id: &str) -> serde_json::Value {
+        let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("project row");
+        serde_json::from_str(&data).expect("project data is JSON")
+    }
+
+    /// mark_project_reviewed stamps both review timestamps, advances next_review_at
+    /// to a Sunday 20:00, seeds the weekly cadence when absent, preserves the
+    /// Project's other fields, and appends a new revision (ADR-0034).
+    #[tokio::test]
+    async fn mark_project_reviewed_stamps_and_advances() {
+        let pool = memory_pool().await;
+        // An on-hold Project (no review fields, so create-time seeding does NOT
+        // fire — only active Projects seed) exercises the absent-cadence default.
+        let project_id = create(
+            &pool,
+            "create_project",
+            "project",
+            serde_json::json!({ "name": "Migrate DB", "outcome": "Done", "status": "on_hold" }),
+        )
+        .await;
+
+        let before = project_data(&pool, &project_id).await;
+        assert!(
+            before.get("review_every").is_none(),
+            "on-hold create seeds no review cadence: {before}"
+        );
+
+        // 2025-06-09T12:00:00Z is a Monday; next Sunday 20:00 local is 2025-06-15.
+        let now_ms = 1_749_470_400_000;
+        mark_reviewed(&pool, &project_id, now_ms)
+            .await
+            .expect("mark reviewed succeeds");
+
+        let after = project_data(&pool, &project_id).await;
+        assert_eq!(
+            after["last_reviewed_at"].as_str(),
+            Some(crate::entities::now_local(now_ms, 0).as_str()),
+            "last_reviewed_at stamped to local now"
+        );
+        assert_eq!(
+            after["next_review_at"].as_str(),
+            Some("2025-06-15T20:00:00"),
+            "next_review_at advanced to the next Sunday 20:00"
+        );
+        assert_eq!(
+            after["review_every"],
+            serde_json::json!({ "interval": 1, "unit": "week" }),
+            "absent cadence materializes the weekly default"
+        );
+        assert_eq!(after["name"].as_str(), Some("Migrate DB"), "name preserved");
+        assert_eq!(after["outcome"].as_str(), Some("Done"), "outcome preserved");
+        assert_eq!(
+            after["status"].as_str(),
+            Some("on_hold"),
+            "status preserved"
+        );
+
+        let max_seq: i64 =
+            sqlx::query_scalar("SELECT MAX(seq) FROM entity_revisions WHERE entity_id = ?1")
+                .bind(&project_id)
+                .fetch_one(&pool)
+                .await
+                .expect("revision seq");
+        assert_eq!(max_seq, 2, "review write appends a second revision");
+    }
+
+    /// mark_project_reviewed preserves an existing non-weekly cadence rather than
+    /// overwriting it with the weekly default (the default only fills an ABSENT one).
+    #[tokio::test]
+    async fn mark_project_reviewed_preserves_existing_cadence() {
+        let pool = memory_pool().await;
+        let project_id = create(
+            &pool,
+            "create_project",
+            "project",
+            serde_json::json!({
+                "name": "Quarterly OKRs",
+                "review_every": { "interval": 1, "unit": "month" },
+                "next_review_at": "2026-01-01T20:00:00",
+            }),
+        )
+        .await;
+
+        mark_reviewed(&pool, &project_id, 1_749_470_400_000)
+            .await
+            .expect("mark reviewed succeeds");
+
+        let after = project_data(&pool, &project_id).await;
+        assert_eq!(
+            after["review_every"],
+            serde_json::json!({ "interval": 1, "unit": "month" }),
+            "an existing cadence is preserved, not replaced by the weekly default"
+        );
+    }
+
+    /// Reviewing ON a Sunday before 20:00 must advance to the FOLLOWING Sunday,
+    /// not the same evening (ADR-0034 advance ≠ the create-time same-day seed).
+    /// Regression for the deep-review correctness finding: a same-day next_review_at
+    /// would re-enter the Review view hours later (web due predicate is
+    /// `next_review_at <= now`).
+    #[tokio::test]
+    async fn mark_project_reviewed_on_sunday_afternoon_advances_a_full_week() {
+        let pool = memory_pool().await;
+        let project_id = create(
+            &pool,
+            "create_project",
+            "project",
+            serde_json::json!({ "name": "Weekly review", "status": "active" }),
+        )
+        .await;
+
+        // 2025-06-15T12:00:00Z is a Sunday, well before the 20:00 anchor.
+        let sunday_noon_ms = 1_749_988_800_000;
+        mark_reviewed(&pool, &project_id, sunday_noon_ms)
+            .await
+            .expect("mark reviewed succeeds");
+
+        let after = project_data(&pool, &project_id).await;
+        assert_eq!(
+            after["next_review_at"].as_str(),
+            Some("2025-06-22T20:00:00"),
+            "a Sunday-afternoon review advances to the NEXT Sunday, not today"
+        );
+    }
+
+    /// mark_project_reviewed rejects a completed or dropped Project (not reviewable,
+    /// ADR-0031) with InvalidMutation, writing nothing.
+    #[tokio::test]
+    async fn mark_project_reviewed_rejects_terminal_status() {
+        for (status, ts_field) in [("completed", "completed_at"), ("dropped", "dropped_at")] {
+            let pool = memory_pool().await;
+            let project_id = create(
+                &pool,
+                "create_project",
+                "project",
+                serde_json::json!({
+                    "name": "Old",
+                    "status": status,
+                    ts_field: "2026-01-01T09:00:00",
+                }),
+            )
+            .await;
+
+            let result = mark_reviewed(&pool, &project_id, 1_749_470_400_000).await;
+            assert!(
+                matches!(result, Err(ApplyError::InvalidMutation(_))),
+                "a {status} project is not reviewable: {result:?}"
+            );
+
+            let after = project_data(&pool, &project_id).await;
+            assert!(
+                after.get("last_reviewed_at").is_none(),
+                "a rejected review writes nothing: {after}"
+            );
+        }
+    }
+
+    /// mark_project_reviewed against a missing Project id surfaces TargetMissing.
+    #[tokio::test]
+    async fn mark_project_reviewed_missing_target() {
+        let pool = memory_pool().await;
+        let result = mark_reviewed(&pool, &Uuid::now_v7().to_string(), 1_749_470_400_000).await;
+        assert!(
+            matches!(result, Err(ApplyError::TargetMissing)),
+            "a vanished Project is TargetMissing: {result:?}"
         );
     }
 }

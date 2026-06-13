@@ -1,6 +1,8 @@
-import { CalendarClock } from "lucide-react";
+import { CalendarClock, Check } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
 	type LibraryItem,
@@ -14,9 +16,10 @@ import { cn } from "@/lib/utils.js";
 import { EntitySkeleton } from "./EntitySkeleton.js";
 
 /**
- * Project Review (ADR-0031): active/on-hold Projects whose review is due.
- * Read-only — surfaces what to reassess; it never mutates review state
- * (marking reviewed needs a Core write path, deferred).
+ * Project Review (ADR-0031): active/on-hold Projects whose review is due. Each
+ * card carries a "Mark reviewed" action (ADR-0034) that stamps the review and
+ * advances `next_review_at` to the next Sunday anchor, so the Project drops off
+ * this list until it comes due again.
  */
 export function ProjectReviewView({
 	selectedId,
@@ -100,49 +103,81 @@ function ReviewCard({
 	const hasActiveTodos = todosForProject(allItems, project).some(
 		(t) => t.status === "active",
 	);
+	const mutation = useEntityMutation();
 
 	return (
-		<li>
-			<button
-				type="button"
-				onClick={() => onSelect(project.id)}
-				aria-current={selected ? "true" : undefined}
-				className={cn(
-					"flex w-full flex-col gap-2 rounded-lg border border-border px-4 py-3 text-left transition-colors",
-					"focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
-					selected ? "bg-secondary/70" : "hover:bg-secondary/40",
-				)}
-			>
-				<div className="flex items-center gap-2">
-					<span className="min-w-0 flex-1 truncate font-medium text-foreground text-sm">
-						{project.name}
-					</span>
-					<Badge size="sm" variant="secondary">
-						{PROJECT_STATUS_LABEL[project.status]}
-					</Badge>
-				</div>
-				{project.outcome ? (
-					<p className="line-clamp-2 text-muted-foreground text-xs">
-						{project.outcome}
-					</p>
-				) : null}
-				<div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
-					{project.nextReviewAt ? (
-						<span className="inline-flex items-center gap-1">
-							<CalendarClock className="size-3" aria-hidden />
-							Review due {project.nextReviewAt.slice(0, 10)}
+		<li
+			className={cn(
+				"flex flex-col rounded-lg border border-border transition-colors",
+				selected ? "bg-secondary/70" : "hover:bg-secondary/40",
+			)}
+		>
+			<div className="flex items-stretch gap-2">
+				<button
+					type="button"
+					onClick={() => onSelect(project.id)}
+					aria-current={selected ? "true" : undefined}
+					className={cn(
+						"flex min-w-0 flex-1 flex-col gap-2 rounded-tl-lg px-4 py-3 text-left",
+						"focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
+					)}
+				>
+					<div className="flex items-center gap-2">
+						<span className="min-w-0 flex-1 truncate font-medium text-foreground text-sm">
+							{project.name}
 						</span>
+						<Badge size="sm" variant="secondary">
+							{PROJECT_STATUS_LABEL[project.status]}
+						</Badge>
+					</div>
+					{project.outcome ? (
+						<p className="line-clamp-2 text-muted-foreground text-xs">
+							{project.outcome}
+						</p>
 					) : null}
-					<span>{hasActiveTodos ? "Has active todos" : "No active todos"}</span>
-					{people.length > 0 ? (
+					<div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
+						{project.nextReviewAt ? (
+							<span className="inline-flex items-center gap-1">
+								<CalendarClock className="size-3" aria-hidden />
+								Review due {project.nextReviewAt.slice(0, 10)}
+							</span>
+						) : null}
 						<span>
-							{people.length === 1
-								? people[0]?.name
-								: `${people.length} people`}
+							{hasActiveTodos ? "Has active todos" : "No active todos"}
 						</span>
-					) : null}
+						{people.length > 0 ? (
+							<span>
+								{people.length === 1
+									? people[0]?.name
+									: `${people.length} people`}
+							</span>
+						) : null}
+					</div>
+				</button>
+				<div className="flex shrink-0 items-center pr-3 pl-1">
+					<Button
+						variant="ghost"
+						size="sm"
+						disabled={mutation.isPending}
+						onClick={() =>
+							mutation.mutate({
+								mutation_kind: "mark_project_reviewed",
+								payload: { entity_id: project.id },
+							})
+						}
+					>
+						<Check className="size-4" aria-hidden />
+						Mark reviewed
+					</Button>
 				</div>
-			</button>
+			</div>
+			{mutation.isError ? (
+				<p role="alert" className="px-4 pb-3 text-destructive text-xs">
+					{mutation.error instanceof Error && mutation.error.message
+						? mutation.error.message
+						: "Couldn't mark reviewed. Try again."}
+				</p>
+			) : null}
 		</li>
 	);
 }

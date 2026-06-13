@@ -38,6 +38,11 @@ pub(crate) fn validate(mutation_kind: &str, payload: &Value) -> Result<(), Strin
         "update_person" => validate_update_person(payload),
         "create_project" => validate_project(&strip_source_journal_entry_id(payload)?),
         "update_project" => validate_update_project(payload),
+        // A user-path-only review touch (ADR-0034): `{entity_id}` only — Core reads
+        // the Project and recomputes the review fields, so the client sends no data.
+        // Deliberately absent from the agent `propose_workspace_mutation` schema; it
+        // can only arrive via `entity/mutate`.
+        "mark_project_reviewed" => validate_entity_id_only(payload, "mark_project_reviewed"),
         "create_todo" => validate_todo(payload),
         "update_todo" => validate_update_todo(payload),
         _ => Err(format!("mutation_kind {mutation_kind:?} not supported")),
@@ -202,7 +207,9 @@ pub(crate) fn schema_version(mutation_kind: &str) -> i64 {
         | "delete_journal_entry"
         | "reference_existing_entity_from_journal_entry" => JOURNAL_ENTRY_SCHEMA_VERSION,
         "create_person" | "update_person" | "delete_person" => PERSON_SCHEMA_VERSION,
-        "create_project" | "update_project" | "delete_project" => PROJECT_SCHEMA_VERSION,
+        "create_project" | "update_project" | "delete_project" | "mark_project_reviewed" => {
+            PROJECT_SCHEMA_VERSION
+        }
         "create_todo" | "update_todo" | "delete_todo" => TODO_SCHEMA_VERSION,
         other => unreachable!("schema_version for unvalidated mutation_kind {other:?}"),
     }
@@ -215,7 +222,9 @@ pub(crate) fn entity_type(mutation_kind: &str) -> &'static str {
         | "delete_journal_entry"
         | "reference_existing_entity_from_journal_entry" => "journal_entry",
         "create_person" | "update_person" | "delete_person" => "person",
-        "create_project" | "update_project" | "delete_project" => "project",
+        "create_project" | "update_project" | "delete_project" | "mark_project_reviewed" => {
+            "project"
+        }
         "create_todo" | "update_todo" | "delete_todo" => "todo",
         other => unreachable!("entity_type for unvalidated mutation_kind {other:?}"),
     }
@@ -240,10 +249,14 @@ pub(crate) fn source_relation_from_user_message(mutation_kind: &str) -> Option<&
 
 pub(crate) fn target_entity_id<'a>(mutation_kind: &str, payload: &'a Value) -> Option<&'a str> {
     match mutation_kind {
-        "update_journal_entry" | "delete_journal_entry" | "update_person" | "update_project"
-        | "delete_person" | "delete_project" | "delete_todo" => {
-            payload.get("entity_id").and_then(Value::as_str)
-        }
+        "update_journal_entry"
+        | "delete_journal_entry"
+        | "update_person"
+        | "update_project"
+        | "delete_person"
+        | "delete_project"
+        | "delete_todo"
+        | "mark_project_reviewed" => payload.get("entity_id").and_then(Value::as_str),
         "reference_existing_entity_from_journal_entry" => {
             payload.get("source_entity_id").and_then(Value::as_str)
         }
@@ -514,6 +527,14 @@ pub(crate) fn body_entity_ref_ids(payload: &Value) -> Vec<&str> {
 /// `delete_todo`): a single required UUID `entity_id` (the target) and no other
 /// field. A delete carries no entity data, so this is the whole schema.
 fn validate_delete_entity(payload: &Value, mutation_kind: &str) -> Result<(), String> {
+    validate_entity_id_only(payload, mutation_kind)
+}
+
+/// Validate a payload that carries exactly one field: a required UUID `entity_id`
+/// naming the target Entity. Shared by every `{entity_id}`-only mutation — the
+/// deletes and `mark_project_reviewed` (whose review fields Core recomputes, so
+/// the client sends no data).
+fn validate_entity_id_only(payload: &Value, mutation_kind: &str) -> Result<(), String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| format!("{mutation_kind} payload must be a JSON object"))?;
@@ -588,6 +609,13 @@ fn validate_update_person(payload: &Value) -> Result<(), String> {
 }
 
 fn validate_project(payload: &Value) -> Result<(), String> {
+    validate_project_data(payload)
+}
+
+/// Validate a complete Project `data` object against the Project schema (ADR-0031).
+/// Shared by the create validator and the `mark_project_reviewed` apply path,
+/// which re-validates the recomputed whole before persisting it (ADR-0034).
+pub(crate) fn validate_project_data(payload: &Value) -> Result<(), String> {
     let obj = payload
         .as_object()
         .ok_or_else(|| "project payload must be a JSON object".to_string())?;
@@ -623,9 +651,7 @@ fn validate_project(payload: &Value) -> Result<(), String> {
         Some(Value::String(s)) => match s.as_str() {
             "active" | "on_hold" | "completed" | "dropped" => s.as_str(),
             _ => {
-                return Err(
-                    "status must be one of active, on_hold, completed, dropped".to_string(),
-                );
+                return Err("status must be one of active, on_hold, completed, dropped".to_string());
             }
         },
         Some(_) => return Err("status must be a string".to_string()),
@@ -774,12 +800,11 @@ fn strip_source_journal_entry_id(payload: &Value) -> Result<Value, String> {
 
 /// Validate an optional `source_journal_entry_id` on a create payload/envelope: a
 /// present value must be a non-empty string parseable as a UUID.
-fn validate_source_journal_entry_id(
-    obj: &serde_json::Map<String, Value>,
-) -> Result<(), String> {
+fn validate_source_journal_entry_id(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
     match obj.get("source_journal_entry_id") {
         Some(Value::String(id)) if !id.trim().is_empty() => {
-            Uuid::parse_str(id).map_err(|_| "source_journal_entry_id must be a UUID".to_string())?;
+            Uuid::parse_str(id)
+                .map_err(|_| "source_journal_entry_id must be a UUID".to_string())?;
             Ok(())
         }
         Some(Value::String(_)) => Err("source_journal_entry_id must not be empty".to_string()),
@@ -1037,7 +1062,9 @@ fn validate_update_todo(payload: &Value) -> Result<(), String> {
         for person_id in remove {
             match person_id {
                 Value::String(id) if !id.trim().is_empty() => {}
-                Value::String(_) => return Err("remove_person_ids id must not be empty".to_string()),
+                Value::String(_) => {
+                    return Err("remove_person_ids id must not be empty".to_string());
+                }
                 _ => return Err("remove_person_ids id must be a string".to_string()),
             }
         }
@@ -1185,18 +1212,24 @@ fn is_leap_year(year: u32) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
-/// The next Sunday at 20:00:00 in local wall-clock, formatted
-/// `YYYY-MM-DDTHH:MM:SS` (ADR-0031). `now_ms` is epoch milliseconds (UTC) and
-/// `offset_minutes` shifts it to the review-anchor local wall clock. A Sunday
-/// strictly before 20:00 local resolves to the same day; at or after 20:00 it
-/// rolls to the following Sunday. Hand-rolled proleptic-Gregorian math (no date
-/// crate), mirroring the file's existing wall-clock parser.
-pub(crate) fn next_review_at_local(now_ms: i64, offset_minutes: i64) -> String {
-    let local_ms = now_ms + offset_minutes * 60_000;
-    let local_secs = local_ms.div_euclid(1000);
-    let days = local_secs.div_euclid(86_400);
-    let secs_of_day = local_secs.rem_euclid(86_400);
+/// Decompose an epoch-ms instant into a local (review-anchor) wall clock as
+/// `(days_since_1970, secs_of_day)`. `offset_minutes` shifts UTC to the anchor
+/// local clock. `div_euclid`/`rem_euclid` floor toward negative infinity, so
+/// `secs_of_day` stays in `[0, 86399]` even for pre-1970 instants. Shared by the
+/// review-date helpers and [`now_local`] so they decompose time identically.
+fn local_day_and_secs(now_ms: i64, offset_minutes: i64) -> (i64, i64) {
+    let local_secs = (now_ms + offset_minutes * 60_000).div_euclid(1000);
+    (local_secs.div_euclid(86_400), local_secs.rem_euclid(86_400))
+}
 
+/// The Sunday-20:00 review anchor at or after the given local day, formatted
+/// `YYYY-MM-DDTHH:MM:SS` (ADR-0031), used to SEED a new active Project's first
+/// review. A Sunday strictly before 20:00 resolves to the SAME day (a new
+/// Project should not wait up to a week for its first review); at or after 20:00
+/// it rolls to the following Sunday. NOT for advancing after a review — that
+/// must always move strictly forward (see [`advance_review_at_local`], ADR-0034).
+pub(crate) fn next_review_at_local(now_ms: i64, offset_minutes: i64) -> String {
+    let (days, secs_of_day) = local_day_and_secs(now_ms, offset_minutes);
     // 1970-01-01 is a Thursday; with Sunday=0 that is weekday 4.
     let weekday = (days.rem_euclid(7) + 4).rem_euclid(7);
     let delta = if weekday == 0 && secs_of_day < 20 * 3_600 {
@@ -1206,9 +1239,43 @@ pub(crate) fn next_review_at_local(now_ms: i64, offset_minutes: i64) -> String {
     } else {
         7 - weekday
     };
+    sunday_anchor(days + delta)
+}
 
-    let (year, month, day) = civil_from_days(days + delta);
+/// The NEXT Sunday-20:00 review anchor strictly after the given instant (ADR-0034),
+/// used to ADVANCE `next_review_at` when a Project is marked reviewed. Unlike
+/// [`next_review_at_local`] (which seeds to the *same* Sunday before 20:00), this
+/// always rolls forward: reviewing on a Sunday — at any time — schedules the
+/// FOLLOWING Sunday, so a just-reviewed Project never re-enters the Review view
+/// the same day. Every non-Sunday day lands on the coming Sunday.
+pub(crate) fn advance_review_at_local(now_ms: i64, offset_minutes: i64) -> String {
+    let (days, _) = local_day_and_secs(now_ms, offset_minutes);
+    let weekday = (days.rem_euclid(7) + 4).rem_euclid(7);
+    // Today-if-Sunday counts as a full week out (delta 7), so the next review is
+    // always a strictly-future Sunday regardless of the review time of day.
+    let delta = if weekday == 0 { 7 } else { 7 - weekday };
+    sunday_anchor(days + delta)
+}
+
+/// Format a day-count (days since 1970-01-01) as the `…T20:00:00` Sunday review
+/// anchor. The caller guarantees `day` lands on a Sunday.
+fn sunday_anchor(day: i64) -> String {
+    let (year, month, day) = civil_from_days(day);
     format!("{year:04}-{month:02}-{day:02}T20:00:00")
+}
+
+/// The current instant as a local wall-clock `YYYY-MM-DDTHH:MM:SS` (ADR-0034),
+/// used to stamp `last_reviewed_at` when a Project is marked reviewed. `now_ms`
+/// is epoch milliseconds (UTC); `offset_minutes` shifts it to the review-anchor
+/// local wall clock, the same anchor the review-date helpers use, so the stamped
+/// "last reviewed" and computed "next review" share one clock.
+pub(crate) fn now_local(now_ms: i64, offset_minutes: i64) -> String {
+    let (days, secs_of_day) = local_day_and_secs(now_ms, offset_minutes);
+    let hour = secs_of_day / 3_600;
+    let minute = (secs_of_day % 3_600) / 60;
+    let second = secs_of_day % 60;
+    let (year, month, day) = civil_from_days(days);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
 }
 
 /// Civil (year, month, day) for a count of days since 1970-01-01, proleptic
@@ -1362,7 +1429,10 @@ mod tests {
             "due == now is not overdue"
         );
         assert!(!is_overdue("active", Some("2026-06-13T00:00:00"), now));
-        assert!(!is_overdue("active", None, now), "no due date is never overdue");
+        assert!(
+            !is_overdue("active", None, now),
+            "no due date is never overdue"
+        );
         assert!(!is_overdue("completed", Some("2026-06-11T00:00:00"), now));
         assert!(!is_overdue("dropped", Some("2026-06-11T00:00:00"), now));
     }
@@ -1376,9 +1446,20 @@ mod tests {
             "due == horizon is due soon"
         );
         assert!(!is_due_soon("active", Some("2026-06-16T00:00:00"), horizon));
-        assert!(!is_due_soon("active", None, horizon), "no due date is not due soon");
-        assert!(!is_due_soon("completed", Some("2026-06-14T00:00:00"), horizon));
-        assert!(!is_due_soon("dropped", Some("2026-06-14T00:00:00"), horizon));
+        assert!(
+            !is_due_soon("active", None, horizon),
+            "no due date is not due soon"
+        );
+        assert!(!is_due_soon(
+            "completed",
+            Some("2026-06-14T00:00:00"),
+            horizon
+        ));
+        assert!(!is_due_soon(
+            "dropped",
+            Some("2026-06-14T00:00:00"),
+            horizon
+        ));
     }
 
     #[test]
@@ -1883,8 +1964,11 @@ mod tests {
             reason.contains("entity_id"),
             "reason names the missing entity_id: {reason}"
         );
-        let reason = validate("update_person", &json!({ "entity_id": "nope", "name": "Alice" }))
-            .expect_err("entity_id must be a UUID");
+        let reason = validate(
+            "update_person",
+            &json!({ "entity_id": "nope", "name": "Alice" }),
+        )
+        .expect_err("entity_id must be a UUID");
         assert!(
             reason.contains("UUID"),
             "reason names the malformed entity_id: {reason}"
@@ -1998,6 +2082,82 @@ mod tests {
                 "review_every": { "interval": 1, "unit": "week" }
             }))
             .is_ok()
+        );
+    }
+
+    #[test]
+    fn mark_project_reviewed_validates_entity_id_only() {
+        // A bare UUID `entity_id` is the whole payload (Core recomputes the rest).
+        assert!(
+            validate(
+                "mark_project_reviewed",
+                &json!({ "entity_id": Uuid::now_v7().to_string() })
+            )
+            .is_ok()
+        );
+        // Missing id, non-UUID id, and any extra field are all rejected.
+        assert!(validate("mark_project_reviewed", &json!({})).is_err());
+        assert!(validate("mark_project_reviewed", &json!({ "entity_id": "nope" })).is_err());
+        let reason = validate(
+            "mark_project_reviewed",
+            &json!({ "entity_id": Uuid::now_v7().to_string(), "next_review_at": "2026-01-01T20:00:00" }),
+        )
+        .expect_err("client may not send review fields");
+        assert!(
+            reason.contains("next_review_at"),
+            "reason names the unsupported field: {reason}"
+        );
+    }
+
+    #[test]
+    fn now_local_formats_full_wall_clock() {
+        // 1_749_470_400_000 ms = 2025-06-09T12:00:00Z (a Monday); offset 0 ⇒ UTC.
+        assert_eq!(now_local(1_749_470_400_000, 0), "2025-06-09T12:00:00");
+        // A +60-minute anchor shifts the wall clock forward one hour.
+        assert_eq!(now_local(1_749_470_400_000, 60), "2025-06-09T13:00:00");
+        // Non-zero minute AND second, so the minute/second arithmetic is actually
+        // exercised (a hardcoded :00:00 or swapped /60 and %60 would fail here).
+        // 1_749_458_231_000 ms = 2025-06-09T08:37:11Z.
+        assert_eq!(now_local(1_749_458_231_000, 0), "2025-06-09T08:37:11");
+        // A +90-minute anchor rolls the hour (and only the hour) forward by 1:30.
+        assert_eq!(now_local(1_749_458_231_000, 90), "2025-06-09T10:07:11");
+    }
+
+    #[test]
+    fn advance_review_at_local_always_rolls_strictly_forward() {
+        // A non-Sunday lands on the coming Sunday (2025-06-09 Mon → 06-15 Sun).
+        assert_eq!(
+            advance_review_at_local(1_749_470_400_000, 0),
+            "2025-06-15T20:00:00"
+        );
+        // Reviewing ON a Sunday (2025-06-15) advances to the FOLLOWING Sunday,
+        // regardless of time of day — both before AND after the 20:00 anchor.
+        // 1_749_988_800_000 = 2025-06-15T12:00:00Z (before 20:00).
+        assert_eq!(
+            advance_review_at_local(1_749_988_800_000, 0),
+            "2025-06-22T20:00:00"
+        );
+        // 1_750_021_200_000 = 2025-06-15T21:00:00Z (after 20:00) — still next week,
+        // matching next_review_at_local's after-20:00 roll for the same instant.
+        assert_eq!(
+            advance_review_at_local(1_750_021_200_000, 0),
+            "2025-06-22T20:00:00"
+        );
+        assert_eq!(
+            next_review_at_local(1_750_021_200_000, 0),
+            "2025-06-22T20:00:00"
+        );
+    }
+
+    #[test]
+    fn next_review_at_local_seeds_same_sunday_before_anchor() {
+        // The SEED variant keeps the same-day shortcut: a Sunday before 20:00 seeds
+        // to that same evening (a new Project shouldn't wait a week for review 1).
+        // This is the behavior advance_review_at_local deliberately does NOT share.
+        // 1_749_988_800_000 = 2025-06-15T12:00:00Z (Sunday, before 20:00).
+        assert_eq!(
+            next_review_at_local(1_749_988_800_000, 0),
+            "2025-06-15T20:00:00"
         );
     }
 
@@ -2271,10 +2431,19 @@ mod tests {
     fn create_accepts_valid_source_journal_entry_id_and_validates_the_rest() {
         let je = Uuid::now_v7().to_string();
         // A valid source rides alongside the entity fields and the rest validates.
-        assert!(validate("create_person", &json!({ "name": "Alice", "source_journal_entry_id": je })).is_ok());
         assert!(
-            validate("create_project", &json!({ "name": "Roadmap", "source_journal_entry_id": je }))
-                .is_ok()
+            validate(
+                "create_person",
+                &json!({ "name": "Alice", "source_journal_entry_id": je })
+            )
+            .is_ok()
+        );
+        assert!(
+            validate(
+                "create_project",
+                &json!({ "name": "Roadmap", "source_journal_entry_id": je })
+            )
+            .is_ok()
         );
         assert!(
             validate(
@@ -2316,7 +2485,10 @@ mod tests {
             &json!({ "source_journal_entry_id": Uuid::now_v7().to_string() }),
         )
         .expect_err("source is provenance, not a name");
-        assert!(reason.contains("name"), "reason names the missing name: {reason}");
+        assert!(
+            reason.contains("name"),
+            "reason names the missing name: {reason}"
+        );
     }
 
     #[test]
@@ -2358,14 +2530,21 @@ mod tests {
         );
         // A bare todo_id (no changes) is also valid.
         assert!(
-            validate("update_todo", &json!({ "todo_id": Uuid::now_v7().to_string() })).is_ok()
+            validate(
+                "update_todo",
+                &json!({ "todo_id": Uuid::now_v7().to_string() })
+            )
+            .is_ok()
         );
     }
 
     #[test]
     fn update_todo_requires_a_uuid_todo_id() {
-        let reason = validate("update_todo", &json!({ "todo": { "due_at": "2026-07-01T09:00:00" } }))
-            .expect_err("update requires a target todo_id");
+        let reason = validate(
+            "update_todo",
+            &json!({ "todo": { "due_at": "2026-07-01T09:00:00" } }),
+        )
+        .expect_err("update requires a target todo_id");
         assert!(
             reason.contains("todo_id"),
             "reason names the missing todo_id: {reason}"
@@ -2404,7 +2583,10 @@ mod tests {
             &json!({ "todo_id": Uuid::now_v7().to_string(), "todo": { "title": "   " } }),
         )
         .expect_err("a supplied title must be non-empty");
-        assert!(reason.contains("title"), "reason names the blank title: {reason}");
+        assert!(
+            reason.contains("title"),
+            "reason names the blank title: {reason}"
+        );
     }
 
     #[test]

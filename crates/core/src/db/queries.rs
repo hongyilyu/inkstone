@@ -898,6 +898,23 @@ where
         .await
 }
 
+/// Read a Project's current `data` JSON by id (ADR-0034), for
+/// `mark_project_reviewed`'s read-modify-write. `None` when the id does not exist
+/// or is not a `project`. Runs inside the apply tx (the recompute must see
+/// committed state under the tx).
+pub(super) async fn current_project_data<'e, E>(
+    executor: E,
+    project_id: &str,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1 AND type = 'project'")
+        .bind(project_id)
+        .fetch_optional(executor)
+        .await
+}
+
 /// Read every Todo that owns `project_id` (its `data.project_id` matches), for
 /// the `delete_project` cascade (ADR-0031). Returns `(todo_id, data)` rows so the
 /// caller can rewrite each Todo's JSON with `project_id` unset. `project_id`
