@@ -595,6 +595,33 @@ interface CaptureScenario {
 	todo?: { title: string; note?: string; due_at?: string; defer_at?: string };
 	project?: { name: string; outcome?: string };
 	person?: { name: string; note?: string; aliases?: string[] };
+	// After a direct Todo is accepted, enrich it with existing accepted
+	// People/Projects (slice 3) — one update_todo proposal per resume cycle,
+	// Project before Person (ADR-0031 sequencing).
+	enrich?: {
+		person_name?: string;
+		person_role?: "waiting_on" | "related";
+		project_name?: string;
+	};
+}
+
+// One enrichment step: link the named existing entity onto the Todo. `kind`
+// selects the search type + update_todo shape; ordered project-before-person.
+type EnrichStep = { kind: "project" | "person"; name: string };
+
+/** The ordered enrichment steps a scenario asks for (project first), filtered to
+ * those naming an entity. Empty when the scenario has no `enrich`. */
+function enrichSteps(scenario: CaptureScenario): EnrichStep[] {
+	const enrich = scenario.enrich;
+	if (enrich === undefined) return [];
+	const steps: EnrichStep[] = [];
+	if (enrich.project_name !== undefined && enrich.project_name.length > 0) {
+		steps.push({ kind: "project", name: enrich.project_name });
+	}
+	if (enrich.person_name !== undefined && enrich.person_name.length > 0) {
+		steps.push({ kind: "person", name: enrich.person_name });
+	}
+	return steps;
 }
 
 function readCaptureScenario(): CaptureScenario {
@@ -653,19 +680,175 @@ function captureProposal(scenario: CaptureScenario) {
 	return undefined;
 }
 
+/** A capture resume's position, reconstructed from the transcript so a fresh
+ * process can resume the right step (each park→decide→resume spawns anew). */
+type CapturePhase =
+	| "fresh" // not a resume — propose the create_todo/project/person
+	| "after_create" // create_todo accepted — start enrichment (or confirm)
+	| "after_link" // an update_todo link accepted — do the next step (or confirm)
+	| "done"; // declined, or nothing left — confirm, propose nothing
+
+function capturePhase(manifest: WorkerManifest): CapturePhase {
+	if (manifest.mode !== "resume") return "fresh";
+	const decisions = manifest.messages.filter(
+		(m): m is Extract<typeof m, { role: "tool_result" }> =>
+			m.role === "tool_result" &&
+			(m.content.startsWith("Accepted.") ||
+				m.content === "User declined this proposal."),
+	);
+	const latest = decisions.at(-1);
+	if (latest === undefined) return "done";
+	if (latest.content === "User declined this proposal.") return "done";
+	if (latest.content.includes("Updated Todo")) return "after_link";
+	if (latest.content.includes("Created Todo")) return "after_create";
+	return "done";
+}
+
+/** The recovered Todo id for enrichment: the first result of the todo-recovery
+ * search (bound to its call id), if that search is already in the transcript. */
+function capturedTodoId(messages: readonly AnyMessage[]): string | undefined {
+	return searchedEntityId(messages, "tc_cap_todo");
+}
+
+/** Build the update_todo link proposal for an enrichment step + resolved id. */
+function enrichLinkProposal(
+	step: EnrichStep,
+	todoId: string,
+	entityId: string,
+	personRole: "waiting_on" | "related",
+) {
+	if (step.kind === "project") {
+		return {
+			mutation_kind: "update_todo",
+			payload: { todo_id: todoId, todo: { project_id: entityId } },
+			rationale: "link the accepted Project to the Todo",
+		};
+	}
+	return {
+		mutation_kind: "update_todo",
+		payload: {
+			todo_id: todoId,
+			add_person_refs: [{ person_id: entityId, role: personRole }],
+		},
+		rationale: "link the accepted Person to the Todo",
+	};
+}
+
+/** Script the enrichment leg for one resume cycle: recover the Todo id (search
+ * if not yet in the transcript), search the step's entity, then propose ONE
+ * update_todo. `stepIndex` is how many links already landed. */
+function setCaptureEnrichResponses(
+	faux: ReturnType<typeof registerFauxProvider>,
+	manifest: WorkerManifest,
+	scenario: CaptureScenario,
+	stepIndex: number,
+): void {
+	const steps = enrichSteps(scenario);
+	const step = steps[stepIndex];
+	if (step === undefined || scenario.todo === undefined) {
+		// No (more) enrichment to do: confirm and stop.
+		faux.setResponses([fauxAssistantMessage("Done — added it.")]);
+		return;
+	}
+	const personRole = scenario.enrich?.person_role ?? "related";
+	const searchId =
+		step.kind === "project" ? "tc_cap_search_project" : "tc_cap_search_person";
+	const updateId =
+		step.kind === "project" ? "tc_cap_update_project" : "tc_cap_update_person";
+
+	const responses: Array<
+		| ReturnType<typeof fauxAssistantMessage>
+		| ((context: {
+				messages: AnyMessage[];
+		  }) => ReturnType<typeof fauxAssistantMessage>)
+	> = [];
+
+	// Recover the Todo id by title search unless a prior cycle already did
+	// (its result is in the resume transcript).
+	const haveTodoId = capturedTodoId(manifest.messages) !== undefined;
+	if (!haveTodoId) {
+		responses.push(
+			fauxAssistantMessage(
+				[
+					fauxToolCall(
+						"search_entities",
+						{ type: "todo", query: scenario.todo.title },
+						{ id: "tc_cap_todo" },
+					),
+				],
+				{ stopReason: "toolUse" },
+			),
+		);
+	}
+	// Search the step's existing entity.
+	responses.push(
+		fauxAssistantMessage(
+			[
+				fauxToolCall(
+					"search_entities",
+					{ type: step.kind, query: step.name },
+					{ id: searchId },
+				),
+			],
+			{ stopReason: "toolUse" },
+		),
+	);
+	// Propose ONE update_todo linking the found entity.
+	responses.push((context) => {
+		const todoId =
+			capturedTodoId(context.messages) ?? capturedTodoId(manifest.messages);
+		const entityId = searchedEntityId(context.messages, searchId);
+		if (todoId === undefined || entityId === undefined) {
+			// Existing-entity branch: a missing match is slice 4's job — here we
+			// simply skip the link and confirm.
+			return fauxAssistantMessage("Done — added it.");
+		}
+		return fauxAssistantMessage(
+			[
+				fauxToolCall(
+					"propose_workspace_mutation",
+					enrichLinkProposal(step, todoId, entityId, personRole),
+					{ id: updateId },
+				),
+			],
+			{ stopReason: "toolUse" },
+		);
+	});
+	responses.push(fauxAssistantMessage("Awaiting your decision."));
+	faux.setResponses(responses);
+}
+
 /** Script the faux provider for direct capture for THIS process. A fresh run
- * proposes once and parks; a resume after the Decision emits a confirmation. */
+ * proposes the create_* once and parks; resumes drive Todo enrichment. */
 function setCaptureResponses(
 	faux: ReturnType<typeof registerFauxProvider>,
 	manifest: WorkerManifest,
 ): void {
 	const scenario = readCaptureScenario();
+	const phase = capturePhase(manifest);
 
-	if (manifest.mode === "resume") {
+	if (phase === "done") {
 		faux.setResponses([fauxAssistantMessage("Done — added it.")]);
 		return;
 	}
+	if (phase === "after_create") {
+		// Todo accepted — link the first enrichment step (or confirm if none).
+		setCaptureEnrichResponses(faux, manifest, scenario, 0);
+		return;
+	}
+	if (phase === "after_link") {
+		// One link landed — do the next step. Count accepted "Updated Todo"
+		// decisions to know how many are already done.
+		const linksDone = manifest.messages.filter(
+			(m) =>
+				m.role === "tool_result" &&
+				m.content.includes("Accepted. Updated Todo"),
+		).length;
+		setCaptureEnrichResponses(faux, manifest, scenario, linksDone);
+		return;
+	}
 
+	// phase === "fresh"
 	const proposal = captureProposal(scenario);
 	if (proposal === undefined) {
 		// Conversation intent (or a malformed scenario): reply, propose nothing.
