@@ -210,9 +210,12 @@ test("edit a seeded Person via the rail editor → update_person full-replace pe
 	await detail.getByLabel("Note").fill("Lead designer, design systems");
 	await detail.getByRole("button", { name: /^save$/i }).click();
 
-	await expect(
-		page.getByRole("region", { name: /people/i }).getByText("Sam Rivera"),
-	).toBeVisible({ timeout: 15_000 });
+	// Post-save signal: the editor closes back to the detail VIEW showing the new
+	// note — visible only after `entity/mutate` resolved and the Library re-read.
+	// (The collection title is unchanged here, so it can't gate the save.)
+	await expect(detail.getByText("Lead designer, design systems")).toBeVisible({
+		timeout: 15_000,
+	});
 
 	// Full-replace update keeps name, swaps note.
 	expect(
@@ -254,9 +257,13 @@ test("edit a seeded Project's status via the rail editor → update_project pers
 	await detail.getByLabel("Status").selectOption("on_hold");
 	await detail.getByRole("button", { name: /^save$/i }).click();
 
-	await expect(
-		page.getByRole("region", { name: /projects/i }).getByText("Spring launch"),
-	).toBeVisible({ timeout: 15_000 });
+	// Post-save signal: the detail VIEW shows the new status — both the header
+	// subtitle and the badge read "On hold", present only after `entity/mutate`
+	// resolved and the Library re-read. (The collection title is unchanged here,
+	// so it can't gate the save.) `.first()` because the text appears twice.
+	await expect(detail.getByText("On hold").first()).toBeVisible({
+		timeout: 15_000,
+	});
 
 	expect(
 		sqliteScalar(
