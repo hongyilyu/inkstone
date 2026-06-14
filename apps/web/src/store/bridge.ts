@@ -12,10 +12,10 @@ import {
 	resetSnapshot,
 	seedAssistantMessage,
 	setFocusedThread,
+	setHydrationStatus,
 	setPendingProposal,
 	setProposalStatus,
 } from "./chat.js";
-import { markThreadHydrated } from "./hydration-set.js";
 
 // Thin imperative seam between Effect (owns wire/streams) and the plain React store — see docs/design/web-store.md (ADR-0020).
 // Each run's stream fiber is retained keyed by run id so it can be interrupted on unmount (structured cancellation, Q18 A′).
@@ -97,8 +97,8 @@ export async function send(
 	threadId: string,
 	text: string,
 ): Promise<SendResult> {
-	// Mark live so the hydrate-on-focus effect does not re-hydrate it (slice 13 guard).
-	markThreadHydrated(threadId);
+	// Mark hydrated so the hydrate-on-focus effect does not re-hydrate a thread we're actively sending into (slice 13 guard).
+	setHydrationStatus(threadId, "ready");
 	const assistantId = seedTurn(threadId, text);
 
 	const post = Effect.gen(function* () {
@@ -131,8 +131,8 @@ export async function sendNewThread(
 	try {
 		const { thread_id, run_id } = await runtime.runPromise(create);
 		setFocusedThread(thread_id);
-		// Mark live so focusing it does NOT trigger a thread/get hydrate (slice 13 guard).
-		markThreadHydrated(thread_id);
+		// Mark hydrated so focusing a freshly-minted thread does NOT trigger a thread/get hydrate (slice 13 guard).
+		setHydrationStatus(thread_id, "ready");
 		const assistantId = seedTurn(thread_id, text);
 		attachRun(thread_id, assistantId, run_id);
 		startRunStream(runtime, thread_id, run_id);

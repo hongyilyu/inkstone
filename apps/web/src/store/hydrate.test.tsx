@@ -4,6 +4,7 @@ import {
 	type RunId,
 	WsClient,
 	type WsError,
+	WsRequestError,
 } from "@inkstone/ui-sdk";
 import { Deferred, Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,15 +13,15 @@ import {
 	appendUserMessage,
 	attachRun,
 	getChatState,
+	getHydrationStatus,
 	resetChatStore,
 	seedAssistantMessage,
 } from "./chat.js";
-import { hydrateThread, resetHydration } from "./hydrate.js";
+import { hydrateThread } from "./hydrate.js";
 
 beforeEach(() => {
 	resetChatStore();
 	resetBridge();
-	resetHydration();
 });
 
 describe("refresh-durable hydration", () => {
@@ -243,5 +244,139 @@ describe("refresh-durable hydration", () => {
 		expect(subscribeRun).not.toHaveBeenCalled();
 
 		await runtime.dispose();
+	});
+
+	it("settles `ready` (not `error`) when thread/get FAILS but a send made the thread live mid-fetch", async () => {
+		// Contrast to the became-live success case: here thread/get REJECTS after the user sent.
+		// A failed fetch must not paint a recoverable-error screen over the valid live turn — it settles `ready`.
+		const gate = Effect.runSync(Deferred.make<ThreadGetResult, WsError>());
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: (id) =>
+				id === "tD" ? Deferred.await(gate) : Effect.die("unknown thread"),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		// Start hydration; threadGet is parked on the latch.
+		const hydrating = hydrateThread(runtime, "tD");
+
+		// A send lands during the window: seed the optimistic turn + attach a run.
+		appendUserMessage("tD", {
+			id: "u1",
+			role: "user",
+			status: "completed",
+			text: "live message",
+			run_id: "",
+		});
+		seedAssistantMessage("tD", {
+			id: "a1",
+			role: "assistant",
+			status: "streaming",
+			text: "",
+			run_id: "",
+		});
+		attachRun("tD", "a1", "live-run");
+
+		// Now let threadGet FAIL.
+		Effect.runSync(Deferred.fail(gate, new WsRequestError({ reason: "boom" })));
+		await hydrating;
+
+		// The became-live arm of the failure callback wins: status is `ready`, not `error`.
+		expect(getHydrationStatus("tD")).toBe("ready");
+		// The live turn survives intact — no error screen painted over valid content.
+		const thread = getChatState().threads.tD;
+		expect(thread?.messages.map((m) => m.text)).toEqual(["live message", ""]);
+		expect(thread?.activeRunId).toBe("live-run");
+
+		await runtime.dispose();
+	});
+
+	it("marks a failed thread/get as `error` (recoverable, not an eternal skeleton)", async () => {
+		// A wire failure: thread/get rejects. The thread must end in `error` status — never stuck `loading`.
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: () => Effect.fail(new WsRequestError({ reason: "boom" })),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tFail");
+
+		expect(getHydrationStatus("tFail")).toBe("error");
+		expect(getChatState().threads.tFail?.messages ?? []).toHaveLength(0);
+
+		// A user-driven retry that succeeds clears the error and loads history.
+		const ok: ThreadGetResult = {
+			thread_id: "tFail",
+			title: "T",
+			messages: [
+				{
+					id: "m1",
+					role: "user",
+					status: "completed",
+					run_id: "r1",
+					text: "hi",
+				},
+			],
+		};
+		const okStub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: () => Effect.succeed(ok),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const okRuntime = ManagedRuntime.make(Layer.succeed(WsClient, okStub));
+
+		await hydrateThread(okRuntime, "tFail");
+
+		expect(getHydrationStatus("tFail")).toBe("ready");
+		expect(getChatState().threads.tFail?.messages.map((m) => m.text)).toEqual([
+			"hi",
+		]);
+
+		await runtime.dispose();
+		await okRuntime.dispose();
 	});
 });

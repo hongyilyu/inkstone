@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { RotateCcw, Sparkles } from "lucide-react";
+import { RotateCcw, Sparkles, TriangleAlert } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRuntime } from "@/runtime";
 import {
@@ -12,14 +12,16 @@ import {
 	type Message,
 	useActiveRunId,
 	useFocusedThreadId,
+	useHydrationStatus,
 	useThreadMessages,
 } from "@/store/chat";
-import { useHydrateFocusedThread } from "@/store/hydrate";
+import { hydrateThread, useHydrateFocusedThread } from "@/store/hydrate";
 import { AssistantProposals } from "./AssistantProposals.js";
 import { ChatMarkdown } from "./ChatMarkdown.js";
 import { ComposeFooter } from "./ComposeFooter.js";
 import { CopyButton } from "./CopyButton.js";
 import { ToolActivity } from "./ToolActivity.js";
+import { Button } from "./ui/button.js";
 import { EmptyState } from "./ui/empty-state.js";
 
 export function ChatColumn() {
@@ -31,12 +33,20 @@ export function ChatColumn() {
 	// Set while a Run streams AND while it's parked awaiting a Proposal (only a
 	// terminal Run Event clears it) — so Stop covers both, matching run/cancel.
 	const activeRunId = useActiveRunId(focusedThreadId ?? "");
+	const hydration = useHydrationStatus(focusedThreadId ?? "");
 	const [sendError, setSendError] = useState<string | null>(null);
 
-	// No thread focused → fresh chat; thread focused but empty → mid-hydration skeleton (PRODUCT.md "show the state, not a spinner").
+	// No thread focused → fresh chat. Focused + empty: the reactive hydration status (issue #108) decides —
+	// skeleton only while the fetch is genuinely in flight (or about to fire), a recoverable error if it failed
+	// (never an eternal skeleton), and the message list otherwise (PRODUCT.md "show the state, not a spinner").
 	const noMessages = messages.length === 0;
 	const showWelcome = focusedThreadId === null && noMessages;
-	const showHydrating = focusedThreadId !== null && noMessages;
+	const hydrationFailed =
+		focusedThreadId !== null && noMessages && hydration === "error";
+	const showHydrating =
+		focusedThreadId !== null &&
+		noMessages &&
+		(hydration === null || hydration === "loading");
 
 	// Hydrate on focus change; no-op for locally-originated (pre-marked) threads. See docs/design/web-chat-ui.md.
 	useHydrateFocusedThread(runtime, focusedThreadId);
@@ -50,6 +60,12 @@ export function ChatColumn() {
 		const el = scrollerRef.current;
 		if (el) el.scrollTop = el.scrollHeight;
 	}, []);
+
+	// Re-run a failed hydration on demand (issue #108): `hydrateThread` flips status back to `loading`, then `ready`/`error` on settle.
+	const retryHydration = () => {
+		if (focusedThreadId === null) return;
+		void hydrateThread(runtime, focusedThreadId);
+	};
 
 	// Re-issue a previous user turn after a failed/interrupted Run; always the `send` path since the thread already exists.
 	const retry = (text: string) => {
@@ -68,6 +84,8 @@ export function ChatColumn() {
 			<div ref={scrollerRef} className="flex-1 overflow-y-auto px-6 pt-14 pb-6">
 				{showWelcome ? (
 					<ChatWelcome />
+				) : hydrationFailed ? (
+					<ChatHydrationError onRetry={retryHydration} />
 				) : showHydrating ? (
 					<ChatHydrating />
 				) : (
@@ -130,6 +148,30 @@ function ChatWelcome() {
 				size="lg"
 				title="Start a chat"
 				description="Type below to begin. Inkstone drafts journal entries and the structured items it notices, and they land in your Library once you approve them."
+			/>
+		</div>
+	);
+}
+
+/** Shown when a focused thread's hydration fails (issue #108): a recoverable error, never an eternal skeleton. */
+function ChatHydrationError({ onRetry }: { onRetry: () => void }) {
+	return (
+		<div
+			role="alert"
+			className="mx-auto flex min-h-full max-w-3xl flex-col items-center justify-center"
+		>
+			<EmptyState
+				icon={TriangleAlert}
+				tone="danger"
+				size="lg"
+				title="Couldn't load this conversation"
+				description="Something went wrong fetching these messages. Your data is safe on disk — try again."
+				action={
+					<Button variant="chip" size="pill" onClick={onRetry}>
+						<RotateCcw className="size-3.5" aria-hidden />
+						Try again
+					</Button>
+				}
 			/>
 		</div>
 	);

@@ -1,4 +1,5 @@
-import { type RunEventValue, WsClient } from "@inkstone/ui-sdk";
+import type { ThreadGetResult } from "@inkstone/protocol";
+import { type RunEventValue, WsClient, WsRequestError } from "@inkstone/ui-sdk";
 import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
@@ -31,7 +32,8 @@ function makeStubRuntime(opts: {
 			}),
 		postMessage: () => Effect.succeed(opts.runId),
 		threadList: () => unused,
-		threadGet: () => unused,
+		// Park hydrate-on-focus: a focused thread stays `loading` (these tests drive messages directly, not via thread/get).
+		threadGet: () => Effect.never,
 		listEntities: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => Stream.fromIterable(opts.events),
@@ -142,6 +144,73 @@ describe("ChatColumn", () => {
 			screen.getByRole("status", { name: /loading conversation/i }),
 		).toBeInTheDocument();
 		expect(screen.queryByRole("heading", { name: /start a chat/i })).toBeNull();
+
+		await runtime.dispose();
+	});
+
+	it("shows a recoverable error (not an eternal skeleton) when hydration fails, and recovers on retry", async () => {
+		const user = userEvent.setup();
+		// First thread/get fails; the retry succeeds with a one-message history.
+		const history: ThreadGetResult = {
+			thread_id: "threadA",
+			title: "T",
+			messages: [
+				{
+					id: "m1",
+					role: "assistant",
+					status: "completed",
+					run_id: "r1",
+					text: "recovered history",
+				},
+			],
+		};
+		let calls = 0;
+		const unused = Effect.die("not exercised in this test");
+		const stub = WsClient.of({
+			threadCreate: () => unused,
+			postMessage: () => unused,
+			threadList: () => unused,
+			threadGet: () => {
+				calls += 1;
+				return calls === 1
+					? Effect.fail(new WsRequestError({ reason: "boom" }))
+					: Effect.succeed(history);
+			},
+			listEntities: () => unused,
+			entityMutate: () => unused,
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => unused,
+			providerStatus: () => unused,
+			providerLoginStart: () => unused,
+			modelCatalog: () => unused,
+			settingsGet: () => unused,
+			settingsSet: () => unused,
+			proposalGet: () => unused,
+			proposalDecide: () => unused,
+			messageSearch: () => unused,
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		setFocusedThread("threadA");
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		// The failed fetch resolves to a recoverable error, never the spinning skeleton.
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent(/couldn't load this conversation/i);
+		expect(
+			screen.queryByRole("status", { name: /loading conversation/i }),
+		).toBeNull();
+
+		await user.click(screen.getByRole("button", { name: /try again/i }));
+
+		// Retry succeeds → history renders, error gone.
+		expect(await screen.findByText("recovered history")).toBeInTheDocument();
+		expect(screen.queryByText(/couldn't load this conversation/i)).toBeNull();
 
 		await runtime.dispose();
 	});

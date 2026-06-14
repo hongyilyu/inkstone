@@ -29,13 +29,18 @@ flat top, flush with the flat floor.
 
 ## ChatColumn.tsx — ChatColumn
 
-Empty-state branching: with no thread focused it's a fresh chat (welcome the
-user and teach the loop); with a thread focused it's mid-hydration (show a
-skeleton, never a blank panel) — PRODUCT.md "show the state, not a spinner".
+Empty-state branching (a focused, message-less thread keys off the reactive
+`useHydrationStatus`, issue #108): no thread focused → fresh chat (welcome the
+user and teach the loop); focused + `loading`/never-hydrated → skeleton; focused
++ `error` → a recoverable error state with a "Try again" that re-runs
+`hydrateThread`, NEVER an eternal skeleton — PRODUCT.md "show the state, not a
+spinner".
 
-Hydration: on focus change to a non-null, not-yet-live thread we run thread/get
-→ load → resubscribe-if-streaming. Locally-originated threads are pre-marked so
-this is a no-op for them (no double-load / double-resubscribe).
+Hydration: on focus change to a non-null thread with `undefined` (never-hydrated)
+status we run thread/get → load → resubscribe-if-streaming. Locally-originated
+threads are pre-marked `ready` (in `bridge.ts`) so this is a no-op for them (no
+double-load / double-resubscribe). A settled `error` is not auto-retried — only
+the user's "Try again" re-fires it.
 
 Proposal stream: consume the global `proposal/*` stream once for the chat
 surface. A parked Run pushes `proposal/pending` → the bridge fetches + attaches
