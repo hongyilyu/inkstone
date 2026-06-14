@@ -114,7 +114,7 @@ _Avoid_: run events (that names the wire stream), audit log, event stream, run t
 ### Domain
 
 **Entity**:
-A structured concept Inkstone tracks for query and reasoning — a Journal Entry, Person, Project, Todo, Recipe, etc. An Entity enters tier 2 (becoming a **Canonical Entity**) one of two ways: the agent proposes it and the user accepts the Proposal, or the user creates or edits it directly from a Client. Before that, an agent-surfaced Entity exists only as an *extraction candidate* in tier 3. Threads, Runs, and Proposals are not Entities — they are application state.
+A structured concept Inkstone tracks for query and reasoning — a Journal Entry, Person, Project, Todo, Bookmark, etc. An Entity enters tier 2 (becoming a **Canonical Entity**) one of two ways: the agent proposes it and the user accepts the Proposal, or the user creates or edits it directly from a Client. Before that, an agent-surfaced Entity exists only as an *extraction candidate* in tier 3. Threads, Runs, and Proposals are not Entities — they are application state.
 _Avoid_: object, record, item.
 
 **Journal Entry**:
@@ -136,6 +136,10 @@ _Avoid_: area, folder, tag, topic bucket.
 **Person**:
 A descriptive Entity for a real person the user wants Inkstone to remember. Person data stays small: name, optional note, and optional aliases. Tasks and Projects involving a Person are derived from Todo Person References; journal history is derived from Entity References in Journal Entries.
 _Avoid_: contact record as CRM source of truth.
+
+**Bookmark**:
+A small descriptive Entity for an outward-pointing thing the user saved to return to — a link, an article, a reference. Bookmark data stays small: a required title, an optional url, an optional note, and optional tags. Like a Person, it is a user-curated standalone Entity that derives richness from references rather than embedding it; it is not a read-it-later queue, a clipping archive, or a document store. A Bookmark is created directly by the user from the Library (a direct user CRUD write, no Proposal and no Journal Entry anchor) — the agent does not author Bookmarks in the first model. Distinct from an Entity Reference (a Journal Entry's inline pointer at another Entity) and an Entity Source (the provenance relation explaining why an Entity exists): a Bookmark is itself a Canonical Entity the user owns, not a relationship between Entities.
+_Avoid_: link, reference, source (all name other concepts), read-later, clipping, resource.
 
 **Todo Person Reference**:
 A Todo-specific association from a Todo to a Canonical Person, with role `waiting_on` or `related`. It is distinct from Entity Reference: Entity Reference renders inline Journal Entry prose, while Todo Person Reference powers task views such as "waiting on Alice" and Person backlinks. A Todo may reference multiple People, but at most once per Person; `waiting_on` includes "related" semantics.
@@ -161,7 +165,7 @@ _Avoid_: accepted entity (as the umbrella — that term is the proposal-born sub
 A **Canonical Entity** that entered tier 2 by the user accepting a Proposal — the proposal-born subset, carrying a `created_via_proposal_id`. A user-authored Entity is canonical but *not* "accepted": there was no Proposal and nothing to accept (`created_by='user'`). Where the system needs to name a referenceable or stored Entity regardless of origin, the umbrella term is **Canonical Entity**.
 
 **Entity Type**:
-The kind of structured concept an Entity is — Journal Entry, Todo, Person, Project, Recipe, etc. Determines how the Entity's content is validated, versioned, and described back to the Worker when a Proposal that creates it is accepted. Distinct from the *change* a Proposal makes (create / update / delete): the Entity Type is *what the thing is*, the change is *what is being done to it*.
+The kind of structured concept an Entity is — Journal Entry, Todo, Person, Project, Bookmark, etc. Determines how the Entity's content is validated, versioned, and described back to the Worker when a Proposal that creates it is accepted. Distinct from the *change* a Proposal makes (create / update / delete): the Entity Type is *what the thing is*, the change is *what is being done to it*.
 _Avoid_: kind (overloaded across unrelated discriminators), entity class, entity category.
 
 **Entity Source**:
