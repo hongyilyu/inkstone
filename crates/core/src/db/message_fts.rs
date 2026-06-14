@@ -272,6 +272,120 @@ mod tests {
         assert_eq!(underscore[0].thread_title, "Has underscore");
     }
 
+    /// Drive a Run's assistant Message through the real append path and return
+    /// `(thread_id, run_id, assistant_message_id)` without completing it. The
+    /// assistant Message is left `streaming` — the caller decides whether to
+    /// `complete_run` (finalize) or leave it incomplete.
+    async fn seed_streaming_assistant_message(
+        pool: &SqlitePool,
+        title: &str,
+        prompt: &str,
+        assistant_text: &str,
+        now_ms: i64,
+    ) -> (Uuid, Uuid, Uuid) {
+        let (thread_id, run_id, _user_msg) =
+            seed_thread_with_user_message(pool, title, prompt, now_ms).await;
+        let assistant_message_id = crate::db::assistant_message_id_for_run(pool, run_id)
+            .await
+            .expect("read assistant message id")
+            .expect("run has an assistant message");
+        crate::db::append_assistant_text(pool, assistant_message_id, assistant_text)
+            .await
+            .expect("append assistant text");
+        (thread_id, run_id, assistant_message_id)
+    }
+
+    /// After a Run completes, the assistant Message's finalized text is searchable
+    /// by substring with role "assistant" — the `RunStatus::complete` seam indexes
+    /// it (ADR-0035). The user Message of the same Run is already indexed (slice 1);
+    /// this proves the assistant side.
+    #[tokio::test]
+    async fn search_finds_assistant_message_after_completion() {
+        let pool = memory_pool().await;
+        let (thread_id, run_id, assistant_message_id) = seed_streaming_assistant_message(
+            &pool,
+            "Botany chat",
+            "tell me how plants eat",
+            "Plants make food via PHOTOSYNTHESIS in their leaves.",
+            1000,
+        )
+        .await;
+
+        // Before completion the assistant text is NOT searchable.
+        assert_eq!(
+            search_messages(&pool, "photosynthesis")
+                .await
+                .expect("search before complete")
+                .len(),
+            0,
+            "streaming assistant text is not indexed until completion"
+        );
+
+        crate::db::complete_run(&pool, run_id, 2000)
+            .await
+            .expect("complete run");
+
+        // A case-insensitive substring of the assistant text now returns the
+        // assistant Message with the correct identity.
+        let hits = search_messages(&pool, "photosynthesis")
+            .await
+            .expect("search after complete");
+        assert_eq!(hits.len(), 1, "the completed assistant message is found");
+        let hit = &hits[0];
+        assert_eq!(hit.message_id, assistant_message_id.to_string());
+        assert_eq!(hit.thread_id, thread_id.to_string());
+        assert_eq!(hit.run_id, run_id.to_string());
+        assert_eq!(hit.role, "assistant");
+        assert_eq!(hit.thread_title, "Botany chat");
+        assert!(
+            hit.snippet.to_lowercase().contains("photosynthesis"),
+            "snippet excerpts around the match: {:?}",
+            hit.snippet
+        );
+    }
+
+    /// Completed-only (ADR-0035): assistant text that never reaches `completed` —
+    /// left `streaming`, or flipped to `incomplete` by `error_run` — contributes
+    /// no search hit. Only `RunStatus::complete` indexes assistant text.
+    #[tokio::test]
+    async fn incomplete_assistant_text_is_not_searchable() {
+        let pool = memory_pool().await;
+
+        // Run A: assistant text appended, never completed (still streaming).
+        seed_streaming_assistant_message(
+            &pool,
+            "Streaming chat",
+            "give me a unique word",
+            "Here is the streaming token quetzalcoatlus mid-thought",
+            1000,
+        )
+        .await;
+
+        // Run B: assistant text appended, then the Run errors — the assistant
+        // Message is flipped to `incomplete`, never `completed`.
+        let (_thread_b, run_b, _assistant_b) = seed_streaming_assistant_message(
+            &pool,
+            "Errored chat",
+            "give me another unique word",
+            "Here is the errored token quetzalcoatlus before failure",
+            2000,
+        )
+        .await;
+        crate::db::error_run(&pool, run_b, 3000)
+            .await
+            .expect("error run");
+
+        // Neither incomplete assistant Message is searchable.
+        assert_eq!(
+            search_messages(&pool, "quetzalcoatlus")
+                .await
+                .expect("search streaming/errored")
+                .len(),
+            0,
+            "neither streaming nor errored assistant text is indexed"
+        );
+    }
+
     /// `rebuild_message_fts` reconstructs the index from `message_parts` after the
     /// table is wiped — proving the projection is honestly tier-3 (ADR-0004).
     #[tokio::test]

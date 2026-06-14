@@ -6,6 +6,7 @@
 use sqlx::SqliteConnection;
 use uuid::Uuid;
 
+use super::message_fts;
 use super::queries;
 use super::run_log::{self, RunLogKind};
 
@@ -87,6 +88,28 @@ impl RunStatus {
         }
 
         queries::mark_assistant_messages_completed(&mut *conn, run_id, now_ms).await?;
+        // Index the now-completed assistant Message's finalized text into the
+        // tier-3 search projection (ADR-0035), in this same transaction. This is
+        // the only transition that completes assistant Messages; `fail`/`park`/
+        // `cancel` leave them streaming/incomplete and must not index. Empty text
+        // is skipped by `index_message`.
+        if let Some(message_id) = queries::assistant_message_id_for_run(&mut *conn, run_id).await? {
+            if let Some(thread_id) = queries::thread_id_for_message(&mut *conn, &message_id).await?
+            {
+                let text = queries::text_parts_by_message(&mut *conn, &message_id)
+                    .await?
+                    .concat();
+                message_fts::index_message(
+                    &mut *conn,
+                    &message_id,
+                    &thread_id,
+                    &run_id.to_string(),
+                    "assistant",
+                    &text,
+                )
+                .await?;
+            }
+        }
         run_log::append(&mut *conn, run_id, RunLogKind::Done, None, now_ms).await?;
         Ok(moved)
     }

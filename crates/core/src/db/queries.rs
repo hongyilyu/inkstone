@@ -1207,6 +1207,21 @@ where
     .await
 }
 
+/// Read a Message's `thread_id`. `None` when no such Message exists. Used by the
+/// Run-completion FTS seam to index the assistant Message into `message_fts`.
+pub(super) async fn thread_id_for_message<'e, E>(
+    executor: E,
+    message_id: &str,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT thread_id FROM messages WHERE id = ?1")
+        .bind(message_id)
+        .fetch_optional(executor)
+        .await
+}
+
 // ─── messages ─────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
