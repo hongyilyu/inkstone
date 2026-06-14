@@ -206,13 +206,17 @@ export async function cancelRun(
 		return;
 	}
 
-	// Parked iff a Proposal is still awaiting a decision (pending) or its decide
-	// failed (error) — both leave the Run parked with no live resume stream. Once
-	// decided (deciding/accepted/rejected), decideProposal has resumed a stream.
+	// Parked iff a Proposal has no live resume stream behind it: pending/error
+	// (never decided) AND deciding (decideProposal sets this BEFORE its decide RPC
+	// resolves; it only re-forks the resume stream afterward). Once accepted/rejected,
+	// the resume stream exists and owns the terminal. A racing cancel during deciding
+	// clears the Proposal here, and decideProposal's currency guard then bails.
 	const proposal = getChatState().proposals[runId];
 	const parked =
 		proposal !== undefined &&
-		(proposal.status === "pending" || proposal.status === "error");
+		(proposal.status === "pending" ||
+			proposal.status === "error" ||
+			proposal.status === "deciding");
 
 	// The ONLY outcome whose terminal is owned elsewhere is `already_terminal` on a
 	// non-parked Run: its live subscribe stream already delivered (or will deliver)

@@ -24,6 +24,7 @@ import {
 	resetChatStore,
 	seedAssistantMessage,
 	setPendingProposal,
+	setProposalStatus,
 } from "./chat.js";
 
 // Stub WsClient whose threadCreate fails; only that runs on the sendNewThread path.
@@ -408,6 +409,35 @@ describe("cancelRun (ADR-0014)", () => {
 		// No resumed stream was forked over the just-cancelled Run.
 		expect(hasRunFiber(runId)).toBe(false);
 		expect(subscribeRun).toHaveBeenCalledTimes(1); // only the original seed
+
+		await runtime.dispose();
+	});
+
+	it("on already_terminal while a proposal is DECIDING: still settles (no resume stream exists yet)", async () => {
+		const { runtime } = makeCancelRuntime({ outcome: "already_terminal" });
+		const runId = "run-deciding" as RunId;
+		seedActiveRun(runId, runtime);
+		// decideProposal sets `deciding` BEFORE re-forking the resume stream, so the
+		// Run is still parked with no live tail — a non-accepted cancel must settle.
+		setPendingProposal({
+			proposal_id: "p1",
+			run_id: runId,
+			mutation_kind: "create_journal_entry",
+			payload: {},
+			rationale: null,
+			status: "pending",
+		});
+		setProposalStatus(runId, "deciding");
+
+		await cancelRunBridge(runtime, runId);
+
+		const thread = getChatState().threads.t1;
+		expect(thread?.messages.find((m) => m.id === "a1")?.status).toBe(
+			"incomplete",
+		);
+		expect(thread?.activeRunId).toBeUndefined();
+		expect(getChatState().proposals[runId]).toBeUndefined();
+		expect(hasRunFiber(runId)).toBe(false);
 
 		await runtime.dispose();
 	});
