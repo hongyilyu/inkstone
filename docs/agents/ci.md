@@ -56,6 +56,13 @@ The four checks are required to merge into `master`. They must have reported onc
 (open a PR / push a commit so all four run) before the API will accept them. Needs
 a token with repo admin.
 
+> **This PUT replaces the entire protection object.** `required_pull_request_reviews:
+> null` and `restrictions: null` *clear* any existing review requirement or push
+> restriction on `master`. That's intended here (the only rule we want is the four
+> required checks) — but if you've since added other protections, fetch the current
+> object first (`gh api .../branches/master/protection`) and merge, or use the
+> granular `.../protection/required_status_checks` sub-endpoint instead.
+
 ```sh
 gh api -X PUT repos/hongyilyu/inkstone/branches/master/protection \
   -H 'Accept: application/vnd.github+json' \
