@@ -1,5 +1,5 @@
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
+import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /** Real-interpreter chat acceptance (ADR-0018): the faux-provider Worker streams a real agent-loop completion offline (ADR-0019). */
 test.use({

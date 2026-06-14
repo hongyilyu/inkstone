@@ -9,9 +9,9 @@
 		"ignoreUnknown": false,
 		"includes": [
 			"**",
-			"!**/.agents/**",
-			"!**/.claude/**",
-			"!**/.impeccable/**",
+			"!**/.agents",
+			"!**/.claude",
+			"!**/.impeccable",
 			"!**/*.gen.ts",
 			"!skills-lock.json"
 		]

@@ -1,5 +1,5 @@
-import { LOGIN_HELPER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
+import { LOGIN_HELPER_CMD } from "./spawnCore.js";
 
 /**
  * Connect-ChatGPT acceptance flow (real-worker-codex slice 8, ADR-0023/0024): a

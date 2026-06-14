@@ -1,5 +1,6 @@
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
+import path from "node:path";
 import { expect, test } from "./fixtures.js";
+import { FAUX_WORKER_CMD, REPO_ROOT } from "./spawnCore.js";
 
 /**
  * Light + dark screenshot gallery (chat-markdown-rendering slice 4, ADR-0021).
@@ -38,8 +39,10 @@ const greet = (name: string) => \`hello \${name}\`;
 \`\`\`
 `;
 
-const SCREENSHOT_DIR =
-	"/Users/lyuhongy/dev/inkstone/.agents/runs/chat-markdown-rendering/screenshots";
+const SCREENSHOT_DIR = path.join(
+	REPO_ROOT,
+	".agents/runs/chat-markdown-rendering/screenshots",
+);
 
 test.use({
 	coreOptions: {

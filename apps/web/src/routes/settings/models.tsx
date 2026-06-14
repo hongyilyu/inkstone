@@ -6,8 +6,8 @@ import { ModelCatalogTable } from "@/components/ModelCatalogTable";
 import { ProviderConnectionCard } from "@/components/ProviderConnectionCard";
 import { useRuntime } from "@/runtime";
 import {
-	PROVIDER_OPENAI_CODEX,
 	fetchConnected,
+	PROVIDER_OPENAI_CODEX,
 	startLogin,
 } from "@/store/providers";
 import { fetchCatalog, fetchSettings, saveSettings } from "@/store/settings";

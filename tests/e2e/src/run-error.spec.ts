@@ -1,5 +1,5 @@
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
+import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
  * Run-error surfacing (real-worker-codex slice 1 + the interpreter path): when

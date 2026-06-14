@@ -3,13 +3,13 @@ packages:
   - "packages/*"
   - "bridges/*"
   - "tests/*"
+# pnpm 11 aborts a non-interactive install (ERR_PNPM_IGNORED_BUILDS) when a
+# dependency ships an un-approved build script. `allowBuilds` is the allowlist
+# that runs them: each entry must be `true` (run) or `false` (skip) — pnpm 11
+# replaced `onlyBuiltDependencies` with this map. With every entry decided, a
+# `pnpm install --frozen-lockfile` runs exactly these scripts and exits clean.
 allowBuilds:
-  '@google/genai': set this to true or false
-  esbuild: set this to true or false
-  msgpackr-extract: set this to true or false
-  protobufjs: set this to true or false
-onlyBuiltDependencies:
-  - "@google/genai"
-  - esbuild
-  - msgpackr-extract
-  - protobufjs
+  "@google/genai": true
+  esbuild: true
+  msgpackr-extract: true
+  protobufjs: true

@@ -2,8 +2,8 @@ import type { LucideIcon } from "lucide-react";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import type { LibraryItem, Todo } from "@/lib/libraryItems";
-import { EntitySkeleton } from "./EntitySkeleton.js";
 import { TodoRow } from "./EntityRow.js";
+import { EntitySkeleton } from "./EntitySkeleton.js";
 
 /**
  * A derived GTD Todo view (Inbox, Waiting/Follow-up): a titled, scrollable list

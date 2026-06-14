@@ -1,17 +1,17 @@
-import type { WorkerManifest } from "@inkstone/protocol";
-import { Effect } from "effect";
-import {
-	runAgentLoop,
-	runAgentLoopContinue,
-} from "@earendil-works/pi-agent-core";
 import type {
 	AgentEventSink,
 	AgentMessage,
 	StreamFn,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { getModel, streamSimple } from "@earendil-works/pi-ai";
+import {
+	runAgentLoop,
+	runAgentLoopContinue,
+} from "@earendil-works/pi-agent-core";
 import type { Message, Model } from "@earendil-works/pi-ai";
+import { getModel, streamSimple } from "@earendil-works/pi-ai";
+import type { WorkerManifest } from "@inkstone/protocol";
+import { Effect } from "effect";
 import { makeProxyTools } from "./tool-proxy.js";
 import { WorkerTransport } from "./transport.js";
 
