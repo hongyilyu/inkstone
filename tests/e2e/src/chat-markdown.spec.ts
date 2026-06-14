@@ -1,5 +1,5 @@
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
+import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
  * Markdown-rendering acceptance flow (chat-markdown-rendering slice 1, ADR-0021).

@@ -1,8 +1,8 @@
 import type { WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { type InterpreterDeps, runInterpreter } from "./interpreter.js";
-import { StdioTransportLive } from "./transport-stdio.js";
 import { WorkerTransport } from "./transport.js";
+import { StdioTransportLive } from "./transport-stdio.js";
 
 /**
  * Shared Worker entry scaffolding both entries call with their own dep-builder — see docs/design/worker.md (ADR-0013, ADR-0018, ADR-0020, ADR-0027).

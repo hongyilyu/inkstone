@@ -1,7 +1,7 @@
 import {
-	RouterProvider,
 	createMemoryHistory,
 	createRouter,
+	RouterProvider,
 } from "@tanstack/react-router";
 import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";

@@ -11,8 +11,8 @@
 // `rotated:<old refresh>` so the test can assert the manifest carried the
 // refreshed token.
 
-import { mkdirSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 function readFirstLine(): Promise<string | null> {

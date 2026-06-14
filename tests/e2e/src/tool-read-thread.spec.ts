@@ -1,5 +1,5 @@
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
+import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /** Tool Protocol capstone (ADR-0018): cross-thread `read_thread` end-to-end via the faux-provider Worker in tool-call mode (ADR-0019). */
 test.use({

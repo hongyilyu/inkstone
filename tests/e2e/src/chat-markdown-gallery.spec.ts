@@ -1,5 +1,5 @@
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
 import { expect, test } from "./fixtures.js";
+import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
  * Light + dark screenshot gallery (chat-markdown-rendering slice 4, ADR-0021).

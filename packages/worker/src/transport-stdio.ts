@@ -1,7 +1,7 @@
-import { WorkerManifest } from "@inkstone/protocol";
-import { Effect, Layer, Schema as S } from "effect";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
+import { WorkerManifest } from "@inkstone/protocol";
+import { Effect, Layer, Schema as S } from "effect";
 import type { ToolCallResponse } from "./tool-proxy.js";
 import { ManifestParseError, WorkerTransport } from "./transport.js";
 

@@ -1,9 +1,9 @@
+import { PassThrough, Writable } from "node:stream";
 import type { RunEvent } from "@inkstone/protocol";
 import { Effect } from "effect";
-import { PassThrough, Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { makeStdioTransport } from "./transport-stdio.js";
 import { ManifestParseError, WorkerTransport } from "./transport.js";
+import { makeStdioTransport } from "./transport-stdio.js";
 
 // A Writable that records everything written, so the test can assert the exact NDJSON frames the transport emitted.
 function capturingWritable(): { output: Writable; written: () => string } {

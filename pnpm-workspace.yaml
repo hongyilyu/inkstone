@@ -3,11 +3,11 @@ packages:
   - "packages/*"
   - "bridges/*"
   - "tests/*"
-allowBuilds:
-  '@google/genai': set this to true or false
-  esbuild: set this to true or false
-  msgpackr-extract: set this to true or false
-  protobufjs: set this to true or false
+# pnpm 11 aborts a non-interactive install (ERR_PNPM_IGNORED_BUILDS) when a
+# dependency ships an un-approved build script; onlyBuiltDependencies alone does
+# not suppress it. Downgrading to a warning lets `pnpm install --frozen-lockfile`
+# succeed in CI while the allowlist below still scopes which deps run scripts.
+strictDepBuilds: false
 onlyBuiltDependencies:
   - "@google/genai"
   - esbuild
