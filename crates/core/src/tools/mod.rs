@@ -3,6 +3,7 @@
 //! `execute`. Core ships allowlist-filtered descriptors in the manifest; the
 //! Worker proxies `tool_request`/`tool_result` over stdio with zero per-tool code.
 
+mod load_skill;
 mod propose_workspace_mutation;
 mod read_current_thread_journal_entries;
 mod read_thread;
@@ -30,6 +31,7 @@ fn descriptor_for(name: &str) -> Option<CoreToolDescriptor> {
         }
         propose_workspace_mutation::NAME => Some(propose_workspace_mutation::descriptor()),
         search_entities::NAME => Some(search_entities::descriptor()),
+        load_skill::NAME => Some(load_skill::descriptor()),
         _ => None,
     }
 }
@@ -72,6 +74,9 @@ pub async fn execute(
             read_current_thread_journal_entries::execute(pool, run_id, params).await
         }
         search_entities::NAME => search_entities::execute(pool, params).await,
+        // `load_skill` reads a Core-managed config file, not the DB (ADR-0036):
+        // no `pool`, no `run_id`. It is not a Proposal — it dispatches here.
+        load_skill::NAME => load_skill::execute(params).await,
         // Proposal tools never reach dispatch (ADR-0025); reaching here means
         // the park interception was bypassed, so refuse defensively.
         propose_workspace_mutation::NAME => Err(ToolError {
