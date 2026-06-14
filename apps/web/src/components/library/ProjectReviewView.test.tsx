@@ -46,6 +46,7 @@ function makeRuntime(
 		settingsSet: () => unused,
 		proposalGet: () => unused,
 		proposalDecide: () => unused,
+		messageSearch: () => unused,
 		proposalNotifications: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
@@ -303,6 +304,7 @@ describe("ProjectReviewView (focused queue)", () => {
 			settingsSet: () => never,
 			proposalGet: () => never,
 			proposalDecide: () => never,
+			messageSearch: () => never,
 			proposalNotifications: () => Effect.never as never,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));

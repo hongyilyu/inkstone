@@ -1207,6 +1207,21 @@ where
     .await
 }
 
+/// Read a Message's `thread_id`. `None` when no such Message exists. Used by the
+/// Run-completion FTS seam to index the assistant Message into `message_fts`.
+pub(super) async fn thread_id_for_message<'e, E>(
+    executor: E,
+    message_id: &str,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT thread_id FROM messages WHERE id = ?1")
+        .bind(message_id)
+        .fetch_optional(executor)
+        .await
+}
+
 // ─── messages ─────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
@@ -1678,4 +1693,164 @@ where
     .execute(executor)
     .await
     .map(|_| ())
+}
+
+// ─── message_fts (tier-3 projection, ADR-0035) ─────────────────────────
+
+/// Index one Message's text into `message_fts`. Called at the user-create seam
+/// (inside the caller's tx) and per completed Message during a rebuild. The
+/// columns mirror the search hit shape; only `text` is tokenized.
+pub(super) async fn insert_message_fts_row<'e, E>(
+    executor: E,
+    message_id: &str,
+    thread_id: &str,
+    run_id: &str,
+    role: &str,
+    text: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO message_fts (message_id, thread_id, run_id, role, text) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(message_id)
+    .bind(thread_id)
+    .bind(run_id)
+    .bind(role)
+    .bind(text)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Wipe `message_fts` for a full rebuild (ADR-0035). The projection is tier-3,
+/// re-derivable from `message_parts`, so delete-and-recreate is safe.
+pub(super) async fn clear_message_fts<'e, E>(executor: E) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM message_fts")
+        .execute(executor)
+        .await
+        .map(|_| ())
+}
+
+/// Read every `completed` Message's identity (`id, thread_id, run_id, role`) for
+/// the rebuild. The caller assembles each Message's text via the canonical
+/// `text_parts_by_message` concat (same path `history_for_run` uses) and indexes
+/// it, keeping the projection honestly derived from tier-2 `message_parts`.
+pub(super) async fn completed_messages_for_fts<'e, E>(
+    executor: E,
+) -> sqlx::Result<Vec<(String, String, String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, thread_id, run_id, role FROM messages \
+         WHERE status = 'completed' ORDER BY created_at, rowid",
+    )
+    .fetch_all(executor)
+    .await
+}
+
+/// Chars of context kept on each side of the match in a snippet (ADR-0035).
+const SNIPPET_PAD: i64 = 32;
+
+/// LIKE escape character for the substring search. Backslash is escaped along
+/// with `%` and `_` so a user query is matched literally (ADR-0035).
+const LIKE_ESCAPE: char = '\\';
+
+/// Escape LIKE metacharacters (`%`, `_`) and the escape char itself so the
+/// needle is matched as literal text under `LIKE ... ESCAPE '\'`.
+fn escape_like(query: &str) -> String {
+    let mut out = String::with_capacity(query.len());
+    for c in query.chars() {
+        if c == LIKE_ESCAPE || c == '%' || c == '_' {
+            out.push(LIKE_ESCAPE);
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Whether the needle contains a LIKE metacharacter (`%`, `_`) or the escape
+/// char (`\`), and therefore needs the `ESCAPE`-clause path. A needle with none
+/// of these is matched identically with or without escaping, so it can take the
+/// plain `LIKE` path that preserves the FTS5 trigram acceleration.
+fn needs_like_escape(query: &str) -> bool {
+    query.contains('%') || query.contains('_') || query.contains(LIKE_ESCAPE)
+}
+
+/// Substring search over `message_fts` (ADR-0035): a case-insensitive
+/// `text LIKE '%' || ? || '%'` (the trigram tokenizer accelerates it, no
+/// `MATCH`), joined to `threads` for the title and `messages` for `created_at`,
+/// ordered newest-first. The snippet is rendered in SQL with `instr`/`substr`
+/// (char-based in SQLite — no byte-slice hazard) around the first case-insensitive
+/// match, keeping [`SNIPPET_PAD`] chars of context per side with `…` where trimmed.
+/// Returns `(message_id, thread_id, run_id, role, snippet, thread_title,
+/// created_at)`.
+///
+/// **Trigram-preserving escape:** SQLite disables the FTS5 trigram LIKE
+/// acceleration whenever an `ESCAPE` clause is present — even for a needle with
+/// nothing to escape. So we only take the LIKE-escaped path (binding
+/// `escape_like(query)` under `ESCAPE '\'`) for a needle that actually contains
+/// `%`/`_`/`\`; the common no-wildcard needle takes the plain `LIKE` path, which
+/// is byte-identical for such needles and keeps the trigram index engaged.
+///
+/// A blank/whitespace-only `query` returns no hits (an empty needle would make
+/// `LIKE '%%'` match the whole corpus) — guarded here so the boundary is safe
+/// regardless of caller.
+#[allow(clippy::type_complexity)]
+pub(super) async fn search_messages<'e, E>(
+    executor: E,
+    query: &str,
+) -> sqlx::Result<Vec<(String, String, String, String, String, String, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // The snippet/select half is identical; only the WHERE clause's escape differs.
+    // `?1` needle for WHERE; `?2` raw needle (instr/substr); `?3` pad.
+    const SELECT_HEAD: &str = "SELECT s.message_id, s.thread_id, s.run_id, s.role, \
+                CASE WHEN s.start > 1 THEN '…' ELSE '' END \
+                  || substr(s.text, s.start, (s.pos - s.start) + s.slen + ?3) \
+                  || CASE WHEN s.start - 1 + ((s.pos - s.start) + s.slen + ?3) < length(s.text) \
+                          THEN '…' ELSE '' END, \
+                s.title, s.created_at \
+         FROM ( \
+           SELECT f.message_id, f.thread_id, f.run_id, f.role, f.text, \
+                  t.title, m.created_at, m.rowid AS m_rowid, \
+                  length(?2) AS slen, \
+                  instr(lower(f.text), lower(?2)) AS pos, \
+                  max(1, instr(lower(f.text), lower(?2)) - ?3) AS start \
+           FROM message_fts f \
+           JOIN threads t ON t.id = f.thread_id \
+           JOIN messages m ON m.id = f.message_id \
+           WHERE f.text LIKE '%' || ?1 || '%'";
+    const SELECT_TAIL: &str = " \
+         ) AS s \
+         ORDER BY s.created_at DESC, s.m_rowid DESC";
+
+    // Wildcard needle → ESCAPE path (correct literal `%`/`_`, trigram bypassed by
+    // SQLite); plain needle → no ESCAPE (trigram preserved). The bound `?1` matches.
+    let (sql, needle) = if needs_like_escape(query) {
+        (
+            format!("{SELECT_HEAD} ESCAPE '\\'{SELECT_TAIL}"),
+            escape_like(query),
+        )
+    } else {
+        (format!("{SELECT_HEAD}{SELECT_TAIL}"), query.to_string())
+    };
+
+    sqlx::query_as(&sql)
+        .bind(needle)
+        .bind(query)
+        .bind(SNIPPET_PAD)
+        .fetch_all(executor)
+        .await
 }

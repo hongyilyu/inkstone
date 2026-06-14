@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { CornerDownLeft, MessageSquareText } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
+import { useMessageSearch } from "@/lib/hooks/useMessageSearch";
 import { useThreads } from "@/lib/hooks/useThreads";
 import {
 	KIND_META,
@@ -21,12 +22,29 @@ import { SearchField } from "./ui/search-field.js";
 
 type Result =
 	| { type: "thread"; id: string; title: string }
-	| { type: "library-item"; item: LibraryItem };
+	| { type: "library-item"; item: LibraryItem }
+	| {
+			type: "message";
+			thread_id: string;
+			message_id: string;
+			snippet: string;
+			thread_title: string;
+	  };
 
 interface Group {
 	key: string;
 	label: string;
 	items: Result[];
+}
+
+/** Debounce a fast-changing value (e.g. keystrokes) so the server message search fires once typing settles, not per keystroke. */
+function useDebounced<T>(value: T, delayMs: number): T {
+	const [debounced, setDebounced] = useState(value);
+	useEffect(() => {
+		const t = setTimeout(() => setDebounced(value), delayMs);
+		return () => clearTimeout(t);
+	}, [value, delayMs]);
+	return debounced;
 }
 
 /** Global command palette (⌘K / Ctrl+K) searching recent Threads and Library items, grouped and keyboard driven; mounted once in `__root`. */
@@ -55,6 +73,11 @@ export function CommandPalette() {
 	// Lazy: fetch threads only while open (shares the sidebar cache); errors → empty list.
 	const { data: threadData } = useThreads({ enabled: open });
 
+	// Debounce keystrokes so server message search fires once typing settles; the
+	// query is disabled for an empty input, so an empty palette makes no server call.
+	const debouncedQuery = useDebounced(query, 180);
+	const { data: messageData } = useMessageSearch(debouncedQuery);
+
 	const groups = useMemo<Group[]>(() => {
 		const all = libraryItems ?? [];
 		const q = query.trim().toLowerCase();
@@ -69,8 +92,25 @@ export function CommandPalette() {
 			? searchLibraryItems(all, query)
 			: recentlyCapturedItems(all, 8);
 
+		// Gate the Messages group on the DEBOUNCED query, not the immediate `q`:
+		// `messageData` is keyed on `debouncedQuery`, so showing it under the
+		// immediate `q` would render hits for the previous query during the debounce
+		// window — a stale row that Enter/click could navigate to. Tying display to
+		// the same query the data was fetched for keeps the group self-consistent.
+		const dq = debouncedQuery.trim();
+		const messageItems: Result[] = (dq ? (messageData?.hits ?? []) : []).map(
+			(hit): Result => ({
+				type: "message",
+				thread_id: hit.thread_id,
+				message_id: hit.message_id,
+				snippet: hit.snippet,
+				thread_title: hit.thread_title,
+			}),
+		);
+
 		const out: Group[] = [
 			{ key: "thread", label: "Threads", items: threadItems },
+			{ key: "message", label: "Messages", items: messageItems },
 			...KIND_ORDER.map((kind) => ({
 				key: kind,
 				label: KIND_META[kind].plural,
@@ -80,7 +120,7 @@ export function CommandPalette() {
 			})),
 		];
 		return out.filter((g) => g.items.length > 0);
-	}, [libraryItems, threadData, query]);
+	}, [libraryItems, threadData, messageData, query, debouncedQuery]);
 
 	const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
@@ -106,6 +146,12 @@ export function CommandPalette() {
 		closeCommand();
 		if (result.type === "thread") {
 			setFocusedThread(result.id);
+			navigate({ to: "/" });
+			return;
+		}
+		if (result.type === "message") {
+			// Scroll-to-message is out of scope (issue #138); land on the Thread.
+			setFocusedThread(result.thread_id);
 			navigate({ to: "/" });
 			return;
 		}
@@ -190,7 +236,11 @@ export function CommandPalette() {
 										return (
 											<button
 												key={
-													item.type === "thread" ? `t-${item.id}` : item.item.id
+													item.type === "thread"
+														? `t-${item.id}`
+														: item.type === "message"
+															? `m-${item.message_id}`
+															: item.item.id
 												}
 												type="button"
 												id={`${listboxId}-opt-${index}`}
@@ -214,6 +264,23 @@ export function CommandPalette() {
 														</span>
 														<span className="min-w-0 flex-1 truncate text-foreground text-sm">
 															{item.title}
+														</span>
+													</>
+												) : item.type === "message" ? (
+													<>
+														<span
+															className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-secondary-foreground"
+															aria-hidden
+														>
+															<MessageSquareText className="size-4" />
+														</span>
+														<span className="min-w-0 flex-1">
+															<span className="block truncate text-foreground text-sm">
+																{item.snippet}
+															</span>
+															<span className="block truncate text-muted-foreground text-xs">
+																{item.thread_title}
+															</span>
 														</span>
 													</>
 												) : (

@@ -60,6 +60,7 @@ function makeRuntime(opts: {
 		settingsSet,
 		proposalGet: die,
 		proposalDecide: die,
+		messageSearch: die,
 		proposalNotifications: () => Stream.empty,
 	});
 	return {

@@ -6,6 +6,9 @@ import {
 	EntityListParams,
 	EntityListResult,
 	EntityRow,
+	MessageHit,
+	MessageSearchParams,
+	MessageSearchResult,
 	MessageView,
 	PostMessageParams,
 	PostMessageResult,
@@ -590,6 +593,89 @@ describe("EntityListParams", () => {
 
 	it("rejects a non-string type", () => {
 		expect(() => S.decodeUnknownSync(EntityListParams)({ type: 42 })).toThrow();
+	});
+});
+
+describe("MessageSearchParams", () => {
+	it("decodes a query and encodes back to the same wire shape", () => {
+		const wire = { query: "daycare" };
+		const decoded = S.decodeUnknownSync(MessageSearchParams)(wire);
+		expect(decoded).toEqual(wire);
+		// The Client ENCODES this param onto the wire, so guard the encode
+		// mirror too (the Rust side decodes it).
+		expect(S.encodeSync(MessageSearchParams)(decoded)).toEqual(wire);
+	});
+
+	it("rejects a missing query", () => {
+		expect(() => S.decodeUnknownSync(MessageSearchParams)({})).toThrow();
+	});
+
+	it("rejects a non-string query", () => {
+		expect(() =>
+			S.decodeUnknownSync(MessageSearchParams)({ query: 42 }),
+		).toThrow();
+	});
+});
+
+describe("MessageHit", () => {
+	const wire = {
+		message_id: "01900000-0000-7000-8000-000000000040",
+		thread_id: "01900000-0000-7000-8000-000000000000",
+		run_id: "01900000-0000-7000-8000-000000000001",
+		role: "user",
+		snippet: "...the daycare schedule...",
+		thread_title: "Planning the week",
+		created_at: 1_700_000_000_000,
+	};
+
+	it("decodes a full hit and encodes back unchanged", () => {
+		const decoded = S.decodeUnknownSync(MessageHit)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(MessageHit)(decoded)).toEqual(wire);
+	});
+
+	it("decodes an assistant-role hit", () => {
+		const assistant = { ...wire, role: "assistant" };
+		expect(S.decodeUnknownSync(MessageHit)(assistant)).toEqual(assistant);
+	});
+
+	it("rejects an unknown role", () => {
+		expect(() =>
+			S.decodeUnknownSync(MessageHit)({ ...wire, role: "system" }),
+		).toThrow();
+	});
+
+	it("rejects a non-number created_at", () => {
+		expect(() =>
+			S.decodeUnknownSync(MessageHit)({ ...wire, created_at: "today" }),
+		).toThrow();
+	});
+});
+
+describe("MessageSearchResult", () => {
+	it("decodes a hits array and encodes back unchanged", () => {
+		const wire = {
+			hits: [
+				{
+					message_id: "01900000-0000-7000-8000-000000000040",
+					thread_id: "01900000-0000-7000-8000-000000000000",
+					run_id: "01900000-0000-7000-8000-000000000001",
+					role: "user",
+					snippet: "...the daycare schedule...",
+					thread_title: "Planning the week",
+					created_at: 1_700_000_000_000,
+				},
+			],
+		};
+		const decoded = S.decodeUnknownSync(MessageSearchResult)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(MessageSearchResult)(decoded)).toEqual(wire);
+	});
+
+	it("decodes an empty hits array", () => {
+		expect(S.decodeUnknownSync(MessageSearchResult)({ hits: [] })).toEqual({
+			hits: [],
+		});
 	});
 });
 

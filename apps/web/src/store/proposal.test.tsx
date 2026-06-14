@@ -92,6 +92,7 @@ function makeStubRuntime(opts: {
 				Effect.succeed({
 					status: params.decision === "accept" ? "accepted" : "rejected",
 				} as const)),
+		messageSearch: () => unused,
 		proposalNotifications: () => Stream.fromQueue(opts.proposalQueue),
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));

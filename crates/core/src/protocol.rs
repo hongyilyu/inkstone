@@ -257,6 +257,37 @@ pub struct EntityMutateResult {
     pub entity_id: Option<String>,
 }
 
+/// `message/search` params (ADR-0035): a substring query over completed Message
+/// text. Mirror of TS `MessageSearchParams`.
+#[derive(Debug, Deserialize)]
+pub struct MessageSearchParams {
+    pub query: String,
+}
+
+/// One `message/search` hit (ADR-0035): a completed Message matching the
+/// substring query, with a SQL-rendered snippet and its Thread title for
+/// navigation. Mirror of TS `MessageHit` (field-for-field, snake_case wire);
+/// aligns with `db::MessageHit`. `role` is `"user"`/`"assistant"` on the wire;
+/// `created_at` is a ms-epoch stamp.
+#[derive(Debug, Serialize)]
+pub struct MessageHit {
+    pub message_id: String,
+    pub thread_id: String,
+    pub run_id: String,
+    pub role: String,
+    pub snippet: String,
+    pub thread_title: String,
+    pub created_at: i64,
+}
+
+/// `message/search` result: the matching hits, newest-first. Object-wrapper
+/// shape (`{hits: [...]}`) keeps it forward-extensible. Mirror of TS
+/// `MessageSearchResult`.
+#[derive(Debug, Serialize)]
+pub struct MessageSearchResult {
+    pub hits: Vec<MessageHit>,
+}
+
 /// `thread/get` params: the Thread to rehydrate. Malformed `thread_id` →
 /// `invalid_params` (-32602), unknown → `unknown_thread` (-32001), as in
 /// `run/post_message`.
@@ -567,6 +598,7 @@ mod mirror_tests {
     // A fixed UUID-shaped string; the wire carries ids as plain strings.
     const UUID_A: &str = "0190d3c1-0000-7000-8000-000000000001";
     const UUID_B: &str = "0190d3c1-0000-7000-8000-000000000002";
+    const UUID_RUN: &str = "0190d3c1-0000-7000-8000-000000000003";
 
     // --- Deserialize-only params: decode the canonical wire JSON. ---
 
@@ -1414,5 +1446,64 @@ mod mirror_tests {
         let empty: SettingsSetParams = serde_json::from_value(json!({})).unwrap();
         assert_eq!(empty.model, None);
         assert_eq!(empty.effort, None);
+    }
+
+    #[test]
+    fn message_search_params_decodes_query() {
+        let wire = json!({ "query": "daycare" });
+        let p: MessageSearchParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.query, "daycare");
+    }
+
+    #[test]
+    fn message_search_params_rejects_missing_and_non_string_query() {
+        assert!(serde_json::from_value::<MessageSearchParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<MessageSearchParams>(json!({ "query": 42 })).is_err());
+    }
+
+    #[test]
+    fn message_hit_encodes_full_snake_case_shape() {
+        let hit = MessageHit {
+            message_id: UUID_A.to_string(),
+            thread_id: UUID_B.to_string(),
+            run_id: UUID_RUN.to_string(),
+            role: "assistant".to_string(),
+            snippet: "…daycare schedule…".to_string(),
+            thread_title: "Planning".to_string(),
+            created_at: 1_700_000_000_000,
+        };
+        assert_eq!(
+            serde_json::to_value(&hit).unwrap(),
+            json!({
+                "message_id": UUID_A,
+                "thread_id": UUID_B,
+                "run_id": UUID_RUN,
+                "role": "assistant",
+                "snippet": "…daycare schedule…",
+                "thread_title": "Planning",
+                "created_at": 1_700_000_000_000_i64,
+            }),
+        );
+    }
+
+    #[test]
+    fn message_search_result_encodes_hits_wrapper_and_empty() {
+        let one = MessageSearchResult {
+            hits: vec![MessageHit {
+                message_id: UUID_A.to_string(),
+                thread_id: UUID_B.to_string(),
+                run_id: UUID_RUN.to_string(),
+                role: "user".to_string(),
+                snippet: "hi".to_string(),
+                thread_title: "T".to_string(),
+                created_at: 1,
+            }],
+        };
+        let value = serde_json::to_value(&one).unwrap();
+        assert_eq!(value["hits"].as_array().unwrap().len(), 1);
+        assert_eq!(value["hits"][0]["role"], json!("user"));
+
+        let empty = MessageSearchResult { hits: vec![] };
+        assert_eq!(serde_json::to_value(&empty).unwrap(), json!({ "hits": [] }));
     }
 }
