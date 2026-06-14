@@ -33,6 +33,7 @@ function makeRuntime(
 		settingsSet: () => unused,
 		proposalGet: () => unused,
 		proposalDecide: () => unused,
+		messageSearch: () => unused,
 		proposalNotifications: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));

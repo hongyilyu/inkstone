@@ -64,6 +64,7 @@ describe("refresh-durable hydration", () => {
 			settingsSet: () => Effect.die("unused"),
 			proposalGet: () => Effect.die("unused"),
 			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
@@ -124,6 +125,7 @@ describe("refresh-durable hydration", () => {
 			settingsSet: () => Effect.die("unused"),
 			proposalGet: () => Effect.die("unused"),
 			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
@@ -195,6 +197,7 @@ describe("refresh-durable hydration", () => {
 			settingsSet: () => Effect.die("unused"),
 			proposalGet: () => Effect.die("unused"),
 			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));

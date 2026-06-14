@@ -3,6 +3,7 @@ import {
 	EntityListResult,
 	type EntityMutateParams,
 	EntityMutateResult,
+	MessageSearchResult,
 	ModelCatalogResult,
 	PostMessageResult,
 	ProposalChangedNotification,
@@ -134,6 +135,9 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly entityMutate: (
 			params: EntityMutateParams,
 		) => Effect.Effect<EntityMutateResult, WsError>;
+		readonly messageSearch: (
+			query: string,
+		) => Effect.Effect<MessageSearchResult, WsError>;
 		readonly subscribeRun: (
 			runId: RunId,
 		) => Stream.Stream<RunEventValue, WsError>;
@@ -373,6 +377,12 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			): Effect.Effect<EntityMutateResult, WsError> =>
 				request("entity/mutate", { ...params }, EntityMutateResult);
 
+			// message/search (ADR-0035): substring full-text search over completed Message text.
+			const messageSearch = (
+				query: string,
+			): Effect.Effect<MessageSearchResult, WsError> =>
+				request("message/search", { query }, MessageSearchResult);
+
 			// Queue is created before run/subscribe is sent so post-ack events aren't dropped — see docs/design/ui-sdk.md
 			const subscribeRun = (
 				runId: RunId,
@@ -429,6 +439,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				threadGet,
 				listEntities,
 				entityMutate,
+				messageSearch,
 				subscribeRun,
 				providerStatus,
 				providerLoginStart,

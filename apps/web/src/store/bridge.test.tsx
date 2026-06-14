@@ -42,6 +42,7 @@ function makeFailingThreadCreateRuntime() {
 		settingsSet: () => unused,
 		proposalGet: () => unused,
 		proposalDecide: () => unused,
+		messageSearch: () => unused,
 		proposalNotifications: () => unused,
 	});
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
@@ -89,6 +90,7 @@ describe("decideProposal resume fiber tracking (M2)", () => {
 			proposalGet: () => Effect.die("unused"),
 			proposalDecide: () =>
 				Effect.succeed({ status: "accepted" as const, entity_id: "e1" }),
+			messageSearch: () => Effect.die("unused"),
 			proposalNotifications: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
