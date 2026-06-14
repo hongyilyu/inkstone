@@ -1,8 +1,8 @@
+import type { OAuthCredentials } from "@earendil-works/pi-ai";
 import {
 	loginOpenAICodex,
 	refreshOpenAICodexToken,
 } from "@earendil-works/pi-ai/oauth";
-import type { OAuthCredentials } from "@earendil-works/pi-ai";
 
 // Provider Helper: stateless OAuth process Core spawns (refresh/login modes) — see docs/design/worker.md (ADR-0023)
 

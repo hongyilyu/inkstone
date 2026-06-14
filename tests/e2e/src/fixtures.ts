@@ -1,10 +1,10 @@
 import { test as base } from "@playwright/test";
+import { ChatPage } from "./page-objects/ChatPage.js";
 import {
 	type SpawnCoreOptions,
 	type SpawnedCore,
 	spawnCore,
 } from "./spawnCore.js";
-import { ChatPage } from "./page-objects/ChatPage.js";
 
 /** Full-system Playwright fixtures (ADR-0019): per-test fresh Core + served SPA + `ChatPage`. */
 interface HarnessFixtures {

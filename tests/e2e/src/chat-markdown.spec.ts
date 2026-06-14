@@ -1,5 +1,6 @@
-import { FAUX_WORKER_CMD } from "./spawnCore.js";
+import path from "node:path";
 import { expect, test } from "./fixtures.js";
+import { FAUX_WORKER_CMD, REPO_ROOT } from "./spawnCore.js";
 
 /**
  * Markdown-rendering acceptance flow (chat-markdown-rendering slice 1, ADR-0021).
@@ -29,14 +30,19 @@ const greet = (name: string) => \`hello \${name}\`;
 \`\`\`
 `;
 
-const SCREENSHOT_PATH =
-	"/Users/lyuhongy/dev/inkstone/.agents/runs/chat-markdown-rendering/screenshots/markdown-slice1.png";
+const SCREENSHOT_DIR = path.join(
+	REPO_ROOT,
+	".agents/runs/chat-markdown-rendering/screenshots",
+);
 
-const STREAMING_SCREENSHOT_PATH =
-	"/Users/lyuhongy/dev/inkstone/.agents/runs/chat-markdown-rendering/screenshots/streaming-slice2.png";
+const SCREENSHOT_PATH = path.join(SCREENSHOT_DIR, "markdown-slice1.png");
 
-const COPY_SCREENSHOT_PATH =
-	"/Users/lyuhongy/dev/inkstone/.agents/runs/chat-markdown-rendering/screenshots/copy-slice3.png";
+const STREAMING_SCREENSHOT_PATH = path.join(
+	SCREENSHOT_DIR,
+	"streaming-slice2.png",
+);
+
+const COPY_SCREENSHOT_PATH = path.join(SCREENSHOT_DIR, "copy-slice3.png");
 
 test.use({
 	coreOptions: {
