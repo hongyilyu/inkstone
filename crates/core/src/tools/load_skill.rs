@@ -43,7 +43,10 @@ pub fn descriptor() -> CoreToolDescriptor {
 /// else `<OS data dir>/inkstone/skills/`, beside the SQLite DB. Mirrors
 /// `db::resolve_db_path` and `workflow::default_dir`.
 fn skills_dir() -> anyhow::Result<PathBuf> {
-    if let Some(dir) = std::env::var_os("INKSTONE_SKILLS_DIR") {
+    // An empty override is treated as unset — otherwise it resolves to a relative
+    // `""` and reads from the process CWD. Mirrors `os_data_dir`'s `XDG_DATA_HOME`
+    // filter (`db/mod.rs`).
+    if let Some(dir) = std::env::var_os("INKSTONE_SKILLS_DIR").filter(|d| !d.is_empty()) {
         return Ok(PathBuf::from(dir));
     }
     Ok(crate::db::os_data_dir()?.join("inkstone").join("skills"))
@@ -316,6 +319,24 @@ mod tests {
         let out = execute(json!({ "name": "empty" })).await.expect("load ok");
         assert_eq!(text(&out), "", "an empty SKILL.md yields an empty body");
 
+        unsafe {
+            std::env::remove_var("INKSTONE_SKILLS_DIR");
+        }
+    }
+
+    #[test]
+    fn empty_skills_dir_env_falls_back_to_data_dir() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        // An empty override must NOT resolve to a relative `""` (which would read
+        // from the process CWD) — it falls through to `<data dir>/inkstone/skills`.
+        unsafe {
+            std::env::set_var("INKSTONE_SKILLS_DIR", "");
+        }
+        let dir = skills_dir().expect("skills_dir resolves");
+        assert!(
+            dir.ends_with("inkstone/skills"),
+            "empty override falls back to the data dir, got {dir:?}"
+        );
         unsafe {
             std::env::remove_var("INKSTONE_SKILLS_DIR");
         }
