@@ -6,6 +6,7 @@ import {
 	useSearch,
 } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { BookmarkEditor } from "@/components/library/BookmarkEditor";
 import { EntityDetail } from "@/components/library/EntityDetail";
 import { JournalEntryEditor } from "@/components/library/JournalEntryEditor";
 import { LibraryNav } from "@/components/library/LibraryNav";
@@ -28,6 +29,7 @@ const CREATABLE_KINDS = new Set<LibraryItemKind>([
 	"person",
 	"project",
 	"journal_entry",
+	"bookmark",
 ]);
 
 /** The default rail width; the Journal body editor wants more room (ADR-0033). */
@@ -145,6 +147,9 @@ function CreateEditor({
 		return (
 			<JournalEntryEditor mode="create" onDone={onDone} onCancel={onCancel} />
 		);
+	}
+	if (kind === "bookmark") {
+		return <BookmarkEditor mode="create" onDone={onDone} onCancel={onCancel} />;
 	}
 	return (
 		<TodoEditor

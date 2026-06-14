@@ -49,12 +49,13 @@ function KindRoute() {
 					search: { id: next },
 				})
 			}
-			// Todo, Person, Project, and Journal Entry are manually-creatable in the rail (ADR-0033).
+			// Todo, Person, Project, Journal Entry, and Bookmark are manually-creatable in the rail (ADR-0033).
 			onNew={
 				kind === "todo" ||
 				kind === "person" ||
 				kind === "project" ||
-				kind === "journal_entry"
+				kind === "journal_entry" ||
+				kind === "bookmark"
 					? () =>
 							navigate({
 								to: "/library/$kind",
