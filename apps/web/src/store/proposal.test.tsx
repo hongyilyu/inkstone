@@ -70,6 +70,7 @@ function makeStubRuntime(opts: {
 			}
 			return opts.runQueue ? Stream.fromQueue(opts.runQueue) : Stream.empty;
 		},
+		cancelRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,

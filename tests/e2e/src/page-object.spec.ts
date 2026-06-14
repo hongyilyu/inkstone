@@ -15,6 +15,7 @@ test("ChatPage exposes its behavior-level methods", () => {
 	for (const method of [
 		"goto",
 		"send",
+		"stop",
 		"waitForAssistantText",
 		"newChat",
 		"openThread",

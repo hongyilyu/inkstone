@@ -1,4 +1,4 @@
-import { ArrowUp, Paperclip, Search } from "lucide-react";
+import { ArrowUp, Paperclip, Search, Square } from "lucide-react";
 import {
 	type FormEvent,
 	type KeyboardEvent,
@@ -10,11 +10,24 @@ import { EffortPicker } from "./EffortPicker.js";
 import { ModelPicker } from "./ModelPicker.js";
 import { Button } from "./ui/button.js";
 
-export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
+export function ComposeFooter({
+	onSend,
+	isRunning = false,
+	onStop,
+}: {
+	onSend: (text: string) => void;
+	/** A Run is streaming or parked → swap Send for a Stop control. */
+	isRunning?: boolean;
+	/** Cancel the active Run (ADR-0014); required when `isRunning`. */
+	onStop?: () => void;
+}) {
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
 	const submit = () => {
+		// While a Run is active, Send is replaced by Stop — Enter/form-submit must
+		// not fire a second turn over the live one. Stop is an explicit click only.
+		if (isRunning) return;
 		const trimmed = value.trim();
 		if (!trimmed) return;
 		onSend(trimmed);
@@ -81,14 +94,26 @@ export function ComposeFooter({ onSend }: { onSend: (text: string) => void }) {
 							<span>Attach</span>
 						</Button>
 					</div>
-					<Button
-						type="submit"
-						aria-label="Send"
-						variant="primary-icon"
-						size="icon-lg"
-					>
-						<ArrowUp className="h-5 w-5" aria-hidden />
-					</Button>
+					{isRunning ? (
+						<Button
+							type="button"
+							aria-label="Stop"
+							variant="primary-icon"
+							size="icon-lg"
+							onClick={onStop}
+						>
+							<Square className="h-4 w-4 fill-current" aria-hidden />
+						</Button>
+					) : (
+						<Button
+							type="submit"
+							aria-label="Send"
+							variant="primary-icon"
+							size="icon-lg"
+						>
+							<ArrowUp className="h-5 w-5" aria-hidden />
+						</Button>
+					)}
 				</div>
 			</form>
 		</div>

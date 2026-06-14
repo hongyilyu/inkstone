@@ -39,6 +39,7 @@ function makeRuntime(opts: {
 		listEntities: die,
 		entityMutate: die,
 		subscribeRun: dieStream,
+		cancelRun: die,
 		providerStatus: () =>
 			Effect.succeed({
 				providers: [{ id: "openai-codex", connected: opts.connected ?? false }],

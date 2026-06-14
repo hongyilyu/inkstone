@@ -23,6 +23,7 @@ function makeRuntime() {
 		listEntities: die,
 		entityMutate: die,
 		subscribeRun: dieStream,
+		cancelRun: die,
 		providerStatus: die,
 		providerLoginStart: die,
 		modelCatalog: () =>
@@ -98,6 +99,29 @@ describe("ComposeFooter", () => {
 		// than masquerading as live controls.
 		expect(screen.getByRole("button", { name: /^search$/i })).toBeDisabled();
 		expect(screen.getByRole("button", { name: /^attach$/i })).toBeDisabled();
+
+		await runtime.dispose();
+	});
+
+	it("swaps Send for a Stop control while a Run is active and routes clicks to onStop", async () => {
+		const user = userEvent.setup();
+		const onSend = vi.fn();
+		const onStop = vi.fn();
+		const runtime = makeRuntime();
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ComposeFooter onSend={onSend} isRunning onStop={onStop} />
+			</RuntimeProvider>,
+		);
+
+		// Send is gone; Stop is the primary control.
+		expect(screen.queryByRole("button", { name: /send/i })).toBeNull();
+		await user.click(screen.getByRole("button", { name: /stop/i }));
+		expect(onStop).toHaveBeenCalledTimes(1);
+
+		// Enter must not start a second turn over the live Run.
+		await user.type(screen.getByRole("textbox"), "queued{Enter}");
+		expect(onSend).not.toHaveBeenCalled();
 
 		await runtime.dispose();
 	});

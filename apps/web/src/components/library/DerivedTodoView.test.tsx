@@ -28,6 +28,7 @@ function makeRuntime(todos: Rows, people: Rows = [], projects: Rows = []) {
 		},
 		entityMutate: () => unused,
 		subscribeRun: () => unused,
+		cancelRun: () => unused,
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,

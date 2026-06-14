@@ -507,6 +507,37 @@ describe("WsClient", () => {
 		}
 	});
 
+	it("cancelRun sends run_id and decodes the RunCancelResult", async () => {
+		const runId = "01234567-89ab-7def-8012-345678901234";
+		let captured: WireRequest["params"];
+
+		const server = await makeServer((ws, req) => {
+			if (req.method === "run/cancel") {
+				captured = req.params;
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { outcome: "accepted" },
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.cancelRun(runId);
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toEqual({ outcome: "accepted" });
+			expect(captured?.run_id).toBe(runId);
+		} finally {
+			await server.close();
+		}
+	});
+
 	it("proposalDecide sends the decision params and decodes the result", async () => {
 		const proposalId = "01900000-0000-7000-8000-000000000010";
 		const entityId = "01900000-0000-7000-8000-000000000020";

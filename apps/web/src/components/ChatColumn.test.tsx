@@ -20,6 +20,7 @@ function makeStubRuntime(opts: {
 	readonly runId: string;
 	readonly events: readonly RunEventValue[];
 	readonly threadId?: string;
+	readonly cancelRun?: WsClient["Type"]["cancelRun"];
 }) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -34,6 +35,9 @@ function makeStubRuntime(opts: {
 		listEntities: () => unused,
 		entityMutate: () => unused,
 		subscribeRun: () => Stream.fromIterable(opts.events),
+		cancelRun:
+			opts.cancelRun ??
+			(() => Effect.succeed({ outcome: "accepted" as const })),
 		providerStatus: () => unused,
 		providerLoginStart: () => unused,
 		modelCatalog: () => unused,
@@ -398,6 +402,47 @@ describe("ChatColumn", () => {
 		);
 
 		expect(screen.getByTestId("tool-call")).toHaveTextContent("Search web");
+	});
+
+	it("shows a Stop control while a run streams and settles the bubble on cancel", async () => {
+		const user = userEvent.setup();
+		const cancelRun = vi.fn(() =>
+			Effect.succeed({ outcome: "accepted" as const }),
+		);
+		// A partial (non-terminal) stream: the assistant turn stays active (no
+		// done/error/cancelled), so activeRunId stays set and Stop is shown.
+		const runtime = makeStubRuntime({
+			runId: "run-stop",
+			threadId: "thread-stop",
+			events: [{ kind: "text_delta", delta: "echo: h" }],
+			cancelRun,
+		});
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		// Partial text rendered and the run is active → Send becomes Stop.
+		await screen.findByText("echo: h");
+		const stop = await screen.findByRole("button", { name: /stop/i });
+
+		await user.click(stop);
+
+		// Cancel reached Core and the bubble settled to the cancelled/incomplete state.
+		expect(cancelRun).toHaveBeenCalledWith("run-stop");
+		await screen.findByTestId("assistant-error");
+		// Stop is gone (run no longer active) and Send is back.
+		await waitFor(() => {
+			expect(screen.queryByRole("button", { name: /stop/i })).toBeNull();
+		});
+		expect(screen.getByRole("button", { name: /send/i })).toBeInTheDocument();
+
+		await runtime.dispose();
 	});
 
 	it("offers Try again on an interrupted reply and re-sends the previous turn", async () => {

@@ -57,6 +57,7 @@ describe("refresh-durable hydration", () => {
 			threadGet: (id) =>
 				id === "tA" ? Effect.succeed(result) : Effect.die("unknown thread"),
 			subscribeRun,
+			cancelRun: () => Effect.die("unused"),
 			providerStatus: () => Effect.die("unused"),
 			providerLoginStart: () => Effect.die("unused"),
 			modelCatalog: () => Effect.die("unused"),
@@ -118,6 +119,7 @@ describe("refresh-durable hydration", () => {
 			threadGet: (id) =>
 				id === "tB" ? Effect.succeed(result) : Effect.die("unknown thread"),
 			subscribeRun,
+			cancelRun: () => Effect.die("unused"),
 			providerStatus: () => Effect.die("unused"),
 			providerLoginStart: () => Effect.die("unused"),
 			modelCatalog: () => Effect.die("unused"),
@@ -190,6 +192,7 @@ describe("refresh-durable hydration", () => {
 			threadGet: (id) =>
 				id === "tC" ? Deferred.await(gate) : Effect.die("unknown thread"),
 			subscribeRun,
+			cancelRun: () => Effect.die("unused"),
 			providerStatus: () => Effect.die("unused"),
 			providerLoginStart: () => Effect.die("unused"),
 			modelCatalog: () => Effect.die("unused"),

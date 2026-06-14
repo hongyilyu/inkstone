@@ -2,9 +2,15 @@ import { useQueryClient } from "@tanstack/react-query";
 import { RotateCcw, Sparkles } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRuntime } from "@/runtime";
-import { send, sendNewThread, startProposalStream } from "@/store/bridge";
+import {
+	cancelRun,
+	send,
+	sendNewThread,
+	startProposalStream,
+} from "@/store/bridge";
 import {
 	type Message,
+	useActiveRunId,
 	useFocusedThreadId,
 	useThreadMessages,
 } from "@/store/chat";
@@ -22,6 +28,9 @@ export function ChatColumn() {
 	const queryClient = useQueryClient();
 	const focusedThreadId = useFocusedThreadId();
 	const messages = useThreadMessages(focusedThreadId ?? "");
+	// Set while a Run streams AND while it's parked awaiting a Proposal (only a
+	// terminal Run Event clears it) — so Stop covers both, matching run/cancel.
+	const activeRunId = useActiveRunId(focusedThreadId ?? "");
 	const [sendError, setSendError] = useState<string | null>(null);
 
 	// No thread focused → fresh chat; thread focused but empty → mid-hydration skeleton (PRODUCT.md "show the state, not a spinner").
@@ -90,6 +99,10 @@ export function ChatColumn() {
 				</p>
 			)}
 			<ComposeFooter
+				isRunning={activeRunId !== null}
+				onStop={() => {
+					if (activeRunId !== null) void cancelRun(runtime, activeRunId);
+				}}
 				onSend={async (text) => {
 					// Send into the focused thread, or mint a new one; then refresh the sidebar's thread/list read.
 					setSendError(null);
