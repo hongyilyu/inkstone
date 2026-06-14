@@ -1,0 +1,137 @@
+name: CI
+
+# The full AGENTS.md §6 quality gate, run on every push to master and every PR.
+# Four parallel jobs, each a required status check (see docs/agents/ci.md):
+#   lint-format  →  biome ci .            (format + lint + organizeImports)
+#   ts           →  pnpm -r check + test  (tsc + vitest across the workspace)
+#   rust         →  cargo check + test    (crates/core)
+#   e2e          →  pnpm test:e2e         (full-system Playwright harness)
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-format:
+    name: lint-format
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # `biome ci .` is the read-only CI form: it never writes, and fails on any
+      # formatting, lint, or organizeImports diagnostic. Covers the §6 format and
+      # lint gates in one pass. Honors biome.json includes/excludes + vcs ignore.
+      - name: Biome (format + lint + organizeImports)
+        run: pnpm exec biome ci .
+
+  ts:
+    name: ts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # = pnpm check:ts. tsc across the 5 packages with a `check` script.
+      - name: Typecheck
+        run: pnpm -r --if-present check
+      # = pnpm -r test. vitest runs in the 4 packages with a `test` script;
+      # tests/e2e has only `test:e2e`, so Playwright is not triggered here.
+      - name: Unit tests (vitest)
+        run: pnpm -r test
+
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: core
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      # A full install is mandatory, not optional: the crates/core integration
+      # tests spawn TypeScript worker fixtures via packages/worker/node_modules/
+      # .bin/tsx (tsx_bin() panics if it is missing).
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # = pnpm check:rust. No DATABASE_URL/SQLX_OFFLINE needed: core uses only
+      # runtime sqlx query fns + sqlx::migrate!, no compile-time query! macros.
+      - name: Cargo check
+        run: cargo check --locked --manifest-path crates/core/Cargo.toml
+      - name: Cargo test
+        run: cargo test --locked --manifest-path crates/core/Cargo.toml
+
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+          shared-key: core
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.2.2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      # Full install: the harness' globalSetup runs `pnpm -C apps/web build` and
+      # each test spawns a real Core that runs the tsx worker fixtures.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      # Cache the Chromium binary, keyed on the lockfile (which pins the Playwright
+      # version). OS libraries are not cached and are (re)installed below.
+      - name: Cache Playwright browser
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('pnpm-lock.yaml') }}
+      # On a miss: install Chromium + its OS deps. On a hit: only the OS deps
+      # (apt libs are not in the cached browser dir). Bare `playwright install`
+      # (no --with-deps) is insufficient on a clean ubuntu-latest runner.
+      - name: Install Playwright browser + OS deps
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: pnpm -C tests/e2e exec playwright install --with-deps chromium
+      - name: Install Playwright OS deps
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: pnpm -C tests/e2e exec playwright install-deps chromium
+      # globalSetup builds debug Core (cargo build) + the web SPA. CI=true is set
+      # by Actions automatically, so playwright.config self-tunes to workers=1,
+      # forbidOnly=true, retries=0. No webServer; each test spawns its own Core.
+      - name: E2E (full-system Playwright harness)
+        run: pnpm test:e2e
