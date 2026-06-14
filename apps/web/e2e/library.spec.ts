@@ -18,7 +18,7 @@ test("opens the Library from the sidebar and shows Today", async ({ page }) => {
 	await expect(page.getByRole("main")).toBeVisible();
 	const nav = page.getByRole("navigation", { name: /library/i });
 	await expect(nav.getByRole("link", { name: /people/i })).toBeVisible();
-	await expect(nav.getByRole("link", { name: /recipes/i })).toBeVisible();
+	await expect(nav.getByRole("link", { name: /projects/i })).toBeVisible();
 });
 
 test("browses People and opens the detail inspector", async ({ page }) => {
@@ -95,17 +95,17 @@ test("toggles a todo done", async ({ page }) => {
 test("opens a Library item in the shared collapsible rail, then closes it", async ({
 	page,
 }) => {
-	// Recipes stay mock-backed, so they render without Core (unlike People/Todos).
-	await page.goto("/library/recipes");
-	await page.getByRole("button", { name: /weeknight ragù/i }).click();
-	await expect(page).toHaveURL(/\/library\/recipes\?id=recipe_ragu/);
+	// Projects stay mock-backed, so they render without Core (unlike People/Todos).
+	await page.goto("/library/projects");
+	await page.getByRole("button", { name: /api v2 migration/i }).click();
+	await expect(page).toHaveURL(/\/library\/projects\?id=proj_apiv2/);
 
 	// Detail opens in the shared right rail (a complementary landmark).
 	const panel = page.getByRole("complementary", {
-		name: /weeknight ragù details/i,
+		name: /api v2 migration details/i,
 	});
 	await expect(
-		panel.getByRole("heading", { name: /weeknight ragù/i }),
+		panel.getByRole("heading", { name: /api v2 migration/i }),
 	).toBeVisible();
 
 	// The bay toggle is the only dismiss; assert its aria-pressed, not pixels.
@@ -115,9 +115,9 @@ test("opens a Library item in the shared collapsible rail, then closes it", asyn
 	await expect(toggle).toHaveAttribute("aria-pressed", "true");
 
 	// Model A: collapsing hides the panel but keeps the selection (`?id`, current row, bay all stay) so it can reopen.
-	await expect(page).toHaveURL(/\/library\/recipes\?id=recipe_ragu/);
+	await expect(page).toHaveURL(/\/library\/projects\?id=proj_apiv2/);
 	await expect(
-		page.getByRole("button", { name: /weeknight ragù/i }),
+		page.getByRole("button", { name: /api v2 migration/i }),
 	).toHaveAttribute("aria-current", "true");
 	await expect(toggle).toBeVisible();
 
@@ -149,33 +149,33 @@ test("hides the bay toggle when nothing is selected, keeping the card frame inse
 test("reveals the bay toggle only after a collection row is selected", async ({
 	page,
 }) => {
-	// Recipes stay mock-backed, so this runs without Core.
-	await page.goto("/library/recipes");
+	// Projects stay mock-backed, so this runs without Core.
+	await page.goto("/library/projects");
 	await expect(
-		page.getByRole("heading", { name: "Recipes", level: 1 }),
+		page.getByRole("heading", { name: "Projects", level: 1 }),
 	).toBeVisible();
 
 	const toggle = page.getByRole("button", { name: /details panel/i });
 	await expect(toggle).toHaveCount(0);
 
-	await page.getByRole("button", { name: /weeknight ragù/i }).click();
+	await page.getByRole("button", { name: /api v2 migration/i }).click();
 	await expect(toggle).toBeVisible();
 	await expect(
-		page.getByRole("complementary", { name: /weeknight ragù details/i }),
+		page.getByRole("complementary", { name: /api v2 migration details/i }),
 	).toBeVisible();
 });
 
 test("drops the bay when navigating away deselects", async ({ page }) => {
-	await page.goto("/library/recipes?id=recipe_ragu");
+	await page.goto("/library/projects?id=proj_apiv2");
 	const toggle = page.getByRole("button", { name: /details panel/i });
 	await expect(toggle).toBeVisible();
 
 	// Navigating to another collection clears `?id` → nothing selected → bay + toggle disappear.
 	await page
 		.getByRole("navigation", { name: /library/i })
-		.getByRole("link", { name: /projects/i })
+		.getByRole("link", { name: /people/i })
 		.click();
-	await expect(page).toHaveURL(/\/library\/projects$/);
+	await expect(page).toHaveURL(/\/library\/people$/);
 	await expect(toggle).toHaveCount(0);
 
 	const box = await page.getByTestId("workspace-card").boundingBox();
@@ -190,15 +190,15 @@ test("drops the bay when navigating away deselects", async ({ page }) => {
 test("shows the bay toggle for a deep-linked selection on load", async ({
 	page,
 }) => {
-	await page.goto("/library/recipes?id=recipe_ragu");
+	await page.goto("/library/projects?id=proj_apiv2");
 
 	await expect(
 		page.getByRole("button", { name: /details panel/i }),
 	).toBeVisible();
 	await expect(
 		page
-			.getByRole("complementary", { name: /weeknight ragù details/i })
-			.getByRole("heading", { name: /weeknight ragù/i }),
+			.getByRole("complementary", { name: /api v2 migration details/i })
+			.getByRole("heading", { name: /api v2 migration/i }),
 	).toBeVisible();
 });
 

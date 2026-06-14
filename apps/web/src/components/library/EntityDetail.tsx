@@ -6,12 +6,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button.js";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import type {
+	Bookmark,
 	JournalEntry,
 	JournalEntryBodyEntityRefNode,
 	LibraryItem,
 	Person,
 	Project,
-	Recipe,
 	Todo,
 } from "@/lib/libraryItems";
 import {
@@ -117,7 +117,7 @@ function EntityDetailView({
 						onOpen={goToEntity}
 					/>
 				)}
-				{entity.kind === "recipe" && <RecipeBody recipe={entity} />}
+				{entity.kind === "bookmark" && <BookmarkBody bookmark={entity} />}
 			</div>
 
 			<CapturedFromFooter entity={entity} />
@@ -1131,44 +1131,35 @@ function TodoBody({
 	);
 }
 
-function RecipeBody({ recipe }: { recipe: Recipe }) {
+/** Read-only Bookmark inspector body (ADR-0036): url as an external link, note as prose, tags as badges. */
+function BookmarkBody({ bookmark }: { bookmark: Bookmark }) {
 	return (
 		<>
-			<div className="flex flex-wrap gap-2">
-				{recipe.time ? <Badge>{recipe.time}</Badge> : null}
-				{recipe.servings ? <Badge>Serves {recipe.servings}</Badge> : null}
-				{recipe.tags?.map((t) => (
-					<Badge key={t}>{t}</Badge>
-				))}
-			</div>
-			<Field label="Ingredients">
-				<ul className="flex flex-col gap-1.5">
-					{recipe.ingredients.map((ing) => (
-						<li key={ing} className="flex gap-2.5">
-							<span
-								className="mt-2 size-1 shrink-0 rounded-full bg-muted-foreground"
-								aria-hidden
-							/>
-							<span className="text-pretty">{ing}</span>
-						</li>
-					))}
-				</ul>
-			</Field>
-			{recipe.steps && recipe.steps.length > 0 ? (
-				<Field label="Method">
-					<ol className="flex flex-col gap-2.5">
-						{recipe.steps.map((step, i) => (
-							<li key={step} className="flex gap-2.5">
-								<span
-									className="flex size-5 shrink-0 items-center justify-center rounded-full bg-secondary font-medium text-[11px] text-secondary-foreground"
-									aria-hidden
-								>
-									{i + 1}
-								</span>
-								<span className="text-pretty">{step}</span>
-							</li>
+			{bookmark.url ? (
+				<Field label="Link">
+					<a
+						href={bookmark.url}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="flex items-center gap-1 text-primary hover:underline"
+					>
+						<span className="truncate">{bookmark.url}</span>
+						<ArrowUpRight className="size-3.5 shrink-0" aria-hidden />
+					</a>
+				</Field>
+			) : null}
+			{bookmark.note ? (
+				<Field label="Note">
+					<p className="text-pretty">{bookmark.note}</p>
+				</Field>
+			) : null}
+			{bookmark.tags && bookmark.tags.length > 0 ? (
+				<Field label="Tags">
+					<div className="flex flex-wrap gap-2">
+						{bookmark.tags.map((t) => (
+							<Badge key={t}>{t}</Badge>
 						))}
-					</ol>
+					</div>
 				</Field>
 			) : null}
 		</>

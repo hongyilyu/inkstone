@@ -1,6 +1,6 @@
 import {
+	Bookmark as BookmarkIcon,
 	BookOpenText,
-	ChefHat,
 	FolderKanban,
 	ListTodo,
 	type LucideIcon,
@@ -12,7 +12,7 @@ export type LibraryItemKind =
 	| "person"
 	| "project"
 	| "todo"
-	| "recipe";
+	| "bookmark";
 
 export interface LibraryItemCapture {
 	threadId: string;
@@ -121,17 +121,15 @@ export interface Todo extends LibraryItemBase {
 	personRefs: TodoPersonRef[];
 }
 
-export interface Recipe extends LibraryItemBase {
-	kind: "recipe";
+export interface Bookmark extends LibraryItemBase {
+	kind: "bookmark";
 	title: string;
+	url?: string;
+	note?: string;
 	tags?: string[];
-	time?: string;
-	servings?: number;
-	ingredients: string[];
-	steps?: string[];
 }
 
-export type LibraryItem = JournalEntry | Person | Project | Todo | Recipe;
+export type LibraryItem = JournalEntry | Person | Project | Todo | Bookmark;
 
 export interface JournalEntryDay {
 	day: string;
@@ -154,7 +152,7 @@ export const KIND_ORDER: LibraryItemKind[] = [
 	"person",
 	"project",
 	"todo",
-	"recipe",
+	"bookmark",
 ];
 
 export const KIND_META: Record<LibraryItemKind, KindMeta> = {
@@ -172,11 +170,11 @@ export const KIND_META: Record<LibraryItemKind, KindMeta> = {
 		icon: FolderKanban,
 	},
 	todo: { label: "Todo", plural: "Todos", slug: "todos", icon: ListTodo },
-	recipe: {
-		label: "Recipe",
-		plural: "Recipes",
-		slug: "recipes",
-		icon: ChefHat,
+	bookmark: {
+		label: "Bookmark",
+		plural: "Bookmarks",
+		slug: "bookmarks",
+		icon: BookmarkIcon,
 	},
 };
 
@@ -185,7 +183,7 @@ const SLUG_TO_KIND: Record<string, LibraryItemKind> = {
 	people: "person",
 	projects: "project",
 	todos: "todo",
-	recipes: "recipe",
+	bookmarks: "bookmark",
 };
 
 export function libraryItemKindForSlug(
@@ -223,10 +221,18 @@ export function libraryItemSubtitle(e: LibraryItem): string {
 			return e.dueAt
 				? `Due ${e.dueAt.slice(0, 10)}`
 				: (e.note ?? TODO_STATUS_LABEL[e.status]);
-		case "recipe":
-			return (
-				[e.time, e.tags?.join(", ")].filter(Boolean).join(" · ") || "Recipe"
-			);
+		case "bookmark":
+			return bookmarkHost(e.url) ?? "Bookmark";
+	}
+}
+
+/** A Bookmark's URL host for its subtitle, or null when the url is absent or unparseable. */
+function bookmarkHost(url: string | undefined): string | null {
+	if (!url) return null;
+	try {
+		return new URL(url).host || null;
+	} catch {
+		return null;
 	}
 }
 
@@ -251,7 +257,7 @@ export function libraryItemKindCounts(
 		person: 0,
 		project: 0,
 		todo: 0,
-		recipe: 0,
+		bookmark: 0,
 	};
 	for (const e of all) counts[e.kind] += 1;
 	return counts;
