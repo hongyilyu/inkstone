@@ -179,8 +179,8 @@ _Avoid_: source, mention, generic link.
 ### Agents
 
 **Workflow**:
-The runnable unit of agent behavior. Each Workflow defines its own system prompt, tool allowlist, model choice, and any bootstrap context. One Run executes exactly one Workflow. Workflows are the primitive — there is no higher grouping (no "Agent" object). Code-level organization of related Workflows is implementation detail, not vocabulary.
-_Avoid_: agent, command, skill, task.
+The runnable unit of agent behavior. Each Workflow defines its own system prompt, tool allowlist, model choice, and any bootstrap context. One Run executes exactly one Workflow. Workflows are the primitive — there is no higher grouping (no "Agent" object). Code-level organization of related Workflows is implementation detail, not vocabulary. A Workflow is distinct from a **Skill**: the Workflow is the behavior bundle the Dispatcher picks at Run start; a Skill is a procedure the model loads mid-Run within it.
+_Avoid_: agent, command, task.
 
 **Dispatcher**:
 The Core-side seam that picks a Workflow for each Run. Called once at Run creation, before the Worker starts. Always present, even when only one Workflow exists; in that case the Dispatcher is a one-liner that returns the single Workflow. The strategy *inside* the Dispatcher (hard-coded, deterministic, LLM-driven, user-picker) is a separate concern.
@@ -188,6 +188,10 @@ The Core-side seam that picks a Workflow for each Run. Called once at Run creati
 **Router**:
 A possible implementation strategy for the Dispatcher — a non-trivial Workflow selector (keyword classifier, LLM call, user picker, hybrid). Whether a Router exists in the MVP stays open; the Dispatcher exists either way. Threads carry conversation history but do not lock the next Run to a specific Workflow.
 _Avoid_: classifier (one possible implementation, not the role).
+
+**Skill**:
+A drop-in markdown procedure (the Agent Skills `SKILL.md` convention: YAML frontmatter with `name` + `description`, plus a markdown body) that guides the model through a specific task — a weekly review, a trip-capture flow, inbox triage. A Skill is *content the model reads*, never code Core executes. Core scans the skills directory (`<data dir>/inkstone/skills/`, Core-managed config, not the Vault) per dispatch and injects each Skill's `name` + `description` into the Workflow's system prompt; the model loads a Skill's full body mid-Run by calling the `load_skill` tool, which Core resolves by name. A Skill composes tools that already exist in Core's registry — it cannot introduce new ones. Distinct from a **Workflow**: the Workflow is the per-Run behavior bundle the Dispatcher selects at Run start; a Skill is loaded by the *model*, mid-Run, to guide itself within that Workflow. One Run runs one Workflow and may load zero or more Skills. "Core does more" is delivered by broadening the single default Workflow and dropping in Skills, not by adding Workflows the Dispatcher routes between (ADR-0036).
+_Avoid_: plugin (no distribution-unit concept exists), command (Skills are model-invoked, not user-fired slash commands in V1), agent.
 
 ## Example dialogue
 

@@ -45,8 +45,9 @@ pub(crate) fn resolve_db_path() -> Result<PathBuf> {
 }
 
 /// Per-OS application-data directory (hand-rolled to avoid a crate dep).
+/// `pub(crate)` so the skills tool can place its dir beside the DB (ADR-0036).
 #[cfg(target_os = "macos")]
-fn os_data_dir() -> Result<PathBuf> {
+pub(crate) fn os_data_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").context("$HOME not set")?;
     Ok(PathBuf::from(home)
         .join("Library")
@@ -54,7 +55,7 @@ fn os_data_dir() -> Result<PathBuf> {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn os_data_dir() -> Result<PathBuf> {
+pub(crate) fn os_data_dir() -> Result<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME").filter(|s| !s.is_empty()) {
         return Ok(PathBuf::from(xdg));
     }
@@ -63,7 +64,7 @@ fn os_data_dir() -> Result<PathBuf> {
 }
 
 #[cfg(target_os = "windows")]
-fn os_data_dir() -> Result<PathBuf> {
+pub(crate) fn os_data_dir() -> Result<PathBuf> {
     let appdata = std::env::var_os("APPDATA").context("%APPDATA% not set")?;
     Ok(PathBuf::from(appdata))
 }
