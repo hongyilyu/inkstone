@@ -1679,3 +1679,129 @@ where
     .await
     .map(|_| ())
 }
+
+// ─── message_fts (tier-3 projection, ADR-0035) ─────────────────────────
+
+/// Index one Message's text into `message_fts`. Called at the user-create seam
+/// (inside the caller's tx) and per completed Message during a rebuild. The
+/// columns mirror the search hit shape; only `text` is tokenized.
+pub(super) async fn insert_message_fts_row<'e, E>(
+    executor: E,
+    message_id: &str,
+    thread_id: &str,
+    run_id: &str,
+    role: &str,
+    text: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "INSERT INTO message_fts (message_id, thread_id, run_id, role, text) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(message_id)
+    .bind(thread_id)
+    .bind(run_id)
+    .bind(role)
+    .bind(text)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
+/// Wipe `message_fts` for a full rebuild (ADR-0035). The projection is tier-3,
+/// re-derivable from `message_parts`, so delete-and-recreate is safe.
+pub(super) async fn clear_message_fts<'e, E>(executor: E) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("DELETE FROM message_fts")
+        .execute(executor)
+        .await
+        .map(|_| ())
+}
+
+/// Read every `completed` Message's identity (`id, thread_id, run_id, role`) for
+/// the rebuild. The caller assembles each Message's text via the canonical
+/// `text_parts_by_message` concat (same path `history_for_run` uses) and indexes
+/// it, keeping the projection honestly derived from tier-2 `message_parts`.
+pub(super) async fn completed_messages_for_fts<'e, E>(
+    executor: E,
+) -> sqlx::Result<Vec<(String, String, String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT id, thread_id, run_id, role FROM messages \
+         WHERE status = 'completed' ORDER BY created_at, rowid",
+    )
+    .fetch_all(executor)
+    .await
+}
+
+/// Chars of context kept on each side of the match in a snippet (ADR-0035).
+const SNIPPET_PAD: i64 = 32;
+
+/// LIKE escape character for the substring search. Backslash is escaped along
+/// with `%` and `_` so a user query is matched literally (ADR-0035).
+const LIKE_ESCAPE: char = '\\';
+
+/// Escape LIKE metacharacters (`%`, `_`) and the escape char itself so the
+/// needle is matched as literal text under `LIKE ... ESCAPE '\'`.
+fn escape_like(query: &str) -> String {
+    let mut out = String::with_capacity(query.len());
+    for c in query.chars() {
+        if c == LIKE_ESCAPE || c == '%' || c == '_' {
+            out.push(LIKE_ESCAPE);
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Substring search over `message_fts` (ADR-0035): a case-insensitive
+/// `text LIKE '%' || ? || '%'` (the trigram tokenizer accelerates it, no
+/// `MATCH`), joined to `threads` for the title and `messages` for `created_at`,
+/// ordered newest-first. The needle is LIKE-escaped so `%`/`_` match literally,
+/// and the snippet is rendered in SQL with `instr`/`substr` (char-based in
+/// SQLite — no byte-slice hazard) around the first case-insensitive match,
+/// keeping [`SNIPPET_PAD`] chars of context per side with `…` where trimmed.
+/// Returns `(message_id, thread_id, run_id, role, snippet, thread_title,
+/// created_at)`. Wired to the `message/search` handler in slice 3; uncalled
+/// (outside tests) until then.
+#[allow(clippy::type_complexity, dead_code)]
+pub(super) async fn search_messages<'e, E>(
+    executor: E,
+    query: &str,
+) -> sqlx::Result<Vec<(String, String, String, String, String, String, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    // `?1` LIKE-escaped needle (WHERE); `?2` raw needle (instr/substr); `?3` pad.
+    sqlx::query_as(
+        "SELECT s.message_id, s.thread_id, s.run_id, s.role, \
+                CASE WHEN s.start > 1 THEN '…' ELSE '' END \
+                  || substr(s.text, s.start, (s.pos - s.start) + s.slen + ?3) \
+                  || CASE WHEN s.start - 1 + ((s.pos - s.start) + s.slen + ?3) < length(s.text) \
+                          THEN '…' ELSE '' END, \
+                s.title, s.created_at \
+         FROM ( \
+           SELECT f.message_id, f.thread_id, f.run_id, f.role, f.text, \
+                  t.title, m.created_at, m.rowid AS m_rowid, \
+                  length(?2) AS slen, \
+                  instr(lower(f.text), lower(?2)) AS pos, \
+                  max(1, instr(lower(f.text), lower(?2)) - ?3) AS start \
+           FROM message_fts f \
+           JOIN threads t ON t.id = f.thread_id \
+           JOIN messages m ON m.id = f.message_id \
+           WHERE f.text LIKE '%' || ?1 || '%' ESCAPE '\\' \
+         ) AS s \
+         ORDER BY s.created_at DESC, s.m_rowid DESC",
+    )
+    .bind(escape_like(query))
+    .bind(query)
+    .bind(SNIPPET_PAD)
+    .fetch_all(executor)
+    .await
+}

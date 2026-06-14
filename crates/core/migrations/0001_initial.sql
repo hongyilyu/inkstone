@@ -186,6 +186,20 @@ CREATE VIRTUAL TABLE fts USING fts5(
   searchable_text
 );
 
+-- Message full-text search (ADR-0035). A trigram FTS5 projection over the text
+-- of every `completed` Message, so conversation history is findable by content
+-- (substring `LIKE`, recency-ordered — trigram accelerates `LIKE`, no `MATCH`).
+-- Tier-3 Derived Projection (ADR-0004): authoritative for nothing, rebuilt from
+-- `message_parts` on open. Distinct from the dead entity `fts` table above.
+CREATE VIRTUAL TABLE message_fts USING fts5(
+  message_id UNINDEXED,
+  thread_id  UNINDEXED,
+  run_id     UNINDEXED,
+  role       UNINDEXED,
+  text,
+  tokenize = 'trigram'
+);
+
 -- Settings (ADR-0024) --------------------------------------------------
 -- The user's preferred model per Workflow and the global effort (thinking)
 -- level, persisted as tier-2 key-value rows. The keys and their defaults are

@@ -47,6 +47,11 @@ async fn main() -> Result<()> {
 
     let pool = db::open().await?;
 
+    // Rebuild the tier-3 message search projection from `message_parts` (ADR-0035):
+    // backfills an existing DB and self-heals any drift on every open. O(completed
+    // messages); single-digit ms at single-user scale, off the user's wait path.
+    db::rebuild_message_fts(&pool).await?;
+
     // Boot recovery sweep (ADR-0012): error any Run left `running` by a prior
     // Core crash — it has no live Worker. Preserves `parked` Runs (ADR-0025).
     let recovered = db::recover_interrupted_runs(&pool, db::now_ms()).await?;
