@@ -19,6 +19,10 @@ pub const PROJECT_SCHEMA_VERSION: i64 = 1;
 /// The schema version stamped onto a freshly-created Todo + its first revision.
 pub const TODO_SCHEMA_VERSION: i64 = 1;
 
+/// The schema version stamped onto a freshly-created Bookmark + its first
+/// revision (ADR-0036).
+pub const BOOKMARK_SCHEMA_VERSION: i64 = 1;
+
 /// Validate a proposed mutation payload against its schema (ADR-0016),
 /// dispatched on `mutation_kind`. An unsupported mutation is a validation
 /// failure. `Err(reason)` is surfaced as the `invalid_params` message on
@@ -45,6 +49,9 @@ pub(crate) fn validate(mutation_kind: &str, payload: &Value) -> Result<(), Strin
         "mark_project_reviewed" => validate_entity_id_only(payload, "mark_project_reviewed"),
         "create_todo" => validate_todo(payload),
         "update_todo" => validate_update_todo(payload),
+        "create_bookmark" => validate_bookmark(payload),
+        "update_bookmark" => validate_update_bookmark(payload),
+        "delete_bookmark" => validate_delete_entity(payload, "delete_bookmark"),
         _ => Err(format!("mutation_kind {mutation_kind:?} not supported")),
     }
 }
@@ -166,6 +173,13 @@ pub(crate) fn render_accept(mutation_kind: &str, payload: &Value) -> String {
                 .unwrap_or("unknown");
             format!("Accepted. Updated Todo (todo_id={todo_id}).")
         }
+        // Bookmark is user-CRUD-only (ADR-0036): it never enters the agent
+        // Proposal accept path (`decide`, the sole caller of `render_accept`),
+        // so this is unreachable. Listed explicitly so the omission is a
+        // deliberate decision, not a forgotten arm.
+        "create_bookmark" | "update_bookmark" | "delete_bookmark" => {
+            unreachable!("bookmark is user-CRUD-only and never reaches the agent accept path")
+        }
         other => unreachable!("render_accept for unvalidated mutation_kind {other:?}"),
     }
 }
@@ -211,6 +225,7 @@ pub(crate) fn schema_version(mutation_kind: &str) -> i64 {
             PROJECT_SCHEMA_VERSION
         }
         "create_todo" | "update_todo" | "delete_todo" => TODO_SCHEMA_VERSION,
+        "create_bookmark" | "update_bookmark" | "delete_bookmark" => BOOKMARK_SCHEMA_VERSION,
         other => unreachable!("schema_version for unvalidated mutation_kind {other:?}"),
     }
 }
@@ -226,6 +241,7 @@ pub(crate) fn entity_type(mutation_kind: &str) -> &'static str {
             "project"
         }
         "create_todo" | "update_todo" | "delete_todo" => "todo",
+        "create_bookmark" | "update_bookmark" | "delete_bookmark" => "bookmark",
         other => unreachable!("entity_type for unvalidated mutation_kind {other:?}"),
     }
 }
@@ -236,13 +252,22 @@ pub(crate) fn source_relation_from_user_message(mutation_kind: &str) -> Option<&
         "update_journal_entry" | "reference_existing_entity_from_journal_entry" => {
             Some("updated_from")
         }
-        "delete_journal_entry" | "delete_person" | "delete_project" | "delete_todo" => None,
+        "delete_journal_entry"
+        | "delete_person"
+        | "delete_project"
+        | "delete_todo"
+        | "delete_bookmark" => None,
         "create_person" => Some("created_from"),
         "update_person" => Some("updated_from"),
         "create_project" => Some("created_from"),
         "update_project" => Some("updated_from"),
         "create_todo" => Some("created_from"),
         "update_todo" => Some("updated_from"),
+        // Bookmark is user-CRUD-only (ADR-0036): the user path passes no Entity
+        // Source, so these relations are never consumed. Kept consistent with the
+        // create/update pattern so the function stays total without a panic.
+        "create_bookmark" => Some("created_from"),
+        "update_bookmark" => Some("updated_from"),
         other => unreachable!("source relation for unvalidated mutation_kind {other:?}"),
     }
 }
@@ -256,7 +281,9 @@ pub(crate) fn target_entity_id<'a>(mutation_kind: &str, payload: &'a Value) -> O
         | "delete_person"
         | "delete_project"
         | "delete_todo"
-        | "mark_project_reviewed" => payload.get("entity_id").and_then(Value::as_str),
+        | "mark_project_reviewed"
+        | "update_bookmark"
+        | "delete_bookmark" => payload.get("entity_id").and_then(Value::as_str),
         "reference_existing_entity_from_journal_entry" => {
             payload.get("source_entity_id").and_then(Value::as_str)
         }
@@ -264,7 +291,11 @@ pub(crate) fn target_entity_id<'a>(mutation_kind: &str, payload: &'a Value) -> O
         // wraps a Partial<TodoData> under `todo`). delete_todo, by contrast,
         // targets a plain `{entity_id}` like every other delete.
         "update_todo" => payload.get("todo_id").and_then(Value::as_str),
-        "create_journal_entry" | "create_person" | "create_project" | "create_todo" => None,
+        "create_journal_entry"
+        | "create_person"
+        | "create_project"
+        | "create_todo"
+        | "create_bookmark" => None,
         other => unreachable!("target entity for unvalidated mutation_kind {other:?}"),
     }
 }
@@ -606,6 +637,70 @@ fn validate_person(payload: &Value) -> Result<(), String> {
 fn validate_update_person(payload: &Value) -> Result<(), String> {
     let rest = strip_update_entity_id(payload)?;
     validate_person(&rest)
+}
+
+/// Validate a `BookmarkData` object (ADR-0036): a required non-empty `title`;
+/// optional `url`/`note` (a present non-null value must be a string — Core stores
+/// `url` opaque, no format check); optional `tags` (an array of non-empty strings,
+/// mirroring Person `aliases`). Each optional field is CLEARABLE: a `null` value
+/// is the ADR-0033 sentinel-clear directive (accepted here; the apply path drops
+/// null keys). Any field outside {title, url, note, tags} is rejected.
+fn validate_bookmark(payload: &Value) -> Result<(), String> {
+    let obj = payload
+        .as_object()
+        .ok_or_else(|| "bookmark payload must be a JSON object".to_string())?;
+
+    for key in obj.keys() {
+        if key != "title" && key != "url" && key != "note" && key != "tags" {
+            return Err(format!("unsupported bookmark field {key:?}"));
+        }
+    }
+
+    match obj.get("title") {
+        Some(Value::String(title)) if !title.trim().is_empty() => {}
+        Some(Value::String(_)) => return Err("title must not be empty".to_string()),
+        Some(_) => return Err("title must be a string".to_string()),
+        None => return Err("title is required".to_string()),
+    }
+
+    // `url`/`note` are clearable optional fields (ADR-0033): a `null` value is the
+    // sentinel-clear directive (the apply path drops the key), accepted here; a
+    // present non-null value must be a string.
+    for field in ["url", "note"] {
+        if let Some(value) = obj.get(field)
+            && !value.is_null()
+            && !value.is_string()
+        {
+            return Err(format!("{field} must be a string"));
+        }
+    }
+
+    // `tags` is clearable (`null` clears, ADR-0033); otherwise an array of
+    // non-empty strings (mirrors Person `aliases`).
+    if let Some(tags) = obj.get("tags")
+        && !tags.is_null()
+    {
+        let tags = tags
+            .as_array()
+            .ok_or_else(|| "tags must be an array".to_string())?;
+        for tag in tags {
+            match tag {
+                Value::String(value) if !value.trim().is_empty() => {}
+                Value::String(_) => return Err("tag must not be empty".to_string()),
+                _ => return Err("tag must be a string".to_string()),
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate an `update_bookmark` payload: a required UUID `entity_id` (the target)
+/// plus the rest validated as `BookmarkData`. Update is a full-document replace
+/// (like person/project), so the rest is a complete BookmarkData (ADR-0036).
+fn validate_update_bookmark(payload: &Value) -> Result<(), String> {
+    let rest = strip_update_entity_id(payload)?;
+    validate_bookmark(&rest)
 }
 
 fn validate_project(payload: &Value) -> Result<(), String> {
@@ -2675,5 +2770,149 @@ mod tests {
             assert_eq!(civil_from_days(days), (y, m, d), "round-trips {y}-{m}-{d}");
         }
         assert_eq!(days_from_civil(1970, 1, 1), 0, "epoch is day 0");
+    }
+
+    // ─── Bookmark (ADR-0036) ───────────────────────────────────────────────
+
+    #[test]
+    fn accepts_minimal_bookmark() {
+        assert!(validate_bookmark(&json!({ "title": "Effect docs" })).is_ok());
+    }
+
+    #[test]
+    fn accepts_bookmark_with_url_note_and_tags() {
+        assert!(
+            validate_bookmark(&json!({
+                "title": "Effect docs",
+                "url": "https://effect.website",
+                "note": "read later",
+                "tags": ["fp", "ts"]
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_blank_bookmark_title() {
+        assert!(validate_bookmark(&json!({ "url": "https://x" })).is_err());
+        let reason =
+            validate_bookmark(&json!({ "title": "   " })).expect_err("blank title is not a title");
+        assert!(
+            reason.contains("title"),
+            "reason names the title field: {reason}"
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_bookmark_field() {
+        let reason = validate_bookmark(&json!({ "title": "x", "servings": 4 }))
+            .expect_err("bookmark has no servings field");
+        assert!(
+            reason.contains("servings"),
+            "reason names the unsupported field: {reason}"
+        );
+    }
+
+    #[test]
+    fn accepts_null_clear_on_bookmark_optional_fields() {
+        // `null` is the ADR-0033 sentinel-clear directive on every optional field.
+        assert!(
+            validate_bookmark(&json!({
+                "title": "x",
+                "url": null,
+                "note": null,
+                "tags": null
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_non_string_bookmark_url_or_note() {
+        let reason = validate_bookmark(&json!({ "title": "x", "url": 42 }))
+            .expect_err("url must be a string");
+        assert!(reason.contains("url"), "reason names url: {reason}");
+        let reason = validate_bookmark(&json!({ "title": "x", "note": 42 }))
+            .expect_err("note must be a string");
+        assert!(reason.contains("note"), "reason names note: {reason}");
+    }
+
+    #[test]
+    fn rejects_non_array_or_blank_bookmark_tags() {
+        let reason = validate_bookmark(&json!({ "title": "x", "tags": "fp" }))
+            .expect_err("tags must be an array");
+        assert!(reason.contains("tags"), "reason names tags: {reason}");
+        let reason = validate_bookmark(&json!({ "title": "x", "tags": ["fp", "  "] }))
+            .expect_err("blank tags are not allowed");
+        assert!(reason.contains("tag"), "reason names the tag: {reason}");
+    }
+
+    #[test]
+    fn update_bookmark_validates_payload_minus_entity_id() {
+        // entity_id + a valid BookmarkData body is ok.
+        assert!(
+            validate(
+                "update_bookmark",
+                &json!({ "entity_id": Uuid::now_v7().to_string(), "title": "x", "note": "n" })
+            )
+            .is_ok()
+        );
+        // The BookmarkData rules still apply to the rest (no unknown field).
+        let reason = validate(
+            "update_bookmark",
+            &json!({ "entity_id": Uuid::now_v7().to_string(), "servings": 4 }),
+        )
+        .expect_err("bookmark has no servings field");
+        assert!(
+            reason.contains("servings"),
+            "reason names the unsupported bookmark field: {reason}"
+        );
+    }
+
+    #[test]
+    fn update_bookmark_requires_a_uuid_entity_id() {
+        let reason = validate("update_bookmark", &json!({ "title": "x" }))
+            .expect_err("update requires a target entity_id");
+        assert!(
+            reason.contains("entity_id"),
+            "reason names the missing entity_id: {reason}"
+        );
+        let reason = validate(
+            "update_bookmark",
+            &json!({ "entity_id": "nope", "title": "x" }),
+        )
+        .expect_err("entity_id must be a UUID");
+        assert!(
+            reason.contains("UUID"),
+            "reason names the malformed entity_id: {reason}"
+        );
+    }
+
+    #[test]
+    fn validate_delete_bookmark_accepts_uuid_and_rejects_extras() {
+        assert!(
+            validate(
+                "delete_bookmark",
+                &json!({ "entity_id": Uuid::now_v7().to_string() })
+            )
+            .is_ok()
+        );
+        let reason = validate(
+            "delete_bookmark",
+            &json!({ "entity_id": Uuid::now_v7().to_string(), "title": "x" }),
+        )
+        .expect_err("an extra field on a delete payload is unsupported");
+        assert!(
+            reason.contains("delete_bookmark") && reason.contains("title"),
+            "reason names the unsupported field: {reason}"
+        );
+    }
+
+    #[test]
+    fn schema_version_bookmark_is_one() {
+        assert_eq!(schema_version("create_bookmark"), BOOKMARK_SCHEMA_VERSION);
+        assert_eq!(schema_version("update_bookmark"), BOOKMARK_SCHEMA_VERSION);
+        assert_eq!(schema_version("delete_bookmark"), BOOKMARK_SCHEMA_VERSION);
+        assert_eq!(schema_version("create_bookmark"), 1);
     }
 }

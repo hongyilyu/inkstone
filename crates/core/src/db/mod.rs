@@ -216,7 +216,7 @@ async fn resolved_entity_refs_for_sources(
 fn entity_title(entity_type: &str, data: &serde_json::Value) -> Option<String> {
     let field = match entity_type {
         "person" | "project" => "name",
-        "todo" => "title",
+        "todo" | "bookmark" => "title",
         _ => return None,
     };
     data.get(field)

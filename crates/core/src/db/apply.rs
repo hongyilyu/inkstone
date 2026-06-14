@@ -57,7 +57,11 @@ pub(crate) struct EntityMutationSpec<'a> {
 fn is_create_mutation(mutation_kind: &str) -> bool {
     matches!(
         mutation_kind,
-        "create_journal_entry" | "create_person" | "create_project" | "create_todo"
+        "create_journal_entry"
+            | "create_person"
+            | "create_project"
+            | "create_todo"
+            | "create_bookmark"
     )
 }
 
@@ -67,7 +71,7 @@ fn is_create_mutation(mutation_kind: &str) -> bool {
 fn is_update_mutation(mutation_kind: &str) -> bool {
     matches!(
         mutation_kind,
-        "update_journal_entry" | "update_person" | "update_project"
+        "update_journal_entry" | "update_person" | "update_project" | "update_bookmark"
     )
 }
 
@@ -80,7 +84,11 @@ fn is_update_mutation(mutation_kind: &str) -> bool {
 fn is_delete_mutation(mutation_kind: &str) -> bool {
     matches!(
         mutation_kind,
-        "delete_journal_entry" | "delete_person" | "delete_project" | "delete_todo"
+        "delete_journal_entry"
+            | "delete_person"
+            | "delete_project"
+            | "delete_todo"
+            | "delete_bookmark"
     )
 }
 
@@ -175,6 +183,17 @@ fn entity_data_payload(
             let mut data = todo.clone();
             data.entry("status")
                 .or_insert_with(|| serde_json::json!("active"));
+            serde_json::Value::Object(data)
+        }
+        "create_bookmark" => {
+            // A `null` optional field (url/note/tags) carries no value to store
+            // (ADR-0033/0036): drop the key rather than persist a JSON null, so the
+            // stored Bookmark data never holds null. No envelope, no defaults.
+            let Some(obj) = payload.as_object() else {
+                return payload.clone();
+            };
+            let mut data = obj.clone();
+            data.retain(|_, value| !value.is_null());
             serde_json::Value::Object(data)
         }
         _ => payload.clone(),

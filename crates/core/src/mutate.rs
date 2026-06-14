@@ -26,7 +26,11 @@ pub struct Outcome {
 fn is_delete_mutation(mutation_kind: &str) -> bool {
     matches!(
         mutation_kind,
-        "delete_journal_entry" | "delete_person" | "delete_project" | "delete_todo"
+        "delete_journal_entry"
+            | "delete_person"
+            | "delete_project"
+            | "delete_todo"
+            | "delete_bookmark"
     )
 }
 
@@ -680,6 +684,104 @@ mod tests {
             rev_proposal, None,
             "a user review writes a NULL-proposal revision"
         );
+    }
+
+    // A user Bookmark rides the same Entity path People/Projects use (ADR-0036):
+    // `create_bookmark` lands a created_by='user' Canonical Entity
+    // (type='bookmark', schema_version=1); `list_by_type` returns it;
+    // `update_bookmark` FULL-DOCUMENT-replaces `data` (the omitted `url` is
+    // dropped); `delete_bookmark` removes the row. Mirrors
+    // `create_person_lands_user_authored_canonical_entity`.
+    #[tokio::test]
+    async fn bookmark_crud_via_entity_path() {
+        let pool = memory_pool().await;
+
+        // create → a user-authored, schema-versioned bookmark Entity.
+        let entity_id = apply(
+            &pool,
+            "create_bookmark",
+            &serde_json::json!({ "title": "Effect docs", "url": "https://effect.website" }),
+        )
+        .await
+        .expect("user create_bookmark succeeds")
+        .entity_id
+        .expect("create yields an entity id");
+
+        let (entity_type, created_by, schema_version, data): (String, String, i64, String) =
+            sqlx::query_as(
+                "SELECT type, created_by, schema_version, data FROM entities WHERE id = ?1",
+            )
+            .bind(&entity_id)
+            .fetch_one(&pool)
+            .await
+            .expect("entity row");
+        assert_eq!(entity_type, "bookmark");
+        assert_eq!(created_by, "user");
+        assert_eq!(schema_version, 1);
+        let data: serde_json::Value = serde_json::from_str(&data).expect("data is JSON");
+        assert_eq!(
+            data.get("title").and_then(serde_json::Value::as_str),
+            Some("Effect docs")
+        );
+        assert_eq!(
+            data.get("url").and_then(serde_json::Value::as_str),
+            Some("https://effect.website")
+        );
+
+        // list → the bookmark is returned by its type.
+        let rows = crate::db::list_by_type(&pool, "bookmark")
+            .await
+            .expect("list bookmarks");
+        assert_eq!(rows.len(), 1, "exactly one bookmark lists");
+        assert_eq!(rows[0].id, entity_id);
+        assert_eq!(rows[0].r#type, "bookmark");
+
+        // update → FULL-document replace: the omitted `url` is dropped, `note` set.
+        apply(
+            &pool,
+            "update_bookmark",
+            &serde_json::json!({ "entity_id": entity_id, "title": "Effect", "note": "read later" }),
+        )
+        .await
+        .expect("user update_bookmark succeeds");
+
+        let stored: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
+            .bind(&entity_id)
+            .fetch_one(&pool)
+            .await
+            .expect("stored bookmark data");
+        let stored: serde_json::Value = serde_json::from_str(&stored).expect("data is JSON");
+        assert_eq!(
+            stored.get("title").and_then(serde_json::Value::as_str),
+            Some("Effect"),
+            "title replaced: {stored}"
+        );
+        assert_eq!(
+            stored.get("note").and_then(serde_json::Value::as_str),
+            Some("read later"),
+            "note set: {stored}"
+        );
+        assert!(
+            stored.get("url").is_none(),
+            "full-document replace drops the omitted url: {stored}"
+        );
+
+        // delete → the row is gone.
+        let outcome = apply(
+            &pool,
+            "delete_bookmark",
+            &serde_json::json!({ "entity_id": entity_id }),
+        )
+        .await
+        .expect("user delete_bookmark succeeds");
+        assert!(outcome.entity_id.is_none(), "a delete leaves no entity id");
+
+        let row_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE id = ?1")
+            .bind(&entity_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count entity rows");
+        assert_eq!(row_count, 0, "the bookmark row is gone");
     }
 
     // mark_project_reviewed against a non-Project entity_id is Invalid (the
