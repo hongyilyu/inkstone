@@ -110,9 +110,11 @@ fn is_single_component(name: &str) -> bool {
 }
 
 /// Read the named Skill's `SKILL.md` body off disk and return it as one text
-/// block. The `name` keys into [`skills_dir`]`/<name>/SKILL.md`. An unknown name
-/// (no such directory or file) is a clean `unknown_skill` error; a file whose
-/// frontmatter is unclosed is `malformed_skill`. Never panics (fail-soft,
+/// block. The `name` keys into [`skills_dir`]`/<name>/SKILL.md`. A genuinely
+/// absent skill (the file does not exist) is a clean `unknown_skill` error; any
+/// other read failure (unreadable, non-UTF-8, transient I/O) is `internal`, so the
+/// model isn't told a present-but-unreadable skill simply doesn't exist; a file
+/// whose frontmatter is unclosed is `malformed_skill`. Never panics (fail-soft,
 /// ADR-0036).
 pub async fn execute(params: Value) -> Result<AgentToolResult, ToolError> {
     let input: Input = serde_json::from_value(params).map_err(|e| ToolError {
@@ -138,10 +140,27 @@ pub async fn execute(params: Value) -> Result<AgentToolResult, ToolError> {
     })?;
     let path = dir.join(&input.name).join("SKILL.md");
 
-    let content = std::fs::read_to_string(&path).map_err(|_| ToolError {
-        code: "unknown_skill".to_string(),
-        message: format!("no skill named {:?}", input.name),
-    })?;
+    // Only a genuinely absent file means "no such skill". Any other read failure
+    // (permission denied, a non-UTF-8 SKILL.md, a transient I/O fault) is an
+    // operational `internal` error — mislabeling it `unknown_skill` would tell the
+    // model the skill doesn't exist when it's merely unreadable. Mirrors
+    // `read_thread`'s not_found-vs-internal split and `credentials.rs`'s NotFound
+    // handling.
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ToolError {
+                code: "unknown_skill".to_string(),
+                message: format!("no skill named {:?}", input.name),
+            });
+        }
+        Err(e) => {
+            return Err(ToolError {
+                code: "internal".to_string(),
+                message: e.to_string(),
+            });
+        }
+    };
 
     let body = strip_frontmatter(&content)?;
 
@@ -165,7 +184,9 @@ mod tests {
     /// `execute` resolves the skills dir from the process-global
     /// `INKSTONE_SKILLS_DIR`, so the env-mutating tests must not run concurrently.
     /// This guard serializes set_var + execute; each test still uses its own
-    /// tempdir so a panic can't leak a fixture into another test.
+    /// tempdir so a panic can't leak a fixture into another test. Lock with
+    /// `unwrap_or_else(|p| p.into_inner())` (as `credentials.rs` does) so a panic
+    /// in one test poisons the mutex without cascading `PoisonError` into the rest.
     static ENV_GUARD: Mutex<()> = Mutex::new(());
 
     /// Seed `<dir>/<name>/SKILL.md` with `content`.
@@ -181,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn returns_body_with_frontmatter_stripped() {
-        let _guard = ENV_GUARD.lock().unwrap();
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         seed_skill(
             tmp.path(),
@@ -220,7 +241,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_name_is_clean_error_not_panic() {
-        let _guard = ENV_GUARD.lock().unwrap();
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         unsafe {
             std::env::set_var("INKSTONE_SKILLS_DIR", tmp.path());
@@ -242,7 +263,7 @@ mod tests {
 
     #[tokio::test]
     async fn unclosed_frontmatter_is_clean_error_not_panic() {
-        let _guard = ENV_GUARD.lock().unwrap();
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         // Opening `---` fence but no closing fence.
         seed_skill(
@@ -266,7 +287,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_frontmatter_returns_whole_file_as_body() {
-        let _guard = ENV_GUARD.lock().unwrap();
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
         seed_skill(tmp.path(), "plain", "# Just a body\n\nNo frontmatter here.\n");
         unsafe {
@@ -282,8 +303,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_skill_file_returns_empty_body() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // An empty SKILL.md (touched but unwritten) hits the `split_first_line ==
+        // None` arm of `strip_frontmatter` — a distinct branch from no-frontmatter.
+        seed_skill(tmp.path(), "empty", "");
+        unsafe {
+            std::env::set_var("INKSTONE_SKILLS_DIR", tmp.path());
+        }
+
+        let out = execute(json!({ "name": "empty" })).await.expect("load ok");
+        assert_eq!(text(&out), "", "an empty SKILL.md yields an empty body");
+
+        unsafe {
+            std::env::remove_var("INKSTONE_SKILLS_DIR");
+        }
+    }
+
+    #[tokio::test]
     async fn unsafe_names_are_rejected_and_never_escape_the_dir() {
-        let _guard = ENV_GUARD.lock().unwrap();
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         // The skills dir is `<base>/skills`, empty of skills. A readable SKILL.md
         // is planted *outside* it, at `<base>/outside/SKILL.md`, so a traversal or
         // absolute-path escape would resolve to a real file and succeed if the name
