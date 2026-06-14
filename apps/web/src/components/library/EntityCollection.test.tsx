@@ -34,6 +34,7 @@ function makeRuntime(
 	todos: EntityListResult["entities"],
 	journalEntries: EntityListResult["entities"],
 	projects: EntityListResult["entities"] = [],
+	bookmarks: EntityListResult["entities"] = [],
 ) {
 	const unused = Effect.die("not exercised in this test");
 	const stub = WsClient.of({
@@ -48,32 +49,9 @@ function makeRuntime(
 				return Effect.succeed({ entities: journalEntries });
 			}
 			if (type === "project") return Effect.succeed({ entities: projects });
+			if (type === "bookmark") return Effect.succeed({ entities: bookmarks });
 			return Effect.succeed({ entities: [] });
 		},
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
-
-function makeUnavailableRuntime() {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		threadGet: () => unused,
-		listEntities: () => Effect.die("Core unavailable"),
 		entityMutate: () => unused,
 		subscribeRun: () => unused,
 		cancelRun: () => unused,
@@ -133,6 +111,7 @@ function renderCollection(
 		people?: EntityListResult["entities"];
 		todos?: EntityListResult["entities"];
 		projects?: EntityListResult["entities"];
+		bookmarks?: EntityListResult["entities"];
 	},
 	overrides?: {
 		selectedId?: string | null;
@@ -145,6 +124,7 @@ function renderCollection(
 		rows.todos ?? [],
 		rows.journalEntries ?? [],
 		rows.projects ?? [],
+		rows.bookmarks ?? [],
 	);
 	const client = new QueryClient({
 		defaultOptions: {
@@ -190,10 +170,20 @@ function renderCollectionWithRuntime(
 afterEach(cleanup);
 
 describe("EntityCollection", () => {
-	it("keeps preview collections visible when Core cannot be read", async () => {
-		renderCollectionWithRuntime("recipe", makeUnavailableRuntime());
+	it("lists live Bookmarks read from entity/list", async () => {
+		renderCollection("bookmark", {
+			bookmarks: [
+				{
+					id: "01900000-0000-7000-8000-0000000000e1",
+					type: "bookmark",
+					data: { title: "Effect docs", url: "https://effect.website" },
+					created_at: 1_700_000_000_000,
+					updated_at: 1_700_000_000_000,
+				},
+			],
+		});
 
-		expect(await screen.findByText(/Weeknight ragù/i)).toBeInTheDocument();
+		expect(await screen.findByText("Effect docs")).toBeInTheDocument();
 	});
 
 	it("lists live People read from entity/list (preview people no longer merged)", async () => {

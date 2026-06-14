@@ -9,7 +9,7 @@ product
 A single user: the developer-owner of this local-first Workspace. Technical,
 fluent in LLMs and agent tooling, using Inkstone as a thinking surface, capturing
 conversations and structured personal knowledge (People, Projects, Todos,
-Recipes) and exploring them through chat-driven agent Runs.
+Bookmarks) and exploring them through chat-driven agent Runs.
 
 Context of use: focused sessions, often returning to a prior Thread to continue a
 topic. Everything runs on their own machine (local-first, single-user per

@@ -6,15 +6,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button.js";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import type {
+	Bookmark,
 	JournalEntry,
 	JournalEntryBodyEntityRefNode,
 	LibraryItem,
 	Person,
 	Project,
-	Recipe,
 	Todo,
 } from "@/lib/libraryItems";
 import {
+	bookmarkHref,
 	journalEntriesMentioning,
 	KIND_META,
 	libraryItemSubtitle,
@@ -32,6 +33,7 @@ import {
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
 import { setFocusedThread } from "@/store/chat";
+import { BookmarkEditor } from "./BookmarkEditor.js";
 import { EntityGlyph } from "./EntityGlyph.js";
 import { JournalEntryEditor } from "./JournalEntryEditor.js";
 import { PersonEditor } from "./PersonEditor.js";
@@ -61,6 +63,9 @@ export function EntityDetail({
 		return (
 			<JournalEntryDetail journalEntry={entity} allEntities={allEntities} />
 		);
+	}
+	if (entity.kind === "bookmark") {
+		return <BookmarkDetail bookmark={entity} />;
 	}
 	return <EntityDetailView entity={entity} allEntities={allEntities} />;
 }
@@ -117,7 +122,6 @@ function EntityDetailView({
 						onOpen={goToEntity}
 					/>
 				)}
-				{entity.kind === "recipe" && <RecipeBody recipe={entity} />}
 			</div>
 
 			<CapturedFromFooter entity={entity} />
@@ -696,6 +700,122 @@ function JournalEntryDetail({
 	);
 }
 
+/**
+ * The Bookmark inspector: view ↔ edit toggle + an inline delete confirm, mirroring
+ * `PersonDetail` (ADR-0033/ADR-0036). The mutation hook lives here so non-editable
+ * kinds render hook-free.
+ */
+function BookmarkDetail({ bookmark }: { bookmark: Bookmark }) {
+	const navigate = useNavigate();
+	const [editing, setEditing] = useState(false);
+	const [confirmingDelete, setConfirmingDelete] = useState(false);
+	const del = useEntityMutation();
+
+	if (editing) {
+		return (
+			<div className="flex h-full flex-col bg-sidebar">
+				<BookmarkEditor
+					mode="edit"
+					bookmark={bookmark}
+					onDone={() => setEditing(false)}
+					onCancel={() => setEditing(false)}
+				/>
+			</div>
+		);
+	}
+
+	const deleteBookmark = () =>
+		del.mutate(
+			{ mutation_kind: "delete_bookmark", payload: { entity_id: bookmark.id } },
+			{
+				onSuccess: () =>
+					navigate({
+						to: "/library/$kind",
+						params: { kind: KIND_META.bookmark.slug },
+						search: {},
+					}),
+			},
+		);
+
+	return (
+		<div className="flex h-full flex-col">
+			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
+				<EntityGlyph entity={bookmark} size="lg" />
+				<div className="min-w-0 flex-1 pt-0.5">
+					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
+						{libraryItemTitle(bookmark)}
+					</h2>
+					<p className="truncate text-muted-foreground text-sm">
+						{KIND_META.bookmark.label} · {libraryItemSubtitle(bookmark)}
+					</p>
+				</div>
+				<Button
+					variant="chip"
+					size="sm"
+					onClick={() => setEditing(true)}
+					aria-label="Edit Bookmark"
+				>
+					<Pencil className="size-3.5" aria-hidden />
+					Edit
+				</Button>
+			</header>
+
+			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+				<BookmarkBody bookmark={bookmark} />
+			</div>
+
+			<footer className="border-foreground/15 border-t px-5 py-4">
+				{del.error ? (
+					<p role="alert" className="mb-3 text-destructive text-sm">
+						{del.error instanceof Error && del.error.message
+							? del.error.message
+							: "Couldn't delete. Try again."}
+					</p>
+				) : null}
+				{confirmingDelete ? (
+					<div className="flex items-center justify-between gap-3">
+						<span className="text-foreground text-sm">
+							Delete this Bookmark?
+						</span>
+						<div className="flex gap-2">
+							<Button
+								variant="chip"
+								size="pill"
+								onClick={() => {
+									del.reset();
+									setConfirmingDelete(false);
+								}}
+								disabled={del.isPending}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="primary-icon"
+								size="pill"
+								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								onClick={deleteBookmark}
+								disabled={del.isPending}
+							>
+								{del.isPending ? "Deleting…" : "Delete"}
+							</Button>
+						</div>
+					</div>
+				) : (
+					<Button
+						variant="ghost"
+						size="row"
+						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+						onClick={() => setConfirmingDelete(true)}
+					>
+						<Trash2 className="size-4" aria-hidden />
+						Delete Bookmark
+					</Button>
+				)}
+			</footer>
+		</div>
+	);
+}
+
 function Field({ label, children }: { label: string; children: ReactNode }) {
 	return (
 		<div className="flex flex-col gap-1.5">
@@ -1131,44 +1251,45 @@ function TodoBody({
 	);
 }
 
-function RecipeBody({ recipe }: { recipe: Recipe }) {
+/** Read-only Bookmark inspector body (ADR-0036): url as an external link, note as prose, tags as badges. */
+function BookmarkBody({ bookmark }: { bookmark: Bookmark }) {
+	// Core stores `url` opaque, so only render a clickable link for a safe
+	// http/https/mailto url; an unsafe (javascript:/data:) or scheme-less url
+	// shows as plain text — never a dangerous or broken-relative link.
+	const href = bookmarkHref(bookmark.url);
 	return (
 		<>
-			<div className="flex flex-wrap gap-2">
-				{recipe.time ? <Badge>{recipe.time}</Badge> : null}
-				{recipe.servings ? <Badge>Serves {recipe.servings}</Badge> : null}
-				{recipe.tags?.map((t) => (
-					<Badge key={t}>{t}</Badge>
-				))}
-			</div>
-			<Field label="Ingredients">
-				<ul className="flex flex-col gap-1.5">
-					{recipe.ingredients.map((ing) => (
-						<li key={ing} className="flex gap-2.5">
-							<span
-								className="mt-2 size-1 shrink-0 rounded-full bg-muted-foreground"
-								aria-hidden
-							/>
-							<span className="text-pretty">{ing}</span>
-						</li>
-					))}
-				</ul>
-			</Field>
-			{recipe.steps && recipe.steps.length > 0 ? (
-				<Field label="Method">
-					<ol className="flex flex-col gap-2.5">
-						{recipe.steps.map((step, i) => (
-							<li key={step} className="flex gap-2.5">
-								<span
-									className="flex size-5 shrink-0 items-center justify-center rounded-full bg-secondary font-medium text-[11px] text-secondary-foreground"
-									aria-hidden
-								>
-									{i + 1}
-								</span>
-								<span className="text-pretty">{step}</span>
-							</li>
+			{bookmark.url ? (
+				<Field label="URL">
+					{href ? (
+						<a
+							href={href}
+							target="_blank"
+							rel="noopener noreferrer"
+							className="flex items-center gap-1 text-primary hover:underline"
+						>
+							<span className="min-w-0 truncate">{bookmark.url}</span>
+							<ArrowUpRight className="size-3.5 shrink-0" aria-hidden />
+						</a>
+					) : (
+						<span className="block truncate text-foreground">
+							{bookmark.url}
+						</span>
+					)}
+				</Field>
+			) : null}
+			{bookmark.note ? (
+				<Field label="Note">
+					<p className="text-pretty">{bookmark.note}</p>
+				</Field>
+			) : null}
+			{bookmark.tags && bookmark.tags.length > 0 ? (
+				<Field label="Tags">
+					<div className="flex flex-wrap gap-2">
+						{bookmark.tags.map((t) => (
+							<Badge key={t}>{t}</Badge>
 						))}
-					</ol>
+					</div>
 				</Field>
 			) : null}
 		</>

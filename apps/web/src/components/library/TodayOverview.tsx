@@ -62,7 +62,7 @@ export function TodayOverview() {
 					tone="brand"
 					size="lg"
 					title="Your library is empty"
-					description="Library items show up here as you chat. Inkstone drafts the people, projects, todos and recipes it notices, and they land here once you accept the Proposal."
+					description="Library items show up here as you chat. Inkstone drafts the people, projects and todos it notices, and they land here once you accept the Proposal; bookmarks you save in the Library appear here right away."
 					action={
 						<Button
 							variant="primary-icon"

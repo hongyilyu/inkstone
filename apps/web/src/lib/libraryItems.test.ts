@@ -93,7 +93,7 @@ describe("library item helpers", () => {
 		expect(libraryItemKindForSlug("people")).toBe("person");
 		expect(libraryItemKindForSlug("projects")).toBe("project");
 		expect(libraryItemKindForSlug("todos")).toBe("todo");
-		expect(libraryItemKindForSlug("recipes")).toBe("recipe");
+		expect(libraryItemKindForSlug("bookmarks")).toBe("bookmark");
 		expect(libraryItemKindForSlug("nope")).toBeUndefined();
 	});
 
@@ -141,12 +141,7 @@ describe("library item helpers", () => {
 		const review = itemsNeedingReview(entities);
 		expect(review.every((e) => e.needsReview)).toBe(true);
 		expect(review.map((e) => e.id).sort()).toEqual(
-			[
-				"person_alice",
-				"person_priya",
-				"recipe_sourdough",
-				"todo_backfill",
-			].sort(),
+			["person_alice", "person_priya", "todo_backfill"].sort(),
 		);
 	});
 

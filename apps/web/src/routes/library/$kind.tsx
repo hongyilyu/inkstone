@@ -3,7 +3,7 @@ import { Search } from "lucide-react";
 import { EntityCollection } from "@/components/library/EntityCollection";
 import { Button } from "@/components/ui/button.js";
 import { EmptyState } from "@/components/ui/empty-state";
-import { libraryItemKindForSlug } from "@/lib/libraryItems";
+import { CREATABLE_KINDS, libraryItemKindForSlug } from "@/lib/libraryItems";
 
 interface KindSearch {
 	id?: string;
@@ -49,12 +49,9 @@ function KindRoute() {
 					search: { id: next },
 				})
 			}
-			// Todo, Person, Project, and Journal Entry are manually-creatable in the rail (ADR-0033).
+			// Manually-creatable kinds gate on the shared CREATABLE_KINDS set (ADR-0033).
 			onNew={
-				kind === "todo" ||
-				kind === "person" ||
-				kind === "project" ||
-				kind === "journal_entry"
+				CREATABLE_KINDS.has(kind)
 					? () =>
 							navigate({
 								to: "/library/$kind",

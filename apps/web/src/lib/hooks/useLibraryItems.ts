@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Effect } from "effect";
 import { entities } from "@/data/mock/entities";
 import type {
+	Bookmark,
 	JournalEntry,
 	JournalEntryBodyNode,
 	LibraryItem,
@@ -87,25 +88,41 @@ export function useLibraryItems() {
 			} catch {
 				// Projects are additive during this migration; keep the other live lists if only this read fails.
 			}
+			let bookmarks: readonly LiveEntityRow[] = [];
+			try {
+				const bookmarkRows = await runtime.runPromise(
+					Effect.gen(function* () {
+						const client = yield* WsClient;
+						return yield* client.listEntities("bookmark");
+					}),
+				);
+				bookmarks = bookmarkRows.entities;
+			} catch {
+				// Bookmarks are additive during this migration; keep the other live lists if only this read fails.
+			}
 			const { journalEntries, todos, people } = rows;
 			const liveJournalEntries = journalEntries.map(toLibraryJournalEntry);
 			const liveTodos = todos.map(toLibraryTodo);
 			const livePeople = people.map(toLibraryPerson);
 			const liveProjects = projects.map(toLibraryProject);
+			const liveBookmarks = bookmarks.map(toLibraryBookmark);
 			const hasLiveTodos = liveTodos.length > 0;
 			const hasLivePeople = livePeople.length > 0;
 			const hasLiveProjects = liveProjects.length > 0;
+			const hasLiveBookmarks = liveBookmarks.length > 0;
 			const remainingPreviewItems = previewItems.filter(
 				(e) =>
 					(e.kind !== "todo" || !hasLiveTodos) &&
 					(e.kind !== "person" || !hasLivePeople) &&
-					(e.kind !== "project" || !hasLiveProjects),
+					(e.kind !== "project" || !hasLiveProjects) &&
+					(e.kind !== "bookmark" || !hasLiveBookmarks),
 			);
 			return [
 				...liveJournalEntries,
 				...liveTodos,
 				...livePeople,
 				...liveProjects,
+				...liveBookmarks,
 				...remainingPreviewItems,
 			];
 		},
@@ -287,4 +304,34 @@ function toLibraryProject(row: LiveEntityRow): Project {
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Project;
+}
+
+/** The Bookmark `data` shape Core stores (ADR-0036): required `title`, optional `url`/`note`/`tags`. */
+interface BookmarkData {
+	title?: unknown;
+	url?: unknown;
+	note?: unknown;
+	tags?: unknown;
+}
+
+/**
+ * Map a live `entity/list` row to the Library `Bookmark` view model (ADR-0036).
+ * Every field is defensively defaulted so a sparse `data` cannot crash the
+ * inspector — the trap the old non-optional `recipe.ingredients` array masked.
+ */
+function toLibraryBookmark(row: LiveEntityRow): Bookmark {
+	const data = (row.data ?? {}) as BookmarkData;
+	const tags = Array.isArray(data.tags)
+		? data.tags.filter((t): t is string => typeof t === "string")
+		: undefined;
+	return {
+		id: row.id,
+		kind: "bookmark",
+		title: asString(data.title) ?? "Untitled",
+		url: asString(data.url),
+		note: asString(data.note),
+		tags: tags && tags.length > 0 ? tags : undefined,
+		recency: row.created_at,
+		createdAt: new Date(row.created_at).toLocaleDateString(),
+	} satisfies Bookmark;
 }

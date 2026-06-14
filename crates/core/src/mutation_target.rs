@@ -185,6 +185,7 @@ pub(crate) async fn validate_mutation_target_refs(
         "update_person" | "delete_person" => Some("person"),
         "update_project" | "delete_project" | "mark_project_reviewed" => Some("project"),
         "delete_todo" => Some("todo"),
+        "update_bookmark" | "delete_bookmark" => Some("bookmark"),
         _ => None,
     } {
         let entity_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {

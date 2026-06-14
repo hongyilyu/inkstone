@@ -213,7 +213,7 @@ Flat by tonal layering, not by shadow. Depth is read from the warm-neutral stack
 - **Style:** Sidebar/Library rows are `rounded-lg`, `text-sidebar-foreground/80`, hover `sidebar-accent`. Active row is filled `sidebar-accent` with medium weight, plus a trailing count. Icons are Lucide, 16px.
 
 ### Command Palette (signature)
-A centered `rounded-2xl` popover over a blurred `foreground/25` backdrop, opened with ⌘K from anywhere. A search field over results grouped by type (Threads, People, Projects, Todos, Recipes), fully keyboard-driven (↑↓ to move, ↵ to open), the active row washed `accent` with a return-key hint. Entrance scales from 0.98 + fades; disabled under reduced motion.
+A centered `rounded-2xl` popover over a blurred `foreground/25` backdrop, opened with ⌘K from anywhere. A search field over results grouped by type (Threads, People, Projects, Todos, Bookmarks), fully keyboard-driven (↑↓ to move, ↵ to open), the active row washed `accent` with a return-key hint. Entrance scales from 0.98 + fades; disabled under reduced motion.
 
 ### Entity Detail Inspector (signature)
 A ~400px right-hand panel (collapses to full-width below `lg`) that opens when a row is selected. Header (glyph + title + close), a scrollable body of labelled fields and deep-linked relations, and a pinned "Captured from · <when> / <thread>" footer that returns to the source Run. The expression of "chat is the verb, knowledge is the noun."

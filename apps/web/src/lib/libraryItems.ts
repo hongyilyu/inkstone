@@ -1,6 +1,6 @@
 import {
+	Bookmark as BookmarkIcon,
 	BookOpenText,
-	ChefHat,
 	FolderKanban,
 	ListTodo,
 	type LucideIcon,
@@ -12,7 +12,7 @@ export type LibraryItemKind =
 	| "person"
 	| "project"
 	| "todo"
-	| "recipe";
+	| "bookmark";
 
 export interface LibraryItemCapture {
 	threadId: string;
@@ -121,17 +121,15 @@ export interface Todo extends LibraryItemBase {
 	personRefs: TodoPersonRef[];
 }
 
-export interface Recipe extends LibraryItemBase {
-	kind: "recipe";
+export interface Bookmark extends LibraryItemBase {
+	kind: "bookmark";
 	title: string;
+	url?: string;
+	note?: string;
 	tags?: string[];
-	time?: string;
-	servings?: number;
-	ingredients: string[];
-	steps?: string[];
 }
 
-export type LibraryItem = JournalEntry | Person | Project | Todo | Recipe;
+export type LibraryItem = JournalEntry | Person | Project | Todo | Bookmark;
 
 export interface JournalEntryDay {
 	day: string;
@@ -154,8 +152,22 @@ export const KIND_ORDER: LibraryItemKind[] = [
 	"person",
 	"project",
 	"todo",
-	"recipe",
+	"bookmark",
 ];
+
+/**
+ * Kinds the user can manually create inline in the Library rail (ADR-0033). The
+ * single source of truth for the create affordance — both the rail mount
+ * (`route.tsx`) and the per-collection "New" button (`$kind.tsx`) gate on this,
+ * so the two never drift.
+ */
+export const CREATABLE_KINDS: ReadonlySet<LibraryItemKind> = new Set([
+	"todo",
+	"person",
+	"project",
+	"journal_entry",
+	"bookmark",
+]);
 
 export const KIND_META: Record<LibraryItemKind, KindMeta> = {
 	journal_entry: {
@@ -172,11 +184,11 @@ export const KIND_META: Record<LibraryItemKind, KindMeta> = {
 		icon: FolderKanban,
 	},
 	todo: { label: "Todo", plural: "Todos", slug: "todos", icon: ListTodo },
-	recipe: {
-		label: "Recipe",
-		plural: "Recipes",
-		slug: "recipes",
-		icon: ChefHat,
+	bookmark: {
+		label: "Bookmark",
+		plural: "Bookmarks",
+		slug: "bookmarks",
+		icon: BookmarkIcon,
 	},
 };
 
@@ -185,7 +197,7 @@ const SLUG_TO_KIND: Record<string, LibraryItemKind> = {
 	people: "person",
 	projects: "project",
 	todos: "todo",
-	recipes: "recipe",
+	bookmarks: "bookmark",
 };
 
 export function libraryItemKindForSlug(
@@ -223,10 +235,40 @@ export function libraryItemSubtitle(e: LibraryItem): string {
 			return e.dueAt
 				? `Due ${e.dueAt.slice(0, 10)}`
 				: (e.note ?? TODO_STATUS_LABEL[e.status]);
-		case "recipe":
-			return (
-				[e.time, e.tags?.join(", ")].filter(Boolean).join(" · ") || "Recipe"
-			);
+		case "bookmark":
+			return bookmarkHost(e.url) ?? "Bookmark";
+	}
+}
+
+/** A Bookmark's URL host for its subtitle, or null when the url is absent or unparseable. */
+function bookmarkHost(url: string | undefined): string | null {
+	if (!url) return null;
+	try {
+		return new URL(url).host || null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * A Bookmark's url as a safe, clickable href — or null when it must not be a
+ * link. Core stores `url` opaque (no scheme validation, ADR-0036), so the
+ * inspector guards the href itself: only http/https/mailto pass. A `javascript:`
+ * or `data:` url (a stored-XSS sink) and a scheme-less string like `acme.dev`
+ * (which would resolve relative to the app origin) both return null, so the
+ * caller renders plain text instead of a dangerous or broken link.
+ */
+export function bookmarkHref(url: string | undefined): string | null {
+	if (!url) return null;
+	try {
+		const { protocol } = new URL(url);
+		return protocol === "http:" ||
+			protocol === "https:" ||
+			protocol === "mailto:"
+			? url
+			: null;
+	} catch {
+		return null;
 	}
 }
 
@@ -251,7 +293,7 @@ export function libraryItemKindCounts(
 		person: 0,
 		project: 0,
 		todo: 0,
-		recipe: 0,
+		bookmark: 0,
 	};
 	for (const e of all) counts[e.kind] += 1;
 	return counts;

@@ -363,3 +363,127 @@ test("edit then delete a seeded Journal Entry via the rail editor (update + dele
 		sqliteScalar(dbPath, `SELECT count(*) FROM entities WHERE id='${JE}';`),
 	).toBe("0");
 });
+
+test("create a Bookmark via the rail editor → entity/mutate writes it and the row appears", async ({
+	page,
+	core,
+	workspace,
+}) => {
+	const dbPath = dbPathFor(workspace.path);
+
+	await page.goto(`${core.url}/library/bookmarks`);
+	await page.getByRole("button", { name: /new bookmark/i }).click();
+
+	const rail = page.getByRole("complementary", { name: /new bookmark/i });
+	await expect(rail).toBeVisible({ timeout: 15_000 });
+	await rail.getByLabel("Title").fill("Effect docs");
+	await rail.getByLabel("URL").fill("https://effect.website");
+	await rail.getByRole("button", { name: /^save$/i }).click();
+
+	// The new Bookmark lands in the live collection (live rows replace the mock preview).
+	const collection = page.getByRole("region", { name: /bookmarks/i });
+	await expect(collection.getByText("Effect docs")).toBeVisible({
+		timeout: 15_000,
+	});
+
+	// DB ground truth: exactly one Bookmark with that title, created_by the user.
+	expect(
+		sqliteScalar(
+			dbPath,
+			`SELECT count(*) FROM entities WHERE type='bookmark' AND created_by='user' AND json_extract(data,'$.title')='Effect docs';`,
+		),
+	).toBe("1");
+});
+
+test("edit a seeded Bookmark via the rail editor → update_bookmark persists across reload", async ({
+	page,
+	core,
+	workspace,
+}) => {
+	const dbPath = dbPathFor(workspace.path);
+	const BOOKMARK = "01900000-0000-7000-8000-000000010005";
+	seedEntities(dbPath, [
+		{
+			id: BOOKMARK,
+			type: "bookmark",
+			data: { title: "Effect docs", url: "https://effect.website" },
+		},
+	]);
+
+	await page.goto(`${core.url}/library/bookmarks?id=${BOOKMARK}`);
+	const detail = page.getByRole("complementary", {
+		name: /Effect docs details/i,
+	});
+	await expect(detail).toBeVisible({ timeout: 15_000 });
+
+	await detail.getByRole("button", { name: /edit bookmark/i }).click();
+	const title = detail.getByLabel("Title");
+	await expect(title).toHaveValue("Effect docs");
+	await title.fill("Effect-TS documentation");
+	await detail.getByRole("button", { name: /^save$/i }).click();
+
+	// Live re-read shows the new title; the old one is gone.
+	const collection = page.getByRole("region", { name: /bookmarks/i });
+	await expect(collection.getByText("Effect-TS documentation")).toBeVisible({
+		timeout: 15_000,
+	});
+	await expect(
+		collection.getByText("Effect docs", { exact: true }),
+	).toHaveCount(0);
+
+	// Persisted in Core (not just optimistic): the row's data carries the new title.
+	expect(
+		sqliteScalar(
+			dbPath,
+			`SELECT json_extract(data,'$.title') FROM entities WHERE id='${BOOKMARK}';`,
+		),
+	).toBe("Effect-TS documentation");
+
+	// Survives a reload (proves the write reached tier 2, not just the cache).
+	await page.reload();
+	await expect(
+		page
+			.getByRole("region", { name: /bookmarks/i })
+			.getByText("Effect-TS documentation"),
+	).toBeVisible({ timeout: 15_000 });
+});
+
+test("delete a seeded Bookmark via the inline confirm → delete_bookmark removes it", async ({
+	page,
+	core,
+	workspace,
+}) => {
+	const dbPath = dbPathFor(workspace.path);
+	const BOOKMARK = "01900000-0000-7000-8000-000000010006";
+	seedEntities(dbPath, [
+		{
+			id: BOOKMARK,
+			type: "bookmark",
+			data: { title: "Stale link", url: "https://example.com" },
+		},
+	]);
+
+	await page.goto(`${core.url}/library/bookmarks?id=${BOOKMARK}`);
+	const detail = page.getByRole("complementary", {
+		name: /Stale link details/i,
+	});
+	await expect(detail).toBeVisible({ timeout: 15_000 });
+
+	// Inline (non-modal) two-step delete confirm (ADR-0033, "approval is sacred").
+	await detail.getByRole("button", { name: /delete bookmark/i }).click();
+	await detail.getByRole("button", { name: /^delete$/i }).click();
+
+	// Row is gone from the collection and the rail closed (route dropped ?id).
+	const collection = page.getByRole("region", { name: /bookmarks/i });
+	await expect(collection.getByText("Stale link")).toHaveCount(0, {
+		timeout: 15_000,
+	});
+
+	// DB ground truth: the Bookmark no longer exists.
+	expect(
+		sqliteScalar(
+			dbPath,
+			`SELECT count(*) FROM entities WHERE id='${BOOKMARK}';`,
+		),
+	).toBe("0");
+});
