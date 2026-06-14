@@ -92,7 +92,13 @@ export function CommandPalette() {
 			? searchLibraryItems(all, query)
 			: recentlyCapturedItems(all, 8);
 
-		const messageItems: Result[] = (q ? (messageData?.hits ?? []) : []).map(
+		// Gate the Messages group on the DEBOUNCED query, not the immediate `q`:
+		// `messageData` is keyed on `debouncedQuery`, so showing it under the
+		// immediate `q` would render hits for the previous query during the debounce
+		// window — a stale row that Enter/click could navigate to. Tying display to
+		// the same query the data was fetched for keeps the group self-consistent.
+		const dq = debouncedQuery.trim();
+		const messageItems: Result[] = (dq ? (messageData?.hits ?? []) : []).map(
 			(hit): Result => ({
 				type: "message",
 				thread_id: hit.thread_id,
@@ -114,7 +120,7 @@ export function CommandPalette() {
 			})),
 		];
 		return out.filter((g) => g.items.length > 0);
-	}, [libraryItems, threadData, messageData, query]);
+	}, [libraryItems, threadData, messageData, query, debouncedQuery]);
 
 	const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 

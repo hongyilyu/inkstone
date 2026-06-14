@@ -269,6 +269,29 @@ mod tests {
         assert_eq!(underscore[0].thread_title, "Has underscore");
     }
 
+    /// A blank or whitespace-only query returns no hits, never the whole corpus.
+    /// An empty needle would make `LIKE '%%'` match every message; the guard in
+    /// `search_messages` short-circuits it at the boundary regardless of caller.
+    #[tokio::test]
+    async fn search_blank_query_returns_no_hits() {
+        let pool = memory_pool().await;
+        seed_thread_with_user_message(&pool, "One", "first message", 1000).await;
+        seed_thread_with_user_message(&pool, "Two", "second message", 2000).await;
+
+        for blank in ["", "   ", "\t\n"] {
+            let hits = search_messages(&pool, blank).await.expect("search blank");
+            assert!(
+                hits.is_empty(),
+                "blank query {blank:?} must return no hits, got {}",
+                hits.len()
+            );
+        }
+
+        // Sanity: a real needle still matches, so the guard didn't over-reach.
+        let hits = search_messages(&pool, "message").await.expect("search");
+        assert_eq!(hits.len(), 2, "a non-blank query still matches");
+    }
+
     /// Drive a Run's assistant Message through the real append path and return
     /// `(thread_id, run_id, assistant_message_id)` without completing it. The
     /// assistant Message is left `streaming` — the caller decides whether to

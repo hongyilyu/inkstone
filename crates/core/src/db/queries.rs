@@ -1775,17 +1775,34 @@ fn escape_like(query: &str) -> String {
     out
 }
 
+/// Whether the needle contains a LIKE metacharacter (`%`, `_`) or the escape
+/// char (`\`), and therefore needs the `ESCAPE`-clause path. A needle with none
+/// of these is matched identically with or without escaping, so it can take the
+/// plain `LIKE` path that preserves the FTS5 trigram acceleration.
+fn needs_like_escape(query: &str) -> bool {
+    query.contains('%') || query.contains('_') || query.contains(LIKE_ESCAPE)
+}
+
 /// Substring search over `message_fts` (ADR-0035): a case-insensitive
 /// `text LIKE '%' || ? || '%'` (the trigram tokenizer accelerates it, no
 /// `MATCH`), joined to `threads` for the title and `messages` for `created_at`,
-/// ordered newest-first. The needle is LIKE-escaped so `%`/`_` match literally,
-/// and the snippet is rendered in SQL with `instr`/`substr` (char-based in
-/// SQLite — no byte-slice hazard) around the first case-insensitive match,
-/// keeping [`SNIPPET_PAD`] chars of context per side with `…` where trimmed.
+/// ordered newest-first. The snippet is rendered in SQL with `instr`/`substr`
+/// (char-based in SQLite — no byte-slice hazard) around the first case-insensitive
+/// match, keeping [`SNIPPET_PAD`] chars of context per side with `…` where trimmed.
 /// Returns `(message_id, thread_id, run_id, role, snippet, thread_title,
-/// created_at)`. Wired to the `message/search` handler in slice 3; uncalled
-/// (outside tests) until then.
-#[allow(clippy::type_complexity, dead_code)]
+/// created_at)`.
+///
+/// **Trigram-preserving escape:** SQLite disables the FTS5 trigram LIKE
+/// acceleration whenever an `ESCAPE` clause is present — even for a needle with
+/// nothing to escape. So we only take the LIKE-escaped path (binding
+/// `escape_like(query)` under `ESCAPE '\'`) for a needle that actually contains
+/// `%`/`_`/`\`; the common no-wildcard needle takes the plain `LIKE` path, which
+/// is byte-identical for such needles and keeps the trigram index engaged.
+///
+/// A blank/whitespace-only `query` returns no hits (an empty needle would make
+/// `LIKE '%%'` match the whole corpus) — guarded here so the boundary is safe
+/// regardless of caller.
+#[allow(clippy::type_complexity)]
 pub(super) async fn search_messages<'e, E>(
     executor: E,
     query: &str,
@@ -1793,9 +1810,13 @@ pub(super) async fn search_messages<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    // `?1` LIKE-escaped needle (WHERE); `?2` raw needle (instr/substr); `?3` pad.
-    sqlx::query_as(
-        "SELECT s.message_id, s.thread_id, s.run_id, s.role, \
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // The snippet/select half is identical; only the WHERE clause's escape differs.
+    // `?1` needle for WHERE; `?2` raw needle (instr/substr); `?3` pad.
+    const SELECT_HEAD: &str = "SELECT s.message_id, s.thread_id, s.run_id, s.role, \
                 CASE WHEN s.start > 1 THEN '…' ELSE '' END \
                   || substr(s.text, s.start, (s.pos - s.start) + s.slen + ?3) \
                   || CASE WHEN s.start - 1 + ((s.pos - s.start) + s.slen + ?3) < length(s.text) \
@@ -1810,13 +1831,26 @@ where
            FROM message_fts f \
            JOIN threads t ON t.id = f.thread_id \
            JOIN messages m ON m.id = f.message_id \
-           WHERE f.text LIKE '%' || ?1 || '%' ESCAPE '\\' \
+           WHERE f.text LIKE '%' || ?1 || '%'";
+    const SELECT_TAIL: &str = " \
          ) AS s \
-         ORDER BY s.created_at DESC, s.m_rowid DESC",
-    )
-    .bind(escape_like(query))
-    .bind(query)
-    .bind(SNIPPET_PAD)
-    .fetch_all(executor)
-    .await
+         ORDER BY s.created_at DESC, s.m_rowid DESC";
+
+    // Wildcard needle → ESCAPE path (correct literal `%`/`_`, trigram bypassed by
+    // SQLite); plain needle → no ESCAPE (trigram preserved). The bound `?1` matches.
+    let (sql, needle) = if needs_like_escape(query) {
+        (
+            format!("{SELECT_HEAD} ESCAPE '\\'{SELECT_TAIL}"),
+            escape_like(query),
+        )
+    } else {
+        (format!("{SELECT_HEAD}{SELECT_TAIL}"), query.to_string())
+    };
+
+    sqlx::query_as(&sql)
+        .bind(needle)
+        .bind(query)
+        .bind(SNIPPET_PAD)
+        .fetch_all(executor)
+        .await
 }

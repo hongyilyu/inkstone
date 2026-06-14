@@ -49,8 +49,14 @@ async fn main() -> Result<()> {
 
     // Rebuild the tier-3 message search projection from `message_parts` (ADR-0035):
     // backfills an existing DB and self-heals any drift on every open. O(completed
-    // messages); single-digit ms at single-user scale, off the user's wait path.
-    db::rebuild_message_fts(&pool).await?;
+    // messages); single-digit ms at single-user scale, so it runs inline at boot.
+    // Best-effort: it is a derived projection (authoritative for nothing), so a
+    // rebuild failure must NOT take the whole app offline — log and serve with a
+    // stale/partial search index, which the next successful open backfills. Unlike
+    // `workflow::init`/`db::open` above, which gate authoritative state and fail-fast.
+    if let Err(e) = db::rebuild_message_fts(&pool).await {
+        eprintln!("INKSTONE_FTS_REBUILD_FAILED message search may be stale: {e:?}");
+    }
 
     // Boot recovery sweep (ADR-0012): error any Run left `running` by a prior
     // Core crash — it has no live Worker. Preserves `parked` Runs (ADR-0025).
