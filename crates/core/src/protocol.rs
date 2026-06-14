@@ -257,6 +257,37 @@ pub struct EntityMutateResult {
     pub entity_id: Option<String>,
 }
 
+/// `message/search` params (ADR-0035): a substring query over completed Message
+/// text. Mirror of TS `MessageSearchParams`.
+#[derive(Debug, Deserialize)]
+pub struct MessageSearchParams {
+    pub query: String,
+}
+
+/// One `message/search` hit (ADR-0035): a completed Message matching the
+/// substring query, with a SQL-rendered snippet and its Thread title for
+/// navigation. Mirror of TS `MessageHit` (field-for-field, snake_case wire);
+/// aligns with `db::MessageHit`. `role` is `"user"`/`"assistant"` on the wire;
+/// `created_at` is a ms-epoch stamp.
+#[derive(Debug, Serialize)]
+pub struct MessageHit {
+    pub message_id: String,
+    pub thread_id: String,
+    pub run_id: String,
+    pub role: String,
+    pub snippet: String,
+    pub thread_title: String,
+    pub created_at: i64,
+}
+
+/// `message/search` result: the matching hits, newest-first. Object-wrapper
+/// shape (`{hits: [...]}`) keeps it forward-extensible. Mirror of TS
+/// `MessageSearchResult`.
+#[derive(Debug, Serialize)]
+pub struct MessageSearchResult {
+    pub hits: Vec<MessageHit>,
+}
+
 /// `thread/get` params: the Thread to rehydrate. Malformed `thread_id` →
 /// `invalid_params` (-32602), unknown → `unknown_thread` (-32001), as in
 /// `run/post_message`.

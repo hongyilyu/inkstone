@@ -11,10 +11,8 @@ use sqlx::{Executor, Sqlite, SqlitePool};
 use super::queries;
 
 /// One message search hit (ADR-0035): enough to render a result and navigate to
-/// the source Thread. Core-internal this slice; the `message/search` handler that
-/// consumes it (and the mirrored wire types) lands in slice 3 — uncalled until
-/// then, like the GTD read layer in [`super`].
-#[allow(dead_code)]
+/// the source Thread. Consumed by the `message/search` handler (slice 3), which
+/// maps it to the mirrored wire `protocol::MessageHit`.
 pub struct MessageHit {
     pub message_id: String,
     pub thread_id: String,
@@ -49,8 +47,7 @@ where
 /// Substring-search the message index (ADR-0035): a case-insensitive
 /// `LIKE '%query%'` over `message_fts.text`, newest-first, with the snippet
 /// rendered in SQL (`instr`/`substr`) around the first match. Wired to the
-/// `message/search` handler in slice 3; uncalled until then.
-#[allow(dead_code)]
+/// `message/search` handler (slice 3).
 pub async fn search_messages(pool: &SqlitePool, query: &str) -> sqlx::Result<Vec<MessageHit>> {
     let rows = queries::search_messages(pool, query).await?;
     Ok(rows

@@ -21,11 +21,11 @@ use crate::workflow::Workflow;
 
 pub use lifecycle::Moved;
 use lifecycle::{ProposalStatus, RunStatus, TerminalReason};
-// `MessageHit`/`search_messages` are the message-search read surface (ADR-0035);
-// the `message/search` handler consuming them lands in slice 3, so they are
-// uncalled (outside tests) until then. `rebuild_message_fts` runs on open.
-#[allow(unused_imports)]
-pub use message_fts::{MessageHit, rebuild_message_fts, search_messages};
+// `search_messages` is the message-search read surface (ADR-0035), consumed by
+// the `message/search` handler (slice 3); it returns `message_fts::MessageHit`,
+// which the handler maps field-for-field to the wire `protocol::MessageHit`
+// without naming the db type. `rebuild_message_fts` runs on open.
+pub use message_fts::{rebuild_message_fts, search_messages};
 
 /// Current wall-clock time as ms since UNIX_EPOCH (the `*_at` columns).
 pub(crate) fn now_ms() -> i64 {

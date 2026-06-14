@@ -234,6 +234,28 @@ export const EntityMutateResult = S.Struct({
 });
 export type EntityMutateResult = S.Schema.Type<typeof EntityMutateResult>;
 
+// message/* (ADR-0035): full-text search over completed Message text, surfaced in ⌘K.
+
+/** One message-search hit (ADR-0035): a completed Message matching the substring query, with a SQL-rendered snippet and its Thread title for navigation. */
+export const MessageHit = S.Struct({
+	message_id: S.String,
+	thread_id: S.String,
+	run_id: S.String,
+	role: S.Literal("user", "assistant"),
+	snippet: S.String,
+	thread_title: S.String,
+	created_at: S.Number, // ms-epoch
+});
+export type MessageHit = S.Schema.Type<typeof MessageHit>;
+
+/** `message/search` params (ADR-0035): a substring query over completed message text. */
+export const MessageSearchParams = S.Struct({ query: S.String });
+export type MessageSearchParams = S.Schema.Type<typeof MessageSearchParams>;
+
+/** `message/search` result: matching hits, newest-first. */
+export const MessageSearchResult = S.Struct({ hits: S.Array(MessageHit) });
+export type MessageSearchResult = S.Schema.Type<typeof MessageSearchResult>;
+
 // tool protocol (ADR-0018): the Worker<->Core duplex for tool calls — see docs/design/protocol.md
 
 /** The only `content` modality Core produces today (image is out of scope). */
