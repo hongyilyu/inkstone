@@ -806,4 +806,51 @@ mod tests {
             "marking a non-Project reviewed is Invalid: {result:?}"
         );
     }
+
+    // update_bookmark / delete_bookmark against a non-Bookmark entity_id is
+    // Invalid: the target-ref check rejects a wrong-type target before any write,
+    // so a regression dropping the `Some("bookmark")` arm (which would let these
+    // mutate an unrelated Person) is caught. Mirrors
+    // `mark_project_reviewed_wrong_type_is_invalid`.
+    #[tokio::test]
+    async fn bookmark_mutations_against_wrong_type_are_invalid() {
+        let pool = memory_pool().await;
+        let person_id = apply(&pool, "create_person", &serde_json::json!({ "name": "Al" }))
+            .await
+            .expect("create person")
+            .entity_id
+            .expect("entity id");
+
+        let update = apply(
+            &pool,
+            "update_bookmark",
+            &serde_json::json!({ "entity_id": person_id, "title": "Hijacked" }),
+        )
+        .await;
+        assert!(
+            matches!(update, Err(MutateError::Invalid(_))),
+            "update_bookmark against a Person is Invalid: {update:?}"
+        );
+
+        let delete = apply(
+            &pool,
+            "delete_bookmark",
+            &serde_json::json!({ "entity_id": person_id }),
+        )
+        .await;
+        assert!(
+            matches!(delete, Err(MutateError::Invalid(_))),
+            "delete_bookmark against a Person is Invalid: {delete:?}"
+        );
+
+        // The Person is untouched (neither mutation wrote or deleted it).
+        let row_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM entities WHERE id = ?1 AND type = 'person'",
+        )
+        .bind(&person_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count person rows");
+        assert_eq!(row_count, 1, "the wrong-type target survives untouched");
+    }
 }

@@ -155,6 +155,20 @@ export const KIND_ORDER: LibraryItemKind[] = [
 	"bookmark",
 ];
 
+/**
+ * Kinds the user can manually create inline in the Library rail (ADR-0033). The
+ * single source of truth for the create affordance — both the rail mount
+ * (`route.tsx`) and the per-collection "New" button (`$kind.tsx`) gate on this,
+ * so the two never drift.
+ */
+export const CREATABLE_KINDS: ReadonlySet<LibraryItemKind> = new Set([
+	"todo",
+	"person",
+	"project",
+	"journal_entry",
+	"bookmark",
+]);
+
 export const KIND_META: Record<LibraryItemKind, KindMeta> = {
 	journal_entry: {
 		label: "Journal Entry",
@@ -231,6 +245,28 @@ function bookmarkHost(url: string | undefined): string | null {
 	if (!url) return null;
 	try {
 		return new URL(url).host || null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * A Bookmark's url as a safe, clickable href — or null when it must not be a
+ * link. Core stores `url` opaque (no scheme validation, ADR-0036), so the
+ * inspector guards the href itself: only http/https/mailto pass. A `javascript:`
+ * or `data:` url (a stored-XSS sink) and a scheme-less string like `acme.dev`
+ * (which would resolve relative to the app origin) both return null, so the
+ * caller renders plain text instead of a dangerous or broken link.
+ */
+export function bookmarkHref(url: string | undefined): string | null {
+	if (!url) return null;
+	try {
+		const { protocol } = new URL(url);
+		return protocol === "http:" ||
+			protocol === "https:" ||
+			protocol === "mailto:"
+			? url
+			: null;
 	} catch {
 		return null;
 	}

@@ -15,6 +15,7 @@ import type {
 	Todo,
 } from "@/lib/libraryItems";
 import {
+	bookmarkHref,
 	journalEntriesMentioning,
 	KIND_META,
 	libraryItemSubtitle,
@@ -1252,19 +1253,29 @@ function TodoBody({
 
 /** Read-only Bookmark inspector body (ADR-0036): url as an external link, note as prose, tags as badges. */
 function BookmarkBody({ bookmark }: { bookmark: Bookmark }) {
+	// Core stores `url` opaque, so only render a clickable link for a safe
+	// http/https/mailto url; an unsafe (javascript:/data:) or scheme-less url
+	// shows as plain text — never a dangerous or broken-relative link.
+	const href = bookmarkHref(bookmark.url);
 	return (
 		<>
 			{bookmark.url ? (
 				<Field label="URL">
-					<a
-						href={bookmark.url}
-						target="_blank"
-						rel="noopener noreferrer"
-						className="flex items-center gap-1 text-primary hover:underline"
-					>
-						<span className="truncate">{bookmark.url}</span>
-						<ArrowUpRight className="size-3.5 shrink-0" aria-hidden />
-					</a>
+					{href ? (
+						<a
+							href={href}
+							target="_blank"
+							rel="noopener noreferrer"
+							className="flex items-center gap-1 text-primary hover:underline"
+						>
+							<span className="min-w-0 truncate">{bookmark.url}</span>
+							<ArrowUpRight className="size-3.5 shrink-0" aria-hidden />
+						</a>
+					) : (
+						<span className="block truncate text-foreground">
+							{bookmark.url}
+						</span>
+					)}
 				</Field>
 			) : null}
 			{bookmark.note ? (

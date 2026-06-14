@@ -216,7 +216,9 @@ async fn resolved_entity_refs_for_sources(
 fn entity_title(entity_type: &str, data: &serde_json::Value) -> Option<String> {
     let field = match entity_type {
         "person" | "project" => "name",
-        "todo" | "bookmark" => "title",
+        "todo" => "title",
+        // Bookmark is deliberately absent: it is not journal-referenceable in V1
+        // (ADR-0036), so it never reaches this reference-target title lookup.
         _ => return None,
     };
     data.get(field)

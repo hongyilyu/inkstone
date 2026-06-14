@@ -16,21 +16,13 @@ import { TodoEditor } from "@/components/library/TodoEditor";
 import { WorkspaceShell } from "@/components/ui/workspace-shell";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
+	CREATABLE_KINDS,
 	KIND_META,
 	type LibraryItem,
 	type LibraryItemKind,
 	libraryItemKindForSlug,
 	libraryItemTitle,
 } from "@/lib/libraryItems";
-
-/** Kinds the rail can create inline via `?new=1` (ADR-0033). */
-const CREATABLE_KINDS = new Set<LibraryItemKind>([
-	"todo",
-	"person",
-	"project",
-	"journal_entry",
-	"bookmark",
-]);
 
 /** The default rail width; the Journal body editor wants more room (ADR-0033). */
 const RAIL_WIDTH_DEFAULT = "400px";
