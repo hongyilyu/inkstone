@@ -6,13 +6,12 @@ import type { WsRuntime } from "../runtime.js";
 import { startRunStream } from "./bridge.js";
 import {
 	getChatState,
+	getHydrationStatus,
 	loadThreadMessages,
 	type Message,
 	prependHistory,
+	setHydrationStatus,
 } from "./chat.js";
-import { isThreadHydrated, markThreadHydrated } from "./hydration-set.js";
-
-export { markThreadHydrated, resetHydration } from "./hydration-set.js";
 
 /** Map a wire `MessageView` to the live {@link Message}, narrowing role/status via defensive guards — see docs/design/web-store.md. */
 export function toMessage(view: ThreadGetResult["messages"][number]): Message {
@@ -32,9 +31,18 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 	};
 }
 
+/** True when a send during the fetch window turned this thread live (a live turn we must not clobber or flag as failed). */
+function threadBecameLive(threadId: string): boolean {
+	const live = getChatState().threads[threadId];
+	return live?.activeRunId !== undefined || (live?.messages.length ?? 0) > 0;
+}
+
 /**
  * Hydrate a thread from `thread/get` and resume any streaming run (slice 13).
- * On failure nothing loads (no-op, not a throw); the returned Promise always resolves.
+ * Drives the reactive hydration status (issue #108): `loading` before the fetch,
+ * then `ready` on success or `error` on a failed fetch so {@link ChatColumn} can
+ * show a recoverable error instead of an eternal skeleton. The returned Promise
+ * always resolves (a failed fetch is surfaced via status, not a throw).
  * Became-live handling (send during the fetch window) folds history in non-destructively
  * via {@link prependHistory} instead of replacing — see docs/design/web-store.md.
  */
@@ -42,16 +50,13 @@ export function hydrateThread(
 	runtime: WsRuntime,
 	threadId: string,
 ): Promise<void> {
-	markThreadHydrated(threadId);
+	setHydrationStatus(threadId, "loading");
 	const program = Effect.gen(function* () {
 		const client = yield* WsClient;
 		const result = yield* client.threadGet(threadId);
 		const messages = result.messages.map(toMessage);
 		// Re-read state AFTER the await: a send during the fetch window may have turned this thread live.
-		const live = getChatState().threads[threadId];
-		const becameLive =
-			live?.activeRunId !== undefined || (live?.messages.length ?? 0) > 0;
-		if (becameLive) {
+		if (threadBecameLive(threadId)) {
 			// Keep the live turn intact; fold history in front and do NOT resubscribe a settled history run.
 			prependHistory(threadId, messages);
 			return;
@@ -64,18 +69,28 @@ export function hydrateThread(
 		}
 	});
 	return runtime.runPromise(program).then(
-		() => undefined,
-		() => undefined,
+		() => setHydrationStatus(threadId, "ready"),
+		() => {
+			// Failed thread/get: if a send made the thread live mid-fetch, keep that live turn (ready);
+			// otherwise surface a recoverable error rather than spinning the skeleton forever.
+			setHydrationStatus(
+				threadId,
+				threadBecameLive(threadId) ? "ready" : "error",
+			);
+		},
 	);
 }
 
-/** Hydrate the focused thread on focus change when it is non-null and not already live (slice 13). */
+/** Hydrate the focused thread on focus change when it is non-null and has never hydrated (slice 13). A failed hydration is retried only by the user (error affordance), never auto-looped. */
 export function useHydrateFocusedThread(
 	runtime: WsRuntime,
 	focusedThreadId: string | null,
 ): void {
 	useEffect(() => {
-		if (focusedThreadId !== null && !isThreadHydrated(focusedThreadId)) {
+		if (
+			focusedThreadId !== null &&
+			getHydrationStatus(focusedThreadId) === undefined
+		) {
 			void hydrateThread(runtime, focusedThreadId);
 		}
 	}, [runtime, focusedThreadId]);

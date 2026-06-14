@@ -23,11 +23,15 @@ export interface Message {
 	readonly error?: string;
 }
 
+/** Reactive hydrate-on-focus lifecycle (replaces the old non-reactive Set): `loading` while `thread/get` is in flight, `error` on a failed fetch (drives a recoverable affordance), `ready` once history is live or locally-originated. Absent = never hydrated. */
+export type HydrationStatus = "loading" | "ready" | "error";
+
 /** Per-thread state; `snapshotApplied` drives the SET-vs-APPEND rule in {@link applyEvent}. */
 interface ThreadState {
 	readonly messages: Message[];
 	readonly activeRunId?: string;
 	readonly snapshotApplied?: Record<string, boolean>;
+	readonly hydration?: HydrationStatus;
 }
 
 interface ChatState {
@@ -89,6 +93,23 @@ export function setFocusedThread(threadId: string): void {
 /** Clear the focused thread (New Chat → null → next send mints a thread). */
 export function clearFocusedThread(): void {
 	store.setState((s) => ({ ...s, focusedThreadId: undefined }));
+}
+
+/** Set a thread's reactive hydration status — drives the focus-hydrate gate and the skeleton-vs-error render (issue #108). */
+export function setHydrationStatus(
+	threadId: string,
+	status: HydrationStatus,
+): void {
+	store.setState((s) =>
+		withThread(s, threadId, (t) => ({ ...t, hydration: status })),
+	);
+}
+
+/** A thread's hydration status, `undefined` if it has never hydrated. Non-reactive read for the focus-hydrate gate. */
+export function getHydrationStatus(
+	threadId: string,
+): HydrationStatus | undefined {
+	return store.getState().threads[threadId]?.hydration;
 }
 
 /** Attach (or replace) the pending Proposal for `runId`, keyed by the parked Run's id (ADR-0025). */
@@ -383,6 +404,11 @@ export function useFocusedThreadId(): string | null {
 /** Active run id for a thread, `null` at the React boundary. */
 export function useActiveRunId(threadId: string): string | null {
 	return useStore(store, (s) => s.threads[threadId]?.activeRunId ?? null);
+}
+
+/** Reactive hydration status for a thread, `null` if it has never hydrated. */
+export function useHydrationStatus(threadId: string): HydrationStatus | null {
+	return useStore(store, (s) => s.threads[threadId]?.hydration ?? null);
 }
 
 /** The pending/decided Proposal attached to `runId`, `null` if none. */
