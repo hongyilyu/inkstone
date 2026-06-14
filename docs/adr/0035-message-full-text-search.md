@@ -1,6 +1,6 @@
 # Message full-text search: a trigram FTS projection over message text
 
-/ builds on [ADR-0004](./0004-three-tier-storage-authority.md), [ADR-0009](./0009-protocol-strategy.md), [ADR-0014](./0014-client-core-wire-protocol.md), [ADR-0028](./0028-run-status-materialized-transitions.md)
+/ builds on [ADR-0004](./0004-three-tier-storage-authority.md), [ADR-0009](./0009-protocol-strategy.md), [ADR-0014](./0014-client-core-wire-protocol.md), [ADR-0028](./0028-run-status-materialized-transitions.md), [ADR-0029](./0029-request-handler-seam.md)
 
 PRODUCT.md's success criterion is that knowledge be "browsable **and findable**
 rather than buried in conversation." The Library made Entities browsable, and the
