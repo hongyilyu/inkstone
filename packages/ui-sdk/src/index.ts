@@ -13,6 +13,7 @@ import {
 	ProposalPendingNotification,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
+	RunCancelResult,
 	type RunEvent,
 	RunEvent as RunEventSchema,
 	SettingsResult,
@@ -141,6 +142,9 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 		readonly subscribeRun: (
 			runId: RunId,
 		) => Stream.Stream<RunEventValue, WsError>;
+		readonly cancelRun: (
+			runId: RunId,
+		) => Effect.Effect<RunCancelResult, WsError>;
 		readonly providerStatus: () => Effect.Effect<ProviderStatusResult, WsError>;
 		readonly providerLoginStart: (
 			provider: string,
@@ -395,6 +399,14 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 					}),
 				);
 
+			// run/cancel (ADR-0014): ask Core to cancel a Run. For a running Run the
+			// terminal `cancelled` Run Event also arrives over subscribeRun; for a
+			// parked Run nothing is pushed, so the response outcome is authoritative.
+			const cancelRun = (
+				runId: RunId,
+			): Effect.Effect<RunCancelResult, WsError> =>
+				request("run/cancel", { run_id: runId }, RunCancelResult);
+
 			// provider/* (ADR-0023): connection status + begin OAuth login.
 			const providerStatus = (): Effect.Effect<ProviderStatusResult, WsError> =>
 				request("provider/status", {}, ProviderStatusResult);
@@ -441,6 +453,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				entityMutate,
 				messageSearch,
 				subscribeRun,
+				cancelRun,
 				providerStatus,
 				providerLoginStart,
 				modelCatalog,

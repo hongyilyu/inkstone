@@ -26,6 +26,16 @@ export class ChatPage {
 		await this.page.getByRole("button", { name: /^send$/i }).click();
 	}
 
+	/** Click the composer's Stop control to cancel the active Run (ADR-0014). */
+	async stop(): Promise<void> {
+		await this.page.getByRole("button", { name: /^stop$/i }).click();
+	}
+
+	/** The settled "stopped/incomplete" assistant bubble (cancel + error share this state). */
+	assistantError() {
+		return this.page.getByTestId("assistant-error");
+	}
+
 	/** The sidebar landmark. */
 	sidebar() {
 		return this.page.getByRole("complementary", { name: /sidebar/i });

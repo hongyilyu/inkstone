@@ -57,6 +57,7 @@ const stub = WsClient.of({
 				})
 			: Effect.succeed({ hits: [] }),
 	subscribeRun: dieStream,
+	cancelRun: die,
 	providerStatus: die,
 	providerLoginStart: die,
 	modelCatalog: die,

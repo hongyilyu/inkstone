@@ -5,6 +5,7 @@ import {
 	appendUserMessage,
 	applyEvent,
 	attachRun,
+	clearProposal,
 	getChatState,
 	markMessageIncomplete,
 	nextMessageId,
@@ -169,6 +170,72 @@ export async function awaitRun(
 	await runtime.runPromise(Fiber.join(fiber));
 }
 
+/**
+ * Stop a Run from the chat surface (ADR-0014). Fires `run/cancel`, then settles
+ * the UI off the authoritative response: interrupt the subscribe fiber, apply a
+ * synthetic `cancelled` event to settle the bubble, and drop any pending Proposal.
+ *
+ * We settle here for every (outcome, state) EXCEPT the one case whose terminal is
+ * owned elsewhere — `already_terminal` on a *running* Run, where the live subscribe
+ * stream already delivered (or will deliver) the real `done`/`error`/`cancelled`.
+ * `accepted` settles (Core committed the cancel; for a running Run its real
+ * `cancelled` is idempotent with the synthetic one). `unknown_run` settles (Core has
+ * no run/hub, so NO stream event will ever come — bailing would leak the fiber). A
+ * *parked* Run (awaiting a Proposal decision) has no live tail, so it settles on any
+ * outcome rather than wedge the Stop control. See docs/design/web-store.md.
+ */
+export async function cancelRun(
+	runtime: WsRuntime,
+	runId: RunId,
+): Promise<void> {
+	const program = Effect.gen(function* () {
+		const client = yield* WsClient;
+		return yield* client.cancelRun(runId);
+	});
+
+	let outcome: "accepted" | "already_terminal" | "unknown_run";
+	try {
+		outcome = (await runtime.runPromise(program)).outcome;
+	} catch {
+		// Cancel is best-effort; a failed request leaves the Run as-is.
+		return;
+	}
+
+	const threadId = findThreadForRun(runId);
+	if (threadId === undefined) {
+		return;
+	}
+
+	// Parked iff a Proposal has no live resume stream behind it: pending/error
+	// (never decided) AND deciding (decideProposal sets this BEFORE its decide RPC
+	// resolves; it only re-forks the resume stream afterward). Once accepted/rejected,
+	// the resume stream exists and owns the terminal. A racing cancel during deciding
+	// clears the Proposal here, and decideProposal's currency guard then bails.
+	const proposal = getChatState().proposals[runId];
+	const parked =
+		proposal !== undefined &&
+		(proposal.status === "pending" ||
+			proposal.status === "error" ||
+			proposal.status === "deciding");
+
+	// The ONLY outcome whose terminal is owned elsewhere is `already_terminal` on a
+	// non-parked Run: its live subscribe stream already delivered (or will deliver)
+	// the real done/error/cancelled, which settles the bubble and reaps the fiber.
+	// Every other case must settle here: `accepted` (Core committed the cancel),
+	// and `unknown_run` (Core has no run/hub, so NO stream event will ever come —
+	// bailing would leak the fiber and wedge Stop forever). `parked` always settles
+	// since a parked Run has no live tail regardless of outcome.
+	if (outcome === "already_terminal" && !parked) {
+		return;
+	}
+
+	// Interrupt first so the fiber's takeUntil can't race a real terminal event,
+	// then settle deterministically off the authoritative cancel response.
+	interruptRun(runtime, runId);
+	applyEvent(threadId, runId, { kind: "cancelled" });
+	clearProposal(runId);
+}
+
 /** Fork the global `proposalNotifications()` stream into the store, fetching+attaching on `pending` (idempotent; ADR-0025). */
 export function startProposalStream(runtime: WsRuntime): void {
 	if (proposalFiber !== undefined) {
@@ -228,6 +295,14 @@ export async function decideProposal(
 
 	try {
 		const result = await runtime.runPromise(program);
+		// Currency guard: a concurrent cancelRun (the composer Stop button stays
+		// clickable while deciding) may have settled + cleared this Proposal while
+		// the decide was in flight. If so the Run is terminal — don't re-fork a
+		// resume stream for a cancelled Run (it would re-subscribe a dead Run and
+		// its snapshot text_delta would overwrite the settled bubble).
+		if (getChatState().proposals[runId] === undefined) {
+			return;
+		}
 		setProposalStatus(runId, result.status);
 		const threadId = findThreadForRun(runId);
 		if (threadId !== undefined) {

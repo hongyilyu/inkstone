@@ -116,6 +116,17 @@ export function setProposalStatus(
 	});
 }
 
+/** Drop the Proposal attached to `runId` (e.g. its parked Run was cancelled — there is nothing left to review); no-op if none. */
+export function clearProposal(runId: string): void {
+	store.setState((s) => {
+		if (s.proposals[runId] === undefined) {
+			return s;
+		}
+		const { [runId]: _dropped, ...rest } = s.proposals;
+		return { ...s, proposals: rest };
+	});
+}
+
 /** Clear the snapshot-applied bit for `runId` so the resume snapshot SETs (not APPENDs) — see docs/design/web-store.md (ADR-0025). */
 export function resetSnapshot(threadId: string, runId: string): void {
 	store.setState((s) => {
