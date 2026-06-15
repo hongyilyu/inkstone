@@ -13,7 +13,8 @@
 			"!**/.claude",
 			"!**/.impeccable",
 			"!**/*.gen.ts",
-			"!skills-lock.json"
+			"!skills-lock.json",
+			"!bridges/contract/fixtures/**"
 		]
 	},
 	"css": {

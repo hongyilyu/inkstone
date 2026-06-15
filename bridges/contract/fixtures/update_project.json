@@ -1,0 +1,85 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "completed_at": {
+      "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+      "type": "string"
+    },
+    "defer_at": {
+      "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+      "type": "string"
+    },
+    "dropped_at": {
+      "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+      "type": "string"
+    },
+    "due_at": {
+      "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+      "type": "string"
+    },
+    "entity_id": {
+      "type": "string"
+    },
+    "last_reviewed_at": {
+      "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+      "type": "string"
+    },
+    "name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "next_review_at": {
+      "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+      "type": "string"
+    },
+    "note": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "review_every": {
+      "additionalProperties": false,
+      "properties": {
+        "interval": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "unit": {
+          "enum": [
+            "day",
+            "week",
+            "month",
+            "year"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "interval",
+        "unit"
+      ],
+      "type": "object"
+    },
+    "status": {
+      "enum": [
+        "active",
+        "on_hold",
+        "completed",
+        "dropped"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "entity_id",
+    "name"
+  ],
+  "type": "object"
+}

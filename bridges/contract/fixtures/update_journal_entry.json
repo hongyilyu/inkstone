@@ -1,0 +1,72 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "body": {
+      "items": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "text"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "text"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "ref_id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "entity_ref"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "ref_id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "ended_at": {
+      "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+      "type": "string"
+    },
+    "entity_id": {
+      "type": "string"
+    },
+    "occurred_at": {
+      "description": "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "entity_id",
+    "occurred_at",
+    "body"
+  ],
+  "type": "object"
+}

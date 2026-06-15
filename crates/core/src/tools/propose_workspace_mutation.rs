@@ -62,6 +62,139 @@ pub fn descriptor() -> CoreToolDescriptor {
 mod tests {
     use super::*;
 
+    /// Dump each agent-proposable kind's `payload` JSON-Schema to a committed
+    /// fixture under `bridges/contract/fixtures/<wire_kind>.json` — the
+    /// schema-of-record the `@inkstone/contract` parity gate diffs the
+    /// hand-authored Effect Schemas against (slice 1 of `schema-parity-gate`).
+    ///
+    /// This MUST live inline in `src/` (not `crates/core/tests/`): `crates/core`
+    /// is binary-only (no `lib.rs`), so the `pub(crate)` entry point
+    /// `kind().payload_spec().json_schema()` is unreachable from an integration
+    /// test crate. The fixture body is EXACTLY the `payload` schema — the same
+    /// expression [`descriptor`] binds — NOT the `{mutation_kind, payload,
+    /// rationale}` envelope.
+    ///
+    /// It writes ALL 13 fixtures even though slice 1's TS test asserts only
+    /// `create_todo`, so slices 2/3 add Effect Schemas with no Rust churn. The
+    /// output is deterministic (`serde_json` sorts object keys; pretty-print +
+    /// trailing newline), so CI re-runs it and `git diff --exit-code` is the
+    /// staleness gate.
+    #[test]
+    fn regenerate_schema_fixtures() {
+        let fixtures_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("bridges/contract/fixtures");
+        std::fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
+
+        for proposable in ProposableMutation::ALL {
+            let kind = proposable.kind();
+            let schema = kind.payload_spec().json_schema();
+            let mut json = serde_json::to_string_pretty(&schema).expect("schema serializes");
+            json.push('\n');
+            let path = fixtures_dir.join(format!("{}.json", kind.as_wire()));
+            std::fs::write(&path, json).unwrap_or_else(|e| panic!("write {path:?}: {e}"));
+        }
+    }
+
+    /// Lift CI's `git diff --exit-code bridges/contract/fixtures/` into the test
+    /// suite so `cargo test` ITSELF bites on stale fixtures. A dev who changes a
+    /// `PayloadSpec` but forgets to re-run [`regenerate_schema_fixtures`] + commit
+    /// would otherwise see green locally (the generator always passes) and only
+    /// trip CI.
+    ///
+    /// The committed fixtures are EMBEDDED via `include_str!` (compile-time), not
+    /// read from disk at runtime: [`regenerate_schema_fixtures`] is a sibling
+    /// `#[test]` that REWRITES the same files, and the two run concurrently in
+    /// this binary — a disk read would race the writer and tear (empty/partial
+    /// file). The embedded bytes are the committed-at-build-time fixture, immune
+    /// to that race. Both sides parse to `serde_json::Value` (robust to
+    /// trailing-newline / whitespace) before asserting equality, naming the stale
+    /// wire kind on mismatch. READ-ONLY: it never touches the filesystem.
+    #[test]
+    fn fixtures_match_committed() {
+        // (wire kind, committed fixture bytes). `include_str!` resolves relative
+        // to this source file: `../../../../bridges/contract/fixtures/`.
+        let committed: &[(&str, &str)] = &[
+            (
+                "create_journal_entry",
+                include_str!("../../../../bridges/contract/fixtures/create_journal_entry.json"),
+            ),
+            (
+                "update_journal_entry",
+                include_str!("../../../../bridges/contract/fixtures/update_journal_entry.json"),
+            ),
+            (
+                "delete_journal_entry",
+                include_str!("../../../../bridges/contract/fixtures/delete_journal_entry.json"),
+            ),
+            (
+                "reference_existing_entity_from_journal_entry",
+                include_str!(
+                    "../../../../bridges/contract/fixtures/reference_existing_entity_from_journal_entry.json"
+                ),
+            ),
+            (
+                "create_person",
+                include_str!("../../../../bridges/contract/fixtures/create_person.json"),
+            ),
+            (
+                "update_person",
+                include_str!("../../../../bridges/contract/fixtures/update_person.json"),
+            ),
+            (
+                "delete_person",
+                include_str!("../../../../bridges/contract/fixtures/delete_person.json"),
+            ),
+            (
+                "create_project",
+                include_str!("../../../../bridges/contract/fixtures/create_project.json"),
+            ),
+            (
+                "update_project",
+                include_str!("../../../../bridges/contract/fixtures/update_project.json"),
+            ),
+            (
+                "delete_project",
+                include_str!("../../../../bridges/contract/fixtures/delete_project.json"),
+            ),
+            (
+                "create_todo",
+                include_str!("../../../../bridges/contract/fixtures/create_todo.json"),
+            ),
+            (
+                "update_todo",
+                include_str!("../../../../bridges/contract/fixtures/update_todo.json"),
+            ),
+            (
+                "delete_todo",
+                include_str!("../../../../bridges/contract/fixtures/delete_todo.json"),
+            ),
+        ];
+        // The embedded table must cover exactly the proposable kinds — neither
+        // side can gain or drop a kind the other lacks.
+        assert_eq!(
+            committed.len(),
+            ProposableMutation::ALL.len(),
+            "the embedded fixture table must cover every proposable kind"
+        );
+
+        for proposable in ProposableMutation::ALL {
+            let kind = proposable.kind();
+            let wire = kind.as_wire();
+            let fresh = kind.payload_spec().json_schema();
+            let raw = committed
+                .iter()
+                .find_map(|(k, raw)| (*k == wire).then_some(*raw))
+                .unwrap_or_else(|| panic!("embedded fixture table is missing {wire}"));
+            let committed_value: Value = serde_json::from_str(raw)
+                .unwrap_or_else(|e| panic!("parse committed fixture {wire}.json: {e}"));
+            assert_eq!(
+                committed_value, fresh,
+                "committed fixture for {wire} is stale; run `cargo test regenerate_schema_fixtures` and commit bridges/contract/fixtures/{wire}.json"
+            );
+        }
+    }
+
     fn property_schema<'a>(schema: &'a Value, property: &str) -> Option<&'a Value> {
         match schema {
             Value::Object(obj) => {
