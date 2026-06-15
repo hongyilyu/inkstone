@@ -47,8 +47,8 @@ export function EntityDetail({
 	entity: LibraryItem;
 	allEntities: LibraryItem[];
 }) {
-	// Todo, Person, and Project are editable; each owns its own view↔edit↔delete
-	// state and the mutation hook, so non-editable kinds render hook-free.
+	// Dispatch each kind to a thin config that renders through `InspectorShell`
+	// (the shell owns the shared view↔edit↔delete state machine and mutation hook).
 	if (entity.kind === "todo") {
 		return <TodoDetail todo={entity} allEntities={allEntities} />;
 	}
@@ -66,13 +66,153 @@ export function EntityDetail({
 	return <BookmarkDetail bookmark={entity} />;
 }
 
+/** The five delete mutation kinds (ADR-0033). Local to the inspector configs — the wire type is an opaque `string`. */
+type DeleteMutationKind =
+	| "delete_todo"
+	| "delete_person"
+	| "delete_project"
+	| "delete_journal_entry"
+	| "delete_bookmark";
+
 /**
- * The Todo inspector: view ↔ edit toggle + an inline (non-modal) delete confirm
- * in the footer (ADR-0033, PRODUCT.md "approval is sacred"). Edit/delete write via
- * `entity/mutate`; on success the Library re-reads and the deleted Todo's rail
- * closes (the route drops `?id`). The mutation hook lives here so non-editable
- * kinds render hook-free.
+ * The Library inspector shell: one view↔edit↔delete state machine behind every
+ * kind (ADR-0033, PRODUCT.md "approval is sacred"). Owns the `editing` /
+ * `confirmingDelete` toggle, the `entity/mutate` hook, the header (glyph + title +
+ * Edit chip), and the inline (non-modal) delete-confirm footer; on a successful
+ * delete the Library re-reads and the route drops `?id` so the rail returns to
+ * empty. Per kind only the delete `mutation_kind`, the confirm sentence, and the
+ * Body/Editor render props vary — the editors don't share a prop shape, so the
+ * slots are render props, not a typed `<Editor entity/>`. The hook lives here,
+ * reached only through this shell, so the tree stays hook-free until an inspector
+ * mounts.
  */
+function InspectorShell({
+	entity,
+	deleteKind,
+	confirmCopy,
+	renderBody,
+	renderEditor,
+}: {
+	entity: LibraryItem;
+	deleteKind: DeleteMutationKind;
+	confirmCopy: string;
+	renderBody: (onOpen: (e: LibraryItem) => void) => ReactNode;
+	renderEditor: (onDone: () => void, onCancel: () => void) => ReactNode;
+}) {
+	const navigate = useNavigate();
+	const [editing, setEditing] = useState(false);
+	const [confirmingDelete, setConfirmingDelete] = useState(false);
+	const del = useEntityMutation();
+	const meta = KIND_META[entity.kind];
+
+	const goToEntity = (e: LibraryItem) =>
+		navigate({
+			to: "/library/$kind",
+			params: { kind: KIND_META[e.kind].slug },
+			search: { id: e.id },
+		});
+
+	if (editing) {
+		const done = () => setEditing(false);
+		return (
+			<div className="flex h-full flex-col bg-sidebar">
+				{renderEditor(done, done)}
+			</div>
+		);
+	}
+
+	const deleteEntity = () =>
+		del.mutate(
+			{ mutation_kind: deleteKind, payload: { entity_id: entity.id } },
+			{
+				onSuccess: () =>
+					// Drop `?id` so the rail returns to empty for the now-gone Entity.
+					navigate({
+						to: "/library/$kind",
+						params: { kind: meta.slug },
+						search: {},
+					}),
+			},
+		);
+
+	return (
+		<div className="flex h-full flex-col">
+			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
+				<EntityGlyph entity={entity} size="lg" />
+				<div className="min-w-0 flex-1 pt-0.5">
+					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
+						{libraryItemTitle(entity)}
+					</h2>
+					<p className="truncate text-muted-foreground text-sm">
+						{meta.label} · {libraryItemSubtitle(entity)}
+					</p>
+				</div>
+				<Button
+					variant="chip"
+					size="sm"
+					onClick={() => setEditing(true)}
+					aria-label={`Edit ${meta.label}`}
+				>
+					<Pencil className="size-3.5" aria-hidden />
+					Edit
+				</Button>
+			</header>
+
+			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+				{renderBody(goToEntity)}
+			</div>
+
+			<footer className="border-foreground/15 border-t px-5 py-4">
+				{del.error ? (
+					<p role="alert" className="mb-3 text-destructive text-sm">
+						{del.error instanceof Error && del.error.message
+							? del.error.message
+							: "Couldn't delete. Try again."}
+					</p>
+				) : null}
+				{confirmingDelete ? (
+					<div className="flex items-center justify-between gap-3">
+						<span className="text-foreground text-sm">{confirmCopy}</span>
+						<div className="flex gap-2">
+							<Button
+								variant="chip"
+								size="pill"
+								onClick={() => {
+									del.reset();
+									setConfirmingDelete(false);
+								}}
+								disabled={del.isPending}
+							>
+								Cancel
+							</Button>
+							<Button
+								variant="primary-icon"
+								size="pill"
+								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+								onClick={deleteEntity}
+								disabled={del.isPending}
+							>
+								{del.isPending ? "Deleting…" : "Delete"}
+							</Button>
+						</div>
+					</div>
+				) : (
+					<Button
+						variant="ghost"
+						size="row"
+						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+						onClick={() => setConfirmingDelete(true)}
+					>
+						<Trash2 className="size-4" aria-hidden />
+						Delete {meta.label}
+					</Button>
+				)}
+			</footer>
+		</div>
+	);
+}
+
+/** The Todo inspector (ADR-0033): the scheduled-task body and the full Todo editor. */
 function TodoDetail({
 	todo,
 	allEntities,
@@ -80,128 +220,28 @@ function TodoDetail({
 	todo: Todo;
 	allEntities: LibraryItem[];
 }) {
-	const navigate = useNavigate();
-	const [editing, setEditing] = useState(false);
-	const [confirmingDelete, setConfirmingDelete] = useState(false);
-	const del = useEntityMutation();
-
-	const goToEntity = (e: LibraryItem) =>
-		navigate({
-			to: "/library/$kind",
-			params: { kind: KIND_META[e.kind].slug },
-			search: { id: e.id },
-		});
-
-	if (editing) {
-		return (
-			<div className="flex h-full flex-col bg-sidebar">
+	return (
+		<InspectorShell
+			entity={todo}
+			deleteKind="delete_todo"
+			confirmCopy="Delete this Todo?"
+			renderBody={(onOpen) => (
+				<TodoBody todo={todo} allEntities={allEntities} onOpen={onOpen} />
+			)}
+			renderEditor={(onDone, onCancel) => (
 				<TodoEditor
 					mode="edit"
 					todo={todo}
 					allEntities={allEntities}
-					onDone={() => setEditing(false)}
-					onCancel={() => setEditing(false)}
+					onDone={onDone}
+					onCancel={onCancel}
 				/>
-			</div>
-		);
-	}
-
-	const deleteTodo = () =>
-		del.mutate(
-			{ mutation_kind: "delete_todo", payload: { entity_id: todo.id } },
-			{
-				onSuccess: () =>
-					// Drop `?id` so the rail returns to empty for the now-gone Todo.
-					navigate({
-						to: "/library/$kind",
-						params: { kind: KIND_META.todo.slug },
-						search: {},
-					}),
-			},
-		);
-
-	return (
-		<div className="flex h-full flex-col">
-			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
-				<EntityGlyph entity={todo} size="lg" />
-				<div className="min-w-0 flex-1 pt-0.5">
-					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
-						{libraryItemTitle(todo)}
-					</h2>
-					<p className="truncate text-muted-foreground text-sm">
-						{KIND_META.todo.label} · {libraryItemSubtitle(todo)}
-					</p>
-				</div>
-				<Button
-					variant="chip"
-					size="sm"
-					onClick={() => setEditing(true)}
-					aria-label="Edit Todo"
-				>
-					<Pencil className="size-3.5" aria-hidden />
-					Edit
-				</Button>
-			</header>
-
-			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
-				<TodoBody todo={todo} allEntities={allEntities} onOpen={goToEntity} />
-			</div>
-
-			<footer className="border-foreground/15 border-t px-5 py-4">
-				{del.error ? (
-					<p role="alert" className="mb-3 text-destructive text-sm">
-						{del.error instanceof Error && del.error.message
-							? del.error.message
-							: "Couldn't delete. Try again."}
-					</p>
-				) : null}
-				{confirmingDelete ? (
-					<div className="flex items-center justify-between gap-3">
-						<span className="text-foreground text-sm">Delete this Todo?</span>
-						<div className="flex gap-2">
-							<Button
-								variant="chip"
-								size="pill"
-								onClick={() => {
-									del.reset();
-									setConfirmingDelete(false);
-								}}
-								disabled={del.isPending}
-							>
-								Cancel
-							</Button>
-							<Button
-								variant="primary-icon"
-								size="pill"
-								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-								onClick={deleteTodo}
-								disabled={del.isPending}
-							>
-								{del.isPending ? "Deleting…" : "Delete"}
-							</Button>
-						</div>
-					</div>
-				) : (
-					<Button
-						variant="ghost"
-						size="row"
-						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-						onClick={() => setConfirmingDelete(true)}
-					>
-						<Trash2 className="size-4" aria-hidden />
-						Delete Todo
-					</Button>
-				)}
-			</footer>
-		</div>
+			)}
+		/>
 	);
 }
 
-/**
- * The Person inspector: view ↔ edit toggle + an inline (non-modal) delete confirm
- * in the footer, mirroring `TodoDetail` (ADR-0033). The mutation hook lives here so
- * non-editable kinds render hook-free.
- */
+/** The Person inspector (ADR-0033): relations derived through Todos, edited via `PersonEditor`. */
 function PersonDetail({
 	person,
 	allEntities,
@@ -209,129 +249,30 @@ function PersonDetail({
 	person: Person;
 	allEntities: LibraryItem[];
 }) {
-	const navigate = useNavigate();
-	const [editing, setEditing] = useState(false);
-	const [confirmingDelete, setConfirmingDelete] = useState(false);
-	const del = useEntityMutation();
-
-	const goToEntity = (e: LibraryItem) =>
-		navigate({
-			to: "/library/$kind",
-			params: { kind: KIND_META[e.kind].slug },
-			search: { id: e.id },
-		});
-
-	if (editing) {
-		return (
-			<div className="flex h-full flex-col bg-sidebar">
+	return (
+		<InspectorShell
+			entity={person}
+			deleteKind="delete_person"
+			confirmCopy="Delete this Person?"
+			renderBody={(onOpen) => (
+				<PersonBody person={person} allEntities={allEntities} onOpen={onOpen} />
+			)}
+			renderEditor={(onDone, onCancel) => (
 				<PersonEditor
 					mode="edit"
 					person={person}
-					onDone={() => setEditing(false)}
-					onCancel={() => setEditing(false)}
+					onDone={onDone}
+					onCancel={onCancel}
 				/>
-			</div>
-		);
-	}
-
-	const deletePerson = () =>
-		del.mutate(
-			{ mutation_kind: "delete_person", payload: { entity_id: person.id } },
-			{
-				onSuccess: () =>
-					navigate({
-						to: "/library/$kind",
-						params: { kind: KIND_META.person.slug },
-						search: {},
-					}),
-			},
-		);
-
-	return (
-		<div className="flex h-full flex-col">
-			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
-				<EntityGlyph entity={person} size="lg" />
-				<div className="min-w-0 flex-1 pt-0.5">
-					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
-						{libraryItemTitle(person)}
-					</h2>
-					<p className="truncate text-muted-foreground text-sm">
-						{KIND_META.person.label} · {libraryItemSubtitle(person)}
-					</p>
-				</div>
-				<Button
-					variant="chip"
-					size="sm"
-					onClick={() => setEditing(true)}
-					aria-label="Edit Person"
-				>
-					<Pencil className="size-3.5" aria-hidden />
-					Edit
-				</Button>
-			</header>
-
-			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
-				<PersonBody
-					person={person}
-					allEntities={allEntities}
-					onOpen={goToEntity}
-				/>
-			</div>
-
-			<footer className="border-foreground/15 border-t px-5 py-4">
-				{del.error ? (
-					<p role="alert" className="mb-3 text-destructive text-sm">
-						{del.error instanceof Error && del.error.message
-							? del.error.message
-							: "Couldn't delete. Try again."}
-					</p>
-				) : null}
-				{confirmingDelete ? (
-					<div className="flex items-center justify-between gap-3">
-						<span className="text-foreground text-sm">Delete this Person?</span>
-						<div className="flex gap-2">
-							<Button
-								variant="chip"
-								size="pill"
-								onClick={() => {
-									del.reset();
-									setConfirmingDelete(false);
-								}}
-								disabled={del.isPending}
-							>
-								Cancel
-							</Button>
-							<Button
-								variant="primary-icon"
-								size="pill"
-								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-								onClick={deletePerson}
-								disabled={del.isPending}
-							>
-								{del.isPending ? "Deleting…" : "Delete"}
-							</Button>
-						</div>
-					</div>
-				) : (
-					<Button
-						variant="ghost"
-						size="row"
-						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-						onClick={() => setConfirmingDelete(true)}
-					>
-						<Trash2 className="size-4" aria-hidden />
-						Delete Person
-					</Button>
-				)}
-			</footer>
-		</div>
+			)}
+		/>
 	);
 }
 
 /**
- * The Project inspector: view ↔ edit toggle + an inline delete confirm, mirroring
- * `TodoDetail` (ADR-0033). Delete cascades server-side (Core unsets `project_id`
- * on the owning Todos); the UI just sends `delete_project`.
+ * The Project inspector (ADR-0033). Delete cascades server-side (Core unsets
+ * `project_id` on the owning Todos), which the confirm copy spells out; the UI
+ * just sends `delete_project`.
  */
 function ProjectDetail({
 	project,
@@ -340,132 +281,33 @@ function ProjectDetail({
 	project: Project;
 	allEntities: LibraryItem[];
 }) {
-	const navigate = useNavigate();
-	const [editing, setEditing] = useState(false);
-	const [confirmingDelete, setConfirmingDelete] = useState(false);
-	const del = useEntityMutation();
-
-	const goToEntity = (e: LibraryItem) =>
-		navigate({
-			to: "/library/$kind",
-			params: { kind: KIND_META[e.kind].slug },
-			search: { id: e.id },
-		});
-
-	if (editing) {
-		return (
-			<div className="flex h-full flex-col bg-sidebar">
-				<ProjectEditor
-					mode="edit"
-					project={project}
-					onDone={() => setEditing(false)}
-					onCancel={() => setEditing(false)}
-				/>
-			</div>
-		);
-	}
-
-	const deleteProject = () =>
-		del.mutate(
-			{ mutation_kind: "delete_project", payload: { entity_id: project.id } },
-			{
-				onSuccess: () =>
-					navigate({
-						to: "/library/$kind",
-						params: { kind: KIND_META.project.slug },
-						search: {},
-					}),
-			},
-		);
-
 	return (
-		<div className="flex h-full flex-col">
-			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
-				<EntityGlyph entity={project} size="lg" />
-				<div className="min-w-0 flex-1 pt-0.5">
-					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
-						{libraryItemTitle(project)}
-					</h2>
-					<p className="truncate text-muted-foreground text-sm">
-						{KIND_META.project.label} · {libraryItemSubtitle(project)}
-					</p>
-				</div>
-				<Button
-					variant="chip"
-					size="sm"
-					onClick={() => setEditing(true)}
-					aria-label="Edit Project"
-				>
-					<Pencil className="size-3.5" aria-hidden />
-					Edit
-				</Button>
-			</header>
-
-			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
+		<InspectorShell
+			entity={project}
+			deleteKind="delete_project"
+			confirmCopy="Delete this Project? Its Todos lose their project."
+			renderBody={(onOpen) => (
 				<ProjectBody
 					project={project}
 					allEntities={allEntities}
-					onOpen={goToEntity}
+					onOpen={onOpen}
 				/>
-			</div>
-
-			<footer className="border-foreground/15 border-t px-5 py-4">
-				{del.error ? (
-					<p role="alert" className="mb-3 text-destructive text-sm">
-						{del.error instanceof Error && del.error.message
-							? del.error.message
-							: "Couldn't delete. Try again."}
-					</p>
-				) : null}
-				{confirmingDelete ? (
-					<div className="flex items-center justify-between gap-3">
-						<span className="text-foreground text-sm">
-							Delete this Project? Its Todos lose their project.
-						</span>
-						<div className="flex gap-2">
-							<Button
-								variant="chip"
-								size="pill"
-								onClick={() => {
-									del.reset();
-									setConfirmingDelete(false);
-								}}
-								disabled={del.isPending}
-							>
-								Cancel
-							</Button>
-							<Button
-								variant="primary-icon"
-								size="pill"
-								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-								onClick={deleteProject}
-								disabled={del.isPending}
-							>
-								{del.isPending ? "Deleting…" : "Delete"}
-							</Button>
-						</div>
-					</div>
-				) : (
-					<Button
-						variant="ghost"
-						size="row"
-						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-						onClick={() => setConfirmingDelete(true)}
-					>
-						<Trash2 className="size-4" aria-hidden />
-						Delete Project
-					</Button>
-				)}
-			</footer>
-		</div>
+			)}
+			renderEditor={(onDone, onCancel) => (
+				<ProjectEditor
+					mode="edit"
+					project={project}
+					onDone={onDone}
+					onCancel={onCancel}
+				/>
+			)}
+		/>
 	);
 }
 
 /**
- * The Journal Entry inspector: view ↔ edit toggle + an inline delete confirm,
- * mirroring `TodoDetail` (ADR-0033). Edit threads through `JournalEntryEditor`
- * (text-body + keep/remove chips); delete sends `delete_journal_entry` and the
- * rail returns to empty.
+ * The Journal Entry inspector (ADR-0033). Edit threads through `JournalEntryEditor`
+ * (text-body + keep/remove chips); delete sends `delete_journal_entry`.
  */
 function JournalEntryDetail({
 	journalEntry,
@@ -474,245 +316,48 @@ function JournalEntryDetail({
 	journalEntry: JournalEntry;
 	allEntities: LibraryItem[];
 }) {
-	const navigate = useNavigate();
-	const [editing, setEditing] = useState(false);
-	const [confirmingDelete, setConfirmingDelete] = useState(false);
-	const del = useEntityMutation();
-
-	const goToEntity = (e: LibraryItem) =>
-		navigate({
-			to: "/library/$kind",
-			params: { kind: KIND_META[e.kind].slug },
-			search: { id: e.id },
-		});
-
-	if (editing) {
-		return (
-			<div className="flex h-full flex-col bg-sidebar">
+	return (
+		<InspectorShell
+			entity={journalEntry}
+			deleteKind="delete_journal_entry"
+			confirmCopy="Delete this Journal Entry?"
+			renderBody={(onOpen) => (
+				<JournalEntryBody
+					journalEntry={journalEntry}
+					allEntities={allEntities}
+					onOpen={onOpen}
+				/>
+			)}
+			renderEditor={(onDone, onCancel) => (
 				<JournalEntryEditor
 					mode="edit"
 					journalEntry={journalEntry}
 					allEntities={allEntities}
-					onDone={() => setEditing(false)}
-					onCancel={() => setEditing(false)}
+					onDone={onDone}
+					onCancel={onCancel}
 				/>
-			</div>
-		);
-	}
-
-	const deleteJournalEntry = () =>
-		del.mutate(
-			{
-				mutation_kind: "delete_journal_entry",
-				payload: { entity_id: journalEntry.id },
-			},
-			{
-				onSuccess: () =>
-					navigate({
-						to: "/library/$kind",
-						params: { kind: KIND_META.journal_entry.slug },
-						search: {},
-					}),
-			},
-		);
-
-	return (
-		<div className="flex h-full flex-col">
-			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
-				<EntityGlyph entity={journalEntry} size="lg" />
-				<div className="min-w-0 flex-1 pt-0.5">
-					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
-						{libraryItemTitle(journalEntry)}
-					</h2>
-					<p className="truncate text-muted-foreground text-sm">
-						{KIND_META.journal_entry.label} ·{" "}
-						{libraryItemSubtitle(journalEntry)}
-					</p>
-				</div>
-				<Button
-					variant="chip"
-					size="sm"
-					onClick={() => setEditing(true)}
-					aria-label="Edit Journal Entry"
-				>
-					<Pencil className="size-3.5" aria-hidden />
-					Edit
-				</Button>
-			</header>
-
-			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
-				<JournalEntryBody
-					journalEntry={journalEntry}
-					allEntities={allEntities}
-					onOpen={goToEntity}
-				/>
-			</div>
-
-			<footer className="border-foreground/15 border-t px-5 py-4">
-				{del.error ? (
-					<p role="alert" className="mb-3 text-destructive text-sm">
-						{del.error instanceof Error && del.error.message
-							? del.error.message
-							: "Couldn't delete. Try again."}
-					</p>
-				) : null}
-				{confirmingDelete ? (
-					<div className="flex items-center justify-between gap-3">
-						<span className="text-foreground text-sm">
-							Delete this Journal Entry?
-						</span>
-						<div className="flex gap-2">
-							<Button
-								variant="chip"
-								size="pill"
-								onClick={() => {
-									del.reset();
-									setConfirmingDelete(false);
-								}}
-								disabled={del.isPending}
-							>
-								Cancel
-							</Button>
-							<Button
-								variant="primary-icon"
-								size="pill"
-								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-								onClick={deleteJournalEntry}
-								disabled={del.isPending}
-							>
-								{del.isPending ? "Deleting…" : "Delete"}
-							</Button>
-						</div>
-					</div>
-				) : (
-					<Button
-						variant="ghost"
-						size="row"
-						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-						onClick={() => setConfirmingDelete(true)}
-					>
-						<Trash2 className="size-4" aria-hidden />
-						Delete Journal Entry
-					</Button>
-				)}
-			</footer>
-		</div>
+			)}
+		/>
 	);
 }
 
-/**
- * The Bookmark inspector: view ↔ edit toggle + an inline delete confirm, mirroring
- * `PersonDetail` (ADR-0033/ADR-0036). The mutation hook lives here so non-editable
- * kinds render hook-free.
- */
+/** The Bookmark inspector (ADR-0033/ADR-0036): a read-only body (no relations), edited via `BookmarkEditor`. */
 function BookmarkDetail({ bookmark }: { bookmark: Bookmark }) {
-	const navigate = useNavigate();
-	const [editing, setEditing] = useState(false);
-	const [confirmingDelete, setConfirmingDelete] = useState(false);
-	const del = useEntityMutation();
-
-	if (editing) {
-		return (
-			<div className="flex h-full flex-col bg-sidebar">
+	return (
+		<InspectorShell
+			entity={bookmark}
+			deleteKind="delete_bookmark"
+			confirmCopy="Delete this Bookmark?"
+			renderBody={() => <BookmarkBody bookmark={bookmark} />}
+			renderEditor={(onDone, onCancel) => (
 				<BookmarkEditor
 					mode="edit"
 					bookmark={bookmark}
-					onDone={() => setEditing(false)}
-					onCancel={() => setEditing(false)}
+					onDone={onDone}
+					onCancel={onCancel}
 				/>
-			</div>
-		);
-	}
-
-	const deleteBookmark = () =>
-		del.mutate(
-			{ mutation_kind: "delete_bookmark", payload: { entity_id: bookmark.id } },
-			{
-				onSuccess: () =>
-					navigate({
-						to: "/library/$kind",
-						params: { kind: KIND_META.bookmark.slug },
-						search: {},
-					}),
-			},
-		);
-
-	return (
-		<div className="flex h-full flex-col">
-			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
-				<EntityGlyph entity={bookmark} size="lg" />
-				<div className="min-w-0 flex-1 pt-0.5">
-					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
-						{libraryItemTitle(bookmark)}
-					</h2>
-					<p className="truncate text-muted-foreground text-sm">
-						{KIND_META.bookmark.label} · {libraryItemSubtitle(bookmark)}
-					</p>
-				</div>
-				<Button
-					variant="chip"
-					size="sm"
-					onClick={() => setEditing(true)}
-					aria-label="Edit Bookmark"
-				>
-					<Pencil className="size-3.5" aria-hidden />
-					Edit
-				</Button>
-			</header>
-
-			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
-				<BookmarkBody bookmark={bookmark} />
-			</div>
-
-			<footer className="border-foreground/15 border-t px-5 py-4">
-				{del.error ? (
-					<p role="alert" className="mb-3 text-destructive text-sm">
-						{del.error instanceof Error && del.error.message
-							? del.error.message
-							: "Couldn't delete. Try again."}
-					</p>
-				) : null}
-				{confirmingDelete ? (
-					<div className="flex items-center justify-between gap-3">
-						<span className="text-foreground text-sm">
-							Delete this Bookmark?
-						</span>
-						<div className="flex gap-2">
-							<Button
-								variant="chip"
-								size="pill"
-								onClick={() => {
-									del.reset();
-									setConfirmingDelete(false);
-								}}
-								disabled={del.isPending}
-							>
-								Cancel
-							</Button>
-							<Button
-								variant="primary-icon"
-								size="pill"
-								className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-								onClick={deleteBookmark}
-								disabled={del.isPending}
-							>
-								{del.isPending ? "Deleting…" : "Delete"}
-							</Button>
-						</div>
-					</div>
-				) : (
-					<Button
-						variant="ghost"
-						size="row"
-						className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-						onClick={() => setConfirmingDelete(true)}
-					>
-						<Trash2 className="size-4" aria-hidden />
-						Delete Bookmark
-					</Button>
-				)}
-			</footer>
-		</div>
+			)}
+		/>
 	);
 }
 
