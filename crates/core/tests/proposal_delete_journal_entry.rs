@@ -81,8 +81,8 @@ async fn seed_accepted_journal_entry_with_source_role(
     let mut tx = pool.begin().await.expect("begin seed tx");
     tx.execute(sqlx::query(
         "INSERT INTO runs \
-         (id, thread_id, workflow_name, workflow_version, provider, model, user_message_id, status, started_at, ended_at, terminal_reason) \
-         VALUES (?1, ?2, 'default', '1.0.0', 'faux', 'fake-model', ?3, 'completed', ?4, ?4, 'completed')",
+         (id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason) \
+         VALUES (?1, ?2, 'default', '1.0.0', 'faux', 'fake-model', 'off', ?3, 'completed', ?4, ?4, 'completed')",
     )
     .bind(run_id.to_string())
     .bind(thread_id.to_string())

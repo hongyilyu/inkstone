@@ -237,9 +237,9 @@ function seedAcceptedProject(
 		INSERT INTO threads (id, title, created_at, last_activity_at)
 		VALUES (${sqlValue(threadId)}, 'Seed thread', ${now}, ${now});
 		INSERT INTO runs
-			(id, thread_id, workflow_name, workflow_version, provider, model, user_message_id, status, started_at, ended_at, terminal_reason)
+			(id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason)
 		VALUES
-			(${sqlValue(runId)}, ${sqlValue(threadId)}, 'default', '1.0.0', 'faux', 'fake-model', ${sqlValue(userMessageId)}, 'completed', ${now}, ${now}, 'completed');
+			(${sqlValue(runId)}, ${sqlValue(threadId)}, 'default', '1.0.0', 'faux', 'fake-model', 'off', ${sqlValue(userMessageId)}, 'completed', ${now}, ${now}, 'completed');
 		INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at)
 		VALUES (${sqlValue(userMessageId)}, ${sqlValue(threadId)}, ${sqlValue(runId)}, 'user', 'completed', ${now}, ${now});
 		INSERT INTO message_parts (message_id, seq, type, text)

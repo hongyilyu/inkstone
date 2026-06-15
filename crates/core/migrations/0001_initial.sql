@@ -14,6 +14,7 @@ CREATE TABLE runs (
   workflow_version         TEXT NOT NULL,
   provider                 TEXT NOT NULL,             -- LLM provider snapshotted at Run start
   model                    TEXT NOT NULL,             -- specific model id snapshotted at Run start
+  thinking_level           TEXT NOT NULL,             -- resolved effort snapshotted at Run start (ADR-0024); resume reads this, not live settings
   user_message_id          TEXT NOT NULL REFERENCES messages(id) DEFERRABLE INITIALLY DEFERRED,
   idempotency_key          TEXT UNIQUE,
   awaiting_tool_call_id    TEXT REFERENCES tool_calls(id),  -- waitpoint when status='parked'

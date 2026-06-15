@@ -93,6 +93,7 @@ pub(super) async fn insert_run<'e, E>(
     workflow_version: &str,
     provider: &str,
     model: &str,
+    thinking_level: &str,
     user_message_id: Uuid,
     started_at: i64,
 ) -> sqlx::Result<()>
@@ -102,8 +103,8 @@ where
     sqlx::query(
         "INSERT INTO runs \
          (id, thread_id, workflow_name, workflow_version, provider, model, \
-          user_message_id, status, started_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+          thinking_level, user_message_id, status, started_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
     )
     .bind(run_id.to_string())
     .bind(thread_id.to_string())
@@ -111,6 +112,7 @@ where
     .bind(workflow_version)
     .bind(provider)
     .bind(model)
+    .bind(thinking_level)
     .bind(user_message_id.to_string())
     .bind(started_at)
     .execute(executor)
@@ -1421,6 +1423,27 @@ where
     .fetch_optional(executor)
     .await?;
     Ok(row)
+}
+
+/// Read the Workflow fields a Run snapshotted at its start (ADR-0024): the
+/// `name`/`version`/`provider`/`model`/`thinking_level` resolved post-dispatch.
+/// `None` when the Run does not exist. Backs `run_workflow_snapshot`, which
+/// rebuilds the effective Workflow for a resume from this snapshot rather than
+/// re-resolving live settings.
+pub(super) async fn select_run_workflow_snapshot<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<(String, String, String, String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT workflow_name, workflow_version, provider, model, thinking_level \
+         FROM runs WHERE id = ?1",
+    )
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await
 }
 
 // ─── run_steps ────────────────────────────────────────────────────────
