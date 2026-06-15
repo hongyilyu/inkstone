@@ -4,7 +4,7 @@ import { expect, test } from "./fixtures.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**
- * Diagnostic Log end-to-end through the real browser UI (ADR-0038).
+ * Diagnostic Log end-to-end through the real browser UI (ADR-0038, #146).
  *
  * Boots the full system — real Core (serving the SPA), the faux-interpreter
  * Worker, a Chromium browser — and drives a Run from the chat surface the way a
@@ -15,12 +15,16 @@ import { FAUX_WORKER_CMD } from "./spawnCore.js";
  *   1. Core wrote `core.jsonl` with a structured `event` (the subscriber works).
  *   2. The Worker wrote `worker.jsonl` BY DEFAULT (Core supplied the path) with a
  *      `worker.run_error` event — the worker half of the trail is live, not inert.
- *   3. The worker line carries a non-empty `run_id` (the env seam works), so the
- *      two files are joinable — the whole point of the feature.
+ *   3. The worker line's `run_id` EQUALS the authoritative run_id Core assigned
+ *      the Run — captured from the live `/ws` `thread/create` response the client
+ *      received. This is the #146 guarantee: run_id now travels in-band on the
+ *      WorkerManifest (not the retired `INKSTONE_RUN_ID` env var), so the value
+ *      the Worker stamps is provably the SAME id Core minted — the two trails
+ *      join on a real key, not merely a non-empty string.
  *
  * This is the browser-driven verification that the per-slice + deep-review passes
- * could not give: it confirms the feature actually produces its artifacts when a
- * real user drives a real Run through the real UI.
+ * could not give: it confirms the feature actually produces its artifacts, with a
+ * correct join key, when a real user drives a real Run through the real UI.
  */
 test.use({
 	coreOptions: {
@@ -58,6 +62,27 @@ test("a Run driven from the browser writes correlated core.jsonl + worker.jsonl"
 	core,
 	page,
 }) => {
+	// Sniff the client's `/ws` frames to capture the AUTHORITATIVE run_id Core
+	// assigned — the `thread/create` result the client receives. This is the join
+	// key the in-band manifest run_id (#146) must match.
+	let authoritativeRunId: string | undefined;
+	page.on("websocket", (ws) => {
+		ws.on("framereceived", (frame) => {
+			if (typeof frame.payload !== "string") return;
+			try {
+				const msg = JSON.parse(frame.payload) as {
+					result?: { run_id?: string };
+				};
+				const id = msg.result?.run_id;
+				if (typeof id === "string" && id.length > 0) {
+					authoritativeRunId ??= id;
+				}
+			} catch {
+				// Non-JSON / non-result frame — ignore.
+			}
+		});
+	});
+
 	// Drive a real Run through the rendered chat UI, like a user.
 	await chat.goto();
 	await chat.send("trigger a failing run");
@@ -100,11 +125,18 @@ test("a Run driven from the browser writes correlated core.jsonl + worker.jsonl"
 		"the Worker wrote a worker.run_error event to worker.jsonl (the worker trail is live by default, not inert)",
 	).toBeDefined();
 
-	// The correlation key: a non-empty run_id stamped from INKSTONE_RUN_ID, so
-	// worker.jsonl joins to core.jsonl by run.
-	const runId = runError?.run_id;
+	// We must have observed the authoritative run_id over the wire, or the join
+	// assertion below is vacuous.
 	expect(
-		typeof runId === "string" && runId.length > 0,
-		`worker.run_error carries a non-empty run_id for the core.jsonl join — got ${JSON.stringify(runId)}`,
+		typeof authoritativeRunId === "string" && authoritativeRunId.length > 0,
+		"captured the authoritative run_id from the /ws thread/create response",
 	).toBe(true);
+
+	// The #146 guarantee: the run_id the Worker stamped — carried IN-BAND on the
+	// WorkerManifest, not the retired INKSTONE_RUN_ID env var — is exactly the id
+	// Core minted and handed the client. The two trails join on a real key.
+	expect(
+		runError?.run_id,
+		`worker.run_error's run_id must equal Core's authoritative run_id (${authoritativeRunId}) — the in-band manifest join, #146`,
+	).toBe(authoritativeRunId);
 });

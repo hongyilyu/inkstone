@@ -45,10 +45,6 @@ impl ChildWorker {
         let mut command = Command::new(program);
         command
             .args(&args)
-            // ADR-0038 env seam: the Worker reads `INKSTONE_RUN_ID` to stamp its
-            // worker.jsonl lines, so they join to core.jsonl by run. Set per-spawn
-            // (run_id differs per Run). #146 moves this in-band into WorkerManifest.
-            .env("INKSTONE_RUN_ID", run_id.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

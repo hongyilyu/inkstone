@@ -2,9 +2,14 @@ import type { RunEvent, WorkerManifest } from "@inkstone/protocol";
 import { Context, Data, type Effect } from "effect";
 import type { CallTool } from "./tool-proxy.js";
 
-/** The manifest line on stdin was present but not a valid {@link WorkerManifest}. */
+/** The manifest line on stdin was present but not a valid {@link WorkerManifest}.
+ * `runId` is the best-effort run_id salvaged from the raw JSON when the line
+ * parsed as JSON but failed schema validation (e.g. Rust↔TS mirror skew, #146) —
+ * absent only when the line was not even valid JSON, so the diagnostic line for a
+ * schema-skew failure still joins to core.jsonl by run. */
 export class ManifestParseError extends Data.TaggedError("ManifestParseError")<{
 	readonly message: string;
+	readonly runId?: string;
 }> {}
 
 /** Worker-side transport seam: the single service the interpreter talks to instead of touching stdio (ADR-0027). See docs/design/worker-transport.md. */
