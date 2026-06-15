@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::entities;
+use crate::mutation::{self, MutationKind, ProposableMutation};
 
 /// The user's resolution of a Proposal, parsed from the wire `decision` string.
 /// An `edit`'s payload-presence is enforced later (fresh apply path), not here.
@@ -76,10 +77,21 @@ where
         .map_err(|e| DecideError::Internal(e.into()))?
         .ok_or_else(|| DecideError::NotDecidable(format!("no proposal {proposal_id}")))?;
 
+    // Resolve the stored `mutation_kind` once (the single string→type point on the
+    // agent path). An unknown stored kind is corrupt data Core itself wrote — a
+    // LOUD `Internal`, not a client `Invalid` (the propose schema cannot emit one).
+    let kind = MutationKind::from_wire(&proposal.mutation_kind).ok_or_else(|| {
+        DecideError::Internal(anyhow::anyhow!(
+            "stored proposal mutation_kind {:?} is not a known kind",
+            proposal.mutation_kind
+        ))
+    })?;
+
     let outcome = compute_outcome(
         pool,
         &proposal_id,
         &proposal,
+        kind,
         &decision,
         edited_payload.as_ref(),
         idempotency_key.as_deref(),
@@ -125,6 +137,7 @@ async fn compute_outcome(
     pool: &SqlitePool,
     proposal_id: &str,
     proposal: &db::DecidableProposal,
+    kind: MutationKind,
     decision: &Decision,
     edited_payload: Option<&serde_json::Value>,
     idempotency_key: Option<&str>,
@@ -132,14 +145,14 @@ async fn compute_outcome(
     if let Some(recorded) = proposal.decision_idempotency_key.as_deref()
         && idempotency_key == Some(recorded)
     {
-        return prior_outcome(pool, proposal_id, proposal).await;
+        return prior_outcome(pool, proposal_id, proposal, kind).await;
     }
 
     if proposal.status != "pending" {
         if (proposal.status == "accepted" || proposal.status == "rejected")
             && run_is_parked(pool, proposal.run_id).await?
         {
-            return prior_outcome(pool, proposal_id, proposal).await;
+            return prior_outcome(pool, proposal_id, proposal, kind).await;
         }
         return Err(DecideError::NotDecidable(format!(
             "proposal {proposal_id} is {} (not pending)",
@@ -158,6 +171,7 @@ async fn compute_outcome(
         pool,
         proposal_id,
         proposal,
+        kind,
         decision,
         edited_payload,
         idempotency_key,
@@ -172,6 +186,7 @@ async fn prior_outcome(
     pool: &SqlitePool,
     proposal_id: &str,
     proposal: &db::DecidableProposal,
+    kind: MutationKind,
 ) -> Result<DecideOutcome, DecideError> {
     match proposal.status.as_str() {
         "rejected" => Ok(DecideOutcome::Rejected {
@@ -182,7 +197,7 @@ async fn prior_outcome(
                 .await
                 .map_err(|e| DecideError::Internal(e.into()))?
                 .or_else(|| {
-                    entities::target_entity_id(&proposal.mutation_kind, &proposal.payload)
+                    mutation::target_entity_id(kind.describe(), &proposal.payload)
                         .map(str::to_string)
                 })
                 .ok_or_else(|| {
@@ -211,6 +226,7 @@ async fn apply_or_reject(
     pool: &SqlitePool,
     proposal_id: &str,
     proposal: &db::DecidableProposal,
+    kind: MutationKind,
     decision: &Decision,
     edited_payload: Option<&serde_json::Value>,
     idempotency_key: Option<&str>,
@@ -219,7 +235,9 @@ async fn apply_or_reject(
 
     if matches!(decision, Decision::Reject) {
         // A decline renders as a NORMAL (non-error) tool result so the resumed
-        // model continues conversationally.
+        // model continues conversationally. A reject touches no entity store and
+        // needs no `ProposableMutation` — even a (should-be-impossible) non-
+        // proposable stored kind can still be declined cleanly.
         let decision_payload = serde_json::json!({
             "decision": "reject",
             "content": "User declined this proposal.",
@@ -251,20 +269,19 @@ async fn apply_or_reject(
         };
     }
 
-    // Accept or edit. An `edit` requires an `edited_payload` (absence → `Invalid`,
-    // checked here so a payload-less retry replays via the branches above); a
-    // plain accept ignores any wire payload. The applied payload is the edited
-    // one for an edit, else the proposed payload; validate it first.
-    if matches!(decision, Decision::Edit)
-        && matches!(
-            proposal.mutation_kind.as_str(),
-            "delete_journal_entry"
-                | "delete_person"
-                | "delete_project"
-                | "delete_todo"
-                | "reference_existing_entity_from_journal_entry"
-        )
-    {
+    // Accept or edit: this is the agent ACCEPT path, so the kind must be
+    // agent-proposable. A stored kind that is not (mark_project_reviewed /
+    // bookmark — the propose schema cannot emit them) is a graceful `Invalid`,
+    // replacing the former render_accept panic. Done AFTER the reject branch so a
+    // corrupt proposal can still be rejected.
+    let proposable = ProposableMutation::try_from(kind)
+        .map_err(|e| DecideError::Invalid(format!("{} cannot be proposed", e.0.as_wire())))?;
+
+    // An `edit` requires an `edited_payload` (absence → `Invalid`, checked here so
+    // a payload-less retry replays via the branches above); a plain accept ignores
+    // any wire payload. The applied payload is the edited one for an edit, else the
+    // proposed payload; validate it first.
+    if matches!(decision, Decision::Edit) && !proposable.supports_edit() {
         return Err(DecideError::Invalid(format!(
             "{} does not support edit",
             proposal.mutation_kind
@@ -274,7 +291,7 @@ async fn apply_or_reject(
     let edited_payload = match decision {
         Decision::Edit => match edited_payload {
             Some(payload) => Some(preserve_update_target_entity_id(
-                &proposal.mutation_kind,
+                kind,
                 &proposal.payload,
                 payload,
             )?),
@@ -289,34 +306,25 @@ async fn apply_or_reject(
     let edited_payload = edited_payload.as_ref();
     let applied_payload = edited_payload.unwrap_or(&proposal.payload);
 
-    entities::validate(&proposal.mutation_kind, applied_payload).map_err(DecideError::Invalid)?;
-    validate_mutation_target(
-        pool,
-        proposal.run_id,
-        &proposal.mutation_kind,
-        applied_payload,
-    )
-    .await?;
+    entities::validate(kind, applied_payload).map_err(DecideError::Invalid)?;
+    validate_mutation_target(pool, proposal.run_id, kind, applied_payload).await?;
 
     let decision_payload = serde_json::json!({
         "decision": "accept",
-        "content": entities::render_accept(&proposal.mutation_kind, applied_payload),
+        "content": entities::render_accept(proposable, applied_payload),
     })
     .to_string();
 
-    let mutation_kind = &proposal.mutation_kind;
     match db::apply_proposal(
         pool,
         run_id,
         proposal_id,
         &proposal.tool_call_id,
-        mutation_kind,
-        entities::entity_type(mutation_kind),
-        entities::schema_version(mutation_kind),
-        entities::target_entity_id(mutation_kind, applied_payload),
+        kind,
+        mutation::target_entity_id(kind.describe(), applied_payload),
         &proposal.payload,
         edited_payload,
-        entities::source_relation_from_user_message(mutation_kind),
+        kind.describe().write_op.source_relation(),
         idempotency_key,
         &decision_payload,
         db::now_ms(),
@@ -339,7 +347,7 @@ async fn apply_or_reject(
 async fn validate_mutation_target(
     pool: &SqlitePool,
     run_id: Uuid,
-    mutation_kind: &str,
+    kind: MutationKind,
     payload: &serde_json::Value,
 ) -> Result<(), DecideError> {
     // Run-INDEPENDENT target-reference checks are shared with the user path
@@ -347,7 +355,7 @@ async fn validate_mutation_target(
     // `project_id`/person refs, an update/delete target's type, and a reference's
     // `target_entity_id` type. Checked BEFORE apply so a bad reference writes
     // nothing.
-    crate::mutation_target::validate_mutation_target_refs(pool, mutation_kind, payload)
+    crate::mutation_target::validate_mutation_target_refs(pool, kind, payload)
         .await
         .map_err(|e| match e {
             // The primary target Entity was deleted out from under this parked
@@ -366,32 +374,31 @@ async fn validate_mutation_target(
     // A reference's source is a model-supplied REFERENCE, not the Entity being
     // mutated — a missing/non-thread source is a payload error (-32602), never a
     // delete-race, so `missing_is_not_decidable: false`.
-    if mutation_kind == "reference_existing_entity_from_journal_entry" {
+    if kind == MutationKind::ReferenceExistingEntityFromJournalEntry {
         let source_entity_id =
-            entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
+            mutation::target_entity_id(kind.describe(), payload).ok_or_else(|| {
                 DecideError::Invalid(
                     "source_entity_id is required for reference_existing_entity_from_journal_entry"
                         .to_string(),
                 )
             })?;
-        validate_current_thread_journal_entry(pool, run_id, mutation_kind, source_entity_id, false)
-            .await?;
+        validate_current_thread_journal_entry(pool, run_id, kind, source_entity_id, false).await?;
         return Ok(());
     }
 
     // A journal-entry update/delete keeps the stricter same-thread guard: the
     // target must be a Journal Entry originally created_from a user Message in the
     // current Thread.
-    if mutation_kind != "update_journal_entry" && mutation_kind != "delete_journal_entry" {
+    if kind != MutationKind::UpdateJournalEntry && kind != MutationKind::DeleteJournalEntry {
         return Ok(());
     }
 
     // Here the Journal Entry IS the primary target being mutated, so a GONE row is
     // the delete-race (ADR-0033) → NotDecidable; `missing_is_not_decidable: true`.
-    let entity_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
-        DecideError::Invalid(format!("entity_id is required for {mutation_kind}"))
+    let entity_id = mutation::target_entity_id(kind.describe(), payload).ok_or_else(|| {
+        DecideError::Invalid(format!("entity_id is required for {}", kind.as_wire()))
     })?;
-    validate_current_thread_journal_entry(pool, run_id, mutation_kind, entity_id, true).await?;
+    validate_current_thread_journal_entry(pool, run_id, kind, entity_id, true).await?;
 
     Ok(())
 }
@@ -404,7 +411,7 @@ async fn validate_mutation_target(
 async fn validate_current_thread_journal_entry(
     pool: &SqlitePool,
     run_id: Uuid,
-    mutation_kind: &str,
+    kind: MutationKind,
     entity_id: &str,
     missing_is_not_decidable: bool,
 ) -> Result<(), DecideError> {
@@ -415,9 +422,10 @@ async fn validate_current_thread_journal_entry(
         // The guard fails for two distinct reasons; tell them apart with a cheap
         // existence check.
         if missing_is_not_decidable {
-            let exists = db::entity_is_type(pool, entity_id, "journal_entry")
-                .await
-                .map_err(|e| DecideError::Internal(e.into()))?;
+            let exists =
+                db::entity_is_type(pool, entity_id, mutation::EntityType::JournalEntry.as_str())
+                    .await
+                    .map_err(|e| DecideError::Internal(e.into()))?;
             if !exists {
                 return Err(DecideError::NotDecidable(
                     "proposal target no longer exists".to_string(),
@@ -425,40 +433,51 @@ async fn validate_current_thread_journal_entry(
             }
         }
         return Err(DecideError::Invalid(format!(
-            "{mutation_kind} target must be a Journal Entry originally created_from a user Message in the current Thread"
+            "{} target must be a Journal Entry originally created_from a user Message in the current Thread",
+            kind.as_wire()
         )));
     }
     Ok(())
 }
 
 fn preserve_update_target_entity_id(
-    mutation_kind: &str,
+    kind: MutationKind,
     proposal_payload: &serde_json::Value,
     edited_payload: &serde_json::Value,
 ) -> Result<serde_json::Value, DecideError> {
+    // Only the editable update kinds carry a target id to preserve. This gate is
+    // the editable-UPDATE set (not merely `target_key.is_some()`, which would also
+    // catch deletes, the reference weave, mark_project_reviewed, and bookmarks —
+    // none of which take an edit). Reference/deletes were already rejected by the
+    // edit-guard upstream; this stays explicit so the set cannot silently widen.
     if !matches!(
-        mutation_kind,
-        "update_journal_entry" | "update_person" | "update_project" | "update_todo"
+        kind,
+        MutationKind::UpdateJournalEntry
+            | MutationKind::UpdatePerson
+            | MutationKind::UpdateProject
+            | MutationKind::UpdateTodo
     ) {
         return Ok(edited_payload.clone());
     }
 
-    // The target key is `todo_id` for update_todo, `entity_id` for the others.
-    let target_key = if mutation_kind == "update_todo" {
-        "todo_id"
-    } else {
-        "entity_id"
-    };
+    // The target key (`todo_id` for update_todo, `entity_id` for the others) is a
+    // pure function of the kind — taken from the descriptor, not hand-rolled.
+    let desc = kind.describe();
+    let target_key = desc
+        .target_key
+        .map(|k| k.as_str())
+        .expect("an update kind always has a target key");
+    let wire = kind.as_wire();
 
-    let Some(target_id) = entities::target_entity_id(mutation_kind, proposal_payload) else {
+    let Some(target_id) = mutation::target_entity_id(desc, proposal_payload) else {
         return Err(DecideError::Invalid(format!(
-            "{mutation_kind} proposal is missing {target_key}"
+            "{wire} proposal is missing {target_key}"
         )));
     };
-    if let Some(edited_target_id) = entities::target_entity_id(mutation_kind, edited_payload) {
+    if let Some(edited_target_id) = mutation::target_entity_id(desc, edited_payload) {
         if edited_target_id != target_id {
             return Err(DecideError::Invalid(format!(
-                "{mutation_kind} edit cannot change {target_key}"
+                "{wire} edit cannot change {target_key}"
             )));
         }
         return Ok(edited_payload.clone());

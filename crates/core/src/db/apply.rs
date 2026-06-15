@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use super::ApplyError;
 use super::queries;
+use crate::mutation::{EntityType, MutationKind, WriteOp};
 
 /// An already-resolved Entity Source row to write for this mutation (ADR-0030,
 /// ADR-0033). The caller resolves the run-coupled bits (the user Message id from
@@ -32,15 +33,15 @@ pub(crate) enum EntitySource {
 }
 
 /// What `apply_entity_mutation` writes, fully resolved by the caller so this
-/// layer is run-independent. `created_by` is the origin marker
+/// layer is run-independent. The `kind` is the single source of the Entity Type,
+/// schema version, and write class (via [`MutationKind::describe`]) — the caller
+/// no longer threads those as separate fields. `created_by` is the origin marker
 /// (`'proposal'`/`'user'`); `proposal_id` is `Some` on the proposal path (it
 /// stamps both `entities.created_via_proposal_id` and the `entity_revisions`
 /// rows) and `None` on the user path (NULL columns, allowed by the schema CHECK).
 /// `source` is the already-resolved Entity Source row, or `None`.
 pub(crate) struct EntityMutationSpec<'a> {
-    pub mutation_kind: &'a str,
-    pub entity_type: &'a str,
-    pub schema_version: i64,
+    pub kind: MutationKind,
     pub target_entity_id: Option<&'a str>,
     pub payload: &'a serde_json::Value,
     pub edited_payload: Option<&'a serde_json::Value>,
@@ -51,51 +52,10 @@ pub(crate) struct EntityMutationSpec<'a> {
     pub now_ms: i64,
 }
 
-/// Whether a `mutation_kind` creates a fresh entity (mints a new id) versus
-/// mutating an existing one (requires a target id). Drives the entity-id
-/// derivation generically so the apply path names no specific Entity Type.
-fn is_create_mutation(mutation_kind: &str) -> bool {
-    matches!(
-        mutation_kind,
-        "create_journal_entry"
-            | "create_person"
-            | "create_project"
-            | "create_todo"
-            | "create_bookmark"
-    )
-}
-
-/// Whether a `mutation_kind` replaces an existing entity's data in place (writes
-/// a new revision), as opposed to creating or deleting one. The apply path runs
-/// the shared update branch (update_entity + revision) for every such kind.
-fn is_update_mutation(mutation_kind: &str) -> bool {
-    matches!(
-        mutation_kind,
-        "update_journal_entry" | "update_person" | "update_project" | "update_bookmark"
-    )
-}
-
-/// Whether a `mutation_kind` removes an existing entity. The apply path runs the
-/// shared delete branch (delete the entity of the caller-supplied `entity_type`;
-/// dependent rows cascade via FK) for every such kind. `update_todo` is NOT a
-/// delete despite its ref-removal ops. `delete_project` is a delete for the
-/// data-payload/edit-guard classification, but takes a DEDICATED apply arm (its
-/// project_id-unset cascade) ahead of the generic plain-delete branch.
-fn is_delete_mutation(mutation_kind: &str) -> bool {
-    matches!(
-        mutation_kind,
-        "delete_journal_entry"
-            | "delete_person"
-            | "delete_project"
-            | "delete_todo"
-            | "delete_bookmark"
-    )
-}
-
-/// The entity `data` to store for a `mutation_kind`, given its effective
-/// payload. The per-kind extraction/normalization seam: every update kind
-/// (`update_journal_entry`/`update_person`/`update_project`) strips `entity_id`
-/// (it targets the row but is not entity data);
+/// The entity `data` to store for a `kind`, given its effective payload. The
+/// per-kind extraction/normalization seam: every full-replace update kind
+/// (`update_journal_entry`/`update_person`/`update_project`/`update_bookmark`)
+/// strips `entity_id` (it targets the row but is not entity data);
 /// `create_project` injects `status:"active"` when absent so the stored data
 /// always carries an explicit status (validate tolerates a missing status), and
 /// for a resulting active Project with no review fields supplied seeds the
@@ -103,15 +63,18 @@ fn is_delete_mutation(mutation_kind: &str) -> bool {
 /// review anchor (ADR-0031); `create_todo` unwraps the `{todo, person_refs?}`
 /// envelope to store `payload.todo` (the TodoData) and likewise injects
 /// `status:"active"` when absent; every other kind stores its payload as-is. The
-/// `now_ms`/`offset_minutes` inputs anchor that review-date default.
+/// `now_ms`/`offset_minutes` inputs anchor that review-date default. The in-tx
+/// kinds (`update_todo`/`mark_project_reviewed`/reference weave) never reach this
+/// seam — their data is computed inside the tx — so they fall to the as-is arm.
 fn entity_data_payload(
-    mutation_kind: &str,
+    kind: MutationKind,
     payload: &serde_json::Value,
     now_ms: i64,
     offset_minutes: i64,
 ) -> serde_json::Value {
-    match mutation_kind {
-        kind if is_update_mutation(kind) => {
+    use MutationKind as M;
+    match kind {
+        M::UpdateJournalEntry | M::UpdatePerson | M::UpdateProject | M::UpdateBookmark => {
             let Some(obj) = payload.as_object() else {
                 return payload.clone();
             };
@@ -128,7 +91,7 @@ fn entity_data_payload(
             data.retain(|_, value| !value.is_null());
             serde_json::Value::Object(data)
         }
-        "create_person" => {
+        M::CreatePerson => {
             // `source_journal_entry_id` is a provenance directive, never Person
             // data — strip it before storing (validate already accepted it).
             let Some(obj) = payload.as_object() else {
@@ -140,7 +103,7 @@ fn entity_data_payload(
             data.retain(|_, value| !value.is_null());
             serde_json::Value::Object(data)
         }
-        "create_project" => {
+        M::CreateProject => {
             let Some(obj) = payload.as_object() else {
                 return payload.clone();
             };
@@ -173,7 +136,7 @@ fn entity_data_payload(
             }
             serde_json::Value::Object(data)
         }
-        "create_todo" => {
+        M::CreateTodo => {
             // Unwrap the `{todo, person_refs?}` envelope into Todo JSON;
             // person_refs persist separately in `todo_person_refs`, never in
             // `entities.data`.
@@ -185,7 +148,7 @@ fn entity_data_payload(
                 .or_insert_with(|| serde_json::json!("active"));
             serde_json::Value::Object(data)
         }
-        "create_bookmark" => {
+        M::CreateBookmark => {
             // A `null` optional field (url/note/tags) carries no value to store
             // (ADR-0033/0036): drop the key rather than persist a JSON null, so the
             // stored Bookmark data never holds null. No envelope, no defaults.
@@ -196,7 +159,18 @@ fn entity_data_payload(
             data.retain(|_, value| !value.is_null());
             serde_json::Value::Object(data)
         }
-        _ => payload.clone(),
+        // The delete kinds touch no entity data, and the in-tx kinds
+        // (update_todo/mark_project_reviewed/reference weave) compute their data
+        // inside the tx — none reach this pre-write seam, so store as-is.
+        M::CreateJournalEntry
+        | M::DeleteJournalEntry
+        | M::ReferenceExistingEntityFromJournalEntry
+        | M::DeletePerson
+        | M::DeleteProject
+        | M::MarkProjectReviewed
+        | M::DeleteTodo
+        | M::UpdateTodo
+        | M::DeleteBookmark => payload.clone(),
     }
 }
 
@@ -503,9 +477,7 @@ pub(crate) async fn apply_entity_mutation(
     spec: EntityMutationSpec<'_>,
 ) -> Result<String, ApplyError> {
     let EntityMutationSpec {
-        mutation_kind,
-        entity_type,
-        schema_version,
+        kind,
         target_entity_id,
         payload,
         edited_payload,
@@ -514,8 +486,12 @@ pub(crate) async fn apply_entity_mutation(
         source,
         now_ms,
     } = spec;
+    let desc = kind.describe();
+    let entity_type = desc.entity_type;
+    let schema_version = entity_type.schema_version();
+    let mutation_kind = kind.as_wire();
 
-    let entity_id = if is_create_mutation(mutation_kind) {
+    let entity_id = if desc.write_op == WriteOp::Create {
         if target_entity_id.is_some() {
             return Err(ApplyError::InvalidMutation(format!(
                 "{mutation_kind} must not target an existing entity"
@@ -545,26 +521,37 @@ pub(crate) async fn apply_entity_mutation(
     // `reference_existing_entity_from_journal_entry` kind likewise rewrites the
     // target Journal Entry body against current state inside the tx (it needs the
     // freshly-minted entity_ref id), so it is computed there too.
-    let mut data_str = match mutation_kind {
+    let mut data_str = match kind {
         // `update_todo` MERGES, `mark_project_reviewed` recomputes from current
         // state, and the reference kind rewrites the target body against current
         // state — all compute their data inside the tx below, not at this seam.
-        "update_todo"
-        | "mark_project_reviewed"
-        | "reference_existing_entity_from_journal_entry" => None,
-        kind if is_delete_mutation(kind) => None,
-        _ => Some(
-            entity_data_payload(
-                mutation_kind,
-                effective_payload,
-                now_ms,
-                review_anchor_offset,
-            )
-            .to_string(),
+        // Deletes touch no entity data. This is an exhaustive `match kind` (no
+        // wildcard) so a new Entity Type must DECLARE its data-seam routing here —
+        // it cannot silently default to the pre-write `entity_data_payload` path,
+        // which would be wrong for a new in-tx-computed kind. (The reference weave
+        // is a WriteOp::Update, so a `match write_op` could not express this.)
+        MutationKind::UpdateTodo
+        | MutationKind::MarkProjectReviewed
+        | MutationKind::ReferenceExistingEntityFromJournalEntry
+        | MutationKind::DeleteJournalEntry
+        | MutationKind::DeletePerson
+        | MutationKind::DeleteProject
+        | MutationKind::DeleteTodo
+        | MutationKind::DeleteBookmark => None,
+        MutationKind::CreateJournalEntry
+        | MutationKind::CreatePerson
+        | MutationKind::CreateProject
+        | MutationKind::CreateTodo
+        | MutationKind::CreateBookmark
+        | MutationKind::UpdateJournalEntry
+        | MutationKind::UpdatePerson
+        | MutationKind::UpdateProject
+        | MutationKind::UpdateBookmark => Some(
+            entity_data_payload(kind, effective_payload, now_ms, review_anchor_offset).to_string(),
         ),
     };
 
-    if mutation_kind == "update_journal_entry" {
+    if kind == MutationKind::UpdateJournalEntry {
         for ref_id in crate::entities::body_entity_ref_ids(effective_payload) {
             let belongs =
                 queries::entity_ref_belongs_to_source(&mut **tx, &entity_id, ref_id).await?;
@@ -576,7 +563,7 @@ pub(crate) async fn apply_entity_mutation(
         }
     }
 
-    let reference_ref_id = if mutation_kind == "reference_existing_entity_from_journal_entry" {
+    let reference_ref_id = if kind == MutationKind::ReferenceExistingEntityFromJournalEntry {
         let target_entity_id = crate::entities::reference_target_entity_id(effective_payload)
             .ok_or_else(|| {
                 ApplyError::InvalidMutation(
@@ -614,7 +601,7 @@ pub(crate) async fn apply_entity_mutation(
     // with the new entity_ref placeholder rewritten to carry the freshly-minted
     // `ref_id`. It needs committed state + that ref id, so it is computed here
     // (the pre-write seam left it `None`); every other kind already has its data_str.
-    if mutation_kind == "reference_existing_entity_from_journal_entry" {
+    if kind == MutationKind::ReferenceExistingEntityFromJournalEntry {
         let ref_id = reference_ref_id
             .as_deref()
             .expect("reference mutation creates or reuses an entity_ref");
@@ -642,14 +629,14 @@ pub(crate) async fn apply_entity_mutation(
         );
     }
 
-    match mutation_kind {
+    match kind {
         // delete_project is the ONE non-FK cascade (ADR-0031): project_id lives in
         // the Todo JSON, not an FK column. In THIS tx, unset project_id on every
         // owning Todo (rewriting each Todo's data + a new revision) FIRST, then
         // delete the Project entity. Only project_id is removed — the Todo's
         // title/note and its todo_person_refs are untouched. Handled ahead of the
         // generic delete arm so the plain delete does not also run for it.
-        "delete_project" => {
+        MutationKind::DeleteProject => {
             let affected = queries::todos_with_project(&mut **tx, &entity_id).await?;
             for (todo_id, todo_data) in affected {
                 let mut data: serde_json::Map<String, serde_json::Value> =
@@ -658,11 +645,14 @@ pub(crate) async fn apply_entity_mutation(
                     })?;
                 data.remove("project_id");
                 let new_data = serde_json::Value::Object(data).to_string();
+                // The rewritten rows are TODOS, so stamp the Todo schema version —
+                // NOT this mutation's entity_type (Project). This is the one site
+                // where the cascade touches a different Entity Type than `kind`.
                 let updated = queries::update_entity(
                     &mut **tx,
                     &todo_id,
-                    "todo",
-                    crate::entities::TODO_SCHEMA_VERSION,
+                    EntityType::Todo.as_str(),
+                    EntityType::Todo.schema_version(),
                     &new_data,
                     now_ms,
                 )
@@ -682,18 +672,23 @@ pub(crate) async fn apply_entity_mutation(
                 )
                 .await?;
             }
-            let deleted = queries::delete_entity(&mut **tx, &entity_id, "project").await?;
+            let deleted =
+                queries::delete_entity(&mut **tx, &entity_id, entity_type.as_str()).await?;
             if deleted != 1 {
                 // The target Project vanished under the parked Proposal (ADR-0033).
                 return Err(ApplyError::TargetMissing);
             }
         }
-        // Delete kinds (journal_entry, person, todo): remove the entity of the
-        // caller-supplied `entity_type`. Its revisions/sources and a Person's or
-        // Todo's `todo_person_refs` rows cascade away via FK ON DELETE CASCADE —
-        // no explicit ref-delete SQL here.
-        kind if is_delete_mutation(kind) => {
-            let deleted = queries::delete_entity(&mut **tx, &entity_id, entity_type).await?;
+        // Delete kinds (journal_entry, person, todo, bookmark): remove the entity
+        // of this `entity_type`. Its revisions/sources and a Person's or Todo's
+        // `todo_person_refs` rows cascade away via FK ON DELETE CASCADE — no
+        // explicit ref-delete SQL here.
+        MutationKind::DeleteJournalEntry
+        | MutationKind::DeletePerson
+        | MutationKind::DeleteTodo
+        | MutationKind::DeleteBookmark => {
+            let deleted =
+                queries::delete_entity(&mut **tx, &entity_id, entity_type.as_str()).await?;
             if deleted != 1 {
                 // The delete target vanished under the parked Proposal (ADR-0033).
                 return Err(ApplyError::TargetMissing);
@@ -703,7 +698,7 @@ pub(crate) async fn apply_entity_mutation(
         // performs its ref ops, all in THIS tx (ADR-0031 atomicity). The merge
         // needs committed state, so it loads current data here rather than via
         // the pre-write `entity_data_payload` seam.
-        "update_todo" => {
+        MutationKind::UpdateTodo => {
             apply_update_todo(
                 tx,
                 &entity_id,
@@ -718,7 +713,7 @@ pub(crate) async fn apply_entity_mutation(
         // fields, and writes a new revision — all in THIS tx (ADR-0034). The
         // recompute needs committed state + the in-tx review-anchor offset, so it
         // loads current data here rather than via the pre-write seam.
-        "mark_project_reviewed" => {
+        MutationKind::MarkProjectReviewed => {
             apply_mark_project_reviewed(
                 tx,
                 &entity_id,
@@ -729,23 +724,25 @@ pub(crate) async fn apply_entity_mutation(
             )
             .await?;
         }
-        // Update kinds (journal_entry, person, project): replace the target
-        // entity's data of the caller-supplied `entity_type` + append the next
-        // revision snapshot. The journal-entry body-ref check above is gated to
-        // journal kinds; person/project carry no body refs.
+        // Update kinds (journal_entry, person, project, bookmark): replace the
+        // target entity's data of this `entity_type` + append the next revision
+        // snapshot. The journal-entry body-ref check above is gated to journal
+        // kinds; person/project/bookmark carry no body refs.
         // `reference_existing_entity_from_journal_entry` also writes a new
         // revision of the target Journal Entry (the body rewritten above to carry
         // the new entity_ref placeholder), so it joins this update branch.
-        kind if is_update_mutation(kind)
-            || kind == "reference_existing_entity_from_journal_entry" =>
-        {
+        MutationKind::UpdateJournalEntry
+        | MutationKind::UpdatePerson
+        | MutationKind::UpdateProject
+        | MutationKind::UpdateBookmark
+        | MutationKind::ReferenceExistingEntityFromJournalEntry => {
             let data_str = data_str
                 .as_deref()
                 .expect("non-delete mutations always carry entity data");
             let updated = queries::update_entity(
                 &mut **tx,
                 &entity_id,
-                entity_type,
+                entity_type.as_str(),
                 schema_version,
                 data_str,
                 now_ms,
@@ -766,14 +763,18 @@ pub(crate) async fn apply_entity_mutation(
             )
             .await?;
         }
-        // Create kinds (journal_entry, person, …): insert the entity of the
-        // caller-supplied `entity_type` + its seq-1 revision. The query is
+        // Create kinds (journal_entry, person, project, todo, bookmark): insert
+        // the entity of this `entity_type` + its seq-1 revision. The query is
         // already generic on `entity_type`.
-        kind if is_create_mutation(kind) => {
+        MutationKind::CreateJournalEntry
+        | MutationKind::CreatePerson
+        | MutationKind::CreateProject
+        | MutationKind::CreateTodo
+        | MutationKind::CreateBookmark => {
             let data_str = data_str
                 .as_deref()
                 .expect("non-delete mutations always carry entity data");
-            if mutation_kind == "create_todo"
+            if kind == MutationKind::CreateTodo
                 && let Some(todo) = effective_payload.get("todo")
             {
                 // Re-check the new Todo's project link in THIS tx: a concurrent
@@ -784,7 +785,7 @@ pub(crate) async fn apply_entity_mutation(
             queries::insert_entity(
                 &mut **tx,
                 &entity_id,
-                entity_type,
+                entity_type.as_str(),
                 schema_version,
                 data_str,
                 created_by,
@@ -801,7 +802,7 @@ pub(crate) async fn apply_entity_mutation(
                 now_ms,
             )
             .await?;
-            if mutation_kind == "create_todo" {
+            if kind == MutationKind::CreateTodo {
                 // Persist the Todo's Person References (ADR-0031) in the SAME tx
                 // so the refs are atomic with the Todo entity. They live in
                 // `todo_person_refs`, NOT in the Todo JSON, so read them from the
@@ -814,7 +815,6 @@ pub(crate) async fn apply_entity_mutation(
                 }
             }
         }
-        _ => unreachable!("mutation_kind validated above"),
     }
 
     // Write the already-resolved Entity Source row, if any. The run-coupled
@@ -892,9 +892,7 @@ mod tests {
         let entity_id = apply_entity_mutation(
             &mut tx,
             EntityMutationSpec {
-                mutation_kind: "create_person",
-                entity_type: "person",
-                schema_version: crate::entities::PERSON_SCHEMA_VERSION,
+                kind: MutationKind::CreatePerson,
                 target_entity_id: None,
                 payload: &serde_json::json!({ "name": "Alice" }),
                 edited_payload: None,
@@ -948,19 +946,12 @@ mod tests {
 
     /// A user-path `create_*` spec through `apply_entity_mutation`, committed.
     /// Returns the minted entity id.
-    async fn create(
-        pool: &SqlitePool,
-        mutation_kind: &str,
-        entity_type: &str,
-        payload: serde_json::Value,
-    ) -> String {
+    async fn create(pool: &SqlitePool, kind: MutationKind, payload: serde_json::Value) -> String {
         let mut tx = pool.begin().await.expect("begin");
         let entity_id = apply_entity_mutation(
             &mut tx,
             EntityMutationSpec {
-                mutation_kind,
-                entity_type,
-                schema_version: 1,
+                kind,
                 target_entity_id: None,
                 payload: &payload,
                 edited_payload: None,
@@ -990,9 +981,7 @@ mod tests {
         let result = apply_entity_mutation(
             &mut tx,
             EntityMutationSpec {
-                mutation_kind: "update_todo",
-                entity_type: "todo",
-                schema_version: 1,
+                kind: MutationKind::UpdateTodo,
                 target_entity_id: Some(&missing_todo_id),
                 payload: &serde_json::json!({
                     "todo_id": missing_todo_id,
@@ -1026,9 +1015,7 @@ mod tests {
         let result = apply_entity_mutation(
             &mut tx,
             EntityMutationSpec {
-                mutation_kind: "create_todo",
-                entity_type: "todo",
-                schema_version: 1,
+                kind: MutationKind::CreateTodo,
                 target_entity_id: None,
                 payload: &serde_json::json!({
                     "todo": { "title": "Ship it", "project_id": missing_project_id }
@@ -1063,15 +1050,13 @@ mod tests {
         let pool = memory_pool().await;
         let project_id = create(
             &pool,
-            "create_project",
-            "project",
+            MutationKind::CreateProject,
             serde_json::json!({ "name": "P" }),
         )
         .await;
         let todo_id = create(
             &pool,
-            "create_todo",
-            "todo",
+            MutationKind::CreateTodo,
             serde_json::json!({ "todo": { "title": "Ship it" } }),
         )
         .await;
@@ -1087,9 +1072,7 @@ mod tests {
         let result = apply_entity_mutation(
             &mut tx,
             EntityMutationSpec {
-                mutation_kind: "update_todo",
-                entity_type: "todo",
-                schema_version: 1,
+                kind: MutationKind::UpdateTodo,
                 target_entity_id: Some(&todo_id),
                 payload: &serde_json::json!({
                     "todo_id": todo_id,
@@ -1121,9 +1104,7 @@ mod tests {
         let result = apply_entity_mutation(
             &mut tx,
             EntityMutationSpec {
-                mutation_kind: "mark_project_reviewed",
-                entity_type: "project",
-                schema_version: crate::entities::PROJECT_SCHEMA_VERSION,
+                kind: MutationKind::MarkProjectReviewed,
                 target_entity_id: Some(project_id),
                 payload: &serde_json::json!({ "entity_id": project_id }),
                 edited_payload: None,
@@ -1160,8 +1141,7 @@ mod tests {
         // fire — only active Projects seed) exercises the absent-cadence default.
         let project_id = create(
             &pool,
-            "create_project",
-            "project",
+            MutationKind::CreateProject,
             serde_json::json!({ "name": "Migrate DB", "outcome": "Done", "status": "on_hold" }),
         )
         .await;
@@ -1219,8 +1199,7 @@ mod tests {
         let pool = memory_pool().await;
         let project_id = create(
             &pool,
-            "create_project",
-            "project",
+            MutationKind::CreateProject,
             serde_json::json!({
                 "name": "Quarterly OKRs",
                 "review_every": { "interval": 1, "unit": "month" },
@@ -1251,8 +1230,7 @@ mod tests {
         let pool = memory_pool().await;
         let project_id = create(
             &pool,
-            "create_project",
-            "project",
+            MutationKind::CreateProject,
             serde_json::json!({ "name": "Weekly review", "status": "active" }),
         )
         .await;
@@ -1279,8 +1257,7 @@ mod tests {
             let pool = memory_pool().await;
             let project_id = create(
                 &pool,
-                "create_project",
-                "project",
+                MutationKind::CreateProject,
                 serde_json::json!({
                     "name": "Old",
                     "status": status,

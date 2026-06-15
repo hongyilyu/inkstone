@@ -116,19 +116,27 @@ async fn review_context_for_proposal(
     run_id: uuid::Uuid,
     proposal: &db::ProposalRow,
 ) -> Result<Option<ProposalReviewContext>, HandlerError> {
-    if proposal.mutation_kind != "update_journal_entry"
-        && proposal.mutation_kind != "delete_journal_entry"
-        && proposal.mutation_kind != "reference_existing_entity_from_journal_entry"
-    {
+    // Only the agent-proposable kinds that mutate an EXISTING Journal Entry carry
+    // review context. Resolve the stored kind to the typed predicate; a kind that
+    // is unknown or not agent-proposable simply has no review context (Ok(None)),
+    // matching the prior non-journal-kind early return.
+    let Some(proposable) = crate::mutation::MutationKind::from_wire(&proposal.mutation_kind)
+        .and_then(|kind| crate::mutation::ProposableMutation::try_from(kind).ok())
+    else {
+        return Ok(None);
+    };
+    if !proposable.carries_review_context() {
         return Ok(None);
     }
 
-    let entity_id_field =
-        if proposal.mutation_kind == "reference_existing_entity_from_journal_entry" {
-            "source_entity_id"
-        } else {
-            "entity_id"
-        };
+    // The Journal Entry under review is the kind's target — `source_entity_id` for
+    // the reference weave, `entity_id` for update/delete (from the descriptor).
+    let entity_id_field = proposable
+        .kind()
+        .describe()
+        .target_key
+        .map(|k| k.as_str())
+        .expect("a review-context kind always has a target key");
     let Some(entity_id) = proposal
         .payload
         .get(entity_id_field)
