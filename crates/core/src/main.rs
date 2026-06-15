@@ -4,6 +4,7 @@ mod decide;
 mod dispatcher;
 mod entities;
 mod hub;
+mod logging;
 mod models;
 mod mutate;
 mod mutation_target;
@@ -41,6 +42,11 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize the Diagnostic Log subscriber FIRST (ADR-0036), before any
+    // fail-fast boot step, so even `workflow::init`/`db::open` faults are
+    // captured on the trail.
+    logging::init()?;
+
     // Validate the Workflow(s) before serving: a malformed default.toml aborts
     // boot (fail-fast, ADR-0018) rather than failing the first Run.
     workflow::init()?;
@@ -98,6 +104,12 @@ async fn main() -> Result<()> {
         .unwrap_or(8765);
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     let local_addr = listener.local_addr()?;
+    // Diagnostic Log boot milestone (ADR-0036), emitted BEFORE the stdout marker
+    // so the blocking appender has it on disk before any observer of the marker
+    // can act (the test harness unblocks on the marker, then may SIGKILL at
+    // once). Distinct from the marker below (the harness's liveness contract,
+    // NOT migrated into tracing). Variable data (`addr`) is a field, not message.
+    tracing::info!(event = "core.listening", addr = %local_addr);
     println!("INKSTONE_LISTENING http://{local_addr}");
 
     axum::serve(listener, app).await?;
