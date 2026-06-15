@@ -1,102 +1,59 @@
-// Preview Library items — visual-only fixture for types not read live from Core yet; see docs/design/web-mock.md.
+// Test-only Library fixtures — Core-shaped rows for exercising the pure helpers
+// in libraryItems.ts. Not imported by app code (the live Library reads from Core
+// via useLibraryItems); only *.test.ts files consume this. One coherent personal
+// workspace mirroring CONTEXT.md's vocabulary, so the assertions read naturally.
 
-import type { LibraryItem, Person, Project, Todo } from "@/lib/libraryItems";
+import type { Person, Project, Todo } from "@/lib/libraryItems";
 
 export const people: Person[] = [
 	{
 		id: "person_priya",
 		kind: "person",
 		name: "Priya Nair",
-		role: "Staff engineer, Platform",
-		relationship: "Colleague",
-		email: "priya@acme.dev",
 		note: "Owns the SDK examples. Flagged the dual-write rewrite risk on the contacts rename; prefers the /v2 alias path.",
 		createdAt: "Today, 10:42",
 		recency: 95,
-		needsReview: true,
-		capturedFrom: {
-			threadId: "th_standup",
-			threadTitle: "Migration standup notes",
-			when: "Today, 10:41",
-		},
 	},
 	{
 		id: "person_alice",
 		kind: "person",
 		name: "Alice Whitman",
 		aliases: ["Allie"],
-		role: "Daycare coordinator",
-		relationship: "Family logistics",
 		note: "Handling the daycare transition. Needs the updated schedule by Friday.",
 		createdAt: "Today, 09:12",
 		recency: 90,
-		needsReview: true,
-		capturedFrom: {
-			threadId: "th_daycare",
-			threadTitle: "Daycare transition",
-			when: "Today, 09:12",
-		},
 	},
 	{
 		id: "person_marco",
 		kind: "person",
 		name: "Marco Reyes",
-		role: "General contractor",
-		relationship: "Home",
-		email: "marco@reyesbuild.co",
 		note: "Quoted the garden retaining wall. Waiting on the revised estimate after the drainage change.",
 		createdAt: "Yesterday",
 		recency: 70,
-		capturedFrom: {
-			threadId: "th_garden",
-			threadTitle: "Garden rebuild planning",
-			when: "Yesterday, 18:30",
-		},
 	},
 	{
 		id: "person_dana",
 		kind: "person",
 		name: "Dana Osei",
-		role: "Design lead",
-		relationship: "Colleague",
-		email: "dana@acme.dev",
 		note: "Reviewing the Inkstone library surface. Likes the restrained pink direction; wants the empty states to teach.",
 		createdAt: "May 28",
 		recency: 50,
-		capturedFrom: {
-			threadId: "th_inkstone_ux",
-			threadTitle: "Library UX review",
-			when: "May 28, 14:05",
-		},
 	},
 	{
 		id: "person_sam",
 		kind: "person",
 		name: "Sam Brennan",
-		relationship: "Friend",
 		note: "Coming for dinner Saturday. Vegetarian, no mushrooms.",
 		createdAt: "May 26",
 		recency: 40,
-		capturedFrom: {
-			threadId: "th_dinner",
-			threadTitle: "Saturday dinner plan",
-			when: "May 26, 20:10",
-		},
 	},
 	{
 		id: "person_lena",
 		kind: "person",
 		name: "Dr. Lena Fischer",
-		role: "Dentist",
-		relationship: "Health",
 		note: "Six-month cleaning overdue. Office prefers Tuesday mornings.",
 		createdAt: "May 20",
 		recency: 30,
-		capturedFrom: {
-			threadId: "th_health",
-			threadTitle: "Health admin",
-			when: "May 20, 08:40",
-		},
 	},
 ];
 
@@ -113,11 +70,6 @@ export const projects: Project[] = [
 		lastReviewedAt: "2026-05-31T20:00:00",
 		createdAt: "Today, 10:42",
 		recency: 92,
-		capturedFrom: {
-			threadId: "th_standup",
-			threadTitle: "Migration standup notes",
-			when: "Today, 10:42",
-		},
 	},
 	{
 		id: "proj_inkstone",
@@ -130,11 +82,6 @@ export const projects: Project[] = [
 		nextReviewAt: "2026-06-21T20:00:00",
 		createdAt: "May 28",
 		recency: 55,
-		capturedFrom: {
-			threadId: "th_inkstone_ux",
-			threadTitle: "Library UX review",
-			when: "May 28, 14:05",
-		},
 	},
 	{
 		id: "proj_garden",
@@ -147,11 +94,6 @@ export const projects: Project[] = [
 		nextReviewAt: "2026-06-08T20:00:00",
 		createdAt: "Yesterday",
 		recency: 68,
-		capturedFrom: {
-			threadId: "th_garden",
-			threadTitle: "Garden rebuild planning",
-			when: "Yesterday, 18:30",
-		},
 	},
 	{
 		id: "proj_lisbon",
@@ -163,11 +105,6 @@ export const projects: Project[] = [
 		nextReviewAt: "2026-06-21T20:00:00",
 		createdAt: "May 24",
 		recency: 38,
-		capturedFrom: {
-			threadId: "th_lisbon",
-			threadTitle: "Lisbon planning",
-			when: "May 24, 21:15",
-		},
 	},
 ];
 
@@ -183,12 +120,6 @@ export const todos: Todo[] = [
 		note: "~2.3M rows. Blocks the weekend cutover.",
 		createdAt: "Today, 10:42",
 		recency: 94,
-		needsReview: true,
-		capturedFrom: {
-			threadId: "th_standup",
-			threadTitle: "Migration standup notes",
-			when: "Today, 10:42",
-		},
 	},
 	{
 		id: "todo_schedule_alice",
@@ -199,11 +130,6 @@ export const todos: Todo[] = [
 		dueAt: "2026-06-14T17:00:00",
 		createdAt: "Today, 09:12",
 		recency: 89,
-		capturedFrom: {
-			threadId: "th_daycare",
-			threadTitle: "Daycare transition",
-			when: "Today, 09:12",
-		},
 	},
 	{
 		id: "todo_sdk",
@@ -215,11 +141,6 @@ export const todos: Todo[] = [
 		projectId: "proj_apiv2",
 		createdAt: "Today, 10:42",
 		recency: 88,
-		capturedFrom: {
-			threadId: "th_standup",
-			threadTitle: "Migration standup notes",
-			when: "Today, 10:42",
-		},
 	},
 	{
 		id: "todo_dentist",
@@ -231,11 +152,6 @@ export const todos: Todo[] = [
 		createdAt: "May 20",
 		recency: 31,
 		note: "Tuesday mornings preferred.",
-		capturedFrom: {
-			threadId: "th_health",
-			threadTitle: "Health admin",
-			when: "May 20, 08:40",
-		},
 	},
 	{
 		id: "todo_flights",
@@ -247,11 +163,6 @@ export const todos: Todo[] = [
 		projectId: "proj_lisbon",
 		createdAt: "May 24",
 		recency: 37,
-		capturedFrom: {
-			threadId: "th_lisbon",
-			threadTitle: "Lisbon planning",
-			when: "May 24, 21:15",
-		},
 	},
 	{
 		id: "todo_estimate",
@@ -263,11 +174,6 @@ export const todos: Todo[] = [
 		projectId: "proj_garden",
 		createdAt: "Yesterday",
 		recency: 66,
-		capturedFrom: {
-			threadId: "th_garden",
-			threadTitle: "Garden rebuild planning",
-			when: "Yesterday, 18:30",
-		},
 	},
 	{
 		id: "todo_library",
@@ -278,11 +184,6 @@ export const todos: Todo[] = [
 		projectId: "proj_inkstone",
 		createdAt: "May 28",
 		recency: 54,
-		capturedFrom: {
-			threadId: "th_inkstone_ux",
-			threadTitle: "Library UX review",
-			when: "May 28, 14:05",
-		},
 	},
 	{
 		id: "todo_groceries",
@@ -294,11 +195,6 @@ export const todos: Todo[] = [
 		createdAt: "May 26",
 		recency: 41,
 		note: "Sam is vegetarian, no mushrooms.",
-		capturedFrom: {
-			threadId: "th_dinner",
-			threadTitle: "Saturday dinner plan",
-			when: "May 26, 20:10",
-		},
 	},
 	{
 		id: "todo_cutover",
@@ -310,11 +206,6 @@ export const todos: Todo[] = [
 		projectId: "proj_apiv2",
 		createdAt: "Today, 10:43",
 		recency: 86,
-		capturedFrom: {
-			threadId: "th_standup",
-			threadTitle: "Migration standup notes",
-			when: "Today, 10:43",
-		},
 	},
 	{
 		id: "todo_empty_states",
@@ -326,11 +217,6 @@ export const todos: Todo[] = [
 		projectId: "proj_inkstone",
 		createdAt: "May 28",
 		recency: 52,
-		capturedFrom: {
-			threadId: "th_inkstone_ux",
-			threadTitle: "Library UX review",
-			when: "May 28, 14:05",
-		},
 	},
 	{
 		id: "todo_passport",
@@ -342,11 +228,6 @@ export const todos: Todo[] = [
 		projectId: "proj_lisbon",
 		createdAt: "May 24",
 		recency: 36,
-		capturedFrom: {
-			threadId: "th_lisbon",
-			threadTitle: "Lisbon planning",
-			when: "May 24, 21:16",
-		},
 	},
 	{
 		id: "todo_old_vendor",
@@ -358,11 +239,6 @@ export const todos: Todo[] = [
 		note: "Superseded — staying on the current provider.",
 		createdAt: "May 18",
 		recency: 24,
-		capturedFrom: {
-			threadId: "th_dinner",
-			threadTitle: "Side notes",
-			when: "May 18, 10:00",
-		},
 	},
 	{
 		id: "todo_buy_milk",
@@ -372,11 +248,6 @@ export const todos: Todo[] = [
 		personRefs: [],
 		createdAt: "Today, 08:00",
 		recency: 80,
-		capturedFrom: {
-			threadId: "th_errands",
-			threadTitle: "Quick errands",
-			when: "Today, 08:00",
-		},
 	},
 	{
 		id: "todo_read_handbook",
@@ -387,13 +258,8 @@ export const todos: Todo[] = [
 		personRefs: [],
 		createdAt: "May 30",
 		recency: 44,
-		capturedFrom: {
-			threadId: "th_learning",
-			threadTitle: "Learning backlog",
-			when: "May 30, 21:00",
-		},
 	},
 ];
 
-/** All preview Library items in one array (stable identity for the query layer). */
-export const entities: LibraryItem[] = [...people, ...projects, ...todos];
+/** The whole fixture graph in one array (people + projects + todos). */
+export const libraryFixtures = [...people, ...projects, ...todos];

@@ -14,19 +14,11 @@ export type LibraryItemKind =
 	| "todo"
 	| "bookmark";
 
-export interface LibraryItemCapture {
-	threadId: string;
-	threadTitle: string;
-	when: string;
-}
-
 interface LibraryItemBase {
 	id: string;
 	kind: LibraryItemKind;
 	createdAt: string;
 	recency: number;
-	needsReview?: boolean;
-	capturedFrom?: LibraryItemCapture;
 }
 
 export interface Person extends LibraryItemBase {
@@ -35,11 +27,6 @@ export interface Person extends LibraryItemBase {
 	/** Alternate names this Person is also known by (ADR-0031). */
 	aliases?: string[];
 	note?: string;
-	// Preview-only descriptive fields (no GTD V0 equivalent yet); kept for the
-	// static fixtures until People capture lands.
-	role?: string;
-	relationship?: string;
-	email?: string;
 }
 
 export interface JournalEntry extends LibraryItemBase {
@@ -90,7 +77,8 @@ export interface Project extends LibraryItemBase {
 	 * lossy projection — they omit server-managed fields like `review_every` and
 	 * `due_at`/`defer_at`. The editor needs every field to build a full-document
 	 * replace `update_project` without dropping any (Core's update REPLACES the
-	 * stored data, it does not merge — slice-7). Absent for static preview rows.
+	 * stored data, it does not merge — slice-7). Absent on test fixtures that
+	 * omit the raw stored object.
 	 */
 	data?: Record<string, unknown>;
 }
@@ -228,7 +216,7 @@ export function libraryItemSubtitle(e: LibraryItem): string {
 		case "journal_entry":
 			return e.occurredAt;
 		case "person":
-			return e.role ?? e.relationship ?? "Person";
+			return e.note ?? "Person";
 		case "project":
 			return e.outcome ?? PROJECT_STATUS_LABEL[e.status];
 		case "todo":
@@ -410,11 +398,6 @@ export function recentlyCapturedItems(
 	limit = 6,
 ): LibraryItem[] {
 	return [...all].sort((a, b) => b.recency - a.recency).slice(0, limit);
-}
-
-/** Accepted but unconfirmed — the "Needs review" digest, newest first. */
-export function itemsNeedingReview(all: LibraryItem[]): LibraryItem[] {
-	return all.filter((e) => e.needsReview).sort((a, b) => b.recency - a.recency);
 }
 
 /** Local wall-clock "now" as the `YYYY-MM-DDTHH:MM:SS` string Core dates compare against. */

@@ -45,14 +45,12 @@ export function ProjectReviewView({
 	selectedId: string | null;
 	onSelect: (id: string) => void;
 }) {
-	const { data, isError, isPlaceholderData } = useLibraryItems();
+	const { data, isError, isPending } = useLibraryItems();
 	const items = data ?? [];
 
-	// Hold the skeleton until REAL Core data has landed. `useLibraryItems` seeds
-	// `placeholderData` (mock preview rows) with isPending=false, so we gate on
-	// the placeholder flag instead — snapshotting the queue off preview projects
-	// would freeze ids that vanish when the live data replaces them.
-	if (isPlaceholderData) {
+	// Hold the skeleton until Core data has landed, so the session-snapshot queue
+	// is never seeded from an empty list before the first read resolves.
+	if (isPending) {
 		return (
 			<ReviewFrame count={null}>
 				<EntitySkeleton rows={4} />

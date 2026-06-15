@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { entities } from "@/data/mock/entities";
+import { libraryFixtures as entities } from "@/lib/libraryItems.fixtures";
 import {
 	activeProjectItems,
 	dueSoonTodos,
 	groupJournalEntriesByDay,
 	inboxTodos,
-	itemsNeedingReview,
 	type JournalEntry,
 	type JournalEntryBodyNode,
 	journalEntriesMentioning,
@@ -83,8 +82,8 @@ describe("library item helpers", () => {
 		expect(libraryItemTitle(byId("proj_apiv2"))).toBe("API v2 migration");
 		expect(libraryItemTitle(byId("todo_backfill"))).toContain("Backfill");
 
-		expect(libraryItemSubtitle(byId("person_priya"))).toBe(
-			"Staff engineer, Platform",
+		expect(libraryItemSubtitle(byId("person_priya"))).toContain(
+			"Owns the SDK examples",
 		);
 		expect(libraryItemSubtitle(byId("todo_backfill"))).toBe("Due 2026-06-12");
 	});
@@ -135,14 +134,6 @@ describe("library item helpers", () => {
 			expect(due.some((t) => t.id === "todo_estimate")).toBe(false); // 2026-06-19
 			expect(due.some((t) => t.id === "todo_cutover")).toBe(false); // completed
 		});
-	});
-
-	it("itemsNeedingReview returns only flagged items, newest first", () => {
-		const review = itemsNeedingReview(entities);
-		expect(review.every((e) => e.needsReview)).toBe(true);
-		expect(review.map((e) => e.id).sort()).toEqual(
-			["person_alice", "person_priya", "todo_backfill"].sort(),
-		);
 	});
 
 	it("recentlyCapturedItems honours the limit and recency order", () => {

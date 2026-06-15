@@ -4,24 +4,22 @@ Design rationale extracted from code comments during cleanup — keep in sync wi
 
 ## apps/web/src/lib/hooks/useLibraryItems.ts — toLibraryTodo
 
-Maps a live `entity/list` row to the Library `Todo` view model. The view model
-carries fields the preview fixture invented for richer rendering (`recency`,
-`createdAt`, `dueInDays`, …) that the live entity store does not yet have; we
-derive the few that matter and default the rest minimally:
+Maps a live `entity/list` row to the Library `Todo` view model (ADR-0031/0032).
+The Library is live-only — there is no preview fixture in app code — so every
+displayed field comes from Core:
 
-- `title` / `done` / `due` come straight from `data`.
-- `recency` = `created_at` (ms-epoch) so newest sorts first, matching the
-  preview fixture's "higher = more recent" convention.
-- `createdAt` = the localized date of `created_at` (a human label).
-- `dueInDays`, `projectId`, `owner`, `note`, `needsReview`, `capturedFrom` are
-  left undefined — derived relationship/recency metadata the live store does not
-  produce this slice.
+- `title` / `note` / `status` and the date fields (`deferAt`, `dueAt`,
+  `completedAt`, `droppedAt`) come straight from `data`.
+- `projectId` and `personRefs` are the GTD relations Core materializes on the
+  row (`person_refs` rides on the wire row, ADR-0032).
+- `recency` = `created_at` (ms-epoch) so newest sorts first; `createdAt` = the
+  localized date of `created_at` (a human label).
 
 ## apps/web/src/lib/hooks/useLibraryItems.ts — toLibraryPerson
 
 Maps a live `entity/list` row to the Library `Person` view model. Mirrors
-`toLibraryTodo`: `name` / `note` come straight from `data`; `recency` is
-`created_at` (newest sorts first) and `createdAt` its localized date. The
-preview-only relationship fields (`role`, `relationship`, `email`, `projectIds`,
-`needsReview`, `capturedFrom`) are left undefined — the live store does not
-produce them this slice (project↔person relations are out of scope).
+`toLibraryTodo`: `name` / `note` / `aliases` come straight from `data`;
+`recency` is `created_at` (newest sorts first) and `createdAt` its localized
+date. Person carries no descriptive relationship fields — Core's Person `data`
+is `{name, note?, aliases?}` only (ADR-0031); Person↔Project relations are
+derived client-side through Todos (ADR-0032), never stored on the Person.

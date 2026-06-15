@@ -1,12 +1,10 @@
 import { WsClient } from "@inkstone/ui-sdk";
 import { useQuery } from "@tanstack/react-query";
 import { Effect } from "effect";
-import { entities } from "@/data/mock/entities";
 import type {
 	Bookmark,
 	JournalEntry,
 	JournalEntryBodyNode,
-	LibraryItem,
 	Person,
 	Project,
 	ProjectStatus,
@@ -14,10 +12,6 @@ import type {
 	TodoStatus,
 } from "@/lib/libraryItems";
 import { useRuntime } from "@/runtime";
-
-const previewItems: LibraryItem[] = entities.filter(
-	(e) => e.kind !== "journal_entry",
-);
 
 interface LiveEntityRow {
 	readonly id: string;
@@ -41,89 +35,53 @@ interface LiveResolvedEntityRef {
 	readonly label_snapshot?: string;
 }
 
-/** The Library's displayed items — live Journal/People/Projects/Todo rows from Core, preview rows for the rest; live rows replace preview rows per kind. */
+/** The Library's displayed items — live Journal/Todo/Person/Project/Bookmark rows from Core; an empty list when Core is unreachable. */
 export function useLibraryItems() {
 	const runtime = useRuntime();
 	return useQuery({
 		queryKey: ["library-items"],
-		placeholderData: previewItems,
 		queryFn: async () => {
 			const program = Effect.gen(function* () {
 				const client = yield* WsClient;
 				// Effect.all is sequential by default — set concurrency to fetch these reads concurrently.
-				const [journalEntries, todos, people] = yield* Effect.all(
-					[
-						client.listEntities("journal_entry"),
-						client.listEntities("todo"),
-						client.listEntities("person"),
-					],
-					{ concurrency: 2 },
-				);
+				const [journalEntries, todos, people, projects, bookmarks] =
+					yield* Effect.all(
+						[
+							client.listEntities("journal_entry"),
+							client.listEntities("todo"),
+							client.listEntities("person"),
+							client.listEntities("project"),
+							client.listEntities("bookmark"),
+						],
+						{ concurrency: 2 },
+					);
 				return {
 					journalEntries: journalEntries.entities,
 					todos: todos.entities,
 					people: people.entities,
+					projects: projects.entities,
+					bookmarks: bookmarks.entities,
 				};
 			});
 			let rows: {
 				journalEntries: readonly LiveEntityRow[];
 				todos: readonly LiveEntityRow[];
 				people: readonly LiveEntityRow[];
+				projects: readonly LiveEntityRow[];
+				bookmarks: readonly LiveEntityRow[];
 			};
 			try {
 				rows = await runtime.runPromise(program);
 			} catch {
-				// Web preview runs without Core — keep preview items; strict live row validation stays below this read boundary.
-				return previewItems;
+				// Web preview runs without Core — show an empty Library; strict live row validation stays below this read boundary.
+				return [];
 			}
-			let projects: readonly LiveEntityRow[] = [];
-			try {
-				const projectRows = await runtime.runPromise(
-					Effect.gen(function* () {
-						const client = yield* WsClient;
-						return yield* client.listEntities("project");
-					}),
-				);
-				projects = projectRows.entities;
-			} catch {
-				// Projects are additive during this migration; keep the other live lists if only this read fails.
-			}
-			let bookmarks: readonly LiveEntityRow[] = [];
-			try {
-				const bookmarkRows = await runtime.runPromise(
-					Effect.gen(function* () {
-						const client = yield* WsClient;
-						return yield* client.listEntities("bookmark");
-					}),
-				);
-				bookmarks = bookmarkRows.entities;
-			} catch {
-				// Bookmarks are additive during this migration; keep the other live lists if only this read fails.
-			}
-			const { journalEntries, todos, people } = rows;
-			const liveJournalEntries = journalEntries.map(toLibraryJournalEntry);
-			const liveTodos = todos.map(toLibraryTodo);
-			const livePeople = people.map(toLibraryPerson);
-			const liveProjects = projects.map(toLibraryProject);
-			const liveBookmarks = bookmarks.map(toLibraryBookmark);
-			const hasLiveTodos = liveTodos.length > 0;
-			const hasLivePeople = livePeople.length > 0;
-			const hasLiveProjects = liveProjects.length > 0;
-			const hasLiveBookmarks = liveBookmarks.length > 0;
-			const remainingPreviewItems = previewItems.filter(
-				(e) =>
-					(e.kind !== "todo" || !hasLiveTodos) &&
-					(e.kind !== "person" || !hasLivePeople) &&
-					(e.kind !== "project" || !hasLiveProjects) &&
-					(e.kind !== "bookmark" || !hasLiveBookmarks),
-			);
 			return [
-				...liveJournalEntries,
-				...liveTodos,
-				...livePeople,
-				...liveProjects,
-				...liveBookmarks,
-				...remainingPreviewItems,
+				...rows.journalEntries.map(toLibraryJournalEntry),
+				...rows.todos.map(toLibraryTodo),
+				...rows.people.map(toLibraryPerson),
+				...rows.projects.map(toLibraryProject),
+				...rows.bookmarks.map(toLibraryBookmark),
 			];
 		},
 	});

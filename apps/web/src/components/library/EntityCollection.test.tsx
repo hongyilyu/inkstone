@@ -68,42 +68,6 @@ function makeRuntime(
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
-function makeProjectUnavailableRuntime(
-	people: EntityListResult["entities"],
-	todos: EntityListResult["entities"],
-	journalEntries: EntityListResult["entities"],
-) {
-	const unused = Effect.die("not exercised in this test");
-	const stub = WsClient.of({
-		threadCreate: () => unused,
-		postMessage: () => unused,
-		threadList: () => unused,
-		threadGet: () => unused,
-		listEntities: (type) => {
-			if (type === "person") return Effect.succeed({ entities: people });
-			if (type === "todo") return Effect.succeed({ entities: todos });
-			if (type === "journal_entry") {
-				return Effect.succeed({ entities: journalEntries });
-			}
-			if (type === "project") return Effect.die("Projects unavailable");
-			return Effect.succeed({ entities: [] });
-		},
-		entityMutate: () => unused,
-		subscribeRun: () => unused,
-		cancelRun: () => unused,
-		providerStatus: () => unused,
-		providerLoginStart: () => unused,
-		modelCatalog: () => unused,
-		settingsGet: () => unused,
-		settingsSet: () => unused,
-		proposalGet: () => unused,
-		proposalDecide: () => unused,
-		messageSearch: () => unused,
-		proposalNotifications: () => unused,
-	});
-	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
-}
-
 function renderCollection(
 	kind: LibraryItemKind,
 	rows: {
@@ -147,26 +111,6 @@ function renderCollection(
 	);
 }
 
-function renderCollectionWithRuntime(
-	kind: LibraryItemKind,
-	runtime: ReturnType<typeof makeRuntime>,
-) {
-	const client = new QueryClient({
-		defaultOptions: {
-			queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
-		},
-	});
-	const Wrapper = ({ children }: { children: ReactNode }) => (
-		<QueryClientProvider client={client}>
-			<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-		</QueryClientProvider>
-	);
-	return render(
-		<EntityCollection kind={kind} selectedId={null} onSelect={() => {}} />,
-		{ wrapper: Wrapper },
-	);
-}
-
 afterEach(cleanup);
 
 describe("EntityCollection", () => {
@@ -194,15 +138,59 @@ describe("EntityCollection", () => {
 		expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
 	});
 
-	it("keeps live rows when only Projects cannot be read", async () => {
-		renderCollectionWithRuntime(
-			"person",
-			makeProjectUnavailableRuntime(livePeople, [], []),
+	it("collapses the whole Library to empty when any one entity read fails (all-or-nothing)", async () => {
+		// `useLibraryItems` reads all five types in one `Effect.all`; a single
+		// failing read rejects the program and the hook's catch returns []. So even
+		// though People would resolve, the view shows the empty state — NOT the
+		// loaded People, and NOT the isError "Couldn't load" state (which only the
+		// mapper-throws path reaches, after the catch). This pins the live-only
+		// fallback the preview-merge removal introduced.
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			threadGet: () => Effect.die("unused"),
+			listEntities: (type) =>
+				type === "todo"
+					? Effect.die("todo read failed")
+					: type === "person"
+						? Effect.succeed({ entities: livePeople })
+						: Effect.succeed({ entities: [] }),
+			entityMutate: () => Effect.die("unused"),
+			subscribeRun: () => Effect.die("unused"),
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Effect.die("unused"),
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		const client = new QueryClient({
+			defaultOptions: {
+				queries: { staleTime: Number.POSITIVE_INFINITY, retry: false },
+			},
+		});
+		render(
+			<EntityCollection kind="person" selectedId={null} onSelect={() => {}} />,
+			{
+				wrapper: ({ children }: { children: ReactNode }) => (
+					<QueryClientProvider client={client}>
+						<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
+					</QueryClientProvider>
+				),
+			},
 		);
 
-		expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
-		expect(screen.getByText("Grace Hopper")).toBeInTheDocument();
-		expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
+		// The empty state renders, not the otherwise-loadable People rows.
+		expect(await screen.findByText("No people yet")).toBeInTheDocument();
+		expect(screen.queryByText("Ada Lovelace")).not.toBeInTheDocument();
+		// Distinct from the mapper-throws isError path ("Couldn't load people").
+		expect(screen.queryByText(/couldn't load/i)).not.toBeInTheDocument();
 	});
 
 	it("renders live Todos read from entity/list", async () => {

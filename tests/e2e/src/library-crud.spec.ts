@@ -31,7 +31,7 @@ test("create a Todo via the rail editor → entity/mutate writes it and the row 
 	await rail.getByLabel("Note").fill("The fern by the window is wilting");
 	await rail.getByRole("button", { name: /^save$/i }).click();
 
-	// The new Todo lands in the live collection (live rows replace the mock preview).
+	// The new Todo lands in the live collection.
 	const collection = page.getByRole("region", { name: /todos/i });
 	await expect(collection.getByText("Water the office plants")).toBeVisible({
 		timeout: 15_000,
@@ -380,7 +380,7 @@ test("create a Bookmark via the rail editor → entity/mutate writes it and the 
 	await rail.getByLabel("URL").fill("https://effect.website");
 	await rail.getByRole("button", { name: /^save$/i }).click();
 
-	// The new Bookmark lands in the live collection (live rows replace the mock preview).
+	// The new Bookmark lands in the live collection.
 	const collection = page.getByRole("region", { name: /bookmarks/i });
 	await expect(collection.getByText("Effect docs")).toBeVisible({
 		timeout: 15_000,

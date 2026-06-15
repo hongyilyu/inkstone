@@ -1,7 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, MessageSquareText, Pencil, Trash2 } from "lucide-react";
+import { ArrowUpRight, Pencil, Trash2 } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
-import { CopyButton } from "@/components/CopyButton.js";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button.js";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
@@ -32,7 +31,6 @@ import {
 	todosForProject,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
-import { setFocusedThread } from "@/store/chat";
 import { BookmarkEditor } from "./BookmarkEditor.js";
 import { EntityGlyph } from "./EntityGlyph.js";
 import { JournalEntryEditor } from "./JournalEntryEditor.js";
@@ -64,106 +62,7 @@ export function EntityDetail({
 			<JournalEntryDetail journalEntry={entity} allEntities={allEntities} />
 		);
 	}
-	if (entity.kind === "bookmark") {
-		return <BookmarkDetail bookmark={entity} />;
-	}
-	return <EntityDetailView entity={entity} allEntities={allEntities} />;
-}
-
-function EntityDetailView({
-	entity,
-	allEntities,
-}: {
-	entity: LibraryItem;
-	allEntities: LibraryItem[];
-}) {
-	const navigate = useNavigate();
-
-	const goToEntity = (e: LibraryItem) =>
-		navigate({
-			to: "/library/$kind",
-			params: { kind: KIND_META[e.kind].slug },
-			search: { id: e.id },
-		});
-
-	return (
-		<div className="flex h-full flex-col">
-			<header className="flex items-start gap-3 border-foreground/15 border-b px-5 py-4">
-				<EntityGlyph entity={entity} size="lg" />
-				<div className="min-w-0 flex-1 pt-0.5">
-					<h2 className="truncate font-semibold text-foreground text-lg tracking-tight">
-						{libraryItemTitle(entity)}
-					</h2>
-					<p className="truncate text-muted-foreground text-sm">
-						{KIND_META[entity.kind].label} · {libraryItemSubtitle(entity)}
-					</p>
-				</div>
-			</header>
-
-			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
-				{entity.kind === "journal_entry" && (
-					<JournalEntryBody
-						journalEntry={entity}
-						allEntities={allEntities}
-						onOpen={goToEntity}
-					/>
-				)}
-				{entity.kind === "person" && (
-					<PersonBody
-						person={entity}
-						allEntities={allEntities}
-						onOpen={goToEntity}
-					/>
-				)}
-				{entity.kind === "project" && (
-					<ProjectBody
-						project={entity}
-						allEntities={allEntities}
-						onOpen={goToEntity}
-					/>
-				)}
-			</div>
-
-			<CapturedFromFooter entity={entity} />
-		</div>
-	);
-}
-
-/** A link back to the Run that captured this Entity, when there is one. */
-function CapturedFromFooter({ entity }: { entity: LibraryItem }) {
-	const navigate = useNavigate();
-	if (!entity.capturedFrom) return null;
-	const captured = entity.capturedFrom;
-	const openSource = () => {
-		setFocusedThread(captured.threadId);
-		navigate({ to: "/" });
-	};
-	return (
-		<footer className="border-foreground/15 border-t p-2">
-			<button
-				type="button"
-				onClick={openSource}
-				className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-secondary/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-			>
-				<MessageSquareText
-					className="size-4 shrink-0 text-muted-foreground"
-					aria-hidden
-				/>
-				<span className="min-w-0 flex-1">
-					<span className="block text-muted-foreground text-xs">
-						Captured from · {captured.when}
-					</span>
-					<span className="block truncate text-foreground text-sm">
-						{captured.threadTitle}
-					</span>
-				</span>
-				<ArrowUpRight
-					className="size-4 shrink-0 text-muted-foreground"
-					aria-hidden
-				/>
-			</button>
-		</footer>
-	);
+	return <BookmarkDetail bookmark={entity} />;
 }
 
 /**
@@ -980,26 +879,9 @@ function PersonBody({
 	const otherTasks = tasks.filter((t) => !waitingIds.has(t.id));
 	return (
 		<>
-			<div className="flex flex-wrap gap-2 text-sm">
-				{person.relationship ? <Badge>{person.relationship}</Badge> : null}
-				{person.role ? <Badge>{person.role}</Badge> : null}
-			</div>
 			{person.aliases && person.aliases.length > 0 ? (
 				<Field label="Also known as">
 					<p className="text-pretty">{person.aliases.join(", ")}</p>
-				</Field>
-			) : null}
-			{person.email ? (
-				<Field label="Email">
-					<span className="flex items-center gap-1">
-						<a
-							href={`mailto:${person.email}`}
-							className="truncate text-primary hover:underline"
-						>
-							{person.email}
-						</a>
-						<CopyButton text={person.email} />
-					</span>
 				</Field>
 			) : null}
 			{person.note ? (

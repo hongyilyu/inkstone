@@ -282,13 +282,11 @@ describe("ProjectReviewView (focused queue)", () => {
 		expect(screen.getByText("API migration")).toBeInTheDocument();
 	});
 
-	// Regression for the placeholder-snapshot freeze: while `useLibraryItems` is
-	// still serving its mock `placeholderData` (isPlaceholderData), the view must
-	// show the skeleton and NOT snapshot the queue off preview projects (whose ids
-	// vanish when live data lands). Gating on `isPending` would fail this — the
-	// hook reports isPending=false during the placeholder window.
-	it("shows the skeleton during the placeholder phase, not a snapshot of preview projects", () => {
-		// A runtime whose reads never resolve, so the query is stuck on placeholder.
+	// While the first Core read is still in flight, the view must show the
+	// skeleton and NOT seed the session-snapshot queue (an empty list would
+	// freeze "All caught up" before any project has loaded).
+	it("shows the skeleton while the first read is pending, not a snapshot of projects", () => {
+		// A runtime whose reads never resolve, so the query stays pending.
 		const never = Effect.never;
 		const stub = WsClient.of({
 			threadCreate: () => never,
@@ -323,8 +321,8 @@ describe("ProjectReviewView (focused queue)", () => {
 			),
 		});
 
-		// The skeleton renders; no preview project (e.g. the mock "API v2 migration")
-		// is focused, so the queue was never seeded from placeholder data.
+		// The skeleton renders; no project is focused, so the queue was never
+		// seeded while the read was still pending.
 		expect(screen.getByTestId("entity-skeleton")).toBeInTheDocument();
 		expect(screen.queryByText("API v2 migration")).not.toBeInTheDocument();
 		expect(screen.queryByText(/Project \d+ of \d+/)).not.toBeInTheDocument();
