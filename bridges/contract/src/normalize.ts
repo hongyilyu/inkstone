@@ -12,7 +12,8 @@
 // - Effect (`JSONSchema.make`, effect 3.21.2): emits `$schema`; `required:[]`
 //   present even when empty; injects combinator `title` (and `description`,
 //   which the schema builders in `schemas.ts` suppress); `required` ordered
-//   before `properties`.
+//   before `properties`; emits unions as `anyOf` (Rust emits `oneOf`) and
+//   COLLAPSES a 1-element union to its bare member (Rust keeps `oneOf:[X]`).
 
 type Json = unknown;
 
@@ -49,6 +50,28 @@ const walk = (value: Json, defs: Record<string, Json>): Json => {
 		value.$ref !== undefined ? resolveRef(value, defs) : value,
 	);
 
+	// Rule 8b — unwrap a single-element `oneOf`. After rule 8a (`anyOf → oneOf`)
+	// both dialects key the journal body union as `oneOf`. A union of ONE member
+	// is semantically identical to that member (`oneOf:[X]` validates exactly as
+	// `X`), but the two dialects disagree on the wrapper: Rust always emits
+	// `oneOf:[…]` (even the `TextOnly` body → `oneOf:[text_node]`), while
+	// `JSONSchema.make` COLLAPSES a 1-element `S.Union(X)` to the bare `X`. We
+	// reconcile by collapsing too — replace `{oneOf:[X]}` with the normalized
+	// `X`. Applied SYMMETRICALLY to both sides, so it never hides a real
+	// difference: a 2-element `oneOf` is left intact (drift in any member still
+	// bites), and a 1-vs-2 variant mismatch survives (one side collapses to the
+	// bare member, the other keeps `oneOf:[A,B]` — still unequal). Only a lone
+	// `oneOf` key qualifies; a `oneOf` alongside sibling constraints is left
+	// wrapped (none occur in these schemas, but staying conservative is safer).
+	const only = isObject(node) ? node.oneOf : undefined;
+	if (
+		Array.isArray(only) &&
+		only.length === 1 &&
+		Object.keys(node).length === 1
+	) {
+		return walk(only[0], defs);
+	}
+
 	const out: Record<string, Json> = {};
 	for (const [key, child] of Object.entries(node)) {
 		out[key] = walk(child, defs);
@@ -81,6 +104,19 @@ const walk1 = (node: Record<string, Json>): Record<string, Json> => {
 	// the same.
 	if (Array.isArray(out.required) && out.required.length === 0) {
 		delete out.required;
+	}
+
+	// Rule 8a — `anyOf → oneOf`. The journal `body` is a union of tagged node
+	// variants. Rust emits the union as `oneOf`; `JSONSchema.make` emits it as
+	// `anyOf`. Rename `anyOf` to the Rust key so both compare under one name. The
+	// variant array is POSITIONAL (`text_node` first) and must NOT be sorted —
+	// rule 7 sorts only the `required`/`enum` SETS, never `oneOf`/`anyOf` — so
+	// reordered or differing variants still bite. The `S.Union(...)` members in
+	// `schemas.ts` are declared text-node-first to match Rust's order. (Rule 8b
+	// in `walk` then collapses a resulting single-element `oneOf`.)
+	if (Array.isArray(out.anyOf) && out.oneOf === undefined) {
+		out.oneOf = out.anyOf;
+		delete out.anyOf;
 	}
 
 	// Rule 7 — canonicalize the element order of `required` and `enum`. Both are

@@ -218,9 +218,81 @@ const updateProject = S.Struct({
 	...projectCore,
 });
 
-/** The kind → Effect Schema registry the parity test iterates. Slices 2/3 add
- * the remaining 12 wire kinds here; the test asserts each against its committed
- * `fixtures/<kind>.json`. */
+// ── journal body node variants (`BodyPolicy`) ──
+//
+// A journal `body` is an array (`minItems:1`) of tagged nodes. Each policy
+// advertises a different `items.oneOf` (Rust) / `items.anyOf` (Effect, renamed
+// by normalize.ts) variant set. The variant array is POSITIONAL — `text_node`
+// is FIRST in every policy, matching Rust's emit order; the normalizer never
+// sorts the union array, so the `S.Union(...)` members must be declared in that
+// same order.
+
+/** The `text` body node — present in EVERY policy, always FIRST. */
+const textNode = S.Struct({
+	type: S.Literal("text"),
+	text: nonEmptyString,
+});
+
+/** The `entity_ref` body node carrying an existing-entity `ref_id`
+ * (`BodyPolicy::TextOrExistingRef`, `update_journal_entry`). */
+const entityRefWithId = S.Struct({
+	type: S.Literal("entity_ref"),
+	ref_id: nonEmptyString,
+});
+
+/** The `entity_ref` PLACEHOLDER node (`BodyPolicy::TextOrNewRef`,
+ * `reference_existing_entity_from_journal_entry`): only `type` is required, and
+ * the node carries a REAL description Core uses to document the rewrite — a
+ * struct-level annotation (NOT a combinator title), so it survives the global
+ * `title` strip (rule 3) and must match the Rust fixture verbatim. */
+const entityRefPlaceholder = S.Struct({
+	type: S.Literal("entity_ref"),
+}).annotations({
+	description:
+		"Placeholder rewritten by Core to the generated or reused EntityRef id.",
+});
+
+/** A journal `body`: a non-empty array (`minItems:1`) of the given node
+ * variants, text-node first. NOTE: `JSONSchema.make` collapses a 1-element
+ * `S.Union(X)` to the bare `X` (no `anyOf` wrapper) — empirically verified — so
+ * the single-variant (`create`) body emits bare `text_node` items while Rust
+ * emits `oneOf:[text_node]`. normalize.ts reconciles this by renaming `anyOf →
+ * oneOf` then unwrapping a single-element `oneOf` symmetrically on both sides. */
+const journalBody = (...variants: readonly S.Schema.Any[]) =>
+	S.Array(S.Union(...variants)).pipe(S.minItems(1, { description: undefined }));
+
+/** `create_journal_entry` (`BodyPolicy::TextOnly`): required `occurred_at`,
+ * optional `ended_at`, required text-only `body`. */
+const createJournalEntry = S.Struct({
+	occurred_at: localDateTime,
+	ended_at: S.optional(localDateTime),
+	body: journalBody(textNode),
+});
+
+/** `update_journal_entry` (`BodyPolicy::TextOrExistingRef`): required bare
+ * `entity_id` + the same timestamps + a `body` whose nodes are text OR an
+ * existing-entity ref. */
+const updateJournalEntry = S.Struct({
+	entity_id: S.String,
+	occurred_at: localDateTime,
+	ended_at: S.optional(localDateTime),
+	body: journalBody(textNode, entityRefWithId),
+});
+
+/** `reference_existing_entity_from_journal_entry` (`BodyPolicy::TextOrNewRef`):
+ * required patterned source/target ids, optional non-empty `label_snapshot`,
+ * and a `body` whose nodes are text OR the entity-ref placeholder. */
+const referenceExistingEntityFromJournalEntry = S.Struct({
+	source_entity_id: patternedUuid,
+	target_entity_id: patternedUuid,
+	label_snapshot: S.optional(nonEmptyString),
+	body: journalBody(textNode, entityRefPlaceholder),
+});
+
+/** The kind → Effect Schema registry the parity test iterates. All 13 wire
+ * kinds are registered here; the test asserts each against its committed
+ * `fixtures/<kind>.json`, and `completeness.test.ts` locks this key set to the
+ * fixtures dir and the canonical wire-kind list. */
 export const schemas = {
 	create_todo: createTodo,
 	create_person: createPerson,
@@ -231,6 +303,11 @@ export const schemas = {
 	delete_person: deleteByEntityId,
 	delete_project: deleteByEntityId,
 	delete_todo: deleteByEntityId,
+	create_journal_entry: createJournalEntry,
+	update_journal_entry: updateJournalEntry,
+	delete_journal_entry: deleteByEntityId,
+	reference_existing_entity_from_journal_entry:
+		referenceExistingEntityFromJournalEntry,
 } as const satisfies Record<string, S.Schema.Any>;
 
 export type WireKind = keyof typeof schemas;

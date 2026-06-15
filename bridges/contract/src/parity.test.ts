@@ -5,8 +5,10 @@
 // agree on field presence/optionality/type/enum-domain. A field added on one
 // side but forgotten on the other turns this red.
 //
-// Slices 2/3 widen `COVERED` as they author the remaining kinds; the registry
-// (`schemas`) and the fixtures dir already hold all 13.
+// `COVERED` is DERIVED from the schema registry, so a kind can never be
+// registered-but-unasserted (a silent parity skip): every kind in `schemas`
+// gets a parity row. `completeness.test.ts` in turn locks the registry to the
+// fixtures dir and the canonical 13-kind list.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -20,18 +22,9 @@ const fixturesDir = fileURLToPath(new URL("../fixtures/", import.meta.url));
 const readFixture = (kind: WireKind): unknown =>
 	JSON.parse(readFileSync(`${fixturesDir}${kind}.json`, "utf8"));
 
-/** The kinds whose Effect Schema this slice asserts. Slices 2/3 append. */
-const COVERED: readonly WireKind[] = [
-	"create_todo",
-	"create_person",
-	"update_person",
-	"create_project",
-	"update_project",
-	"update_todo",
-	"delete_person",
-	"delete_project",
-	"delete_todo",
-];
+/** Every kind in the registry is asserted — derived, never hand-listed, so a
+ * newly-registered kind cannot slip through unasserted. */
+const COVERED = Object.keys(schemas) as WireKind[];
 
 describe("schema parity (Rust PayloadSpec ≡ TS Effect Schema)", () => {
 	for (const kind of COVERED) {

@@ -39,3 +39,34 @@ describe("normalize: required/enum are order-insensitive sets", () => {
 		expect(normalize(a)).not.toStrictEqual(normalize(b));
 	});
 });
+
+describe("normalize: journal body union (rules 8a/8b)", () => {
+	it("rule 8a — `anyOf` (Effect) ≡ `oneOf` (Rust) for the same variants", () => {
+		const effect = { anyOf: [{ const: "a" }, { const: "b" }] };
+		const rust = { oneOf: [{ const: "a" }, { const: "b" }] };
+		expect(normalize(effect)).toStrictEqual(normalize(rust));
+	});
+
+	it("rule 8b — `oneOf:[X]` (Rust) ≡ bare `X` (Effect-collapsed)", () => {
+		// Rust always wraps the body union, even `TextOnly` → `oneOf:[text]`;
+		// `JSONSchema.make` collapses a 1-member union to the bare member.
+		const rust = { oneOf: [{ type: "object", required: ["type"] }] };
+		const effectCollapsed = { type: "object", required: ["type"] };
+		expect(normalize(rust)).toStrictEqual(normalize(effectCollapsed));
+	});
+
+	it("union variant order is positional — reordering still bites", () => {
+		// The variant array is NOT a set (unlike `required`/`enum`): `text_node`
+		// must stay first. Swapping members must NOT compare equal.
+		const a = { oneOf: [{ const: "text" }, { const: "entity_ref" }] };
+		const b = { anyOf: [{ const: "entity_ref" }, { const: "text" }] };
+		expect(normalize(a)).not.toStrictEqual(normalize(b));
+	});
+
+	it("a 2-member union does NOT collapse (variant drift still bites)", () => {
+		// Only a single-element union unwraps; a 1-vs-2 variant mismatch survives.
+		const oneVariant = { oneOf: [{ const: "text" }] };
+		const twoVariant = { oneOf: [{ const: "text" }, { const: "entity_ref" }] };
+		expect(normalize(oneVariant)).not.toStrictEqual(normalize(twoVariant));
+	});
+});
