@@ -101,7 +101,9 @@ impl RunStatus {
         // errored. On failure we log and let the transaction commit the status
         // flip; the next open's `rebuild_message_fts` backfills the missed row.
         if let Err(e) = Self::index_completed_assistant_message(&mut *conn, run_id).await {
-            eprintln!("INKSTONE_FTS_INDEX_FAILED run {run_id} assistant text not indexed: {e:?}");
+            // Not a test-parsed marker (only INKSTONE_LISTENING is), so converted
+            // outright to a structured event (ADR-0036). `run_id` rides as a field.
+            tracing::error!(event = "db.fts_index_failed", %run_id, error = ?e);
         }
         run_log::append(&mut *conn, run_id, RunLogKind::Done, None, now_ms).await?;
         Ok(moved)

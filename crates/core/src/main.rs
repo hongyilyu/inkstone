@@ -61,6 +61,9 @@ async fn main() -> Result<()> {
     // stale/partial search index, which the next successful open backfills. Unlike
     // `workflow::init`/`db::open` above, which gate authoritative state and fail-fast.
     if let Err(e) = db::rebuild_message_fts(&pool).await {
+        // The `INKSTONE_FTS_REBUILD_FAILED` marker stays raw (ADR-0036 keeps the
+        // boot markers verbatim); the structured event is emitted alongside it.
+        tracing::error!(event = "core.fts_rebuild_failed", error = ?e);
         eprintln!("INKSTONE_FTS_REBUILD_FAILED message search may be stale: {e:?}");
     }
 
@@ -68,6 +71,9 @@ async fn main() -> Result<()> {
     // Core crash — it has no live Worker. Preserves `parked` Runs (ADR-0025).
     let recovered = db::recover_interrupted_runs(&pool, db::now_ms()).await?;
     if recovered > 0 {
+        // The `INKSTONE_RECOVERED` marker stays raw (ADR-0036 keeps the boot
+        // markers verbatim); the structured milestone is emitted alongside it.
+        tracing::info!(event = "core.runs_recovered", count = recovered);
         println!("INKSTONE_RECOVERED {recovered} interrupted run(s) errored as core_restarted");
     }
 
@@ -142,10 +148,23 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         tokio::select! {
             biased;
             msg = socket.recv() => {
-                let Some(Ok(msg)) = msg else { break };
+                let Some(Ok(msg)) = msg else {
+                    // recv closed or errored: a normal client disconnect is not a
+                    // fault, so this stays low-severity (ADR-0036 level discipline).
+                    tracing::debug!(event = "core.ws_recv_closed");
+                    break;
+                };
                 match msg {
                     Message::Text(t) => {
                         let Ok(req) = serde_json::from_str::<JsonRpcRequest>(&t) else {
+                            // A malformed frame is tolerated (we drop it and keep
+                            // serving), so WARN, not ERROR. The bad text rides as a
+                            // BOUNDED preview field, never interpolated into the
+                            // message (ADR-0036).
+                            tracing::warn!(
+                                event = "core.jsonrpc_parse_failed",
+                                preview = %t.chars().take(200).collect::<String>(),
+                            );
                             continue;
                         };
                         runs::dispatch(&state.pool, &state.hubs, req, &out_tx).await;
@@ -157,6 +176,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             outbound = out_rx.recv() => {
                 let Some(s) = outbound else { break };
                 if socket.send(Message::Text(s.into())).await.is_err() {
+                    tracing::warn!(event = "core.ws_send_failed");
                     break;
                 }
             }

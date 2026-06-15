@@ -5,6 +5,9 @@
 //! Workspace TempDir outlives Core (mirrors `provider_login.rs`), and the
 //! blocking daily appender has each event on disk before the kill.
 
+use futures_util::SinkExt;
+use tokio_tungstenite::tungstenite::Message;
+
 mod common;
 use common::Workspace;
 
@@ -47,6 +50,51 @@ fn core_writes_listening_event_to_jsonl_and_keeps_stdout_marker() {
     assert!(
         has_listening,
         "expected a JSONL line with event=\"core.listening\" under {}; got {} line(s)",
+        log_dir.display(),
+        lines.len()
+    );
+}
+
+/// A malformed (non-JSON-RPC) text frame, which Core's WS loop previously
+/// `continue`d on silently, now lands on the trail as a WARN
+/// `core.jsonrpc_parse_failed` event (ADR-0036: make swallows observable). The
+/// bad text rides as a bounded field, never interpolated into the message.
+#[test]
+fn malformed_ws_frame_logs_jsonrpc_parse_failed_warn() {
+    let workspace = Workspace::new();
+    let log_dir = workspace.path().join("logs");
+    let mut core = workspace.core().env("INKSTONE_LOG_DIR", &log_dir).spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+        // Not a JsonRpcRequest — decode fails, the loop drops the frame.
+        ws.send(Message::Text("this is not json-rpc".into()))
+            .await
+            .expect("send malformed frame");
+        // No response is expected (Core silently continues); give the loop a
+        // moment to receive and process the frame before SIGKILL.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    });
+
+    // SIGKILL + reap; the blocking appender already flushed each event.
+    core.kill();
+
+    let lines = read_jsonl_lines(&log_dir);
+    let parse_failed_warn = lines.iter().any(|line| {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        v.get("event").and_then(|e| e.as_str()) == Some("core.jsonrpc_parse_failed")
+            && v.get("level").and_then(|l| l.as_str()) == Some("WARN")
+    });
+    assert!(
+        parse_failed_warn,
+        "expected a WARN JSONL line with event=\"core.jsonrpc_parse_failed\" under {}; got {} line(s)",
         log_dir.display(),
         lines.len()
     );
