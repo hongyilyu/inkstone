@@ -44,8 +44,13 @@ struct AppState {
 async fn main() -> Result<()> {
     // Initialize the Diagnostic Log subscriber FIRST (ADR-0038), before any
     // fail-fast boot step, so even `workflow::init`/`db::open` faults are
-    // captured on the trail.
-    logging::init()?;
+    // captured on the trail. Fail-OPEN: observability is not an availability
+    // dependency — an unwritable log dir must not abort Core boot (mirrors the
+    // worker-spawn sink, which also degrades silently). Worst case the trail is
+    // absent; the process still serves.
+    if let Err(e) = logging::init() {
+        eprintln!("INKSTONE_LOG_INIT_FAILED {e:#}");
+    }
 
     // Validate the Workflow(s) before serving: a malformed default.toml aborts
     // boot (fail-fast, ADR-0018) rather than failing the first Run.

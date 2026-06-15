@@ -69,33 +69,43 @@ fn malformed_ws_frame_logs_jsonrpc_parse_failed_warn() {
         .enable_all()
         .build()
         .expect("tokio runtime builds");
+
+    // Match a WARN `core.jsonrpc_parse_failed` line in the trail.
+    let is_parse_failed_warn = |line: &str| {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        v.get("event").and_then(|e| e.as_str()) == Some("core.jsonrpc_parse_failed")
+            && v.get("level").and_then(|l| l.as_str()) == Some("WARN")
+    };
+
     rt.block_on(async {
         let mut ws = core.connect().await;
         // Not a JsonRpcRequest — decode fails, the loop drops the frame.
         ws.send(Message::Text("this is not json-rpc".into()))
             .await
             .expect("send malformed frame");
-        // No response is expected (Core silently continues); give the loop a
-        // moment to receive and process the frame before SIGKILL.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Deterministic barrier instead of a fixed sleep (which races Core's WS
+        // processing on slow CI): poll the trail until the event is observable,
+        // with a generous timeout that only guards against a hang.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if read_jsonl_lines(&log_dir)
+                .iter()
+                .any(|l| is_parse_failed_warn(l))
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for a WARN core.jsonrpc_parse_failed line under {}",
+                log_dir.display()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
     });
 
-    // SIGKILL + reap; the blocking appender already flushed each event.
+    // The barrier above already proved the event landed; SIGKILL + reap.
     core.kill();
-
-    let lines = read_jsonl_lines(&log_dir);
-    let parse_failed_warn = lines.iter().any(|line| {
-        let v: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => return false,
-        };
-        v.get("event").and_then(|e| e.as_str()) == Some("core.jsonrpc_parse_failed")
-            && v.get("level").and_then(|l| l.as_str()) == Some("WARN")
-    });
-    assert!(
-        parse_failed_warn,
-        "expected a WARN JSONL line with event=\"core.jsonrpc_parse_failed\" under {}; got {} line(s)",
-        log_dir.display(),
-        lines.len()
-    );
 }
