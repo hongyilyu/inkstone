@@ -1,8 +1,8 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { people, todos } from "@/lib/libraryItems.fixtures";
 import type { Todo } from "@/lib/libraryItems";
+import { people, todos } from "@/lib/libraryItems.fixtures";
 import { EntityRow, TodoRow } from "./EntityRow";
 
 const todo = (id: string) => {

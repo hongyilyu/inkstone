@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { libraryFixtures as entities } from "@/lib/libraryItems.fixtures";
 import {
 	activeProjectItems,
 	dueSoonTodos,
@@ -27,6 +26,7 @@ import {
 	todosForProject,
 	waitingTodos,
 } from "@/lib/libraryItems";
+import { libraryFixtures as entities } from "@/lib/libraryItems.fixtures";
 
 const byId = (id: string) => {
 	const e = entities.find((x) => x.id === id);

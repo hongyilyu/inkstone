@@ -39,9 +39,9 @@ test("with no Core data the Library shows its empty state, not preview rows", as
 
 	// The "Needs review" digest was a mock-only affordance (needsReview had no
 	// Core read path) — it must never render.
-	await expect(page.getByRole("heading", { name: /needs review/i })).toHaveCount(
-		0,
-	);
+	await expect(
+		page.getByRole("heading", { name: /needs review/i }),
+	).toHaveCount(0);
 });
 
 test("an empty collection teaches instead of falling back to preview rows", async ({
