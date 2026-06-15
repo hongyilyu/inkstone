@@ -420,6 +420,7 @@ async fn insert_initial_run_rows(
         &workflow.version,
         &workflow.provider,
         workflow.model.as_deref().unwrap_or_default(),
+        workflow.thinking_level.as_deref().unwrap_or_default(),
         user_message_id,
         now_ms,
     )
@@ -1100,6 +1101,36 @@ pub async fn select_run_snapshot(
         }))
 }
 
+/// Rebuild the effective Workflow a Run executes from its persisted snapshot
+/// (ADR-0024). The `runs` row snapshots the post-dispatch resolved
+/// `name`/`version`/`provider`/`model`/`thinking_level` at Run start; the
+/// un-tunable, un-snapshotted fields (`system_prompt`, `tools`) come from the
+/// static base Workflow of the same name. `None` when the Run does not exist.
+///
+/// This is how resume honors ADR-0024 ("a setting changed mid-Run affects the
+/// next Run, not the running one"): it reads the snapshot, never re-resolving
+/// live settings, so a model/effort change between park and decide cannot leak
+/// into the resumed Run.
+pub async fn run_workflow_snapshot(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    base: &Workflow,
+) -> sqlx::Result<Option<Workflow>> {
+    Ok(queries::select_run_workflow_snapshot(pool, run_id)
+        .await?
+        .map(
+            |(name, version, provider, model, thinking_level)| Workflow {
+                name,
+                version,
+                provider,
+                model: Some(model),
+                thinking_level: Some(thinking_level),
+                system_prompt: base.system_prompt.clone(),
+                tools: base.tools.clone(),
+            },
+        ))
+}
+
 /// Clean termination on the Worker's `done`: flip `runs` and the assistant
 /// `messages` row to `completed` and append a `done` `run_log` row, in one
 /// transaction so a reader never sees an in-between mix.
@@ -1296,8 +1327,8 @@ mod tests {
         sqlx::query(
             "INSERT INTO runs \
              (id, thread_id, workflow_name, workflow_version, provider, model, \
-              user_message_id, status, started_at) \
-             VALUES (?, ?, 'w', '1', 'p', 'm', ?, ?, ?)",
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, ?, ?)",
         )
         .bind(run_id)
         .bind(format!("thr-{run_id}"))

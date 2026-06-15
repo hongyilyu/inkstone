@@ -42,6 +42,17 @@ const main = async (): Promise<void> => {
 		// Malformed manifest — fall through to the fresh (propose) path.
 	}
 	if (manifest.mode === "resume") {
+		// Resume-effort probe (INKSTONE_ECHO_RESUME_EFFORT=1): instead of the
+		// usual completion text, echo the effort the RESUME manifest carried, so
+		// a Core test can assert resume read the Run's snapshot (ADR-0024), not
+		// live settings changed between park and decide.
+		if (process.env.INKSTONE_ECHO_RESUME_EFFORT === "1") {
+			const resumed = manifest as { workflow?: { thinking_level?: string } };
+			const effort = resumed.workflow?.thinking_level ?? "<none>";
+			emit({ kind: "text_delta", delta: `resume-effort=${effort}` });
+			emit({ kind: "done" });
+			return;
+		}
 		const toolResult = [...(manifest.messages ?? [])]
 			.reverse()
 			.find((message) => message.role === "tool_result");

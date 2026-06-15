@@ -102,12 +102,15 @@ pub fn spawn(
 /// apply is already committed, so a resume failure leaves a durably-accepted
 /// Proposal on a still-parked Run (an idempotent decide retry re-resumes).
 pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Result<()> {
-    // Resolve the effective Workflow (ADR-0024) as the fresh path does; the raw
-    // `default_workflow()` leaves model/thinking_level `None`, which the resume
-    // manifest serializes as `""`/`off` and the real Worker rejects.
+    // Rebuild the effective Workflow from the Run's PERSISTED snapshot (ADR-0024),
+    // NOT by re-resolving live settings: a model/effort change between park and
+    // decide must affect the next Run, not this resumed one. The snapshot carries
+    // the resolved model/thinking_level; the static base of the same name supplies
+    // the un-tunable system_prompt/tools.
     let workflow =
-        crate::dispatcher::resolve_effective_workflow(pool, crate::workflow::default_workflow())
-            .await;
+        crate::db::run_workflow_snapshot(pool, run_id, crate::workflow::default_workflow())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("run {run_id} has no Workflow snapshot to resume"))?;
 
     let assistant_message_id = db::assistant_message_id_for_run(pool, run_id)
         .await?
