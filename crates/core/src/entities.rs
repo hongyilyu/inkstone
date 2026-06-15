@@ -12,7 +12,7 @@
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::mutation::{MutationKind, ProposableMutation};
+use crate::mutation::{Mode, MutationKind, ProposableMutation, todo_data_spec};
 
 /// Validate a proposed mutation payload against its schema (ADR-0016),
 /// dispatched on the typed [`MutationKind`]. `Err(reason)` is surfaced as the
@@ -23,29 +23,33 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
     match kind {
         MutationKind::CreateJournalEntry => validate_journal_entry(payload),
         MutationKind::UpdateJournalEntry => validate_update_journal_entry(payload),
-        MutationKind::DeleteJournalEntry => validate_delete_entity(payload, "delete_journal_entry"),
         MutationKind::ReferenceExistingEntityFromJournalEntry => {
             validate_reference_existing_entity_from_journal_entry(payload)
         }
-        MutationKind::DeletePerson => validate_delete_entity(payload, "delete_person"),
-        MutationKind::DeleteProject => validate_delete_entity(payload, "delete_project"),
-        MutationKind::DeleteTodo => validate_delete_entity(payload, "delete_todo"),
-        MutationKind::CreatePerson => validate_person(&strip_source_journal_entry_id(payload)?),
-        MutationKind::UpdatePerson => validate_update_person(payload),
-        MutationKind::CreateProject => validate_project(&strip_source_journal_entry_id(payload)?),
-        MutationKind::UpdateProject => validate_update_project(payload),
+        MutationKind::DeleteJournalEntry
+        | MutationKind::DeletePerson
+        | MutationKind::DeleteProject
+        | MutationKind::DeleteTodo
+        | MutationKind::DeleteBookmark
         // A user-path-only review touch (ADR-0034): `{entity_id}` only — Core reads
         // the Project and recomputes the review fields, so the client sends no data.
         // Deliberately absent from the agent `propose_workspace_mutation` schema; it
         // can only arrive via `entity/mutate`.
-        MutationKind::MarkProjectReviewed => {
-            validate_entity_id_only(payload, "mark_project_reviewed")
+        | MutationKind::MarkProjectReviewed => validate_entity_id_only(kind, payload),
+        // Create routes the FULL payload (entity data + the `source_journal_entry_id`
+        // provenance directive) through its single-source spec, so that field's
+        // shape is owned by `mutation.rs` like every other — no separate strip.
+        MutationKind::CreatePerson => MutationKind::CreatePerson.payload_spec().check(payload),
+        MutationKind::UpdatePerson => validate_update_person(payload),
+        MutationKind::CreateProject => {
+            MutationKind::CreateProject.payload_spec().check(payload)?;
+            project_status_timestamp_invariant(payload.as_object().expect("check accepted an object"))
         }
+        MutationKind::UpdateProject => validate_update_project(payload),
         MutationKind::CreateTodo => validate_todo(payload),
         MutationKind::UpdateTodo => validate_update_todo(payload),
         MutationKind::CreateBookmark => validate_bookmark(payload),
         MutationKind::UpdateBookmark => validate_update_bookmark(payload),
-        MutationKind::DeleteBookmark => validate_delete_entity(payload, "delete_bookmark"),
     }
 }
 
@@ -217,41 +221,48 @@ enum BodyNodePolicy {
 }
 
 fn validate_journal_entry(payload: &Value) -> Result<(), String> {
-    validate_journal_entry_payload(payload, BodyNodePolicy::TextOnly)
+    // Flat shell (occurred_at/ended_at presence + datetime parse, the body-union
+    // schema) from the single source; the ended_at≥occurred_at + body-content
+    // invariants are the hook.
+    MutationKind::CreateJournalEntry
+        .payload_spec()
+        .check(payload)?;
+    validate_journal_body_and_times(payload, BodyNodePolicy::TextOnly)
 }
 
-fn validate_journal_entry_payload(
+/// The Journal-Entry cross-field invariants the flat spec walk cannot express:
+/// `ended_at >= occurred_at` (both already parse-validated by the spec) and the
+/// body's array/non-empty/per-node/policy checks (the `body` field is a schema-only
+/// `Body` union in the spec, so its content is validated here). `occurred_at` is
+/// present + parseable by the time this runs (the spec enforced it), so the
+/// comparison re-parses cheaply.
+fn validate_journal_body_and_times(
     payload: &Value,
     body_policy: BodyNodePolicy,
 ) -> Result<(), String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "journal entry payload must be a JSON object".to_string())?;
+    let obj = payload.as_object().expect("check accepted an object");
 
-    for key in obj.keys() {
-        if key != "occurred_at" && key != "ended_at" && key != "body" {
-            return Err(format!("unsupported journal entry field {key:?}"));
-        }
-    }
-
-    let occurred_at = match obj.get("occurred_at") {
-        Some(Value::String(t)) if !t.trim().is_empty() => parse_local_datetime(t, "occurred_at")?,
-        Some(Value::String(_)) => return Err("occurred_at must not be empty".to_string()),
-        Some(_) => return Err("occurred_at must be a string".to_string()),
-        None => return Err("occurred_at is required".to_string()),
-    };
-
-    if let Some(ended_at) = obj.get("ended_at") {
-        let ended_at = match ended_at {
-            Value::String(t) if !t.trim().is_empty() => parse_local_datetime(t, "ended_at")?,
-            Value::String(_) => return Err("ended_at must not be empty".to_string()),
-            _ => return Err("ended_at must be a string".to_string()),
-        };
-        if ended_at < occurred_at {
+    if let (Some(occurred_at), Some(ended_at)) = (
+        obj.get("occurred_at").and_then(Value::as_str),
+        obj.get("ended_at").and_then(Value::as_str),
+    ) {
+        let occurred = parse_local_datetime(occurred_at, "occurred_at")?;
+        let ended = parse_local_datetime(ended_at, "ended_at")?;
+        if ended < occurred {
             return Err("ended_at must be greater than or equal to occurred_at".to_string());
         }
     }
 
+    validate_journal_body(obj, body_policy)
+}
+
+/// Validate a Journal-Entry `body`: a non-empty array of node objects, each valid
+/// under `body_policy`. Shared by the create/update validators and the reference
+/// weave (which adds the exactly-one-entity_ref invariant on top).
+fn validate_journal_body(
+    obj: &serde_json::Map<String, Value>,
+    body_policy: BodyNodePolicy,
+) -> Result<(), String> {
     let body = obj
         .get("body")
         .and_then(Value::as_array)
@@ -265,7 +276,6 @@ fn validate_journal_entry_payload(
             .ok_or_else(|| "body nodes must be objects".to_string())?;
         validate_body_node(node, body_policy)?;
     }
-
     Ok(())
 }
 
@@ -336,76 +346,30 @@ fn required_body_node_string<'a>(
 }
 
 fn validate_update_journal_entry(payload: &Value) -> Result<(), String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "journal entry payload must be a JSON object".to_string())?;
-
-    let entity_id = match obj.get("entity_id") {
-        Some(Value::String(value)) if !value.trim().is_empty() => value,
-        Some(Value::String(_)) => return Err("entity_id must not be empty".to_string()),
-        Some(_) => return Err("entity_id must be a string".to_string()),
-        None => return Err("entity_id is required".to_string()),
-    };
-    Uuid::parse_str(entity_id).map_err(|_| "entity_id must be a UUID".to_string())?;
-
-    let mut journal_payload = serde_json::Map::with_capacity(obj.len().saturating_sub(1));
-    for (key, value) in obj {
-        if key != "entity_id" {
-            journal_payload.insert(key.clone(), value.clone());
-        }
-    }
-    validate_journal_entry_payload(
-        &Value::Object(journal_payload),
-        BodyNodePolicy::TextOrExistingEntityRef,
-    )
+    // Flat shell (entity_id target + occurred_at/ended_at + body-union schema)
+    // from the single source; the cross-field invariants are the hook. The body
+    // policy admits an `entity_ref` carrying a `ref_id`.
+    MutationKind::UpdateJournalEntry
+        .payload_spec()
+        .check(payload)?;
+    validate_journal_body_and_times(payload, BodyNodePolicy::TextOrExistingEntityRef)
 }
 
 fn validate_reference_existing_entity_from_journal_entry(payload: &Value) -> Result<(), String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "reference payload must be a JSON object".to_string())?;
+    // Flat shell (source/target UUIDs, optional label_snapshot, body-union schema)
+    // from the single source; the body content + exactly-one-entity_ref invariant
+    // are the hook.
+    MutationKind::ReferenceExistingEntityFromJournalEntry
+        .payload_spec()
+        .check(payload)?;
+    let obj = payload.as_object().expect("check accepted an object");
 
-    for key in obj.keys() {
-        if !matches!(
-            key.as_str(),
-            "source_entity_id" | "target_entity_id" | "label_snapshot" | "body"
-        ) {
-            return Err(format!("unsupported reference field {key:?}"));
-        }
-    }
-
-    for field in ["source_entity_id", "target_entity_id"] {
-        let value = match obj.get(field) {
-            Some(Value::String(value)) if !value.trim().is_empty() => value,
-            Some(Value::String(_)) => return Err(format!("{field} must not be empty")),
-            Some(_) => return Err(format!("{field} must be a string")),
-            None => return Err(format!("{field} is required")),
-        };
-        Uuid::parse_str(value).map_err(|_| format!("{field} must be a UUID"))?;
-    }
-
-    if let Some(label_snapshot) = obj.get("label_snapshot") {
-        match label_snapshot {
-            Value::String(value) if !value.trim().is_empty() => {}
-            Value::String(_) => return Err("label_snapshot must not be empty".to_string()),
-            _ => return Err("label_snapshot must be a string".to_string()),
-        }
-    }
+    validate_journal_body(obj, BodyNodePolicy::TextOrNewEntityRef)?;
 
     let body = obj
         .get("body")
         .and_then(Value::as_array)
-        .ok_or_else(|| "body must be an array".to_string())?;
-    if body.is_empty() {
-        return Err("body must not be empty".to_string());
-    }
-    for node in body {
-        let node = node
-            .as_object()
-            .ok_or_else(|| "body nodes must be objects".to_string())?;
-        validate_body_node(node, BodyNodePolicy::TextOrNewEntityRef)?;
-    }
-
+        .expect("body validated");
     let ref_count = body
         .iter()
         .filter(|node| node.get("type").and_then(Value::as_str) == Some("entity_ref"))
@@ -459,145 +423,39 @@ pub(crate) fn body_entity_ref_ids(payload: &Value) -> Vec<&str> {
         .collect()
 }
 
-/// Validate a delete payload (`delete_journal_entry`/`delete_person`/
-/// `delete_todo`): a single required UUID `entity_id` (the target) and no other
-/// field. A delete carries no entity data, so this is the whole schema.
-fn validate_delete_entity(payload: &Value, mutation_kind: &str) -> Result<(), String> {
-    validate_entity_id_only(payload, mutation_kind)
-}
-
-/// Validate a payload that carries exactly one field: a required UUID `entity_id`
-/// naming the target Entity. Shared by every `{entity_id}`-only mutation — the
-/// deletes and `mark_project_reviewed` (whose review fields Core recomputes, so
-/// the client sends no data).
-fn validate_entity_id_only(payload: &Value, mutation_kind: &str) -> Result<(), String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| format!("{mutation_kind} payload must be a JSON object"))?;
-
-    let entity_id = match obj.get("entity_id") {
-        Some(Value::String(value)) if !value.trim().is_empty() => value,
-        Some(Value::String(_)) => return Err("entity_id must not be empty".to_string()),
-        Some(_) => return Err("entity_id must be a string".to_string()),
-        None => return Err("entity_id is required".to_string()),
-    };
-    Uuid::parse_str(entity_id).map_err(|_| "entity_id must be a UUID".to_string())?;
-
-    for key in obj.keys() {
-        if key != "entity_id" {
-            return Err(format!("unsupported {mutation_kind} field {key:?}"));
-        }
-    }
-
-    Ok(())
+/// Validate an `{entity_id}`-only payload (the deletes + `mark_project_reviewed`)
+/// against the kind's id-only spec: a single required UUID `entity_id` and no
+/// other field. A delete carries no entity data, so the spec is the whole schema.
+fn validate_entity_id_only(kind: MutationKind, payload: &Value) -> Result<(), String> {
+    kind.payload_spec().check(payload)
 }
 
 fn validate_person(payload: &Value) -> Result<(), String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "person payload must be a JSON object".to_string())?;
-
-    for key in obj.keys() {
-        if key != "name" && key != "note" && key != "aliases" {
-            return Err(format!("unsupported person field {key:?}"));
-        }
-    }
-
-    match obj.get("name") {
-        Some(Value::String(name)) if !name.trim().is_empty() => {}
-        Some(Value::String(_)) => return Err("name must not be empty".to_string()),
-        Some(_) => return Err("name must be a string".to_string()),
-        None => return Err("name is required".to_string()),
-    }
-
-    // `note`/`aliases` are clearable optional fields (ADR-0033): a `null` value is
-    // the sentinel-clear directive (the apply path drops the key), accepted here.
-    if let Some(note) = obj.get("note")
-        && !note.is_null()
-        && !note.is_string()
-    {
-        return Err("note must be a string".to_string());
-    }
-
-    if let Some(aliases) = obj.get("aliases")
-        && !aliases.is_null()
-    {
-        let aliases = aliases
-            .as_array()
-            .ok_or_else(|| "aliases must be an array".to_string())?;
-        for alias in aliases {
-            match alias {
-                Value::String(value) if !value.trim().is_empty() => {}
-                Value::String(_) => return Err("alias must not be empty".to_string()),
-                _ => return Err("alias must be a string".to_string()),
-            }
-        }
-    }
-
-    Ok(())
+    // PersonData has no cross-field invariant — the spec walk is the whole
+    // validator. `note`/`aliases` are clearable optional fields (ADR-0033): a
+    // `null` value is the sentinel-clear directive (the apply path drops the key),
+    // accepted by the clearable string / nullable-array specs.
+    MutationKind::CreatePerson
+        .payload_data_spec()
+        .check(payload)
 }
 
 /// Validate an `update_person` payload: a required UUID `entity_id` (the target)
-/// plus the rest validated as `PersonData` (mirrors `validate_update_journal_entry`).
+/// plus the rest validated as `PersonData` (the shared Person field core).
 fn validate_update_person(payload: &Value) -> Result<(), String> {
     let rest = strip_update_entity_id(payload)?;
     validate_person(&rest)
 }
 
 /// Validate a `BookmarkData` object (ADR-0036): a required non-empty `title`;
-/// optional `url`/`note` (a present non-null value must be a string — Core stores
-/// `url` opaque, no format check); optional `tags` (an array of non-empty strings,
-/// mirroring Person `aliases`). Each optional field is CLEARABLE: a `null` value
-/// is the ADR-0033 sentinel-clear directive (accepted here; the apply path drops
-/// null keys). Any field outside {title, url, note, tags} is rejected.
+/// clearable string `url`/`note`; clearable `tags` (an array of non-empty strings).
+/// BookmarkData has no cross-field invariant — the spec walk is the whole
+/// validator. Each optional field is CLEARABLE: a `null` value is the ADR-0033
+/// sentinel-clear directive (accepted; the apply path drops null keys).
 fn validate_bookmark(payload: &Value) -> Result<(), String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "bookmark payload must be a JSON object".to_string())?;
-
-    for key in obj.keys() {
-        if key != "title" && key != "url" && key != "note" && key != "tags" {
-            return Err(format!("unsupported bookmark field {key:?}"));
-        }
-    }
-
-    match obj.get("title") {
-        Some(Value::String(title)) if !title.trim().is_empty() => {}
-        Some(Value::String(_)) => return Err("title must not be empty".to_string()),
-        Some(_) => return Err("title must be a string".to_string()),
-        None => return Err("title is required".to_string()),
-    }
-
-    // `url`/`note` are clearable optional fields (ADR-0033): a `null` value is the
-    // sentinel-clear directive (the apply path drops the key), accepted here; a
-    // present non-null value must be a string.
-    for field in ["url", "note"] {
-        if let Some(value) = obj.get(field)
-            && !value.is_null()
-            && !value.is_string()
-        {
-            return Err(format!("{field} must be a string"));
-        }
-    }
-
-    // `tags` is clearable (`null` clears, ADR-0033); otherwise an array of
-    // non-empty strings (mirrors Person `aliases`).
-    if let Some(tags) = obj.get("tags")
-        && !tags.is_null()
-    {
-        let tags = tags
-            .as_array()
-            .ok_or_else(|| "tags must be an array".to_string())?;
-        for tag in tags {
-            match tag {
-                Value::String(value) if !value.trim().is_empty() => {}
-                Value::String(_) => return Err("tag must not be empty".to_string()),
-                _ => return Err("tag must be a string".to_string()),
-            }
-        }
-    }
-
-    Ok(())
+    MutationKind::CreateBookmark
+        .payload_data_spec()
+        .check(payload)
 }
 
 /// Validate an `update_bookmark` payload: a required UUID `entity_id` (the target)
@@ -616,72 +474,26 @@ fn validate_project(payload: &Value) -> Result<(), String> {
 /// Shared by the create validator and the `mark_project_reviewed` apply path,
 /// which re-validates the recomputed whole before persisting it (ADR-0034).
 pub(crate) fn validate_project_data(payload: &Value) -> Result<(), String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "project payload must be a JSON object".to_string())?;
+    // Flat shape (fields, types, the status enum, datetime parse, review_every
+    // sub-object) from the single source; the status↔timestamp invariant — which
+    // a flat walk cannot express — stays a hand-written hook.
+    MutationKind::CreateProject
+        .payload_data_spec()
+        .check(payload)?;
+    project_status_timestamp_invariant(payload.as_object().expect("check accepted an object"))
+}
 
-    for key in obj.keys() {
-        match key.as_str() {
-            "name" | "outcome" | "note" | "status" | "defer_at" | "due_at" | "completed_at"
-            | "dropped_at" | "review_every" | "next_review_at" | "last_reviewed_at" => {}
-            other => return Err(format!("unsupported project field {other:?}")),
-        }
-    }
-
-    match obj.get("name") {
-        Some(Value::String(name)) if !name.trim().is_empty() => {}
-        Some(Value::String(_)) => return Err("name must not be empty".to_string()),
-        Some(_) => return Err("name must be a string".to_string()),
-        None => return Err("name is required".to_string()),
-    }
-
-    // `outcome`/`note` are clearable optional fields (ADR-0033): `null` is the
-    // sentinel-clear directive (the apply path drops the key), accepted here.
-    for field in ["outcome", "note"] {
-        if let Some(value) = obj.get(field)
-            && !value.is_null()
-            && !value.is_string()
-        {
-            return Err(format!("{field} must be a string"));
-        }
-    }
-
-    // Status is optional here (absent ⇒ defaults to active in the apply path).
-    let status = match obj.get("status") {
-        Some(Value::String(s)) => match s.as_str() {
-            "active" | "on_hold" | "completed" | "dropped" => s.as_str(),
-            _ => {
-                return Err("status must be one of active, on_hold, completed, dropped".to_string());
-            }
-        },
-        Some(_) => return Err("status must be a string".to_string()),
-        None => "active",
-    };
-
-    // Timestamps are clearable optional fields: `null` is the sentinel-clear
-    // directive (ADR-0033) and is treated as absent for the invariants below.
-    for field in [
-        "defer_at",
-        "due_at",
-        "completed_at",
-        "dropped_at",
-        "next_review_at",
-        "last_reviewed_at",
-    ] {
-        if let Some(value) = obj.get(field) {
-            match value {
-                Value::Null => {}
-                Value::String(t) if !t.trim().is_empty() => {
-                    parse_local_datetime(t, field)?;
-                }
-                Value::String(_) => return Err(format!("{field} must not be empty")),
-                _ => return Err(format!("{field} must be a string")),
-            }
-        }
-    }
-
-    // status↔timestamp invariants (absent status ⇒ treated as active). A `null`
-    // timestamp is a clear directive, so it counts as ABSENT here.
+/// The Project status↔timestamp invariant (ADR-0031): completed requires
+/// `completed_at` and forbids `dropped_at`; dropped is the mirror; active/on_hold
+/// forbid both. An absent status defaults to active. A `null` timestamp is the
+/// ADR-0033 clear directive, so it counts as ABSENT here ([`present_non_null`]) —
+/// distinct from the Todo invariant, which treats a (already-rejected) null as
+/// present.
+fn project_status_timestamp_invariant(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
+    let status = obj
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("active");
     let has_completed_at = present_non_null(obj, "completed_at");
     let has_dropped_at = present_non_null(obj, "dropped_at");
     match status {
@@ -709,16 +521,8 @@ pub(crate) fn validate_project_data(payload: &Value) -> Result<(), String> {
                 return Err("dropped project must not have completed_at".to_string());
             }
         }
-        _ => unreachable!("status validated above"),
+        _ => unreachable!("status validated by the spec"),
     }
-
-    // `review_every` is a clearable optional field (ADR-0033): `null` clears it.
-    if let Some(review_every) = obj.get("review_every")
-        && !review_every.is_null()
-    {
-        validate_review_every(review_every)?;
-    }
-
     Ok(())
 }
 
@@ -772,77 +576,6 @@ pub(crate) fn source_journal_entry_id(payload: &Value) -> Option<&str> {
         .get("source_journal_entry_id")
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
-}
-
-/// Pull an optional `source_journal_entry_id` off a create payload (the
-/// provenance directive, ADR-0030/0031), returning the payload MINUS that field
-/// (the entity data to validate/store). When present it must be a non-empty
-/// string that parses as a UUID; its existence (that it names a Journal Entry) is
-/// checked at decide-time. Used by `create_person`/`create_project`; `create_todo`
-/// validates the field in place since its envelope is not the entity data.
-fn strip_source_journal_entry_id(payload: &Value) -> Result<Value, String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "payload must be a JSON object".to_string())?;
-    validate_source_journal_entry_id(obj)?;
-
-    if !obj.contains_key("source_journal_entry_id") {
-        return Ok(payload.clone());
-    }
-    let mut rest = serde_json::Map::with_capacity(obj.len().saturating_sub(1));
-    for (key, value) in obj {
-        if key != "source_journal_entry_id" {
-            rest.insert(key.clone(), value.clone());
-        }
-    }
-    Ok(Value::Object(rest))
-}
-
-/// Validate an optional `source_journal_entry_id` on a create payload/envelope: a
-/// present value must be a non-empty string parseable as a UUID.
-fn validate_source_journal_entry_id(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
-    match obj.get("source_journal_entry_id") {
-        Some(Value::String(id)) if !id.trim().is_empty() => {
-            Uuid::parse_str(id)
-                .map_err(|_| "source_journal_entry_id must be a UUID".to_string())?;
-            Ok(())
-        }
-        Some(Value::String(_)) => Err("source_journal_entry_id must not be empty".to_string()),
-        Some(_) => Err("source_journal_entry_id must be a string".to_string()),
-        None => Ok(()),
-    }
-}
-
-fn validate_review_every(value: &Value) -> Result<(), String> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| "review_every must be an object".to_string())?;
-
-    for key in obj.keys() {
-        if key != "interval" && key != "unit" {
-            return Err(format!("unsupported review_every field {key:?}"));
-        }
-    }
-
-    match obj.get("interval") {
-        Some(Value::Number(n)) => match n.as_u64() {
-            Some(interval) if interval >= 1 => {}
-            _ => return Err("review_every interval must be a positive integer".to_string()),
-        },
-        Some(_) => return Err("review_every interval must be a positive integer".to_string()),
-        None => return Err("review_every interval is required".to_string()),
-    }
-
-    match obj.get("unit") {
-        Some(Value::String(unit)) => match unit.as_str() {
-            "day" | "week" | "month" | "year" => {}
-            _ => return Err("review_every unit must be one of day, week, month, year".to_string()),
-        },
-        Some(_) => return Err("review_every unit must be a string".to_string()),
-        None => return Err("review_every unit is required".to_string()),
-    }
-
-    Ok(())
 }
 
 /// Validate a Todo's `recurrence` rule in ISOLATION (ADR-0037): every invariant
@@ -1070,65 +803,16 @@ fn validate_recurrence_end(value: &Value) -> Result<(), String> {
 /// defaults to `related` at apply-time). Any other top-level key is rejected.
 /// `person_id` existence (an Accepted Person) is checked at decide-time, not here.
 fn validate_todo(payload: &Value) -> Result<(), String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "create_todo payload must be a JSON object".to_string())?;
-
-    for key in obj.keys() {
-        if key != "todo" && key != "person_refs" && key != "source_journal_entry_id" {
-            return Err(format!("unsupported create_todo field {key:?}"));
-        }
-    }
-
-    validate_source_journal_entry_id(obj)?;
-
-    if let Some(person_refs) = obj.get("person_refs") {
-        let refs = person_refs
-            .as_array()
-            .ok_or_else(|| "person_refs must be an array".to_string())?;
-        for ref_value in refs {
-            validate_person_ref(ref_value)?;
-        }
-    }
-
+    // Envelope shape (`{todo, person_refs?, source_journal_entry_id?}`) from the
+    // single source — including the person_refs element shape, now spec-driven —
+    // then the TodoData hook validates the `todo` value (its cross-field
+    // invariants exceed a flat walk).
+    MutationKind::CreateTodo.payload_spec().check(payload)?;
+    let obj = payload.as_object().expect("check accepted an object");
     let todo = obj
         .get("todo")
         .ok_or_else(|| "todo is required".to_string())?;
     validate_todo_data(todo)
-}
-
-/// Validate one `person_refs` element (ADR-0031): an object with a required
-/// non-empty string `person_id` and an optional `role` ∈ {waiting_on, related}.
-/// Any other key is rejected. A missing role is friendly — it defaults to
-/// `related` at apply-time (per ADR-0031: UI/Worker may omit the role).
-fn validate_person_ref(value: &Value) -> Result<(), String> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| "person_refs element must be a JSON object".to_string())?;
-
-    for key in obj.keys() {
-        if key != "person_id" && key != "role" {
-            return Err(format!("unsupported person_refs field {key:?}"));
-        }
-    }
-
-    match obj.get("person_id") {
-        Some(Value::String(id)) if !id.trim().is_empty() => {}
-        Some(Value::String(_)) => return Err("person_refs person_id must not be empty".to_string()),
-        Some(_) => return Err("person_refs person_id must be a string".to_string()),
-        None => return Err("person_refs person_id is required".to_string()),
-    }
-
-    match obj.get("role") {
-        Some(Value::String(role)) => match role.as_str() {
-            "waiting_on" | "related" => {}
-            _ => return Err("person_refs role must be one of waiting_on, related".to_string()),
-        },
-        Some(_) => return Err("person_refs role must be a string".to_string()),
-        None => {}
-    }
-
-    Ok(())
 }
 
 /// Validate the `TodoData` sub-object (ADR-0031): a required non-empty `title`;
@@ -1139,63 +823,25 @@ fn validate_person_ref(value: &Value) -> Result<(), String> {
 /// status↔timestamp invariants. Any other field is rejected. `pub(crate)` so the
 /// apply path can re-validate a MERGED `update_todo` result as a whole.
 pub(crate) fn validate_todo_data(payload: &Value) -> Result<(), String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "todo must be a JSON object".to_string())?;
+    // Flat shape (fields, title, note, project_id, status enum, datetime parse)
+    // from the single source; the status↔timestamp + recurrence (rule-in-isolation
+    // and anchor-presence) invariants — which exceed a flat walk — stay hooks.
+    todo_data_spec(Mode::Full).check(payload)?;
+    let obj = payload.as_object().expect("check accepted an object");
+    todo_status_timestamp_invariant(obj)?;
+    todo_recurrence_invariant(obj)
+}
 
-    for key in obj.keys() {
-        match key.as_str() {
-            "title" | "note" | "status" | "project_id" | "defer_at" | "due_at" | "completed_at"
-            | "dropped_at" | "recurrence" => {}
-            other => return Err(format!("unsupported todo field {other:?}")),
-        }
-    }
-
-    match obj.get("title") {
-        Some(Value::String(title)) if !title.trim().is_empty() => {}
-        Some(Value::String(_)) => return Err("title must not be empty".to_string()),
-        Some(_) => return Err("title must be a string".to_string()),
-        None => return Err("title is required".to_string()),
-    }
-
-    if let Some(note) = obj.get("note")
-        && !note.is_string()
-    {
-        return Err("note must be a string".to_string());
-    }
-    // `project_id`, when present, must be a non-empty string: a blank id would
-    // bypass the Accepted-Project reference check at decide and persist an empty
-    // string that is neither projectless nor a real link.
-    match obj.get("project_id") {
-        Some(Value::String(id)) if !id.trim().is_empty() => {}
-        Some(Value::String(_)) => return Err("project_id must not be empty".to_string()),
-        Some(_) => return Err("project_id must be a string".to_string()),
-        None => {}
-    }
-
-    // Status is optional here (absent ⇒ defaults to active in the apply path).
-    let status = match obj.get("status") {
-        Some(Value::String(s)) => match s.as_str() {
-            "active" | "completed" | "dropped" => s.as_str(),
-            _ => return Err("status must be one of active, completed, dropped".to_string()),
-        },
-        Some(_) => return Err("status must be a string".to_string()),
-        None => "active",
-    };
-
-    for field in ["defer_at", "due_at", "completed_at", "dropped_at"] {
-        if let Some(value) = obj.get(field) {
-            match value {
-                Value::String(t) if !t.trim().is_empty() => {
-                    parse_local_datetime(t, field)?;
-                }
-                Value::String(_) => return Err(format!("{field} must not be empty")),
-                _ => return Err(format!("{field} must be a string")),
-            }
-        }
-    }
-
-    // status↔timestamp invariants (absent status ⇒ treated as active).
+/// The Todo status↔timestamp invariant (ADR-0031): completed requires
+/// `completed_at` and forbids `dropped_at`; dropped is the mirror; active forbids
+/// both. Absent status defaults to active. Unlike Project, Todo timestamps reject
+/// `null` (the spec already did), so a present key is a concrete timestamp —
+/// hence `contains_key`, not `present_non_null`.
+fn todo_status_timestamp_invariant(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
+    let status = obj
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("active");
     let has_completed_at = obj.contains_key("completed_at");
     let has_dropped_at = obj.contains_key("dropped_at");
     match status {
@@ -1223,14 +869,17 @@ pub(crate) fn validate_todo_data(payload: &Value) -> Result<(), String> {
                 return Err("dropped todo must not have completed_at".to_string());
             }
         }
-        _ => unreachable!("status validated above"),
+        _ => unreachable!("status validated by the spec"),
     }
+    Ok(())
+}
 
-    // `recurrence` (ADR-0037): validate the rule in isolation, then enforce the
-    // cross-field anchor-presence invariant — the Todo must carry a non-empty
-    // date at the field the rule's `anchor` names (a rule cannot recompute a date
-    // the Todo lacks). This holds for any valid stored Todo, so the apply-time
-    // re-validation of a merged `update_todo` enforces it too.
+/// The Todo `recurrence` invariant (ADR-0037): validate the rule in isolation
+/// (the `HookValidated` spec leaves it to us), then enforce anchor-presence — the
+/// Todo must carry a non-empty date at the field the rule's `anchor` names. Holds
+/// for any valid stored Todo, so the apply-time re-validation of a merged
+/// `update_todo` enforces it too.
+fn todo_recurrence_invariant(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
     if let Some(recurrence) = obj.get("recurrence") {
         validate_recurrence(recurrence)?;
         if let Some(Value::String(anchor)) = recurrence.get("anchor") {
@@ -1243,7 +892,6 @@ pub(crate) fn validate_todo_data(payload: &Value) -> Result<(), String> {
             }
         }
     }
-
     Ok(())
 }
 
@@ -1257,55 +905,14 @@ pub(crate) fn validate_todo_data(payload: &Value) -> Result<(), String> {
 /// `set_person_refs`/`add_person_refs` (each a ref array) and `remove_person_ids`
 /// (an array of non-empty strings). Any other top-level key is rejected.
 fn validate_update_todo(payload: &Value) -> Result<(), String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "update_todo payload must be a JSON object".to_string())?;
-
-    for key in obj.keys() {
-        match key.as_str() {
-            "todo_id" | "todo" | "set_person_refs" | "add_person_refs" | "remove_person_ids" => {}
-            other => return Err(format!("unsupported update_todo field {other:?}")),
-        }
-    }
-
-    let todo_id = match obj.get("todo_id") {
-        Some(Value::String(value)) if !value.trim().is_empty() => value,
-        Some(Value::String(_)) => return Err("todo_id must not be empty".to_string()),
-        Some(_) => return Err("todo_id must be a string".to_string()),
-        None => return Err("todo_id is required".to_string()),
-    };
-    Uuid::parse_str(todo_id).map_err(|_| "todo_id must be a UUID".to_string())?;
-
+    // Envelope shape (`todo_id`, set/add `person_refs`, `remove_person_ids`) from
+    // the single source; the partial `todo` value's recurrence rule (a non-null
+    // value validated in isolation) is the one cross-field bit the spec defers.
+    MutationKind::UpdateTodo.payload_spec().check(payload)?;
+    let obj = payload.as_object().expect("check accepted an object");
     if let Some(todo) = obj.get("todo") {
         validate_partial_todo_data(todo)?;
     }
-
-    for field in ["set_person_refs", "add_person_refs"] {
-        if let Some(refs) = obj.get(field) {
-            let refs = refs
-                .as_array()
-                .ok_or_else(|| format!("{field} must be an array"))?;
-            for ref_value in refs {
-                validate_person_ref(ref_value)?;
-            }
-        }
-    }
-
-    if let Some(remove) = obj.get("remove_person_ids") {
-        let remove = remove
-            .as_array()
-            .ok_or_else(|| "remove_person_ids must be an array".to_string())?;
-        for person_id in remove {
-            match person_id {
-                Value::String(id) if !id.trim().is_empty() => {}
-                Value::String(_) => {
-                    return Err("remove_person_ids id must not be empty".to_string());
-                }
-                _ => return Err("remove_person_ids id must be a string".to_string()),
-            }
-        }
-    }
-
     Ok(())
 }
 
@@ -1320,80 +927,21 @@ fn validate_update_todo(payload: &Value) -> Result<(), String> {
 /// by the apply-time merge. `null` on the required, non-clearable `title`/`status`
 /// stays rejected (clearing them is meaningless).
 fn validate_partial_todo_data(payload: &Value) -> Result<(), String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "todo must be a JSON object".to_string())?;
-
-    for key in obj.keys() {
-        match key.as_str() {
-            "title" | "note" | "status" | "project_id" | "defer_at" | "due_at" | "completed_at"
-            | "dropped_at" | "recurrence" => {}
-            other => return Err(format!("unsupported todo field {other:?}")),
-        }
-    }
-
-    if let Some(title) = obj.get("title") {
-        match title {
-            Value::String(t) if !t.trim().is_empty() => {}
-            Value::String(_) => return Err("title must not be empty".to_string()),
-            _ => return Err("title must be a string".to_string()),
-        }
-    }
-
-    if let Some(note) = obj.get("note")
-        && !note.is_null()
-        && !note.is_string()
-    {
-        return Err("note must be a string".to_string());
-    }
-    // A supplied `project_id` is `null` (clear, ADR-0033) or a non-empty string;
-    // a blank string would bypass the Accepted-Project reference check.
-    match obj.get("project_id") {
-        Some(Value::Null) => {}
-        Some(Value::String(id)) if !id.trim().is_empty() => {}
-        Some(Value::String(_)) => return Err("project_id must not be empty".to_string()),
-        Some(_) => return Err("project_id must be a string".to_string()),
-        None => {}
-    }
-
-    if let Some(status) = obj.get("status") {
-        match status {
-            Value::String(s) => match s.as_str() {
-                "active" | "completed" | "dropped" => {}
-                _ => return Err("status must be one of active, completed, dropped".to_string()),
-            },
-            _ => return Err("status must be a string".to_string()),
-        }
-    }
-
-    for field in ["defer_at", "due_at", "completed_at", "dropped_at"] {
-        if let Some(value) = obj.get(field) {
-            match value {
-                // `null` is the sentinel-clear directive (ADR-0033).
-                Value::Null => {}
-                Value::String(t) if !t.trim().is_empty() => {
-                    parse_local_datetime(t, field)?;
-                }
-                Value::String(_) => return Err(format!("{field} must not be empty")),
-                _ => return Err(format!("{field} must be a string")),
-            }
-        }
-    }
-
-    // `recurrence` (ADR-0037): `null` is the sentinel-clear directive (the apply
-    // path drops the key); any other value is validated as a rule in isolation.
-    // The anchor-presence cross-check is NOT done here — a partial lacks the whole
-    // Todo; the apply-time re-validation of the merged whole enforces it.
+    // Flat partial shape from the single source (Mode::Partial: every field
+    // optional; `note`/`project_id`/timestamps/`recurrence` clearable via `null`;
+    // `title`/`status` optional-but-not-clearable). The recurrence rule, when a
+    // non-null value is supplied, is validated in isolation here — the
+    // anchor-presence cross-check is NOT done (a partial lacks the whole Todo; the
+    // apply-time re-validation of the merged whole enforces it).
+    todo_data_spec(Mode::Partial).check(payload)?;
+    let obj = payload.as_object().expect("check accepted an object");
     match obj.get("recurrence") {
-        Some(Value::Null) => {}
-        Some(recurrence) => validate_recurrence(recurrence)?,
-        None => {}
+        Some(Value::Null) | None => Ok(()),
+        Some(recurrence) => validate_recurrence(recurrence),
     }
-
-    Ok(())
 }
 
-fn parse_local_datetime(
+pub(crate) fn parse_local_datetime(
     value: &str,
     field: &str,
 ) -> Result<(u32, u32, u32, u32, u32, u32), String> {
@@ -2254,6 +1802,20 @@ mod tests {
     #[test]
     fn accepts_project_without_status() {
         assert!(validate_project(&json!({ "name": "Ship API v2 migration" })).is_ok());
+    }
+
+    #[test]
+    fn rejects_null_project_status() {
+        // `status` is optional (absent ⇒ active) but NOT clearable: an explicit
+        // `null` is rejected, matching Todo `status` and the pre-spec validator.
+        // Clearing a status is meaningless, so `null` must not slip through as a
+        // silent "active".
+        let reason = validate_project(&json!({ "name": "Roadmap", "status": null }))
+            .expect_err("a null status is not a valid status");
+        assert!(
+            reason.contains("status"),
+            "reason names the status field: {reason}"
+        );
     }
 
     #[test]

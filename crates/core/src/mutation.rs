@@ -20,6 +20,8 @@
 
 use serde_json::Value;
 
+use crate::field_spec::{BodyPolicy, Field, FieldSpec, ObjErr, PayloadSpec, Presence};
+
 /// The schema version stamped onto a freshly-created Journal Entry + its first
 /// revision.
 pub const JOURNAL_ENTRY_SCHEMA_VERSION: i64 = 1;
@@ -147,6 +149,434 @@ impl EntityType {
             EntityType::JournalEntry | EntityType::Bookmark => false,
         }
     }
+}
+
+// ─── Field shapes (card 2) ──────────────────────────────────────────────────
+//
+// Each Entity Type owns its data-field shape once, as a `PayloadSpec` (the
+// `*_core` builders below). `MutationKind::payload_spec` FRAMES that core for a
+// specific mutation — a create rides the bare core plus an optional
+// `source_journal_entry_id` provenance directive; an update prepends the target
+// id; a delete is the id alone. The same spec drives BOTH the agent tool schema
+// (the proposable subset) and the validators (all kinds). Cross-field invariants
+// stay in `crate::entities` hooks (ADR-0033).
+
+/// The four `YYYY-MM-DDTHH:MM:SS` Project/Todo terminal+scheduling timestamps a
+/// status↔timestamp invariant governs, plus (for Project) the review pair. Each
+/// is an optional, clearable local datetime (ADR-0033 `null` clears).
+fn clearable_datetime(name: &'static str) -> Field {
+    Field::datetime(name).clearable()
+}
+
+impl EntityType {
+    /// The Person data-field core: a required non-empty `name`, a clearable
+    /// `note`, and a clearable `aliases` array (each element non-empty at
+    /// validate-time, plain in the schema). The single source `validate_person`
+    /// and the agent schema both derive from.
+    fn person_core() -> Vec<Field> {
+        vec![
+            Field::required("name", FieldSpec::non_empty_string()),
+            Field::optional("note", FieldSpec::string()).clearable(),
+            Field::optional("aliases", FieldSpec::non_empty_string_array()).clearable(),
+        ]
+    }
+
+    /// The Bookmark data-field core (ADR-0036): a required `title`, clearable
+    /// string `url`/`note`, and a clearable `tags` array. The single source
+    /// `validate_bookmark` and the user-CRUD path both derive from.
+    fn bookmark_core() -> Vec<Field> {
+        vec![
+            Field::required("title", FieldSpec::non_empty_string()),
+            Field::optional("url", FieldSpec::string()).clearable(),
+            Field::optional("note", FieldSpec::string()).clearable(),
+            Field::optional("tags", FieldSpec::non_empty_string_array()).clearable(),
+        ]
+    }
+
+    /// The Project data-field core: a required `name`, clearable `outcome`/`note`,
+    /// optional `status` enum, the four clearable terminal/scheduling timestamps,
+    /// the clearable `review_every` cadence, and the two clearable review
+    /// timestamps. The single source `validate_project_data` and the agent schema
+    /// both derive from. The status↔timestamp invariant is a hook, not here.
+    ///
+    /// `status` is optional but NOT clearable (matching Todo `status`): an absent
+    /// status defaults to active, but an explicit `null` is rejected — clearing a
+    /// status has no meaning, and the pre-spec validator rejected it likewise.
+    fn project_core() -> Vec<Field> {
+        vec![
+            Field::required("name", FieldSpec::non_empty_string()),
+            Field::optional("outcome", FieldSpec::string()).clearable(),
+            Field::optional("note", FieldSpec::string()).clearable(),
+            Field::optional("status", project_status_enum()),
+            clearable_datetime("defer_at"),
+            clearable_datetime("due_at"),
+            clearable_datetime("completed_at"),
+            clearable_datetime("dropped_at"),
+            Field::optional("review_every", FieldSpec::Object(review_every_spec())).clearable(),
+            clearable_datetime("next_review_at"),
+            clearable_datetime("last_reviewed_at"),
+        ]
+    }
+
+    /// The Todo `TodoData` core — the single source `validate_todo_data` /
+    /// `validate_partial_todo_data` and the agent schema all derive from. In
+    /// `Mode::Full` `title` is required and no field is clearable; in
+    /// `Mode::Partial` (the `update_todo` `todo` envelope) every field is optional
+    /// and all EXCEPT `title`/`status` become clearable (ADR-0033). The
+    /// status↔timestamp + recurrence-anchor invariants are hooks.
+    fn todo_core(mode: Mode) -> Vec<Field> {
+        let partial = mode == Mode::Partial;
+        // In partial mode title is optional but NOT clearable (a `null` title is
+        // meaningless); status is likewise optional-non-clearable in both modes.
+        let title = Field {
+            name: "title",
+            presence: if partial {
+                Presence::Optional
+            } else {
+                Presence::Required
+            },
+            clearable: false,
+            spec: FieldSpec::non_empty_string(),
+            description: None,
+        };
+        vec![
+            title,
+            Field::optional("note", FieldSpec::string()).clearable_when(partial),
+            Field::optional("status", todo_status_enum()),
+            Field::optional("project_id", FieldSpec::non_empty_string()).clearable_when(partial),
+            clearable_datetime_when("defer_at", partial),
+            clearable_datetime_when("due_at", partial),
+            clearable_datetime_when("completed_at", partial),
+            clearable_datetime_when("dropped_at", partial),
+            Field::optional("recurrence", FieldSpec::HookValidated(recurrence_spec()))
+                .clearable_when(partial),
+        ]
+    }
+}
+
+/// Full vs partial TodoData (create vs the `update_todo` `todo` envelope).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Mode {
+    Full,
+    Partial,
+}
+
+/// A clearable-in-partial-mode local datetime: clearable on the `update_todo`
+/// partial path (`null` clears), concrete-or-absent on the create path.
+fn clearable_datetime_when(name: &'static str, partial: bool) -> Field {
+    let field = Field::datetime(name);
+    if partial { field.clearable() } else { field }
+}
+
+/// The Project `status` enum (`validate_project_data`).
+fn project_status_enum() -> FieldSpec {
+    FieldSpec::EnumStr {
+        domain: &["active", "on_hold", "completed", "dropped"],
+        err: "status must be one of active, on_hold, completed, dropped",
+    }
+}
+
+/// The Todo `status` enum (no `on_hold`, `validate_todo_data`).
+fn todo_status_enum() -> FieldSpec {
+    FieldSpec::EnumStr {
+        domain: &["active", "completed", "dropped"],
+        err: "status must be one of active, completed, dropped",
+    }
+}
+
+/// The `review_every` cadence sub-object (ADR-0031): a positive `interval` and a
+/// `unit` enum. Validated inline by the spec walk (it has no cross-field rule).
+fn review_every_spec() -> PayloadSpec {
+    PayloadSpec::nested(
+        "review_every",
+        ObjErr::Object,
+        vec![
+            Field::required("interval", FieldSpec::PositiveInt),
+            Field::required(
+                "unit",
+                FieldSpec::EnumStr {
+                    domain: &["day", "week", "month", "year"],
+                    err: "review_every unit must be one of day, week, month, year",
+                },
+            ),
+        ],
+    )
+}
+
+/// One `person_refs` element (ADR-0031): a required non-empty `person_id` and an
+/// optional `role` enum. Validated inline by the spec walk; a missing role
+/// defaults to `related` at apply-time.
+fn person_ref_spec() -> PayloadSpec {
+    PayloadSpec::nested(
+        "person_refs",
+        ObjErr::JsonObject,
+        vec![
+            Field::required("person_id", FieldSpec::non_empty_string()),
+            Field::optional(
+                "role",
+                FieldSpec::EnumStr {
+                    domain: &["waiting_on", "related"],
+                    err: "person_refs role must be one of waiting_on, related",
+                },
+            ),
+        ],
+    )
+}
+
+/// The recurrence rule sub-object SCHEMA (ADR-0037). Validation is the
+/// hand-written `validate_recurrence` hook (cross-field), but the schema and the
+/// dead-struct deletion single-source from here. `only_on`/`end` are themselves
+/// hook-validated nested objects.
+fn recurrence_spec() -> PayloadSpec {
+    PayloadSpec::nested(
+        "recurrence",
+        ObjErr::Object,
+        vec![
+            Field::required("interval", FieldSpec::PositiveInt),
+            Field::required(
+                "unit",
+                FieldSpec::EnumStr {
+                    domain: &["minute", "hour", "day", "week", "month", "year"],
+                    err: "recurrence unit must be one of minute, hour, day, week, month, year",
+                },
+            ),
+            Field::required(
+                "schedule",
+                FieldSpec::EnumStr {
+                    domain: &["regular", "from_completion"],
+                    err: "recurrence schedule must be one of regular, from_completion",
+                },
+            ),
+            Field::required(
+                "anchor",
+                FieldSpec::EnumStr {
+                    domain: &["defer_at", "due_at"],
+                    err: "recurrence anchor must be one of defer_at, due_at",
+                },
+            ),
+            Field::optional("catch_up", FieldSpec::Bool),
+            Field::optional(
+                "only_on",
+                FieldSpec::HookValidated(recurrence_only_on_spec()),
+            ),
+            Field::optional("end", FieldSpec::HookValidated(recurrence_end_spec())),
+        ],
+    )
+}
+
+/// `recurrence.only_on` schema (`validate_recurrence_only_on`): weekday names /
+/// month-day integers. Element ranges + dedup + unit coupling are the hook's job.
+fn recurrence_only_on_spec() -> PayloadSpec {
+    PayloadSpec::nested(
+        "recurrence only_on",
+        ObjErr::Object,
+        vec![
+            Field::optional(
+                "weekdays",
+                FieldSpec::Array {
+                    items: Box::new(FieldSpec::EnumStr {
+                        domain: &["sun", "mon", "tue", "wed", "thu", "fri", "sat"],
+                        err: "recurrence only_on weekdays must be sun, mon, tue, wed, thu, fri, sat",
+                    }),
+                    plain_items: false,
+                },
+            ),
+            Field::optional(
+                "month_days",
+                FieldSpec::Array {
+                    items: Box::new(FieldSpec::PositiveInt),
+                    plain_items: false,
+                },
+            ),
+        ],
+    )
+}
+
+/// `recurrence.end` schema (`validate_recurrence_end`): an `until` datetime or an
+/// `after_count`. The at-most-one cardinality is the hook's job.
+fn recurrence_end_spec() -> PayloadSpec {
+    PayloadSpec::nested(
+        "recurrence end",
+        ObjErr::Object,
+        vec![
+            Field::datetime("until"),
+            Field::optional("after_count", FieldSpec::PositiveInt),
+        ],
+    )
+}
+
+/// The `source_journal_entry_id` provenance directive (ADR-0030/0031) a
+/// `create_{person,project,todo}` payload may carry: an optional UUID, advertised
+/// with the canonical pattern.
+fn source_journal_entry_id_field() -> Field {
+    Field::optional(
+        "source_journal_entry_id",
+        FieldSpec::Uuid { schema_regex: true },
+    )
+}
+
+/// A reference/source UUID field advertised WITH the canonical pattern + length.
+fn patterned_uuid(name: &'static str) -> Field {
+    Field::required(name, FieldSpec::Uuid { schema_regex: true })
+}
+
+/// The `entity_id` target key shared by the full-document update kinds: a UUID the
+/// validator parses but the schema advertises bare (the historical divergence —
+/// no test pins a pattern on `entity_id`).
+fn entity_id_target() -> Field {
+    Field::required(
+        "entity_id",
+        FieldSpec::Uuid {
+            schema_regex: false,
+        },
+    )
+}
+
+impl MutationKind {
+    /// The flat field shape of this kind's FULL payload (id/envelope + data) — the
+    /// single source from which both the agent tool schema and the validator
+    /// derive. Frames the owning Entity Type's data core with the per-kind
+    /// id/provenance differences.
+    pub(crate) fn payload_spec(self) -> PayloadSpec {
+        use MutationKind as M;
+        match self {
+            // ── Person ──
+            M::CreatePerson => {
+                let mut fields = EntityType::person_core();
+                fields.push(source_journal_entry_id_field());
+                PayloadSpec::payload("person", fields)
+            }
+            M::UpdatePerson => update_payload("person", EntityType::person_core()),
+            // ── Project ──
+            M::CreateProject => {
+                let mut fields = EntityType::project_core();
+                fields.push(source_journal_entry_id_field());
+                PayloadSpec::payload("project", fields)
+            }
+            M::UpdateProject => update_payload("project", EntityType::project_core()),
+            // ── Bookmark (user-CRUD only) ──
+            M::CreateBookmark => PayloadSpec::payload("bookmark", EntityType::bookmark_core()),
+            M::UpdateBookmark => update_payload("bookmark", EntityType::bookmark_core()),
+            // ── Todo ──
+            M::CreateTodo => PayloadSpec::payload(
+                "create_todo",
+                vec![
+                    // `todo` schema recurses (HookValidated emits the TodoData
+                    // schema) but its VALIDATION is `validate_todo_data` (the
+                    // status↔ts + recurrence invariants exceed a flat walk).
+                    Field::required("todo", FieldSpec::HookValidated(todo_data_spec(Mode::Full))),
+                    Field::optional(
+                        "person_refs",
+                        FieldSpec::Array {
+                            items: Box::new(FieldSpec::Object(person_ref_spec())),
+                            plain_items: false,
+                        },
+                    ),
+                    source_journal_entry_id_field(),
+                ],
+            ),
+            M::UpdateTodo => PayloadSpec::payload(
+                "update_todo",
+                vec![
+                    Field::required(
+                        "todo_id",
+                        FieldSpec::Uuid {
+                            schema_regex: false,
+                        },
+                    ),
+                    Field::optional(
+                        "todo",
+                        FieldSpec::HookValidated(todo_data_spec(Mode::Partial)),
+                    ),
+                    person_ref_array("set_person_refs"),
+                    person_ref_array("add_person_refs"),
+                    Field::optional("remove_person_ids", FieldSpec::non_empty_string_array()),
+                ],
+            ),
+            // ── Journal Entry ──
+            M::CreateJournalEntry => journal_entry_payload(None, BodyPolicy::TextOnly),
+            M::UpdateJournalEntry => {
+                journal_entry_payload(Some(entity_id_target()), BodyPolicy::TextOrExistingRef)
+            }
+            M::ReferenceExistingEntityFromJournalEntry => PayloadSpec::payload(
+                "reference",
+                vec![
+                    patterned_uuid("source_entity_id"),
+                    patterned_uuid("target_entity_id"),
+                    Field::optional("label_snapshot", FieldSpec::non_empty_string()),
+                    Field::required("body", FieldSpec::Body(BodyPolicy::TextOrNewRef)),
+                ],
+            ),
+            // ── id-only payloads ──
+            M::DeleteJournalEntry => entity_id_only("delete_journal_entry"),
+            M::DeletePerson => entity_id_only("delete_person"),
+            M::DeleteProject => entity_id_only("delete_project"),
+            M::DeleteTodo => entity_id_only("delete_todo"),
+            M::DeleteBookmark => entity_id_only("delete_bookmark"),
+            M::MarkProjectReviewed => entity_id_only("mark_project_reviewed"),
+        }
+    }
+
+    /// The DATA-only spec (the entity fields, no envelope/id) — used by the update
+    /// validators that strip the target id and validate the rest as entity data,
+    /// and by the create validators after stripping `source_journal_entry_id`.
+    pub(crate) fn payload_data_spec(self) -> PayloadSpec {
+        use MutationKind as M;
+        match self {
+            M::CreatePerson | M::UpdatePerson => {
+                PayloadSpec::payload("person", EntityType::person_core())
+            }
+            M::CreateProject | M::UpdateProject => {
+                PayloadSpec::payload("project", EntityType::project_core())
+            }
+            M::CreateBookmark | M::UpdateBookmark => {
+                PayloadSpec::payload("bookmark", EntityType::bookmark_core())
+            }
+            other => other.payload_spec(),
+        }
+    }
+}
+
+/// The full TodoData sub-object spec for a [`Mode`] (`todo` envelope value).
+pub(crate) fn todo_data_spec(mode: Mode) -> PayloadSpec {
+    PayloadSpec::nested("todo", ObjErr::JsonObject, EntityType::todo_core(mode))
+}
+
+/// An update payload: the `entity_id` target prepended to the entity data core.
+fn update_payload(noun: &'static str, core: Vec<Field>) -> PayloadSpec {
+    let mut fields = vec![entity_id_target()];
+    fields.extend(core);
+    PayloadSpec::payload(noun, fields)
+}
+
+/// An optional `person_refs`-shaped array field (`set_person_refs`/`add_person_refs`).
+fn person_ref_array(name: &'static str) -> Field {
+    Field::optional(
+        name,
+        FieldSpec::Array {
+            items: Box::new(FieldSpec::Object(person_ref_spec())),
+            plain_items: false,
+        },
+    )
+}
+
+/// A `{entity_id}`-only payload (the deletes + `mark_project_reviewed`); the noun
+/// is the wire kind, woven into the unsupported-field message.
+fn entity_id_only(noun: &'static str) -> PayloadSpec {
+    PayloadSpec::payload(noun, vec![entity_id_target()])
+}
+
+/// A journal-entry payload: optional target id, the `occurred_at`/`ended_at`
+/// timestamps, and the `body` union for the given policy.
+fn journal_entry_payload(target: Option<Field>, body: BodyPolicy) -> PayloadSpec {
+    let mut fields = Vec::new();
+    if let Some(target) = target {
+        fields.push(target);
+    }
+    fields.push(Field::datetime("occurred_at").require());
+    fields.push(Field::datetime("ended_at"));
+    fields.push(Field::required("body", FieldSpec::Body(body)));
+    PayloadSpec::payload("journal entry", fields)
 }
 
 /// Which top-level payload key names the target Entity of a mutation. A pure
@@ -396,10 +826,9 @@ pub(crate) enum ProposableMutation {
 }
 
 impl ProposableMutation {
-    /// Every agent-proposable kind, in wire order. Powers the exhaustive
-    /// predicates' tests and the `Input` schema round-trip check; test-only, so
-    /// it does not warn as unused in a normal build.
-    #[cfg(test)]
+    /// Every agent-proposable kind, in wire order. The single source the
+    /// `propose_workspace_mutation` tool descriptor iterates to emit its `oneOf`
+    /// schema, and the closed set the drift-guard test pins.
     pub(crate) const ALL: [ProposableMutation; 13] = [
         ProposableMutation::CreateJournalEntry,
         ProposableMutation::UpdateJournalEntry,

@@ -1,0 +1,19 @@
+{
+	"mutation_kind": "create_todo",
+	"payload": {
+		"todo": {
+			"title": "Submit the weekly status report",
+			"due_at": "2026-12-31T17:00:00",
+			"recurrence": {
+				"interval": 1,
+				"unit": "week",
+				"schedule": "regular",
+				"anchor": "due_at",
+				"catch_up": false,
+				"only_on": { "weekdays": ["mon", "fri"] },
+				"end": { "after_count": 10 }
+			}
+		}
+	},
+	"rationale": "The user described a recurring obligation worth tracking as a repeating Todo."
+}

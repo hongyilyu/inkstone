@@ -3,6 +3,7 @@ mod db;
 mod decide;
 mod dispatcher;
 mod entities;
+mod field_spec;
 mod hub;
 mod logging;
 mod models;
@@ -19,8 +20,8 @@ mod worker;
 mod workflow;
 
 use anyhow::Result;
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::{Router, routing::get};
 use sqlx::SqlitePool;
@@ -100,8 +101,7 @@ async fn main() -> Result<()> {
     let app = match web_dir_for_serving() {
         Some(dir) => {
             let index = dir.join("index.html");
-            let serve_dir =
-                ServeDir::new(&dir).fallback(ServeFile::new(index));
+            let serve_dir = ServeDir::new(&dir).fallback(ServeFile::new(index));
             app.fallback_service(serve_dir)
         }
         None => app.route("/", get(|| async { "Inkstone Core" })),

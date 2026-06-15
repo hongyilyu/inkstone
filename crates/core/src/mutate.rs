@@ -474,8 +474,11 @@ mod tests {
                 serde_json::json!({ "entity_id": project_id, "name": null }),
             ),
             (
+                // `name` is present so the rejection traces to the null `status`
+                // (a non-clearable enum), not the required-name check — otherwise
+                // "name is required" would fire first and mask the status guard.
                 "update_project",
-                serde_json::json!({ "entity_id": project_id, "status": null }),
+                serde_json::json!({ "entity_id": project_id, "name": "Roadmap", "status": null }),
             ),
         ];
 
