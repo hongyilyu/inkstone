@@ -9,7 +9,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::Workspace;
+use common::{Workspace, read_jsonl_lines};
 
 /// The boot trail lands in `INKSTONE_LOG_DIR` as JSONL whose lines carry a
 /// stable `event` key — `core.listening` proves the subscriber is wired — AND
@@ -98,21 +98,4 @@ fn malformed_ws_frame_logs_jsonrpc_parse_failed_warn() {
         log_dir.display(),
         lines.len()
     );
-}
-
-/// Read every non-empty line of every file under `dir` (the daily appender
-/// suffixes the file with a date, so the exact name is not assumed).
-fn read_jsonl_lines(dir: &std::path::Path) -> Vec<String> {
-    let mut lines = Vec::new();
-    let entries = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
-    for entry in entries {
-        let path = entry.expect("dir entry").path();
-        if path.is_file() {
-            let body = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            lines.extend(body.lines().filter(|l| !l.is_empty()).map(str::to_owned));
-        }
-    }
-    lines
 }

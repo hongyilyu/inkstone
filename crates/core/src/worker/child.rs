@@ -42,20 +42,30 @@ impl ChildWorker {
         };
         let args: Vec<&str> = parts.collect();
 
-        let mut child = match Command::new(program)
+        let mut command = Command::new(program);
+        command
             .args(&args)
             // ADR-0038 env seam: the Worker reads `INKSTONE_RUN_ID` to stamp its
             // worker.jsonl lines, so they join to core.jsonl by run. Set per-spawn
-            // (run_id differs per Run) — no `.env_clear()`, so the child keeps
-            // inheriting Core's env (e.g. INKSTONE_WORKER_LOG_PATH). #146 moves
-            // this in-band into WorkerManifest.
+            // (run_id differs per Run). #146 moves this in-band into WorkerManifest.
             .env("INKSTONE_RUN_ID", run_id.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
-            .kill_on_drop(true)
-            .spawn()
-        {
+            .kill_on_drop(true);
+
+        // Point the Worker's `worker.jsonl` sink at the sibling of Core's
+        // `core.jsonl` (ADR-0038), so the Worker half of the trail is written by
+        // default — not only when an operator sets the path. An explicit
+        // `INKSTONE_WORKER_LOG_PATH` already in Core's env wins as an override
+        // (the child inherits it; we only supply the default when it's absent).
+        if std::env::var_os("INKSTONE_WORKER_LOG_PATH").is_none() {
+            if let Some(path) = crate::logging::worker_log_path() {
+                command.env("INKSTONE_WORKER_LOG_PATH", path);
+            }
+        }
+
+        let mut child = match command.spawn() {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(event = "worker.spawn_failed", %run_id, program, error = ?e);

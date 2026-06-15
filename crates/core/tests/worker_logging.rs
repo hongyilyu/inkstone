@@ -19,7 +19,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{Workspace, next_text};
+use common::{Workspace, next_text, read_jsonl_lines};
 
 /// A worker that writes a malformed (non-NDJSON) stdout line trips Core's
 /// `child.rs` "unknown line" arm; the resulting `worker.unknown_line` WARN lands
@@ -123,21 +123,4 @@ fn worker_unknown_line_carries_run_id() {
         log_dir.display(),
         lines.len()
     );
-}
-
-/// Read every non-empty line of every file under `dir` (the daily appender
-/// suffixes the file with a date, so the exact name is not assumed).
-fn read_jsonl_lines(dir: &std::path::Path) -> Vec<String> {
-    let mut lines = Vec::new();
-    let entries =
-        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
-    for entry in entries {
-        let path = entry.expect("dir entry").path();
-        if path.is_file() {
-            let body = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            lines.extend(body.lines().filter(|l| !l.is_empty()).map(str::to_owned));
-        }
-    }
-    lines
 }

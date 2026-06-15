@@ -30,7 +30,13 @@ export function runWorkerMain(
 			Effect.flatMap(WorkerTransport, (t) =>
 				Effect.sync(() => {
 					// Diagnostic Log (ADR-0038): additive to the terminal Run Event below.
-					logWorkerFault("worker.run_error", { message: error.message });
+					// `source` distinguishes this program-level catchAll from the
+					// interpreter's model-reported `worker.run_error` (same key, so an
+					// agent's `GROUP BY event` mines all run errors together).
+					logWorkerFault("worker.run_error", {
+						source: "catch_all",
+						message: error.message,
+					});
 					t.emit({ kind: "error", message: error.message });
 				}),
 			),

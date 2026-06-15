@@ -5,11 +5,14 @@
 // in `process.env.INKSTONE_RUN_ID` so the test can assert Core passed the Run's
 // run_id to the worker child at spawn time (the ADR-0038 env seam; slice 6).
 //
-// Mechanism (A) FILE ECHO: the fixture writes `INKSTONE_RUN_ID` (or "" when
-// unset, which is the RED state before child.rs sets it) to the sink file at
-// `process.env.INKSTONE_TEST_RUNID_SINK`, then drives a minimal valid Run to a
-// terminal `done` so Core finalizes the Run cleanly. The test reads the sink
-// after killing Core and asserts its trimmed contents equal the Run's run_id.
+// Mechanism (A) FILE ECHO: the fixture writes a spawn-time env var (or "" when
+// unset, the RED state before Core sets it) to a sink file, then drives a
+// minimal valid Run to a terminal `done` so Core finalizes the Run cleanly. The
+// test reads the sink after killing Core and asserts its contents.
+//   - `INKSTONE_TEST_RUNID_SINK`   ← echoes `INKSTONE_RUN_ID` (slice 6 seam)
+//   - `INKSTONE_TEST_LOGPATH_SINK` ← echoes `INKSTONE_WORKER_LOG_PATH` (the
+//     default worker.jsonl path Core supplies so the Worker trail is written
+//     by default, ADR-0038)
 //
 // Node builtins ONLY (no @inkstone/protocol) so it runs standalone via tsx from
 // crates/core/tests/fixtures/.
@@ -18,11 +21,15 @@ import { writeFileSync } from "node:fs";
 import { emit, stdinLines } from "./transport.js";
 
 const main = async (): Promise<void> => {
-	// Echo the spawn-time env var to the sink. Before child.rs sets it the var
-	// is unset → `?? ""` writes an empty string (the RED observable).
-	const sink = process.env.INKSTONE_TEST_RUNID_SINK;
-	if (sink !== undefined && sink.length > 0) {
-		writeFileSync(sink, process.env.INKSTONE_RUN_ID ?? "");
+	// Echo the spawn-time env var(s) to the requested sink(s). Before Core sets
+	// them the vars are unset → `?? ""` writes an empty string (the RED observable).
+	const runIdSink = process.env.INKSTONE_TEST_RUNID_SINK;
+	if (runIdSink !== undefined && runIdSink.length > 0) {
+		writeFileSync(runIdSink, process.env.INKSTONE_RUN_ID ?? "");
+	}
+	const logPathSink = process.env.INKSTONE_TEST_LOGPATH_SINK;
+	if (logPathSink !== undefined && logPathSink.length > 0) {
+		writeFileSync(logPathSink, process.env.INKSTONE_WORKER_LOG_PATH ?? "");
 	}
 
 	// First non-empty stdin line is the manifest; empty stdin -> exit 0.

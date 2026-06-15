@@ -16,6 +16,9 @@ use tracing_subscriber::EnvFilter;
 /// e.g. `core.jsonl.2026-06-14`.
 const LOG_FILE_PREFIX: &str = "core.jsonl";
 
+/// Filename for the Worker's sibling trail, written next to `core.jsonl`.
+const WORKER_LOG_FILE: &str = "worker.jsonl";
+
 /// Default verbosity directive when `INKSTONE_LOG` is unset: `INFO` overall,
 /// with `sqlx::query` clamped to `WARN` so SQL statements and their bound
 /// parameters are not written to disk at the default level (ADR-0038
@@ -65,37 +68,22 @@ pub fn init() -> Result<()> {
 }
 
 /// Resolve the log directory: `INKSTONE_LOG_DIR` env override wins, else
-/// `<OS data dir>/inkstone/logs`. Mirrors [`crate::db`]'s `resolve_db_path`.
+/// `<OS data dir>/inkstone/logs`. Reuses `db::os_data_dir` (already
+/// `pub(crate)`) so the log dir and the DB dir resolve through the same per-OS
+/// logic and can never drift apart.
 fn resolve_log_dir() -> Result<PathBuf> {
     if let Some(env) = std::env::var_os("INKSTONE_LOG_DIR") {
         return Ok(PathBuf::from(env));
     }
-    Ok(os_data_dir()?.join("inkstone").join("logs"))
+    Ok(crate::db::os_data_dir()?.join("inkstone").join("logs"))
 }
 
-// Per-OS application-data directory, duplicated from `db::os_data_dir` (which is
-// private to the `db` module) to keep this slice within Core's logging file
-// ownership — a one-module-local copy rather than widening another module's
-// visibility. Kept byte-identical so the two resolvers cannot drift.
-#[cfg(target_os = "macos")]
-fn os_data_dir() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("$HOME not set")?;
-    Ok(PathBuf::from(home)
-        .join("Library")
-        .join("Application Support"))
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn os_data_dir() -> Result<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME").filter(|s| !s.is_empty()) {
-        return Ok(PathBuf::from(xdg));
-    }
-    let home = std::env::var_os("HOME").context("$HOME not set")?;
-    Ok(PathBuf::from(home).join(".local").join("share"))
-}
-
-#[cfg(target_os = "windows")]
-fn os_data_dir() -> Result<PathBuf> {
-    let appdata = std::env::var_os("APPDATA").context("%APPDATA% not set")?;
-    Ok(PathBuf::from(appdata))
+/// The default path for the Worker's `worker.jsonl` sibling trail — the same
+/// log dir Core writes `core.jsonl` into, plus `worker.jsonl`. Core hands this
+/// to the spawned Worker as `INKSTONE_WORKER_LOG_PATH` (the Worker's sink reads
+/// that env var), so the Worker half of the trail is written by default,
+/// joinable to `core.jsonl`. Returns `None` if the log dir can't be resolved —
+/// logging is best-effort and must never block a Worker spawn.
+pub(crate) fn worker_log_path() -> Option<PathBuf> {
+    resolve_log_dir().ok().map(|d| d.join(WORKER_LOG_FILE))
 }
