@@ -7,6 +7,7 @@ mod hub;
 mod logging;
 mod models;
 mod mutate;
+mod mutation;
 mod mutation_target;
 mod protocol;
 mod provider_auth;

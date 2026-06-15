@@ -12,6 +12,7 @@ use sqlx::SqlitePool;
 
 use crate::db;
 use crate::entities;
+use crate::mutation::{MutationKind, WriteOp};
 use crate::mutation_target::{self, TargetError};
 
 /// A successful user mutation: the affected Entity id, present on create/update
@@ -19,19 +20,6 @@ use crate::mutation_target::{self, TargetError};
 #[derive(Debug)]
 pub struct Outcome {
     pub entity_id: Option<String>,
-}
-
-/// Whether a `mutation_kind` removes an Entity (no surviving row, so no
-/// `entity_id` on the wire). Mirrors the apply core's delete classification.
-fn is_delete_mutation(mutation_kind: &str) -> bool {
-    matches!(
-        mutation_kind,
-        "delete_journal_entry"
-            | "delete_person"
-            | "delete_project"
-            | "delete_todo"
-            | "delete_bookmark"
-    )
 }
 
 /// The user-mutation failure vocabulary. The handler maps each to a wire code:
@@ -56,7 +44,14 @@ pub async fn apply(
     mutation_kind: &str,
     payload: &serde_json::Value,
 ) -> Result<Outcome, MutateError> {
-    entities::validate(mutation_kind, payload).map_err(MutateError::Invalid)?;
+    // Resolve the wire string once (the single string→type point on this path):
+    // an unknown kind is a client error (-32602), the old validate `_` arm's role.
+    let kind = MutationKind::from_wire(mutation_kind).ok_or_else(|| {
+        MutateError::Invalid(format!("mutation_kind {mutation_kind:?} not supported"))
+    })?;
+    let desc = kind.describe();
+
+    entities::validate(kind, payload).map_err(MutateError::Invalid)?;
 
     // A direct Library create is anchor-less by design (ADR-0033: "source row iff
     // a real source" — the user path has no Run, user Message, or Journal-Entry
@@ -64,8 +59,8 @@ pub async fn apply(
     // shared agent path, but the user path must REJECT it rather than silently
     // validate provenance and persist no entity_sources row.
     if matches!(
-        mutation_kind,
-        "create_person" | "create_project" | "create_todo"
+        kind,
+        MutationKind::CreatePerson | MutationKind::CreateProject | MutationKind::CreateTodo
     ) && entities::source_journal_entry_id(payload).is_some()
     {
         return Err(MutateError::Invalid(
@@ -73,7 +68,7 @@ pub async fn apply(
         ));
     }
 
-    mutation_target::validate_mutation_target_refs(pool, mutation_kind, payload)
+    mutation_target::validate_mutation_target_refs(pool, kind, payload)
         .await
         .map_err(|e| match e {
             // On the USER path a vanished primary target is a client-correctable
@@ -88,10 +83,8 @@ pub async fn apply(
 
     let entity_id = db::apply_user_mutation(
         pool,
-        mutation_kind,
-        entities::entity_type(mutation_kind),
-        entities::schema_version(mutation_kind),
-        entities::target_entity_id(mutation_kind, payload),
+        kind,
+        crate::mutation::target_entity_id(desc, payload),
         payload,
         db::now_ms(),
     )
@@ -111,7 +104,7 @@ pub async fn apply(
         db::ApplyError::Sql(err) => MutateError::Internal(err.into()),
     })?;
 
-    let entity_id = if is_delete_mutation(mutation_kind) {
+    let entity_id = if desc.write_op == WriteOp::Delete {
         None
     } else {
         Some(entity_id)
@@ -844,13 +837,12 @@ mod tests {
         );
 
         // The Person is untouched (neither mutation wrote or deleted it).
-        let row_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM entities WHERE id = ?1 AND type = 'person'",
-        )
-        .bind(&person_id)
-        .fetch_one(&pool)
-        .await
-        .expect("count person rows");
+        let row_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE id = ?1 AND type = 'person'")
+                .bind(&person_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count person rows");
         assert_eq!(row_count, 1, "the wrong-type target survives untouched");
     }
 }

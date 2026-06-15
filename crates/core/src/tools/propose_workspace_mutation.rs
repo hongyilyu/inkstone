@@ -12,28 +12,6 @@ pub const NAME: &str = "propose_workspace_mutation";
 const DESCRIPTION: &str = "Propose a Workspace mutation for user review: capture a journal-worthy lived event or reflection as a Journal Entry, or extract People/Projects/Todos from an already-accepted Journal Entry. Do not create a Journal Entry for a bare reminder, task, or future obligation the user only wants remembered.";
 const LABEL: &str = "Propose Workspace mutation";
 
-/// Closed set of Core-known Workspace mutation kinds (Journal Entry + GTD
-/// Person/Project/Todo). Documentation mirror of [`Input`]'s `mutation_kind`
-/// discriminants; the wire schema is generated from `Input`, not this enum.
-#[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
-pub enum WorkspaceMutationKind {
-    CreateJournalEntry,
-    UpdateJournalEntry,
-    DeleteJournalEntry,
-    ReferenceExistingEntityFromJournalEntry,
-    CreatePerson,
-    UpdatePerson,
-    DeletePerson,
-    CreateProject,
-    UpdateProject,
-    DeleteProject,
-    CreateTodo,
-    UpdateTodo,
-    DeleteTodo,
-}
-
 /// Wire arguments: `mutation_kind` names the mutation; `payload` is its body,
 /// validated by Core on Decision.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1120,6 +1098,46 @@ mod tests {
                 top_level_variant(&d.json_schema, kind).is_some(),
                 "schema must bind {kind} at top level: {}",
                 d.json_schema
+            );
+        }
+    }
+
+    /// The two surfaces that must list the same 13 agent-proposable kinds — the
+    /// wire schema generated from `Input`, and `ProposableMutation` (the taxonomy
+    /// that carries render_accept/supports_edit/…) — cannot silently drift. Every
+    /// `ProposableMutation::ALL` variant binds a top-level schema variant AND
+    /// round-trips through `from_wire` + `try_into`; and the schema has EXACTLY 13
+    /// top-level variants, so neither side can gain a kind the other lacks.
+    #[test]
+    fn input_schema_and_proposable_mutation_agree() {
+        use crate::mutation::{MutationKind, ProposableMutation};
+
+        let d = descriptor();
+        let variants = d.json_schema["oneOf"]
+            .as_array()
+            .expect("schema binds mutation_kind via a top-level oneOf");
+        assert_eq!(
+            variants.len(),
+            ProposableMutation::ALL.len(),
+            "schema must expose exactly the {} agent-proposable kinds, got {}: {}",
+            ProposableMutation::ALL.len(),
+            variants.len(),
+            d.json_schema
+        );
+
+        for proposable in ProposableMutation::ALL {
+            let wire = proposable.kind().as_wire();
+            assert!(
+                top_level_variant(&d.json_schema, wire).is_some(),
+                "Input schema is missing proposable kind {wire}: {}",
+                d.json_schema
+            );
+            // The wire string round-trips back to the SAME proposable kind.
+            let parsed = MutationKind::from_wire(wire).expect("proposable kind parses");
+            assert_eq!(
+                ProposableMutation::try_from(parsed).ok(),
+                Some(proposable),
+                "{wire} must round-trip to its ProposableMutation"
             );
         }
     }

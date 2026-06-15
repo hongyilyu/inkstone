@@ -697,8 +697,23 @@ pub async fn journal_entry_target_is_valid(
     queries::journal_entry_target_is_valid(pool, run_id, entity_id).await
 }
 
-pub async fn entity_type_by_id(pool: &SqlitePool, entity_id: &str) -> sqlx::Result<Option<String>> {
-    queries::entity_type_by_id(pool, entity_id).await
+/// The Entity Type of an accepted Entity, parsed into [`EntityType`]. `None`
+/// means the row is genuinely absent (→ a target-gone `TargetMissing` on the
+/// agent path, ADR-0033). A row whose stored `type` string fails to parse — the
+/// column has no CHECK constraint — surfaces as a loud `sqlx::Error::Decode`
+/// (every caller routes it to `Internal`), never silently collapsing to `None`.
+pub async fn entity_type_by_id(
+    pool: &SqlitePool,
+    entity_id: &str,
+) -> sqlx::Result<Option<crate::mutation::EntityType>> {
+    match queries::entity_type_by_id(pool, entity_id).await? {
+        None => Ok(None),
+        Some(raw) => crate::mutation::EntityType::from_str(&raw)
+            .map(Some)
+            .ok_or_else(|| {
+                sqlx::Error::Decode(format!("unknown stored entity type {raw:?}").into())
+            }),
+    }
 }
 
 /// Whether an accepted Entity with `entity_id` exists and is of `entity_type`.
@@ -776,17 +791,16 @@ pub async fn apply_proposal(
     run_id: Uuid,
     proposal_id: &str,
     tool_call_id: &str,
-    mutation_kind: &str,
-    entity_type: &str,
-    schema_version: i64,
+    kind: crate::mutation::MutationKind,
     target_entity_id: Option<&str>,
     payload: &serde_json::Value,
     edited_payload: Option<&serde_json::Value>,
-    source_relation_from_user_message: Option<&str>,
+    source_relation_from_user_message: Option<crate::mutation::SourceRelation>,
     decision_idempotency_key: Option<&str>,
     decision_result_payload: &str,
     now_ms: i64,
 ) -> Result<String, ApplyError> {
+    use crate::mutation::SourceRelation;
     let edited_str = edited_payload.map(|v| v.to_string());
     let effective_payload = edited_payload.unwrap_or(payload);
 
@@ -817,17 +831,17 @@ pub async fn apply_proposal(
     // at the user Message, so the field is honored solely for creates.
     let source = match source_relation_from_user_message {
         Some(relation) => {
-            let je_id = (relation == "created_from")
+            let je_id = (relation == SourceRelation::CreatedFrom)
                 .then(|| crate::entities::source_journal_entry_id(effective_payload))
                 .flatten();
             Some(match je_id {
                 Some(journal_entry_id) => apply::EntitySource::FromJournalEntry {
                     journal_entry_id: journal_entry_id.to_string(),
-                    relation: relation.to_string(),
+                    relation: relation.as_str().to_string(),
                 },
                 None => apply::EntitySource::FromMessage {
                     message_id: queries::user_message_id_for_run(&mut *tx, run_id).await?,
-                    relation: relation.to_string(),
+                    relation: relation.as_str().to_string(),
                 },
             })
         }
@@ -837,9 +851,7 @@ pub async fn apply_proposal(
     let entity_id = apply::apply_entity_mutation(
         &mut tx,
         apply::EntityMutationSpec {
-            mutation_kind,
-            entity_type,
-            schema_version,
+            kind,
             target_entity_id,
             payload,
             edited_payload,
@@ -870,13 +882,12 @@ pub async fn apply_proposal(
 /// driven with `created_by='user'`, `proposal_id=None`, and `source=None` — a
 /// plain Library write has no Run, user Message, or Journal-Entry anchor, so it
 /// writes no Entity Source row (ADR-0033 "source row iff a real source").
-/// `entity_type`/`schema_version`/`target_entity_id` are caller-resolved, so this
-/// layer names no specific Entity Type, mirroring [`apply_proposal`].
+/// The `kind` carries the Entity Type / schema version / target-key, and the
+/// `target_entity_id` is caller-resolved, so this layer names no specific Entity
+/// Type, mirroring [`apply_proposal`].
 pub async fn apply_user_mutation(
     pool: &SqlitePool,
-    mutation_kind: &str,
-    entity_type: &str,
-    schema_version: i64,
+    kind: crate::mutation::MutationKind,
     target_entity_id: Option<&str>,
     payload: &serde_json::Value,
     now_ms: i64,
@@ -885,9 +896,7 @@ pub async fn apply_user_mutation(
     let entity_id = apply::apply_entity_mutation(
         &mut tx,
         apply::EntityMutationSpec {
-            mutation_kind,
-            entity_type,
-            schema_version,
+            kind,
             target_entity_id,
             payload,
             edited_payload: None,
@@ -1496,16 +1505,14 @@ mod tests {
             run_id,
             &proposal_id,
             "tool-accept",
-            "create_journal_entry",
-            "journal_entry",
-            99,
+            crate::mutation::MutationKind::CreateJournalEntry,
             None,
             &serde_json::json!({
                 "occurred_at": "2026-06-10T10:30:00",
                 "body": [{ "type": "text", "text": "Bought milk." }]
             }),
             None,
-            Some("created_from"),
+            Some(crate::mutation::SourceRelation::CreatedFrom),
             Some("idem-accept"),
             r#"{"decision":"accept","content":"Accepted."}"#,
             42,
@@ -1527,15 +1534,19 @@ mod tests {
             source_count, 1,
             "accepted entity records its source Message"
         );
-        // The caller-supplied schema_version is persisted verbatim (a sentinel,
-        // not the default), so this catches apply_proposal re-hardcoding it.
+        // The stored schema_version is the one the Entity Type owns (derived from
+        // the kind via the descriptor), so this catches apply_proposal stamping
+        // the wrong version for the Journal Entry it created.
         let stored_schema_version: i64 =
             sqlx::query_scalar("SELECT schema_version FROM entities WHERE id = ?1")
                 .bind(&entity_id)
                 .fetch_one(&pool)
                 .await
                 .expect("entity schema_version");
-        assert_eq!(stored_schema_version, 99);
+        assert_eq!(
+            stored_schema_version,
+            crate::mutation::JOURNAL_ENTRY_SCHEMA_VERSION
+        );
         assert_eq!(
             run_event_count(&pool, &run_id.to_string(), "proposal_decided").await,
             1
@@ -1551,16 +1562,14 @@ mod tests {
             run_id,
             &proposal_id,
             "tool-accept",
-            "create_journal_entry",
-            "journal_entry",
-            crate::entities::JOURNAL_ENTRY_SCHEMA_VERSION,
+            crate::mutation::MutationKind::CreateJournalEntry,
             None,
             &serde_json::json!({
                 "occurred_at": "2026-06-10T10:30:00",
                 "body": [{ "type": "text", "text": "Bought milk." }]
             }),
             None,
-            Some("created_from"),
+            Some(crate::mutation::SourceRelation::CreatedFrom),
             Some("idem-accept-2"),
             r#"{"decision":"accept","content":"Accepted."}"#,
             43,
@@ -1595,7 +1604,7 @@ mod tests {
              VALUES (?, 'person', ?, ?, 'user', NULL, ?, ?)",
         )
         .bind(&person_id)
-        .bind(crate::entities::PERSON_SCHEMA_VERSION)
+        .bind(crate::mutation::PERSON_SCHEMA_VERSION)
         .bind(r#"{"name":"Alice"}"#)
         .bind(1_i64)
         .bind(1_i64)
@@ -1615,9 +1624,7 @@ mod tests {
             run_id,
             &proposal_id,
             "tool-update-src",
-            "update_person",
-            "person",
-            crate::entities::PERSON_SCHEMA_VERSION,
+            crate::mutation::MutationKind::UpdatePerson,
             Some(&person_id),
             &serde_json::json!({
                 "entity_id": person_id,
@@ -1625,7 +1632,7 @@ mod tests {
                 "source_journal_entry_id": bogus_journal_entry_id,
             }),
             None,
-            Some("updated_from"),
+            Some(crate::mutation::SourceRelation::UpdatedFrom),
             Some("idem-update-src"),
             r#"{"decision":"accept","content":"Accepted."}"#,
             42,
@@ -1675,9 +1682,7 @@ mod tests {
             run_id,
             &proposal_id,
             "tool-vanished",
-            "delete_journal_entry",
-            "journal_entry",
-            crate::entities::JOURNAL_ENTRY_SCHEMA_VERSION,
+            crate::mutation::MutationKind::DeleteJournalEntry,
             Some(&missing_entity_id),
             &serde_json::json!({ "entity_id": missing_entity_id }),
             None,
@@ -1727,13 +1732,11 @@ mod tests {
             run_id,
             &proposal_id,
             "tool-vanished-upd",
-            "update_person",
-            "person",
-            crate::entities::PERSON_SCHEMA_VERSION,
+            crate::mutation::MutationKind::UpdatePerson,
             Some(&missing_entity_id),
             &serde_json::json!({ "entity_id": missing_entity_id, "name": "Ghost" }),
             None,
-            Some("updated_from"),
+            Some(crate::mutation::SourceRelation::UpdatedFrom),
             Some("idem-vanished-upd"),
             r#"{"decision":"accept","content":"Accepted."}"#,
             42,

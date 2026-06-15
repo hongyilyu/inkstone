@@ -1,66 +1,64 @@
 //! Workspace mutation schemas (ADR-0016, ADR-0025). A Proposal's payload is
-//! validated by `mutation_kind` before it is durably applied. Supported
+//! validated by its [`MutationKind`] before it is durably applied. Supported
 //! mutations create/update/delete a `journal_entry` Entity (plus provenance)
 //! and add inline references from Journal Entries to existing Entities.
+//!
+//! The closed Entity-Type taxonomy ([`MutationKind`]/[`ProposableMutation`] and
+//! the descriptor) lives in [`crate::mutation`]; this module is the per-kind
+//! *schema* layer — the validator bodies plus the accept-text rendering. Both
+//! `validate` and `render_accept` dispatch on the typed kind, so a new kind is a
+//! compile error here, not a runtime panic.
 
 use serde_json::Value;
 use uuid::Uuid;
 
-/// The schema version stamped onto a freshly-created Journal Entry + its first
-/// revision.
-pub const JOURNAL_ENTRY_SCHEMA_VERSION: i64 = 1;
-
-/// The schema version stamped onto a freshly-created Person + its first revision.
-pub const PERSON_SCHEMA_VERSION: i64 = 1;
-
-/// The schema version stamped onto a freshly-created Project + its first revision.
-pub const PROJECT_SCHEMA_VERSION: i64 = 1;
-
-/// The schema version stamped onto a freshly-created Todo + its first revision.
-pub const TODO_SCHEMA_VERSION: i64 = 1;
-
-/// The schema version stamped onto a freshly-created Bookmark + its first
-/// revision (ADR-0036).
-pub const BOOKMARK_SCHEMA_VERSION: i64 = 1;
+use crate::mutation::{MutationKind, ProposableMutation};
 
 /// Validate a proposed mutation payload against its schema (ADR-0016),
-/// dispatched on `mutation_kind`. An unsupported mutation is a validation
-/// failure. `Err(reason)` is surfaced as the `invalid_params` message on
-/// `proposal/decide`.
-pub(crate) fn validate(mutation_kind: &str, payload: &Value) -> Result<(), String> {
-    match mutation_kind {
-        "create_journal_entry" => validate_journal_entry(payload),
-        "update_journal_entry" => validate_update_journal_entry(payload),
-        "delete_journal_entry" => validate_delete_entity(payload, "delete_journal_entry"),
-        "reference_existing_entity_from_journal_entry" => {
+/// dispatched on the typed [`MutationKind`]. `Err(reason)` is surfaced as the
+/// `invalid_params` message on `proposal/decide` / `entity/mutate`. Total over
+/// the closed kind set — an unknown wire string is rejected at the edge by
+/// [`MutationKind::from_wire`], so this never sees one.
+pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String> {
+    match kind {
+        MutationKind::CreateJournalEntry => validate_journal_entry(payload),
+        MutationKind::UpdateJournalEntry => validate_update_journal_entry(payload),
+        MutationKind::DeleteJournalEntry => validate_delete_entity(payload, "delete_journal_entry"),
+        MutationKind::ReferenceExistingEntityFromJournalEntry => {
             validate_reference_existing_entity_from_journal_entry(payload)
         }
-        "delete_person" => validate_delete_entity(payload, "delete_person"),
-        "delete_project" => validate_delete_entity(payload, "delete_project"),
-        "delete_todo" => validate_delete_entity(payload, "delete_todo"),
-        "create_person" => validate_person(&strip_source_journal_entry_id(payload)?),
-        "update_person" => validate_update_person(payload),
-        "create_project" => validate_project(&strip_source_journal_entry_id(payload)?),
-        "update_project" => validate_update_project(payload),
+        MutationKind::DeletePerson => validate_delete_entity(payload, "delete_person"),
+        MutationKind::DeleteProject => validate_delete_entity(payload, "delete_project"),
+        MutationKind::DeleteTodo => validate_delete_entity(payload, "delete_todo"),
+        MutationKind::CreatePerson => validate_person(&strip_source_journal_entry_id(payload)?),
+        MutationKind::UpdatePerson => validate_update_person(payload),
+        MutationKind::CreateProject => validate_project(&strip_source_journal_entry_id(payload)?),
+        MutationKind::UpdateProject => validate_update_project(payload),
         // A user-path-only review touch (ADR-0034): `{entity_id}` only — Core reads
         // the Project and recomputes the review fields, so the client sends no data.
         // Deliberately absent from the agent `propose_workspace_mutation` schema; it
         // can only arrive via `entity/mutate`.
-        "mark_project_reviewed" => validate_entity_id_only(payload, "mark_project_reviewed"),
-        "create_todo" => validate_todo(payload),
-        "update_todo" => validate_update_todo(payload),
-        "create_bookmark" => validate_bookmark(payload),
-        "update_bookmark" => validate_update_bookmark(payload),
-        "delete_bookmark" => validate_delete_entity(payload, "delete_bookmark"),
-        _ => Err(format!("mutation_kind {mutation_kind:?} not supported")),
+        MutationKind::MarkProjectReviewed => {
+            validate_entity_id_only(payload, "mark_project_reviewed")
+        }
+        MutationKind::CreateTodo => validate_todo(payload),
+        MutationKind::UpdateTodo => validate_update_todo(payload),
+        MutationKind::CreateBookmark => validate_bookmark(payload),
+        MutationKind::UpdateBookmark => validate_update_bookmark(payload),
+        MutationKind::DeleteBookmark => validate_delete_entity(payload, "delete_bookmark"),
     }
 }
 
 /// Render the human-readable Decision text the model reads on resume as the
-/// awaited tool's result (ADR-0025), dispatched on mutation kind.
-pub(crate) fn render_accept(mutation_kind: &str, payload: &Value) -> String {
-    match mutation_kind {
-        "create_journal_entry" => {
+/// awaited tool's result (ADR-0025). An inherent method on [`ProposableMutation`]
+/// (declared in [`crate::mutation`]) so it is total over exactly the 13 kinds
+/// that can reach the agent accept path — the 4 user-only kinds are not in the
+/// type, so there is no `unreachable!` to forget. Defined here, alongside the
+/// private body-text helpers it uses.
+pub(crate) fn render_accept(kind: ProposableMutation, payload: &Value) -> String {
+    use ProposableMutation as P;
+    match kind {
+        P::CreateJournalEntry => {
             let occurred_at = payload
                 .get("occurred_at")
                 .and_then(Value::as_str)
@@ -68,7 +66,7 @@ pub(crate) fn render_accept(mutation_kind: &str, payload: &Value) -> String {
             let body = journal_body_text(payload);
             format!("Accepted. Created Journal Entry (occurred_at={occurred_at}, body={body}).")
         }
-        "update_journal_entry" => {
+        P::UpdateJournalEntry => {
             let occurred_at = payload
                 .get("occurred_at")
                 .and_then(Value::as_str)
@@ -76,14 +74,14 @@ pub(crate) fn render_accept(mutation_kind: &str, payload: &Value) -> String {
             let body = journal_body_text(payload);
             format!("Accepted. Updated Journal Entry (occurred_at={occurred_at}, body={body}).")
         }
-        "delete_journal_entry" => {
+        P::DeleteJournalEntry => {
             let entity_id = payload
                 .get("entity_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Deleted Journal Entry (entity_id={entity_id}).")
         }
-        "reference_existing_entity_from_journal_entry" => {
+        P::ReferenceExistingEntityFromJournalEntry => {
             let source_entity_id = payload
                 .get("source_entity_id")
                 .and_then(Value::as_str)
@@ -97,42 +95,42 @@ pub(crate) fn render_accept(mutation_kind: &str, payload: &Value) -> String {
                 "Accepted. Referenced Entity (source_entity_id={source_entity_id}, target_entity_id={target_entity_id}, body={body})."
             )
         }
-        "delete_person" => {
+        P::DeletePerson => {
             let entity_id = payload
                 .get("entity_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Deleted Person (entity_id={entity_id}).")
         }
-        "delete_project" => {
+        P::DeleteProject => {
             let entity_id = payload
                 .get("entity_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Deleted Project (entity_id={entity_id}).")
         }
-        "delete_todo" => {
+        P::DeleteTodo => {
             let entity_id = payload
                 .get("entity_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Deleted Todo (entity_id={entity_id}).")
         }
-        "create_person" => {
+        P::CreatePerson => {
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Created Person (name={name}).")
         }
-        "update_person" => {
+        P::UpdatePerson => {
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Updated Person (name={name}).")
         }
-        "create_project" => {
+        P::CreateProject => {
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
@@ -143,7 +141,7 @@ pub(crate) fn render_accept(mutation_kind: &str, payload: &Value) -> String {
                 .unwrap_or("active");
             format!("Accepted. Created Project (name={name}, status={status}).")
         }
-        "update_project" => {
+        P::UpdateProject => {
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
@@ -154,7 +152,7 @@ pub(crate) fn render_accept(mutation_kind: &str, payload: &Value) -> String {
                 .unwrap_or("unknown");
             format!("Accepted. Updated Project (name={name}, status={status}).")
         }
-        "create_todo" => {
+        P::CreateTodo => {
             let todo = payload.get("todo");
             let title = todo
                 .and_then(|t| t.get("title"))
@@ -166,21 +164,13 @@ pub(crate) fn render_accept(mutation_kind: &str, payload: &Value) -> String {
                 .unwrap_or("active");
             format!("Accepted. Created Todo (title={title}, status={status}).")
         }
-        "update_todo" => {
+        P::UpdateTodo => {
             let todo_id = payload
                 .get("todo_id")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Updated Todo (todo_id={todo_id}).")
         }
-        // Bookmark is user-CRUD-only (ADR-0036): it never enters the agent
-        // Proposal accept path (`decide`, the sole caller of `render_accept`),
-        // so this is unreachable. Listed explicitly so the omission is a
-        // deliberate decision, not a forgotten arm.
-        "create_bookmark" | "update_bookmark" | "delete_bookmark" => {
-            unreachable!("bookmark is user-CRUD-only and never reaches the agent accept path")
-        }
-        other => unreachable!("render_accept for unvalidated mutation_kind {other:?}"),
     }
 }
 
@@ -212,94 +202,9 @@ fn journal_body_node_text(node: &Value) -> Option<String> {
     }
 }
 
-/// The schema version to stamp onto a freshly-created entity of this Entity
-/// Type + its first revision, dispatched on `mutation_kind`.
-pub(crate) fn schema_version(mutation_kind: &str) -> i64 {
-    match mutation_kind {
-        "create_journal_entry"
-        | "update_journal_entry"
-        | "delete_journal_entry"
-        | "reference_existing_entity_from_journal_entry" => JOURNAL_ENTRY_SCHEMA_VERSION,
-        "create_person" | "update_person" | "delete_person" => PERSON_SCHEMA_VERSION,
-        "create_project" | "update_project" | "delete_project" | "mark_project_reviewed" => {
-            PROJECT_SCHEMA_VERSION
-        }
-        "create_todo" | "update_todo" | "delete_todo" => TODO_SCHEMA_VERSION,
-        "create_bookmark" | "update_bookmark" | "delete_bookmark" => BOOKMARK_SCHEMA_VERSION,
-        other => unreachable!("schema_version for unvalidated mutation_kind {other:?}"),
-    }
-}
-
-pub(crate) fn entity_type(mutation_kind: &str) -> &'static str {
-    match mutation_kind {
-        "create_journal_entry"
-        | "update_journal_entry"
-        | "delete_journal_entry"
-        | "reference_existing_entity_from_journal_entry" => "journal_entry",
-        "create_person" | "update_person" | "delete_person" => "person",
-        "create_project" | "update_project" | "delete_project" | "mark_project_reviewed" => {
-            "project"
-        }
-        "create_todo" | "update_todo" | "delete_todo" => "todo",
-        "create_bookmark" | "update_bookmark" | "delete_bookmark" => "bookmark",
-        other => unreachable!("entity_type for unvalidated mutation_kind {other:?}"),
-    }
-}
-
-pub(crate) fn source_relation_from_user_message(mutation_kind: &str) -> Option<&'static str> {
-    match mutation_kind {
-        "create_journal_entry" => Some("created_from"),
-        "update_journal_entry" | "reference_existing_entity_from_journal_entry" => {
-            Some("updated_from")
-        }
-        "delete_journal_entry"
-        | "delete_person"
-        | "delete_project"
-        | "delete_todo"
-        | "delete_bookmark" => None,
-        "create_person" => Some("created_from"),
-        "update_person" => Some("updated_from"),
-        "create_project" => Some("created_from"),
-        "update_project" => Some("updated_from"),
-        "create_todo" => Some("created_from"),
-        "update_todo" => Some("updated_from"),
-        // Bookmark is user-CRUD-only (ADR-0036): the user path passes no Entity
-        // Source, so these relations are never consumed. Kept consistent with the
-        // create/update pattern so the function stays total without a panic.
-        "create_bookmark" => Some("created_from"),
-        "update_bookmark" => Some("updated_from"),
-        other => unreachable!("source relation for unvalidated mutation_kind {other:?}"),
-    }
-}
-
-pub(crate) fn target_entity_id<'a>(mutation_kind: &str, payload: &'a Value) -> Option<&'a str> {
-    match mutation_kind {
-        "update_journal_entry"
-        | "delete_journal_entry"
-        | "update_person"
-        | "update_project"
-        | "delete_person"
-        | "delete_project"
-        | "delete_todo"
-        | "mark_project_reviewed"
-        | "update_bookmark"
-        | "delete_bookmark" => payload.get("entity_id").and_then(Value::as_str),
-        "reference_existing_entity_from_journal_entry" => {
-            payload.get("source_entity_id").and_then(Value::as_str)
-        }
-        // update_todo's target key is `todo_id`, NOT `entity_id` (its envelope
-        // wraps a Partial<TodoData> under `todo`). delete_todo, by contrast,
-        // targets a plain `{entity_id}` like every other delete.
-        "update_todo" => payload.get("todo_id").and_then(Value::as_str),
-        "create_journal_entry"
-        | "create_person"
-        | "create_project"
-        | "create_todo"
-        | "create_bookmark" => None,
-        other => unreachable!("target entity for unvalidated mutation_kind {other:?}"),
-    }
-}
-
+/// The `target_entity_id` of a reference weave — the EXISTING Entity the new
+/// inline reference points at (distinct from the `source_entity_id` Journal
+/// Entry the reference is woven into, which is the mutation's target key).
 pub(crate) fn reference_target_entity_id(payload: &Value) -> Option<&str> {
     payload.get("target_entity_id").and_then(Value::as_str)
 }
@@ -1698,7 +1603,37 @@ pub fn is_inbox_todo(status: &str, has_project: bool, has_due: bool, has_any_ref
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mutation::{BOOKMARK_SCHEMA_VERSION, JOURNAL_ENTRY_SCHEMA_VERSION};
     use serde_json::json;
+
+    /// Test shim: validate by wire string, mirroring the pre-refactor
+    /// `validate(&str, _)` signature so the schema tests stay string-driven. An
+    /// unknown kind is the from_wire-None case the edge maps to Invalid; here it
+    /// surfaces as the same "not supported" reason the old `_` arm returned.
+    fn validate(kind: &str, payload: &Value) -> Result<(), String> {
+        match MutationKind::from_wire(kind) {
+            Some(k) => super::validate(k, payload),
+            None => Err(format!("mutation_kind {kind:?} not supported")),
+        }
+    }
+
+    /// Test shim: render the accept text by wire string (the kind must be
+    /// agent-proposable, as only those reach `render_accept`).
+    fn render_accept(kind: &str, payload: &Value) -> String {
+        let kind = MutationKind::from_wire(kind).expect("known mutation_kind");
+        let proposable = ProposableMutation::try_from(kind).expect("agent-proposable kind");
+        super::render_accept(proposable, payload)
+    }
+
+    /// Test shim: the schema version for a wire kind, via its Entity Type — the
+    /// pre-refactor `schema_version(&str)` the version tests assert against.
+    fn schema_version(kind: &str) -> i64 {
+        MutationKind::from_wire(kind)
+            .expect("known mutation_kind")
+            .describe()
+            .entity_type
+            .schema_version()
+    }
 
     // ─── derived predicates (Slice 11, ADR-0031 "Derived Facets") ──────────
 

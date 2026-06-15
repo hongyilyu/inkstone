@@ -12,6 +12,7 @@ use sqlx::SqlitePool;
 
 use crate::db;
 use crate::entities;
+use crate::mutation::{self, EntityType, MutationKind};
 
 /// A run-independent target-validation failure.
 ///
@@ -39,20 +40,21 @@ pub(crate) enum TargetError {
 /// writes nothing.
 pub(crate) async fn validate_mutation_target_refs(
     pool: &SqlitePool,
-    mutation_kind: &str,
+    kind: MutationKind,
     payload: &serde_json::Value,
 ) -> Result<(), TargetError> {
     // A create carrying `source_journal_entry_id` (ADR-0030/0031) must reference a
     // Canonical Journal Entry; an absent field is fine (the Entity is then sourced
     // from the user Message on the agent path, or unsourced on the user path).
     if matches!(
-        mutation_kind,
-        "create_person" | "create_project" | "create_todo"
+        kind,
+        MutationKind::CreatePerson | MutationKind::CreateProject | MutationKind::CreateTodo
     ) && let Some(journal_entry_id) = entities::source_journal_entry_id(payload)
     {
-        let is_journal_entry = db::entity_is_type(pool, journal_entry_id, "journal_entry")
-            .await
-            .map_err(|e| TargetError::Internal(e.into()))?;
+        let is_journal_entry =
+            db::entity_is_type(pool, journal_entry_id, EntityType::JournalEntry.as_str())
+                .await
+                .map_err(|e| TargetError::Internal(e.into()))?;
         if !is_journal_entry {
             return Err(TargetError::Invalid(
                 "source_journal_entry_id must reference an Accepted Journal Entry".to_string(),
@@ -62,14 +64,14 @@ pub(crate) async fn validate_mutation_target_refs(
 
     // A create_todo's `todo.project_id`, when present, must reference a Canonical
     // Project; an absent project_id is fine (a standalone Todo).
-    if mutation_kind == "create_todo" {
+    if kind == MutationKind::CreateTodo {
         let project_id = payload
             .get("todo")
             .and_then(|todo| todo.get("project_id"))
             .and_then(serde_json::Value::as_str)
             .filter(|id| !id.is_empty());
         if let Some(project_id) = project_id {
-            let is_project = db::entity_is_type(pool, project_id, "project")
+            let is_project = db::entity_is_type(pool, project_id, EntityType::Project.as_str())
                 .await
                 .map_err(|e| TargetError::Internal(e.into()))?;
             if !is_project {
@@ -92,7 +94,7 @@ pub(crate) async fn validate_mutation_target_refs(
                 else {
                     continue;
                 };
-                let is_person = db::entity_is_type(pool, person_id, "person")
+                let is_person = db::entity_is_type(pool, person_id, EntityType::Person.as_str())
                     .await
                     .map_err(|e| TargetError::Internal(e.into()))?;
                 if !is_person {
@@ -111,8 +113,8 @@ pub(crate) async fn validate_mutation_target_refs(
     // supplied `todo.project_id` (the partial may set it) must reference a
     // Canonical Project. All checked BEFORE apply so a bad ref/target writes
     // nothing.
-    if mutation_kind == "update_todo" {
-        let todo_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
+    if kind == MutationKind::UpdateTodo {
+        let todo_id = mutation::target_entity_id(kind.describe(), payload).ok_or_else(|| {
             TargetError::Invalid("todo_id is required for update_todo".to_string())
         })?;
         match db::entity_type_by_id(pool, todo_id)
@@ -127,7 +129,7 @@ pub(crate) async fn validate_mutation_target_refs(
                 ));
             }
             // The id resolves to a non-Todo Entity — a genuine payload error.
-            Some(actual) if actual != "todo" => {
+            Some(actual) if actual != EntityType::Todo => {
                 return Err(TargetError::Invalid(
                     "update_todo todo_id must reference an Accepted Todo".to_string(),
                 ));
@@ -147,7 +149,7 @@ pub(crate) async fn validate_mutation_target_refs(
                 else {
                     continue;
                 };
-                let is_person = db::entity_is_type(pool, person_id, "person")
+                let is_person = db::entity_is_type(pool, person_id, EntityType::Person.as_str())
                     .await
                     .map_err(|e| TargetError::Internal(e.into()))?;
                 if !is_person {
@@ -165,7 +167,7 @@ pub(crate) async fn validate_mutation_target_refs(
             .and_then(serde_json::Value::as_str)
             .filter(|id| !id.is_empty());
         if let Some(project_id) = project_id {
-            let is_project = db::entity_is_type(pool, project_id, "project")
+            let is_project = db::entity_is_type(pool, project_id, EntityType::Project.as_str())
                 .await
                 .map_err(|e| TargetError::Internal(e.into()))?;
             if !is_project {
@@ -178,19 +180,31 @@ pub(crate) async fn validate_mutation_target_refs(
     }
 
     // An update_person/update_project or delete_person/delete_todo's `entity_id`
-    // must reference a Canonical Entity of the matching type. These use this simple
-    // type check; journal entries keep the stricter same-thread guard in `decide`
-    // (delete_journal_entry included).
-    if let Some(target_type) = match mutation_kind {
-        "update_person" | "delete_person" => Some("person"),
-        "update_project" | "delete_project" | "mark_project_reviewed" => Some("project"),
-        "delete_todo" => Some("todo"),
-        "update_bookmark" | "delete_bookmark" => Some("bookmark"),
-        _ => None,
-    } {
-        let entity_id = entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
-            TargetError::Invalid(format!("entity_id is required for {mutation_kind}"))
-        })?;
+    // must reference a Canonical Entity of the matching type. These kinds use this
+    // simple pool-level type check; the routing below is exhaustive over the kinds
+    // so a new Entity Type must declare how its target is validated. The target
+    // TYPE is the kind's own Entity Type (`desc.entity_type`).
+    //
+    // NOT routed here (each handled elsewhere): the create kinds returned earlier
+    // (nothing to resolve); update_todo / the reference weave have their own
+    // branches above/below; and the journal update/delete kinds keep the stricter
+    // same-thread guard in `decide` (so they fall through to the trailing Ok).
+    let generic_type_check = matches!(
+        kind,
+        MutationKind::UpdatePerson
+            | MutationKind::DeletePerson
+            | MutationKind::UpdateProject
+            | MutationKind::DeleteProject
+            | MutationKind::MarkProjectReviewed
+            | MutationKind::DeleteTodo
+            | MutationKind::UpdateBookmark
+            | MutationKind::DeleteBookmark
+    );
+    if generic_type_check {
+        let target_type = kind.describe().entity_type;
+        let wire = kind.as_wire();
+        let entity_id = mutation::target_entity_id(kind.describe(), payload)
+            .ok_or_else(|| TargetError::Invalid(format!("entity_id is required for {wire}")))?;
         match db::entity_type_by_id(pool, entity_id)
             .await
             .map_err(|e| TargetError::Internal(e.into()))?
@@ -201,12 +215,14 @@ pub(crate) async fn validate_mutation_target_refs(
             // resolves to a row, so it stays Invalid below.
             None => {
                 return Err(TargetError::TargetMissing(format!(
-                    "{mutation_kind} target no longer references an Accepted {target_type}"
+                    "{wire} target no longer references an Accepted {}",
+                    target_type.as_str()
                 )));
             }
             Some(actual) if actual != target_type => {
                 return Err(TargetError::Invalid(format!(
-                    "{mutation_kind} target must reference an Accepted {target_type}"
+                    "{wire} target must reference an Accepted {}",
+                    target_type.as_str()
                 )));
             }
             Some(_) => {}
@@ -219,7 +235,7 @@ pub(crate) async fn validate_mutation_target_refs(
     // todo), and its `source_entity_id` must name an existing Journal Entry (the
     // PRIMARY anchor the reference is woven into). The source-Journal-Entry
     // same-thread guard is run-coupled and stays in `decide`.
-    if mutation_kind == "reference_existing_entity_from_journal_entry" {
+    if kind == MutationKind::ReferenceExistingEntityFromJournalEntry {
         // Validate the source Journal Entry (the primary anchor) FIRST: the apply
         // path inserts into `entity_refs` keyed on `source_entity_id` before it
         // loads the source JE, so a deleted source trips the FK → an opaque
@@ -234,7 +250,7 @@ pub(crate) async fn validate_mutation_target_refs(
         // insert. It closes the validate→apply gap for THIS mutation, not a race
         // against another writer (there is none).
         let source_entity_id =
-            entities::target_entity_id(mutation_kind, payload).ok_or_else(|| {
+            mutation::target_entity_id(kind.describe(), payload).ok_or_else(|| {
                 TargetError::Invalid(
                     "source_entity_id is required for reference_existing_entity_from_journal_entry"
                         .to_string(),
@@ -250,7 +266,7 @@ pub(crate) async fn validate_mutation_target_refs(
                         .to_string(),
                 ));
             }
-            Some(actual) if actual != "journal_entry" => {
+            Some(actual) if actual != EntityType::JournalEntry => {
                 return Err(TargetError::Invalid(
                     "reference source_entity_id must reference an Accepted Journal Entry"
                         .to_string(),
@@ -273,7 +289,7 @@ pub(crate) async fn validate_mutation_target_refs(
                 "target_entity_id must be an existing accepted Entity".to_string(),
             ));
         };
-        if !matches!(target_type.as_str(), "person" | "project" | "todo") {
+        if !target_type.is_referenceable() {
             return Err(TargetError::Invalid(
                 "target_entity_id must be a person, project, or todo".to_string(),
             ));
