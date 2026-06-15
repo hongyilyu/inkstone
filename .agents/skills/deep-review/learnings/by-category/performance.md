@@ -1,6 +1,6 @@
 # Learned rules — Performance (`performance`)
 
-_12 rules. Loaded by the `dr-performance` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_14 rules. Loaded by the `dr-performance` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Stream or cap large content instead of buffering it fully in memory  ·  `avoid-buffering-large-content-in-memory`
 - **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #5076, #26262, #27890, #28907
@@ -42,8 +42,18 @@ _12 rules. Loaded by the `dr-performance` specialist. Generated from rules.json 
 - **Rule:** Don't issue one awaited sub-query per row inside a loop (1+N queries) on a list/read hot path, especially against a SQLite pool with max_connections(1) where reads are serialized. Batch-resolve related data for all returned rows in a single query keyed by the set of source ids, then group in memory and assign to rows.
 - **Detect:** `for row in &mut rows { ... = some_query(pool, &row.id).await? }` or any awaited DB call inside a loop over result rows. Flag N+1; recommend a single batch query over the collected ids plus in-memory grouping.
 
+## Push filtering and limiting into the query, not into memory  ·  `push-filter-and-limit-into-query-not-memory`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #133
+- **Rule:** When a search/list handler loads a whole table/collection (e.g. `list_by_type`, `SELECT *`) and then applies the match predicate and the result limit in application memory (`.filter(...).take(limit)`, `.filter().slice()`), push the predicate and LIMIT into the query (e.g. SQL `WHERE LOWER(col) LIKE '%'||LOWER(?)||'%' ... LIMIT ?`) so rows scanned scale with matched rows, not total rows. This matters when the scanned set is unbounded or grows over time; note that a hard output cap (MAX_LIMIT) bounds returned rows but still scans the full table, so it does not remove the issue. On a provably small/bounded collection the in-memory approach is an acceptable tradeoff — flag it, but at lower urgency.
+- **Detect:** A search/list handler calls `list_by_type`/`select all` then `.filter(...).take(limit)` (or `.filter().slice()`) in memory; ask whether the predicate and limit could be pushed into SQL/the query (LOWER(...) LIKE + LIMIT).
+
+## Don't add a LIKE ESCAPE clause that disables the FTS5/trigram index  ·  `like-escape-clause-disables-fts5-trigram-index`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #139
+- **Rule:** SQLite drops the FTS5 trigram LIKE/GLOB index optimization whenever the LIKE has an ESCAPE clause — even when the needle contains nothing to escape. On a trigram-tokenized column reached by a hot/debounced substring search, an unconditional `LIKE '%'||?||'%' ESCAPE '\'` therefore silently degrades every query to a full table scan. Only take the ESCAPE path when the needle actually contains a `%`, `_`, or the escape char (escaping those literals); route the common no-wildcard needle through the plain unescaped LIKE so the trigram index stays engaged. Confirm with EXPLAIN QUERY PLAN that the index is used on the unescaped path and bypassed on the escaped one.
+- **Detect:** Flag a SQL string with `LIKE '%' || ? || '%' ESCAPE '\'` (or any LIKE ESCAPE) over an FTS5/trigram-tokenized column on a hot/debounced search path. Ask: does EXPLAIN QUERY PLAN still use the index with ESCAPE? Is the escape unconditional even when the needle has no %/_/\?
+
 ## Hoist computations derived only from static/invariant inputs out of hot paths and loops  ·  `hoist-invariant-computation-out-of-repeated-calls`
-- **Severity:** nit  ·  **Support:** 4  ·  **Seen in:** #4636, #28701, #29208, #29635
+- **Severity:** nit  ·  **Support:** 5  ·  **Seen in:** #4636, #28701, #29208, #29635, #32284
 - **Rule:** If a constructed value or pure-function result inside a loop or frequently-called function depends only on imports/module constants (not on any argument or the loop variable), hoist it to module/loop-outer scope and reuse it (e.g. `new Set(CONST)`, regex built from constants, `await import()` in a hot helper -> cached module-scope promise). Flag only when invariance is clear from the diff.
 - **Detect:** For each constructed value or pure function call inside a function body or loop, ask: does it depend on any function argument or the loop variable? If it depends only on imports/module constants (e.g. `new Set(SOME_CONST.map(...))`, `formatOptions(config)` inside `.map`, `await import(...)` inside a repeatedly-called function), flag it as hoistable.
 
@@ -53,7 +63,7 @@ _12 rules. Loaded by the `dr-performance` specialist. Generated from rules.json 
 - **Detect:** Flag a new import of a known-heavy module where only one small/pure helper is used. Flag get-or-create of a store/subscription/query inside a memo or render path used for previewing options. Ask: does this drag in a large dependency tree, or trigger I/O, for something that should be lightweight/read-only?
 
 ## Refresh recency on cache hit when an LRU eviction policy is intended  ·  `lru-cache-must-refresh-recency-on-hit`
-- **Severity:** nit  ·  **Support:** 2  ·  **Seen in:** #369, #30722
+- **Severity:** nit  ·  **Support:** 3  ·  **Seen in:** #369, #30722
 - **Rule:** If a Map-based cache is meant to be LRU, refresh the key on a hit (delete then re-set) or use a real LRU implementation, so eviction order reflects access rather than insertion. Evicting via keys().next().value while never re-inserting on a get hit is FIFO masquerading as LRU and evicts hot entries.
 - **Detect:** Find Map-based caches that evict via keys().next().value but whose get/hit branch reads the cache without delete+re-set. Ask: does a cache hit refresh recency, or is eviction purely insertion-ordered?
 

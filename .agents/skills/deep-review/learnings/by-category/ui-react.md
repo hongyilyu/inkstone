@@ -1,6 +1,6 @@
 # Learned rules — UI (React/Solid) (`ui-react`)
 
-_31 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_36 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Don't replace a wired feature with a placeholder shell on the mainline  ·  `do-not-orphan-wired-feature-behind-placeholder-shell`
 - **Severity:** blocking  ·  **Support:** 3  ·  **Seen in:** #10, #70, #2037
@@ -43,7 +43,7 @@ _31 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json —
 - **Detect:** A diff adds props.someCallback?.() for behavior that previously ran unconditionally, or adds a useContext/useXProvider() call for data only one route needs. Grep all usages of the component; ask whether every call site passes the prop, or whether the component is reused where the provider is absent.
 
 ## Initialize observer-derived state synchronously and re-run on all relevant changes  ·  `initialize-observer-derived-state-synchronously`
-- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #28664, #32082
+- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #28664, #32082
 - **Rule:** When wiring a ResizeObserver/IntersectionObserver/MutationObserver, trigger an initial measurement immediately after creating it rather than relying on the first callback, which may be delayed or never fire (offscreen, display:none, RO unavailable). Also confirm any state set from a layout/measurement callback re-runs on all relevant input changes (children positions/sizes), not only on resize, so the derived value can't desync until an unrelated event fires.
 - **Detect:** Flag where measurement state is updated only inside an observer callback with no explicit initial measurement call right after the observer is created; and flag setState inside layout/measurement callbacks whose inputs (children sizes/positions) may change without re-triggering the callback.
 
@@ -51,6 +51,16 @@ _31 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json —
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #132, #30678
 - **Rule:** When a flag suppresses some derived UI indicators (e.g. activeServer() gating), apply the same gating to all related derived values in the group and avoid reading inactive/underlying stores unconditionally; otherwise sibling indicators (isWorking, tint) stay live for inactive entities and the UI state becomes incoherent.
 - **Detect:** Within one factory/component, flag where several derived memos guard on a condition (e.g. activeServer()) but a peer memo computing related UI state omits the guard.
+
+## Use CSS visibility (not conditional render) for purely visual collapse  ·  `visual-collapse-keep-mounted`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #137, #27890
+- **Rule:** Flag a Show/ternary that unmounts content whose hiding is purely visual/collapse, where unmount/remount would lose internal state, scroll, or focus — prefer CSS visibility ([hidden]/display:none/max-height:0). Only raise when state/scroll/focus loss is plausible; do not flag genuine conditional rendering of distinct content or unmounting done deliberately to reset state.
+- **Detect:** Flag <Show when={!minimized/collapsed}> or {!collapsed && ...} wrapping content whose collapse is described as visual; ask whether unmount/remount would lose scroll/focus/internal component state.
+
+## Don't render <img> with an empty src  ·  `no-empty-img-src`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #30722
+- **Rule:** Do not render an <img> with src="" or a fallback to empty string when the URL is missing — it triggers a spurious request to the current document URL and shows a broken-image icon. Omit the src attribute entirely, render no image, or use a harmless placeholder like src="data:,".
+- **Detect:** Grep for src="" or src="${x ?? ""}" patterns in img-building strings/JSX; ask whether an empty src can be produced.
 
 ## Add min-w-0 to a truncating flex child so long tokens don't overflow siblings  ·  `add-min-w-0-to-truncating-flex-child`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #79, #416
@@ -77,11 +87,6 @@ _31 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json —
 - **Rule:** For FLIP-style width/size transitions, capture the previous (first) measurement BEFORE the framework updates the DOM to the new value. If the rendered content is bound directly to the same reactive source the animation effect depends on, the DOM is already at the new value when measured and text-only changes won't animate from the prior size; store the displayed value in state and update it only after measuring the old size.
 - **Detect:** In a Solid/React effect that measures an element's current size as the animation's starting point, check whether the rendered content is bound to the same reactive source the effect depends on. Ask: is 'first' measured after the DOM already reflects the new content?
 
-## Use CSS visibility (not conditional render) for purely visual collapse  ·  `visual-collapse-keep-mounted`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #27890
-- **Rule:** Flag a Show/ternary that unmounts content whose hiding is purely visual/collapse, where unmount/remount would lose internal state, scroll, or focus — prefer CSS visibility ([hidden]/display:none/max-height:0). Only raise when state/scroll/focus loss is plausible; do not flag genuine conditional rendering of distinct content or unmounting done deliberately to reset state.
-- **Detect:** Flag <Show when={!minimized/collapsed}> or {!collapsed && ...} wrapping content whose collapse is described as visual; ask whether unmount/remount would lose scroll/focus/internal component state.
-
 ## When enabling a global layout flag, apply the compensation to every full-viewport surface  ·  `apply-global-layout-flag-to-all-surfaces`
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #25833
 - **Rule:** When a diff enables a global layout change (e.g. viewport-fit=cover exposing safe-area insets, or any global flag affecting positioning), audit every fixed/overlay/full-viewport surface — sidebars, dialogs, toasts, loading/error screens — and apply the compensating inset/padding handling to each, not just the root container.
@@ -91,11 +96,6 @@ _31 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json —
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #31462
 - **Rule:** Before adding overflow-hidden or a clipping radius to a container, check for absolutely-positioned descendants that intentionally overflow it (translateX(50%), negative offsets, resize handles). Move the clipping/background to an inner surface and keep the outer element unclipped as the positioning context so the overflowing control isn't cut off.
 - **Detect:** A diff adds overflow-hidden (or a clipping radius) to a container class. Search the component for descendants with position: absolute plus translate/negative-offset classes; ask whether the new clipping would cut off an overflowing control.
-
-## Don't render <img> with an empty src  ·  `no-empty-img-src`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #30722
-- **Rule:** Do not render an <img> with src="" or a fallback to empty string when the URL is missing — it triggers a spurious request to the current document URL and shows a broken-image icon. Omit the src attribute entirely, render no image, or use a harmless placeholder like src="data:,".
-- **Detect:** Grep for src="" or src="${x ?? ""}" patterns in img-building strings/JSX; ask whether an empty src can be produced.
 
 ## Render referenced sprites/symbols in markup, not only via onMount  ·  `ssr-safe-sprite-injection`
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #26950
@@ -137,8 +137,28 @@ _31 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json —
 - **Rule:** An absolutely-positioned control (e.g. absolute top-3 right-3 z-10) inside a relative grid/flex container can cover a sibling component's interactive elements at the same corner offset, blocking clicks — especially with dynamic content width. Only flag when the same relative container demonstrably holds another component's interactive controls (button/input) near that same corner; prefer reserving layout space over absolute overlays. Do not flag absolute overlays that sit over non-interactive area or have no sibling controls at that offset.
 - **Detect:** A newly-added element with className containing 'absolute' + top/right/bottom/left + z-index inside a 'relative' container that also holds another component's controls near the same corner. Ask: does the overlay sit over interactive buttons of a sibling at that offset?
 
+## Disable pointer events on interactive handles when their panel is collapsed  ·  `disable-pointer-events-on-collapsed-panel-handles`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #32169
+- **Rule:** When a panel collapses to zero height/width but its DOM stays mounted, every interactive child overlapping the collapsed strip (resize handle, drag strip, button) must stop intercepting POINTER events — not just leave the tab order (this is the gap #196 leaves: #196 covers focus/tab order, this covers mouse/click/cursor). Putting the handle as a sibling OUTSIDE the element that receives pointer-events:none/inert (or gating only inert/tabindex, which fixes keyboard but not mouse) lets it keep capturing clicks over the now-zero-size region. Detection: a resize/drag handle rendered outside the wrapper that gets pointer-events-none/inert/aria-hidden when a panel's open/expanded signal is false (or whose grid/flex track collapses via a `collapsed ? "0px" : ...` ternary). Ask: while collapsed, does the handle still receive pointer events because pointer-events:none was scoped only to the panel body, not the handle? Fix by applying pointer-events:none to the handle (or moving it inside the inert layer) on the same collapsed condition.
+- **Detect:** A resize/drag handle or interactive element positioned outside the wrapper that gets pointer-events-none/inert when a panel's open signal is false; ask whether the handle still intercepts pointer events while collapsed.
+
+## Feed the full value to title/aria-label; truncate only the visible text  ·  `full-value-for-title-and-aria-label-truncate-only-visible`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #32207
+- **Rule:** When a label is visually truncated, drive only the visible text from CSS truncation (e.g. `truncate`/`text-overflow: ellipsis` or a `.slice(0,n)+"…"` display string) and pass the FULL untruncated value to `title=`/`aria-label=`. Passing an already-shortened string to title/aria-label hides the full value from tooltips and screen readers. Detection: flag a JSX element whose `title=`/`aria-label=` is bound to the same expression that produces its visibly-truncated text — specifically when that expression is a prop named like `displayLabel`/`shortLabel`/`truncated*`, or the output of a slice/truncate/ellipsis helper. Ask: is the full (untruncated) value available in scope and passed separately to the accessible/tooltip attribute? Do NOT flag when title/aria-label already receives a distinct full-value source, or when the visible text is the full value and truncation is purely CSS on the same complete string (CSS truncation does not shorten the bound attribute).
+- **Detect:** A component receives an already-truncated/displayLabel string and uses that same prop for both visible text and title=/aria-label=; ask whether the full value is available and should be passed separately for the accessible/tooltip text.
+
+## Refresh dynamic attributes on DOM nodes deliberately preserved across a diff/morph  ·  `refresh-dynamic-attributes-on-preserved-morphed-nodes`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #32331
+- **Rule:** When a reconciler intentionally keeps an existing DOM element mounted instead of replacing it — morphdom onBeforeElUpdated returning false, a key/id-preserved node, htmx/Alpine out-of-band or x-html swap, or a manual DOM patch — its dynamic attributes (aria-label, title, data-tooltip, state/`copied` classes, alt text) do NOT update unless you patch them explicitly. Preserving the node and refreshing its attributes are two separate responsibilities. Detection: find a keep/skip-update branch (onBeforeElUpdated => false, a `key`/`id`-match short-circuit, an `if (sameNode) return` patch guard) covering an interactive or labeled element, then ask: when the i18n label, tooltip, or transient state for that element changes, is some other code path explicitly writing the new attribute onto the preserved node? If not, the label/title goes stale.
+- **Detect:** Find a `return false` in morphdom onBeforeElUpdated (or any keep/skip-update branch) for an interactive element; ask whether that element's aria-label/title/tooltip/copied-state attributes are updated elsewhere when i18n labels or state change.
+
+## Guard form/action submit against re-entry while a save is pending  ·  `guard-form-submit-against-reentry-while-saving`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #135
+- **Rule:** A submit handler for a non-idempotent mutation must short-circuit re-entry while a prior save is in flight. The handler itself must early-return on the saving/pending flag (`if (saving) return;` before calling the mutation) — disabling the submit control (`disabled={saving}`) is complementary, NOT a substitute, because pressing Enter in a form field re-fires `onSubmit` even when the submit button is disabled. Flag a `<form onSubmit={h}>` / submit handler that calls `onSubmit()`/the mutation with a `saving`/`pending`/`isPending` flag in scope but no `if (saving) return` guard at the top of the handler.
+- **Detect:** A form onSubmit/handler that unconditionally calls onSubmit()/the mutation with a `saving`/`pending` state in scope but no `if (saving) return` guard and no disabled={saving} on the submit control.
+
 ## Route user-facing strings (including aria-labels) through the existing i18n helper  ·  `route-user-facing-strings-through-i18n`
-- **Severity:** nit  ·  **Support:** 5  ·  **Seen in:** #492, #28420, #28442, #31208
+- **Severity:** nit  ·  **Support:** 6  ·  **Seen in:** #492, #28420, #28442, #31208, #32331
 - **Rule:** In a file that already imports/uses an i18n helper (t(), language.t, useLanguage().t), flag newly added bare user-facing string literals — JSX text nodes and aria-label/title/placeholder/alt attributes — that sit alongside sibling strings already routed through the translation function. Do not flag files with no i18n helper, or non-user-facing strings (keys, test ids, class names, console logs).
 - **Detect:** In a file that imports/uses a t()/language.t()/useLanguage i18n helper, grep changed hunks for bare string literals in JSX text nodes or in aria-label=/title=/placeholder=/alt= attributes (e.g. aria-label="..."). Flag any English literal sitting next to sibling strings that DO use t().
 
@@ -156,3 +176,8 @@ _31 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json —
 - **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #30253
 - **Rule:** When a diff opens an editing/modal overlay gated by a boolean signal, flag if no handler resets it (cancel button, ESC keydown, or backdrop click) and the only exit is the save callback. Skip overlays that are intentionally non-dismissable (blocking confirmations) or where ESC/close is provided by a shared dialog wrapper.
 - **Detect:** When a diff adds an overlay/modal gated by a boolean signal set true, check whether any handler sets it back to false (cancel button, ESC keydown, backdrop click); flag if the only exit is the save callback.
+
+## Gate debounced search results on input identity before showing or acting on them  ·  `gate-debounced-results-on-input-identity`
+- **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #139
+- **Rule:** Display and selection of debounced-search results must be tied to the SAME query value the data was fetched/keyed under, not to the faster-updating live input. When a hook is keyed on `debouncedQuery` (e.g. useQuery(["search", debouncedQuery])) but a list is built/gated using the immediate `query`, the two diverge during the debounce window: stale hits from the previous debounced value render under the new input, and a click/Enter can navigate to the wrong target. Fix by mapping the results under the debounced value (`const dq = debouncedQuery.trim(); dq ? hits : []`) — i.e. keep the rendered group consistent with the query its data belongs to. (Equivalently, carry the query alongside the data, or gate on `debouncedQuery === query`; prefer gating on the debounced value to avoid blanking the group on every keystroke.)
+- **Detect:** Flag a component that maps `data?.hits`/results from a hook keyed by a `debouncedQuery` into a list while the rendered/selectable items aren't gated on `debouncedQuery === query`. Ask: during the debounce delay can a stale result be clicked and navigate to the wrong entity?
