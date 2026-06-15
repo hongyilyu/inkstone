@@ -24,6 +24,7 @@ import {
 	projectForTodo,
 	projectProgress,
 	projectsForPerson,
+	recurrenceSummary,
 	TODO_STATUS_LABEL,
 	type TodoPersonRole,
 	todoIsOverdue,
@@ -1090,6 +1091,11 @@ function TodoBody({
 				) : null}
 				{todo.deferAt ? (
 					<Badge>Deferred to {todo.deferAt.slice(0, 10)}</Badge>
+				) : null}
+				{todo.recurrence ? (
+					<Badge variant="secondary">
+						{recurrenceSummary(todo.recurrence)}
+					</Badge>
 				) : null}
 				{todo.status === "completed" && todo.completedAt ? (
 					<Badge variant="secondary">

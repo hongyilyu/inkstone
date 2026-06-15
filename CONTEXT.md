@@ -130,8 +130,12 @@ A derived date-grouped view over Journal Entries, grouped by the entries' occurr
 _Avoid_: daily entity, daily document as source of truth.
 
 **Todo**:
-A GTD-style actionable Entity that tracks something the user is responsible for doing, waiting on, or deciding to drop. A Todo may originate directly from a user Message ("remind me to buy milk") or be extracted from an accepted Journal Entry. Todo data is plain operational text plus task metadata: title, optional note, status, optional Project ownership, defer date, due date, and resolution timestamps. Person involvement is not embedded in the Todo JSON; it is recorded through Todo Person References.
+A GTD-style actionable Entity that tracks something the user is responsible for doing, waiting on, or deciding to drop. A Todo may originate directly from a user Message ("remind me to buy milk") or be extracted from an accepted Journal Entry. Todo data is plain operational text plus task metadata: title, optional note, status, optional Project ownership, defer date, due date, resolution timestamps, and an optional Recurrence Rule. Person involvement is not embedded in the Todo JSON; it is recorded through Todo Person References.
 _Avoid_: task object, reminder row.
+
+**Recurrence Rule**:
+An optional OmniFocus-style repeat carried in a Todo's data JSON (ADR-0037): `interval` + `unit` (minute…year), a `schedule` (regular vs from-completion), the `anchor` date it recomputes (`defer_at` or `due_at`), an optional `catch_up` toggle, optional `only_on` weekday/month-day constraints, and an optional `end` condition (`until` or `after_count`). Core validates and persists the rule; **generating the next occurrence when a recurring Todo is completed is a separate concern** (issue #125), not part of the rule itself. The rule is the durable input; occurrence generation is the execution layer that reads it.
+_Avoid_: repeat flag, schedule entity, cron rule.
 
 **Project**:
 A GTD-style outcome Entity that may require more than one Todo to complete. A Project is the user's desired outcome, not a generic category, area, or stakeholder container. Project status is manual: active, on hold, completed, or dropped. Projects carry review metadata so the Review view can prompt periodic reassessment; completing all Todos does not complete the Project automatically.

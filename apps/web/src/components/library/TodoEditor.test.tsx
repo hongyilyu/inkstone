@@ -368,3 +368,411 @@ describe("TodoEditor edit", () => {
 		]);
 	});
 });
+
+describe("TodoEditor recurrence", () => {
+	// Turning Repeats on with a defer date present emits the snake_case rule on
+	// create (the editor defaults the anchor to defer_at when no due date — ADR-0037).
+	it("emits a snake_case recurrence on create when Repeats is on", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({
+					entity_id: "01900000-0000-7000-8000-000000000099",
+				});
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Water the plants");
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		expect(seen[0]).toEqual({
+			mutation_kind: "create_todo",
+			payload: {
+				todo: {
+					title: "Water the plants",
+					defer_at: "2026-07-01T00:00:00",
+					recurrence: {
+						interval: 1,
+						unit: "week",
+						schedule: "regular",
+						anchor: "defer_at",
+					},
+				},
+			},
+		});
+	});
+
+	// Repeats off must omit `recurrence` entirely on create (never explicit null —
+	// Core rejects null on create, ADR-0031/slice-3).
+	it("omits recurrence on create when Repeats is off", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({
+					entity_id: "01900000-0000-7000-8000-000000000099",
+				});
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "One-off task");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		const todo = (seen[0].payload as { todo: Record<string, unknown> }).todo;
+		expect(todo).not.toHaveProperty("recurrence");
+	});
+
+	const recurringTodo: Todo = {
+		...existing,
+		deferAt: "2026-07-01T00:00:00",
+		recurrence: {
+			interval: 1,
+			unit: "week",
+			schedule: "regular",
+			anchor: "defer_at",
+		},
+	};
+
+	// Recurrence diffs as a whole object: changing the interval emits the entire
+	// new rule, not a field-level partial.
+	it("emits the whole rule when the interval changes on edit", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{
+				mode: "edit",
+				todo: recurringTodo,
+				allEntities,
+				onDone: () => {},
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: recurringTodo.id });
+			},
+		);
+
+		const interval = screen.getByLabelText(/every/i);
+		await user.clear(interval);
+		await user.type(interval, "2");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		expect(seen[0]).toEqual({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: recurringTodo.id,
+				todo: {
+					recurrence: {
+						interval: 2,
+						unit: "week",
+						schedule: "regular",
+						anchor: "defer_at",
+					},
+				},
+			},
+		});
+	});
+
+	// Toggling Repeats off on an existing recurring Todo clears the rule via
+	// sentinel-null (ADR-0033/0037), not by omitting the key.
+	it("emits recurrence:null when Repeats is toggled off", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{
+				mode: "edit",
+				todo: recurringTodo,
+				allEntities,
+				onDone: () => {},
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: recurringTodo.id });
+			},
+		);
+
+		await user.click(screen.getByLabelText(/repeats/i));
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		expect(seen[0]).toEqual({
+			mutation_kind: "update_todo",
+			payload: { todo_id: recurringTodo.id, todo: { recurrence: null } },
+		});
+	});
+
+	// Editing only the title on a recurring Todo must NOT emit a recurrence key
+	// (deep-compare equal → unchanged).
+	it("omits the recurrence key when the rule is unchanged", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{
+				mode: "edit",
+				todo: recurringTodo,
+				allEntities,
+				onDone: () => {},
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: recurringTodo.id });
+			},
+		);
+
+		const title = screen.getByLabelText(/title/i);
+		await user.clear(title);
+		await user.type(title, "Send schedule v2");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		const todo = (seen[0].payload as { todo: Record<string, unknown> }).todo;
+		expect(todo).toEqual({ title: "Send schedule v2" });
+		expect(todo).not.toHaveProperty("recurrence");
+	});
+
+	// FAIL fix (ADR-0037 round-trip): the three unsurfaced fields — catch_up,
+	// only_on, end — must survive a common-path edit untouched. Recurrence is
+	// replaced whole, so a stash that drops any of them silently loses it.
+	it("round-trips catch_up, only_on, and end through a common-path edit", async () => {
+		const fullyLoaded: Todo = {
+			...existing,
+			deferAt: "2026-07-01T00:00:00",
+			recurrence: {
+				interval: 1,
+				unit: "week",
+				schedule: "regular",
+				anchor: "defer_at",
+				catchUp: true,
+				onlyOn: { weekdays: ["mon", "wed"] },
+				end: { afterCount: 10 },
+			},
+		};
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{
+				mode: "edit",
+				todo: fullyLoaded,
+				allEntities,
+				onDone: () => {},
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: fullyLoaded.id });
+			},
+		);
+
+		const interval = screen.getByLabelText(/every/i);
+		await user.clear(interval);
+		await user.type(interval, "3");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		expect(seen[0]).toEqual({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: fullyLoaded.id,
+				todo: {
+					recurrence: {
+						interval: 3,
+						unit: "week",
+						schedule: "regular",
+						anchor: "defer_at",
+						catch_up: true,
+						only_on: { weekdays: ["mon", "wed"] },
+						end: { after_count: 10 },
+					},
+				},
+			},
+		});
+	});
+
+	// Reconciliation (ADR-0037): a stashed catch_up is only valid with
+	// schedule === "regular". Switching Schedule to from_completion must DROP it,
+	// not re-emit a field the editor never surfaces (Core would reject it).
+	it("drops stashed catch_up when Schedule switches to from_completion", async () => {
+		const withCatchUp: Todo = {
+			...existing,
+			deferAt: "2026-07-01T00:00:00",
+			recurrence: {
+				interval: 1,
+				unit: "week",
+				schedule: "regular",
+				anchor: "defer_at",
+				catchUp: true,
+			},
+		};
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{
+				mode: "edit",
+				todo: withCatchUp,
+				allEntities,
+				onDone: () => {},
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: withCatchUp.id });
+			},
+		);
+
+		await user.selectOptions(
+			screen.getByLabelText(/schedule/i),
+			"from_completion",
+		);
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		const recurrence = (seen[0].payload as { todo: Record<string, unknown> })
+			.todo.recurrence as Record<string, unknown>;
+		expect(recurrence).toEqual({
+			interval: 1,
+			unit: "week",
+			schedule: "from_completion",
+			anchor: "defer_at",
+		});
+		expect(recurrence).not.toHaveProperty("catch_up");
+	});
+
+	// Reconciliation (ADR-0037): only_on.weekdays is valid only with unit === "week".
+	// Switching Unit away from week must DROP only_on entirely (Core rejects an
+	// empty only_on, and weekdays is meaningless off a weekly cadence).
+	it("drops stashed only_on when Unit switches away from week", async () => {
+		const withOnlyOn: Todo = {
+			...existing,
+			deferAt: "2026-07-01T00:00:00",
+			recurrence: {
+				interval: 1,
+				unit: "week",
+				schedule: "regular",
+				anchor: "defer_at",
+				onlyOn: { weekdays: ["mon", "wed"] },
+			},
+		};
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{
+				mode: "edit",
+				todo: withOnlyOn,
+				allEntities,
+				onDone: () => {},
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: withOnlyOn.id });
+			},
+		);
+
+		await user.selectOptions(screen.getByLabelText(/unit/i), "day");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		const recurrence = (seen[0].payload as { todo: Record<string, unknown> })
+			.todo.recurrence as Record<string, unknown>;
+		expect(recurrence).toEqual({
+			interval: 1,
+			unit: "day",
+			schedule: "regular",
+			anchor: "defer_at",
+		});
+		expect(recurrence).not.toHaveProperty("only_on");
+	});
+
+	// Setting interval to "" (or "0") with Repeats on blocks Save: Core requires a
+	// positive integer, so the editor gates rather than emitting an invalid rule.
+	it("blocks save when the interval is empty while Repeats is on", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{
+				mode: "edit",
+				todo: recurringTodo,
+				allEntities,
+				onDone: () => {},
+				onCancel: () => {},
+			},
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({ entity_id: recurringTodo.id });
+			},
+		);
+
+		const interval = screen.getByLabelText(/every/i);
+		await user.clear(interval);
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		// Give any (erroneous) mutation a chance to fire, then assert none did.
+		await new Promise((r) => setTimeout(r, 50));
+		expect(seen).toHaveLength(0);
+
+		// A valid interval unblocks the save.
+		await user.type(interval, "2");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		expect(
+			(seen[0].payload as { todo: Record<string, unknown> }).todo.recurrence,
+		).toEqual({
+			interval: 2,
+			unit: "week",
+			schedule: "regular",
+			anchor: "defer_at",
+		});
+	});
+
+	// ADVISORY fix: Repeats on but the anchor's date absent must block Save (Core
+	// rejects an anchorless rule). Setting the date then lets the save proceed.
+	it("blocks save while Repeats is on but the anchor date is absent", async () => {
+		const user = userEvent.setup();
+		const seen: EntityMutateParams[] = [];
+		renderEditor(
+			{ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} },
+			(params) => {
+				seen.push(params);
+				return Effect.succeed({
+					entity_id: "01900000-0000-7000-8000-000000000099",
+				});
+			},
+		);
+
+		await user.type(screen.getByLabelText(/title/i), "Repeat me");
+		await user.click(screen.getByLabelText(/repeats/i));
+		// No defer/due date set: the anchor date is missing.
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		// Give any (erroneous) mutation a chance to fire, then assert none did.
+		await new Promise((r) => setTimeout(r, 50));
+		expect(seen).toHaveLength(0);
+
+		// Setting the anchor's date unblocks the save and emits the rule.
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		await user.click(screen.getByRole("button", { name: /^save$/i }));
+
+		await waitFor(() => expect(seen).toHaveLength(1));
+		expect(
+			(seen[0].payload as { todo: Record<string, unknown> }).todo.recurrence,
+		).toEqual({
+			interval: 1,
+			unit: "week",
+			schedule: "regular",
+			anchor: "defer_at",
+		});
+	});
+});

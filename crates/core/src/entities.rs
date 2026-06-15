@@ -940,6 +940,224 @@ fn validate_review_every(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate a Todo's `recurrence` rule in ISOLATION (ADR-0037): every invariant
+/// that needs only the rule itself. The cross-field `anchor` presence check —
+/// the Todo must carry the date field the `anchor` names — needs the whole Todo
+/// and lives in [`validate_todo_data`], not here.
+fn validate_recurrence(value: &Value) -> Result<(), String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "recurrence must be an object".to_string())?;
+
+    for key in obj.keys() {
+        match key.as_str() {
+            "interval" | "unit" | "schedule" | "anchor" | "catch_up" | "only_on" | "end" => {}
+            other => return Err(format!("unsupported recurrence field {other:?}")),
+        }
+    }
+
+    match obj.get("interval") {
+        Some(Value::Number(n)) => match n.as_u64() {
+            Some(interval) if interval >= 1 => {}
+            _ => return Err("recurrence interval must be a positive integer".to_string()),
+        },
+        Some(_) => return Err("recurrence interval must be a positive integer".to_string()),
+        None => return Err("recurrence interval is required".to_string()),
+    }
+
+    let unit = match obj.get("unit") {
+        Some(Value::String(unit)) => match unit.as_str() {
+            "minute" | "hour" | "day" | "week" | "month" | "year" => unit.as_str(),
+            _ => {
+                return Err(
+                    "recurrence unit must be one of minute, hour, day, week, month, year"
+                        .to_string(),
+                );
+            }
+        },
+        Some(_) => return Err("recurrence unit must be a string".to_string()),
+        None => return Err("recurrence unit is required".to_string()),
+    };
+
+    let schedule = match obj.get("schedule") {
+        Some(Value::String(schedule)) => match schedule.as_str() {
+            "regular" | "from_completion" => schedule.as_str(),
+            _ => {
+                return Err(
+                    "recurrence schedule must be one of regular, from_completion".to_string(),
+                );
+            }
+        },
+        Some(_) => return Err("recurrence schedule must be a string".to_string()),
+        None => return Err("recurrence schedule is required".to_string()),
+    };
+
+    match obj.get("anchor") {
+        Some(Value::String(anchor)) => match anchor.as_str() {
+            "defer_at" | "due_at" => {}
+            _ => return Err("recurrence anchor must be one of defer_at, due_at".to_string()),
+        },
+        Some(_) => return Err("recurrence anchor must be a string".to_string()),
+        None => return Err("recurrence anchor is required".to_string()),
+    }
+
+    match obj.get("catch_up") {
+        Some(Value::Bool(_)) if schedule == "regular" => {}
+        Some(Value::Bool(_)) => {
+            return Err("recurrence catch_up is only valid with schedule regular".to_string());
+        }
+        Some(_) => return Err("recurrence catch_up must be a boolean".to_string()),
+        None => {}
+    }
+
+    if let Some(only_on) = obj.get("only_on") {
+        validate_recurrence_only_on(only_on, unit)?;
+    }
+
+    if let Some(end) = obj.get("end") {
+        validate_recurrence_end(end)?;
+    }
+
+    Ok(())
+}
+
+/// Validate `recurrence.only_on` (ADR-0037): a non-empty object whose `weekdays`
+/// is valid only with unit `week` and `month_days` only with unit `month`. Each
+/// present array is non-empty, deduped, and in range (weekday enum; month day
+/// 1..=31).
+fn validate_recurrence_only_on(value: &Value, unit: &str) -> Result<(), String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "recurrence only_on must be an object".to_string())?;
+
+    if obj.is_empty() {
+        return Err("recurrence only_on must not be empty".to_string());
+    }
+
+    for key in obj.keys() {
+        match key.as_str() {
+            "weekdays" | "month_days" => {}
+            other => return Err(format!("unsupported recurrence only_on field {other:?}")),
+        }
+    }
+
+    if let Some(weekdays) = obj.get("weekdays") {
+        if unit != "week" {
+            return Err("recurrence only_on weekdays is only valid with unit week".to_string());
+        }
+        let weekdays = weekdays
+            .as_array()
+            .ok_or_else(|| "recurrence only_on weekdays must be an array".to_string())?;
+        if weekdays.is_empty() {
+            return Err("recurrence only_on weekdays must not be empty".to_string());
+        }
+        let mut seen: Vec<&str> = Vec::with_capacity(weekdays.len());
+        for day in weekdays {
+            let day = match day {
+                Value::String(d) => match d.as_str() {
+                    "sun" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat" => d.as_str(),
+                    _ => {
+                        return Err(
+                            "recurrence only_on weekdays must be sun, mon, tue, wed, thu, fri, sat"
+                                .to_string(),
+                        );
+                    }
+                },
+                _ => return Err("recurrence only_on weekdays must be strings".to_string()),
+            };
+            if seen.contains(&day) {
+                return Err("recurrence only_on weekdays must not repeat".to_string());
+            }
+            seen.push(day);
+        }
+    }
+
+    if let Some(month_days) = obj.get("month_days") {
+        if unit != "month" {
+            return Err("recurrence only_on month_days is only valid with unit month".to_string());
+        }
+        let month_days = month_days
+            .as_array()
+            .ok_or_else(|| "recurrence only_on month_days must be an array".to_string())?;
+        if month_days.is_empty() {
+            return Err("recurrence only_on month_days must not be empty".to_string());
+        }
+        let mut seen: Vec<u64> = Vec::with_capacity(month_days.len());
+        for day in month_days {
+            let day = match day {
+                Value::Number(n) => match n.as_u64() {
+                    Some(d) if (1..=31).contains(&d) => d,
+                    _ => {
+                        return Err(
+                            "recurrence only_on month_days must be integers in 1..31".to_string()
+                        );
+                    }
+                },
+                _ => {
+                    return Err(
+                        "recurrence only_on month_days must be integers in 1..31".to_string()
+                    );
+                }
+            };
+            if seen.contains(&day) {
+                return Err("recurrence only_on month_days must not repeat".to_string());
+            }
+            seen.push(day);
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate `recurrence.end` (ADR-0037): a non-empty object carrying at most one
+/// of `until` (a parseable `YYYY-MM-DDTHH:MM:SS` wall clock) or `after_count`
+/// (an integer `>= 1`).
+fn validate_recurrence_end(value: &Value) -> Result<(), String> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| "recurrence end must be an object".to_string())?;
+
+    for key in obj.keys() {
+        match key.as_str() {
+            "until" | "after_count" => {}
+            other => return Err(format!("unsupported recurrence end field {other:?}")),
+        }
+    }
+
+    let has_until = obj.contains_key("until");
+    let has_after_count = obj.contains_key("after_count");
+    if !has_until && !has_after_count {
+        return Err("recurrence end must carry until or after_count".to_string());
+    }
+    if has_until && has_after_count {
+        return Err("recurrence end must carry at most one of until, after_count".to_string());
+    }
+
+    if let Some(until) = obj.get("until") {
+        match until {
+            Value::String(t) if !t.trim().is_empty() => {
+                parse_local_datetime(t, "recurrence end until")?;
+            }
+            Value::String(_) => return Err("recurrence end until must not be empty".to_string()),
+            _ => return Err("recurrence end until must be a string".to_string()),
+        }
+    }
+
+    if let Some(after_count) = obj.get("after_count") {
+        match after_count {
+            Value::Number(n) => match n.as_u64() {
+                Some(count) if count >= 1 => {}
+                _ => {
+                    return Err("recurrence end after_count must be a positive integer".to_string());
+                }
+            },
+            _ => return Err("recurrence end after_count must be a positive integer".to_string()),
+        }
+    }
+
+    Ok(())
+}
+
 /// Validate a `create_todo` payload: an ENVELOPE `{todo: TodoData, person_refs?}`
 /// (ADR-0031). `todo` is required and validated as `TodoData`; `person_refs`, when
 /// present, must be an array of refs, each an object with a required non-empty
@@ -1023,7 +1241,7 @@ pub(crate) fn validate_todo_data(payload: &Value) -> Result<(), String> {
     for key in obj.keys() {
         match key.as_str() {
             "title" | "note" | "status" | "project_id" | "defer_at" | "due_at" | "completed_at"
-            | "dropped_at" => {}
+            | "dropped_at" | "recurrence" => {}
             other => return Err(format!("unsupported todo field {other:?}")),
         }
     }
@@ -1101,6 +1319,24 @@ pub(crate) fn validate_todo_data(payload: &Value) -> Result<(), String> {
             }
         }
         _ => unreachable!("status validated above"),
+    }
+
+    // `recurrence` (ADR-0037): validate the rule in isolation, then enforce the
+    // cross-field anchor-presence invariant — the Todo must carry a non-empty
+    // date at the field the rule's `anchor` names (a rule cannot recompute a date
+    // the Todo lacks). This holds for any valid stored Todo, so the apply-time
+    // re-validation of a merged `update_todo` enforces it too.
+    if let Some(recurrence) = obj.get("recurrence") {
+        validate_recurrence(recurrence)?;
+        if let Some(Value::String(anchor)) = recurrence.get("anchor") {
+            let present =
+                matches!(obj.get(anchor.as_str()), Some(Value::String(t)) if !t.trim().is_empty());
+            if !present {
+                return Err(format!(
+                    "recurrence anchor {anchor:?} requires the todo to have {anchor}"
+                ));
+            }
+        }
     }
 
     Ok(())
@@ -1186,7 +1422,7 @@ fn validate_partial_todo_data(payload: &Value) -> Result<(), String> {
     for key in obj.keys() {
         match key.as_str() {
             "title" | "note" | "status" | "project_id" | "defer_at" | "due_at" | "completed_at"
-            | "dropped_at" => {}
+            | "dropped_at" | "recurrence" => {}
             other => return Err(format!("unsupported todo field {other:?}")),
         }
     }
@@ -1237,6 +1473,16 @@ fn validate_partial_todo_data(payload: &Value) -> Result<(), String> {
                 _ => return Err(format!("{field} must be a string")),
             }
         }
+    }
+
+    // `recurrence` (ADR-0037): `null` is the sentinel-clear directive (the apply
+    // path drops the key); any other value is validated as a rule in isolation.
+    // The anchor-presence cross-check is NOT done here — a partial lacks the whole
+    // Todo; the apply-time re-validation of the merged whole enforces it.
+    match obj.get("recurrence") {
+        Some(Value::Null) => {}
+        Some(recurrence) => validate_recurrence(recurrence)?,
+        None => {}
     }
 
     Ok(())
@@ -2914,5 +3160,363 @@ mod tests {
         assert_eq!(schema_version("update_bookmark"), BOOKMARK_SCHEMA_VERSION);
         assert_eq!(schema_version("delete_bookmark"), BOOKMARK_SCHEMA_VERSION);
         assert_eq!(schema_version("create_bookmark"), 1);
+    }
+
+    // ─── recurrence rule (ADR-0037) ────────────────────────────────────────
+
+    /// A `create_todo` envelope carrying a Todo with both anchor dates present
+    /// (so any `anchor` choice satisfies anchor-presence) plus the given rule.
+    fn todo_with_recurrence(recurrence: Value) -> Value {
+        json!({
+            "todo": {
+                "title": "water the plants",
+                "defer_at": "2026-06-14T09:00:00",
+                "due_at": "2026-06-14T18:00:00",
+                "recurrence": recurrence
+            }
+        })
+    }
+
+    #[test]
+    fn accepts_omnifocus_parity_recurrence_rules() {
+        let rules = [
+            // Minimal regular rule on each unit.
+            json!({ "interval": 1, "unit": "minute", "schedule": "regular", "anchor": "due_at" }),
+            json!({ "interval": 2, "unit": "hour", "schedule": "regular", "anchor": "due_at" }),
+            json!({ "interval": 3, "unit": "day", "schedule": "regular", "anchor": "defer_at" }),
+            json!({ "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at" }),
+            json!({ "interval": 6, "unit": "month", "schedule": "regular", "anchor": "due_at" }),
+            json!({ "interval": 1, "unit": "year", "schedule": "regular", "anchor": "defer_at" }),
+            // from_completion schedule (no catch_up).
+            json!({
+                "interval": 1, "unit": "day",
+                "schedule": "from_completion", "anchor": "due_at"
+            }),
+            // catch_up toggle on a regular schedule.
+            json!({
+                "interval": 1, "unit": "week",
+                "schedule": "regular", "anchor": "due_at", "catch_up": true
+            }),
+            json!({
+                "interval": 1, "unit": "week",
+                "schedule": "regular", "anchor": "due_at", "catch_up": false
+            }),
+            // only_on.weekdays with unit week.
+            json!({
+                "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
+                "only_on": { "weekdays": ["mon", "wed", "fri"] }
+            }),
+            // only_on.month_days with unit month, boundary days.
+            json!({
+                "interval": 1, "unit": "month", "schedule": "regular", "anchor": "due_at",
+                "only_on": { "month_days": [1, 15, 31] }
+            }),
+            // end via until.
+            json!({
+                "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                "end": { "until": "2026-12-31T23:59:59" }
+            }),
+            // end via after_count.
+            json!({
+                "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                "end": { "after_count": 10 }
+            }),
+        ];
+        for rule in rules {
+            assert!(
+                validate("create_todo", &todo_with_recurrence(rule.clone())).is_ok(),
+                "valid recurrence rule should be accepted: {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_recurrence_invariant_violations() {
+        // Each entry: (rule, substring the reason must contain). The Todo carries
+        // both anchor dates so only the rule's own invariant trips.
+        let cases: [(Value, &str); 17] = [
+            // interval must be an integer >= 1.
+            (
+                json!({ "interval": 0, "unit": "day", "schedule": "regular", "anchor": "due_at" }),
+                "interval",
+            ),
+            (
+                json!({ "interval": 1.5, "unit": "day", "schedule": "regular", "anchor": "due_at" }),
+                "interval",
+            ),
+            // unit must be one of the six.
+            (
+                json!({ "interval": 1, "unit": "fortnight", "schedule": "regular", "anchor": "due_at" }),
+                "unit",
+            ),
+            // schedule enum.
+            (
+                json!({ "interval": 1, "unit": "day", "schedule": "sometimes", "anchor": "due_at" }),
+                "schedule",
+            ),
+            // anchor enum.
+            (
+                json!({ "interval": 1, "unit": "day", "schedule": "regular", "anchor": "planned_at" }),
+                "anchor",
+            ),
+            // catch_up rejected with from_completion.
+            (
+                json!({
+                    "interval": 1, "unit": "day",
+                    "schedule": "from_completion", "anchor": "due_at", "catch_up": true
+                }),
+                "catch_up",
+            ),
+            // weekdays only with unit week.
+            (
+                json!({
+                    "interval": 1, "unit": "month", "schedule": "regular", "anchor": "due_at",
+                    "only_on": { "weekdays": ["mon"] }
+                }),
+                "weekdays",
+            ),
+            // month_days only with unit month.
+            (
+                json!({
+                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
+                    "only_on": { "month_days": [1] }
+                }),
+                "month_days",
+            ),
+            // weekdays: empty array.
+            (
+                json!({
+                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
+                    "only_on": { "weekdays": [] }
+                }),
+                "weekdays",
+            ),
+            // weekdays: bad value.
+            (
+                json!({
+                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
+                    "only_on": { "weekdays": ["funday"] }
+                }),
+                "weekdays",
+            ),
+            // weekdays: duplicate.
+            (
+                json!({
+                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
+                    "only_on": { "weekdays": ["mon", "mon"] }
+                }),
+                "weekdays",
+            ),
+            // month_days: out of 1..=31 range.
+            (
+                json!({
+                    "interval": 1, "unit": "month", "schedule": "regular", "anchor": "due_at",
+                    "only_on": { "month_days": [32] }
+                }),
+                "month_days",
+            ),
+            // month_days: duplicate.
+            (
+                json!({
+                    "interval": 1, "unit": "month", "schedule": "regular", "anchor": "due_at",
+                    "only_on": { "month_days": [1, 1] }
+                }),
+                "month_days",
+            ),
+            // empty only_on object.
+            (
+                json!({
+                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
+                    "only_on": {}
+                }),
+                "only_on",
+            ),
+            // end carrying both keys.
+            (
+                json!({
+                    "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                    "end": { "until": "2026-12-31T23:59:59", "after_count": 5 }
+                }),
+                "end",
+            ),
+            // end.until unparseable.
+            (
+                json!({
+                    "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                    "end": { "until": "next year" }
+                }),
+                "until",
+            ),
+            // empty end object.
+            (
+                json!({
+                    "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                    "end": {}
+                }),
+                "end",
+            ),
+        ];
+        for (rule, needle) in cases {
+            let reason = validate("create_todo", &todo_with_recurrence(rule.clone()))
+                .expect_err("invalid recurrence rule should be rejected");
+            assert!(
+                reason.contains(needle),
+                "reason should name {needle:?}: {reason} (rule {rule})"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_recurrence_unknown_fields() {
+        // Unknown key on the rule, on only_on, and on end.
+        let reason = validate(
+            "create_todo",
+            &todo_with_recurrence(json!({
+                "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                "timezone": "UTC"
+            })),
+        )
+        .expect_err("unknown recurrence field is rejected");
+        assert!(
+            reason.contains("timezone"),
+            "names the unknown field: {reason}"
+        );
+
+        let reason = validate(
+            "create_todo",
+            &todo_with_recurrence(json!({
+                "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
+                "only_on": { "weekdays": ["mon"], "ordinals": [1] }
+            })),
+        )
+        .expect_err("unknown only_on field is rejected");
+        assert!(
+            reason.contains("ordinals"),
+            "names the unknown only_on field: {reason}"
+        );
+
+        let reason = validate(
+            "create_todo",
+            &todo_with_recurrence(json!({
+                "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                "end": { "after_count": 3, "grace": 1 }
+            })),
+        )
+        .expect_err("unknown end field is rejected");
+        assert!(
+            reason.contains("grace"),
+            "names the unknown end field: {reason}"
+        );
+    }
+
+    #[test]
+    fn rejects_recurrence_anchor_naming_an_absent_date() {
+        // anchor names due_at but the Todo has only defer_at → rejected as a
+        // cross-field check against the whole Todo.
+        let reason = validate(
+            "create_todo",
+            &json!({
+                "todo": {
+                    "title": "water the plants",
+                    "defer_at": "2026-06-14T09:00:00",
+                    "recurrence": {
+                        "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at"
+                    }
+                }
+            }),
+        )
+        .expect_err("anchor must name a date the Todo has");
+        assert!(
+            reason.contains("anchor") && reason.contains("due_at"),
+            "reason names the missing anchor date: {reason}"
+        );
+        // The mirror: anchor defer_at with only due_at present.
+        let reason = validate(
+            "create_todo",
+            &json!({
+                "todo": {
+                    "title": "water the plants",
+                    "due_at": "2026-06-14T18:00:00",
+                    "recurrence": {
+                        "interval": 1, "unit": "day", "schedule": "regular", "anchor": "defer_at"
+                    }
+                }
+            }),
+        )
+        .expect_err("anchor must name a date the Todo has");
+        assert!(
+            reason.contains("anchor") && reason.contains("defer_at"),
+            "reason names the missing anchor date: {reason}"
+        );
+    }
+
+    #[test]
+    fn update_todo_partial_accepts_recurrence_and_null_clear() {
+        // A supplied valid rule is accepted; `null` is the sentinel-clear directive
+        // (ADR-0037). The anchor-presence cross-check is NOT done here — the partial
+        // lacks the whole Todo; the merged-whole re-validation in apply enforces it.
+        assert!(
+            validate(
+                "update_todo",
+                &json!({
+                    "todo_id": Uuid::now_v7().to_string(),
+                    "todo": {
+                        "recurrence": {
+                            "interval": 1, "unit": "week",
+                            "schedule": "regular", "anchor": "due_at"
+                        }
+                    }
+                })
+            )
+            .is_ok()
+        );
+        assert!(
+            validate(
+                "update_todo",
+                &json!({ "todo_id": Uuid::now_v7().to_string(), "todo": { "recurrence": null } })
+            )
+            .is_ok(),
+            "recurrence: null is the sentinel-clear directive"
+        );
+    }
+
+    #[test]
+    fn update_todo_partial_rejects_invalid_recurrence_rule() {
+        // The standalone rule check still runs on a supplied (non-null) rule.
+        let reason = validate(
+            "update_todo",
+            &json!({
+                "todo_id": Uuid::now_v7().to_string(),
+                "todo": {
+                    "recurrence": {
+                        "interval": 1, "unit": "fortnight",
+                        "schedule": "regular", "anchor": "due_at"
+                    }
+                }
+            }),
+        )
+        .expect_err("an invalid unit is rejected in the partial");
+        assert!(
+            reason.contains("unit"),
+            "reason names the bad unit: {reason}"
+        );
+        // catch_up with from_completion is a rule-level invariant — rejected here.
+        let reason = validate(
+            "update_todo",
+            &json!({
+                "todo_id": Uuid::now_v7().to_string(),
+                "todo": {
+                    "recurrence": {
+                        "interval": 1, "unit": "day", "schedule": "from_completion",
+                        "anchor": "due_at", "catch_up": true
+                    }
+                }
+            }),
+        )
+        .expect_err("catch_up with from_completion is rejected in the partial");
+        assert!(
+            reason.contains("catch_up"),
+            "reason names catch_up: {reason}"
+        );
     }
 }

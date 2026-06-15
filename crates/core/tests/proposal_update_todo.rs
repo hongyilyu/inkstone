@@ -638,3 +638,163 @@ fn update_todo_with_non_person_ref_is_rejected_atomically() {
         );
     });
 }
+
+/// Case 5 (recurrence set-then-clear, ADR-0037): a Todo created with a `due_at` +
+/// a due-anchored recurrence, then `update_todo { recurrence: null }` → the merge
+/// drops the key (ADR-0033 sentinel) and the stored data has no `recurrence`.
+#[test]
+fn update_todo_clears_recurrence_via_null_sentinel() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("propose-params.json");
+    let core = build_core(&workspace, &params_path);
+    let rt = runtime();
+
+    let todo_id = rt.block_on(async {
+        let todo_id = create_todo(
+            &core,
+            &params_path,
+            40,
+            serde_json::json!({
+                "title": "Water the plants",
+                "due_at": "2026-06-14T18:00:00",
+                "recurrence": {
+                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at"
+                }
+            }),
+            serde_json::json!([]),
+            "todo-create",
+        )
+        .await;
+
+        // Clear the recurrence with the null sentinel.
+        write_params(
+            &params_path,
+            serde_json::json!({
+                "mutation_kind": "update_todo",
+                "payload": {
+                    "todo_id": todo_id,
+                    "todo": { "recurrence": null }
+                },
+                "rationale": "the user stopped the repeat"
+            }),
+        );
+        let (update_run, update_proposal) =
+            create_thread_and_park(&core, 60, "Stop the repeat.").await;
+        let resp = decide_accept(&core, 62, &update_proposal, "todo-clear-recurrence").await;
+        assert_eq!(
+            resp["result"]["status"].as_str(),
+            Some("accepted"),
+            "clear-recurrence accept — body: {resp}"
+        );
+        await_status(&core, &update_run, "completed").await;
+        todo_id
+    });
+
+    rt.block_on(async {
+        let pool = open_readonly_pool(&workspace).await;
+        let data = entity_data(&pool, &todo_id).await;
+        assert!(
+            data.get("recurrence").is_none(),
+            "the null sentinel DROPPED the recurrence key — got {data}"
+        );
+        assert_eq!(
+            data["due_at"].as_str(),
+            Some("2026-06-14T18:00:00"),
+            "the anchor date is PRESERVED (only recurrence cleared)"
+        );
+        assert_eq!(
+            max_revision_seq(&pool, &todo_id).await,
+            2,
+            "the clear appends a seq-2 revision"
+        );
+    });
+}
+
+/// Case 6 (recurrence anchor-clear rejected, ADR-0037): a Todo with `due_at` + a
+/// due-anchored recurrence; `update_todo { due_at: null }` would clear the date
+/// the live rule anchors on → the MERGED whole fails anchor-presence → -32602 and
+/// NOTHING changes (data unchanged, no new revision, proposal pending, run parked).
+#[test]
+fn update_todo_clearing_recurrence_anchor_is_invalid_and_changes_nothing() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("propose-params.json");
+    let core = build_core(&workspace, &params_path);
+    let rt = runtime();
+
+    let (todo_id, update_run_id) = rt.block_on(async {
+        let todo_id = create_todo(
+            &core,
+            &params_path,
+            40,
+            serde_json::json!({
+                "title": "Water the plants",
+                "due_at": "2026-06-14T18:00:00",
+                "recurrence": {
+                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at"
+                }
+            }),
+            serde_json::json!([]),
+            "todo-create",
+        )
+        .await;
+
+        // Clear due_at out from under the still-live due-anchored recurrence.
+        write_params(
+            &params_path,
+            serde_json::json!({
+                "mutation_kind": "update_todo",
+                "payload": {
+                    "todo_id": todo_id,
+                    "todo": { "due_at": null }
+                },
+                "rationale": "the user cleared the due date"
+            }),
+        );
+        let (update_run, update_proposal) =
+            create_thread_and_park(&core, 60, "Clear the due date.").await;
+        let resp = decide_accept(&core, 62, &update_proposal, "todo-bad-anchor-clear").await;
+        assert_eq!(
+            resp["error"]["code"].as_i64(),
+            Some(-32602),
+            "clearing the recurrence anchor → invalid_params — body: {resp}"
+        );
+        // The rejected decide leaves the Run parked; wait for that transition to
+        // commit before the next block reads run/proposal status (else it races).
+        await_status(&core, &update_run, "parked").await;
+        (todo_id, update_run)
+    });
+
+    rt.block_on(async {
+        let pool = open_readonly_pool(&workspace).await;
+        let data = entity_data(&pool, &todo_id).await;
+        assert_eq!(
+            data["due_at"].as_str(),
+            Some("2026-06-14T18:00:00"),
+            "the due_at is unchanged (the clear was rejected)"
+        );
+        assert!(
+            data.get("recurrence").is_some(),
+            "the recurrence is still present — got {data}"
+        );
+        assert_eq!(
+            max_revision_seq(&pool, &todo_id).await,
+            1,
+            "no new revision was written"
+        );
+        let proposal_status: String = sqlx::query_scalar(
+            "SELECT p.status FROM proposals p \
+             JOIN tool_calls tc ON tc.id = p.tool_call_id WHERE tc.run_id = ?1",
+        )
+        .bind(&update_run_id)
+        .fetch_one(&pool)
+        .await
+        .expect("proposal row exists");
+        assert_eq!(proposal_status, "pending", "the proposal stays pending");
+        let run_status: String = sqlx::query_scalar("SELECT status FROM runs WHERE id = ?1")
+            .bind(&update_run_id)
+            .fetch_one(&pool)
+            .await
+            .expect("run row exists");
+        assert_eq!(run_status, "parked", "the run stays parked");
+    });
+}

@@ -87,6 +87,32 @@ export type TodoStatus = "active" | "completed" | "dropped";
 
 export type TodoPersonRole = "waiting_on" | "related";
 
+export type RecurrenceUnit =
+	| "minute"
+	| "hour"
+	| "day"
+	| "week"
+	| "month"
+	| "year";
+
+export type Weekday = "sun" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat";
+
+/**
+ * A Todo's repeat rule (ADR-0037). The view model camelCases the snake_case
+ * fields Core stores in `data.recurrence`; the snake→camel mapping happens in
+ * `toLibraryTodo`. This slice is read-only — Core validates and persists the
+ * rule; the UI only displays it.
+ */
+export interface RecurrenceRule {
+	interval: number;
+	unit: RecurrenceUnit;
+	schedule: "regular" | "from_completion";
+	anchor: "defer_at" | "due_at";
+	catchUp?: boolean;
+	onlyOn?: { weekdays?: Weekday[]; monthDays?: number[] };
+	end?: { until?: string; afterCount?: number };
+}
+
 /** A Todo's reference to a Person, with its GTD role (ADR-0031/0032). */
 export interface TodoPersonRef {
 	personId: string;
@@ -105,6 +131,8 @@ export interface Todo extends LibraryItemBase {
 	dueAt?: string;
 	completedAt?: string;
 	droppedAt?: string;
+	/** Repeat rule (ADR-0037). Absent when the Todo does not recur. */
+	recurrence?: RecurrenceRule;
 	/** Person References (ADR-0032). Empty when the Todo links no People. */
 	personRefs: TodoPersonRef[];
 }
@@ -513,6 +541,30 @@ export function reviewCadenceLabel(project: Project): string | null {
 	const { interval, unit } = every as { interval?: unknown; unit?: unknown };
 	if (typeof interval !== "number" || typeof unit !== "string") return null;
 	return interval === 1 ? `Every ${unit}` : `Every ${interval} ${unit}s`;
+}
+
+/** "every minute" reads better than "minutely"; the rest take an -ly adverb. */
+const RECURRENCE_ADVERB: Record<RecurrenceUnit, string> = {
+	minute: "every minute",
+	hour: "hourly",
+	day: "daily",
+	week: "weekly",
+	month: "monthly",
+	year: "yearly",
+};
+
+/**
+ * Human-readable summary of a recurrence rule's common path (ADR-0037). Covers
+ * interval, unit, and schedule; `onlyOn`/`end` round-trip but are not spelled
+ * out. Sentence case, no em dashes (DESIGN.md/PRODUCT.md copy tone).
+ */
+export function recurrenceSummary(rule: RecurrenceRule): string {
+	const cadence =
+		rule.interval === 1
+			? RECURRENCE_ADVERB[rule.unit]
+			: `every ${rule.interval} ${rule.unit}s`;
+	const suffix = rule.schedule === "from_completion" ? " from completion" : "";
+	return `Repeats ${cadence}${suffix}`;
 }
 
 export function groupJournalEntriesByDay(
