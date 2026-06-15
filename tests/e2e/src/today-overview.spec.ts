@@ -10,9 +10,9 @@ import { dbPathFor, seedEntities } from "./seed.js";
  * opens an entity's detail rail without leaving Today.
  *
  * Today's sections aren't ARIA landmarks (no `aria-label`), so they're located by
- * their heading text; rows are buttons carrying the entity title. The seeded
- * Todo/Person/Project replace the mock preview rows of their kind (the live-rows-
- * win rule in `useLibraryItems`), so the seeded titles are the live truth.
+ * their heading text; rows are buttons carrying the entity title. The Library is
+ * live-only (`useLibraryItems` reads Core; no preview fixtures), so the seeded
+ * rows are the entire Library surface.
  *
  * Determinism: no Run is started; the default gate-fixture Worker never spawns.
  */
@@ -113,5 +113,9 @@ test("selecting an entity on Today opens its detail rail in place (?id, no navig
 		name: /Jordan Lee details/i,
 	});
 	await expect(detail).toBeVisible({ timeout: 15_000 });
-	await expect(detail.getByText("Venue contact")).toBeVisible();
+	// The note renders in the body Field; `exact` excludes the header subtitle
+	// ("Person · Venue contact"), which now derives from the same note.
+	await expect(
+		detail.getByText("Venue contact", { exact: true }),
+	).toBeVisible();
 });

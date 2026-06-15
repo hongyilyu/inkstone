@@ -1,8 +1,8 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { people, todos } from "@/data/mock/entities";
 import type { Todo } from "@/lib/libraryItems";
+import { people, todos } from "@/lib/libraryItems.fixtures";
 import { EntityRow, TodoRow } from "./EntityRow";
 
 const todo = (id: string) => {
@@ -105,7 +105,7 @@ describe("EntityRow", () => {
 		render(<EntityRow entity={person("person_priya")} onSelect={onSelect} />);
 
 		expect(screen.getByText("Priya Nair")).toBeInTheDocument();
-		expect(screen.getByText("Staff engineer, Platform")).toBeInTheDocument();
+		expect(screen.getByText(/Owns the SDK examples/)).toBeInTheDocument();
 
 		await user.click(screen.getByRole("button", { name: /priya nair/i }));
 		expect(onSelect).toHaveBeenCalledWith("person_priya");

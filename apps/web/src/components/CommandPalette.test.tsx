@@ -18,27 +18,45 @@ const die = (): Effect.Effect<never, never> => Effect.die("unused");
 const dieStream = (): Stream.Stream<never, WsError> =>
 	Stream.fromEffect(Effect.die("unused")) as Stream.Stream<never, WsError>;
 
-// Stub: empty threadList so the open-triggered query resolves; Alice seeded as a stable live-People result.
+// Stub: empty threadList so the open-triggered query resolves; Alice (person)
+// and a matching daycare todo seeded as stable live entity/list results.
 const stub = WsClient.of({
 	threadCreate: die,
 	postMessage: die,
 	threadList: () => Effect.succeed({ threads: [] }),
 	threadGet: die,
-	listEntities: (type) =>
-		Effect.succeed({
-			entities:
-				type === "person"
-					? [
-							{
-								id: "person_alice",
-								type: "person",
-								data: { name: "Alice Whitman" },
-								created_at: 1_700_000_000_000,
-								updated_at: 1_700_000_000_000,
-							},
-						]
-					: [],
-		}),
+	listEntities: (type) => {
+		if (type === "person") {
+			return Effect.succeed({
+				entities: [
+					{
+						id: "person_alice",
+						type: "person",
+						data: { name: "Alice Whitman" },
+						created_at: 1_700_000_000_000,
+						updated_at: 1_700_000_000_000,
+					},
+				],
+			});
+		}
+		if (type === "todo") {
+			return Effect.succeed({
+				entities: [
+					{
+						id: "todo_schedule_alice",
+						type: "todo",
+						data: {
+							title: "Send Alice the updated daycare schedule",
+							status: "active",
+						},
+						created_at: 1_700_000_000_000,
+						updated_at: 1_700_000_000_000,
+					},
+				],
+			});
+		}
+		return Effect.succeed({ entities: [] });
+	},
 	entityMutate: die,
 	messageSearch: (query) =>
 		query.trim().toLowerCase().includes("daycare")

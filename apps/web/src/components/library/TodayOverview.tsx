@@ -2,19 +2,14 @@ import { useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, Sparkles, TriangleAlert } from "lucide-react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button.js";
-import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
 	activeProjectItems,
 	dueSoonTodos,
-	itemsNeedingReview,
-	KIND_META,
-	libraryItemTitle,
 	projectProgress,
 	recentlyCapturedItems,
 } from "@/lib/libraryItems";
-import { confirmReview, useConfirmedReviews } from "@/store/library";
 import { EntityGlyph } from "./EntityGlyph.js";
 import { EntityRow, TodoRow } from "./EntityRow.js";
 import { EntitySkeleton } from "./EntitySkeleton.js";
@@ -22,7 +17,6 @@ import { EntitySkeleton } from "./EntitySkeleton.js";
 export function TodayOverview() {
 	const { data, isPending, isError } = useLibraryItems();
 	const navigate = useNavigate();
-	const confirmed = useConfirmedReviews();
 
 	// Select in place: set `?id` on Today so the rail shows detail without leaving.
 	const open = (id: string) => {
@@ -77,17 +71,11 @@ export function TodayOverview() {
 		);
 	}
 
-	const reviews = itemsNeedingReview(data).filter((e) => !confirmed[e.id]);
 	const due = dueSoonTodos(data);
 	const recent = recentlyCapturedItems(data, 6);
 	const projects = activeProjectItems(data).slice(0, 4);
 
-	const summary = [
-		due.length > 0 ? `${due.length} due soon` : null,
-		reviews.length > 0 ? `${reviews.length} to review` : null,
-	]
-		.filter(Boolean)
-		.join(" · ");
+	const summary = due.length > 0 ? `${due.length} due soon` : "";
 
 	return (
 		<Shell>
@@ -102,50 +90,6 @@ export function TodayOverview() {
 					{summary || "Everything's clear. Nothing needs you right now."}
 				</p>
 			</header>
-
-			{reviews.length > 0 ? (
-				<Section
-					title="Needs review"
-					count={reviews.length}
-					delay={60}
-					hint="Accepted from recent chats. Confirm, or open to check."
-				>
-					<Card className="overflow-hidden bg-card/50">
-						{reviews.map((entity, i) => (
-							<div key={entity.id} className={cnRow(i)}>
-								<EntityGlyph entity={entity} size="sm" />
-								<div className="min-w-0 flex-1">
-									<p className="truncate font-medium text-foreground text-sm">
-										{libraryItemTitle(entity)}
-									</p>
-									<p className="truncate text-muted-foreground text-xs">
-										{KIND_META[entity.kind].label}
-										{entity.capturedFrom
-											? ` · from ${entity.capturedFrom.threadTitle}`
-											: ""}
-									</p>
-								</div>
-								<div className="flex shrink-0 items-center gap-1">
-									<Button
-										variant="chip"
-										size="sm"
-										onClick={() => confirmReview(entity.id)}
-									>
-										Confirm
-									</Button>
-									<Button
-										variant="ghost"
-										size="sm"
-										onClick={() => open(entity.id)}
-									>
-										Open
-									</Button>
-								</div>
-							</div>
-						))}
-					</Card>
-				</Section>
-			) : null}
 
 			{due.length > 0 ? (
 				<Section
@@ -234,14 +178,12 @@ function Shell({ children }: { children: ReactNode }) {
 function Section({
 	title,
 	count,
-	hint,
 	action,
 	delay = 0,
 	children,
 }: {
 	title: string;
 	count?: number;
-	hint?: string;
 	action?: ReactNode;
 	delay?: number;
 	children: ReactNode;
@@ -260,9 +202,6 @@ function Section({
 				</h2>
 				{action}
 			</div>
-			{hint ? (
-				<p className="mb-2.5 text-muted-foreground text-xs">{hint}</p>
-			) : null}
 			{children}
 		</section>
 	);
@@ -279,8 +218,4 @@ function ViewAll({ onClick }: { onClick: () => void }) {
 			<ArrowUpRight className="size-3" aria-hidden />
 		</button>
 	);
-}
-
-function cnRow(i: number): string {
-	return `flex items-center gap-3 px-3 py-2.5${i > 0 ? " border-border border-t" : ""}`;
 }

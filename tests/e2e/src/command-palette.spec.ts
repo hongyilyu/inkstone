@@ -11,9 +11,8 @@ import { dbPathFor, seedEntities, sqlite } from "./seed.js";
  *
  * Previously covered only by a mock-transport unit test (CommandPalette.test.tsx);
  * this drives the real palette against a real Core through the DOM a user
- * touches. Distinctive seeded titles ("Zephyr…", "Quenby Marsh", "Operation
- * Foxglove") never collide with the mock preview rows, so each query resolves to
- * exactly the seeded match.
+ * touches. The Library is live-only, so each query resolves to exactly the
+ * seeded match.
  *
  * Determinism: no Run is started; the default gate-fixture Worker never spawns.
  */
@@ -90,8 +89,7 @@ test("filters live Threads and Library entities into grouped results", async ({
 	await expect(palette.option(THREAD_A_TITLE)).toBeVisible();
 	await expect(palette.dialog().getByText(THREAD_B_TITLE)).toHaveCount(0);
 
-	// A Person query resolves to the seeded live Person (live rows replace the
-	// mock preview People, so it's the only People match).
+	// A Person query resolves to the seeded live Person (the only People match).
 	await palette.search("Quenby");
 	await expect(palette.option(/Quenby Marsh/)).toBeVisible();
 
