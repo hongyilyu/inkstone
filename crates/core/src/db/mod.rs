@@ -697,8 +697,8 @@ pub async fn journal_entry_target_is_valid(
     queries::journal_entry_target_is_valid(pool, run_id, entity_id).await
 }
 
-/// The Entity Type of an accepted Entity, parsed into [`EntityType`]. `None`
-/// means the row is genuinely absent (→ a target-gone `TargetMissing` on the
+/// The Entity Type of an accepted Entity, parsed into [`crate::mutation::EntityType`].
+/// `None` means the row is genuinely absent (→ a target-gone `TargetMissing` on the
 /// agent path, ADR-0033). A row whose stored `type` string fails to parse — the
 /// column has no CHECK constraint — surfaces as a loud `sqlx::Error::Decode`
 /// (every caller routes it to `Internal`), never silently collapsing to `None`.

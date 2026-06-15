@@ -179,19 +179,23 @@ pub(crate) async fn validate_mutation_target_refs(
         return Ok(());
     }
 
-    // An update_person/update_project or delete_person/delete_todo's `entity_id`
-    // must reference a Canonical Entity of the matching type. These kinds use this
-    // simple pool-level type check; the routing below is exhaustive over the kinds
-    // so a new Entity Type must declare how its target is validated. The target
-    // TYPE is the kind's own Entity Type (`desc.entity_type`).
+    // An update/delete's `entity_id` must reference a Canonical Entity of the
+    // matching type. These kinds use this simple pool-level type/existence check;
+    // the target TYPE is the kind's own Entity Type (`desc.entity_type`). The
+    // journal update/delete kinds are included here too: this run-INDEPENDENT
+    // check is the only target validation the user path (`mutate`) has, and on the
+    // agent path it runs BEFORE — not instead of — the stricter same-thread guard
+    // in `decide` (which still fires for a correct-type Journal Entry). It also
+    // disambiguates a wrong-TYPE journal target (e.g. a Person id) as `Invalid`
+    // rather than letting `decide`'s existence probe report it as target-missing.
     //
-    // NOT routed here (each handled elsewhere): the create kinds returned earlier
-    // (nothing to resolve); update_todo / the reference weave have their own
-    // branches above/below; and the journal update/delete kinds keep the stricter
-    // same-thread guard in `decide` (so they fall through to the trailing Ok).
+    // NOT routed here: the create kinds returned earlier (nothing to resolve);
+    // update_todo / the reference weave have their own branches above/below.
     let generic_type_check = matches!(
         kind,
-        MutationKind::UpdatePerson
+        MutationKind::UpdateJournalEntry
+            | MutationKind::DeleteJournalEntry
+            | MutationKind::UpdatePerson
             | MutationKind::DeletePerson
             | MutationKind::UpdateProject
             | MutationKind::DeleteProject

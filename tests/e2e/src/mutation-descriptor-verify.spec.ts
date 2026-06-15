@@ -40,6 +40,8 @@ test("descriptor refactor: propose → accept lands a Journal Entry and resumes"
 
 test("descriptor refactor: edit changes the Journal Entry then resumes", async ({
 	chat,
+	core,
+	page,
 }, testInfo) => {
 	await chat.goto();
 
@@ -58,4 +60,13 @@ test("descriptor refactor: edit changes the Journal Entry then resumes", async (
 
 	await expect(card).toContainText(/added to journal/i, { timeout: 15_000 });
 	await chat.waitForAssistantText(/done.*added it/i);
+
+	// The EDITED body — not the model's proposed body — is what got persisted:
+	// the apply path stored `edited_payload`, so the Library shows "oat milk".
+	await page.goto(`${core.url}/library/journal`);
+	await expect(
+		page
+			.getByRole("region", { name: /journal/i })
+			.getByText("Bought oat milk after daycare pickup."),
+	).toBeVisible({ timeout: 15_000 });
 });

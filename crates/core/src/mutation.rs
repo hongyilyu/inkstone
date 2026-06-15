@@ -4,10 +4,11 @@
 //! into the closed [`MutationKind`] enum; everything downstream branches on the
 //! typed value so a missed case is a compile error, not a runtime panic. The
 //! per-kind *classification + policy* — operation class, Entity Type, target-id
-//! key, source relation, agent-proposability — lives here as one [`describe`]
-//! table plus a handful of total predicates. The per-kind *apply behaviour* that
-//! needs committed DB state stays behind the transaction seam in
-//! [`crate::db::apply`]; this module is pure and DB-free.
+//! key, source relation, agent-proposability — lives here as one
+//! [`MutationKind::describe`] table plus a handful of total predicates. The
+//! per-kind *apply behaviour* that
+//! needs committed DB state stays behind the transaction seam in the `db::apply`
+//! module; this module is pure and DB-free.
 //!
 //! Two enums, one wide and one narrow:
 //! - [`MutationKind`] — all 17 Core-known kinds. The currency of `validate`,
@@ -149,8 +150,8 @@ impl EntityType {
 }
 
 /// Which top-level payload key names the target Entity of a mutation. A pure
-/// function of the kind (resolved in [`describe`]); the value is read FROM the
-/// payload at the edge via [`crate::entities::target_entity_id`].
+/// function of the kind (resolved in [`MutationKind::describe`]); the value is
+/// read FROM the payload at the edge via [`target_entity_id`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TargetKey {
     /// `entity_id` — the common update/delete target key.
