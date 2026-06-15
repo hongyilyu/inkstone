@@ -199,6 +199,7 @@ async fn fresh_manifest_line(
         .collect();
     let access_token = resolve_token(run_id, workflow).await?;
     let manifest = WorkerManifest {
+        run_id,
         workflow: workflow_manifest(workflow),
         prompt,
         messages,
@@ -218,6 +219,7 @@ async fn resume_manifest_line(
     let messages: Vec<ManifestMessage> = transcript.iter().map(crate::resume::Block::as_message).collect();
     let access_token = resolve_token(run_id, workflow).await?;
     let manifest = WorkerManifest {
+        run_id,
         workflow: workflow_manifest(workflow),
         prompt: "",
         messages,

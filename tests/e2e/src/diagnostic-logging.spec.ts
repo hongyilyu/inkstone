@@ -15,8 +15,9 @@ import { FAUX_WORKER_CMD } from "./spawnCore.js";
  *   1. Core wrote `core.jsonl` with a structured `event` (the subscriber works).
  *   2. The Worker wrote `worker.jsonl` BY DEFAULT (Core supplied the path) with a
  *      `worker.run_error` event — the worker half of the trail is live, not inert.
- *   3. The worker line carries a non-empty `run_id` (the env seam works), so the
- *      two files are joinable — the whole point of the feature.
+ *   3. The worker line carries a non-empty `run_id` (carried in-band via the
+ *      WorkerManifest, #146), so the two files are joinable — the whole point of
+ *      the feature.
  *
  * This is the browser-driven verification that the per-slice + deep-review passes
  * could not give: it confirms the feature actually produces its artifacts when a
@@ -100,8 +101,8 @@ test("a Run driven from the browser writes correlated core.jsonl + worker.jsonl"
 		"the Worker wrote a worker.run_error event to worker.jsonl (the worker trail is live by default, not inert)",
 	).toBeDefined();
 
-	// The correlation key: a non-empty run_id stamped from INKSTONE_RUN_ID, so
-	// worker.jsonl joins to core.jsonl by run.
+	// The correlation key: a non-empty run_id carried in-band via the
+	// WorkerManifest (#146), so worker.jsonl joins to core.jsonl by run.
 	const runId = runError?.run_id;
 	expect(
 		typeof runId === "string" && runId.length > 0,

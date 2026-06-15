@@ -181,7 +181,7 @@ export function runInterpreter(
 			// left unlogged. Shares the `worker.run_error` key with worker-main's
 			// catchAll so an agent's `GROUP BY event` mines every run error together;
 			// `source` distinguishes this model-reported failure from the catchAll.
-			logWorkerFault("worker.run_error", {
+			logWorkerFault("worker.run_error", manifest.run_id, {
 				source: "interpreter",
 				message: errorMessage,
 			});

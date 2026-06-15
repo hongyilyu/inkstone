@@ -6,6 +6,18 @@ import type { ToolCallResponse } from "./tool-proxy.js";
 import { ManifestParseError, WorkerTransport } from "./transport.js";
 import { logWorkerFault } from "./worker-log.js";
 
+/** Best-effort run_id from a raw manifest line, for when schema decode fails but
+ * the JSON parsed (#146): keeps the failure's diagnostic line joinable to
+ * core.jsonl. `undefined` on a JSON syntax error or a non-string run_id. */
+const rawRunId = (line: string): string | undefined => {
+	try {
+		const runId = (JSON.parse(line) as { run_id?: unknown }).run_id;
+		return typeof runId === "string" ? runId : undefined;
+	} catch {
+		return undefined;
+	}
+};
+
 /** Production transport (ADR-0027): the Worker's stdio behind the {@link WorkerTransport} seam, over injected streams for testability. See docs/design/worker-transport.md. */
 const makeStdioService = (
 	input: Readable,
@@ -22,6 +34,7 @@ const makeStdioService = (
 		resolveManifest = resolve;
 	});
 	let gotManifest = false;
+	let runId = "";
 
 	const rl = createInterface({ input });
 	rl.on("line", (line: string) => {
@@ -47,7 +60,7 @@ const makeStdioService = (
 					pending(msg.outcome);
 				} else {
 					// A tool_result arrived with no awaiting call — silently dropped before.
-					logWorkerFault("worker.tool_result_no_pending", {
+					logWorkerFault("worker.tool_result_no_pending", runId, {
 						tool_call_id: msg.tool_call_id,
 					});
 				}
@@ -55,7 +68,7 @@ const makeStdioService = (
 		} catch {
 			// Non-JSON / unknown inbound line: dropped, but now observable. Bound the
 			// preview so a huge bad line never bloats the Diagnostic Log.
-			logWorkerFault("worker.inbound_line_unparsed", {
+			logWorkerFault("worker.inbound_line_unparsed", runId, {
 				preview: line.slice(0, 200),
 			});
 		}
@@ -71,15 +84,20 @@ const makeStdioService = (
 		readManifest: Effect.gen(function* () {
 			const line = yield* Effect.promise(() => manifestLine);
 			if (line === null) return null;
-			return yield* Effect.try({
+			const manifest = yield* Effect.try({
 				try: () => S.decodeUnknownSync(WorkerManifest)(JSON.parse(line)),
 				catch: (e) =>
 					new ManifestParseError({
 						message: `worker could not parse manifest: ${
 							e instanceof Error ? e.message : String(e)
 						}`,
+						// Salvage run_id from the raw JSON so a schema-skew failure (#146)
+						// still logs a joinable run_id — undefined only on a JSON syntax error.
+						runId: rawRunId(line),
 					}),
 			});
+			runId = manifest.run_id;
+			return manifest;
 		}),
 		emit: (event) => writeLine(event),
 		callTool: (toolCallId, name, params) =>
@@ -87,7 +105,7 @@ const makeStdioService = (
 				pendingTools.set(toolCallId, resolve);
 				writeLine({
 					kind: "tool_request",
-					run_id: "",
+					run_id: runId,
 					tool_call_id: toolCallId,
 					name,
 					params,

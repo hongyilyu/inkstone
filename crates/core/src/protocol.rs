@@ -569,12 +569,16 @@ pub struct WorkflowManifest<'a> {
 }
 
 /// The full spawn manifest written to the Worker's stdin (ADR-0018, ADR-0013).
+/// `run_id` carries the Run's id in-band so the Worker can stamp its trail.
 /// `messages` is the assembled prior history. `mode` selects the loop entry
 /// point (ADR-0025): absent/`"fresh"` starts a new prompt, `"resume"` continues
 /// a reconstructed transcript. `access_token` is `Some` only for OAuth providers
 /// (ADR-0023), skipped on the wire otherwise.
 #[derive(Debug, Serialize)]
 pub struct WorkerManifest<'a> {
+    /// The Run's id, carried in-band (ADR-0038 / #146) so the Worker stamps its
+    /// `worker.jsonl` lines without an out-of-band spawn-time env var.
+    pub run_id: uuid::Uuid,
     pub workflow: WorkflowManifest<'a>,
     pub prompt: &'a str,
     pub messages: Vec<ManifestMessage<'a>>,
@@ -1080,6 +1084,7 @@ mod mirror_tests {
     #[test]
     fn worker_manifest_encodes_full_shape_with_history_and_token() {
         let manifest = WorkerManifest {
+            run_id: UUID_RUN.parse().unwrap(),
             workflow: WorkflowManifest {
                 name: "default",
                 version: "1.0.0",
@@ -1108,6 +1113,7 @@ mod mirror_tests {
         assert_eq!(
             serde_json::to_value(&manifest).unwrap(),
             json!({
+                "run_id": UUID_RUN,
                 "workflow": {
                     "name": "default",
                     "version": "1.0.0",
@@ -1135,6 +1141,7 @@ mod mirror_tests {
     #[test]
     fn worker_manifest_omits_access_token_when_none() {
         let manifest = WorkerManifest {
+            run_id: UUID_RUN.parse().unwrap(),
             workflow: WorkflowManifest {
                 name: "default",
                 version: "1.0.0",
@@ -1160,6 +1167,7 @@ mod mirror_tests {
             v.get("mode").is_none(),
             "mode must be omitted when None, got {v}"
         );
+        assert_eq!(v["run_id"], json!(UUID_RUN));
         assert_eq!(v["workflow"]["tools"], json!([]));
         assert_eq!(v["messages"], json!([]));
     }
@@ -1171,6 +1179,7 @@ mod mirror_tests {
         // The resume transcript (ADR-0025): a user turn, an assistant `tool_call`
         // with no text, and the awaited `tool_result`.
         let manifest = WorkerManifest {
+            run_id: UUID_RUN.parse().unwrap(),
             workflow: WorkflowManifest {
                 name: "default",
                 version: "1.0.0",
@@ -1209,6 +1218,7 @@ mod mirror_tests {
             access_token: None,
         };
         let v = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(v["run_id"], json!(UUID_RUN));
         assert_eq!(v["mode"], json!("resume"));
         assert_eq!(
             v["messages"],

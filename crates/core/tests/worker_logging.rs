@@ -124,3 +124,80 @@ fn worker_unknown_line_carries_run_id() {
         lines.len()
     );
 }
+
+/// Core supplies the Worker's `worker.jsonl` sink path BY DEFAULT (ADR-0038):
+/// the Worker's sink no-ops unless `INKSTONE_WORKER_LOG_PATH` is set, so without
+/// Core defaulting it the entire Worker half of the trail would write nothing in
+/// normal operation. This asserts a spawned Worker that sets NO log-path env of
+/// its own still receives `INKSTONE_WORKER_LOG_PATH` pointed at `worker.jsonl`
+/// inside the same log dir Core writes `core.jsonl` into.
+#[test]
+fn worker_child_receives_default_worker_log_path() {
+    let workspace = Workspace::new();
+    let log_dir = workspace.path().join("logs");
+    let sink_path = workspace.path().join("logpath-sink");
+    let core = workspace
+        .core()
+        .worker_fixture("log-path-echo-worker.ts")
+        // Pin Core's log dir to the tempdir (hermetic); do NOT set
+        // INKSTONE_WORKER_LOG_PATH — Core must supply the default.
+        .env("INKSTONE_LOG_DIR", &log_dir)
+        .env("INKSTONE_TEST_LOGPATH_SINK", &sink_path)
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+        let request =
+            r#"{"jsonrpc":"2.0","id":1,"method":"thread/create","params":{"prompt":"hi"}}"#;
+        ws.send(Message::Text(request.into()))
+            .await
+            .expect("send request frame");
+        let response_body = next_text(&mut ws).await;
+        let response: serde_json::Value = serde_json::from_str(&response_body)
+            .unwrap_or_else(|e| panic!("response is JSON: {e} — body: {response_body}"));
+        let run_id = response["result"]["run_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("result.run_id is a string — body: {response_body}"))
+            .to_string();
+
+        let subscribe = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"run/subscribe","params":{{"run_id":"{run_id}"}}}}"#
+        );
+        ws.send(Message::Text(subscribe.into()))
+            .await
+            .expect("send subscribe frame");
+        let _sub_response = next_text(&mut ws).await;
+
+        loop {
+            let body = next_text(&mut ws).await;
+            let v: serde_json::Value = serde_json::from_str(&body)
+                .unwrap_or_else(|e| panic!("event is JSON: {e} — body: {body}"));
+            if v["params"]["event"]["kind"].as_str() == Some("done") {
+                break;
+            }
+        }
+        ws.close(None).await.ok();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    });
+
+    drop(core);
+
+    let echoed = std::fs::read_to_string(&sink_path)
+        .unwrap_or_else(|e| panic!("read sink {}: {e}", sink_path.display()));
+    let echoed = echoed.trim();
+    assert!(
+        !echoed.is_empty(),
+        "Core supplies a default INKSTONE_WORKER_LOG_PATH — sink was empty (worker trail would be inert)"
+    );
+    let expected = log_dir.join("worker.jsonl");
+    assert_eq!(
+        std::path::Path::new(echoed),
+        expected,
+        "the default worker log path is worker.jsonl in Core's log dir (sibling to core.jsonl)"
+    );
+}
