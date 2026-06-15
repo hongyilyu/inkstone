@@ -1,13 +1,33 @@
 //! Dispatcher seam (ADR-0011) + effective-Workflow resolution (ADR-0024).
 //!
-//! [`dispatch`] answers "which Workflow?" (the single default today).
+//! [`dispatch_and_resolve`] is the single entry every fresh Run-creation site
+//! shares (ADR-0011: "asked once, in one place"): it picks the Workflow, then
+//! resolves its model/effort from settings into an owned, executable Workflow.
+//! [`dispatch`] answers "which Workflow?" (the single default today);
 //! [`resolve_effective_workflow`] answers "with which model/effort?", overriding
 //! the base Workflow's `model`/`thinking_level` from the user's settings.
+//!
+//! Resume does NOT call this — a resumed Run rebuilds its Workflow from the
+//! `runs` snapshot (`db::run_workflow_snapshot`), never re-resolving live
+//! settings, so a mid-Run setting change cannot leak into the running Run
+//! (ADR-0024).
 
 use sqlx::SqlitePool;
 
 use crate::workflow::{self, Workflow};
 use crate::{models, settings};
+
+/// Pick the Workflow for a fresh Run (ADR-0011) and resolve its effective
+/// model/effort from user settings (ADR-0024) in one step — the single seam the
+/// Run-creation sites share. Returns an owned, executable Workflow.
+pub async fn dispatch_and_resolve(
+    pool: &SqlitePool,
+    thread_id: uuid::Uuid,
+    prompt: &str,
+) -> Workflow {
+    let base = dispatch(thread_id, prompt);
+    resolve_effective_workflow(pool, base).await
+}
 
 pub fn dispatch(_thread_id: uuid::Uuid, _prompt: &str) -> &'static Workflow {
     workflow::default_workflow()

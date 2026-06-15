@@ -563,8 +563,8 @@ mod tests {
         sqlx::query(
             "INSERT INTO runs \
              (id, thread_id, workflow_name, workflow_version, provider, model, \
-              user_message_id, status, started_at) \
-             VALUES (?, ?, 'w', '1', 'p', 'm', ?, 'parked', ?)",
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'parked', ?)",
         )
         .bind(&run)
         .bind(&thread)
