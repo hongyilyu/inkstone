@@ -18,7 +18,13 @@ A Diagnostic Log line and a Run Log row may describe the same moment (a Run erro
 
 `tracing` is the ecosystem default and the only choice that earns its dependency here:
 
-- **Spans give correlation for free.** `#[instrument(fields(%run_id))]` on `worker::spawn`/`worker::resume` attaches `run_id` to every event emitted inside the Run's task without threading it through each call site — closing the "no correlation id" gap by construction. `child.rs`'s pre-stream sites (where `run_id` is not a parameter) inherit it from the enclosing span rather than needing the id plumbed in.
+- **Spans give correlation for free.** A `worker_run` span carrying `%run_id`, `.instrument()`'d onto the spawned Run task, attaches `run_id` to every event emitted inside that task — including transitive `sqlx`/`tokio` dep events — without threading it through each call site. (Note: `tokio::spawn` does *not* propagate the ambient span into the spawned future, so the span is attached explicitly via `.instrument(span)`, not a bare `#[instrument]` attribute, which would silently lose correlation across the spawn boundary.)
+
+**Canonical correlation field: top-level `run_id`.** The agent-queryable correlation key is a **direct, top-level** event field, emitted as `%run_id` at every site where `run_id` is in scope. This is load-bearing for the feature's purpose: with the JSON subscriber's `flatten_event(true)`, a *direct* event field lands at top-level `.run_id`, whereas a field carried only by the enclosing **span** lands at `.span.run_id`. A trail that mixed the two would defeat the one query the feature exists to serve — `jq 'select(.run_id=="…")'` / `GROUP BY run_id` would silently miss every span-only event. Therefore:
+  - Sites with `run_id` in scope (most of `run.rs`, `mod.rs`) emit it **directly**: `error!(event="worker.terminal_tx_failed", %run_id, …)`.
+  - Sites without it in scope (`child.rs`'s stdout reader) get `run_id` **threaded in** (into `ChildWorker::spawn`) so they too emit the top-level field.
+  - The `worker_run` span is **retained** anyway, because it is the only way to correlate the transitive `sqlx`/`tokio` events (which we don't author and can't add a field to) — those remain joinable via `.span.run_id`.
+  - The canonical, documented query path is **top-level `.run_id`**; `.span.run_id` is a fallback for dep events only.
 - **It captures the dependencies' events.** `sqlx`, `tokio`, and `tower` already emit `tracing` events transitively (they are in `Cargo.lock` today). A `tracing` subscriber picks these up; `log` + `env_logger` would not, and a hand-rolled macro would reimplement levels, filtering, span propagation, and formatting to capture nothing extra.
 - **The structured-event discipline is native.** `warn!(event = "db.fts_index_failed", %run_id, error = %e)` is the idiomatic form, and the JSON layer serializes fields as JSON object keys — exactly the shape `jq`/`GROUP BY` wants.
 
