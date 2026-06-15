@@ -85,10 +85,10 @@ const recurrence = S.Struct({
 	end: S.optional(recurrenceEnd),
 });
 
-/** The TodoData core in `Mode::Full` (create path): `title` required, the rest
- * optional. The `update_todo` partial mode (slice 2) reuses a relaxed variant. */
-const todoDataFull = S.Struct({
-	title: nonEmptyString,
+/** The TodoData fields OTHER than `title` — already all optional, and identical
+ * across both `Mode`s. Spread into the full/partial structs so the two variants
+ * differ only in how they declare `title`. */
+const todoDataRest = {
 	note: S.optional(S.String),
 	status: S.optional(S.Literal("active", "completed", "dropped")),
 	project_id: S.optional(nonEmptyString),
@@ -97,6 +97,21 @@ const todoDataFull = S.Struct({
 	completed_at: S.optional(localDateTime),
 	dropped_at: S.optional(localDateTime),
 	recurrence: S.optional(recurrence),
+};
+
+/** The TodoData core in `Mode::Full` (create path): `title` required, the rest
+ * optional. */
+const todoDataFull = S.Struct({
+	title: nonEmptyString,
+	...todoDataRest,
+});
+
+/** The TodoData core in `Mode::Partial` (`update_todo`'s `todo`): EVERY field
+ * optional, `title` included — so the struct emits no `required` array, matching
+ * the fixture (a partial update sets only the fields it carries). */
+const todoDataPartial = S.Struct({
+	title: S.optional(nonEmptyString),
+	...todoDataRest,
 });
 
 /** One `person_refs` element (ADR-0031): a required `person_id` + optional role. */
@@ -113,11 +128,109 @@ const createTodo = S.Struct({
 	source_journal_entry_id: S.optional(patternedUuid),
 });
 
+/** `update_todo` payload (ADR-0031): required `todo_id` (bare) + an optional
+ * partial `todo` + the three Person-Reference edit lists — `set`/`add` carry
+ * person_ref objects, `remove` carries BARE id strings (the non-empty rule is
+ * validator-only). All four lists optional; only the id is required. */
+const updateTodo = S.Struct({
+	todo_id: S.String,
+	todo: S.optional(todoDataPartial),
+	set_person_refs: S.optional(S.Array(personRef)),
+	add_person_refs: S.optional(S.Array(personRef)),
+	remove_person_ids: S.optional(S.Array(S.String)),
+});
+
+// ── delete payloads (`delete_person` / `delete_project` / `delete_todo`) ──
+//
+// All three are the identical `{entity_id}` shape: a bare-string id (a UUID at
+// runtime, but advertised bare per the dialect — `FieldSpec::Uuid` WITHOUT
+// `schema_regex`, like `todo_id`), required. One shared factory, three entries.
+
+/** The shared single-`entity_id` delete payload. */
+const deleteByEntityId = S.Struct({
+	entity_id: S.String,
+});
+
+// ── person payloads (`create_person` / `update_person`) ──
+//
+// `create`/`update` share the same Person core (name + note + aliases); create
+// additionally carries the optional provenance id, update prepends the required
+// `entity_id` and drops provenance (the update path has no source entry).
+
+/** The Person core: `name` required (non-empty), `note` optional bare string,
+ * `aliases` optional array of BARE strings (the non-empty rule is validator-only,
+ * deliberately absent from the schema — the fixture shows plain `{type:string}`
+ * items). Spread into both create/update structs so neither duplicates it. */
+const personCore = {
+	name: nonEmptyString,
+	note: S.optional(S.String),
+	aliases: S.optional(S.Array(S.String)),
+};
+
+/** `create_person`: Person core + optional provenance id. */
+const createPerson = S.Struct({
+	...personCore,
+	source_journal_entry_id: S.optional(patternedUuid),
+});
+
+/** `update_person`: required `entity_id` (bare) + Person core. */
+const updatePerson = S.Struct({
+	entity_id: S.String,
+	...personCore,
+});
+
+// ── project payloads (`create_project` / `update_project`) ──
+
+/** `project.review_every` (ADR-0036): a positive-int interval + a cadence unit.
+ * Both required. (Distinct from the Todo `recurrence` unit — no minute/hour.) */
+const reviewEvery = S.Struct({
+	interval: positiveInt,
+	unit: S.Literal("day", "week", "month", "year"),
+});
+
+/** The Project core: `name` required; `outcome`/`note` optional bare strings;
+ * `status` optional enum; the six scheduling/review datetimes optional; the
+ * `review_every` cadence optional. Spread into create/update (create adds the
+ * provenance id, update prepends `entity_id`). */
+const projectCore = {
+	name: nonEmptyString,
+	outcome: S.optional(S.String),
+	note: S.optional(S.String),
+	status: S.optional(S.Literal("active", "on_hold", "completed", "dropped")),
+	defer_at: S.optional(localDateTime),
+	due_at: S.optional(localDateTime),
+	completed_at: S.optional(localDateTime),
+	dropped_at: S.optional(localDateTime),
+	next_review_at: S.optional(localDateTime),
+	last_reviewed_at: S.optional(localDateTime),
+	review_every: S.optional(reviewEvery),
+};
+
+/** `create_project`: Project core + optional provenance id. */
+const createProject = S.Struct({
+	...projectCore,
+	source_journal_entry_id: S.optional(patternedUuid),
+});
+
+/** `update_project`: required `entity_id` (bare) + Project core. */
+const updateProject = S.Struct({
+	entity_id: S.String,
+	...projectCore,
+});
+
 /** The kind → Effect Schema registry the parity test iterates. Slices 2/3 add
  * the remaining 12 wire kinds here; the test asserts each against its committed
  * `fixtures/<kind>.json`. */
 export const schemas = {
 	create_todo: createTodo,
+	create_person: createPerson,
+	update_person: updatePerson,
+	create_project: createProject,
+	update_project: updateProject,
+	update_todo: updateTodo,
+	delete_person: deleteByEntityId,
+	delete_project: deleteByEntityId,
+	delete_todo: deleteByEntityId,
 } as const satisfies Record<string, S.Schema.Any>;
 
 export type WireKind = keyof typeof schemas;

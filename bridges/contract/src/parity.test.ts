@@ -21,7 +21,17 @@ const readFixture = (kind: WireKind): unknown =>
 	JSON.parse(readFileSync(`${fixturesDir}${kind}.json`, "utf8"));
 
 /** The kinds whose Effect Schema this slice asserts. Slices 2/3 append. */
-const COVERED: readonly WireKind[] = ["create_todo"];
+const COVERED: readonly WireKind[] = [
+	"create_todo",
+	"create_person",
+	"update_person",
+	"create_project",
+	"update_project",
+	"update_todo",
+	"delete_person",
+	"delete_project",
+	"delete_todo",
+];
 
 describe("schema parity (Rust PayloadSpec ≡ TS Effect Schema)", () => {
 	for (const kind of COVERED) {
