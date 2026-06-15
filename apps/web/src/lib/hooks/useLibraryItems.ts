@@ -190,6 +190,16 @@ const RECURRENCE_UNITS: readonly RecurrenceUnit[] = [
 	"year",
 ];
 
+const WEEKDAYS: readonly Weekday[] = [
+	"sun",
+	"mon",
+	"tue",
+	"wed",
+	"thu",
+	"fri",
+	"sat",
+];
+
 /**
  * Defensively map a stored snake_case recurrence rule (ADR-0037) to the
  * camelCase view model. Core validates the rule on the way in, so this is
@@ -220,12 +230,14 @@ function asRecurrence(value: unknown): RecurrenceRule | undefined {
 		const onlyOn: { weekdays?: Weekday[]; monthDays?: number[] } = {};
 		if (Array.isArray(onlyOnRaw.weekdays)) {
 			onlyOn.weekdays = onlyOnRaw.weekdays.filter(
-				(w): w is Weekday => typeof w === "string",
+				(w): w is Weekday =>
+					typeof w === "string" && WEEKDAYS.includes(w as Weekday),
 			);
 		}
 		if (Array.isArray(onlyOnRaw.month_days)) {
 			onlyOn.monthDays = onlyOnRaw.month_days.filter(
-				(d): d is number => typeof d === "number",
+				(d): d is number =>
+					typeof d === "number" && Number.isInteger(d) && d >= 1 && d <= 31,
 			);
 		}
 		if (onlyOn.weekdays || onlyOn.monthDays) rule.onlyOn = onlyOn;

@@ -311,6 +311,7 @@ pub struct RecurrenceEnd {
     #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
     pub until: Option<String>,
     #[serde(default)]
+    #[schemars(range(min = 1))]
     pub after_count: Option<u64>,
 }
 

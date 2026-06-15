@@ -758,6 +758,9 @@ fn update_todo_clearing_recurrence_anchor_is_invalid_and_changes_nothing() {
             Some(-32602),
             "clearing the recurrence anchor → invalid_params — body: {resp}"
         );
+        // The rejected decide leaves the Run parked; wait for that transition to
+        // commit before the next block reads run/proposal status (else it races).
+        await_status(&core, &update_run, "parked").await;
         (todo_id, update_run)
     });
 

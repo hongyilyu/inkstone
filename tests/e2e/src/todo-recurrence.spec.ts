@@ -18,6 +18,9 @@ test("create a recurring Todo via the rail editor → recurrence persists and th
 	workspace,
 }) => {
 	const dbPath = dbPathFor(workspace.path);
+	// Unique per-test title so the DB ground-truth filters can't collide with a
+	// preseeded or parallel-worker row carrying the same title.
+	const title = `Submit the weekly report ${test.info().testId}`;
 
 	await page.goto(`${core.url}/library/todos`);
 	await page.getByRole("button", { name: /new todo/i }).click();
@@ -25,7 +28,7 @@ test("create a recurring Todo via the rail editor → recurrence persists and th
 	const rail = page.getByRole("complementary", { name: /new todo/i });
 	await expect(rail).toBeVisible({ timeout: 15_000 });
 
-	await rail.getByLabel("Title").fill("Submit the weekly report");
+	await rail.getByLabel("Title").fill(title);
 	// A due date is REQUIRED: the editor defaults the recurrence anchor to due_at
 	// when a due date is set, and Core rejects a rule whose anchor date is absent.
 	await rail.getByLabel("Due").fill("2026-12-31");
@@ -42,7 +45,7 @@ test("create a recurring Todo via the rail editor → recurrence persists and th
 
 	// The new Todo lands in the live collection (live rows replace the mock preview).
 	const collection = page.getByRole("region", { name: /todos/i });
-	await expect(collection.getByText("Submit the weekly report")).toBeVisible({
+	await expect(collection.getByText(title)).toBeVisible({
 		timeout: 15_000,
 	});
 
@@ -50,7 +53,7 @@ test("create a recurring Todo via the rail editor → recurrence persists and th
 	// whose recurrence badge reads the rule re-fetched from Core (ADR-0037 summary:
 	// interval 2 / unit week / regular → "Repeats every 2 weeks").
 	const detail = page.getByRole("complementary", {
-		name: /Submit the weekly report details/i,
+		name: `${title} details`,
 	});
 	await expect(detail).toBeVisible({ timeout: 15_000 });
 	await expect(detail.getByText(/repeats every 2 weeks/i)).toBeVisible({
@@ -58,29 +61,15 @@ test("create a recurring Todo via the rail editor → recurrence persists and th
 	});
 
 	// DB ground truth: the persisted Todo's data carries the recurrence rule —
-	// proves the round-trip reached tier 2, not just the client cache.
-	expect(
+	// proves the round-trip reached tier 2, not just the client cache. Filtering
+	// on the unique title pins the assertion to this test's row.
+	const recurrenceField = (field: string) =>
 		sqliteScalar(
 			dbPath,
-			`SELECT json_extract(data,'$.recurrence.unit') FROM entities WHERE type='todo' AND json_extract(data,'$.title')='Submit the weekly report';`,
-		),
-	).toBe("week");
-	expect(
-		sqliteScalar(
-			dbPath,
-			`SELECT json_extract(data,'$.recurrence.interval') FROM entities WHERE type='todo' AND json_extract(data,'$.title')='Submit the weekly report';`,
-		),
-	).toBe("2");
-	expect(
-		sqliteScalar(
-			dbPath,
-			`SELECT json_extract(data,'$.recurrence.schedule') FROM entities WHERE type='todo' AND json_extract(data,'$.title')='Submit the weekly report';`,
-		),
-	).toBe("regular");
-	expect(
-		sqliteScalar(
-			dbPath,
-			`SELECT json_extract(data,'$.recurrence.anchor') FROM entities WHERE type='todo' AND json_extract(data,'$.title')='Submit the weekly report';`,
-		),
-	).toBe("due_at");
+			`SELECT json_extract(data,'$.recurrence.${field}') FROM entities WHERE type='todo' AND json_extract(data,'$.title')='${title}';`,
+		);
+	expect(recurrenceField("unit")).toBe("week");
+	expect(recurrenceField("interval")).toBe("2");
+	expect(recurrenceField("schedule")).toBe("regular");
+	expect(recurrenceField("anchor")).toBe("due_at");
 });
