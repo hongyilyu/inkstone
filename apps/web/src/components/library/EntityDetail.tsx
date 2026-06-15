@@ -9,6 +9,7 @@ import type {
 	JournalEntry,
 	JournalEntryBodyEntityRefNode,
 	LibraryItem,
+	LibraryItemKind,
 	Person,
 	Project,
 	Todo,
@@ -66,13 +67,20 @@ export function EntityDetail({
 	return <BookmarkDetail bookmark={entity} />;
 }
 
-/** The five delete mutation kinds (ADR-0033). Local to the inspector configs — the wire type is an opaque `string`. */
-type DeleteMutationKind =
-	| "delete_todo"
-	| "delete_person"
-	| "delete_project"
-	| "delete_journal_entry"
-	| "delete_bookmark";
+/**
+ * The `entity/mutate` delete kind per Library kind (ADR-0033). Derived from
+ * `entity.kind` inside the shell — like `KIND_META[kind].slug` — so the entity
+ * on screen is the single source of truth and a kind/delete-kind mismatch is
+ * unrepresentable. The wire type is an opaque `string`; this total map is the
+ * local typo guard.
+ */
+const DELETE_KIND: Record<LibraryItemKind, string> = {
+	todo: "delete_todo",
+	person: "delete_person",
+	project: "delete_project",
+	journal_entry: "delete_journal_entry",
+	bookmark: "delete_bookmark",
+};
 
 /**
  * The Library inspector shell: one view↔edit↔delete state machine behind every
@@ -80,21 +88,19 @@ type DeleteMutationKind =
  * `confirmingDelete` toggle, the `entity/mutate` hook, the header (glyph + title +
  * Edit chip), and the inline (non-modal) delete-confirm footer; on a successful
  * delete the Library re-reads and the route drops `?id` so the rail returns to
- * empty. Per kind only the delete `mutation_kind`, the confirm sentence, and the
- * Body/Editor render props vary — the editors don't share a prop shape, so the
- * slots are render props, not a typed `<Editor entity/>`. The hook lives here,
- * reached only through this shell, so the tree stays hook-free until an inspector
- * mounts.
+ * empty. The delete kind and nav slug derive from `entity.kind`; per kind only
+ * the confirm sentence and the Body/Editor render props vary — the editors don't
+ * share a prop shape, so the slots are render props, not a typed `<Editor entity/>`.
+ * The hook lives here, reached only through this shell, so the tree stays
+ * hook-free until an inspector mounts.
  */
 function InspectorShell({
 	entity,
-	deleteKind,
 	confirmCopy,
 	renderBody,
 	renderEditor,
 }: {
 	entity: LibraryItem;
-	deleteKind: DeleteMutationKind;
 	confirmCopy: string;
 	renderBody: (onOpen: (e: LibraryItem) => void) => ReactNode;
 	renderEditor: (onDone: () => void, onCancel: () => void) => ReactNode;
@@ -123,7 +129,10 @@ function InspectorShell({
 
 	const deleteEntity = () =>
 		del.mutate(
-			{ mutation_kind: deleteKind, payload: { entity_id: entity.id } },
+			{
+				mutation_kind: DELETE_KIND[entity.kind],
+				payload: { entity_id: entity.id },
+			},
 			{
 				onSuccess: () =>
 					// Drop `?id` so the rail returns to empty for the now-gone Entity.
@@ -223,7 +232,6 @@ function TodoDetail({
 	return (
 		<InspectorShell
 			entity={todo}
-			deleteKind="delete_todo"
 			confirmCopy="Delete this Todo?"
 			renderBody={(onOpen) => (
 				<TodoBody todo={todo} allEntities={allEntities} onOpen={onOpen} />
@@ -252,7 +260,6 @@ function PersonDetail({
 	return (
 		<InspectorShell
 			entity={person}
-			deleteKind="delete_person"
 			confirmCopy="Delete this Person?"
 			renderBody={(onOpen) => (
 				<PersonBody person={person} allEntities={allEntities} onOpen={onOpen} />
@@ -284,7 +291,6 @@ function ProjectDetail({
 	return (
 		<InspectorShell
 			entity={project}
-			deleteKind="delete_project"
 			confirmCopy="Delete this Project? Its Todos lose their project."
 			renderBody={(onOpen) => (
 				<ProjectBody
@@ -319,7 +325,6 @@ function JournalEntryDetail({
 	return (
 		<InspectorShell
 			entity={journalEntry}
-			deleteKind="delete_journal_entry"
 			confirmCopy="Delete this Journal Entry?"
 			renderBody={(onOpen) => (
 				<JournalEntryBody
@@ -346,7 +351,6 @@ function BookmarkDetail({ bookmark }: { bookmark: Bookmark }) {
 	return (
 		<InspectorShell
 			entity={bookmark}
-			deleteKind="delete_bookmark"
 			confirmCopy="Delete this Bookmark?"
 			renderBody={() => <BookmarkBody bookmark={bookmark} />}
 			renderEditor={(onDone, onCancel) => (
