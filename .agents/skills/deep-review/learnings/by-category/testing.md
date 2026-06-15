@@ -1,6 +1,11 @@
 # Learned rules — Testing (`testing`)
 
-_33 rules. Loaded by the `dr-testing` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_34 rules. Loaded by the `dr-testing` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+
+## Isolate and restore shared/global state per test  ·  `isolate-and-restore-shared-state`
+- **Severity:** important  ·  **Support:** 9  ·  **Seen in:** #133, #134, #27719, #28434, #28529, #29784
+- **Rule:** Tests must not leak shared state across tests in the same process. Require save-and-restore (afterEach/afterAll or try/finally) for mutations of process.env, module-level singletons/flags, or event-bus subscriptions, and require persistent state to be written to an isolated temp dir rather than a real/global/home-derived path. A test asserting on a persistent on-disk file must reset/initialize it in setup so results are not order-dependent. Flag a global mutation only when no matching restore captures the prior value.
+- **Detect:** Flag: assignments to process.env.* / Flag.* / shared singletons without a matching restore that captures the prior value; mkdir/write into a global path constant instead of a per-test tmpdir; a subscribe/addListener/on call whose unsubscribe return value is discarded; a test asserting on a persistent file's contents with no rm/clear/init of that file before the exercise phase. Ask: is every global mutation undone before the next test runs?
 
 ## Cover every new branch — including the contrasting/negative case  ·  `test-new-branch-and-both-sides`
 - **Severity:** important  ·  **Support:** 8  ·  **Seen in:** #25773, #25797, #26752, #26754, #26825, #27016
@@ -12,23 +17,18 @@ _33 rules. Loaded by the `dr-testing` specialist. Generated from rules.json — 
 - **Rule:** Make platform checks injectable (an optional platform arg defaulting to process.platform) or extract a pure helper so OS-specific logic can be unit-tested on the single-OS CI runner. Gate platform-specific tests with describe.skipIf/it.skipIf so they report as skipped, rather than early-returning inside the test body (which falsely shows green) or asserting that a platform-gated command was not called when it would never run on the runner anyway (mock os.platform() so the branch is reachable). Add tests stubbing any new runtime/environment detection branch.
 - **Detect:** A function early-returning on if (process.platform !== "win32") return whose tests assert win32-only behavior; if (process.platform !== "win32") return; at the top of an it/test body; expect(...not called...) on a platform-gated command (pbcopy/clip/xclip/wl-copy) with no os.platform() mock; or a new if (isBunRuntime)/detectInstallMethod() branch with no test stubbing it.
 
-## Isolate and restore shared/global state per test  ·  `isolate-and-restore-shared-state`
-- **Severity:** important  ·  **Support:** 6  ·  **Seen in:** #27719, #28434, #28529, #29784, #30571, #30574
-- **Rule:** Tests must not leak shared state across tests in the same process. Require save-and-restore (afterEach/afterAll or try/finally) for mutations of process.env, module-level singletons/flags, or event-bus subscriptions, and require persistent state to be written to an isolated temp dir rather than a real/global/home-derived path. A test asserting on a persistent on-disk file must reset/initialize it in setup so results are not order-dependent. Flag a global mutation only when no matching restore captures the prior value.
-- **Detect:** Flag: assignments to process.env.* / Flag.* / shared singletons without a matching restore that captures the prior value; mkdir/write into a global path constant instead of a per-test tmpdir; a subscribe/addListener/on call whose unsubscribe return value is discarded; a test asserting on a persistent file's contents with no rm/clear/init of that file before the exercise phase. Ask: is every global mutation undone before the next test runs?
-
 ## Regression test must fail on the pre-fix code and exercise the real implementation  ·  `regression-test-must-fail-without-fix`
 - **Severity:** important  ·  **Support:** 6  ·  **Seen in:** #131, #21559, #26751, #27545, #27632, #29208
 - **Rule:** A test labeled bug-fix/regression/dedup-guard must assert the specific changed behavior so it would FAIL against the pre-fix code. Reject tests that (a) only assert state that already held before the fix, (b) reimplement or copy the production algorithm in the test instead of calling the real entry point, or (c) call the underlying helper in isolation when the fix is in the wiring/component, so removing the production wiring would still pass. Apply only when the PR is explicitly framed as a fix/regression test.
 - **Detect:** Ask per regression test: would this assertion also pass on the pre-fix code? Flag test files with comments like 'replicate'/'mirror the logic in <prod file>' or that copy sorting/walking logic from the module under test. Grep the test for the production helper name and check the connecting component/prop/JSX is actually instantiated rather than the helper being called in isolation.
 
 ## Cover newly added branchy functions, config/precedence, and observable fields with tests  ·  `tests-must-cover-new-branchy-functions-and-config-precedence`
-- **Severity:** important  ·  **Support:** 5  ·  **Seen in:** #120, #125, #154, #3963, #4112
+- **Severity:** important  ·  **Support:** 6  ·  **Seen in:** #120, #125, #154, #3963, #4112, #32282
 - **Rule:** When a PR introduces a new exported function with multiple branches/edge cases, a new CLI flag, an env-var path-resolution precedence chain, defensive normalization of malformed external input, or new entries in source-of-truth Record maps (default-model, display-name, env-var, provider-classification), add unit tests exercising each branch/precedence/edge case and asserting the new keys — especially when a sibling test file already exists. Tests should assert the unit's own logic, not standard-library guarantees.
 - **Detect:** A diff adds an export function with >2 conditional branches, a parseArgs()/getAgentDir() env-var branch, input-sanitization branches, or keys to maps like defaultModelPerProvider/BUILT_IN_PROVIDER_DISPLAY_NAMES/getApiKeyEnvVars, but touches no corresponding *.test.ts; or a test whose assertions only check a builtin (String.prototype.startsWith) with hardcoded inputs.
 
 ## Assert precise, input-tied values — not vacuous or loose matchers  ·  `assert-precise-behavior-tied-values`
-- **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #25797, #28432, #29208, #31357
+- **Severity:** important  ·  **Support:** 5  ·  **Seen in:** #134, #25797, #28432, #29208, #31357
 - **Rule:** Assertions must be causally tied to the test input so a default-returning or input-ignoring implementation would fail. Reject as the sole/primary check in a behavior-named test: toBeDefined/toBeTruthy/not.toThrow, or loose negative matchers (not.toBe(true)) that also pass for undefined/1/'false'. Prefer asserting the exact expected value, that valid input fields are preserved and invalid ones absent, or the precise resulting schema/field shape. Do not flag these matchers when the test legitimately only checks existence/non-throwing (e.g. smoke or type-guard tests).
 - **Detect:** Flag expect(x).toBeDefined()/.toBeTruthy()/.not.toThrow() or expect(x).not.toBe(true|false) as the sole assertion in a behavior-named test. Ask: would this still pass if the function ignored its input and returned a default? For schema-transform diffs, check a test asserts that exact field's resulting shape. Flag toBe/toEqual against a string literal encoding internal naming conventions.
 
@@ -37,15 +37,15 @@ _33 rules. Loaded by the `dr-testing` specialist. Generated from rules.json — 
 - **Rule:** Test doubles and fixtures must distinguish the correct behavior from the buggy one. A mock must reproduce the semantics the assertion depends on (e.g. insert-at-cursor tracks an offset, not append). A fixture for an 'invalid input' test must be genuinely rejected by the actual parser (lenient JSONC/JSON5 accepts comments/trailing commas, so use an unterminated string/missing brace). A fetch/request stub's unmatched branch should fail fast (throw with the unexpected URL) rather than silently return undefined.
 - **Detect:** Inspect mock method bodies: does insert/splice just concatenate (text = text + x) instead of honoring a cursor/index? For a test named 'invalid X', would the target parser actually reject the fixture? Flag fetch/request mocks with an implicit fall-through returning undefined when no case matches.
 
+## Synchronize on deterministic signals, not fixed sleeps or silently-resolving timeouts  ·  `deterministic-waits-not-sleeps`
+- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #135, #29635, #29784
+- **Rule:** Do not synchronize tests with async work via fixed-delay sleeps (Bun.sleep/setTimeout); await a promise that resolves on the first matching event with a generous timeout, and remove sleeps placed before the operation that triggers the event. When using Promise.race with a timeout branch, the timeout branch must reject with a descriptive error (including the awaited pattern), never resolve to a value/void that would mask a missed event.
+- **Detect:** Flag Bun.sleep(N)/setTimeout used to await async events in tests, especially a sleep before the triggering operation. Flag Promise.race([<event>, sleep(ms)]) where the sleep branch resolves to a value/void instead of rejecting with context.
+
 ## Polling-wait helpers in tests must be bounded with a timeout and descriptive failure  ·  `bounded-poll-loops-in-tests-must-have-timeout`
 - **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #2, #106, #120
 - **Rule:** Polling/spawn-wait helpers in tests (waitForGate, waitForFile, retry-until loops, blocking read with a deadline) must enforce a real bound and throw a descriptive error when the deadline passes. An unbounded `while (!existsSync(path)) await sleep(10)`, or a deadline checked only before a blocking read_line/recv() that never returns, hangs CI with no signal instead of failing fast. The wait the timeout guards must itself be interruptible (async read with tokio::time::timeout, read_timeout, select! with a timer, Promise.race).
 - **Detect:** Test/fixture `while (` loops with existsSync/await sleep and no Date.now() deadline/timeout/Promise.race; or a Rust `Instant::now() + timeout` deadline whose loop body contains a blocking reader.read_line(...)/recv()/wait() with no per-read timeout. Ask: if the awaited output never comes but the process stays alive, can the deadline ever fire?
-
-## Synchronize on deterministic signals, not fixed sleeps or silently-resolving timeouts  ·  `deterministic-waits-not-sleeps`
-- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #29635, #29784
-- **Rule:** Do not synchronize tests with async work via fixed-delay sleeps (Bun.sleep/setTimeout); await a promise that resolves on the first matching event with a generous timeout, and remove sleeps placed before the operation that triggers the event. When using Promise.race with a timeout branch, the timeout branch must reject with a descriptive error (including the awaited pattern), never resolve to a value/void that would mask a missed event.
-- **Detect:** Flag Bun.sleep(N)/setTimeout used to await async events in tests, especially a sleep before the triggering operation. Flag Promise.race([<event>, sleep(ms)]) where the sleep branch resolves to a value/void instead of rejecting with context.
 
 ## Keep CI coverage portable: don't silently shrink per-platform, and guard OS-specific tests  ·  `no-per-platform-coverage-shrink-guard-platform-tests`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #25375, #29641
@@ -61,6 +61,11 @@ _33 rules. Loaded by the `dr-testing` specialist. Generated from rules.json — 
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #112, #131
 - **Rule:** Tests must assert the concrete persisted/derived value, not merely a state transition or a loose structural property. An edit test must re-query/assert the new value after accept (not just that the card reached accepted and the run resumed). A derived-timestamp test must compute the expected target relative to now and assert equality (not just weekday==Sunday at a fixed time), so off-by-one/off-by-period and edit-application regressions cannot pass silently.
 - **Detect:** An edit e2e test asserts only accept/resume wording with no assertion on the new value; or a derived-timestamp test checks only weekday/time suffix with no comparison to now. Ask: would the assertion still pass if the value were one period off or the edit were never applied?
+
+## Wait for the write to land before reloading in a persistence e2e test  ·  `wait-for-write-confirmation-before-reload-in-persistence-e2e`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #74, #136
+- **Rule:** An e2e test that reloads to prove persistence must wait for the write to actually land (network response, settled indicator, deterministic saved signal) before page.reload(), not just for the optimistic UI to update. Reloading right after an optimistic state change races the in-flight network/DB write, can tear down the page mid-write, and makes the persistence assertion flaky.
+- **Detect:** A Playwright page.reload() immediately follows assertions on optimistic UI (aria-checked, a toggling label) for a value backed by an async save, with no preceding waitForResponse/save-confirmation. Flag the race.
 
 ## New providers need an e2e test following the shared per-capability pattern  ·  `new-provider-needs-e2e-test-following-shared-capability-pattern`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #494, #3887
@@ -92,11 +97,6 @@ _33 rules. Loaded by the `dr-testing` specialist. Generated from rules.json — 
 - **Rule:** Vite `preview` serves the dist/ build output, not source — so any e2e/smoke webServer that runs `vite preview` (or `pnpm preview`) must build first (chain `vite build`/`pnpm build` in the script or webServer command). Otherwise tests fail on a clean checkout when dist is missing, or silently pass against a stale artifact. Detection: in playwright/test config or CI, webServer.command or test:e2e invokes preview with no preceding build step.
 - **Detect:** In playwright/test config or CI, webServer.command or test:e2e invokes `vite preview`/`pnpm preview` with no preceding `vite build`/`pnpm build`. Flag missing build-before-preview.
 
-## Wait for the write to land before reloading in a persistence e2e test  ·  `wait-for-write-confirmation-before-reload-in-persistence-e2e`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #74
-- **Rule:** An e2e test that reloads to prove persistence must wait for the write to actually land (network response, settled indicator, deterministic saved signal) before page.reload(), not just for the optimistic UI to update. Reloading right after an optimistic state change races the in-flight network/DB write, can tear down the page mid-write, and makes the persistence assertion flaky.
-- **Detect:** A Playwright page.reload() immediately follows assertions on optimistic UI (aria-checked, a toggling label) for a value backed by an async save, with no preceding waitForResponse/save-confirmation. Flag the race.
-
 ## Regression tests must assert the specific named invariant, not a generic precondition  ·  `regression-test-must-assert-the-named-invariant-and-out-of-order`
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #4204
 - **Rule:** A regression test must assert the specific behavior it is named for and would fail if the original bug were reintroduced: if the bug was 'scrollback wiped', assert scrollback content survives or that the clear-scrollback escape (\x1b[3J) was not emitted, not merely that a redraw occurred. When narrowing a previously-unconditional state reset to one branch of a new mode switch, re-examine every former path so other modes do not strand stale state.
@@ -112,15 +112,30 @@ _33 rules. Loaded by the `dr-testing` specialist. Generated from rules.json — 
 - **Rule:** When testing rendering of stateful spans that can wrap (OSC 8 hyperlinks), add a narrow-width regression test asserting each wrapped line segment remains correctly styled/hyperlinked, not just that the open/close sequence appears once in the joined output. The renderer/wrapper must preserve and replay such non-SGR escape state across line breaks (or apply open/close around each post-wrap segment).
 - **Detect:** Tests for wrapped terminal output whose assertions only inspect lines.join(...) for a single occurrence of an escape sequence; or a wrapper that tracks only SGR (\x1b[...m) state while wrapping text containing OSC 8 (\x1b]8;;).
 
+## Use rounded/tolerant comparisons for sub-pixel geometry in tests  ·  `tolerant-comparison-for-subpixel-geometry-in-tests`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #32169
+- **Rule:** In tests, don't assert exact equality (toBe/toEqual) on values that come from runtime layout measurement — getBoundingClientRect(), offsetWidth/Height/Top/Left, clientRect, scroll metrics — because they carry sub-pixel/devicePixelRatio rounding that differs across environments (e.g. -7.9999 vs -8). Round (Math.round) or use a tolerant matcher (toBeCloseTo) before comparing. This applies ONLY to measured rendering geometry; values computed deterministically in code must still use exact assertions (do not weaken those — see assert-precise-behavior-tied-values).
+- **Detect:** Test asserting toEqual/toBe on raw getBoundingClientRect()/offset/clientRect float values, or exact integer expectations for measured pixel positions; flag missing Math.round or tolerant matcher.
+
 ## Keep test names and labels aligned with what is asserted and with registered identifiers  ·  `test-names-and-labels-match-assertions`
-- **Severity:** nit  ·  **Support:** 3  ·  **Seen in:** #117, #132, #25406, #30672
+- **Severity:** nit  ·  **Support:** 4  ·  **Seen in:** #117, #132, #25406, #30672, #32284
 - **Rule:** A test/describe title must match what it actually verifies; rename when a title claims 'only X' but expectations also cover siblings/descendants. Keep describe/test labels consistent with the identifier actually registered in the implementation (don't label a block 'shell' when the tool is still registered under id 'bash'). Flag only clear mismatches between title scope and asserted scope, or a renamed label diverging from a still-referenced id constant.
 - **Detect:** Compare a test's title against its expect() calls: flag 'only X' titles whose expectations cover more than X. Flag renamed describe/test blocks whose new label diverges from the still-registered id constant referenced in the implementation.
 
 ## Cover every case the test name claims and every branch the component implements  ·  `cover-every-case-and-branch-named-or-implemented`
-- **Severity:** nit  ·  **Support:** 2  ·  **Seen in:** #13, #132
+- **Severity:** nit  ·  **Support:** 4  ·  **Seen in:** #13, #132, #134, #32261
 - **Rule:** Ensure every status/variant named in a test title is actually constructed as a fixture and asserted (if the name says 'completed AND dropped', include a dropped fixture and assert its exclusion). Likewise, cover each branch an interactive component implements — keyboard submit vs newline modifier, whitespace-only rejection, post-action input reset — not just the one happy path. Unnamed/unasserted branches let regressions pass silently.
 - **Detect:** Compare the test name's enumerated cases against literals constructed in the body; and cross-reference handler logic (Enter/shiftKey checks, value.trim() guards, setValue("") resets) against the test file. Flag any named case or implemented branch with no fixture/assertion.
+
+## Type-validation rejection tests must reference a real entity of the wrong type  ·  `tests-must-construct-real-wrong-type-fixture-for-type-rejection`
+- **Severity:** nit  ·  **Support:** 2  ·  **Seen in:** #131, #135
+- **Rule:** When testing a type-validation rejection, create a real entity of the WRONG type and reference its id, not a random nonexistent UUID. A random UUID only exercises the missing-entity path and would still pass if the code wrongly accepted an existing entity of the wrong type, giving false confidence about the type-validation contract.
+- **Detect:** A rejection test builds an id via Uuid::now_v7()/random and expects an error claiming type validation. Ask: does the test distinguish 'id does not exist' from 'id exists but is the wrong type'?
+
+## Add a mirror decode test when adding a new wire-contract params struct  ·  `add-mirror-decode-test-for-new-wire-params-struct`
+- **Severity:** nit  ·  **Support:** 2  ·  **Seen in:** #112, #139
+- **Rule:** When adding a serde Deserialize-only protocol/params struct, add a mirror decode test that parses the canonical wire JSON into it and asserts field values, matching the existing coverage pattern for sibling *Params types in the mirror_tests module. A wire-contract struct with no decode test can silently drift from the canonical JSON.
+- **Detect:** A diff adds `#[derive(..., Deserialize)] pub struct XParams`; check the protocol's mirror_tests module for a test decoding canonical JSON into it (serde_json::from_str(r#"{...}"#) -> XParams). Missing test for a new *Params struct = flag.
 
 ## Faithful stdout interception and temp-dir cleanup in tests  ·  `test-must-delegate-stdout-write-and-clean-temp-dirs`
 - **Severity:** nit  ·  **Support:** 2  ·  **Seen in:** #3620, #4732
@@ -131,11 +146,6 @@ _33 rules. Loaded by the `dr-testing` specialist. Generated from rules.json — 
 - **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #21559
 - **Rule:** When testing a rendering/transform pipeline, assert that the reassembled visible output equals the original input verbatim (e.g. lines.join('') === input), not only derived metadata like ids or line counts, so silent character drops/alterations are caught. Flag a render/transform test case that asserts only structure/metadata while sibling cases in the same file include the verbatim-reconstruction check.
 - **Detect:** In a render/transform test, flag a hunk that asserts structure/metadata (length, id consistency) but omits a join/concat === input comparison that sibling cases include.
-
-## Type-validation rejection tests must reference a real entity of the wrong type  ·  `tests-must-construct-real-wrong-type-fixture-for-type-rejection`
-- **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #131
-- **Rule:** When testing a type-validation rejection, create a real entity of the WRONG type and reference its id, not a random nonexistent UUID. A random UUID only exercises the missing-entity path and would still pass if the code wrongly accepted an existing entity of the wrong type, giving false confidence about the type-validation contract.
-- **Detect:** A rejection test builds an id via Uuid::now_v7()/random and expects an error claiming type validation. Ask: does the test distinguish 'id does not exist' from 'id exists but is the wrong type'?
 
 ## Assert presence/absence of a JSON key by parsing, not substring containment  ·  `assert-json-structure-not-serialized-substring`
 - **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #131
@@ -151,11 +161,6 @@ _33 rules. Loaded by the `dr-testing` specialist. Generated from rules.json — 
 - **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #123
 - **Rule:** When the same test helper (migrated_pool, seed_thread, rpc, open_readonly_pool, polling helpers) is defined identically in two or more test files that already import a shared common/test-util module, extract it into that module to avoid divergence and maintenance burden.
 - **Detect:** A diff adding a test file defines helper fns (async fn migrated_pool, fn seed_thread, fn rpc) that already exist verbatim in sibling test files / the imported mod common. Ask: is this helper a duplicate of one in another test file?
-
-## Add a mirror decode test when adding a new wire-contract params struct  ·  `add-mirror-decode-test-for-new-wire-params-struct`
-- **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #112
-- **Rule:** When adding a serde Deserialize-only protocol/params struct, add a mirror decode test that parses the canonical wire JSON into it and asserts field values, matching the existing coverage pattern for sibling *Params types in the mirror_tests module. A wire-contract struct with no decode test can silently drift from the canonical JSON.
-- **Detect:** A diff adds `#[derive(..., Deserialize)] pub struct XParams`; check the protocol's mirror_tests module for a test decoding canonical JSON into it (serde_json::from_str(r#"{...}"#) -> XParams). Missing test for a new *Params struct = flag.
 
 ## Negative/rejection-path tests must assert neutral or path-specific text, not success wording  ·  `negative-path-tests-must-not-assert-success-wording`
 - **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #117

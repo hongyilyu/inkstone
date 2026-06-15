@@ -1,9 +1,9 @@
 # Learned rules — Concurrency & async (`concurrency-async`)
 
-_15 rules. Loaded by the `dr-concurrency-async` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_16 rules. Loaded by the `dr-concurrency-async` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Revalidate target before applying a late async result  ·  `guard-stale-async-result-before-applying`
-- **Severity:** blocking  ·  **Support:** 4  ·  **Seen in:** #23407, #30722, #31095, #31208
+- **Severity:** blocking  ·  **Support:** 5  ·  **Seen in:** #23407, #30722, #31095, #31208, #32331
 - **Rule:** When an async result (.then/await) is written into shared state, a keyed store, the DOM, or a global flag, require a guard checked AFTER the await confirming the target is still current before applying: compare a generation/epoch/navigation token captured before the await, re-check key existence, or check a disposed flag / element.isConnected. Only flag when the awaited value is applied to mutable shared/external state AND the target can plausibly be removed, unmounted, or superseded between op start and completion; do not flag pure local computations or results assigned to a fresh local variable.
 - **Detect:** In a changed hunk, find a .then/await callback that writes to a keyed store, signal/state, tree, error flag, or DOM property (e.g. img.src). Ask: between starting this async op and applying its result, could the target have been removed, replaced, unmounted, or superseded by a newer request? Is there an existence/version/disposal guard (token !== current, isConnected, disposed flag) before the write? If none, flag it.
 
@@ -18,7 +18,7 @@ _15 rules. Loaded by the `dr-concurrency-async` specialist. Generated from rules
 - **Detect:** Grep for `void \w+(`, `.catch(() => undefined)` / `.catch(() => {})` with no rollback or logging, and `async () =>` assigned to an event/command callback invoked as `cb?.()`. For `.then` callbacks that themselves start a promise, check whether that promise is `return`ed before any outer `.finally` that resets state. Ask per hunk: are this discarded promise's rejections handled, and does completion tracking reflect the true async completion?
 
 ## Serialize or make atomic any read-modify-write on shared state  ·  `atomic-shared-state-mutation-no-toctou`
-- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #2910, #27053, #28434
+- **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #135, #2910, #27053, #28434
 - **Rule:** Flag a check-then-write or read-modify-persist on a resource reachable by concurrent actors (a file/record shared across processes, or a module/instance-level Set/Map/array mutated then persisted from concurrently-invoked code) with no atomicity between read and write — lock, exclusive-create+rename, transaction, CAS, or atomic Ref. Only flag when concurrent invocation is actually plausible (shared file, server request handler, multiple fibers); skip single-threaded init or request-local state.
 - **Detect:** Look for read -> conditional status/state check -> mutate same field -> write-back on a shared file/record with no lock/flock/transaction/CAS between read and write (especially fields named status/state/claimed/locked), or read-modify-write of a module-level collection followed by a persist call (fs.writeJson/writeFileString) reachable from multiple fibers/callers. Ask: can two concurrent actors both pass the check and both write?
 
@@ -31,6 +31,11 @@ _15 rules. Loaded by the `dr-concurrency-async` specialist. Generated from rules
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #89, #120
 - **Rule:** Events published onto a broadcast channel before a subscriber can attach are dropped (broadcast has no replay to late subscribers). If a producer can run before the client gets the id needed to subscribe, or a subscriber attaches after a terminal event was already published, an important event (started indicator, terminal status) is silently lost. Either persist such events into the snapshot late subscribers replay, buffer until a subscriber attaches, or — when reading a snapshot whose status is already terminal — emit a synthetic terminal event instead of tailing a channel that will never deliver one.
 - **Detect:** tx.send(...)/broadcast publish marked 'not persisted'/'won't replay' where the producer can run before the subscriber attaches; or tx.subscribe()/broadcast::Receiver created right after reading a status snapshot followed by a forwarder relaying only future events. Ask: if the status is already terminal or the event fired pre-subscribe, does any terminal/started event still reach this receiver?
+
+## Attribute streaming deltas to the per-run message id/index, not the current last message  ·  `attribute-streaming-deltas-by-per-run-id-not-last-message`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #9, #133
+- **Rule:** Track the assistant message index/id per runId and update that specific entry from the stream handler, rather than mutating the current last message (next[next.length-1] / messages.at(-1)). Assume runs can overlap unless the UI strictly prevents concurrent submits (composer disabled, onSend awaited) — otherwise late deltas from an earlier run land in the newest bubble when the user submits a second prompt before the first finishes.
+- **Detect:** A streaming text_delta/event handler writes to arr[arr.length-1] to attribute streamed output. Ask: if two runs overlap, can a delta for run A be written to run B's bubble because it targets the last message rather than a per-run id/index?
 
 ## Guard shared-controller cleanup against overlap and test out-of-order completion  ·  `out-of-order-async-completion-tests-and-guarded-shared-controller-cleanup`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #112, #2910
@@ -67,12 +72,12 @@ _15 rules. Loaded by the `dr-concurrency-async` specialist. Generated from rules
 - **Rule:** When a bounded reconnect/retry loop gives up, put the client into a terminal failed state so in-flight and future request() calls reject with a typed error rather than enqueuing a pending deferred and awaiting a write nothing will fulfill. A dead receive/reconnect loop must not leave callers blocked with no path to completion.
 - **Detect:** An Effect/promise retry has a finite times/maxAttempts; on exhaustion the fiber ends but request() still adds to a pending map and awaits. Ask: after retries are exhausted, what fails the in-flight and future requests? If nothing, they hang.
 
-## Attribute streaming deltas to the per-run message id/index, not the current last message  ·  `attribute-streaming-deltas-by-per-run-id-not-last-message`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #9
-- **Rule:** Track the assistant message index/id per runId and update that specific entry from the stream handler, rather than mutating the current last message (next[next.length-1] / messages.at(-1)). Assume runs can overlap unless the UI strictly prevents concurrent submits (composer disabled, onSend awaited) — otherwise late deltas from an earlier run land in the newest bubble when the user submits a second prompt before the first finishes.
-- **Detect:** A streaming text_delta/event handler writes to arr[arr.length-1] to attribute streamed output. Ask: if two runs overlap, can a delta for run A be written to run B's bubble because it targets the last message rather than a per-run id/index?
-
 ## Don't parallelize order-dependent shared-state mutation with Promise.all  ·  `keep-concurrent-registration-deterministic`
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #4925
 - **Rule:** Do not convert a sequential loop that mutates shared state into Promise.all when ordering/precedence matters (first-in-order wins for flag defaults, provider/extension registration). Concurrent factories racing on shared mutable state break deterministic precedence; keep registration sequential, or buffer per-item results and apply them in input order after all complete.
 - **Detect:** A diff replacing `for (...) { await loadX(..., sharedRuntime) }` with `await Promise.all(paths.map(...))` where the callback passes the same shared mutable object and correctness depends on order.
+
+## Drain buffered stream events before interrupting on cancel  ·  `drain-buffered-stream-events-before-interrupting-on-cancel`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #142
+- **Rule:** When stopping a live subscription/stream by interrupting its consuming fiber, deltas already received over the wire but not yet drained from the transport queue are lost when you immediately apply a synthetic terminal event (the synthetic event settles status but cannot recover the undrained tail). The applied store text survives; only buffered-but-unprocessed events vanish, so the surface can show less than was persisted until a reload re-hydrates. For a still-running stream, prefer letting the real terminal event drain (or refetch an authoritative snapshot) before settling; reserve synthetic settlement for cases with genuinely no live tail (e.g. a parked/torn-down hub, or unknown_run where no event will ever arrive).
+- **Detect:** A cancel/stop handler calls `interruptRun`/`fiber.interrupt()` then immediately `applyEvent({kind:'cancelled'})` (or setState terminal) for a Run/stream that may still have queued notifications. Ask: can committed-but-undrained deltas be lost, showing less text than persisted until reload?

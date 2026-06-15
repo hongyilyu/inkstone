@@ -3,9 +3,14 @@
 _14 rules. Loaded by the `dr-security` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Validate and normalize untrusted paths (and use literal pathspecs) before passing them to file/VCS APIs  ·  `validate-untrusted-path-before-file-api`
-- **Severity:** blocking  ·  **Support:** 3  ·  **Seen in:** #2037, #25403, #30722
+- **Severity:** blocking  ·  **Support:** 4  ·  **Seen in:** #2037, #25403, #30722
 - **Rule:** Before passing a user/markdown/URL-derived path to a file-read API or to git, reject path-traversal: decode percent-encoded sequences (e.g. %2e%2e) then reject `..` segments, absolute paths, and drive/protocol prefixes ([A-Za-z]:, \\). For git, pass dynamic paths as literal pathspecs (:(literal) or --pathspec-file-nul) on every call site, including batched ones. Never rely on client-side checks alone; ensure server-side sandboxing too.
 - **Detect:** Find file/path read calls (client.file.read, fs read) or git invocations after `--` whose argument originates from user/markdown/URL input. Yes/no: is there a guard rejecting `..`, leading `/`/`\`, drive prefixes, AND percent-encoded traversal before the call? For git, is each path wrapped as a literal pathspec on both single and batched call sites?
+
+## Enforce filesystem boundary/containment checks against the resolved realpath, not the requested path  ·  `resolve-realpath-before-boundary-check`
+- **Severity:** blocking  ·  **Support:** 3  ·  **Seen in:** #26262, #26958, #32263
+- **Rule:** When a file operation walks, copies, archives, or boundary-checks a path that may be a symlink, resolve the real path (realpath, or lstat to detect symlinks) and assert it stays under the intended base directory BEFORE including/trusting it. Do not run containment checks on the pre-resolved requested path, and prefer lstatSync over statSync when collecting files for an export/zip/tar so a symlink cannot escape the base dir.
+- **Detect:** Yes/no per hunk: does a containment/assertExternal/contains-path check run on a raw requested path instead of the output of resolve/realpath? OR does a file-collection walker use statSync() instead of lstatSync() / a realpath-within-base assertion before adding entries to a zip/tar/archive? Flag if a symlink could escape the base dir.
 
 ## Escape HTML attributes and sanitize untrusted text before rendering as markup  ·  `escape-and-sanitize-untrusted-markup`
 - **Severity:** blocking  ·  **Support:** 3  ·  **Seen in:** #4541, #27890, #30722
@@ -16,11 +21,6 @@ _14 rules. Loaded by the `dr-security` specialist. Generated from rules.json —
 - **Severity:** blocking  ·  **Support:** 3  ·  **Seen in:** #4434, #25406, #26821
 - **Rule:** Default any permission/auto-accept/auto-approve or consent gate to the most restrictive (opt-in) value; auto-approval of edits or destructive actions must be explicit opt-in. When refactoring or compacting safety rules/prompts, do not fold a specific destructive-action guard (e.g. default-branch force-push protection, deletion protection, secret-file warning) into a weaker generic clause; flag the removal of any specific guardrail relative to the deleted text.
 - **Detect:** Flag a default value for a permission/auto-accept setting that is not the most restrictive option (especially where it silently replies to permission requests). Separately, diff rewritten rules/prompt/policy files: list safety clauses removed vs kept and ask whether a specific destructive-action guard was dropped or weakened relative to the deleted text.
-
-## Enforce filesystem boundary/containment checks against the resolved realpath, not the requested path  ·  `resolve-realpath-before-boundary-check`
-- **Severity:** blocking  ·  **Support:** 2  ·  **Seen in:** #26262, #26958
-- **Rule:** When a file operation walks, copies, archives, or boundary-checks a path that may be a symlink, resolve the real path (realpath, or lstat to detect symlinks) and assert it stays under the intended base directory BEFORE including/trusting it. Do not run containment checks on the pre-resolved requested path, and prefer lstatSync over statSync when collecting files for an export/zip/tar so a symlink cannot escape the base dir.
-- **Detect:** Yes/no per hunk: does a containment/assertExternal/contains-path check run on a raw requested path instead of the output of resolve/realpath? OR does a file-collection walker use statSync() instead of lstatSync() / a realpath-within-base assertion before adding entries to a zip/tar/archive? Flag if a symlink could escape the base dir.
 
 ## Pin update/delete mutations to the originally-reviewed target, not the edited payload's id  ·  `pin-update-delete-target-to-reviewed-proposal-not-edited-payload`
 - **Severity:** blocking  ·  **Support:** 2  ·  **Seen in:** #123
@@ -47,18 +47,18 @@ _14 rules. Loaded by the `dr-security` specialist. Generated from rules.json —
 - **Rule:** Do not write raw user-supplied content (question/prompt/message bodies), full pretty-printed exceptions/causes whose message can embed parsed secret/config input, or user-identifying details (absolute home/userData paths, env vars) into logs or shareable diagnostic bundles. Log only redacted identifiers/metadata (IDs, error type/name/location) and redact before generating any exportable archive. Treat info/warn-level logging of free-text input fields as the primary flag.
 - **Detect:** Flag log/diagnostic calls whose payload includes: raw free-text fields (question/prompt/message/input) at info/warn; a full exception/cause (Cause.pretty, err.message) from a parser fed secret/config content; or absolute home/userData/crashDumps paths or env vars in an object destined for export. Ask: could this leak a secret, message body, or username?
 
+## Validate the OAuth CSRF state parameter before acting on any callback outcome  ·  `validate-oauth-state-first`
+- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #28557, #31700
+- **Rule:** In an OAuth/loopback callback handler, validate that a pending authorization exists and that the returned `state` equals the stored state as the FIRST gate for every outcome (error, missing code, and success). Do not reject, resolve, or clear the pending flow on the error/missing-code branch before the state comparison, or any local request to the fixed loopback port can cancel or hijack the authorization without knowing the state.
+- **Detect:** In an OAuth redirect handler, check ordering: is the `state` comparison performed after the code branches on `error`/missing `code` and mutates pending state? Yes/no: can any callback outcome reject/resolve/clear pendingOAuth before state is verified?
+
 ## Sanitize and validate environment data passed to child processes  ·  `sanitize-data-crossing-subprocess-boundary`
 - **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #1723, #25962, #29158
 - **Rule:** Do not pass `env: process.env` (or a spread of it) to a spawned subprocess by reference; build a fresh env containing only the values the child needs and ensure all values are strings. Any env-sourced URL/endpoint/proxy forwarded to a child process or fetch must be parsed and scheme/host-validated (e.g. enforce expected scheme, restrict to an allowlist such as loopback) before use.
 - **Detect:** Grep for `env: process.env` / `...process.env` in spawn/fork/exec without filtering. Also find env vars holding a URL/endpoint/proxy (process.env / std::env::var / getenv) passed straight to a subprocess or fetch. Yes/no: is the child env a sanitized string-valued copy, and is any env URL parsed + scheme/host-validated before use?
 
-## Validate the OAuth CSRF state parameter before acting on any callback outcome  ·  `validate-oauth-state-first`
-- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #28557, #31700
-- **Rule:** In an OAuth/loopback callback handler, validate that a pending authorization exists and that the returned `state` equals the stored state as the FIRST gate for every outcome (error, missing code, and success). Do not reject, resolve, or clear the pending flow on the error/missing-code branch before the state comparison, or any local request to the fixed loopback port can cancel or hijack the authorization without knowing the state.
-- **Detect:** In an OAuth redirect handler, check ordering: is the `state` comparison performed after the code branches on `error`/missing `code` and mutates pending state? Yes/no: can any callback outcome reject/resolve/clear pendingOAuth before state is verified?
-
 ## Exclude SVG from broad image/* render allowlists  ·  `restrict-image-mime-allowlist-exclude-svg`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #30722
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #30722
 - **Rule:** Do not gate rendering/embedding on a broad `mimeType.startsWith("image/")` check, which permits image/svg+xml and its scripting/external-reference risk. Restrict to a safe raster set (png, jpeg, gif, webp, avif) or explicitly exclude svg unless SVG support is required.
 - **Detect:** Grep for startsWith("image/") or similar broad MIME prefix checks used to gate rendering/embedding; ask whether svg+xml is unintentionally allowed.
 

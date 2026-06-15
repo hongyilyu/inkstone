@@ -24,7 +24,7 @@ This skill bundles its own brain; it depends on nothing outside this directory (
 the folder containing this file, e.g. `<repo>/.agents/skills/deep-review/`). Commit it and it travels
 with the repo — a teammate who checks out the repo gets the full reviewer and its accumulated rules.
 
-- **Rule base:** `SKILL_DIR/learnings/` — `rules.json` (source of truth, **268 rules**), `INDEX.md`,
+- **Rule base:** `SKILL_DIR/learnings/` — `rules.json` (source of truth, **285 rules**), `INDEX.md`,
   `by-category/*.md`, `CHANGELOG.md`.
 - **Watermarks:** `SKILL_DIR/learnings/state.json` — per-repo cursor of the newest review comment
   already mined (so `learn` continues where it left off).

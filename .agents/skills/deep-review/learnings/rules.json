@@ -5,11 +5,25 @@
     "raw_insights": 374,
     "rules_kept": 148,
     "rules_dropped_in_verification": 34,
-    "version": 3,
+    "version": 4,
     "sources": [
       "anomalyco/opencode (bootstrap)",
       "earendil-works/pi (Copilot+human)",
       "hongyilyu/inkstone (CodeRabbit+Codex+human)"
+    ],
+    "learn_runs": [
+      {
+        "date": "2026-06-15",
+        "sources": [
+          "anomalyco/opencode",
+          "hongyilyu/inkstone",
+          "earendil-works/pi"
+        ],
+        "comments_mined": 132,
+        "new_rules": 17,
+        "reinforced": 38,
+        "dropped_in_verification": 12
+      }
     ]
   },
   "rules": [
@@ -66,12 +80,15 @@
         26095,
         26535,
         30543,
-        31925
+        31700,
+        31925,
+        32261
       ],
-      "support_count": 8,
+      "support_count": 10,
       "reinforced_by": [
         "inkstone",
-        "pi"
+        "pi",
+        "opencode"
       ]
     },
     {
@@ -82,13 +99,18 @@
       "detection_hint": "Grep the repo for the literal/pattern being patched (e.g. `filetype=\"markdown\"`, a status check, a guard) and confirm every occurrence got the change. For a new disabled prop, check all on* handlers return early when disabled. For a new context/env param, check every internal call of the same family forwards it. For experimental Flag.* guards, verify the gated path also got the fix.",
       "severity": "important",
       "example_prs": [
+        135,
         21559,
         23214,
         26596,
         27913,
-        31283
+        31283,
+        32263
       ],
-      "support_count": 5
+      "support_count": 7,
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "predicate-must-cover-all-relevant-states",
@@ -98,13 +120,18 @@
       "detection_hint": "Find a `ready`/`valid` memo checking existence (resolvedPath, !error) but ignoring a nearby mismatch/incompatibility field other code branches on. Find status checks narrowed to a single enum literal (=== 'busy', reason === 'unknown' && output===0) when the union has other active/equivalent states. For each ternary keyed on a status, trace the enclosing guard: can the guarded value ever equal the branch's compared value?",
       "severity": "important",
       "example_prs": [
+        142,
         20467,
         23407,
         26167,
         27166,
-        28610
+        28610,
+        32191
       ],
-      "support_count": 5
+      "support_count": 7,
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "apply-invariants-and-precedence-after-merge",
@@ -131,6 +158,7 @@
       "severity": "important",
       "example_prs": [
         105,
+        135,
         972,
         3375,
         19961,
@@ -139,7 +167,7 @@
         28290,
         31395
       ],
-      "support_count": 7,
+      "support_count": 8,
       "reinforced_by": [
         "inkstone",
         "pi"
@@ -158,11 +186,13 @@
         25615,
         27398,
         28347,
-        30253
+        30253,
+        32191
       ],
-      "support_count": 5,
+      "support_count": 6,
       "reinforced_by": [
-        "pi"
+        "pi",
+        "opencode"
       ]
     },
     {
@@ -194,9 +224,10 @@
         31021,
         31700
       ],
-      "support_count": 5,
+      "support_count": 6,
       "reinforced_by": [
-        "pi"
+        "pi",
+        "opencode"
       ]
     },
     {
@@ -282,7 +313,10 @@
         28369,
         31985
       ],
-      "support_count": 2
+      "support_count": 3,
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "select-by-preference-and-enforce-limits-independently",
@@ -562,11 +596,13 @@
         492,
         28420,
         28442,
-        31208
+        31208,
+        32331
       ],
-      "support_count": 5,
+      "support_count": 6,
       "reinforced_by": [
-        "pi"
+        "pi",
+        "opencode"
       ]
     },
     {
@@ -693,7 +729,10 @@
         28664,
         32082
       ],
-      "support_count": 2
+      "support_count": 3,
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "add-new-translation-keys-to-all-locales",
@@ -783,9 +822,13 @@
       "detection_hint": "Flag <Show when={!minimized/collapsed}> or {!collapsed && ...} wrapping content whose collapse is described as visual; ask whether unmount/remount would lose scroll/focus/internal component state.",
       "severity": "important",
       "example_prs": [
+        137,
         27890
       ],
-      "support_count": 1
+      "support_count": 2,
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "apply-global-layout-flag-to-all-surfaces",
@@ -821,7 +864,10 @@
       "example_prs": [
         30722
       ],
-      "support_count": 1
+      "support_count": 2,
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "modal-needs-cancel-path",
@@ -898,12 +944,14 @@
         30722,
         31021,
         31925,
-        31985
+        31985,
+        32282
       ],
-      "support_count": 8,
+      "support_count": 9,
       "reinforced_by": [
         "inkstone",
-        "pi"
+        "pi",
+        "opencode"
       ]
     },
     {
@@ -940,18 +988,22 @@
       "severity": "nit",
       "example_prs": [
         62,
+        139,
+        145,
         3136,
         4873,
         27053,
         27229,
         28308,
         29683,
-        31395
+        31395,
+        32284
       ],
-      "support_count": 7,
+      "support_count": 10,
       "reinforced_by": [
         "inkstone",
-        "pi"
+        "pi",
+        "opencode"
       ]
     },
     {
@@ -1013,7 +1065,10 @@
       "example_prs": [
         30722
       ],
-      "support_count": 1
+      "support_count": 2,
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "dedupe-before-appending-persisted-list",
@@ -1266,11 +1321,13 @@
       "severity": "important",
       "example_prs": [
         125,
+        134,
         25615
       ],
-      "support_count": 2,
+      "support_count": 3,
       "reinforced_by": [
-        "pi"
+        "pi",
+        "inkstone"
       ]
     },
     {
@@ -1309,9 +1366,13 @@
       "detection_hint": "Look for a try/catch or `.catch`/`catchCause` whose guarded block contains multiple distinct operations. Ask: does the recovery logic treat all of them as the same error class? Flag if a parse-error fallback also swallows IO or resolution errors.",
       "severity": "important",
       "example_prs": [
+        135,
         29208
       ],
-      "support_count": 1
+      "support_count": 2,
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "no-optional-creds-into-auth-builder",
@@ -1368,14 +1429,20 @@
       "detection_hint": "Flag: assignments to process.env.* / Flag.* / shared singletons without a matching restore that captures the prior value; mkdir/write into a global path constant instead of a per-test tmpdir; a subscribe/addListener/on call whose unsubscribe return value is discarded; a test asserting on a persistent file's contents with no rm/clear/init of that file before the exercise phase. Ask: is every global mutation undone before the next test runs?",
       "severity": "important",
       "example_prs": [
+        133,
+        134,
         27719,
         28434,
         28529,
         29784,
         30571,
-        30574
+        30574,
+        32284
       ],
-      "support_count": 6
+      "support_count": 9,
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "regression-test-must-fail-without-fix",
@@ -1405,12 +1472,16 @@
       "detection_hint": "Flag expect(x).toBeDefined()/.toBeTruthy()/.not.toThrow() or expect(x).not.toBe(true|false) as the sole assertion in a behavior-named test. Ask: would this still pass if the function ignored its input and returned a default? For schema-transform diffs, check a test asserts that exact field's resulting shape. Flag toBe/toEqual against a string literal encoding internal naming conventions.",
       "severity": "important",
       "example_prs": [
+        134,
         25797,
         28432,
         29208,
         31357
       ],
-      "support_count": 4
+      "support_count": 5,
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "mocks-and-fixtures-must-be-faithful",
@@ -1434,10 +1505,14 @@
       "detection_hint": "Flag Bun.sleep(N)/setTimeout used to await async events in tests, especially a sleep before the triggering operation. Flag Promise.race([<event>, sleep(ms)]) where the sleep branch resolves to a value/void instead of rejecting with context.",
       "severity": "important",
       "example_prs": [
+        135,
         29635,
         29784
       ],
-      "support_count": 2
+      "support_count": 3,
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "no-per-platform-coverage-shrink-guard-platform-tests",
@@ -1463,11 +1538,13 @@
         117,
         132,
         25406,
-        30672
+        30672,
+        32284
       ],
-      "support_count": 3,
+      "support_count": 4,
       "reinforced_by": [
-        "inkstone"
+        "inkstone",
+        "opencode"
       ]
     },
     {
@@ -1517,11 +1594,13 @@
         4636,
         28701,
         29208,
-        29635
+        29635,
+        32284
       ],
-      "support_count": 4,
+      "support_count": 5,
       "reinforced_by": [
-        "pi"
+        "pi",
+        "opencode"
       ]
     },
     {
@@ -1635,9 +1714,10 @@
         369,
         30722
       ],
-      "support_count": 2,
+      "support_count": 3,
       "reinforced_by": [
-        "pi"
+        "pi",
+        "opencode"
       ]
     },
     {
@@ -1663,9 +1743,13 @@
       "severity": "blocking",
       "example_prs": [
         26262,
-        26958
+        26958,
+        32263
       ],
-      "support_count": 2
+      "support_count": 3,
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "validate-untrusted-path-before-file-api",
@@ -1679,9 +1763,10 @@
         25403,
         30722
       ],
-      "support_count": 3,
+      "support_count": 4,
       "reinforced_by": [
-        "pi"
+        "pi",
+        "opencode"
       ]
     },
     {
@@ -1695,7 +1780,10 @@
         28557,
         31700
       ],
-      "support_count": 2
+      "support_count": 3,
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "escape-and-sanitize-untrusted-markup",
@@ -1770,7 +1858,10 @@
       "example_prs": [
         30722
       ],
-      "support_count": 1
+      "support_count": 2,
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "persist-only-after-operation-succeeds",
@@ -1893,9 +1984,13 @@
         23407,
         30722,
         31095,
-        31208
+        31208,
+        32331
       ],
-      "support_count": 4
+      "support_count": 5,
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "handle-fire-and-forget-promise-rejections",
@@ -1920,13 +2015,15 @@
       "detection_hint": "Look for read -> conditional status/state check -> mutate same field -> write-back on a shared file/record with no lock/flock/transaction/CAS between read and write (especially fields named status/state/claimed/locked), or read-modify-write of a module-level collection followed by a persist call (fs.writeJson/writeFileString) reachable from multiple fibers/callers. Ask: can two concurrent actors both pass the check and both write?",
       "severity": "important",
       "example_prs": [
+        135,
         2910,
         27053,
         28434
       ],
-      "support_count": 3,
+      "support_count": 4,
       "reinforced_by": [
-        "pi"
+        "pi",
+        "inkstone"
       ]
     },
     {
@@ -2250,10 +2347,14 @@
       "example_prs": [
         118,
         130,
-        131
+        131,
+        133
       ],
-      "support_count": 4,
-      "source_repo": "inkstone"
+      "support_count": 5,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "strip-addressing-and-transport-only-fields-before-persisting",
@@ -2594,10 +2695,14 @@
       "detection_hint": "In .sql migrations grep for 'REFERENCES .* ON DELETE CASCADE'. For each cascading FK ask: is the cascaded row's id (or target id) also stored in a JSON/text body column or another table the cascade does not touch, while an ADR documents atomic removal? Flag the dangling-reference risk.",
       "severity": "important",
       "example_prs": [
-        127
+        127,
+        135
       ],
-      "support_count": 1,
-      "source_repo": "inkstone"
+      "support_count": 2,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "fail-on-malformed-snapshot-not-fallback-to-null",
@@ -2673,10 +2778,14 @@
       "detection_hint": "A rejection test builds an id via Uuid::now_v7()/random and expects an error claiming type validation. Ask: does the test distinguish 'id does not exist' from 'id exists but is the wrong type'?",
       "severity": "nit",
       "example_prs": [
-        131
+        131,
+        135
       ],
-      "support_count": 1,
-      "source_repo": "inkstone"
+      "support_count": 2,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "assert-edited-or-derived-value-not-just-transition",
@@ -2714,10 +2823,15 @@
       "severity": "nit",
       "example_prs": [
         13,
-        132
+        132,
+        134,
+        32261
       ],
-      "support_count": 2,
-      "source_repo": "inkstone"
+      "support_count": 4,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "derive-test-expectations-from-shared-fixture-source",
@@ -2753,10 +2867,14 @@
       "detection_hint": "A diff adds `#[derive(..., Deserialize)] pub struct XParams`; check the protocol's mirror_tests module for a test decoding canonical JSON into it (serde_json::from_str(r#\"{...}\"#) -> XParams). Missing test for a new *Params struct = flag.",
       "severity": "nit",
       "example_prs": [
-        112
+        112,
+        139
       ],
-      "support_count": 1,
-      "source_repo": "inkstone"
+      "support_count": 2,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "negative-path-tests-must-not-assert-success-wording",
@@ -2846,10 +2964,14 @@
       "detection_hint": "A Playwright page.reload() immediately follows assertions on optimistic UI (aria-checked, a toggling label) for a value backed by an async save, with no preceding waitForResponse/save-confirmation. Flag the race.",
       "severity": "important",
       "example_prs": [
-        74
+        74,
+        136
       ],
-      "support_count": 1,
-      "source_repo": "inkstone"
+      "support_count": 2,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "add-min-w-0-to-truncating-flex-child",
@@ -2941,10 +3063,14 @@
       "detection_hint": "A streaming text_delta/event handler writes to arr[arr.length-1] to attribute streamed output. Ask: if two runs overlap, can a delta for run A be written to run B's bubble because it targets the last message rather than a per-run id/index?",
       "severity": "important",
       "example_prs": [
-        9
+        9,
+        133
       ],
-      "support_count": 1,
-      "source_repo": "inkstone"
+      "support_count": 2,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "do-not-overlay-absolute-control-over-sibling-interactive-elements",
@@ -3149,10 +3275,14 @@
         104,
         113,
         120,
-        123
+        123,
+        135
       ],
-      "support_count": 6,
-      "source_repo": "inkstone"
+      "support_count": 7,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "consistent-format-specifier-across-sibling-error-messages",
@@ -3607,12 +3737,16 @@
       "detection_hint": "Docs snippets invoking reload/restart without the prerequisite await/wait step; onboarding/help strings asserting a concrete capability not guaranteed in all environments; or a warning/notice string describing a state with no clause explaining its effect.",
       "severity": "important",
       "example_prs": [
+        137,
         2426,
         2607,
         5332
       ],
-      "support_count": 3,
-      "source_repo": "earendil-works/pi"
+      "support_count": 4,
+      "source_repo": "earendil-works/pi",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "keep-pr-scope-tight-no-incidental-generated-or-core-changes",
@@ -3771,10 +3905,14 @@
         125,
         154,
         3963,
-        4112
+        4112,
+        32282
       ],
-      "support_count": 5,
-      "source_repo": "earendil-works/pi"
+      "support_count": 6,
+      "source_repo": "earendil-works/pi",
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "new-provider-needs-e2e-test-following-shared-capability-pattern",
@@ -3881,6 +4019,244 @@
       ],
       "support_count": 1,
       "source_repo": "earendil-works/pi"
+    },
+    {
+      "id": "argv-flag-detection-must-match-equals-form",
+      "category": "correctness",
+      "title": "argv flag-presence checks must also match the --flag=value form",
+      "rule": "When detecting a CLI flag via raw argv membership (`argv.includes(\"--flag\")`, `argv.indexOf(\"--flag\")` used as a boolean), confirm whether the flag's inline `--flag=value` (or `-f=value`) form is also accepted by the parser; if so, the membership check silently misses it. Prefer reading the already-parsed args object; if you must scan raw argv, match a prefix (`a.startsWith(\"--flag=\")`) in addition to exact equality. Only applies to flags whose `=value` form is actually honored — flags that only support the space-separated form are unaffected.",
+      "detection_hint": "Grep for `process.argv.includes(\"--<name>\")` / `argv.indexOf(\"--<name>\")` used as a boolean signal; ask whether `--<name>=value` (or `-x=value`) would also need to be detected. Prefer reading the parsed args over scanning raw argv.",
+      "severity": "important",
+      "example_prs": [
+        29876
+      ],
+      "source_repo": "opencode",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "disable-pointer-events-on-collapsed-panel-handles",
+      "category": "ui-react",
+      "title": "Disable pointer events on interactive handles when their panel is collapsed",
+      "rule": "When a panel collapses to zero height/width but its DOM stays mounted, every interactive child overlapping the collapsed strip (resize handle, drag strip, button) must stop intercepting POINTER events — not just leave the tab order (this is the gap #196 leaves: #196 covers focus/tab order, this covers mouse/click/cursor). Putting the handle as a sibling OUTSIDE the element that receives pointer-events:none/inert (or gating only inert/tabindex, which fixes keyboard but not mouse) lets it keep capturing clicks over the now-zero-size region. Detection: a resize/drag handle rendered outside the wrapper that gets pointer-events-none/inert/aria-hidden when a panel's open/expanded signal is false (or whose grid/flex track collapses via a `collapsed ? \"0px\" : ...` ternary). Ask: while collapsed, does the handle still receive pointer events because pointer-events:none was scoped only to the panel body, not the handle? Fix by applying pointer-events:none to the handle (or moving it inside the inert layer) on the same collapsed condition.",
+      "detection_hint": "A resize/drag handle or interactive element positioned outside the wrapper that gets pointer-events-none/inert when a panel's open signal is false; ask whether the handle still intercepts pointer events while collapsed.",
+      "severity": "important",
+      "example_prs": [
+        32169
+      ],
+      "source_repo": "opencode",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "tolerant-comparison-for-subpixel-geometry-in-tests",
+      "category": "testing",
+      "title": "Use rounded/tolerant comparisons for sub-pixel geometry in tests",
+      "rule": "In tests, don't assert exact equality (toBe/toEqual) on values that come from runtime layout measurement — getBoundingClientRect(), offsetWidth/Height/Top/Left, clientRect, scroll metrics — because they carry sub-pixel/devicePixelRatio rounding that differs across environments (e.g. -7.9999 vs -8). Round (Math.round) or use a tolerant matcher (toBeCloseTo) before comparing. This applies ONLY to measured rendering geometry; values computed deterministically in code must still use exact assertions (do not weaken those — see assert-precise-behavior-tied-values).",
+      "detection_hint": "Test asserting toEqual/toBe on raw getBoundingClientRect()/offset/clientRect float values, or exact integer expectations for measured pixel positions; flag missing Math.round or tolerant matcher.",
+      "severity": "important",
+      "example_prs": [
+        32169
+      ],
+      "source_repo": "opencode",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "full-value-for-title-and-aria-label-truncate-only-visible",
+      "category": "ui-react",
+      "title": "Feed the full value to title/aria-label; truncate only the visible text",
+      "rule": "When a label is visually truncated, drive only the visible text from CSS truncation (e.g. `truncate`/`text-overflow: ellipsis` or a `.slice(0,n)+\"…\"` display string) and pass the FULL untruncated value to `title=`/`aria-label=`. Passing an already-shortened string to title/aria-label hides the full value from tooltips and screen readers. Detection: flag a JSX element whose `title=`/`aria-label=` is bound to the same expression that produces its visibly-truncated text — specifically when that expression is a prop named like `displayLabel`/`shortLabel`/`truncated*`, or the output of a slice/truncate/ellipsis helper. Ask: is the full (untruncated) value available in scope and passed separately to the accessible/tooltip attribute? Do NOT flag when title/aria-label already receives a distinct full-value source, or when the visible text is the full value and truncation is purely CSS on the same complete string (CSS truncation does not shorten the bound attribute).",
+      "detection_hint": "A component receives an already-truncated/displayLabel string and uses that same prop for both visible text and title=/aria-label=; ask whether the full value is available and should be passed separately for the accessible/tooltip text.",
+      "severity": "important",
+      "example_prs": [
+        32207
+      ],
+      "source_repo": "opencode",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "compare-dotted-versions-componentwise-not-parsefloat",
+      "category": "correctness",
+      "title": "Compare dotted version strings componentwise, not via parseFloat",
+      "rule": "Don't compare or sort dotted version strings via parseFloat/Number — they collapse the minor component (parseFloat(\"5.10\") === 5.1), so e.g. \"5.10\" sorts before \"5.4\" and gates behavior wrongly. Parse major/minor (and patch) as separate integers and compare componentwise, or use a real semver comparator. The trap is worst when a single capture group grabs the whole \"major.minor\" (e.g. /^v?(\\d+\\.\\d+)/) and that captured string is fed to parseFloat.",
+      "detection_hint": "Flag parseFloat(x)/Number(x) on a version-like string (matched by /(\\d+)\\.(\\d+)/ or a `gpt-`/`v`-prefixed id) used in a `<`/`>`/sort comparison. Ask: does a multi-digit minor (e.g. .10) order correctly against a single-digit minor (.4)?",
+      "severity": "important",
+      "example_prs": [
+        32276
+      ],
+      "source_repo": "opencode",
+      "support_count": 2,
+      "reinforced_by": []
+    },
+    {
+      "id": "flipping-persisted-default-silently-shifts-absent-key-users",
+      "category": "data-persistence",
+      "title": "Flipping a persisted default silently changes behavior for users missing the key",
+      "rule": "A persisted setting's default is the effective value for everyone whose stored key is absent: fresh installs, cleared storage, and installs predating the key (when the value is read via a withFallback/?? default rather than a stored value). Flipping that default therefore silently changes behavior for that absent-key cohort — not just new installs. When a diff changes a literal inside a defaultSettings/default-config object (e.g. `false` -> `true`), confirm the absent-key cohort is the intended target of the change, and that the old default wasn't load-bearing for existing users; if only new installs should get the new behavior, gate it on install version / a migration instead of flipping the shared default.",
+      "detection_hint": "In a diff that changes a literal in a defaultSettings/default-config object (e.g. `false` -> `true`), ask: who reads this key without a stored value, and does the flip silently change their behavior? Confirm the absent-key cohort is the intended target.",
+      "severity": "nit",
+      "example_prs": [
+        32277
+      ],
+      "source_repo": "opencode",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "refresh-dynamic-attributes-on-preserved-morphed-nodes",
+      "category": "ui-react",
+      "title": "Refresh dynamic attributes on DOM nodes deliberately preserved across a diff/morph",
+      "rule": "When a reconciler intentionally keeps an existing DOM element mounted instead of replacing it — morphdom onBeforeElUpdated returning false, a key/id-preserved node, htmx/Alpine out-of-band or x-html swap, or a manual DOM patch — its dynamic attributes (aria-label, title, data-tooltip, state/`copied` classes, alt text) do NOT update unless you patch them explicitly. Preserving the node and refreshing its attributes are two separate responsibilities. Detection: find a keep/skip-update branch (onBeforeElUpdated => false, a `key`/`id`-match short-circuit, an `if (sameNode) return` patch guard) covering an interactive or labeled element, then ask: when the i18n label, tooltip, or transient state for that element changes, is some other code path explicitly writing the new attribute onto the preserved node? If not, the label/title goes stale.",
+      "detection_hint": "Find a `return false` in morphdom onBeforeElUpdated (or any keep/skip-update branch) for an interactive element; ask whether that element's aria-label/title/tooltip/copied-state attributes are updated elsewhere when i18n labels or state change.",
+      "severity": "important",
+      "example_prs": [
+        32331
+      ],
+      "source_repo": "opencode",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "push-filter-and-limit-into-query-not-memory",
+      "category": "performance",
+      "title": "Push filtering and limiting into the query, not into memory",
+      "rule": "When a search/list handler loads a whole table/collection (e.g. `list_by_type`, `SELECT *`) and then applies the match predicate and the result limit in application memory (`.filter(...).take(limit)`, `.filter().slice()`), push the predicate and LIMIT into the query (e.g. SQL `WHERE LOWER(col) LIKE '%'||LOWER(?)||'%' ... LIMIT ?`) so rows scanned scale with matched rows, not total rows. This matters when the scanned set is unbounded or grows over time; note that a hard output cap (MAX_LIMIT) bounds returned rows but still scans the full table, so it does not remove the issue. On a provably small/bounded collection the in-memory approach is an acceptable tradeoff — flag it, but at lower urgency.",
+      "detection_hint": "A search/list handler calls `list_by_type`/`select all` then `.filter(...).take(limit)` (or `.filter().slice()`) in memory; ask whether the predicate and limit could be pushed into SQL/the query (LOWER(...) LIKE + LIMIT).",
+      "severity": "important",
+      "example_prs": [
+        133
+      ],
+      "source_repo": "inkstone",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "edit-type-dispatched-save-must-carry-all-edited-fields",
+      "category": "data-persistence",
+      "title": "A save path chosen by edit type must not silently drop concurrently-edited fields",
+      "rule": "When a save/submit handler picks one of several mutation paths based on what changed (e.g. add-reference vs full-update vs create), verify the chosen path's payload carries EVERY field the user could have edited in that same save. If a path replaces only a subset (e.g. body only) and the backend preserves the rest, simultaneous edits to the preserved fields are silently dropped. Fix by sequencing a second mutation for the omitted fields (awaited, before/after the subset mutation) or by blocking/merging those edits. Detection: a submit handler with a branch like `cond ? buildSubsetParams(...) : buildFullParams(...)` (or `if (referencing) {...}`) where one branch's payload object omits scalar/metadata fields the editor also exposes; ask whether an edit to an omitted field in the same Save is lost. Flag the absence of either a guarded second mutation (`if (scalarsDiffer) await mutate(fullParams)`) or a UI guard that prevents editing the omitted fields while that path is selected.",
+      "detection_hint": "A submit handler branches (referencing ? buildReferenceParams : buildUpdateParams) where one branch's payload omits scalar fields the user could also have edited in the same save; ask whether those edits are dropped.",
+      "severity": "important",
+      "example_prs": [
+        135
+      ],
+      "source_repo": "inkstone",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "validate-both-referents-before-fk-insert",
+      "category": "error-handling",
+      "title": "Validate every referenced entity (source and target) before the FK write",
+      "rule": "When an apply/mutation path inserts a row into a join/refs/association table that references two or more entities via foreign keys (e.g. entity_refs keyed on source_entity_id + target_entity_id), the pre-apply boundary validator must confirm EVERY referent exists (and is the right type) — not just one side. Validating only the target (or only the source) lets a missing/stale referent on the unchecked side trip the database FK at insert/commit and surface as an opaque internal/-32603 error instead of a client-correctable invalid-or-target-missing error. Detection: a validator runs entity_is_type/entity_type_by_id on target_entity_id but never on source_entity_id (or vice versa), while the apply path inserts into the join/refs table before it loads/reads the unchecked side. Ask: if the unchecked referent has been deleted, does this become a raw FK/internal error rather than a structured client error?",
+      "detection_hint": "A pre-apply validator checks target_entity_id but not source_entity_id (or vice versa) while the apply path inserts into a join/refs table before loading the unchecked side; ask whether a missing referent becomes an FK/internal error.",
+      "severity": "important",
+      "example_prs": [
+        135
+      ],
+      "source_repo": "inkstone",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "guard-form-submit-against-reentry-while-saving",
+      "category": "ui-react",
+      "title": "Guard form/action submit against re-entry while a save is pending",
+      "rule": "A submit handler for a non-idempotent mutation must short-circuit re-entry while a prior save is in flight. The handler itself must early-return on the saving/pending flag (`if (saving) return;` before calling the mutation) — disabling the submit control (`disabled={saving}`) is complementary, NOT a substitute, because pressing Enter in a form field re-fires `onSubmit` even when the submit button is disabled. Flag a `<form onSubmit={h}>` / submit handler that calls `onSubmit()`/the mutation with a `saving`/`pending`/`isPending` flag in scope but no `if (saving) return` guard at the top of the handler.",
+      "detection_hint": "A form onSubmit/handler that unconditionally calls onSubmit()/the mutation with a `saving`/`pending` state in scope but no `if (saving) return` guard and no disabled={saving} on the submit control.",
+      "severity": "important",
+      "example_prs": [
+        135
+      ],
+      "source_repo": "inkstone",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "divergent-write-path-must-reject-validated-input-it-cannot-honor",
+      "category": "data-persistence",
+      "title": "Reject a validated input on a sibling write path that can't honor it — don't silently hard-code it away",
+      "rule": "A shared validator that accepts an optional input (a provenance/anchor/relation field) is reused by a sibling write path that structurally cannot produce that input's side effect (e.g. a user/direct path with no Run/Message/anchor to write the corresponding source/relation row). On such a divergent path, explicitly REJECT the accepted-but-unhonorable field at the boundary rather than letting it pass shared validation and then persist with the side effect silently dropped. Detection: find a write/apply fn that calls a shared validate(...) accepting field X from the payload, then ask — can this path actually create X's persisted side effect (source/relation/join row)? If not, is X rejected, or silently discarded? Flag the silent-discard case.",
+      "detection_hint": "A handler/apply fn hard-codes a struct field to None/default (e.g. `source: None`, `proposal_id: None`) where a shared `validate(...)` earlier in the same flow accepts that same field from the payload. Ask: can a caller supply the field, pass validation, and then have it silently discarded with no persisted effect?",
+      "severity": "important",
+      "example_prs": [
+        135
+      ],
+      "source_repo": "inkstone",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "like-escape-clause-disables-fts5-trigram-index",
+      "category": "performance",
+      "title": "Don't add a LIKE ESCAPE clause that disables the FTS5/trigram index",
+      "rule": "SQLite drops the FTS5 trigram LIKE/GLOB index optimization whenever the LIKE has an ESCAPE clause — even when the needle contains nothing to escape. On a trigram-tokenized column reached by a hot/debounced substring search, an unconditional `LIKE '%'||?||'%' ESCAPE '\\'` therefore silently degrades every query to a full table scan. Only take the ESCAPE path when the needle actually contains a `%`, `_`, or the escape char (escaping those literals); route the common no-wildcard needle through the plain unescaped LIKE so the trigram index stays engaged. Confirm with EXPLAIN QUERY PLAN that the index is used on the unescaped path and bypassed on the escaped one.",
+      "detection_hint": "Flag a SQL string with `LIKE '%' || ? || '%' ESCAPE '\\'` (or any LIKE ESCAPE) over an FTS5/trigram-tokenized column on a hot/debounced search path. Ask: does EXPLAIN QUERY PLAN still use the index with ESCAPE? Is the escape unconditional even when the needle has no %/_/\\?",
+      "severity": "important",
+      "example_prs": [
+        139
+      ],
+      "source_repo": "inkstone",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "gate-debounced-results-on-input-identity",
+      "category": "ui-react",
+      "title": "Gate debounced search results on input identity before showing or acting on them",
+      "rule": "Display and selection of debounced-search results must be tied to the SAME query value the data was fetched/keyed under, not to the faster-updating live input. When a hook is keyed on `debouncedQuery` (e.g. useQuery([\"search\", debouncedQuery])) but a list is built/gated using the immediate `query`, the two diverge during the debounce window: stale hits from the previous debounced value render under the new input, and a click/Enter can navigate to the wrong target. Fix by mapping the results under the debounced value (`const dq = debouncedQuery.trim(); dq ? hits : []`) — i.e. keep the rendered group consistent with the query its data belongs to. (Equivalently, carry the query alongside the data, or gate on `debouncedQuery === query`; prefer gating on the debounced value to avoid blanking the group on every keystroke.)",
+      "detection_hint": "Flag a component that maps `data?.hits`/results from a hook keyed by a `debouncedQuery` into a list while the rendered/selectable items aren't gated on `debouncedQuery === query`. Ask: during the debounce delay can a stale result be clicked and navigate to the wrong entity?",
+      "severity": "nit",
+      "example_prs": [
+        139
+      ],
+      "source_repo": "inkstone",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "verify-config-keys-against-pinned-tool-version",
+      "category": "correctness",
+      "title": "Verify config keys against the pinned tool version's current docs",
+      "rule": "When a PR pins or bumps a build/package tool's major version (packageManager, engines, a tool dep, or a CI toolchain), verify every config-setting key for that tool against the pinned major's schema. Major versions rename, remove, or re-purpose keys (pnpm `onlyBuiltDependencies` -> `allowBuilds`/`strictDepBuilds`; eslint `.eslintrc` -> flat `eslint.config`; biome v1 -> v2 schema), and a stale key often still parses while doing nothing — silently failing to grant the intended behavior. Detection: flag a tool config file (pnpm-workspace.yaml, package.json pnpm/engines blocks, biome.json, tsconfig, eslint config) whose setting keys are touched in the same PR (or whose tool is pinned/bumped to a new major), then ask per key: does this key still exist in the pinned major, and does it produce the intended effect rather than being a no-op carried over from an older version?",
+      "detection_hint": "A config file relies on a setting key (`onlyBuiltDependencies`, `strictDepBuilds`, allowlists) while the toolchain is pinned to a major version that renamed/removed it. Ask: does this key exist in the pinned version, and does it produce the intended effect rather than just silencing a warning?",
+      "severity": "important",
+      "example_prs": [
+        141
+      ],
+      "source_repo": "inkstone",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "drain-buffered-stream-events-before-interrupting-on-cancel",
+      "category": "concurrency-async",
+      "title": "Drain buffered stream events before interrupting on cancel",
+      "rule": "When stopping a live subscription/stream by interrupting its consuming fiber, deltas already received over the wire but not yet drained from the transport queue are lost when you immediately apply a synthetic terminal event (the synthetic event settles status but cannot recover the undrained tail). The applied store text survives; only buffered-but-unprocessed events vanish, so the surface can show less than was persisted until a reload re-hydrates. For a still-running stream, prefer letting the real terminal event drain (or refetch an authoritative snapshot) before settling; reserve synthetic settlement for cases with genuinely no live tail (e.g. a parked/torn-down hub, or unknown_run where no event will ever arrive).",
+      "detection_hint": "A cancel/stop handler calls `interruptRun`/`fiber.interrupt()` then immediately `applyEvent({kind:'cancelled'})` (or setState terminal) for a Run/stream that may still have queued notifications. Ask: can committed-but-undrained deltas be lost, showing less text than persisted until reload?",
+      "severity": "important",
+      "example_prs": [
+        142
+      ],
+      "source_repo": "inkstone",
+      "support_count": 1,
+      "reinforced_by": []
+    },
+    {
+      "id": "treat-empty-env-var-as-unset-for-path-base",
+      "category": "correctness",
+      "title": "Treat an empty env-var value as unset before using it as a path/config base",
+      "rule": "When an env var overrides a path/config base, treat a present-but-empty value as unset: an empty string becomes a relative path that resolves against the process CWD, silently relocating the DB/config/skills dir. Filter empty before use (`.filter(|d| !d.is_empty())` in Rust, `if (!x)` / `x === \"\"` in TS) and fall through to the computed default. Flag a presence-only override (`if let Some(v) = env::var_os(X)` / `const v = process.env.X` used directly in PathBuf::from / path.join / a returned path) that lacks an empty-string filter, UNLESS an empty value is genuinely meaningful at this site. Bonus: when one sibling resolver filters empty (e.g. XDG_DATA_HOME) and a peer does not, flag the inconsistency.",
+      "detection_hint": "Grep for `env::var_os(X)` / `process.env.X` used directly as a path base (PathBuf::from, path.join, return) with only a presence check (`if let Some` / `if (x)`); ask: is an empty string filtered out (`.filter(|d| !d.is_empty())`, `if x === \"\"`) before it becomes a relative/CWD-rooted path?",
+      "severity": "important",
+      "example_prs": [
+        144
+      ],
+      "source_repo": "inkstone",
+      "support_count": 1,
+      "reinforced_by": []
     }
   ]
 }

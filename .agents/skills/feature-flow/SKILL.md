@@ -202,7 +202,7 @@ For each slice, in order:
                 Any fail or unhandled-reasonable-advisory? loop slice (cap 3).
 ```
 
-After slice-N's gate passes, the **Final review phase** runs once over the whole `feature/<slug>` branch: feature-level gates (full e2e suite, full Rust tests) and feature-level reviewers. Only then is `REPORT.md` written and the PR opened.
+After slice-N's gate passes, the **Final review phase** runs once over the whole `feature/<slug>` branch: feature-level gates (full e2e suite, full Rust tests), feature-level reviewers, and a **deep-review pass** (the [deep-review](../deep-review/SKILL.md) skill). The PR is opened, **CI must go green**, and every review finding must be addressed-or-reasoned — only then is `REPORT.md` written and the feature declared done.
 
 Slice failures don't block other slices from being attempted **only if** the failure is contained — which it almost never is, since each slice builds on the previous one's commit. In practice: a slice that fails its retry cap halts the whole flow.
 
@@ -349,7 +349,7 @@ The triage rule applies on every iteration that produces advisory findings, not 
 
 ## Done
 
-When slice-N passes verify, the per-slice loop is finished — but the feature is **not** declared shipped yet. Run the **Final review phase** below before writing `REPORT.md`.
+When slice-N passes verify, the per-slice loop is finished — but the feature is **not** declared shipped yet. Run the **Final review phase** below — feature-level gates, structured reviewers, deep-review, and a green CI run — before writing `REPORT.md`.
 
 ## Final review phase
 
@@ -395,15 +395,27 @@ Reviewers use the existing SOPs ([REVIEW-CORRECTNESS.md](REVIEW-CORRECTNESS.md),
 
 Note for reviewers: when `SLICE: feature`, `feature/<slug>` carries one squashed commit per slice, so the RED→GREEN commit pattern is **not** visible here — it was already verified per slice in phase 4 on each scratch branch. The feature-level tests reviewer **skips** the commit-pattern check and asserts gates and union test coverage only.
 
+### Final phase 2b: deep-review pass
+
+After the four structured reviewers return, run the [deep-review](../deep-review/SKILL.md) skill in **RUN mode**, scoped to the whole feature diff (`git diff <FEATURE_BASE>..<FEATURE_TIP>`). It is a multi-agent fan-out (specialist lenses + adversarial verification + the learned rule base) that catches classes of bug the four structured reviewers don't — it complements them, it doesn't replace them.
+
+Invoke it from a worktree on `FEATURE_BRANCH`. Write its verified report to `<RUN_DIR>/FINAL-REVIEWS/<iteration>/deep-review.md`. deep-review already drops refuted findings in its own verification pass, so what lands in that file is the surviving, verified set.
+
+Fold the surviving findings into the Final phase 3 gate exactly like reviewer findings: **Blocking / Important** deep-review findings are blocking (treat like a reviewer `fail`); **Nit** findings are advisory. They are subject to the same address-or-reason rule below — no deep-review finding is silently dropped.
+
+Append `deep-review-done` to `STATE.md` (detail: counts by severity, and how many deep-review dropped in verification).
+
 ### Final phase 3: gate
 
-Same three outcomes as a slice gate, applied at feature scope:
+Same three outcomes as a slice gate, applied at feature scope. The finding pool here is the union of the four structured reviewers **and** the deep-review pass (phase 2b).
 
-- **Hard fail.** Any feature-level gate failed OR any reviewer returned `fail`. Diagnose which slice (or cross-slice seam) introduced the problem, then respawn its impl agent on a scratch branch `flow/<slug>/final-iter<m>` cut from `feature/<slug>`'s tip, with `PRIOR_FINDINGS` listing the failures. It runs RED→GREEN there; when green, squash it into one commit on `feature/<slug>` (`git merge --squash` + `git commit -m "final-fix: <brief>"`). Re-run final phases 1–3. Cap: 3 final iterations. Iteration cap hit → write `BLOCKED.md` and stop.
+**Address-or-reason is mandatory.** No finding — from a structured reviewer or from deep-review — may advance past this gate unresolved. Each is either *addressed* (fixed in a `final-fix:` commit) or *reasoned* (recorded with a one-line justification for not acting now). "Reasoned" means a deliberate, written verdict, not silence. The same rule applies on every final iteration, not just the first.
 
-- **Polish.** All gates green, no reviewer `fail`, but advisory findings exist. Triage with the same "reasonable to address now" rule as a slice gate, scoped to the feature. Reasonable feature-level fixes are developed on `flow/<slug>/final-iter<m>` and squashed into one `final-fix:` commit on `feature/<slug>`, same as a hard-fail iteration. Deferred findings go into `RUN_DIR/FINAL-ADVISORY-DEFERRED.md`. After fixes, re-run final phases 1–3. Counts toward the 3 final-iteration cap.
+- **Hard fail.** Any feature-level gate failed OR any reviewer returned `fail` OR deep-review returned a Blocking/Important finding. Diagnose which slice (or cross-slice seam) introduced the problem, then respawn its impl agent on a scratch branch `flow/<slug>/final-iter<m>` cut from `feature/<slug>`'s tip, with `PRIOR_FINDINGS` listing the failures. It runs RED→GREEN there; when green, squash it into one commit on `feature/<slug>` (`git merge --squash` + `git commit -m "final-fix: <brief>"`). Re-run final phases 1–3. Cap: 3 final iterations. Iteration cap hit → write `BLOCKED.md` and stop.
 
-- **Pass.** All gates green, no reviewer `fail`, no remaining advisories (or all triaged + handled). Append `final-review-passed` to `STATE.md`. Proceed to the landing step.
+- **Polish.** All gates green, no reviewer `fail`, no Blocking/Important deep-review finding, but advisory findings exist (reviewer advisories and/or deep-review Nits). Triage **every** advisory with the "reasonable to address now" rule as a slice gate, scoped to the feature — each gets an `address` or `defer` verdict with a one-line reason. Reasonable feature-level fixes are developed on `flow/<slug>/final-iter<m>` and squashed into one `final-fix:` commit on `feature/<slug>`, same as a hard-fail iteration. Deferred findings (with their reasons) go into `RUN_DIR/FINAL-ADVISORY-DEFERRED.md`. After fixes, re-run final phases 1–3. Counts toward the 3 final-iteration cap.
+
+- **Pass.** All gates green, no reviewer `fail`, no Blocking/Important deep-review finding, and **every** remaining finding (reviewer or deep-review) has been triaged — addressed or deferred-with-a-reason. Nothing is left un-adjudicated. Append `final-review-passed` to `STATE.md`. Proceed to the landing step.
 
 Final-iteration fixes are squashed onto `feature/<slug>` as `final-fix:` commits, so the branch stays clean: N slice commits plus any final-fix commits.
 
@@ -427,7 +439,23 @@ Notes:
 
 Record the PR URL (or the handoff commands) in `REPORT.md`.
 
-Then write `REPORT.md` listing each slice, its squashed commit on `feature/<slug>`, the final review's outcome, and the PR URL (or handoff commands). Then run the **Summary phase** — see below.
+### Wait for CI to go green
+
+Opening the PR is not the finish line — **the feature is not done until CI passes.** The repo's GitHub Actions [§6 gate](../../../.github/workflows/ci.yml) runs four required checks on the PR (`lint-format`, `ts`, `rust`, `e2e`). The local final-phase gates mirror these, but CI runs them on a clean runner and can surface failures a local run masked (lockfile drift, OS-dep gaps, environment assumptions).
+
+After opening the PR, poll until the checks settle:
+
+```
+gh pr checks <pr-number> --watch
+```
+
+- **All checks pass** → append `ci-passed` to `STATE.md` (detail: the commit SHA CI ran on). Proceed to write `REPORT.md`.
+- **Any check fails** → this is a hard fail, identical to a Final phase 3 hard fail. Pull the failing job's logs (`gh run view <run-id> --log-failed`), diagnose, fix on a `flow/<slug>/final-iter<m>` branch, squash a `final-fix:` commit onto `feature/<slug>`, push, and re-poll. Counts toward the 3 final-iteration cap. Cap hit with CI still red → write `BLOCKED.md` and stop; the feature is **not** done.
+- **`gh` / remote unavailable** (handoff mode, no PR opened) → CI can't be polled. Record in `REPORT.md` that the §6 gate passed locally but CI was not verified, and that the user must confirm CI green before merging.
+
+Only once CI is green (or explicitly unverifiable in handoff mode) is the feature done.
+
+Then write `REPORT.md` listing each slice, its squashed commit on `feature/<slug>`, the final review's outcome (structured reviewers + deep-review), the CI status, and the PR URL (or handoff commands). Then run the **Summary phase** — see below.
 
 ## Summary phase (terminal)
 
@@ -436,11 +464,12 @@ Runs after `REPORT.md` (success) or `BLOCKED.md` (failure). Always runs. Output:
 ### Steps
 
 1. Walk `STATE.md`. Per slice: iteration count, outcome (`passed` / `blocked`).
-2. List every reviewer `fail` verdict (slice or `final`, iteration, reviewer, one-line finding).
+2. List every reviewer `fail` verdict (slice or `final`, iteration, reviewer, one-line finding). Include deep-review Blocking/Important findings (read `FINAL-REVIEWS/<iter>/deep-review.md`).
 3. Aggregate deferred advisory findings: read every `slices/<n>/ADVISORY-TRIAGE.md` (deferred entries only) and `FINAL-ADVISORY-DEFERRED.md` if present.
-4. Record final-review outcome: number of final iterations, gate results, advisories addressed vs deferred.
-5. List every `BLOCKED.md` content verbatim.
-6. Append `summary-written` to `STATE.md`. This is the final event.
+4. Record final-review outcome: number of final iterations, gate results, deep-review severity counts, advisories addressed vs deferred.
+5. Record the CI outcome (from the `ci-passed` / `ci-failed` event, or "unverified — handoff mode").
+6. List every `BLOCKED.md` content verbatim.
+7. Append `summary-written` to `STATE.md`. This is the final event.
 
 ### SUMMARY.md template
 
@@ -461,8 +490,10 @@ Outcome: success | blocked
 
 - Iterations: <n>
 - Gate: pass | fail (one-line summary)
+- Deep-review: <blocking>/<important>/<nit> findings (<dropped> dropped in verification)
 - Advisories addressed: <count>
 - Advisories deferred: <count>
+- CI: passed (<sha>) | failed (<check>) | unverified — handoff mode
 
 ## Reviewer fails
 
@@ -502,3 +533,4 @@ That's it. No interpretation, no "patterns" section, no friction-signal aggregat
 - Iteration cap hit on any slice → write `BLOCKED.md`, surface to user.
 - Verify fails with the same error two iterations in a row on the same slice → stop, the loop is not converging.
 - Final review iteration cap hit → write `BLOCKED.md`, surface to user. `feature/<slug>` and the scratch branches are intact for human inspection; the unresolved findings are in `RUN_DIR/FINAL-REVIEWS/<last-iter>/`.
+- CI stays red after the final-iteration cap → write `BLOCKED.md`. The PR is open with a failing gate; the feature is not done until the user-owned CI checks are green.
