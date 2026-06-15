@@ -247,6 +247,97 @@ pub enum ReviewEveryUnit {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
+pub enum RecurrenceUnit {
+    Minute,
+    Hour,
+    Day,
+    Week,
+    Month,
+    Year,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum RecurrenceWeekday {
+    Sun,
+    Mon,
+    Tue,
+    Wed,
+    Thu,
+    Fri,
+    Sat,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum RecurrenceSchedule {
+    Regular,
+    FromCompletion,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum RecurrenceAnchor {
+    DeferAt,
+    DueAt,
+}
+
+/// Constrain regular occurrences to specific weekdays / month days (mirrors
+/// `validate_recurrence_only_on`): `weekdays` only with unit `week`, `month_days`
+/// only with unit `month`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct RecurrenceOnlyOn {
+    #[serde(default)]
+    pub weekdays: Option<Vec<RecurrenceWeekday>>,
+    #[serde(default)]
+    pub month_days: Option<Vec<u32>>,
+}
+
+/// A recurrence end condition (mirrors `validate_recurrence_end`): at most one of
+/// `until` (a wall clock instant) or `after_count` (occurrence count).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct RecurrenceEnd {
+    /// Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.
+    #[serde(default)]
+    #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
+    pub until: Option<String>,
+    #[serde(default)]
+    pub after_count: Option<u64>,
+}
+
+/// A Todo recurrence rule (mirrors `validate_recurrence`): `interval` units of
+/// `unit`, a `regular`/`from_completion` schedule recomputing the `anchor` date,
+/// with optional catch-up, weekday/month-day constraints, and end condition.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct Recurrence {
+    #[schemars(range(min = 1))]
+    pub interval: u64,
+    pub unit: RecurrenceUnit,
+    pub schedule: RecurrenceSchedule,
+    pub anchor: RecurrenceAnchor,
+    #[serde(default)]
+    pub catch_up: Option<bool>,
+    #[serde(default)]
+    pub only_on: Option<RecurrenceOnlyOn>,
+    #[serde(default)]
+    pub end: Option<RecurrenceEnd>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum ProjectStatus {
     Active,
     OnHold,
@@ -410,6 +501,8 @@ pub struct TodoData {
     #[serde(default)]
     #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
     pub dropped_at: Option<String>,
+    #[serde(default)]
+    pub recurrence: Option<Recurrence>,
 }
 
 /// A `Partial<TodoData>` for `update_todo` (mirrors `validate_partial_todo_data`):
@@ -445,6 +538,8 @@ pub struct PartialTodoData {
     #[serde(default)]
     #[schemars(regex(pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$"))]
     pub dropped_at: Option<String>,
+    #[serde(default)]
+    pub recurrence: Option<Recurrence>,
 }
 
 /// `create_todo` ENVELOPE (mirrors `validate_todo`): a required `todo`, optional
@@ -546,6 +641,18 @@ const OMITTABLE_PROPERTIES: &[&str] = &[
     "dropped_at",
     "next_review_at",
     "last_reviewed_at",
+    "recurrence",
+    // Todo recurrence (ADR-0037): the nested optionals Core's validator rejects
+    // an explicit null for — same "omit, don't null" stance as `recurrence` itself.
+    // `disallow_null_for_property` recurses by name into the RecurrenceOnlyOn /
+    // RecurrenceEnd definitions, so listing the field names is enough.
+    "catch_up",
+    "only_on",
+    "end",
+    "weekdays",
+    "month_days",
+    "until",
+    "after_count",
     // Todo envelope + person refs. `title` is required on TodoData (create) but
     // optional on PartialTodoData (update_todo); stripping null only touches the
     // optional occurrence, leaving the required create field untouched.
@@ -964,6 +1071,37 @@ mod tests {
     }
 
     #[test]
+    fn create_todo_with_full_recurrence_round_trips_through_input() {
+        // A `create_todo` envelope whose `todo` carries a FULL recurrence rule
+        // (interval, unit, schedule, anchor, plus catch_up, only_on, and end)
+        // alongside its `due_at` anchor deserializes into `Input::CreateTodo`.
+        // RED at base: TodoData's `deny_unknown_fields` rejects `recurrence`.
+        let todo: Input = serde_json::from_value(serde_json::json!({
+            "mutation_kind": "create_todo",
+            "payload": {
+                "todo": {
+                    "title": "Weekly review",
+                    "due_at": "2026-06-15T09:00:00",
+                    "recurrence": {
+                        "interval": 1,
+                        "unit": "week",
+                        "schedule": "regular",
+                        "anchor": "due_at",
+                        "catch_up": false,
+                        "only_on": { "weekdays": ["mon", "fri"] },
+                        "end": { "after_count": 10 }
+                    }
+                }
+            }
+        }))
+        .expect("create_todo envelope with recurrence deserializes into Input");
+        assert!(
+            matches!(todo, Input::CreateTodo { .. }),
+            "create_todo with recurrence binds the CreateTodo variant"
+        );
+    }
+
+    #[test]
     fn descriptor_binds_all_nine_gtd_mutation_kinds() {
         let d = descriptor();
         for kind in [
@@ -1155,6 +1293,13 @@ mod tests {
             "dropped_at",
             "next_review_at",
             "last_reviewed_at",
+            "catch_up",
+            "only_on",
+            "end",
+            "weekdays",
+            "month_days",
+            "until",
+            "after_count",
         ] {
             let mut occurrences = Vec::new();
             collect_property_schemas(&d.json_schema, property, &mut occurrences);

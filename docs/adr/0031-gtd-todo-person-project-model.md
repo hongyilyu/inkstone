@@ -334,10 +334,14 @@ Completed and dropped Todos remain historical records; deleting linked context r
 
 ## Deferred
 
-Todo recurrence is deferred. Do not store `repeat` on Todo in immediate V1. Tracking:
+Todo recurrence was deferred out of this ADR. The durable rule shape is now
+defined in [ADR-0037](./0037-todo-recurrence-rule.md): a Todo carries an optional
+OmniFocus-style `recurrence` rule in its data JSON. Occurrence generation — the
+execution layer that spawns the next occurrence when a recurring Todo completes —
+remains deferred. Tracking:
 
-- [#124](https://github.com/hongyilyu/inkstone/issues/124): design and persist OmniFocus-style Todo recurrence rules
-- [#125](https://github.com/hongyilyu/inkstone/issues/125): generate next Todo occurrence for recurring Todos
+- [#124](https://github.com/hongyilyu/inkstone/issues/124): design and persist OmniFocus-style Todo recurrence rules — resolved by ADR-0037.
+- [#125](https://github.com/hongyilyu/inkstone/issues/125): generate next Todo occurrence for recurring Todos — still deferred.
 
 Generic Tags/Contexts are deferred. This includes where/tool/energy contexts such as office, phone, home, errands, and similar OmniFocus tags.
 
@@ -361,7 +365,7 @@ Subtasks/action groups are deferred. V1 uses flat Todos under Projects. If a Tod
 - **Persist Inbox as `inbox: boolean`.** Rejected: adding Project, due date, or Person should naturally move a task out of Inbox. Inbox is derived from missing organizing metadata.
 - **Persist `standalone: boolean`.** Rejected: it only renames `inbox` and pre-solves generic one-off classification before Tags/Contexts exist.
 - **Add a fake one-off Project.** Rejected: single actions should not be hidden inside a fake outcome. Future Tags/Contexts are the correct way out of Inbox for one-off errands.
-- **Add recurrence fields now.** Rejected: recurrence needs OmniFocus-style semantics and execution. It is tracked separately in #124 and #125.
+- **Add recurrence fields now.** Rejected at the time: recurrence needs OmniFocus-style semantics and execution. The rule shape was tracked separately and is now defined in [ADR-0037](./0037-todo-recurrence-rule.md) (#124); execution (#125) is still deferred.
 
 ## Related
 

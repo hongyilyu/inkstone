@@ -281,6 +281,27 @@ describe("EntityDetail Todo projection", () => {
 		expect(screen.getByText("Dropped")).toBeInTheDocument();
 		expect(screen.getByText(/Dropped 2026-05-20/)).toBeInTheDocument();
 	});
+
+	it("renders a recurrence summary badge for a recurring todo (ADR-0037)", () => {
+		const todo = todoItem("t_rec", {
+			title: "Weekly review",
+			deferAt: "2026-06-14T09:00:00",
+			recurrence: {
+				interval: 1,
+				unit: "week",
+				schedule: "regular",
+				anchor: "defer_at",
+			},
+		});
+		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+		expect(screen.getByText("Repeats weekly")).toBeInTheDocument();
+	});
+
+	it("renders no recurrence badge for a non-recurring todo (ADR-0037)", () => {
+		const todo = todoItem("t_norec", { title: "One-off task" });
+		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+		expect(screen.queryByText(/^Repeats/)).not.toBeInTheDocument();
+	});
 });
 
 describe("EntityDetail Todo edit", () => {

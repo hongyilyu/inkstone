@@ -378,6 +378,115 @@ fn accept_create_todo_defaults_status_active() {
     });
 }
 
+/// Case 2b: a `create_todo` whose `todo` carries a `due_at` anchor and a
+/// `due_at`-anchored recurrence rule persists that rule into the stored entity
+/// `data` JSON (ADR-0037). After accept, the `recurrence` object round-trips with
+/// its `unit`/`schedule`/`anchor`.
+#[test]
+fn accept_create_todo_persists_recurrence_rule() {
+    let workspace = Workspace::new();
+
+    let params_dir = tempfile::Builder::new()
+        .prefix("inkstone-create-todo-recurrence-")
+        .tempdir()
+        .expect("create params tempdir");
+    let params_path = params_dir.path().join("propose-params.json");
+    write_params(
+        &params_path,
+        serde_json::json!({
+            "mutation_kind": "create_todo",
+            "payload": {
+                "todo": {
+                    "title": "Weekly review",
+                    "due_at": "2026-06-19T17:00:00",
+                    "recurrence": {
+                        "interval": 1,
+                        "unit": "week",
+                        "schedule": "regular",
+                        "anchor": "due_at",
+                        "catch_up": false
+                    }
+                }
+            },
+            "rationale": "a recurring obligation"
+        }),
+    );
+
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let entity_id = rt.block_on(async {
+        let run_id = create_and_park(&core, 1, "Review my projects every week.").await;
+        let proposal_id = proposal_id_for(&core, 3, &run_id).await;
+        let resp = rpc(
+            &core,
+            4,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "accept",
+                "decision_idempotency_key": "rec1",
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp["result"]["status"].as_str(),
+            Some("accepted"),
+            "decide result status — body: {resp}"
+        );
+        let entity_id = resp["result"]["entity_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
+            .to_string();
+        await_completed(&core, &run_id).await;
+        entity_id
+    });
+
+    rt.block_on(async {
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+        let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
+            .bind(&entity_id)
+            .fetch_one(&pool)
+            .await
+            .expect("entity row exists");
+        let data_json: serde_json::Value =
+            serde_json::from_str(&data).expect("entity data is JSON");
+        let recurrence = &data_json["recurrence"];
+        assert!(
+            recurrence.is_object(),
+            "stored todo carries the recurrence rule — got {data}"
+        );
+        assert_eq!(
+            recurrence["unit"].as_str(),
+            Some("week"),
+            "recurrence unit round-trips — got {data}"
+        );
+        assert_eq!(
+            recurrence["schedule"].as_str(),
+            Some("regular"),
+            "recurrence schedule round-trips — got {data}"
+        );
+        assert_eq!(
+            recurrence["anchor"].as_str(),
+            Some("due_at"),
+            "recurrence anchor round-trips — got {data}"
+        );
+    });
+}
+
 /// Case 3: a `create_todo` whose `project_id` does NOT reference an Accepted
 /// Project is rejected with `invalid_params` (-32602) BEFORE any DB write: no
 /// todo entity, the Proposal stays `pending`, the Run stays `parked`.

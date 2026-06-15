@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { toLibraryTodo } from "@/lib/hooks/useLibraryItems";
 import {
 	activeProjectItems,
 	dueSoonTodos,
@@ -20,6 +21,7 @@ import {
 	projectsForPerson,
 	projectsForReview,
 	recentlyCapturedItems,
+	recurrenceSummary,
 	searchLibraryItems,
 	type Todo,
 	todosForPerson,
@@ -451,5 +453,125 @@ describe("library item helpers", () => {
 	it("does not resolve a relation target absent from the provided list", () => {
 		const backfill = byId("todo_backfill") as Todo;
 		expect(projectForTodo([backfill], backfill)).toBeUndefined();
+	});
+});
+
+describe("recurrence (ADR-0037 read side)", () => {
+	const todoRow = (data: Record<string, unknown>) => ({
+		id: "t_rec",
+		data: { title: "Water the plants", status: "active", ...data },
+		created_at: 1,
+	});
+
+	describe("toLibraryTodo recurrence mapping", () => {
+		it("maps a snake_case rule to the camelCase view model", () => {
+			const todo = toLibraryTodo(
+				todoRow({
+					defer_at: "2026-06-14T09:00:00",
+					recurrence: {
+						interval: 2,
+						unit: "week",
+						schedule: "regular",
+						anchor: "defer_at",
+						catch_up: true,
+						only_on: { weekdays: ["mon", "wed"] },
+						end: { after_count: 10 },
+					},
+				}),
+			);
+			expect(todo.recurrence).toEqual({
+				interval: 2,
+				unit: "week",
+				schedule: "regular",
+				anchor: "defer_at",
+				catchUp: true,
+				onlyOn: { weekdays: ["mon", "wed"] },
+				end: { afterCount: 10 },
+			});
+		});
+
+		it("maps month_days and an until end condition", () => {
+			const todo = toLibraryTodo(
+				todoRow({
+					due_at: "2026-06-30T17:00:00",
+					recurrence: {
+						interval: 1,
+						unit: "month",
+						schedule: "from_completion",
+						anchor: "due_at",
+						only_on: { month_days: [1, 15] },
+						end: { until: "2027-01-01T00:00:00" },
+					},
+				}),
+			);
+			expect(todo.recurrence).toEqual({
+				interval: 1,
+				unit: "month",
+				schedule: "from_completion",
+				anchor: "due_at",
+				onlyOn: { monthDays: [1, 15] },
+				end: { until: "2027-01-01T00:00:00" },
+			});
+		});
+
+		it("leaves recurrence undefined when the Todo carries no rule", () => {
+			expect(toLibraryTodo(todoRow({})).recurrence).toBeUndefined();
+		});
+
+		it("ignores a partial rule missing required fields", () => {
+			expect(
+				toLibraryTodo(todoRow({ recurrence: { interval: 2 } })).recurrence,
+			).toBeUndefined();
+		});
+	});
+
+	describe("recurrenceSummary", () => {
+		const rule = (extra: Partial<Parameters<typeof recurrenceSummary>[0]>) => ({
+			interval: 1,
+			unit: "day" as const,
+			schedule: "regular" as const,
+			anchor: "defer_at" as const,
+			...extra,
+		});
+
+		it("summarises interval-1 rules per unit", () => {
+			expect(recurrenceSummary(rule({ unit: "day" }))).toBe("Repeats daily");
+			expect(recurrenceSummary(rule({ unit: "week" }))).toBe("Repeats weekly");
+			expect(recurrenceSummary(rule({ unit: "month" }))).toBe(
+				"Repeats monthly",
+			);
+			expect(recurrenceSummary(rule({ unit: "year" }))).toBe("Repeats yearly");
+			expect(recurrenceSummary(rule({ unit: "hour" }))).toBe("Repeats hourly");
+			expect(recurrenceSummary(rule({ unit: "minute" }))).toBe(
+				"Repeats every minute",
+			);
+		});
+
+		it("summarises interval-N rules", () => {
+			expect(recurrenceSummary(rule({ interval: 2, unit: "day" }))).toBe(
+				"Repeats every 2 days",
+			);
+			expect(recurrenceSummary(rule({ interval: 3, unit: "week" }))).toBe(
+				"Repeats every 3 weeks",
+			);
+		});
+
+		it("appends the from-completion suffix", () => {
+			expect(
+				recurrenceSummary(rule({ unit: "week", schedule: "from_completion" })),
+			).toBe("Repeats weekly from completion");
+		});
+
+		it("does not throw when only_on / end are present", () => {
+			expect(
+				recurrenceSummary(
+					rule({
+						unit: "week",
+						onlyOn: { weekdays: ["mon"] },
+						end: { afterCount: 5 },
+					}),
+				),
+			).toBe("Repeats weekly");
+		});
 	});
 });

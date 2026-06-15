@@ -8,8 +8,11 @@ import type {
 	Person,
 	Project,
 	ProjectStatus,
+	RecurrenceRule,
+	RecurrenceUnit,
 	Todo,
 	TodoStatus,
+	Weekday,
 } from "@/lib/libraryItems";
 import { useRuntime } from "@/runtime";
 
@@ -167,6 +170,7 @@ interface TodoData {
 	due_at?: unknown;
 	completed_at?: unknown;
 	dropped_at?: unknown;
+	recurrence?: unknown;
 }
 
 function asString(value: unknown): string | undefined {
@@ -177,8 +181,68 @@ function asTodoStatus(value: unknown): TodoStatus {
 	return value === "completed" || value === "dropped" ? value : "active";
 }
 
+const RECURRENCE_UNITS: readonly RecurrenceUnit[] = [
+	"minute",
+	"hour",
+	"day",
+	"week",
+	"month",
+	"year",
+];
+
+/**
+ * Defensively map a stored snake_case recurrence rule (ADR-0037) to the
+ * camelCase view model. Core validates the rule on the way in, so this is
+ * parsing not validation: it returns undefined unless the required fields are
+ * present and well-typed, and never throws on a partial/missing shape.
+ */
+function asRecurrence(value: unknown): RecurrenceRule | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const r = value as Record<string, unknown>;
+	if (
+		typeof r.interval !== "number" ||
+		typeof r.unit !== "string" ||
+		!RECURRENCE_UNITS.includes(r.unit as RecurrenceUnit) ||
+		(r.schedule !== "regular" && r.schedule !== "from_completion") ||
+		(r.anchor !== "defer_at" && r.anchor !== "due_at")
+	) {
+		return undefined;
+	}
+	const rule: RecurrenceRule = {
+		interval: r.interval,
+		unit: r.unit as RecurrenceUnit,
+		schedule: r.schedule,
+		anchor: r.anchor,
+	};
+	if (typeof r.catch_up === "boolean") rule.catchUp = r.catch_up;
+	if (r.only_on && typeof r.only_on === "object") {
+		const onlyOnRaw = r.only_on as Record<string, unknown>;
+		const onlyOn: { weekdays?: Weekday[]; monthDays?: number[] } = {};
+		if (Array.isArray(onlyOnRaw.weekdays)) {
+			onlyOn.weekdays = onlyOnRaw.weekdays.filter(
+				(w): w is Weekday => typeof w === "string",
+			);
+		}
+		if (Array.isArray(onlyOnRaw.month_days)) {
+			onlyOn.monthDays = onlyOnRaw.month_days.filter(
+				(d): d is number => typeof d === "number",
+			);
+		}
+		if (onlyOn.weekdays || onlyOn.monthDays) rule.onlyOn = onlyOn;
+	}
+	if (r.end && typeof r.end === "object") {
+		const endRaw = r.end as Record<string, unknown>;
+		const end: { until?: string; afterCount?: number } = {};
+		if (typeof endRaw.until === "string") end.until = endRaw.until;
+		if (typeof endRaw.after_count === "number")
+			end.afterCount = endRaw.after_count;
+		if (end.until !== undefined || end.afterCount !== undefined) rule.end = end;
+	}
+	return rule;
+}
+
 /** Map a live `entity/list` row to the Library `Todo` view model (ADR-0031). */
-function toLibraryTodo(row: LiveEntityRow): Todo {
+export function toLibraryTodo(row: LiveEntityRow): Todo {
 	const data = (row.data ?? {}) as TodoData;
 	return {
 		id: row.id,
@@ -191,6 +255,7 @@ function toLibraryTodo(row: LiveEntityRow): Todo {
 		dueAt: asString(data.due_at),
 		completedAt: asString(data.completed_at),
 		droppedAt: asString(data.dropped_at),
+		recurrence: asRecurrence(data.recurrence),
 		personRefs: (row.person_refs ?? []).map((ref) => ({
 			personId: ref.person_id,
 			role: ref.role,
