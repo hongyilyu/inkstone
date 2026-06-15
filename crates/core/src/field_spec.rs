@@ -1,0 +1,491 @@
+//! The single source of each Entity Type's field shape (card 2 of the
+//! Entity-Type refactor). One [`PayloadSpec`] per Entity Type's data core drives
+//! BOTH the agent tool schema (the Draft-07 fragment [`PayloadSpec::json_schema`]
+//! emits) AND the runtime validators ([`PayloadSpec::check`]) — so a renamed or
+//! added field is one edit with a compiler tie, not a hand-mirrored
+//! struct/validator pair.
+//!
+//! The split (ADR-0018, ADR-0033):
+//! - **shape + scalar facts** (which keys exist, required vs optional, type,
+//!   non-emptiness, enum domain, UUID/datetime parse, clearable-null) live in the
+//!   spec and are checked by the generic [`PayloadSpec::check`] walk.
+//! - **cross-field invariants** (status↔timestamp, the recurrence anchor-presence
+//!   and inter-field couplings, exactly-one entity_ref, `ended_at >= occurred_at`)
+//!   are NOT expressible as a flat field walk and stay as hand-written hooks in
+//!   [`crate::entities`], run after `check`.
+//!
+//! Where the *advertised schema* and the *validation rule* historically diverge
+//! (a bare-string `entity_id` the validator nonetheless UUID-checks; an `aliases`
+//! element the schema leaves unconstrained but the validator requires non-empty),
+//! the spec carries the two facts separately and faithfully — single-sourcing the
+//! field's existence without forcing schema == validator.
+
+use serde_json::{Map, Value};
+
+use crate::entities::parse_local_datetime;
+
+/// The standard `description` schemars emitted for every local wall-clock field,
+/// surfaced to the Worker so the model knows the expected literal format. The
+/// `descriptor_describes_create_journal_entry_payload` test pins that this
+/// substring appears in the schema.
+const LOCAL_DATETIME_DESCRIPTION: &str = "Local wall-clock time in YYYY-MM-DDTHH:MM:SS format.";
+
+/// The `YYYY-MM-DDTHH:MM:SS` regex the deleted `#[schemars(regex(...))]`
+/// attributes carried on every local-datetime field.
+const LOCAL_DATETIME_PATTERN: &str = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$";
+
+/// The canonical UUID pattern the reference/source id fields advertise. UUID-shaped
+/// ids the schema leaves bare (`entity_id`, `todo_id`) still validate via
+/// [`FieldSpec::Uuid`] with `schema_regex: false`.
+const UUID_PATTERN: &str =
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+
+/// Whether a field must be present. A `Required` field missing from the payload
+/// is an error; an `Optional` field absent is fine. Optionality also drives the
+/// emitted schema's `required` array.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Presence {
+    Required,
+    Optional,
+}
+
+/// How an object spec phrases its "value is not an object" rejection — the
+/// hand-written validators are inconsistent and the tests pin the substrings, so
+/// each spec carries its style verbatim.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ObjErr {
+    /// `"{noun} payload must be a JSON object"` — the top-level person/project/
+    /// bookmark/create_todo/update_todo payloads.
+    Payload,
+    /// `"{noun} must be an object"` — review_every and the recurrence sub-objects.
+    Object,
+    /// `"{noun} must be a JSON object"` — TodoData and the person_refs element.
+    JsonObject,
+}
+
+impl ObjErr {
+    fn message(self, noun: &str) -> String {
+        match self {
+            ObjErr::Payload => format!("{noun} payload must be a JSON object"),
+            ObjErr::Object => format!("{noun} must be an object"),
+            ObjErr::JsonObject => format!("{noun} must be a JSON object"),
+        }
+    }
+}
+
+/// Body-node policy for a Journal-Entry `body` array — which node kinds the
+/// tagged `oneOf` union admits, mirroring [`crate::entities`]'s `BodyNodePolicy`.
+/// Schema-side only; the per-policy validation (and the exactly-one-entity_ref
+/// invariant) lives in the entities hooks.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum BodyPolicy {
+    /// `create_journal_entry`: text nodes only.
+    TextOnly,
+    /// `update_journal_entry`: text or an `entity_ref` carrying a `ref_id`.
+    TextOrExistingRef,
+    /// the reference weave: text or a bare `entity_ref` placeholder (no `ref_id`).
+    TextOrNewRef,
+}
+
+/// The shape of one field's value — the leaf vocabulary the schema generator and
+/// the validation walk both read. Clearability (ADR-0033 sentinel-null) is NOT
+/// here; it is a [`Field`]-level facet, orthogonal to value shape.
+#[derive(Clone, Debug)]
+pub(crate) enum FieldSpec {
+    /// A string. `non_empty` ⇒ a present value must be non-blank
+    /// (`""`/whitespace → "{field} must not be empty"; schema carries
+    /// `minLength:1`).
+    Str { non_empty: bool },
+    /// A boolean.
+    Bool,
+    /// A positive integer (`>= 1`). Schema: `{type:integer, minimum:1}` — the
+    /// advertised bound matches the validator (the deleted structs carried
+    /// `#[schemars(range(min = 1))]`), so a provider can't pre-pass an `interval`
+    /// of `0` that Core only rejects at decide-time.
+    PositiveInt,
+    /// A local wall-clock `YYYY-MM-DDTHH:MM:SS` string. Schema carries the regex
+    /// pattern + the standard description.
+    LocalDateTime,
+    /// A UUID string. `schema_regex` ⇒ the advertised schema carries the UUID
+    /// pattern + `minLength`/`maxLength` 36 (the reference/source ids); otherwise
+    /// the schema is bare `{type:string}` but the validator still parses a UUID
+    /// (the `entity_id`/`todo_id` target keys).
+    Uuid { schema_regex: bool },
+    /// A string drawn from a closed set. `err` is the exact validator message on a
+    /// bad value (byte-faithful to the hand-written validators).
+    EnumStr {
+        domain: &'static [&'static str],
+        err: &'static str,
+    },
+    /// A homogeneous array. The element spec validates each item. `plain_items`
+    /// advertises a bare `{type:string}` element even when the element spec would
+    /// constrain it (the historical divergence: `aliases`/`tags`/`remove_person_ids`
+    /// validate non-empty but advertise plain); validation still runs the element
+    /// spec. (Cardinality `minItems` is carried by [`FieldSpec::Body`], the only
+    /// array that needs it; the homogeneous arrays here are all unbounded.)
+    Array {
+        items: Box<FieldSpec>,
+        plain_items: bool,
+    },
+    /// A nested object validated by its own [`PayloadSpec`].
+    Object(PayloadSpec),
+    /// A nested object whose SCHEMA comes from the spec but whose VALIDATION is
+    /// deferred to a hand-written cross-field hook. The recurrence rule (ADR-0037)
+    /// is intrinsically cross-field — `catch_up`↔`schedule`, `only_on`↔`unit`,
+    /// `end` cardinality, weekday/month-day dedup+range — so a flat walk cannot
+    /// express it. The schema single-sources from the spec (killing the dead
+    /// structs); `check` is a no-op and the owning entity's hook validates.
+    HookValidated(PayloadSpec),
+    /// A Journal-Entry `body`: a tagged `oneOf` union of node objects per
+    /// [`BodyPolicy`]. The array-level `minItems:1` and per-node shape are emitted
+    /// here; cross-node invariants are entities hooks (so `check` is a no-op).
+    Body(BodyPolicy),
+}
+
+impl FieldSpec {
+    /// A non-empty string (names, titles).
+    pub(crate) fn non_empty_string() -> Self {
+        FieldSpec::Str { non_empty: true }
+    }
+
+    /// A may-be-empty string (the full-document `note`/`url`; emptiness unpoliced).
+    pub(crate) fn string() -> Self {
+        FieldSpec::Str { non_empty: false }
+    }
+
+    /// A plain-schema array whose elements validate as non-empty strings but are
+    /// advertised bare (`aliases`/`tags`/`remove_person_ids`).
+    pub(crate) fn non_empty_string_array() -> Self {
+        FieldSpec::Array {
+            items: Box::new(FieldSpec::non_empty_string()),
+            plain_items: true,
+        }
+    }
+}
+
+/// One named field of a [`PayloadSpec`]: its key, presence, clearability, value
+/// shape, and the optional schema `description` surfaced to the Worker.
+#[derive(Clone, Debug)]
+pub(crate) struct Field {
+    pub(crate) name: &'static str,
+    pub(crate) presence: Presence,
+    /// ADR-0033 sentinel-null: a `null` value is the clear directive, accepted
+    /// regardless of `spec`. When false, a present `null` falls through to `spec`
+    /// (which produces the field's type error).
+    pub(crate) clearable: bool,
+    pub(crate) spec: FieldSpec,
+    pub(crate) description: Option<&'static str>,
+}
+
+impl Field {
+    pub(crate) fn required(name: &'static str, spec: FieldSpec) -> Self {
+        Field {
+            name,
+            presence: Presence::Required,
+            clearable: false,
+            spec,
+            description: None,
+        }
+    }
+
+    pub(crate) fn optional(name: &'static str, spec: FieldSpec) -> Self {
+        Field {
+            name,
+            presence: Presence::Optional,
+            clearable: false,
+            spec,
+            description: None,
+        }
+    }
+
+    /// Mark this (optional) field clearable: `null` is accepted as the ADR-0033
+    /// clear directive.
+    pub(crate) fn clearable(mut self) -> Self {
+        self.clearable = true;
+        self
+    }
+
+    /// Conditionally clearable — clearable only on the `update_todo` partial path,
+    /// concrete-or-absent on the create path.
+    pub(crate) fn clearable_when(self, yes: bool) -> Self {
+        if yes { self.clearable() } else { self }
+    }
+
+    /// Promote this field to required (used where a helper builds an optional
+    /// field that a specific kind needs present, e.g. journal `occurred_at`).
+    pub(crate) fn require(mut self) -> Self {
+        self.presence = Presence::Required;
+        self
+    }
+
+    /// Attach a schema `description`.
+    pub(crate) fn described(mut self, description: &'static str) -> Self {
+        self.description = Some(description);
+        self
+    }
+
+    /// A local wall-clock datetime field carrying the standard description. The
+    /// helper most timestamp fields use.
+    pub(crate) fn datetime(name: &'static str) -> Self {
+        Field::optional(name, FieldSpec::LocalDateTime).described(LOCAL_DATETIME_DESCRIPTION)
+    }
+}
+
+/// An ordered set of [`Field`]s plus the `noun` woven into the
+/// `"unsupported {noun} field {key:?}"` rejection and the `obj_err` style for the
+/// "not an object" rejection — the single source of an object's field shape.
+/// `additionalProperties` is always denied (every validator and every deleted
+/// struct denied unknown fields).
+#[derive(Clone, Debug)]
+pub(crate) struct PayloadSpec {
+    pub(crate) noun: &'static str,
+    pub(crate) obj_err: ObjErr,
+    pub(crate) fields: Vec<Field>,
+}
+
+impl PayloadSpec {
+    /// A top-level payload spec (`"{noun} payload must be a JSON object"`).
+    pub(crate) fn payload(noun: &'static str, fields: Vec<Field>) -> Self {
+        PayloadSpec {
+            noun,
+            obj_err: ObjErr::Payload,
+            fields,
+        }
+    }
+
+    /// A nested-object spec with an explicit "not an object" style.
+    pub(crate) fn nested(noun: &'static str, obj_err: ObjErr, fields: Vec<Field>) -> Self {
+        PayloadSpec {
+            noun,
+            obj_err,
+            fields,
+        }
+    }
+
+    fn field(&self, name: &str) -> Option<&Field> {
+        self.fields.iter().find(|f| f.name == name)
+    }
+
+    /// The inline Draft-07 object schema for this payload (no `$ref`/`definitions`
+    /// — ADR-0018 wants inlined schemas; Anthropic rejects `$ref`). Emits
+    /// `type:object`, `properties`, the `required` array, and
+    /// `additionalProperties:false`.
+    pub(crate) fn json_schema(&self) -> Value {
+        let mut properties = Map::new();
+        let mut required = Vec::new();
+        for field in &self.fields {
+            properties.insert(field.name.to_string(), field_schema(field));
+            if field.presence == Presence::Required {
+                required.push(Value::String(field.name.to_string()));
+            }
+        }
+        let mut obj = Map::new();
+        obj.insert("type".to_string(), Value::String("object".to_string()));
+        obj.insert("properties".to_string(), Value::Object(properties));
+        if !required.is_empty() {
+            obj.insert("required".to_string(), Value::Array(required));
+        }
+        obj.insert("additionalProperties".to_string(), Value::Bool(false));
+        Value::Object(obj)
+    }
+
+    /// Validate a payload's flat shape against this spec: reject unknown keys,
+    /// enforce required presence, and check each present field's value. Returns
+    /// the SAME substring messages the hand-written validators returned. Cross-field
+    /// invariants are NOT checked here — the caller runs the per-entity hook after.
+    pub(crate) fn check(&self, payload: &Value) -> Result<(), String> {
+        let obj = payload
+            .as_object()
+            .ok_or_else(|| self.obj_err.message(self.noun))?;
+
+        for key in obj.keys() {
+            if self.field(key).is_none() {
+                return Err(format!("unsupported {} field {key:?}", self.noun));
+            }
+        }
+
+        for field in &self.fields {
+            match obj.get(field.name) {
+                Some(value) => check_field(field, value)?,
+                None => {
+                    if field.presence == Presence::Required {
+                        return Err(format!("{} is required", field.name));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// The schema fragment for one field, threading its `description` in.
+fn field_schema(field: &Field) -> Value {
+    let mut schema = spec_schema(&field.spec);
+    if let Some(description) = field.description
+        && let Value::Object(obj) = &mut schema
+        && !obj.contains_key("description")
+    {
+        obj.insert(
+            "description".to_string(),
+            Value::String(description.to_string()),
+        );
+    }
+    schema
+}
+
+/// The schema fragment for a [`FieldSpec`], independent of field-level metadata.
+fn spec_schema(spec: &FieldSpec) -> Value {
+    match spec {
+        FieldSpec::Str { non_empty: true } => {
+            serde_json::json!({ "type": "string", "minLength": 1 })
+        }
+        FieldSpec::Str { non_empty: false }
+        | FieldSpec::Uuid {
+            schema_regex: false,
+        } => {
+            serde_json::json!({ "type": "string" })
+        }
+        FieldSpec::Bool => serde_json::json!({ "type": "boolean" }),
+        FieldSpec::PositiveInt => serde_json::json!({ "type": "integer", "minimum": 1 }),
+        FieldSpec::LocalDateTime => serde_json::json!({
+            "type": "string",
+            "pattern": LOCAL_DATETIME_PATTERN,
+            "description": LOCAL_DATETIME_DESCRIPTION,
+        }),
+        FieldSpec::Uuid { schema_regex: true } => serde_json::json!({
+            "type": "string",
+            "minLength": 36,
+            "maxLength": 36,
+            "pattern": UUID_PATTERN,
+        }),
+        FieldSpec::EnumStr { domain, .. } => serde_json::json!({
+            "type": "string",
+            "enum": domain,
+        }),
+        FieldSpec::Array { items, plain_items } => {
+            let item_schema = if *plain_items {
+                serde_json::json!({ "type": "string" })
+            } else {
+                spec_schema(items)
+            };
+            serde_json::json!({ "type": "array", "items": item_schema })
+        }
+        FieldSpec::Object(spec) | FieldSpec::HookValidated(spec) => spec.json_schema(),
+        FieldSpec::Body(policy) => body_schema(*policy),
+    }
+}
+
+/// The tagged `oneOf` body-node union for a [`BodyPolicy`], wrapped as an array
+/// with `minItems:1` (every Journal-Entry body must carry at least one node).
+fn body_schema(policy: BodyPolicy) -> Value {
+    let text_node = serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "type": { "type": "string", "enum": ["text"] },
+            "text": { "type": "string", "minLength": 1 },
+        },
+        "required": ["type", "text"],
+    });
+    let mut variants = vec![text_node];
+    match policy {
+        BodyPolicy::TextOnly => {}
+        BodyPolicy::TextOrExistingRef => variants.push(serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "type": { "type": "string", "enum": ["entity_ref"] },
+                "ref_id": { "type": "string", "minLength": 1 },
+            },
+            "required": ["type", "ref_id"],
+        })),
+        BodyPolicy::TextOrNewRef => variants.push(serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Placeholder rewritten by Core to the generated or reused EntityRef id.",
+            "properties": {
+                "type": { "type": "string", "enum": ["entity_ref"] },
+            },
+            "required": ["type"],
+        })),
+    }
+    serde_json::json!({
+        "type": "array",
+        "minItems": 1,
+        "items": { "oneOf": variants },
+    })
+}
+
+/// Validate one present field's value against its [`Field`], honoring
+/// clearability first, then emitting byte-faithful validator messages.
+fn check_field(field: &Field, value: &Value) -> Result<(), String> {
+    if field.clearable && value.is_null() {
+        return Ok(());
+    }
+    let name = field.name;
+    match &field.spec {
+        FieldSpec::Str { non_empty } => match value {
+            Value::String(s) if !*non_empty || !s.trim().is_empty() => Ok(()),
+            Value::String(_) => Err(format!("{name} must not be empty")),
+            _ => Err(format!("{name} must be a string")),
+        },
+        FieldSpec::Bool => {
+            if value.is_boolean() {
+                Ok(())
+            } else {
+                Err(format!("{name} must be a boolean"))
+            }
+        }
+        FieldSpec::PositiveInt => match value {
+            Value::Number(n) => match n.as_u64() {
+                Some(v) if v >= 1 => Ok(()),
+                _ => Err(format!("{name} must be a positive integer")),
+            },
+            _ => Err(format!("{name} must be a positive integer")),
+        },
+        FieldSpec::LocalDateTime => match value {
+            Value::String(t) if !t.trim().is_empty() => {
+                parse_local_datetime(t, name)?;
+                Ok(())
+            }
+            Value::String(_) => Err(format!("{name} must not be empty")),
+            _ => Err(format!("{name} must be a string")),
+        },
+        FieldSpec::Uuid { .. } => match value {
+            Value::String(s) if !s.trim().is_empty() => {
+                uuid::Uuid::parse_str(s).map_err(|_| format!("{name} must be a UUID"))?;
+                Ok(())
+            }
+            Value::String(_) => Err(format!("{name} must not be empty")),
+            _ => Err(format!("{name} must be a string")),
+        },
+        FieldSpec::EnumStr { domain, err } => match value {
+            Value::String(s) if domain.contains(&s.as_str()) => Ok(()),
+            Value::String(_) => Err((*err).to_string()),
+            // A non-string enum value is rejected as "{field} must be a string"
+            // (distinct from the bad-value domain message), faithful to the
+            // hand-written validators.
+            _ => Err(format!("{name} must be a string")),
+        },
+        FieldSpec::Array { items, .. } => {
+            let array = value
+                .as_array()
+                .ok_or_else(|| format!("{name} must be an array"))?;
+            let element = Field {
+                name,
+                presence: Presence::Required,
+                clearable: false,
+                spec: (**items).clone(),
+                description: None,
+            };
+            for item in array {
+                check_field(&element, item)?;
+            }
+            Ok(())
+        }
+        FieldSpec::Object(spec) => spec.check(value),
+        // Recurrence: schema only; the owning entity's hook validates the rule.
+        FieldSpec::HookValidated(_) | FieldSpec::Body(_) => Ok(()),
+    }
+}
