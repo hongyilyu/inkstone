@@ -1,6 +1,6 @@
 # Learned rules — Error handling (`error-handling`)
 
-_22 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_23 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Do not swallow errors silently in catch/handler blocks  ·  `no-silent-error-swallowing`
 - **Severity:** important  ·  **Support:** 7  ·  **Seen in:** #24, #71, #125, #25516, #27936, #28207
@@ -16,6 +16,11 @@ _22 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.js
 - **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #26262, #27053, #29208
 - **Rule:** Any throwing parse/decode applied to external, persisted, or request-derived input (JSON.parse on file contents or request bodies, decodeURIComponent / new URL on request paths, throwing schema decoders like decodeSync) must be wrapped in try/catch or Effect.try and turned into a recoverable failure or clean error response (400/404). A single corrupt/truncated file or malformed request must not throw synchronously and crash the operation — especially when the read is piped through `.orDie` or sits inside a loop over many entries, where the bad entry should be skipped rather than aborting the batch.
 - **Detect:** Find `JSON.parse(...)`, `decodeURIComponent(...)`, `new URL(...)`, or `*decodeSync*`/`*Sync(...)` applied to file-read results or request-derived values that are NOT inside try/catch or Effect.try. High priority when inside a loop over directory entries or piped through `Effect.orDie`, or inside a request/protocol handler. Ask: what happens on malformed input?
+
+## Do not collapse non-throwing error responses into fake success  ·  `no-fake-success-from-error-response`
+- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #125, #134, #25615
+- **Rule:** For SDKs/clients that return errors in the response object rather than throwing, explicitly inspect `res.error`/`response.status` (or pass `throwOnError: true`) before mapping. Do not collapse an error response into a placeholder success value like `res.data?.text ?? "No response"`, which hides the real error from the caller.
+- **Detect:** Flag `.then((res) => res.data?.<field> ?? "<placeholder>")` (or similar) where the response type includes an `error`/`status` field that is never inspected. Ask: are non-throwing error responses handled, or silently turned into a fake success?
 
 ## Distinguish fs error codes and build user-facing errors from known fields  ·  `distinguish-fs-error-codes-and-build-terse-errors-from-known-fields`
 - **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #120, #3955, #4133
@@ -37,15 +42,15 @@ _22 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.js
 - **Rule:** When local/module state is updated optimistically before an async operation resolves, add a `.catch` (or await + try/catch) that restores the last known-good value on rejection, so state does not drift out of sync and subsequent steps don't compound from a value that never actually applied.
 - **Detect:** Flag a state/module variable assigned a new value immediately before an async call whose `.then` handles success but has no `.catch` reverting the value on failure. Ask: if the call rejects, is the optimistic value rolled back?
 
-## Do not collapse non-throwing error responses into fake success  ·  `no-fake-success-from-error-response`
-- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #125, #25615
-- **Rule:** For SDKs/clients that return errors in the response object rather than throwing, explicitly inspect `res.error`/`response.status` (or pass `throwOnError: true`) before mapping. Do not collapse an error response into a placeholder success value like `res.data?.text ?? "No response"`, which hides the real error from the caller.
-- **Detect:** Flag `.then((res) => res.data?.<field> ?? "<placeholder>")` (or similar) where the response type includes an `error`/`status` field that is never inspected. Ask: are non-throwing error responses handled, or silently turned into a fake success?
-
 ## Register the full failure lifecycle, not just the happy-path terminal event  ·  `wire-full-failure-lifecycle`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #22, #25962
 - **Rule:** When wiring observability/handlers for a long-lived resource, register the failure/error events alongside the success/exit event. For a forked subprocess, registering only `child.on('exit', ...)` is insufficient — also add `child.on('error', ...)` and platform crash hooks (e.g. Electron `app.on('child-process-gone')` filtered by service) so launch failures, crashes, and OOM are distinguishable from a clean exit and surfaced.
 - **Detect:** When a diff adds `child.on('exit', ...)` for a forked process, check whether `child.on('error', ...)` and crash hooks are also registered. Ask: are crash/launch-failed events handled, or only clean exit?
+
+## Narrow each catch to the smallest block whose failure mode it handles  ·  `narrow-catch-scope`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #135, #29208
+- **Rule:** Flag a try/catch or .catch/catchCause whose guarded block performs multiple semantically distinct fallible operations (e.g. parse + schema validation + plugin resolution + IO write-back) but whose recovery treats them as one error class — so an IO or resolution error is silently handled by a parse-error fallback. Recommend narrowing the catch to the block whose failure the fallback actually targets. Do not flag when all operations share the same legitimate recovery semantics.
+- **Detect:** Look for a try/catch or `.catch`/`catchCause` whose guarded block contains multiple distinct operations. Ask: does the recovery logic treat all of them as the same error class? Flag if a parse-error fallback also swallows IO or resolution errors.
 
 ## Route serialization failures in the success path through error framing, not panic  ·  `do-not-panic-while-framing-a-successful-result`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #105, #4904
@@ -72,11 +77,6 @@ _22 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.js
 - **Rule:** Do not rely on the second argument of `.then(onFulfilled, onRejected)` as the only error handling when `onFulfilled` does non-trivial work (map/normalize/parse) — that only catches the original promise rejection, not errors thrown inside the mapping. Use `.then(map).catch(() => fallback)` so both the original rejection and mapping errors fall back.
 - **Detect:** Flag `.then(onFulfilled, onRejected)` where `onFulfilled` performs map/normalize/parse work and the second arg is the only error handler. Recommend a trailing `.catch` after the mapping instead.
 
-## Narrow each catch to the smallest block whose failure mode it handles  ·  `narrow-catch-scope`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #29208
-- **Rule:** Flag a try/catch or .catch/catchCause whose guarded block performs multiple semantically distinct fallible operations (e.g. parse + schema validation + plugin resolution + IO write-back) but whose recovery treats them as one error class — so an IO or resolution error is silently handled by a parse-error fallback. Recommend narrowing the catch to the block whose failure the fallback actually targets. Do not flag when all operations share the same legitimate recovery semantics.
-- **Detect:** Look for a try/catch or `.catch`/`catchCause` whose guarded block contains multiple distinct operations. Ask: does the recovery logic treat all of them as the same error class? Flag if a parse-error fallback also swallows IO or resolution errors.
-
 ## Do not pass possibly-undefined credentials unconditionally into auth header builders  ·  `no-optional-creds-into-auth-builder`
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #30571
 - **Rule:** Attach auth headers only when credentials are actually present (or ensure the header builder returns empty/undefined for missing inputs), so requests don't carry malformed/incorrect Authorization headers built from undefined username/password/token.
@@ -96,6 +96,11 @@ _22 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.js
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #125
 - **Rule:** After normalizing external/RPC input into a prompt string, validate it is non-empty before dispatching; if all blocks were filtered out, return an explicit error to the client instead of silently calling prompt(""). Do not blindly String()-coerce untrusted content (which yields "null"/"undefined"/"[object Object]") and then silently drop it via a later typeof check; validate shape and report when a non-string value is encountered.
 - **Detect:** promptText built via .filter().map().join().trim() || "" then agent.prompt(promptText) with no if(!promptText) guard; or String(x ?? "") on external content followed by .filter(c => typeof c.text === "string").
+
+## Validate every referenced entity (source and target) before the FK write  ·  `validate-both-referents-before-fk-insert`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #135
+- **Rule:** When an apply/mutation path inserts a row into a join/refs/association table that references two or more entities via foreign keys (e.g. entity_refs keyed on source_entity_id + target_entity_id), the pre-apply boundary validator must confirm EVERY referent exists (and is the right type) — not just one side. Validating only the target (or only the source) lets a missing/stale referent on the unchecked side trip the database FK at insert/commit and surface as an opaque internal/-32603 error instead of a client-correctable invalid-or-target-missing error. Detection: a validator runs entity_is_type/entity_type_by_id on target_entity_id but never on source_entity_id (or vice versa), while the apply path inserts into the join/refs table before it loads/reads the unchecked side. Ask: if the unchecked referent has been deleted, does this become a raw FK/internal error rather than a structured client error?
+- **Detect:** A pre-apply validator checks target_entity_id but not source_entity_id (or vice versa) while the apply path inserts into a join/refs table before loading the unchecked side; ask whether a missing referent becomes an FK/internal error.
 
 ## Preserve underlying error cause/details in user-facing and log messages  ·  `preserve-error-cause-in-messages`
 - **Severity:** nit  ·  **Support:** 4  ·  **Seen in:** #4133, #28207, #29635, #29784

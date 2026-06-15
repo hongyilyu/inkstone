@@ -33,7 +33,7 @@ _32 rules. Loaded by the `dr-code-quality` specialist. Generated from rules.json
 - **Detect:** In a PR scoped to feature X, a *.generated.* file also modifies fields of unrelated entries (cost, contextWindow, maxTokens, new unrelated model ids); or a core/shared module gains many edits not needed for the stated feature.
 
 ## Set done/resolved markers only after the async work succeeds  ·  `set-done-flag-only-after-success`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #30722
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #30722
 - **Rule:** Flag code that sets a done/resolved marker (flag, attribute, set entry) before awaiting the async operation it represents, with no clear-on-failure path, since a rejection or empty result leaves the item permanently marked done and never retried.
 - **Detect:** Find code that sets a done/resolved flag immediately before the await/promise it is supposed to gate. Ask: if the awaited op throws or returns empty, is the flag left incorrectly set with no clear-on-failure path?
 
@@ -77,8 +77,13 @@ _32 rules. Loaded by the `dr-code-quality` specialist. Generated from rules.json
 - **Rule:** Never paste a raw/invisible control character (a literal NUL shown as ^@) into source as a join/separator delimiter; use an explicit escape (\0, \x00) so the separator is readable, greppable, and survives copy/paste and diff tooling, matching the repo's existing convention.
 - **Detect:** A .join(...) (or split) delimiter argument containing a non-printable/control byte (often rendered ^@) rather than a visible escape like \0.
 
+## Keep names and docs accurate to actual behavior  ·  `names-must-match-behavior`
+- **Severity:** nit  ·  **Support:** 10  ·  **Seen in:** #62, #139, #145, #3136, #4873, #27053
+- **Rule:** Flag when an identifier or doc no longer matches behavior: plural/general names whose body handles one case, memo/variable names left stale after a condition is widened (added OR branch), tool/param docs out of sync with schema keys, and doc edits that flip conditional 'or'/'else' semantics into 'and'/unconditional.
+- **Detect:** Compare function/variable names using plural/general nouns or boolean predicates against their bodies and widened conditions. Cross-check parameter names in a tool's description/.txt prompt against the actual schema keys. Cross-check named packages/paths in doc/CI text against packages/* dirs. Flag doc edits that flip 'or'/conditional phrasing to 'and'/unconditional.
+
 ## Extract duplicated helpers, lookups, and bootstrap expressions instead of copy-pasting  ·  `extract-duplicated-logic`
-- **Severity:** nit  ·  **Support:** 8  ·  **Seen in:** #42, #123, #160, #171, #3851, #25389
+- **Severity:** nit  ·  **Support:** 9  ·  **Seen in:** #42, #123, #160, #171, #3851, #25389
 - **Rule:** When the same non-trivial logic (identical helper bodies, escape chains, inline types, init/bootstrap wiring) appears in 2+ places within one diff, suggest extracting to a shared helper so copies cannot drift. Only flag substantive logic, not trivial 1-2 line expressions, to avoid premature-abstraction noise.
 - **Detect:** Detect the same function name+body, identical inline `type X = {...}`, identical chained `.replace(/&/g,...).replace(/"/g,...)`, or identical multi-call init expression appearing in 2+ files/sites in the same diff. Also: a diff adds config options to one call of a primitive (prompts.spinner, logger) while sibling bare calls remain. Ask: should this be shared from one module?
 
@@ -92,13 +97,8 @@ _32 rules. Loaded by the `dr-code-quality` specialist. Generated from rules.json
 - **Rule:** Flag a newly added or refactor-orphaned identifier with zero references: unused imports, error classes, single-use type aliases, component props declared but never read, destructured setters never called, and exports no longer imported anywhere. Prioritize unused error classes and exports, which mislead readers about behavior; skip cases an existing eslint no-unused config already blocks.
 - **Detect:** For each added/changed `import`, `const`, `type X = ...`, `class`, exported symbol, or component prop, grep the rest of the file (and repo, for exports) for another reference. Zero usages => flag. Also flag tuple destructure `const [v, setV] = createSignal/useState` where the setter is never used afterward.
 
-## Keep names and docs accurate to actual behavior  ·  `names-must-match-behavior`
-- **Severity:** nit  ·  **Support:** 7  ·  **Seen in:** #62, #3136, #4873, #27053, #27229, #28308
-- **Rule:** Flag when an identifier or doc no longer matches behavior: plural/general names whose body handles one case, memo/variable names left stale after a condition is widened (added OR branch), tool/param docs out of sync with schema keys, and doc edits that flip conditional 'or'/'else' semantics into 'and'/unconditional.
-- **Detect:** Compare function/variable names using plural/general nouns or boolean predicates against their bodies and widened conditions. Cross-check parameter names in a tool's description/.txt prompt against the actual schema keys. Cross-check named packages/paths in doc/CI text against packages/* dirs. Flag doc edits that flip 'or'/conditional phrasing to 'and'/unconditional.
-
 ## Reconcile every dependent usage when updating a doc's vocabulary, state machine, or claims  ·  `doc-vocabulary-and-state-machine-must-stay-internally-consistent`
-- **Severity:** nit  ·  **Support:** 6  ·  **Seen in:** #1, #104, #113, #120, #123
+- **Severity:** nit  ·  **Support:** 7  ·  **Seen in:** #1, #104, #113, #120, #123, #135
 - **Rule:** When a diff updates a canonical definition, enum/variant set, state-machine transitions, or makes a universal behavioral claim in docs/ADRs/prompts, reconcile every dependent usage in the same change: grep the file (and nearby docs) for old terms/removed states and update example sentences, transition lists, and origin/semantics claims, so the document presents one consistent model. Also verify every implementation actually satisfies any 'each/every <verb> does X' guarantee, and that cross-reference links point at the document that genuinely owns the named topic. And collapse redundant duplicated phrasing within a single sentence.
 - **Detect:** A doc/ADR diff edits an enumerated set/definition/transition list or asserts 'each/every <thing> does X', but another line still uses the superseded vocabulary, lists a removed state ('edited'), describes a variant's wrong origin, or an implementing fn omits the asserted step; or a link's descriptive text names a topic the target file delegates elsewhere; or a sentence repeats the same phrase twice. Flag the inconsistency.
 

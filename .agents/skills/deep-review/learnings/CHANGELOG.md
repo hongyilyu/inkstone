@@ -2,6 +2,41 @@
 
 Append-only. Each entry records what the reviewer learned and when.
 
+## 2026-06-15 — Incremental sweep of all 3 tracked repos (opencode + inkstone + pi)
+
+- **Source:** 133 cleaned inline review comments newer than each repo's cursor —
+  `anomalyco/opencode` 51 (cursor → 2026-06-14T15:39:45Z), `hongyilyu/inkstone` 81
+  (cursor → 2026-06-15T02:06:51Z), `earendil-works/pi` 1 (cursor → 2026-06-13T09:46:01Z).
+  Reviewers: CodeRabbit, ChatGPT Codex, GitHub Copilot, humans.
+- **Pipeline (`/deep-review-learn`, background Workflow):** 12 parallel miners → 132 insights
+  (33 new-lesson · 50 already-covered · 49 noise) → cross-chunk synthesis (29 candidates) →
+  per-candidate adversarial verification.
+- **Result:** **17 new rules added** (7 from opencode, 10 from inkstone), **38 existing rules
+  reinforced** (support_count bumped, PRs added as evidence), **12 candidates dropped in
+  verification** (fabricated/misattributed provenance, premise-false lessons, linter-caught,
+  or duplicates of existing rules).
+- **KB grew 268 → 285 rules.** New-rule mix: 15 important · 2 nit · 0 blocking. Heaviest new
+  coverage: ui-react +4, correctness +4, data-persistence +3, performance +2.
+- **Notable new lessons:**
+  - *argv flag-presence checks must also match the `--flag=value` form* — `argv.includes("--flag")`
+    silently misses the inline-value form when the parser honors it (`correctness`).
+  - *Compare dotted version strings componentwise, not via parseFloat* — `parseFloat("5.10") === 5.1`
+    collapses the minor, so "5.10" sorts before "5.4" (`correctness`).
+  - *Edit-type-dispatched save must carry all edited fields* — a save keyed on edit type must not
+    drop fields the user changed (`data-persistence`).
+  - *Validate both referents before an FK insert* — reject blank/dangling reference ids at
+    validation, not at the DB error (`error-handling`).
+  - *A LIKE escape clause disables the FTS5 trigram index* — `LIKE … ESCAPE` forces a scan;
+    push the filter into the FTS query (`performance`).
+  - *Drain buffered stream events before interrupting on cancel* — cancellation must flush
+    in-flight deltas, not drop them (`concurrency-async`).
+  - *Treat an empty env var as unset for a path base* — `""` must fall back to the default,
+    not resolve against the process cwd (`correctness`).
+  - *Disable pointer events on interactive handles when their panel is collapsed* — focus/tab
+    order (rule #196) isn't enough; a zero-size handle still captures clicks (`ui-react`).
+- KB regenerated: `rules.json` (v3 → v4), `INDEX.md`, `by-category/*.md`. Cursors advanced
+  per source in `state.json`.
+
 ## 2026-06-12 — Bootstrap from anomalyco/opencode PR review history
 
 - **Source:** 541 cleaned inline review comments across 180 PRs (reviewers: Copilot,
