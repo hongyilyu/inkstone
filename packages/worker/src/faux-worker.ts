@@ -9,6 +9,12 @@ import {
 	streamSimple,
 } from "@earendil-works/pi-ai";
 import type { WorkerManifest } from "@inkstone/protocol";
+import {
+	acceptedCreate,
+	acceptedReference,
+	acceptedVerb,
+	decisionOutcome,
+} from "./faux-decisions.js";
 import type { InterpreterDeps } from "./interpreter.js";
 import { runWorkerMain } from "./worker-main.js";
 
@@ -25,6 +31,39 @@ function textOf(content: unknown): string {
 			.join("");
 	}
 	return "";
+}
+
+// ── Ordered-Turn fixtures (ADR-0019) ───────────────────────────────────────
+// ADR-0019 prescribes the faux script as an *ordered list of Turn responses*,
+// hand-authored, and explicitly rejects the "(context) => response" programmatic
+// shape. These builders express one Turn per entry declaratively: `toolCallTurn`
+// for a tool-use Turn, `textTurn` for a plain assistant reply. A scenario's
+// script is then a hand-readable array of Turns. The minority of Turns whose
+// response genuinely depends on a PRIOR tool result (a Journal Entry id or a
+// search row that is only known at run time) stay as `(context) => …` closures —
+// no static fixture can name a value the run hasn't produced yet.
+
+/** One scripted Turn: a static assistant response, or a context-dependent one
+ * for the Turns that must read a prior tool result. */
+type FauxContext = { messages: AnyMessage[] };
+type FauxTurn =
+	| ReturnType<typeof fauxAssistantMessage>
+	| ((context: FauxContext) => ReturnType<typeof fauxAssistantMessage>);
+
+/** A tool-use Turn: the assistant calls `name(args)` under tool-call id `id`. */
+function toolCallTurn(
+	name: string,
+	args: Record<string, unknown>,
+	id: string,
+): ReturnType<typeof fauxAssistantMessage> {
+	return fauxAssistantMessage([fauxToolCall(name, args, { id })], {
+		stopReason: "toolUse",
+	});
+}
+
+/** A plain-text Turn: the assistant replies with `text` and stops. */
+function textTurn(text: string): ReturnType<typeof fauxAssistantMessage> {
+	return fauxAssistantMessage(text);
 }
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -145,21 +184,16 @@ function updatedBodyText(prompt: string, currentText: string): string {
 }
 
 function journalConfirmation(text: string): string {
-	const lower = text.toLowerCase();
-	if (
-		lower.includes("declined") ||
-		lower.includes("rejected") ||
-		lower.includes("dismissed")
-	) {
+	if (decisionOutcome(text) === "declined") {
 		return "Done — dismissed it.";
 	}
-	if (lower.includes("deleted journal entry")) {
+	if (acceptedVerb(text, "Deleted", "Journal Entry")) {
 		return "Done — deleted it.";
 	}
-	if (lower.includes("updated journal entry")) {
+	if (acceptedVerb(text, "Updated", "Journal Entry")) {
 		return "Done — updated it.";
 	}
-	if (lower.includes("created journal entry")) {
+	if (acceptedVerb(text, "Created", "Journal Entry")) {
 		return "Done — added it.";
 	}
 	return "Done.";
@@ -390,30 +424,22 @@ export function extractionPhase(manifest: WorkerManifest): ExtractionPhase {
 
 	const decisions = manifest.messages.filter(
 		(m): m is Extract<typeof m, { role: "tool_result" }> =>
-			m.role === "tool_result" &&
-			(m.content.startsWith("Accepted.") ||
-				m.content === "User declined this proposal."),
+			m.role === "tool_result" && decisionOutcome(m.content) !== undefined,
 	);
 	const latest = decisions.at(-1);
-	if (
-		latest !== undefined &&
-		latest.content === "User declined this proposal."
-	) {
+	if (latest !== undefined && decisionOutcome(latest.content) === "declined") {
 		return "dismiss";
 	}
 
-	const accepted = (substr: string) =>
-		decisions.some((d) => d.content.includes(substr));
+	const acceptedCreateOf = (kind: string) =>
+		decisions.some((d) => acceptedCreate(d.content, kind));
 	// The Todo flow is a single create with no reference step, so an accepted
 	// create_todo Decision means the flow is complete.
-	if (accepted("Accepted. Created Todo")) return "done";
-	if (accepted("Accepted. Referenced Entity")) return "done";
-	if (
-		accepted("Accepted. Created Person") ||
-		accepted("Accepted. Created Project")
-	)
+	if (acceptedCreateOf("Todo")) return "done";
+	if (decisions.some((d) => acceptedReference(d.content))) return "done";
+	if (acceptedCreateOf("Person") || acceptedCreateOf("Project"))
 		return "after_create_entity";
-	if (accepted("Accepted. Created Journal Entry")) return "after_journal";
+	if (acceptedCreateOf("Journal Entry")) return "after_journal";
 	// No relevant accepted Decision yet — confirm and stop rather than loop.
 	return "done";
 }
@@ -505,48 +531,24 @@ function setExtractTodoResponses(
 	manifest: WorkerManifest,
 	todo: NonNullable<ExtractScenario["todo"]>,
 ): void {
-	const responses: Array<
-		| ReturnType<typeof fauxAssistantMessage>
-		| ((context: {
-				messages: AnyMessage[];
-		  }) => ReturnType<typeof fauxAssistantMessage>)
-	> = [
-		fauxAssistantMessage(
-			[
-				fauxToolCall(
-					"read_current_thread_journal_entries",
-					{},
-					{ id: "tc_extract_read" },
-				),
-			],
-			{ stopReason: "toolUse" },
-		),
+	const responses: FauxTurn[] = [
+		toolCallTurn("read_current_thread_journal_entries", {}, "tc_extract_read"),
 	];
 	if (todo.person_name !== undefined && todo.person_name.length > 0) {
 		responses.push(
-			fauxAssistantMessage(
-				[
-					fauxToolCall(
-						"search_entities",
-						{ type: "person", query: todo.person_name },
-						{ id: "tc_extract_search_person" },
-					),
-				],
-				{ stopReason: "toolUse" },
+			toolCallTurn(
+				"search_entities",
+				{ type: "person", query: todo.person_name },
+				"tc_extract_search_person",
 			),
 		);
 	}
 	if (todo.project_name !== undefined && todo.project_name.length > 0) {
 		responses.push(
-			fauxAssistantMessage(
-				[
-					fauxToolCall(
-						"search_entities",
-						{ type: "project", query: todo.project_name },
-						{ id: "tc_extract_search_project" },
-					),
-				],
-				{ stopReason: "toolUse" },
+			toolCallTurn(
+				"search_entities",
+				{ type: "project", query: todo.project_name },
+				"tc_extract_search_project",
 			),
 		);
 	}
@@ -567,18 +569,13 @@ function setExtractTodoResponses(
 			todo.project_name !== undefined && todo.project_name.length > 0
 				? searchedEntityId(context.messages, "tc_extract_search_project")
 				: undefined;
-		return fauxAssistantMessage(
-			[
-				fauxToolCall(
-					"propose_workspace_mutation",
-					createTodoProposal(todo, journalEntryId, personId, projectId),
-					{ id: "tc_extract_todo" },
-				),
-			],
-			{ stopReason: "toolUse" },
+		return toolCallTurn(
+			"propose_workspace_mutation",
+			createTodoProposal(todo, journalEntryId, personId, projectId),
+			"tc_extract_todo",
 		);
 	});
-	responses.push(fauxAssistantMessage("Awaiting your decision."));
+	responses.push(textTurn("Awaiting your decision."));
 	faux.setResponses(responses);
 }
 
@@ -718,9 +715,7 @@ function decisionFor(
 		const m = messages[i];
 		if (m.role !== "tool_result" && m.role !== "toolResult") continue;
 		if (toolResultCallId(m) !== callId) continue;
-		const text = textOf(m.content);
-		if (text.startsWith("Accepted.")) return "accepted";
-		if (text === "User declined this proposal.") return "declined";
+		return decisionOutcome(textOf(m.content));
 	}
 	return undefined;
 }
@@ -804,74 +799,49 @@ function setCaptureEnrichResponses(
 	// exists: re-search (distinct id) and propose the update_todo link.
 	if (decisionFor(manifest.messages, ids.create) === "accepted") {
 		faux.setResponses([
-			fauxAssistantMessage(
-				[
-					fauxToolCall(
-						"search_entities",
-						{ type: step.kind, query: step.name },
-						{ id: ids.research },
-					),
-				],
-				{ stopReason: "toolUse" },
+			toolCallTurn(
+				"search_entities",
+				{ type: step.kind, query: step.name },
+				ids.research,
 			),
 			(context) => {
 				const todoId =
 					capturedTodoId(context.messages) ?? capturedTodoId(manifest.messages);
 				const entityId = searchedEntityId(context.messages, ids.research);
 				if (todoId === undefined || entityId === undefined) {
-					return fauxAssistantMessage("Done — added it.");
+					return textTurn("Done — added it.");
 				}
-				return fauxAssistantMessage(
-					[
-						fauxToolCall(
-							"propose_workspace_mutation",
-							enrichLinkProposal(step, todoId, entityId, personRole),
-							{ id: ids.update },
-						),
-					],
-					{ stopReason: "toolUse" },
+				return toolCallTurn(
+					"propose_workspace_mutation",
+					enrichLinkProposal(step, todoId, entityId, personRole),
+					ids.update,
 				);
 			},
-			fauxAssistantMessage("Awaiting your decision."),
+			textTurn("Awaiting your decision."),
 		]);
 		return;
 	}
 
-	const responses: Array<
-		| ReturnType<typeof fauxAssistantMessage>
-		| ((context: {
-				messages: AnyMessage[];
-		  }) => ReturnType<typeof fauxAssistantMessage>)
-	> = [];
+	const responses: FauxTurn[] = [];
 
 	// Recover the Todo id by title search unless a prior cycle already did
 	// (its result is in the resume transcript).
 	const haveTodoId = capturedTodoId(manifest.messages) !== undefined;
 	if (!haveTodoId) {
 		responses.push(
-			fauxAssistantMessage(
-				[
-					fauxToolCall(
-						"search_entities",
-						{ type: "todo", query: scenario.todo.title },
-						{ id: "tc_cap_todo" },
-					),
-				],
-				{ stopReason: "toolUse" },
+			toolCallTurn(
+				"search_entities",
+				{ type: "todo", query: scenario.todo.title },
+				"tc_cap_todo",
 			),
 		);
 	}
 	// Search the step's entity (existing-vs-missing branch resolves on the result).
 	responses.push(
-		fauxAssistantMessage(
-			[
-				fauxToolCall(
-					"search_entities",
-					{ type: step.kind, query: step.name },
-					{ id: ids.search },
-				),
-			],
-			{ stopReason: "toolUse" },
+		toolCallTurn(
+			"search_entities",
+			{ type: step.kind, query: step.name },
+			ids.search,
 		),
 	);
 	// FOUND -> propose update_todo link; MISSING -> propose create_* first.
@@ -880,34 +850,24 @@ function setCaptureEnrichResponses(
 			capturedTodoId(context.messages) ?? capturedTodoId(manifest.messages);
 		const entityId = searchedEntityId(context.messages, ids.search);
 		if (todoId === undefined) {
-			return fauxAssistantMessage("Done — added it.");
+			return textTurn("Done — added it.");
 		}
 		if (entityId === undefined) {
 			// Missing: create the entity first, Message-sourced. The link follows
 			// on the next resume once this create is accepted.
-			return fauxAssistantMessage(
-				[
-					fauxToolCall(
-						"propose_workspace_mutation",
-						enrichCreateProposal(step),
-						{ id: ids.create },
-					),
-				],
-				{ stopReason: "toolUse" },
+			return toolCallTurn(
+				"propose_workspace_mutation",
+				enrichCreateProposal(step),
+				ids.create,
 			);
 		}
-		return fauxAssistantMessage(
-			[
-				fauxToolCall(
-					"propose_workspace_mutation",
-					enrichLinkProposal(step, todoId, entityId, personRole),
-					{ id: ids.update },
-				),
-			],
-			{ stopReason: "toolUse" },
+		return toolCallTurn(
+			"propose_workspace_mutation",
+			enrichLinkProposal(step, todoId, entityId, personRole),
+			ids.update,
 		);
 	});
-	responses.push(fauxAssistantMessage("Awaiting your decision."));
+	responses.push(textTurn("Awaiting your decision."));
 	faux.setResponses(responses);
 }
 
@@ -924,15 +884,13 @@ function setCaptureResponses(
 	// after_create vs after_link — both resume into the enrichment leg.
 	if (manifest.mode === "resume") {
 		const todoCreated = manifest.messages.some(
-			(m) =>
-				m.role === "tool_result" &&
-				m.content.includes("Accepted. Created Todo"),
+			(m) => m.role === "tool_result" && acceptedCreate(m.content, "Todo"),
 		);
 		if (todoCreated) {
 			setCaptureEnrichResponses(faux, manifest, scenario);
 		} else {
 			// The Todo create itself was declined (or no Todo) — nothing to enrich.
-			faux.setResponses([fauxAssistantMessage("Done — added it.")]);
+			faux.setResponses([textTurn("Done — added it.")]);
 		}
 		return;
 	}
@@ -942,23 +900,14 @@ function setCaptureResponses(
 	if (proposal === undefined) {
 		// Conversation intent (or a malformed scenario): reply, propose nothing.
 		faux.setResponses([
-			fauxAssistantMessage(
-				"Happy to talk it through — nothing to capture here.",
-			),
+			textTurn("Happy to talk it through — nothing to capture here."),
 		]);
 		return;
 	}
 
 	faux.setResponses([
-		fauxAssistantMessage(
-			[
-				fauxToolCall("propose_workspace_mutation", proposal, {
-					id: "tc_capture",
-				}),
-			],
-			{ stopReason: "toolUse" },
-		),
-		fauxAssistantMessage("Done — added it."),
+		toolCallTurn("propose_workspace_mutation", proposal, "tc_capture"),
+		textTurn("Done — added it."),
 	]);
 }
 
@@ -973,7 +922,7 @@ function setExtractResponses(
 
 	if (phase === "done") {
 		faux.setResponses([
-			fauxAssistantMessage(
+			textTurn(
 				target !== undefined
 					? `Done — extracted ${target.name}.`
 					: "Done — added it.",
@@ -982,22 +931,17 @@ function setExtractResponses(
 		return;
 	}
 	if (phase === "dismiss") {
-		faux.setResponses([fauxAssistantMessage("Dismissed.")]);
+		faux.setResponses([textTurn("Dismissed.")]);
 		return;
 	}
 	if (phase === "propose_journal") {
 		faux.setResponses([
-			fauxAssistantMessage(
-				[
-					fauxToolCall(
-						"propose_workspace_mutation",
-						createJournalEntryForExtraction(scenario),
-						{ id: "tc_extract_journal" },
-					),
-				],
-				{ stopReason: "toolUse" },
+			toolCallTurn(
+				"propose_workspace_mutation",
+				createJournalEntryForExtraction(scenario),
+				"tc_extract_journal",
 			),
-			fauxAssistantMessage("Journal Entry captured."),
+			textTurn("Journal Entry captured."),
 		]);
 		return;
 	}
@@ -1014,22 +958,20 @@ function setExtractResponses(
 	// No-target / category case: the JE is accepted but the scenario names no
 	// entity to extract, so confirm and propose NOTHING (category stays plain text).
 	if (target === undefined) {
-		faux.setResponses([fauxAssistantMessage("Done — added it.")]);
+		faux.setResponses([textTurn("Done — added it.")]);
 		return;
 	}
 
 	// Both "after_journal" and "after_create_entity" end with a search → propose
 	// chain. after_journal first reads the JE to learn its id; after_create_entity
 	// already has the JE id in the transcript and re-searches to resolve the new id.
-	const proposeFromSearch = (context: { messages: AnyMessage[] }) => {
+	const proposeFromSearch = (context: FauxContext) => {
 		const journalEntryId =
 			journalEntryIdFrom(context.messages) ??
 			journalEntryIdFrom(manifest.messages);
 		const results = latestSearchResults(context.messages) ?? [];
 		if (journalEntryId === undefined) {
-			return fauxAssistantMessage(
-				"I couldn't find the Journal Entry to extract from.",
-			);
+			return textTurn("I couldn't find the Journal Entry to extract from.");
 		}
 		const found = results[0];
 		const proposal =
@@ -1038,13 +980,10 @@ function setExtractResponses(
 				: createEntityProposal(target, journalEntryId);
 		const createId =
 			target.kind === "project" ? "tc_extract_project" : "tc_extract_person";
-		return fauxAssistantMessage(
-			[
-				fauxToolCall("propose_workspace_mutation", proposal, {
-					id: found !== undefined ? "tc_extract_reference" : createId,
-				}),
-			],
-			{ stopReason: "toolUse" },
+		return toolCallTurn(
+			"propose_workspace_mutation",
+			proposal,
+			found !== undefined ? "tc_extract_reference" : createId,
 		);
 	};
 	// `tool_calls.id` is a global PRIMARY KEY, so the two searches in the
@@ -1055,30 +994,19 @@ function setExtractResponses(
 		phase === "after_create_entity"
 			? "tc_extract_search_recheck"
 			: "tc_extract_search_initial";
-	const searchEntity = () =>
-		fauxAssistantMessage(
-			[
-				fauxToolCall(
-					"search_entities",
-					{ type: target.kind, query: target.name },
-					{ id: searchToolCallId },
-				),
-			],
-			{ stopReason: "toolUse" },
-		);
-	const finalConfirm = () => fauxAssistantMessage("Awaiting your decision.");
+	const searchEntity = toolCallTurn(
+		"search_entities",
+		{ type: target.kind, query: target.name },
+		searchToolCallId,
+	);
+	const finalConfirm = textTurn("Awaiting your decision.");
 
 	if (phase === "after_journal") {
 		faux.setResponses([
-			fauxAssistantMessage(
-				[
-					fauxToolCall(
-						"read_current_thread_journal_entries",
-						{},
-						{ id: "tc_extract_read" },
-					),
-				],
-				{ stopReason: "toolUse" },
+			toolCallTurn(
+				"read_current_thread_journal_entries",
+				{},
+				"tc_extract_read",
 			),
 			searchEntity,
 			proposeFromSearch,
@@ -1117,9 +1045,7 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 				const toolResult = [...context.messages]
 					.reverse()
 					.find((m) => m.role === "toolResult");
-				return fauxAssistantMessage(
-					`read_thread result: ${textOf(toolResult?.content)}`,
-				);
+				return textTurn(`read_thread result: ${textOf(toolResult?.content)}`);
 			},
 		]);
 	} else if (process.env.INKSTONE_FAUX_PROPOSE === "1") {
@@ -1129,36 +1055,26 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 				.reverse()
 				.find((message) => message.role === "tool_result");
 			faux.setResponses([
-				fauxAssistantMessage(journalConfirmation(textOf(toolResult?.content))),
+				textTurn(journalConfirmation(textOf(toolResult?.content))),
 			]);
 		} else {
 			const prompt = manifest.prompt;
 			const action = classifyJournalIntakePrompt(prompt);
 			if (action === "create") {
 				faux.setResponses([
-					fauxAssistantMessage(
-						[
-							fauxToolCall(
-								"propose_workspace_mutation",
-								createJournalEntryProposal(),
-								{ id: "tc_create" },
-							),
-						],
-						{ stopReason: "toolUse" },
+					toolCallTurn(
+						"propose_workspace_mutation",
+						createJournalEntryProposal(),
+						"tc_create",
 					),
-					fauxAssistantMessage("Done — added it."),
+					textTurn("Done — added it."),
 				]);
 			} else {
 				faux.setResponses([
-					fauxAssistantMessage(
-						[
-							fauxToolCall(
-								"read_current_thread_journal_entries",
-								{},
-								{ id: "tc_read_current" },
-							),
-						],
-						{ stopReason: "toolUse" },
+					toolCallTurn(
+						"read_current_thread_journal_entries",
+						{},
+						"tc_read_current",
 					),
 					(context) => {
 						const toolResult = [...context.messages]
@@ -1169,7 +1085,7 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 						);
 						const entry = entries[0];
 						if (entry === undefined) {
-							return fauxAssistantMessage(
+							return textTurn(
 								"I couldn't find that Journal Entry in this thread.",
 							);
 						}
@@ -1177,22 +1093,17 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 							action === "update"
 								? updateJournalEntryProposal(prompt, entry)
 								: deleteJournalEntryProposal(entry);
-						return fauxAssistantMessage(
-							[
-								fauxToolCall("propose_workspace_mutation", proposal, {
-									id: action === "update" ? "tc_update" : "tc_delete",
-								}),
-							],
-							{ stopReason: "toolUse" },
+						return toolCallTurn(
+							"propose_workspace_mutation",
+							proposal,
+							action === "update" ? "tc_update" : "tc_delete",
 						);
 					},
 					(context) => {
 						const toolResult = [...context.messages]
 							.reverse()
 							.find((message) => message.role === "toolResult");
-						return fauxAssistantMessage(
-							journalConfirmation(textOf(toolResult?.content)),
-						);
+						return textTurn(journalConfirmation(textOf(toolResult?.content)));
 					},
 				]);
 			}
@@ -1213,12 +1124,12 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 				// All prior turns except the current prompt (the last user message).
 				const prior = context.messages.slice(0, -1);
 				const parts = prior.map((m) => `${m.role}=${textOf(m.content)}`);
-				return fauxAssistantMessage(`history:${parts.join("|")}`);
+				return textTurn(`history:${parts.join("|")}`);
 			},
 		]);
 	} else {
 		faux.setResponses([
-			fauxAssistantMessage(process.env.INKSTONE_FAUX_RESPONSE ?? "faux reply"),
+			textTurn(process.env.INKSTONE_FAUX_RESPONSE ?? "faux reply"),
 		]);
 	}
 	return {
