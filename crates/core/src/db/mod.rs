@@ -110,8 +110,22 @@ pub async fn list_threads(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String
     queries::list_threads(pool).await
 }
 
+/// Parse a stored Canonical Entity's `data` JSON (tier-2 `entities.data` /
+/// `entity_revisions.data`). A malformed value is a corrupt tier-2 row, not a
+/// blank entity: log a `db.entity_data_parse_failed` Diagnostic Log event
+/// (ADR-0038) and surface a loud `sqlx::Error::Decode` rather than degrading to
+/// `Value::Null`. Mirrors `entity_type_by_id`'s loud-decode precedent.
+fn parse_entity_data(entity_id: &str, raw: &str) -> sqlx::Result<serde_json::Value> {
+    serde_json::from_str(raw).map_err(|e| {
+        tracing::error!(event = "db.entity_data_parse_failed", entity_id, error = ?e);
+        sqlx::Error::Decode(format!("entity {entity_id} data is malformed JSON: {e}").into())
+    })
+}
+
 /// One accepted Entity for `entity/list`. `data` is parsed from the stored
-/// JSON; a malformed row degrades to `null` rather than failing the read.
+/// JSON; a malformed row now fails the read with a logged `sqlx::Error`
+/// (`db.entity_data_parse_failed`, ADR-0038) rather than silently degrading to
+/// `null`.
 pub struct EntityRow {
     pub id: String,
     pub r#type: String,
@@ -138,16 +152,19 @@ pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<
     let rows = queries::list_by_type(pool, entity_type).await?;
     let mut rows = rows
         .into_iter()
-        .map(|(id, r#type, data, created_at, updated_at)| EntityRow {
-            id,
-            r#type,
-            data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-            created_at,
-            updated_at,
-            refs: Vec::new(),
-            person_refs: Vec::new(),
+        .map(|(id, r#type, data, created_at, updated_at)| {
+            let data = parse_entity_data(&id, &data)?;
+            Ok(EntityRow {
+                id,
+                r#type,
+                data,
+                created_at,
+                updated_at,
+                refs: Vec::new(),
+                person_refs: Vec::new(),
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<sqlx::Result<Vec<_>>>()?;
 
     if entity_type == "journal_entry" {
         let source_entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
@@ -189,8 +206,7 @@ async fn resolved_entity_refs_for_sources(
     source_entity_ids: &[String],
 ) -> sqlx::Result<Vec<ResolvedEntityRef>> {
     let rows = queries::entity_refs_for_sources(pool, source_entity_ids).await?;
-    Ok(rows
-        .into_iter()
+    rows.into_iter()
         .map(
             |(
                 id,
@@ -200,18 +216,18 @@ async fn resolved_entity_refs_for_sources(
                 target_data,
                 label_snapshot,
             )| {
-                let data = serde_json::from_str(&target_data).unwrap_or(serde_json::Value::Null);
-                ResolvedEntityRef {
+                let data = parse_entity_data(&target_entity_id, &target_data)?;
+                Ok(ResolvedEntityRef {
                     id,
                     source_entity_id,
                     target_entity_id,
                     target_title: entity_title(&target_entity_type, &data),
                     target_entity_type,
                     label_snapshot,
-                }
+                })
             },
         )
-        .collect())
+        .collect()
 }
 
 fn entity_title(entity_type: &str, data: &serde_json::Value) -> Option<String> {
@@ -237,7 +253,9 @@ pub struct CurrentThreadJournalEntryRow {
 }
 
 /// One accepted Journal Entry for `proposal/get` review context. `data` is the
-/// current `entities.data` snapshot.
+/// current `entities.data` snapshot. Unlike the canonical [`EntityRow`] reads,
+/// this is a display-only review-context snapshot: a malformed `data` degrades to
+/// `Value::Null` rather than failing the read (see [`current_journal_entry_by_id`]).
 pub struct CurrentJournalEntryRow {
     pub entity_id: String,
     pub data: serde_json::Value,
@@ -245,6 +263,16 @@ pub struct CurrentJournalEntryRow {
 
 /// Read one accepted Journal Entry by id. `None` when it does not exist or is
 /// not a journal entry.
+///
+/// Display-only review read: its sole caller is `proposal/get`'s
+/// `review_context_for_proposal` preview, which is designed to degrade gracefully
+/// when the current-entry snapshot is unparseable. So a malformed `data` falls
+/// back to `Value::Null` here rather than routing through [`parse_entity_data`] —
+/// deliberately NOT a canonical authoritative read. The loud parse-failure
+/// guarantee for this Journal Entry's data lives on the decide/apply path
+/// (`db::apply`, which parses the same snapshot and returns
+/// `ApplyError::InvalidMutation` → `-32602`), so corruption is rejected where it
+/// matters without breaking the optional review preview.
 pub async fn current_journal_entry_by_id(
     pool: &SqlitePool,
     entity_id: &str,
@@ -266,13 +294,12 @@ pub async fn current_thread_journal_entries(
     run_id: Uuid,
 ) -> sqlx::Result<Vec<CurrentThreadJournalEntryRow>> {
     let rows = queries::current_thread_journal_entries(pool, run_id).await?;
-    Ok(rows
-        .into_iter()
-        .map(|(entity_id, data)| CurrentThreadJournalEntryRow {
-            entity_id,
-            data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+    rows.into_iter()
+        .map(|(entity_id, data)| {
+            let data = parse_entity_data(&entity_id, &data)?;
+            Ok(CurrentThreadJournalEntryRow { entity_id, data })
         })
-        .collect())
+        .collect()
 }
 
 /// One Message in a `thread/get` read, with `text` already assembled (text
@@ -1214,21 +1241,23 @@ pub async fn set_setting(pool: &SqlitePool, key: &str, value: &str) -> sqlx::Res
 //
 // Core-internal in V0 — exposed to client APIs in V1, so currently uncalled
 // (`#[allow(dead_code)]`). Entity-returning helpers map raw rows into
-// [`EntityRow`] like [`list_by_type`]: a malformed `data` JSON degrades to
-// `null` rather than failing the read.
+// [`EntityRow`] like [`list_by_type`]: a malformed `data` JSON now fails the read
+// with a logged `sqlx::Error` (`db.entity_data_parse_failed`, ADR-0038) rather
+// than degrading to `null`.
 
 /// Map a raw `(id, type, data, created_at, updated_at)` row to an [`EntityRow`].
-fn entity_row(row: (String, String, String, i64, i64)) -> EntityRow {
+fn entity_row(row: (String, String, String, i64, i64)) -> sqlx::Result<EntityRow> {
     let (id, r#type, data, created_at, updated_at) = row;
-    EntityRow {
+    let data = parse_entity_data(&id, &data)?;
+    Ok(EntityRow {
         id,
         r#type,
-        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+        data,
         created_at,
         updated_at,
         refs: Vec::new(),
         person_refs: Vec::new(),
-    }
+    })
 }
 
 /// Read every Todo owning `project_id` (its `data.project_id` matches), reusing
@@ -1237,12 +1266,11 @@ fn entity_row(row: (String, String, String, i64, i64)) -> EntityRow {
 #[allow(dead_code)]
 pub async fn todos_by_project(pool: &SqlitePool, project_id: &str) -> sqlx::Result<Vec<EntityRow>> {
     let rows = queries::todos_by_project(pool, project_id).await?;
-    Ok(rows
-        .into_iter()
+    rows.into_iter()
         .map(|(id, data, created_at, updated_at)| {
             entity_row((id, "todo".to_string(), data, created_at, updated_at))
         })
-        .collect())
+        .collect::<sqlx::Result<Vec<_>>>()
 }
 
 /// Read every Todo linked to `person_id` via `todo_person_refs`, optionally
@@ -1254,7 +1282,9 @@ pub async fn todos_by_person(
     role: Option<&str>,
 ) -> sqlx::Result<Vec<EntityRow>> {
     let rows = queries::todos_by_person(pool, person_id, role).await?;
-    Ok(rows.into_iter().map(entity_row).collect())
+    rows.into_iter()
+        .map(entity_row)
+        .collect::<sqlx::Result<Vec<_>>>()
 }
 
 /// Read every Todo Person Reference on `todo_id` as `(person_id, role)` pairs
@@ -1284,7 +1314,9 @@ pub async fn person_projects(pool: &SqlitePool, person_id: &str) -> sqlx::Result
 #[allow(dead_code)]
 pub async fn projects_due_for_review(pool: &SqlitePool, now: &str) -> sqlx::Result<Vec<EntityRow>> {
     let rows = queries::projects_due_for_review(pool, now).await?;
-    Ok(rows.into_iter().map(entity_row).collect())
+    rows.into_iter()
+        .map(entity_row)
+        .collect::<sqlx::Result<Vec<_>>>()
 }
 
 #[cfg(test)]
@@ -2217,6 +2249,37 @@ mod tests {
             ids,
             vec!["p-active-due".to_string(), "p-onhold-due".to_string()],
             "active/on_hold with next_review_at <= now; terminal and future excluded"
+        );
+    }
+
+    /// A canonical `entities.data` row holding malformed JSON makes `list_by_type`
+    /// fail the read (logged `db.entity_data_parse_failed` + `sqlx::Error::Decode`)
+    /// rather than silently returning an `EntityRow` with `data: Null`. The column
+    /// has no `json_valid` CHECK, so `seed_entity` writes the bad row directly.
+    #[tokio::test]
+    async fn list_by_type_errors_on_malformed_entity_data() {
+        let pool = memory_pool().await;
+        seed_entity(&pool, "t-bad", "todo", "{not json").await;
+
+        assert!(
+            list_by_type(&pool, "todo").await.is_err(),
+            "a malformed entities.data row errors the read, no silent Null"
+        );
+
+        // A well-formed row in the same type still reads back fine once the bad
+        // row is gone — the helper only fails on actual parse errors.
+        sqlx::query("DELETE FROM entities WHERE id = 't-bad'")
+            .execute(&pool)
+            .await
+            .expect("delete bad row");
+        seed_entity(&pool, "t-ok", "todo", r#"{"title":"ok"}"#).await;
+        let rows = list_by_type(&pool, "todo")
+            .await
+            .expect("well-formed reads ok");
+        assert_eq!(rows.len(), 1, "the well-formed row reads back");
+        assert_eq!(
+            rows[0].data.get("title").and_then(|v| v.as_str()),
+            Some("ok")
         );
     }
 }
