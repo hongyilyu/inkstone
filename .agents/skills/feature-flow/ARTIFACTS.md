@@ -32,7 +32,8 @@ All run state lives under `.agents/runs/<slug>/`. The orchestrator owns this dir
 │   │   ├── correctness.md
 │   │   ├── integration.md
 │   │   ├── tests.md
-│   │   └── adr.md
+│   │   ├── adr.md
+│   │   └── deep-review.md       # verified findings from the deep-review pass (phase 2b)
 │   └── 2/                        # iteration 2 (only on final-review retry)
 ├── FINAL-VERIFY/                # written by the Final review phase's deterministic gates
 │   ├── 1.md
@@ -78,10 +79,12 @@ Final-review events (scope `final`):
 
 - `gates-spawned` | `gates-pass` | `gates-fail`
 - `reviewers-spawned` | `reviewers-done`
+- `deep-review-done` (with severity counts + how many deep-review dropped in verification)
 - `advisory-triaged` (with `addressed=<n> deferred=<n>`)
 - `iter-end` (final-review retry)
 - `final-review-passed`
-- `blocked` (final review hit its retry cap)
+- `ci-passed` (detail: the commit SHA CI ran on) | `ci-failed` (detail: failing check name)
+- `blocked` (final review hit its retry cap, or CI stayed red past the cap)
 
 ## Branch model
 
