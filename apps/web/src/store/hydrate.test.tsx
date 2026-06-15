@@ -135,7 +135,7 @@ describe("refresh-durable hydration", () => {
 
 		await hydrateThread(runtime, "tB");
 
-		// activeRunId set; snapshotApplied left unset so the resubscribe snapshot SETs.
+		// activeRunId set; no Run record yet, so the resubscribe arms the snapshot and its first delta SETs.
 		const hydrated = getChatState().threads.tB;
 		expect(hydrated?.messages.map((m) => [m.role, m.text, m.status])).toEqual([
 			["user", "hello", "completed"],

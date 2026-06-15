@@ -26,17 +26,37 @@ export interface Message {
 /** Reactive hydrate-on-focus lifecycle (replaces the old non-reactive Set): `loading` while `thread/get` is in flight, `error` on a failed fetch (drives a recoverable affordance), `ready` once history is live or locally-originated. Absent = never hydrated. */
 export type HydrationStatus = "loading" | "ready" | "error";
 
-/** Per-thread state; `snapshotApplied` drives the SET-vs-APPEND rule in {@link applyEvent}. */
+/** Per-thread state. The Run lifecycle (status / snapshot boundary / parked-ness) lives on {@link RunRecord}, keyed by run id. */
 interface ThreadState {
 	readonly messages: Message[];
 	readonly activeRunId?: string;
-	readonly snapshotApplied?: Record<string, boolean>;
 	readonly hydration?: HydrationStatus;
+}
+
+/**
+ * One keyed record per Run — the single place its live state is materialized,
+ * rather than re-derived ad hoc across the store and bridge:
+ *
+ * - `status` — `running` while the subscribe tail flows, `parked` while a Proposal
+ *   awaits a decision (no live tail), `terminal` once a done/error/cancelled
+ *   settles it. "is this Run parked?" / "is it terminal?" become field reads.
+ * - `threadId` — the run→thread index that replaces a linear scan of all threads.
+ * - `snapshotArmed` — true when the NEXT `text_delta` is the cumulative snapshot
+ *   (SET, not APPEND), per the ADR-0022 snapshot/tail boundary. Armed by
+ *   {@link beginRunSubscription} (the single fresh-send AND resume verb) and read
+ *   /cleared by {@link applyEvent} — no cross-file flag arming.
+ */
+interface RunRecord {
+	readonly status: "running" | "parked" | "terminal";
+	readonly threadId: string;
+	readonly snapshotArmed: boolean;
 }
 
 interface ChatState {
 	readonly threads: Record<string, ThreadState>;
 	readonly focusedThreadId?: string;
+	/** Live Run lifecycle records, keyed by run id (ADR-0022 boundary, ADR-0028 record-not-FSM). */
+	readonly runs: Record<string, RunRecord>;
 	/** Pending (and decided) Proposals keyed by the parked Run's id (ADR-0025). */
 	readonly proposals: Record<string, PendingProposal>;
 }
@@ -53,7 +73,11 @@ export interface PendingProposal {
 }
 
 // Plain *vanilla* zustand store so actions are callable outside React render — see docs/design/web-store.md
-const initialState = (): ChatState => ({ threads: {}, proposals: {} });
+const initialState = (): ChatState => ({
+	threads: {},
+	runs: {},
+	proposals: {},
+});
 
 const store = createStore<ChatState>()(() => initialState());
 
@@ -112,12 +136,54 @@ export function getHydrationStatus(
 	return store.getState().threads[threadId]?.hydration;
 }
 
-/** Attach (or replace) the pending Proposal for `runId`, keyed by the parked Run's id (ADR-0025). */
+/**
+ * Begin (or resume) the live subscription for `runId`: materialize its record as
+ * `running` and **arm the snapshot bit** so the next `text_delta` SETs the
+ * cumulative snapshot rather than APPENDing (ADR-0022). This is the single verb
+ * behind both a fresh send and a post-decide resume — arming here replaces the
+ * old cross-file `resetSnapshot` discipline that caused the M1 duplicated-prefix bug.
+ */
+export function beginRunSubscription(threadId: string, runId: string): void {
+	store.setState((s) => ({
+		...s,
+		runs: {
+			...s.runs,
+			[runId]: { status: "running", threadId, snapshotArmed: true },
+		},
+	}));
+}
+
+/** The Run record for `runId`, if one has been materialized (non-reactive read for the bridge). */
+export function getRun(runId: string): RunRecord | undefined {
+	return store.getState().runs[runId];
+}
+
+/** Whether `runId` is parked on a Proposal (no live tail) — a field read, not re-derived from Proposal status. */
+export function isRunParked(runId: string): boolean {
+	return store.getState().runs[runId]?.status === "parked";
+}
+
+/** The thread that owns `runId` — the run→thread index that replaces a linear thread scan. */
+export function getRunThreadId(runId: string): string | undefined {
+	return store.getState().runs[runId]?.threadId;
+}
+
+/** Attach (or replace) the pending Proposal for `runId` and park its Run (ADR-0025): a parked Run has no live tail. */
 export function setPendingProposal(proposal: PendingProposal): void {
 	store.setState((s) => ({
 		...s,
+		runs: parkRun(s.runs, proposal.run_id),
 		proposals: { ...s.proposals, [proposal.run_id]: proposal },
 	}));
+}
+
+/** Park `runId`'s record if it exists; a Proposal awaiting a decision has no live subscribe tail. */
+function parkRun(runs: ChatState["runs"], runId: string): ChatState["runs"] {
+	const run = runs[runId];
+	if (run === undefined) {
+		return runs;
+	}
+	return { ...runs, [runId]: { ...run, status: "parked" } };
 }
 
 /** Move a Proposal to a new review `status`; no-op if none is attached for `runId`. */
@@ -145,18 +211,6 @@ export function clearProposal(runId: string): void {
 		}
 		const { [runId]: _dropped, ...rest } = s.proposals;
 		return { ...s, proposals: rest };
-	});
-}
-
-/** Clear the snapshot-applied bit for `runId` so the resume snapshot SETs (not APPENDs) — see docs/design/web-store.md (ADR-0025). */
-export function resetSnapshot(threadId: string, runId: string): void {
-	store.setState((s) => {
-		const thread = s.threads[threadId];
-		if (thread === undefined || thread.snapshotApplied?.[runId] === undefined) {
-			return s;
-		}
-		const { [runId]: _dropped, ...rest } = thread.snapshotApplied;
-		return withThread(s, threadId, (t) => ({ ...t, snapshotApplied: rest }));
 	});
 }
 
@@ -206,7 +260,8 @@ export function attachRun(
  * with the wire→live mapped set and points `activeRunId` at the streaming
  * message's run, if any (else clears it).
  *
- * Does NOT pre-mark `snapshotApplied` — snapshot-vs-resubscribe interplay, see docs/design/web-store.md.
+ * Does NOT arm a Run snapshot — that is owned by {@link beginRunSubscription}
+ * when the streaming run is (re)subscribed; see docs/design/web-store.md.
  */
 export function loadThreadMessages(
 	threadId: string,
@@ -278,10 +333,24 @@ function settleRunningToolCalls(
 	);
 }
 
+/** Mark `runId`'s record terminal; no-op if no record exists. The keyed companion to clearing `activeRunId`. */
+function terminateRun(
+	runs: ChatState["runs"],
+	runId: string,
+): ChatState["runs"] {
+	const run = runs[runId];
+	if (run === undefined) {
+		return runs;
+	}
+	return { ...runs, [runId]: { ...run, status: "terminal" } };
+}
+
 /**
  * Apply a streamed run event to the thread's assistant message for `runId`.
  * SET-vs-APPEND rule: the FIRST `text_delta` after subscribe is the cumulative
- * snapshot → SET; subsequent deltas → APPEND. On `done` finalize + clear `activeRunId`.
+ * snapshot → SET (driven by the record's armed `snapshotArmed` bit); subsequent
+ * deltas → APPEND. A terminal event finalizes the bubble, clears `activeRunId`,
+ * and flips the record to `terminal`.
  */
 export function applyEvent(
 	threadId: string,
@@ -295,18 +364,23 @@ export function applyEvent(
 		}
 
 		if (event.kind === "text_delta") {
-			const applied = thread.snapshotApplied?.[runId] ?? false;
+			// Armed (or no record yet) → the cumulative snapshot SETs; an attached,
+			// disarmed tail APPENDs (ADR-0022 snapshot/tail boundary).
+			const armed = s.runs[runId]?.snapshotArmed ?? true;
 			const messages = thread.messages.map(
 				(m): Message =>
 					m.role === "assistant" && m.run_id === runId
-						? { ...m, text: applied ? m.text + event.delta : event.delta }
+						? { ...m, text: armed ? event.delta : m.text + event.delta }
 						: m,
 			);
-			return withThread(s, threadId, (t) => ({
-				...t,
-				messages,
-				snapshotApplied: { ...t.snapshotApplied, [runId]: true },
-			}));
+			const run = s.runs[runId];
+			return {
+				...withThread(s, threadId, (t) => ({ ...t, messages })),
+				runs:
+					run === undefined
+						? s.runs
+						: { ...s.runs, [runId]: { ...run, snapshotArmed: false } },
+			};
 		}
 
 		if (event.kind === "tool_call") {
@@ -341,11 +415,14 @@ export function applyEvent(
 							}
 						: m,
 			);
-			return withThread(s, threadId, (t) => ({
-				...t,
-				messages,
-				activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
-			}));
+			return {
+				...withThread(s, threadId, (t) => ({
+					...t,
+					messages,
+					activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
+				})),
+				runs: terminateRun(s.runs, runId),
+			};
 		}
 
 		if (event.kind === "cancelled") {
@@ -360,11 +437,14 @@ export function applyEvent(
 							}
 						: m,
 			);
-			return withThread(s, threadId, (t) => ({
-				...t,
-				messages,
-				activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
-			}));
+			return {
+				...withThread(s, threadId, (t) => ({
+					...t,
+					messages,
+					activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
+				})),
+				runs: terminateRun(s.runs, runId),
+			};
 		}
 
 		// done: finalize the assistant message and clear the active run.
@@ -378,11 +458,14 @@ export function applyEvent(
 						}
 					: m,
 		);
-		return withThread(s, threadId, (t) => ({
-			...t,
-			messages,
-			activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
-		}));
+		return {
+			...withThread(s, threadId, (t) => ({
+				...t,
+				messages,
+				activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
+			})),
+			runs: terminateRun(s.runs, runId),
+		};
 	});
 }
 

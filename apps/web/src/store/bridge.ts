@@ -5,11 +5,13 @@ import {
 	appendUserMessage,
 	applyEvent,
 	attachRun,
+	beginRunSubscription,
 	clearProposal,
 	getChatState,
+	getRunThreadId,
+	isRunParked,
 	markMessageIncomplete,
 	nextMessageId,
-	resetSnapshot,
 	seedAssistantMessage,
 	setFocusedThread,
 	setHydrationStatus,
@@ -59,6 +61,10 @@ export function startRunStream(
 	threadId: string,
 	runId: RunId,
 ): void {
+	// Materialize the Run as `running` and arm its snapshot bit (ADR-0022): the
+	// single begin-subscribe verb behind both a fresh send and a post-decide
+	// resume, so the next text_delta SETs rather than APPENDs.
+	beginRunSubscription(threadId, runId);
 	// Hold the fiber so the finalizer can delete ONLY its own map entry.
 	let self: Fiber.RuntimeFiber<void, WsError> | undefined;
 	const program = Effect.gen(function* () {
@@ -201,22 +207,17 @@ export async function cancelRun(
 		return;
 	}
 
-	const threadId = findThreadForRun(runId);
+	const threadId = getRunThreadId(runId);
 	if (threadId === undefined) {
 		return;
 	}
 
-	// Parked iff a Proposal has no live resume stream behind it: pending/error
-	// (never decided) AND deciding (decideProposal sets this BEFORE its decide RPC
-	// resolves; it only re-forks the resume stream afterward). Once accepted/rejected,
-	// the resume stream exists and owns the terminal. A racing cancel during deciding
+	// Parked-ness is a record field read, not re-derived from Proposal status: the
+	// record stays `parked` from the moment a Proposal attaches through `deciding`
+	// and a failed decide, flipping back to `running` only when the resume stream
+	// re-subscribes (which then owns the terminal). A racing cancel during deciding
 	// clears the Proposal here, and decideProposal's currency guard then bails.
-	const proposal = getChatState().proposals[runId];
-	const parked =
-		proposal !== undefined &&
-		(proposal.status === "pending" ||
-			proposal.status === "error" ||
-			proposal.status === "deciding");
+	const parked = isRunParked(runId);
 
 	// The ONLY outcome whose terminal is owned elsewhere is `already_terminal` on a
 	// non-parked Run: its live subscribe stream already delivered (or will deliver)
@@ -304,26 +305,15 @@ export async function decideProposal(
 			return;
 		}
 		setProposalStatus(runId, result.status);
-		const threadId = findThreadForRun(runId);
+		const threadId = getRunThreadId(runId);
 		if (threadId !== undefined) {
-			// Stale-fiber + snapshot-reset guard (M2): interrupt the parked fiber, then
-			// reset the snapshot bit so the resume's first text_delta SETs — see docs/design/web-store.md.
+			// Stale-fiber guard (M2): interrupt the parked fiber, then re-subscribe.
+			// startRunStream re-arms the record's snapshot bit, so the resume's first
+			// text_delta SETs (not appends) — the M1 fix; see docs/design/web-store.md.
 			interruptRun(runtime, runId);
-			resetSnapshot(threadId, runId);
 			startRunStream(runtime, threadId, runId);
 		}
 	} catch {
 		setProposalStatus(runId, "error");
 	}
-}
-
-/** The thread holding an assistant message for `runId`, if any. */
-function findThreadForRun(runId: RunId): string | undefined {
-	const { threads } = getChatState();
-	for (const [threadId, thread] of Object.entries(threads)) {
-		if (thread.messages.some((m) => m.run_id === runId)) {
-			return threadId;
-		}
-	}
-	return undefined;
 }
