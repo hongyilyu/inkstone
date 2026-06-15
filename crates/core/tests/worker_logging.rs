@@ -1,8 +1,8 @@
-//! Worker-supervisor Diagnostic Log trail (ADR-0036, slice 3): a fault raised
+//! Worker-supervisor Diagnostic Log trail (ADR-0038, slice 3): a fault raised
 //! from a site where `run_id` is NOT a function parameter — `child.rs`'s stdout
 //! reader, which runs in a `tokio::spawn`ed task — still lands on the trail
 //! correlated by `run_id`. This proves the headline correlation mechanism, but
-//! via the **canonical path**: per the amended ADR-0036, every Diagnostic Log
+//! via the **canonical path**: per the amended ADR-0038, every Diagnostic Log
 //! event emits `run_id` as a **direct, top-level field** (`.run_id`), uniform
 //! with slice-2's `db.*` events, so a single `jq 'select(.run_id=="X")'` mines
 //! Core and Worker-supervisor faults together. `child.rs` has no `run_id`
@@ -103,7 +103,7 @@ fn worker_unknown_line_carries_run_id() {
             Some("WARN"),
             "worker.unknown_line is a WARN — line: {line}"
         );
-        // Canonical path (amended ADR-0036): run_id is a DIRECT, top-level field,
+        // Canonical path (amended ADR-0038): run_id is a DIRECT, top-level field,
         // threaded into the child reader — NOT only under `.span`. A non-empty
         // value here proves child.rs received run_id and emitted it as `%run_id`,
         // uniform with slice-2's `db.*` events.

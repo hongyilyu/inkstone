@@ -182,7 +182,7 @@ impl<'a> CoreBuilder<'a> {
         cmd.current_dir(repo_root())
             .env("INKSTONE_PORT", "0")
             .env("INKSTONE_DB_PATH", self.ws.db_path())
-            // Default the Diagnostic Log dir (ADR-0036) into the Workspace
+            // Default the Diagnostic Log dir (ADR-0038) into the Workspace
             // tempdir so tests that don't set it stay hermetic — otherwise
             // `logging::init` falls back to the real OS data dir and writes
             // core.jsonl into the developer's/CI home. Per-test `.env(...)`

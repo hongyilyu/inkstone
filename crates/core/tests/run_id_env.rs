@@ -1,4 +1,4 @@
-//! The correlation chain's final link (ADR-0036, slice 6): when Core spawns a
+//! The correlation chain's final link (ADR-0038, slice 6): when Core spawns a
 //! Worker for a Run, it passes the Run's `run_id` to the child as the
 //! `INKSTONE_RUN_ID` spawn-time env var. Slice 5 made the Worker READ that var
 //! to stamp its `worker.jsonl` lines; this proves Core SETS it to the true

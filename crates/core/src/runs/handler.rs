@@ -74,7 +74,7 @@ pub(super) fn frame_error(
     err: HandlerError,
 ) {
     if let HandlerError::Internal(e) = &err {
-        // Log the full fault server-side (ADR-0036); the client still gets only
+        // Log the full fault server-side (ADR-0038); the client still gets only
         // the generic `client_message()` below (ADR-0029 single-framing-site).
         tracing::error!(event = "handler.internal_error", error = ?e);
     }

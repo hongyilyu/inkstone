@@ -19,7 +19,7 @@ pub(super) struct ChildWorker {
     #[allow(dead_code)] // held to own the process lifetime; kill_on_drop tears it down.
     child: Child,
     /// The Run's id, threaded in purely so this transport's Diagnostic Log
-    /// events emit `run_id` as a direct top-level field (ADR-0036 canonical) —
+    /// events emit `run_id` as a direct top-level field (ADR-0038 canonical) —
     /// these reader/writer sites have no enclosing fn param to draw it from.
     run_id: Uuid,
     /// Kept open across the Run for `tool_result` writes (ADR-0013); set to
@@ -31,7 +31,7 @@ pub(super) struct ChildWorker {
 impl ChildWorker {
     /// Spawn the Worker from `cmd` (whitespace-split program + args), write the
     /// serialized `manifest_line` to its stdin, and return the live transport.
-    /// `run_id` is carried only for Diagnostic Log correlation (ADR-0036).
+    /// `run_id` is carried only for Diagnostic Log correlation (ADR-0038).
     /// `Err(())` on any pre-stream failure (empty cmd, spawn failure, missing
     /// stdio) — the caller maps it to `finalize_error`.
     pub(super) async fn spawn(run_id: Uuid, cmd: &str, manifest_line: String) -> Result<Self, ()> {
@@ -44,7 +44,7 @@ impl ChildWorker {
 
         let mut child = match Command::new(program)
             .args(&args)
-            // ADR-0036 env seam: the Worker reads `INKSTONE_RUN_ID` to stamp its
+            // ADR-0038 env seam: the Worker reads `INKSTONE_RUN_ID` to stamp its
             // worker.jsonl lines, so they join to core.jsonl by run. Set per-spawn
             // (run_id differs per Run) — no `.env_clear()`, so the child keeps
             // inheriting Core's env (e.g. INKSTONE_WORKER_LOG_PATH). #146 moves
@@ -144,7 +144,7 @@ impl WorkerPort for ChildWorker {
 }
 
 /// Bound an unrecognized stdout line before it rides into the trail as a field
-/// (ADR-0036: variable data in fields, never unbounded). Truncates on a char
+/// (ADR-0038: variable data in fields, never unbounded). Truncates on a char
 /// boundary so the preview stays valid UTF-8.
 fn line_preview(line: &str) -> &str {
     const MAX: usize = 200;

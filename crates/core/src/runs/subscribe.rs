@@ -111,7 +111,7 @@ async fn emit_pending(out_tx: &UnboundedSender<String>, pool: &SqlitePool, run_i
         Ok(Some(p)) => send_proposal_pending(out_tx, run_id, &p.proposal_id),
         Ok(None) => {}
         Err(e) => {
-            // Tolerated degradation (ADR-0036 level discipline): the Client
+            // Tolerated degradation (ADR-0038 level discipline): the Client
             // still learns the park via the `parked` response status, so this
             // is WARN, not ERROR.
             tracing::warn!(event = "subscribe.pending_proposal_lookup_failed", %run_id, error = ?e);
@@ -214,7 +214,7 @@ fn spawn_tail_forwarder(
                             break;
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            // Tolerated degradation (ADR-0036): buffer overflow
+                            // Tolerated degradation (ADR-0038): buffer overflow
                             // recovers via re-snapshot, so WARN. Lagged count in
                             // a field, never interpolated into the message.
                             tracing::warn!(event = "subscribe.forwarder_lagged", %run_id, n);
@@ -253,7 +253,7 @@ mod tests {
     use super::*;
 
     /// One captured diagnostic event: its stable `event` key, its level, and
-    /// the top-level `run_id` field (ADR-0036's canonical correlation field).
+    /// the top-level `run_id` field (ADR-0038's canonical correlation field).
     #[derive(Clone)]
     struct CapturedEvent {
         event: Option<String>,
@@ -435,7 +435,7 @@ mod tests {
         );
     }
 
-    /// Severity split (ADR-0036): a broadcast-overflow re-snapshot is a
+    /// Severity split (ADR-0038): a broadcast-overflow re-snapshot is a
     /// *tolerated* degradation, so the forwarder logs `subscribe.forwarder_lagged`
     /// at WARN (not ERROR) carrying the canonical top-level `run_id`. Overflow is
     /// forced deterministically: send > capacity events into a cap-8 channel

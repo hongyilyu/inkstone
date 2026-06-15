@@ -11,7 +11,7 @@
 // asserts the `worker.unknown_line` event carries the Run's `run_id` as a
 // top-level field — proving run_id correlation reaches a child.rs site
 // (threaded into `ChildWorker::spawn`; the `worker_run` span is retained for
-// transitive dep events). See ADR-0036.
+// transitive dep events). See ADR-0038.
 //
 // Node builtins ONLY (no @inkstone/protocol) so it runs standalone via tsx from
 // crates/core/tests/fixtures/.

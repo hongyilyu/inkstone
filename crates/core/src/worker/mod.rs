@@ -46,7 +46,7 @@ pub fn spawn(
     hubs: Hubs,
     run_hub: RunHub,
 ) {
-    // Correlation span (ADR-0036): every Diagnostic Log event emitted inside this
+    // Correlation span (ADR-0038): every Diagnostic Log event emitted inside this
     // task — including `child.rs`'s stdout-reader sites where `run_id` is not a
     // parameter — inherits `run_id` from this span. `tokio::spawn` does NOT
     // propagate the current span, so the future is explicitly `.instrument`'d.
@@ -138,7 +138,7 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
     let run_hub = hub::create(hubs, run_id);
     let pool = pool.clone();
     let hubs = hubs.clone();
-    // Correlation span (ADR-0036), mirroring `spawn`: `run_id` reaches the
+    // Correlation span (ADR-0038), mirroring `spawn`: `run_id` reaches the
     // child.rs reader sites only via this explicitly-`.instrument`'d span.
     let span = tracing::info_span!("worker_run", %run_id);
     tokio::spawn(
@@ -245,8 +245,8 @@ async fn resolve_token(run_id: Uuid, workflow: &Workflow) -> Option<Option<Strin
         Err(e) => {
             // `run_id` is threaded in so the resume path (which resolves the
             // token BEFORE the span is entered) also emits run_id top-level
-            // (ADR-0036 canonical). Provider name only — never the token/secret
-            // (ADR-0036 redaction).
+            // (ADR-0038 canonical). Provider name only — never the token/secret
+            // (ADR-0038 redaction).
             tracing::error!(
                 event = "worker.access_token_resolution_failed",
                 %run_id,

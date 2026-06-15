@@ -1,4 +1,4 @@
-//! Diagnostic Log trail (ADR-0036): Core initializes a `tracing` subscriber at
+//! Diagnostic Log trail (ADR-0038): Core initializes a `tracing` subscriber at
 //! boot that writes structured JSONL events to a rolling file under
 //! `INKSTONE_LOG_DIR`, while the `INKSTONE_LISTENING` stdout marker the harness
 //! parses stays verbatim. Reads the file *after* `core.kill()` (SIGKILL) — the
@@ -21,7 +21,7 @@ fn core_writes_listening_event_to_jsonl_and_keeps_stdout_marker() {
     let mut core = workspace.core().env("INKSTONE_LOG_DIR", &log_dir).spawn();
 
     // `spawn()` already blocked on the stdout marker; this asserts the harness
-    // parsed it (the marker is NOT migrated into tracing per ADR-0036).
+    // parsed it (the marker is NOT migrated into tracing per ADR-0038).
     assert!(
         !core.http_url().is_empty(),
         "INKSTONE_LISTENING stdout marker still parsed off stdout"
@@ -57,7 +57,7 @@ fn core_writes_listening_event_to_jsonl_and_keeps_stdout_marker() {
 
 /// A malformed (non-JSON-RPC) text frame, which Core's WS loop previously
 /// `continue`d on silently, now lands on the trail as a WARN
-/// `core.jsonrpc_parse_failed` event (ADR-0036: make swallows observable). The
+/// `core.jsonrpc_parse_failed` event (ADR-0038: make swallows observable). The
 /// bad text rides as a bounded field, never interpolated into the message.
 #[test]
 fn malformed_ws_frame_logs_jsonrpc_parse_failed_warn() {

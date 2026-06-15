@@ -29,7 +29,7 @@ export function runWorkerMain(
 		Effect.catchAll((error) =>
 			Effect.flatMap(WorkerTransport, (t) =>
 				Effect.sync(() => {
-					// Diagnostic Log (ADR-0036): additive to the terminal Run Event below.
+					// Diagnostic Log (ADR-0038): additive to the terminal Run Event below.
 					logWorkerFault("worker.run_error", { message: error.message });
 					t.emit({ kind: "error", message: error.message });
 				}),

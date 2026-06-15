@@ -42,7 +42,7 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize the Diagnostic Log subscriber FIRST (ADR-0036), before any
+    // Initialize the Diagnostic Log subscriber FIRST (ADR-0038), before any
     // fail-fast boot step, so even `workflow::init`/`db::open` faults are
     // captured on the trail.
     logging::init()?;
@@ -61,7 +61,7 @@ async fn main() -> Result<()> {
     // stale/partial search index, which the next successful open backfills. Unlike
     // `workflow::init`/`db::open` above, which gate authoritative state and fail-fast.
     if let Err(e) = db::rebuild_message_fts(&pool).await {
-        // The `INKSTONE_FTS_REBUILD_FAILED` marker stays raw (ADR-0036 keeps the
+        // The `INKSTONE_FTS_REBUILD_FAILED` marker stays raw (ADR-0038 keeps the
         // boot markers verbatim); the structured event is emitted alongside it.
         tracing::error!(event = "core.fts_rebuild_failed", error = ?e);
         eprintln!("INKSTONE_FTS_REBUILD_FAILED message search may be stale: {e:?}");
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
     // Core crash — it has no live Worker. Preserves `parked` Runs (ADR-0025).
     let recovered = db::recover_interrupted_runs(&pool, db::now_ms()).await?;
     if recovered > 0 {
-        // The `INKSTONE_RECOVERED` marker stays raw (ADR-0036 keeps the boot
+        // The `INKSTONE_RECOVERED` marker stays raw (ADR-0038 keeps the boot
         // markers verbatim); the structured milestone is emitted alongside it.
         tracing::info!(event = "core.runs_recovered", count = recovered);
         println!("INKSTONE_RECOVERED {recovered} interrupted run(s) errored as core_restarted");
@@ -110,7 +110,7 @@ async fn main() -> Result<()> {
         .unwrap_or(8765);
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     let local_addr = listener.local_addr()?;
-    // Diagnostic Log boot milestone (ADR-0036), emitted BEFORE the stdout marker
+    // Diagnostic Log boot milestone (ADR-0038), emitted BEFORE the stdout marker
     // so the blocking appender has it on disk before any observer of the marker
     // can act (the test harness unblocks on the marker, then may SIGKILL at
     // once). Distinct from the marker below (the harness's liveness contract,
@@ -150,7 +150,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             msg = socket.recv() => {
                 let Some(Ok(msg)) = msg else {
                     // recv closed or errored: a normal client disconnect is not a
-                    // fault, so this stays low-severity (ADR-0036 level discipline).
+                    // fault, so this stays low-severity (ADR-0038 level discipline).
                     tracing::debug!(event = "core.ws_recv_closed");
                     break;
                 };
@@ -160,7 +160,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                             // A malformed frame is tolerated (we drop it and keep
                             // serving), so WARN, not ERROR. The bad text rides as a
                             // BOUNDED preview field, never interpolated into the
-                            // message (ADR-0036).
+                            // message (ADR-0038).
                             tracing::warn!(
                                 event = "core.jsonrpc_parse_failed",
                                 preview = %t.chars().take(200).collect::<String>(),

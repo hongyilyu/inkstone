@@ -3,7 +3,7 @@
 // Speaks the Worker NDJSON protocol over stdio (a drop-in via
 // `INKSTONE_WORKER_CMD`), but its single purpose is to ECHO the value Core set
 // in `process.env.INKSTONE_RUN_ID` so the test can assert Core passed the Run's
-// run_id to the worker child at spawn time (the ADR-0036 env seam; slice 6).
+// run_id to the worker child at spawn time (the ADR-0038 env seam; slice 6).
 //
 // Mechanism (A) FILE ECHO: the fixture writes `INKSTONE_RUN_ID` (or "" when
 // unset, which is the RED state before child.rs sets it) to the sink file at

@@ -1,4 +1,4 @@
-//! Diagnostic Log substrate (ADR-0036): a `tracing` subscriber that writes
+//! Diagnostic Log substrate (ADR-0038): a `tracing` subscriber that writes
 //! structured JSONL events to a daily-rolling file under `INKSTONE_LOG_DIR`
 //! (OS-data-dir default, mirroring [`crate::db`]'s `INKSTONE_DB_PATH` resolver).
 //!
@@ -18,7 +18,7 @@ const LOG_FILE_PREFIX: &str = "core.jsonl";
 
 /// Default verbosity directive when `INKSTONE_LOG` is unset: `INFO` overall,
 /// with `sqlx::query` clamped to `WARN` so SQL statements and their bound
-/// parameters are not written to disk at the default level (ADR-0036
+/// parameters are not written to disk at the default level (ADR-0038
 /// redaction). `INKSTONE_LOG` overrides the whole directive when set.
 const DEFAULT_DIRECTIVE: &str = "info,sqlx::query=warn";
 
@@ -53,7 +53,7 @@ pub fn init() -> Result<()> {
     tracing_subscriber::fmt()
         .json()
         // Hoist event fields to the top level so the stable `event` key is
-        // queryable as `.event` (ADR-0036's `jq -r .event | sort | uniq -c`
+        // queryable as `.event` (ADR-0038's `jq -r .event | sort | uniq -c`
         // consumer), not nested under a `fields` object.
         .flatten_event(true)
         .with_env_filter(filter)

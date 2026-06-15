@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { logWorkerFault } from "./worker-log.js";
 
-// worker.jsonl sink: the env-gated NDJSON fault trail, sibling to Core's core.jsonl (ADR-0036).
+// worker.jsonl sink: the env-gated NDJSON fault trail, sibling to Core's core.jsonl (ADR-0038).
 
 afterEach(() => {
 	delete process.env.INKSTONE_WORKER_LOG_PATH;
