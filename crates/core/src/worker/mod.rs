@@ -11,6 +11,7 @@ mod port;
 mod run;
 
 use sqlx::SqlitePool;
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::db;
@@ -45,43 +46,51 @@ pub fn spawn(
     hubs: Hubs,
     run_hub: RunHub,
 ) {
-    tokio::spawn(async move {
-        pre_spawn_delay_if_configured().await;
-        if run_hub.is_cancelled() {
-            hub::remove(&hubs, run_id);
-            return;
-        }
-        let Some(line) = fresh_manifest_line(&workflow, &prompt, &history).await else {
-            finalize_error(&pool, &hubs, run_id).await;
-            return;
-        };
-        if run_hub.is_cancelled() {
-            hub::remove(&hubs, run_id);
-            return;
-        }
-        match ChildWorker::spawn(&worker_cmd(), line).await {
-            Ok(worker) => {
-                if run_hub.is_cancelled() {
-                    drop(worker);
-                    hub::remove(&hubs, run_id);
-                    return;
-                }
-                run_loop(
-                    worker,
-                    run_id,
-                    workflow,
-                    pool,
-                    assistant_message_id,
-                    hubs,
-                    run_hub.tx.clone(),
-                    run_hub.gate.clone(),
-                    run_hub.cancel_rx(),
-                )
-                .await;
+    // Correlation span (ADR-0038): every Diagnostic Log event emitted inside this
+    // task — including `child.rs`'s stdout-reader sites where `run_id` is not a
+    // parameter — inherits `run_id` from this span. `tokio::spawn` does NOT
+    // propagate the current span, so the future is explicitly `.instrument`'d.
+    let span = tracing::info_span!("worker_run", %run_id);
+    tokio::spawn(
+        async move {
+            pre_spawn_delay_if_configured().await;
+            if run_hub.is_cancelled() {
+                hub::remove(&hubs, run_id);
+                return;
             }
-            Err(()) => finalize_error(&pool, &hubs, run_id).await,
+            let Some(line) = fresh_manifest_line(run_id, &workflow, &prompt, &history).await else {
+                finalize_error(&pool, &hubs, run_id).await;
+                return;
+            };
+            if run_hub.is_cancelled() {
+                hub::remove(&hubs, run_id);
+                return;
+            }
+            match ChildWorker::spawn(run_id, &worker_cmd(), line).await {
+                Ok(worker) => {
+                    if run_hub.is_cancelled() {
+                        drop(worker);
+                        hub::remove(&hubs, run_id);
+                        return;
+                    }
+                    run_loop(
+                        worker,
+                        run_id,
+                        workflow,
+                        pool,
+                        assistant_message_id,
+                        hubs,
+                        run_hub.tx.clone(),
+                        run_hub.gate.clone(),
+                        run_hub.cancel_rx(),
+                    )
+                    .await;
+                }
+                Err(()) => finalize_error(&pool, &hubs, run_id).await,
+            }
         }
-    });
+        .instrument(span),
+    );
 }
 
 /// Resume a parked Run after its Proposal is decided (ADR-0025). Reconstructs
@@ -114,7 +123,7 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
     // failure, and the Client retries — the still-parked recovery branch then
     // re-resumes. (Wedging the Run `errored` here would strand a
     // durably-accepted Proposal whose model never saw the Decision.)
-    let Some(line) = resume_manifest_line(&workflow, &transcript).await else {
+    let Some(line) = resume_manifest_line(run_id, &workflow, &transcript).await else {
         anyhow::bail!("resume manifest build failed for run {run_id} (token resolution)");
     };
 
@@ -129,35 +138,41 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
     let run_hub = hub::create(hubs, run_id);
     let pool = pool.clone();
     let hubs = hubs.clone();
-    tokio::spawn(async move {
-        pre_spawn_delay_if_configured().await;
-        if run_hub.is_cancelled() {
-            hub::remove(&hubs, run_id);
-            return;
-        }
-        match ChildWorker::spawn(&worker_cmd(), line).await {
-            Ok(worker) => {
-                run_loop(
-                    worker,
-                    run_id,
-                    workflow,
-                    pool,
-                    assistant_message_id,
-                    hubs,
-                    run_hub.tx.clone(),
-                    run_hub.gate.clone(),
-                    run_hub.cancel_rx(),
-                )
-                .await;
+    // Correlation span (ADR-0038), mirroring `spawn`: `run_id` reaches the
+    // child.rs reader sites only via this explicitly-`.instrument`'d span.
+    let span = tracing::info_span!("worker_run", %run_id);
+    tokio::spawn(
+        async move {
+            pre_spawn_delay_if_configured().await;
+            if run_hub.is_cancelled() {
+                hub::remove(&hubs, run_id);
+                return;
             }
-            // Rare residual case: a post-flip spawn failure (the realistic
-            // token/manifest failure is handled before the flip). The decide
-            // RPC already reported success, so re-parking would leave a decided
-            // card over a silently hung turn. Finalize `errored` instead so the
-            // failure is visible and the user can re-send.
-            Err(()) => finalize_error(&pool, &hubs, run_id).await,
+            match ChildWorker::spawn(run_id, &worker_cmd(), line).await {
+                Ok(worker) => {
+                    run_loop(
+                        worker,
+                        run_id,
+                        workflow,
+                        pool,
+                        assistant_message_id,
+                        hubs,
+                        run_hub.tx.clone(),
+                        run_hub.gate.clone(),
+                        run_hub.cancel_rx(),
+                    )
+                    .await;
+                }
+                // Rare residual case: a post-flip spawn failure (the realistic
+                // token/manifest failure is handled before the flip). The decide
+                // RPC already reported success, so re-parking would leave a decided
+                // card over a silently hung turn. Finalize `errored` instead so the
+                // failure is visible and the user can re-send.
+                Err(()) => finalize_error(&pool, &hubs, run_id).await,
+            }
         }
-    });
+        .instrument(span),
+    );
 
     Ok(())
 }
@@ -167,6 +182,7 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
 /// for OAuth providers — a short-lived access token (ADR-0023). `None` if token
 /// resolution fails (the caller runs `finalize_error`).
 async fn fresh_manifest_line(
+    run_id: Uuid,
     workflow: &Workflow,
     prompt: &str,
     history: &[(String, String)],
@@ -181,7 +197,7 @@ async fn fresh_manifest_line(
             _ => ManifestMessage::User { text },
         })
         .collect();
-    let access_token = resolve_token(workflow).await?;
+    let access_token = resolve_token(run_id, workflow).await?;
     let manifest = WorkerManifest {
         workflow: workflow_manifest(workflow),
         prompt,
@@ -195,11 +211,12 @@ async fn fresh_manifest_line(
 /// Build the resume manifest line (ADR-0025): empty prompt, reconstructed
 /// transcript as typed message blocks, `mode:"resume"`. `None` on token failure.
 async fn resume_manifest_line(
+    run_id: Uuid,
     workflow: &Workflow,
     transcript: &[crate::resume::Block],
 ) -> Option<String> {
     let messages: Vec<ManifestMessage> = transcript.iter().map(crate::resume::Block::as_message).collect();
-    let access_token = resolve_token(workflow).await?;
+    let access_token = resolve_token(run_id, workflow).await?;
     let manifest = WorkerManifest {
         workflow: workflow_manifest(workflow),
         prompt: "",
@@ -222,11 +239,20 @@ fn workflow_manifest(workflow: &Workflow) -> WorkflowManifest<'_> {
     }
 }
 
-async fn resolve_token(workflow: &Workflow) -> Option<Option<String>> {
+async fn resolve_token(run_id: Uuid, workflow: &Workflow) -> Option<Option<String>> {
     match crate::provider_auth::resolve_access_token(&workflow.provider, db::now_ms()).await {
         Ok(token) => Some(token),
         Err(e) => {
-            eprintln!("access token resolution failed for provider {:?}: {e}", workflow.provider);
+            // `run_id` is threaded in so the resume path (which resolves the
+            // token BEFORE the span is entered) also emits run_id top-level
+            // (ADR-0038 canonical). Provider name only — never the token/secret
+            // (ADR-0038 redaction).
+            tracing::error!(
+                event = "worker.access_token_resolution_failed",
+                %run_id,
+                provider = %workflow.provider,
+                error = ?e
+            );
             None
         }
     }
@@ -256,7 +282,7 @@ async fn pre_spawn_delay_if_configured() {
 /// falls through to the persisted snapshot + `done`.
 async fn finalize_error(pool: &SqlitePool, hubs: &Hubs, run_id: Uuid) {
     if let Err(e) = db::error_run(pool, run_id, db::now_ms()).await {
-        eprintln!("error_run after pre-loop spawn failure for run {run_id}: {e}");
+        tracing::error!(event = "worker.error_run_failed", %run_id, error = ?e);
     }
     crate::hub::remove(hubs, run_id);
 }

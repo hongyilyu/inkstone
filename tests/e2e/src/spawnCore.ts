@@ -115,6 +115,10 @@ export interface SpawnedCore {
 	readonly url: string;
 	/** The tempdir Workspace (DB lives at `<workspaceDir>/db.sqlite`). */
 	readonly workspaceDir: string;
+	/** The Diagnostic Log dir (ADR-0038): `core.jsonl` + sibling `worker.jsonl`
+	 * land here. Defaulted into the Workspace tempdir so e2e runs stay hermetic
+	 * (no writes to the dev/CI OS data dir). */
+	readonly logDir: string;
 	/** Release the gate so the fixture streams its remaining chunks + done. */
 	tripGate(): void;
 	/** SIGTERM Core, wait for exit, and remove the tempdir Workspace. */
@@ -185,6 +189,11 @@ export async function spawnCore(
 ): Promise<SpawnedCore> {
 	const workspaceDir = mkdtempSync(path.join(tmpdir(), "inkstone-test-"));
 	const dbPath = path.join(workspaceDir, "db.sqlite");
+	// Pin the Diagnostic Log dir (ADR-0038) into the tempdir so e2e runs don't
+	// write core.jsonl/worker.jsonl into the dev/CI OS data dir — and so a test
+	// can read the trail back. Core defaults the Worker's INKSTONE_WORKER_LOG_PATH
+	// to <logDir>/worker.jsonl from this.
+	const logDir = path.join(workspaceDir, "logs");
 
 	const chunks = opts.chunks ?? 1;
 	const gatePath =
@@ -195,6 +204,7 @@ export async function spawnCore(
 		INKSTONE_DB_PATH: dbPath,
 		INKSTONE_PORT: String(opts.port ?? 0),
 		INKSTONE_WEB_DIR: opts.webDir ?? WEB_DIST,
+		INKSTONE_LOG_DIR: logDir,
 	};
 
 	// Strip inherited INKSTONE_FAUX_* so an ambient value can't leak one test's mode into another.
@@ -309,6 +319,7 @@ export async function spawnCore(
 	return {
 		url,
 		workspaceDir,
+		logDir,
 		tripGate() {
 			if (!gatePath) {
 				throw new Error(

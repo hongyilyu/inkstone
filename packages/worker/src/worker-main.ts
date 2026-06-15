@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { type InterpreterDeps, runInterpreter } from "./interpreter.js";
 import { WorkerTransport } from "./transport.js";
 import { StdioTransportLive } from "./transport-stdio.js";
+import { logWorkerFault } from "./worker-log.js";
 
 /**
  * Shared Worker entry scaffolding both entries call with their own dep-builder — see docs/design/worker.md (ADR-0013, ADR-0018, ADR-0020, ADR-0027).
@@ -27,17 +28,27 @@ export function runWorkerMain(
 	const main = program.pipe(
 		Effect.catchAll((error) =>
 			Effect.flatMap(WorkerTransport, (t) =>
-				Effect.sync(() => t.emit({ kind: "error", message: error.message })),
+				Effect.sync(() => {
+					// Diagnostic Log (ADR-0038): additive to the terminal Run Event below.
+					// `source` distinguishes this program-level catchAll from the
+					// interpreter's model-reported `worker.run_error` (same key, so an
+					// agent's `GROUP BY event` mines all run errors together).
+					logWorkerFault("worker.run_error", {
+						source: "catch_all",
+						message: error.message,
+					});
+					t.emit({ kind: "error", message: error.message });
+				}),
 			),
 		),
 		Effect.catchAllDefect((defect) =>
 			Effect.flatMap(WorkerTransport, (t) =>
-				Effect.sync(() =>
-					t.emit({
-						kind: "error",
-						message: defect instanceof Error ? defect.message : String(defect),
-					}),
-				),
+				Effect.sync(() => {
+					const message =
+						defect instanceof Error ? defect.message : String(defect);
+					logWorkerFault("worker.run_defect", { message });
+					t.emit({ kind: "error", message });
+				}),
 			),
 		),
 		Effect.provide(StdioTransportLive),
@@ -46,6 +57,9 @@ export function runWorkerMain(
 	Effect.runPromise(main).then(
 		() => process.exit(0),
 		// A rejection here means stdout itself failed — nothing left to do but exit non-zero.
-		() => process.exit(1),
+		() => {
+			logWorkerFault("worker.stdout_failed");
+			process.exit(1);
+		},
 	);
 }

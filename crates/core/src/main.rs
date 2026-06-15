@@ -4,6 +4,7 @@ mod decide;
 mod dispatcher;
 mod entities;
 mod hub;
+mod logging;
 mod models;
 mod mutate;
 mod mutation_target;
@@ -41,6 +42,16 @@ struct AppState {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Initialize the Diagnostic Log subscriber FIRST (ADR-0038), before any
+    // fail-fast boot step, so even `workflow::init`/`db::open` faults are
+    // captured on the trail. Fail-OPEN: observability is not an availability
+    // dependency — an unwritable log dir must not abort Core boot (mirrors the
+    // worker-spawn sink, which also degrades silently). Worst case the trail is
+    // absent; the process still serves.
+    if let Err(e) = logging::init() {
+        eprintln!("INKSTONE_LOG_INIT_FAILED {e:#}");
+    }
+
     // Validate the Workflow(s) before serving: a malformed default.toml aborts
     // boot (fail-fast, ADR-0018) rather than failing the first Run.
     workflow::init()?;
@@ -55,6 +66,9 @@ async fn main() -> Result<()> {
     // stale/partial search index, which the next successful open backfills. Unlike
     // `workflow::init`/`db::open` above, which gate authoritative state and fail-fast.
     if let Err(e) = db::rebuild_message_fts(&pool).await {
+        // The `INKSTONE_FTS_REBUILD_FAILED` marker stays raw (ADR-0038 keeps the
+        // boot markers verbatim); the structured event is emitted alongside it.
+        tracing::error!(event = "core.fts_rebuild_failed", error = ?e);
         eprintln!("INKSTONE_FTS_REBUILD_FAILED message search may be stale: {e:?}");
     }
 
@@ -62,6 +76,9 @@ async fn main() -> Result<()> {
     // Core crash — it has no live Worker. Preserves `parked` Runs (ADR-0025).
     let recovered = db::recover_interrupted_runs(&pool, db::now_ms()).await?;
     if recovered > 0 {
+        // The `INKSTONE_RECOVERED` marker stays raw (ADR-0038 keeps the boot
+        // markers verbatim); the structured milestone is emitted alongside it.
+        tracing::info!(event = "core.runs_recovered", count = recovered);
         println!("INKSTONE_RECOVERED {recovered} interrupted run(s) errored as core_restarted");
     }
 
@@ -98,6 +115,12 @@ async fn main() -> Result<()> {
         .unwrap_or(8765);
     let listener = TcpListener::bind(("127.0.0.1", port)).await?;
     let local_addr = listener.local_addr()?;
+    // Diagnostic Log boot milestone (ADR-0038), emitted BEFORE the stdout marker
+    // so the blocking appender has it on disk before any observer of the marker
+    // can act (the test harness unblocks on the marker, then may SIGKILL at
+    // once). Distinct from the marker below (the harness's liveness contract,
+    // NOT migrated into tracing). Variable data (`addr`) is a field, not message.
+    tracing::info!(event = "core.listening", addr = %local_addr);
     println!("INKSTONE_LISTENING http://{local_addr}");
 
     axum::serve(listener, app).await?;
@@ -130,10 +153,23 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
         tokio::select! {
             biased;
             msg = socket.recv() => {
-                let Some(Ok(msg)) = msg else { break };
+                let Some(Ok(msg)) = msg else {
+                    // recv closed or errored: a normal client disconnect is not a
+                    // fault, so this stays low-severity (ADR-0038 level discipline).
+                    tracing::debug!(event = "core.ws_recv_closed");
+                    break;
+                };
                 match msg {
                     Message::Text(t) => {
                         let Ok(req) = serde_json::from_str::<JsonRpcRequest>(&t) else {
+                            // A malformed frame is tolerated (we drop it and keep
+                            // serving), so WARN, not ERROR. The bad text rides as a
+                            // BOUNDED preview field, never interpolated into the
+                            // message (ADR-0038).
+                            tracing::warn!(
+                                event = "core.jsonrpc_parse_failed",
+                                preview = %t.chars().take(200).collect::<String>(),
+                            );
                             continue;
                         };
                         runs::dispatch(&state.pool, &state.hubs, req, &out_tx).await;
@@ -145,6 +181,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             outbound = out_rx.recv() => {
                 let Some(s) = outbound else { break };
                 if socket.send(Message::Text(s.into())).await.is_err() {
+                    tracing::warn!(event = "core.ws_send_failed");
                     break;
                 }
             }

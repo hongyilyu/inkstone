@@ -4,6 +4,7 @@ import { WorkerManifest } from "@inkstone/protocol";
 import { Effect, Layer, Schema as S } from "effect";
 import type { ToolCallResponse } from "./tool-proxy.js";
 import { ManifestParseError, WorkerTransport } from "./transport.js";
+import { logWorkerFault } from "./worker-log.js";
 
 /** Production transport (ADR-0027): the Worker's stdio behind the {@link WorkerTransport} seam, over injected streams for testability. See docs/design/worker-transport.md. */
 const makeStdioService = (
@@ -44,10 +45,19 @@ const makeStdioService = (
 				if (pending) {
 					pendingTools.delete(msg.tool_call_id);
 					pending(msg.outcome);
+				} else {
+					// A tool_result arrived with no awaiting call — silently dropped before.
+					logWorkerFault("worker.tool_result_no_pending", {
+						tool_call_id: msg.tool_call_id,
+					});
 				}
 			}
 		} catch {
-			// Non-JSON / unknown inbound line: ignore.
+			// Non-JSON / unknown inbound line: dropped, but now observable. Bound the
+			// preview so a huge bad line never bloats the Diagnostic Log.
+			logWorkerFault("worker.inbound_line_unparsed", {
+				preview: line.slice(0, 200),
+			});
 		}
 	});
 	rl.on("close", () => {

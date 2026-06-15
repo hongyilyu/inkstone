@@ -14,6 +14,7 @@ import type { WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { makeProxyTools } from "./tool-proxy.js";
 import { WorkerTransport } from "./transport.js";
+import { logWorkerFault } from "./worker-log.js";
 
 // Generic Workflow-agnostic interpreter — see docs/design/worker.md (ADR-0018, ADR-0019)
 
@@ -174,6 +175,16 @@ export function runInterpreter(
 		}
 
 		if (errorMessage !== undefined) {
+			// A model/provider-reported run failure: worker-main's catchAll never sees
+			// this (it's a successful Effect that emits a terminal error Run Event), so
+			// log it here. Only the error branch — the done path is not a fault and is
+			// left unlogged. Shares the `worker.run_error` key with worker-main's
+			// catchAll so an agent's `GROUP BY event` mines every run error together;
+			// `source` distinguishes this model-reported failure from the catchAll.
+			logWorkerFault("worker.run_error", {
+				source: "interpreter",
+				message: errorMessage,
+			});
 			emit({ kind: "error", message: errorMessage });
 			return;
 		}

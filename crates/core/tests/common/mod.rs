@@ -78,6 +78,25 @@ pub fn fixture_cmd(file: &str, args: &[&str]) -> String {
     cmd
 }
 
+/// Read every non-empty line of every file under `dir` — the Diagnostic Log
+/// trail (ADR-0038). The daily appender suffixes the file with a date, so the
+/// exact name is not assumed; logging tests read after `core.kill()` (the
+/// blocking appender has each event on disk by then).
+pub fn read_jsonl_lines(dir: &Path) -> Vec<String> {
+    let mut lines = Vec::new();
+    let entries =
+        std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
+    for entry in entries {
+        let path = entry.expect("dir entry").path();
+        if path.is_file() {
+            let body = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            lines.extend(body.lines().filter(|l| !l.is_empty()).map(str::to_owned));
+        }
+    }
+    lines
+}
+
 /// A per-test Workspace (ADR-0019): the on-disk state Core opens. Owns the
 /// tempdir so it outlives the [`CoreHandle`] — a test can kill Core, then read
 /// the DB or respawn against the same DB.
@@ -182,6 +201,14 @@ impl<'a> CoreBuilder<'a> {
         cmd.current_dir(repo_root())
             .env("INKSTONE_PORT", "0")
             .env("INKSTONE_DB_PATH", self.ws.db_path())
+            // Default the Diagnostic Log dir (ADR-0038) into the Workspace
+            // tempdir so tests that don't set it stay hermetic — otherwise
+            // `logging::init` falls back to the real OS data dir and writes
+            // core.jsonl into the developer's/CI home. Per-test `.env(...)`
+            // overrides still win: the `self.envs` loop below runs after this,
+            // and last `cmd.env` for a key wins. `logging::init` creates the
+            // dir itself (`create_dir_all`), so it need not pre-exist.
+            .env("INKSTONE_LOG_DIR", self.ws.path().join("logs"))
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         if let Some(ref worker_cmd) = self.worker_cmd {

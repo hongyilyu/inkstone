@@ -108,8 +108,12 @@ A tier-2 storage record for one bubble in the chat UI — a user prompt, an assi
 One ordered chunk inside a Message — a text block, an attachment reference, a marker for an inline tool call, etc. Composite key `(message_id, seq)`. Polymorphic by `type`; payloads beyond plain text are JSON. Tool calls and tool results are *not* Message Parts — they live in their own table and are interleaved with Messages at render time via Run Steps.
 
 **Run Log**:
-Core's durable tier-2 record of a Run's lifecycle milestones — one ordered row per milestone, keyed `(run_id, run_seq)`, discriminated by a **Run Log Kind** (`running`, `parked`, `done`, `error`, `cancelled`, `proposal_pending`, `proposal_decided`). Written by the Run status transition verbs (ADR-0028) as each change commits; authoritative for nothing and read by nothing yet — it pre-pays a future `run/get_history`. Distinct from a **Run Event** (the ephemeral wire stream) and from Run status (the materialized cell whose changes it records).
-_Avoid_: run events (that names the wire stream), audit log, event stream, run timeline (that's the rendered Message / Tool Call sequence).
+Core's durable tier-2 record of a Run's lifecycle milestones — one ordered row per milestone, keyed `(run_id, run_seq)`, discriminated by a **Run Log Kind** (`running`, `parked`, `done`, `error`, `cancelled`, `proposal_pending`, `proposal_decided`). Written by the Run status transition verbs (ADR-0028) as each change commits; authoritative for nothing and read by nothing yet — it pre-pays a future `run/get_history`. Distinct from a **Run Event** (the ephemeral wire stream), from a **Diagnostic Log** (the operational fault trail), and from Run status (the materialized cell whose changes it records).
+_Avoid_: run events (that names the wire stream), audit log, event stream, run timeline (that's the rendered Message / Tool Call sequence), diagnostic log (the operational trail, a different concept).
+
+**Diagnostic Log**:
+The operational fault/trace trail of what Core and the Worker did and where they faulted — structured `tracing` events on a rolling JSONL file (`<data-dir>/inkstone/logs/core.jsonl`, sibling `worker.jsonl`), each keyed by a stable `event` (`worker.*`, `db.*`, `subscribe.*`, `core.*`, `handler.*`) with typed fields, verbosity via `INKSTONE_LOG` (default `INFO`). A tier-3-like derived artifact: authoritative for nothing, lossy, rotatable, deleting it changes no product behavior. Its consumer is an agent-driven hardening loop that greps/aggregates the file to find recurring faults (ADR-0038). Distinct from the **Run Log** (durable tier-2 milestones, no levels/fault detail) and the **Run Event** (ephemeral wire signal to Clients); a Diagnostic Log line never rides the wire and is never read by the product.
+_Avoid_: log (too generic), run log (the tier-2 milestone record), audit log, telemetry, trace (overloaded with `tracing` spans).
 
 ### Domain
 
