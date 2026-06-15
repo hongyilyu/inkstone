@@ -6,6 +6,7 @@ use std::process::Stdio;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use uuid::Uuid;
 
 use super::port::WorkerPort;
 use crate::protocol::{ToolResult, WorkerStdout};
@@ -17,6 +18,10 @@ use crate::protocol::{ToolResult, WorkerStdout};
 pub(super) struct ChildWorker {
     #[allow(dead_code)] // held to own the process lifetime; kill_on_drop tears it down.
     child: Child,
+    /// The Run's id, threaded in purely so this transport's Diagnostic Log
+    /// events emit `run_id` as a direct top-level field (ADR-0036 canonical) —
+    /// these reader/writer sites have no enclosing fn param to draw it from.
+    run_id: Uuid,
     /// Kept open across the Run for `tool_result` writes (ADR-0013); set to
     /// `None` by [`WorkerPort::shutdown`] to send the Worker EOF.
     stdin: Option<ChildStdin>,
@@ -26,12 +31,13 @@ pub(super) struct ChildWorker {
 impl ChildWorker {
     /// Spawn the Worker from `cmd` (whitespace-split program + args), write the
     /// serialized `manifest_line` to its stdin, and return the live transport.
+    /// `run_id` is carried only for Diagnostic Log correlation (ADR-0036).
     /// `Err(())` on any pre-stream failure (empty cmd, spawn failure, missing
     /// stdio) — the caller maps it to `finalize_error`.
-    pub(super) async fn spawn(cmd: &str, manifest_line: String) -> Result<Self, ()> {
+    pub(super) async fn spawn(run_id: Uuid, cmd: &str, manifest_line: String) -> Result<Self, ()> {
         let mut parts = cmd.split_whitespace();
         let Some(program) = parts.next() else {
-            eprintln!("INKSTONE_WORKER_CMD is empty");
+            tracing::error!(event = "worker.cmd_empty", %run_id);
             return Err(());
         };
         let args: Vec<&str> = parts.collect();
@@ -46,34 +52,35 @@ impl ChildWorker {
         {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("failed to spawn worker {program:?}: {e}");
+                tracing::error!(event = "worker.spawn_failed", %run_id, program, error = ?e);
                 return Err(());
             }
         };
 
         let Some(mut stdin) = child.stdin.take() else {
-            eprintln!("worker child has no stdin");
+            tracing::error!(event = "worker.stdin_missing", %run_id);
             return Err(());
         };
         if let Err(e) = stdin.write_all(manifest_line.as_bytes()).await {
-            eprintln!("failed to write worker manifest: {e}");
+            tracing::error!(event = "worker.manifest_write_failed", %run_id, error = ?e);
             return Err(());
         }
         if let Err(e) = stdin.flush().await {
             // The manifest is the Worker's first input; an unflushed manifest
             // blocks it forever. Fail fast → the caller runs finalize_error.
-            eprintln!("failed to flush worker manifest: {e}");
+            tracing::error!(event = "worker.manifest_flush_failed", %run_id, error = ?e);
             return Err(());
         }
 
         let Some(stdout) = child.stdout.take() else {
-            eprintln!("worker child has no stdout");
+            tracing::error!(event = "worker.stdout_missing", %run_id);
             return Err(());
         };
         let lines = BufReader::new(stdout).lines();
 
         Ok(Self {
             child,
+            run_id,
             stdin: Some(stdin),
             lines,
         })
@@ -87,13 +94,18 @@ impl WorkerPort for ChildWorker {
                 Ok(Some(line)) => match serde_json::from_str::<WorkerStdout>(&line) {
                     Ok(msg) => return Some(msg),
                     Err(e) => {
-                        eprintln!("worker emitted unknown line {line:?}: {e}");
+                        tracing::warn!(
+                            event = "worker.unknown_line",
+                            run_id = %self.run_id,
+                            line_preview = %line_preview(&line),
+                            error = ?e
+                        );
                         continue;
                     }
                 },
                 Ok(None) => return None,
                 Err(e) => {
-                    eprintln!("worker stdout read error: {e}");
+                    tracing::error!(event = "worker.stdout_read_failed", run_id = %self.run_id, error = ?e);
                     return None;
                 }
             }
@@ -108,11 +120,13 @@ impl WorkerPort for ChildWorker {
             Ok(mut line) => {
                 line.push('\n');
                 if let Err(e) = stdin.write_all(line.as_bytes()).await {
-                    eprintln!("failed to write tool_result to worker stdin: {e}");
+                    tracing::error!(event = "worker.tool_result_write_failed", run_id = %self.run_id, error = ?e);
                 }
                 let _ = stdin.flush().await;
             }
-            Err(e) => eprintln!("failed to serialize tool_result: {e}"),
+            Err(e) => {
+                tracing::error!(event = "worker.tool_result_serialize_failed", run_id = %self.run_id, error = ?e)
+            }
         }
     }
 
@@ -121,4 +135,19 @@ impl WorkerPort for ChildWorker {
         // exits and closes stdout, ending the read loop.
         self.stdin = None;
     }
+}
+
+/// Bound an unrecognized stdout line before it rides into the trail as a field
+/// (ADR-0036: variable data in fields, never unbounded). Truncates on a char
+/// boundary so the preview stays valid UTF-8.
+fn line_preview(line: &str) -> &str {
+    const MAX: usize = 200;
+    if line.len() <= MAX {
+        return line;
+    }
+    let mut end = MAX;
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    &line[..end]
 }

@@ -78,8 +78,11 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                     }
                     Ok(false) => {}
                     Err(e) => {
-                        eprintln!(
-                            "text_delta append failed for assistant message {assistant_message_id}: {e}"
+                        tracing::error!(
+                            event = "worker.text_delta_append_failed",
+                            %run_id,
+                            %assistant_message_id,
+                            error = ?e
                         );
                     }
                 }
@@ -179,7 +182,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
             db::error_run(&pool, run_id, now_ms).await
         };
         if let Err(ref e) = result {
-            eprintln!("terminal tx failed for run {run_id}: {e}");
+            tracing::error!(event = "worker.terminal_tx_failed", %run_id, error = ?e);
         }
 
         // Publish the terminal Run Event ONLY AFTER this loop's terminal tx
@@ -257,7 +260,7 @@ async fn handle_tool_request(
     )
     .await
     {
-        eprintln!("persist_tool_call failed for {tool_call_id}: {e}");
+        tracing::error!(event = "worker.persist_tool_call_failed", %run_id, tool_call_id, error = ?e);
     }
 
     match crate::tools::execute(pool, run_id, name, params).await {
@@ -266,7 +269,13 @@ async fn handle_tool_request(
             if let Err(e) =
                 db::resolve_tool_call(pool, tool_call_id, "completed", &payload, db::now_ms()).await
             {
-                eprintln!("resolve_tool_call (completed) failed for {tool_call_id}: {e}");
+                tracing::error!(
+                    event = "worker.resolve_tool_call_failed",
+                    phase = "completed",
+                    %run_id,
+                    tool_call_id,
+                    error = ?e
+                );
             }
             ToolOutcome::Ok { ok: result }
         }
@@ -275,7 +284,13 @@ async fn handle_tool_request(
             if let Err(e) =
                 db::resolve_tool_call(pool, tool_call_id, "errored", &payload, db::now_ms()).await
             {
-                eprintln!("resolve_tool_call (errored) failed for {tool_call_id}: {e}");
+                tracing::error!(
+                    event = "worker.resolve_tool_call_failed",
+                    phase = "errored",
+                    %run_id,
+                    tool_call_id,
+                    error = ?e
+                );
             }
             ToolOutcome::Err {
                 err: ToolErrorWire {
@@ -321,7 +336,12 @@ async fn park_on_proposal(
     {
         Ok(moved) => moved.won(),
         Err(e) => {
-            eprintln!("park_on_proposal failed for run {run_id}, tool_call {tool_call_id}: {e}");
+            tracing::error!(
+                event = "worker.park_on_proposal_failed",
+                %run_id,
+                tool_call_id,
+                error = ?e
+            );
             false
         }
     }
