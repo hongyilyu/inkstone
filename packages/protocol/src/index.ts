@@ -422,8 +422,9 @@ export const WorkflowManifest = S.Struct({
 });
 export type WorkflowManifest = S.Schema.Type<typeof WorkflowManifest>;
 
-/** The full spawn manifest written to the Worker's stdin (ADR-0018, ADR-0023, ADR-0025) — see docs/design/protocol.md */
+/** The full spawn manifest written to the Worker's stdin (ADR-0018, ADR-0023, ADR-0025) — see docs/design/protocol.md. `run_id` carries the Run's id in-band so the Worker can stamp its Diagnostic Log (ADR-0038, #146). */
 export const WorkerManifest = S.Struct({
+	run_id: S.String,
 	workflow: WorkflowManifest,
 	prompt: S.String,
 	messages: S.Array(ManifestMessage),

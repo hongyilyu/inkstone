@@ -895,6 +895,7 @@ describe("ProviderLoginStartParams", () => {
 
 describe("WorkerManifest", () => {
 	const valid = {
+		run_id: "01900000-0000-7000-8000-000000000abc",
 		workflow: {
 			name: "default",
 			version: "1.0.0",
@@ -945,6 +946,11 @@ describe("WorkerManifest", () => {
 				messages: [{ role: "system", text: "x" }],
 			}),
 		).toThrow();
+	});
+
+	it("rejects a missing run_id", () => {
+		const { run_id: _omit, ...noRunId } = valid;
+		expect(() => S.decodeUnknownSync(WorkerManifest)(noRunId)).toThrow();
 	});
 
 	it("decodes a manifest whose tools carry descriptor objects", () => {

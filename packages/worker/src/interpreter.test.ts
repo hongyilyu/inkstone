@@ -20,6 +20,7 @@ afterEach(() => {
 
 function fauxManifest(overrides: Partial<WorkerManifest> = {}): WorkerManifest {
 	return {
+		run_id: "01900000-0000-7000-8000-000000000abc",
 		workflow: {
 			name: "default",
 			version: "1.0.0",

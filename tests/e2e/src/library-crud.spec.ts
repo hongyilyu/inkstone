@@ -307,6 +307,46 @@ test("delete a seeded Todo via the inline confirm → delete_todo removes it", a
 	).toBe("0");
 });
 
+test("cancel the inline delete confirm → no write, the Todo survives", async ({
+	page,
+	core,
+	workspace,
+}) => {
+	const dbPath = dbPathFor(workspace.path);
+	const TODO = "01900000-0000-7000-8000-000000010007";
+	seedEntities(dbPath, [
+		{
+			id: TODO,
+			type: "todo",
+			data: { title: "Keep this task", status: "active" },
+		},
+	]);
+
+	await page.goto(`${core.url}/library/todos?id=${TODO}`);
+	const detail = page.getByRole("complementary", {
+		name: /Keep this task details/i,
+	});
+	await expect(detail).toBeVisible({ timeout: 15_000 });
+
+	// Reveal the inline confirm, then back out — the shell resets `confirmingDelete`
+	// (and `del.reset()`) so no `entity/mutate` is sent (ADR-0033, "approval is sacred").
+	await detail.getByRole("button", { name: /delete todo/i }).click();
+	await expect(detail.getByText(/delete this todo\?/i)).toBeVisible();
+	await detail.getByRole("button", { name: /cancel/i }).click();
+
+	// Confirm dismissed, the delete affordance is back, the rail stayed open (?id kept).
+	await expect(detail.getByText(/delete this todo\?/i)).toHaveCount(0);
+	await expect(
+		detail.getByRole("button", { name: /delete todo/i }),
+	).toBeVisible();
+	await expect(detail).toBeVisible();
+
+	// DB ground truth: the Todo is untouched — cancel never wrote.
+	expect(
+		sqliteScalar(dbPath, `SELECT count(*) FROM entities WHERE id='${TODO}';`),
+	).toBe("1");
+});
+
 test("edit then delete a seeded Journal Entry via the rail editor (update + delete)", async ({
 	page,
 	core,

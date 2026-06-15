@@ -17,16 +17,19 @@ function capturingWritable(): { output: Writable; written: () => string } {
 	return { output, written: () => chunks.join("") };
 }
 
+const validWorkflow = {
+	name: "default",
+	version: "1.0.0",
+	provider: "faux",
+	model: "faux-1",
+	system_prompt: "You are a test assistant.",
+	thinking_level: "off",
+	tools: [],
+};
+
 const manifestJson = JSON.stringify({
-	workflow: {
-		name: "default",
-		version: "1.0.0",
-		provider: "faux",
-		model: "faux-1",
-		system_prompt: "You are a test assistant.",
-		thinking_level: "off",
-		tools: [],
-	},
+	run_id: "01900000-0000-7000-8000-000000000abc",
+	workflow: validWorkflow,
 	prompt: "hello",
 	messages: [],
 });
@@ -75,7 +78,7 @@ describe("StdioTransportLive (over injected streams)", () => {
 		expect(frames).toContainEqual({ kind: "text_delta", delta: "hi" });
 		expect(frames).toContainEqual({
 			kind: "tool_request",
-			run_id: "",
+			run_id: "01900000-0000-7000-8000-000000000abc",
 			tool_call_id: "tc1",
 			name: "read_thread",
 			params: { thread_id: "x" },
@@ -115,6 +118,53 @@ describe("StdioTransportLive (over injected streams)", () => {
 		expect(result._tag).toBe("Left");
 		if (result._tag === "Left") {
 			expect(result.left).toBeInstanceOf(ManifestParseError);
+		}
+	});
+
+	it("salvages run_id onto ManifestParseError when the JSON parses but fails schema (#146)", async () => {
+		const input = new PassThrough();
+		const { output } = capturingWritable();
+		const runId = "01900000-0000-7000-8000-00000000beef";
+		// Valid JSON carrying run_id, but schema decode fails on another field
+		// (thinking_level) — the mirror-skew case whose diagnostic line must still join.
+		input.write(
+			`${JSON.stringify({
+				run_id: runId,
+				workflow: { ...validWorkflow, thinking_level: "turbo" },
+				prompt: "hi",
+				messages: [],
+			})}\n`,
+		);
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const t = yield* WorkerTransport;
+				return yield* Effect.either(t.readManifest);
+			}).pipe(Effect.provide(makeStdioTransport(input, output))),
+		);
+
+		expect(result._tag).toBe("Left");
+		if (result._tag === "Left") {
+			expect(result.left).toBeInstanceOf(ManifestParseError);
+			expect((result.left as ManifestParseError).runId).toBe(runId);
+		}
+	});
+
+	it("leaves run_id undefined on ManifestParseError when the line is not valid JSON", async () => {
+		const input = new PassThrough();
+		const { output } = capturingWritable();
+		input.write("this is not json\n");
+
+		const result = await Effect.runPromise(
+			Effect.gen(function* () {
+				const t = yield* WorkerTransport;
+				return yield* Effect.either(t.readManifest);
+			}).pipe(Effect.provide(makeStdioTransport(input, output))),
+		);
+
+		expect(result._tag).toBe("Left");
+		if (result._tag === "Left") {
+			expect((result.left as ManifestParseError).runId).toBeUndefined();
 		}
 	});
 });
