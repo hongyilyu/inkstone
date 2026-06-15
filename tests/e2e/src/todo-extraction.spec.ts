@@ -1,10 +1,15 @@
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Page } from "@playwright/test";
 import { expect, test } from "./fixtures.js";
 import type { ChatPage } from "./page-objects/ChatPage.js";
+import {
+	seedAcceptedPerson,
+	seedAcceptedProject,
+	sqlite,
+	sqlValue,
+} from "./seed-proposal.js";
 import { FAUX_WORKER_CMD, PROMPT_BOUNDARY_WORKER_CMD } from "./spawnCore.js";
 
 /**
@@ -235,104 +240,4 @@ function writeScenario(scenario: {
 	};
 }): void {
 	writeFileSync(extractParamsFile, JSON.stringify(scenario));
-}
-
-/** Seed a single accepted Person with a known id and name (no Journal Entry —
- * the Worker proposes that). Mirrors person-extraction.spec.ts's person seed. */
-function seedAcceptedPerson(
-	dbPath: string,
-	personId: string,
-	name: string,
-): void {
-	const now = Date.now();
-	const threadId = `seed-thread-${personId}`;
-	const runId = `seed-run-${personId}`;
-	const userMessageId = `seed-msg-${personId}`;
-	const toolCallId = `tc_seed_person_${personId}`;
-	const proposalId = `seed-proposal-${personId}`;
-	const payload = { name };
-	sqlite(
-		dbPath,
-		`
-		BEGIN IMMEDIATE;
-		INSERT INTO threads (id, title, created_at, last_activity_at)
-		VALUES (${sqlValue(threadId)}, 'Seed thread', ${now}, ${now});
-		INSERT INTO runs
-			(id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason)
-		VALUES
-			(${sqlValue(runId)}, ${sqlValue(threadId)}, 'default', '1.0.0', 'faux', 'fake-model', 'off', ${sqlValue(userMessageId)}, 'completed', ${now}, ${now}, 'completed');
-		INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at)
-		VALUES (${sqlValue(userMessageId)}, ${sqlValue(threadId)}, ${sqlValue(runId)}, 'user', 'completed', ${now}, ${now});
-		INSERT INTO message_parts (message_id, seq, type, text)
-		VALUES (${sqlValue(userMessageId)}, 0, 'text', ${sqlValue(name)});
-		INSERT INTO tool_calls (id, run_id, name, request_payload, status, result_payload, requested_at, resolved_at)
-		VALUES (${sqlValue(toolCallId)}, ${sqlValue(runId)}, 'propose_workspace_mutation', '{}', 'completed', '{}', ${now}, ${now});
-		INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, decided_at, applied_at)
-		VALUES (${sqlValue(proposalId)}, ${sqlValue(toolCallId)}, 'create_person', 'accepted', 'user', ${now}, ${now});
-		INSERT INTO entities (id, type, schema_version, data, created_by, created_via_proposal_id, created_at, updated_at)
-		VALUES (${sqlValue(personId)}, 'person', 1, ${jsonValue(payload)}, 'proposal', ${sqlValue(proposalId)}, ${now}, ${now});
-		INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at)
-		VALUES (${sqlValue(personId)}, 1, ${jsonValue(payload)}, ${sqlValue(proposalId)}, ${now});
-		COMMIT;
-		`,
-	);
-}
-
-/** Seed a single accepted Project with a known id and name, with the
- * `status: "active"` that create_project stores. Mirrors
- * project-extraction.spec.ts's project seed. */
-function seedAcceptedProject(
-	dbPath: string,
-	projectId: string,
-	name: string,
-): void {
-	const now = Date.now();
-	const threadId = `seed-thread-${projectId}`;
-	const runId = `seed-run-${projectId}`;
-	const userMessageId = `seed-msg-${projectId}`;
-	const toolCallId = `tc_seed_project_${projectId}`;
-	const proposalId = `seed-proposal-${projectId}`;
-	const payload = { name, status: "active" };
-	sqlite(
-		dbPath,
-		`
-		BEGIN IMMEDIATE;
-		INSERT INTO threads (id, title, created_at, last_activity_at)
-		VALUES (${sqlValue(threadId)}, 'Seed thread', ${now}, ${now});
-		INSERT INTO runs
-			(id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason)
-		VALUES
-			(${sqlValue(runId)}, ${sqlValue(threadId)}, 'default', '1.0.0', 'faux', 'fake-model', 'off', ${sqlValue(userMessageId)}, 'completed', ${now}, ${now}, 'completed');
-		INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at)
-		VALUES (${sqlValue(userMessageId)}, ${sqlValue(threadId)}, ${sqlValue(runId)}, 'user', 'completed', ${now}, ${now});
-		INSERT INTO message_parts (message_id, seq, type, text)
-		VALUES (${sqlValue(userMessageId)}, 0, 'text', ${sqlValue(name)});
-		INSERT INTO tool_calls (id, run_id, name, request_payload, status, result_payload, requested_at, resolved_at)
-		VALUES (${sqlValue(toolCallId)}, ${sqlValue(runId)}, 'propose_workspace_mutation', '{}', 'completed', '{}', ${now}, ${now});
-		INSERT INTO proposals (id, tool_call_id, mutation_kind, status, decided_by, decided_at, applied_at)
-		VALUES (${sqlValue(proposalId)}, ${sqlValue(toolCallId)}, 'create_project', 'accepted', 'user', ${now}, ${now});
-		INSERT INTO entities (id, type, schema_version, data, created_by, created_via_proposal_id, created_at, updated_at)
-		VALUES (${sqlValue(projectId)}, 'project', 1, ${jsonValue(payload)}, 'proposal', ${sqlValue(proposalId)}, ${now}, ${now});
-		INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at)
-		VALUES (${sqlValue(projectId)}, 1, ${jsonValue(payload)}, ${sqlValue(proposalId)}, ${now});
-		COMMIT;
-		`,
-	);
-}
-
-function sqlite(dbPath: string, input: string): string {
-	return execFileSync("sqlite3", [dbPath], {
-		input: `.timeout 5000
-PRAGMA foreign_keys = ON;
-${input}`,
-		encoding: "utf8",
-	});
-}
-
-function sqlValue(value: string): string {
-	return `'${value.replaceAll("'", "''")}'`;
-}
-
-function jsonValue(value: unknown): string {
-	return sqlValue(JSON.stringify(value));
 }
