@@ -43,7 +43,7 @@ pub(super) async fn handle(
                 Ok(Some(snap)) => (snap.text, snap.status),
                 Ok(None) => (String::new(), "running".to_string()),
                 Err(e) => {
-                    eprintln!("snapshot read failed for run {run_id}: {e}");
+                    tracing::error!(event = "subscribe.snapshot_read_failed", %run_id, error = ?e);
                     (String::new(), "running".to_string())
                 }
             };
@@ -69,7 +69,7 @@ pub(super) async fn handle(
                 Ok(Some(s)) => s,
                 Ok(None) => String::new(), // unknown run id — stay defensible
                 Err(e) => {
-                    eprintln!("run_status read failed for run {run_id}: {e}");
+                    tracing::error!(event = "subscribe.run_status_read_failed", %run_id, error = ?e);
                     String::new()
                 }
             };
@@ -83,7 +83,7 @@ pub(super) async fn handle(
                     // Unknown run id — no snapshot.
                 }
                 Err(e) => {
-                    eprintln!("snapshot read failed for run {run_id}: {e}");
+                    tracing::error!(event = "subscribe.snapshot_read_failed", %run_id, error = ?e);
                 }
             }
             // No-false-done (ADR-0025): a parked Run stopped without a terminal
@@ -111,7 +111,10 @@ async fn emit_pending(out_tx: &UnboundedSender<String>, pool: &SqlitePool, run_i
         Ok(Some(p)) => send_proposal_pending(out_tx, run_id, &p.proposal_id),
         Ok(None) => {}
         Err(e) => {
-            eprintln!("pending proposal lookup failed for run {run_id}: {e}");
+            // Tolerated degradation (ADR-0036 level discipline): the Client
+            // still learns the park via the `parked` response status, so this
+            // is WARN, not ERROR.
+            tracing::warn!(event = "subscribe.pending_proposal_lookup_failed", %run_id, error = ?e);
         }
     }
 }
@@ -211,10 +214,10 @@ fn spawn_tail_forwarder(
                             break;
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            eprintln!(
-                                "subscribe forwarder lagged {n} events for run {run_id}; \
-                                 re-snapshotting from tier 2"
-                            );
+                            // Tolerated degradation (ADR-0036): buffer overflow
+                            // recovers via re-snapshot, so WARN. Lagged count in
+                            // a field, never interpolated into the message.
+                            tracing::warn!(event = "subscribe.forwarder_lagged", %run_id, n);
                             // Re-emit the persisted text as a cumulative
                             // `text_delta`; a read error is tolerated and the
                             // tail resumes either way.
@@ -224,9 +227,7 @@ fn spawn_tail_forwarder(
                                 }
                                 Ok(None) => {}
                                 Err(e) => {
-                                    eprintln!(
-                                        "re-snapshot read failed for run {run_id}: {e}"
-                                    );
+                                    tracing::error!(event = "subscribe.resnapshot_read_failed", %run_id, error = ?e);
                                 }
                             }
                         }
@@ -239,11 +240,73 @@ fn spawn_tail_forwarder(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tokio::sync::mpsc;
+    use tracing::field::{Field, Visit};
+    use tracing::Level;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
+    use tracing_subscriber::Layer;
     use uuid::Uuid;
 
     use super::*;
+
+    /// One captured diagnostic event: its stable `event` key, its level, and
+    /// the top-level `run_id` field (ADR-0036's canonical correlation field).
+    #[derive(Clone)]
+    struct CapturedEvent {
+        event: Option<String>,
+        level: Level,
+        run_id: Option<String>,
+    }
+
+    /// Pulls the `event` and `run_id` field values off a `tracing` event.
+    /// `tracing` fields are not a map, so a `Visit` impl is the only way to read
+    /// specific field values. `event = "..."` records as a str; `%run_id`
+    /// records via its `Display` impl (debug form for everything else).
+    #[derive(Default)]
+    struct FieldGrab {
+        event: Option<String>,
+        run_id: Option<String>,
+    }
+
+    impl Visit for FieldGrab {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            match field.name() {
+                "event" => self.event = Some(value.to_string()),
+                "run_id" => self.run_id = Some(value.to_string()),
+                _ => {}
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            // `%run_id` lands here as a `Display`-formatted value; capture it if
+            // `record_str` did not (subscriber backends differ).
+            if field.name() == "run_id" && self.run_id.is_none() {
+                self.run_id = Some(format!("{value:?}").trim_matches('"').to_string());
+            }
+        }
+    }
+
+    /// A minimal in-memory `tracing` Layer that appends each event's
+    /// `event`/level/`run_id` into a shared buffer for assertions. Hand-rolled
+    /// to avoid a new dev-dependency (tracing-subscriber is already a dep).
+    struct CaptureLayer {
+        events: Arc<Mutex<Vec<CapturedEvent>>>,
+    }
+
+    impl<S: tracing::Subscriber> Layer<S> for CaptureLayer {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut grab = FieldGrab::default();
+            event.record(&mut grab);
+            self.events.lock().unwrap().push(CapturedEvent {
+                event: grab.event,
+                level: *event.metadata().level(),
+                run_id: grab.run_id,
+            });
+        }
+    }
 
     /// A migrated in-memory tier-2 pool (so `runs` CHECK constraints are in
     /// force).
@@ -369,6 +432,64 @@ mod tests {
         assert!(
             out_rx.recv().await.is_none(),
             "no forwarder attached — exactly three frames, then close"
+        );
+    }
+
+    /// Severity split (ADR-0036): a broadcast-overflow re-snapshot is a
+    /// *tolerated* degradation, so the forwarder logs `subscribe.forwarder_lagged`
+    /// at WARN (not ERROR) carrying the canonical top-level `run_id`. Overflow is
+    /// forced deterministically: send > capacity events into a cap-8 channel
+    /// BEFORE the forwarder polls, so its first `recv()` returns
+    /// `RecvError::Lagged` and it takes the re-snapshot arm.
+    #[tokio::test]
+    async fn forwarder_lagged_logs_warn_with_top_level_run_id() {
+        let captured = Arc::new(Mutex::new(Vec::<CapturedEvent>::new()));
+        let layer = CaptureLayer {
+            events: captured.clone(),
+        };
+        // Scoped to this test via a DefaultGuard — unit tests have no global
+        // subscriber, and the guard drops at test end so nothing leaks.
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(layer),
+        );
+
+        let pool = memory_pool().await;
+        // Seed a run so the Lagged arm's re-snapshot read has a valid run_id.
+        let run_id = seed_cancelled_run(&pool).await;
+
+        // Overflow a cap-8 channel before the forwarder drains: 9 buffered
+        // events on a capacity-8 broadcast guarantees the receiver is past
+        // capacity, so its next `recv()` yields `Lagged`.
+        let (event_tx, event_rx) = broadcast::channel::<RunEvent>(8);
+        for _ in 0..9 {
+            event_tx
+                .send(RunEvent::TextDelta { delta: "x".to_string() })
+                .expect("buffer a tail event");
+        }
+
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+        spawn_tail_forwarder(run_id, event_rx, out_tx, pool.clone());
+
+        // Pump the forwarder: the Lagged arm re-emits the persisted snapshot as
+        // a `text_delta`, so awaiting one out frame proves it processed Lagged.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), out_rx.recv())
+            .await
+            .expect("forwarder emits a re-snapshot frame within timeout");
+
+        let events = captured.lock().unwrap();
+        let lagged = events
+            .iter()
+            .find(|e| e.event.as_deref() == Some("subscribe.forwarder_lagged"))
+            .expect("subscribe.forwarder_lagged was emitted on broadcast overflow");
+        assert_eq!(
+            lagged.level,
+            Level::WARN,
+            "forwarder lag is a tolerated degradation — WARN, not ERROR"
+        );
+        assert_eq!(
+            lagged.run_id.as_deref(),
+            Some(run_id.to_string().as_str()),
+            "the lag event carries the canonical top-level run_id"
         );
     }
 }
