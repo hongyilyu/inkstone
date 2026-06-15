@@ -114,9 +114,9 @@ function seedAcceptedJournalEntryAndPerson(dbPath: string): void {
 		VALUES (${sqlValue(THREAD_ID)}, 'Journal ref thread', ${now}, ${now});
 
 		INSERT INTO runs
-			(id, thread_id, workflow_name, workflow_version, provider, model, user_message_id, status, started_at, ended_at, terminal_reason)
+			(id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason)
 		VALUES
-			('01900000-0000-7000-8000-000000000111', ${sqlValue(THREAD_ID)}, 'default', '1.0.0', 'faux', 'fake-model', '01900000-0000-7000-8000-000000000112', 'completed', ${now}, ${now}, 'completed');
+			('01900000-0000-7000-8000-000000000111', ${sqlValue(THREAD_ID)}, 'default', '1.0.0', 'faux', 'fake-model', 'off', '01900000-0000-7000-8000-000000000112', 'completed', ${now}, ${now}, 'completed');
 		INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at)
 		VALUES ('01900000-0000-7000-8000-000000000112', ${sqlValue(THREAD_ID)}, '01900000-0000-7000-8000-000000000111', 'user', 'completed', ${now}, ${now});
 		INSERT INTO message_parts (message_id, seq, type, text)
@@ -138,9 +138,9 @@ function seedAcceptedJournalEntryAndPerson(dbPath: string): void {
 		VALUES ('01900000-0000-7000-8000-000000000114', ${sqlValue(SOURCE_ENTITY_ID)}, '01900000-0000-7000-8000-000000000112', 'created_from', ${now});
 
 		INSERT INTO runs
-			(id, thread_id, workflow_name, workflow_version, provider, model, user_message_id, status, started_at, ended_at, terminal_reason)
+			(id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at, ended_at, terminal_reason)
 		VALUES
-			('01900000-0000-7000-8000-000000000121', ${sqlValue(THREAD_ID)}, 'default', '1.0.0', 'faux', 'fake-model', '01900000-0000-7000-8000-000000000122', 'completed', ${now}, ${now}, 'completed');
+			('01900000-0000-7000-8000-000000000121', ${sqlValue(THREAD_ID)}, 'default', '1.0.0', 'faux', 'fake-model', 'off', '01900000-0000-7000-8000-000000000122', 'completed', ${now}, ${now}, 'completed');
 		INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at)
 		VALUES ('01900000-0000-7000-8000-000000000122', ${sqlValue(THREAD_ID)}, '01900000-0000-7000-8000-000000000121', 'user', 'completed', ${now}, ${now});
 		INSERT INTO message_parts (message_id, seq, type, text)
