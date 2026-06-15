@@ -13,9 +13,13 @@ export default defineConfig({
 	fullyParallel: true,
 	forbidOnly: !!process.env.CI,
 	retries: 0,
-	// Each test spawns its own Core; cap workers so parallel debug-Core spawns
-	// don't thrash a laptop. Override with `--workers` as needed.
-	workers: process.env.CI ? 1 : 4,
+	// Each test spawns its own Core on an ephemeral port with an isolated tempdir
+	// Workspace (ADR-0019), so the suite is fully parallel-safe. 4 workers
+	// everywhere: these tests are IO-bound (WS streaming, gate-file waits), the
+	// one cargo build is amortized in globalSetup, and the ubuntu-latest runner
+	// (4 vCPU / 16 GB) absorbs it like the dev box already does. `--workers`
+	// overrides per-invocation.
+	workers: 4,
 	reporter: "list",
 	globalSetup: "./global-setup.ts",
 	timeout: 60_000,

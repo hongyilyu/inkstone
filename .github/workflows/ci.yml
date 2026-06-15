@@ -144,7 +144,8 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: pnpm -C tests/e2e exec playwright install-deps chromium
       # globalSetup builds debug Core (cargo build) + the web SPA. CI=true is set
-      # by Actions automatically, so playwright.config self-tunes to workers=1,
-      # forbidOnly=true, retries=0. No webServer; each test spawns its own Core.
+      # by Actions automatically, so playwright.config sets forbidOnly=true and
+      # retries=0; workers=4 everywhere (per-test isolation makes it parallel-safe;
+      # ubuntu-latest is 4 vCPU). No webServer; each test spawns its own Core.
       - name: E2E (full-system Playwright harness)
         run: pnpm test:e2e
