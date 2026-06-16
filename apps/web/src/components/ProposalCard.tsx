@@ -1,37 +1,206 @@
 import {
-	BookOpenText,
 	CalendarDays,
 	Check,
-	FolderKanban,
-	ListTodo,
 	Loader2,
 	type LucideIcon,
 	Pencil,
 	RotateCcw,
-	User,
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { KIND_META } from "@/lib/libraryItems";
 import type { PendingProposal } from "@/store/chat";
 import { Card } from "./ui/card.js";
 import { Input } from "./ui/input.js";
 
-// The glyph for a proposal's mutation kind, matching the canonical entity
-// iconography (KIND_META in lib/libraryItems) so a Person proposal wears the
-// same mark it has in the Library, command palette, and detail panels. Kinds
-// differ by glyph + label, never colour alone (PRODUCT.md a11y). Journal-entry
-// mutations keep the journal book.
-function proposalGlyph(mutationKind: string): LucideIcon {
-	switch (mutationKind) {
-		case "create_person":
-			return User;
-		case "create_project":
-			return FolderKanban;
-		case "create_todo":
-		case "update_todo":
-			return ListTodo;
-		default:
-			return BookOpenText;
-	}
+// The 8 mutation kinds the Worker proposes (ADR-0025). Bookmarks and direct
+// entity-edits are user-CRUD-only (ADR-0033/0036) — never proposed — so the card
+// has never rendered them; an unrecognized kind degrades through `fallbackView`.
+type ProposalKind =
+	| "create_journal_entry"
+	| "update_journal_entry"
+	| "delete_journal_entry"
+	| "reference_existing_entity_from_journal_entry"
+	| "create_person"
+	| "create_project"
+	| "create_todo"
+	| "update_todo";
+
+// Per-kind presentation for a Proposal — the review card's analogue of KIND_META
+// (lib/libraryItems): one entry concentrates the copy, labels, glyph, and
+// edit-ability that distinguish one proposal kind from another, so a new kind is
+// one new row instead of a fork threaded through a dozen ternaries. Glyphs reuse
+// the canonical entity iconography (KIND_META) so a Person proposal wears the same
+// mark it has in the Library, palette, and detail panels; kinds differ by glyph +
+// label, never colour alone (PRODUCT.md a11y).
+interface ProposalView {
+	/** Header glyph — the canonical entity mark. */
+	glyph: LucideIcon;
+	/** Accept-button glyph — GTD kinds show their entity mark, journal kinds a calendar. */
+	acceptGlyph: LucideIcon;
+	/**
+	 * The card's bold summary line, read from the (unvalidated) payload through the
+	 * defensive helpers so a malformed payload degrades rather than crashes
+	 * (the wire keeps the payload opaque — ADR-0009/0014).
+	 */
+	summary: (payload: unknown) => string;
+	/** Muted review prompt shown above the summary. */
+	reviewCopy: string;
+	/** Confirmation copy once the Proposal is accepted / rejected. */
+	acceptedCopy: string;
+	rejectedCopy: string;
+	/** Accept-button label, and its in-flight variant. */
+	acceptLabel: string;
+	acceptBusyLabel: string;
+	/** Reject-button label, and its in-flight variant. */
+	rejectLabel: string;
+	rejectBusyLabel: string;
+	/**
+	 * Whether the inline Edit affordance is offered: only journal create/update, and
+	 * only when the body carries no entity_ref (no GTD editor in V0). A function of
+	 * the already-read `bodyHasEntityRef` rather than the raw payload.
+	 */
+	canEdit: (bodyHasEntityRef: boolean) => boolean;
+}
+
+const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
+	create_journal_entry: {
+		glyph: KIND_META.journal_entry.icon,
+		acceptGlyph: CalendarDays,
+		summary: (payload) => journalBody(payload) || "Untitled entry",
+		reviewCopy: "Inkstone wants to create a Journal Entry.",
+		acceptedCopy: "Added to Journal.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Add Journal Entry",
+		acceptBusyLabel: "Adding...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: (bodyHasEntityRef) => !bodyHasEntityRef,
+	},
+	update_journal_entry: {
+		glyph: KIND_META.journal_entry.icon,
+		acceptGlyph: CalendarDays,
+		summary: () => "Update Journal Entry",
+		reviewCopy: "Inkstone wants to update a Journal Entry.",
+		acceptedCopy: "Updated in Journal.",
+		rejectedCopy: "Kept current Journal Entry.",
+		acceptLabel: "Update Journal Entry",
+		acceptBusyLabel: "Updating...",
+		rejectLabel: "Keep current entry",
+		rejectBusyLabel: "Keeping current entry...",
+		canEdit: (bodyHasEntityRef) => !bodyHasEntityRef,
+	},
+	delete_journal_entry: {
+		glyph: KIND_META.journal_entry.icon,
+		acceptGlyph: CalendarDays,
+		summary: () => "Delete Journal Entry",
+		reviewCopy: "Inkstone wants to delete a Journal Entry.",
+		acceptedCopy: "Deleted from Journal.",
+		rejectedCopy: "Kept in Journal.",
+		acceptLabel: "Delete Journal Entry",
+		acceptBusyLabel: "Deleting...",
+		rejectLabel: "Keep Journal Entry",
+		rejectBusyLabel: "Keeping...",
+		canEdit: () => false,
+	},
+	reference_existing_entity_from_journal_entry: {
+		glyph: KIND_META.journal_entry.icon,
+		acceptGlyph: CalendarDays,
+		summary: () => "Reference existing Entity",
+		reviewCopy:
+			"Inkstone wants to link an accepted Entity from this Journal Entry.",
+		acceptedCopy: "Linked in Journal.",
+		rejectedCopy: "Kept current Journal Entry.",
+		acceptLabel: "Link Entity",
+		acceptBusyLabel: "Linking...",
+		rejectLabel: "Keep current entry",
+		rejectBusyLabel: "Keeping current entry...",
+		canEdit: () => false,
+	},
+	create_person: {
+		glyph: KIND_META.person.icon,
+		acceptGlyph: KIND_META.person.icon,
+		summary: (payload) => textField(payload, "name") || "New Person",
+		reviewCopy: "Inkstone wants to add a Person.",
+		acceptedCopy: "Added Person.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Add Person",
+		acceptBusyLabel: "Adding...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => false,
+	},
+	create_project: {
+		glyph: KIND_META.project.icon,
+		acceptGlyph: KIND_META.project.icon,
+		summary: (payload) => textField(payload, "name") || "New Project",
+		reviewCopy: "Inkstone wants to add a Project.",
+		acceptedCopy: "Added Project.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Add Project",
+		acceptBusyLabel: "Adding...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => false,
+	},
+	create_todo: {
+		glyph: KIND_META.todo.icon,
+		acceptGlyph: KIND_META.todo.icon,
+		summary: (payload) =>
+			textField(objectField(payload, "todo"), "title") || "New Todo",
+		reviewCopy: "Inkstone wants to add a Todo.",
+		acceptedCopy: "Added Todo.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Add Todo",
+		acceptBusyLabel: "Adding...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => false,
+	},
+	update_todo: {
+		glyph: KIND_META.todo.icon,
+		acceptGlyph: KIND_META.todo.icon,
+		summary: () => "Update Todo",
+		reviewCopy: "Inkstone wants to update a Todo.",
+		acceptedCopy: "Updated Todo.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Update Todo",
+		acceptBusyLabel: "Updating...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => false,
+	},
+};
+
+// An unrecognized kind renders like a generic Journal-Entry create, echoing the
+// raw kind into the review prompt. Unreachable by contract — the Worker only
+// proposes the 8 kinds above — but `mutation_kind` is a bare string on the wire
+// (ADR-0014), so the card stays legible rather than blank if one slips through.
+function fallbackView(kind: string): ProposalView {
+	return {
+		glyph: KIND_META.journal_entry.icon,
+		acceptGlyph: CalendarDays,
+		summary: (payload) => journalBody(payload) || "Untitled entry",
+		reviewCopy: `Inkstone wants to create a ${kind}.`,
+		acceptedCopy: "Added to Journal.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Add Journal Entry",
+		acceptBusyLabel: "Adding...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => false,
+	};
+}
+
+function proposalView(mutationKind: string): ProposalView {
+	// Gate on OWN membership, not a bare `??`: `mutation_kind` is an unvalidated
+	// wire string (ADR-0014), and indexing the record with a prototype key
+	// ("toString", "constructor", …) would return an inherited Object.prototype
+	// member — truthy, so `?? fallbackView` would NOT fire and the card would
+	// crash reading `.summary` off a function. `Object.hasOwn` degrades every
+	// non-own key through the fallback.
+	return Object.hasOwn(PROPOSAL_VIEWS, mutationKind)
+		? PROPOSAL_VIEWS[mutationKind as ProposalKind]
+		: fallbackView(mutationKind);
 }
 
 type JournalEntryPayload = {
@@ -178,62 +347,33 @@ export function ProposalCard({
 	const bodyHasEntityRef =
 		journalBodyHasEntityRef(payload) ||
 		journalBodyHasEntityRef(currentJournalEntry);
+	// Retained because OUT-OF-SCOPE code consumes them: the journal payload
+	// validation below reads create/update; the journal detail-render gates on
+	// create/update/delete; the GTD detail-render gates on `isGtdProposal`. The
+	// per-kind copy/labels/glyph these once drove now live in PROPOSAL_VIEWS.
 	const isCreateProposal = mutation_kind === "create_journal_entry";
 	const isUpdateProposal = mutation_kind === "update_journal_entry";
 	const isDeleteProposal = mutation_kind === "delete_journal_entry";
-	const isReferenceProposal =
-		mutation_kind === "reference_existing_entity_from_journal_entry";
-	const isJournalEntryProposal =
-		isCreateProposal ||
-		isUpdateProposal ||
-		isDeleteProposal ||
-		isReferenceProposal;
-	const isCreatePersonProposal = mutation_kind === "create_person";
-	const isCreateProjectProposal = mutation_kind === "create_project";
-	const isCreateTodoProposal = mutation_kind === "create_todo";
-	const isUpdateTodoProposal = mutation_kind === "update_todo";
 	const isGtdProposal =
-		isCreatePersonProposal ||
-		isCreateProjectProposal ||
-		isCreateTodoProposal ||
-		isUpdateTodoProposal;
-	// Header + accept-button glyph track the kind (Person/Project/Todo/Journal),
-	// so the mark always matches the thing being proposed.
-	const HeaderGlyph = proposalGlyph(mutation_kind);
-	const AcceptGlyph = isGtdProposal ? HeaderGlyph : CalendarDays;
-	const title = isJournalEntryProposal ? "Journal Entry" : mutation_kind;
-	const gtdSummary = isCreatePersonProposal
-		? textField(payload, "name") || "New Person"
-		: isCreateProjectProposal
-			? textField(payload, "name") || "New Project"
-			: isCreateTodoProposal
-				? textField(objectField(payload, "todo"), "title") || "New Todo"
-				: "Update Todo";
-	const summary = isDeleteProposal
-		? "Delete Journal Entry"
-		: isReferenceProposal
-			? "Reference existing Entity"
-			: isUpdateProposal
-				? "Update Journal Entry"
-				: isGtdProposal
-					? gtdSummary
-					: bodyText || "Untitled entry";
-	const gtdReviewCopy = isCreatePersonProposal
-		? "Inkstone wants to add a Person."
-		: isCreateProjectProposal
-			? "Inkstone wants to add a Project."
-			: isCreateTodoProposal
-				? "Inkstone wants to add a Todo."
-				: "Inkstone wants to update a Todo.";
-	const reviewCopy = isDeleteProposal
-		? "Inkstone wants to delete a Journal Entry."
-		: isReferenceProposal
-			? "Inkstone wants to link an accepted Entity from this Journal Entry."
-			: isUpdateProposal
-				? "Inkstone wants to update a Journal Entry."
-				: isGtdProposal
-					? gtdReviewCopy
-					: `Inkstone wants to create a ${title}.`;
+		mutation_kind === "create_person" ||
+		mutation_kind === "create_project" ||
+		mutation_kind === "create_todo" ||
+		mutation_kind === "update_todo";
+	// The single resolved presentation entry: header glyph, accept-button glyph,
+	// summary, review/accepted/rejected copy, accept/reject labels (+ busy variants),
+	// and edit-ability all read from here instead of a per-kind ternary.
+	const view = proposalView(mutation_kind);
+	const HeaderGlyph = view.glyph;
+	const AcceptGlyph = view.acceptGlyph;
+	const summary = view.summary(payload);
+	const reviewCopy = view.reviewCopy;
+	const acceptedCopy = view.acceptedCopy;
+	const rejectedCopy = view.rejectedCopy;
+	const acceptLabel = view.acceptLabel;
+	const acceptBusyLabel = view.acceptBusyLabel;
+	const rejectLabel = view.rejectLabel;
+	const rejectBusyLabel = view.rejectBusyLabel;
+	const canEdit = view.canEdit(bodyHasEntityRef);
 	const payloadIssue = isCreateProposal
 		? journalPayloadIssue(occurredAt, bodyText, endedAt)
 		: isUpdateProposal
@@ -241,65 +381,6 @@ export function ProposalCard({
 			: null;
 	// GTD cards carry no journal-style payload validation — they are always applyable.
 	const canApply = payloadIssue === null;
-	// No GTD editor in V0; keep Edit hidden for GTD kinds (like delete/reference).
-	const canEdit = (isCreateProposal || isUpdateProposal) && !bodyHasEntityRef;
-	const gtdAcceptedCopy = isCreatePersonProposal
-		? "Added Person."
-		: isCreateProjectProposal
-			? "Added Project."
-			: isCreateTodoProposal
-				? "Added Todo."
-				: "Updated Todo.";
-	const acceptedCopy = isDeleteProposal
-		? "Deleted from Journal."
-		: isReferenceProposal
-			? "Linked in Journal."
-			: isUpdateProposal
-				? "Updated in Journal."
-				: isGtdProposal
-					? gtdAcceptedCopy
-					: "Added to Journal.";
-	const rejectedCopy = isDeleteProposal
-		? "Kept in Journal."
-		: isUpdateProposal || isReferenceProposal
-			? "Kept current Journal Entry."
-			: "Dismissed.";
-	const gtdAcceptLabel = isCreatePersonProposal
-		? "Add Person"
-		: isCreateProjectProposal
-			? "Add Project"
-			: isCreateTodoProposal
-				? "Add Todo"
-				: "Update Todo";
-	const acceptLabel = isDeleteProposal
-		? "Delete Journal Entry"
-		: isReferenceProposal
-			? "Link Entity"
-			: isUpdateProposal
-				? "Update Journal Entry"
-				: isGtdProposal
-					? gtdAcceptLabel
-					: "Add Journal Entry";
-	const gtdAcceptBusyLabel = isUpdateTodoProposal ? "Updating..." : "Adding...";
-	const acceptBusyLabel = isDeleteProposal
-		? "Deleting..."
-		: isReferenceProposal
-			? "Linking..."
-			: isUpdateProposal
-				? "Updating..."
-				: isGtdProposal
-					? gtdAcceptBusyLabel
-					: "Adding...";
-	const rejectLabel = isDeleteProposal
-		? "Keep Journal Entry"
-		: isUpdateProposal || isReferenceProposal
-			? "Keep current entry"
-			: "Dismiss";
-	const rejectBusyLabel = isDeleteProposal
-		? "Keeping..."
-		: isUpdateProposal || isReferenceProposal
-			? "Keeping current entry..."
-			: "Dismissing...";
 
 	const [inFlight, setInFlight] = useState<"accept" | "reject" | "edit" | null>(
 		null,

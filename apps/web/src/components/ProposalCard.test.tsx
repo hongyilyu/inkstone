@@ -593,6 +593,50 @@ describe("ProposalCard", () => {
 		expect(onDecide).not.toHaveBeenCalled();
 	});
 
+	describe("reference_existing_entity_from_journal_entry", () => {
+		const referenceProposal: PendingProposal = {
+			proposal_id: "prop-ref",
+			run_id: "run-ref",
+			mutation_kind: "reference_existing_entity_from_journal_entry",
+			payload: { entity_id: "entry-123", ref_id: "person-1" },
+			rationale: "the user named an entity worth linking",
+			status: "pending",
+		};
+
+		// reference's reviewCopy + rejectedCopy are otherwise unguarded — e2e asserts
+		// only its summary/Link label/accepted copy, so a mistyped row here would slip
+		// through the whole suite. Lock both strings the table owns for this kind.
+		it("renders the reference review copy and Link/Keep labels", () => {
+			render(<ProposalCard proposal={referenceProposal} onDecide={() => {}} />);
+			expect(
+				screen.getByText(
+					"Inkstone wants to link an accepted Entity from this Journal Entry.",
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /link entity/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /keep current entry/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: /^edit$/i }),
+			).not.toBeInTheDocument();
+		});
+
+		it("shows the reference rejected copy when kept", () => {
+			render(
+				<ProposalCard
+					proposal={{ ...referenceProposal, status: "rejected" }}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(
+				screen.getByText("Kept current Journal Entry."),
+			).toBeInTheDocument();
+		});
+	});
+
 	describe("create_person", () => {
 		const createPerson: PendingProposal = {
 			proposal_id: "prop-person",
@@ -957,6 +1001,57 @@ describe("ProposalCard", () => {
 			expect(screen.getByText(/todo-9/)).toBeInTheDocument();
 			expect(
 				screen.getByRole("button", { name: /update todo/i }),
+			).toBeInTheDocument();
+		});
+
+		// `mutation_kind` is an unvalidated wire string (Core stores it raw at park
+		// time), so the presentation lookup must degrade ANY unrecognized kind to the
+		// fallback — including a prototype key like "constructor"/"toString", which a
+		// bare `record[kind] ?? fallback` would wrongly resolve to an inherited
+		// Object.prototype member and crash the card.
+		it("renders a prototype-key mutation_kind through the fallback without crashing", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard
+					proposal={{
+						proposal_id: "prop-proto",
+						run_id: "run-proto",
+						mutation_kind: "constructor",
+						payload: { body: [{ type: "text", text: "Body text" }] },
+						rationale: null,
+						status: "pending",
+					}}
+					onDecide={onDecide}
+				/>,
+			);
+			expect(
+				screen.getByText("Inkstone wants to create a constructor."),
+			).toBeInTheDocument();
+			const accept = screen.getByRole("button", { name: /add journal entry/i });
+			expect(accept).toBeInTheDocument();
+			fireEvent.click(accept);
+			expect(onDecide).toHaveBeenCalledWith("accept");
+		});
+
+		it("renders an unrecognized mutation_kind through the fallback", () => {
+			render(
+				<ProposalCard
+					proposal={{
+						proposal_id: "prop-unknown",
+						run_id: "run-unknown",
+						mutation_kind: "create_bookmark",
+						payload: null,
+						rationale: null,
+						status: "pending",
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(
+				screen.getByText("Inkstone wants to create a create_bookmark."),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /add journal entry/i }),
 			).toBeInTheDocument();
 		});
 	});

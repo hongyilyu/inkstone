@@ -51,6 +51,9 @@ test.describe("Direct capture intent matrix (faux capture mode)", () => {
 
 		const card = pendingCard(chat);
 		await expect(card).toBeVisible({ timeout: 15_000 });
+		// The per-kind presentation table drives the review copy + title; assert both
+		// render through the real browser, not just the accept button.
+		await expect(card).toContainText("Inkstone wants to add a Todo.");
 		await expect(card).toContainText("Buy milk");
 		await card.getByRole("button", { name: /add todo/i }).click();
 
@@ -80,6 +83,7 @@ test.describe("Direct capture intent matrix (faux capture mode)", () => {
 
 		const card = pendingCard(chat);
 		await expect(card).toBeVisible({ timeout: 15_000 });
+		await expect(card).toContainText("Inkstone wants to add a Project.");
 		await expect(card).toContainText("Ship API v2 migration");
 		await card.getByRole("button", { name: /add project/i }).click();
 
@@ -106,7 +110,9 @@ test.describe("Direct capture intent matrix (faux capture mode)", () => {
 
 		const card = pendingCard(chat);
 		await expect(card).toBeVisible({ timeout: 15_000 });
+		await expect(card).toContainText("Inkstone wants to add a Person.");
 		await expect(card).toContainText("Alice");
+		await expect(card).toContainText("daycare coordinator");
 		await card.getByRole("button", { name: /add person/i }).click();
 
 		await expect(acceptedCard(chat)).toBeVisible({ timeout: 15_000 });
