@@ -1,9 +1,10 @@
 // The hand-authored Effect Schema mirror of each agent-proposable Workspace
 // mutation's `payload` (ADR-0009's "manually mirrored types + contract tests"
-// discipline; this contract-test package lives at `tests/contract`). One
-// entry per wire kind in `schemas`; `parity.test.ts` runs each through
-// `JSONSchema.make`, normalizes, and asserts deep-equality with the committed
-// Rust fixture (`fixtures/<kind>.json`, the schema-of-record).
+// discipline; promoted into `@inkstone/protocol` so the parity gate guards the
+// shipped schema). One entry per wire kind in `schemas`; `parity.test.ts`
+// (`tests/contract`) runs each through `JSONSchema.make`, normalizes, and
+// asserts deep-equality with the committed Rust fixture (`fixtures/<kind>.json`,
+// the schema-of-record).
 //
 // All 13 wire kinds are authored and registered in `schemas`. `create_todo` is
 // the deepest payload — nested objects 3 levels deep, arrays of objects, enums,
@@ -313,3 +314,39 @@ export const schemas = {
 } as const satisfies Record<string, S.Schema.Any>;
 
 export type WireKind = keyof typeof schemas;
+
+// ── bookmark payloads (UNGATED — ADR-0036) ──
+//
+// Bookmark is user-CRUD-only (no agent proposal, no Rust `PayloadSpec`, no
+// parity fixture), so its three schemas are NOT registered in `schemas` (that
+// would break the 13-kind completeness lock and the parity iteration). They are
+// authored here for the Web codec to import directly; the codec's own round-trip
+// test is their only guard. Modeled on Person: `title` required non-empty; the
+// rest optional bare strings; `tags` an array of BARE strings (the Person
+// `aliases` dialect). No `source_journal_entry_id` — bookmarks have no journal
+// provenance. `update_bookmark` prepends the required bare `entity_id`;
+// `delete_bookmark` reuses the shared `deleteByEntityId` factory.
+
+/** The Bookmark core: `title` required (non-empty), `url`/`note` optional bare
+ * strings, `tags` optional array of BARE strings. Spread into create/update so
+ * neither duplicates it. */
+const bookmarkCore = {
+	title: nonEmptyString,
+	url: S.optional(S.String),
+	note: S.optional(S.String),
+	tags: S.optional(S.Array(S.String)),
+};
+
+/** `create_bookmark`: Bookmark core (no provenance id). */
+export const createBookmark = S.Struct({
+	...bookmarkCore,
+});
+
+/** `update_bookmark`: required `entity_id` (bare) + Bookmark core. */
+export const updateBookmark = S.Struct({
+	entity_id: S.String,
+	...bookmarkCore,
+});
+
+/** `delete_bookmark`: the shared single-`entity_id` delete payload. */
+export const deleteBookmark = deleteByEntityId;

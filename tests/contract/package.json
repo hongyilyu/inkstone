@@ -3,14 +3,12 @@
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
-	"exports": {
-		".": "./src/schemas.ts"
-	},
 	"scripts": {
 		"check": "tsc --noEmit",
 		"test": "vitest run"
 	},
 	"dependencies": {
+		"@inkstone/protocol": "workspace:*",
 		"effect": "^3.21.2"
 	},
 	"devDependencies": {

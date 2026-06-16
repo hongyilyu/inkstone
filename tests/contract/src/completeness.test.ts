@@ -15,8 +15,8 @@
 
 import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { schemas } from "@inkstone/protocol";
 import { describe, expect, it } from "vitest";
-import { schemas } from "./schemas.js";
 
 /** The 13 agent-proposable wire kinds, verbatim from `ProposableMutation::ALL`
  * (`crates/core/src/.../mutation.rs`, via `as_wire`). The single source the two

@@ -12,10 +12,10 @@
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { schemas, type WireKind } from "@inkstone/protocol";
 import { JSONSchema, type Schema as S } from "effect";
 import { describe, expect, it } from "vitest";
 import { normalize } from "./normalize.js";
-import { schemas, type WireKind } from "./schemas.js";
 
 const fixturesDir = fileURLToPath(new URL("../fixtures/", import.meta.url));
 
