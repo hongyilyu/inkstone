@@ -14,6 +14,17 @@ We are declining them for the MVP because:
 
 The contract tests are the real quality bar — they catch the drift that manual mirroring is most likely to produce.
 
+## As-built: the schema-parity gate (2026-06)
+
+The contract-test leg this ADR called for now exists in `bridges/contract`, and it covers a second, larger surface beyond the Worker ↔ Core protocol types this ADR was written about: the **agent-proposable Workspace mutation payloads**. Core single-sources each of the 13 proposable kinds' payload shape from one `PayloadSpec` (`crates/core/src/field_spec.rs`), which emits an inline Draft-07 fragment; the Web side hand-mirrors each as an Effect Schema. The gate dumps the Rust schema per kind to a committed fixture and asserts the Effect Schema, run through `JSONSchema.make` and normalized to a common dialect, deep-equals it. Note the wire `payload` itself stays `S.Unknown` in `packages/protocol` — the typed Effect Schemas live only in the test package, so this is a contract *test*, not a wire-type change.
+
+Two boundaries are deliberate and worth recording, because they bound what "the schemas agree" means:
+
+- **It compares the advertised schema, not the validator, and not the envelope.** Where Core deliberately advertises a looser schema than it validates (a bare-string `entity_id` it nonetheless UUID-checks; plain-string `aliases`/`tags`/`remove_person_ids` elements it requires non-empty), the mirror follows the *schema*. Cross-field invariants (status↔timestamp, the recurrence couplings, exactly-one entity_ref, `ended_at >= occurred_at`) are hand-written hooks in `crates/core/src/entities.rs`, not in the schema layer, so the gate does not see them. The `{mutation_kind, payload, rationale}` envelope and the top-level `oneOf` framing are Core-owned and not mirrored.
+- **It is a structural-drift catcher** — field presence, optionality, type, and enum domain across the seam — **not a full-contract catcher.** A field added on one side but forgotten on the other turns CI red; a semantic divergence inside an already-present field does not.
+
+This is the implementation of this ADR's discipline, at the location [ADR-0008](./0008-monorepo-shape.md)/[ADR-0019](./0019-test-harness-architecture.md) name, in [ADR-0018](./0018-workflow-and-tools-definition.md)'s inline-Draft-07 dialect — not a new decision. The package's own `README.md` carries the same in/out-of-scope boundary for contributors.
+
 ## When to revisit
 
 This decision is explicitly MVP-only. Triggers to revisit:

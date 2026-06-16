@@ -14,7 +14,7 @@
 			"!**/.impeccable",
 			"!**/*.gen.ts",
 			"!skills-lock.json",
-			"!bridges/contract/fixtures/**"
+			"!bridges/contract/fixtures"
 		]
 	},
 	"css": {

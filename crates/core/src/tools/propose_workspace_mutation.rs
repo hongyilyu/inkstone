@@ -74,11 +74,11 @@ mod tests {
     /// expression [`descriptor`] binds — NOT the `{mutation_kind, payload,
     /// rationale}` envelope.
     ///
-    /// It writes ALL 13 fixtures even though slice 1's TS test asserts only
-    /// `create_todo`, so slices 2/3 add Effect Schemas with no Rust churn. The
-    /// output is deterministic (`serde_json` sorts object keys; pretty-print +
-    /// trailing newline), so CI re-runs it and `git diff --exit-code` is the
-    /// staleness gate.
+    /// It writes ALL 13 fixtures — the TS parity test (`bridges/contract`)
+    /// asserts every one against its committed fixture. The output is
+    /// deterministic (`serde_json` sorts object keys; pretty-print + trailing
+    /// newline), so CI re-runs it and `git diff --exit-code` is the staleness
+    /// gate.
     #[test]
     fn regenerate_schema_fixtures() {
         let fixtures_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

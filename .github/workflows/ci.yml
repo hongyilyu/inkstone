@@ -107,14 +107,21 @@ jobs:
         run: cargo check --locked --manifest-path crates/core/Cargo.toml
       - name: Cargo test
         run: cargo test --locked --manifest-path crates/core/Cargo.toml
-      # Re-dump the 13 proposable payload schemas, then fail if any committed
+      # Re-dump the proposable payload schemas, then fail if any committed
       # fixture drifted from a fresh dump — the schema-parity staleness gate
       # (bridges/contract). A PayloadSpec change that wasn't re-committed turns
       # this red.
       - name: Regenerate schema fixtures
         run: cargo test --locked --manifest-path crates/core/Cargo.toml regenerate_schema_fixtures
+      # `git add -N` stages intent-to-add for any NEW fixture (a freshly-added
+      # proposable kind), so `git diff --exit-code` catches it too — plain
+      # `git diff` only sees tracked files and would miss an un-added new kind.
+      # (Defense-in-depth: the Rust `fixtures_match_committed` include_str! table
+      # and `completeness.test.ts` also fail on a new kind.)
       - name: Schema fixtures are committed (no drift)
-        run: git diff --exit-code bridges/contract/fixtures/
+        run: |
+          git add -N bridges/contract/fixtures/
+          git diff --exit-code bridges/contract/fixtures/
 
   e2e:
     name: e2e

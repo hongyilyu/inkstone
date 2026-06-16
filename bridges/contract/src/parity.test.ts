@@ -1,4 +1,4 @@
-// The schema parity gate (slice 1: `create_todo` only). For each covered wire
+// The schema parity gate (all 13 proposable wire kinds). For each covered wire
 // kind, run its hand-authored Effect Schema through `JSONSchema.make`, normalize
 // it, and assert deep-equality with the normalized Rust fixture — proving the
 // Core (`PayloadSpec`) and Web (Effect Schema) definitions of the wire `payload`

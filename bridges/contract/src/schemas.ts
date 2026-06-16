@@ -5,11 +5,11 @@
 // `JSONSchema.make`, normalizes, and asserts deep-equality with the committed
 // Rust fixture (`fixtures/<kind>.json`, the schema-of-record).
 //
-// Slice 1 authors `create_todo` only — the deepest payload, exercising ~every
-// dialect quirk (nested objects 3 levels deep, arrays of objects, enums,
+// All 13 wire kinds are authored and registered in `schemas`. `create_todo` is
+// the deepest payload — nested objects 3 levels deep, arrays of objects, enums,
 // positive integers, datetime pattern+description, the bare-vs-patterned UUID
-// split). Slices 2/3 add the other 12 kinds by extending `schemas`; no Rust
-// change is needed because all 13 fixtures are already committed.
+// split — so its leaf builders (defined first, below) are the shared vocabulary
+// the other kinds reuse.
 
 import { Schema as S } from "effect";
 
@@ -58,7 +58,7 @@ const patternedUuid = S.String.pipe(
 	),
 );
 
-// ── create_todo sub-schemas (named so slices 2/3 can reuse them) ──
+// ── create_todo sub-schemas (shared leaf builders reused across kinds) ──
 
 /** `recurrence.only_on` (ADR-0037): weekday names / month-day integers. */
 const recurrenceOnlyOn = S.Struct({
@@ -140,11 +140,13 @@ const updateTodo = S.Struct({
 	remove_person_ids: S.optional(S.Array(S.String)),
 });
 
-// ── delete payloads (`delete_person` / `delete_project` / `delete_todo`) ──
+// ── delete payloads ──
 //
-// All three are the identical `{entity_id}` shape: a bare-string id (a UUID at
-// runtime, but advertised bare per the dialect — `FieldSpec::Uuid` WITHOUT
-// `schema_regex`, like `todo_id`), required. One shared factory, three entries.
+// The four deletes (`delete_person` / `delete_project` / `delete_todo`, plus
+// `delete_journal_entry`, registered under the journal section below) are the
+// identical `{entity_id}` shape: a bare-string id (a UUID at runtime, but
+// advertised bare per the dialect — `FieldSpec::Uuid` WITHOUT `schema_regex`,
+// like `todo_id`), required. One shared factory, four entries.
 
 /** The shared single-`entity_id` delete payload. */
 const deleteByEntityId = S.Struct({
