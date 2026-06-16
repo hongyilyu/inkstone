@@ -165,6 +165,75 @@ fn read_thread_returns_another_threads_messages() {
 }
 
 #[test]
+fn search_entities_dispatches_to_its_own_handler() {
+    // A second, distinctly-shaped tool through the real worker + the collapsed
+    // tool registry. `search_entities` and `read_thread` are BOTH allowlisted
+    // `Pool`-variant dispatches, so a registry entry that wired one to the
+    // other's `execute` would still compile and still pass the unit tests — only
+    // an end-to-end dispatch catches the mis-wire. This asserts the request
+    // reaches `search_entities::execute` specifically: its `{ "results": [...] }`
+    // payload shape is one `read_thread` never emits.
+    let workspace = Workspace::new();
+    let core = workspace
+        .core()
+        .worker_fixture("tool-worker.ts")
+        .env("INKSTONE_TOOLWORKER_TOOL", "search_entities")
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    let run = rt.block_on(async {
+        // No entities exist, so the search succeeds with an empty result set —
+        // the dispatch reached search_entities, not a not_found from read_thread.
+        let (_thread, run, text, tools) = run_and_collect(&core, "hi").await;
+        assert!(
+            text.contains(r#"tool_outcome=ok:{"results":[]}"#),
+            "search_entities dispatched to its own handler, returning a results payload — got {text:?}"
+        );
+        assert_eq!(
+            tools,
+            vec![
+                ("search_entities".to_string(), "started".to_string()),
+                ("search_entities".to_string(), "completed".to_string()),
+            ],
+            "search_entities surfaced started→completed on the stream — got {tools:?}",
+        );
+        run
+    });
+
+    rt.block_on(async {
+        let url = format!("sqlite://{}?mode=ro", workspace.db_path().display());
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect to migrated DB");
+
+        let row =
+            sqlx::query("SELECT name, status, result_payload FROM tool_calls WHERE run_id = ?1")
+                .bind(&run)
+                .fetch_one(&pool)
+                .await
+                .expect("a tool_calls row exists for the run");
+        let name: String = row.get("name");
+        let status: String = row.get("status");
+        let result_payload: Option<String> = row.get("result_payload");
+        assert_eq!(name, "search_entities");
+        assert_eq!(status, "completed");
+        // The persisted payload is the serialized AgentToolResult, carrying the
+        // tool's `results` shape as nested text — a discriminator read_thread
+        // (which returns thread_id/title/messages) never produces.
+        assert!(
+            result_payload.as_deref().unwrap_or("").contains("results"),
+            "result_payload carries the search_entities results shape — got {result_payload:?}"
+        );
+    });
+}
+
+#[test]
 fn unknown_thread_id_returns_error_outcome() {
     let workspace = Workspace::new();
     // No id-file → the fixture reads an unknown id; read_thread must return an
