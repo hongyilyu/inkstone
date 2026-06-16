@@ -42,13 +42,10 @@ pub async fn dispatch(
         "run/subscribe" => {
             // Hand-written (streaming); decode framing matches the combinator —
             // a malformed id is invalid_params (ADR-0029).
-            match serde_json::from_value::<SubscribeParams>(req.params) {
-                Ok(params) => subscribe::handle(pool, hubs, req.id, params, out_tx).await,
-                Err(e) => handler::frame_error(
-                    out_tx,
-                    req.id,
-                    handler::HandlerError::InvalidParams(format!("invalid params: {e}")),
-                ),
+            if let Some(params) =
+                handler::decode_params::<SubscribeParams>(out_tx, req.id.clone(), req.params)
+            {
+                subscribe::handle(pool, hubs, req.id, params, out_tx).await;
             }
         }
         "run/cancel" => {
@@ -79,13 +76,12 @@ pub async fn dispatch(
         "proposal/decide" => {
             // Hand-written (idempotent multi-step); decode framing matches the
             // combinator — a malformed id is invalid_params (ADR-0029).
-            match serde_json::from_value::<crate::protocol::ProposalDecideParams>(req.params) {
-                Ok(params) => proposal::handle_decide(pool, hubs, req.id, params, out_tx).await,
-                Err(e) => handler::frame_error(
-                    out_tx,
-                    req.id,
-                    handler::HandlerError::InvalidParams(format!("invalid params: {e}")),
-                ),
+            if let Some(params) = handler::decode_params::<crate::protocol::ProposalDecideParams>(
+                out_tx,
+                req.id.clone(),
+                req.params,
+            ) {
+                proposal::handle_decide(pool, hubs, req.id, params, out_tx).await;
             }
         }
         "provider/status" => {
