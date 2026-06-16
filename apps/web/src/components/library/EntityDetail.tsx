@@ -4,7 +4,6 @@ import {
 	BookOpenText,
 	MessageSquareText,
 	Pencil,
-	PenLine,
 	Trash2,
 } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
@@ -374,8 +373,8 @@ function JournalEntryDetail({
  * The Bookmark inspector (ADR-0033/ADR-0036): a read-only body (no relations),
  * edited via `BookmarkEditor`. Intentionally passes no `allEntities` — a Bookmark
  * is always a direct user create (the agent never authors one, CONTEXT.md), so it
- * carries no Entity Source and its "Captured from" footer always takes the
- * user-authored branch, which needs no entity lookup.
+ * carries no Entity Source and renders no "Captured from" footer, needing no
+ * entity lookup.
  */
 function BookmarkDetail({ bookmark }: { bookmark: Bookmark }) {
 	return (
@@ -396,13 +395,15 @@ function BookmarkDetail({ bookmark }: { bookmark: Bookmark }) {
 }
 
 /**
- * The Inspector's "Captured from" provenance line (ADR-0030), rendered once per
- * inspector at the foot of the scrolling body. Three states from `entity.source`:
- * a Thread source links back to the originating chat; a Journal-Entry source
- * links to that entry in the Library; a user-authored Entity (no source) shows a
- * non-interactive "Created in Library" line. The signature magenta is reserved
- * for the link title (a rationed "captured-from link", per DESIGN.md), so the row
- * reads as quiet Inspector metadata, not a call to action.
+ * The Inspector's "Captured from" provenance footer (ADR-0030). Rendered ONLY
+ * when the Entity's origin resolves to a working link — a Thread source (link
+ * back to the originating chat) or a Journal-Entry source still present in the
+ * Library (link to that entry). Everything else renders nothing: a user-authored
+ * Entity has no source, and an extracted Entity whose source row was removed
+ * (the source Journal Entry/Message was deleted — `entity_sources` cascades) can
+ * no longer point anywhere, so a dead "captured from …" line would mislead. The
+ * signature magenta is reserved for the link title (a rationed "captured-from
+ * link", per DESIGN.md); the footer reads as quiet metadata, not a CTA.
  */
 function CapturedFrom({
 	entity,
@@ -416,37 +417,13 @@ function CapturedFrom({
 	onOpenThread: (threadId: string) => void;
 }) {
 	const source = entity.source;
-
-	// User-authored: a quiet, non-interactive origin line — no link, no magenta.
-	if (!source) {
-		return (
-			<ProvenanceFrame>
-				<span className="flex items-center gap-2.5 px-2 py-1.5 text-muted-foreground text-sm">
-					<PenLine className="size-4 shrink-0" aria-hidden />
-					<span className="min-w-0 truncate">
-						Created in Library · {entity.createdAt}
-					</span>
-				</span>
-			</ProvenanceFrame>
-		);
-	}
+	if (!source) return null;
 
 	if (source.kind === "journal_entry") {
 		const target = allEntities.find((e) => e.id === source.journalEntryId);
-		// The source entry is gone (e.g. deleted): keep the provenance line, but
-		// don't offer a dead link.
-		if (!target) {
-			return (
-				<ProvenanceFrame>
-					<span className="flex items-center gap-2.5 px-2 py-1.5 text-muted-foreground text-sm">
-						<BookOpenText className="size-4 shrink-0" aria-hidden />
-						<span className="min-w-0 truncate">
-							Captured from a Journal Entry · {entity.createdAt}
-						</span>
-					</span>
-				</ProvenanceFrame>
-			);
-		}
+		// The source entry is gone (deleted): no resolvable link, so render nothing
+		// rather than a dead row.
+		if (!target) return null;
 		return (
 			<ProvenanceFrame>
 				<ProvenanceLink

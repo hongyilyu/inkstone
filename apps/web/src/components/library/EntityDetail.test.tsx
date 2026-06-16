@@ -688,31 +688,28 @@ describe("EntityDetail Captured from", () => {
 		expect(setFocusedThread).not.toHaveBeenCalled();
 	});
 
-	it("shows a non-link origin for a user-authored Entity", () => {
+	it("renders no footer for a user-authored Entity (no source)", () => {
 		const todo = todoItem("t_user", {
 			title: "Hand-made",
 			createdAt: "Jun 14",
 		});
 		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
 
-		expect(screen.getByText(/Created in Library · Jun 14/)).toBeInTheDocument();
-		// No interactive "Captured from" affordance for a user-authored Entity.
-		expect(
-			screen.queryByRole("button", { name: /Captured from/ }),
-		).not.toBeInTheDocument();
+		// A user-authored Entity has no provenance, so the footer is absent
+		// entirely — no "Captured from" header, no origin line.
+		expect(screen.queryByText(/Captured from/)).not.toBeInTheDocument();
+		expect(screen.queryByText(/Created in Library/)).not.toBeInTheDocument();
 	});
 
-	it("keeps the provenance line but drops the link when the source entry is gone", () => {
+	it("renders no footer when the source entry is gone (cascade-deleted)", () => {
 		const todo = todoItem("t_orphan", {
 			title: "Orphaned",
 			source: { kind: "journal_entry", journalEntryId: "missing_je" },
 		});
-		// allEntities lacks `missing_je` → no resolvable target.
+		// allEntities lacks `missing_je` → no resolvable target → no dead row.
 		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
 
-		expect(
-			screen.getByText(/Captured from a Journal Entry/),
-		).toBeInTheDocument();
+		expect(screen.queryByText(/Captured from/)).not.toBeInTheDocument();
 	});
 
 	it("falls back to a label when the source Journal Entry has empty body text", () => {
