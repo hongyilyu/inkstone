@@ -99,9 +99,9 @@ export type Weekday = "sun" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat";
 
 /**
  * A Todo's repeat rule (ADR-0037). The view model camelCases the snake_case
- * fields Core stores in `data.recurrence`; the snake→camel mapping happens in
- * the entity codec's `parseTodo`. Core validates and persists the rule; the
- * UI only displays it.
+ * fields Core stores in `data.recurrence`; the entity codec maps between the two
+ * (`parseTodo` on the way in, `buildTodo` re-snakes it on the way out). Core
+ * validates and persists the rule.
  */
 export interface RecurrenceRule {
 	interval: number;
