@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import {
-	buildTodo,
+	entityCodec,
 	recurAnchorDatePresent,
 	type TodoDraft,
 	todoDraftFromVm,
@@ -113,8 +113,8 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 	const submit = () => {
 		if (titleEmpty || anchorMissing || intervalInvalid) return;
 		const params = existing
-			? buildTodo({ mode: "update", existing, baseline, draft })
-			: buildTodo({ mode: "create", draft });
+			? entityCodec.todo.build({ mode: "update", existing, baseline, draft })
+			: entityCodec.todo.build({ mode: "create", draft });
 		if (params === null) {
 			// Nothing changed — close without a write.
 			onDone(existing?.id ?? draft.title);

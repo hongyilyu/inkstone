@@ -3,7 +3,6 @@ import { useId, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import {
 	buildBody,
-	buildJournalEntry,
 	buildJournalReference,
 	type DraftBodyNode,
 	entityCodec,
@@ -121,7 +120,11 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 		const run = async () => {
 			if (journalScalarsDiffer(entry, draft)) {
 				await mutation.mutateAsync(
-					buildJournalEntry({ mode: "update", existing: entry, draft }),
+					entityCodec.journal_entry.build({
+						mode: "update",
+						existing: entry,
+						draft,
+					}),
 				);
 			}
 			const result = await mutation.mutateAsync(referenceParams);

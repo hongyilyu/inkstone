@@ -30,6 +30,7 @@ import {
 	parseTodo,
 	personDraftFromVm,
 	projectDraftFromVm,
+	recurAnchorDatePresent,
 	stagedNewChip,
 	type TodoDraft,
 	todoDraftFromVm,
@@ -539,6 +540,44 @@ describe("entityCodec build — todo create", () => {
 		const todo = (params?.payload as { todo: Record<string, unknown> }).todo;
 		expect(todo).not.toHaveProperty("recurrence");
 	});
+
+	// The codec OWNS the anchor gate (recurActive = recurs && recurAnchorDatePresent):
+	// when Repeats is on but the chosen anchor's date is absent, Core would reject the
+	// rule, so the codec omits it. The editor's Save-block makes this state hard to reach
+	// today, but the codec must be correct standalone — a future caller routed through
+	// build() without that guard can't be allowed to emit an anchorless rule.
+	it("omits recurrence when Repeats is on but the anchor date is absent", () => {
+		const params = buildTodo({
+			mode: "create",
+			draft: draft({
+				title: "Repeat me",
+				recurs: true,
+				recurAnchor: "due_at",
+				// dueDay intentionally left "" — the anchor's date is missing.
+			}),
+		});
+		const todo = (params?.payload as { todo: Record<string, unknown> }).todo;
+		expect(todo).not.toHaveProperty("recurrence");
+	});
+
+	it("recurAnchorDatePresent gates on the chosen anchor's date", () => {
+		expect(
+			recurAnchorDatePresent(draft({ recurAnchor: "due_at", dueDay: "" })),
+		).toBe(false);
+		expect(
+			recurAnchorDatePresent(
+				draft({ recurAnchor: "due_at", dueDay: "2026-07-01" }),
+			),
+		).toBe(true);
+		expect(
+			recurAnchorDatePresent(draft({ recurAnchor: "defer_at", deferDay: "" })),
+		).toBe(false);
+		expect(
+			recurAnchorDatePresent(
+				draft({ recurAnchor: "defer_at", deferDay: "2026-07-01" }),
+			),
+		).toBe(true);
+	});
 });
 
 describe("entityCodec build — todo update", () => {
@@ -659,6 +698,14 @@ describe("entityCodec build — todo update", () => {
 		const todo = (params?.payload as { todo: Record<string, unknown> }).todo;
 		expect(todo).toEqual({ title: "Send schedule v2" });
 		expect(todo).not.toHaveProperty("recurrence");
+	});
+
+	// Anchor gate (update side): toggling Repeats ON without the anchor's date keeps
+	// recurActive false on both prev and next, so the rule diff is null↔null — no
+	// recurrence key, and certainly no anchorless rule Core would reject.
+	it("omits recurrence when Repeats is toggled on but the anchor date is absent", () => {
+		const params = edit(existing, { recurs: true, recurAnchor: "due_at" });
+		expect(params).toBeNull();
 	});
 
 	it("round-trips catch_up, only_on, and end through a common-path edit", () => {
