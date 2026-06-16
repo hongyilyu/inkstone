@@ -1,22 +1,24 @@
-//! `run/cancel` handler (ADR-0014): cancel a Run and (if parked) its pending
-//! Proposal. The Response outcome is `accepted` (was live/parked, now
-//! cancelling), `already_terminal` (already finished), or `unknown_run`. A
-//! malformed `run_id` is `invalid_params`.
+//! `run/cancel` handler (ADR-0014): the thin JSON-RPC shell over the
+//! [`crate::cancel`] verb (ADR-0029, the `proposal/decide` → [`crate::decide`]
+//! precedent applied to cancel). Decode params → call `cancel::cancel` (injecting
+//! `hub::get` as the hub lookup) → frame the typed [`Outcome`] as the unchanged
+//! `RunCancelResult` wire strings (`accepted` / `already_terminal` / `unknown_run`)
+//! → frame a DB fault as `Internal`. A malformed `run_id` is `invalid_params`.
 //!
-//! Parked cancellation is pure tier-2: one tx flips the Run and its pending
-//! Proposal to `cancelled`. Running cancellation first wins the guarded
-//! `running -> cancelled` transition, then publishes `RunEvent::Cancelled` and
-//! signals the live Worker via the hub (cleanup; the DB transition is the
-//! user-visible outcome).
+//! The parked-vs-running decision and the running-won Worker signal live in the
+//! verb. On a won running-cancel the verb returns the live `RunHub`; this shell
+//! publishes the terminal `RunEvent::Cancelled` + removes the hub via
+//! [`crate::cancel::publish_cancelled`] AFTER framing the Response, preserving the
+//! deterministic `response → cancelled` wire order.
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use super::reply::send_response;
-use crate::db::{self, RunStatus};
-use crate::hub::{self, Hubs, RunHub};
-use crate::protocol::{RunCancelParams, RunCancelResult, RunEvent};
+use crate::cancel::{self, Outcome};
+use crate::hub::{self, Hubs};
+use crate::protocol::{RunCancelParams, RunCancelResult};
 
 pub(super) async fn handle_cancel(
     pool: &SqlitePool,
@@ -38,55 +40,15 @@ pub(super) async fn handle_cancel(
     };
     let run_id = params.run_id;
 
-    let mut cancelled_hub: Option<RunHub> = None;
-    let outcome = match db::run_status(pool, run_id).await {
-        Ok(status) => match status {
-            // Unknown run id — an ADR-0014 outcome value, not an error code.
-            None => "unknown_run",
-            Some(RunStatus::Parked) => {
-                // Parked Run has no live Worker: a pure tier-2 flip of the Run
-                // + its pending Proposal.
-                match db::cancel_parked_run(pool, run_id, db::now_ms()).await {
-                    Ok(true) => "accepted",
-                    Ok(false) => {
-                        // Raced off `parked` (a concurrent decide/cancel won).
-                        "already_terminal"
-                    }
-                    Err(e) => {
-                        handler::frame_error(out_tx, id, HandlerError::Internal(e.into()));
-                        return;
-                    }
-                }
-            }
-            Some(RunStatus::Running) => {
-                match db::cancel_running_run(pool, run_id, db::now_ms()).await {
-                    Ok(moved) if moved.won() => {
-                        cancelled_hub = hub::get(hubs, run_id);
-                        if let Some(run_hub) = &cancelled_hub {
-                            run_hub.cancel();
-                        }
-                        "accepted"
-                    }
-                    Ok(_) => {
-                        // The Worker committed a terminal transition first.
-                        "already_terminal"
-                    }
-                    Err(e) => {
-                        handler::frame_error(out_tx, id, HandlerError::Internal(e.into()));
-                        return;
-                    }
-                }
-            }
-            // Completed, errored, or cancelled — the Run already ended. The
-            // terminal set is classified once by `is_terminal` (ADR-0028), not
-            // re-spelled here. The trailing arm is unreachable (the two live
-            // states are matched above) but required: a guarded arm does not
-            // count toward match exhaustiveness.
-            Some(status) if status.is_terminal() => "already_terminal",
-            Some(_) => "already_terminal",
-        },
+    // The verb owns the decision + the Worker signal; the hub lookup is injected so
+    // it stays testable against `:memory:` (ADR-0029).
+    let (outcome, cancelled_hub) = match cancel::cancel(pool, run_id, |id| hub::get(hubs, id)).await
+    {
+        Ok(Outcome::Accepted { hub }) => ("accepted", hub),
+        Ok(Outcome::AlreadyTerminal) => ("already_terminal", None),
+        Ok(Outcome::UnknownRun) => ("unknown_run", None),
         Err(e) => {
-            handler::frame_error(out_tx, id, HandlerError::Internal(e.into()));
+            handler::frame_error(out_tx, id, HandlerError::Internal(e));
             return;
         }
     };
@@ -101,19 +63,8 @@ pub(super) async fn handle_cancel(
         }
     }
 
-    if cancelled_hub.is_some() {
-        publish_cancelled(hubs, run_id, cancelled_hub).await;
-    }
-}
-
-async fn publish_cancelled(hubs: &Hubs, run_id: uuid::Uuid, run_hub: Option<RunHub>) {
-    let Some(run_hub) = run_hub else {
-        return;
-    };
-
-    let guard = run_hub.gate.lock().await;
-    let _ = run_hub.tx.send(RunEvent::Cancelled);
-    drop(guard);
-
-    hub::remove(hubs, run_id);
+    // Publish the terminal Cancelled + remove the hub AFTER the Response is framed,
+    // so the client sees `response → cancelled`. A parked/lost/terminal/unknown
+    // outcome carries no hub, and `publish_cancelled` is then a no-op.
+    cancel::publish_cancelled(hubs, run_id, cancelled_hub).await;
 }

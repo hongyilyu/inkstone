@@ -1,3 +1,4 @@
+mod cancel;
 mod credentials;
 mod db;
 mod decide;
