@@ -14,7 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use super::reply::send_response;
-use crate::db;
+use crate::db::{self, RunStatus};
 use crate::hub::{self, Hubs, RunHub};
 use crate::protocol::{RunCancelParams, RunCancelResult, RunEvent};
 
@@ -43,44 +43,47 @@ pub(super) async fn handle_cancel(
         Ok(status) => match status {
             // Unknown run id — an ADR-0014 outcome value, not an error code.
             None => "unknown_run",
-            Some(status) => match status.as_str() {
-                "completed" | "errored" | "cancelled" => "already_terminal",
+            Some(RunStatus::Parked) => {
                 // Parked Run has no live Worker: a pure tier-2 flip of the Run
                 // + its pending Proposal.
-                "parked" => {
-                    match db::cancel_parked_run(pool, run_id, db::now_ms()).await {
-                        Ok(true) => "accepted",
-                        Ok(false) => {
-                            // Raced off `parked` (a concurrent decide/cancel won).
-                            "already_terminal"
-                        }
-                        Err(e) => {
-                            handler::frame_error(out_tx, id, HandlerError::Internal(e.into()));
-                            return;
-                        }
+                match db::cancel_parked_run(pool, run_id, db::now_ms()).await {
+                    Ok(true) => "accepted",
+                    Ok(false) => {
+                        // Raced off `parked` (a concurrent decide/cancel won).
+                        "already_terminal"
+                    }
+                    Err(e) => {
+                        handler::frame_error(out_tx, id, HandlerError::Internal(e.into()));
+                        return;
                     }
                 }
-                "running" => {
-                    match db::cancel_running_run(pool, run_id, db::now_ms()).await {
-                        Ok(moved) if moved.won() => {
-                            cancelled_hub = hub::get(hubs, run_id);
-                            if let Some(run_hub) = &cancelled_hub {
-                                run_hub.cancel();
-                            }
-                            "accepted"
+            }
+            Some(RunStatus::Running) => {
+                match db::cancel_running_run(pool, run_id, db::now_ms()).await {
+                    Ok(moved) if moved.won() => {
+                        cancelled_hub = hub::get(hubs, run_id);
+                        if let Some(run_hub) = &cancelled_hub {
+                            run_hub.cancel();
                         }
-                        Ok(_) => {
-                            // The Worker committed a terminal transition first.
-                            "already_terminal"
-                        }
-                        Err(e) => {
-                            handler::frame_error(out_tx, id, HandlerError::Internal(e.into()));
-                            return;
-                        }
+                        "accepted"
+                    }
+                    Ok(_) => {
+                        // The Worker committed a terminal transition first.
+                        "already_terminal"
+                    }
+                    Err(e) => {
+                        handler::frame_error(out_tx, id, HandlerError::Internal(e.into()));
+                        return;
                     }
                 }
-                _ => "already_terminal",
-            },
+            }
+            // Completed, errored, or cancelled — the Run already ended. The
+            // terminal set is classified once by `is_terminal` (ADR-0028), not
+            // re-spelled here. The trailing arm is unreachable (the two live
+            // states are matched above) but required: a guarded arm does not
+            // count toward match exhaustiveness.
+            Some(status) if status.is_terminal() => "already_terminal",
+            Some(_) => "already_terminal",
         },
         Err(e) => {
             handler::frame_error(out_tx, id, HandlerError::Internal(e.into()));

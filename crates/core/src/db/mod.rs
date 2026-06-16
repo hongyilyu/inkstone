@@ -20,7 +20,12 @@ use uuid::Uuid;
 use crate::workflow::Workflow;
 
 pub use lifecycle::Moved;
-use lifecycle::{ProposalStatus, RunStatus, TerminalReason};
+// `RunStatus` is the read+write Interface for Run status: the write verbs live on
+// it (ADR-0028), and the read seam (`run_status`, `RunSnapshot.status`) now returns
+// it too, so read sites match compiler-checked variants instead of raw strings
+// (ADR-0029 "type at the seam"). The wire stays a string via `.as_str()`.
+pub use lifecycle::RunStatus;
+use lifecycle::{ProposalStatus, TerminalReason};
 // `search_messages` is the message-search read surface (ADR-0035), consumed by
 // the `message/search` handler (slice 3); it returns `message_fts::MessageHit`,
 // which the handler maps field-for-field to the wire `protocol::MessageHit`
@@ -612,10 +617,22 @@ pub async fn park_on_proposal(
     Ok(moved)
 }
 
-/// Read a Run's `status` (ADR-0025); `None` when the Run does not exist. Backs
-/// `run/subscribe`'s parked branch and the forwarder's no-false-done check.
-pub async fn run_status(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Option<String>> {
-    queries::run_status(pool, run_id).await
+/// Read a Run's [`RunStatus`] (ADR-0025); `None` when the Run does not exist.
+/// Backs `run/subscribe`'s parked branch and the forwarder's no-false-done check.
+///
+/// The stored string is parsed into the enum at this seam (ADR-0029): read sites
+/// match typed variants, not raw strings. A row whose stored `status` fails to
+/// parse surfaces as a loud `sqlx::Error::Decode` rather than collapsing to `None`
+/// (which means "no such Run"), mirroring [`entity_type_by_id`]. The `runs.status`
+/// CHECK constraint means a live DB never produces an unknown value, so this arm
+/// is defensive.
+pub async fn run_status(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Option<RunStatus>> {
+    match queries::run_status(pool, run_id).await? {
+        None => Ok(None),
+        Some(raw) => RunStatus::from_str(&raw)
+            .map(Some)
+            .ok_or_else(|| sqlx::Error::Decode(format!("unknown stored run status {raw:?}").into())),
+    }
 }
 
 /// A Run's pending Proposal for `proposal/get` (ADR-0025). `payload` and
@@ -1105,27 +1122,34 @@ pub async fn read_run_timeline(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<
 /// A Run's snapshot for `run/subscribe` (ADR-0022): the assistant message's
 /// cumulative text at the subscribe instant plus the Run's status. `text` is
 /// empty for a Run that has streamed no delta yet.
+#[derive(Debug)]
 pub struct RunSnapshot {
     pub text: String,
-    /// The Run's `runs.status`. Part of the ADR-0022 snapshot shape, consumed by
-    /// the `thread/get` rehydration read in a later slice.
-    #[allow(dead_code)]
-    pub status: String,
+    /// The Run's [`RunStatus`]. Part of the ADR-0022 snapshot shape; the
+    /// subscribe handler reads it to tell terminal from live under the gate, and
+    /// the `thread/get` rehydration read consumes it in a later slice.
+    pub status: RunStatus,
 }
 
 /// Read the snapshot-then-tail starting point: the assistant message's
 /// cumulative `seq=0` text and the Run status. `None` when the Run does not
 /// exist (subscribe handler stays defensible against unknown run ids).
+///
+/// The stored status is parsed into [`RunStatus`] at this seam; an unknown value
+/// surfaces as a loud `sqlx::Error::Decode` (see [`run_status`]).
 pub async fn select_run_snapshot(
     pool: &SqlitePool,
     run_id: Uuid,
 ) -> sqlx::Result<Option<RunSnapshot>> {
-    Ok(queries::select_run_snapshot(pool, run_id)
-        .await?
-        .map(|(text, status)| RunSnapshot {
-            text: text.unwrap_or_default(),
-            status,
-        }))
+    let Some((text, status)) = queries::select_run_snapshot(pool, run_id).await? else {
+        return Ok(None);
+    };
+    let status = RunStatus::from_str(&status)
+        .ok_or_else(|| sqlx::Error::Decode(format!("unknown stored run status {status:?}").into()))?;
+    Ok(Some(RunSnapshot {
+        text: text.unwrap_or_default(),
+        status,
+    }))
 }
 
 /// Rebuild the effective Workflow a Run executes from its persisted snapshot
@@ -1391,6 +1415,59 @@ mod tests {
             .fetch_one(pool)
             .await
             .expect("run row")
+    }
+
+    /// The typed read seam fails loudly on an unknown stored status rather than
+    /// degrading to `None` (which means "no such Run"). The `runs.status` CHECK
+    /// constraint keeps a live DB from ever producing this, so the row is forged
+    /// with `PRAGMA ignore_check_constraints` — exercising the defensive
+    /// `from_str` → `Decode` arm in `run_status` and `select_run_snapshot`, and
+    /// proving the unknown-string error stays distinct from the absent-row `None`.
+    #[tokio::test]
+    async fn read_seam_rejects_unknown_stored_status() {
+        let pool = memory_pool().await;
+        // The seam keys on `run_id.to_string()`, so the forged row needs a real
+        // UUID id. Relax the CHECK only to seed an out-of-vocabulary status.
+        let run_id = Uuid::now_v7();
+        sqlx::query("PRAGMA ignore_check_constraints = ON")
+            .execute(&pool)
+            .await
+            .expect("relax checks");
+        insert_bare_run(&pool, &run_id.to_string(), "halfway").await;
+
+        // run_status: unknown stored value → Decode, not Ok(None).
+        let err = run_status(&pool, run_id)
+            .await
+            .expect_err("unknown status must surface as an error, not None");
+        assert!(
+            matches!(err, sqlx::Error::Decode(_)),
+            "unknown stored status is a Decode fault, got {err:?}"
+        );
+
+        // select_run_snapshot: same defensive arm. `insert_bare_run` already
+        // inserted the assistant Message; a `seq=0` part makes the snapshot row
+        // JOIN materialize so the parse (not a missing row) is what's exercised.
+        sqlx::query(
+            "INSERT INTO message_parts (message_id, seq, type, text) \
+             VALUES (?, 0, 'text', 'hi')",
+        )
+        .bind(format!("msg-{run_id}"))
+        .execute(&pool)
+        .await
+        .expect("seed assistant part");
+        let snap_err = select_run_snapshot(&pool, run_id)
+            .await
+            .expect_err("snapshot of an unknown status must error");
+        assert!(
+            matches!(snap_err, sqlx::Error::Decode(_)),
+            "unknown snapshot status is a Decode fault, got {snap_err:?}"
+        );
+
+        // An absent Run stays Ok(None) — the error arm must not swallow that case.
+        let absent = run_status(&pool, Uuid::now_v7())
+            .await
+            .expect("absent read ok");
+        assert!(absent.is_none(), "an absent Run reads as None, never Decode");
     }
 
     /// The boot recovery sweep (ADR-0012) errors a `running` Run but preserves a
