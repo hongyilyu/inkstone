@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 use super::port::{Exit, WorkerPort};
 use crate::db;
+use crate::db::TerminalReason;
 use crate::hub::Hubs;
 use crate::protocol::{
     RunEvent, ToolCallStatus, ToolErrorWire, ToolOutcome, ToolResult, WorkerStdout,
@@ -174,8 +175,15 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
     if !parked && !cancelled_by_core {
         let now_ms = db::now_ms();
         let result = if let Some(ref message) = worker_error {
-            db::error_run_with_message(&pool, run_id, "errored", "worker_error", message, now_ms)
-                .await
+            db::error_run_with_message(
+                &pool,
+                run_id,
+                TerminalReason::Errored,
+                "worker_error",
+                message,
+                now_ms,
+            )
+            .await
         } else if saw_done {
             db::complete_run(&pool, run_id, now_ms).await
         } else {

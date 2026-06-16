@@ -25,7 +25,13 @@ pub use lifecycle::Moved;
 // it too, so read sites match compiler-checked variants instead of raw strings
 // (ADR-0029 "type at the seam"). The wire stays a string via `.as_str()`.
 pub use lifecycle::RunStatus;
-use lifecycle::{ProposalStatus, TerminalReason};
+use lifecycle::ProposalStatus;
+// `TerminalReason` is the typed terminal-state cause. It is `pub use`d (not just
+// crate-private) so the Worker run loop can name the variant at the `error_run_*`
+// call instead of routing a wire string through a re-parse (ADR-0028/0029 "type
+// at the seam"). The CHECK/wire string is produced once, outward, via
+// `TerminalReason::as_str()` in `RunStatus::fail`.
+pub use lifecycle::TerminalReason;
 // `search_messages` is the message-search read surface (ADR-0035), consumed by
 // the `message/search` handler (slice 3); it returns `message_fts::MessageHit`,
 // which the handler maps field-for-field to the wire `protocol::MessageHit`
@@ -1200,7 +1206,7 @@ pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Re
     error_run_with_message(
         pool,
         run_id,
-        "worker_disconnected",
+        TerminalReason::WorkerDisconnected,
         "worker_disconnected",
         "worker exited without emitting done event",
         now_ms,
@@ -1210,25 +1216,21 @@ pub async fn error_run(pool: &SqlitePool, run_id: Uuid, now_ms: i64) -> sqlx::Re
 
 /// Worker emitted an explicit `error` Run Event (ADR-0006). Same terminal shape
 /// as [`error_run`] but with caller-supplied `terminal_reason`, `error_code`,
-/// and `error_message` carried into the `runs` row and `run_log` payload.
-/// `terminal_reason` must satisfy the `runs` CHECK constraint. One transaction.
+/// and `error_message` carried into the `runs` row and `run_log` payload. The
+/// `runs` CHECK string is produced from `terminal_reason` via `as_str()` inside
+/// [`RunStatus::fail`]. One transaction.
 pub async fn error_run_with_message(
     pool: &SqlitePool,
     run_id: Uuid,
-    terminal_reason: &str,
+    terminal_reason: TerminalReason,
     error_code: &str,
     error_message: &str,
     now_ms: i64,
 ) -> sqlx::Result<Moved> {
     let mut tx = pool.begin().await?;
-    let reason = match terminal_reason {
-        "worker_disconnected" => TerminalReason::WorkerDisconnected,
-        "core_restarted" => TerminalReason::CoreRestarted,
-        "errored" => TerminalReason::Errored,
-        _ => TerminalReason::Errored,
-    };
     let moved =
-        RunStatus::fail(&mut *tx, run_id, reason, error_code, error_message, now_ms).await?;
+        RunStatus::fail(&mut *tx, run_id, terminal_reason, error_code, error_message, now_ms)
+            .await?;
     tx.commit().await?;
     Ok(moved)
 }
