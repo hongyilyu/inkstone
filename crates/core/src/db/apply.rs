@@ -1571,6 +1571,11 @@ mod tests {
         let successor = &successors[0];
         assert_eq!(successor["status"].as_str(), Some("active"));
         assert_eq!(
+            successor["title"].as_str(),
+            Some("Weekly report"),
+            "title carried forward"
+        );
+        assert_eq!(
             successor["due_at"].as_str(),
             Some("2026-06-26T17:00:00"),
             "due advanced one week"
@@ -1866,6 +1871,94 @@ mod tests {
             successors[0]["recurrence"]["end"]["after_count"].as_u64(),
             Some(2),
             "after_count decremented on the successor"
+        );
+    }
+
+    /// Completing a recurring Todo whose next occurrence would fall past its
+    /// `until` bound spawns no successor — the until end-condition wired through
+    /// the apply layer (ADR-0039), not just the pure module.
+    #[tokio::test]
+    async fn completing_until_exhausted_occurrence_spawns_nothing() {
+        let pool = memory_pool().await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Until the end of June",
+                    "due_at": "2026-06-26T17:00:00",
+                    "recurrence": {
+                        "interval": 1, "unit": "week", "anchor": "due_at",
+                        "end": { "until": "2026-06-30T00:00:00" }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "status": "completed", "completed_at": "2026-06-26T18:00:00" }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("completion succeeds");
+
+        assert!(
+            other_todos(&pool, &todo_id).await.is_empty(),
+            "the next occurrence (2026-07-03) is past until (2026-06-30): no successor"
+        );
+    }
+
+    /// A defer-anchored, due-absent recurring Todo: the successor advances
+    /// `defer_at`, leaves `due_at` absent (presence mirrored), and carries the
+    /// title forward (ADR-0039 set_or_remove + carried context, at the DB layer).
+    #[tokio::test]
+    async fn defer_anchored_successor_advances_defer_and_omits_due() {
+        let pool = memory_pool().await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Deferred chore",
+                    "defer_at": "2026-06-14T09:00:00",
+                    "recurrence": { "interval": 2, "unit": "day", "anchor": "defer_at" }
+                }
+            }),
+        )
+        .await;
+
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "status": "completed", "completed_at": "2026-06-14T10:00:00" }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("completion succeeds");
+
+        let successors = other_todos(&pool, &todo_id).await;
+        assert_eq!(successors.len(), 1);
+        let successor = &successors[0];
+        assert_eq!(
+            successor["defer_at"].as_str(),
+            Some("2026-06-16T09:00:00"),
+            "defer advanced two days"
+        );
+        assert!(
+            successor.get("due_at").is_none(),
+            "the absent due date stays absent on the successor: {successor}"
+        );
+        assert_eq!(
+            successor["title"].as_str(),
+            Some("Deferred chore"),
+            "the title carries forward"
         );
     }
 }

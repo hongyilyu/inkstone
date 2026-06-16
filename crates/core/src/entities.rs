@@ -954,10 +954,29 @@ fn sunday_anchor(day: i64) -> String {
 /// "last reviewed" and computed "next review" share one clock.
 pub(crate) fn now_local(now_ms: i64, offset_minutes: i64) -> String {
     let (days, secs_of_day) = local_day_and_secs(now_ms, offset_minutes);
-    let hour = secs_of_day / 3_600;
-    let minute = (secs_of_day % 3_600) / 60;
-    let second = secs_of_day % 60;
     let (year, month, day) = civil_from_days(days);
+    format_local_datetime(
+        year,
+        month,
+        day,
+        (secs_of_day / 3_600) as u32,
+        ((secs_of_day % 3_600) / 60) as u32,
+        (secs_of_day % 60) as u32,
+    )
+}
+
+/// Format a civil date + time as the `YYYY-MM-DDTHH:MM:SS` wall-clock string —
+/// the one owner of the wall-clock format used by [`now_local`] and the
+/// recurrence date math (ADR-0039). `pub(crate)` so the recurrence module shares
+/// this string rather than re-deriving it.
+pub(crate) fn format_local_datetime(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
 }
 

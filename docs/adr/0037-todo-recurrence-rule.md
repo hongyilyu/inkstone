@@ -39,7 +39,9 @@ type RecurrenceRule = {
   // Which Todo date the rule recomputes — the date ADR-0039 advances on the
   // successor (next_anchor = old_anchor + interval × unit). Must name a field
   // that is present on the Todo (see invariants). The non-anchor date, if
-  // present, shifts by the same delta so the defer→due gap is preserved.
+  // present, advances by the same rule — an identical span for
+  // minute/hour/day/week (preserving the gap), its own clamped day-of-month for
+  // month/year (see ADR-0039).
   anchor: "defer_at" | "due_at";
 
   // Optional end condition. At most ONE of the two keys.
@@ -92,8 +94,8 @@ defer/due anchor; `until` / `after_count` end conditions.
 
 **Delivered by #125** ([ADR-0039](./0039-recurring-todo-occurrence-generation.md),
 the execution layer): computing the next occurrence date (`old_anchor + interval
-× unit`, with month-end clamping), shifting the non-anchor date by the same
-delta, decrementing `after_count`, honoring `until`, and creating the successor
+× unit`, with month-end clamping), advancing the non-anchor date by the same
+rule, decrementing `after_count`, honoring `until`, and creating the successor
 Todo atomically on completion.
 
 **Removed from the original shape** (ADR-0039 amendment, no stored data
@@ -141,7 +143,7 @@ landed — spawns its successor when completed.
 - **Validate via the schemars `Input` structs.** Rejected: those generate the
   tool schema and are not the runtime authority; the opaque `entity/mutate`
   payload (user-initiated CRUD, ADR-0033) never deserializes through `Input`.
-  Cross-field invariants (anchor presence, catch-up↔schedule) live in
+  Cross-field invariants (anchor presence, `end` cardinality) live in
   `entities::validate`, the one path both the agent and the user hit.
 
 ## Related

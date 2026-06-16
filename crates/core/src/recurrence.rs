@@ -15,7 +15,9 @@
 
 use serde_json::Value;
 
-use crate::entities::{civil_from_days, days_from_civil, days_in_month, parse_local_datetime};
+use crate::entities::{
+    civil_from_days, days_from_civil, days_in_month, format_local_datetime, parse_local_datetime,
+};
 
 /// The next occurrence's dates and rule. `defer_at`/`due_at` mirror the
 /// original's presence — a date absent on the completed Todo stays absent on the
@@ -50,11 +52,13 @@ pub(crate) fn next_occurrence(
     let anchor = obj.get("anchor")?.as_str()?;
 
     // End condition: after_count counts DOWN per occurrence. The Todo being
-    // completed is one occurrence; if its rule says "1 left", it was the last —
-    // no successor. (until is checked below, once the next anchor is known.)
+    // completed is one occurrence; if its rule says "1 left" (or, defensively, 0),
+    // it was the last — no successor. The `<= 1` gate (not `== 1`) also keeps the
+    // `count - 1` below from underflowing on a validation-bypassing 0. (until is
+    // checked below, once the next anchor is known.)
     let end = obj.get("end").and_then(Value::as_object);
     let after_count = end.and_then(|e| e.get("after_count")).and_then(Value::as_u64);
-    if after_count == Some(1) {
+    if after_count.is_some_and(|c| c <= 1) {
         return None;
     }
 
@@ -108,9 +112,14 @@ pub(crate) fn next_occurrence(
 /// `YYYY-MM-DDTHH:MM:SS` string. minute/hour/day/week add a fixed span of seconds
 /// (rolling the calendar as needed); month/year shift the calendar month/year and
 /// CLAMP the day to the target month's last valid day (Jan 31 + 1 month →
-/// Feb 28/29), preserving the time-of-day. `None` only on an unparseable input.
+/// Feb 28/29), preserving the time-of-day. `None` on an unparseable input OR an
+/// `interval` so large the civil arithmetic would overflow `i64` — checked
+/// arithmetic throughout, so a runaway interval yields "no successor" rather than
+/// a panic (debug) or a wrapped garbage date (release), honoring the
+/// fail-safe contract `next_occurrence` advertises.
 fn advance(value: &str, interval: u64, unit: &str) -> Option<String> {
     let (year, month, day, hour, minute, second) = parse_local_datetime(value, "recurrence").ok()?;
+    let interval = i64::try_from(interval).ok()?;
 
     match unit {
         "minute" | "hour" | "day" | "week" => {
@@ -123,10 +132,13 @@ fn advance(value: &str, interval: u64, unit: &str) -> Option<String> {
             };
             let days = days_from_civil(i64::from(year), i64::from(month), i64::from(day));
             let secs_of_day = i64::from(hour) * 3_600 + i64::from(minute) * 60 + i64::from(second);
-            let total = days * 86_400 + secs_of_day + interval as i64 * per_unit_secs;
+            let total = days
+                .checked_mul(86_400)?
+                .checked_add(secs_of_day)?
+                .checked_add(interval.checked_mul(per_unit_secs)?)?;
             let (new_days, new_secs) = (total.div_euclid(86_400), total.rem_euclid(86_400));
             let (y, m, d) = civil_from_days(new_days);
-            Some(format_local(
+            Some(format_local_datetime(
                 y,
                 m,
                 d,
@@ -137,17 +149,20 @@ fn advance(value: &str, interval: u64, unit: &str) -> Option<String> {
         }
         "month" | "year" => {
             let added_months = if unit == "year" {
-                interval * 12
+                interval.checked_mul(12)?
             } else {
                 interval
             };
             // Months since year 0, advanced, then split back to (year, month).
-            let total_months = i64::from(year) * 12 + i64::from(month - 1) + added_months as i64;
+            let total_months = i64::from(year)
+                .checked_mul(12)?
+                .checked_add(i64::from(month - 1))?
+                .checked_add(added_months)?;
             let target_year = total_months.div_euclid(12);
             let target_month = total_months.rem_euclid(12) + 1;
             let max_day = i64::from(days_in_month(target_year as u32, target_month as u32));
             let target_day = i64::from(day).min(max_day);
-            Some(format_local(
+            Some(format_local_datetime(
                 target_year,
                 target_month,
                 target_day,
@@ -158,11 +173,6 @@ fn advance(value: &str, interval: u64, unit: &str) -> Option<String> {
         }
         _ => None,
     }
-}
-
-/// Format a civil date + time as the `YYYY-MM-DDTHH:MM:SS` wall-clock string.
-fn format_local(year: i64, month: i64, day: i64, hour: u32, minute: u32, second: u32) -> String {
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
 }
 
 #[cfg(test)]
@@ -349,5 +359,61 @@ mod tests {
         let occ = next_occurrence(&rule(1, "week", "due_at"), None, Some("2026-06-14T09:00:00"))
             .expect("successor exists");
         assert_eq!(occ.recurrence, rule(1, "week", "due_at"), "rule round-trips");
+    }
+
+    #[test]
+    fn until_is_measured_against_the_defer_anchor() {
+        // anchor is defer_at: the `until` bound is checked against the advanced
+        // DEFER date, not the due date. Next defer = 2026-06-21; an until one day
+        // earlier ends the series…
+        let past = json!({
+            "interval": 1, "unit": "week", "anchor": "defer_at",
+            "end": { "until": "2026-06-20T09:00:00" }
+        });
+        assert!(
+            next_occurrence(&past, Some("2026-06-14T09:00:00"), Some("2026-06-30T17:00:00")).is_none(),
+            "until measured against the defer anchor (next defer > until) ends the series"
+        );
+        // …while an until at-or-after the next defer still generates — even though
+        // the (later) due date would be past a naive due-based check.
+        let on = json!({
+            "interval": 1, "unit": "week", "anchor": "defer_at",
+            "end": { "until": "2026-06-21T09:00:00" }
+        });
+        assert!(
+            next_occurrence(&on, Some("2026-06-14T09:00:00"), Some("2026-06-30T17:00:00")).is_some(),
+            "until == next defer (inclusive) still generates, regardless of the due date"
+        );
+    }
+
+    #[test]
+    fn defensive_after_count_zero_ends_series() {
+        // after_count: 0 can't reach here through the validated path (validation
+        // requires >= 1), but the fail-safe must not underflow `count - 1` — it
+        // ends the series cleanly.
+        let zero = json!({
+            "interval": 1, "unit": "week", "anchor": "due_at",
+            "end": { "after_count": 0 }
+        });
+        assert!(
+            next_occurrence(&zero, None, Some("2026-06-14T09:00:00")).is_none(),
+            "after_count == 0 ends the series with no underflow"
+        );
+    }
+
+    #[test]
+    fn runaway_interval_yields_no_successor_not_a_panic() {
+        // An interval large enough to overflow the civil-seconds arithmetic must
+        // return None (no successor), not panic — the fail-safe the doc promises.
+        let huge = json!({ "interval": u64::MAX, "unit": "week", "anchor": "due_at" });
+        assert!(
+            next_occurrence(&huge, None, Some("2026-06-14T09:00:00")).is_none(),
+            "a runaway interval is a safe no-op, not a panic"
+        );
+        let huge_year = json!({ "interval": u64::MAX, "unit": "year", "anchor": "due_at" });
+        assert!(
+            next_occurrence(&huge_year, None, Some("2026-06-14T09:00:00")).is_none(),
+            "a runaway year interval is a safe no-op, not a panic"
+        );
     }
 }
