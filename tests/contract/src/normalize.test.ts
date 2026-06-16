@@ -104,3 +104,42 @@ describe("normalize: $ref inlining + $defs drop (rule 2)", () => {
 		expect(normalize(refInt)).not.toStrictEqual(normalize(refString));
 	});
 });
+
+describe("normalize: keyword rewrites skip schema-map values (rule 3 scope)", () => {
+	// Regression guard: the `title`-strip (rule 3) and the other per-node keyword
+	// rewrites must apply to schema NODES, not to the arbitrary field-name keys
+	// inside a `properties` map. `create_todo`/`update_todo` both have a field
+	// literally named `title`; an earlier normalizer deleted it everywhere, so
+	// drift on a `title` field passed silently. These pin that the field survives
+	// AND that the combinator `title` annotation is still stripped.
+	it("preserves a field literally named `title` inside `properties`", () => {
+		const withMin = {
+			type: "object",
+			properties: { title: { type: "string", minLength: 1 } },
+			required: ["title"],
+		};
+		const withoutMin = {
+			type: "object",
+			properties: { title: { type: "string" } },
+			required: ["title"],
+		};
+		// The `title` FIELD must survive normalization...
+		expect(JSON.stringify(normalize(withMin))).toContain('"title"');
+		// ...and a real difference on it must still bite (not be hidden).
+		expect(normalize(withMin)).not.toStrictEqual(normalize(withoutMin));
+	});
+
+	it("still strips a combinator `title` ANNOTATION on a schema node", () => {
+		const annotated = { type: "string", minLength: 1, title: "minLength(1)" };
+		const bare = { type: "string", minLength: 1 };
+		expect(normalize(annotated)).toStrictEqual(normalize(bare));
+	});
+
+	it("preserves a `$schema`-named field inside `properties` too", () => {
+		// The same hazard for any keyword the node rewrites delete.
+		const a = { properties: { $schema: { type: "string", minLength: 1 } } };
+		const b = { properties: { $schema: { type: "string" } } };
+		expect(JSON.stringify(normalize(a))).toContain("$schema");
+		expect(normalize(a)).not.toStrictEqual(normalize(b));
+	});
+});

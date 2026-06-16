@@ -35,11 +35,42 @@ const resolveRef = (
 	return { ...resolved, ...siblings };
 };
 
+/** Schema-map keywords: their VALUE is a map of arbitrary names → subschemas
+ * (`properties.title` is a field literally named "title", NOT a `title`
+ * annotation). The per-node keyword rewrites in `walk1` (which delete keys like
+ * `title`/`$schema`) must NOT run on these maps, or a real field named after a
+ * keyword would be silently dropped — hiding drift on it. Their values are still
+ * walked as ordinary subschemas. */
+const SCHEMA_MAP_KEYS = new Set([
+	"properties",
+	"patternProperties",
+	"$defs",
+	"definitions",
+	"dependentSchemas",
+]);
+
 /** The recursive walk. `defs` carries the top-level `$defs` block (if any) so
- * nested `$ref`s resolve against it; the block itself is dropped at the root. */
-const walk = (value: Json, defs: Record<string, Json>): Json => {
+ * nested `$ref`s resolve against it; the block itself is dropped at the root.
+ * `inSchemaMap` is true when `value` is the VALUE of a schema-map keyword (a
+ * `name → subschema` map), so the keyword rewrites are skipped for it. */
+const walk = (
+	value: Json,
+	defs: Record<string, Json>,
+	inSchemaMap = false,
+): Json => {
 	if (Array.isArray(value)) return value.map((item) => walk(item, defs));
 	if (!isObject(value)) return value;
+
+	// Inside a schema map (e.g. the object under `properties`), the keys are
+	// arbitrary field names — skip `walk1` so a field named `title`/`$schema`/etc.
+	// is preserved. Its values are walked as ordinary subschemas below.
+	if (inSchemaMap) {
+		const mapped: Record<string, Json> = {};
+		for (const [key, child] of Object.entries(value)) {
+			mapped[key] = walk(child, defs);
+		}
+		return sortKeys(mapped);
+	}
 
 	// Rule 2 — inline `$ref` + drop `$defs`. Effect hoists `S.Int` to
 	// `#/$defs/Int`; Rust inlines every schema (ADR-0018: Anthropic rejects
@@ -74,7 +105,7 @@ const walk = (value: Json, defs: Record<string, Json>): Json => {
 
 	const out: Record<string, Json> = {};
 	for (const [key, child] of Object.entries(node)) {
-		out[key] = walk(child, defs);
+		out[key] = walk(child, defs, SCHEMA_MAP_KEYS.has(key));
 	}
 	return sortKeys(out);
 };

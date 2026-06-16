@@ -63,7 +63,7 @@ This gate locks the **advertised wire schema's structure**, nothing more.
 
 ## Layout
 
-```
+```text
 fixtures/<wire_kind>.json   the 13 Rust-emitted schemas (the schema-of-record)
 src/schemas.ts              kind → Effect Schema registry + shared sub-schemas
 src/normalize.ts            the dialect-reconciling normalizer
@@ -72,6 +72,6 @@ src/parity.test.ts          the per-kind deep-equality assertions
 
 Regenerate the fixtures after any `PayloadSpec` change:
 
-```
+```shell
 cargo test --manifest-path crates/core/Cargo.toml regenerate_schema_fixtures
 ```
