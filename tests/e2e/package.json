@@ -10,8 +10,10 @@
 		"test:e2e:install": "playwright install chromium"
 	},
 	"devDependencies": {
+		"@inkstone/contract": "workspace:*",
 		"@playwright/test": "^1.60.0",
 		"@types/node": "^22.0.0",
+		"effect": "^3.21.2",
 		"typescript": "^5.0.0"
 	}
 }
