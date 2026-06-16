@@ -51,6 +51,21 @@ export class ChatPage {
 		return this.page.locator('[data-role="user"]');
 	}
 
+	/** A single user bubble whose text contains `text` (the `<li>`, so `data-message-id` lives here). */
+	userBubble(text: string | RegExp) {
+		return this.userBubbles().filter({ hasText: text });
+	}
+
+	/** Completed assistant turns expose a Copy control; its count is a monotonic "turns finished" signal for sequencing multi-send flows. */
+	copyButtons() {
+		return this.page.getByRole("button", { name: /copy$/i });
+	}
+
+	/** The element currently wearing the search-jump lamplight ring (issue #138), if any. */
+	searchJumpHighlight() {
+		return this.page.locator("[data-highlighted]");
+	}
+
 	/** The interactive proposal review card (slice 9). */
 	proposalCard() {
 		return this.page.locator("[data-proposal]");

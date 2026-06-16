@@ -225,6 +225,49 @@
 		color-mix(in oklab, var(--tool-glyph) 55%, transparent);
 }
 
+/* Search-jump lamplight (issue #138): when a ⌘K message-search hit scrolls a
+   message into view, its content box wears a brand-magenta ring + soft halo for
+   ~1.6s to land the eye, then ChatColumn drops the attribute. The ring is an
+   inert `::after` overlay (no layout shift, no pointer capture) carrying a FIXED
+   ring + halo box-shadow whose OPACITY is animated — the same GPU-friendly
+   pattern as `.tool-glow`, not an animated shadow. `motion-safe` blooms it in
+   and fades it out; a reduced-motion user (or a headless render) sees the ring
+   appear statically and hold for the same dwell — "show the state", never a
+   flash of noise. */
+.search-jump-target::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	pointer-events: none;
+	opacity: 0;
+	box-shadow:
+		0 0 0 2px color-mix(in oklab, var(--tool-glyph) 85%, transparent),
+		0 0 16px 2px color-mix(in oklab, var(--tool-glyph) 45%, transparent);
+}
+.search-jump-target[data-highlighted]::after {
+	opacity: 1;
+}
+@media (prefers-reduced-motion: no-preference) {
+	.search-jump-target[data-highlighted]::after {
+		animation: search-jump-glow 1.6s var(--ease-out-quint) both;
+	}
+}
+@keyframes search-jump-glow {
+	0% {
+		opacity: 0;
+	}
+	18% {
+		opacity: 1;
+	}
+	70% {
+		opacity: 1;
+	}
+	100% {
+		opacity: 0;
+	}
+}
+
 /* Motion tokens (extract): one easing + the entrance/activity animations,
    exposed as Tailwind utilities (`ease-out-quint`, `animate-rise`,
    `animate-panel`, `animate-tool-glow`, `animate-tool-pop`). */

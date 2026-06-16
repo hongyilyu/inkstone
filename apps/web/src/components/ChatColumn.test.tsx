@@ -8,6 +8,7 @@ import { RuntimeProvider } from "@/runtime";
 import { resetBridge } from "@/store/bridge";
 import {
 	appendUserMessage,
+	focusMessage,
 	getChatState,
 	resetChatStore,
 	seedAssistantMessage,
@@ -510,6 +511,81 @@ describe("ChatColumn", () => {
 			expect(screen.queryByRole("button", { name: /stop/i })).toBeNull();
 		});
 		expect(screen.getByRole("button", { name: /send/i })).toBeInTheDocument();
+
+		await runtime.dispose();
+	});
+
+	it("scrolls to and highlights the message matching the search-jump anchor", async () => {
+		const scrollIntoView = vi.fn();
+		Element.prototype.scrollIntoView = scrollIntoView;
+		const runtime = makeStubRuntime({ runId: "run-jump", events: [] });
+		setFocusedThread("threadA");
+		appendUserMessage("threadA", {
+			id: "u-top",
+			role: "user",
+			status: "completed",
+			text: "first message",
+			run_id: "",
+		});
+		seedAssistantMessage("threadA", {
+			id: "a-deep",
+			role: "assistant",
+			status: "completed",
+			text: "the matched reply deep in scrollback",
+			run_id: "r-deep",
+		});
+		// A ⌘K hit jumped to the deep message: anchor set before the column renders.
+		focusMessage("threadA", "a-deep");
+
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		const target = await screen.findByText(
+			"the matched reply deep in scrollback",
+		);
+		const li = target.closest("li");
+		// The anchored row is scrolled into view, centered, with a reduced-motion-safe
+		// instant jump (behavior: "auto", never a glide).
+		await waitFor(() => {
+			expect(scrollIntoView).toHaveBeenCalledWith({
+				block: "center",
+				behavior: "auto",
+			});
+		});
+		expect(li).toHaveAttribute("data-message-id", "a-deep");
+		// The matched content box wears the lamplight ring…
+		expect(li?.querySelector("[data-highlighted]")).not.toBeNull();
+		// …and the one-shot store anchor is consumed so a re-render can't re-fire it.
+		expect(getChatState().focusedMessageId).toBeUndefined();
+
+		await runtime.dispose();
+	});
+
+	it("does not highlight any message when no search-jump anchor is set", async () => {
+		const scrollIntoView = vi.fn();
+		Element.prototype.scrollIntoView = scrollIntoView;
+		const runtime = makeStubRuntime({ runId: "run-noanchor", events: [] });
+		setFocusedThread("threadA");
+		seedAssistantMessage("threadA", {
+			id: "a-plain",
+			role: "assistant",
+			status: "completed",
+			text: "an ordinary reply",
+			run_id: "r-plain",
+		});
+
+		const { container } = renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ChatColumn />
+			</RuntimeProvider>,
+		);
+
+		await screen.findByText("an ordinary reply");
+		expect(scrollIntoView).not.toHaveBeenCalled();
+		expect(container.querySelector("[data-highlighted]")).toBeNull();
 
 		await runtime.dispose();
 	});

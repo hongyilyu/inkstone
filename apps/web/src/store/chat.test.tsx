@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "./bridge.js";
 import {
 	appendUserMessage,
+	clearFocusedMessage,
+	clearFocusedThread,
+	focusMessage,
 	getChatState,
 	type Message,
 	prependHistory,
@@ -335,6 +338,43 @@ describe("chat store + stream bridge", () => {
 		]);
 
 		await runtime.dispose();
+	});
+});
+
+describe("scroll-to-message anchor (issue #138)", () => {
+	it("focusMessage sets the thread focus AND the message anchor atomically", () => {
+		focusMessage("threadA", "m-42");
+		expect(getChatState().focusedThreadId).toBe("threadA");
+		expect(getChatState().focusedMessageId).toBe("m-42");
+	});
+
+	it("setFocusedThread clears a stale anchor (a later sidebar focus never re-fires it)", () => {
+		focusMessage("threadA", "m-42");
+		// Re-focusing the SAME thread by plain means must drop the anchor.
+		setFocusedThread("threadA");
+		expect(getChatState().focusedThreadId).toBe("threadA");
+		expect(getChatState().focusedMessageId).toBeUndefined();
+	});
+
+	it("clearFocusedThread drops the anchor too (New Chat)", () => {
+		focusMessage("threadA", "m-42");
+		clearFocusedThread();
+		expect(getChatState().focusedThreadId).toBeUndefined();
+		expect(getChatState().focusedMessageId).toBeUndefined();
+	});
+
+	it("clearFocusedMessage consumes the anchor but leaves the thread focused", () => {
+		focusMessage("threadA", "m-42");
+		clearFocusedMessage();
+		expect(getChatState().focusedMessageId).toBeUndefined();
+		expect(getChatState().focusedThreadId).toBe("threadA");
+	});
+
+	it("clearFocusedMessage is a no-op (stable state) when no anchor is set", () => {
+		setFocusedThread("threadA");
+		const before = getChatState();
+		clearFocusedMessage();
+		expect(getChatState()).toBe(before);
 	});
 });
 
