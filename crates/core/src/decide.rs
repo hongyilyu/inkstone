@@ -8,7 +8,7 @@
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::db;
+use crate::db::{self, RunStatus};
 use crate::entities;
 use crate::mutation::{self, MutationKind, ProposableMutation};
 
@@ -500,8 +500,7 @@ async fn run_is_parked(pool: &SqlitePool, run_id: Uuid) -> Result<bool, DecideEr
     Ok(db::run_status(pool, run_id)
         .await
         .map_err(|e| DecideError::Internal(e.into()))?
-        .as_deref()
-        == Some("parked"))
+        .is_some_and(RunStatus::is_parked))
 }
 
 #[cfg(test)]
@@ -1333,7 +1332,7 @@ mod tests {
         // The Run is still parked (resume returned Err before flipping), so the
         // still-parked recovery branch is reachable.
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
             Some("parked"),
             "a failed resume leaves the Run parked, not errored"
         );

@@ -67,6 +67,40 @@ impl RunStatus {
         }
     }
 
+    /// Parse a stored `runs.status` value. `None` for an unknown string — the
+    /// inverse of [`as_str`](Self::as_str), and the one place the string→enum
+    /// mapping lives. The read seam ([`crate::db::run_status`]) maps that `None`
+    /// to a loud `sqlx::Error::Decode` rather than degrading silently, mirroring
+    /// `entity_type_by_id`; the `runs.status` CHECK constraint means a live DB
+    /// never produces an unknown value, so that arm is defensive.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "running" => Some(Self::Running),
+            "parked" => Some(Self::Parked),
+            "completed" => Some(Self::Completed),
+            "errored" => Some(Self::Errored),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+
+    /// Whether the Run has ended. The terminal grouping lives here once, so a
+    /// read site asks the type instead of re-spelling the
+    /// `completed | errored | cancelled` set. `running`/`parked` are non-terminal
+    /// (a `parked` Run resumes; see CONTEXT.md *Run status*).
+    pub fn is_terminal(self) -> bool {
+        match self {
+            Self::Completed | Self::Errored | Self::Cancelled => true,
+            Self::Running | Self::Parked => false,
+        }
+    }
+
+    /// Whether the Run is parked, waiting on a Decision (ADR-0025). The parked
+    /// classifier lives here once for the resume-gate and subscribe read sites.
+    pub fn is_parked(self) -> bool {
+        matches!(self, Self::Parked)
+    }
+
     pub(super) async fn complete(
         conn: &mut SqliteConnection,
         run_id: Uuid,
@@ -369,4 +403,57 @@ async fn insert_proposal_decided_event(
     })
     .to_string();
     run_log::append(&mut *conn, run_id, RunLogKind::ProposalDecided, Some(&payload), now_ms).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunStatus;
+
+    /// `RunStatus` owns the Run-status vocabulary once (ADR-0028 read side): the
+    /// `as_str`/`from_str` round-trip covers every variant, an unknown stored
+    /// string is rejected (the `db::run_status` seam maps that `None` to a loud
+    /// `Decode` error), and the terminal/parked groupings live here on the type
+    /// rather than re-spelled at each read site.
+    #[test]
+    fn run_status_round_trips_and_classifies() {
+        let all = [
+            RunStatus::Running,
+            RunStatus::Parked,
+            RunStatus::Completed,
+            RunStatus::Errored,
+            RunStatus::Cancelled,
+        ];
+
+        // `as_str` → `from_str` round-trips every variant.
+        for status in all {
+            assert_eq!(
+                RunStatus::from_str(status.as_str()),
+                Some(status),
+                "round-trip {status:?}"
+            );
+        }
+
+        // An unknown / empty stored string parses to `None`.
+        assert_eq!(RunStatus::from_str("bogus"), None);
+        assert_eq!(RunStatus::from_str(""), None);
+
+        // Terminal grouping: completed/errored/cancelled are terminal; the two
+        // live states are not.
+        assert!(RunStatus::Completed.is_terminal());
+        assert!(RunStatus::Errored.is_terminal());
+        assert!(RunStatus::Cancelled.is_terminal());
+        assert!(!RunStatus::Running.is_terminal());
+        assert!(!RunStatus::Parked.is_terminal());
+
+        // Parked grouping: only `parked`.
+        assert!(RunStatus::Parked.is_parked());
+        for status in [
+            RunStatus::Running,
+            RunStatus::Completed,
+            RunStatus::Errored,
+            RunStatus::Cancelled,
+        ] {
+            assert!(!status.is_parked(), "{status:?} is not parked");
+        }
+    }
 }

@@ -16,7 +16,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 use super::reply::{send_proposal_pending, send_response, send_run_event, send_text_delta};
-use crate::db;
+use crate::db::{self, RunStatus};
 use crate::hub::{self, Hubs};
 use crate::protocol::{RunEvent, SubscribeParams, SubscribeResult};
 
@@ -41,10 +41,10 @@ pub(super) async fn handle(
 
             let (snapshot_text, status) = match snapshot {
                 Ok(Some(snap)) => (snap.text, snap.status),
-                Ok(None) => (String::new(), "running".to_string()),
+                Ok(None) => (String::new(), RunStatus::Running),
                 Err(e) => {
                     tracing::error!(event = "subscribe.snapshot_read_failed", %run_id, error = ?e);
-                    (String::new(), "running".to_string())
+                    (String::new(), RunStatus::Running)
                 }
             };
 
@@ -54,27 +54,33 @@ pub(super) async fn handle(
             // terminal event while the Worker's sender keeps the channel open,
             // so the tail would block on `recv()` forever. When the status under
             // the gate is already terminal, emit it and close WITHOUT attaching.
-            send_subscribe_response(out_tx, id, run_id, &status);
+            send_subscribe_response(out_tx, id, run_id, status.as_str());
             send_text_delta(out_tx, run_id, &snapshot_text);
-            match status.as_str() {
-                "cancelled" => send_run_event(out_tx, run_id, &RunEvent::Cancelled),
-                "completed" | "errored" => send_run_event(out_tx, run_id, &RunEvent::Done),
-                _ => spawn_tail_forwarder(run_id, receiver, out_tx.clone(), pool.clone()),
+            match status {
+                RunStatus::Cancelled => send_run_event(out_tx, run_id, &RunEvent::Cancelled),
+                RunStatus::Completed | RunStatus::Errored => {
+                    send_run_event(out_tx, run_id, &RunEvent::Done)
+                }
+                RunStatus::Running | RunStatus::Parked => {
+                    spawn_tail_forwarder(run_id, receiver, out_tx.clone(), pool.clone())
+                }
             }
         }
         // No hub: terminal, parked, or unknown. Read persisted status to tell
-        // parked (ADR-0025) from terminal.
+        // parked (ADR-0025) from terminal. `None` is the unknown-run id — modeled
+        // as the absence of a status rather than an empty-string sentinel.
         None => {
-            let status = match db::run_status(pool, run_id).await {
-                Ok(Some(s)) => s,
-                Ok(None) => String::new(), // unknown run id — stay defensible
+            let status: Option<RunStatus> = match db::run_status(pool, run_id).await {
+                Ok(status) => status,
                 Err(e) => {
                     tracing::error!(event = "subscribe.run_status_read_failed", %run_id, error = ?e);
-                    String::new()
+                    None
                 }
             };
             let snapshot = db::select_run_snapshot(pool, run_id).await;
-            send_subscribe_response(out_tx, id, run_id, &status);
+            // The wire status stays a string (ADR-0029): an unknown run reports
+            // the empty status, exactly as before.
+            send_subscribe_response(out_tx, id, run_id, status.map_or("", RunStatus::as_str));
             match snapshot {
                 Ok(Some(snap)) => {
                     send_text_delta(out_tx, run_id, &snap.text);
@@ -89,15 +95,16 @@ pub(super) async fn handle(
             // No-false-done (ADR-0025): a parked Run stopped without a terminal
             // event, so emit NO terminal Run Event — the Client reads `parked`
             // from the response status. Cancelled gets its terminal event;
-            // completed and the unknown/errored fallback synthesize `done`.
-            if status == "parked" {
+            // completed, running, and the unknown/errored fallback synthesize
+            // `done`.
+            match status {
                 // Push `proposal/pending` (ADR-0025) so a fresh subscriber shows
                 // the review card without a separate `proposal/get` poll.
-                emit_pending(out_tx, pool, run_id).await;
-            } else if status == "cancelled" {
-                send_run_event(out_tx, run_id, &RunEvent::Cancelled);
-            } else {
-                send_run_event(out_tx, run_id, &RunEvent::Done);
+                Some(RunStatus::Parked) => emit_pending(out_tx, pool, run_id).await,
+                Some(RunStatus::Cancelled) => {
+                    send_run_event(out_tx, run_id, &RunEvent::Cancelled)
+                }
+                _ => send_run_event(out_tx, run_id, &RunEvent::Done),
             }
         }
     }
@@ -200,10 +207,10 @@ fn spawn_tail_forwarder(
                             // of a synthesized `done`.
                             if !saw_terminal {
                                 match db::run_status(&pool, run_id).await {
-                                    Ok(Some(ref s)) if s == "parked" => {
+                                    Ok(Some(RunStatus::Parked)) => {
                                         emit_pending(&out_tx, &pool, run_id).await;
                                     }
-                                    Ok(Some(ref s)) if s == "cancelled" => {
+                                    Ok(Some(RunStatus::Cancelled)) => {
                                         send_run_event(&out_tx, run_id, &RunEvent::Cancelled);
                                     }
                                     _ => {

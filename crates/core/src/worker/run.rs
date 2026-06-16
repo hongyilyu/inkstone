@@ -538,7 +538,7 @@ mod tests {
 
         assert_eq!(exit, Exit::Done);
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
             Some("completed")
         );
         let snap = db::select_run_snapshot(&pool, run_id)
@@ -573,7 +573,7 @@ mod tests {
 
         assert_eq!(exit, Exit::Errored("boom".to_string()));
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
             Some("errored")
         );
     }
@@ -604,7 +604,7 @@ mod tests {
 
         assert_eq!(exit, Exit::Disconnected);
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
             Some("errored")
         );
     }
@@ -677,7 +677,7 @@ mod tests {
 
         assert_eq!(exit, Exit::Parked);
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
             Some("parked")
         );
         assert!(
@@ -723,7 +723,7 @@ mod tests {
         // The loop owns no terminal tx on cancel; here no transition ran at
         // all, so the run stays `running`.
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
             Some("running"),
             "the loop committed neither complete_run nor error_run"
         );
@@ -814,7 +814,7 @@ mod tests {
         assert_eq!(exit, Exit::Done, "the loop saw `done`");
         // But the terminal tx lost the guard: status stays `cancelled`.
         assert_eq!(
-            db::run_status(&pool, run_id).await.unwrap().as_deref(),
+            db::run_status(&pool, run_id).await.unwrap().map(db::RunStatus::as_str),
             Some("cancelled"),
             "a later completion does not overwrite a committed cancellation"
         );
