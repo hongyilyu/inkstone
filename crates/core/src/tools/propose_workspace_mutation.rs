@@ -63,7 +63,7 @@ mod tests {
     use super::*;
 
     /// Dump each agent-proposable kind's `payload` JSON-Schema to a committed
-    /// fixture under `bridges/contract/fixtures/<wire_kind>.json` — the
+    /// fixture under `tests/contract/fixtures/<wire_kind>.json` — the
     /// schema-of-record the `@inkstone/contract` parity gate diffs the
     /// hand-authored Effect Schemas against (slice 1 of `schema-parity-gate`).
     ///
@@ -74,7 +74,7 @@ mod tests {
     /// expression [`descriptor`] binds — NOT the `{mutation_kind, payload,
     /// rationale}` envelope.
     ///
-    /// It writes ALL 13 fixtures — the TS parity test (`bridges/contract`)
+    /// It writes ALL 13 fixtures — the TS parity test (`tests/contract`)
     /// asserts every one against its committed fixture. The output is
     /// deterministic (`serde_json` sorts object keys; pretty-print + trailing
     /// newline), so CI re-runs it and `git diff --exit-code` is the staleness
@@ -83,7 +83,7 @@ mod tests {
     fn regenerate_schema_fixtures() {
         let fixtures_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("bridges/contract/fixtures");
+            .join("tests/contract/fixtures");
         std::fs::create_dir_all(&fixtures_dir).expect("create fixtures dir");
 
         for proposable in ProposableMutation::ALL {
@@ -96,7 +96,7 @@ mod tests {
         }
     }
 
-    /// Lift CI's `git diff --exit-code bridges/contract/fixtures/` into the test
+    /// Lift CI's `git diff --exit-code tests/contract/fixtures/` into the test
     /// suite so `cargo test` ITSELF bites on stale fixtures. A dev who changes a
     /// `PayloadSpec` but forgets to re-run [`regenerate_schema_fixtures`] + commit
     /// would otherwise see green locally (the generator always passes) and only
@@ -113,61 +113,61 @@ mod tests {
     #[test]
     fn fixtures_match_committed() {
         // (wire kind, committed fixture bytes). `include_str!` resolves relative
-        // to this source file: `../../../../bridges/contract/fixtures/`.
+        // to this source file: `../../../../tests/contract/fixtures/`.
         let committed: &[(&str, &str)] = &[
             (
                 "create_journal_entry",
-                include_str!("../../../../bridges/contract/fixtures/create_journal_entry.json"),
+                include_str!("../../../../tests/contract/fixtures/create_journal_entry.json"),
             ),
             (
                 "update_journal_entry",
-                include_str!("../../../../bridges/contract/fixtures/update_journal_entry.json"),
+                include_str!("../../../../tests/contract/fixtures/update_journal_entry.json"),
             ),
             (
                 "delete_journal_entry",
-                include_str!("../../../../bridges/contract/fixtures/delete_journal_entry.json"),
+                include_str!("../../../../tests/contract/fixtures/delete_journal_entry.json"),
             ),
             (
                 "reference_existing_entity_from_journal_entry",
                 include_str!(
-                    "../../../../bridges/contract/fixtures/reference_existing_entity_from_journal_entry.json"
+                    "../../../../tests/contract/fixtures/reference_existing_entity_from_journal_entry.json"
                 ),
             ),
             (
                 "create_person",
-                include_str!("../../../../bridges/contract/fixtures/create_person.json"),
+                include_str!("../../../../tests/contract/fixtures/create_person.json"),
             ),
             (
                 "update_person",
-                include_str!("../../../../bridges/contract/fixtures/update_person.json"),
+                include_str!("../../../../tests/contract/fixtures/update_person.json"),
             ),
             (
                 "delete_person",
-                include_str!("../../../../bridges/contract/fixtures/delete_person.json"),
+                include_str!("../../../../tests/contract/fixtures/delete_person.json"),
             ),
             (
                 "create_project",
-                include_str!("../../../../bridges/contract/fixtures/create_project.json"),
+                include_str!("../../../../tests/contract/fixtures/create_project.json"),
             ),
             (
                 "update_project",
-                include_str!("../../../../bridges/contract/fixtures/update_project.json"),
+                include_str!("../../../../tests/contract/fixtures/update_project.json"),
             ),
             (
                 "delete_project",
-                include_str!("../../../../bridges/contract/fixtures/delete_project.json"),
+                include_str!("../../../../tests/contract/fixtures/delete_project.json"),
             ),
             (
                 "create_todo",
-                include_str!("../../../../bridges/contract/fixtures/create_todo.json"),
+                include_str!("../../../../tests/contract/fixtures/create_todo.json"),
             ),
             (
                 "update_todo",
-                include_str!("../../../../bridges/contract/fixtures/update_todo.json"),
+                include_str!("../../../../tests/contract/fixtures/update_todo.json"),
             ),
             (
                 "delete_todo",
-                include_str!("../../../../bridges/contract/fixtures/delete_todo.json"),
+                include_str!("../../../../tests/contract/fixtures/delete_todo.json"),
             ),
         ];
         // The embedded table must cover exactly the proposable kinds — neither
@@ -190,7 +190,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("parse committed fixture {wire}.json: {e}"));
             assert_eq!(
                 committed_value, fresh,
-                "committed fixture for {wire} is stale; run `cargo test regenerate_schema_fixtures` and commit bridges/contract/fixtures/{wire}.json"
+                "committed fixture for {wire} is stale; run `cargo test regenerate_schema_fixtures` and commit tests/contract/fixtures/{wire}.json"
             );
         }
     }

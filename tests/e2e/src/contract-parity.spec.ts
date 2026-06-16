@@ -1,6 +1,6 @@
 // Runtime contract parity (the behavioral leg of the schema-parity gate).
 //
-// The `bridges/contract` gate proves the two schema DEFINITIONS agree — Rust
+// The `tests/contract` gate proves the two schema DEFINITIONS agree — Rust
 // `PayloadSpec::json_schema()` ≡ the hand-authored Effect Schema — entirely
 // offline, against committed fixtures. It can't prove the locked schema accepts
 // what Core actually EMITS at runtime. This spec closes that gap end-to-end:

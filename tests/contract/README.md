@@ -12,7 +12,7 @@ A CI gate that proves the **Rust** and **TypeScript** definitions of the wire
   fixture through `normalize.ts`, and asserts deep-equality.
 
 This implements ADR-0009's already-decided "manually mirrored types + contract
-tests" discipline, at the location ADR-0008/0019 name (`bridges/`), using
+tests" discipline (this contract-test package lives at `tests/contract`), using
 ADR-0018's inline Draft-07 dialect. It is **not** a new architectural decision.
 
 ## Why a normalizer

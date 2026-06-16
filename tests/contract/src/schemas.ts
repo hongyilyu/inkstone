@@ -1,6 +1,6 @@
 // The hand-authored Effect Schema mirror of each agent-proposable Workspace
 // mutation's `payload` (ADR-0009's "manually mirrored types + contract tests"
-// discipline, implemented at the location ADR-0008/0019 name: `bridges/`). One
+// discipline; this contract-test package lives at `tests/contract`). One
 // entry per wire kind in `schemas`; `parity.test.ts` runs each through
 // `JSONSchema.make`, normalizes, and asserts deep-equality with the committed
 // Rust fixture (`fixtures/<kind>.json`, the schema-of-record).

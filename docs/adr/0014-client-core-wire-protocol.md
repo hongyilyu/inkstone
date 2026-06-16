@@ -12,7 +12,7 @@ Every frame is a JSON-encoded JSON-RPC 2.0 message. Three shapes:
 - **Response**: `{"jsonrpc":"2.0", "id": <request_id>, "result": {...}}` or `{"jsonrpc":"2.0", "id": <request_id>, "error": {"code": <int>, "message": "...", "data": {...}}}`.
 - **Notification**: `{"jsonrpc":"2.0", "method": "...", "params": {...}}` — no `id`, no reply expected.
 
-JSON-RPC 2.0 is a small conventional envelope that fits the shapes Inkstone needs. It does not solve schema evolution, reconnect semantics, durability boundaries, ordering, or cancellation guarantees — those are decided in the rest of this ADR. The shapes are minimal and hand-written on both sides per [ADR-0009](./0009-protocol-strategy.md); contract tests in `bridges/` exercise the round-trip.
+JSON-RPC 2.0 is a small conventional envelope that fits the shapes Inkstone needs. It does not solve schema evolution, reconnect semantics, durability boundaries, ordering, or cancellation guarantees — those are decided in the rest of this ADR. The shapes are minimal and hand-written on both sides per [ADR-0009](./0009-protocol-strategy.md); contract tests in `tests/contract` exercise the round-trip.
 
 ## Method namespaces
 

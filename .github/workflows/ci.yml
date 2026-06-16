@@ -70,10 +70,10 @@ jobs:
       - name: Unit tests (vitest)
         run: pnpm -r test
       # The wire-schema parity gate: each hand-authored Effect Schema deep-equals
-      # its Rust-emitted fixture (bridges/contract). `pnpm -r test` already runs
+      # its Rust-emitted fixture (tests/contract). `pnpm -r test` already runs
       # this transitively; the explicit step makes the gate visible as its own
       # line.
-      - name: Schema parity (bridges/contract)
+      - name: Schema parity (tests/contract)
         run: pnpm --filter @inkstone/contract test
 
   rust:
@@ -109,7 +109,7 @@ jobs:
         run: cargo test --locked --manifest-path crates/core/Cargo.toml
       # Re-dump the proposable payload schemas, then fail if any committed
       # fixture drifted from a fresh dump — the schema-parity staleness gate
-      # (bridges/contract). A PayloadSpec change that wasn't re-committed turns
+      # (tests/contract). A PayloadSpec change that wasn't re-committed turns
       # this red.
       - name: Regenerate schema fixtures
         run: cargo test --locked --manifest-path crates/core/Cargo.toml regenerate_schema_fixtures
@@ -120,8 +120,8 @@ jobs:
       # and `completeness.test.ts` also fail on a new kind.)
       - name: Schema fixtures are committed (no drift)
         run: |
-          git add -N bridges/contract/fixtures/
-          git diff --exit-code bridges/contract/fixtures/
+          git add -N tests/contract/fixtures/
+          git diff --exit-code tests/contract/fixtures/
 
   e2e:
     name: e2e

@@ -1,6 +1,6 @@
 # Protocol strategy: manually mirrored types + contract tests
 
-For the MVP, the Worker ↔ Core protocol types are defined manually on both sides — Rust types in `crates/core` and TypeScript types in `packages/protocol`. Consistency between the two is enforced by **contract tests** that exercise serialization, deserialization, and round-trips across the language boundary, living in `bridges/`.
+For the MVP, the Worker ↔ Core protocol types are defined manually on both sides — Rust types in `crates/core` and TypeScript types in `packages/protocol`. Consistency between the two is enforced by **contract tests** that exercise serialization, deserialization, and round-trips across the language boundary, living in `tests/contract`.
 
 ## Why not schema-first generation
 
@@ -16,7 +16,7 @@ The contract tests are the real quality bar — they catch the drift that manual
 
 ## As-built: the schema-parity gate (2026-06)
 
-The contract-test leg this ADR called for now exists in `bridges/contract`, and it covers a second, larger surface beyond the Worker ↔ Core protocol types this ADR was written about: the **agent-proposable Workspace mutation payloads**. Core single-sources each of the 13 proposable kinds' payload shape from one `PayloadSpec` (`crates/core/src/field_spec.rs`), which emits an inline Draft-07 fragment; the Web side hand-mirrors each as an Effect Schema. The gate dumps the Rust schema per kind to a committed fixture and asserts the Effect Schema, run through `JSONSchema.make` and normalized to a common dialect, deep-equals it. Note the wire `payload` itself stays `S.Unknown` in `packages/protocol` — the typed Effect Schemas live only in the test package, so this is a contract *test*, not a wire-type change.
+The contract-test leg this ADR called for now exists in `tests/contract`, and it covers a second, larger surface beyond the Worker ↔ Core protocol types this ADR was written about: the **agent-proposable Workspace mutation payloads**. Core single-sources each of the 13 proposable kinds' payload shape from one `PayloadSpec` (`crates/core/src/field_spec.rs`), which emits an inline Draft-07 fragment; the Web side hand-mirrors each as an Effect Schema. The gate dumps the Rust schema per kind to a committed fixture and asserts the Effect Schema, run through `JSONSchema.make` and normalized to a common dialect, deep-equals it. Note the wire `payload` itself stays `S.Unknown` in `packages/protocol` — the typed Effect Schemas live only in the test package, so this is a contract *test*, not a wire-type change.
 
 Two boundaries are deliberate and worth recording, because they bound what "the schemas agree" means:
 
