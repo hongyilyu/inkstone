@@ -987,8 +987,8 @@ where
 }
 
 /// Read every Todo Person Reference on `todo_id` (ADR-0031) as `(person_id,
-/// role)` pairs. Core-internal V0 read layer (Slice 11).
-#[allow(dead_code)]
+/// role)` pairs. Used by the recurrence successor-spawn (ADR-0039) to carry the
+/// completed Todo's People forward onto its next occurrence.
 pub(super) async fn person_refs_by_todo<'e, E>(
     executor: E,
     todo_id: &str,
