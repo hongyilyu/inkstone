@@ -1,0 +1,9 @@
+{
+	"mutation_kind": "create_todo",
+	"payload": {
+		"todo": {
+			"title": "Email Alce about the migration"
+		}
+	},
+	"rationale": "The user mentioned an email they need to send."
+}
