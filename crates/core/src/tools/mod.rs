@@ -112,6 +112,46 @@ pub fn descriptors_for(allowlist: &[String]) -> Vec<CoreToolDescriptor> {
         .collect()
 }
 
+/// The ambient tools appended to every Run (ADR-0036). One today: `load_skill`.
+/// The single source of truth for ambient membership: both [`is_ambient`] (the
+/// dispatch gate, via [`is_allowed`]) and [`run_descriptors`] (the manifest)
+/// derive from this slice, so what the model *sees* and what Core *dispatches*
+/// cannot drift apart.
+const AMBIENT_TOOLS: &[&str] = &[load_skill::NAME];
+
+/// Whether `name` is an *ambient* tool — allowed on every Run regardless of the
+/// Workflow's own allowlist (ADR-0036 §"load_skill is always allowed"). The
+/// Skills subsystem makes `load_skill` ambient so the model can always pull a
+/// skill body, while domain tools stay per-Workflow opt-in. Both the manifest
+/// build ([`run_descriptors`]) and the dispatch gate ([`is_allowed`]) consult
+/// this same [`AMBIENT_TOOLS`] list, so they never disagree.
+pub fn is_ambient(name: &str) -> bool {
+    AMBIENT_TOOLS.contains(&name)
+}
+
+/// The descriptors shipped in a Run's manifest: the Workflow's allowlisted tools
+/// (in order) followed by any ambient tool not already named (ADR-0036). This is
+/// what the model is shown; [`is_allowed`] is the matching dispatch gate.
+pub fn run_descriptors(allowlist: &[String]) -> Vec<CoreToolDescriptor> {
+    let mut descriptors = descriptors_for(allowlist);
+    for name in AMBIENT_TOOLS {
+        if !allowlist.iter().any(|t| t == name)
+            && let Some(descriptor) = descriptor_for(name)
+        {
+            descriptors.push(descriptor);
+        }
+    }
+    descriptors
+}
+
+/// Whether a `tool_request` for `name` may be dispatched on a Run with this
+/// `allowlist` (ADR-0018 dual gate): the tool must be registered AND either in
+/// the Workflow's allowlist or ambient (ADR-0036). Mirrors [`run_descriptors`]
+/// so an advertised tool is always dispatchable.
+pub fn is_allowed(allowlist: &[String], name: &str) -> bool {
+    is_registered(name) && (is_ambient(name) || allowlist.iter().any(|t| t == name))
+}
+
 /// Whether `name` is a registered tool. Used for allowlist enforcement before
 /// dispatch (ADR-0018).
 pub fn is_registered(name: &str) -> bool {
@@ -212,5 +252,72 @@ mod tests {
             vec![propose_workspace_mutation::NAME],
             "exactly one Proposal tool, and it is propose_workspace_mutation"
         );
+    }
+
+    #[test]
+    fn run_descriptors_appends_ambient_load_skill_once() {
+        // An empty Workflow allowlist still ships load_skill (ambient).
+        let ds = run_descriptors(&[]);
+        let names: Vec<&str> = ds.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["load_skill"],
+            "ambient load_skill is always shipped"
+        );
+
+        // A Workflow that already lists load_skill gets it exactly once, no dup.
+        let ds = run_descriptors(&["load_skill".to_string()]);
+        assert_eq!(
+            ds.iter().filter(|d| d.name == "load_skill").count(),
+            1,
+            "load_skill is not duplicated when the Workflow already lists it"
+        );
+
+        // Domain tools keep their order, with load_skill appended after.
+        let ds = run_descriptors(&["read_thread".to_string()]);
+        let names: Vec<&str> = ds.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["read_thread", "load_skill"]);
+    }
+
+    #[test]
+    fn is_allowed_permits_ambient_and_allowlisted_only() {
+        // Ambient: allowed even with an empty allowlist.
+        assert!(is_allowed(&[], "load_skill"), "load_skill is ambient");
+        // Allowlisted domain tool: allowed.
+        assert!(is_allowed(&["read_thread".to_string()], "read_thread"));
+        // Off-allowlist domain tool: rejected.
+        assert!(!is_allowed(&[], "read_thread"));
+        // Unregistered name: rejected even if (absurdly) allowlisted.
+        assert!(!is_allowed(&["nonexistent".to_string()], "nonexistent"));
+    }
+
+    #[test]
+    fn ambient_gate_and_manifest_agree_for_every_ambient_tool() {
+        // The two gates must never disagree (ADR-0036): a tool shown in the
+        // manifest must dispatch, and a tool dispatched must be shown. Both derive
+        // from AMBIENT_TOOLS, so this pins their agreement for EVERY ambient tool —
+        // a future tool added to the set (or, were they to diverge, dropped from
+        // one side) is caught here, not at runtime.
+        let advertised: Vec<String> =
+            run_descriptors(&[]).into_iter().map(|d| d.name).collect();
+        for name in AMBIENT_TOOLS {
+            assert!(is_ambient(name), "{name} is in AMBIENT_TOOLS but is_ambient() denies it");
+            assert!(
+                is_allowed(&[], name),
+                "{name} is ambient but is_allowed rejects it with an empty allowlist"
+            );
+            assert!(
+                advertised.iter().any(|d| d == name),
+                "{name} is ambient but run_descriptors(&[]) does not advertise it"
+            );
+        }
+        // Conversely, everything run_descriptors adds beyond an empty allowlist is
+        // dispatchable — no advertised-but-undispatchable tool.
+        for name in &advertised {
+            assert!(
+                is_allowed(&[], name),
+                "{name} is advertised by run_descriptors(&[]) but is_allowed rejects it"
+            );
+        }
     }
 }

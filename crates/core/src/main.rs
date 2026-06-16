@@ -17,6 +17,7 @@ mod recurrence;
 mod resume;
 mod runs;
 mod settings;
+mod skills;
 mod tools;
 mod worker;
 mod workflow;
@@ -61,6 +62,14 @@ async fn main() -> Result<()> {
     workflow::init()?;
 
     let pool = db::open().await?;
+
+    // Seed the bundled example Skills into the Core-managed skills dir on first
+    // run (ADR-0036), so the feature is live on a fresh install. Best-effort and
+    // only when the dir is absent — an existing dir is the user's (drop-in
+    // ownership), so edits and deletes survive and we never re-seed. A failure is
+    // logged inside, never fatal: worst case the install ships no skills until one
+    // is dropped in.
+    skills::seed_if_absent();
 
     // Rebuild the tier-3 message search projection from `message_parts` (ADR-0035):
     // backfills an existing DB and self-heals any drift on every open. O(completed

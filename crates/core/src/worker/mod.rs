@@ -201,9 +201,14 @@ async fn fresh_manifest_line(
         })
         .collect();
     let access_token = resolve_token(run_id, workflow).await?;
+    // Scan the skills dir and inject the <available_skills> block per spawn
+    // (ADR-0036): fresh AND resume both build the manifest here, so both see the
+    // current skill set without snapshotting a stale one. The augmented String
+    // must outlive the borrowing manifest, so it is bound here.
+    let system_prompt = crate::skills::augmented_system_prompt(workflow);
     let manifest = WorkerManifest {
         run_id,
-        workflow: workflow_manifest(workflow),
+        workflow: workflow_manifest(workflow, &system_prompt),
         prompt,
         messages,
         mode: None,
@@ -221,9 +226,10 @@ async fn resume_manifest_line(
 ) -> Option<String> {
     let messages: Vec<ManifestMessage> = transcript.iter().map(crate::resume::Block::as_message).collect();
     let access_token = resolve_token(run_id, workflow).await?;
+    let system_prompt = crate::skills::augmented_system_prompt(workflow);
     let manifest = WorkerManifest {
         run_id,
-        workflow: workflow_manifest(workflow),
+        workflow: workflow_manifest(workflow, &system_prompt),
         prompt: "",
         messages,
         mode: Some("resume"),
@@ -232,15 +238,20 @@ async fn resume_manifest_line(
     Some(serialize_manifest(&manifest))
 }
 
-fn workflow_manifest(workflow: &Workflow) -> WorkflowManifest<'_> {
+/// Build the `WorkflowManifest` (ADR-0018). `system_prompt` is passed in (not
+/// taken from `workflow`) because it carries the per-spawn `<available_skills>`
+/// injection (ADR-0036) and must be owned by the caller to outlive this borrow.
+/// `tools` is the Run descriptor set: the Workflow's own allowlist plus ambient
+/// `load_skill`.
+fn workflow_manifest<'a>(workflow: &'a Workflow, system_prompt: &'a str) -> WorkflowManifest<'a> {
     WorkflowManifest {
         name: &workflow.name,
         version: &workflow.version,
         provider: &workflow.provider,
         model: workflow.model.as_deref().unwrap_or_default(),
-        system_prompt: &workflow.system_prompt,
+        system_prompt,
         thinking_level: workflow.thinking_level.as_deref().unwrap_or("off"),
-        tools: crate::tools::descriptors_for(&workflow.tools),
+        tools: crate::tools::run_descriptors(&workflow.tools),
     }
 }
 
@@ -290,4 +301,104 @@ async fn finalize_error(pool: &SqlitePool, hubs: &Hubs, run_id: Uuid) {
         tracing::error!(event = "worker.error_run_failed", %run_id, error = ?e);
     }
     crate::hub::remove(hubs, run_id);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn workflow(tools: &[&str]) -> Workflow {
+        Workflow {
+            name: "default".to_string(),
+            version: "1.0.0".to_string(),
+            provider: "faux".to_string(),
+            model: Some("m".to_string()),
+            system_prompt: "Base prompt.".to_string(),
+            thinking_level: Some("off".to_string()),
+            tools: tools.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// The manifest builder injects the scanned skills' name+description into the
+    /// `system_prompt` AND ships `load_skill` in `tools`, even when the Workflow's
+    /// own allowlist omits it — the two ADR-0036 gates, asserted together on the
+    /// one struct that reaches the wire.
+    #[test]
+    fn workflow_manifest_injects_skills_and_ambient_load_skill() {
+        let _guard = crate::skills::SKILLS_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(tmp.path().join("weekly-review")).expect("mk skill dir");
+        std::fs::write(
+            tmp.path().join("weekly-review").join("SKILL.md"),
+            "---\nname: weekly-review\ndescription: Guide a GTD weekly review.\n---\n\n# Weekly review\n",
+        )
+        .expect("write SKILL.md");
+        unsafe {
+            std::env::set_var("INKSTONE_SKILLS_DIR", tmp.path());
+        }
+
+        // A Workflow whose own allowlist has one domain tool and NOT load_skill.
+        let wf = workflow(&["search_entities"]);
+        let system_prompt = crate::skills::augmented_system_prompt(&wf);
+        let manifest = workflow_manifest(&wf, &system_prompt);
+
+        // Disclosure: the base prompt is kept and the skill's name+description are
+        // injected under an <available_skills> block.
+        assert!(manifest.system_prompt.starts_with("Base prompt."));
+        assert!(manifest.system_prompt.contains("<available_skills>"));
+        assert!(
+            manifest
+                .system_prompt
+                .contains("- weekly-review: Guide a GTD weekly review."),
+            "skill name+description injected — got {:?}",
+            manifest.system_prompt
+        );
+
+        // Activation: load_skill is shipped (ambient) alongside the domain tool.
+        let tool_names: Vec<&str> = manifest.tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(tool_names.contains(&"search_entities"), "domain tool kept");
+        assert!(
+            tool_names.contains(&"load_skill"),
+            "ambient load_skill shipped despite the Workflow omitting it — got {tool_names:?}"
+        );
+
+        unsafe {
+            std::env::remove_var("INKSTONE_SKILLS_DIR");
+        }
+    }
+
+    /// With no skills dir, the prompt is left untouched (no empty block) but
+    /// `load_skill` is still ambiently shipped — disclosure degrades, activation
+    /// does not.
+    #[test]
+    fn workflow_manifest_without_skills_keeps_bare_prompt_but_ships_load_skill() {
+        let _guard = crate::skills::SKILLS_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Point at an empty (existing) dir: scan finds nothing.
+        unsafe {
+            std::env::set_var("INKSTONE_SKILLS_DIR", tmp.path());
+        }
+
+        let wf = workflow(&["search_entities"]);
+        let system_prompt = crate::skills::augmented_system_prompt(&wf);
+        let manifest = workflow_manifest(&wf, &system_prompt);
+
+        assert_eq!(
+            manifest.system_prompt, "Base prompt.",
+            "no skills → no block"
+        );
+        let tool_names: Vec<&str> = manifest.tools.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            tool_names.contains(&"load_skill"),
+            "load_skill stays ambient"
+        );
+
+        unsafe {
+            std::env::remove_var("INKSTONE_SKILLS_DIR");
+        }
+    }
 }

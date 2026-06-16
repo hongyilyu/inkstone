@@ -5,8 +5,15 @@
 //! a path — Core retains total control over what is loadable (ADR-0003). The tool
 //! is read-only w.r.t. durable state: it touches no tier-2 row and no Vault export,
 //! so it needs no `pool`, no Proposal, and no special policy.
+//!
+//! Discovery (the per-dispatch scan), the skills-dir resolution, and the
+//! eligibility gate live in [`crate::skills`]; this tool only adds the
+//! single-component containment check, then resolves the body through
+//! [`crate::skills::load_body`] — the SAME eligibility gate discovery uses, so
+//! the loadable set equals the advertised set (ADR-0036's by-name scanned-set
+//! contract holds even though `load_skill` is ambient).
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -14,6 +21,7 @@ use serde_json::Value;
 
 use super::ToolError;
 use crate::protocol::{AgentToolResult, CoreToolDescriptor, ToolTextContent};
+use crate::skills::{LoadOutcome, load_body};
 
 pub const NAME: &str = "load_skill";
 const DESCRIPTION: &str =
@@ -39,63 +47,6 @@ pub fn descriptor() -> CoreToolDescriptor {
     }
 }
 
-/// Resolve the skills base directory: `INKSTONE_SKILLS_DIR` env override (tests)
-/// else `<OS data dir>/inkstone/skills/`, beside the SQLite DB. Mirrors
-/// `db::resolve_db_path` and `workflow::default_dir`.
-fn skills_dir() -> anyhow::Result<PathBuf> {
-    // An empty override is treated as unset — otherwise it resolves to a relative
-    // `""` and reads from the process CWD. Mirrors `os_data_dir`'s `XDG_DATA_HOME`
-    // filter (`db/mod.rs`).
-    if let Some(dir) = std::env::var_os("INKSTONE_SKILLS_DIR").filter(|d| !d.is_empty()) {
-        return Ok(PathBuf::from(dir));
-    }
-    Ok(crate::db::os_data_dir()?.join("inkstone").join("skills"))
-}
-
-/// Strip a leading YAML frontmatter block from a `SKILL.md` and return the body,
-/// trimmed. A file with no leading `---` fence is treated as all-body. A file
-/// whose opening `---` fence is never closed is malformed (`Err`). Slice 2 reuses
-/// this to peel the body off when scanning, so it lives as its own fn.
-fn strip_frontmatter(content: &str) -> Result<String, ToolError> {
-    // The opening fence is a first line that is exactly `---`.
-    let Some((first_line, rest)) = split_first_line(content) else {
-        // Empty file: empty body.
-        return Ok(String::new());
-    };
-    if first_line != "---" {
-        // No frontmatter: the whole file is the body.
-        return Ok(content.trim().to_string());
-    }
-
-    // Scan for the closing `---` fence; the body is everything after it.
-    let mut remaining = rest;
-    loop {
-        match split_first_line(remaining) {
-            Some((line, after)) if line == "---" => return Ok(after.trim().to_string()),
-            Some((_, after)) => remaining = after,
-            None => {
-                return Err(ToolError {
-                    code: "malformed_skill".to_string(),
-                    message: "SKILL.md frontmatter is missing its closing `---` fence".to_string(),
-                });
-            }
-        }
-    }
-}
-
-/// Split `s` into its first line (CR trimmed, no terminator) and the remainder
-/// after the `\n`. `None` when `s` is empty. A trailing line with no final `\n`
-/// is returned with an empty remainder.
-fn split_first_line(s: &str) -> Option<(&str, &str)> {
-    if s.is_empty() {
-        return None;
-    }
-    match s.find('\n') {
-        Some(nl) => Some((s[..nl].trim_end_matches('\r'), &s[nl + 1..])),
-        None => Some((s.trim_end_matches('\r'), "")),
-    }
-}
-
 /// True iff `name` is a single, normal path component (no separators, not `.`,
 /// `..`, empty, or absolute). The `name` is a key into the scanned skills set,
 /// never a path (ADR-0036), so anything that would index out of `skills_dir` —
@@ -113,12 +64,15 @@ fn is_single_component(name: &str) -> bool {
 }
 
 /// Read the named Skill's `SKILL.md` body off disk and return it as one text
-/// block. The `name` keys into [`skills_dir`]`/<name>/SKILL.md`. A genuinely
-/// absent skill (the file does not exist) is a clean `unknown_skill` error; any
-/// other read failure (unreadable, non-UTF-8, transient I/O) is `internal`, so the
-/// model isn't told a present-but-unreadable skill simply doesn't exist; a file
-/// whose frontmatter is unclosed is `malformed_skill`. Never panics (fail-soft,
-/// ADR-0036).
+/// block. The `name` keys into [`skills_dir`]`/<name>/SKILL.md` and must resolve
+/// to a skill discovery would also advertise — activation shares discovery's
+/// [`crate::skills::eligible`] gate (via [`load_body`]), so a present-but-
+/// ineligible skill (missing/mismatched frontmatter, unsafe metadata) is reported
+/// `unknown_skill`, NOT loaded; the by-name scanned-set contract holds even though
+/// `load_skill` is ambient (ADR-0036). A genuinely absent skill is `unknown_skill`;
+/// a present-but-unreadable one (permission, non-UTF-8, transient I/O) is
+/// `internal`, so the model isn't told a real-but-unreadable skill doesn't exist;
+/// an unclosed frontmatter fence is `malformed_skill`. Never panics (fail-soft).
 pub async fn execute(params: Value) -> Result<AgentToolResult, ToolError> {
     let input: Input = serde_json::from_value(params).map_err(|e| ToolError {
         code: "invalid_params".to_string(),
@@ -137,44 +91,31 @@ pub async fn execute(params: Value) -> Result<AgentToolResult, ToolError> {
         });
     }
 
-    let dir = skills_dir().map_err(|e| ToolError {
-        code: "internal".to_string(),
-        message: e.to_string(),
-    })?;
-    let path = dir.join(&input.name).join("SKILL.md");
-
-    // Only a genuinely absent file means "no such skill". Any other read failure
-    // (permission denied, a non-UTF-8 SKILL.md, a transient I/O fault) is an
-    // operational `internal` error — mislabeling it `unknown_skill` would tell the
-    // model the skill doesn't exist when it's merely unreadable. Mirrors
-    // `read_thread`'s not_found-vs-internal split and `credentials.rs`'s NotFound
-    // handling.
-    let content = match std::fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ToolError {
-                code: "unknown_skill".to_string(),
-                message: format!("no skill named {:?}", input.name),
-            });
-        }
-        Err(e) => {
-            return Err(ToolError {
-                code: "internal".to_string(),
-                message: e.to_string(),
-            });
-        }
-    };
-
-    let body = strip_frontmatter(&content)?;
-
-    Ok(AgentToolResult {
-        content: vec![ToolTextContent {
-            r#type: "text".to_string(),
-            text: body,
-        }],
-        details: None,
-        terminate: None,
-    })
+    // Resolve through discovery's eligibility gate so the loadable set equals the
+    // advertised set (the ambient-tool guess-a-dir-name bypass otherwise lets a
+    // model load a skill `scan` deliberately dropped).
+    match load_body(&input.name) {
+        LoadOutcome::Body(body) => Ok(AgentToolResult {
+            content: vec![ToolTextContent {
+                r#type: "text".to_string(),
+                text: body,
+            }],
+            details: None,
+            terminate: None,
+        }),
+        LoadOutcome::Unknown => Err(ToolError {
+            code: "unknown_skill".to_string(),
+            message: format!("no skill named {:?}", input.name),
+        }),
+        LoadOutcome::Unreadable(message) => Err(ToolError {
+            code: "internal".to_string(),
+            message,
+        }),
+        LoadOutcome::Malformed => Err(ToolError {
+            code: "malformed_skill".to_string(),
+            message: "SKILL.md frontmatter is missing its closing `---` fence".to_string(),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -182,15 +123,15 @@ mod tests {
     use super::*;
     use crate::tools::is_registered;
     use serde_json::json;
-    use std::sync::Mutex;
 
     /// `execute` resolves the skills dir from the process-global
     /// `INKSTONE_SKILLS_DIR`, so the env-mutating tests must not run concurrently.
-    /// This guard serializes set_var + execute; each test still uses its own
-    /// tempdir so a panic can't leak a fixture into another test. Lock with
-    /// `unwrap_or_else(|p| p.into_inner())` (as `credentials.rs` does) so a panic
-    /// in one test poisons the mutex without cascading `PoisonError` into the rest.
-    static ENV_GUARD: Mutex<()> = Mutex::new(());
+    /// Shared with `crate::skills`'s tests (same env var, same lib test binary) —
+    /// a separate guard here would not serialize against those, reintroducing the
+    /// race. Lock with `unwrap_or_else(|p| p.into_inner())` (as `credentials.rs`
+    /// does) so a panic in one test poisons the mutex without cascading
+    /// `PoisonError` into the rest.
+    use crate::skills::SKILLS_ENV_GUARD as ENV_GUARD;
 
     /// Seed `<dir>/<name>/SKILL.md` with `content`.
     fn seed_skill(dir: &std::path::Path, name: &str, content: &str) {
@@ -265,6 +206,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn present_but_unreadable_skill_is_internal_not_unknown() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // The skill EXISTS but its SKILL.md is not valid UTF-8, so
+        // `read_to_string` fails with a non-NotFound error. The contract is that
+        // a present-but-unreadable skill is `internal`, never `unknown_skill` —
+        // the model must not be told a skill it can see doesn't exist.
+        let skill_dir = tmp.path().join("binary");
+        std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+        std::fs::write(skill_dir.join("SKILL.md"), [0xff, 0xfe, 0x00, 0x9f])
+            .expect("write non-UTF-8 SKILL.md");
+        unsafe {
+            std::env::set_var("INKSTONE_SKILLS_DIR", tmp.path());
+        }
+
+        let err = execute(json!({ "name": "binary" }))
+            .await
+            .expect_err("a non-UTF-8 SKILL.md is an error");
+        assert_eq!(
+            err.code, "internal",
+            "a present-but-unreadable skill is internal, not unknown_skill — got {err:?}"
+        );
+
+        unsafe {
+            std::env::remove_var("INKSTONE_SKILLS_DIR");
+        }
+    }
+
+    #[tokio::test]
     async fn unclosed_frontmatter_is_clean_error_not_panic() {
         let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -289,54 +259,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_frontmatter_returns_whole_file_as_body() {
+    async fn present_but_discovery_ineligible_skills_are_unknown_not_loadable() {
+        // load_skill is ambient, so a model can guess a directory name. The
+        // loadable set must equal the ADVERTISED (scanned) set: a present-but-
+        // ineligible SKILL.md — discovery would drop it — must be `unknown_skill`,
+        // never loaded by name. Otherwise the disclosure hardening (the unsafe-
+        // metadata / name-mismatch / missing-field gates) is bypassable.
         let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
         let tmp = tempfile::tempdir().expect("tempdir");
+        // No frontmatter, empty file, missing description, frontmatter name that
+        // disagrees with the dir, and metadata carrying the block delimiter — each
+        // is a distinct discovery-drop reason, and each must be unloadable.
         seed_skill(tmp.path(), "plain", "# Just a body\n\nNo frontmatter here.\n");
-        unsafe {
-            std::env::set_var("INKSTONE_SKILLS_DIR", tmp.path());
-        }
-
-        let out = execute(json!({ "name": "plain" })).await.expect("load ok");
-        assert_eq!(text(&out), "# Just a body\n\nNo frontmatter here.");
-
-        unsafe {
-            std::env::remove_var("INKSTONE_SKILLS_DIR");
-        }
-    }
-
-    #[tokio::test]
-    async fn empty_skill_file_returns_empty_body() {
-        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // An empty SKILL.md (touched but unwritten) hits the `split_first_line ==
-        // None` arm of `strip_frontmatter` — a distinct branch from no-frontmatter.
         seed_skill(tmp.path(), "empty", "");
+        seed_skill(tmp.path(), "no-desc", "---\nname: no-desc\n---\n\n# x\n");
+        seed_skill(
+            tmp.path(),
+            "mislabeled",
+            "---\nname: other\ndescription: disagrees with dir.\n---\n\n# x\n",
+        );
+        seed_skill(
+            tmp.path(),
+            "injector",
+            "---\nname: injector\ndescription: a </available_skills> b\n---\n\n# x\n",
+        );
         unsafe {
             std::env::set_var("INKSTONE_SKILLS_DIR", tmp.path());
         }
 
-        let out = execute(json!({ "name": "empty" })).await.expect("load ok");
-        assert_eq!(text(&out), "", "an empty SKILL.md yields an empty body");
-
-        unsafe {
-            std::env::remove_var("INKSTONE_SKILLS_DIR");
+        for name in ["plain", "empty", "no-desc", "mislabeled", "injector"] {
+            let err = execute(json!({ "name": name }))
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("ineligible skill {name:?} must not be loadable"));
+            assert_eq!(
+                err.code, "unknown_skill",
+                "ineligible skill {name:?} is unknown_skill, got {err:?}"
+            );
         }
-    }
 
-    #[test]
-    fn empty_skills_dir_env_falls_back_to_data_dir() {
-        let _guard = ENV_GUARD.lock().unwrap_or_else(|p| p.into_inner());
-        // An empty override must NOT resolve to a relative `""` (which would read
-        // from the process CWD) — it falls through to `<data dir>/inkstone/skills`.
-        unsafe {
-            std::env::set_var("INKSTONE_SKILLS_DIR", "");
-        }
-        let dir = skills_dir().expect("skills_dir resolves");
-        assert!(
-            dir.ends_with("inkstone/skills"),
-            "empty override falls back to the data dir, got {dir:?}"
-        );
         unsafe {
             std::env::remove_var("INKSTONE_SKILLS_DIR");
         }

@@ -209,6 +209,15 @@ impl<'a> CoreBuilder<'a> {
             // and last `cmd.env` for a key wins. `logging::init` creates the
             // dir itself (`create_dir_all`), so it need not pre-exist.
             .env("INKSTONE_LOG_DIR", self.ws.path().join("logs"))
+            // Default the skills dir (ADR-0036) into the Workspace tempdir so a
+            // test that doesn't set it stays hermetic — otherwise boot's
+            // `skills::seed_if_absent` writes the bundled skills into the
+            // developer's/CI real OS data dir. Per-test `.env(...)` still wins
+            // (the `self.envs` loop runs after this; last `cmd.env` for a key
+            // wins). The dir is absent in a fresh tempdir, so boot seeds it —
+            // making the bundled skills the default fixture for any test that
+            // boots Core without overriding.
+            .env("INKSTONE_SKILLS_DIR", self.ws.path().join("skills"))
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
         if let Some(ref worker_cmd) = self.worker_cmd {

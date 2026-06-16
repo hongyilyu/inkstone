@@ -1048,6 +1048,21 @@ export function fauxDepsFor(manifest: WorkerManifest): InterpreterDeps {
 				return textTurn(`read_thread result: ${textOf(toolResult?.content)}`);
 			},
 		]);
+	} else if (process.env.INKSTONE_FAUX_LOAD_SKILL !== undefined) {
+		// Load-skill mode (e2e, ADR-0036): turn 1 calls the AMBIENT load_skill tool
+		// by name (the name rides in INKSTONE_FAUX_LOAD_SKILL), turn 2 echoes the
+		// returned skill body. Proves the Skills activation round-trip surfaces a
+		// tool-call row in the real UI even though no Workflow allowlists load_skill.
+		const skillName = process.env.INKSTONE_FAUX_LOAD_SKILL;
+		faux.setResponses([
+			toolCallTurn("load_skill", { name: skillName }, "tc_load_skill"),
+			(context) => {
+				const toolResult = [...context.messages]
+					.reverse()
+					.find((m) => m.role === "toolResult");
+				return textTurn(`load_skill result: ${textOf(toolResult?.content)}`);
+			},
+		]);
 	} else if (process.env.INKSTONE_FAUX_PROPOSE === "1") {
 		// Propose mode (e2e): fresh turn proposes, Core parks; resume continues — see docs/design/worker.md (ADR-0025).
 		if (manifest.mode === "resume") {

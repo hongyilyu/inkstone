@@ -56,7 +56,8 @@ pub(crate) fn resolve_db_path() -> Result<PathBuf> {
 }
 
 /// Per-OS application-data directory (hand-rolled to avoid a crate dep).
-/// `pub(crate)` so the skills tool can place its dir beside the DB (ADR-0036).
+/// `pub(crate)` so the Skills subsystem can root its dir in the data dir
+/// (`<data dir>/inkstone/skills/`, ADR-0036).
 #[cfg(target_os = "macos")]
 pub(crate) fn os_data_dir() -> Result<PathBuf> {
     let home = std::env::var_os("HOME").context("$HOME not set")?;
