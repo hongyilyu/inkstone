@@ -1,16 +1,26 @@
-import type { EntityMutateParams } from "@inkstone/protocol";
 import { Link2, X } from "lucide-react";
 import { useId, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button.js";
+import {
+	buildBody,
+	buildJournalEntry,
+	buildJournalReference,
+	type DraftBodyNode,
+	entityCodec,
+	type JournalDraft,
+	journalDraftFromVm,
+	journalScalarsDiffer,
+	REFERENCEABLE_KINDS,
+	type ReferenceableKind,
+	stagedNewChip,
+} from "@/lib/entityCodec.js";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import {
 	type JournalEntry,
-	type JournalEntryBodyNode,
 	type LibraryItem,
 	type LibraryItemKind,
 	libraryItemSubtitle,
 	libraryItemTitle,
-	localNowString,
 } from "@/lib/libraryItems";
 import { EditorField, EditorInput, EntityEditorFrame } from "./EntityEditor.js";
 import { EntityGlyph } from "./EntityGlyph.js";
@@ -24,205 +34,12 @@ type Props = (
 	onCancel: () => void;
 };
 
-/** The Entity kinds an inline chip may target (ADR-0030; never a Journal Entry). */
-type ReferenceableKind = "person" | "project" | "todo";
-const REFERENCEABLE_KINDS: ReferenceableKind[] = ["person", "project", "todo"];
-
-/**
- * The editable body: text segments are mutable strings; chips are references.
- * Existing chips carry a real `refId`; a NEWLY added chip is a bare placeholder
- * carrying its `targetEntityId` (no ref_id — Core mints one on the reference
- * mutation). At most one new chip is staged at a time (one reference mutation
- * per new chip — the hard contract). Discriminated on `type`.
- */
-type DraftEntityRefNode = {
-	type: "entity_ref";
-	/** For existing chips: the stored `ref_id` (snake_case on the wire). */
-	refId?: string;
-	/** A human label for the chip token. */
-	label?: string;
-	/** For a NEW chip: the picked Entity's id (the reference target). */
-	newTargetId?: string;
-};
-
-type DraftBodyNode = { type: "text"; text: string } | DraftEntityRefNode;
-
-interface Draft {
-	/** Local wall-clock `YYYY-MM-DDTHH:MM` (datetime-local value). */
-	occurredAt: string;
-	endedAt: string;
-	body: DraftBodyNode[];
-}
-
-/** A 16-char datetime-local value (`…THH:MM`) → the 19-char string Core wants. */
-function localToWallClock(value: string): string {
-	return `${value}:00`;
-}
-
-/**
- * Resolve the wall-clock string to emit for a time the user may not have touched.
- * `datetime-local` only carries minute precision, so a stored value with nonzero
- * seconds would be re-stamped to `:00` on any save — silent mutation of an
- * untouched field. When the input still matches the stored value's minute prefix,
- * emit the stored string verbatim (seconds preserved); otherwise emit the edit.
- */
-function emitWallClock(value: string, stored: string | undefined): string {
-	if (stored && wallClockToLocal(stored) === value) return stored;
-	return localToWallClock(value);
-}
-
-/** A stored 19-char wall-clock string → the 16-char datetime-local value. */
-function wallClockToLocal(value: string): string {
-	return value.slice(0, 16);
-}
-
-function chipLabel(
-	node: Extract<JournalEntryBodyNode, { type: "entity_ref" }>,
-) {
-	return node.targetTitle ?? node.labelSnapshot ?? "Referenced entity";
-}
-
-function draftFromJournalEntry(entry: JournalEntry | undefined): Draft {
-	if (!entry) {
-		return {
-			occurredAt: wallClockToLocal(localNowString()),
-			endedAt: "",
-			body: [{ type: "text", text: "" }],
-		};
-	}
-	return {
-		occurredAt: wallClockToLocal(entry.occurredAt),
-		endedAt: entry.endedAt ? wallClockToLocal(entry.endedAt) : "",
-		body: entry.body.map((node) =>
-			node.type === "text"
-				? { type: "text", text: node.text }
-				: { type: "entity_ref", refId: node.refId, label: chipLabel(node) },
-		),
-	};
-}
-
-/**
- * The wire body for the draft, dropping empty text segments and mapping kept
- * chips to snake_case `{type:"entity_ref", ref_id}` carrying the REAL stored id
- * (slice-6 bug class — never leak camelCase `refId`). Empty when nothing remains.
- */
-function buildBody(
-	body: DraftBodyNode[],
-): Array<
-	{ type: "text"; text: string } | { type: "entity_ref"; ref_id: string }
-> {
-	const nodes: Array<
-		{ type: "text"; text: string } | { type: "entity_ref"; ref_id: string }
-	> = [];
-	for (const node of body) {
-		if (node.type === "text") {
-			if (node.text.trim() !== "")
-				nodes.push({ type: "text", text: node.text });
-		} else if (node.refId) {
-			nodes.push({ type: "entity_ref", ref_id: node.refId });
-		}
-	}
-	return nodes;
-}
-
-function buildCreateParams(d: Draft): EntityMutateParams {
-	const payload: Record<string, unknown> = {
-		occurred_at: localToWallClock(d.occurredAt),
-		body: buildBody(d.body),
-	};
-	if (d.endedAt) payload.ended_at = localToWallClock(d.endedAt);
-	return { mutation_kind: "create_journal_entry", payload };
-}
-
-/**
- * `update_journal_entry` is a FULL REPLACE (slice-8): emit the complete intended
- * state — occurred_at, ended_at (when set), and the whole body (kept chips +
- * edited text). A removed chip is simply absent from `body`.
- */
-function buildUpdateParams(entry: JournalEntry, d: Draft): EntityMutateParams {
-	const payload: Record<string, unknown> = {
-		entity_id: entry.id,
-		occurred_at: emitWallClock(d.occurredAt, entry.occurredAt),
-		body: buildBody(d.body),
-	};
-	if (d.endedAt) payload.ended_at = emitWallClock(d.endedAt, entry.endedAt);
-	return { mutation_kind: "update_journal_entry", payload };
-}
-
-/** The single staged new chip (the one bare placeholder), or undefined. */
-function stagedNewChip(body: DraftBodyNode[]): DraftEntityRefNode | undefined {
-	return body.find(
-		(node): node is DraftEntityRefNode =>
-			node.type === "entity_ref" && node.newTargetId !== undefined,
-	);
-}
-
-/**
- * Whether the draft's occurred_at/ended_at differ from the stored entry. The
- * reference mutation (`buildReferenceParams`) carries NO scalars — Core preserves
- * the stored occurred_at/ended_at and replaces only the body. So when a chip is
- * staged AND the user also edited a date in the same Save, the scalar edit would
- * be silently dropped unless we first emit an `update_journal_entry` for it.
- */
-function scalarsDiffer(entry: JournalEntry, d: Draft): boolean {
-	if (emitWallClock(d.occurredAt, entry.occurredAt) !== entry.occurredAt)
-		return true;
-	const ended = d.endedAt ? emitWallClock(d.endedAt, entry.endedAt) : undefined;
-	return ended !== entry.endedAt;
-}
-
-/**
- * The wire body for a reference mutation: the JE's text nodes plus the ONE new
- * chip as a BARE `{type:"entity_ref"}` placeholder (Core mints its ref_id and
- * rewrites the placeholder). Core rejects any `ref_id` on a reference body node
- * and rewrites EVERY placeholder to the same minted id, so this body carries no
- * `ref_id` node and exactly one placeholder. Add-a-chip is gated to chip-free
- * entries (see `AddReferenceField`), so no existing chip is ever present here.
- */
-function buildReferenceBody(
-	body: DraftBodyNode[],
-): Array<{ type: "text"; text: string } | { type: "entity_ref" }> {
-	const nodes: Array<{ type: "text"; text: string } | { type: "entity_ref" }> =
-		[];
-	for (const node of body) {
-		if (node.type === "text") {
-			if (node.text.trim() !== "")
-				nodes.push({ type: "text", text: node.text });
-		} else if (node.newTargetId !== undefined) {
-			nodes.push({ type: "entity_ref" });
-		}
-	}
-	return nodes;
-}
-
-/**
- * `reference_existing_entity_from_journal_entry` for the ONE staged new chip:
- * the JE is the source, the picked Entity the target, and the body carries
- * exactly one bare placeholder for the new chip (ADR-0030/0033).
- */
-function buildReferenceParams(
-	entry: JournalEntry,
-	d: Draft,
-	chip: DraftEntityRefNode,
-): EntityMutateParams {
-	const payload: Record<string, unknown> = {
-		source_entity_id: entry.id,
-		target_entity_id: chip.newTargetId,
-		body: buildReferenceBody(d.body),
-	};
-	if (chip.label) payload.label_snapshot = chip.label;
-	return {
-		mutation_kind: "reference_existing_entity_from_journal_entry",
-		payload,
-	};
-}
-
 /** Create / edit a Journal Entry inline in the (widened) Library rail (ADR-0033). */
 export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 	const existing = m.mode === "edit" ? m.journalEntry : undefined;
 	const allEntities = m.mode === "edit" ? m.allEntities : [];
-	const [draft, setDraft] = useState<Draft>(() =>
-		draftFromJournalEntry(existing),
+	const [draft, setDraft] = useState<JournalDraft>(() =>
+		journalDraftFromVm(existing),
 	);
 	const mutation = useEntityMutation();
 
@@ -285,8 +102,8 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 		const referencing = existing !== undefined && newChip !== undefined;
 		if (!referencing) {
 			const params = existing
-				? buildUpdateParams(existing, draft)
-				: buildCreateParams(draft);
+				? entityCodec.journal_entry.build({ mode: "update", existing, draft })
+				: entityCodec.journal_entry.build({ mode: "create", draft });
 			mutation.mutate(params, {
 				onSuccess: (result) =>
 					onDone(result.entity_id ?? existing?.id ?? draft.occurredAt),
@@ -300,10 +117,12 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 		// The reference mutation carries NO scalars, so a date edit made in the same
 		// Save would be lost. Persist it FIRST via update_journal_entry (awaited),
 		// THEN reference the chip — so the user never silently loses a date edit.
-		const referenceParams = buildReferenceParams(entry, draft, chip);
+		const referenceParams = buildJournalReference(entry, draft, chip);
 		const run = async () => {
-			if (scalarsDiffer(entry, draft)) {
-				await mutation.mutateAsync(buildUpdateParams(entry, draft));
+			if (journalScalarsDiffer(entry, draft)) {
+				await mutation.mutateAsync(
+					buildJournalEntry({ mode: "update", existing: entry, draft }),
+				);
 			}
 			const result = await mutation.mutateAsync(referenceParams);
 			dropStagedPlaceholder();

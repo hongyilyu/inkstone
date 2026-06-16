@@ -577,15 +577,527 @@ function buildTodo(
 		: buildUpdateParams(input.existing, input.baseline, input.draft);
 }
 
+// ---------------------------------------------------------------------------
+// PERSON build (full-document replace). Create OMITS empty optionals (Core
+// rejects explicit-null on create); update is a full-document REPLACE driven by
+// the draft (name always — the validator requires it — plus non-empty
+// note/aliases), with a cleared optional simply OMITTED (omit ≡ null under
+// replace — never sentinel-null). Returns null when nothing changed.
+// ---------------------------------------------------------------------------
+
+/** The editable shape of a Person's scalar fields; `""` means absent/cleared. */
+export interface PersonDraft {
+	name: string;
+	note: string;
+	/** Aliases as a comma-separated string; split on save (ADR-0031). */
+	aliases: string;
+}
+
+/** Parse the comma-separated aliases field into a trimmed, non-empty `string[]`. */
+function parseAliases(raw: string): string[] {
+	return raw
+		.split(",")
+		.map((a) => a.trim())
+		.filter((a) => a.length > 0);
+}
+
+/** The editable draft for a Person (or a fresh blank draft when absent). */
+function personDraftFromVm(person: Person | undefined): PersonDraft {
+	return {
+		name: person?.name ?? "",
+		note: person?.note ?? "",
+		aliases: person?.aliases?.join(", ") ?? "",
+	};
+}
+
+function buildPersonCreate(d: PersonDraft): EntityMutateParams {
+	const payload: Record<string, unknown> = { name: d.name.trim() };
+	if (d.note.trim()) payload.note = d.note.trim();
+	const aliases = parseAliases(d.aliases);
+	if (aliases.length > 0) payload.aliases = aliases;
+	return { mutation_kind: "create_person", payload };
+}
+
+function buildPersonUpdate(
+	person: Person,
+	prev: PersonDraft,
+	next: PersonDraft,
+): EntityMutateParams | null {
+	const changed =
+		next.name.trim() !== prev.name ||
+		next.note.trim() !== prev.note ||
+		next.aliases.trim() !== prev.aliases;
+	if (!changed) return null;
+
+	const payload: Record<string, unknown> = {
+		entity_id: person.id,
+		name: next.name.trim(),
+	};
+	const note = next.note.trim();
+	if (note) payload.note = note;
+	const aliases = parseAliases(next.aliases);
+	if (aliases.length > 0) payload.aliases = aliases;
+	return { mutation_kind: "update_person", payload };
+}
+
+/** The single PERSON build entry the editor calls: dispatches on `mode`. */
+function buildPerson(
+	input:
+		| { mode: "create"; draft: PersonDraft }
+		| {
+				mode: "update";
+				existing: Person;
+				baseline: PersonDraft;
+				draft: PersonDraft;
+		  },
+): EntityMutateParams | null {
+	return input.mode === "create"
+		? buildPersonCreate(input.draft)
+		: buildPersonUpdate(input.existing, input.baseline, input.draft);
+}
+
+// ---------------------------------------------------------------------------
+// BOOKMARK build (full-document replace) — uses the promoted/ungated schema
+// (slice 1). Same full-replace shape as person: title always (the validator
+// requires it), url/note/tags when non-empty, cleared optional OMITTED (omit ≡
+// null under replace — never sentinel-null, so the built payload conforms to
+// `createBookmark`/`updateBookmark`). Returns null when nothing changed.
+// ---------------------------------------------------------------------------
+
+/** The editable shape of a Bookmark's scalar fields; `""` means absent/cleared. */
+export interface BookmarkDraft {
+	title: string;
+	url: string;
+	note: string;
+	/** Tags as a comma-separated string; split on save (ADR-0036). */
+	tags: string;
+}
+
+/** Parse the comma-separated tags field into a deduped, trimmed `string[]`. */
+function parseTags(raw: string): string[] {
+	return [
+		...new Set(
+			raw
+				.split(",")
+				.map((t) => t.trim())
+				.filter((t) => t.length > 0),
+		),
+	];
+}
+
+/** The editable draft for a Bookmark (or a fresh blank draft when absent). */
+function bookmarkDraftFromVm(bookmark: Bookmark | undefined): BookmarkDraft {
+	return {
+		title: bookmark?.title ?? "",
+		url: bookmark?.url ?? "",
+		note: bookmark?.note ?? "",
+		tags: bookmark?.tags?.join(", ") ?? "",
+	};
+}
+
+function buildBookmarkCreate(d: BookmarkDraft): EntityMutateParams {
+	const payload: Record<string, unknown> = { title: d.title.trim() };
+	if (d.url.trim()) payload.url = d.url.trim();
+	if (d.note.trim()) payload.note = d.note.trim();
+	const tags = parseTags(d.tags);
+	if (tags.length > 0) payload.tags = tags;
+	return { mutation_kind: "create_bookmark", payload };
+}
+
+function buildBookmarkUpdate(
+	bookmark: Bookmark,
+	prev: BookmarkDraft,
+	next: BookmarkDraft,
+): EntityMutateParams | null {
+	const changed =
+		next.title.trim() !== prev.title ||
+		next.url.trim() !== prev.url ||
+		next.note.trim() !== prev.note ||
+		next.tags.trim() !== prev.tags;
+	if (!changed) return null;
+
+	const payload: Record<string, unknown> = {
+		entity_id: bookmark.id,
+		title: next.title.trim(),
+	};
+	const url = next.url.trim();
+	if (url) payload.url = url;
+	const note = next.note.trim();
+	if (note) payload.note = note;
+	const tags = parseTags(next.tags);
+	if (tags.length > 0) payload.tags = tags;
+	return { mutation_kind: "update_bookmark", payload };
+}
+
+/** The single BOOKMARK build entry the editor calls: dispatches on `mode`. */
+function buildBookmark(
+	input:
+		| { mode: "create"; draft: BookmarkDraft }
+		| {
+				mode: "update";
+				existing: Bookmark;
+				baseline: BookmarkDraft;
+				draft: BookmarkDraft;
+		  },
+): EntityMutateParams | null {
+	return input.mode === "create"
+		? buildBookmarkCreate(input.draft)
+		: buildBookmarkUpdate(input.existing, input.baseline, input.draft);
+}
+
+// ---------------------------------------------------------------------------
+// PROJECT build (full-document replace with VERBATIM-data overlay). Create OMITS
+// empty optionals (review_every is never sent — Core injects the default review
+// ritual). Update CLONES the verbatim stored `project.data` (the slice-2 parse
+// carry), deletes `entity_id`, overlays name/outcome/note/status, on a status
+// CHANGE sets/clears the terminal timestamps, then DROPS undefined/null keys
+// (omit ≡ null under replace) — so server-managed `review_every`/`due_at`/
+// `defer_at` survive the overlay. `entity_id` rides at the top level. Returns
+// null when nothing changed.
+// ---------------------------------------------------------------------------
+
+/**
+ * The editable shape of a Project's scalar fields; `""` means absent/cleared.
+ * (`due_at`/`defer_at` and the review ritual aren't editable in this form, but
+ * the update replays them verbatim from the stored data — ADR-0031.)
+ */
+export interface ProjectDraft {
+	name: string;
+	outcome: string;
+	note: string;
+	status: ProjectStatus;
+}
+
+/** The editable draft for a Project (or a fresh blank draft when absent). */
+function projectDraftFromVm(project: Project | undefined): ProjectDraft {
+	return {
+		name: project?.name ?? "",
+		outcome: project?.outcome ?? "",
+		note: project?.note ?? "",
+		status: project?.status ?? "active",
+	};
+}
+
+function buildProjectCreate(d: ProjectDraft): EntityMutateParams {
+	const payload: Record<string, unknown> = { name: d.name.trim() };
+	if (d.outcome.trim()) payload.outcome = d.outcome.trim();
+	if (d.note.trim()) payload.note = d.note.trim();
+	if (d.status !== "active") {
+		payload.status = d.status;
+		if (d.status === "completed") payload.completed_at = localNowString();
+		else if (d.status === "dropped") payload.dropped_at = localNowString();
+	}
+	return { mutation_kind: "create_project", payload };
+}
+
+function buildProjectUpdate(
+	project: Project,
+	prev: ProjectDraft,
+	next: ProjectDraft,
+): EntityMutateParams | null {
+	const changed =
+		next.name.trim() !== prev.name ||
+		next.outcome.trim() !== prev.outcome ||
+		next.note.trim() !== prev.note ||
+		next.status !== prev.status;
+	if (!changed) return null;
+
+	// Clone the complete stored data verbatim, then overlay the form edits. The
+	// stored data never carries `entity_id` (Core strips it), but drop it
+	// defensively so it rides only as the top-level row target.
+	const doc: Record<string, unknown> = { ...(project.data ?? {}) };
+	delete doc.entity_id;
+
+	doc.name = next.name.trim();
+	doc.outcome = next.outcome.trim() || undefined;
+	doc.note = next.note.trim() || undefined;
+	doc.status = next.status;
+	// Only (re)stamp the terminal timestamp(s) on a status CHANGE. When status is
+	// unchanged, leave the stored `completed_at`/`dropped_at` (cloned from
+	// `project.data`) intact — re-stamping every edit would silently overwrite the
+	// original completion/drop date (ADR-0033).
+	if (next.status !== prev.status) {
+		if (next.status === "completed") {
+			doc.completed_at = localNowString();
+			doc.dropped_at = undefined;
+		} else if (next.status === "dropped") {
+			doc.dropped_at = localNowString();
+			doc.completed_at = undefined;
+		} else {
+			doc.completed_at = undefined;
+			doc.dropped_at = undefined;
+		}
+	}
+
+	// Drop cleared optionals: under full-replace, an absent key carries no value
+	// (omit ≡ null — ADR-0033).
+	const payload: Record<string, unknown> = { entity_id: project.id };
+	for (const [key, value] of Object.entries(doc)) {
+		if (value !== undefined && value !== null) payload[key] = value;
+	}
+	return { mutation_kind: "update_project", payload };
+}
+
+/** The single PROJECT build entry the editor calls: dispatches on `mode`. */
+function buildProject(
+	input:
+		| { mode: "create"; draft: ProjectDraft }
+		| {
+				mode: "update";
+				existing: Project;
+				baseline: ProjectDraft;
+				draft: ProjectDraft;
+		  },
+): EntityMutateParams | null {
+	return input.mode === "create"
+		? buildProjectCreate(input.draft)
+		: buildProjectUpdate(input.existing, input.baseline, input.draft);
+}
+
+// ---------------------------------------------------------------------------
+// JOURNAL_ENTRY build (full replace + a SEPARATE reference weave). The codec
+// produces the wire PAYLOADS — create/update full-replace bodies, and the
+// reference body for a staged new chip. The editor KEEPS the async orchestration
+// (await update-if-scalarsDiffer, then await reference, then dropStagedPlaceholder)
+// and the React state/handlers — that's mutation-lifecycle logic, not wire shape.
+// ---------------------------------------------------------------------------
+
+/** The Entity kinds an inline chip may target (ADR-0030; never a Journal Entry). */
+export type ReferenceableKind = "person" | "project" | "todo";
+export const REFERENCEABLE_KINDS: ReferenceableKind[] = [
+	"person",
+	"project",
+	"todo",
+];
+
+/**
+ * The editable body: text segments are mutable strings; chips are references.
+ * Existing chips carry a real `refId`; a NEWLY added chip is a bare placeholder
+ * carrying its `newTargetId` (no ref_id — Core mints one on the reference
+ * mutation). At most one new chip is staged at a time (one reference mutation
+ * per new chip — the hard contract). Discriminated on `type`.
+ */
+export type DraftEntityRefNode = {
+	type: "entity_ref";
+	/** For existing chips: the stored `ref_id` (snake_case on the wire). */
+	refId?: string;
+	/** A human label for the chip token. */
+	label?: string;
+	/** For a NEW chip: the picked Entity's id (the reference target). */
+	newTargetId?: string;
+};
+
+export type DraftBodyNode = { type: "text"; text: string } | DraftEntityRefNode;
+
+export interface JournalDraft {
+	/** Local wall-clock `YYYY-MM-DDTHH:MM` (datetime-local value). */
+	occurredAt: string;
+	endedAt: string;
+	body: DraftBodyNode[];
+}
+
+/** A 16-char datetime-local value (`…THH:MM`) → the 19-char string Core wants. */
+function localToWallClock(value: string): string {
+	return `${value}:00`;
+}
+
+/** A stored 19-char wall-clock string → the 16-char datetime-local value. */
+function wallClockToLocal(value: string): string {
+	return value.slice(0, 16);
+}
+
+/**
+ * Resolve the wall-clock string to emit for a time the user may not have touched.
+ * `datetime-local` only carries minute precision, so a stored value with nonzero
+ * seconds would be re-stamped to `:00` on any save — silent mutation of an
+ * untouched field. When the input still matches the stored value's minute prefix,
+ * emit the stored string verbatim (seconds preserved); otherwise emit the edit.
+ */
+function emitWallClock(value: string, stored: string | undefined): string {
+	if (stored && wallClockToLocal(stored) === value) return stored;
+	return localToWallClock(value);
+}
+
+function chipLabel(
+	node: Extract<JournalEntryBodyNode, { type: "entity_ref" }>,
+) {
+	return node.targetTitle ?? node.labelSnapshot ?? "Referenced entity";
+}
+
+/** The editable draft for a Journal Entry (or a fresh blank draft when absent). */
+function journalDraftFromVm(entry: JournalEntry | undefined): JournalDraft {
+	if (!entry) {
+		return {
+			occurredAt: wallClockToLocal(localNowString()),
+			endedAt: "",
+			body: [{ type: "text", text: "" }],
+		};
+	}
+	return {
+		occurredAt: wallClockToLocal(entry.occurredAt),
+		endedAt: entry.endedAt ? wallClockToLocal(entry.endedAt) : "",
+		body: entry.body.map((node) =>
+			node.type === "text"
+				? { type: "text", text: node.text }
+				: { type: "entity_ref", refId: node.refId, label: chipLabel(node) },
+		),
+	};
+}
+
+/**
+ * The wire body for the draft, dropping empty text segments and mapping kept
+ * chips to snake_case `{type:"entity_ref", ref_id}` carrying the REAL stored id
+ * (slice-6 bug class — never leak camelCase `refId`). Empty when nothing remains.
+ */
+function buildBody(
+	body: DraftBodyNode[],
+): Array<
+	{ type: "text"; text: string } | { type: "entity_ref"; ref_id: string }
+> {
+	const nodes: Array<
+		{ type: "text"; text: string } | { type: "entity_ref"; ref_id: string }
+	> = [];
+	for (const node of body) {
+		if (node.type === "text") {
+			if (node.text.trim() !== "")
+				nodes.push({ type: "text", text: node.text });
+		} else if (node.refId) {
+			nodes.push({ type: "entity_ref", ref_id: node.refId });
+		}
+	}
+	return nodes;
+}
+
+function buildJournalEntryCreate(d: JournalDraft): EntityMutateParams {
+	const payload: Record<string, unknown> = {
+		occurred_at: localToWallClock(d.occurredAt),
+		body: buildBody(d.body),
+	};
+	if (d.endedAt) payload.ended_at = localToWallClock(d.endedAt);
+	return { mutation_kind: "create_journal_entry", payload };
+}
+
+/**
+ * `update_journal_entry` is a FULL REPLACE (slice-8): emit the complete intended
+ * state — occurred_at, ended_at (when set), and the whole body (kept chips +
+ * edited text). A removed chip is simply absent from `body`.
+ */
+function buildJournalEntryUpdate(
+	entry: JournalEntry,
+	d: JournalDraft,
+): EntityMutateParams {
+	const payload: Record<string, unknown> = {
+		entity_id: entry.id,
+		occurred_at: emitWallClock(d.occurredAt, entry.occurredAt),
+		body: buildBody(d.body),
+	};
+	if (d.endedAt) payload.ended_at = emitWallClock(d.endedAt, entry.endedAt);
+	return { mutation_kind: "update_journal_entry", payload };
+}
+
+/**
+ * The JOURNAL_ENTRY full-replace build entry the editor calls: dispatches on
+ * `mode`. (The reference weave for a staged new chip is `buildJournalReference`;
+ * the editor sequences the two.)
+ */
+function buildJournalEntry(
+	input:
+		| { mode: "create"; draft: JournalDraft }
+		| { mode: "update"; existing: JournalEntry; draft: JournalDraft },
+): EntityMutateParams {
+	return input.mode === "create"
+		? buildJournalEntryCreate(input.draft)
+		: buildJournalEntryUpdate(input.existing, input.draft);
+}
+
+/** The single staged new chip (the one bare placeholder), or undefined. */
+function stagedNewChip(body: DraftBodyNode[]): DraftEntityRefNode | undefined {
+	return body.find(
+		(node): node is DraftEntityRefNode =>
+			node.type === "entity_ref" && node.newTargetId !== undefined,
+	);
+}
+
+/**
+ * Whether the draft's occurred_at/ended_at differ from the stored entry. The
+ * reference mutation (`buildJournalReference`) carries NO scalars — Core preserves
+ * the stored occurred_at/ended_at and replaces only the body. So when a chip is
+ * staged AND the user also edited a date in the same Save, the scalar edit would
+ * be silently dropped unless we first emit an `update_journal_entry` for it.
+ */
+function journalScalarsDiffer(entry: JournalEntry, d: JournalDraft): boolean {
+	if (emitWallClock(d.occurredAt, entry.occurredAt) !== entry.occurredAt)
+		return true;
+	const ended = d.endedAt ? emitWallClock(d.endedAt, entry.endedAt) : undefined;
+	return ended !== entry.endedAt;
+}
+
+/**
+ * The wire body for a reference mutation: the JE's text nodes plus the ONE new
+ * chip as a BARE `{type:"entity_ref"}` placeholder (Core mints its ref_id and
+ * rewrites the placeholder). Core rejects any `ref_id` on a reference body node
+ * and rewrites EVERY placeholder to the same minted id, so this body carries no
+ * `ref_id` node and exactly one placeholder. Add-a-chip is gated to chip-free
+ * entries (see `AddReferenceField`), so no existing chip is ever present here.
+ */
+function buildReferenceBody(
+	body: DraftBodyNode[],
+): Array<{ type: "text"; text: string } | { type: "entity_ref" }> {
+	const nodes: Array<{ type: "text"; text: string } | { type: "entity_ref" }> =
+		[];
+	for (const node of body) {
+		if (node.type === "text") {
+			if (node.text.trim() !== "")
+				nodes.push({ type: "text", text: node.text });
+		} else if (node.newTargetId !== undefined) {
+			nodes.push({ type: "entity_ref" });
+		}
+	}
+	return nodes;
+}
+
+/**
+ * `reference_existing_entity_from_journal_entry` for the ONE staged new chip:
+ * the JE is the source, the picked Entity the target, and the body carries
+ * exactly one bare placeholder for the new chip (ADR-0030/0033).
+ */
+function buildJournalReference(
+	entry: JournalEntry,
+	d: JournalDraft,
+	chip: DraftEntityRefNode,
+): EntityMutateParams {
+	const payload: Record<string, unknown> = {
+		source_entity_id: entry.id,
+		target_entity_id: chip.newTargetId,
+		body: buildReferenceBody(d.body),
+	};
+	if (chip.label) payload.label_snapshot = chip.label;
+	return {
+		mutation_kind: "reference_existing_entity_from_journal_entry",
+		payload,
+	};
+}
+
 export {
+	bookmarkDraftFromVm,
+	buildBody,
+	buildBookmark,
+	buildJournalEntry,
+	buildJournalReference,
+	buildPerson,
+	buildProject,
 	buildTodo,
+	journalDraftFromVm,
+	journalScalarsDiffer,
 	parseBookmark,
 	parseJournalEntry,
 	parsePerson,
 	parseProject,
 	parseTodo,
-	recurActive,
+	personDraftFromVm,
+	projectDraftFromVm,
 	recurAnchorDatePresent,
+	stagedNewChip,
 	todoDraftFromVm,
 };
 
@@ -594,9 +1106,9 @@ export {
  * added per kind in later slices.
  */
 export const entityCodec = {
-	journal_entry: { parse: parseJournalEntry },
+	journal_entry: { parse: parseJournalEntry, build: buildJournalEntry },
 	todo: { parse: parseTodo, build: buildTodo },
-	person: { parse: parsePerson },
-	project: { parse: parseProject },
-	bookmark: { parse: parseBookmark },
+	person: { parse: parsePerson, build: buildPerson },
+	project: { parse: parseProject, build: buildProject },
+	bookmark: { parse: parseBookmark, build: buildBookmark },
 };

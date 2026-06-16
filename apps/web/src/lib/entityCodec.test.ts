@@ -1,13 +1,36 @@
+import { createBookmark, updateBookmark } from "@inkstone/protocol";
+import { Schema as S } from "effect";
 import { describe, expect, it } from "vitest";
-import type { Todo } from "@/lib/libraryItems";
+import type {
+	Bookmark,
+	JournalEntry,
+	Person,
+	Project,
+	Todo,
+} from "@/lib/libraryItems";
 import {
+	type BookmarkDraft,
+	bookmarkDraftFromVm,
+	buildBookmark,
+	buildJournalEntry,
+	buildJournalReference,
+	buildPerson,
+	buildProject,
 	buildTodo,
+	type JournalDraft,
+	journalDraftFromVm,
+	journalScalarsDiffer,
 	type LiveEntityRow,
+	type PersonDraft,
+	type ProjectDraft,
 	parseBookmark,
 	parseJournalEntry,
 	parsePerson,
 	parseProject,
 	parseTodo,
+	personDraftFromVm,
+	projectDraftFromVm,
+	stagedNewChip,
 	type TodoDraft,
 	todoDraftFromVm,
 } from "./entityCodec.js";
@@ -717,5 +740,552 @@ describe("entityCodec build — todo update", () => {
 			anchor: "defer_at",
 		});
 		expect(recurrence).not.toHaveProperty("only_on");
+	});
+});
+
+describe("entityCodec build — person create", () => {
+	const draft = (over: Partial<PersonDraft> = {}): PersonDraft => ({
+		...personDraftFromVm(undefined),
+		...over,
+	});
+
+	it("emits create_person with only the filled fields (name-only)", () => {
+		expect(
+			buildPerson({ mode: "create", draft: draft({ name: "Bob" }) }),
+		).toEqual({
+			mutation_kind: "create_person",
+			payload: { name: "Bob" },
+		});
+	});
+
+	it("includes note and aliases as a plain string[] when given", () => {
+		expect(
+			buildPerson({
+				mode: "create",
+				draft: draft({
+					name: "Bob",
+					note: "Met at the daycare",
+					aliases: "Bobby, Rob",
+				}),
+			}),
+		).toEqual({
+			mutation_kind: "create_person",
+			payload: {
+				name: "Bob",
+				note: "Met at the daycare",
+				aliases: ["Bobby", "Rob"],
+			},
+		});
+	});
+});
+
+describe("entityCodec build — person update", () => {
+	const existing: Person = {
+		id: "p_e1",
+		kind: "person",
+		name: "Alice",
+		recency: 1,
+		createdAt: "fixture",
+	};
+	const edit = (person: Person, over: Partial<PersonDraft>) => {
+		const baseline = personDraftFromVm(person);
+		return buildPerson({
+			mode: "update",
+			existing: person,
+			baseline,
+			draft: { ...baseline, ...over },
+		});
+	};
+
+	it("replays note + aliases when only the name changes (full-replace)", () => {
+		const withOptionals: Person = {
+			...existing,
+			note: "Met at the daycare",
+			aliases: ["Ally", "A."],
+		};
+		expect(edit(withOptionals, { name: "Alice Smith" })).toEqual({
+			mutation_kind: "update_person",
+			payload: {
+				entity_id: "p_e1",
+				name: "Alice Smith",
+				note: "Met at the daycare",
+				aliases: ["Ally", "A."],
+			},
+		});
+	});
+
+	it("returns null when nothing changed (no-op)", () => {
+		expect(edit(existing, {})).toBeNull();
+	});
+
+	it("omits cleared optionals from the full doc (omit ≡ null), name still present", () => {
+		const withOptionals: Person = {
+			...existing,
+			note: "Old note",
+			aliases: ["Ally"],
+		};
+		expect(edit(withOptionals, { note: "", aliases: "" })).toEqual({
+			mutation_kind: "update_person",
+			payload: { entity_id: "p_e1", name: "Alice" },
+		});
+	});
+});
+
+describe("entityCodec build — bookmark create", () => {
+	const draft = (over: Partial<BookmarkDraft> = {}): BookmarkDraft => ({
+		...bookmarkDraftFromVm(undefined),
+		...over,
+	});
+
+	it("emits create_bookmark with only the filled fields (title-only)", () => {
+		expect(
+			buildBookmark({ mode: "create", draft: draft({ title: "Effect docs" }) }),
+		).toEqual({
+			mutation_kind: "create_bookmark",
+			payload: { title: "Effect docs" },
+		});
+	});
+
+	it("includes url/note and dedups tags as a plain string[] when given", () => {
+		expect(
+			buildBookmark({
+				mode: "create",
+				draft: draft({
+					title: "Effect docs",
+					url: "https://effect.website",
+					note: "Great reference",
+					tags: "effect, ts, effect",
+				}),
+			}),
+		).toEqual({
+			mutation_kind: "create_bookmark",
+			payload: {
+				title: "Effect docs",
+				url: "https://effect.website",
+				note: "Great reference",
+				tags: ["effect", "ts"],
+			},
+		});
+	});
+
+	// The bookmark round-trip is the ONLY guard on the promoted (ungated) bookmark
+	// schemas (no Rust fixture) — so prove the built payload decodes against the
+	// shipped @inkstone/protocol schema. Create/update have NO sentinel-null, so a
+	// schema-decode is valid here (unlike todo's update).
+	it("the built create payload decodes against createBookmark", () => {
+		const params = buildBookmark({
+			mode: "create",
+			draft: draft({
+				title: "Effect docs",
+				url: "https://effect.website",
+				note: "Great reference",
+				tags: "effect, ts",
+			}),
+		});
+		expect(params).not.toBeNull();
+		expect(
+			S.decodeUnknownSync(createBookmark)(
+				(params as { payload: unknown }).payload,
+			),
+		).toEqual((params as { payload: unknown }).payload);
+	});
+});
+
+describe("entityCodec build — bookmark update", () => {
+	const existing: Bookmark = {
+		id: "b_e1",
+		kind: "bookmark",
+		title: "Effect docs",
+		recency: 1,
+		createdAt: "fixture",
+	};
+	const edit = (bookmark: Bookmark, over: Partial<BookmarkDraft>) => {
+		const baseline = bookmarkDraftFromVm(bookmark);
+		return buildBookmark({
+			mode: "update",
+			existing: bookmark,
+			baseline,
+			draft: { ...baseline, ...over },
+		});
+	};
+
+	it("replays url + note + tags when only the title changes (full-replace)", () => {
+		const withOptionals: Bookmark = {
+			...existing,
+			url: "https://effect.website",
+			note: "Great reference",
+			tags: ["effect", "ts"],
+		};
+		expect(edit(withOptionals, { title: "Effect — docs" })).toEqual({
+			mutation_kind: "update_bookmark",
+			payload: {
+				entity_id: "b_e1",
+				title: "Effect — docs",
+				url: "https://effect.website",
+				note: "Great reference",
+				tags: ["effect", "ts"],
+			},
+		});
+	});
+
+	it("returns null when nothing changed (no-op)", () => {
+		expect(edit(existing, {})).toBeNull();
+	});
+
+	it("omits cleared optionals from the full doc (omit ≡ null), title still present", () => {
+		const withOptionals: Bookmark = {
+			...existing,
+			url: "https://effect.website",
+			note: "Old note",
+			tags: ["effect"],
+		};
+		expect(edit(withOptionals, { url: "", note: "", tags: "" })).toEqual({
+			mutation_kind: "update_bookmark",
+			payload: { entity_id: "b_e1", title: "Effect docs" },
+		});
+	});
+
+	it("the built update payload decodes against updateBookmark", () => {
+		const withOptionals: Bookmark = {
+			...existing,
+			url: "https://effect.website",
+			note: "Great reference",
+			tags: ["effect", "ts"],
+		};
+		const params = edit(withOptionals, { title: "Effect — docs" });
+		expect(params).not.toBeNull();
+		expect(
+			S.decodeUnknownSync(updateBookmark)(
+				(params as { payload: unknown }).payload,
+			),
+		).toEqual((params as { payload: unknown }).payload);
+	});
+});
+
+describe("entityCodec build — project create", () => {
+	const draft = (over: Partial<ProjectDraft> = {}): ProjectDraft => ({
+		...projectDraftFromVm(undefined),
+		...over,
+	});
+
+	it("emits create_project with only the filled fields (no review_every; active omitted)", () => {
+		expect(
+			buildProject({ mode: "create", draft: draft({ name: "Garden" }) }),
+		).toEqual({
+			mutation_kind: "create_project",
+			payload: { name: "Garden" },
+		});
+	});
+
+	it("includes outcome and note when given", () => {
+		expect(
+			buildProject({
+				mode: "create",
+				draft: draft({
+					name: "Garden",
+					outcome: "Beds planted",
+					note: "Spring project",
+				}),
+			}),
+		).toEqual({
+			mutation_kind: "create_project",
+			payload: {
+				name: "Garden",
+				outcome: "Beds planted",
+				note: "Spring project",
+			},
+		});
+	});
+
+	it("stamps the matching terminal timestamp on a non-active status (completed)", () => {
+		const params = buildProject({
+			mode: "create",
+			draft: draft({ name: "Done", status: "completed" }),
+		});
+		const payload = (params as { payload: Record<string, unknown> }).payload;
+		expect(payload.status).toBe("completed");
+		expect(typeof payload.completed_at).toBe("string");
+		expect(payload).not.toHaveProperty("dropped_at");
+	});
+});
+
+describe("entityCodec build — project update", () => {
+	// The complete stored data the editor replays into a full-document replace —
+	// carries the server-managed review ritual the form never renders.
+	const existing: Project = {
+		id: "proj_e1",
+		kind: "project",
+		name: "Daycare move",
+		status: "active",
+		recency: 1,
+		createdAt: "fixture",
+		data: {
+			name: "Daycare move",
+			status: "active",
+			review_every: "P1W",
+			next_review_at: "2026-06-21T20:00:00",
+		},
+	};
+	const edit = (project: Project, over: Partial<ProjectDraft>) => {
+		const baseline = projectDraftFromVm(project);
+		return buildProject({
+			mode: "update",
+			existing: project,
+			baseline,
+			draft: { ...baseline, ...over },
+		});
+	};
+
+	it("replays the full verbatim stored document when only outcome changes (review_every/next_review_at survive)", () => {
+		expect(edit(existing, { outcome: "Moved in" })).toEqual({
+			mutation_kind: "update_project",
+			payload: {
+				entity_id: "proj_e1",
+				name: "Daycare move",
+				status: "active",
+				review_every: "P1W",
+				next_review_at: "2026-06-21T20:00:00",
+				outcome: "Moved in",
+			},
+		});
+	});
+
+	it("returns null when nothing changed (no-op)", () => {
+		expect(edit(existing, {})).toBeNull();
+	});
+
+	it("stamps completed_at and drops dropped_at on active→completed (status change)", () => {
+		const params = edit(existing, { status: "completed" });
+		const payload = (params as { payload: Record<string, unknown> }).payload;
+		expect(payload.status).toBe("completed");
+		expect(typeof payload.completed_at).toBe("string");
+		expect("dropped_at" in payload).toBe(false);
+		// Review ritual survives.
+		expect(payload.review_every).toBe("P1W");
+	});
+
+	it("clears terminal timestamps when leaving a terminal status", () => {
+		const completed: Project = {
+			...existing,
+			status: "completed",
+			data: {
+				...existing.data,
+				status: "completed",
+				completed_at: "2026-06-01T12:00:00",
+			},
+		};
+		const params = edit(completed, { status: "active" });
+		const payload = (params as { payload: Record<string, unknown> }).payload;
+		expect(payload.status).toBe("active");
+		expect("completed_at" in payload).toBe(false);
+		expect("dropped_at" in payload).toBe(false);
+		expect(payload.review_every).toBe("P1W");
+	});
+
+	it("preserves the stored completed_at when status is unchanged", () => {
+		const completed: Project = {
+			...existing,
+			status: "completed",
+			outcome: "Old goal",
+			data: {
+				...existing.data,
+				status: "completed",
+				outcome: "Old goal",
+				completed_at: "2026-06-01T12:00:00",
+			},
+		};
+		const params = edit(completed, { outcome: "Moved in" });
+		const payload = (params as { payload: Record<string, unknown> }).payload;
+		expect(payload.status).toBe("completed");
+		expect(payload.outcome).toBe("Moved in");
+		// The original completion timestamp survives — NOT re-stamped.
+		expect(payload.completed_at).toBe("2026-06-01T12:00:00");
+	});
+
+	it("drops a cleared optional (outcome) from the full doc; the rest survives", () => {
+		const withOutcome: Project = {
+			...existing,
+			outcome: "Old goal",
+			data: { ...existing.data, outcome: "Old goal" },
+		};
+		const params = edit(withOutcome, { outcome: "" });
+		const payload = (params as { payload: Record<string, unknown> }).payload;
+		expect("outcome" in payload).toBe(false);
+		expect(payload.name).toBe("Daycare move");
+		expect(payload.review_every).toBe("P1W");
+	});
+});
+
+describe("entityCodec build — journal_entry create", () => {
+	it("emits create_journal_entry with occurred_at + text body, dropping empty text segments", () => {
+		const draft: JournalDraft = {
+			occurredAt: "2026-06-12T09:00",
+			endedAt: "",
+			body: [
+				{ type: "text", text: "Quick standup notes." },
+				{ type: "text", text: "   " },
+			],
+		};
+		expect(buildJournalEntry({ mode: "create", draft })).toEqual({
+			mutation_kind: "create_journal_entry",
+			payload: {
+				occurred_at: "2026-06-12T09:00:00",
+				body: [{ type: "text", text: "Quick standup notes." }],
+			},
+		});
+	});
+
+	it("includes ended_at when an end time is set", () => {
+		const draft: JournalDraft = {
+			occurredAt: "2026-06-12T09:00",
+			endedAt: "2026-06-12T09:30",
+			body: [{ type: "text", text: "Pairing session." }],
+		};
+		expect(buildJournalEntry({ mode: "create", draft })).toEqual({
+			mutation_kind: "create_journal_entry",
+			payload: {
+				occurred_at: "2026-06-12T09:00:00",
+				ended_at: "2026-06-12T09:30:00",
+				body: [{ type: "text", text: "Pairing session." }],
+			},
+		});
+	});
+});
+
+describe("entityCodec build — journal_entry update", () => {
+	const REF_A = "01900000-0000-7000-8000-0000000000a1";
+	const REF_B = "01900000-0000-7000-8000-0000000000a2";
+	const existing: JournalEntry = {
+		id: "je_e1",
+		kind: "journal_entry",
+		occurredAt: "2026-06-10T10:30:00",
+		endedAt: "2026-06-10T10:45:00",
+		body: [
+			{ type: "text", text: "Spoke with " },
+			{ type: "entity_ref", refId: REF_A, targetTitle: "Alice" },
+			{ type: "text", text: " about " },
+			{ type: "entity_ref", refId: REF_B, targetTitle: "Daycare move" },
+			{ type: "text", text: " plans." },
+		],
+		recency: 1,
+		createdAt: "fixture",
+	};
+
+	it("keeps existing chips as snake_case ref_id nodes and preserves occurred_at/ended_at (full replace)", () => {
+		const draft = journalDraftFromVm(existing);
+		// Edit only the trailing text segment; keep both chips.
+		draft.body[4] = { type: "text", text: " plans for next week." };
+		expect(buildJournalEntry({ mode: "update", existing, draft })).toEqual({
+			mutation_kind: "update_journal_entry",
+			payload: {
+				entity_id: "je_e1",
+				occurred_at: "2026-06-10T10:30:00",
+				ended_at: "2026-06-10T10:45:00",
+				body: [
+					{ type: "text", text: "Spoke with " },
+					{ type: "entity_ref", ref_id: REF_A },
+					{ type: "text", text: " about " },
+					{ type: "entity_ref", ref_id: REF_B },
+					{ type: "text", text: " plans for next week." },
+				],
+			},
+		});
+	});
+
+	it("omits a removed chip from the emitted body", () => {
+		const draft = journalDraftFromVm(existing);
+		// Remove the first chip (REF_A at index 1).
+		draft.body = draft.body.filter((_, i) => i !== 1);
+		const params = buildJournalEntry({ mode: "update", existing, draft });
+		const body = (params.payload as { body: Array<{ type: string }> }).body;
+		const refNodes = body.filter((n) => n.type === "entity_ref");
+		expect(refNodes).toEqual([{ type: "entity_ref", ref_id: REF_B }]);
+		expect(JSON.stringify(body)).not.toContain(REF_A);
+		expect(JSON.stringify(body)).not.toContain("refId");
+	});
+
+	it("preserves stored occurred_at seconds on a body-only edit (minute-prefix unchanged)", () => {
+		const withSeconds: JournalEntry = {
+			...existing,
+			occurredAt: "2026-06-10T10:30:45",
+			endedAt: undefined,
+			body: [{ type: "text", text: "Standup." }],
+		};
+		const draft = journalDraftFromVm(withSeconds);
+		draft.body[0] = { type: "text", text: "Standup notes." };
+		const params = buildJournalEntry({
+			mode: "update",
+			existing: withSeconds,
+			draft,
+		});
+		const payload = params.payload as Record<string, unknown>;
+		expect(payload.occurred_at).toBe("2026-06-10T10:30:45");
+		expect("ended_at" in payload).toBe(false);
+	});
+
+	it("drops ended_at when the end time is cleared", () => {
+		const draft = journalDraftFromVm(existing);
+		draft.endedAt = "";
+		const params = buildJournalEntry({ mode: "update", existing, draft });
+		const payload = params.payload as Record<string, unknown>;
+		expect("ended_at" in payload).toBe(false);
+		expect(payload.occurred_at).toBe("2026-06-10T10:30:00");
+	});
+
+	it("journalScalarsDiffer is true iff occurred/ended changed", () => {
+		const same = journalDraftFromVm(existing);
+		expect(journalScalarsDiffer(existing, same)).toBe(false);
+
+		const occurredEdit = { ...same, occurredAt: "2026-06-11T08:15" };
+		expect(journalScalarsDiffer(existing, occurredEdit)).toBe(true);
+
+		const endedCleared = { ...same, endedAt: "" };
+		expect(journalScalarsDiffer(existing, endedCleared)).toBe(true);
+	});
+});
+
+describe("entityCodec build — journal_entry reference", () => {
+	const textOnly: JournalEntry = {
+		id: "je_e2",
+		kind: "journal_entry",
+		occurredAt: "2026-06-10T10:30:00",
+		endedAt: undefined,
+		body: [{ type: "text", text: "Standup notes." }],
+		recency: 1,
+		createdAt: "fixture",
+	};
+
+	it("builds a reference with exactly one bare placeholder + text nodes + source/target ids + label_snapshot", () => {
+		const draft = journalDraftFromVm(textOnly);
+		// Stage ONE new chip (a bare placeholder carrying the picked target).
+		draft.body = [
+			...draft.body,
+			{ type: "entity_ref", newTargetId: "person_bob", label: "Bob" },
+		];
+		const chip = stagedNewChip(draft.body);
+		expect(chip).toBeDefined();
+		const params = buildJournalReference(
+			textOnly,
+			draft,
+			// biome-ignore lint/style/noNonNullAssertion: asserted defined above.
+			chip!,
+		);
+		expect(params.mutation_kind).toBe(
+			"reference_existing_entity_from_journal_entry",
+		);
+		const payload = params.payload as {
+			source_entity_id: string;
+			target_entity_id: string;
+			label_snapshot?: string;
+			body: Array<{ type: string }>;
+		};
+		expect(payload.source_entity_id).toBe(textOnly.id);
+		expect(payload.target_entity_id).toBe("person_bob");
+		expect(payload.label_snapshot).toBe("Bob");
+		expect(payload.body).toEqual([
+			{ type: "text", text: "Standup notes." },
+			{ type: "entity_ref" },
+		]);
+		expect(JSON.stringify(payload.body)).not.toContain("ref_id");
 	});
 });
