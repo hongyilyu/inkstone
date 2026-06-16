@@ -1,6 +1,6 @@
 import type { ThreadGetResult } from "@inkstone/protocol";
 import { type RunEventValue, WsClient, WsRequestError } from "@inkstone/ui-sdk";
-import { cleanup, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -54,6 +54,11 @@ function makeStubRuntime(opts: {
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
+// jsdom ships no scrollIntoView; the search-jump tests stub it on the prototype.
+// Capture the (undefined) original so afterEach can restore it and the stub can't
+// leak into later tests in this file.
+const originalScrollIntoView = Element.prototype.scrollIntoView;
+
 beforeEach(() => {
 	resetChatStore();
 	resetBridge();
@@ -61,6 +66,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	Element.prototype.scrollIntoView = originalScrollIntoView;
 });
 
 describe("ChatColumn", () => {
@@ -588,6 +594,46 @@ describe("ChatColumn", () => {
 		expect(container.querySelector("[data-highlighted]")).toBeNull();
 
 		await runtime.dispose();
+	});
+
+	it("clears the search-jump highlight after its dwell so the ring is transient", async () => {
+		Element.prototype.scrollIntoView = vi.fn();
+		vi.useFakeTimers();
+		try {
+			const runtime = makeStubRuntime({ runId: "run-fade", events: [] });
+			setFocusedThread("threadA");
+			seedAssistantMessage("threadA", {
+				id: "a-fade",
+				role: "assistant",
+				status: "completed",
+				text: "the briefly-ringed reply",
+				run_id: "r-fade",
+			});
+			focusMessage("threadA", "a-fade");
+
+			const { container } = renderWithQuery(
+				<RuntimeProvider runtime={runtime}>
+					<ChatColumn />
+				</RuntimeProvider>,
+			);
+
+			// The ring blooms on the (synchronously-flushed) scroll effect…
+			expect(container.querySelector("[data-highlighted]")).not.toBeNull();
+			// …holds just before the dwell elapses…
+			act(() => {
+				vi.advanceTimersByTime(1599);
+			});
+			expect(container.querySelector("[data-highlighted]")).not.toBeNull();
+			// …then clears, so a stuck/permanent ring is a real regression this catches.
+			act(() => {
+				vi.advanceTimersByTime(1);
+			});
+			expect(container.querySelector("[data-highlighted]")).toBeNull();
+
+			await runtime.dispose();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("offers Try again on an interrupted reply and re-sends the previous turn", async () => {
