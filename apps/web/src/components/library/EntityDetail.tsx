@@ -370,7 +370,13 @@ function JournalEntryDetail({
 	);
 }
 
-/** The Bookmark inspector (ADR-0033/ADR-0036): a read-only body (no relations), edited via `BookmarkEditor`. */
+/**
+ * The Bookmark inspector (ADR-0033/ADR-0036): a read-only body (no relations),
+ * edited via `BookmarkEditor`. Intentionally passes no `allEntities` — a Bookmark
+ * is always a direct user create (the agent never authors one, CONTEXT.md), so it
+ * carries no Entity Source and its "Captured from" footer always takes the
+ * user-authored branch, which needs no entity lookup.
+ */
 function BookmarkDetail({ bookmark }: { bookmark: Bookmark }) {
 	return (
 		<InspectorShell
@@ -445,7 +451,9 @@ function CapturedFrom({
 			<ProvenanceFrame>
 				<ProvenanceLink
 					icon={<BookOpenText className="size-4 shrink-0" aria-hidden />}
-					title={libraryItemTitle(target)}
+					// A text-only entry's title is its body text; fall back so the link
+					// always has an accessible name (mirrors the Thread branch below).
+					title={libraryItemTitle(target) || "Untitled journal entry"}
 					date={entity.createdAt}
 					onClick={() => onOpenEntity(target)}
 				/>

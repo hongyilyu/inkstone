@@ -714,4 +714,26 @@ describe("EntityDetail Captured from", () => {
 			screen.getByText(/Captured from a Journal Entry/),
 		).toBeInTheDocument();
 	});
+
+	it("falls back to a label when the source Journal Entry has empty body text", () => {
+		// A text-only entry's title is its body text; an empty body would leave the
+		// link with no accessible name, so the JE branch falls back like the Thread.
+		const entry: JournalEntry = {
+			id: "je_blank",
+			kind: "journal_entry",
+			occurredAt: "2026-06-10T10:30:00",
+			body: [],
+			createdAt: "fixture",
+			recency: 1,
+		};
+		const todo = todoItem("t_blank_je", {
+			title: "From a blank entry",
+			source: { kind: "journal_entry", journalEntryId: "je_blank" },
+		});
+		renderDetail(<EntityDetail entity={todo} allEntities={[todo, entry]} />);
+
+		expect(
+			screen.getByRole("button", { name: /Untitled journal entry/ }),
+		).toBeInTheDocument();
+	});
 });
