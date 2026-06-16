@@ -9,8 +9,15 @@ import {
 import { useEffect, useId, useRef, useState } from "react";
 import { KIND_META } from "@/lib/libraryItems";
 import {
+	type CreatePersonDraft,
+	type CreateProjectDraft,
 	type CreateTodoDraft,
+	overlayCreatePerson,
+	overlayCreateProject,
 	overlayCreateTodo,
+	type ProjectEditStatus,
+	seedCreatePerson,
+	seedCreateProject,
 	seedCreateTodo,
 	type TodoEditStatus,
 } from "@/lib/proposalEdit";
@@ -26,6 +33,15 @@ import { Input } from "./ui/input.js";
 
 const TODO_STATUS_OPTIONS: { value: TodoEditStatus; label: string }[] = [
 	{ value: "active", label: "Active" },
+	{ value: "completed", label: "Completed" },
+	{ value: "dropped", label: "Dropped" },
+];
+
+// Reuses the Library ProjectEditor's STATUS_OPTIONS labels — Project has `on_hold`,
+// which Todo lacks.
+const PROJECT_STATUS_OPTIONS: { value: ProjectEditStatus; label: string }[] = [
+	{ value: "active", label: "Active" },
+	{ value: "on_hold", label: "On hold" },
 	{ value: "completed", label: "Completed" },
 	{ value: "dropped", label: "Dropped" },
 ];
@@ -145,7 +161,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		acceptBusyLabel: "Adding...",
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
-		canEdit: () => false,
+		canEdit: () => true,
 	},
 	create_project: {
 		glyph: KIND_META.project.icon,
@@ -158,7 +174,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		acceptBusyLabel: "Adding...",
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
-		canEdit: () => false,
+		canEdit: () => true,
 	},
 	create_todo: {
 		glyph: KIND_META.todo.icon,
@@ -361,6 +377,13 @@ export function ProposalCard({
 	const todoTitleInputId = `${editFormId}-proposal-edit-todo-title`;
 	const todoNoteInputId = `${editFormId}-proposal-edit-todo-note`;
 	const todoStatusInputId = `${editFormId}-proposal-edit-todo-status`;
+	const personNameInputId = `${editFormId}-proposal-edit-person-name`;
+	const personNoteInputId = `${editFormId}-proposal-edit-person-note`;
+	const personAliasesInputId = `${editFormId}-proposal-edit-person-aliases`;
+	const projectNameInputId = `${editFormId}-proposal-edit-project-name`;
+	const projectOutcomeInputId = `${editFormId}-proposal-edit-project-outcome`;
+	const projectNoteInputId = `${editFormId}-proposal-edit-project-note`;
+	const projectStatusInputId = `${editFormId}-proposal-edit-project-status`;
 	const { status, payload, rationale, mutation_kind } = proposal;
 	const occurredAt = textField(payload, "occurred_at");
 	const endedAt = textField(payload, "ended_at");
@@ -382,6 +405,11 @@ export function ProposalCard({
 	const isDeleteProposal = mutation_kind === "delete_journal_entry";
 	// The GTD kinds that render their own inline edit form (vs the journal form).
 	const isCreateTodo = mutation_kind === "create_todo";
+	const isCreatePerson = mutation_kind === "create_person";
+	const isCreateProject = mutation_kind === "create_project";
+	// A GTD create that surfaces an inline edit form (todo/person/project). update_todo
+	// renders read-only — it has no inline editor yet.
+	const isGtdEdit = isCreateTodo || isCreatePerson || isCreateProject;
 	const isGtdProposal =
 		mutation_kind === "create_person" ||
 		mutation_kind === "create_project" ||
@@ -440,24 +468,42 @@ export function ProposalCard({
 	const [editOccurredAt, setEditOccurredAt] = useState(occurredAt);
 	const [editEndedAt, setEditEndedAt] = useState(endedAt);
 	const [editBody, setEditBody] = useState(bodyText);
-	// The create_todo inline form's surfaced fields (seeded from the proposed
-	// payload on open). Other kinds reuse the journal form / can't edit yet.
+	// Each GTD create form's surfaced fields (seeded from the proposed payload on
+	// open). The journal kinds reuse the journal form; update_todo can't edit yet.
 	const [todoDraft, setTodoDraft] = useState<CreateTodoDraft>(() =>
 		seedCreateTodo(payload),
+	);
+	const [personDraft, setPersonDraft] = useState<CreatePersonDraft>(() =>
+		seedCreatePerson(payload),
+	);
+	const [projectDraft, setProjectDraft] = useState<CreateProjectDraft>(() =>
+		seedCreateProject(payload),
 	);
 	const editIssue = isCreateProposal
 		? journalPayloadIssue(editOccurredAt, editBody, editEndedAt)
 		: isUpdateProposal
 			? journalPayloadIssue(editOccurredAt, editBody, editEndedAt, entityId)
 			: null;
-	// Required-field gate for the create_todo form: Save is disabled when title is
-	// blank (mirrors TodoEditor's `titleEmpty`).
+	// Required-field gate for each GTD create form: Save is disabled when the
+	// required field (Todo title / Person+Project name) is blank.
 	const todoTitleEmpty = todoDraft.title.trim() === "";
+	const personNameEmpty = personDraft.name.trim() === "";
+	const projectNameEmpty = projectDraft.name.trim() === "";
+	// The single required-field gate the GTD Save reads, by kind.
+	const gtdRequiredEmpty = isCreateTodo
+		? todoTitleEmpty
+		: isCreatePerson
+			? personNameEmpty
+			: projectNameEmpty;
 	const bodyRef = useRef<HTMLTextAreaElement>(null);
 	const openEdit = () => {
 		if (!canEdit) return;
 		if (isCreateTodo) {
 			setTodoDraft(seedCreateTodo(payload));
+		} else if (isCreatePerson) {
+			setPersonDraft(seedCreatePerson(payload));
+		} else if (isCreateProject) {
+			setProjectDraft(seedCreateProject(payload));
 		} else {
 			setEditOccurredAt(occurredAt);
 			setEditEndedAt(endedAt);
@@ -466,10 +512,10 @@ export function ProposalCard({
 		setEditing(true);
 	};
 	useEffect(() => {
-		// The journal form focuses its body textarea on open; the create_todo form
-		// focuses its Title via the input's autoFocus (EditorInput forwards no ref).
-		if (editing && !isCreateTodo) bodyRef.current?.focus();
-	}, [editing, isCreateTodo]);
+		// The journal form focuses its body textarea on open; each GTD form focuses
+		// its required field via the input's autoFocus (EditorInput forwards no ref).
+		if (editing && !isGtdEdit) bodyRef.current?.focus();
+	}, [editing, isGtdEdit]);
 	const saveEdit = () => {
 		if (inFlight !== null || proposal.status === "deciding") return;
 		if (editIssue !== null) return;
@@ -482,10 +528,17 @@ export function ProposalCard({
 		lastAttempt.current = { decision: "edit", editedPayload: decisionPayload };
 		onDecide("edit", decisionPayload);
 	};
-	const saveTodoEdit = () => {
+	// Route each GTD create kind to its pure overlay (proposalEdit), commit as a
+	// single edit decision through the same inFlight/lastAttempt/retry plumbing as
+	// the journal form. Save is gated on the kind's required field.
+	const saveGtdEdit = () => {
 		if (inFlight !== null || proposal.status === "deciding") return;
-		if (todoTitleEmpty) return;
-		const decisionPayload = overlayCreateTodo(payload, todoDraft);
+		if (gtdRequiredEmpty) return;
+		const decisionPayload = isCreateTodo
+			? overlayCreateTodo(payload, todoDraft)
+			: isCreatePerson
+				? overlayCreatePerson(payload, personDraft)
+				: overlayCreateProject(payload, projectDraft);
 		setInFlight("edit");
 		setEditing(false);
 		lastAttempt.current = { decision: "edit", editedPayload: decisionPayload };
@@ -536,57 +589,163 @@ export function ProposalCard({
 			</header>
 
 			{editing ? (
-				isCreateTodo ? (
+				isGtdEdit ? (
 					<form
 						onSubmit={(event) => {
 							event.preventDefault();
-							saveTodoEdit();
+							saveGtdEdit();
 						}}
 						className="flex flex-col gap-3 border-border border-t pt-3"
 					>
-						<EditorField label="Title" htmlFor={todoTitleInputId}>
-							{/* Focus Title on open (mirrors the journal form focusing its body);
-							    autoFocus rides through EditorInput → Input onto the real <input>. */}
-							<EditorInput
-								id={todoTitleInputId}
-								autoFocus
-								value={todoDraft.title}
-								onChange={(event) =>
-									setTodoDraft((d) => ({ ...d, title: event.target.value }))
-								}
-							/>
-						</EditorField>
-						<EditorField label="Note" htmlFor={todoNoteInputId}>
-							<EditorTextarea
-								id={todoNoteInputId}
-								value={todoDraft.note}
-								onChange={(event) =>
-									setTodoDraft((d) => ({ ...d, note: event.target.value }))
-								}
-							/>
-						</EditorField>
-						<EditorField label="Status" htmlFor={todoStatusInputId}>
-							<EditorSelect
-								id={todoStatusInputId}
-								value={todoDraft.status}
-								onChange={(event) =>
-									setTodoDraft((d) => ({
-										...d,
-										status: event.target.value as TodoEditStatus,
-									}))
-								}
-							>
-								{TODO_STATUS_OPTIONS.map((o) => (
-									<option key={o.value} value={o.value}>
-										{o.label}
-									</option>
-								))}
-							</EditorSelect>
-						</EditorField>
+						{/* One inline form per GTD create kind. Each surfaces exactly the
+						    fields the user can change (approval-gate legibility); the
+						    required field (Todo title / Person+Project name) autoFocuses on
+						    open (mirrors the journal form focusing its body — autoFocus rides
+						    through EditorInput → Input onto the real <input>). */}
+						{isCreateTodo ? (
+							<>
+								<EditorField label="Title" htmlFor={todoTitleInputId}>
+									<EditorInput
+										id={todoTitleInputId}
+										autoFocus
+										value={todoDraft.title}
+										onChange={(event) =>
+											setTodoDraft((d) => ({ ...d, title: event.target.value }))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Note" htmlFor={todoNoteInputId}>
+									<EditorTextarea
+										id={todoNoteInputId}
+										value={todoDraft.note}
+										onChange={(event) =>
+											setTodoDraft((d) => ({ ...d, note: event.target.value }))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Status" htmlFor={todoStatusInputId}>
+									<EditorSelect
+										id={todoStatusInputId}
+										value={todoDraft.status}
+										onChange={(event) =>
+											setTodoDraft((d) => ({
+												...d,
+												status: event.target.value as TodoEditStatus,
+											}))
+										}
+									>
+										{TODO_STATUS_OPTIONS.map((o) => (
+											<option key={o.value} value={o.value}>
+												{o.label}
+											</option>
+										))}
+									</EditorSelect>
+								</EditorField>
+							</>
+						) : isCreatePerson ? (
+							<>
+								<EditorField label="Name" htmlFor={personNameInputId}>
+									<EditorInput
+										id={personNameInputId}
+										autoFocus
+										value={personDraft.name}
+										onChange={(event) =>
+											setPersonDraft((d) => ({
+												...d,
+												name: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Note" htmlFor={personNoteInputId}>
+									<EditorTextarea
+										id={personNoteInputId}
+										value={personDraft.note}
+										onChange={(event) =>
+											setPersonDraft((d) => ({
+												...d,
+												note: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Aliases" htmlFor={personAliasesInputId}>
+									<EditorInput
+										id={personAliasesInputId}
+										value={personDraft.aliases}
+										placeholder="Other names, comma-separated"
+										onChange={(event) =>
+											setPersonDraft((d) => ({
+												...d,
+												aliases: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+							</>
+						) : (
+							<>
+								<EditorField label="Name" htmlFor={projectNameInputId}>
+									<EditorInput
+										id={projectNameInputId}
+										autoFocus
+										value={projectDraft.name}
+										onChange={(event) =>
+											setProjectDraft((d) => ({
+												...d,
+												name: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Outcome" htmlFor={projectOutcomeInputId}>
+									<EditorTextarea
+										id={projectOutcomeInputId}
+										value={projectDraft.outcome}
+										onChange={(event) =>
+											setProjectDraft((d) => ({
+												...d,
+												outcome: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Note" htmlFor={projectNoteInputId}>
+									<EditorTextarea
+										id={projectNoteInputId}
+										value={projectDraft.note}
+										onChange={(event) =>
+											setProjectDraft((d) => ({
+												...d,
+												note: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Status" htmlFor={projectStatusInputId}>
+									<EditorSelect
+										id={projectStatusInputId}
+										value={projectDraft.status}
+										onChange={(event) =>
+											setProjectDraft((d) => ({
+												...d,
+												status: event.target.value as ProjectEditStatus,
+											}))
+										}
+									>
+										{PROJECT_STATUS_OPTIONS.map((o) => (
+											<option key={o.value} value={o.value}>
+												{o.label}
+											</option>
+										))}
+									</EditorSelect>
+								</EditorField>
+							</>
+						)}
 						<footer className="flex items-center gap-2 pt-1">
 							<button
 								type="submit"
-								disabled={submitting || todoTitleEmpty}
+								disabled={submitting || gtdRequiredEmpty}
 								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<Check className="size-4" aria-hidden />
