@@ -4,7 +4,7 @@ TypeScript modules in Inkstone are written on top of [Effect](https://effect.web
 
 ## Scope
 
-This ADR commits to one rule: **every TypeScript module in `apps/`, `packages/`, and `bridges/` imports `effect`** when it does anything Effect can express idiomatically — runtime validation, IO, service lookup, async streams, typed errors. That includes `packages/protocol`, `packages/ui-sdk`, `packages/worker`, and `apps/web`.
+This ADR commits to one rule: **every TypeScript module in `apps/`, `packages/`, and `tests/` imports `effect`** when it does anything Effect can express idiomatically — runtime validation, IO, service lookup, async streams, typed errors. That includes `packages/protocol`, `packages/ui-sdk`, `packages/worker`, and `apps/web`.
 
 What this rule does *not* commit to:
 
@@ -99,6 +99,6 @@ adopted.
 
 - [ADR-0001](./0001-core-worker-split.md) — names the learning-vehicle goal this ADR invokes alongside tool-fit.
 - [ADR-0008](./0008-monorepo-shape.md) — `packages/protocol`, `packages/ui-sdk`, `packages/worker` and `apps/web` all carry the paradigm.
-- [ADR-0009](./0009-protocol-strategy.md) — manual type mirroring; on the TS side, `Schema` is the authority that the contract tests in `bridges/` validate.
+- [ADR-0009](./0009-protocol-strategy.md) — manual type mirroring; on the TS side, `Schema` is the authority that the contract tests in `tests/contract` validate.
 - [ADR-0013](./0013-worker-process-lifecycle-and-transport.md) — Worker is `Effect.gen` from entry to exit; Effect's interruption matches the per-Run ephemeral process model.
 - [ADR-0014](./0014-client-core-wire-protocol.md) — wire types are `Schema` on the TS side; `Stream` carries server-pushed Notifications.

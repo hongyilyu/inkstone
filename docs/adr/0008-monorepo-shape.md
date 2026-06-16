@@ -8,8 +8,7 @@ crates/core/          Core daemon (Rust)
 packages/protocol/    Shared protocol definitions (TypeScript side)
 packages/ui-sdk/      Client-to-Core wrapper consumed by Clients
 packages/worker/      Worker (TypeScript)
-bridges/              Cross-language contract / integration tests
-tests/                End-to-end Test Harness
+tests/                Test area: end-to-end harness (tests/e2e) + cross-language contract tests (tests/contract)
 ```
 
 ## Why the cross-language monorepo
@@ -28,9 +27,11 @@ A catch-all `shared/` package becomes a junk drawer: anything two packages need 
 
 Combining them would force every Client to depend on the wire types directly, defeating the wrapper's purpose. Keeping them split also lets the Worker depend on `protocol` without dragging in Client-side concerns.
 
-## `bridges/` purpose
+## Cross-language contract tests live under `tests/`
 
-Cross-language contract and integration tests live here — the place where Rust and TypeScript actually exercise each other through the protocol. Distinct from per-package unit tests; this directory is where we catch protocol drift.
+Contract and integration tests — the place where Rust and TypeScript actually exercise each other through the protocol — live in `tests/contract` (the first such package is `@inkstone/contract`, the wire-schema parity gate). They sit alongside the full-system Playwright harness in `tests/e2e`: `tests/` is the repo's test area, with `tests/contract` for no-DOM protocol/round-trip/schema tests and `tests/e2e` for behavioral tests through the Web Client. Distinct from per-package unit tests; `tests/contract` is where we catch protocol drift.
+
+(Originally a dedicated top-level `bridges/` directory; superseded — contract tests folded under `tests/` so the repo root carries no extra top-level test directory. The `tests/e2e` ↔ `tests/contract` boundary is the same one ADR-0019 draws.)
 
 ## Out of scope
 

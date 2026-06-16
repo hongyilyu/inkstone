@@ -35,7 +35,7 @@ The faux script selection above (`INKSTONE_FAUX_*` env branches) originally live
 
 ## Core decisions
 
-- **Top-level `tests/` package**, registered in `pnpm-workspace.yaml`. Runs under Playwright's test runner with a `test:e2e` script. Not under `apps/` (it's not a product Client) and not under `packages/` (it's not a library). It's a `Test Harness` per the term in `CONTEXT.md`. The boundary with `bridges/` (per [ADR-0008](./0008-monorepo-shape.md)): `bridges/` holds protocol-level contract tests — Rust↔TS serialization round-trips, one shape per test, no spawned processes. `tests/` holds full-system behavioral tests through the Web Client. If a test could pass without rendering DOM, it belongs in `bridges/`.
+- **Top-level `tests/` package**, registered in `pnpm-workspace.yaml`. Runs under Playwright's test runner with a `test:e2e` script. Not under `apps/` (it's not a product Client) and not under `packages/` (it's not a library). It's a `Test Harness` per the term in `CONTEXT.md`. It lives at `tests/e2e`, alongside `tests/contract` (per [ADR-0008](./0008-monorepo-shape.md)): `tests/contract` holds protocol-level contract tests — Rust↔TS serialization round-trips, schema parity, one shape per test, no spawned processes. `tests/e2e` holds full-system behavioral tests through the Web Client. If a test could pass without rendering DOM, it belongs in `tests/contract`.
 - **Per-test fresh Core, parallel across Playwright workers.** Playwright fixtures are `test`-scoped: each test creates a tempdir Workspace, spawns Core with `--workspace=$tempdir --port=0`, and tears down on exit. The wall-clock cost (~hundreds of ms in debug mode) is hidden by Playwright's worker parallelism, not amortized. Core was designed for one Workspace per process; tests respect that.
 - **Core advertises its URL on stdout.** On startup, before accepting connections, Core writes a single line announcing its listening URL. The harness reads stdout until it sees that line. Picking `--port=0` avoids port collisions across parallel tests; safe because [ADR-0007](./0007-local-first-single-user.md) binds Core to loopback.
 - **Headless Chromium via Playwright.** Tests assert through the same surface a real user touches. The harness loads Core's URL in Playwright; the Web bundle is served from Core (per [ADR-0015](./0015-web-client-packaging.md)).
@@ -78,7 +78,7 @@ Core was designed for one Workspace per process (per `CONTEXT.md`'s `Workspace` 
 
 A wire-level test (open the WebSocket, send `session/hello`, drive flows by JSON-RPC) would be faster and more deterministic. It would *not* prove that the rendered DOM behaves correctly — selectors, focus, accessibility, hydration. The MVP-scope features (chat-driven Web Client per [ADR-0010](./0010-mvp-slice-chat-driven-web-client.md)) are UI-shaped; testing them at the wire level would miss the surface that breaks. Playwright is the cost paid for catching UI regressions.
 
-When wire-level tests become useful (e.g., for protocol contract tests independent of UI), they live in `bridges/`, not in `tests/`.
+When wire-level tests become useful (e.g., for protocol contract tests independent of UI), they live in `tests/contract`, not in `tests/e2e`.
 
 ## Considered and rejected
 
@@ -95,7 +95,7 @@ When wire-level tests become useful (e.g., for protocol contract tests independe
 
 - [ADR-0001](./0001-core-worker-split.md) — harness respects: only Core spawns Worker.
 - [ADR-0002](./0002-clients-talk-only-to-core.md) — page-object code accesses Core only through the served Web Client; `workspace` helpers go through Core's same client surface.
-- [ADR-0008](./0008-monorepo-shape.md) — `tests/` is a top-level monorepo directory alongside `bridges/`.
+- [ADR-0008](./0008-monorepo-shape.md) — `tests/` is a top-level monorepo directory holding both `tests/e2e` and `tests/contract`.
 - [ADR-0013](./0013-worker-process-lifecycle-and-transport.md) — Worker is per-Run, Core-owned, stdio-transported; the mock lives inside it.
 - [ADR-0014](./0014-client-core-wire-protocol.md) — Core's HTTP listener serves the Web bundle and the WebSocket on the same port; `workspace` setup helpers ride the same WS.
 - [ADR-0015](./0015-web-client-packaging.md) — production embeds the bundle in Core; the harness uses production-style serving via `--web-dir` for fast FE iteration.

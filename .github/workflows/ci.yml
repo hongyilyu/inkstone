@@ -69,6 +69,12 @@ jobs:
       # tests/e2e has only `test:e2e`, so Playwright is not triggered here.
       - name: Unit tests (vitest)
         run: pnpm -r test
+      # The wire-schema parity gate: each hand-authored Effect Schema deep-equals
+      # its Rust-emitted fixture (tests/contract). `pnpm -r test` already runs
+      # this transitively; the explicit step makes the gate visible as its own
+      # line.
+      - name: Schema parity (tests/contract)
+        run: pnpm --filter @inkstone/contract test
 
   rust:
     name: rust
@@ -101,6 +107,21 @@ jobs:
         run: cargo check --locked --manifest-path crates/core/Cargo.toml
       - name: Cargo test
         run: cargo test --locked --manifest-path crates/core/Cargo.toml
+      # Re-dump the proposable payload schemas, then fail if any committed
+      # fixture drifted from a fresh dump — the schema-parity staleness gate
+      # (tests/contract). A PayloadSpec change that wasn't re-committed turns
+      # this red.
+      - name: Regenerate schema fixtures
+        run: cargo test --locked --manifest-path crates/core/Cargo.toml regenerate_schema_fixtures
+      # `git add -N` stages intent-to-add for any NEW fixture (a freshly-added
+      # proposable kind), so `git diff --exit-code` catches it too — plain
+      # `git diff` only sees tracked files and would miss an un-added new kind.
+      # (Defense-in-depth: the Rust `fixtures_match_committed` include_str! table
+      # and `completeness.test.ts` also fail on a new kind.)
+      - name: Schema fixtures are committed (no drift)
+        run: |
+          git add -N tests/contract/fixtures/
+          git diff --exit-code tests/contract/fixtures/
 
   e2e:
     name: e2e

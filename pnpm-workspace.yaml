@@ -1,7 +1,6 @@
 packages:
   - "apps/*"
   - "packages/*"
-  - "bridges/*"
   - "tests/*"
 # pnpm 11 aborts a non-interactive install (ERR_PNPM_IGNORED_BUILDS) when a
 # dependency ships an un-approved build script. `allowBuilds` is the allowlist
