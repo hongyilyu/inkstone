@@ -57,11 +57,15 @@ reads no `now_ms` and no UTC offset. It lives in its own module
   month → Apr 30; Feb 29 + 1 year → Feb 28). Matches OmniFocus / RFC 5545 /
   chrono `checked_add_months`. Time-of-day is always preserved.
 
-**Both dates move in lockstep.** The rule names one `anchor` (`defer_at` *or*
-`due_at`), but a Todo may carry both. The anchor advances per the rule; the
-non-anchor date (if present) shifts by the **same delta**, so the defer→due gap
-is preserved on every occurrence. A "defer two days before it's due" repeat
-keeps its two-day lead.
+**Both dates advance by the same rule.** The rule names one `anchor` (`defer_at`
+*or* `due_at`), but a Todo may carry both. Each present date is advanced by the
+same `interval × unit`. For the fixed-duration units (minute/hour/day/week) this
+adds an identical span to both, so the defer→due gap is preserved exactly — a
+"defer two days before it's due" repeat keeps its two-day lead. For month/year,
+each date keeps its **own** day-of-month (clamped independently), which is the
+natural calendar behavior: a defer-on-the-1st / due-on-the-15th monthly repeat
+stays on the 1st and the 15th. The `anchor` the rule names is the date the
+`until` end-bound is measured against.
 
 ### End conditions
 
