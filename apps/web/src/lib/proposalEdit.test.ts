@@ -6,9 +6,12 @@ import {
 	overlayCreatePerson,
 	overlayCreateProject,
 	overlayCreateTodo,
+	overlayUpdateTodo,
 	seedCreatePerson,
 	seedCreateProject,
 	seedCreateTodo,
+	seedUpdateTodo,
+	type UpdateTodoDraft,
 } from "./proposalEdit.js";
 
 const LOCAL_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
@@ -412,6 +415,178 @@ describe("proposalEdit — create_project", () => {
 			const draft = seedCreateProject(proposed);
 			overlayCreateProject(proposed, { ...draft, name: "Changed" });
 			expect(proposed.name).toBe("Ship API v2 migration");
+		});
+	});
+});
+
+describe("proposalEdit — update_todo (partial)", () => {
+	// A representative partial: status surfaced + title surfaced, plus an unsurfaced
+	// `todo` key (project_id) and all three ref lists that must ride byte-for-byte.
+	const proposed = {
+		todo_id: "todo-7",
+		todo: {
+			title: "Email Alice (done)",
+			note: "Send the migration plan.",
+			status: "completed",
+			completed_at: "2026-06-01T09:00:00",
+			project_id: "proj-1",
+		},
+		set_person_refs: [{ person_id: "dave-1", role: "related" }],
+		add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
+		remove_person_ids: ["bob-1"],
+	};
+
+	describe("seed", () => {
+		it("seeds title/note/status and marks them present from a partial that carries them", () => {
+			expect(seedUpdateTodo(proposed)).toEqual({
+				title: "Email Alice (done)",
+				titlePresent: true,
+				note: "Send the migration plan.",
+				status: "completed",
+				statusPresent: true,
+			} satisfies UpdateTodoDraft);
+		});
+
+		it("marks status absent when the partial carries no status", () => {
+			const draft = seedUpdateTodo({
+				todo_id: "todo-9",
+				todo: { title: "Rename me" },
+			});
+			expect(draft.statusPresent).toBe(false);
+			expect(draft.titlePresent).toBe(true);
+			expect(draft.status).toBe("active");
+		});
+
+		it("marks title absent when the partial carries no title", () => {
+			const draft = seedUpdateTodo({
+				todo_id: "todo-9",
+				todo: { note: "Just a note change" },
+			});
+			expect(draft.titlePresent).toBe(false);
+			expect(draft.note).toBe("Just a note change");
+		});
+
+		it("seeds an empty, all-absent draft from a null payload without throwing", () => {
+			expect(seedUpdateTodo(null)).toEqual({
+				title: "",
+				titlePresent: false,
+				note: "",
+				status: "active",
+				statusPresent: false,
+			});
+		});
+
+		it("seeds an empty, all-absent draft from a payload whose todo is missing", () => {
+			expect(seedUpdateTodo({ todo_id: "todo-9" })).toEqual({
+				title: "",
+				titlePresent: false,
+				note: "",
+				status: "active",
+				statusPresent: false,
+			});
+		});
+	});
+
+	describe("overlay", () => {
+		it("editing title preserves todo_id, all ref lists, and unsurfaced todo keys", () => {
+			const draft = seedUpdateTodo(proposed);
+			const edited = overlayUpdateTodo(proposed, {
+				...draft,
+				title: "Email Alice about the Q3 migration",
+			});
+			expect(edited).toEqual({
+				todo_id: "todo-7",
+				todo: {
+					title: "Email Alice about the Q3 migration",
+					note: "Send the migration plan.",
+					status: "completed",
+					completed_at: "2026-06-01T09:00:00",
+					project_id: "proj-1",
+				},
+				set_person_refs: [{ person_id: "dave-1", role: "related" }],
+				add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
+				remove_person_ids: ["bob-1"],
+			});
+		});
+
+		it("does not mutate the proposed payload (overlay clones)", () => {
+			const draft = seedUpdateTodo(proposed);
+			overlayUpdateTodo(proposed, { ...draft, title: "Changed" });
+			expect(proposed.todo.title).toBe("Email Alice (done)");
+		});
+
+		it("blanking a proposed note omits the note key from the partial", () => {
+			const draft = seedUpdateTodo(proposed);
+			const edited = overlayUpdateTodo(proposed, {
+				...draft,
+				note: "",
+			}) as { todo: Record<string, unknown> };
+			expect("note" in edited.todo).toBe(false);
+		});
+
+		it("emits no status key when the partial had no status (status unsurfaced)", () => {
+			const noStatus = {
+				todo_id: "todo-9",
+				todo: { title: "Rename me", note: "keep" },
+			};
+			const draft = seedUpdateTodo(noStatus);
+			const edited = overlayUpdateTodo(noStatus, {
+				...draft,
+				title: "Renamed",
+			}) as { todo: Record<string, unknown> };
+			expect("status" in edited.todo).toBe(false);
+			expect(edited.todo.title).toBe("Renamed");
+		});
+
+		it("emits no title key when the partial had no title (title unsurfaced)", () => {
+			const noTitle = {
+				todo_id: "todo-9",
+				todo: { note: "Just a note change" },
+			};
+			const draft = seedUpdateTodo(noTitle);
+			const edited = overlayUpdateTodo(noTitle, {
+				...draft,
+				note: "An edited note",
+			}) as { todo: Record<string, unknown> };
+			expect("title" in edited.todo).toBe(false);
+			expect(edited.todo.note).toBe("An edited note");
+		});
+
+		describe("status↔timestamp coupling (when status surfaced + changed)", () => {
+			it("completed→active clears completed_at and dropped_at within the partial", () => {
+				const draft = seedUpdateTodo(proposed);
+				const edited = overlayUpdateTodo(proposed, {
+					...draft,
+					status: "active",
+				}) as { todo: Record<string, unknown> };
+				expect(edited.todo.status).toBe("active");
+				expect("completed_at" in edited.todo).toBe(false);
+				expect("dropped_at" in edited.todo).toBe(false);
+			});
+
+			it("active→completed stamps completed_at and omits dropped_at within the partial", () => {
+				const activeProposed = {
+					todo_id: "todo-3",
+					todo: { title: "Do it", status: "active" },
+				};
+				const draft = seedUpdateTodo(activeProposed);
+				const edited = overlayUpdateTodo(activeProposed, {
+					...draft,
+					status: "completed",
+				}) as { todo: Record<string, unknown> };
+				expect(edited.todo.status).toBe("completed");
+				expect(edited.todo.completed_at).toMatch(LOCAL_DATETIME_RE);
+				expect("dropped_at" in edited.todo).toBe(false);
+			});
+
+			it("leaves a stored completed_at intact when surfaced status is unchanged", () => {
+				const draft = seedUpdateTodo(proposed);
+				const edited = overlayUpdateTodo(proposed, {
+					...draft,
+					title: "Email Alice (done, edited)",
+				}) as { todo: Record<string, unknown> };
+				expect(edited.todo.completed_at).toBe("2026-06-01T09:00:00");
+			});
 		});
 	});
 });

@@ -15,11 +15,14 @@ import {
 	overlayCreatePerson,
 	overlayCreateProject,
 	overlayCreateTodo,
+	overlayUpdateTodo,
 	type ProjectEditStatus,
 	seedCreatePerson,
 	seedCreateProject,
 	seedCreateTodo,
+	seedUpdateTodo,
 	type TodoEditStatus,
+	type UpdateTodoDraft,
 } from "@/lib/proposalEdit";
 import type { PendingProposal } from "@/store/chat";
 import {
@@ -201,7 +204,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		acceptBusyLabel: "Updating...",
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
-		canEdit: () => false,
+		canEdit: () => true,
 	},
 };
 
@@ -407,9 +410,12 @@ export function ProposalCard({
 	const isCreateTodo = mutation_kind === "create_todo";
 	const isCreatePerson = mutation_kind === "create_person";
 	const isCreateProject = mutation_kind === "create_project";
-	// A GTD create that surfaces an inline edit form (todo/person/project). update_todo
-	// renders read-only — it has no inline editor yet.
-	const isGtdEdit = isCreateTodo || isCreatePerson || isCreateProject;
+	// update_todo edits the proposed PARTIAL in place (title/note, status only when
+	// the partial already carries one); todo_id + the three ref lists ride untouched.
+	const isUpdateTodo = mutation_kind === "update_todo";
+	// A GTD kind that surfaces an inline edit form (the three creates + update_todo).
+	const isGtdEdit =
+		isCreateTodo || isCreatePerson || isCreateProject || isUpdateTodo;
 	const isGtdProposal =
 		mutation_kind === "create_person" ||
 		mutation_kind === "create_project" ||
@@ -479,6 +485,9 @@ export function ProposalCard({
 	const [projectDraft, setProjectDraft] = useState<CreateProjectDraft>(() =>
 		seedCreateProject(payload),
 	);
+	const [updateTodoDraft, setUpdateTodoDraft] = useState<UpdateTodoDraft>(() =>
+		seedUpdateTodo(payload),
+	);
 	const editIssue = isCreateProposal
 		? journalPayloadIssue(editOccurredAt, editBody, editEndedAt)
 		: isUpdateProposal
@@ -489,12 +498,19 @@ export function ProposalCard({
 	const todoTitleEmpty = todoDraft.title.trim() === "";
 	const personNameEmpty = personDraft.name.trim() === "";
 	const projectNameEmpty = projectDraft.name.trim() === "";
+	// update_todo: title is required ONLY when the partial proposed one (setting an
+	// existing title to "" would be invalid). A partial with no title key has no
+	// title field to gate, so Save stays enabled.
+	const updateTodoTitleEmpty =
+		updateTodoDraft.titlePresent && updateTodoDraft.title.trim() === "";
 	// The single required-field gate the GTD Save reads, by kind.
 	const gtdRequiredEmpty = isCreateTodo
 		? todoTitleEmpty
 		: isCreatePerson
 			? personNameEmpty
-			: projectNameEmpty;
+			: isCreateProject
+				? projectNameEmpty
+				: updateTodoTitleEmpty;
 	const bodyRef = useRef<HTMLTextAreaElement>(null);
 	const openEdit = () => {
 		if (!canEdit) return;
@@ -504,6 +520,8 @@ export function ProposalCard({
 			setPersonDraft(seedCreatePerson(payload));
 		} else if (isCreateProject) {
 			setProjectDraft(seedCreateProject(payload));
+		} else if (isUpdateTodo) {
+			setUpdateTodoDraft(seedUpdateTodo(payload));
 		} else {
 			setEditOccurredAt(occurredAt);
 			setEditEndedAt(endedAt);
@@ -538,7 +556,9 @@ export function ProposalCard({
 			? overlayCreateTodo(payload, todoDraft)
 			: isCreatePerson
 				? overlayCreatePerson(payload, personDraft)
-				: overlayCreateProject(payload, projectDraft);
+				: isCreateProject
+					? overlayCreateProject(payload, projectDraft)
+					: overlayUpdateTodo(payload, updateTodoDraft);
 		setInFlight("edit");
 		setEditing(false);
 		lastAttempt.current = { decision: "edit", editedPayload: decisionPayload };
@@ -683,7 +703,7 @@ export function ProposalCard({
 									/>
 								</EditorField>
 							</>
-						) : (
+						) : isCreateProject ? (
 							<>
 								<EditorField label="Name" htmlFor={projectNameInputId}>
 									<EditorInput
@@ -740,6 +760,61 @@ export function ProposalCard({
 										))}
 									</EditorSelect>
 								</EditorField>
+							</>
+						) : (
+							/* update_todo — edits the proposed PARTIAL in place. Title shows
+							   only when the partial proposed one; Status shows only when the
+							   partial carried a status (surfacing a select would inject an
+							   unrequested field into the partial). Note is always surfaced. */
+							<>
+								{updateTodoDraft.titlePresent ? (
+									<EditorField label="Title" htmlFor={todoTitleInputId}>
+										<EditorInput
+											id={todoTitleInputId}
+											autoFocus
+											value={updateTodoDraft.title}
+											onChange={(event) =>
+												setUpdateTodoDraft((d) => ({
+													...d,
+													title: event.target.value,
+												}))
+											}
+										/>
+									</EditorField>
+								) : null}
+								<EditorField label="Note" htmlFor={todoNoteInputId}>
+									<EditorTextarea
+										id={todoNoteInputId}
+										autoFocus={!updateTodoDraft.titlePresent}
+										value={updateTodoDraft.note}
+										onChange={(event) =>
+											setUpdateTodoDraft((d) => ({
+												...d,
+												note: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								{updateTodoDraft.statusPresent ? (
+									<EditorField label="Status" htmlFor={todoStatusInputId}>
+										<EditorSelect
+											id={todoStatusInputId}
+											value={updateTodoDraft.status}
+											onChange={(event) =>
+												setUpdateTodoDraft((d) => ({
+													...d,
+													status: event.target.value as TodoEditStatus,
+												}))
+											}
+										>
+											{TODO_STATUS_OPTIONS.map((o) => (
+												<option key={o.value} value={o.value}>
+													{o.label}
+												</option>
+											))}
+										</EditorSelect>
+									</EditorField>
+								) : null}
 							</>
 						)}
 						<footer className="flex items-center gap-2 pt-1">

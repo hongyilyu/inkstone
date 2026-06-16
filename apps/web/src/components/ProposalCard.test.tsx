@@ -1019,9 +1019,10 @@ describe("ProposalCard", () => {
 			expect(screen.getByText(/Related: dave-1/)).toBeInTheDocument();
 			expect(screen.getByText(/Waiting on: carol-1/)).toBeInTheDocument();
 			expect(screen.getByText(/bob-1/)).toBeInTheDocument();
+			// update_todo now offers inline Edit at the gate (slice 3).
 			expect(
-				screen.queryByRole("button", { name: /^edit$/i }),
-			).not.toBeInTheDocument();
+				screen.getByRole("button", { name: /^edit$/i }),
+			).toBeInTheDocument();
 		});
 
 		it("calls onDecide('accept') when Update Todo is clicked", () => {
@@ -1036,6 +1037,83 @@ describe("ProposalCard", () => {
 			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
 			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
 			expect(onDecide).toHaveBeenCalledWith("reject");
+		});
+
+		it("editing Title then Save emits the partial preserving todo_id and all ref lists", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {
+				target: { value: "Email Alice about the Q3 migration" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			expect(onDecide).toHaveBeenCalledWith("edit", {
+				todo_id: "todo-7",
+				todo: {
+					title: "Email Alice about the Q3 migration",
+					status: "completed",
+				},
+				set_person_refs: [{ person_id: "dave-1", role: "related" }],
+				add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
+				remove_person_ids: ["bob-1"],
+			});
+			expect(onDecide).toHaveBeenCalledTimes(1);
+		});
+
+		it("blanking a proposed Note omits the note key from the edited partial", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard
+					proposal={{
+						...updateTodo,
+						payload: {
+							todo_id: "todo-7",
+							todo: { title: "Keep title", note: "Drop me" },
+						},
+					}}
+					onDecide={onDecide}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /note/i }), {
+				target: { value: "" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect("note" in payload.todo).toBe(false);
+		});
+
+		it("hides the Status control when the proposed partial carries no status", () => {
+			render(
+				<ProposalCard
+					proposal={{
+						...updateTodo,
+						payload: {
+							todo_id: "todo-7",
+							todo: { title: "Rename me" },
+						},
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			expect(
+				screen.getByRole("textbox", { name: /title/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByRole("combobox", { name: /status/i }),
+			).not.toBeInTheDocument();
+		});
+
+		it("disables Save when a proposed Title is blanked", () => {
+			render(<ProposalCard proposal={updateTodo} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {
+				target: { value: "" },
+			});
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
 		});
 	});
 
