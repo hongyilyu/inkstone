@@ -7,10 +7,7 @@
 			"recurrence": {
 				"interval": 1,
 				"unit": "week",
-				"schedule": "regular",
 				"anchor": "due_at",
-				"catch_up": false,
-				"only_on": { "weekdays": ["mon", "fri"] },
 				"end": { "after_count": 10 }
 			}
 		}

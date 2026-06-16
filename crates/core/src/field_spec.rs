@@ -96,8 +96,6 @@ pub(crate) enum FieldSpec {
     /// (`""`/whitespace → "{field} must not be empty"; schema carries
     /// `minLength:1`).
     Str { non_empty: bool },
-    /// A boolean.
-    Bool,
     /// A positive integer (`>= 1`). Schema: `{type:integer, minimum:1}` — the
     /// advertised bound matches the validator (the deleted structs carried
     /// `#[schemars(range(min = 1))]`), so a provider can't pre-pass an `interval`
@@ -130,11 +128,11 @@ pub(crate) enum FieldSpec {
     /// A nested object validated by its own [`PayloadSpec`].
     Object(PayloadSpec),
     /// A nested object whose SCHEMA comes from the spec but whose VALIDATION is
-    /// deferred to a hand-written cross-field hook. The recurrence rule (ADR-0037)
-    /// is intrinsically cross-field — `catch_up`↔`schedule`, `only_on`↔`unit`,
-    /// `end` cardinality, weekday/month-day dedup+range — so a flat walk cannot
-    /// express it. The schema single-sources from the spec (killing the dead
-    /// structs); `check` is a no-op and the owning entity's hook validates.
+    /// deferred to a hand-written cross-field hook. The recurrence rule (ADR-0037,
+    /// slimmed by ADR-0039) is cross-field — `end` cardinality (at most one of
+    /// `until`/`after_count`) and the anchor-presence check against the whole Todo
+    /// — so a flat walk cannot express it. The schema single-sources from the
+    /// spec; `check` is a no-op and the owning entity's hook validates.
     HookValidated(PayloadSpec),
     /// A Journal-Entry `body`: a tagged `oneOf` union of node objects per
     /// [`BodyPolicy`]. The array-level `minItems:1` and per-node shape are emitted
@@ -346,7 +344,6 @@ fn spec_schema(spec: &FieldSpec) -> Value {
         } => {
             serde_json::json!({ "type": "string" })
         }
-        FieldSpec::Bool => serde_json::json!({ "type": "boolean" }),
         FieldSpec::PositiveInt => serde_json::json!({ "type": "integer", "minimum": 1 }),
         FieldSpec::LocalDateTime => serde_json::json!({
             "type": "string",
@@ -430,13 +427,6 @@ fn check_field(field: &Field, value: &Value) -> Result<(), String> {
             Value::String(_) => Err(format!("{name} must not be empty")),
             _ => Err(format!("{name} must be a string")),
         },
-        FieldSpec::Bool => {
-            if value.is_boolean() {
-                Ok(())
-            } else {
-                Err(format!("{name} must be a boolean"))
-            }
-        }
         FieldSpec::PositiveInt => match value {
             Value::Number(n) => match n.as_u64() {
                 Some(v) if v >= 1 => Ok(()),
