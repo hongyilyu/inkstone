@@ -1,5 +1,7 @@
 import { Schema as S } from "effect";
 
+export * from "./payloads.js";
+
 export const PostMessageParams = S.Struct({
 	thread_id: S.String,
 	prompt: S.String,

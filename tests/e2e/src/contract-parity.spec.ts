@@ -7,13 +7,13 @@
 // it drives a real agent-proposed mutation through the browser SPA, observes the
 // pending ProposalCard render in headless Chromium, reads the live `payload` over
 // the very `proposal/get` wire the SPA itself calls, and decodes it against the
-// `@inkstone/contract` Effect Schema for its `mutation_kind`. A clean decode
+// `@inkstone/protocol` Effect Schema for its `mutation_kind`. A clean decode
 // proves Core's runtime payload satisfies the schema the structural gate locks.
 //
 // The negative control (corrupt the live payload → decode must fail) proves the
 // assertion bites rather than passing vacuously.
 
-import { schemas, type WireKind } from "@inkstone/contract";
+import { schemas, type WireKind } from "@inkstone/protocol";
 import { Either, Schema } from "effect";
 import { expect, test } from "./fixtures.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
@@ -82,7 +82,7 @@ function proposalGet(
 	});
 }
 
-test("the live proposal payload Core emits decodes against its @inkstone/contract schema", async ({
+test("the live proposal payload Core emits decodes against its @inkstone/protocol schema", async ({
 	chat,
 	core,
 }) => {
@@ -120,7 +120,7 @@ test("the live proposal payload Core emits decodes against its @inkstone/contrac
 	const decoded = Schema.decodeUnknownEither(schema)(payload);
 	if (Either.isLeft(decoded)) {
 		throw new Error(
-			`live ${mutation_kind} payload did NOT match its @inkstone/contract schema:\n` +
+			`live ${mutation_kind} payload did NOT match its @inkstone/protocol schema:\n` +
 				`${JSON.stringify(payload, null, 2)}\n` +
 				`decode error: ${String(decoded.left)}`,
 		);

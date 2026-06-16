@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { toLibraryTodo } from "@/lib/hooks/useLibraryItems";
+import { parseTodo } from "@/lib/entityCodec";
 import {
 	activeProjectItems,
 	dueSoonTodos,
@@ -465,7 +465,7 @@ describe("recurrence (ADR-0037 read side)", () => {
 
 	describe("toLibraryTodo recurrence mapping", () => {
 		it("maps a snake_case rule to the camelCase view model", () => {
-			const todo = toLibraryTodo(
+			const todo = parseTodo(
 				todoRow({
 					defer_at: "2026-06-14T09:00:00",
 					recurrence: {
@@ -491,7 +491,7 @@ describe("recurrence (ADR-0037 read side)", () => {
 		});
 
 		it("maps month_days and an until end condition", () => {
-			const todo = toLibraryTodo(
+			const todo = parseTodo(
 				todoRow({
 					due_at: "2026-06-30T17:00:00",
 					recurrence: {
@@ -515,12 +515,12 @@ describe("recurrence (ADR-0037 read side)", () => {
 		});
 
 		it("leaves recurrence undefined when the Todo carries no rule", () => {
-			expect(toLibraryTodo(todoRow({})).recurrence).toBeUndefined();
+			expect(parseTodo(todoRow({})).recurrence).toBeUndefined();
 		});
 
 		it("ignores a partial rule missing required fields", () => {
 			expect(
-				toLibraryTodo(todoRow({ recurrence: { interval: 2 } })).recurrence,
+				parseTodo(todoRow({ recurrence: { interval: 2 } })).recurrence,
 			).toBeUndefined();
 		});
 	});
