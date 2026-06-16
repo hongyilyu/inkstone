@@ -15,11 +15,15 @@ import {
 	overlayCreatePerson,
 	overlayCreateProject,
 	overlayCreateTodo,
+	overlayUpdatePerson,
+	overlayUpdateProject,
 	overlayUpdateTodo,
 	type ProjectEditStatus,
 	seedCreatePerson,
 	seedCreateProject,
 	seedCreateTodo,
+	seedUpdatePerson,
+	seedUpdateProject,
 	seedUpdateTodo,
 	type TodoEditStatus,
 	type UpdateTodoDraft,
@@ -49,7 +53,7 @@ const PROJECT_STATUS_OPTIONS: { value: ProjectEditStatus; label: string }[] = [
 	{ value: "dropped", label: "Dropped" },
 ];
 
-// The 8 mutation kinds the Worker proposes (ADR-0025). Bookmarks and direct
+// The mutation kinds the Worker proposes (ADR-0025). Bookmarks and direct
 // entity-edits are user-CRUD-only (ADR-0033/0036) — never proposed — so the card
 // has never rendered them; an unrecognized kind degrades through `fallbackView`.
 type ProposalKind =
@@ -60,7 +64,9 @@ type ProposalKind =
 	| "create_person"
 	| "create_project"
 	| "create_todo"
-	| "update_todo";
+	| "update_todo"
+	| "update_person"
+	| "update_project";
 
 // Per-kind presentation for a Proposal — the review card's analogue of KIND_META
 // (lib/libraryItems): one entry concentrates the copy, labels, glyph, and
@@ -201,6 +207,32 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		acceptedCopy: "Updated Todo.",
 		rejectedCopy: "Dismissed.",
 		acceptLabel: "Update Todo",
+		acceptBusyLabel: "Updating...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => true,
+	},
+	update_person: {
+		glyph: KIND_META.person.icon,
+		acceptGlyph: KIND_META.person.icon,
+		summary: (payload) => textField(payload, "name") || "Update Person",
+		reviewCopy: "Inkstone wants to update a Person.",
+		acceptedCopy: "Updated Person.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Update Person",
+		acceptBusyLabel: "Updating...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => true,
+	},
+	update_project: {
+		glyph: KIND_META.project.icon,
+		acceptGlyph: KIND_META.project.icon,
+		summary: (payload) => textField(payload, "name") || "Update Project",
+		reviewCopy: "Inkstone wants to update a Project.",
+		acceptedCopy: "Updated Project.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Update Project",
 		acceptBusyLabel: "Updating...",
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
@@ -413,14 +445,26 @@ export function ProposalCard({
 	// update_todo edits the proposed PARTIAL in place (title/note, status only when
 	// the partial already carries one); todo_id + the three ref lists ride untouched.
 	const isUpdateTodo = mutation_kind === "update_todo";
-	// A GTD kind that surfaces an inline edit form (the three creates + update_todo).
+	// update_person/update_project are FULL-DOCUMENT REPLACE: the proposed payload is
+	// the whole new entity body plus a top-level entity_id, so they reuse the
+	// create_person/create_project inline forms (same surfaced fields + overlay logic;
+	// the entity_id rides untouched through the overlay clone).
+	const isUpdatePerson = mutation_kind === "update_person";
+	const isUpdateProject = mutation_kind === "update_project";
+	// The person/project inline forms back BOTH their create and update (full-replace)
+	// kinds — identical surfaced fields, so one form each, keyed by these booleans.
+	const showPersonForm = isCreatePerson || isUpdatePerson;
+	const showProjectForm = isCreateProject || isUpdateProject;
+	// A GTD kind that surfaces an inline edit form (the creates + the updates).
 	const isGtdEdit =
-		isCreateTodo || isCreatePerson || isCreateProject || isUpdateTodo;
+		isCreateTodo || showPersonForm || showProjectForm || isUpdateTodo;
 	const isGtdProposal =
 		mutation_kind === "create_person" ||
 		mutation_kind === "create_project" ||
 		mutation_kind === "create_todo" ||
-		mutation_kind === "update_todo";
+		mutation_kind === "update_todo" ||
+		mutation_kind === "update_person" ||
+		mutation_kind === "update_project";
 	// The single resolved presentation entry: header glyph, accept-button glyph,
 	// summary, review/accepted/rejected copy, accept/reject labels (+ busy variants),
 	// and edit-ability all read from here instead of a per-kind ternary.
@@ -474,8 +518,10 @@ export function ProposalCard({
 	const [editOccurredAt, setEditOccurredAt] = useState(occurredAt);
 	const [editEndedAt, setEditEndedAt] = useState(endedAt);
 	const [editBody, setEditBody] = useState(bodyText);
-	// Each GTD create form's surfaced fields (seeded from the proposed payload on
-	// open). The journal kinds reuse the journal form; update_todo can't edit yet.
+	// Each GTD form's surfaced fields (seeded from the proposed payload on open). The
+	// journal kinds reuse the journal form. The person/project drafts back both the
+	// create and the full-replace update kinds — the update seed reads the same
+	// surfaced fields, so the create seed is the right initial value either way.
 	const [todoDraft, setTodoDraft] = useState<CreateTodoDraft>(() =>
 		seedCreateTodo(payload),
 	);
@@ -493,8 +539,8 @@ export function ProposalCard({
 		: isUpdateProposal
 			? journalPayloadIssue(editOccurredAt, editBody, editEndedAt, entityId)
 			: null;
-	// Required-field gate for each GTD create form: Save is disabled when the
-	// required field (Todo title / Person+Project name) is blank.
+	// Required-field gate for each GTD form: Save is disabled when the required field
+	// (Todo title / Person+Project name) is blank.
 	const todoTitleEmpty = todoDraft.title.trim() === "";
 	const personNameEmpty = personDraft.name.trim() === "";
 	const projectNameEmpty = projectDraft.name.trim() === "";
@@ -503,12 +549,13 @@ export function ProposalCard({
 	// title field to gate, so Save stays enabled.
 	const updateTodoTitleEmpty =
 		updateTodoDraft.titlePresent && updateTodoDraft.title.trim() === "";
-	// The single required-field gate the GTD Save reads, by kind.
+	// The single required-field gate the GTD Save reads, by form. update_person/
+	// update_project share the create person/project gates (name required).
 	const gtdRequiredEmpty = isCreateTodo
 		? todoTitleEmpty
-		: isCreatePerson
+		: showPersonForm
 			? personNameEmpty
-			: isCreateProject
+			: showProjectForm
 				? projectNameEmpty
 				: updateTodoTitleEmpty;
 	const bodyRef = useRef<HTMLTextAreaElement>(null);
@@ -516,10 +563,16 @@ export function ProposalCard({
 		if (!canEdit) return;
 		if (isCreateTodo) {
 			setTodoDraft(seedCreateTodo(payload));
-		} else if (isCreatePerson) {
-			setPersonDraft(seedCreatePerson(payload));
-		} else if (isCreateProject) {
-			setProjectDraft(seedCreateProject(payload));
+		} else if (showPersonForm) {
+			setPersonDraft(
+				isUpdatePerson ? seedUpdatePerson(payload) : seedCreatePerson(payload),
+			);
+		} else if (showProjectForm) {
+			setProjectDraft(
+				isUpdateProject
+					? seedUpdateProject(payload)
+					: seedCreateProject(payload),
+			);
 		} else if (isUpdateTodo) {
 			setUpdateTodoDraft(seedUpdateTodo(payload));
 		} else {
@@ -546,18 +599,26 @@ export function ProposalCard({
 		lastAttempt.current = { decision: "edit", editedPayload: decisionPayload };
 		onDecide("edit", decisionPayload);
 	};
-	// Route each GTD create kind to its pure overlay (proposalEdit), commit as a
-	// single edit decision through the same inFlight/lastAttempt/retry plumbing as
-	// the journal form. Save is gated on the kind's required field.
+	// Route each GTD kind to its pure overlay (proposalEdit), commit as a single edit
+	// decision through the same inFlight/lastAttempt/retry plumbing as the journal
+	// form. Save is gated on the kind's required field. update_person/update_project
+	// reuse the person/project drafts but route to their full-replace overlays (which
+	// preserve the top-level entity_id + any unsurfaced field).
 	const saveGtdEdit = () => {
 		if (inFlight !== null || proposal.status === "deciding") return;
 		if (gtdRequiredEmpty) return;
 		const decisionPayload = isCreateTodo
 			? overlayCreateTodo(payload, todoDraft)
-			: isCreatePerson
-				? overlayCreatePerson(payload, personDraft)
-				: isCreateProject
-					? overlayCreateProject(payload, projectDraft)
+			: showPersonForm
+				? (isUpdatePerson ? overlayUpdatePerson : overlayCreatePerson)(
+						payload,
+						personDraft,
+					)
+				: showProjectForm
+					? (isUpdateProject ? overlayUpdateProject : overlayCreateProject)(
+							payload,
+							projectDraft,
+						)
 					: overlayUpdateTodo(payload, updateTodoDraft);
 		setInFlight("edit");
 		setEditing(false);
@@ -617,8 +678,9 @@ export function ProposalCard({
 						}}
 						className="flex flex-col gap-3 border-border border-t pt-3"
 					>
-						{/* One inline form per GTD create kind. Each surfaces exactly the
-						    fields the user can change (approval-gate legibility); the
+						{/* One inline form per GTD form (the person/project forms back both
+						    their create and full-replace update kinds). Each surfaces exactly
+						    the fields the user can change (approval-gate legibility); the
 						    required field (Todo title / Person+Project name) autoFocuses on
 						    open (mirrors the journal form focusing its body — autoFocus rides
 						    through EditorInput → Input onto the real <input>). */}
@@ -662,7 +724,7 @@ export function ProposalCard({
 									</EditorSelect>
 								</EditorField>
 							</>
-						) : isCreatePerson ? (
+						) : showPersonForm ? (
 							<>
 								<EditorField label="Name" htmlFor={personNameInputId}>
 									<EditorInput
@@ -703,7 +765,7 @@ export function ProposalCard({
 									/>
 								</EditorField>
 							</>
-						) : isCreateProject ? (
+						) : showProjectForm ? (
 							<>
 								<EditorField label="Name" htmlFor={projectNameInputId}>
 									<EditorInput
@@ -1139,7 +1201,54 @@ function GtdSection({
 		);
 	}
 
+	// update_person is a FULL-DOCUMENT REPLACE: the proposed payload IS the new Person
+	// body (name + note?/aliases?) plus a top-level entity_id routing key, so its
+	// read-only detail mirrors create_person's (the entity_id rides untouched on
+	// overlay but is not surfaced here).
+	if (mutationKind === "update_person") {
+		const note = textField(payload, "note");
+		const aliases = arrayField(payload, "aliases").filter(
+			(a): a is string => typeof a === "string",
+		);
+		return (
+			<section className="flex flex-col gap-2">
+				<p className="text-xs font-medium tracking-normal text-muted-foreground">
+					Person
+				</p>
+				<dl className="flex flex-col gap-1.5 text-sm">
+					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
+					{note ? <Field label="Note" value={note} /> : null}
+					{aliases.length > 0 ? (
+						<Field label="Aliases" value={aliases.join(", ")} />
+					) : null}
+				</dl>
+			</section>
+		);
+	}
+
 	if (mutationKind === "create_project") {
+		const outcome = textField(payload, "outcome");
+		const status = textField(payload, "status");
+		const note = textField(payload, "note");
+		return (
+			<section className="flex flex-col gap-2">
+				<p className="text-xs font-medium tracking-normal text-muted-foreground">
+					Project
+				</p>
+				<dl className="flex flex-col gap-1.5 text-sm">
+					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
+					{outcome ? <Field label="Outcome" value={outcome} /> : null}
+					{status ? <Field label="Status" value={status} /> : null}
+					{note ? <Field label="Note" value={note} /> : null}
+				</dl>
+			</section>
+		);
+	}
+
+	// update_project is a FULL-DOCUMENT REPLACE: the proposed payload IS the new
+	// Project body (name + outcome?/note?/status? + preserved review cadence/dates)
+	// plus a top-level entity_id, so its read-only detail mirrors create_project's.
+	if (mutationKind === "update_project") {
 		const outcome = textField(payload, "outcome");
 		const status = textField(payload, "status");
 		const note = textField(payload, "note");

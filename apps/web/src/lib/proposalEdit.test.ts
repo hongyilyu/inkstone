@@ -6,10 +6,14 @@ import {
 	overlayCreatePerson,
 	overlayCreateProject,
 	overlayCreateTodo,
+	overlayUpdatePerson,
+	overlayUpdateProject,
 	overlayUpdateTodo,
 	seedCreatePerson,
 	seedCreateProject,
 	seedCreateTodo,
+	seedUpdatePerson,
+	seedUpdateProject,
 	seedUpdateTodo,
 	type UpdateTodoDraft,
 } from "./proposalEdit.js";
@@ -587,6 +591,209 @@ describe("proposalEdit — update_todo (partial)", () => {
 				}) as { todo: Record<string, unknown> };
 				expect(edited.todo.completed_at).toBe("2026-06-01T09:00:00");
 			});
+		});
+	});
+});
+
+// update_person/update_project are FULL-DOCUMENT REPLACE — the proposed payload is
+// the whole new entity body plus a top-level `entity_id` routing key. Their seeds
+// surface the same fields as the creates, and their overlays clone-and-overwrite the
+// same surfaced keys while PRESERVING the top-level `entity_id` (and, for project,
+// the review cadence + dates). Omit-empty (ADR-0033): a blanked optional is OMITTED
+// (omit ≡ cleared under replace), never a sentinel-null.
+
+describe("proposalEdit — update_person", () => {
+	const proposed = {
+		entity_id: "person-7",
+		name: "Alice Carter",
+		note: "Met at the conference.",
+		aliases: ["Ali", "AC"],
+	};
+
+	describe("seed", () => {
+		it("seeds name/note and joins proposed aliases back to a comma string", () => {
+			expect(seedUpdatePerson(proposed)).toEqual({
+				name: "Alice Carter",
+				note: "Met at the conference.",
+				aliases: "Ali, AC",
+			} satisfies CreatePersonDraft);
+		});
+
+		it("seeds an empty draft from a null payload without throwing", () => {
+			expect(seedUpdatePerson(null)).toEqual({
+				name: "",
+				note: "",
+				aliases: "",
+			});
+		});
+	});
+
+	describe("overlay", () => {
+		it("editing name preserves the top-level entity_id and unsurfaced fields", () => {
+			const draft = seedUpdatePerson(proposed);
+			const edited = overlayUpdatePerson(proposed, {
+				...draft,
+				name: "Alice C. Carter",
+			});
+			expect(edited).toEqual({
+				entity_id: "person-7",
+				name: "Alice C. Carter",
+				note: "Met at the conference.",
+				aliases: ["Ali", "AC"],
+			});
+		});
+
+		it("does not mutate the proposed payload (overlay clones)", () => {
+			const draft = seedUpdatePerson(proposed);
+			overlayUpdatePerson(proposed, { ...draft, name: "Changed" });
+			expect(proposed.name).toBe("Alice Carter");
+			expect(proposed.entity_id).toBe("person-7");
+		});
+
+		it("splits the comma-separated aliases field to a trimmed non-empty array", () => {
+			const edited = overlayUpdatePerson(proposed, {
+				name: "Alice",
+				note: "",
+				aliases: " Ali ,, AC , Allie ",
+			}) as Record<string, unknown>;
+			expect(edited.aliases).toEqual(["Ali", "AC", "Allie"]);
+		});
+
+		it("omits the note key when the field is blanked (replace ⇒ omit ≡ cleared)", () => {
+			const edited = overlayUpdatePerson(proposed, {
+				name: "Alice",
+				note: "",
+				aliases: "Ali, AC",
+			}) as Record<string, unknown>;
+			expect("note" in edited).toBe(false);
+			// The routing key still rides through.
+			expect(edited.entity_id).toBe("person-7");
+		});
+
+		it("omits the aliases key when the field is blanked", () => {
+			const edited = overlayUpdatePerson(proposed, {
+				name: "Alice",
+				note: "Met at the conference.",
+				aliases: "   ",
+			}) as Record<string, unknown>;
+			expect("aliases" in edited).toBe(false);
+		});
+	});
+});
+
+describe("proposalEdit — update_project", () => {
+	const proposed = {
+		entity_id: "project-7",
+		name: "Ship API v2 migration",
+		outcome: "All clients on v2 by Q3.",
+		note: "Coordinate with the platform team.",
+		status: "active",
+		review_every: { interval: 1, unit: "week" },
+		next_review_at: "2026-07-01T09:00:00",
+		last_reviewed_at: "2026-06-01T09:00:00",
+		due_at: "2026-09-30T00:00:00",
+	};
+
+	describe("seed", () => {
+		it("seeds name/outcome/note/status from a well-formed proposed project", () => {
+			expect(seedUpdateProject(proposed)).toEqual({
+				name: "Ship API v2 migration",
+				outcome: "All clients on v2 by Q3.",
+				note: "Coordinate with the platform team.",
+				status: "active",
+			} satisfies CreateProjectDraft);
+		});
+
+		it("degrades a wrong/unknown status to active", () => {
+			expect(
+				seedUpdateProject({ entity_id: "p-1", name: "P", status: "weird" })
+					.status,
+			).toBe("active");
+		});
+	});
+
+	describe("overlay", () => {
+		it("editing name preserves entity_id, review cadence, and dates", () => {
+			const draft = seedUpdateProject(proposed);
+			const edited = overlayUpdateProject(proposed, {
+				...draft,
+				name: "Ship API v2",
+			});
+			expect(edited).toEqual({
+				entity_id: "project-7",
+				name: "Ship API v2",
+				outcome: "All clients on v2 by Q3.",
+				note: "Coordinate with the platform team.",
+				status: "active",
+				review_every: { interval: 1, unit: "week" },
+				next_review_at: "2026-07-01T09:00:00",
+				last_reviewed_at: "2026-06-01T09:00:00",
+				due_at: "2026-09-30T00:00:00",
+			});
+		});
+
+		describe("status↔timestamp coupling", () => {
+			it("active→on_hold clears both terminal timestamps and preserves entity_id", () => {
+				const completedProposed = {
+					entity_id: "project-9",
+					name: "Done project",
+					status: "completed",
+					completed_at: "2026-06-01T09:00:00",
+				};
+				const draft = seedUpdateProject(completedProposed);
+				const edited = overlayUpdateProject(completedProposed, {
+					...draft,
+					status: "on_hold",
+				}) as Record<string, unknown>;
+				expect(edited.status).toBe("on_hold");
+				expect("completed_at" in edited).toBe(false);
+				expect("dropped_at" in edited).toBe(false);
+				expect(edited.entity_id).toBe("project-9");
+			});
+
+			it("active→dropped stamps a valid dropped_at and omits completed_at", () => {
+				const draft = seedUpdateProject(proposed);
+				const edited = overlayUpdateProject(proposed, {
+					...draft,
+					status: "dropped",
+				}) as Record<string, unknown>;
+				expect(edited.status).toBe("dropped");
+				expect(edited.dropped_at).toMatch(LOCAL_DATETIME_RE);
+				expect("completed_at" in edited).toBe(false);
+			});
+
+			it("leaves a stored completed_at intact when status is unchanged", () => {
+				const completedProposed = {
+					entity_id: "project-9",
+					name: "Done project",
+					status: "completed",
+					completed_at: "2026-06-01T09:00:00",
+				};
+				const draft = seedUpdateProject(completedProposed);
+				const edited = overlayUpdateProject(completedProposed, {
+					...draft,
+					name: "Done project edited",
+				}) as Record<string, unknown>;
+				expect(edited.completed_at).toBe("2026-06-01T09:00:00");
+			});
+		});
+
+		it("omits blank outcome and note keys", () => {
+			const draft = seedUpdateProject(proposed);
+			const edited = overlayUpdateProject(proposed, {
+				...draft,
+				outcome: "",
+				note: "",
+			}) as Record<string, unknown>;
+			expect("outcome" in edited).toBe(false);
+			expect("note" in edited).toBe(false);
+		});
+
+		it("does not mutate the proposed payload (overlay clones)", () => {
+			const draft = seedUpdateProject(proposed);
+			overlayUpdateProject(proposed, { ...draft, name: "Changed" });
+			expect(proposed.name).toBe("Ship API v2 migration");
+			expect(proposed.entity_id).toBe("project-7");
 		});
 	});
 });

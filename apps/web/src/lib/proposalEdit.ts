@@ -417,3 +417,55 @@ export function overlayUpdateTodo(
 	next.todo = todo;
 	return next;
 }
+
+// ---------------------------------------------------------------------------
+// update_person / update_project — FULL-DOCUMENT REPLACE. Unlike update_todo (a
+// partial), the proposed payload IS the whole new entity body — the create_person/
+// create_project shape PLUS a top-level `entity_id` routing key. So the surfaced
+// fields are identical to the creates (Name/Note/Aliases; Name/Outcome/Note/Status),
+// and the overlays are the create overlays: `clonePayload` already carries every
+// UNSURFACED top-level field through — the `entity_id` for both, and the review
+// cadence (`review_every`/`next_review_at`/`last_reviewed_at`) + dates for project.
+// Omit-empty (ADR-0033): a blanked optional is OMITTED, not sentinel-null — under a
+// full replace, omit ≡ cleared (matching the entityCodec replace-build discipline).
+//
+// These delegate to the create seed/overlay (same draft types) rather than duplicate
+// the field/coupling/parseAliases logic; the distinct names keep the card's per-kind
+// dispatch explicit and let the update surface diverge later without a rename.
+// ---------------------------------------------------------------------------
+
+/** Seed an update_person draft from the proposed payload, never throwing. */
+export function seedUpdatePerson(payload: unknown): CreatePersonDraft {
+	return seedCreatePerson(payload);
+}
+
+/**
+ * Overlay the update_person draft onto a CLONE of the proposed payload. Only the
+ * surfaced name/note/aliases change; the top-level `entity_id` and every unsurfaced
+ * field ride untouched (full-replace ⇒ a blanked optional is omitted, never a
+ * sentinel-null).
+ */
+export function overlayUpdatePerson(
+	payload: unknown,
+	draft: CreatePersonDraft,
+): Record<string, unknown> {
+	return overlayCreatePerson(payload, draft);
+}
+
+/** Seed an update_project draft from the proposed payload, never throwing. */
+export function seedUpdateProject(payload: unknown): CreateProjectDraft {
+	return seedCreateProject(payload);
+}
+
+/**
+ * Overlay the update_project draft onto a CLONE of the proposed payload. Only the
+ * surfaced name/outcome/note/status change (with the same status↔timestamp coupling
+ * as create_project); the top-level `entity_id`, the review cadence, and the dates
+ * ride untouched (full-replace ⇒ a blanked optional is omitted, never a sentinel-null).
+ */
+export function overlayUpdateProject(
+	payload: unknown,
+	draft: CreateProjectDraft,
+): Record<string, unknown> {
+	return overlayCreateProject(payload, draft);
+}

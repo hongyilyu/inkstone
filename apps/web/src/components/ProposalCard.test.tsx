@@ -1117,6 +1117,193 @@ describe("ProposalCard", () => {
 		});
 	});
 
+	describe("update_person", () => {
+		const updatePerson: PendingProposal = {
+			proposal_id: "prop-update-person",
+			run_id: "run-update-person",
+			mutation_kind: "update_person",
+			payload: {
+				entity_id: "person-7",
+				name: "Alice Carter",
+				note: "Now leads the daycare committee.",
+				aliases: ["Ali", "AC"],
+			},
+			rationale: "the user corrected Alice's note",
+			status: "pending",
+		};
+
+		it("renders an update Person proposal with its review copy, Update label, and detail — not the journal fallback", () => {
+			render(<ProposalCard proposal={updatePerson} onDecide={() => {}} />);
+			expect(
+				screen.getByText("Inkstone wants to update a Person."),
+			).toBeInTheDocument();
+			// A degraded fallback would echo the raw kind — assert it does NOT.
+			expect(
+				screen.queryByText(/wants to create a update_person/i),
+			).not.toBeInTheDocument();
+			expect(screen.getAllByText("Alice Carter").length).toBeGreaterThan(0);
+			expect(
+				screen.getByText("Now leads the daycare committee."),
+			).toBeInTheDocument();
+			expect(screen.getByText(/Ali, AC/)).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /update person/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /^edit$/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /dismiss/i }),
+			).toBeInTheDocument();
+		});
+
+		it("opening Edit pre-fills Name/Note/Aliases from the proposed person", () => {
+			render(<ProposalCard proposal={updatePerson} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			expect(screen.getByRole("textbox", { name: /name/i })).toHaveValue(
+				"Alice Carter",
+			);
+			expect(screen.getByRole("textbox", { name: /note/i })).toHaveValue(
+				"Now leads the daycare committee.",
+			);
+			expect(screen.getByRole("textbox", { name: /aliases/i })).toHaveValue(
+				"Ali, AC",
+			);
+		});
+
+		it("editing Name then Save emits onDecide('edit', payload) preserving entity_id", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={updatePerson} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
+				target: { value: "Alice C. Carter" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			expect(onDecide).toHaveBeenCalledWith("edit", {
+				entity_id: "person-7",
+				name: "Alice C. Carter",
+				note: "Now leads the daycare committee.",
+				aliases: ["Ali", "AC"],
+			});
+			expect(onDecide).toHaveBeenCalledTimes(1);
+		});
+
+		it("blanking the proposed Note omits note but keeps entity_id (full-replace ⇒ omit ≡ cleared)", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={updatePerson} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /note/i }), {
+				target: { value: "" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect("note" in payload).toBe(false);
+			expect(payload.entity_id).toBe("person-7");
+		});
+
+		it("disables Save when Name is blanked", () => {
+			render(<ProposalCard proposal={updatePerson} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
+				target: { value: "" },
+			});
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
+		});
+	});
+
+	describe("update_project", () => {
+		const updateProject: PendingProposal = {
+			proposal_id: "prop-update-project",
+			run_id: "run-update-project",
+			mutation_kind: "update_project",
+			payload: {
+				entity_id: "project-7",
+				name: "Ship API v2",
+				outcome: "All clients on v2 by Q3.",
+				status: "active",
+			},
+			rationale: "the user re-scoped the project",
+			status: "pending",
+		};
+
+		it("renders an update Project proposal with its review copy, Update label, and detail — not the journal fallback", () => {
+			render(<ProposalCard proposal={updateProject} onDecide={() => {}} />);
+			expect(
+				screen.getByText("Inkstone wants to update a Project."),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText(/wants to create a update_project/i),
+			).not.toBeInTheDocument();
+			expect(screen.getAllByText("Ship API v2").length).toBeGreaterThan(0);
+			expect(screen.getByText("All clients on v2 by Q3.")).toBeInTheDocument();
+			expect(screen.getByText("active")).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /update project/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /^edit$/i }),
+			).toBeInTheDocument();
+		});
+
+		it("opening Edit pre-fills Name/Outcome/Status from the proposed project", () => {
+			render(<ProposalCard proposal={updateProject} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			expect(screen.getByRole("textbox", { name: /name/i })).toHaveValue(
+				"Ship API v2",
+			);
+			expect(screen.getByRole("textbox", { name: /outcome/i })).toHaveValue(
+				"All clients on v2 by Q3.",
+			);
+			expect(screen.getByRole("combobox", { name: /status/i })).toHaveValue(
+				"active",
+			);
+		});
+
+		it("changing Status active→on_hold clears terminal timestamps and preserves entity_id", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard
+					proposal={{
+						...updateProject,
+						payload: {
+							entity_id: "project-7",
+							name: "Ship API v2",
+							status: "active",
+							completed_at: "2026-01-01T00:00:00",
+							review_every: { interval: 1, unit: "week" },
+						},
+					}}
+					onDecide={onDecide}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("combobox", { name: /status/i }), {
+				target: { value: "on_hold" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect(payload.status).toBe("on_hold");
+			expect("completed_at" in payload).toBe(false);
+			expect("dropped_at" in payload).toBe(false);
+			// entity_id + the review cadence ride untouched under full replace.
+			expect(payload.entity_id).toBe("project-7");
+			expect(payload.review_every).toEqual({ interval: 1, unit: "week" });
+		});
+
+		it("disables Save when Name is blanked", () => {
+			render(<ProposalCard proposal={updateProject} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
+				target: { value: "" },
+			});
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
+		});
+	});
+
 	// Core forwards the RAW, unvalidated model arguments to the card: park_on_proposal
 	// (crates/core/src/worker/run.rs) stores params verbatim, and the proposal-get path
 	// defaults a missing `payload` to null. A real LLM can omit `payload` or emit a
