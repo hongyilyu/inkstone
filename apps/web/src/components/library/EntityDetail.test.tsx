@@ -289,7 +289,6 @@ describe("EntityDetail Todo projection", () => {
 			recurrence: {
 				interval: 1,
 				unit: "week",
-				schedule: "regular",
 				anchor: "defer_at",
 			},
 		});

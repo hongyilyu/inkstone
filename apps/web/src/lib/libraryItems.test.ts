@@ -471,10 +471,7 @@ describe("recurrence (ADR-0037 read side)", () => {
 					recurrence: {
 						interval: 2,
 						unit: "week",
-						schedule: "regular",
 						anchor: "defer_at",
-						catch_up: true,
-						only_on: { weekdays: ["mon", "wed"] },
 						end: { after_count: 10 },
 					},
 				}),
@@ -482,24 +479,19 @@ describe("recurrence (ADR-0037 read side)", () => {
 			expect(todo.recurrence).toEqual({
 				interval: 2,
 				unit: "week",
-				schedule: "regular",
 				anchor: "defer_at",
-				catchUp: true,
-				onlyOn: { weekdays: ["mon", "wed"] },
 				end: { afterCount: 10 },
 			});
 		});
 
-		it("maps month_days and an until end condition", () => {
+		it("maps an until end condition", () => {
 			const todo = parseTodo(
 				todoRow({
 					due_at: "2026-06-30T17:00:00",
 					recurrence: {
 						interval: 1,
 						unit: "month",
-						schedule: "from_completion",
 						anchor: "due_at",
-						only_on: { month_days: [1, 15] },
 						end: { until: "2027-01-01T00:00:00" },
 					},
 				}),
@@ -507,9 +499,7 @@ describe("recurrence (ADR-0037 read side)", () => {
 			expect(todo.recurrence).toEqual({
 				interval: 1,
 				unit: "month",
-				schedule: "from_completion",
 				anchor: "due_at",
-				onlyOn: { monthDays: [1, 15] },
 				end: { until: "2027-01-01T00:00:00" },
 			});
 		});
@@ -529,7 +519,6 @@ describe("recurrence (ADR-0037 read side)", () => {
 		const rule = (extra: Partial<Parameters<typeof recurrenceSummary>[0]>) => ({
 			interval: 1,
 			unit: "day" as const,
-			schedule: "regular" as const,
 			anchor: "defer_at" as const,
 			...extra,
 		});
@@ -556,21 +545,9 @@ describe("recurrence (ADR-0037 read side)", () => {
 			);
 		});
 
-		it("appends the from-completion suffix", () => {
+		it("does not throw when an end condition is present", () => {
 			expect(
-				recurrenceSummary(rule({ unit: "week", schedule: "from_completion" })),
-			).toBe("Repeats weekly from completion");
-		});
-
-		it("does not throw when only_on / end are present", () => {
-			expect(
-				recurrenceSummary(
-					rule({
-						unit: "week",
-						onlyOn: { weekdays: ["mon"] },
-						end: { afterCount: 5 },
-					}),
-				),
+				recurrenceSummary(rule({ unit: "week", end: { afterCount: 5 } })),
 			).toBe("Repeats weekly");
 		});
 	});

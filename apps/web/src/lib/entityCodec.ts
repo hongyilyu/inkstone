@@ -11,7 +11,6 @@ import {
 	type RecurrenceUnit,
 	type Todo,
 	type TodoStatus,
-	type Weekday,
 } from "@/lib/libraryItems";
 
 // The per-Entity-Type wire codec. THIS module owns each kind's row-input shape
@@ -142,21 +141,11 @@ const RECURRENCE_UNITS: readonly RecurrenceUnit[] = [
 	"year",
 ];
 
-const WEEKDAYS: readonly Weekday[] = [
-	"sun",
-	"mon",
-	"tue",
-	"wed",
-	"thu",
-	"fri",
-	"sat",
-];
-
 /**
- * Defensively map a stored snake_case recurrence rule (ADR-0037) to the
- * camelCase view model. Core validates the rule on the way in, so this is
- * parsing not validation: it returns undefined unless the required fields are
- * present and well-typed, and never throws on a partial/missing shape.
+ * Defensively map a stored snake_case recurrence rule (ADR-0037, slimmed by
+ * ADR-0039) to the camelCase view model. Core validates the rule on the way in,
+ * so this is parsing not validation: it returns undefined unless the required
+ * fields are present and well-typed, and never throws on a partial/missing shape.
  */
 function asRecurrence(value: unknown): RecurrenceRule | undefined {
 	if (!value || typeof value !== "object") return undefined;
@@ -165,7 +154,6 @@ function asRecurrence(value: unknown): RecurrenceRule | undefined {
 		typeof r.interval !== "number" ||
 		typeof r.unit !== "string" ||
 		!RECURRENCE_UNITS.includes(r.unit as RecurrenceUnit) ||
-		(r.schedule !== "regular" && r.schedule !== "from_completion") ||
 		(r.anchor !== "defer_at" && r.anchor !== "due_at")
 	) {
 		return undefined;
@@ -173,27 +161,8 @@ function asRecurrence(value: unknown): RecurrenceRule | undefined {
 	const rule: RecurrenceRule = {
 		interval: r.interval,
 		unit: r.unit as RecurrenceUnit,
-		schedule: r.schedule,
 		anchor: r.anchor,
 	};
-	if (typeof r.catch_up === "boolean") rule.catchUp = r.catch_up;
-	if (r.only_on && typeof r.only_on === "object") {
-		const onlyOnRaw = r.only_on as Record<string, unknown>;
-		const onlyOn: { weekdays?: Weekday[]; monthDays?: number[] } = {};
-		if (Array.isArray(onlyOnRaw.weekdays)) {
-			onlyOn.weekdays = onlyOnRaw.weekdays.filter(
-				(w): w is Weekday =>
-					typeof w === "string" && WEEKDAYS.includes(w as Weekday),
-			);
-		}
-		if (Array.isArray(onlyOnRaw.month_days)) {
-			onlyOn.monthDays = onlyOnRaw.month_days.filter(
-				(d): d is number =>
-					typeof d === "number" && Number.isInteger(d) && d >= 1 && d <= 31,
-			);
-		}
-		if (onlyOn.weekdays || onlyOn.monthDays) rule.onlyOn = onlyOn;
-	}
 	if (r.end && typeof r.end === "object") {
 		const endRaw = r.end as Record<string, unknown>;
 		const end: { until?: string; afterCount?: number } = {};
@@ -332,7 +301,6 @@ function parseBookmark(row: LiveEntityRow): Bookmark {
 // schema rejects — so this path must NOT be routed through S.encode/S.decode.
 // ---------------------------------------------------------------------------
 
-type RecurSchedule = "regular" | "from_completion";
 type RecurAnchor = "defer_at" | "due_at";
 
 /** The editable shape of a Todo's scalar fields; `""` means absent/cleared. */
@@ -350,14 +318,13 @@ export interface TodoDraft {
 	/** Interval as text, like `dueDay` — coerced to a number on build. */
 	recurInterval: string;
 	recurUnit: RecurrenceUnit;
-	recurSchedule: RecurSchedule;
 	recurAnchor: RecurAnchor;
 	/**
-	 * The loaded rule's unsurfaced fields — `catch_up`, `only_on`, `end` — stashed
-	 * verbatim (re-snaked) so an edit that only touches the common path round-trips
-	 * them untouched through the whole-object replace (ADR-0037 UI scope).
+	 * The loaded rule's unsurfaced `end` condition, stashed verbatim (re-snaked)
+	 * so an edit that only touches the common path round-trips it untouched
+	 * through the whole-object replace (ADR-0037 UI scope).
 	 */
-	recurExtra?: { catch_up?: boolean; only_on?: unknown; end?: unknown };
+	recurExtra?: { end?: unknown };
 }
 
 /** A `YYYY-MM-DD` UI date → the `YYYY-MM-DDTHH:MM:SS` wall-clock string Core wants. */
@@ -366,32 +333,19 @@ function dayToLocal(day: string): string {
 }
 
 /**
- * Re-snake the rule's unsurfaced fields — `catchUp`/`onlyOn`/`end` — so they
- * round-trip into the emitted rule byte-for-byte. The editor never surfaces
- * these (ADR-0037), but recurrence is replaced as a whole object, so dropping
- * any of them on a common-path edit would silently lose stored state.
+ * Re-snake the rule's unsurfaced `end` condition so it round-trips into the
+ * emitted rule byte-for-byte. The editor never surfaces `end` (ADR-0037), but
+ * recurrence is replaced as a whole object, so dropping it on a common-path edit
+ * would silently lose stored state.
  */
 function stashRecurExtra(
 	rule: NonNullable<Todo["recurrence"]>,
 ): TodoDraft["recurExtra"] {
-	const extra: { catch_up?: boolean; only_on?: unknown; end?: unknown } = {};
-	if (rule.catchUp !== undefined) extra.catch_up = rule.catchUp;
-	if (rule.onlyOn) {
-		const onlyOn: Record<string, unknown> = {};
-		if (rule.onlyOn.weekdays) onlyOn.weekdays = rule.onlyOn.weekdays;
-		if (rule.onlyOn.monthDays) onlyOn.month_days = rule.onlyOn.monthDays;
-		extra.only_on = onlyOn;
-	}
-	if (rule.end) {
-		const end: Record<string, unknown> = {};
-		if (rule.end.until !== undefined) end.until = rule.end.until;
-		if (rule.end.afterCount !== undefined)
-			end.after_count = rule.end.afterCount;
-		extra.end = end;
-	}
-	return extra.catch_up !== undefined || extra.only_on || extra.end
-		? extra
-		: undefined;
+	if (!rule.end) return undefined;
+	const end: Record<string, unknown> = {};
+	if (rule.end.until !== undefined) end.until = rule.end.until;
+	if (rule.end.afterCount !== undefined) end.after_count = rule.end.afterCount;
+	return { end };
 }
 
 /** The editable draft for a Todo (or a fresh blank draft when `todo` is absent). */
@@ -409,7 +363,6 @@ function todoDraftFromVm(todo: Todo | undefined): TodoDraft {
 		recurs: rule != null,
 		recurInterval: rule ? String(rule.interval) : "1",
 		recurUnit: rule?.unit ?? "week",
-		recurSchedule: rule?.schedule ?? "regular",
 		recurAnchor: rule?.anchor ?? "defer_at",
 		recurExtra: rule ? stashRecurExtra(rule) : undefined,
 	};
@@ -432,37 +385,15 @@ function recurActive(d: TodoDraft): boolean {
 
 /**
  * The snake_case recurrence rule for the payload: the common path the editor
- * drives (interval/unit/schedule/anchor) plus the stashed `catch_up`/`only_on`/
- * `end` it round-trips untouched. Assumes `recurActive(d)` — callers gate on it.
- *
- * Reconciles the stashed fields against the CURRENT surfaced schedule/unit (the
- * user can freely change those selects): `catch_up` only survives `schedule ===
- * "regular"`, `only_on.weekdays` only `unit === "week"`, `only_on.month_days`
- * only `unit === "month"` — Core's invariants (ADR-0037). Without this, switching
- * Schedule/Unit would re-emit a now-invalid field the editor never surfaces,
- * leaving the user stuck on a Core error. `end` is independent — round-trips as is.
+ * drives (interval/unit/anchor) plus the stashed `end` it round-trips untouched
+ * (ADR-0037/0039). Assumes `recurActive(d)` — callers gate on it.
  */
 function buildRecurrence(d: TodoDraft): Record<string, unknown> {
 	const rule: Record<string, unknown> = {
 		interval: Number(d.recurInterval),
 		unit: d.recurUnit,
-		schedule: d.recurSchedule,
 		anchor: d.recurAnchor,
 	};
-	if (d.recurExtra?.catch_up !== undefined && d.recurSchedule === "regular")
-		rule.catch_up = d.recurExtra.catch_up;
-	const onlyOn = d.recurExtra?.only_on as
-		| { weekdays?: unknown; month_days?: unknown }
-		| undefined;
-	if (onlyOn) {
-		const filtered: Record<string, unknown> = {};
-		if (d.recurUnit === "week" && onlyOn.weekdays !== undefined)
-			filtered.weekdays = onlyOn.weekdays;
-		if (d.recurUnit === "month" && onlyOn.month_days !== undefined)
-			filtered.month_days = onlyOn.month_days;
-		// Core rejects an empty only_on, so omit it entirely when nothing survives.
-		if (Object.keys(filtered).length > 0) rule.only_on = filtered;
-	}
 	if (d.recurExtra?.end !== undefined) rule.end = d.recurExtra.end;
 	return rule;
 }

@@ -215,10 +215,7 @@ describe("entityCodec parse — todo", () => {
 					recurrence: {
 						interval: 2,
 						unit: "week",
-						schedule: "regular",
 						anchor: "defer_at",
-						catch_up: true,
-						only_on: { weekdays: ["mon", "wed"], month_days: [1, 15] },
 						end: { after_count: 10 },
 					},
 				},
@@ -243,10 +240,7 @@ describe("entityCodec parse — todo", () => {
 		expect(vm.recurrence).toEqual({
 			interval: 2,
 			unit: "week",
-			schedule: "regular",
 			anchor: "defer_at",
-			catchUp: true,
-			onlyOn: { weekdays: ["mon", "wed"], monthDays: [1, 15] },
 			end: { afterCount: 10 },
 		});
 		expect(vm.personRefs).toEqual([
@@ -277,15 +271,13 @@ describe("entityCodec parse — todo", () => {
 		).toBeUndefined();
 	});
 
-	it("maps an until end condition with month_days", () => {
+	it("maps an until end condition", () => {
 		const vm = parseTodo(
 			row({
 				recurrence: {
 					interval: 1,
 					unit: "month",
-					schedule: "from_completion",
 					anchor: "due_at",
-					only_on: { month_days: [1, 15] },
 					end: { until: "2027-01-01T00:00:00" },
 				},
 			}),
@@ -293,9 +285,7 @@ describe("entityCodec parse — todo", () => {
 		expect(vm.recurrence).toEqual({
 			interval: 1,
 			unit: "month",
-			schedule: "from_completion",
 			anchor: "due_at",
-			onlyOn: { monthDays: [1, 15] },
 			end: { until: "2027-01-01T00:00:00" },
 		});
 	});
@@ -310,27 +300,12 @@ describe("entityCodec parse — todo", () => {
 		expect(vm.droppedAt).toBe("2026-06-15T08:00:00");
 	});
 
-	// Slice-2 follow-up: asRecurrence's only_on filters are per-member — invalid
-	// weekdays and out-of-range month_days are dropped, the valid ones survive.
-	it("filters invalid weekdays and out-of-range month_days in only_on", () => {
-		const vm = parseTodo(
-			row({
-				recurrence: {
-					interval: 1,
-					unit: "week",
-					schedule: "regular",
-					anchor: "defer_at",
-					only_on: {
-						weekdays: ["mon", "funday", "wed", 7],
-						month_days: [0, 1, 15, 32, 31],
-					},
-				},
-			}),
-		);
-		expect(vm.recurrence?.onlyOn).toEqual({
-			weekdays: ["mon", "wed"],
-			monthDays: [1, 15, 31],
-		});
+	it("drops a recurrence rule with an invalid anchor → undefined", () => {
+		expect(
+			parseTodo(
+				row({ recurrence: { interval: 1, unit: "week", anchor: "bogus" } }),
+			).recurrence,
+		).toBeUndefined();
 	});
 });
 
@@ -524,7 +499,6 @@ describe("entityCodec build — todo create", () => {
 					recurrence: {
 						interval: 1,
 						unit: "week",
-						schedule: "regular",
 						anchor: "defer_at",
 					},
 				},
@@ -664,7 +638,6 @@ describe("entityCodec build — todo update", () => {
 		recurrence: {
 			interval: 1,
 			unit: "week",
-			schedule: "regular",
 			anchor: "defer_at",
 		},
 	};
@@ -678,7 +651,6 @@ describe("entityCodec build — todo update", () => {
 					recurrence: {
 						interval: 2,
 						unit: "week",
-						schedule: "regular",
 						anchor: "defer_at",
 					},
 				},
@@ -708,17 +680,14 @@ describe("entityCodec build — todo update", () => {
 		expect(params).toBeNull();
 	});
 
-	it("round-trips catch_up, only_on, and end through a common-path edit", () => {
+	it("round-trips the stashed end condition through a common-path edit", () => {
 		const fullyLoaded: Todo = {
 			...existing,
 			deferAt: "2026-07-01T00:00:00",
 			recurrence: {
 				interval: 1,
 				unit: "week",
-				schedule: "regular",
 				anchor: "defer_at",
-				catchUp: true,
-				onlyOn: { weekdays: ["mon", "wed"] },
 				end: { afterCount: 10 },
 			},
 		};
@@ -730,63 +699,12 @@ describe("entityCodec build — todo update", () => {
 					recurrence: {
 						interval: 3,
 						unit: "week",
-						schedule: "regular",
 						anchor: "defer_at",
-						catch_up: true,
-						only_on: { weekdays: ["mon", "wed"] },
 						end: { after_count: 10 },
 					},
 				},
 			},
 		});
-	});
-
-	it("drops stashed catch_up when Schedule switches to from_completion", () => {
-		const withCatchUp: Todo = {
-			...existing,
-			deferAt: "2026-07-01T00:00:00",
-			recurrence: {
-				interval: 1,
-				unit: "week",
-				schedule: "regular",
-				anchor: "defer_at",
-				catchUp: true,
-			},
-		};
-		const params = edit(withCatchUp, { recurSchedule: "from_completion" });
-		const recurrence = (params?.payload as { todo: Record<string, unknown> })
-			.todo.recurrence as Record<string, unknown>;
-		expect(recurrence).toEqual({
-			interval: 1,
-			unit: "week",
-			schedule: "from_completion",
-			anchor: "defer_at",
-		});
-		expect(recurrence).not.toHaveProperty("catch_up");
-	});
-
-	it("drops stashed only_on when Unit switches away from week", () => {
-		const withOnlyOn: Todo = {
-			...existing,
-			deferAt: "2026-07-01T00:00:00",
-			recurrence: {
-				interval: 1,
-				unit: "week",
-				schedule: "regular",
-				anchor: "defer_at",
-				onlyOn: { weekdays: ["mon", "wed"] },
-			},
-		};
-		const params = edit(withOnlyOn, { recurUnit: "day" });
-		const recurrence = (params?.payload as { todo: Record<string, unknown> })
-			.todo.recurrence as Record<string, unknown>;
-		expect(recurrence).toEqual({
-			interval: 1,
-			unit: "day",
-			schedule: "regular",
-			anchor: "defer_at",
-		});
-		expect(recurrence).not.toHaveProperty("only_on");
 	});
 });
 
