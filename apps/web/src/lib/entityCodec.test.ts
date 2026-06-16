@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
+import type { Todo } from "@/lib/libraryItems";
 import {
+	buildTodo,
 	type LiveEntityRow,
 	parseBookmark,
 	parseJournalEntry,
 	parsePerson,
 	parseProject,
 	parseTodo,
+	type TodoDraft,
+	todoDraftFromVm,
 } from "./entityCodec.js";
 
 // `created_at` is pinned to fixed numbers; `createdAt`'s toLocaleDateString() is
@@ -271,6 +275,39 @@ describe("entityCodec parse — todo", () => {
 			end: { until: "2027-01-01T00:00:00" },
 		});
 	});
+
+	// Slice-2 follow-up: a stored dropped_at must surface on the view model so the
+	// editor renders/round-trips the dropped status's timestamp.
+	it("carries dropped_at onto droppedAt", () => {
+		const vm = parseTodo(
+			row({ status: "dropped", dropped_at: "2026-06-15T08:00:00" }),
+		);
+		expect(vm.status).toBe("dropped");
+		expect(vm.droppedAt).toBe("2026-06-15T08:00:00");
+	});
+
+	// Slice-2 follow-up: asRecurrence's only_on filters are per-member — invalid
+	// weekdays and out-of-range month_days are dropped, the valid ones survive.
+	it("filters invalid weekdays and out-of-range month_days in only_on", () => {
+		const vm = parseTodo(
+			row({
+				recurrence: {
+					interval: 1,
+					unit: "week",
+					schedule: "regular",
+					anchor: "defer_at",
+					only_on: {
+						weekdays: ["mon", "funday", "wed", 7],
+						month_days: [0, 1, 15, 32, 31],
+					},
+				},
+			}),
+		);
+		expect(vm.recurrence?.onlyOn).toEqual({
+			weekdays: ["mon", "wed"],
+			monthDays: [1, 15, 31],
+		});
+	});
 });
 
 describe("entityCodec parse — person", () => {
@@ -391,5 +428,294 @@ describe("entityCodec parse — bookmark", () => {
 		]);
 		expect(parseBookmark(row({ tags: [1, 2] })).tags).toBeUndefined();
 		expect(parseBookmark(row({ tags: [] })).tags).toBeUndefined();
+	});
+});
+
+// The build direction, proven React-free (the TodoEditor.test.tsx oracle proves
+// it through the component; this pins the codec standalone). `localNowString()`
+// is live, so status-timestamp cases assert the *_at value is a string, not an
+// exact instant — matching the oracle's stance.
+describe("entityCodec build — todo create", () => {
+	const draft = (over: Partial<TodoDraft> = {}): TodoDraft => ({
+		...todoDraftFromVm(undefined),
+		...over,
+	});
+
+	it("emits create_todo with only the filled fields (title-only)", () => {
+		expect(
+			buildTodo({ mode: "create", draft: draft({ title: "Buy milk" }) }),
+		).toEqual({
+			mutation_kind: "create_todo",
+			payload: { todo: { title: "Buy milk" } },
+		});
+	});
+
+	it("nests a project link and a person ref when chosen", () => {
+		expect(
+			buildTodo({
+				mode: "create",
+				draft: draft({
+					title: "Get the schedule",
+					projectId: "proj_1",
+					waitingPersonId: "p_a",
+				}),
+			}),
+		).toEqual({
+			mutation_kind: "create_todo",
+			payload: {
+				todo: { title: "Get the schedule", project_id: "proj_1" },
+				person_refs: [{ person_id: "p_a", role: "waiting_on" }],
+			},
+		});
+	});
+
+	it("sets status + matching timestamp (completed) and never dropped_at on create", () => {
+		const params = buildTodo({
+			mode: "create",
+			draft: draft({ title: "Done thing", status: "completed" }),
+		});
+		const todo = (params?.payload as { todo: Record<string, unknown> }).todo;
+		expect(todo.status).toBe("completed");
+		expect(typeof todo.completed_at).toBe("string");
+		expect(todo).not.toHaveProperty("dropped_at");
+	});
+
+	it("emits the snake_case rule when recurrence is on (anchor date present)", () => {
+		expect(
+			buildTodo({
+				mode: "create",
+				draft: draft({
+					title: "Water the plants",
+					deferDay: "2026-07-01",
+					recurs: true,
+					recurAnchor: "defer_at",
+				}),
+			}),
+		).toEqual({
+			mutation_kind: "create_todo",
+			payload: {
+				todo: {
+					title: "Water the plants",
+					defer_at: "2026-07-01T00:00:00",
+					recurrence: {
+						interval: 1,
+						unit: "week",
+						schedule: "regular",
+						anchor: "defer_at",
+					},
+				},
+			},
+		});
+	});
+
+	it("omits the recurrence key when Repeats is off", () => {
+		const params = buildTodo({
+			mode: "create",
+			draft: draft({ title: "One-off task" }),
+		});
+		const todo = (params?.payload as { todo: Record<string, unknown> }).todo;
+		expect(todo).not.toHaveProperty("recurrence");
+	});
+});
+
+describe("entityCodec build — todo update", () => {
+	const existing: Todo = {
+		id: "t_c1",
+		kind: "todo",
+		title: "Send schedule",
+		status: "active",
+		personRefs: [],
+		recency: 1,
+		createdAt: "fixture",
+	};
+	// Build an edited draft by spreading the baseline with overrides — exactly how
+	// the editor's `set` mutates a single state field.
+	const edit = (todo: Todo, over: Partial<TodoDraft>) => {
+		const baseline = todoDraftFromVm(todo);
+		return buildTodo({
+			mode: "update",
+			existing: todo,
+			baseline,
+			draft: { ...baseline, ...over },
+		});
+	};
+
+	it("diffs the changed title only", () => {
+		expect(edit(existing, { title: "Send the new schedule" })).toEqual({
+			mutation_kind: "update_todo",
+			payload: { todo_id: "t_c1", todo: { title: "Send the new schedule" } },
+		});
+	});
+
+	it("returns null when nothing changed (no-op)", () => {
+		expect(edit(existing, {})).toBeNull();
+	});
+
+	it("sends due_at:null (sentinel-null clear) when an existing due date is cleared", () => {
+		const withDue: Todo = { ...existing, dueAt: "2026-06-20T00:00:00" };
+		expect(edit(withDue, { dueDay: "" })).toEqual({
+			mutation_kind: "update_todo",
+			payload: { todo_id: "t_c1", todo: { due_at: null } },
+		});
+	});
+
+	it("sets completed_at and nulls dropped_at on active→completed", () => {
+		const params = edit(existing, { status: "completed" });
+		const todo = (params?.payload as { todo: Record<string, unknown> }).todo;
+		expect(todo.status).toBe("completed");
+		expect(typeof todo.completed_at).toBe("string");
+		expect(todo.dropped_at).toBeNull();
+	});
+
+	it("nulls both terminal timestamps when leaving a terminal status", () => {
+		const completed: Todo = {
+			...existing,
+			status: "completed",
+			completedAt: "2026-06-01T09:00:00",
+		};
+		expect(edit(completed, { status: "active" })).toEqual({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: "t_c1",
+				todo: { status: "active", completed_at: null, dropped_at: null },
+			},
+		});
+	});
+
+	it("rebuilds set_person_refs with kept refs snake_cased when the waiting link changes", () => {
+		const withRelated: Todo = {
+			...existing,
+			personRefs: [{ personId: "p_b", role: "related" }],
+		};
+		const params = edit(withRelated, { waitingPersonId: "p_a" });
+		const refs = (params?.payload as { set_person_refs: unknown[] })
+			.set_person_refs;
+		expect(refs).toEqual([
+			{ person_id: "p_b", role: "related" },
+			{ person_id: "p_a", role: "waiting_on" },
+		]);
+	});
+
+	const recurring: Todo = {
+		...existing,
+		deferAt: "2026-07-01T00:00:00",
+		recurrence: {
+			interval: 1,
+			unit: "week",
+			schedule: "regular",
+			anchor: "defer_at",
+		},
+	};
+
+	it("emits the whole new rule when the interval changes", () => {
+		expect(edit(recurring, { recurInterval: "2" })).toEqual({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: "t_c1",
+				todo: {
+					recurrence: {
+						interval: 2,
+						unit: "week",
+						schedule: "regular",
+						anchor: "defer_at",
+					},
+				},
+			},
+		});
+	});
+
+	it("emits recurrence:null when Repeats is toggled off", () => {
+		expect(edit(recurring, { recurs: false })).toEqual({
+			mutation_kind: "update_todo",
+			payload: { todo_id: "t_c1", todo: { recurrence: null } },
+		});
+	});
+
+	it("omits the recurrence key when the rule is unchanged", () => {
+		const params = edit(recurring, { title: "Send schedule v2" });
+		const todo = (params?.payload as { todo: Record<string, unknown> }).todo;
+		expect(todo).toEqual({ title: "Send schedule v2" });
+		expect(todo).not.toHaveProperty("recurrence");
+	});
+
+	it("round-trips catch_up, only_on, and end through a common-path edit", () => {
+		const fullyLoaded: Todo = {
+			...existing,
+			deferAt: "2026-07-01T00:00:00",
+			recurrence: {
+				interval: 1,
+				unit: "week",
+				schedule: "regular",
+				anchor: "defer_at",
+				catchUp: true,
+				onlyOn: { weekdays: ["mon", "wed"] },
+				end: { afterCount: 10 },
+			},
+		};
+		expect(edit(fullyLoaded, { recurInterval: "3" })).toEqual({
+			mutation_kind: "update_todo",
+			payload: {
+				todo_id: "t_c1",
+				todo: {
+					recurrence: {
+						interval: 3,
+						unit: "week",
+						schedule: "regular",
+						anchor: "defer_at",
+						catch_up: true,
+						only_on: { weekdays: ["mon", "wed"] },
+						end: { after_count: 10 },
+					},
+				},
+			},
+		});
+	});
+
+	it("drops stashed catch_up when Schedule switches to from_completion", () => {
+		const withCatchUp: Todo = {
+			...existing,
+			deferAt: "2026-07-01T00:00:00",
+			recurrence: {
+				interval: 1,
+				unit: "week",
+				schedule: "regular",
+				anchor: "defer_at",
+				catchUp: true,
+			},
+		};
+		const params = edit(withCatchUp, { recurSchedule: "from_completion" });
+		const recurrence = (params?.payload as { todo: Record<string, unknown> })
+			.todo.recurrence as Record<string, unknown>;
+		expect(recurrence).toEqual({
+			interval: 1,
+			unit: "week",
+			schedule: "from_completion",
+			anchor: "defer_at",
+		});
+		expect(recurrence).not.toHaveProperty("catch_up");
+	});
+
+	it("drops stashed only_on when Unit switches away from week", () => {
+		const withOnlyOn: Todo = {
+			...existing,
+			deferAt: "2026-07-01T00:00:00",
+			recurrence: {
+				interval: 1,
+				unit: "week",
+				schedule: "regular",
+				anchor: "defer_at",
+				onlyOn: { weekdays: ["mon", "wed"] },
+			},
+		};
+		const params = edit(withOnlyOn, { recurUnit: "day" });
+		const recurrence = (params?.payload as { todo: Record<string, unknown> })
+			.todo.recurrence as Record<string, unknown>;
+		expect(recurrence).toEqual({
+			interval: 1,
+			unit: "day",
+			schedule: "regular",
+			anchor: "defer_at",
+		});
+		expect(recurrence).not.toHaveProperty("only_on");
 	});
 });
