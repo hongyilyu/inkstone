@@ -60,7 +60,10 @@ describe("ungated bookmark schemas (NOT in the 13-kind registry)", () => {
 
 	it("exports updateBookmark and deleteBookmark", () => {
 		expect(
-			S.decodeUnknownSync(updateBookmark)({ entity_id: "b1", title: "renamed" }),
+			S.decodeUnknownSync(updateBookmark)({
+				entity_id: "b1",
+				title: "renamed",
+			}),
 		).toEqual({ entity_id: "b1", title: "renamed" });
 		expect(S.decodeUnknownSync(deleteBookmark)({ entity_id: "b1" })).toEqual({
 			entity_id: "b1",
