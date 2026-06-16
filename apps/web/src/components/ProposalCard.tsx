@@ -8,9 +8,27 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { KIND_META } from "@/lib/libraryItems";
+import {
+	type CreateTodoDraft,
+	overlayCreateTodo,
+	seedCreateTodo,
+	type TodoEditStatus,
+} from "@/lib/proposalEdit";
 import type { PendingProposal } from "@/store/chat";
+import {
+	EditorField,
+	EditorInput,
+	EditorSelect,
+	EditorTextarea,
+} from "./library/EntityEditor.js";
 import { Card } from "./ui/card.js";
 import { Input } from "./ui/input.js";
+
+const TODO_STATUS_OPTIONS: { value: TodoEditStatus; label: string }[] = [
+	{ value: "active", label: "Active" },
+	{ value: "completed", label: "Completed" },
+	{ value: "dropped", label: "Dropped" },
+];
 
 // The 8 mutation kinds the Worker proposes (ADR-0025). Bookmarks and direct
 // entity-edits are user-CRUD-only (ADR-0033/0036) — never proposed — so the card
@@ -154,7 +172,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		acceptBusyLabel: "Adding...",
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
-		canEdit: () => false,
+		canEdit: () => true,
 	},
 	update_todo: {
 		glyph: KIND_META.todo.icon,
@@ -321,6 +339,11 @@ function journalPayloadIssue(
 	return null;
 }
 
+type EditedPayload =
+	| JournalEntryPayload
+	| UpdateJournalEntryPayload
+	| Record<string, unknown>;
+
 export function ProposalCard({
 	proposal,
 	onDecide,
@@ -328,13 +351,16 @@ export function ProposalCard({
 	proposal: PendingProposal;
 	onDecide: (
 		decision: "accept" | "reject" | "edit",
-		editedPayload?: JournalEntryPayload | UpdateJournalEntryPayload,
+		editedPayload?: EditedPayload,
 	) => void;
 }) {
 	const editFormId = useId();
 	const occurredAtInputId = `${editFormId}-proposal-edit-occurred-at`;
 	const endedAtInputId = `${editFormId}-proposal-edit-ended-at`;
 	const bodyInputId = `${editFormId}-proposal-edit-body`;
+	const todoTitleInputId = `${editFormId}-proposal-edit-todo-title`;
+	const todoNoteInputId = `${editFormId}-proposal-edit-todo-note`;
+	const todoStatusInputId = `${editFormId}-proposal-edit-todo-status`;
 	const { status, payload, rationale, mutation_kind } = proposal;
 	const occurredAt = textField(payload, "occurred_at");
 	const endedAt = textField(payload, "ended_at");
@@ -354,6 +380,8 @@ export function ProposalCard({
 	const isCreateProposal = mutation_kind === "create_journal_entry";
 	const isUpdateProposal = mutation_kind === "update_journal_entry";
 	const isDeleteProposal = mutation_kind === "delete_journal_entry";
+	// The GTD kinds that render their own inline edit form (vs the journal form).
+	const isCreateTodo = mutation_kind === "create_todo";
 	const isGtdProposal =
 		mutation_kind === "create_person" ||
 		mutation_kind === "create_project" ||
@@ -391,7 +419,7 @@ export function ProposalCard({
 	// Last decision attempted, retained across `deciding → error` so retry re-issues the SAME decision. See docs/design/web-chat-ui.md.
 	const lastAttempt = useRef<{
 		decision: "accept" | "reject" | "edit";
-		editedPayload?: JournalEntryPayload | UpdateJournalEntryPayload;
+		editedPayload?: EditedPayload;
 	} | null>(null);
 	const decide = (decision: "accept" | "reject") => {
 		setInFlight(decision);
@@ -412,22 +440,36 @@ export function ProposalCard({
 	const [editOccurredAt, setEditOccurredAt] = useState(occurredAt);
 	const [editEndedAt, setEditEndedAt] = useState(endedAt);
 	const [editBody, setEditBody] = useState(bodyText);
+	// The create_todo inline form's surfaced fields (seeded from the proposed
+	// payload on open). Other kinds reuse the journal form / can't edit yet.
+	const [todoDraft, setTodoDraft] = useState<CreateTodoDraft>(() =>
+		seedCreateTodo(payload),
+	);
 	const editIssue = isCreateProposal
 		? journalPayloadIssue(editOccurredAt, editBody, editEndedAt)
 		: isUpdateProposal
 			? journalPayloadIssue(editOccurredAt, editBody, editEndedAt, entityId)
 			: null;
+	// Required-field gate for the create_todo form: Save is disabled when title is
+	// blank (mirrors TodoEditor's `titleEmpty`).
+	const todoTitleEmpty = todoDraft.title.trim() === "";
 	const bodyRef = useRef<HTMLTextAreaElement>(null);
 	const openEdit = () => {
 		if (!canEdit) return;
-		setEditOccurredAt(occurredAt);
-		setEditEndedAt(endedAt);
-		setEditBody(bodyText);
+		if (isCreateTodo) {
+			setTodoDraft(seedCreateTodo(payload));
+		} else {
+			setEditOccurredAt(occurredAt);
+			setEditEndedAt(endedAt);
+			setEditBody(bodyText);
+		}
 		setEditing(true);
 	};
 	useEffect(() => {
-		if (editing) bodyRef.current?.focus();
-	}, [editing]);
+		// The journal form focuses its body textarea on open; the create_todo form
+		// focuses its Title via the input's autoFocus (EditorInput forwards no ref).
+		if (editing && !isCreateTodo) bodyRef.current?.focus();
+	}, [editing, isCreateTodo]);
 	const saveEdit = () => {
 		if (inFlight !== null || proposal.status === "deciding") return;
 		if (editIssue !== null) return;
@@ -435,6 +477,15 @@ export function ProposalCard({
 		const decisionPayload = entityId
 			? { entity_id: entityId, ...editedPayload }
 			: editedPayload;
+		setInFlight("edit");
+		setEditing(false);
+		lastAttempt.current = { decision: "edit", editedPayload: decisionPayload };
+		onDecide("edit", decisionPayload);
+	};
+	const saveTodoEdit = () => {
+		if (inFlight !== null || proposal.status === "deciding") return;
+		if (todoTitleEmpty) return;
+		const decisionPayload = overlayCreateTodo(payload, todoDraft);
 		setInFlight("edit");
 		setEditing(false);
 		lastAttempt.current = { decision: "edit", editedPayload: decisionPayload };
@@ -485,71 +536,142 @@ export function ProposalCard({
 			</header>
 
 			{editing ? (
-				<form
-					onSubmit={(event) => {
-						event.preventDefault();
-						saveEdit();
-					}}
-					className="flex flex-col gap-3 border-border border-t pt-3"
-				>
-					<label className="flex flex-col gap-1.5" htmlFor={occurredAtInputId}>
-						<span className="text-xs font-medium text-muted-foreground">
-							Occurred at
-						</span>
-						<Input
-							id={occurredAtInputId}
-							value={editOccurredAt}
-							onChange={(event) => setEditOccurredAt(event.target.value)}
-							className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
-						/>
-					</label>
-					<label className="flex flex-col gap-1.5" htmlFor={endedAtInputId}>
-						<span className="text-xs font-medium text-muted-foreground">
-							Ended at
-						</span>
-						<Input
-							id={endedAtInputId}
-							value={editEndedAt}
-							onChange={(event) => setEditEndedAt(event.target.value)}
-							className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
-						/>
-					</label>
-					<label className="flex flex-col gap-1.5" htmlFor={bodyInputId}>
-						<span className="text-xs font-medium text-muted-foreground">
-							Body
-						</span>
-						<textarea
-							id={bodyInputId}
-							ref={bodyRef}
-							value={editBody}
-							onChange={(event) => setEditBody(event.target.value)}
-							className="min-h-24 rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-						/>
-					</label>
-					{editIssue ? (
-						<p role="alert" className="text-sm text-destructive">
-							Edit required fields: {editIssue}.
-						</p>
-					) : null}
-					<footer className="flex items-center gap-2 pt-1">
-						<button
-							type="submit"
-							disabled={submitting || editIssue !== null}
-							className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+				isCreateTodo ? (
+					<form
+						onSubmit={(event) => {
+							event.preventDefault();
+							saveTodoEdit();
+						}}
+						className="flex flex-col gap-3 border-border border-t pt-3"
+					>
+						<EditorField label="Title" htmlFor={todoTitleInputId}>
+							{/* Focus Title on open (mirrors the journal form focusing its body);
+							    autoFocus rides through EditorInput → Input onto the real <input>. */}
+							<EditorInput
+								id={todoTitleInputId}
+								autoFocus
+								value={todoDraft.title}
+								onChange={(event) =>
+									setTodoDraft((d) => ({ ...d, title: event.target.value }))
+								}
+							/>
+						</EditorField>
+						<EditorField label="Note" htmlFor={todoNoteInputId}>
+							<EditorTextarea
+								id={todoNoteInputId}
+								value={todoDraft.note}
+								onChange={(event) =>
+									setTodoDraft((d) => ({ ...d, note: event.target.value }))
+								}
+							/>
+						</EditorField>
+						<EditorField label="Status" htmlFor={todoStatusInputId}>
+							<EditorSelect
+								id={todoStatusInputId}
+								value={todoDraft.status}
+								onChange={(event) =>
+									setTodoDraft((d) => ({
+										...d,
+										status: event.target.value as TodoEditStatus,
+									}))
+								}
+							>
+								{TODO_STATUS_OPTIONS.map((o) => (
+									<option key={o.value} value={o.value}>
+										{o.label}
+									</option>
+								))}
+							</EditorSelect>
+						</EditorField>
+						<footer className="flex items-center gap-2 pt-1">
+							<button
+								type="submit"
+								disabled={submitting || todoTitleEmpty}
+								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								<Check className="size-4" aria-hidden />
+								Save changes
+							</button>
+							<button
+								type="button"
+								disabled={submitting}
+								onClick={() => setEditing(false)}
+								className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								Cancel
+							</button>
+						</footer>
+					</form>
+				) : (
+					<form
+						onSubmit={(event) => {
+							event.preventDefault();
+							saveEdit();
+						}}
+						className="flex flex-col gap-3 border-border border-t pt-3"
+					>
+						<label
+							className="flex flex-col gap-1.5"
+							htmlFor={occurredAtInputId}
 						>
-							<Check className="size-4" aria-hidden />
-							Save changes
-						</button>
-						<button
-							type="button"
-							disabled={submitting}
-							onClick={() => setEditing(false)}
-							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-						>
-							Cancel
-						</button>
-					</footer>
-				</form>
+							<span className="text-xs font-medium text-muted-foreground">
+								Occurred at
+							</span>
+							<Input
+								id={occurredAtInputId}
+								value={editOccurredAt}
+								onChange={(event) => setEditOccurredAt(event.target.value)}
+								className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
+							/>
+						</label>
+						<label className="flex flex-col gap-1.5" htmlFor={endedAtInputId}>
+							<span className="text-xs font-medium text-muted-foreground">
+								Ended at
+							</span>
+							<Input
+								id={endedAtInputId}
+								value={editEndedAt}
+								onChange={(event) => setEditEndedAt(event.target.value)}
+								className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
+							/>
+						</label>
+						<label className="flex flex-col gap-1.5" htmlFor={bodyInputId}>
+							<span className="text-xs font-medium text-muted-foreground">
+								Body
+							</span>
+							<textarea
+								id={bodyInputId}
+								ref={bodyRef}
+								value={editBody}
+								onChange={(event) => setEditBody(event.target.value)}
+								className="min-h-24 rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+							/>
+						</label>
+						{editIssue ? (
+							<p role="alert" className="text-sm text-destructive">
+								Edit required fields: {editIssue}.
+							</p>
+						) : null}
+						<footer className="flex items-center gap-2 pt-1">
+							<button
+								type="submit"
+								disabled={submitting || editIssue !== null}
+								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								<Check className="size-4" aria-hidden />
+								Save changes
+							</button>
+							<button
+								type="button"
+								disabled={submitting}
+								onClick={() => setEditing(false)}
+								className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								Cancel
+							</button>
+						</footer>
+					</form>
+				)
 			) : (
 				<>
 					{isCreateProposal || isUpdateProposal || isDeleteProposal ? (
