@@ -51,24 +51,32 @@ export interface LiveResolvedEntityRef {
 	readonly label_snapshot?: string;
 }
 
+/** A non-empty string id, or undefined — an empty id is treated as absent. */
+function nonEmptyId(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
 /**
  * Map the flat wire provenance (ADR-0030) to the view-model `EntitySource`
  * union. Reads `journal_entry_id` first, else the Thread fields — the same
  * precedence Core's exactly-one-kind row guarantees. Returns undefined for a
- * user-authored Entity (no source) or a malformed/empty source, so a thin row
- * can never crash the inspector.
+ * user-authored Entity (no source) or a malformed/empty source (incl. an
+ * empty-string id, which would otherwise emit a dead link), so a thin row can
+ * never crash the inspector or render a link that navigates nowhere.
  */
 function parseSource(
 	source: LiveEntitySource | undefined,
 ): EntitySource | undefined {
 	if (!source) return undefined;
-	if (typeof source.journal_entry_id === "string") {
-		return { kind: "journal_entry", journalEntryId: source.journal_entry_id };
+	const journalEntryId = nonEmptyId(source.journal_entry_id);
+	if (journalEntryId !== undefined) {
+		return { kind: "journal_entry", journalEntryId };
 	}
-	if (typeof source.thread_id === "string") {
+	const threadId = nonEmptyId(source.thread_id);
+	if (threadId !== undefined) {
 		return {
 			kind: "thread",
-			threadId: source.thread_id,
+			threadId,
 			threadTitle:
 				typeof source.thread_title === "string" ? source.thread_title : "",
 		};

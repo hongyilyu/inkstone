@@ -297,6 +297,17 @@ describe("entityCodec parse — todo", () => {
 		expect(parseTodo(row({}, { source: {} })).source).toBeUndefined();
 	});
 
+	it("treats an empty-string source id as absent (no dead link)", () => {
+		// An empty thread_id/journal_entry_id is malformed, not a valid target —
+		// degrade to undefined so the inspector never renders a link to nowhere.
+		expect(
+			parseTodo(row({}, { source: { thread_id: "" } })).source,
+		).toBeUndefined();
+		expect(
+			parseTodo(row({}, { source: { journal_entry_id: "  " } })).source,
+		).toBeUndefined();
+	});
+
 	it("prefers the Journal-Entry id when both source fields are present", () => {
 		// Core's exactly-one-kind row makes this unreachable, but the parser must
 		// resolve deterministically regardless: journal_entry_id wins.
