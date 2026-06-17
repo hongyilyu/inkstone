@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import {
 	CORE_BIN,
+	PROVIDER_HELPER_FIXTURE_BIN,
 	REPO_ROOT,
 	WEB_DIST,
 	WORKER_FIXTURE_BIN,
@@ -16,6 +17,16 @@ const SLOW_WORKER_FIXTURE = path.join(
 	"tests",
 	"fixtures",
 	"slow-worker.ts",
+);
+
+/** Path to the offline login-helper fixture that bun-compiles into {@link PROVIDER_HELPER_FIXTURE_BIN}. */
+const LOGIN_HELPER_FIXTURE = path.join(
+	REPO_ROOT,
+	"crates",
+	"core",
+	"tests",
+	"fixtures",
+	"login-helper.ts",
 );
 
 /** Playwright global setup (ADR-0019): build debug Core + Web Client SPA once per run so `spawnCore` has real artifacts. */
@@ -51,6 +62,25 @@ export default function globalSetup(): void {
 	if (!existsSync(WORKER_FIXTURE_BIN)) {
 		throw new Error(
 			`bun build --compile did not produce ${WORKER_FIXTURE_BIN}`,
+		);
+	}
+
+	// Compiled FIXTURE provider-helper binary (ADR-0041 step 2): bun-compile the
+	// offline login-helper once per run. The compiled-provider-helper.spec copies
+	// it into a per-test tempdir under the REAL `inkstone-provider-helper` name so
+	// Core auto-detects + spawns it for `provider/login_start`. Compiled to a
+	// NON-real name so it can never sit next to `target/debug/core` and hijack
+	// real login in `pnpm dev` / no-override specs.
+	run("bun", [
+		"build",
+		"--compile",
+		LOGIN_HELPER_FIXTURE,
+		"--outfile",
+		PROVIDER_HELPER_FIXTURE_BIN,
+	]);
+	if (!existsSync(PROVIDER_HELPER_FIXTURE_BIN)) {
+		throw new Error(
+			`bun build --compile did not produce ${PROVIDER_HELPER_FIXTURE_BIN}`,
 		);
 	}
 }

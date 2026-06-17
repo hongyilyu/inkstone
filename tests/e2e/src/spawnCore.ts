@@ -31,6 +31,20 @@ export const WORKER_FIXTURE_BIN = path.join(
 	"debug",
 	"inkstone-worker-fixture",
 );
+
+/** Compiled FIXTURE provider-helper binary (ADR-0041 step 2, slice 4). Same
+ * FOOTGUN as {@link WORKER_FIXTURE_BIN}: `global-setup.ts` bun-compiles the
+ * offline `login-helper.ts` fixture to this NON-real name — NOT
+ * `inkstone-provider-helper`, which would sit next to `target/debug/core` and
+ * hijack real `provider/login_start` in `pnpm dev`. The hermetic
+ * `siblingBinaries.providerHelper` mode below copies it to the real
+ * `inkstone-provider-helper` name ONLY inside a per-test tempdir. */
+export const PROVIDER_HELPER_FIXTURE_BIN = path.join(
+	REPO_ROOT,
+	"target",
+	"debug",
+	"inkstone-provider-helper-fixture",
+);
 const TSX_BIN = path.join(
 	REPO_ROOT,
 	"packages",
@@ -112,7 +126,10 @@ export interface SpawnCoreOptions {
 	 * directory. `worker` is a path to a compiled worker binary (e.g.
 	 * {@link WORKER_FIXTURE_BIN}); when set, `INKSTONE_WORKER_CMD` is left UNSET
 	 * (and scrubbed from the inherited env) and `workerCmd` is ignored.
-	 * `providerHelper` is reserved for slice 4 and not yet implemented. */
+	 * `providerHelper` is a path to a compiled provider-helper binary (e.g.
+	 * {@link PROVIDER_HELPER_FIXTURE_BIN}); when set, `INKSTONE_PROVIDER_LOGIN_CMD`
+	 * is left UNSET (and scrubbed) and `providerLoginCmd` is ignored. Both may be
+	 * set together — one tempdir hosts both siblings. */
 	readonly siblingBinaries?: {
 		readonly worker?: string;
 		readonly providerHelper?: string;
@@ -267,29 +284,48 @@ export async function spawnCore(
 		delete env[key];
 	}
 
-	// Hermetic sibling-binary mode (ADR-0041 step 2): copy Core + the given
-	// compiled worker into an isolated tempdir so `current_exe().parent()`
-	// finds the sibling `inkstone-worker`, and leave `INKSTONE_WORKER_CMD`
-	// UNSET (scrubbed from the inherited env too — see below) so Core's
-	// resolver auto-detects the sibling rather than honoring an override.
+	// Hermetic sibling-binary mode (ADR-0041 step 2): copy Core + whichever
+	// compiled sibling binaries are provided into ONE isolated tempdir so
+	// `current_exe().parent()` finds them, and leave the corresponding
+	// `INKSTONE_*_CMD` override(s) UNSET (scrubbed from the inherited env too) so
+	// Core's resolver auto-detects each sibling rather than honoring an override.
+	// Worker and provider-helper siblings are independent: either, both, or
+	// neither may be set.
 	const siblingWorker = opts.siblingBinaries?.worker;
+	const siblingProviderHelper = opts.siblingBinaries?.providerHelper;
+	const usingSiblings =
+		siblingWorker !== undefined || siblingProviderHelper !== undefined;
 	let binDir: string | undefined;
 	let coreBin = CORE_BIN;
-	if (siblingWorker !== undefined) {
+	if (usingSiblings) {
 		binDir = mkdtempSync(path.join(tmpdir(), "inkstone-bin-"));
 		coreBin = path.join(binDir, "core");
 		copyFileSync(CORE_BIN, coreBin);
 		chmodSync(coreBin, 0o755);
-		const siblingDest = path.join(binDir, "inkstone-worker");
-		copyFileSync(siblingWorker, siblingDest);
-		chmodSync(siblingDest, 0o755);
-		// Auto-detection only fires when NO override is set. Scrub any inherited
-		// value so nothing leaks through `...process.env`.
-		delete env.INKSTONE_WORKER_CMD;
-		// The fixture honors INKSTONE_FIXTURE_CHUNKS/GATE on stdin like the tsx
-		// form does, so the gate/chunk knobs still work through the sibling.
-		env.INKSTONE_FIXTURE_CHUNKS = String(chunks);
-		if (gatePath) env.INKSTONE_FIXTURE_GATE = gatePath;
+		if (siblingWorker !== undefined) {
+			const siblingDest = path.join(binDir, "inkstone-worker");
+			copyFileSync(siblingWorker, siblingDest);
+			chmodSync(siblingDest, 0o755);
+			// Auto-detection only fires when NO override is set. Scrub any inherited
+			// value so nothing leaks through `...process.env`.
+			delete env.INKSTONE_WORKER_CMD;
+			// The fixture honors INKSTONE_FIXTURE_CHUNKS/GATE on stdin like the tsx
+			// form does, so the gate/chunk knobs still work through the sibling.
+			env.INKSTONE_FIXTURE_CHUNKS = String(chunks);
+			if (gatePath) env.INKSTONE_FIXTURE_GATE = gatePath;
+		}
+		if (siblingProviderHelper !== undefined) {
+			const helperDest = path.join(binDir, "inkstone-provider-helper");
+			copyFileSync(siblingProviderHelper, helperDest);
+			chmodSync(helperDest, 0o755);
+			// Auto-detection only fires when NO override is set. Scrub the inherited
+			// value and DON'T re-set it from opts.providerLoginCmd below.
+			delete env.INKSTONE_PROVIDER_LOGIN_CMD;
+			// The compiled login-helper fixture reads INKSTONE_LOGIN_STUB_URL from its
+			// (inherited) env; point it at about:blank so the SPA's window.open of the
+			// authorize URL is harmless in headless Chromium.
+			env.INKSTONE_LOGIN_STUB_URL = "about:blank";
+		}
 	} else {
 		const workerCmd =
 			opts.workerCmd !== undefined ? opts.workerCmd : GATE_WORKER_CMD;
@@ -308,7 +344,12 @@ export async function spawnCore(
 
 	// Per-test credential store so provider/status starts disconnected and a login e2e can observe it flip to connected.
 	env.INKSTONE_CREDENTIALS_DIR = path.join(workspaceDir, "credentials");
-	if (opts.providerLoginCmd !== undefined) {
+	// In provider-helper sibling mode the override is deliberately UNSET (scrubbed
+	// above) so Core auto-detects the sibling; never re-set it from providerLoginCmd.
+	if (
+		siblingProviderHelper === undefined &&
+		opts.providerLoginCmd !== undefined
+	) {
 		env.INKSTONE_PROVIDER_LOGIN_CMD = opts.providerLoginCmd;
 	}
 

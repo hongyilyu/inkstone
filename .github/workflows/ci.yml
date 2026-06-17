@@ -180,6 +180,22 @@ jobs:
         run: |
           pnpm build:worker
           printf "" | target/debug/inkstone-worker
+      # build:provider-helper boot-smoke (ADR-0041): compile the REAL provider.ts
+      # to a self-contained binary and run `login` backgrounded. The spike showed
+      # it binds :1455 and emits a real PKCE `authorize_url` line, then blocks on
+      # the OAuth callback — so we capture stdout for ~8s, assert the authorize_url
+      # appeared, then kill it (we never complete OAuth, which needs a real
+      # browser). Proves the shipping artifact compiles + its login entrypoint
+      # works without a provider. The e2e spec's own input is the FIXTURE helper
+      # (the offline login-helper), compiled by globalSetup during the E2E step.
+      - name: build:provider-helper boot-smoke
+        run: |
+          pnpm build:provider-helper
+          out="$(mktemp)"
+          timeout 8 target/debug/inkstone-provider-helper login >"$out" 2>&1 || true
+          echo "--- helper stdout ---"
+          cat "$out"
+          grep -q '"kind":"authorize_url"' "$out"
       # globalSetup builds debug Core (cargo build) + the web SPA + bun-compiles
       # the worker fixture binary. CI=true is set by Actions automatically, so
       # playwright.config sets forbidOnly=true and retries=0; workers=4 everywhere
