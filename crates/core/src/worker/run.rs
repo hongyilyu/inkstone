@@ -243,8 +243,11 @@ async fn handle_tool_request(
     name: &str,
     params: serde_json::Value,
 ) -> ToolOutcome {
-    let allowed =
-        workflow.tools.iter().any(|t| t.as_str() == name) && crate::tools::is_registered(name);
+    // Dual gate (ADR-0018), ambient-aware (ADR-0036): a tool dispatches iff it is
+    // registered AND (in this Workflow's allowlist OR ambient, e.g. `load_skill`).
+    // Mirrors the manifest's `run_descriptors`, so the model never sees a tool it
+    // can't call.
+    let allowed = crate::tools::is_allowed(&workflow.tools, name);
     if !allowed {
         return ToolOutcome::Err {
             err: ToolErrorWire {

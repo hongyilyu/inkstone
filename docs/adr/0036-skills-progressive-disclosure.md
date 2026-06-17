@@ -171,6 +171,15 @@ import path is trivial.
   scan and logged — one bad dropped-in file must not take down Core. This is a
   deliberate difference in failure posture from the Workflow loader.
 
+- **Bundled example skills seed the dir on first run.** A fresh install's skills
+  dir is empty, so the feature would be inert until the user authors a skill. Core
+  ships a few canonical examples in-repo (`crates/core/skills/`, embedded with
+  `include_str!`) and, at boot, writes them into the skills dir **only when that
+  dir does not yet exist**. Once it exists it is the user's: edits and deletes
+  survive and Core never re-seeds (drop-in ownership). This is the minimal
+  delivery mechanism, not the deferred *plugin distribution* concept below — a
+  skill is still a directory you place, the seed just primes the first one.
+
 ## Considered and rejected
 
 - **Skill = a Workflow; the Dispatcher routes between many.** "Drop a skill in" =

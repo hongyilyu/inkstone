@@ -23,7 +23,14 @@
 //   mis-wired one allowlisted tool to another's handler is caught end-to-end.
 //   Set to an off-list name (e.g. "nonexistent") to exercise allowlist
 //   rejection → Core returns an `err` outcome and the fixture echoes
-//   `tool_outcome=err:<code>`. Params are chosen per tool (see `paramsFor`).
+//   `tool_outcome=err:<code>`. Set to "load_skill" to exercise the ambient
+//   Skills tool (ADR-0036): the fixture asserts it is present in the manifest
+//   despite the Workflow allowlist omitting it, then requests it by name.
+//   Params are chosen per tool (see `paramsFor`).
+//
+// INKSTONE_TOOLWORKER_SKILL_NAME
+//   The skill name passed to load_skill (only read when TOOL=load_skill).
+//   Default "weekly-review".
 //
 // INKSTONE_TOOLWORKER_THREAD_ID_FILE
 //   A filesystem path. If set AND the file exists, its trimmed contents are
@@ -57,7 +64,7 @@ const waitForGate = async (path: string, timeoutMs = 10_000): Promise<void> => {
 };
 
 interface Manifest {
-	workflow?: { tools?: Array<{ name?: string }> };
+	workflow?: { tools?: Array<{ name?: string }>; system_prompt?: string };
 }
 
 interface ToolResultLine {
@@ -80,26 +87,47 @@ const main = async (): Promise<void> => {
 	if (manifestLine === null) return;
 	const manifest = JSON.parse(manifestLine) as Manifest;
 
-	// In the default (happy) mode, prove Core shipped the read_thread
-	// descriptor in the manifest.
-	if (tool === "read_thread") {
+	// Prove Core shipped the requested tool's descriptor in the manifest. For
+	// load_skill this is the load-bearing assertion: it is AMBIENT (ADR-0036),
+	// so it must appear even though the default Workflow's allowlist omits it.
+	if (tool === "read_thread" || tool === "load_skill") {
 		const present = (manifest.workflow?.tools ?? []).some(
-			(t) => t?.name === "read_thread",
+			(t) => t?.name === tool,
 		);
 		if (!present) {
 			emit({
 				kind: "error",
-				message: "read_thread descriptor missing from manifest",
+				message: `${tool} descriptor missing from manifest`,
+			});
+			return;
+		}
+	}
+
+	// For load_skill, also prove the DISCLOSURE half reached the wire at runtime:
+	// the per-spawn <available_skills> block (ADR-0036) must be injected into the
+	// serialized system_prompt the worker actually received, listing the seeded
+	// skills. Keyed on the always-seeded "weekly-review" (NOT the load target, so
+	// it also holds for the unknown-skill scenario). Without this the e2e would
+	// prove activation but not that disclosure survives real serialization (only
+	// an in-process unit test would).
+	if (tool === "load_skill") {
+		const prompt = manifest.workflow?.system_prompt ?? "";
+		if (
+			!prompt.includes("<available_skills>") ||
+			!prompt.includes("weekly-review")
+		) {
+			emit({
+				kind: "error",
+				message: "available_skills block missing from system_prompt",
 			});
 			return;
 		}
 	}
 
 	// Emit one tool_request. `run_id` is Core-ignored (Core uses the spawn's
-	// authoritative run id); send "" to keep the wire shape. The thread_id is
-	// read from the id-file when present, else the unknown "t-dummy". The
-	// tool_call_id is per-process (one worker process per Run) so it is unique
-	// across Runs — `tool_calls.id` is a global primary key.
+	// authoritative run id); send "" to keep the wire shape. The tool_call_id is
+	// per-process (one worker process per Run) so it is unique across Runs —
+	// `tool_calls.id` is a global primary key.
 	const idFile = process.env.INKSTONE_TOOLWORKER_THREAD_ID_FILE;
 	const threadId =
 		idFile && existsSync(idFile)
@@ -108,11 +136,16 @@ const main = async (): Promise<void> => {
 	const toolCallId = `tc_${process.pid}`;
 	// Each tool wants its own arg shape. read_thread (and any off-list name we
 	// only need to see rejected) take a thread_id; search_entities takes a
-	// {type, query}. An empty query matches all accepted entities of the type.
+	// {type, query} (empty query matches all accepted entities of the type);
+	// load_skill takes the skill {name} from INKSTONE_TOOLWORKER_SKILL_NAME.
 	const paramsFor = (name: string): Record<string, unknown> =>
 		name === "search_entities"
 			? { type: "person", query: "" }
-			: { thread_id: threadId };
+			: name === "load_skill"
+				? {
+						name: process.env.INKSTONE_TOOLWORKER_SKILL_NAME ?? "weekly-review",
+					}
+				: { thread_id: threadId };
 	emit({
 		kind: "tool_request",
 		run_id: "",

@@ -96,6 +96,10 @@ export interface SpawnCoreOptions {
 	readonly fauxError?: string;
 	/** Drive the faux provider in `read_thread` tool-call mode (`INKSTONE_FAUX_TOOL_CALL`), exercising the full Tool Protocol round-trip. */
 	readonly fauxToolCall?: boolean;
+	/** Drive the faux provider to call the ambient `load_skill` tool by this name (`INKSTONE_FAUX_LOAD_SKILL`, ADR-0036), exercising Skills activation end-to-end. */
+	readonly fauxLoadSkill?: string;
+	/** Skills directory (`INKSTONE_SKILLS_DIR`, ADR-0036). Defaulted into the Workspace tempdir so boot's seed_if_absent stays hermetic and tests can pre-seed it. */
+	readonly skillsDir?: string;
 	/** Higher-level faux interpreter mode: `propose` (Journal Entry mutations, ADR-0025), `extract` (Person/Project/Todo extraction from an accepted Journal Entry), or `capture` (direct GTD capture sourced from the user Message — no Journal Entry). Drives the park -> decide -> resume loop. */
 	readonly faux?: "propose" | "extract" | "capture";
 	/** Direct propose-worker fixture knob. Emits params loaded from this JSON file. */
@@ -199,12 +203,18 @@ export async function spawnCore(
 	const gatePath =
 		opts.gatePath ?? (chunks > 1 ? path.join(workspaceDir, "gate") : undefined);
 
+	// Default the skills dir (ADR-0036) into the tempdir so boot's seed_if_absent
+	// writes the bundled skills there (hermetic — never the dev/CI OS data dir),
+	// and a test can pre-seed it. Per-opt override still wins below.
+	const skillsDir = opts.skillsDir ?? path.join(workspaceDir, "skills");
+
 	const env: NodeJS.ProcessEnv = {
 		...process.env,
 		INKSTONE_DB_PATH: dbPath,
 		INKSTONE_PORT: String(opts.port ?? 0),
 		INKSTONE_WEB_DIR: opts.webDir ?? WEB_DIST,
 		INKSTONE_LOG_DIR: logDir,
+		INKSTONE_SKILLS_DIR: skillsDir,
 	};
 
 	// Strip inherited INKSTONE_FAUX_* so an ambient value can't leak one test's mode into another.
@@ -212,6 +222,7 @@ export async function spawnCore(
 		"INKSTONE_FAUX_RESPONSE",
 		"INKSTONE_FAUX_ERROR",
 		"INKSTONE_FAUX_TOOL_CALL",
+		"INKSTONE_FAUX_LOAD_SKILL",
 		"INKSTONE_FAUX_PROPOSE",
 		"INKSTONE_FAUX_EXTRACT",
 		"INKSTONE_FAUX_EXTRACT_PARAMS",
@@ -249,10 +260,14 @@ export async function spawnCore(
 		opts.fauxResponse !== undefined ||
 		opts.fauxError !== undefined ||
 		opts.fauxToolCall ||
+		opts.fauxLoadSkill !== undefined ||
 		opts.faux !== undefined
 	) {
 		const workflowsDir = path.join(workspaceDir, "workflows");
 		mkdirSync(workflowsDir, { recursive: true });
+		// load_skill is AMBIENT (ADR-0036) — deliberately NOT listed here, so the
+		// e2e proves Core adds it to the manifest + dispatches it despite an empty
+		// Workflow allowlist.
 		const tools = opts.fauxToolCall
 			? '["read_thread"]'
 			: opts.faux === "propose"
@@ -276,6 +291,8 @@ export async function spawnCore(
 		env.INKSTONE_WORKFLOWS_DIR = workflowsDir;
 		if (opts.fauxToolCall) {
 			env.INKSTONE_FAUX_TOOL_CALL = "1";
+		} else if (opts.fauxLoadSkill !== undefined) {
+			env.INKSTONE_FAUX_LOAD_SKILL = opts.fauxLoadSkill;
 		} else if (opts.faux === "propose") {
 			env.INKSTONE_FAUX_PROPOSE = "1";
 		} else if (opts.faux === "extract") {
