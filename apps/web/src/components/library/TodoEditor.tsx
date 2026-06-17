@@ -47,13 +47,7 @@ const UNIT_OPTIONS: { value: RecurrenceUnit; label: string }[] = [
 	{ value: "year", label: "Years" },
 ];
 
-type RecurSchedule = "regular" | "from_completion";
 type RecurAnchor = "defer_at" | "due_at";
-
-const SCHEDULE_OPTIONS: { value: RecurSchedule; label: string }[] = [
-	{ value: "regular", label: "Regular" },
-	{ value: "from_completion", label: "From completion" },
-];
 
 const ANCHOR_OPTIONS: { value: RecurAnchor; label: string }[] = [
 	{ value: "defer_at", label: "Defer date" },
@@ -78,7 +72,6 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 		recurs: useId(),
 		recurInterval: useId(),
 		recurUnit: useId(),
-		recurSchedule: useId(),
 		recurAnchor: useId(),
 	};
 
@@ -247,22 +240,6 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 								}
 							>
 								{UNIT_OPTIONS.map((o) => (
-									<option key={o.value} value={o.value}>
-										{o.label}
-									</option>
-								))}
-							</EditorSelect>
-						</EditorField>
-
-						<EditorField label="Schedule" htmlFor={ids.recurSchedule}>
-							<EditorSelect
-								id={ids.recurSchedule}
-								value={draft.recurSchedule}
-								onChange={(e) =>
-									set("recurSchedule", e.target.value as RecurSchedule)
-								}
-							>
-								{SCHEDULE_OPTIONS.map((o) => (
 									<option key={o.value} value={o.value}>
 										{o.label}
 									</option>

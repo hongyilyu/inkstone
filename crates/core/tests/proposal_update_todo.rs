@@ -658,7 +658,7 @@ fn update_todo_clears_recurrence_via_null_sentinel() {
                 "title": "Water the plants",
                 "due_at": "2026-06-14T18:00:00",
                 "recurrence": {
-                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at"
+                    "interval": 1, "unit": "week", "anchor": "due_at"
                 }
             }),
             serde_json::json!([]),
@@ -730,7 +730,7 @@ fn update_todo_clearing_recurrence_anchor_is_invalid_and_changes_nothing() {
                 "title": "Water the plants",
                 "due_at": "2026-06-14T18:00:00",
                 "recurrence": {
-                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at"
+                    "interval": 1, "unit": "week", "anchor": "due_at"
                 }
             }),
             serde_json::json!([]),

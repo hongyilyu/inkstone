@@ -134,7 +134,7 @@ A GTD-style actionable Entity that tracks something the user is responsible for 
 _Avoid_: task object, reminder row.
 
 **Recurrence Rule**:
-An optional OmniFocus-style repeat carried in a Todo's data JSON (ADR-0037): `interval` + `unit` (minute…year), a `schedule` (regular vs from-completion), the `anchor` date it recomputes (`defer_at` or `due_at`), an optional `catch_up` toggle, optional `only_on` weekday/month-day constraints, and an optional `end` condition (`until` or `after_count`). Core validates and persists the rule; **generating the next occurrence when a recurring Todo is completed is a separate concern** (issue #125), not part of the rule itself. The rule is the durable input; occurrence generation is the execution layer that reads it.
+An optional repeat carried in a Todo's data JSON (ADR-0037, slimmed by ADR-0039): `interval` + `unit` (minute…year), the `anchor` date it recomputes (`defer_at` or `due_at`), and an optional `end` condition (`until` or `after_count`). Core validates and persists the rule. **Occurrence generation** (ADR-0039) is the execution layer: completing a recurring Todo spawns its successor in the same transaction, with `next_anchor = old_anchor + interval × unit` (naive civil math, month-end clamped), the non-anchor date advanced by the same rule, all Todo Person References carried forward, and `after_count` decremented. The rule is the durable input; occurrence generation reads it. (The earlier `schedule`/`catch_up`/`only_on` fields were removed by ADR-0039 before any data existed.)
 _Avoid_: repeat flag, schedule entity, cron rule.
 
 **Project**:

@@ -61,28 +61,17 @@ const patternedUuid = S.String.pipe(
 
 // ── create_todo sub-schemas (shared leaf builders reused across kinds) ──
 
-/** `recurrence.only_on` (ADR-0037): weekday names / month-day integers. */
-const recurrenceOnlyOn = S.Struct({
-	weekdays: S.optional(
-		S.Array(S.Literal("sun", "mon", "tue", "wed", "thu", "fri", "sat")),
-	),
-	month_days: S.optional(S.Array(positiveInt)),
-});
-
 /** `recurrence.end` (ADR-0037): an `until` datetime or an `after_count`. */
 const recurrenceEnd = S.Struct({
 	until: S.optional(localDateTime),
 	after_count: S.optional(positiveInt),
 });
 
-/** The recurrence rule (ADR-0037). */
+/** The recurrence rule (ADR-0037, slimmed by ADR-0039). */
 const recurrence = S.Struct({
 	interval: positiveInt,
 	unit: S.Literal("minute", "hour", "day", "week", "month", "year"),
-	schedule: S.Literal("regular", "from_completion"),
 	anchor: S.Literal("defer_at", "due_at"),
-	catch_up: S.optional(S.Boolean),
-	only_on: S.optional(recurrenceOnlyOn),
 	end: S.optional(recurrenceEnd),
 });
 

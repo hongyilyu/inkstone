@@ -323,10 +323,10 @@ fn person_ref_spec() -> PayloadSpec {
     )
 }
 
-/// The recurrence rule sub-object SCHEMA (ADR-0037). Validation is the
-/// hand-written `validate_recurrence` hook (cross-field), but the schema and the
-/// dead-struct deletion single-source from here. `only_on`/`end` are themselves
-/// hook-validated nested objects.
+/// The recurrence rule sub-object SCHEMA (ADR-0037, slimmed by ADR-0039).
+/// Validation is the hand-written `validate_recurrence` hook (cross-field), but
+/// the schema single-sources from here. `end` is itself a hook-validated nested
+/// object.
 fn recurrence_spec() -> PayloadSpec {
     PayloadSpec::nested(
         "recurrence",
@@ -341,53 +341,13 @@ fn recurrence_spec() -> PayloadSpec {
                 },
             ),
             Field::required(
-                "schedule",
-                FieldSpec::EnumStr {
-                    domain: &["regular", "from_completion"],
-                    err: "recurrence schedule must be one of regular, from_completion",
-                },
-            ),
-            Field::required(
                 "anchor",
                 FieldSpec::EnumStr {
                     domain: &["defer_at", "due_at"],
                     err: "recurrence anchor must be one of defer_at, due_at",
                 },
             ),
-            Field::optional("catch_up", FieldSpec::Bool),
-            Field::optional(
-                "only_on",
-                FieldSpec::HookValidated(recurrence_only_on_spec()),
-            ),
             Field::optional("end", FieldSpec::HookValidated(recurrence_end_spec())),
-        ],
-    )
-}
-
-/// `recurrence.only_on` schema (`validate_recurrence_only_on`): weekday names /
-/// month-day integers. Element ranges + dedup + unit coupling are the hook's job.
-fn recurrence_only_on_spec() -> PayloadSpec {
-    PayloadSpec::nested(
-        "recurrence only_on",
-        ObjErr::Object,
-        vec![
-            Field::optional(
-                "weekdays",
-                FieldSpec::Array {
-                    items: Box::new(FieldSpec::EnumStr {
-                        domain: &["sun", "mon", "tue", "wed", "thu", "fri", "sat"],
-                        err: "recurrence only_on weekdays must be sun, mon, tue, wed, thu, fri, sat",
-                    }),
-                    plain_items: false,
-                },
-            ),
-            Field::optional(
-                "month_days",
-                FieldSpec::Array {
-                    items: Box::new(FieldSpec::PositiveInt),
-                    plain_items: false,
-                },
-            ),
         ],
     )
 }

@@ -589,7 +589,7 @@ fn validate_recurrence(value: &Value) -> Result<(), String> {
 
     for key in obj.keys() {
         match key.as_str() {
-            "interval" | "unit" | "schedule" | "anchor" | "catch_up" | "only_on" | "end" => {}
+            "interval" | "unit" | "anchor" | "end" => {}
             other => return Err(format!("unsupported recurrence field {other:?}")),
         }
     }
@@ -603,9 +603,9 @@ fn validate_recurrence(value: &Value) -> Result<(), String> {
         None => return Err("recurrence interval is required".to_string()),
     }
 
-    let unit = match obj.get("unit") {
+    match obj.get("unit") {
         Some(Value::String(unit)) => match unit.as_str() {
-            "minute" | "hour" | "day" | "week" | "month" | "year" => unit.as_str(),
+            "minute" | "hour" | "day" | "week" | "month" | "year" => {}
             _ => {
                 return Err(
                     "recurrence unit must be one of minute, hour, day, week, month, year"
@@ -617,19 +617,6 @@ fn validate_recurrence(value: &Value) -> Result<(), String> {
         None => return Err("recurrence unit is required".to_string()),
     };
 
-    let schedule = match obj.get("schedule") {
-        Some(Value::String(schedule)) => match schedule.as_str() {
-            "regular" | "from_completion" => schedule.as_str(),
-            _ => {
-                return Err(
-                    "recurrence schedule must be one of regular, from_completion".to_string(),
-                );
-            }
-        },
-        Some(_) => return Err("recurrence schedule must be a string".to_string()),
-        None => return Err("recurrence schedule is required".to_string()),
-    };
-
     match obj.get("anchor") {
         Some(Value::String(anchor)) => match anchor.as_str() {
             "defer_at" | "due_at" => {}
@@ -639,109 +626,8 @@ fn validate_recurrence(value: &Value) -> Result<(), String> {
         None => return Err("recurrence anchor is required".to_string()),
     }
 
-    match obj.get("catch_up") {
-        Some(Value::Bool(_)) if schedule == "regular" => {}
-        Some(Value::Bool(_)) => {
-            return Err("recurrence catch_up is only valid with schedule regular".to_string());
-        }
-        Some(_) => return Err("recurrence catch_up must be a boolean".to_string()),
-        None => {}
-    }
-
-    if let Some(only_on) = obj.get("only_on") {
-        validate_recurrence_only_on(only_on, unit)?;
-    }
-
     if let Some(end) = obj.get("end") {
         validate_recurrence_end(end)?;
-    }
-
-    Ok(())
-}
-
-/// Validate `recurrence.only_on` (ADR-0037): a non-empty object whose `weekdays`
-/// is valid only with unit `week` and `month_days` only with unit `month`. Each
-/// present array is non-empty, deduped, and in range (weekday enum; month day
-/// 1..=31).
-fn validate_recurrence_only_on(value: &Value, unit: &str) -> Result<(), String> {
-    let obj = value
-        .as_object()
-        .ok_or_else(|| "recurrence only_on must be an object".to_string())?;
-
-    if obj.is_empty() {
-        return Err("recurrence only_on must not be empty".to_string());
-    }
-
-    for key in obj.keys() {
-        match key.as_str() {
-            "weekdays" | "month_days" => {}
-            other => return Err(format!("unsupported recurrence only_on field {other:?}")),
-        }
-    }
-
-    if let Some(weekdays) = obj.get("weekdays") {
-        if unit != "week" {
-            return Err("recurrence only_on weekdays is only valid with unit week".to_string());
-        }
-        let weekdays = weekdays
-            .as_array()
-            .ok_or_else(|| "recurrence only_on weekdays must be an array".to_string())?;
-        if weekdays.is_empty() {
-            return Err("recurrence only_on weekdays must not be empty".to_string());
-        }
-        let mut seen: Vec<&str> = Vec::with_capacity(weekdays.len());
-        for day in weekdays {
-            let day = match day {
-                Value::String(d) => match d.as_str() {
-                    "sun" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat" => d.as_str(),
-                    _ => {
-                        return Err(
-                            "recurrence only_on weekdays must be sun, mon, tue, wed, thu, fri, sat"
-                                .to_string(),
-                        );
-                    }
-                },
-                _ => return Err("recurrence only_on weekdays must be strings".to_string()),
-            };
-            if seen.contains(&day) {
-                return Err("recurrence only_on weekdays must not repeat".to_string());
-            }
-            seen.push(day);
-        }
-    }
-
-    if let Some(month_days) = obj.get("month_days") {
-        if unit != "month" {
-            return Err("recurrence only_on month_days is only valid with unit month".to_string());
-        }
-        let month_days = month_days
-            .as_array()
-            .ok_or_else(|| "recurrence only_on month_days must be an array".to_string())?;
-        if month_days.is_empty() {
-            return Err("recurrence only_on month_days must not be empty".to_string());
-        }
-        let mut seen: Vec<u64> = Vec::with_capacity(month_days.len());
-        for day in month_days {
-            let day = match day {
-                Value::Number(n) => match n.as_u64() {
-                    Some(d) if (1..=31).contains(&d) => d,
-                    _ => {
-                        return Err(
-                            "recurrence only_on month_days must be integers in 1..31".to_string()
-                        );
-                    }
-                },
-                _ => {
-                    return Err(
-                        "recurrence only_on month_days must be integers in 1..31".to_string()
-                    );
-                }
-            };
-            if seen.contains(&day) {
-                return Err("recurrence only_on month_days must not repeat".to_string());
-            }
-            seen.push(day);
-        }
     }
 
     Ok(())
@@ -992,7 +878,10 @@ fn parse_digits(value: &str, start: usize, end: usize, field: &str) -> Result<u3
         .map_err(|_| format!("{field} must use YYYY-MM-DDTHH:MM:SS"))
 }
 
-fn days_in_month(year: u32, month: u32) -> u32 {
+/// The number of days in a civil month (proleptic Gregorian), `0` for an
+/// out-of-range month. `pub(crate)` so the recurrence date math (ADR-0039) can
+/// clamp a month/year advance to the target month's last valid day.
+pub(crate) fn days_in_month(year: u32, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
@@ -1065,16 +954,36 @@ fn sunday_anchor(day: i64) -> String {
 /// "last reviewed" and computed "next review" share one clock.
 pub(crate) fn now_local(now_ms: i64, offset_minutes: i64) -> String {
     let (days, secs_of_day) = local_day_and_secs(now_ms, offset_minutes);
-    let hour = secs_of_day / 3_600;
-    let minute = (secs_of_day % 3_600) / 60;
-    let second = secs_of_day % 60;
     let (year, month, day) = civil_from_days(days);
+    format_local_datetime(
+        year,
+        month,
+        day,
+        (secs_of_day / 3_600) as u32,
+        ((secs_of_day % 3_600) / 60) as u32,
+        (secs_of_day % 60) as u32,
+    )
+}
+
+/// Format a civil date + time as the `YYYY-MM-DDTHH:MM:SS` wall-clock string —
+/// the one owner of the wall-clock format used by [`now_local`] and the
+/// recurrence date math (ADR-0039). `pub(crate)` so the recurrence module shares
+/// this string rather than re-deriving it.
+pub(crate) fn format_local_datetime(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
 }
 
 /// Civil (year, month, day) for a count of days since 1970-01-01, proleptic
-/// Gregorian (Howard Hinnant's `civil_from_days`).
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
+/// Gregorian (Howard Hinnant's `civil_from_days`). `pub(crate)` so the recurrence
+/// date math (ADR-0039) shares one civil calendar with the review-date helpers.
+pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
     let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
     let doe = z - era * 146_097;
@@ -1088,10 +997,10 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
 }
 
 /// Days since 1970-01-01 for a civil (year, month, day), proleptic Gregorian
-/// (Howard Hinnant's `days_from_civil`); the inverse of [`civil_from_days`],
-/// used to cross-check the round trip in tests.
-#[cfg(test)]
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+/// (Howard Hinnant's `days_from_civil`); the inverse of [`civil_from_days`].
+/// `pub(crate)` so the recurrence date math (ADR-0039) can convert a clamped
+/// civil date back to a day count for the day/week advance.
+pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let y = year - if month <= 2 { 1 } else { 0 };
     let era = (if y >= 0 { y } else { y - 399 }) / 400;
     let yoe = y - era * 400;
@@ -2675,47 +2584,24 @@ mod tests {
     }
 
     #[test]
-    fn accepts_omnifocus_parity_recurrence_rules() {
+    fn accepts_recurrence_rules() {
+        // The slimmed shape (ADR-0039): interval + unit across all six units, both
+        // anchors, and the two end conditions.
         let rules = [
-            // Minimal regular rule on each unit.
-            json!({ "interval": 1, "unit": "minute", "schedule": "regular", "anchor": "due_at" }),
-            json!({ "interval": 2, "unit": "hour", "schedule": "regular", "anchor": "due_at" }),
-            json!({ "interval": 3, "unit": "day", "schedule": "regular", "anchor": "defer_at" }),
-            json!({ "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at" }),
-            json!({ "interval": 6, "unit": "month", "schedule": "regular", "anchor": "due_at" }),
-            json!({ "interval": 1, "unit": "year", "schedule": "regular", "anchor": "defer_at" }),
-            // from_completion schedule (no catch_up).
-            json!({
-                "interval": 1, "unit": "day",
-                "schedule": "from_completion", "anchor": "due_at"
-            }),
-            // catch_up toggle on a regular schedule.
-            json!({
-                "interval": 1, "unit": "week",
-                "schedule": "regular", "anchor": "due_at", "catch_up": true
-            }),
-            json!({
-                "interval": 1, "unit": "week",
-                "schedule": "regular", "anchor": "due_at", "catch_up": false
-            }),
-            // only_on.weekdays with unit week.
-            json!({
-                "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
-                "only_on": { "weekdays": ["mon", "wed", "fri"] }
-            }),
-            // only_on.month_days with unit month, boundary days.
-            json!({
-                "interval": 1, "unit": "month", "schedule": "regular", "anchor": "due_at",
-                "only_on": { "month_days": [1, 15, 31] }
-            }),
+            json!({ "interval": 1, "unit": "minute", "anchor": "due_at" }),
+            json!({ "interval": 2, "unit": "hour", "anchor": "due_at" }),
+            json!({ "interval": 3, "unit": "day", "anchor": "defer_at" }),
+            json!({ "interval": 1, "unit": "week", "anchor": "due_at" }),
+            json!({ "interval": 6, "unit": "month", "anchor": "due_at" }),
+            json!({ "interval": 1, "unit": "year", "anchor": "defer_at" }),
             // end via until.
             json!({
-                "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                "interval": 1, "unit": "day", "anchor": "due_at",
                 "end": { "until": "2026-12-31T23:59:59" }
             }),
             // end via after_count.
             json!({
-                "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                "interval": 1, "unit": "day", "anchor": "due_at",
                 "end": { "after_count": 10 }
             }),
         ];
@@ -2731,107 +2617,32 @@ mod tests {
     fn rejects_recurrence_invariant_violations() {
         // Each entry: (rule, substring the reason must contain). The Todo carries
         // both anchor dates so only the rule's own invariant trips.
-        let cases: [(Value, &str); 17] = [
+        let cases: [(Value, &str); 8] = [
             // interval must be an integer >= 1.
             (
-                json!({ "interval": 0, "unit": "day", "schedule": "regular", "anchor": "due_at" }),
+                json!({ "interval": 0, "unit": "day", "anchor": "due_at" }),
                 "interval",
             ),
             (
-                json!({ "interval": 1.5, "unit": "day", "schedule": "regular", "anchor": "due_at" }),
+                json!({ "interval": 1.5, "unit": "day", "anchor": "due_at" }),
                 "interval",
             ),
             // unit must be one of the six.
             (
-                json!({ "interval": 1, "unit": "fortnight", "schedule": "regular", "anchor": "due_at" }),
+                json!({ "interval": 1, "unit": "fortnight", "anchor": "due_at" }),
                 "unit",
-            ),
-            // schedule enum.
-            (
-                json!({ "interval": 1, "unit": "day", "schedule": "sometimes", "anchor": "due_at" }),
-                "schedule",
             ),
             // anchor enum.
             (
-                json!({ "interval": 1, "unit": "day", "schedule": "regular", "anchor": "planned_at" }),
+                json!({ "interval": 1, "unit": "day", "anchor": "planned_at" }),
                 "anchor",
             ),
-            // catch_up rejected with from_completion.
-            (
-                json!({
-                    "interval": 1, "unit": "day",
-                    "schedule": "from_completion", "anchor": "due_at", "catch_up": true
-                }),
-                "catch_up",
-            ),
-            // weekdays only with unit week.
-            (
-                json!({
-                    "interval": 1, "unit": "month", "schedule": "regular", "anchor": "due_at",
-                    "only_on": { "weekdays": ["mon"] }
-                }),
-                "weekdays",
-            ),
-            // month_days only with unit month.
-            (
-                json!({
-                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
-                    "only_on": { "month_days": [1] }
-                }),
-                "month_days",
-            ),
-            // weekdays: empty array.
-            (
-                json!({
-                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
-                    "only_on": { "weekdays": [] }
-                }),
-                "weekdays",
-            ),
-            // weekdays: bad value.
-            (
-                json!({
-                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
-                    "only_on": { "weekdays": ["funday"] }
-                }),
-                "weekdays",
-            ),
-            // weekdays: duplicate.
-            (
-                json!({
-                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
-                    "only_on": { "weekdays": ["mon", "mon"] }
-                }),
-                "weekdays",
-            ),
-            // month_days: out of 1..=31 range.
-            (
-                json!({
-                    "interval": 1, "unit": "month", "schedule": "regular", "anchor": "due_at",
-                    "only_on": { "month_days": [32] }
-                }),
-                "month_days",
-            ),
-            // month_days: duplicate.
-            (
-                json!({
-                    "interval": 1, "unit": "month", "schedule": "regular", "anchor": "due_at",
-                    "only_on": { "month_days": [1, 1] }
-                }),
-                "month_days",
-            ),
-            // empty only_on object.
-            (
-                json!({
-                    "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
-                    "only_on": {}
-                }),
-                "only_on",
-            ),
+            // anchor is required.
+            (json!({ "interval": 1, "unit": "day" }), "anchor"),
             // end carrying both keys.
             (
                 json!({
-                    "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                    "interval": 1, "unit": "day", "anchor": "due_at",
                     "end": { "until": "2026-12-31T23:59:59", "after_count": 5 }
                 }),
                 "end",
@@ -2839,7 +2650,7 @@ mod tests {
             // end.until unparseable.
             (
                 json!({
-                    "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                    "interval": 1, "unit": "day", "anchor": "due_at",
                     "end": { "until": "next year" }
                 }),
                 "until",
@@ -2847,7 +2658,7 @@ mod tests {
             // empty end object.
             (
                 json!({
-                    "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                    "interval": 1, "unit": "day", "anchor": "due_at",
                     "end": {}
                 }),
                 "end",
@@ -2864,12 +2675,35 @@ mod tests {
     }
 
     #[test]
+    fn rejects_removed_recurrence_fields() {
+        // schedule/catch_up/only_on were removed from the durable shape (ADR-0039
+        // amendment). A rule carrying any of them is now an unknown-field error —
+        // proves a stored/proposed rule can't smuggle a dead field back in.
+        for field in ["schedule", "catch_up", "only_on"] {
+            let mut rule = serde_json::Map::new();
+            rule.insert("interval".into(), json!(1));
+            rule.insert("unit".into(), json!("week"));
+            rule.insert("anchor".into(), json!("due_at"));
+            rule.insert(field.into(), json!("regular"));
+            let reason = validate(
+                "create_todo",
+                &todo_with_recurrence(Value::Object(rule)),
+            )
+            .expect_err("a removed recurrence field is rejected as unknown");
+            assert!(
+                reason.contains(field),
+                "reason names the removed field {field:?}: {reason}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_recurrence_unknown_fields() {
-        // Unknown key on the rule, on only_on, and on end.
+        // Unknown key on the rule and on end.
         let reason = validate(
             "create_todo",
             &todo_with_recurrence(json!({
-                "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                "interval": 1, "unit": "day", "anchor": "due_at",
                 "timezone": "UTC"
             })),
         )
@@ -2882,20 +2716,7 @@ mod tests {
         let reason = validate(
             "create_todo",
             &todo_with_recurrence(json!({
-                "interval": 1, "unit": "week", "schedule": "regular", "anchor": "due_at",
-                "only_on": { "weekdays": ["mon"], "ordinals": [1] }
-            })),
-        )
-        .expect_err("unknown only_on field is rejected");
-        assert!(
-            reason.contains("ordinals"),
-            "names the unknown only_on field: {reason}"
-        );
-
-        let reason = validate(
-            "create_todo",
-            &todo_with_recurrence(json!({
-                "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at",
+                "interval": 1, "unit": "day", "anchor": "due_at",
                 "end": { "after_count": 3, "grace": 1 }
             })),
         )
@@ -2917,7 +2738,7 @@ mod tests {
                     "title": "water the plants",
                     "defer_at": "2026-06-14T09:00:00",
                     "recurrence": {
-                        "interval": 1, "unit": "day", "schedule": "regular", "anchor": "due_at"
+                        "interval": 1, "unit": "day", "anchor": "due_at"
                     }
                 }
             }),
@@ -2935,7 +2756,7 @@ mod tests {
                     "title": "water the plants",
                     "due_at": "2026-06-14T18:00:00",
                     "recurrence": {
-                        "interval": 1, "unit": "day", "schedule": "regular", "anchor": "defer_at"
+                        "interval": 1, "unit": "day", "anchor": "defer_at"
                     }
                 }
             }),
@@ -2959,8 +2780,7 @@ mod tests {
                     "todo_id": Uuid::now_v7().to_string(),
                     "todo": {
                         "recurrence": {
-                            "interval": 1, "unit": "week",
-                            "schedule": "regular", "anchor": "due_at"
+                            "interval": 1, "unit": "week", "anchor": "due_at"
                         }
                     }
                 })
@@ -2986,8 +2806,7 @@ mod tests {
                 "todo_id": Uuid::now_v7().to_string(),
                 "todo": {
                     "recurrence": {
-                        "interval": 1, "unit": "fortnight",
-                        "schedule": "regular", "anchor": "due_at"
+                        "interval": 1, "unit": "fortnight", "anchor": "due_at"
                     }
                 }
             }),
@@ -2997,23 +2816,23 @@ mod tests {
             reason.contains("unit"),
             "reason names the bad unit: {reason}"
         );
-        // catch_up with from_completion is a rule-level invariant — rejected here.
+        // A removed field (only_on) is an unknown-field error in the partial too.
         let reason = validate(
             "update_todo",
             &json!({
                 "todo_id": Uuid::now_v7().to_string(),
                 "todo": {
                     "recurrence": {
-                        "interval": 1, "unit": "day", "schedule": "from_completion",
-                        "anchor": "due_at", "catch_up": true
+                        "interval": 1, "unit": "week", "anchor": "due_at",
+                        "only_on": { "weekdays": ["mon"] }
                     }
                 }
             }),
         )
-        .expect_err("catch_up with from_completion is rejected in the partial");
+        .expect_err("a removed recurrence field is rejected in the partial");
         assert!(
-            reason.contains("catch_up"),
-            "reason names catch_up: {reason}"
+            reason.contains("only_on"),
+            "reason names only_on: {reason}"
         );
     }
 }

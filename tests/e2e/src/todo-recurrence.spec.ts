@@ -36,9 +36,8 @@ test("create a recurring Todo via the rail editor → recurrence persists and th
 	await rail.getByLabel("Repeats").check();
 	await rail.getByLabel("Every").fill("2");
 	await rail.getByLabel("Unit").selectOption({ label: "Weeks" });
-	// Schedule and Anchor keep their defaults (Regular / Due date). Toggling
-	// Repeats with a due date present defaults the anchor to "Due date".
-	await expect(rail.getByLabel("Schedule")).toHaveValue("regular");
+	// Anchor keeps its default (Due date). Toggling Repeats with a due date
+	// present defaults the anchor to "Due date".
 	await expect(rail.getByLabel("Anchor")).toHaveValue("due_at");
 
 	await rail.getByRole("button", { name: /^save$/i }).click();
@@ -51,7 +50,7 @@ test("create a recurring Todo via the rail editor → recurrence persists and th
 
 	// On a successful create the rail re-navigates to the new Todo's detail panel,
 	// whose recurrence badge reads the rule re-fetched from Core (ADR-0037 summary:
-	// interval 2 / unit week / regular → "Repeats every 2 weeks").
+	// interval 2 / unit week → "Repeats every 2 weeks").
 	const detail = page.getByRole("complementary", {
 		name: `${title} details`,
 	});
@@ -70,6 +69,5 @@ test("create a recurring Todo via the rail editor → recurrence persists and th
 		);
 	expect(recurrenceField("unit")).toBe("week");
 	expect(recurrenceField("interval")).toBe("2");
-	expect(recurrenceField("schedule")).toBe("regular");
 	expect(recurrenceField("anchor")).toBe("due_at");
 });

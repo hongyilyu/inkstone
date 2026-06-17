@@ -380,8 +380,8 @@ fn accept_create_todo_defaults_status_active() {
 
 /// Case 2b: a `create_todo` whose `todo` carries a `due_at` anchor and a
 /// `due_at`-anchored recurrence rule persists that rule into the stored entity
-/// `data` JSON (ADR-0037). After accept, the `recurrence` object round-trips with
-/// its `unit`/`schedule`/`anchor`.
+/// `data` JSON (ADR-0037, slimmed by ADR-0039). After accept, the `recurrence`
+/// object round-trips with its `interval`/`unit`/`anchor`.
 #[test]
 fn accept_create_todo_persists_recurrence_rule() {
     let workspace = Workspace::new();
@@ -402,9 +402,7 @@ fn accept_create_todo_persists_recurrence_rule() {
                     "recurrence": {
                         "interval": 1,
                         "unit": "week",
-                        "schedule": "regular",
-                        "anchor": "due_at",
-                        "catch_up": false
+                        "anchor": "due_at"
                     }
                 }
             },
@@ -475,9 +473,9 @@ fn accept_create_todo_persists_recurrence_rule() {
             "recurrence unit round-trips — got {data}"
         );
         assert_eq!(
-            recurrence["schedule"].as_str(),
-            Some("regular"),
-            "recurrence schedule round-trips — got {data}"
+            recurrence["interval"].as_u64(),
+            Some(1),
+            "recurrence interval round-trips — got {data}"
         );
         assert_eq!(
             recurrence["anchor"].as_str(),
