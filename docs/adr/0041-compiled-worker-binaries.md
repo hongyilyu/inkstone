@@ -22,7 +22,9 @@ This ADR adds a **shippable launch form**: each program compiles to a single sel
 3. **Core resolves the launch form through one ordered policy**, applied per role (worker / provider-login / provider-refresh):
    1. **`INKSTONE_*_CMD` env override set** → use it, parsed with **`shlex`** (not whitespace-split, fixing the space-in-path bug). This is the **test seam** — every integration/e2e test points it at a `.ts` fixture via `tsx` — and the power-user / explicit-packaging escape hatch. It **always wins**.
    2. **else** → the **real program**: if a sibling executable (`inkstone-worker` / `inkstone-provider-helper`) exists next to Core's own executable (`current_exe`'s directory), spawn it.
-   3. **else** → `tsx <script>` from the repo-root-relative source path (the dev-from-source form, unchanged).
+   3. **else** → `tsx <script>` from the repo-root-relative source path (the dev-from-source form).
+
+   Step 3 holds **only while no sibling binary is present**. Because `pnpm dev` runs `cargo run` (i.e. `target/debug/core`) and `build:worker` / `build:provider-helper` write to `target/debug/inkstone-worker` / `target/debug/inkstone-provider-helper` — siblings of that exe — a dev who has run a `build:*` script will find `pnpm dev` auto-detecting and spawning the **compiled (frozen) binary** at step 2 rather than live `tsx`, so subsequent edits to the worker/helper source are ignored until that binary is removed (`rm target/debug/inkstone-worker target/debug/inkstone-provider-helper`) or an `INKSTONE_*_CMD` override is set. The compiled artifacts live in git-ignored `target/`, so the shadowing is invisible to `git status`. This is the intended resolution order (a built binary next to Core is exactly what step 2 should prefer); it is called out here because the interaction with the `pnpm dev` hot-edit loop is non-obvious.
 
    The resolved command is centralized in **one resolver** that all three spawn sites call; the three inline `env::var + split` copies collapse into it.
 

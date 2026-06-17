@@ -242,6 +242,21 @@ mod tests {
         }
     }
 
+    /// An override that `shlex` cannot tokenize (an unbalanced quote) is an
+    /// error per role, not a panic or a silent fallthrough — the `shlex::split`
+    /// → `None` → "not a valid command line" arm. Distinct from the empty case
+    /// (which tokenizes to zero words); this exercises the parse-failure branch.
+    #[test]
+    fn unbalanced_quote_override_is_error_per_role() {
+        for role in [Role::Worker, Role::ProviderLogin, Role::ProviderRefresh] {
+            assert!(
+                resolve_with(role, Some("\"/unterminated/tsx script.ts"), None, &exists_false)
+                    .is_err(),
+                "unbalanced-quote override → error for {role:?}"
+            );
+        }
+    }
+
     // --- Slice 2: sibling-binary auto-detection (ADR-0041 step 2) ---
 
     /// (a) Sibling present → the binary wins over the tsx default. Worker takes
