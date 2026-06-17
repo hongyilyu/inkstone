@@ -12,7 +12,7 @@
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::mutation::{Mode, MutationKind, ProposableMutation, todo_data_spec};
+use crate::mutation::{todo_data_spec, Mode, MutationKind, ProposableMutation};
 
 /// Validate a proposed mutation payload against its schema (ADR-0016),
 /// dispatched on the typed [`MutationKind`]. `Err(reason)` is surfaced as the
@@ -67,7 +67,7 @@ pub(crate) fn render_accept(
     use ProposableMutation as P;
     match kind {
         P::CreateJournalEntry => {
-            let entity_id = entity_id.unwrap_or("unknown");
+            let entity_id = entity_id.expect("create accept rendering requires entity_id");
             let occurred_at = payload
                 .get("occurred_at")
                 .and_then(Value::as_str)
@@ -128,7 +128,7 @@ pub(crate) fn render_accept(
             format!("Accepted. Deleted Todo (entity_id={entity_id}).")
         }
         P::CreatePerson => {
-            let entity_id = entity_id.unwrap_or("unknown");
+            let entity_id = entity_id.expect("create accept rendering requires entity_id");
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
@@ -143,7 +143,7 @@ pub(crate) fn render_accept(
             format!("Accepted. Updated Person (name={name}).")
         }
         P::CreateProject => {
-            let entity_id = entity_id.unwrap_or("unknown");
+            let entity_id = entity_id.expect("create accept rendering requires entity_id");
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
@@ -168,7 +168,7 @@ pub(crate) fn render_accept(
             format!("Accepted. Updated Project (name={name}, status={status}).")
         }
         P::CreateTodo => {
-            let entity_id = entity_id.unwrap_or("unknown");
+            let entity_id = entity_id.expect("create accept rendering requires entity_id");
             let todo = payload.get("todo");
             let title = todo
                 .and_then(|t| t.get("title"))
@@ -1074,7 +1074,7 @@ mod tests {
     fn render_accept(kind: &str, payload: &Value) -> String {
         let kind = MutationKind::from_wire(kind).expect("known mutation_kind");
         let proposable = ProposableMutation::try_from(kind).expect("agent-proposable kind");
-        super::render_accept(proposable, payload, None)
+        super::render_accept(proposable, payload, Some("test-entity-id"))
     }
 
     /// Test shim: the schema version for a wire kind, via its Entity Type — the
@@ -1192,33 +1192,27 @@ mod tests {
 
     #[test]
     fn accepts_minimal_journal_entry() {
-        assert!(
-            validate_journal_entry(&json!({
-                "occurred_at": "2026-06-10T10:30:00",
-                "body": [{ "type": "text", "text": "Talked to Alice." }]
-            }))
-            .is_ok()
-        );
+        assert!(validate_journal_entry(&json!({
+            "occurred_at": "2026-06-10T10:30:00",
+            "body": [{ "type": "text", "text": "Talked to Alice." }]
+        }))
+        .is_ok());
     }
 
     #[test]
     fn accepts_equal_or_later_ended_at() {
-        assert!(
-            validate_journal_entry(&json!({
-                "occurred_at": "2026-06-10T10:30:00",
-                "ended_at": "2026-06-10T10:30:00",
-                "body": [{ "type": "text", "text": "Talked to Alice." }]
-            }))
-            .is_ok()
-        );
-        assert!(
-            validate_journal_entry(&json!({
-                "occurred_at": "2026-06-10T10:30:00",
-                "ended_at": "2026-06-10T11:00:00",
-                "body": [{ "type": "text", "text": "Talked to Alice." }]
-            }))
-            .is_ok()
-        );
+        assert!(validate_journal_entry(&json!({
+            "occurred_at": "2026-06-10T10:30:00",
+            "ended_at": "2026-06-10T10:30:00",
+            "body": [{ "type": "text", "text": "Talked to Alice." }]
+        }))
+        .is_ok());
+        assert!(validate_journal_entry(&json!({
+            "occurred_at": "2026-06-10T10:30:00",
+            "ended_at": "2026-06-10T11:00:00",
+            "body": [{ "type": "text", "text": "Talked to Alice." }]
+        }))
+        .is_ok());
     }
 
     #[test]
@@ -1226,12 +1220,10 @@ mod tests {
         assert!(
             validate_journal_entry(&json!({ "body": [{ "type": "text", "text": "x" }] })).is_err()
         );
-        assert!(
-            validate_journal_entry(
-                &json!({ "occurred_at": "", "body": [{ "type": "text", "text": "x" }] })
-            )
-            .is_err()
-        );
+        assert!(validate_journal_entry(
+            &json!({ "occurred_at": "", "body": [{ "type": "text", "text": "x" }] })
+        )
+        .is_err());
     }
 
     #[test]
@@ -1287,21 +1279,19 @@ mod tests {
 
     #[test]
     fn update_accepts_mixed_text_and_entity_ref_body_nodes() {
-        assert!(
-            validate(
-                "update_journal_entry",
-                &json!({
-                    "entity_id": Uuid::now_v7().to_string(),
-                    "occurred_at": "2026-06-10T10:30:00",
-                    "body": [
-                        { "type": "text", "text": "Met " },
-                        { "type": "entity_ref", "ref_id": Uuid::now_v7().to_string() },
-                        { "type": "text", "text": " at school." }
-                    ]
-                })
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "update_journal_entry",
+            &json!({
+                "entity_id": Uuid::now_v7().to_string(),
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [
+                    { "type": "text", "text": "Met " },
+                    { "type": "entity_ref", "ref_id": Uuid::now_v7().to_string() },
+                    { "type": "text", "text": " at school." }
+                ]
+            })
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1354,22 +1344,20 @@ mod tests {
 
     #[test]
     fn reference_existing_entity_accepts_one_new_entity_ref_placeholder() {
-        assert!(
-            validate(
-                "reference_existing_entity_from_journal_entry",
-                &json!({
-                    "source_entity_id": Uuid::now_v7().to_string(),
-                    "target_entity_id": Uuid::now_v7().to_string(),
-                    "label_snapshot": "Ada",
-                    "body": [
-                        { "type": "text", "text": "Met " },
-                        { "type": "entity_ref" },
-                        { "type": "text", "text": " at school." }
-                    ]
-                })
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "reference_existing_entity_from_journal_entry",
+            &json!({
+                "source_entity_id": Uuid::now_v7().to_string(),
+                "target_entity_id": Uuid::now_v7().to_string(),
+                "label_snapshot": "Ada",
+                "body": [
+                    { "type": "text", "text": "Met " },
+                    { "type": "entity_ref" },
+                    { "type": "text", "text": " at school." }
+                ]
+            })
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1460,25 +1448,21 @@ mod tests {
 
     #[test]
     fn validate_dispatches_journal_entry_ok() {
-        assert!(
-            validate(
-                "create_journal_entry",
-                &json!({
-                    "occurred_at": "2026-06-10T10:30:00",
-                    "body": [{ "type": "text", "text": "Talked to Alice." }]
-                })
-            )
-            .is_ok()
-        );
-        assert!(
-            validate(
-                "delete_journal_entry",
-                &json!({
-                    "entity_id": Uuid::now_v7().to_string()
-                })
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "create_journal_entry",
+            &json!({
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Talked to Alice." }]
+            })
+        )
+        .is_ok());
+        assert!(validate(
+            "delete_journal_entry",
+            &json!({
+                "entity_id": Uuid::now_v7().to_string()
+            })
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1617,14 +1601,12 @@ mod tests {
 
     #[test]
     fn accepts_person_with_note_and_aliases() {
-        assert!(
-            validate_person(&json!({
-                "name": "Alice",
-                "note": "daycare coordinator",
-                "aliases": ["Al", "Ali"]
-            }))
-            .is_ok()
-        );
+        assert!(validate_person(&json!({
+            "name": "Alice",
+            "note": "daycare coordinator",
+            "aliases": ["Al", "Ali"]
+        }))
+        .is_ok());
     }
 
     #[test]
@@ -1665,13 +1647,11 @@ mod tests {
     #[test]
     fn update_person_validates_payload_minus_entity_id() {
         // entity_id + a valid PersonData body is ok.
-        assert!(
-            validate(
-                "update_person",
-                &json!({ "entity_id": Uuid::now_v7().to_string(), "name": "Alice", "note": "x" })
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "update_person",
+            &json!({ "entity_id": Uuid::now_v7().to_string(), "name": "Alice", "note": "x" })
+        )
+        .is_ok());
         // The PersonData rules still apply to the rest (no status field).
         let reason = validate(
             "update_person",
@@ -1730,14 +1710,12 @@ mod tests {
 
     #[test]
     fn accepts_completed_project_with_completed_at() {
-        assert!(
-            validate_project(&json!({
-                "name": "Roadmap",
-                "status": "completed",
-                "completed_at": "2026-06-10T10:00:00"
-            }))
-            .is_ok()
-        );
+        assert!(validate_project(&json!({
+            "name": "Roadmap",
+            "status": "completed",
+            "completed_at": "2026-06-10T10:00:00"
+        }))
+        .is_ok());
     }
 
     #[test]
@@ -1818,25 +1796,21 @@ mod tests {
 
     #[test]
     fn accepts_valid_review_every() {
-        assert!(
-            validate_project(&json!({
-                "name": "Roadmap",
-                "review_every": { "interval": 1, "unit": "week" }
-            }))
-            .is_ok()
-        );
+        assert!(validate_project(&json!({
+            "name": "Roadmap",
+            "review_every": { "interval": 1, "unit": "week" }
+        }))
+        .is_ok());
     }
 
     #[test]
     fn mark_project_reviewed_validates_entity_id_only() {
         // A bare UUID `entity_id` is the whole payload (Core recomputes the rest).
-        assert!(
-            validate(
-                "mark_project_reviewed",
-                &json!({ "entity_id": Uuid::now_v7().to_string() })
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "mark_project_reviewed",
+            &json!({ "entity_id": Uuid::now_v7().to_string() })
+        )
+        .is_ok());
         // Missing id, non-UUID id, and any extra field are all rejected.
         assert!(validate("mark_project_reviewed", &json!({})).is_err());
         assert!(validate("mark_project_reviewed", &json!({ "entity_id": "nope" })).is_err());
@@ -2015,30 +1989,24 @@ mod tests {
     #[test]
     fn accepts_todo_with_each_valid_status() {
         assert!(validate_todo(&json!({ "todo": { "title": "x", "status": "active" } })).is_ok());
-        assert!(
-            validate_todo(&json!({
-                "todo": { "title": "x", "status": "completed", "completed_at": "2026-06-10T10:00:00" }
-            }))
-            .is_ok()
-        );
-        assert!(
-            validate_todo(&json!({
-                "todo": { "title": "x", "status": "dropped", "dropped_at": "2026-06-10T10:00:00" }
-            }))
-            .is_ok()
-        );
+        assert!(validate_todo(&json!({
+            "todo": { "title": "x", "status": "completed", "completed_at": "2026-06-10T10:00:00" }
+        }))
+        .is_ok());
+        assert!(validate_todo(&json!({
+            "todo": { "title": "x", "status": "dropped", "dropped_at": "2026-06-10T10:00:00" }
+        }))
+        .is_ok());
     }
 
     #[test]
     fn accepts_todo_with_project_link_and_person_refs_array() {
         // project_id existence is a decide-time check, not the pure validator's.
-        assert!(
-            validate_todo(&json!({
-                "todo": { "title": "x", "project_id": "some-id" },
-                "person_refs": [{ "person_id": "alice", "role": "waiting_on" }]
-            }))
-            .is_ok()
-        );
+        assert!(validate_todo(&json!({
+            "todo": { "title": "x", "project_id": "some-id" },
+            "person_refs": [{ "person_id": "alice", "role": "waiting_on" }]
+        }))
+        .is_ok());
     }
 
     #[test]
@@ -2157,16 +2125,14 @@ mod tests {
     fn validates_create_todo_person_ref_elements() {
         // Valid: a ref with an explicit role, and a ref with role omitted (the
         // missing role is friendly — defaulted to related at apply-time).
-        assert!(
-            validate_todo(&json!({
-                "todo": { "title": "x" },
-                "person_refs": [
-                    { "person_id": "alice", "role": "waiting_on" },
-                    { "person_id": "bob" }
-                ]
-            }))
-            .is_ok()
-        );
+        assert!(validate_todo(&json!({
+            "todo": { "title": "x" },
+            "person_refs": [
+                { "person_id": "alice", "role": "waiting_on" },
+                { "person_id": "bob" }
+            ]
+        }))
+        .is_ok());
 
         // Missing person_id.
         let reason = validate_todo(&json!({
@@ -2203,27 +2169,21 @@ mod tests {
     fn create_accepts_valid_source_journal_entry_id_and_validates_the_rest() {
         let je = Uuid::now_v7().to_string();
         // A valid source rides alongside the entity fields and the rest validates.
-        assert!(
-            validate(
-                "create_person",
-                &json!({ "name": "Alice", "source_journal_entry_id": je })
-            )
-            .is_ok()
-        );
-        assert!(
-            validate(
-                "create_project",
-                &json!({ "name": "Roadmap", "source_journal_entry_id": je })
-            )
-            .is_ok()
-        );
-        assert!(
-            validate(
-                "create_todo",
-                &json!({ "todo": { "title": "follow up" }, "source_journal_entry_id": je })
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "create_person",
+            &json!({ "name": "Alice", "source_journal_entry_id": je })
+        )
+        .is_ok());
+        assert!(validate(
+            "create_project",
+            &json!({ "name": "Roadmap", "source_journal_entry_id": je })
+        )
+        .is_ok());
+        assert!(validate(
+            "create_todo",
+            &json!({ "todo": { "title": "follow up" }, "source_journal_entry_id": je })
+        )
+        .is_ok());
     }
 
     #[test]
@@ -2278,36 +2238,30 @@ mod tests {
     #[test]
     fn update_todo_accepts_partial_todo_and_ref_ops() {
         // A partial `todo` may omit title; ref arrays + remove ids are shape-valid.
-        assert!(
-            validate(
-                "update_todo",
-                &json!({
-                    "todo_id": Uuid::now_v7().to_string(),
-                    "todo": { "due_at": "2026-07-01T09:00:00" },
-                    "set_person_refs": [{ "person_id": "alice", "role": "related" }],
-                    "add_person_refs": [{ "person_id": "bob" }],
-                    "remove_person_ids": ["carol"]
-                })
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "update_todo",
+            &json!({
+                "todo_id": Uuid::now_v7().to_string(),
+                "todo": { "due_at": "2026-07-01T09:00:00" },
+                "set_person_refs": [{ "person_id": "alice", "role": "related" }],
+                "add_person_refs": [{ "person_id": "bob" }],
+                "remove_person_ids": ["carol"]
+            })
+        )
+        .is_ok());
         // A lone status (no completed_at) is fine for the PURE validator — the
         // invariant is checked on the merged whole at apply-time.
-        assert!(
-            validate(
-                "update_todo",
-                &json!({ "todo_id": Uuid::now_v7().to_string(), "todo": { "status": "completed" } })
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "update_todo",
+            &json!({ "todo_id": Uuid::now_v7().to_string(), "todo": { "status": "completed" } })
+        )
+        .is_ok());
         // A bare todo_id (no changes) is also valid.
-        assert!(
-            validate(
-                "update_todo",
-                &json!({ "todo_id": Uuid::now_v7().to_string() })
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "update_todo",
+            &json!({ "todo_id": Uuid::now_v7().to_string() })
+        )
+        .is_ok());
     }
 
     #[test]
@@ -2458,15 +2412,13 @@ mod tests {
 
     #[test]
     fn accepts_bookmark_with_url_note_and_tags() {
-        assert!(
-            validate_bookmark(&json!({
-                "title": "Effect docs",
-                "url": "https://effect.website",
-                "note": "read later",
-                "tags": ["fp", "ts"]
-            }))
-            .is_ok()
-        );
+        assert!(validate_bookmark(&json!({
+            "title": "Effect docs",
+            "url": "https://effect.website",
+            "note": "read later",
+            "tags": ["fp", "ts"]
+        }))
+        .is_ok());
     }
 
     #[test]
@@ -2493,15 +2445,13 @@ mod tests {
     #[test]
     fn accepts_null_clear_on_bookmark_optional_fields() {
         // `null` is the ADR-0033 sentinel-clear directive on every optional field.
-        assert!(
-            validate_bookmark(&json!({
-                "title": "x",
-                "url": null,
-                "note": null,
-                "tags": null
-            }))
-            .is_ok()
-        );
+        assert!(validate_bookmark(&json!({
+            "title": "x",
+            "url": null,
+            "note": null,
+            "tags": null
+        }))
+        .is_ok());
     }
 
     #[test]
@@ -2527,13 +2477,11 @@ mod tests {
     #[test]
     fn update_bookmark_validates_payload_minus_entity_id() {
         // entity_id + a valid BookmarkData body is ok.
-        assert!(
-            validate(
-                "update_bookmark",
-                &json!({ "entity_id": Uuid::now_v7().to_string(), "title": "x", "note": "n" })
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "update_bookmark",
+            &json!({ "entity_id": Uuid::now_v7().to_string(), "title": "x", "note": "n" })
+        )
+        .is_ok());
         // The BookmarkData rules still apply to the rest (no unknown field).
         let reason = validate(
             "update_bookmark",
@@ -2567,13 +2515,11 @@ mod tests {
 
     #[test]
     fn validate_delete_bookmark_accepts_uuid_and_rejects_extras() {
-        assert!(
-            validate(
-                "delete_bookmark",
-                &json!({ "entity_id": Uuid::now_v7().to_string() })
-            )
-            .is_ok()
-        );
+        assert!(validate(
+            "delete_bookmark",
+            &json!({ "entity_id": Uuid::now_v7().to_string() })
+        )
+        .is_ok());
         let reason = validate(
             "delete_bookmark",
             &json!({ "entity_id": Uuid::now_v7().to_string(), "title": "x" }),
@@ -2710,11 +2656,8 @@ mod tests {
             rule.insert("unit".into(), json!("week"));
             rule.insert("anchor".into(), json!("due_at"));
             rule.insert(field.into(), json!("regular"));
-            let reason = validate(
-                "create_todo",
-                &todo_with_recurrence(Value::Object(rule)),
-            )
-            .expect_err("a removed recurrence field is rejected as unknown");
+            let reason = validate("create_todo", &todo_with_recurrence(Value::Object(rule)))
+                .expect_err("a removed recurrence field is rejected as unknown");
             assert!(
                 reason.contains(field),
                 "reason names the removed field {field:?}: {reason}"
@@ -2798,20 +2741,18 @@ mod tests {
         // A supplied valid rule is accepted; `null` is the sentinel-clear directive
         // (ADR-0037). The anchor-presence cross-check is NOT done here — the partial
         // lacks the whole Todo; the merged-whole re-validation in apply enforces it.
-        assert!(
-            validate(
-                "update_todo",
-                &json!({
-                    "todo_id": Uuid::now_v7().to_string(),
-                    "todo": {
-                        "recurrence": {
-                            "interval": 1, "unit": "week", "anchor": "due_at"
-                        }
+        assert!(validate(
+            "update_todo",
+            &json!({
+                "todo_id": Uuid::now_v7().to_string(),
+                "todo": {
+                    "recurrence": {
+                        "interval": 1, "unit": "week", "anchor": "due_at"
                     }
-                })
-            )
-            .is_ok()
-        );
+                }
+            })
+        )
+        .is_ok());
         assert!(
             validate(
                 "update_todo",
@@ -2855,9 +2796,6 @@ mod tests {
             }),
         )
         .expect_err("a removed recurrence field is rejected in the partial");
-        assert!(
-            reason.contains("only_on"),
-            "reason names only_on: {reason}"
-        );
+        assert!(reason.contains("only_on"), "reason names only_on: {reason}");
     }
 }
