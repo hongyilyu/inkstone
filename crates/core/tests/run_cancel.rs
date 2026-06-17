@@ -32,6 +32,46 @@ async fn no_text_frame(ws: &mut common::Ws, duration: Duration) {
 }
 
 #[test]
+fn cancel_malformed_run_id_is_invalid_params() {
+    let workspace = Workspace::new();
+    let core = workspace
+        .core()
+        .worker_fixture("slow-worker.ts")
+        .env("INKSTONE_FIXTURE_CHUNKS", "1")
+        .env("INKSTONE_FIXTURE_GATE", workspace.path().join("gate"))
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        // A malformed run_id must be invalid_params (-32602), not an internal
+        // error, like every other method (ADR-0029). Mirrors the run/subscribe
+        // gate — run/cancel shares the same decode_params framing.
+        let cancel =
+            r#"{"jsonrpc":"2.0","id":9,"method":"run/cancel","params":{"run_id":"not-a-uuid"}}"#;
+        ws.send(Message::Text(cancel.into()))
+            .await
+            .expect("send cancel");
+
+        let body = next_text(&mut ws).await;
+        let v: serde_json::Value = serde_json::from_str(&body).expect("json response");
+        assert_eq!(v["id"], serde_json::json!(9), "echoed id");
+        assert_eq!(
+            v["error"]["code"],
+            serde_json::json!(-32602),
+            "malformed run_id rejected with invalid_params (-32602) — body: {body}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+#[test]
 fn cancel_running_run_wins_and_suppresses_late_worker_done() {
     let workspace = Workspace::new();
     let gate_path = workspace.path().join("cancel-gate");

@@ -93,6 +93,43 @@ async fn await_completed(core: &CoreHandle, run_id: &str) {
 }
 
 #[test]
+fn decide_malformed_proposal_id_is_invalid_params() {
+    // A non-UUID proposal_id fails at decode (ADR-0029), before any DB lookup,
+    // so this needs no parked proposal. Mirrors the run/subscribe + run/cancel
+    // gates: proposal/decide shares the same decode_params framing, so its
+    // malformed-envelope wire code must stay invalid_params (-32602), never
+    // -32603. edit_rejects_invalid_payload exercises a body-level -32602 after
+    // decode succeeds; this pins the decode arm itself.
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let resp = rpc(
+            &core,
+            9,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": "not-a-uuid",
+                "decision": "accept",
+                "decision_idempotency_key": "k",
+            }),
+        )
+        .await;
+        assert_eq!(resp["id"], serde_json::json!(9), "echoed id");
+        assert_eq!(
+            resp["error"]["code"].as_i64(),
+            Some(-32602),
+            "malformed proposal_id rejected with invalid_params (-32602) — body: {resp}"
+        );
+    });
+}
+
+#[test]
 fn accept_applies_and_resumes() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("propose-worker.ts").spawn();

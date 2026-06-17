@@ -81,6 +81,26 @@ pub(super) fn frame_error(
     send_rpc_error(out_tx, id, err.code(), err.client_message());
 }
 
+/// Decode `params` into `P`, or frame `invalid_params` (`-32602`) and return
+/// `None`. This is the one site that owns the decode-failure message + framing
+/// for both the [`handle`] combinator and the hand-written opt-out handlers
+/// (`run/subscribe`, `proposal/decide`, `run/cancel`), so they cannot drift back
+/// to `-32603` (ADR-0029). Takes `id` by value to match [`frame_error`]; a
+/// caller that still needs `id` on its success path passes `id.clone()`.
+pub(super) fn decode_params<P: DeserializeOwned>(
+    out_tx: &UnboundedSender<String>,
+    id: serde_json::Value,
+    params: serde_json::Value,
+) -> Option<P> {
+    match serde_json::from_value(params) {
+        Ok(p) => Some(p),
+        Err(e) => {
+            frame_error(out_tx, id, HandlerError::InvalidParams(format!("invalid params: {e}")));
+            None
+        }
+    }
+}
+
 /// Run a request→response handler body behind the seam: decode `params` into
 /// `P` (decode failure is `invalid_params`), run `body`, frame the outcome. The
 /// body never touches the wire — it returns a value or a [`HandlerError`].
@@ -95,12 +115,8 @@ pub(super) async fn handle<P, S, F, Fut>(
     F: FnOnce(P) -> Fut,
     Fut: Future<Output = Result<S, HandlerError>>,
 {
-    let decoded: P = match serde_json::from_value(params) {
-        Ok(p) => p,
-        Err(e) => {
-            frame_error(out_tx, id, HandlerError::InvalidParams(format!("invalid params: {e}")));
-            return;
-        }
+    let Some(decoded): Option<P> = decode_params(out_tx, id.clone(), params) else {
+        return;
     };
 
     match body(decoded).await {
