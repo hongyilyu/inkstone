@@ -202,7 +202,7 @@ For each slice, in order:
                 Any fail or unhandled-reasonable-advisory? loop slice (cap 3).
 ```
 
-After slice-N's gate passes, the **Final review phase** runs once over the whole `feature/<slug>` branch: feature-level gates (full e2e suite, full Rust tests), feature-level reviewers, and a **deep-review pass** (the [deep-review](../deep-review/SKILL.md) skill). The PR is opened, **CI must go green**, and every review finding must be addressed-or-reasoned — only then is `REPORT.md` written and the feature declared done.
+After slice-N's gate passes, the **Final review phase** runs once over the whole `feature/<slug>` branch: feature-level gates (the full four-job CI mirror, run locally), feature-level reviewers, and a **deep-review pass** (the [deep-review](../deep-review/SKILL.md) skill). Every review finding must be addressed-or-reasoned; then the branch is **rebased onto the latest `master` and the local CI gate re-run on the rebased tree** before the PR is pushed, so it clears CI before opening. The PR is opened, **CI must go green**, and only then is `REPORT.md` written and the feature declared done.
 
 Slice failures don't block other slices from being attempted **only if** the failure is contained — which it almost never is, since each slice builds on the previous one's commit. In practice: a slice that fails its retry cap halts the whole flow.
 
@@ -367,14 +367,13 @@ The diff scope for this phase is `git diff <FEATURE_BASE>..<FEATURE_TIP>` — th
 
 ### Final phase 1: feature-level deterministic gates
 
-On `FEATURE_BRANCH`, run every gate, top to bottom, capturing pass/fail per command:
+This is the repo's [§6 CI gate](../../../.github/workflows/ci.yml) run **locally and in full** — the same four jobs (`lint-format`, `ts`, `rust`, `e2e`) the PR will face on a clean runner, in the same commands. Running it here, and again on the rebased tree before push (landing step 2), is how the feature clears CI *before* the PR opens rather than after. On `FEATURE_BRANCH`, run every gate top to bottom, capturing pass/fail per command:
 
-- `pnpm install --frozen-lockfile` if `pnpm-lock.yaml` changed across the feature
-- `pnpm check` (workspace typecheck + Rust check)
-- `pnpm -C apps/web build` if the feature touched `apps/web/**` or `packages/ui-sdk/**`
-- `cargo test --workspace` (every Rust crate, not just the slices' touched crates — this catches regressions)
-- `pnpm exec playwright install chromium` (idempotent — no-op if cached)
-- `pnpm -C tests/e2e test:e2e` — **the entire e2e suite**, including any new specs the feature added. This is the bar the user expects: all e2e tests green, including the newly-added ones for this feature.
+- `pnpm install --frozen-lockfile` if `pnpm-lock.yaml` changed across the feature — CI runs a frozen install before every job; a drifted lockfile fails there.
+- **`lint-format`** — `pnpm exec biome ci .` (format + lint + organizeImports, read-only — the exact CI command; `pnpm format` writes and `pnpm lint` only covers lint, so neither is the gate).
+- **`ts`** — `pnpm -r --if-present check` (tsc across the workspace; this is `pnpm check`'s TS half) **then** `pnpm -r test` (vitest in every package, including `tests/contract`'s schema-parity suite). The workspace vitest run is a required CI check — do not skip it.
+- **`rust`** — `cargo check --locked --manifest-path crates/core/Cargo.toml`, then `cargo test --locked --manifest-path crates/core/Cargo.toml`, then the schema-fixture staleness gate: `cargo test --locked --manifest-path crates/core/Cargo.toml regenerate_schema_fixtures` followed by `git add -N tests/contract/fixtures/ && git diff --exit-code tests/contract/fixtures/` (red if a `PayloadSpec` change wasn't re-committed). `crates/core` is the only crate, so this is the whole Rust gate.
+- **`e2e`** — `pnpm -C apps/web build` first if the feature touched `apps/web/**` or `packages/ui-sdk/**` (a fast pre-signal; e2e's globalSetup rebuilds it anyway), then `pnpm -C tests/e2e exec playwright install chromium` (idempotent — no-op if cached; the `-C tests/e2e` is load-bearing — Playwright is an `@inkstone/e2e` devDep, so a root `pnpm exec` can't resolve the binary), then `pnpm test:e2e` — **the entire e2e suite**, including any new specs the feature added. This is the bar the user expects: all e2e green, including the newly-added ones for this feature.
 - Any other repo-level test commands enumerated across the slices' `DECOMPOSE.md` "Test commands" sections; deduplicate and run each once.
 
 Write `FINAL-VERIFY/<iteration>.md` with the command/status table.
@@ -421,9 +420,24 @@ Final-iteration fixes are squashed onto `feature/<slug>` as `final-fix:` commits
 
 ### Landing the feature: one PR
 
-`feature/<slug>` holds the whole feature — one commit per slice (plus any `final-fix:` commits), all green. Land it as a **single PR**. No Graphite, no stacked PRs.
+`feature/<slug>` holds the whole feature — one commit per slice (plus any `final-fix:` commits), all green against the `master` the flow started from (`FEATURE_BASE`). But `master` has likely advanced since then. Rebase onto its current tip and re-clear the gate **before** pushing — never push a branch whose base is stale or whose local CI hasn't passed on the exact tree being pushed.
 
-From the repo root:
+Land it as a **single PR**. No Graphite, no stacked PRs.
+
+**Step 1 — rebase onto the latest `master`.** From the orchestrator's `master` checkout (working tree clean):
+
+```
+git fetch origin master
+git checkout feature/<slug>
+git rebase origin/master
+```
+
+- **Clean rebase** → the one-commit-per-slice (+`final-fix:`) history is now replayed on the current `master`. Append `rebased` to `STATE.md` (detail: the `origin/master` SHA). Continue to step 2.
+- **Conflicts** → resolve them in line with the slice that owns each hunk; `git rebase --continue` until clean. A conflict that can't be resolved without re-opening a design decision is a hard fail — append `rebase-conflict` (detail: the conflicting paths), write `BLOCKED.md`, and stop. Don't `-X ours`/`-X theirs` your way past a semantic clash.
+
+**Step 2 — re-run the full local CI gate on the rebased tip.** A clean rebase is not a green one: the new `master` can carry changes that break the feature (or vice-versa) with zero textual conflict. Re-run **Final phase 1** (the four-job CI mirror, in full) against the rebased `feature/<slug>`. Any failure → treat exactly as a Final phase 3 hard fail (fix on `flow/<slug>/final-iter<m>`, squash a `final-fix:` commit, counts toward the 3-iteration cap), then rebase-check again. Push only once the gate is green on the rebased tree; append `local-ci-passed` to `STATE.md` (detail: the rebased commit SHA).
+
+**Step 3 — push and open the PR.** From the repo root:
 
 ```
 git push -u origin feature/<slug>
@@ -434,8 +448,9 @@ gh pr create --base master --head feature/<slug> \
 
 Notes:
 - One PR, reviewed as a unit. The one-commit-per-slice history lets a reviewer walk the feature slice by slice.
+- The rebase is **non-destructive to `master`** — it only replays `feature/<slug>`'s own commits onto the fetched `origin/master`. It does not touch, fast-forward, or push `master`.
 - Pushing the feature branch and opening the PR is allowed; **merging to `master` is not** — the user owns the merge.
-- If the remote or `gh` isn't available, write the two commands above into `REPORT.md` as a copy-pasteable handoff instead of failing the flow.
+- If the remote or `gh` isn't available, the rebase can't fetch and the push can't run: skip steps 1 and 3, record in `REPORT.md` that the gate passed locally on the **pre-rebase** tip (CI and rebase unverified), and write the three commands above as a copy-pasteable handoff. The user rebases, re-gates, and pushes.
 
 Record the PR URL (or the handoff commands) in `REPORT.md`.
 

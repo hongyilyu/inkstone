@@ -1,6 +1,6 @@
 # Learned rules — Data & persistence (`data-persistence`)
 
-_21 rules. Loaded by the `dr-data-persistence` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_22 rules. Loaded by the `dr-data-persistence` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Persist state-change side effects only after the operation they represent succeeds  ·  `persist-only-after-operation-succeeds`
 - **Severity:** blocking  ·  **Support:** 3  ·  **Seen in:** #26167, #27002, #28434
@@ -27,6 +27,16 @@ _21 rules. Loaded by the `dr-data-persistence` specialist. Generated from rules.
 - **Rule:** State that can change outside the application (installed tool versions, external resources, deployed assets) must not be cached indefinitely (staleTime/gcTime Infinity, per-key cache maps with no deletion path) without an invalidation or forced re-probe on relevant triggers (step entry, selection/add/remove). After upgrading/reinstalling a binary or config that a long-lived process loaded into memory, restart or signal that process rather than relying on a version re-probe. Derive cache-version constants from a build identifier instead of a hand-edited literal.
 - **Detect:** Find query options with staleTime/gcTime set to Infinity, per-key cache maps written but with no deletion/invalidation path, upgrade/install functions that mutate on-disk artifacts followed only by a version re-probe (no process restart), or a literal CACHE_NAME/cache-version constant with no build-id/hash interpolation. Ask per hunk: can the underlying value change externally, and is there any reprobe/clear/restart/auto-roll path?
 
+## Do not back-fill missing persisted fields by re-running current selection logic  ·  `no-current-logic-backfill-for-missing-historical-field`
+- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #166, #800, #26227
+- **Rule:** When a newly-added field is absent on older persisted records, do not infer it by re-running current runtime/selection logic (session-id hash, current default, feature flag, percentage rollout) — that retroactively relabels history with a value that may differ from what was actually used. Use a neutral/legacy label or the known historical default when the field is missing.
+- **Detect:** Look for code reading an optional persisted field (metadata.provider, version, type) and, when absent, computing a substitute from current runtime state. Ask per hunk: could records predating this field have had a different real value than what the fallback now infers?
+
+## Write a terminal status to the durable row on every run outcome  ·  `persist-terminal-status-on-every-run-outcome`
+- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #22, #122, #175
+- **Rule:** Whenever an entity is durably persisted in a transient/running state, ensure every terminal outcome path (success, error, failed spawn, rollback) writes the terminal status back to the DB. Forwarding live events is not persistence. Also avoid moving a run into a parked/recovery state that the recovery query (which filters on pending) cannot observe, or the user is left with a decided card and a permanently stuck run.
+- **Detect:** An INSERT sets status='running'/'pending' but no UPDATE to 'completed'/'errored'/'failed' exists on the worker done/error path; or a rollback sets status back to 'parked' after a proposal decision was committed and notified. Ask: for every way a run can end, is there a DB write transitioning the persisted status, and can the recovery query still see it?
+
 ## Apply normalization at every read/replay/emit path, not only at write-time ingestion  ·  `normalize-at-emit-and-replay-not-just-ingest`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #26401
 - **Rule:** When you normalize, resize, or sanitize data, apply the same transform everywhere the data flows out, not only at the inbound write path. Emit events and invoke plugin hooks with the normalized data so consumers observe what is actually persisted and sent downstream (do not publish raw pre-transform payloads). Also add the safeguard at the read/replay path (e.g. toModelMessages) so already-stored oversized/invalid records and bypassed paths are normalized before use.
@@ -42,20 +52,10 @@ _21 rules. Loaded by the `dr-data-persistence` specialist. Generated from rules.
 - **Rule:** When loading a persisted set/list of IDs from disk into in-memory state, filter it against the currently-known/configured keys before storing and re-persisting, so the state file does not accumulate stale entries re-written on every change. For persisted records, retain one only if it holds actual material (tokens, payload, verifier), not when only a pure-qualifier/index field (url/id) is set, since a lone qualifier surfaces as a phantom entry through list/all/enumeration paths.
 - **Detect:** Find a normalize/keep predicate that returns an entry whenever any field is set, including a pure-qualifier field that is not real data — ask: can this entry be retained with only its qualifier set and then show up via all()/list? Separately, when a set/list is loaded from disk into state, check whether it is filtered against live config keys before being stored and re-persisted.
 
-## Do not back-fill missing persisted fields by re-running current selection logic  ·  `no-current-logic-backfill-for-missing-historical-field`
-- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #800, #26227
-- **Rule:** When a newly-added field is absent on older persisted records, do not infer it by re-running current runtime/selection logic (session-id hash, current default, feature flag, percentage rollout) — that retroactively relabels history with a value that may differ from what was actually used. Use a neutral/legacy label or the known historical default when the field is missing.
-- **Detect:** Look for code reading an optional persisted field (metadata.provider, version, type) and, when absent, computing a substitute from current runtime state. Ask per hunk: could records predating this field have had a different real value than what the fallback now infers?
-
 ## Strip all addressing/transport-only fields from a payload before persisting the canonical snapshot  ·  `strip-addressing-and-transport-only-fields-before-persisting`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #123, #131
 - **Rule:** When a payload mixes addressing/transport-only fields (target entity_id, source_journal_entry_id, other provenance directives) with data fields, strip ALL non-data fields before serializing into the canonical entity snapshot/revision. Use the target id only to select the row; persist a clean payload matching the entity's data schema. Stripping only the obvious id leaves provenance/addressing keys polluting the stored row and corrupting list/revision reads.
 - **Detect:** An update branch clones payload.as_object() and removes only entity_id then serializes into a data/snapshot column (entities.data, entity_revisions.data). Ask: are all non-data fields (source_journal_entry_id, target ids) removed, or do addressing/provenance keys leak into the persisted JSON?
-
-## Write a terminal status to the durable row on every run outcome  ·  `persist-terminal-status-on-every-run-outcome`
-- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #22, #122
-- **Rule:** Whenever an entity is durably persisted in a transient/running state, ensure every terminal outcome path (success, error, failed spawn, rollback) writes the terminal status back to the DB. Forwarding live events is not persistence. Also avoid moving a run into a parked/recovery state that the recovery query (which filters on pending) cannot observe, or the user is left with a decided card and a permanently stuck run.
-- **Detect:** An INSERT sets status='running'/'pending' but no UPDATE to 'completed'/'errored'/'failed' exists on the worker done/error path; or a rollback sets status back to 'parked' after a proposal decision was committed and notified. Ask: for every way a run can end, is there a DB write transitioning the persisted status, and can the recovery query still see it?
 
 ## Don't ON DELETE CASCADE a row whose id is also referenced from a store the cascade can't reach  ·  `restrict-cascade-or-cover-all-stores-for-cross-store-refs`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #127, #135
@@ -101,6 +101,11 @@ _21 rules. Loaded by the `dr-data-persistence` specialist. Generated from rules.
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #135
 - **Rule:** A shared validator that accepts an optional input (a provenance/anchor/relation field) is reused by a sibling write path that structurally cannot produce that input's side effect (e.g. a user/direct path with no Run/Message/anchor to write the corresponding source/relation row). On such a divergent path, explicitly REJECT the accepted-but-unhonorable field at the boundary rather than letting it pass shared validation and then persist with the side effect silently dropped. Detection: find a write/apply fn that calls a shared validate(...) accepting field X from the payload, then ask — can this path actually create X's persisted side effect (source/relation/join row)? If not, is X rejected, or silently discarded? Flag the silent-discard case.
 - **Detect:** A handler/apply fn hard-codes a struct field to None/default (e.g. `source: None`, `proposal_id: None`) where a shared `validate(...)` earlier in the same flow accepts that same field from the payload. Ask: can a caller supply the field, pass validation, and then have it silently discarded with no persisted effect?
+
+## In merge/partial updates where absent means preserve, emit an explicit null to clear a field  ·  `merge-update-omit-preserves-value-emit-null-to-clear`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #173
+- **Rule:** When an update path merges a partial payload onto stored state with the semantics 'absent key = leave unchanged, explicit null = clear', deleting a key from the partial does NOT clear the stored value. To clear a field (or a coupled field whose value must go away on a state change), emit an explicit null sentinel; relying on key-omission leaves stale stored data that can violate downstream invariants.
+- **Detect:** In a builder/overlay that produces a PARTIAL update payload merged onto stored state, find a branch that `delete obj.key` (or omits a key) intending to CLEAR or remove stored data. First confirm the merge contract: if the apply/merge path treats absent key = preserve and only an explicit null clears (e.g. Rust `if value.is_null() { map.remove(key) } else { map.insert(...) }`; absent keys skip the loop), then omission does NOT clear — it preserves the stale stored value. Highest risk: a status->active/non-terminal edit that deletes a coupled completed_at/dropped_at from the partial, where a downstream invariant checks `contains_key`/presence (not value-null). Ask: against THIS merge contract, does omitting the key actually clear the stored value, or must an explicit null sentinel be emitted? (Note: under a full-document REPLACE contract, omit == cleared and this is fine — the rule only bites partial/three-way merges.)
 
 ## Flipping a persisted default silently changes behavior for users missing the key  ·  `flipping-persisted-default-silently-shifts-absent-key-users`
 - **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #32277

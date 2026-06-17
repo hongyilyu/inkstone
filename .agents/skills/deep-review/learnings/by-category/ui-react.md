@@ -1,6 +1,6 @@
 # Learned rules — UI (React/Solid) (`ui-react`)
 
-_36 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_38 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Don't replace a wired feature with a placeholder shell on the mainline  ·  `do-not-orphan-wired-feature-behind-placeholder-shell`
 - **Severity:** blocking  ·  **Support:** 3  ·  **Seen in:** #10, #70, #2037
@@ -157,6 +157,11 @@ _36 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json —
 - **Rule:** A submit handler for a non-idempotent mutation must short-circuit re-entry while a prior save is in flight. The handler itself must early-return on the saving/pending flag (`if (saving) return;` before calling the mutation) — disabling the submit control (`disabled={saving}`) is complementary, NOT a substitute, because pressing Enter in a form field re-fires `onSubmit` even when the submit button is disabled. Flag a `<form onSubmit={h}>` / submit handler that calls `onSubmit()`/the mutation with a `saving`/`pending`/`isPending` flag in scope but no `if (saving) return` guard at the top of the handler.
 - **Detect:** A form onSubmit/handler that unconditionally calls onSubmit()/the mutation with a `saving`/`pending` state in scope but no `if (saving) return` guard and no disabled={saving} on the submit control.
 
+## Call preventDefault/ownership-claiming side effects before the first await in an event handler  ·  `suppress-default-action-before-async-boundary`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #32479
+- **Rule:** In an event handler that intends to fully own an action (e.g. suppress the platform/terminal default via preventDefault), any await before that suppression lets the default behavior fire during the async gap, causing duplicated or unwanted side effects. Move preventDefault (or the equivalent claim) before the first await on every path that means to take over handling.
+- **Detect:** In an event/keypress/paste handler, find an `await` that precedes `event.preventDefault()` (or stopPropagation/the suppression call) on a path that handles the event itself. Compare against sibling paths in the same handler that call preventDefault synchronously. Ask: can the default action run during the await, producing a duplicate insertion/navigation?
+
 ## Route user-facing strings (including aria-labels) through the existing i18n helper  ·  `route-user-facing-strings-through-i18n`
 - **Severity:** nit  ·  **Support:** 6  ·  **Seen in:** #492, #28420, #28442, #31208, #32331
 - **Rule:** In a file that already imports/uses an i18n helper (t(), language.t, useLanguage().t), flag newly added bare user-facing string literals — JSX text nodes and aria-label/title/placeholder/alt attributes — that sit alongside sibling strings already routed through the translation function. Do not flag files with no i18n helper, or non-user-facing strings (keys, test ids, class names, console logs).
@@ -171,6 +176,11 @@ _36 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json —
 - **Severity:** nit  ·  **Support:** 2  ·  **Seen in:** #132, #28032
 - **Rule:** Flag a derived/memoized display value computed from a lookup that can return undefined (Map.get, list.find, last-item access) used to drive UI without a ?? fallback to the current/selected value. Only raise when the undefined branch yields a visibly wrong or neutral state, not where undefined is already handled downstream or is the intended empty state.
 - **Detect:** Flag a createMemo/derived value computed from a lookup that can return undefined, used without a ?? fallback; ask whether the undefined branch produces a visually wrong/neutral state.
+
+## Don't flag a child for not resetting internal state on identity change when a parent keys it for remount  ·  `dont-flag-child-state-reset-when-parent-keys-remount`
+- **Severity:** nit  ·  **Support:** 2  ·  **Seen in:** #153, #162
+- **Rule:** Before flagging a component (editor/form) for failing to reset draft/baseline/local state when its target identity changes, check whether a parent mounts it with `key={<identity>}`. A key tied to the entity id forces React to fully unmount and remount the subtree on every identity switch, so useState/hook state is always fresh and an internal reset effect is unnecessary. Treat the absence of an internal reset as correct in that case.
+- **Detect:** When tempted to flag 'editor/form does not reset draft/baseline/local state on prop or entity change', first grep the mount site (route or parent owning selection) for `key={selected.id}` / `key={entity.id}` / `key={<changing-identity>}`. If the key equals the changing identity, React fully unmounts+remounts on each switch, so useState/hook state is already fresh — do NOT flag, and treat the missing reset effect as correct. Corroborate by confirming the child has no reset useEffect of its own. Ripgrep gotcha: search .tsx with `--type=ts` or `--glob '*.tsx'`; `--type=tsx` errors with 'unrecognized file type' and silently finds nothing, which is how the original reviewer missed the keyed mount.
 
 ## Provide a cancel/close/ESC path for editing overlays and modals  ·  `modal-needs-cancel-path`
 - **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #30253

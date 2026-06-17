@@ -1,6 +1,6 @@
 # Learned rules — Correctness & logic (`correctness`)
 
-_70 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_76 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Hand-rolled shell tokenizers must honor backslash-escape and single-quote semantics  ·  `shell-tokenizer-must-honor-quote-and-escape-rules`
 - **Severity:** blocking  ·  **Support:** 4  ·  **Seen in:** #4732, #4747, #4749, #4750
@@ -47,25 +47,40 @@ _70 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Rule:** When adding a provider/case to a negative capability gate (e.g. supports... && !isNewProvider), verify there is an alternate path that still honors that capability for the excluded case; disabling the gate with no replacement silently turns the user's setting into a no-op. Flag a new && !isX term added to a capability chain when grep finds no X-specific handling for that capability elsewhere.
 - **Detect:** A capability flag computed as a chain of !isProviderA && !isProviderB gains a new && !isProviderC term, and grep shows no provider-specific handling for ProviderC's reasoning/feature elsewhere.
 
+## Bound a computed value at the producer to the downstream strict validator's accepted range  ·  `bound-generated-value-to-downstream-validator-range`
+- **Severity:** blocking  ·  **Support:** 1  ·  **Seen in:** #172
+- **Rule:** When code computes a value (date year, length, id) that is later checked by a strict-format or range validator inside an enclosing transaction, bound or reject the value at the point it is generated. An out-of-range value produced upstream and rejected downstream aborts/rolls back the whole transaction instead of gracefully no-oping; also avoid lossy narrowing casts on a value that can exceed the target type's range.
+- **Detect:** Find arithmetic that produces a value (date year via interval*unit, a length/count/id) which is later serialized/formatted and handed to a strict-format or range validator (fixed-width like 4-digit year, range CHECK, length limit) whose failure rolls back an enclosing multi-step write/transaction. Ask: can the computed value exceed the validator's accepted range, and is it clamped or None-returned at the point of generation (before formatting), so an out-of-range case gracefully no-ops instead of aborting the whole tx? Secondary tell: a lossy narrowing cast (`x as u32`/`as i32`/`as u16`) on a value that can exceed the target type's range — but the primary signal is the producer/downstream-validator range mismatch, not the cast alone.
+
+## Recursive key-stripping rewrites must not treat user-named map values as keywords  ·  `tree-rewrite-must-distinguish-map-value-keys-from-keywords`
+- **Severity:** blocking  ·  **Support:** 1  ·  **Seen in:** #160
+- **Rule:** A recursive transform that deletes or rewrites object keys by name must distinguish nodes whose keys are a fixed vocabulary (keywords) from nodes that are maps of user/domain-controlled names. Applying the keyword rewrite uniformly to every object strips legitimate map entries that merely share a keyword's name, corrupting the output (and, for normalizers/comparators, silently hiding real differences).
+- **Detect:** Flag a recursive walk that does `delete out[KEYWORD]` or rewrites a fixed key name on every visited object without tracking parent context (no inSchemaMap/parentKey/inMap flag threaded through recursion). For JSON-Schema/OpenAPI-like trees, check whether values under map-keyword parents (properties, patternProperties, $defs, definitions, dependentSchemas) are walked as keyword-bearing schema nodes rather than as opaque name->subschema maps. Acute for normalizers/comparators: a stripped user field silently hides real drift. Ask: can a domain/user field legitimately be named the same as the stripped keyword, and would the rewrite then corrupt it?
+
 ## Parse and validate external/formatted strings robustly at the boundary  ·  `validate-and-parse-external-strings-robustly`
 - **Severity:** important  ·  **Support:** 10  ·  **Seen in:** #118, #171, #23407, #25773, #26095, #26535
 - **Rule:** Validate externally-supplied formatted strings at the boundary and fail on malformed input (e.g. 'provider/model' must yield non-empty halves). Prefer real parsers over incidental delimiters: URLSearchParams for URL fragments, shell-word parsing for argv, and extract the executable token before basename-matching a shell. Don't over-restrict values passed as discrete argv elements. Flag `.split` destructuring of user strings without both-half checks and ad-hoc `&`/`=`/`:` splitting of structured input.
 - **Detect:** Flag `.split("/")`/destructuring of user strings without checking both halves non-empty; `.split("&")`+`.split("=")` over URLs; `.split_whitespace()`/`.split(' ')` building argv for spawn/Command; `path.basename(shell)` where shell may contain flags; `str.includes(':')`/`split(':')` over free-form text; and strict allowlist regexes (`/^[A-Za-z0-9_.-]+$/`) rejecting values passed as separate argv entries.
 
 ## Preserve guards, side effects, ordering, and semantics when refactoring/extracting  ·  `preserve-behavior-and-side-effects-when-refactoring`
-- **Severity:** important  ·  **Support:** 8  ·  **Seen in:** #105, #135, #972, #3375, #19961, #25663
+- **Severity:** important  ·  **Support:** 9  ·  **Seen in:** #105, #135, #972, #3375, #19961, #25663
 - **Rule:** When refactoring or extracting, preserve existing early-return guards, side effects, and ordering. Flag a removed `if (!exists) return` that gated a side effect, removal of a render-time call establishing subscriptions, changed ordering of caching-sensitive assembled content, and a function whose body no longer matches its name (e.g. stops filtering by role). When a shared resolver gains a global 'last used' fallback, audit resume/restore callers.
 - **Detect:** Compare pre/post control flow: flag a removed `if (!exists) return` early-return that gated a side effect. Flag removal of `{someFn() ?? ""}` JSX where the name implies sync/subscribe. Compare relative order of assembled prompt pieces before/after. Compare a function's name/test description against its body (maps all items vs filtering by the implied role). When a shared resolver gains a global fallback, enumerate callers and flag resume/restore/historical paths.
+
+## Apply a fix, guard, or normalization to every code path with the same pattern  ·  `apply-fix-and-guards-to-all-sibling-paths`
+- **Severity:** important  ·  **Support:** 8  ·  **Seen in:** #135, #171, #21559, #23214, #26596, #27913
+- **Rule:** When you add a fix, guard, validation, normalization, or new parameter to one occurrence of a repeated pattern, apply the identical change to every sibling occurrence sharing that pattern (including flag-gated variants and all on* handlers), or annotate why one is intentionally different. Grep the diff's surrounding code for the same literal/pattern and confirm each got the change.
+- **Detect:** Grep the repo for the literal/pattern being patched (e.g. `filetype="markdown"`, a status check, a guard) and confirm every occurrence got the change. For a new disabled prop, check all on* handlers return early when disabled. For a new context/env param, check every internal call of the same family forwards it. For experimental Flag.* guards, verify the gated path also got the fix.
+
+## Special-cases and dispatch tables must enumerate all equivalent/producible values  ·  `dispatch-must-cover-all-producible-values`
+- **Severity:** important  ·  **Support:** 8  ·  **Seen in:** #152, #164, #3286, #4904, #25615, #27398
+- **Rule:** When dispatching or gating on a string/enum identifier, enumerate every value the producer can emit and equivalent sibling ids sharing the path; don't hardcode a subset that silently hits a default, and resolve configurable/renamable names rather than hardcoding one. Flag `x === "literal"` gates and cross-check against the producer's value set.
+- **Detect:** Find `providerID === "X"` / `if (label === "a" || "b")` / `agents.get("build")` gating behavior, then cross-reference the set of values the producer can return (EXT_TO_LANGUAGE values, sibling provider ids like X-anthropic, project markers used by sibling servers). Ask: are there equivalent ids/values that fall through to a default or trigger a fatal error?
 
 ## Don't use truthy/||/?? checks on values where 0, NaN, or false are valid  ·  `no-truthy-check-on-numeric-zero`
 - **Severity:** important  ·  **Support:** 7  ·  **Seen in:** #2037, #3162, #28557, #30672, #31021, #31157
 - **Rule:** When providing a fallback or gate for a value that can legitimately be 0, false, or NaN (timestamps, counts, indices, limits, opt-out flags), do not rely on truthiness (`if (x)`, `x || b`) or `??` alone where `??` is wrong for those cases. Use explicit `=== undefined`/`!= null` for absence, and `Number.isFinite(x)` checks for external numerics fed to timers/loops. Flag only when the value can realistically be 0/false/NaN.
 - **Detect:** Grep for `x || fallback`, `x ? ... : fallback`, `if (x)`, `!obj.field`, or `(a ?? b) === false` where the variable is numeric (named *limit*/*context*/*count*/*size*/*index*/*time*/*archived*) or a boolean opt-out flag. Ask per hunk: can this value be 0, NaN, or false, and would that wrongly trigger the fallback/override? For external numerics reaching setTimeout/setInterval, ask: can NaN or a negative slip past `?? default`?
-
-## Apply a fix, guard, or normalization to every code path with the same pattern  ·  `apply-fix-and-guards-to-all-sibling-paths`
-- **Severity:** important  ·  **Support:** 7  ·  **Seen in:** #135, #21559, #23214, #26596, #27913, #31283
-- **Rule:** When you add a fix, guard, validation, normalization, or new parameter to one occurrence of a repeated pattern, apply the identical change to every sibling occurrence sharing that pattern (including flag-gated variants and all on* handlers), or annotate why one is intentionally different. Grep the diff's surrounding code for the same literal/pattern and confirm each got the change.
-- **Detect:** Grep the repo for the literal/pattern being patched (e.g. `filetype="markdown"`, a status check, a guard) and confirm every occurrence got the change. For a new disabled prop, check all on* handlers return early when disabled. For a new context/env param, check every internal call of the same family forwards it. For experimental Flag.* guards, verify the gated path also got the fix.
 
 ## Readiness/active/empty-stream predicates must include every disqualifying or equivalent state  ·  `predicate-must-cover-all-relevant-states`
 - **Severity:** important  ·  **Support:** 7  ·  **Seen in:** #142, #20467, #23407, #26167, #27166, #28610
@@ -76,11 +91,6 @@ _70 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Severity:** important  ·  **Support:** 6  ·  **Seen in:** #25662, #25939, #25941, #27016, #30644, #31194
 - **Rule:** When you normalize/canonicalize an identifier or path, use the normalized form only as a cache/query key. Pass the original value to client/server side-effects, normalize BOTH sides of any comparison (or the config entries the same way), and route every matching-key/href builder through the same normalizer. Flag membership tests or client-factory calls fed a normalized value while sibling sites pass the raw value.
 - **Detect:** Flag `sdkFor(key)`/client-factory calls or membership tests (`includes`, `has`) fed a normalized value (`directoryKey(x)`, `realpath`, `.toLowerCase`) while sibling sites pass the raw value. Check `.normalize("NFC")` applied to the query but not the candidate items. When a diff adds a normalizer mapping A→B, grep for other uses of the original id building keys/hrefs not routed through it. When a useIsFetching/status key differs from the fetch's actual key, flag the mismatch.
-
-## Special-cases and dispatch tables must enumerate all equivalent/producible values  ·  `dispatch-must-cover-all-producible-values`
-- **Severity:** important  ·  **Support:** 6  ·  **Seen in:** #3286, #4904, #25615, #27398, #28347, #30253
-- **Rule:** When dispatching or gating on a string/enum identifier, enumerate every value the producer can emit and equivalent sibling ids sharing the path; don't hardcode a subset that silently hits a default, and resolve configurable/renamable names rather than hardcoding one. Flag `x === "literal"` gates and cross-check against the producer's value set.
-- **Detect:** Find `providerID === "X"` / `if (label === "a" || "b")` / `agents.get("build")` gating behavior, then cross-reference the set of values the producer can return (EXT_TO_LANGUAGE values, sibling provider ids like X-anthropic, project markers used by sibling servers). Ask: are there equivalent ids/values that fall through to a default or trigger a fatal error?
 
 ## Branch on, publish, and fall back from the resolved/effective value — not a raw or partial source  ·  `branch-on-resolved-value-not-raw-or-stale-source`
 - **Severity:** important  ·  **Support:** 6  ·  **Seen in:** #160, #2037, #23407, #31021, #31700
@@ -97,15 +107,15 @@ _70 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Rule:** Ensure matching regexes accept every legitimate input: multi-segment extensions (`.js.map`) via `(\.\w+)+$`, end-of-string as a valid boundary for streaming/partial input, and consistent character classes across validators for the same identifier type. Flag asset-classifying filename regexes ending in `\.\w+$` and regexes requiring a trailing separator on streamed text.
 - **Detect:** Flag filename regexes ending in `\.\w+$` used to classify build assets (does it match foo.js.map?). Flag regexes requiring a trailing blank-line/separator on streamed text (should `$` be an accepted boundary?). When a diff adds/changes an identifier-validation regex, compare its character class against other validators for the same concept (one allows `_`, another forbids it). Flag normalizers that lack an early `.trim()` while validation elsewhere trims.
 
+## Default/fallback branches and edge cases must implement the intended (not legacy/failing) behavior  ·  `default-branch-and-edge-cases-must-implement-intended-behavior`
+- **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #166, #23407, #26895, #28255
+- **Rule:** Ensure the undefined/default branch implements the intended new behavior, not a legacy constant. Distinguish real failures from valid edge cases: don't fail-closed on a valid baseline sentinel (e.g. git empty-tree hash), and don't drop the currently-selected entry from a derived list just because its status changed — surface or handle the disappearance. Flag `if (state.kind !== "ready") continue` loops that can exclude the active item.
+- **Detect:** When a feature adds a config option, check whether the undefined/default branch reproduces old behavior while only an explicit value triggers the new behavior. Flag early returns discarding a result on a known sentinel (emptyTreeHash). Find list-building loops with `if (state.kind !== "ready") continue` — can the active/selected item match the excluded state and cause a silent fallback?
+
 ## Documentation examples and capability claims must be accurate and runnable  ·  `docs-examples-must-be-runnable-and-true`
 - **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #137, #2426, #2607, #5332
 - **Rule:** Code examples in docs must be runnable as written: for lifecycle-sensitive commands (reload/restart) show the prerequisite (await ctx.waitForIdle() before ctx.reload()) or pick an example that works inline. User-facing onboarding/help/status copy must only claim capabilities that are true in every supported install/runtime mode, and warning/status messages should state the concrete consequence (e.g. an untrusted-project banner should say project-local extensions/config won't load), not just the state.
 - **Detect:** Docs snippets invoking reload/restart without the prerequisite await/wait step; onboarding/help strings asserting a concrete capability not guaranteed in all environments; or a warning/notice string describing a state with no clause explaining its effect.
-
-## Default/fallback branches and edge cases must implement the intended (not legacy/failing) behavior  ·  `default-branch-and-edge-cases-must-implement-intended-behavior`
-- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #23407, #26895, #28255
-- **Rule:** Ensure the undefined/default branch implements the intended new behavior, not a legacy constant. Distinguish real failures from valid edge cases: don't fail-closed on a valid baseline sentinel (e.g. git empty-tree hash), and don't drop the currently-selected entry from a derived list just because its status changed — surface or handle the disappearance. Flag `if (state.kind !== "ready") continue` loops that can exclude the active item.
-- **Detect:** When a feature adds a config option, check whether the undefined/default branch reproduces old behavior while only an explicit value triggers the new behavior. Flag early returns discarding a result on a known sentinel (emptyTreeHash). Find list-building loops with `if (state.kind !== "ready") continue` — can the active/selected item match the excluded state and cause a silent fallback?
 
 ## Guard browser/runtime globals and degrade gracefully when optional capabilities are missing  ·  `guard-environment-and-optional-runtime-capabilities`
 - **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #26282, #30253, #31309
@@ -172,10 +182,25 @@ _70 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Rule:** Don't map every media/attachment part to a single hardcoded output block type (e.g. `image_url`) without validating mediaType. Check the prefix against the expected family (image/*) and explicitly reject or route unsupported types (application/pdf, audio/*) to the correct block. Flag transforms hardcoding a provider block type without a mediaType check.
 - **Detect:** Flag transforms mapping media parts to a hardcoded provider block type (`type: "image_url"`) without checking the `mediaType` prefix; ask what happens for non-image media.
 
+## Don't loosen a boolean guard so it becomes true in default/unset cases  ·  `tighten-loosened-boolean-guards-against-default-cases`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #172, #29066
+- **Rule:** When loosening a boolean condition with added negation/OR (`!x ||`), verify it doesn't become true in a default/unset case and thereby widen behavior to cases the original excluded. A 'same/default' guard must stay sensitive to explicit overrides. Flag a changed condition that evaluates true when a field is unset (e.g. `!ag.model || (...)`).
+- **Detect:** Flag a changed boolean condition that adds `!x ||` or removes a truthiness requirement so it evaluates true when a field is unset (`!ag.model || (...)`); verify downstream effects aren't applied to explicitly-overridden inputs.
+
 ## Don't silently switch an aggregate's metric while labels describe only one  ·  `avoid-mislabeled-aggregate-metric-switching`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #2037, #31157
 - **Rule:** Don't let an aggregate silently switch which metric it computes via a fallback while the returned shape and UI labels describe only one metric. Make the metric explicit (a `metric` field with matching totals) or drop the fallback so missing data reads as no activity. Flag a ternary picking between two source metrics based on whether one is zero (`peakTokens > 0 ? day.tokens : day.count`) where labels assume one metric.
 - **Detect:** Look for a ternary picking between two different source metrics based on whether one is zero/empty (`peakTokens > 0 ? day.tokens : day.count`), where downstream labels/field names assume only one metric.
+
+## Reject blank/empty-string reference IDs at validation instead of treating empty as absent  ·  `reject-blank-reference-ids-at-validation`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #131, #166
+- **Rule:** Validate foreign-key/reference id fields with a non-empty-string check (id.trim().is_empty() => Err), not just value.is_string(). If empty strings are later filtered out as 'absent' before the existence/FK check, an empty string slips past validation and persists as neither null nor a valid reference, breaking downstream null/real-id queries.
+- **Detect:** A validator checks only value.is_string() for an id/reference field combined with a later .filter(|id| !id.is_empty()) before an existence check. Ask: can the payload set the reference to "" and bypass the existence check while still being stored?
+
+## Compute local calendar-day boundaries with Date arithmetic, not fixed-millisecond offsets  ·  `compute-local-calendar-boundaries-with-date-arithmetic-not-fixed-ms`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #115, #175
+- **Rule:** Compute local calendar-day boundaries (start of yesterday, last N days, start of week) with Date calendar arithmetic (setDate(getDate()-1) / setHours(0,0,0,0)), not by subtracting a fixed 86_400_000 ms / 24*60*60*1000 from local midnight. Across DST a calendar day is not 24h, so fixed-ms day math lands at the wrong wall-clock instant and mis-buckets items.
+- **Detect:** Date math subtracting a fixed 86_400_000 / 24*60*60*1000 constant from a local midnight to derive 'yesterday'/'last N days'. Fixed-ms day arithmetic for local-calendar buckets = DST bug.
 
 ## Add a unique tie-breaker to ORDER BY (and sort merged sources) when row order matters  ·  `order-by-unique-tiebreaker-when-row-order-matters`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #15, #25
@@ -212,16 +237,6 @@ _70 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Rule:** In functions polled on an interval, guard expensive idempotent actions (download, upload, fetch) against already-completed state: refresh metadata each poll but skip re-running when the done version matches the latest. Flag removal of an early-return/cache guard (`if (downloadedVersion) return`) in a known-polled function.
 - **Detect:** Flag removal of an early-return/cache guard in a function known to be polled on an interval (`if (downloadedUpdateVersion) return ...`). Without the guard, will an expensive action re-run every poll even when already completed for the same version?
 
-## Don't loosen a boolean guard so it becomes true in default/unset cases  ·  `tighten-loosened-boolean-guards-against-default-cases`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #29066
-- **Rule:** When loosening a boolean condition with added negation/OR (`!x ||`), verify it doesn't become true in a default/unset case and thereby widen behavior to cases the original excluded. A 'same/default' guard must stay sensitive to explicit overrides. Flag a changed condition that evaluates true when a field is unset (e.g. `!ag.model || (...)`).
-- **Detect:** Flag a changed boolean condition that adds `!x ||` or removes a truthiness requirement so it evaluates true when a field is unset (`!ag.model || (...)`); verify downstream effects aren't applied to explicitly-overridden inputs.
-
-## Reject blank/empty-string reference IDs at validation instead of treating empty as absent  ·  `reject-blank-reference-ids-at-validation`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #131
-- **Rule:** Validate foreign-key/reference id fields with a non-empty-string check (id.trim().is_empty() => Err), not just value.is_string(). If empty strings are later filtered out as 'absent' before the existence/FK check, an empty string slips past validation and persists as neither null nor a valid reference, breaking downstream null/real-id queries.
-- **Detect:** A validator checks only value.is_string() for an id/reference field combined with a later .filter(|id| !id.is_empty()) before an existence check. Ask: can the payload set the reference to "" and bypass the existence check while still being stored?
-
 ## Use partial validators for update paths; don't route partial edits through create validators  ·  `partial-update-validators-must-not-require-create-fields`
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #131
 - **Rule:** Partial-update/edit paths need partial validators: do not strip the id then call the create validator, which makes all create-required fields (name/title) mandatory on update and rejects valid partial edits. Validate only the fields present, then revalidate the merged result (existing + patch) in the apply path for full-object invariants.
@@ -231,11 +246,6 @@ _70 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #107
 - **Rule:** When several helpers dispatch on the same kind/type key, route them through one authoritative resolver that returns Err for unknown kinds rather than letting each match arm independently fall back to a synthesized default. A split contract — one helper rejects unknown kinds while siblings (render/schema_version) fabricate defaults — lets an unsupported entity be silently stamped as a wrong default instead of failing fast.
 - **Detect:** Multiple fns match on the same kind/type string where one has `_ => Err(...)` but another has `_ => <real default value>`. Ask: can an unknown kind reach the fabricating helper without first being rejected by the validating one?
-
-## Compute local calendar-day boundaries with Date arithmetic, not fixed-millisecond offsets  ·  `compute-local-calendar-boundaries-with-date-arithmetic-not-fixed-ms`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #115
-- **Rule:** Compute local calendar-day boundaries (start of yesterday, last N days, start of week) with Date calendar arithmetic (setDate(getDate()-1) / setHours(0,0,0,0)), not by subtracting a fixed 86_400_000 ms / 24*60*60*1000 from local midnight. Across DST a calendar day is not 24h, so fixed-ms day math lands at the wrong wall-clock instant and mis-buckets items.
-- **Detect:** Date math subtracting a fixed 86_400_000 / 24*60*60*1000 constant from a local midnight to derive 'yesterday'/'last N days'. Fixed-ms day arithmetic for local-calendar buckets = DST bug.
 
 ## Bucket time-ordered items by their own timestamps, not fixed array indices  ·  `bucket-time-ordered-items-by-timestamp-not-array-index`
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #11
@@ -326,6 +336,26 @@ _70 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #144
 - **Rule:** When an env var overrides a path/config base, treat a present-but-empty value as unset: an empty string becomes a relative path that resolves against the process CWD, silently relocating the DB/config/skills dir. Filter empty before use (`.filter(|d| !d.is_empty())` in Rust, `if (!x)` / `x === ""` in TS) and fall through to the computed default. Flag a presence-only override (`if let Some(v) = env::var_os(X)` / `const v = process.env.X` used directly in PathBuf::from / path.join / a returned path) that lacks an empty-string filter, UNLESS an empty value is genuinely meaningful at this site. Bonus: when one sibling resolver filters empty (e.g. XDG_DATA_HOME) and a peer does not, flag the inconsistency.
 - **Detect:** Grep for `env::var_os(X)` / `process.env.X` used directly as a path base (PathBuf::from, path.join, return) with only a presence check (`if let Some` / `if (x)`); ask: is an empty string filtered out (`.filter(|d| !d.is_empty())`, `if x === ""`) before it becomes a relative/CWD-rooted path?
+
+## A by-key/path loader must enforce the same eligibility filter as discovery so it can't load what discovery rejected  ·  `route-direct-load-through-same-discovery-eligibility-gate`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #171
+- **Rule:** When a resource is both surfaced through a filtered discovery/advertised list AND directly loadable by key or path, route the direct loader through the same eligibility gate. Otherwise an item discovery deliberately dropped (malformed, missing/duplicate/mismatched metadata, failed safety check) is still reachable by direct load, so the loadable set diverges from the advertised set.
+- **Detect:** Find two siblings over the same resource set: a discovery/scan/list function that applies an eligibility filter before advertising items (drops malformed, missing/duplicate/mismatched metadata, or items that fail a safety check), AND a loader that resolves a single item directly by key, name, or path (e.g. reads `<base>/<name>/FILE`, `map.get(id)` against a raw store, `import(pathFor(name))`) WITHOUT going through that filter. Ask: can the direct loader return an item the scan deliberately dropped? Prioritize cases where a dropped reason is a safety/validity check — then the by-key loader is a reachability bypass, not just a divergence.
+
+## Reconcile id namespaces before matching an item from one source against a store populated by another  ·  `reconcile-id-namespaces-before-cross-source-match`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #169
+- **Rule:** When code looks up or matches an entity by id where the id comes from one source (server search, persisted record) but the target collection may hold a different id namespace for the same logical item (e.g. optimistic/locally-minted client ids vs server-assigned ids), reconcile or translate the namespaces first. A direct equality match silently never fires for items that exist under the other namespace, leaving the feature a no-op.
+- **Detect:** Trigger when a collection is populated by TWO paths that mint ids differently for the same logical item — a live/optimistic path assigning local ids (counter like `m${n}`, `temp-`, client-side `crypto.randomUUID`) AND a server/persisted/hydration path carrying wire ids — then a guard/lookup `coll.some(x => x.id === incomingId)` / `.find` / `Map.get(incomingId)` matches an `incomingId` sourced from the server/search/persisted side. Ask: for an item created in the current session (present under the LOCAL id, not yet re-hydrated under its wire id), does this equality ever pass, or does the feature silently no-op until a reload swaps ids? If a test only exercises the post-reload/cold-hydrated path, the warm-session divergence is likely unproven.
+
+## Gate a transition side effect on the exact source state, not the negation of one target state  ·  `gate-transition-side-effect-on-source-state-not-target-negation`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #172
+- **Rule:** When a side effect should fire only on a specific state transition (e.g. active->completed), gate it on the precise source state (prior == active), not on the negation of the target (prior != completed). The negated form also fires for other source states (e.g. dropped->completed, absent->completed) that should not trigger the effect, spawning/mutating where the intended transition never occurred.
+- **Detect:** Flag a side effect (spawn/insert/persist/notify) gated by `prior_state != "<target>" && new_state == "<target>"` (any `oldX != T && newX == T`, including when prior is read with a `.unwrap_or("<default>")`). Enumerate every value `prior` can hold besides the intended source — other enum literals (dropped, on_hold) and the absent/default fallback. If ANY of them satisfies `!= target` yet is a transition the effect must NOT run for, require the precise source instead: `prior == "<intended-source>"`. Distinct from narrow-predicate rules: here the guard is too BROAD on the source side of a transition.
+
+## Use full git history (fetch-depth: 0) when a later step needs ancestor commits  ·  `fetch-full-git-history-for-history-dependent-operations`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #32554
+- **Rule:** A CI/checkout step that uses a default shallow clone will be missing ancestor/base commits; any later operation that requires those commits (fetching a bundle, diffing against a base branch, git describe, merge-base) can fail intermittently when the base branch advances. When a job consumes a branch bundle, computes a diff against a base ref, or otherwise depends on commit history beyond the tip, fetch full history.
+- **Detect:** In a CI workflow diff, flag a job ONLY when BOTH hold: (a) its checkout uses default/shallow depth — an actions/checkout step with no `fetch-depth:` or `fetch-depth: 1` (or git-clone with `--depth`); AND (b) a later step in the SAME job consumes commit history beyond the tip: `git fetch <something>.bundle`, `git merge-base`, `git describe`, `git diff <base>..`/`<base>...`, `git log <base>..`, `git rev-list ^origin/<base>`, or `git cherry`. A bare `git fetch origin <base>` earlier in the job is NOT sufficient — it does not unshallow the checkout clone. When both (a) and (b) co-occur, require `fetch-depth: 0` on the checkout. Do not flag a default-depth checkout that has no history-dependent consumer.
 
 ## Don't append a separator/newline to output that may already end with one  ·  `no-double-separator-on-already-terminated-output`
 - **Severity:** nit  ·  **Support:** 2  ·  **Seen in:** #440, #30547

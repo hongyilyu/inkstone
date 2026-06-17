@@ -1,6 +1,6 @@
 # Learned rules — Error handling (`error-handling`)
 
-_23 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_25 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Do not swallow errors silently in catch/handler blocks  ·  `no-silent-error-swallowing`
 - **Severity:** important  ·  **Support:** 7  ·  **Seen in:** #24, #71, #125, #25516, #27936, #28207
@@ -101,6 +101,16 @@ _23 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.js
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #135
 - **Rule:** When an apply/mutation path inserts a row into a join/refs/association table that references two or more entities via foreign keys (e.g. entity_refs keyed on source_entity_id + target_entity_id), the pre-apply boundary validator must confirm EVERY referent exists (and is the right type) — not just one side. Validating only the target (or only the source) lets a missing/stale referent on the unchecked side trip the database FK at insert/commit and surface as an opaque internal/-32603 error instead of a client-correctable invalid-or-target-missing error. Detection: a validator runs entity_is_type/entity_type_by_id on target_entity_id but never on source_entity_id (or vice versa), while the apply path inserts into the join/refs table before it loads/reads the unchecked side. Ask: if the unchecked referent has been deleted, does this become a raw FK/internal error rather than a structured client error?
 - **Detect:** A pre-apply validator checks target_entity_id but not source_entity_id (or vice versa) while the apply path inserts into a join/refs table before loading the unchecked side; ask whether a missing referent becomes an FK/internal error.
+
+## Salvage a message's correlation id from the raw payload before strict schema decode can fail  ·  `salvage-correlation-id-before-strict-decode`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #154
+- **Rule:** When a message/envelope that carries a correlation id (run/request/trace id) is parsed and then strictly schema-decoded, extract the correlation id from the raw parsed object BEFORE the full decode. If decode fails on some other field, the error path can still emit a diagnostic joinable to the original operation instead of an empty/placeholder id, preserving the trace correlation for the recoverable (non-syntax) failure class.
+- **Detect:** Find a decode pipeline where the correlation id is read only off the fully-decoded struct, while an error/catch path logs with `id: ""`/default on decode failure. Ask: when the raw JSON parses but schema decode fails on an unrelated field, is the already-present id salvaged from the raw object, or lost — breaking the diagnostic join?
+
+## Initialization of optional/diagnostic infrastructure must fail-open, not abort startup  ·  `optional-observability-subsystem-init-must-fail-open`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #151
+- **Rule:** Setup of an optional, non-product subsystem (logging/tracing sink, metrics, telemetry, crash reporter) must not be a hard availability dependency at boot. Propagating its init error with `?`/throw turns a recoverable condition (e.g. an unwritable log dir) into a full startup failure, even though deleting the artifact changes no product behavior. Initialize it fail-open: on error, emit a single distinctive stderr marker and continue booting. Detection: a boot/startup sequence calls `<observability>::init()?` / `await initLogging()` whose failure propagates to the process entrypoint, while the subsystem is documented as derived/lossy/optional and its other sinks already degrade silently. Ask: should an unwritable log/metrics path crash the whole service?
+- **Detect:** In a process/service startup sequence, an init call for an optional/diagnostic subsystem (logging/tracing sink, metrics, telemetry, crash reporter) propagates its error to the entrypoint — Rust `logging::init()?` / `tracing_subscriber...try_init()?`, or JS `await initLogging()` that can throw — so the whole boot aborts. Discriminator (the deletion test): if you deleted this subsystem's output artifact, would any PRODUCT behavior change? If no, its init is not an availability dependency. Flag when such an init can fail on an environmental condition (unwritable/absent log/metrics dir, missing sink path) and that failure isn't caught. Stronger signal: a sibling sink for the same subsystem already degrades silently (env-gated try/catch, best-effort) — the boot path should match it. Fix: catch the error, emit one distinctive stderr marker, and continue booting.
 
 ## Preserve underlying error cause/details in user-facing and log messages  ·  `preserve-error-cause-in-messages`
 - **Severity:** nit  ·  **Support:** 4  ·  **Seen in:** #4133, #28207, #29635, #29784

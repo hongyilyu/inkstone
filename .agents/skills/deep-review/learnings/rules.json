@@ -5,7 +5,7 @@
     "raw_insights": 374,
     "rules_kept": 148,
     "rules_dropped_in_verification": 34,
-    "version": 4,
+    "version": 5,
     "sources": [
       "anomalyco/opencode (bootstrap)",
       "earendil-works/pi (Copilot+human)",
@@ -23,6 +23,18 @@
         "new_rules": 17,
         "reinforced": 38,
         "dropped_in_verification": 12
+      },
+      {
+        "date": "2026-06-17",
+        "sources": [
+          "hongyilyu/inkstone",
+          "anomalyco/opencode",
+          "earendil-works/pi"
+        ],
+        "comments_mined": 91,
+        "new_rules": 18,
+        "reinforced": 18,
+        "dropped_in_verification": 3
       }
     ]
   },
@@ -53,7 +65,7 @@
       "category": "correctness",
       "title": "Normalize only for cache keys; preserve and re-match the original value everywhere else",
       "rule": "When you normalize/canonicalize an identifier or path, use the normalized form only as a cache/query key. Pass the original value to client/server side-effects, normalize BOTH sides of any comparison (or the config entries the same way), and route every matching-key/href builder through the same normalizer. Flag membership tests or client-factory calls fed a normalized value while sibling sites pass the raw value.",
-      "detection_hint": "Flag `sdkFor(key)`/client-factory calls or membership tests (`includes`, `has`) fed a normalized value (`directoryKey(x)`, `realpath`, `.toLowerCase`) while sibling sites pass the raw value. Check `.normalize(\"NFC\")` applied to the query but not the candidate items. When a diff adds a normalizer mapping A→B, grep for other uses of the original id building keys/hrefs not routed through it. When a useIsFetching/status key differs from the fetch's actual key, flag the mismatch.",
+      "detection_hint": "Flag `sdkFor(key)`/client-factory calls or membership tests (`includes`, `has`) fed a normalized value (`directoryKey(x)`, `realpath`, `.toLowerCase`) while sibling sites pass the raw value. Check `.normalize(\"NFC\")` applied to the query but not the candidate items. When a diff adds a normalizer mapping A\u2192B, grep for other uses of the original id building keys/hrefs not routed through it. When a useIsFetching/status key differs from the fetch's actual key, flag the mismatch.",
       "severity": "important",
       "example_prs": [
         25662,
@@ -100,6 +112,7 @@
       "severity": "important",
       "example_prs": [
         135,
+        171,
         21559,
         23214,
         26596,
@@ -107,9 +120,10 @@
         31283,
         32263
       ],
-      "support_count": 7,
+      "support_count": 8,
       "reinforced_by": [
-        "opencode"
+        "opencode",
+        "inkstone"
       ]
     },
     {
@@ -165,12 +179,14 @@
         25663,
         28082,
         28290,
-        31395
+        31395,
+        32479
       ],
-      "support_count": 8,
+      "support_count": 9,
       "reinforced_by": [
         "inkstone",
-        "pi"
+        "pi",
+        "opencode"
       ]
     },
     {
@@ -181,6 +197,8 @@
       "detection_hint": "Find `providerID === \"X\"` / `if (label === \"a\" || \"b\")` / `agents.get(\"build\")` gating behavior, then cross-reference the set of values the producer can return (EXT_TO_LANGUAGE values, sibling provider ids like X-anthropic, project markers used by sibling servers). Ask: are there equivalent ids/values that fall through to a default or trigger a fatal error?",
       "severity": "important",
       "example_prs": [
+        152,
+        164,
         3286,
         4904,
         25615,
@@ -189,10 +207,11 @@
         30253,
         32191
       ],
-      "support_count": 6,
+      "support_count": 8,
       "reinforced_by": [
         "pi",
-        "opencode"
+        "opencode",
+        "inkstone"
       ]
     },
     {
@@ -213,8 +232,8 @@
     {
       "id": "branch-on-resolved-value-not-raw-or-stale-source",
       "category": "correctness",
-      "title": "Branch on, publish, and fall back from the resolved/effective value — not a raw or partial source",
-      "rule": "Downstream code must use the resolved/effective value from a resolver, fallback chain, or override — not a raw stored key or single source's type. Publish the resolver output (not state.active) to globals, branch on which source actually won (not just auth.type) in a fallback chain, pick fallbacks from the complete effective collection, and compute derived values from the overridden value. Flag effects assigning a global from a raw field where a diverging resolver exists.",
+      "title": "Branch on, publish, and fall back from the resolved/effective value \u2014 not a raw or partial source",
+      "rule": "Downstream code must use the resolved/effective value from a resolver, fallback chain, or override \u2014 not a raw stored key or single source's type. Publish the resolver output (not state.active) to globals, branch on which source actually won (not just auth.type) in a fallback chain, pick fallbacks from the complete effective collection, and compute derived values from the overridden value. Flag effects assigning a global from a raw field where a diverging resolver exists.",
       "detection_hint": "Find an effect assigning `window.*`/a global from a raw stored field (state.active) where a resolver (current()/computed) exists that can diverge. Find a `?? `-chain resolving a credential followed by `if (auth?.type === ...)` that can fire even when an earlier source won. Find removal/fallback logic searching `store.list` when a broader accessor (allServers()) exists. Find `effectiveLimit(...)` introduced but the base `input.model` still passed to derived computations.",
       "severity": "important",
       "example_prs": [
@@ -234,22 +253,26 @@
       "id": "default-branch-and-edge-cases-must-implement-intended-behavior",
       "category": "correctness",
       "title": "Default/fallback branches and edge cases must implement the intended (not legacy/failing) behavior",
-      "rule": "Ensure the undefined/default branch implements the intended new behavior, not a legacy constant. Distinguish real failures from valid edge cases: don't fail-closed on a valid baseline sentinel (e.g. git empty-tree hash), and don't drop the currently-selected entry from a derived list just because its status changed — surface or handle the disappearance. Flag `if (state.kind !== \"ready\") continue` loops that can exclude the active item.",
-      "detection_hint": "When a feature adds a config option, check whether the undefined/default branch reproduces old behavior while only an explicit value triggers the new behavior. Flag early returns discarding a result on a known sentinel (emptyTreeHash). Find list-building loops with `if (state.kind !== \"ready\") continue` — can the active/selected item match the excluded state and cause a silent fallback?",
+      "rule": "Ensure the undefined/default branch implements the intended new behavior, not a legacy constant. Distinguish real failures from valid edge cases: don't fail-closed on a valid baseline sentinel (e.g. git empty-tree hash), and don't drop the currently-selected entry from a derived list just because its status changed \u2014 surface or handle the disappearance. Flag `if (state.kind !== \"ready\") continue` loops that can exclude the active item.",
+      "detection_hint": "When a feature adds a config option, check whether the undefined/default branch reproduces old behavior while only an explicit value triggers the new behavior. Flag early returns discarding a result on a known sentinel (emptyTreeHash). Find list-building loops with `if (state.kind !== \"ready\") continue` \u2014 can the active/selected item match the excluded state and cause a silent fallback?",
       "severity": "important",
       "example_prs": [
+        166,
         23407,
         26895,
         28255
       ],
-      "support_count": 3
+      "support_count": 4,
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "guard-environment-and-optional-runtime-capabilities",
       "category": "correctness",
       "title": "Guard browser/runtime globals and degrade gracefully when optional capabilities are missing",
       "rule": "Guard browser-only globals (self, window, document, requestAnimationFrame, Worker) with `typeof` checks or move them into client-only lifecycle hooks, especially at module-evaluation time and when sibling code in the same file already guards them. When an optional capability is missing, provide a degraded fallback rather than rendering nothing. Flag top-level reads of window/document/self without a typeof guard.",
-      "detection_hint": "Flag top-level/module-scope reads/writes of self/window/document/navigator without a `typeof` guard. Flag direct rAF/cancelAnimationFrame/document.* calls without `typeof X === \"function\"` when other functions in the file have the guard. Flag `if (typeof Worker === \"undefined\") return [() => undefined]` — does the missing-capability branch disable the feature entirely or degrade?",
+      "detection_hint": "Flag top-level/module-scope reads/writes of self/window/document/navigator without a `typeof` guard. Flag direct rAF/cancelAnimationFrame/document.* calls without `typeof X === \"function\"` when other functions in the file have the guard. Flag `if (typeof Worker === \"undefined\") return [() => undefined]` \u2014 does the missing-capability branch disable the feature entirely or degrade?",
       "severity": "important",
       "example_prs": [
         26282,
@@ -277,7 +300,7 @@
       "category": "correctness",
       "title": "Don't leave half-mutated state on failure or mark state live before the update applies",
       "rule": "Build results into a new array/object (or use per-item error handling) so a mid-iteration throw can't leave a partially-mutated structure; commit only after the full transform succeeds. Perform 'touch'/mark-live side effects only AFTER the guards (`!parts`/`!found` early returns) that confirm the update applied. Flag in-place element assignment in a loop body that can throw, and mark-live calls placed before bail-out guards.",
-      "detection_hint": "Find loops assigning into an existing object/array element (`config.plugin[i] = await resolve(...)`) where the body can throw — if iteration N throws, are items 0..N-1 mutated while N+ are not? Find a touch/mark-live call placed before early-return guards (`!parts`, `!found`) — if the guards bail, was state already marked live for an unapplied delta?",
+      "detection_hint": "Find loops assigning into an existing object/array element (`config.plugin[i] = await resolve(...)`) where the body can throw \u2014 if iteration N throws, are items 0..N-1 mutated while N+ are not? Find a touch/mark-live call placed before early-return guards (`!parts`, `!found`) \u2014 if the guards bail, was state already marked live for an unapplied delta?",
       "severity": "important",
       "example_prs": [
         29208,
@@ -290,7 +313,7 @@
       "category": "correctness",
       "title": "Guard nested spreads against undefined and String.replace against $-patterns",
       "rule": "Guard nested object spreads of possibly-undefined optional properties with a default (`{ ...(meta.icon ?? {}) }`). When using String.replace with a replacement containing arbitrary dynamic text (e.g. a filesystem path), use a function replacer so `$&`/`$$` patterns aren't interpreted. Flag `.replace(pattern, str)` where `str` holds user/path-derived text.",
-      "detection_hint": "Find `...obj.prop` inside an object literal where obj is partial/Optional (`?:` in its type) and prop isn't guaranteed present, lacking a `?? {}` guard. Find `.replace(pattern, str)` where `str` is or contains a variable holding user/filesystem-derived text — recommend a function replacer.",
+      "detection_hint": "Find `...obj.prop` inside an object literal where obj is partial/Optional (`?:` in its type) and prop isn't guaranteed present, lacking a `?? {}` guard. Find `.replace(pattern, str)` where `str` is or contains a variable holding user/filesystem-derived text \u2014 recommend a function replacer.",
       "severity": "important",
       "example_prs": [
         2037,
@@ -322,8 +345,8 @@
       "id": "select-by-preference-and-enforce-limits-independently",
       "category": "correctness",
       "title": "Select by stated preference order and keep limit checks independent of optional transforms",
-      "rule": "When multiple candidates satisfy a constraint, pick the first acceptable in preference order, not the globally smallest — don't re-sort and discard intended ordering. Separate a limit/validation check from an optional transform so disabling the transform doesn't skip the limit. Flag `.filter(<=limit).sort(bySize)[0]` and `if (!flag) return input` placed before validation.",
-      "detection_hint": "Flag `.filter(... <= limit).sort((a,b)=>a.size-b.size)[0]` — does this discard an implicit quality/preference order among items that all pass? Flag `if (!flag) return input` sitting before validation logic — does disabling the flag also skip a documented limit/safety check?",
+      "rule": "When multiple candidates satisfy a constraint, pick the first acceptable in preference order, not the globally smallest \u2014 don't re-sort and discard intended ordering. Separate a limit/validation check from an optional transform so disabling the transform doesn't skip the limit. Flag `.filter(<=limit).sort(bySize)[0]` and `if (!flag) return input` placed before validation.",
+      "detection_hint": "Flag `.filter(... <= limit).sort((a,b)=>a.size-b.size)[0]` \u2014 does this discard an implicit quality/preference order among items that all pass? Flag `if (!flag) return input` sitting before validation logic \u2014 does disabling the flag also skip a documented limit/safety check?",
       "severity": "important",
       "example_prs": [
         26401
@@ -334,7 +357,7 @@
       "id": "use-documented-library-apis-and-avoid-magic-heuristics",
       "category": "correctness",
       "title": "Use documented library APIs; don't invent members or present heuristics as authoritative",
-      "rule": "Introspect library values only via documented utilities; don't invent property/method names that may not exist and fail at runtime, especially in handlers that must not throw. Don't present a local heuristic (char-count/4) as authoritative token/billing usage — label estimates and prefer provider-reported values, reusing an already-computed sum. Flag ad-hoc member access on library objects and `charCount / 4` token estimates.",
+      "rule": "Introspect library values only via documented utilities; don't invent property/method names that may not exist and fail at runtime, especially in handlers that must not throw. Don't present a local heuristic (char-count/4) as authoritative token/billing usage \u2014 label estimates and prefer provider-reported values, reusing an already-computed sum. Flag ad-hoc member access on library objects and `charCount / 4` token estimates.",
       "detection_hint": "Flag access to ad-hoc properties/methods on library objects that aren't standard members of the type (cause.reasons, Cause.isDieReason), especially in handlers that must not throw. Flag arithmetic dividing character counts by a constant (`/4`) to produce a 'tokens'/usage value, and recomputation of an expression already stored in a local.",
       "severity": "important",
       "example_prs": [
@@ -347,8 +370,8 @@
       "id": "ephemeral-features-intercept-before-unconditional-setup",
       "category": "correctness",
       "title": "Intercept no-side-effect features before unconditional setup runs",
-      "rule": "For features meant to have no side effects (ephemeral/no-persist), intercept them before earlier unconditional setup (session creation, navigation) in the same handler, or skip that setup for the ephemeral path. Don't clear a tombstone/unavailable flag on a generic update event — only for events explicitly representing a restore. Flag an ephemeral branch preceded by unconditional state mutation, and unavailable-flag clears on every non-delete path.",
-      "detection_hint": "For a new branch handling an 'ephemeral'/'no-persist' command, ask: does an earlier unconditional statement in the same handler already mutate state (create session, navigate) before this branch runs? Flag an update/event handler setting an unavailable/deleted flag to undefined on every non-delete path — can that event legitimately restore the entity?",
+      "rule": "For features meant to have no side effects (ephemeral/no-persist), intercept them before earlier unconditional setup (session creation, navigation) in the same handler, or skip that setup for the ephemeral path. Don't clear a tombstone/unavailable flag on a generic update event \u2014 only for events explicitly representing a restore. Flag an ephemeral branch preceded by unconditional state mutation, and unavailable-flag clears on every non-delete path.",
+      "detection_hint": "For a new branch handling an 'ephemeral'/'no-persist' command, ask: does an earlier unconditional statement in the same handler already mutate state (create session, navigate) before this branch runs? Flag an update/event handler setting an unavailable/deleted flag to undefined on every non-delete path \u2014 can that event legitimately restore the entity?",
       "severity": "important",
       "example_prs": [
         25615,
@@ -361,7 +384,7 @@
       "category": "correctness",
       "title": "Preserve Request headers when wrapping fetch and keep listener/redirect hosts consistent",
       "rule": "When wrapping fetch and rebuilding headers, seed them from `requestInput.headers` when requestInput is a Request (not just init.headers), then layer overrides, so carried headers aren't dropped. Keep an OAuth/loopback listener host consistent with the redirect/authorize URL host (binding 127.0.0.1 while redirecting to localhost can fail on IPv6). Flag header construction from `init?.headers` only when requestInput may be a Request, and listener-vs-redirect host mismatches.",
-      "detection_hint": "Find a fetch override constructing headers from `init?.headers` only, then `fetch(requestInput, { ...init, headers })` — if requestInput is a Request with its own headers, are they preserved? Compare `server.listen(port, host)` host against the redirect_uri/authorize host — does one use '127.0.0.1' while the other uses 'localhost'?",
+      "detection_hint": "Find a fetch override constructing headers from `init?.headers` only, then `fetch(requestInput, { ...init, headers })` \u2014 if requestInput is a Request with its own headers, are they preserved? Compare `server.listen(port, host)` host against the redirect_uri/authorize host \u2014 does one use '127.0.0.1' while the other uses 'localhost'?",
       "severity": "important",
       "example_prs": [
         28557,
@@ -373,8 +396,8 @@
       "id": "resolve-relative-paths-against-intended-base-not-cwd",
       "category": "correctness",
       "title": "Resolve relative paths against the intended base directory, not process CWD",
-      "rule": "Resolve relative path inputs against the explicit intended base directory (e.g. `path.resolve(worktree, file)`), not process CWD, for deterministic normalization. Treat a worktree of '/' or undefined as invalid and fall back to the project dir — a plain `worktree || fallback` misses '/' since it is truthy. Flag `path.resolve(x)`/`process.cwd()` joins where a specific base exists, and `x.worktree || fallback`.",
-      "detection_hint": "Flag `path.resolve(x)` / `path.join(process.cwd(), x)` where x may be relative but the logic compares against a specific base (worktree/root). Flag `x.worktree || fallback` cwd resolution — can worktree be '/' for non-git repos, bypassing the fallback?",
+      "rule": "Resolve relative path inputs against the explicit intended base directory (e.g. `path.resolve(worktree, file)`), not process CWD, for deterministic normalization. Treat a worktree of '/' or undefined as invalid and fall back to the project dir \u2014 a plain `worktree || fallback` misses '/' since it is truthy. Flag `path.resolve(x)`/`process.cwd()` joins where a specific base exists, and `x.worktree || fallback`.",
+      "detection_hint": "Flag `path.resolve(x)` / `path.join(process.cwd(), x)` where x may be relative but the logic compares against a specific base (worktree/root). Flag `x.worktree || fallback` cwd resolution \u2014 can worktree be '/' for non-git repos, bypassing the fallback?",
       "severity": "important",
       "example_prs": [
         3241,
@@ -390,7 +413,7 @@
       "id": "classify-path-prefixes-independent-of-env-resolution-and-data-source-swaps",
       "category": "correctness",
       "title": "Classify path-like prefixes independent of env resolution; verify env-var data-source swaps are populated",
-      "rule": "Recognize a path-like prefix ($VAR/..., %VAR%/...) as path-like regardless of whether the env var currently resolves, then fail as a missing file or throw a targeted config error naming the variable — don't reroute a local path through the package branch because the var is unset. When replacing a data source with an optional default-empty env var, verify some workflow/script sets it. Flag classification gated on `!!process.env[name]` and new empty-default env reads with no setter.",
+      "rule": "Recognize a path-like prefix ($VAR/..., %VAR%/...) as path-like regardless of whether the env var currently resolves, then fail as a missing file or throw a targeted config error naming the variable \u2014 don't reroute a local path through the package branch because the var is unset. When replacing a data source with an optional default-empty env var, verify some workflow/script sets it. Flag classification gated on `!!process.env[name]` and new empty-default env reads with no setter.",
       "detection_hint": "Flag classification logic gating an 'is path / is package' decision on `!!process.env[name]`. When code starts reading a new `process.env.X` with an empty default replacing a prior data source, grep workflows/scripts for `X:`/`export X` and flag if nothing sets it.",
       "severity": "important",
       "example_prs": [
@@ -404,7 +427,7 @@
       "category": "correctness",
       "title": "Preserve known per-model exceptions and syntactically-significant whitespace",
       "rule": "When replacing per-model special-case branches with a generic merge, preserve known model-specific exceptions (a model that must omit a parameter) so the merge doesn't reintroduce a value a backend rejects. Don't trim leading whitespace from text rendered as markdown (4-space code blocks are significant); only trim trailing. Flag refactors collapsing per-model branches into `mergeDeep` and `.trim()`/`.trimStart()` on markdown-rendered text.",
-      "detection_hint": "Flag refactors replacing per-model special-case branches with a generic `mergeDeep(base, variant)` — did any removed branch omit a parameter a specific backend rejects? Flag `.trim()`/`.trimStart()` applied to text later rendered as markdown.",
+      "detection_hint": "Flag refactors replacing per-model special-case branches with a generic `mergeDeep(base, variant)` \u2014 did any removed branch omit a parameter a specific backend rejects? Flag `.trim()`/`.trimStart()` applied to text later rendered as markdown.",
       "severity": "important",
       "example_prs": [
         27390,
@@ -416,7 +439,7 @@
       "id": "ordered-checks-must-not-shortcut-entries-carrying-both-fields",
       "category": "correctness",
       "title": "Order checks so entries carrying multiple relevant fields aren't shortcut, and add window fallbacks",
-      "rule": "When an entry can carry both a role and an explicit action, an early `if (entry.role) return ...` must not preempt the action handling — reorder or special-case actionable roles. When running window/UI actions against getFocusedWindow()/activeElement, provide a fallback for when nothing is focused so the action doesn't silently no-op. Flag an early `if (entry.X) return` preceding handling of a mutually-relevant field on the same entry, and focused-target usage with no null path.",
+      "rule": "When an entry can carry both a role and an explicit action, an early `if (entry.role) return ...` must not preempt the action handling \u2014 reorder or special-case actionable roles. When running window/UI actions against getFocusedWindow()/activeElement, provide a fallback for when nothing is focused so the action doesn't silently no-op. Flag an early `if (entry.X) return` preceding handling of a mutually-relevant field on the same entry, and focused-target usage with no null path.",
       "detection_hint": "In a config-entry mapper, look for an early `if (entry.X) return ...` preceding handling of a mutually-relevant field on the same entry; ask if entries with both fields are shortcut. Grep for getFocusedWindow()/document.activeElement used directly as a target with no null/fallback path.",
       "severity": "important",
       "example_prs": [
@@ -470,7 +493,7 @@
       "category": "correctness",
       "title": "Implement bounded polling iteratively, not via per-interval self-recursion",
       "rule": "Implement wait/poll routines as an iterative loop so stack usage stays constant. Don't self-recurse once per poll interval with a decremented timeout, since a large timeout builds a deep call stack and can overflow. Flag a polling function that recursively calls itself after a sleep with a decremented timeout/counter.",
-      "detection_hint": "Flag a polling function that calls itself recursively after a sleep with a decremented timeout/counter — iteration count scales with timeout/POLL_MS. Recommend an iterative loop.",
+      "detection_hint": "Flag a polling function that calls itself recursively after a sleep with a decremented timeout/counter \u2014 iteration count scales with timeout/POLL_MS. Recommend an iterative loop.",
       "severity": "important",
       "example_prs": [
         25406
@@ -525,9 +548,13 @@
       "detection_hint": "Flag a changed boolean condition that adds `!x ||` or removes a truthiness requirement so it evaluates true when a field is unset (`!ag.model || (...)`); verify downstream effects aren't applied to explicitly-overridden inputs.",
       "severity": "important",
       "example_prs": [
+        172,
         29066
       ],
-      "support_count": 1
+      "support_count": 2,
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "round-derived-integer-counts-explicitly",
@@ -561,7 +588,7 @@
       "id": "init-state-with-real-value-before-tracking-effects-run",
       "category": "correctness",
       "title": "Initialize signals/state with their real value before selection-tracking effects run",
-      "rule": "Initialize a signal/state with its real value at creation when the source data is synchronously available, rather than starting empty and populating it in onMount/useEffect — otherwise selection-tracking effects run against an empty list on first render and settle on a wrong default. Flag signals created empty and filled in onMount when the source is synchronously available and first-render effects depend on it.",
+      "rule": "Initialize a signal/state with its real value at creation when the source data is synchronously available, rather than starting empty and populating it in onMount/useEffect \u2014 otherwise selection-tracking effects run against an empty list on first render and settle on a wrong default. Flag signals created empty and filled in onMount when the source is synchronously available and first-render effects depend on it.",
       "detection_hint": "Flag signals/state created empty and then filled in onMount/useEffect when the source data is synchronously available; ask whether first-render effects depend on the populated value.",
       "severity": "nit",
       "example_prs": [
@@ -589,7 +616,7 @@
       "id": "route-user-facing-strings-through-i18n",
       "category": "ui-react",
       "title": "Route user-facing strings (including aria-labels) through the existing i18n helper",
-      "rule": "In a file that already imports/uses an i18n helper (t(), language.t, useLanguage().t), flag newly added bare user-facing string literals — JSX text nodes and aria-label/title/placeholder/alt attributes — that sit alongside sibling strings already routed through the translation function. Do not flag files with no i18n helper, or non-user-facing strings (keys, test ids, class names, console logs).",
+      "rule": "In a file that already imports/uses an i18n helper (t(), language.t, useLanguage().t), flag newly added bare user-facing string literals \u2014 JSX text nodes and aria-label/title/placeholder/alt attributes \u2014 that sit alongside sibling strings already routed through the translation function. Do not flag files with no i18n helper, or non-user-facing strings (keys, test ids, class names, console logs).",
       "detection_hint": "In a file that imports/uses a t()/language.t()/useLanguage i18n helper, grep changed hunks for bare string literals in JSX text nodes or in aria-label=/title=/placeholder=/alt= attributes (e.g. aria-label=\"...\"). Flag any English literal sitting next to sibling strings that DO use t().",
       "severity": "nit",
       "example_prs": [
@@ -679,7 +706,7 @@
       "id": "wire-new-optional-prop-or-context-at-all-call-sites",
       "category": "ui-react",
       "title": "Wire new prop/context dependencies at every call site; don't hide missing wiring",
-      "rule": "When required behavior starts depending on a new optional prop/callback, audit every existing call site that renders the component and pass it — optional-chaining a callback (props.onX?.()) hides missing wiring at compile time but silently drops the behavior at runtime. For reusable components, prefer injecting needed values as optional props (or reading context only in the route-level wrapper that guarantees the provider) rather than hard-requiring a context that may be absent in other routes/harnesses.",
+      "rule": "When required behavior starts depending on a new optional prop/callback, audit every existing call site that renders the component and pass it \u2014 optional-chaining a callback (props.onX?.()) hides missing wiring at compile time but silently drops the behavior at runtime. For reusable components, prefer injecting needed values as optional props (or reading context only in the route-level wrapper that guarantees the provider) rather than hard-requiring a context that may be absent in other routes/harnesses.",
       "detection_hint": "A diff adds props.someCallback?.() for behavior that previously ran unconditionally, or adds a useContext/useXProvider() call for data only one route needs. Grep all usages of the component; ask whether every call site passes the prop, or whether the component is reused where the provider is absent.",
       "severity": "important",
       "example_prs": [
@@ -696,7 +723,7 @@
       "id": "correct-reactive-primitive-for-side-effects-and-iteration",
       "category": "ui-react",
       "title": "Use the correct reactive primitive: effects for side effects, iterate memoized results directly",
-      "rule": "In a Solid-style reactive component, flag a createMemo whose body performs side effects (mutates state, calls setup/ensure) and whose return value is unused — use createEffect instead. Also flag array re-allocation (e.g. accessor().map(x => x())) applied to a reactive accessor inside JSX iteration. Only apply to Solid-style (createMemo/createEffect/For) code, not plain React useMemo.",
+      "rule": "In a Solid-style reactive component, flag a createMemo whose body performs side effects (mutates state, calls setup/ensure) and whose return value is unused \u2014 use createEffect instead. Also flag array re-allocation (e.g. accessor().map(x => x())) applied to a reactive accessor inside JSX iteration. Only apply to Solid-style (createMemo/createEffect/For) code, not plain React useMemo.",
       "detection_hint": "Flag a createMemo whose body performs side effects (mutates a Map, calls ensureX/setup) and whose return value is discarded. Flag .map(x => x()) or other array re-allocation applied to a reactive accessor result inside JSX (<For each={...}>) or a memo body.",
       "severity": "blocking",
       "example_prs": [
@@ -709,8 +736,8 @@
       "id": "keep-cache-keys-reactive-not-init-snapshot",
       "category": "ui-react",
       "title": "Keep cache/persistence keys and observed data reactive, not snapshotted at init",
-      "rule": "Do not invoke a reactive accessor once and store the result in a plain const at provider/component init when that value keys caches or persistence (e.g. const scope = server.scope()) — it captures a stale snapshot and leaks across later changes. Keep it a memo/accessor so derived caches re-key. Likewise, ensure a memo/effect that reads async/lazy store data (existing(), cache.get()) also reads a signal that changes when that data arrives (a version/loaded signal or reactive map), or it will silently serve stale data and never re-run.",
-      "detection_hint": "Flag where a reactive accessor is invoked once and assigned to a const used to key caches/persistence (previously a memo). Flag a memo/effect that reads a non-reactive lookup like existing()/cache.get() whose population is async, without also reading a related version/loaded signal — ask 'what re-triggers this when the data loads?'",
+      "rule": "Do not invoke a reactive accessor once and store the result in a plain const at provider/component init when that value keys caches or persistence (e.g. const scope = server.scope()) \u2014 it captures a stale snapshot and leaks across later changes. Keep it a memo/accessor so derived caches re-key. Likewise, ensure a memo/effect that reads async/lazy store data (existing(), cache.get()) also reads a signal that changes when that data arrives (a version/loaded signal or reactive map), or it will silently serve stale data and never re-run.",
+      "detection_hint": "Flag where a reactive accessor is invoked once and assigned to a const used to key caches/persistence (previously a memo). Flag a memo/effect that reads a non-reactive lookup like existing()/cache.get() whose population is async, without also reading a related version/loaded signal \u2014 ask 'what re-triggers this when the data loads?'",
       "severity": "blocking",
       "example_prs": [
         28938,
@@ -818,7 +845,7 @@
       "id": "visual-collapse-keep-mounted",
       "category": "ui-react",
       "title": "Use CSS visibility (not conditional render) for purely visual collapse",
-      "rule": "Flag a Show/ternary that unmounts content whose hiding is purely visual/collapse, where unmount/remount would lose internal state, scroll, or focus — prefer CSS visibility ([hidden]/display:none/max-height:0). Only raise when state/scroll/focus loss is plausible; do not flag genuine conditional rendering of distinct content or unmounting done deliberately to reset state.",
+      "rule": "Flag a Show/ternary that unmounts content whose hiding is purely visual/collapse, where unmount/remount would lose internal state, scroll, or focus \u2014 prefer CSS visibility ([hidden]/display:none/max-height:0). Only raise when state/scroll/focus loss is plausible; do not flag genuine conditional rendering of distinct content or unmounting done deliberately to reset state.",
       "detection_hint": "Flag <Show when={!minimized/collapsed}> or {!collapsed && ...} wrapping content whose collapse is described as visual; ask whether unmount/remount would lose scroll/focus/internal component state.",
       "severity": "important",
       "example_prs": [
@@ -834,7 +861,7 @@
       "id": "apply-global-layout-flag-to-all-surfaces",
       "category": "ui-react",
       "title": "When enabling a global layout flag, apply the compensation to every full-viewport surface",
-      "rule": "When a diff enables a global layout change (e.g. viewport-fit=cover exposing safe-area insets, or any global flag affecting positioning), audit every fixed/overlay/full-viewport surface — sidebars, dialogs, toasts, loading/error screens — and apply the compensating inset/padding handling to each, not just the root container.",
+      "rule": "When a diff enables a global layout change (e.g. viewport-fit=cover exposing safe-area insets, or any global flag affecting positioning), audit every fixed/overlay/full-viewport surface \u2014 sidebars, dialogs, toasts, loading/error screens \u2014 and apply the compensating inset/padding handling to each, not just the root container.",
       "detection_hint": "If a diff adds viewport-fit=cover or env(safe-area-inset-*) handling to one element, grep for other position: fixed, h-dvh/100dvh/w-screen, or overlay components and ask whether they also account for the insets.",
       "severity": "important",
       "example_prs": [
@@ -858,7 +885,7 @@
       "id": "no-empty-img-src",
       "category": "ui-react",
       "title": "Don't render <img> with an empty src",
-      "rule": "Do not render an <img> with src=\"\" or a fallback to empty string when the URL is missing — it triggers a spurious request to the current document URL and shows a broken-image icon. Omit the src attribute entirely, render no image, or use a harmless placeholder like src=\"data:,\".",
+      "rule": "Do not render an <img> with src=\"\" or a fallback to empty string when the URL is missing \u2014 it triggers a spurious request to the current document URL and shows a broken-image icon. Omit the src attribute entirely, render no image, or use a harmless placeholder like src=\"data:,\".",
       "detection_hint": "Grep for src=\"\" or src=\"${x ?? \"\"}\" patterns in img-building strings/JSX; ask whether an empty src can be produced.",
       "severity": "important",
       "example_prs": [
@@ -897,7 +924,7 @@
       "id": "guard-late-async-ui-updates-against-staleness",
       "category": "ui-react",
       "title": "Guard late async UI updates against staleness",
-      "rule": "When an async handler resolves and then mutates shared UI (dialog.replace, setState), verify the originating surface is still active before applying the update — track whether the dialog/component is still open/mounted (or capture a token/id) and skip the update if the user dismissed or navigated away. An unconditional update can reopen or clobber unrelated UI state.",
+      "rule": "When an async handler resolves and then mutates shared UI (dialog.replace, setState), verify the originating surface is still active before applying the update \u2014 track whether the dialog/component is still open/mounted (or capture a token/id) and skip the update if the user dismissed or navigated away. An unconditional update can reopen or clobber unrelated UI state.",
       "detection_hint": "Flag await <promise> followed by dialog.replace/setState with no check that the dialog/component is still mounted/active; ask whether a late resolution can clobber unrelated UI state.",
       "severity": "important",
       "example_prs": [
@@ -936,6 +963,7 @@
       "example_prs": [
         42,
         123,
+        155,
         160,
         171,
         3851,
@@ -947,7 +975,7 @@
         31985,
         32282
       ],
-      "support_count": 9,
+      "support_count": 10,
       "reinforced_by": [
         "inkstone",
         "pi",
@@ -990,6 +1018,7 @@
         62,
         139,
         145,
+        162,
         3136,
         4873,
         27053,
@@ -999,7 +1028,7 @@
         31395,
         32284
       ],
-      "support_count": 10,
+      "support_count": 11,
       "reinforced_by": [
         "inkstone",
         "pi",
@@ -1177,7 +1206,7 @@
       "id": "no-silent-error-swallowing",
       "category": "error-handling",
       "title": "Do not swallow errors silently in catch/handler blocks",
-      "rule": "Flag error handlers that fully discard a caught error on a consequential operation: empty `catch {}`, `catch (e) {}` with the binding never used, `.catch(() => {})`/`.catch(() => undefined)`. Such a handler should at least log (debug/warn) or report via telemetry while returning a safe fallback. Exempt cases where the comment or code clearly marks the swallow as intentional/benign (e.g. best-effort cleanup) — focus on registration/IPC/config/fire-and-forget calls whose failure changes behavior.",
+      "rule": "Flag error handlers that fully discard a caught error on a consequential operation: empty `catch {}`, `catch (e) {}` with the binding never used, `.catch(() => {})`/`.catch(() => undefined)`. Such a handler should at least log (debug/warn) or report via telemetry while returning a safe fallback. Exempt cases where the comment or code clearly marks the swallow as intentional/benign (e.g. best-effort cleanup) \u2014 focus on registration/IPC/config/fire-and-forget calls whose failure changes behavior.",
       "detection_hint": "Grep for `catch {}`, `catch (e) {}` with unused binding, `.catch(() => {})`, `.catch(() => undefined)`, or `Promise.resolve().then(...).catch(() => {})`. Yes/no per hunk: is the caught error logged/reported anywhere, or fully discarded? Heightened concern when `void` precedes a consequential async call or when the swallowed promise is a registration/config call.",
       "severity": "important",
       "example_prs": [
@@ -1200,7 +1229,7 @@
       "id": "guard-throwing-parsers-on-external-input",
       "category": "error-handling",
       "title": "Wrap throwing parsers/decoders of external input in try/catch",
-      "rule": "Any throwing parse/decode applied to external, persisted, or request-derived input (JSON.parse on file contents or request bodies, decodeURIComponent / new URL on request paths, throwing schema decoders like decodeSync) must be wrapped in try/catch or Effect.try and turned into a recoverable failure or clean error response (400/404). A single corrupt/truncated file or malformed request must not throw synchronously and crash the operation — especially when the read is piped through `.orDie` or sits inside a loop over many entries, where the bad entry should be skipped rather than aborting the batch.",
+      "rule": "Any throwing parse/decode applied to external, persisted, or request-derived input (JSON.parse on file contents or request bodies, decodeURIComponent / new URL on request paths, throwing schema decoders like decodeSync) must be wrapped in try/catch or Effect.try and turned into a recoverable failure or clean error response (400/404). A single corrupt/truncated file or malformed request must not throw synchronously and crash the operation \u2014 especially when the read is piped through `.orDie` or sits inside a loop over many entries, where the bad entry should be skipped rather than aborting the batch.",
       "detection_hint": "Find `JSON.parse(...)`, `decodeURIComponent(...)`, `new URL(...)`, or `*decodeSync*`/`*Sync(...)` applied to file-read results or request-derived values that are NOT inside try/catch or Effect.try. High priority when inside a loop over directory entries or piped through `Effect.orDie`, or inside a request/protocol handler. Ask: what happens on malformed input?",
       "severity": "important",
       "example_prs": [
@@ -1334,7 +1363,7 @@
       "id": "catch-mapping-errors-not-just-rejection",
       "category": "error-handling",
       "title": "Use trailing .catch so mapping/normalization errors are also handled",
-      "rule": "Do not rely on the second argument of `.then(onFulfilled, onRejected)` as the only error handling when `onFulfilled` does non-trivial work (map/normalize/parse) — that only catches the original promise rejection, not errors thrown inside the mapping. Use `.then(map).catch(() => fallback)` so both the original rejection and mapping errors fall back.",
+      "rule": "Do not rely on the second argument of `.then(onFulfilled, onRejected)` as the only error handling when `onFulfilled` does non-trivial work (map/normalize/parse) \u2014 that only catches the original promise rejection, not errors thrown inside the mapping. Use `.then(map).catch(() => fallback)` so both the original rejection and mapping errors fall back.",
       "detection_hint": "Flag `.then(onFulfilled, onRejected)` where `onFulfilled` performs map/normalize/parse work and the second arg is the only error handler. Recommend a trailing `.catch` after the mapping instead.",
       "severity": "important",
       "example_prs": [
@@ -1346,7 +1375,7 @@
       "id": "wire-full-failure-lifecycle",
       "category": "error-handling",
       "title": "Register the full failure lifecycle, not just the happy-path terminal event",
-      "rule": "When wiring observability/handlers for a long-lived resource, register the failure/error events alongside the success/exit event. For a forked subprocess, registering only `child.on('exit', ...)` is insufficient — also add `child.on('error', ...)` and platform crash hooks (e.g. Electron `app.on('child-process-gone')` filtered by service) so launch failures, crashes, and OOM are distinguishable from a clean exit and surfaced.",
+      "rule": "When wiring observability/handlers for a long-lived resource, register the failure/error events alongside the success/exit event. For a forked subprocess, registering only `child.on('exit', ...)` is insufficient \u2014 also add `child.on('error', ...)` and platform crash hooks (e.g. Electron `app.on('child-process-gone')` filtered by service) so launch failures, crashes, and OOM are distinguishable from a clean exit and surfaced.",
       "detection_hint": "When a diff adds `child.on('exit', ...)` for a forked process, check whether `child.on('error', ...)` and crash hooks are also registered. Ask: are crash/launch-failed events handled, or only clean exit?",
       "severity": "important",
       "example_prs": [
@@ -1362,7 +1391,7 @@
       "id": "narrow-catch-scope",
       "category": "error-handling",
       "title": "Narrow each catch to the smallest block whose failure mode it handles",
-      "rule": "Flag a try/catch or .catch/catchCause whose guarded block performs multiple semantically distinct fallible operations (e.g. parse + schema validation + plugin resolution + IO write-back) but whose recovery treats them as one error class — so an IO or resolution error is silently handled by a parse-error fallback. Recommend narrowing the catch to the block whose failure the fallback actually targets. Do not flag when all operations share the same legitimate recovery semantics.",
+      "rule": "Flag a try/catch or .catch/catchCause whose guarded block performs multiple semantically distinct fallible operations (e.g. parse + schema validation + plugin resolution + IO write-back) but whose recovery treats them as one error class \u2014 so an IO or resolution error is silently handled by a parse-error fallback. Recommend narrowing the catch to the block whose failure the fallback actually targets. Do not flag when all operations share the same legitimate recovery semantics.",
       "detection_hint": "Look for a try/catch or `.catch`/`catchCause` whose guarded block contains multiple distinct operations. Ask: does the recovery logic treat all of them as the same error class? Flag if a parse-error fallback also swallows IO or resolution errors.",
       "severity": "important",
       "example_prs": [
@@ -1405,7 +1434,7 @@
     {
       "id": "test-new-branch-and-both-sides",
       "category": "testing",
-      "title": "Cover every new branch — including the contrasting/negative case",
+      "title": "Cover every new branch \u2014 including the contrasting/negative case",
       "rule": "When a diff adds a new code path (catch/fallback branch, new conditional, new validation that rejects some inputs, or a switch to manual request/body parsing), require a test in the same PR that feeds an input which actually triggers that specific path and asserts the intended outcome. If the new logic also changes classification for an adjacent input class, also require the contrasting case (e.g. accepted AND rejected input). Only flag when the branch carries observable behavior; do not demand tests for trivial logging-only or defensive-unreachable branches.",
       "detection_hint": "For each added catch/else/if branch, distinct log message, new validation, or switch to manual body parsing in src, grep the PR's test files for an input that exercises that branch. Ask per hunk: does any test trigger this exact branch, and is the opposite/adjacent branch also covered? Flag new branches with no corresponding test input.",
       "severity": "important",
@@ -1467,18 +1496,19 @@
     {
       "id": "assert-precise-behavior-tied-values",
       "category": "testing",
-      "title": "Assert precise, input-tied values — not vacuous or loose matchers",
+      "title": "Assert precise, input-tied values \u2014 not vacuous or loose matchers",
       "rule": "Assertions must be causally tied to the test input so a default-returning or input-ignoring implementation would fail. Reject as the sole/primary check in a behavior-named test: toBeDefined/toBeTruthy/not.toThrow, or loose negative matchers (not.toBe(true)) that also pass for undefined/1/'false'. Prefer asserting the exact expected value, that valid input fields are preserved and invalid ones absent, or the precise resulting schema/field shape. Do not flag these matchers when the test legitimately only checks existence/non-throwing (e.g. smoke or type-guard tests).",
       "detection_hint": "Flag expect(x).toBeDefined()/.toBeTruthy()/.not.toThrow() or expect(x).not.toBe(true|false) as the sole assertion in a behavior-named test. Ask: would this still pass if the function ignored its input and returned a default? For schema-transform diffs, check a test asserts that exact field's resulting shape. Flag toBe/toEqual against a string literal encoding internal naming conventions.",
       "severity": "important",
       "example_prs": [
         134,
+        155,
         25797,
         28432,
         29208,
         31357
       ],
-      "support_count": 5,
+      "support_count": 6,
       "reinforced_by": [
         "inkstone"
       ]
@@ -1506,10 +1536,12 @@
       "severity": "important",
       "example_prs": [
         135,
+        150,
+        151,
         29635,
         29784
       ],
-      "support_count": 3,
+      "support_count": 5,
       "reinforced_by": [
         "inkstone"
       ]
@@ -1550,7 +1582,7 @@
     {
       "id": "hermetic-no-external-processes",
       "category": "testing",
-      "title": "Keep tests hermetic — extract pure logic instead of spawning external processes",
+      "title": "Keep tests hermetic \u2014 extract pure logic instead of spawning external processes",
       "rule": "Avoid unit tests that transitively spawn native/external processes (clipboard utilities like wl-copy/xclip/powershell/clipboardy, arbitrary shell tools) or hit real network/filesystem against external tools, since they are environment-dependent and flake or hang in CI. Extract the pure logic and test it directly, or stub the native boundary so no external process is spawned. Does not apply to tests explicitly designated as integration/e2e.",
       "detection_hint": "In test files, look for calls that transitively spawn child processes (spawn/exec of clipboard or shell utilities) or perform real network/filesystem I/O against external tools; ask whether a pure helper could be tested instead.",
       "severity": "important",
@@ -1625,8 +1657,8 @@
       "id": "query-key-must-match-inputs-actually-read",
       "category": "performance",
       "title": "Derive cache/query keys from exactly the inputs the query reads, and don't embed large content",
-      "rule": "A cache/query key must reflect exactly the inputs the query function actually consumes — no more, no less. Do not include extra inputs the function ignores (which fragments the cache and triggers redundant refetches when those unused inputs change), and do not interpolate large field contents (file/diff text) into the key (use a small checksum/hash instead to avoid memory bloat). When the goal is cache reuse, use cache-aware reads (ensureQueryData, or set an appropriate staleTime) rather than unconditional fetches (fetchQuery) on a zero-staleTime query.",
-      "detection_hint": "Compare the queryKey's inputs against the variables actually used in queryFn — flag keys that spread values the function ignores (e.g. full list when only [0] is read). Flag cache-key strings that interpolate multi-KB content (`${before}${after}`) rather than a hash. Flag diffs replacing `ensureQueryData(` with `fetchQuery(` on a query with no staleTime.",
+      "rule": "A cache/query key must reflect exactly the inputs the query function actually consumes \u2014 no more, no less. Do not include extra inputs the function ignores (which fragments the cache and triggers redundant refetches when those unused inputs change), and do not interpolate large field contents (file/diff text) into the key (use a small checksum/hash instead to avoid memory bloat). When the goal is cache reuse, use cache-aware reads (ensureQueryData, or set an appropriate staleTime) rather than unconditional fetches (fetchQuery) on a zero-staleTime query.",
+      "detection_hint": "Compare the queryKey's inputs against the variables actually used in queryFn \u2014 flag keys that spread values the function ignores (e.g. full list when only [0] is read). Flag cache-key strings that interpolate multi-KB content (`${before}${after}`) rather than a hash. Flag diffs replacing `ensureQueryData(` with `fetchQuery(` on a query with no staleTime.",
       "severity": "important",
       "example_prs": [
         25939,
@@ -1678,7 +1710,7 @@
       "id": "avoid-heavy-imports-and-eager-io-just-to-read",
       "category": "performance",
       "title": "Avoid heavy imports or eager store/subscription creation just to read a small value",
-      "rule": "Don't import a known-heavy module just to use one small pure helper (extract the helper to a lightweight module), and don't get-or-create a store/subscription/query that triggers network I/O merely to read a value for previewing — use a read-only/existing accessor and instantiate only after explicit selection. Flag only when the imported module is plausibly heavy or the created instance clearly triggers I/O.",
+      "rule": "Don't import a known-heavy module just to use one small pure helper (extract the helper to a lightweight module), and don't get-or-create a store/subscription/query that triggers network I/O merely to read a value for previewing \u2014 use a read-only/existing accessor and instantiate only after explicit selection. Flag only when the imported module is plausibly heavy or the created instance clearly triggers I/O.",
       "detection_hint": "Flag a new import of a known-heavy module where only one small/pure helper is used. Flag get-or-create of a store/subscription/query inside a memo or render path used for previewing options. Ask: does this drag in a large dependency tree, or trigger I/O, for something that should be lightweight/read-only?",
       "severity": "nit",
       "example_prs": [
@@ -1868,7 +1900,7 @@
       "category": "data-persistence",
       "title": "Persist state-change side effects only after the operation they represent succeeds",
       "rule": "Do not write or mutate persisted state (state files, DB records, marker records) before the fallible operation it represents has succeeded. Order the persist after the create/connect/network/stream call, or use a bracket/ensuring pattern that restores prior state on failure. When retrying an operation that may have committed partial side effects (mid-stream upserts/DB writes), reset or discard the in-flight attempt's persisted partial records before retrying so a successful retry does not combine stale partial data with the retried result.",
-      "detection_hint": "In a hunk, check whether a write/persist call (writeDisabledState, updateMessage/updatePart, file write) precedes a fallible create/connect/stream call whose value the persisted state represents. Also flag Effect.retry / retry wrappers around code that calls updatePart/upsert/DB writes while accumulating into closure-captured state — ask: does the retry clear previously persisted partial parts? Yes/no per hunk: if the operation fails, is persisted state left describing a state that never took effect?",
+      "detection_hint": "In a hunk, check whether a write/persist call (writeDisabledState, updateMessage/updatePart, file write) precedes a fallible create/connect/stream call whose value the persisted state represents. Also flag Effect.retry / retry wrappers around code that calls updatePart/upsert/DB writes while accumulating into closure-captured state \u2014 ask: does the retry clear previously persisted partial parts? Yes/no per hunk: if the operation fails, is persisted state left describing a state that never took effect?",
       "severity": "blocking",
       "example_prs": [
         26167,
@@ -1895,7 +1927,7 @@
       "category": "data-persistence",
       "title": "Apply normalization at every read/replay/emit path, not only at write-time ingestion",
       "rule": "When you normalize, resize, or sanitize data, apply the same transform everywhere the data flows out, not only at the inbound write path. Emit events and invoke plugin hooks with the normalized data so consumers observe what is actually persisted and sent downstream (do not publish raw pre-transform payloads). Also add the safeguard at the read/replay path (e.g. toModelMessages) so already-stored oversized/invalid records and bypassed paths are normalized before use.",
-      "detection_hint": "Find where an event/hook is published with one variable (resolvedParts/parts) while the saved record just below uses a different transformed variable — flag pre-normalization payload divergence. Separately, when a diff adds normalization at the prompt/write path, ask: is there a corresponding read/replay path (toModelMessages) that still sends stored data without the same normalization? Flag the missing emit-time or replay-time guard.",
+      "detection_hint": "Find where an event/hook is published with one variable (resolvedParts/parts) while the saved record just below uses a different transformed variable \u2014 flag pre-normalization payload divergence. Separately, when a diff adds normalization at the prompt/write path, ask: is there a corresponding read/replay path (toModelMessages) that still sends stored data without the same normalization? Flag the missing emit-time or replay-time guard.",
       "severity": "important",
       "example_prs": [
         26401
@@ -1937,7 +1969,7 @@
       "category": "data-persistence",
       "title": "Do not retain phantom or stale persisted records; prune against live config",
       "rule": "When loading a persisted set/list of IDs from disk into in-memory state, filter it against the currently-known/configured keys before storing and re-persisting, so the state file does not accumulate stale entries re-written on every change. For persisted records, retain one only if it holds actual material (tokens, payload, verifier), not when only a pure-qualifier/index field (url/id) is set, since a lone qualifier surfaces as a phantom entry through list/all/enumeration paths.",
-      "detection_hint": "Find a normalize/keep predicate that returns an entry whenever any field is set, including a pure-qualifier field that is not real data — ask: can this entry be retained with only its qualifier set and then show up via all()/list? Separately, when a set/list is loaded from disk into state, check whether it is filtered against live config keys before being stored and re-persisted.",
+      "detection_hint": "Find a normalize/keep predicate that returns an entry whenever any field is set, including a pure-qualifier field that is not real data \u2014 ask: can this entry be retained with only its qualifier set and then show up via all()/list? Separately, when a set/list is loaded from disk into state, check whether it is filtered against live config keys before being stored and re-persisted.",
       "severity": "important",
       "example_prs": [
         27785,
@@ -1949,16 +1981,18 @@
       "id": "no-current-logic-backfill-for-missing-historical-field",
       "category": "data-persistence",
       "title": "Do not back-fill missing persisted fields by re-running current selection logic",
-      "rule": "When a newly-added field is absent on older persisted records, do not infer it by re-running current runtime/selection logic (session-id hash, current default, feature flag, percentage rollout) — that retroactively relabels history with a value that may differ from what was actually used. Use a neutral/legacy label or the known historical default when the field is missing.",
+      "rule": "When a newly-added field is absent on older persisted records, do not infer it by re-running current runtime/selection logic (session-id hash, current default, feature flag, percentage rollout) \u2014 that retroactively relabels history with a value that may differ from what was actually used. Use a neutral/legacy label or the known historical default when the field is missing.",
       "detection_hint": "Look for code reading an optional persisted field (metadata.provider, version, type) and, when absent, computing a substitute from current runtime state. Ask per hunk: could records predating this field have had a different real value than what the fallback now infers?",
       "severity": "important",
       "example_prs": [
+        166,
         800,
         26227
       ],
-      "support_count": 2,
+      "support_count": 3,
       "reinforced_by": [
-        "pi"
+        "pi",
+        "inkstone"
       ]
     },
     {
@@ -2011,7 +2045,7 @@
       "id": "atomic-shared-state-mutation-no-toctou",
       "category": "concurrency-async",
       "title": "Serialize or make atomic any read-modify-write on shared state",
-      "rule": "Flag a check-then-write or read-modify-persist on a resource reachable by concurrent actors (a file/record shared across processes, or a module/instance-level Set/Map/array mutated then persisted from concurrently-invoked code) with no atomicity between read and write — lock, exclusive-create+rename, transaction, CAS, or atomic Ref. Only flag when concurrent invocation is actually plausible (shared file, server request handler, multiple fibers); skip single-threaded init or request-local state.",
+      "rule": "Flag a check-then-write or read-modify-persist on a resource reachable by concurrent actors (a file/record shared across processes, or a module/instance-level Set/Map/array mutated then persisted from concurrently-invoked code) with no atomicity between read and write \u2014 lock, exclusive-create+rename, transaction, CAS, or atomic Ref. Only flag when concurrent invocation is actually plausible (shared file, server request handler, multiple fibers); skip single-threaded init or request-local state.",
       "detection_hint": "Look for read -> conditional status/state check -> mutate same field -> write-back on a shared file/record with no lock/flock/transaction/CAS between read and write (especially fields named status/state/claimed/locked), or read-modify-write of a module-level collection followed by a persist call (fs.writeJson/writeFileString) reachable from multiple fibers/callers. Ask: can two concurrent actors both pass the check and both write?",
       "severity": "important",
       "example_prs": [
@@ -2031,7 +2065,7 @@
       "category": "concurrency-async",
       "title": "Bound async handshakes and network fetches with a timeout",
       "rule": "Flag an awaited external operation that may never settle and has no timeout/AbortSignal: (a) `await new Promise` waiting on a child-process `message`/`ready`/`spawn` event with no timer or abort in the executor (kill child on timeout); (b) when a PR adds `signal:`/AbortController to some `fetch(` calls, sibling `fetch(` calls in the same flow (especially auth/token endpoints) left without one. Skip operations already bounded by an upstream timeout or a library default.",
-      "detection_hint": "Find `await new Promise(... child.on('message'|'ready'|'spawn' ...))` with no timer/AbortSignal in the executor — ask: if the subprocess never posts ready or error, does this ever settle? Also: when a PR adds an AbortController/`signal:` to some `fetch(` calls, grep the same module for other `fetch(` calls lacking `signal:`; flag unprotected auth/token fetches.",
+      "detection_hint": "Find `await new Promise(... child.on('message'|'ready'|'spawn' ...))` with no timer/AbortSignal in the executor \u2014 ask: if the subprocess never posts ready or error, does this ever settle? Also: when a PR adds an AbortController/`signal:` to some `fetch(` calls, grep the same module for other `fetch(` calls lacking `signal:`; flag unprotected auth/token fetches.",
       "severity": "blocking",
       "example_prs": [
         54,
@@ -2049,7 +2083,7 @@
       "id": "reset-one-shot-recovery-retry-guards",
       "category": "concurrency-async",
       "title": "Scope and reset one-shot recovery/retry guards",
-      "rule": "Flag `if (flag) return; setFlag(true); <recovery/retry/init action>` where the guard is set true but is never reset anywhere on success, context change, or failure — permanently disabling later legitimate attempts. Prefer per-entity guards (Set of ids) reset appropriately. Do not flag intentional once-per-process initialization where re-running is genuinely undesirable.",
+      "rule": "Flag `if (flag) return; setFlag(true); <recovery/retry/init action>` where the guard is set true but is never reset anywhere on success, context change, or failure \u2014 permanently disabling later legitimate attempts. Prefer per-entity guards (Set of ids) reset appropriately. Do not flag intentional once-per-process initialization where re-running is genuinely undesirable.",
       "detection_hint": "Flag `if (flag) return; setFlag(true); <recovery/retry action>` where the flag is set true once but is never reset anywhere in the module. Ask: do subsequent legitimate retries get silently skipped forever?",
       "severity": "important",
       "example_prs": [
@@ -2065,7 +2099,7 @@
       "id": "single-flight-guard-cleared-after-callback",
       "category": "concurrency-async",
       "title": "Clear single-flight scheduler guards only after the callback completes",
-      "rule": "Flag a flush/single-flight function that resets its in-flight guard (`scheduled=false` / `frame=undefined`) BEFORE invoking the queued callback, where the callback can call the schedule function again — risking a second concurrent flush loop. Require the guard stay set during execution (or a dedicated flushing flag) cleared only after the callback completes. Only flag when reentrant scheduling from the callback is actually reachable.",
+      "rule": "Flag a flush/single-flight function that resets its in-flight guard (`scheduled=false` / `frame=undefined`) BEFORE invoking the queued callback, where the callback can call the schedule function again \u2014 risking a second concurrent flush loop. Require the guard stay set during execution (or a dedicated flushing flag) cleared only after the callback completes. Only flag when reentrant scheduling from the callback is actually reachable.",
       "detection_hint": "Flag a scheduler that sets its `scheduled`/frame guard to undefined/false at the top of the flush function, then runs a queued callback that can itself call the schedule function. Ask: if the callback re-schedules synchronously, can a second concurrent loop start?",
       "severity": "important",
       "example_prs": [
@@ -2077,7 +2111,7 @@
       "id": "cross-process-unique-id-generation",
       "category": "concurrency-async",
       "title": "Use cross-process-unique IDs for keys in a shared store",
-      "rule": "Flag an ID generator combining Date.now()/timestamp with only a module-level per-process counter when the result keys files/records in a store that other processes also write to — collisions occur within the same millisecond across processes. Require a cross-process-unique source (crypto.randomUUID(), or timestamp+pid+randomness). Do not flag IDs scoped to a single process or used only as in-memory keys.",
+      "rule": "Flag an ID generator combining Date.now()/timestamp with only a module-level per-process counter when the result keys files/records in a store that other processes also write to \u2014 collisions occur within the same millisecond across processes. Require a cross-process-unique source (crypto.randomUUID(), or timestamp+pid+randomness). Do not flag IDs scoped to a single process or used only as in-memory keys.",
       "detection_hint": "Look for an ID generator combining Date.now()/timestamp with a module-level `counter` variable where the result is used as a filename/key in a directory other processes also write to. Ask: can two separate processes produce the same ID in the same millisecond?",
       "severity": "important",
       "example_prs": [
@@ -2089,7 +2123,7 @@
       "id": "register-signal-handlers-before-spawn",
       "category": "concurrency-async",
       "title": "Register signal-forwarding handlers before spawning the child",
-      "rule": "In code that spawns a child and forwards termination signals, flag `process.on('SIGINT'|'SIGTERM'|...)` registered AFTER the `spawn(...)` call — a signal arriving in the gap terminates the wrapper without forwarding, orphaning the child. Require handlers registered before spawn, exiting/re-raising safely when no child is assigned yet. Only applies when the handler's purpose is forwarding to the spawned child.",
+      "rule": "In code that spawns a child and forwards termination signals, flag `process.on('SIGINT'|'SIGTERM'|...)` registered AFTER the `spawn(...)` call \u2014 a signal arriving in the gap terminates the wrapper without forwarding, orphaning the child. Require handlers registered before spawn, exiting/re-raising safely when no child is assigned yet. Only applies when the handler's purpose is forwarding to the spawned child.",
       "detection_hint": "Flag `process.on('SIGINT'|'SIGTERM'|...)` forwarding to a child that appears after the `spawn(...)` call. Ask: if a signal lands between spawn and handler registration, is the child orphaned?",
       "severity": "important",
       "example_prs": [
@@ -2145,7 +2179,7 @@
       "category": "types",
       "title": "Read properties directly after narrowing instead of casting",
       "rule": "After a discriminant/status early-return or `\"prop\" in x` check has narrowed a union, access the property directly instead of adding an `as {...}` cast (ask: would direct access type-check without it?). Conversely, when reading a property off a value still typed `unknown`/`object` after `\"prop\" in x`, cast once to an explicit shape (e.g. `x as { code?: unknown }`) before reading. Flag both the redundant cast and the missing boundary cast.",
-      "detection_hint": "Flag `as {...}` on a property accessed immediately after `if (x.status !== \"...\") return` / a switch that already narrows to the owning variant — ask: would direct access type-check without the cast? Separately, flag `error.code`/`error.x` read off a value typed `unknown`/`object` (post `\"x\" in error`) with no cast to a typed shape.",
+      "detection_hint": "Flag `as {...}` on a property accessed immediately after `if (x.status !== \"...\") return` / a switch that already narrows to the owning variant \u2014 ask: would direct access type-check without the cast? Separately, flag `error.code`/`error.x` read off a value typed `unknown`/`object` (post `\"x\" in error`) with no cast to a typed shape.",
       "severity": "important",
       "example_prs": [
         120,
@@ -2164,7 +2198,7 @@
       "id": "type-matches-runtime-contract",
       "category": "types",
       "title": "Make declared types match runtime reality at boundaries",
-      "rule": "Ensure declared types match runtime reality at boundaries. Flag `createContext<T>()` with no default where `T` excludes `undefined` (consumers get `undefined` with no provider — type it `T | undefined` or pass a default). Flag a `headers` field/param typed `Record<string, string>` that flows to `fetch`/an HTTP client — `HeadersInit` is the runtime contract. Keep narrow to these two well-defined patterns.",
+      "rule": "Ensure declared types match runtime reality at boundaries. Flag `createContext<T>()` with no default where `T` excludes `undefined` (consumers get `undefined` with no provider \u2014 type it `T | undefined` or pass a default). Flag a `headers` field/param typed `Record<string, string>` that flows to `fetch`/an HTTP client \u2014 `HeadersInit` is the runtime contract. Keep narrow to these two well-defined patterns.",
       "detection_hint": "Flag `createContext<T>()` calls with no default argument where `T` does not include `undefined` (ask: can a consumer call `useContext` with no provider mounted?). Flag a `headers` field/param typed `Record<string, string>` that flows to fetch/an HTTP client (ask: is `HeadersInit` the correct type?).",
       "severity": "important",
       "example_prs": [
@@ -2185,7 +2219,7 @@
       "category": "types",
       "title": "Validate external/plugin input at runtime instead of trusting the declared type",
       "rule": "At trust boundaries (plugin/external/network input), do not rely on a declared TS type to guarantee a value's shape before calling type-specific methods; even `Partial<Record<...,string>>` can arrive `undefined`/non-string. Flag iteration (`Object.entries`/`values`) over an externally-supplied record whose values reach string methods (`startsWith`/`slice`/`trim`) with no preceding `typeof === 'string'`/truthiness guard. Only apply at actual external boundaries, not internally-constructed values.",
-      "detection_hint": "Flag `Object.entries`/`Object.values` over an external- or plugin-provided record where each value is passed to a function that calls string methods (`startsWith`/`slice`/`trim`) without a preceding `typeof === 'string'` / truthiness check — especially when the declared type is `Partial<Record<...>>`.",
+      "detection_hint": "Flag `Object.entries`/`Object.values` over an external- or plugin-provided record where each value is passed to a function that calls string methods (`startsWith`/`slice`/`trim`) without a preceding `typeof === 'string'` / truthiness check \u2014 especially when the declared type is `Partial<Record<...>>`.",
       "severity": "important",
       "example_prs": [
         125,
@@ -2303,9 +2337,13 @@
       "detection_hint": "Two checks per hunk: (1) in a child/worker catch block that does parentPort.postMessage({type:'error'}) or similar, is there a following process.exit/self.close? (2) Does stop()/shutdown() post a 'stop' message then return void/synchronously with a setTimeout(...kill), rather than returning a Promise awaited by relaunch/update/quit callers? Ask: can the subprocess survive a failed startup or a parent that exits before the kill timer fires?",
       "severity": "important",
       "example_prs": [
+        162,
         25962
       ],
-      "support_count": 2
+      "support_count": 3,
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "reset-flag-in-finally-around-await",
@@ -2348,9 +2386,11 @@
         118,
         130,
         131,
-        133
+        133,
+        150,
+        155
       ],
-      "support_count": 5,
+      "support_count": 9,
       "source_repo": "inkstone",
       "reinforced_by": [
         "inkstone"
@@ -2378,10 +2418,14 @@
       "detection_hint": "A validator checks only value.is_string() for an id/reference field combined with a later .filter(|id| !id.is_empty()) before an existence check. Ask: can the payload set the reference to \"\" and bypass the existence check while still being stored?",
       "severity": "important",
       "example_prs": [
-        131
+        131,
+        166
       ],
-      "support_count": 1,
-      "source_repo": "inkstone"
+      "support_count": 2,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "partial-update-validators-must-not-require-create-fields",
@@ -2400,7 +2444,7 @@
       "id": "single-resolver-for-shared-dispatch-key-no-fabricated-defaults",
       "category": "correctness",
       "title": "Route sibling dispatch helpers through one resolver that rejects unknown kinds",
-      "rule": "When several helpers dispatch on the same kind/type key, route them through one authoritative resolver that returns Err for unknown kinds rather than letting each match arm independently fall back to a synthesized default. A split contract — one helper rejects unknown kinds while siblings (render/schema_version) fabricate defaults — lets an unsupported entity be silently stamped as a wrong default instead of failing fast.",
+      "rule": "When several helpers dispatch on the same kind/type key, route them through one authoritative resolver that returns Err for unknown kinds rather than letting each match arm independently fall back to a synthesized default. A split contract \u2014 one helper rejects unknown kinds while siblings (render/schema_version) fabricate defaults \u2014 lets an unsupported entity be silently stamped as a wrong default instead of failing fast.",
       "detection_hint": "Multiple fns match on the same kind/type string where one has `_ => Err(...)` but another has `_ => <real default value>`. Ask: can an unknown kind reach the fabricating helper without first being rejected by the validating one?",
       "severity": "important",
       "example_prs": [
@@ -2431,10 +2475,14 @@
       "severity": "important",
       "example_prs": [
         22,
-        122
+        122,
+        175
       ],
-      "support_count": 2,
-      "source_repo": "inkstone"
+      "support_count": 3,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "lazy-singleton-init-must-be-atomic",
@@ -2479,7 +2527,7 @@
       "id": "decouple-durable-persistence-from-client-delivery",
       "category": "data-persistence",
       "title": "Keep durable persistence of streamed output independent of live client delivery",
-      "rule": "Do not gate DB writes (or the loop draining the worker) on WebSocket send success. A client disconnect must not stop the run's output from being read and persisted. Distinguish a downstream client/subscriber disconnect from an actual worker EOF/crash: a failed ws_sender.send only means the client went away — don't break the loop and persist 'errored'/'worker_disconnected' for a run that may still be producing output or have already buffered 'done'.",
+      "rule": "Do not gate DB writes (or the loop draining the worker) on WebSocket send success. A client disconnect must not stop the run's output from being read and persisted. Distinguish a downstream client/subscriber disconnect from an actual worker EOF/crash: a failed ws_sender.send only means the client went away \u2014 don't break the loop and persist 'errored'/'worker_disconnected' for a run that may still be producing output or have already buffered 'done'.",
       "detection_hint": "A loop reads worker events, does a DB UPDATE for a delta, then ws_sender.send(...) with break/return on send error; an else branch records errored/disconnect. Ask: if the WS send fails and breaks the loop, does that stop persistence or falsely mark the run errored?",
       "severity": "blocking",
       "example_prs": [
@@ -2493,7 +2541,7 @@
       "id": "ephemeral-broadcast-events-must-be-recoverable-by-late-subscribers",
       "category": "concurrency-async",
       "title": "Make timing-sensitive broadcast events recoverable by late/reconnecting subscribers",
-      "rule": "Events published onto a broadcast channel before a subscriber can attach are dropped (broadcast has no replay to late subscribers). If a producer can run before the client gets the id needed to subscribe, or a subscriber attaches after a terminal event was already published, an important event (started indicator, terminal status) is silently lost. Either persist such events into the snapshot late subscribers replay, buffer until a subscriber attaches, or — when reading a snapshot whose status is already terminal — emit a synthetic terminal event instead of tailing a channel that will never deliver one.",
+      "rule": "Events published onto a broadcast channel before a subscriber can attach are dropped (broadcast has no replay to late subscribers). If a producer can run before the client gets the id needed to subscribe, or a subscriber attaches after a terminal event was already published, an important event (started indicator, terminal status) is silently lost. Either persist such events into the snapshot late subscribers replay, buffer until a subscriber attaches, or \u2014 when reading a snapshot whose status is already terminal \u2014 emit a synthetic terminal event instead of tailing a channel that will never deliver one.",
       "detection_hint": "tx.send(...)/broadcast publish marked 'not persisted'/'won't replay' where the producer can run before the subscriber attaches; or tx.subscribe()/broadcast::Receiver created right after reading a status snapshot followed by a forwarder relaying only future events. Ask: if the status is already terminal or the event fired pre-subscribe, does any terminal/started event still reach this receiver?",
       "severity": "important",
       "example_prs": [
@@ -2538,7 +2586,7 @@
       "id": "persisted-setting-must-have-effective-consumer",
       "category": "correctness",
       "title": "A persisted setting must be read by the path it is meant to influence",
-      "rule": "When a handler persists a user preference/setting, verify a read path actually applies it where it matters (run creation, dispatch, rendering). A setter whose key is only read back by its own get/echo handler — while the behavior-driving path still uses a hardcoded default — is a no-op feature that merely appears to work.",
+      "rule": "When a handler persists a user preference/setting, verify a read path actually applies it where it matters (run creation, dispatch, rendering). A setter whose key is only read back by its own get/echo handler \u2014 while the behavior-driving path still uses a hardcoded default \u2014 is a no-op feature that merely appears to work.",
       "detection_hint": "A diff adds set_setting/persist for a key; grep for get_setting(<key>). Is any consumer OTHER than the matching get/echo handler reading it? If the behavior path (run/post_message building the workflow) still uses a hardcoded default, the setting is never applied.",
       "severity": "blocking",
       "example_prs": [
@@ -2569,7 +2617,7 @@
       "category": "api-compat",
       "title": "Land producer and consumer together when changing a shared wire schema/union",
       "rule": "Changes to a shared cross-language wire schema must land on both sides in the same change. Narrowing a field type (S.Array(S.String) -> S.Array(Descriptor)) while the producer still emits the old shape turns valid messages into parse failures. Adding a new outbound message variant on the sender without a matching decode/dispatch branch on the receiver causes the receiver to drop it as 'unknown', hanging request/response handshakes. A shared schema union must also enumerate every documented/emitted variant (terminal error/cancelled/status), or the consumer rejects valid messages at the boundary.",
-      "detection_hint": "A field in packages/protocol changes primitive->struct, or a union/enum of outbound kinds gains a variant — then check the Rust counterpart (protocol.rs/worker.rs) still builds the old shape, the receiver's decoder/match has no arm for the new variant, or the union omits variants documented in docs/adr. Flag the one-sided change.",
+      "detection_hint": "A field in packages/protocol changes primitive->struct, or a union/enum of outbound kinds gains a variant \u2014 then check the Rust counterpart (protocol.rs/worker.rs) still builds the old shape, the receiver's decoder/match has no arm for the new variant, or the union omits variants documented in docs/adr. Flag the one-sided change.",
       "severity": "important",
       "example_prs": [
         4,
@@ -2582,7 +2630,7 @@
       "id": "subscribe-must-send-wire-subscription-request",
       "category": "api-compat",
       "title": "A subscribe method must send the actual protocol subscription request",
-      "rule": "When implementing a subscribe-style method against a real protocol, actually send the wire subscription request (run/subscribe(run_id, since?)) to register with the server — don't merely allocate a local in-memory queue/stream. A loopback/fake-server test that pushes events unconditionally masks the missing subscribe call; against a real server the client is never registered for notifications.",
+      "rule": "When implementing a subscribe-style method against a real protocol, actually send the wire subscription request (run/subscribe(run_id, since?)) to register with the server \u2014 don't merely allocate a local in-memory queue/stream. A loopback/fake-server test that pushes events unconditionally masks the missing subscribe call; against a real server the client is never registered for notifications.",
       "detection_hint": "A subscribe*/stream method body only does ensureQueue/Stream.fromQueue with no socket.send/RPC of a subscribe method. Ask: does subscribing perform the wire */subscribe request, or just wire up a local queue?",
       "severity": "important",
       "example_prs": [
@@ -2625,7 +2673,7 @@
       "id": "preserve-actionable-error-messages-across-refactors",
       "category": "error-handling",
       "title": "Preserve actionable client-facing error messages when refactoring error branches",
-      "rule": "When refactoring error branches, preserve actionable, already-sanitized client-facing messages. If a branch previously surfaced a specific failure reason to the UI (provider login failure), don't collapse it into a generic Internal variant whose framer emits only 'internal error' — use a variant that carries a client-facing message. Confirm which errors are user-actionable before mapping them to the catch-all.",
+      "rule": "When refactoring error branches, preserve actionable, already-sanitized client-facing messages. If a branch previously surfaced a specific failure reason to the UI (provider login failure), don't collapse it into a generic Internal variant whose framer emits only 'internal error' \u2014 use a variant that carries a client-facing message. Confirm which errors are user-actionable before mapping them to the catch-all.",
       "detection_hint": "In a refactor diff, branches that previously sent a specific message now return HandlerError::Internal(...) (or equivalent generic error). Ask: did this branch lose a client-visible, actionable message the UI surfaces?",
       "severity": "important",
       "example_prs": [
@@ -2665,7 +2713,7 @@
       "id": "tie-row-update-and-event-log-to-one-authoritative-key",
       "category": "data-persistence",
       "title": "Tie a row update and its event-log write to a single authoritative key",
-      "rule": "When a lifecycle transition updates a row keyed by one id (proposal_id) but writes an associated event log (run_events) using a separately caller-supplied id (run_id), the two can diverge — one proposal is mutated while events are appended to a different run. Constrain the UPDATE by the joined run_id, or fetch the authoritative run_id from the DB for that proposal and use the same value for the event insert; do not trust a caller-supplied id that can diverge from the row being mutated.",
+      "rule": "When a lifecycle transition updates a row keyed by one id (proposal_id) but writes an associated event log (run_events) using a separately caller-supplied id (run_id), the two can diverge \u2014 one proposal is mutated while events are appended to a different run. Constrain the UPDATE by the joined run_id, or fetch the authoritative run_id from the DB for that proposal and use the same value for the event insert; do not trust a caller-supplied id that can diverge from the row being mutated.",
       "detection_hint": "A transition fn does `UPDATE proposals WHERE proposal_id = ?` but `INSERT INTO run_events (run_id, ...)` using a parameter run_id rather than one derived from the same proposal/tool_calls row. Ask: can the event-insert run_id differ from the proposal's true run_id?",
       "severity": "important",
       "example_prs": [
@@ -2708,7 +2756,7 @@
       "id": "fail-on-malformed-snapshot-not-fallback-to-null",
       "category": "data-persistence",
       "title": "Treat a malformed stored snapshot as an apply error, not a Null fallback",
-      "rule": "When a stored DB snapshot must be parsed before re-applying a mutation, treat parse failure (or a non-object value) as an internal apply error and return Err — do not normalize to Value::Null / default. Parsing with .unwrap_or(Value::Null) and rebuilding the document from that fallback silently drops sibling fields (occurred_at/ended_at/body) and persists a partial document.",
+      "rule": "When a stored DB snapshot must be parsed before re-applying a mutation, treat parse failure (or a non-object value) as an internal apply error and return Err \u2014 do not normalize to Value::Null / default. Parsing with .unwrap_or(Value::Null) and rebuilding the document from that fallback silently drops sibling fields (occurred_at/ended_at/body) and persists a partial document.",
       "detection_hint": "Grep for serde_json::from_str(...).unwrap_or(serde_json::Value::Null) (or .unwrap_or_default()) where the parsed value is then merged/written back to the DB. Flag: is parse failure mapped to an error, and is the value validated as an Object before use?",
       "severity": "blocking",
       "example_prs": [
@@ -2733,7 +2781,7 @@
     {
       "id": "no-synthetic-row-fields-query-real-values",
       "category": "code-quality",
-      "title": "Don't fabricate struct fields with placeholder defaults — query the real values",
+      "title": "Don't fabricate struct fields with placeholder defaults \u2014 query the real values",
       "rule": "Don't fabricate domain-row struct fields with placeholder zeros/defaults (created_at/updated_at = 0) to satisfy a type when the data is available. Query the full row and map it through the shared row-mapping helper so all fields are real; synthetic timestamps silently corrupt any consumer that sorts or renders by them.",
       "detection_hint": "A fn constructs a row/DTO struct manually with literal 0/default for fields like created_at/updated_at while a shared mapper (entity_row(...)) exists. Ask: are any non-trivial fields filled with 0/default instead of real DB values?",
       "severity": "nit",
@@ -2796,10 +2844,14 @@
       "severity": "important",
       "example_prs": [
         112,
-        131
+        131,
+        152
       ],
-      "support_count": 2,
-      "source_repo": "inkstone"
+      "support_count": 3,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "assert-json-structure-not-serialized-substring",
@@ -2818,7 +2870,7 @@
       "id": "cover-every-case-and-branch-named-or-implemented",
       "category": "testing",
       "title": "Cover every case the test name claims and every branch the component implements",
-      "rule": "Ensure every status/variant named in a test title is actually constructed as a fixture and asserted (if the name says 'completed AND dropped', include a dropped fixture and assert its exclusion). Likewise, cover each branch an interactive component implements — keyboard submit vs newline modifier, whitespace-only rejection, post-action input reset — not just the one happy path. Unnamed/unasserted branches let regressions pass silently.",
+      "rule": "Ensure every status/variant named in a test title is actually constructed as a fixture and asserted (if the name says 'completed AND dropped', include a dropped fixture and assert its exclusion). Likewise, cover each branch an interactive component implements \u2014 keyboard submit vs newline modifier, whitespace-only rejection, post-action input reset \u2014 not just the one happy path. Unnamed/unasserted branches let regressions pass silently.",
       "detection_hint": "Compare the test name's enumerated cases against literals constructed in the body; and cross-reference handler logic (Enter/shiftKey checks, value.trim() guards, setValue(\"\") resets) against the test file. Flag any named case or implemented branch with no fixture/assertion.",
       "severity": "nit",
       "example_prs": [
@@ -2947,7 +2999,7 @@
       "id": "build-before-vite-preview-in-e2e",
       "category": "testing",
       "title": "Build before vite preview in e2e/smoke webServer setup",
-      "rule": "Vite `preview` serves the dist/ build output, not source — so any e2e/smoke webServer that runs `vite preview` (or `pnpm preview`) must build first (chain `vite build`/`pnpm build` in the script or webServer command). Otherwise tests fail on a clean checkout when dist is missing, or silently pass against a stale artifact. Detection: in playwright/test config or CI, webServer.command or test:e2e invokes preview with no preceding build step.",
+      "rule": "Vite `preview` serves the dist/ build output, not source \u2014 so any e2e/smoke webServer that runs `vite preview` (or `pnpm preview`) must build first (chain `vite build`/`pnpm build` in the script or webServer command). Otherwise tests fail on a clean checkout when dist is missing, or silently pass against a stale artifact. Detection: in playwright/test config or CI, webServer.command or test:e2e invokes preview with no preceding build step.",
       "detection_hint": "In playwright/test config or CI, webServer.command or test:e2e invokes `vite preview`/`pnpm preview` with no preceding `vite build`/`pnpm build`. Flag missing build-before-preview.",
       "severity": "important",
       "example_prs": [
@@ -3020,7 +3072,7 @@
       "id": "effect-on-async-data-must-depend-on-that-data",
       "category": "ui-react",
       "title": "Effects acting on async-loaded data must depend on that data, not an empty deps array",
-      "rule": "An effect (useEffect/useLayoutEffect) that acts on data from an async hook must include that data (the loaded object or a derived value like conversation?.messages?.length) in its dependency array, not []. An empty deps array fires once on mount before the async hook resolves and never re-runs when data arrives (e.g. auto-scroll-to-bottom firing before messages render). Note: react-hooks/exhaustive-deps catches the missing dep only when the value is referenced in the effect body and the lint rule is enabled — flag this even when it is suppressed or the dependency is derived.",
+      "rule": "An effect (useEffect/useLayoutEffect) that acts on data from an async hook must include that data (the loaded object or a derived value like conversation?.messages?.length) in its dependency array, not []. An empty deps array fires once on mount before the async hook resolves and never re-runs when data arrives (e.g. auto-scroll-to-bottom firing before messages render). Note: react-hooks/exhaustive-deps catches the missing dep only when the value is referenced in the effect body and the lint rule is enabled \u2014 flag this even when it is suppressed or the dependency is derived.",
       "detection_hint": "useEffect/useLayoutEffect with `}, []);` whose body references a variable destructured from a useX() hook returning { data }. Ask: does the effect read async-loaded data but never list it as a dependency?",
       "severity": "important",
       "example_prs": [
@@ -3033,7 +3085,7 @@
       "id": "do-not-seed-usestate-from-async-data-that-may-be-empty",
       "category": "ui-react",
       "title": "Don't seed useState synchronously from async data that may be empty on first render",
-      "rule": "Don't seed useState from async-loaded data that may be empty on first render (const initial = list.find(...) ?? list[0]; useState<Model>(initial)) and then dereference selected.name — on first render the list is empty so the seed is undefined and the dereference crashes, and state never re-syncs when data arrives. Store the selected id and derive the object each render with fallbacks, or type state as T | undefined and guard dereferences, re-syncing when data loads.",
+      "rule": "Don't seed useState from async-loaded data that may be empty on first render (const initial = list.find(...) ?? list[0]; useState<Model>(initial)) and then dereference selected.name \u2014 on first render the list is empty so the seed is undefined and the dereference crashes, and state never re-syncs when data arrives. Store the selected id and derive the object each render with fallbacks, or type state as T | undefined and guard dereferences, re-syncing when data loads.",
       "detection_hint": "useState<T>(list.find(...) ?? list[0]) where list comes from data ?? [] of an async hook, followed by non-optional selected.X accesses. Ask: can list be empty on first render, making the seed undefined and the later dereference unsafe?",
       "severity": "important",
       "example_prs": [
@@ -3059,7 +3111,7 @@
       "id": "attribute-streaming-deltas-by-per-run-id-not-last-message",
       "category": "concurrency-async",
       "title": "Attribute streaming deltas to the per-run message id/index, not the current last message",
-      "rule": "Track the assistant message index/id per runId and update that specific entry from the stream handler, rather than mutating the current last message (next[next.length-1] / messages.at(-1)). Assume runs can overlap unless the UI strictly prevents concurrent submits (composer disabled, onSend awaited) — otherwise late deltas from an earlier run land in the newest bubble when the user submits a second prompt before the first finishes.",
+      "rule": "Track the assistant message index/id per runId and update that specific entry from the stream handler, rather than mutating the current last message (next[next.length-1] / messages.at(-1)). Assume runs can overlap unless the UI strictly prevents concurrent submits (composer disabled, onSend awaited) \u2014 otherwise late deltas from an earlier run land in the newest bubble when the user submits a second prompt before the first finishes.",
       "detection_hint": "A streaming text_delta/event handler writes to arr[arr.length-1] to attribute streamed output. Ask: if two runs overlap, can a delta for run A be written to run B's bubble because it targets the last message rather than a per-run id/index?",
       "severity": "important",
       "example_prs": [
@@ -3076,7 +3128,7 @@
       "id": "do-not-overlay-absolute-control-over-sibling-interactive-elements",
       "category": "ui-react",
       "title": "Don't place an absolute overlay control over a sibling's interactive elements",
-      "rule": "An absolutely-positioned control (e.g. absolute top-3 right-3 z-10) inside a relative grid/flex container can cover a sibling component's interactive elements at the same corner offset, blocking clicks — especially with dynamic content width. Only flag when the same relative container demonstrably holds another component's interactive controls (button/input) near that same corner; prefer reserving layout space over absolute overlays. Do not flag absolute overlays that sit over non-interactive area or have no sibling controls at that offset.",
+      "rule": "An absolutely-positioned control (e.g. absolute top-3 right-3 z-10) inside a relative grid/flex container can cover a sibling component's interactive elements at the same corner offset, blocking clicks \u2014 especially with dynamic content width. Only flag when the same relative container demonstrably holds another component's interactive controls (button/input) near that same corner; prefer reserving layout space over absolute overlays. Do not flag absolute overlays that sit over non-interactive area or have no sibling controls at that offset.",
       "detection_hint": "A newly-added element with className containing 'absolute' + top/right/bottom/left + z-index inside a 'relative' container that also holds another component's controls near the same corner. Ask: does the overlay sit over interactive buttons of a sibling at that offset?",
       "severity": "important",
       "example_prs": [
@@ -3106,7 +3158,7 @@
       "id": "no-node-only-ws-import-in-browser-facing-code",
       "category": "api-compat",
       "title": "Use globalThis.WebSocket (or DI) instead of the Node ws package in browser-facing code",
-      "rule": "In code intended to run in the browser (or a shared SDK consumed by a web app), use the DOM globalThis.WebSocket or inject the WebSocket constructor — do not import the Node-only `ws` package, which pulls Node networking APIs into Vite/browser bundles and fails to bundle or run in the browser.",
+      "rule": "In code intended to run in the browser (or a shared SDK consumed by a web app), use the DOM globalThis.WebSocket or inject the WebSocket constructor \u2014 do not import the Node-only `ws` package, which pulls Node networking APIs into Vite/browser bundles and fails to bundle or run in the browser.",
       "detection_hint": "Grep for `from \"ws\"` or require('ws') in packages/SDKs consumed by the web app. Ask: is this module bundled for the browser? If so flag the Node ws import in favor of globalThis.WebSocket or DI.",
       "severity": "important",
       "example_prs": [
@@ -3123,10 +3175,14 @@
       "detection_hint": "Date math subtracting a fixed 86_400_000 / 24*60*60*1000 constant from a local midnight to derive 'yesterday'/'last N days'. Fixed-ms day arithmetic for local-calendar buckets = DST bug.",
       "severity": "important",
       "example_prs": [
-        115
+        115,
+        175
       ],
-      "support_count": 1,
-      "source_repo": "inkstone"
+      "support_count": 2,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "bucket-time-ordered-items-by-timestamp-not-array-index",
@@ -3145,7 +3201,7 @@
       "id": "order-by-unique-tiebreaker-when-row-order-matters",
       "category": "correctness",
       "title": "Add a unique tie-breaker to ORDER BY (and sort merged sources) when row order matters",
-      "rule": "SQL does not guarantee order among rows with equal sort keys; ORDER BY a non-unique column (created_at, timestamp) is non-deterministic when rows share the key (user+assistant messages stamped from one now_ms). Add a monotonic/unique tie-breaker (a seq column, rowid, explicit role filter) when order matters — especially in tests indexing positionally. Likewise, when merging rows from multiple sources for an order-sensitive view, sort the merged list by the semantic key rather than relying on `[...a, ...b]` concatenation order.",
+      "rule": "SQL does not guarantee order among rows with equal sort keys; ORDER BY a non-unique column (created_at, timestamp) is non-deterministic when rows share the key (user+assistant messages stamped from one now_ms). Add a monotonic/unique tie-breaker (a seq column, rowid, explicit role filter) when order matters \u2014 especially in tests indexing positionally. Likewise, when merging rows from multiple sources for an order-sensitive view, sort the merged list by the semantic key rather than relying on `[...a, ...b]` concatenation order.",
       "detection_hint": "`ORDER BY <col>` where <col> may be non-unique and code/tests index results positionally (rows[0]=user, rows[1]=assistant); or `return [...editRows, ...autoRows]` feeding an order-sensitive list with no subsequent sort. Ask: could two rows share this key, and is there a unique tie-breaker / explicit sort?",
       "severity": "important",
       "example_prs": [
@@ -3172,20 +3228,24 @@
       "id": "run-independent-async-fetches-concurrently",
       "category": "performance",
       "title": "Run independent async fetches concurrently, not sequentially",
-      "rule": "Run independent async fetches concurrently (Effect.all / Promise.all) rather than awaiting them sequentially when neither depends on the other's result — sequential `yield*`/await of two independent list calls doubles latency.",
+      "rule": "Run independent async fetches concurrently (Effect.all / Promise.all) rather than awaiting them sequentially when neither depends on the other's result \u2014 sequential `yield*`/await of two independent list calls doubles latency.",
       "detection_hint": "Consecutive `yield* client.x(...)` / `await client.x(...)` statements where the second does not use the first's result. Ask: are these two independent fetches awaited sequentially when they could be batched with Effect.all/Promise.all?",
       "severity": "nit",
       "example_prs": [
-        112
+        112,
+        175
       ],
-      "support_count": 1,
-      "source_repo": "inkstone"
+      "support_count": 2,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        "inkstone"
+      ]
     },
     {
       "id": "isolate-non-critical-read-from-whole-batch-fallback",
       "category": "error-handling",
       "title": "Isolate an optional read from a shared batch fallback so its failure doesn't drop live data",
-      "rule": "Don't bundle an optional/non-critical async read into the same Effect.all/Promise.all batch whose shared try/catch falls back to stale/preview data — a failure in that one read drops ALL successfully-fetched live data. Wrap the non-essential read in its own catchAll/try-catch yielding an empty/default result so a transient failure doesn't invalidate the other successful reads.",
+      "rule": "Don't bundle an optional/non-critical async read into the same Effect.all/Promise.all batch whose shared try/catch falls back to stale/preview data \u2014 a failure in that one read drops ALL successfully-fetched live data. Wrap the non-essential read in its own catchAll/try-catch yielding an empty/default result so a transient failure doesn't invalidate the other successful reads.",
       "detection_hint": "A diff adds an entry to an existing Effect.all([...]) / Promise.all([...]) wrapped in a single try/catch returning a fallback. Does the new element have its own Effect.catchAll/per-call error handling? If not, flag that one failing read collapses the whole batch.",
       "severity": "important",
       "example_prs": [
@@ -3224,7 +3284,7 @@
       "id": "do-not-discard-flush-error-on-required-write-path",
       "category": "error-handling",
       "title": "Don't discard the flush error after writing a required handshake/manifest line",
-      "rule": "Don't discard flush errors on a write path the peer depends on. After write_all of a required first line (handshake/manifest), check the flush Result and propagate the error on failure (log + Err), matching the write_all error handling — a swallowed `let _ = stdin.flush().await;` can leave data buffered and stall the peer waiting for input.",
+      "rule": "Don't discard flush errors on a write path the peer depends on. After write_all of a required first line (handshake/manifest), check the flush Result and propagate the error on failure (log + Err), matching the write_all error handling \u2014 a swallowed `let _ = stdin.flush().await;` can leave data buffered and stall the peer waiting for input.",
       "detection_hint": "Grep for `let _ = *.flush().await` (or unchecked .flush()) following a write_all of protocol/handshake data. Flag the discarded flush error.",
       "severity": "important",
       "example_prs": [
@@ -3254,7 +3314,7 @@
       "id": "lossy-flattened-display-string-must-not-be-editable-model",
       "category": "data-persistence",
       "title": "Don't reuse a display-only flattened string as the editable model for structured content",
-      "rule": "Don't reuse a display-only flattened string (structured body nodes like entity_ref collapsed to text placeholders) as the editable model — the save path reserializes it as plain text and silently destroys the structured references. Keep a structured editable model that round-trips the nodes, or disable inline edit when the body contains structured nodes that flattening would corrupt.",
+      "rule": "Don't reuse a display-only flattened string (structured body nodes like entity_ref collapsed to text placeholders) as the editable model \u2014 the save path reserializes it as plain text and silently destroys the structured references. Keep a structured editable model that round-trips the nodes, or disable inline edit when the body contains structured nodes that flattening would corrupt.",
       "detection_hint": "A body array mapped to a single display string converting entity_ref/structured nodes to text, and that same string feeds a textarea whose save handler rebuilds body as [{type:'text'}]. Flag lossy round-trip; ask: are structured nodes preserved or is edit disabled when present?",
       "severity": "important",
       "example_prs": [
@@ -3315,7 +3375,7 @@
       "category": "code-quality",
       "title": "Keep a doc comment attached to its type when inserting a new item between them",
       "rule": "When inserting a new type/item between an existing doc comment and the type it documents, move the doc comment to stay attached to its intended type. Otherwise the generated docs attach the comment to the wrong (newly-inserted) item and leave the original type undocumented. Likewise update comments referencing an identifier that was renamed in the same diff.",
-      "detection_hint": "A diff inserts a new `#[derive] pub struct X` between an existing `/// ...` doc block and a different struct — does the doc block's described type name match the struct directly below it? Or a rename whose nearby comments still use the old identifier. Mismatch = misattached/stale doc.",
+      "detection_hint": "A diff inserts a new `#[derive] pub struct X` between an existing `/// ...` doc block and a different struct \u2014 does the doc block's described type name match the struct directly below it? Or a rename whose nearby comments still use the old identifier. Mismatch = misattached/stale doc.",
       "severity": "nit",
       "example_prs": [
         106,
@@ -3758,10 +3818,14 @@
       "example_prs": [
         3375,
         4005,
-        4380
+        4380,
+        26763
       ],
-      "support_count": 3,
-      "source_repo": "earendil-works/pi"
+      "support_count": 4,
+      "source_repo": "earendil-works/pi",
+      "reinforced_by": [
+        "opencode"
+      ]
     },
     {
       "id": "do-not-hand-edit-generated-files",
@@ -3793,7 +3857,7 @@
       "id": "package-dependency-declaration-hygiene",
       "category": "code-quality",
       "title": "Declare new imports in package.json and avoid dep/devDep duplication or floating versions",
-      "rule": "When a new bare-specifier import is added (not relative, not a node: builtin), confirm the package is declared in the nearest package.json dependencies — a missing dep compiles via monorepo hoisting but breaks at publish/install. List a package in exactly one of dependencies/devDependencies (a runtime package belongs only in dependencies), pin to a compatible semver range aligned with the monorepo version rather than `*`/`@*`, and double-check npm:-alias strings target a real package/version.",
+      "rule": "When a new bare-specifier import is added (not relative, not a node: builtin), confirm the package is declared in the nearest package.json dependencies \u2014 a missing dep compiles via monorepo hoisting but breaks at publish/install. List a package in exactly one of dependencies/devDependencies (a runtime package belongs only in dependencies), pin to a compatible semver range aligned with the monorepo version rather than `*`/`@*`, and double-check npm:-alias strings target a real package/version.",
       "detection_hint": "An added `import ... from \"<bare-specifier>\"` whose package root is absent from package.json deps; a package present in both dependencies and devDependencies; a version value matching `@\\*\"` or exactly `\"*\"`; or a `npm:<otherName>@<range>` alias.",
       "severity": "important",
       "example_prs": [
@@ -3897,7 +3961,7 @@
       "id": "tests-must-cover-new-branchy-functions-and-config-precedence",
       "category": "testing",
       "title": "Cover newly added branchy functions, config/precedence, and observable fields with tests",
-      "rule": "When a PR introduces a new exported function with multiple branches/edge cases, a new CLI flag, an env-var path-resolution precedence chain, defensive normalization of malformed external input, or new entries in source-of-truth Record maps (default-model, display-name, env-var, provider-classification), add unit tests exercising each branch/precedence/edge case and asserting the new keys — especially when a sibling test file already exists. Tests should assert the unit's own logic, not standard-library guarantees.",
+      "rule": "When a PR introduces a new exported function with multiple branches/edge cases, a new CLI flag, an env-var path-resolution precedence chain, defensive normalization of malformed external input, or new entries in source-of-truth Record maps (default-model, display-name, env-var, provider-classification), add unit tests exercising each branch/precedence/edge case and asserting the new keys \u2014 especially when a sibling test file already exists. Tests should assert the unit's own logic, not standard-library guarantees.",
       "detection_hint": "A diff adds an export function with >2 conditional branches, a parseArgs()/getAgentDir() env-var branch, input-sanitization branches, or keys to maps like defaultModelPerProvider/BUILT_IN_PROVIDER_DISPLAY_NAMES/getApiKeyEnvVars, but touches no corresponding *.test.ts; or a test whose assertions only check a builtin (String.prototype.startsWith) with hardcoded inputs.",
       "severity": "important",
       "example_prs": [
@@ -3918,7 +3982,7 @@
       "id": "new-provider-needs-e2e-test-following-shared-capability-pattern",
       "category": "testing",
       "title": "New providers need an e2e test following the shared per-capability pattern",
-      "rule": "A new provider/integration implementation should include an end-to-end test that follows the repo's established per-capability pattern used by sibling integrations (shared capability helpers invoked from one describe block per provider against a known-good target), and must mirror the capabilities the sibling suites test — including a reasoning/thinking test when the model under test reports reasoning support. Flag a new providers/ implementation with no corresponding e2e describe using the shared helpers.",
+      "rule": "A new provider/integration implementation should include an end-to-end test that follows the repo's established per-capability pattern used by sibling integrations (shared capability helpers invoked from one describe block per provider against a known-good target), and must mirror the capabilities the sibling suites test \u2014 including a reasoning/thinking test when the model under test reports reasoning support. Flag a new providers/ implementation with no corresponding e2e describe using the shared helpers.",
       "detection_hint": "A new provider implementation file under providers/ with no corresponding e2e describe block using the shared capability helpers, or a new describe for a reasoning:true model with no handleThinking/reasoning test while sibling suites have one.",
       "severity": "important",
       "example_prs": [
@@ -3971,7 +4035,7 @@
       "id": "avoid-os-specific-binary-path-and-flag-assumptions",
       "category": "correctness",
       "title": "Resolve system binaries across paths and pass required CLI flags",
-      "rule": "When locating or invoking a system binary, do not assume one fixed absolute path (bash is /bin/bash on some distros, /usr/bin/bash on others) — check plausible paths or resolve via PATH. Pass flags the tool actually requires for the intended mode (e.g. xclip -selection clipboard -i to read from stdin, since some versions won't read piped input without -i).",
+      "rule": "When locating or invoking a system binary, do not assume one fixed absolute path (bash is /bin/bash on some distros, /usr/bin/bash on others) \u2014 check plausible paths or resolve via PATH. Pass flags the tool actually requires for the intended mode (e.g. xclip -selection clipboard -i to read from stdin, since some versions won't read piped input without -i).",
       "detection_hint": "existsSync(\"/bin/<tool>\") single-absolute-path probe with no /usr/bin or PATH fallback; or execSync(\"xclip -selection clipboard\"...) without -i when input is piped.",
       "severity": "nit",
       "example_prs": [
@@ -4024,7 +4088,7 @@
       "id": "argv-flag-detection-must-match-equals-form",
       "category": "correctness",
       "title": "argv flag-presence checks must also match the --flag=value form",
-      "rule": "When detecting a CLI flag via raw argv membership (`argv.includes(\"--flag\")`, `argv.indexOf(\"--flag\")` used as a boolean), confirm whether the flag's inline `--flag=value` (or `-f=value`) form is also accepted by the parser; if so, the membership check silently misses it. Prefer reading the already-parsed args object; if you must scan raw argv, match a prefix (`a.startsWith(\"--flag=\")`) in addition to exact equality. Only applies to flags whose `=value` form is actually honored — flags that only support the space-separated form are unaffected.",
+      "rule": "When detecting a CLI flag via raw argv membership (`argv.includes(\"--flag\")`, `argv.indexOf(\"--flag\")` used as a boolean), confirm whether the flag's inline `--flag=value` (or `-f=value`) form is also accepted by the parser; if so, the membership check silently misses it. Prefer reading the already-parsed args object; if you must scan raw argv, match a prefix (`a.startsWith(\"--flag=\")`) in addition to exact equality. Only applies to flags whose `=value` form is actually honored \u2014 flags that only support the space-separated form are unaffected.",
       "detection_hint": "Grep for `process.argv.includes(\"--<name>\")` / `argv.indexOf(\"--<name>\")` used as a boolean signal; ask whether `--<name>=value` (or `-x=value`) would also need to be detected. Prefer reading the parsed args over scanning raw argv.",
       "severity": "important",
       "example_prs": [
@@ -4038,7 +4102,7 @@
       "id": "disable-pointer-events-on-collapsed-panel-handles",
       "category": "ui-react",
       "title": "Disable pointer events on interactive handles when their panel is collapsed",
-      "rule": "When a panel collapses to zero height/width but its DOM stays mounted, every interactive child overlapping the collapsed strip (resize handle, drag strip, button) must stop intercepting POINTER events — not just leave the tab order (this is the gap #196 leaves: #196 covers focus/tab order, this covers mouse/click/cursor). Putting the handle as a sibling OUTSIDE the element that receives pointer-events:none/inert (or gating only inert/tabindex, which fixes keyboard but not mouse) lets it keep capturing clicks over the now-zero-size region. Detection: a resize/drag handle rendered outside the wrapper that gets pointer-events-none/inert/aria-hidden when a panel's open/expanded signal is false (or whose grid/flex track collapses via a `collapsed ? \"0px\" : ...` ternary). Ask: while collapsed, does the handle still receive pointer events because pointer-events:none was scoped only to the panel body, not the handle? Fix by applying pointer-events:none to the handle (or moving it inside the inert layer) on the same collapsed condition.",
+      "rule": "When a panel collapses to zero height/width but its DOM stays mounted, every interactive child overlapping the collapsed strip (resize handle, drag strip, button) must stop intercepting POINTER events \u2014 not just leave the tab order (this is the gap #196 leaves: #196 covers focus/tab order, this covers mouse/click/cursor). Putting the handle as a sibling OUTSIDE the element that receives pointer-events:none/inert (or gating only inert/tabindex, which fixes keyboard but not mouse) lets it keep capturing clicks over the now-zero-size region. Detection: a resize/drag handle rendered outside the wrapper that gets pointer-events-none/inert/aria-hidden when a panel's open/expanded signal is false (or whose grid/flex track collapses via a `collapsed ? \"0px\" : ...` ternary). Ask: while collapsed, does the handle still receive pointer events because pointer-events:none was scoped only to the panel body, not the handle? Fix by applying pointer-events:none to the handle (or moving it inside the inert layer) on the same collapsed condition.",
       "detection_hint": "A resize/drag handle or interactive element positioned outside the wrapper that gets pointer-events-none/inert when a panel's open signal is false; ask whether the handle still intercepts pointer events while collapsed.",
       "severity": "important",
       "example_prs": [
@@ -4052,7 +4116,7 @@
       "id": "tolerant-comparison-for-subpixel-geometry-in-tests",
       "category": "testing",
       "title": "Use rounded/tolerant comparisons for sub-pixel geometry in tests",
-      "rule": "In tests, don't assert exact equality (toBe/toEqual) on values that come from runtime layout measurement — getBoundingClientRect(), offsetWidth/Height/Top/Left, clientRect, scroll metrics — because they carry sub-pixel/devicePixelRatio rounding that differs across environments (e.g. -7.9999 vs -8). Round (Math.round) or use a tolerant matcher (toBeCloseTo) before comparing. This applies ONLY to measured rendering geometry; values computed deterministically in code must still use exact assertions (do not weaken those — see assert-precise-behavior-tied-values).",
+      "rule": "In tests, don't assert exact equality (toBe/toEqual) on values that come from runtime layout measurement \u2014 getBoundingClientRect(), offsetWidth/Height/Top/Left, clientRect, scroll metrics \u2014 because they carry sub-pixel/devicePixelRatio rounding that differs across environments (e.g. -7.9999 vs -8). Round (Math.round) or use a tolerant matcher (toBeCloseTo) before comparing. This applies ONLY to measured rendering geometry; values computed deterministically in code must still use exact assertions (do not weaken those \u2014 see assert-precise-behavior-tied-values).",
       "detection_hint": "Test asserting toEqual/toBe on raw getBoundingClientRect()/offset/clientRect float values, or exact integer expectations for measured pixel positions; flag missing Math.round or tolerant matcher.",
       "severity": "important",
       "example_prs": [
@@ -4066,7 +4130,7 @@
       "id": "full-value-for-title-and-aria-label-truncate-only-visible",
       "category": "ui-react",
       "title": "Feed the full value to title/aria-label; truncate only the visible text",
-      "rule": "When a label is visually truncated, drive only the visible text from CSS truncation (e.g. `truncate`/`text-overflow: ellipsis` or a `.slice(0,n)+\"…\"` display string) and pass the FULL untruncated value to `title=`/`aria-label=`. Passing an already-shortened string to title/aria-label hides the full value from tooltips and screen readers. Detection: flag a JSX element whose `title=`/`aria-label=` is bound to the same expression that produces its visibly-truncated text — specifically when that expression is a prop named like `displayLabel`/`shortLabel`/`truncated*`, or the output of a slice/truncate/ellipsis helper. Ask: is the full (untruncated) value available in scope and passed separately to the accessible/tooltip attribute? Do NOT flag when title/aria-label already receives a distinct full-value source, or when the visible text is the full value and truncation is purely CSS on the same complete string (CSS truncation does not shorten the bound attribute).",
+      "rule": "When a label is visually truncated, drive only the visible text from CSS truncation (e.g. `truncate`/`text-overflow: ellipsis` or a `.slice(0,n)+\"\u2026\"` display string) and pass the FULL untruncated value to `title=`/`aria-label=`. Passing an already-shortened string to title/aria-label hides the full value from tooltips and screen readers. Detection: flag a JSX element whose `title=`/`aria-label=` is bound to the same expression that produces its visibly-truncated text \u2014 specifically when that expression is a prop named like `displayLabel`/`shortLabel`/`truncated*`, or the output of a slice/truncate/ellipsis helper. Ask: is the full (untruncated) value available in scope and passed separately to the accessible/tooltip attribute? Do NOT flag when title/aria-label already receives a distinct full-value source, or when the visible text is the full value and truncation is purely CSS on the same complete string (CSS truncation does not shorten the bound attribute).",
       "detection_hint": "A component receives an already-truncated/displayLabel string and uses that same prop for both visible text and title=/aria-label=; ask whether the full value is available and should be passed separately for the accessible/tooltip text.",
       "severity": "important",
       "example_prs": [
@@ -4080,7 +4144,7 @@
       "id": "compare-dotted-versions-componentwise-not-parsefloat",
       "category": "correctness",
       "title": "Compare dotted version strings componentwise, not via parseFloat",
-      "rule": "Don't compare or sort dotted version strings via parseFloat/Number — they collapse the minor component (parseFloat(\"5.10\") === 5.1), so e.g. \"5.10\" sorts before \"5.4\" and gates behavior wrongly. Parse major/minor (and patch) as separate integers and compare componentwise, or use a real semver comparator. The trap is worst when a single capture group grabs the whole \"major.minor\" (e.g. /^v?(\\d+\\.\\d+)/) and that captured string is fed to parseFloat.",
+      "rule": "Don't compare or sort dotted version strings via parseFloat/Number \u2014 they collapse the minor component (parseFloat(\"5.10\") === 5.1), so e.g. \"5.10\" sorts before \"5.4\" and gates behavior wrongly. Parse major/minor (and patch) as separate integers and compare componentwise, or use a real semver comparator. The trap is worst when a single capture group grabs the whole \"major.minor\" (e.g. /^v?(\\d+\\.\\d+)/) and that captured string is fed to parseFloat.",
       "detection_hint": "Flag parseFloat(x)/Number(x) on a version-like string (matched by /(\\d+)\\.(\\d+)/ or a `gpt-`/`v`-prefixed id) used in a `<`/`>`/sort comparison. Ask: does a multi-digit minor (e.g. .10) order correctly against a single-digit minor (.4)?",
       "severity": "important",
       "example_prs": [
@@ -4094,7 +4158,7 @@
       "id": "flipping-persisted-default-silently-shifts-absent-key-users",
       "category": "data-persistence",
       "title": "Flipping a persisted default silently changes behavior for users missing the key",
-      "rule": "A persisted setting's default is the effective value for everyone whose stored key is absent: fresh installs, cleared storage, and installs predating the key (when the value is read via a withFallback/?? default rather than a stored value). Flipping that default therefore silently changes behavior for that absent-key cohort — not just new installs. When a diff changes a literal inside a defaultSettings/default-config object (e.g. `false` -> `true`), confirm the absent-key cohort is the intended target of the change, and that the old default wasn't load-bearing for existing users; if only new installs should get the new behavior, gate it on install version / a migration instead of flipping the shared default.",
+      "rule": "A persisted setting's default is the effective value for everyone whose stored key is absent: fresh installs, cleared storage, and installs predating the key (when the value is read via a withFallback/?? default rather than a stored value). Flipping that default therefore silently changes behavior for that absent-key cohort \u2014 not just new installs. When a diff changes a literal inside a defaultSettings/default-config object (e.g. `false` -> `true`), confirm the absent-key cohort is the intended target of the change, and that the old default wasn't load-bearing for existing users; if only new installs should get the new behavior, gate it on install version / a migration instead of flipping the shared default.",
       "detection_hint": "In a diff that changes a literal in a defaultSettings/default-config object (e.g. `false` -> `true`), ask: who reads this key without a stored value, and does the flip silently change their behavior? Confirm the absent-key cohort is the intended target.",
       "severity": "nit",
       "example_prs": [
@@ -4108,7 +4172,7 @@
       "id": "refresh-dynamic-attributes-on-preserved-morphed-nodes",
       "category": "ui-react",
       "title": "Refresh dynamic attributes on DOM nodes deliberately preserved across a diff/morph",
-      "rule": "When a reconciler intentionally keeps an existing DOM element mounted instead of replacing it — morphdom onBeforeElUpdated returning false, a key/id-preserved node, htmx/Alpine out-of-band or x-html swap, or a manual DOM patch — its dynamic attributes (aria-label, title, data-tooltip, state/`copied` classes, alt text) do NOT update unless you patch them explicitly. Preserving the node and refreshing its attributes are two separate responsibilities. Detection: find a keep/skip-update branch (onBeforeElUpdated => false, a `key`/`id`-match short-circuit, an `if (sameNode) return` patch guard) covering an interactive or labeled element, then ask: when the i18n label, tooltip, or transient state for that element changes, is some other code path explicitly writing the new attribute onto the preserved node? If not, the label/title goes stale.",
+      "rule": "When a reconciler intentionally keeps an existing DOM element mounted instead of replacing it \u2014 morphdom onBeforeElUpdated returning false, a key/id-preserved node, htmx/Alpine out-of-band or x-html swap, or a manual DOM patch \u2014 its dynamic attributes (aria-label, title, data-tooltip, state/`copied` classes, alt text) do NOT update unless you patch them explicitly. Preserving the node and refreshing its attributes are two separate responsibilities. Detection: find a keep/skip-update branch (onBeforeElUpdated => false, a `key`/`id`-match short-circuit, an `if (sameNode) return` patch guard) covering an interactive or labeled element, then ask: when the i18n label, tooltip, or transient state for that element changes, is some other code path explicitly writing the new attribute onto the preserved node? If not, the label/title goes stale.",
       "detection_hint": "Find a `return false` in morphdom onBeforeElUpdated (or any keep/skip-update branch) for an interactive element; ask whether that element's aria-label/title/tooltip/copied-state attributes are updated elsewhere when i18n labels or state change.",
       "severity": "important",
       "example_prs": [
@@ -4122,7 +4186,7 @@
       "id": "push-filter-and-limit-into-query-not-memory",
       "category": "performance",
       "title": "Push filtering and limiting into the query, not into memory",
-      "rule": "When a search/list handler loads a whole table/collection (e.g. `list_by_type`, `SELECT *`) and then applies the match predicate and the result limit in application memory (`.filter(...).take(limit)`, `.filter().slice()`), push the predicate and LIMIT into the query (e.g. SQL `WHERE LOWER(col) LIKE '%'||LOWER(?)||'%' ... LIMIT ?`) so rows scanned scale with matched rows, not total rows. This matters when the scanned set is unbounded or grows over time; note that a hard output cap (MAX_LIMIT) bounds returned rows but still scans the full table, so it does not remove the issue. On a provably small/bounded collection the in-memory approach is an acceptable tradeoff — flag it, but at lower urgency.",
+      "rule": "When a search/list handler loads a whole table/collection (e.g. `list_by_type`, `SELECT *`) and then applies the match predicate and the result limit in application memory (`.filter(...).take(limit)`, `.filter().slice()`), push the predicate and LIMIT into the query (e.g. SQL `WHERE LOWER(col) LIKE '%'||LOWER(?)||'%' ... LIMIT ?`) so rows scanned scale with matched rows, not total rows. This matters when the scanned set is unbounded or grows over time; note that a hard output cap (MAX_LIMIT) bounds returned rows but still scans the full table, so it does not remove the issue. On a provably small/bounded collection the in-memory approach is an acceptable tradeoff \u2014 flag it, but at lower urgency.",
       "detection_hint": "A search/list handler calls `list_by_type`/`select all` then `.filter(...).take(limit)` (or `.filter().slice()`) in memory; ask whether the predicate and limit could be pushed into SQL/the query (LOWER(...) LIKE + LIMIT).",
       "severity": "important",
       "example_prs": [
@@ -4150,7 +4214,7 @@
       "id": "validate-both-referents-before-fk-insert",
       "category": "error-handling",
       "title": "Validate every referenced entity (source and target) before the FK write",
-      "rule": "When an apply/mutation path inserts a row into a join/refs/association table that references two or more entities via foreign keys (e.g. entity_refs keyed on source_entity_id + target_entity_id), the pre-apply boundary validator must confirm EVERY referent exists (and is the right type) — not just one side. Validating only the target (or only the source) lets a missing/stale referent on the unchecked side trip the database FK at insert/commit and surface as an opaque internal/-32603 error instead of a client-correctable invalid-or-target-missing error. Detection: a validator runs entity_is_type/entity_type_by_id on target_entity_id but never on source_entity_id (or vice versa), while the apply path inserts into the join/refs table before it loads/reads the unchecked side. Ask: if the unchecked referent has been deleted, does this become a raw FK/internal error rather than a structured client error?",
+      "rule": "When an apply/mutation path inserts a row into a join/refs/association table that references two or more entities via foreign keys (e.g. entity_refs keyed on source_entity_id + target_entity_id), the pre-apply boundary validator must confirm EVERY referent exists (and is the right type) \u2014 not just one side. Validating only the target (or only the source) lets a missing/stale referent on the unchecked side trip the database FK at insert/commit and surface as an opaque internal/-32603 error instead of a client-correctable invalid-or-target-missing error. Detection: a validator runs entity_is_type/entity_type_by_id on target_entity_id but never on source_entity_id (or vice versa), while the apply path inserts into the join/refs table before it loads/reads the unchecked side. Ask: if the unchecked referent has been deleted, does this become a raw FK/internal error rather than a structured client error?",
       "detection_hint": "A pre-apply validator checks target_entity_id but not source_entity_id (or vice versa) while the apply path inserts into a join/refs table before loading the unchecked side; ask whether a missing referent becomes an FK/internal error.",
       "severity": "important",
       "example_prs": [
@@ -4164,7 +4228,7 @@
       "id": "guard-form-submit-against-reentry-while-saving",
       "category": "ui-react",
       "title": "Guard form/action submit against re-entry while a save is pending",
-      "rule": "A submit handler for a non-idempotent mutation must short-circuit re-entry while a prior save is in flight. The handler itself must early-return on the saving/pending flag (`if (saving) return;` before calling the mutation) — disabling the submit control (`disabled={saving}`) is complementary, NOT a substitute, because pressing Enter in a form field re-fires `onSubmit` even when the submit button is disabled. Flag a `<form onSubmit={h}>` / submit handler that calls `onSubmit()`/the mutation with a `saving`/`pending`/`isPending` flag in scope but no `if (saving) return` guard at the top of the handler.",
+      "rule": "A submit handler for a non-idempotent mutation must short-circuit re-entry while a prior save is in flight. The handler itself must early-return on the saving/pending flag (`if (saving) return;` before calling the mutation) \u2014 disabling the submit control (`disabled={saving}`) is complementary, NOT a substitute, because pressing Enter in a form field re-fires `onSubmit` even when the submit button is disabled. Flag a `<form onSubmit={h}>` / submit handler that calls `onSubmit()`/the mutation with a `saving`/`pending`/`isPending` flag in scope but no `if (saving) return` guard at the top of the handler.",
       "detection_hint": "A form onSubmit/handler that unconditionally calls onSubmit()/the mutation with a `saving`/`pending` state in scope but no `if (saving) return` guard and no disabled={saving} on the submit control.",
       "severity": "important",
       "example_prs": [
@@ -4177,8 +4241,8 @@
     {
       "id": "divergent-write-path-must-reject-validated-input-it-cannot-honor",
       "category": "data-persistence",
-      "title": "Reject a validated input on a sibling write path that can't honor it — don't silently hard-code it away",
-      "rule": "A shared validator that accepts an optional input (a provenance/anchor/relation field) is reused by a sibling write path that structurally cannot produce that input's side effect (e.g. a user/direct path with no Run/Message/anchor to write the corresponding source/relation row). On such a divergent path, explicitly REJECT the accepted-but-unhonorable field at the boundary rather than letting it pass shared validation and then persist with the side effect silently dropped. Detection: find a write/apply fn that calls a shared validate(...) accepting field X from the payload, then ask — can this path actually create X's persisted side effect (source/relation/join row)? If not, is X rejected, or silently discarded? Flag the silent-discard case.",
+      "title": "Reject a validated input on a sibling write path that can't honor it \u2014 don't silently hard-code it away",
+      "rule": "A shared validator that accepts an optional input (a provenance/anchor/relation field) is reused by a sibling write path that structurally cannot produce that input's side effect (e.g. a user/direct path with no Run/Message/anchor to write the corresponding source/relation row). On such a divergent path, explicitly REJECT the accepted-but-unhonorable field at the boundary rather than letting it pass shared validation and then persist with the side effect silently dropped. Detection: find a write/apply fn that calls a shared validate(...) accepting field X from the payload, then ask \u2014 can this path actually create X's persisted side effect (source/relation/join row)? If not, is X rejected, or silently discarded? Flag the silent-discard case.",
       "detection_hint": "A handler/apply fn hard-codes a struct field to None/default (e.g. `source: None`, `proposal_id: None`) where a shared `validate(...)` earlier in the same flow accepts that same field from the payload. Ask: can a caller supply the field, pass validation, and then have it silently discarded with no persisted effect?",
       "severity": "important",
       "example_prs": [
@@ -4192,7 +4256,7 @@
       "id": "like-escape-clause-disables-fts5-trigram-index",
       "category": "performance",
       "title": "Don't add a LIKE ESCAPE clause that disables the FTS5/trigram index",
-      "rule": "SQLite drops the FTS5 trigram LIKE/GLOB index optimization whenever the LIKE has an ESCAPE clause — even when the needle contains nothing to escape. On a trigram-tokenized column reached by a hot/debounced substring search, an unconditional `LIKE '%'||?||'%' ESCAPE '\\'` therefore silently degrades every query to a full table scan. Only take the ESCAPE path when the needle actually contains a `%`, `_`, or the escape char (escaping those literals); route the common no-wildcard needle through the plain unescaped LIKE so the trigram index stays engaged. Confirm with EXPLAIN QUERY PLAN that the index is used on the unescaped path and bypassed on the escaped one.",
+      "rule": "SQLite drops the FTS5 trigram LIKE/GLOB index optimization whenever the LIKE has an ESCAPE clause \u2014 even when the needle contains nothing to escape. On a trigram-tokenized column reached by a hot/debounced substring search, an unconditional `LIKE '%'||?||'%' ESCAPE '\\'` therefore silently degrades every query to a full table scan. Only take the ESCAPE path when the needle actually contains a `%`, `_`, or the escape char (escaping those literals); route the common no-wildcard needle through the plain unescaped LIKE so the trigram index stays engaged. Confirm with EXPLAIN QUERY PLAN that the index is used on the unescaped path and bypassed on the escaped one.",
       "detection_hint": "Flag a SQL string with `LIKE '%' || ? || '%' ESCAPE '\\'` (or any LIKE ESCAPE) over an FTS5/trigram-tokenized column on a hot/debounced search path. Ask: does EXPLAIN QUERY PLAN still use the index with ESCAPE? Is the escape unconditional even when the needle has no %/_/\\?",
       "severity": "important",
       "example_prs": [
@@ -4206,7 +4270,7 @@
       "id": "gate-debounced-results-on-input-identity",
       "category": "ui-react",
       "title": "Gate debounced search results on input identity before showing or acting on them",
-      "rule": "Display and selection of debounced-search results must be tied to the SAME query value the data was fetched/keyed under, not to the faster-updating live input. When a hook is keyed on `debouncedQuery` (e.g. useQuery([\"search\", debouncedQuery])) but a list is built/gated using the immediate `query`, the two diverge during the debounce window: stale hits from the previous debounced value render under the new input, and a click/Enter can navigate to the wrong target. Fix by mapping the results under the debounced value (`const dq = debouncedQuery.trim(); dq ? hits : []`) — i.e. keep the rendered group consistent with the query its data belongs to. (Equivalently, carry the query alongside the data, or gate on `debouncedQuery === query`; prefer gating on the debounced value to avoid blanking the group on every keystroke.)",
+      "rule": "Display and selection of debounced-search results must be tied to the SAME query value the data was fetched/keyed under, not to the faster-updating live input. When a hook is keyed on `debouncedQuery` (e.g. useQuery([\"search\", debouncedQuery])) but a list is built/gated using the immediate `query`, the two diverge during the debounce window: stale hits from the previous debounced value render under the new input, and a click/Enter can navigate to the wrong target. Fix by mapping the results under the debounced value (`const dq = debouncedQuery.trim(); dq ? hits : []`) \u2014 i.e. keep the rendered group consistent with the query its data belongs to. (Equivalently, carry the query alongside the data, or gate on `debouncedQuery === query`; prefer gating on the debounced value to avoid blanking the group on every keystroke.)",
       "detection_hint": "Flag a component that maps `data?.hits`/results from a hook keyed by a `debouncedQuery` into a list while the rendered/selectable items aren't gated on `debouncedQuery === query`. Ask: during the debounce delay can a stale result be clicked and navigate to the wrong entity?",
       "severity": "nit",
       "example_prs": [
@@ -4220,7 +4284,7 @@
       "id": "verify-config-keys-against-pinned-tool-version",
       "category": "correctness",
       "title": "Verify config keys against the pinned tool version's current docs",
-      "rule": "When a PR pins or bumps a build/package tool's major version (packageManager, engines, a tool dep, or a CI toolchain), verify every config-setting key for that tool against the pinned major's schema. Major versions rename, remove, or re-purpose keys (pnpm `onlyBuiltDependencies` -> `allowBuilds`/`strictDepBuilds`; eslint `.eslintrc` -> flat `eslint.config`; biome v1 -> v2 schema), and a stale key often still parses while doing nothing — silently failing to grant the intended behavior. Detection: flag a tool config file (pnpm-workspace.yaml, package.json pnpm/engines blocks, biome.json, tsconfig, eslint config) whose setting keys are touched in the same PR (or whose tool is pinned/bumped to a new major), then ask per key: does this key still exist in the pinned major, and does it produce the intended effect rather than being a no-op carried over from an older version?",
+      "rule": "When a PR pins or bumps a build/package tool's major version (packageManager, engines, a tool dep, or a CI toolchain), verify every config-setting key for that tool against the pinned major's schema. Major versions rename, remove, or re-purpose keys (pnpm `onlyBuiltDependencies` -> `allowBuilds`/`strictDepBuilds`; eslint `.eslintrc` -> flat `eslint.config`; biome v1 -> v2 schema), and a stale key often still parses while doing nothing \u2014 silently failing to grant the intended behavior. Detection: flag a tool config file (pnpm-workspace.yaml, package.json pnpm/engines blocks, biome.json, tsconfig, eslint config) whose setting keys are touched in the same PR (or whose tool is pinned/bumped to a new major), then ask per key: does this key still exist in the pinned major, and does it produce the intended effect rather than being a no-op carried over from an older version?",
       "detection_hint": "A config file relies on a setting key (`onlyBuiltDependencies`, `strictDepBuilds`, allowlists) while the toolchain is pinned to a major version that renamed/removed it. Ask: does this key exist in the pinned version, and does it produce the intended effect rather than just silencing a warning?",
       "severity": "important",
       "example_prs": [
@@ -4257,6 +4321,241 @@
       "source_repo": "inkstone",
       "support_count": 1,
       "reinforced_by": []
+    },
+    {
+      "id": "merge-update-omit-preserves-value-emit-null-to-clear",
+      "category": "data-persistence",
+      "title": "In merge/partial updates where absent means preserve, emit an explicit null to clear a field",
+      "rule": "When an update path merges a partial payload onto stored state with the semantics 'absent key = leave unchanged, explicit null = clear', deleting a key from the partial does NOT clear the stored value. To clear a field (or a coupled field whose value must go away on a state change), emit an explicit null sentinel; relying on key-omission leaves stale stored data that can violate downstream invariants.",
+      "detection_hint": "In a builder/overlay that produces a PARTIAL update payload merged onto stored state, find a branch that `delete obj.key` (or omits a key) intending to CLEAR or remove stored data. First confirm the merge contract: if the apply/merge path treats absent key = preserve and only an explicit null clears (e.g. Rust `if value.is_null() { map.remove(key) } else { map.insert(...) }`; absent keys skip the loop), then omission does NOT clear \u2014 it preserves the stale stored value. Highest risk: a status->active/non-terminal edit that deletes a coupled completed_at/dropped_at from the partial, where a downstream invariant checks `contains_key`/presence (not value-null). Ask: against THIS merge contract, does omitting the key actually clear the stored value, or must an explicit null sentinel be emitted? (Note: under a full-document REPLACE contract, omit == cleared and this is fine \u2014 the rule only bites partial/three-way merges.)",
+      "severity": "important",
+      "example_prs": [
+        173
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "bound-generated-value-to-downstream-validator-range",
+      "category": "correctness",
+      "title": "Bound a computed value at the producer to the downstream strict validator's accepted range",
+      "rule": "When code computes a value (date year, length, id) that is later checked by a strict-format or range validator inside an enclosing transaction, bound or reject the value at the point it is generated. An out-of-range value produced upstream and rejected downstream aborts/rolls back the whole transaction instead of gracefully no-oping; also avoid lossy narrowing casts on a value that can exceed the target type's range.",
+      "detection_hint": "Find arithmetic that produces a value (date year via interval*unit, a length/count/id) which is later serialized/formatted and handed to a strict-format or range validator (fixed-width like 4-digit year, range CHECK, length limit) whose failure rolls back an enclosing multi-step write/transaction. Ask: can the computed value exceed the validator's accepted range, and is it clamped or None-returned at the point of generation (before formatting), so an out-of-range case gracefully no-ops instead of aborting the whole tx? Secondary tell: a lossy narrowing cast (`x as u32`/`as i32`/`as u16`) on a value that can exceed the target type's range \u2014 but the primary signal is the producer/downstream-validator range mismatch, not the cast alone.",
+      "severity": "blocking",
+      "example_prs": [
+        172
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "tests-must-not-depend-on-ambient-clock-or-locale",
+      "category": "testing",
+      "title": "Pin the clock and assert locale-independently; don't let tests depend on wall time or locale",
+      "rule": "Tests that build time-bucketed or formatted-output data must use a fixed timestamp, not Date.now()/system clock, so assertions don't flake around boundaries (midnight, DST). Assertions on locale-formatted output (dates, times, numbers) must not hardcode English month names or a specific separator; compare against the same locale-aware formatter or a locale-agnostic shape instead.",
+      "detection_hint": "In test files: flag `Date.now()` / `new Date()` used to seed data whose bucketing/formatting is then asserted (use a fixed epoch). Flag `expect(out).toMatch(/Jun/)`, `.toMatch(/:/)`, or other assertions on month-name/separator text that assume a locale. Ask: would this assertion pass in a non-English locale or if run one minute before midnight?",
+      "severity": "important",
+      "example_prs": [
+        175
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "route-direct-load-through-same-discovery-eligibility-gate",
+      "category": "correctness",
+      "title": "A by-key/path loader must enforce the same eligibility filter as discovery so it can't load what discovery rejected",
+      "rule": "When a resource is both surfaced through a filtered discovery/advertised list AND directly loadable by key or path, route the direct loader through the same eligibility gate. Otherwise an item discovery deliberately dropped (malformed, missing/duplicate/mismatched metadata, failed safety check) is still reachable by direct load, so the loadable set diverges from the advertised set.",
+      "detection_hint": "Find two siblings over the same resource set: a discovery/scan/list function that applies an eligibility filter before advertising items (drops malformed, missing/duplicate/mismatched metadata, or items that fail a safety check), AND a loader that resolves a single item directly by key, name, or path (e.g. reads `<base>/<name>/FILE`, `map.get(id)` against a raw store, `import(pathFor(name))`) WITHOUT going through that filter. Ask: can the direct loader return an item the scan deliberately dropped? Prioritize cases where a dropped reason is a safety/validity check \u2014 then the by-key loader is a reachability bypass, not just a divergence.",
+      "severity": "important",
+      "example_prs": [
+        171
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "reconcile-id-namespaces-before-cross-source-match",
+      "category": "correctness",
+      "title": "Reconcile id namespaces before matching an item from one source against a store populated by another",
+      "rule": "When code looks up or matches an entity by id where the id comes from one source (server search, persisted record) but the target collection may hold a different id namespace for the same logical item (e.g. optimistic/locally-minted client ids vs server-assigned ids), reconcile or translate the namespaces first. A direct equality match silently never fires for items that exist under the other namespace, leaving the feature a no-op.",
+      "detection_hint": "Trigger when a collection is populated by TWO paths that mint ids differently for the same logical item \u2014 a live/optimistic path assigning local ids (counter like `m${n}`, `temp-`, client-side `crypto.randomUUID`) AND a server/persisted/hydration path carrying wire ids \u2014 then a guard/lookup `coll.some(x => x.id === incomingId)` / `.find` / `Map.get(incomingId)` matches an `incomingId` sourced from the server/search/persisted side. Ask: for an item created in the current session (present under the LOCAL id, not yet re-hydrated under its wire id), does this equality ever pass, or does the feature silently no-op until a reload swaps ids? If a test only exercises the post-reload/cold-hydrated path, the warm-session divergence is likely unproven.",
+      "severity": "important",
+      "example_prs": [
+        169
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "tree-rewrite-must-distinguish-map-value-keys-from-keywords",
+      "category": "correctness",
+      "title": "Recursive key-stripping rewrites must not treat user-named map values as keywords",
+      "rule": "A recursive transform that deletes or rewrites object keys by name must distinguish nodes whose keys are a fixed vocabulary (keywords) from nodes that are maps of user/domain-controlled names. Applying the keyword rewrite uniformly to every object strips legitimate map entries that merely share a keyword's name, corrupting the output (and, for normalizers/comparators, silently hiding real differences).",
+      "detection_hint": "Flag a recursive walk that does `delete out[KEYWORD]` or rewrites a fixed key name on every visited object without tracking parent context (no inSchemaMap/parentKey/inMap flag threaded through recursion). For JSON-Schema/OpenAPI-like trees, check whether values under map-keyword parents (properties, patternProperties, $defs, definitions, dependentSchemas) are walked as keyword-bearing schema nodes rather than as opaque name->subschema maps. Acute for normalizers/comparators: a stripped user field silently hides real drift. Ask: can a domain/user field legitimately be named the same as the stripped keyword, and would the rewrite then corrupt it?",
+      "severity": "blocking",
+      "example_prs": [
+        160
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "salvage-correlation-id-before-strict-decode",
+      "category": "error-handling",
+      "title": "Salvage a message's correlation id from the raw payload before strict schema decode can fail",
+      "rule": "When a message/envelope that carries a correlation id (run/request/trace id) is parsed and then strictly schema-decoded, extract the correlation id from the raw parsed object BEFORE the full decode. If decode fails on some other field, the error path can still emit a diagnostic joinable to the original operation instead of an empty/placeholder id, preserving the trace correlation for the recoverable (non-syntax) failure class.",
+      "detection_hint": "Find a decode pipeline where the correlation id is read only off the fully-decoded struct, while an error/catch path logs with `id: \"\"`/default on decode failure. Ask: when the raw JSON parses but schema decode fails on an unrelated field, is the already-present id salvaged from the raw object, or lost \u2014 breaking the diagnostic join?",
+      "severity": "important",
+      "example_prs": [
+        154
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "gate-transition-side-effect-on-source-state-not-target-negation",
+      "category": "correctness",
+      "title": "Gate a transition side effect on the exact source state, not the negation of one target state",
+      "rule": "When a side effect should fire only on a specific state transition (e.g. active->completed), gate it on the precise source state (prior == active), not on the negation of the target (prior != completed). The negated form also fires for other source states (e.g. dropped->completed, absent->completed) that should not trigger the effect, spawning/mutating where the intended transition never occurred.",
+      "detection_hint": "Flag a side effect (spawn/insert/persist/notify) gated by `prior_state != \"<target>\" && new_state == \"<target>\"` (any `oldX != T && newX == T`, including when prior is read with a `.unwrap_or(\"<default>\")`). Enumerate every value `prior` can hold besides the intended source \u2014 other enum literals (dropped, on_hold) and the absent/default fallback. If ANY of them satisfies `!= target` yet is a transition the effect must NOT run for, require the precise source instead: `prior == \"<intended-source>\"`. Distinct from narrow-predicate rules: here the guard is too BROAD on the source side of a transition.",
+      "severity": "important",
+      "example_prs": [
+        172
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "by-name-lookup-must-reapply-listing-eligibility-filter",
+      "category": "security",
+      "title": "A by-name fetch that resolves to a filesystem path must re-apply the discovery/eligibility filter",
+      "rule": "When a resource is both discoverable via a curated listing/scan (which deliberately excludes ineligible entries) and fetchable directly by name (resolving name to a path), the by-name path must re-check that the name is in the eligible scanned set before returning content. Otherwise a guessed/crafted name loads any matching file the listing intentionally skipped, bypassing the disclosure-hardening the listing enforces.",
+      "detection_hint": "A resource is reachable two ways: (1) a curated discovery/listing function that filters entries (scan/list/index dropping items for missing/invalid metadata, name mismatch, unsafe content), and (2) a direct by-name/by-id fetch that resolves the identifier to a backing location (e.g. name -> <dir>/<name>/<file>, or id -> row) and returns content. Flag when the by-name path enforces only structural safety (path-containment, single-component, id-format) but does NOT verify the identifier is a member of the eligible discovery result before returning. Ask: if a caller guesses/crafts a valid-but-unlisted name, does this path serve content the listing deliberately excluded? The fix shares the discovery eligibility predicate (e.g. eligible()/load_body) across both paths so loadable set == advertised set.",
+      "severity": "important",
+      "example_prs": [
+        171
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "dont-flag-child-state-reset-when-parent-keys-remount",
+      "category": "ui-react",
+      "title": "Don't flag a child for not resetting internal state on identity change when a parent keys it for remount",
+      "rule": "Before flagging a component (editor/form) for failing to reset draft/baseline/local state when its target identity changes, check whether a parent mounts it with `key={<identity>}`. A key tied to the entity id forces React to fully unmount and remount the subtree on every identity switch, so useState/hook state is always fresh and an internal reset effect is unnecessary. Treat the absence of an internal reset as correct in that case.",
+      "detection_hint": "When tempted to flag 'editor/form does not reset draft/baseline/local state on prop or entity change', first grep the mount site (route or parent owning selection) for `key={selected.id}` / `key={entity.id}` / `key={<changing-identity>}`. If the key equals the changing identity, React fully unmounts+remounts on each switch, so useState/hook state is already fresh \u2014 do NOT flag, and treat the missing reset effect as correct. Corroborate by confirming the child has no reset useEffect of its own. Ripgrep gotcha: search .tsx with `--type=ts` or `--glob '*.tsx'`; `--type=tsx` errors with 'unrecognized file type' and silently finds nothing, which is how the original reviewer missed the keyed mount.",
+      "severity": "nit",
+      "example_prs": [
+        153,
+        162
+      ],
+      "support_count": 2,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "type-guard-must-check-membership-not-just-typeof",
+      "category": "types",
+      "title": "A user-defined type guard narrowing to a literal union must check membership, not just the broad runtime typeof",
+      "rule": "A user-defined type guard of the form `(x): x is LiteralUnion => typeof x === 'string'` (or `typeof x === 'number'`) lies: it narrows to the specific literal union while only proving the broad primitive type, so arbitrary out-of-vocabulary strings/numbers get the narrow type and leak into the parsed model, later round-tripping as malformed data. When parsing external/stored values into a closed-vocabulary field, the guard must verify the value is actually a member of the allowed set (ALLOWED.includes(x)) and, for bounded numbers, check integer-ness and range. Detection: a `.filter((v): v is T => typeof v === 'string'|'number')` (or equivalent predicate) where T is a literal/enum union or a bounded number, with no membership/range check inside. Ask: can a value of the right primitive type but wrong vocabulary pass this guard and acquire the narrow type?",
+      "detection_hint": "Grep for user-defined type predicates `(x): x is <T> => ...` (often inside `.filter()`) where T is a literal/enum union or a bounded number, and the predicate BODY only proves a broad primitive (`typeof x === \"string\"` / `=== \"number\"`) \u2014 or is even weaker (`=> true`, `=> !!x`, `=> x != null`) \u2014 with no `ALLOWED.includes(x)` membership check and, for numbers, no `Number.isInteger(x)` + range check. Flag as unsound narrowing: ask \"can a value of the right primitive type but wrong vocabulary pass this and acquire the narrow type?\"",
+      "severity": "important",
+      "example_prs": [
+        150
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "optional-observability-subsystem-init-must-fail-open",
+      "category": "error-handling",
+      "title": "Initialization of optional/diagnostic infrastructure must fail-open, not abort startup",
+      "rule": "Setup of an optional, non-product subsystem (logging/tracing sink, metrics, telemetry, crash reporter) must not be a hard availability dependency at boot. Propagating its init error with `?`/throw turns a recoverable condition (e.g. an unwritable log dir) into a full startup failure, even though deleting the artifact changes no product behavior. Initialize it fail-open: on error, emit a single distinctive stderr marker and continue booting. Detection: a boot/startup sequence calls `<observability>::init()?` / `await initLogging()` whose failure propagates to the process entrypoint, while the subsystem is documented as derived/lossy/optional and its other sinks already degrade silently. Ask: should an unwritable log/metrics path crash the whole service?",
+      "detection_hint": "In a process/service startup sequence, an init call for an optional/diagnostic subsystem (logging/tracing sink, metrics, telemetry, crash reporter) propagates its error to the entrypoint \u2014 Rust `logging::init()?` / `tracing_subscriber...try_init()?`, or JS `await initLogging()` that can throw \u2014 so the whole boot aborts. Discriminator (the deletion test): if you deleted this subsystem's output artifact, would any PRODUCT behavior change? If no, its init is not an availability dependency. Flag when such an init can fail on an environmental condition (unwritable/absent log/metrics dir, missing sink path) and that failure isn't caught. Stronger signal: a sibling sink for the same subsystem already degrades silently (env-gated try/catch, best-effort) \u2014 the boot path should match it. Fix: catch the error, emit one distinctive stderr marker, and continue booting.",
+      "severity": "important",
+      "example_prs": [
+        151
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "use-unique-per-run-identifier-for-shared-store-assertions",
+      "category": "testing",
+      "title": "Use a unique per-run identifier when asserting against a shared/persistent store keyed by that value",
+      "rule": "When a test fills a value (title/name/key) and later asserts ground truth by querying a shared or persistent store keyed on that same value (SQL WHERE col = 'literal', getByText of a fixed label), a static literal can collide with a preseeded row or a parallel test's row, so the assertion passes/fails against the wrong record. Generate a unique-per-run identifier once (timestamp/uuid suffix) and reuse the SAME variable for the form fill, the UI assertion, and every store query. Detection: a test uses a hardcoded literal for both an input fill and a subsequent DB/store lookup filter, with parallel execution or a shared/preseeded store. Ask: could another row (preseeded or from a parallel worker) share this literal and satisfy the query?",
+      "detection_hint": "A test fills a static string literal into a form/title and the same literal appears in a later SQL `WHERE ...='literal'`/store-lookup filter (or a fixed getByText), under fullyParallel or against a persistent/preseeded store. Flag the missing unique-per-run suffix shared across fill + assertions.",
+      "severity": "important",
+      "example_prs": [
+        150
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "isolate-shared-process-global-resources-before-raising-test-parallelism",
+      "category": "testing",
+      "title": "Serialize or mock tests touching a shared process/OS-global resource before increasing parallel workers",
+      "rule": "Per-test isolation (own tempdir, own server, own port) does NOT cover process- or OS-global resources shared across the whole runner: the system clipboard, global env mutations, a fixed network port, a singleton file at a constant path. Raising the parallel-worker count lets specs that read/write such a resource interleave, so one test reads another's value (e.g. a copied id) and acts on it, producing nondeterministic cross-test failures. Before increasing parallelism, audit specs for shared-global access and either serialize them (a serial project/describe) or mock the resource. Detection: a test-runner config raises the workers/concurrency count (or sets fullyParallel) while specs use navigator.clipboard, a hardcoded port, process.env writes, or a constant-path file. Ask: which resource here lives outside the per-test isolation boundary, and can two concurrent specs clobber it?",
+      "detection_hint": "A diff that raises a test-runner's parallelism \u2014 playwright/vitest/jest `workers`/`maxWorkers`/`maxConcurrency` increased, `fullyParallel: true`, or a serial pin removed \u2014 while some spec touches a resource that lives OUTSIDE per-test isolation: a hardcoded/fixed listen port, a `process.env.*` write, a singleton file at a constant path (not a per-test tempdir), or `navigator.clipboard` (context-dependent \u2014 weaker, since Playwright clipboard is per-context). Per-test tempdir/server/ephemeral-port isolation does NOT cover these. Flag the unserialized/unmocked shared-global specs and ask: which resource here is shared across all workers, and can two concurrent specs clobber it? Fix = serialize (serial project/describe) or mock the resource before raising parallelism.",
+      "severity": "important",
+      "example_prs": [
+        149
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "fetch-full-git-history-for-history-dependent-operations",
+      "category": "correctness",
+      "title": "Use full git history (fetch-depth: 0) when a later step needs ancestor commits",
+      "rule": "A CI/checkout step that uses a default shallow clone will be missing ancestor/base commits; any later operation that requires those commits (fetching a bundle, diffing against a base branch, git describe, merge-base) can fail intermittently when the base branch advances. When a job consumes a branch bundle, computes a diff against a base ref, or otherwise depends on commit history beyond the tip, fetch full history.",
+      "detection_hint": "In a CI workflow diff, flag a job ONLY when BOTH hold: (a) its checkout uses default/shallow depth \u2014 an actions/checkout step with no `fetch-depth:` or `fetch-depth: 1` (or git-clone with `--depth`); AND (b) a later step in the SAME job consumes commit history beyond the tip: `git fetch <something>.bundle`, `git merge-base`, `git describe`, `git diff <base>..`/`<base>...`, `git log <base>..`, `git rev-list ^origin/<base>`, or `git cherry`. A bare `git fetch origin <base>` earlier in the job is NOT sufficient \u2014 it does not unshallow the checkout clone. When both (a) and (b) co-occur, require `fetch-depth: 0` on the checkout. Do not flag a default-depth checkout that has no history-dependent consumer.",
+      "severity": "important",
+      "example_prs": [
+        32554
+      ],
+      "support_count": 1,
+      "source_repo": "anomalyco/opencode"
+    },
+    {
+      "id": "no-sync-blocking-call-on-event-loop-or-ui-thread",
+      "category": "performance",
+      "title": "Don't run synchronous blocking calls (execSync, *Sync, long sleeps) on the event-loop/UI thread",
+      "rule": "Switching from an async/spawn-based call to a synchronous blocking one (execSync, readFileSync of large data, sync network) on the thread that drives rendering or the event loop freezes input and UI for the whole duration (up to the timeout). In TUIs, GUIs, or any single-threaded event loop, keep potentially-slow subprocess/I/O calls asynchronous so the loop stays responsive; apply a timeout/kill on the async path instead.",
+      "detection_hint": "Flag a diff that swaps an existing async subprocess/I/O helper (spawn/exec/command(...)/fetch) for a synchronous blocking variant \u2014 execSync/execFileSync/spawnSync, or a *Sync call that runs an external process / network \u2014 in code reachable from a render loop, keypress/input handler, or any single-threaded event loop (TUI like Ink/blessed, browser main thread, GUI). Ask: while the external process or sync I/O runs (up to its timeout), is the event loop blocked, freezing input/rendering? If an async sibling exists, prefer it with a timeout/kill. Do NOT flag a one-shot *Sync read of small local data at startup with no async sibling and no UI-path reachability.",
+      "severity": "important",
+      "example_prs": [
+        32479
+      ],
+      "support_count": 1,
+      "source_repo": "anomalyco/opencode"
+    },
+    {
+      "id": "prefer-arg-array-over-shell-string-for-subprocess",
+      "category": "security",
+      "title": "Invoke subprocesses with an explicit argument array, not an interpolated shell command string",
+      "rule": "Building a single command string by interpolating a variable (path, filename, user/FS-derived value) and passing it to a shell-executing API runs through the shell: it is brittle (quoting/escaping) and a command-injection vector. Invoke the executable directly with an args array (execFile/spawn/execFileSync or the project's args-array helper) so arguments are passed verbatim and never shell-interpreted.",
+      "detection_hint": "Grep for execSync/exec/`child_process.exec`/`sh -c`/`bash -c`/`powershell -Command \"...\"` whose sole argument is a template literal that interpolates a variable (e.g. ``execSync(`tool ${x}`)``). Then ask: (1) is the interpolated value FS-, filename-, or otherwise externally derived (paths with spaces/quotes/`$`/`;` are both a quoting bug AND an injection vector)? and (2) would an args-array form (execFile/execFileSync/spawn with `[args]`, or the project's args-array helper) pass it verbatim and avoid the shell entirely? Flag the shell-string form even when it sits next to a sibling that already uses the args-array API (a regression that collapsed an array invocation into a string is the strongest signal).",
+      "severity": "important",
+      "example_prs": [
+        32479
+      ],
+      "support_count": 1,
+      "source_repo": "anomalyco/opencode"
+    },
+    {
+      "id": "suppress-default-action-before-async-boundary",
+      "category": "ui-react",
+      "title": "Call preventDefault/ownership-claiming side effects before the first await in an event handler",
+      "rule": "In an event handler that intends to fully own an action (e.g. suppress the platform/terminal default via preventDefault), any await before that suppression lets the default behavior fire during the async gap, causing duplicated or unwanted side effects. Move preventDefault (or the equivalent claim) before the first await on every path that means to take over handling.",
+      "detection_hint": "In an event/keypress/paste handler, find an `await` that precedes `event.preventDefault()` (or stopPropagation/the suppression call) on a path that handles the event itself. Compare against sibling paths in the same handler that call preventDefault synchronously. Ask: can the default action run during the await, producing a duplicate insertion/navigation?",
+      "severity": "important",
+      "example_prs": [
+        32479
+      ],
+      "support_count": 1,
+      "source_repo": "anomalyco/opencode"
     }
   ]
 }
