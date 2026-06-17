@@ -1735,6 +1735,39 @@ where
     .map(|_| ())
 }
 
+/// Read the recent-Runs feed for `run/get_history` (ADR-0028 as-built): one row
+/// per Run carrying its *latest* Run Log milestone (the max-`run_seq` entry),
+/// joined to its Thread title, ordered by that milestone's `created_at`
+/// descending and capped at `limit`. Returns `(run_id, thread_id, title, kind,
+/// at)` rows.
+///
+/// The latest milestone is selected with a correlated subquery on `run_seq`
+/// (monotonic per Run, so MAX(run_seq) is the newest entry regardless of
+/// `created_at` ties). A Run always has at least its creation `running` row, so
+/// the inner join never drops a Run. `kind` is returned verbatim — Core does not
+/// fold the seven Run Log kinds into the five `RunStatus` values; presentation
+/// lives in the client.
+pub(super) async fn list_run_history<'e, E>(
+    executor: E,
+    limit: i64,
+) -> sqlx::Result<Vec<(String, String, String, String, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT rl.run_id, r.thread_id, t.title, rl.kind, rl.created_at \
+         FROM run_log rl \
+         JOIN runs r ON r.id = rl.run_id \
+         JOIN threads t ON t.id = r.thread_id \
+         WHERE rl.run_seq = (SELECT MAX(run_seq) FROM run_log WHERE run_id = rl.run_id) \
+         ORDER BY rl.created_at DESC, rl.run_id DESC \
+         LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(executor)
+    .await
+}
+
 // ─── settings ─────────────────────────────────────────────────────────
 
 /// Read a user setting's value by key (ADR-0024). `None` when the key is unset.
