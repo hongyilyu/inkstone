@@ -15,6 +15,10 @@ use crate::protocol::{RunGetHistoryParams, RunHistoryItem, RunHistoryResult};
 /// only ever shows recent activity.
 const RUN_HISTORY_DEFAULT_LIMIT: i64 = 50;
 
+/// Hard ceiling on `limit` regardless of what the caller asks for, so an
+/// arbitrarily large value can't force a heavy read / huge response frame.
+const RUN_HISTORY_MAX_LIMIT: i64 = 200;
+
 pub(super) async fn handle(
     pool: &SqlitePool,
     id: serde_json::Value,
@@ -32,9 +36,10 @@ pub(super) async fn handle(
                 .map_err(|e| HandlerError::InvalidParams(format!("invalid params: {e}")))?
         };
         // A non-positive or absent limit falls back to the default; the value is
-        // a display cap, not a security boundary.
+        // a display cap, not a security boundary. A positive limit is still
+        // clamped to a hard ceiling so a huge value can't force a heavy read.
         let limit = match p.limit {
-            Some(n) if n > 0 => n,
+            Some(n) if n > 0 => n.min(RUN_HISTORY_MAX_LIMIT),
             _ => RUN_HISTORY_DEFAULT_LIMIT,
         };
 

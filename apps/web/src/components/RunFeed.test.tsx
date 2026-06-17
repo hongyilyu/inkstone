@@ -11,7 +11,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RuntimeProvider } from "@/runtime";
 import { RunFeed } from "./RunFeed";
 
@@ -59,7 +59,10 @@ function renderFeed(
 	return render(<RunFeed onOpenThread={onOpenThread} />, { wrapper: Wrapper });
 }
 
-const TODAY = Date.now();
+// A fixed "now" (noon local) so recency buckets don't flake around midnight.
+// The system clock is pinned to it (below) so the component's internal
+// `Date.now()` and the row timestamps agree.
+const TODAY = new Date(2026, 5, 16, 12, 0, 0).getTime();
 const item = (over: Partial<RunHistoryItem>): RunHistoryItem => ({
 	run_id: "r1",
 	thread_id: "t1",
@@ -70,7 +73,18 @@ const item = (over: Partial<RunHistoryItem>): RunHistoryItem => ({
 });
 
 describe("RunFeed", () => {
-	afterEach(cleanup);
+	// Pin Date.now() to TODAY; keep timers otherwise real (userEvent needs them).
+	beforeEach(() => {
+		vi.useFakeTimers({
+			now: TODAY,
+			toFake: ["Date"],
+			shouldAdvanceTime: true,
+		});
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+		cleanup();
+	});
 
 	it("renders live history grouped by recency with per-kind labels", async () => {
 		const runs: RunHistoryItem[] = [

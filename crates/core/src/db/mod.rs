@@ -1297,10 +1297,13 @@ pub async fn error_run_with_message(
 /// swept count for boot logging.
 pub async fn recover_interrupted_runs(pool: &SqlitePool, now_ms: i64) -> sqlx::Result<u64> {
     let mut tx = pool.begin().await?;
-    let swept =
-        queries::recover_interrupted_runs(&mut *tx, "core restarted while run in flight", now_ms)
-            .await?;
+    let error_message = "core restarted while run in flight";
+    let swept = queries::recover_interrupted_runs(&mut *tx, error_message, now_ms).await?;
     queries::mark_recovered_streaming_messages_incomplete(&mut *tx, now_ms).await?;
+    // Append the terminal `error` Run Log row the typed `fail()` verb would have
+    // written, so a crash-recovered Run reads as errored (not Running) in
+    // `run/get_history`. Same tx as the status flip.
+    queries::append_recovered_error_events(&mut *tx, error_message, now_ms).await?;
     tx.commit().await?;
     Ok(swept)
 }
@@ -1577,6 +1580,32 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(parked_msg, "streaming", "parked Run's message untouched");
+
+        // The sweep appends a terminal `error` Run Log milestone for the swept
+        // Run (the raw bulk UPDATE is outside the typed `fail()` verb), so
+        // `run/get_history` reads it as errored, not Running. The preserved
+        // parked Run gets none.
+        assert_eq!(
+            run_event_count(&pool, "run-running", "error").await,
+            1,
+            "swept Run gets one terminal error Run Log row"
+        );
+        assert_eq!(
+            run_event_count(&pool, "run-parked", "error").await,
+            0,
+            "preserved parked Run gets no error row"
+        );
+        let recovered_kind: String = sqlx::query_scalar(
+            "SELECT kind FROM run_log WHERE run_id = 'run-running' \
+             ORDER BY run_seq DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            recovered_kind, "error",
+            "the recovered Run's latest milestone is error, so the feed shows it errored not running"
+        );
     }
 
     async fn run_event_count(pool: &SqlitePool, run_id: &str, kind: &str) -> i64 {

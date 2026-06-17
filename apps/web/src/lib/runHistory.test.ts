@@ -42,19 +42,33 @@ describe("runHistoryBucket", () => {
 
 describe("formatRunTime", () => {
 	it("shows a clock time for a same-day timestamp", () => {
-		// 09:05 today → a time string (contains a colon), not a date.
+		// 09:05 today → the locale's hour:minute time string (not a date). Compare
+		// against the same Intl formatting so the assertion is locale-independent.
 		const at = new Date(2026, 5, 16, 9, 5, 0).getTime();
-		const out = formatRunTime(at, NOW);
-		expect(out).toMatch(/\d{1,2}:\d{2}/);
-		expect(out).not.toMatch(/Jun/);
+		expect(formatRunTime(at, NOW)).toBe(
+			new Date(at).toLocaleTimeString(undefined, {
+				hour: "numeric",
+				minute: "2-digit",
+			}),
+		);
 	});
 
 	it("shows a month/day stamp for an older timestamp", () => {
-		// 10 days ago → a compact date, not a clock time.
+		// 10 days ago → the locale's short month/day date (not a clock time).
 		const at = NOW - 10 * DAY;
-		const out = formatRunTime(at, NOW);
-		expect(out).toMatch(/Jun/);
-		expect(out).not.toMatch(/:\d{2}/);
+		expect(formatRunTime(at, NOW)).toBe(
+			new Date(at).toLocaleDateString(undefined, {
+				month: "short",
+				day: "numeric",
+			}),
+		);
+		// And it is NOT the same-day time form.
+		expect(formatRunTime(at, NOW)).not.toBe(
+			new Date(at).toLocaleTimeString(undefined, {
+				hour: "numeric",
+				minute: "2-digit",
+			}),
+		);
 	});
 });
 
