@@ -27,16 +27,10 @@ pub(super) async fn handle_cancel(
     params: serde_json::Value,
     out_tx: &UnboundedSender<String>,
 ) {
-    let params: RunCancelParams = match serde_json::from_value(params) {
-        Ok(p) => p,
-        Err(e) => {
-            handler::frame_error(
-                out_tx,
-                id,
-                HandlerError::InvalidParams(format!("invalid params: {e}")),
-            );
-            return;
-        }
+    let Some(params): Option<RunCancelParams> =
+        handler::decode_params(out_tx, id.clone(), params)
+    else {
+        return;
     };
     let run_id = params.run_id;
 

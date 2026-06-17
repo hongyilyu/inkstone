@@ -93,9 +93,6 @@
               ],
               "type": "string"
             },
-            "catch_up": {
-              "type": "boolean"
-            },
             "end": {
               "additionalProperties": false,
               "properties": {
@@ -115,41 +112,6 @@
               "minimum": 1,
               "type": "integer"
             },
-            "only_on": {
-              "additionalProperties": false,
-              "properties": {
-                "month_days": {
-                  "items": {
-                    "minimum": 1,
-                    "type": "integer"
-                  },
-                  "type": "array"
-                },
-                "weekdays": {
-                  "items": {
-                    "enum": [
-                      "sun",
-                      "mon",
-                      "tue",
-                      "wed",
-                      "thu",
-                      "fri",
-                      "sat"
-                    ],
-                    "type": "string"
-                  },
-                  "type": "array"
-                }
-              },
-              "type": "object"
-            },
-            "schedule": {
-              "enum": [
-                "regular",
-                "from_completion"
-              ],
-              "type": "string"
-            },
             "unit": {
               "enum": [
                 "minute",
@@ -165,7 +127,6 @@
           "required": [
             "interval",
             "unit",
-            "schedule",
             "anchor"
           ],
           "type": "object"

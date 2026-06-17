@@ -400,7 +400,6 @@ describe("TodoEditor recurrence", () => {
 					recurrence: {
 						interval: 1,
 						unit: "week",
-						schedule: "regular",
 						anchor: "defer_at",
 					},
 				},
@@ -437,7 +436,6 @@ describe("TodoEditor recurrence", () => {
 		recurrence: {
 			interval: 1,
 			unit: "week",
-			schedule: "regular",
 			anchor: "defer_at",
 		},
 	};
@@ -475,7 +473,6 @@ describe("TodoEditor recurrence", () => {
 					recurrence: {
 						interval: 2,
 						unit: "week",
-						schedule: "regular",
 						anchor: "defer_at",
 					},
 				},
@@ -542,20 +539,17 @@ describe("TodoEditor recurrence", () => {
 		expect(todo).not.toHaveProperty("recurrence");
 	});
 
-	// FAIL fix (ADR-0037 round-trip): the three unsurfaced fields — catch_up,
-	// only_on, end — must survive a common-path edit untouched. Recurrence is
-	// replaced whole, so a stash that drops any of them silently loses it.
-	it("round-trips catch_up, only_on, and end through a common-path edit", async () => {
+	// Round-trip (ADR-0037/0039): the unsurfaced `end` condition must survive a
+	// common-path edit untouched. Recurrence is replaced whole, so a stash that
+	// drops it silently loses it.
+	it("round-trips the end condition through a common-path edit", async () => {
 		const fullyLoaded: Todo = {
 			...existing,
 			deferAt: "2026-07-01T00:00:00",
 			recurrence: {
 				interval: 1,
 				unit: "week",
-				schedule: "regular",
 				anchor: "defer_at",
-				catchUp: true,
-				onlyOn: { weekdays: ["mon", "wed"] },
 				end: { afterCount: 10 },
 			},
 		};
@@ -589,110 +583,12 @@ describe("TodoEditor recurrence", () => {
 					recurrence: {
 						interval: 3,
 						unit: "week",
-						schedule: "regular",
 						anchor: "defer_at",
-						catch_up: true,
-						only_on: { weekdays: ["mon", "wed"] },
 						end: { after_count: 10 },
 					},
 				},
 			},
 		});
-	});
-
-	// Reconciliation (ADR-0037): a stashed catch_up is only valid with
-	// schedule === "regular". Switching Schedule to from_completion must DROP it,
-	// not re-emit a field the editor never surfaces (Core would reject it).
-	it("drops stashed catch_up when Schedule switches to from_completion", async () => {
-		const withCatchUp: Todo = {
-			...existing,
-			deferAt: "2026-07-01T00:00:00",
-			recurrence: {
-				interval: 1,
-				unit: "week",
-				schedule: "regular",
-				anchor: "defer_at",
-				catchUp: true,
-			},
-		};
-		const user = userEvent.setup();
-		const seen: EntityMutateParams[] = [];
-		renderEditor(
-			{
-				mode: "edit",
-				todo: withCatchUp,
-				allEntities,
-				onDone: () => {},
-				onCancel: () => {},
-			},
-			(params) => {
-				seen.push(params);
-				return Effect.succeed({ entity_id: withCatchUp.id });
-			},
-		);
-
-		await user.selectOptions(
-			screen.getByLabelText(/schedule/i),
-			"from_completion",
-		);
-		await user.click(screen.getByRole("button", { name: /^save$/i }));
-
-		await waitFor(() => expect(seen).toHaveLength(1));
-		const recurrence = (seen[0].payload as { todo: Record<string, unknown> })
-			.todo.recurrence as Record<string, unknown>;
-		expect(recurrence).toEqual({
-			interval: 1,
-			unit: "week",
-			schedule: "from_completion",
-			anchor: "defer_at",
-		});
-		expect(recurrence).not.toHaveProperty("catch_up");
-	});
-
-	// Reconciliation (ADR-0037): only_on.weekdays is valid only with unit === "week".
-	// Switching Unit away from week must DROP only_on entirely (Core rejects an
-	// empty only_on, and weekdays is meaningless off a weekly cadence).
-	it("drops stashed only_on when Unit switches away from week", async () => {
-		const withOnlyOn: Todo = {
-			...existing,
-			deferAt: "2026-07-01T00:00:00",
-			recurrence: {
-				interval: 1,
-				unit: "week",
-				schedule: "regular",
-				anchor: "defer_at",
-				onlyOn: { weekdays: ["mon", "wed"] },
-			},
-		};
-		const user = userEvent.setup();
-		const seen: EntityMutateParams[] = [];
-		renderEditor(
-			{
-				mode: "edit",
-				todo: withOnlyOn,
-				allEntities,
-				onDone: () => {},
-				onCancel: () => {},
-			},
-			(params) => {
-				seen.push(params);
-				return Effect.succeed({ entity_id: withOnlyOn.id });
-			},
-		);
-
-		await user.selectOptions(screen.getByLabelText(/unit/i), "day");
-		await user.click(screen.getByRole("button", { name: /^save$/i }));
-
-		await waitFor(() => expect(seen).toHaveLength(1));
-		const recurrence = (seen[0].payload as { todo: Record<string, unknown> })
-			.todo.recurrence as Record<string, unknown>;
-		expect(recurrence).toEqual({
-			interval: 1,
-			unit: "day",
-			schedule: "regular",
-			anchor: "defer_at",
-		});
-		expect(recurrence).not.toHaveProperty("only_on");
 	});
 
 	// Setting interval to "" (or "0") with Repeats on blocks Save: Core requires a
@@ -732,7 +628,6 @@ describe("TodoEditor recurrence", () => {
 		).toEqual({
 			interval: 2,
 			unit: "week",
-			schedule: "regular",
 			anchor: "defer_at",
 		});
 	});
@@ -771,7 +666,6 @@ describe("TodoEditor recurrence", () => {
 		).toEqual({
 			interval: 1,
 			unit: "week",
-			schedule: "regular",
 			anchor: "defer_at",
 		});
 	});
