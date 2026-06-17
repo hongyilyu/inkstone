@@ -16,9 +16,9 @@ Mode (ADR-0025): `manifest.mode === "resume"` continues a reconstructed transcri
 
 Both transport channels are sourced from the seam (ADR-0027) once at the top: the synchronous `emit` (Run Events) and the request/response `callTool` (Tool Protocol). Both feed pi's callbacks, which run outside the Effect context (ADR-0027 push-shape).
 
-## interpreter.ts — toAgentMessages
+## manifest-codec.ts — manifestCodec.toAgentMessages
 
-Map the manifest's assembled history into pi `Message[]`. Handles the tagged-union `WorkerManifest` message blocks (ADR-0025):
+The pure translation from a `WorkerManifest`'s assembled history into pi `Message[]`, extracted from `interpreter.ts` into its own seam so the interpreter body reads as pure orchestration and this mapping is testable at its own interface (mirrors the Web side's `entityCodec`; unit-tested in `manifest-codec.test.ts`). Handles the tagged-union `WorkerManifest` message blocks (ADR-0025):
 - `user` → a pi `UserMessage` carrying the text.
 - `assistant` → a pi `AssistantMessage` whose `content` is the optional text block followed by any `tool_calls` as `toolCall` content blocks (so a resumed transcript carries the prior turn's tool requests).
 - `tool_result` → a pi `ToolResultMessage` whose `toolCallId` matches the assistant's `toolCall.id` — the pairing that makes the transcript provider-valid (a `toolResult` is rejected unless its `toolCall` precedes it).

@@ -12,6 +12,7 @@ import type { Message, Model } from "@earendil-works/pi-ai";
 import { getModel, streamSimple } from "@earendil-works/pi-ai";
 import type { WorkerManifest } from "@inkstone/protocol";
 import { Effect } from "effect";
+import { manifestCodec } from "./manifest-codec.js";
 import { makeProxyTools } from "./tool-proxy.js";
 import { WorkerTransport } from "./transport.js";
 import { logWorkerFault } from "./worker-log.js";
@@ -38,56 +39,6 @@ export const defaultInterpreterDeps = (): InterpreterDeps => ({
 		return streamSimple(model, context, options);
 	},
 });
-
-/** Map the manifest's assembled history into pi `Message[]` — see docs/design/worker.md (ADR-0025). */
-function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
-	const now = Date.now();
-	const history: Message[] = manifest.messages.map((m): Message => {
-		if (m.role === "user") {
-			return { role: "user", content: m.text, timestamp: now };
-		}
-		if (m.role === "tool_result") {
-			return {
-				role: "toolResult",
-				toolCallId: m.tool_call_id,
-				toolName: "",
-				content: [{ type: "text", text: m.content }],
-				isError: m.is_error ?? false,
-				timestamp: now,
-			};
-		}
-		const assistant: Message & { role: "assistant" } = {
-			role: "assistant",
-			content: [],
-			api: "",
-			provider: "",
-			model: manifest.workflow.model,
-			usage: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				totalTokens: 0,
-				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-			},
-			stopReason: "stop",
-			timestamp: now,
-		};
-		if (m.text !== undefined) {
-			assistant.content.push({ type: "text", text: m.text });
-		}
-		for (const tc of m.tool_calls ?? []) {
-			assistant.content.push({
-				type: "toolCall",
-				id: tc.id,
-				name: tc.name,
-				arguments: (tc.arguments ?? {}) as Record<string, unknown>,
-			});
-		}
-		return assistant;
-	});
-	return history as AgentMessage[];
-}
 
 /** Drive one Run to completion, emitting `text_delta` events then one terminal `done`/`error` — see docs/design/worker.md (ADR-0018, ADR-0025). */
 export function runInterpreter(
@@ -130,7 +81,7 @@ export function runInterpreter(
 
 		const context = {
 			systemPrompt: manifest.workflow.system_prompt,
-			messages: toAgentMessages(manifest),
+			messages: manifestCodec.toAgentMessages(manifest),
 			tools,
 		};
 		const config = {
