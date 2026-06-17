@@ -171,6 +171,95 @@ test("rejected create_person leaves no Person, source, or reference", async ({
 	).toBe("1");
 });
 
+test.describe("Person extraction from the accepted Journal Entry Decision", () => {
+	const decisionScenarioDir = mkdtempSync(
+		path.join(tmpdir(), "inkstone-extract-decision-"),
+	);
+	const decisionExtractParamsFile = path.join(
+		decisionScenarioDir,
+		"scenario.json",
+	);
+
+	test.use({
+		coreOptions: {
+			workerCmd: FAUX_WORKER_CMD,
+			faux: "extract",
+			extractParamsFile: decisionExtractParamsFile,
+		},
+	});
+
+	test.beforeAll(() => {
+		writeFileSync(
+			decisionExtractParamsFile,
+			JSON.stringify({
+				journal_text: JOURNAL_TEXT,
+				person_name: PERSON_NAME,
+				journal_entry_id_source: "decision_result",
+			}),
+		);
+	});
+
+	test.afterAll(() => {
+		rmSync(decisionScenarioDir, { recursive: true, force: true });
+	});
+
+	test("missing Person can be edited and accepted using the accepted Journal Entry id", async ({
+		chat,
+		workspace,
+	}) => {
+		const dbPath = path.join(workspace.path, "db.sqlite");
+
+		await chat.goto();
+		await chat.send("Caught up with Alice over coffee today.");
+		await acceptJournalEntry(chat);
+
+		const personCard = pendingCard(chat);
+		await expect(personCard).toBeVisible({ timeout: 15_000 });
+		await expect(personCard).toContainText(PERSON_NAME);
+		const personRunId = await personCard.getAttribute("data-proposal");
+		expect(personRunId).not.toBeNull();
+
+		await personCard.getByRole("button", { name: /^edit$/i }).click();
+		await expect(
+			personCard.getByRole("textbox", { name: /name/i }),
+		).toHaveValue(PERSON_NAME);
+		await personCard
+			.getByRole("textbox", { name: /note/i })
+			.fill("Met over coffee.");
+		await personCard.getByRole("button", { name: /save changes/i }).click();
+		await expect(
+			chat.page.locator(`[data-proposal="${personRunId}"]`),
+		).toContainText(/added person/i, { timeout: 15_000 });
+
+		expect(
+			sqlite(
+				dbPath,
+				`SELECT COUNT(*) FROM entities
+				 WHERE type = 'person'
+				 AND json_extract(data, '$.name') = ${sqlValue(PERSON_NAME)}
+				 AND json_extract(data, '$.note') = ${sqlValue("Met over coffee.")};`,
+			).trim(),
+		).toBe("1");
+		expect(
+			sqlite(
+				dbPath,
+				`SELECT COUNT(*) FROM entity_sources s
+				 JOIN entities p ON p.id = s.entity_id AND p.type = 'person'
+				 JOIN entities je ON je.id = s.source_entity_id AND je.type = 'journal_entry'
+				 WHERE s.relation = 'created_from' AND s.source_message_id IS NULL;`,
+			).trim(),
+		).toBe("1");
+
+		const refCard = pendingCard(chat);
+		await expect(refCard).toBeVisible({ timeout: 15_000 });
+		await expect(refCard).toContainText("Reference existing Entity");
+		await refCard.getByRole("button", { name: /link entity/i }).click();
+		await expect(acceptedCard(chat)).toContainText(/linked in journal/i, {
+			timeout: 15_000,
+		});
+	});
+});
+
 /** Accept the anchor create_journal_entry proposal and wait for its accepted
  * state. The accepted card renders only its status copy (no body text), so pin
  * to the stable `data-proposal` run id captured while the card is still pending

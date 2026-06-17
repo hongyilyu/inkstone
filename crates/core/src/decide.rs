@@ -309,12 +309,6 @@ async fn apply_or_reject(
     entities::validate(kind, applied_payload).map_err(DecideError::Invalid)?;
     validate_mutation_target(pool, proposal.run_id, kind, applied_payload).await?;
 
-    let decision_payload = serde_json::json!({
-        "decision": "accept",
-        "content": entities::render_accept(proposable, applied_payload),
-    })
-    .to_string();
-
     match db::apply_proposal(
         pool,
         run_id,
@@ -326,7 +320,13 @@ async fn apply_or_reject(
         edited_payload,
         kind.describe().write_op.source_relation(),
         idempotency_key,
-        &decision_payload,
+        |entity_id| {
+            serde_json::json!({
+                "decision": "accept",
+                "content": entities::render_accept(proposable, applied_payload, Some(entity_id)),
+            })
+            .to_string()
+        },
         db::now_ms(),
     )
     .await

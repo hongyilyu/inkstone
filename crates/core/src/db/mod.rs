@@ -886,6 +886,10 @@ impl std::fmt::Display for ApplyError {
 /// records the edit; an unedited accept passes `None` and writes the proposed
 /// `data`.
 ///
+/// `decision_result_payload` is rendered after the entity write returns so the
+/// resume transcript can carry the real affected Entity id. This matters for
+/// follow-up agent proposals that must target or source from the accepted Entity.
+///
 /// Self-guarding (review M1): the `proposals` flip is guarded on
 /// `status='pending'`. On 0 rows a racing decide already won, so the tx rolls
 /// back and [`ApplyError::NotPending`] is returned — exactly one concurrent
@@ -902,7 +906,7 @@ pub async fn apply_proposal(
     edited_payload: Option<&serde_json::Value>,
     source_relation_from_user_message: Option<crate::mutation::SourceRelation>,
     decision_idempotency_key: Option<&str>,
-    decision_result_payload: &str,
+    decision_result_payload: impl FnOnce(&str) -> String,
     now_ms: i64,
 ) -> Result<String, ApplyError> {
     use crate::mutation::SourceRelation;
@@ -968,11 +972,12 @@ pub async fn apply_proposal(
     )
     .await?;
 
+    let decision_result_payload = decision_result_payload(&entity_id);
     queries::resolve_tool_call(
         &mut *tx,
         tool_call_id,
         "completed",
-        decision_result_payload,
+        &decision_result_payload,
         now_ms,
     )
     .await?;
@@ -1740,7 +1745,7 @@ mod tests {
             None,
             Some(crate::mutation::SourceRelation::CreatedFrom),
             Some("idem-accept"),
-            r#"{"decision":"accept","content":"Accepted."}"#,
+            |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
             42,
         )
         .await
@@ -1797,7 +1802,7 @@ mod tests {
             None,
             Some(crate::mutation::SourceRelation::CreatedFrom),
             Some("idem-accept-2"),
-            r#"{"decision":"accept","content":"Accepted."}"#,
+            |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
             43,
         )
         .await;
@@ -1860,7 +1865,7 @@ mod tests {
             None,
             Some(crate::mutation::SourceRelation::UpdatedFrom),
             Some("idem-update-src"),
-            r#"{"decision":"accept","content":"Accepted."}"#,
+            |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
             42,
         )
         .await
@@ -1914,7 +1919,7 @@ mod tests {
             None,
             None,
             Some("idem-vanished"),
-            r#"{"decision":"accept","content":"Accepted."}"#,
+            |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
             42,
         )
         .await;
@@ -1964,7 +1969,7 @@ mod tests {
             None,
             Some(crate::mutation::SourceRelation::UpdatedFrom),
             Some("idem-vanished-upd"),
-            r#"{"decision":"accept","content":"Accepted."}"#,
+            |_| r#"{"decision":"accept","content":"Accepted."}"#.to_string(),
             42,
         )
         .await;

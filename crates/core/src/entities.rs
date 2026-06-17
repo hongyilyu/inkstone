@@ -59,16 +59,23 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
 /// that can reach the agent accept path — the 4 user-only kinds are not in the
 /// type, so there is no `unreachable!` to forget. Defined here, alongside the
 /// private body-text helpers it uses.
-pub(crate) fn render_accept(kind: ProposableMutation, payload: &Value) -> String {
+pub(crate) fn render_accept(
+    kind: ProposableMutation,
+    payload: &Value,
+    entity_id: Option<&str>,
+) -> String {
     use ProposableMutation as P;
     match kind {
         P::CreateJournalEntry => {
+            let entity_id = entity_id.unwrap_or("unknown");
             let occurred_at = payload
                 .get("occurred_at")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             let body = journal_body_text(payload);
-            format!("Accepted. Created Journal Entry (occurred_at={occurred_at}, body={body}).")
+            format!(
+                "Accepted. Created Journal Entry (entity_id={entity_id}, occurred_at={occurred_at}, body={body})."
+            )
         }
         P::UpdateJournalEntry => {
             let occurred_at = payload
@@ -121,11 +128,12 @@ pub(crate) fn render_accept(kind: ProposableMutation, payload: &Value) -> String
             format!("Accepted. Deleted Todo (entity_id={entity_id}).")
         }
         P::CreatePerson => {
+            let entity_id = entity_id.unwrap_or("unknown");
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
-            format!("Accepted. Created Person (name={name}).")
+            format!("Accepted. Created Person (entity_id={entity_id}, name={name}).")
         }
         P::UpdatePerson => {
             let name = payload
@@ -135,6 +143,7 @@ pub(crate) fn render_accept(kind: ProposableMutation, payload: &Value) -> String
             format!("Accepted. Updated Person (name={name}).")
         }
         P::CreateProject => {
+            let entity_id = entity_id.unwrap_or("unknown");
             let name = payload
                 .get("name")
                 .and_then(Value::as_str)
@@ -143,7 +152,9 @@ pub(crate) fn render_accept(kind: ProposableMutation, payload: &Value) -> String
                 .get("status")
                 .and_then(Value::as_str)
                 .unwrap_or("active");
-            format!("Accepted. Created Project (name={name}, status={status}).")
+            format!(
+                "Accepted. Created Project (entity_id={entity_id}, name={name}, status={status})."
+            )
         }
         P::UpdateProject => {
             let name = payload
@@ -157,6 +168,7 @@ pub(crate) fn render_accept(kind: ProposableMutation, payload: &Value) -> String
             format!("Accepted. Updated Project (name={name}, status={status}).")
         }
         P::CreateTodo => {
+            let entity_id = entity_id.unwrap_or("unknown");
             let todo = payload.get("todo");
             let title = todo
                 .and_then(|t| t.get("title"))
@@ -166,7 +178,9 @@ pub(crate) fn render_accept(kind: ProposableMutation, payload: &Value) -> String
                 .and_then(|t| t.get("status"))
                 .and_then(Value::as_str)
                 .unwrap_or("active");
-            format!("Accepted. Created Todo (title={title}, status={status}).")
+            format!(
+                "Accepted. Created Todo (entity_id={entity_id}, title={title}, status={status})."
+            )
         }
         P::UpdateTodo => {
             let todo_id = payload
@@ -1060,7 +1074,7 @@ mod tests {
     fn render_accept(kind: &str, payload: &Value) -> String {
         let kind = MutationKind::from_wire(kind).expect("known mutation_kind");
         let proposable = ProposableMutation::try_from(kind).expect("agent-proposable kind");
-        super::render_accept(proposable, payload)
+        super::render_accept(proposable, payload, None)
     }
 
     /// Test shim: the schema version for a wire kind, via its Entity Type — the

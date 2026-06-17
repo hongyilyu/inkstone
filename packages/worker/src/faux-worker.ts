@@ -272,6 +272,7 @@ interface ExtractScenario {
 	journal_text: string;
 	person_name?: string;
 	project_name?: string;
+	journal_entry_id_source?: "read_tool" | "decision_result";
 	todo?: {
 		title: string;
 		person_name?: string;
@@ -305,6 +306,7 @@ function readExtractScenario(): ExtractScenario {
 		journal_text: parsed.journal_text,
 		person_name: parsed.person_name,
 		project_name: parsed.project_name,
+		journal_entry_id_source: parsed.journal_entry_id_source,
 		todo: parsed.todo,
 	};
 }
@@ -379,6 +381,35 @@ function journalEntryIdFrom(
 	const text = latestToolResultText(messages, (t) => t.includes('"entries"'));
 	if (text === undefined) return undefined;
 	return currentThreadEntriesFromToolResult(text)[0]?.entity_id;
+}
+
+/** The Journal Entry id Core now includes in an accepted create_journal_entry
+ * Decision result. This covers the real-model path where the Worker reasons
+ * from the resume transcript instead of issuing a read tool call. */
+function journalEntryIdFromDecision(
+	messages: readonly AnyMessage[],
+): string | undefined {
+	const text = latestToolResultText(messages, (t) =>
+		acceptedCreate(t, "Journal Entry"),
+	);
+	return text?.match(/\bentity_id=([^,\s)]+)/)?.[1];
+}
+
+function journalEntryIdForExtraction(
+	scenario: ExtractScenario,
+	context: FauxContext,
+	manifest: WorkerManifest,
+): string | undefined {
+	if (scenario.journal_entry_id_source === "decision_result") {
+		return (
+			journalEntryIdFromDecision(context.messages) ??
+			journalEntryIdFromDecision(manifest.messages)
+		);
+	}
+	return (
+		journalEntryIdFrom(context.messages) ??
+		journalEntryIdFrom(manifest.messages)
+	);
 }
 
 /** The latest `search_entities` results, if a search result is present. */
@@ -966,9 +997,11 @@ function setExtractResponses(
 	// chain. after_journal first reads the JE to learn its id; after_create_entity
 	// already has the JE id in the transcript and re-searches to resolve the new id.
 	const proposeFromSearch = (context: FauxContext) => {
-		const journalEntryId =
-			journalEntryIdFrom(context.messages) ??
-			journalEntryIdFrom(manifest.messages);
+		const journalEntryId = journalEntryIdForExtraction(
+			scenario,
+			context,
+			manifest,
+		);
 		const results = latestSearchResults(context.messages) ?? [];
 		if (journalEntryId === undefined) {
 			return textTurn("I couldn't find the Journal Entry to extract from.");
@@ -1002,16 +1035,20 @@ function setExtractResponses(
 	const finalConfirm = textTurn("Awaiting your decision.");
 
 	if (phase === "after_journal") {
-		faux.setResponses([
-			toolCallTurn(
-				"read_current_thread_journal_entries",
-				{},
-				"tc_extract_read",
-			),
-			searchEntity,
-			proposeFromSearch,
-			finalConfirm,
-		]);
+		faux.setResponses(
+			scenario.journal_entry_id_source === "decision_result"
+				? [searchEntity, proposeFromSearch, finalConfirm]
+				: [
+						toolCallTurn(
+							"read_current_thread_journal_entries",
+							{},
+							"tc_extract_read",
+						),
+						searchEntity,
+						proposeFromSearch,
+						finalConfirm,
+					],
+		);
 		return;
 	}
 
