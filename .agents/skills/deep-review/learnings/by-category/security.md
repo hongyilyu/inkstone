@@ -1,6 +1,6 @@
 # Learned rules — Security (`security`)
 
-_14 rules. Loaded by the `dr-security` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_16 rules. Loaded by the `dr-security` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Validate and normalize untrusted paths (and use literal pathspecs) before passing them to file/VCS APIs  ·  `validate-untrusted-path-before-file-api`
 - **Severity:** blocking  ·  **Support:** 4  ·  **Seen in:** #2037, #25403, #30722
@@ -66,6 +66,16 @@ _14 rules. Loaded by the `dr-security` specialist. Generated from rules.json —
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #120
 - **Rule:** Before Buffer.from(untrustedBase64, "base64") or feeding decoded bytes to a parser, enforce a maximum input length and reject oversized payloads up front, so a malicious or huge payload cannot exhaust memory before being measured.
 - **Detect:** Buffer.from(<userControlled>, "base64") or decoded request/message bytes passed to a parser (imageSize) with no preceding length/size guard.
+
+## A by-name fetch that resolves to a filesystem path must re-apply the discovery/eligibility filter  ·  `by-name-lookup-must-reapply-listing-eligibility-filter`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #171
+- **Rule:** When a resource is both discoverable via a curated listing/scan (which deliberately excludes ineligible entries) and fetchable directly by name (resolving name to a path), the by-name path must re-check that the name is in the eligible scanned set before returning content. Otherwise a guessed/crafted name loads any matching file the listing intentionally skipped, bypassing the disclosure-hardening the listing enforces.
+- **Detect:** A resource is reachable two ways: (1) a curated discovery/listing function that filters entries (scan/list/index dropping items for missing/invalid metadata, name mismatch, unsafe content), and (2) a direct by-name/by-id fetch that resolves the identifier to a backing location (e.g. name -> <dir>/<name>/<file>, or id -> row) and returns content. Flag when the by-name path enforces only structural safety (path-containment, single-component, id-format) but does NOT verify the identifier is a member of the eligible discovery result before returning. Ask: if a caller guesses/crafts a valid-but-unlisted name, does this path serve content the listing deliberately excluded? The fix shares the discovery eligibility predicate (e.g. eligible()/load_body) across both paths so loadable set == advertised set.
+
+## Invoke subprocesses with an explicit argument array, not an interpolated shell command string  ·  `prefer-arg-array-over-shell-string-for-subprocess`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #32479
+- **Rule:** Building a single command string by interpolating a variable (path, filename, user/FS-derived value) and passing it to a shell-executing API runs through the shell: it is brittle (quoting/escaping) and a command-injection vector. Invoke the executable directly with an args array (execFile/spawn/execFileSync or the project's args-array helper) so arguments are passed verbatim and never shell-interpreted.
+- **Detect:** Grep for execSync/exec/`child_process.exec`/`sh -c`/`bash -c`/`powershell -Command "..."` whose sole argument is a template literal that interpolates a variable (e.g. ``execSync(`tool ${x}`)``). Then ask: (1) is the interpolated value FS-, filename-, or otherwise externally derived (paths with spaces/quotes/`$`/`;` are both a quoting bug AND an injection vector)? and (2) would an args-array form (execFile/execFileSync/spawn with `[args]`, or the project's args-array helper) pass it verbatim and avoid the shell entirely? Flag the shell-string form even when it sits next to a sibling that already uses the args-array API (a regression that collapsed an array invocation into a string is the strongest signal).
 
 ## Don't surface internal identifiers into user-facing display text  ·  `no-internal-ids-in-user-facing-text`
 - **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #130

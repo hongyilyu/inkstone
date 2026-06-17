@@ -17,6 +17,11 @@ _32 rules. Loaded by the `dr-code-quality` specialist. Generated from rules.json
 - **Rule:** Flag README/doc diffs that delete large blocks of public usage/install/FAQ content unrelated to the PR's stated change, or that switch the document's intended audience or language; such notes belong in CONTRIBUTING/AGENTS.md.
 - **Detect:** Flag README/doc diffs that remove large blocks of public usage/install/FAQ content unrelated to the PR's described change, or that switch the document's audience or language.
 
+## Keep PR scope tight; flag incidental generated-file or core-module drift  ·  `keep-pr-scope-tight-no-incidental-generated-or-core-changes`
+- **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #3375, #4005, #4380, #26763
+- **Rule:** A focused feature PR should not silently carry unrelated changes: regenerating a shared generated/catalogue file (models.generated.ts) that also touches unrelated entries' pricing/contextWindow/maxTokens, or bulk cleanup/refactor of a core module mixed into a feature, must be split out or explicitly called out in the description, since unannounced metadata drift changes cost estimation and truncation behavior for existing users.
+- **Detect:** In a PR scoped to feature X, a *.generated.* file also modifies fields of unrelated entries (cost, contextWindow, maxTokens, new unrelated model ids); or a core/shared module gains many edits not needed for the stated feature.
+
 ## Declare new imports in package.json and avoid dep/devDep duplication or floating versions  ·  `package-dependency-declaration-hygiene`
 - **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #120, #1694, #2037, #3474
 - **Rule:** When a new bare-specifier import is added (not relative, not a node: builtin), confirm the package is declared in the nearest package.json dependencies — a missing dep compiles via monorepo hoisting but breaks at publish/install. List a package in exactly one of dependencies/devDependencies (a runtime package belongs only in dependencies), pin to a compatible semver range aligned with the monorepo version rather than `*`/`@*`, and double-check npm:-alias strings target a real package/version.
@@ -26,11 +31,6 @@ _32 rules. Loaded by the `dr-code-quality` specialist. Generated from rules.json
 - **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #23407, #26262, #30543
 - **Rule:** In a file that already imports/uses an i18n helper (language.t/useLanguage/i18n), flag new hardcoded English user-facing strings (titles, labels, ariaLabel, placeholders) where sibling values go through the helper. Only apply when the file demonstrably uses i18n already, to avoid flagging projects that intentionally don't translate.
 - **Detect:** In a file importing an i18n helper, flag raw English string literals in user-facing JSX text nodes or fields (title/label/ariaLabel/placeholder), especially adjacent to existing `language.t(...)` calls. In i18n dictionary diffs, flag fragments beginning/ending with ' ,' / ' .' or a stray leading space.
-
-## Keep PR scope tight; flag incidental generated-file or core-module drift  ·  `keep-pr-scope-tight-no-incidental-generated-or-core-changes`
-- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #3375, #4005, #4380
-- **Rule:** A focused feature PR should not silently carry unrelated changes: regenerating a shared generated/catalogue file (models.generated.ts) that also touches unrelated entries' pricing/contextWindow/maxTokens, or bulk cleanup/refactor of a core module mixed into a feature, must be split out or explicitly called out in the description, since unannounced metadata drift changes cost estimation and truncation behavior for existing users.
-- **Detect:** In a PR scoped to feature X, a *.generated.* file also modifies fields of unrelated entries (cost, contextWindow, maxTokens, new unrelated model ids); or a core/shared module gains many edits not needed for the stated feature.
 
 ## Set done/resolved markers only after the async work succeeds  ·  `set-done-flag-only-after-success`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #30722
@@ -78,12 +78,12 @@ _32 rules. Loaded by the `dr-code-quality` specialist. Generated from rules.json
 - **Detect:** A .join(...) (or split) delimiter argument containing a non-printable/control byte (often rendered ^@) rather than a visible escape like \0.
 
 ## Keep names and docs accurate to actual behavior  ·  `names-must-match-behavior`
-- **Severity:** nit  ·  **Support:** 10  ·  **Seen in:** #62, #139, #145, #3136, #4873, #27053
+- **Severity:** nit  ·  **Support:** 11  ·  **Seen in:** #62, #139, #145, #162, #3136, #4873
 - **Rule:** Flag when an identifier or doc no longer matches behavior: plural/general names whose body handles one case, memo/variable names left stale after a condition is widened (added OR branch), tool/param docs out of sync with schema keys, and doc edits that flip conditional 'or'/'else' semantics into 'and'/unconditional.
 - **Detect:** Compare function/variable names using plural/general nouns or boolean predicates against their bodies and widened conditions. Cross-check parameter names in a tool's description/.txt prompt against the actual schema keys. Cross-check named packages/paths in doc/CI text against packages/* dirs. Flag doc edits that flip 'or'/conditional phrasing to 'and'/unconditional.
 
 ## Extract duplicated helpers, lookups, and bootstrap expressions instead of copy-pasting  ·  `extract-duplicated-logic`
-- **Severity:** nit  ·  **Support:** 9  ·  **Seen in:** #42, #123, #160, #171, #3851, #25389
+- **Severity:** nit  ·  **Support:** 10  ·  **Seen in:** #42, #123, #155, #160, #171, #3851
 - **Rule:** When the same non-trivial logic (identical helper bodies, escape chains, inline types, init/bootstrap wiring) appears in 2+ places within one diff, suggest extracting to a shared helper so copies cannot drift. Only flag substantive logic, not trivial 1-2 line expressions, to avoid premature-abstraction noise.
 - **Detect:** Detect the same function name+body, identical inline `type X = {...}`, identical chained `.replace(/&/g,...).replace(/"/g,...)`, or identical multi-call init expression appearing in 2+ files/sites in the same diff. Also: a diff adds config options to one call of a primitive (prompts.spinner, logger) while sibling bare calls remain. Ask: should this be shared from one module?
 

@@ -83,6 +83,8 @@ Final-review events (scope `final`):
 - `advisory-triaged` (with `addressed=<n> deferred=<n>`)
 - `iter-end` (final-review retry)
 - `final-review-passed`
+- `rebased` (detail: the `origin/master` SHA rebased onto) | `rebase-conflict` (detail: conflicting paths → BLOCKED.md)
+- `local-ci-passed` (detail: the rebased commit SHA the full four-job gate passed on, before push)
 - `ci-passed` (detail: the commit SHA CI ran on) | `ci-failed` (detail: failing check name)
 - `blocked` (final review hit its retry cap, or CI stayed red past the cap)
 

@@ -1,55 +1,52 @@
 {
-  "_doc": "Per-source watermarks for /deep-review-learn. 'cursor' = created_at of the newest review comment already mined from that source; the next learn run only processes comments strictly newer than this. Managed by /deep-review-learn and /deep-review-status — safe to read, edit cautiously.",
+  "_doc": "Per-source watermarks for /deep-review-learn. 'cursor' = created_at of the newest review comment already mined from that source; the next learn run only processes comments strictly newer than this. Managed by /deep-review-learn and /deep-review-status \u2014 safe to read, edit cautiously.",
   "sources": {
     "anomalyco/opencode": {
       "kind": "github",
-      "cursor": "2026-06-14T15:39:45Z",
-      "last_checked": "2026-06-15T02:12:14Z",
+      "cursor": "2026-06-16T13:38:30Z",
+      "last_checked": "2026-06-17T03:19:56Z",
       "last_run": {
-        "comments_seen": 53,
-        "comments_processed": 51,
-        "new_rules": 7,
-        "reinforced": 23,
-        "noise": 19
+        "comments_seen": 9,
+        "comments_processed": 8,
+        "new_rules": 4,
+        "reinforced": 2
       },
       "totals": {
-        "runs": 2,
-        "new_rules_contributed": 155,
-        "reinforced_contributed": 23
+        "runs": 3,
+        "new_rules_contributed": 159,
+        "reinforced_contributed": 25
       },
       "note": "Bootstrap source. Cursor set to the newest comment in the bootstrap harvest."
     },
     "hongyilyu/inkstone": {
       "kind": "github",
-      "cursor": "2026-06-15T02:06:51Z",
-      "last_checked": "2026-06-15T02:12:14Z",
+      "cursor": "2026-06-17T03:04:01Z",
+      "last_checked": "2026-06-17T03:19:56Z",
       "last_run": {
-        "comments_seen": 81,
-        "comments_processed": 81,
-        "new_rules": 10,
-        "reinforced": 15,
-        "noise": 30
+        "comments_seen": 83,
+        "comments_processed": 83,
+        "new_rules": 14,
+        "reinforced": 21
       },
       "totals": {
-        "runs": 2,
-        "new_rules_contributed": 80,
-        "reinforced_contributed": 38
+        "runs": 3,
+        "new_rules_contributed": 94,
+        "reinforced_contributed": 59
       },
       "note": "Reviewers: CodeRabbit, ChatGPT Codex, human (hongyilyu)."
     },
     "earendil-works/pi": {
       "kind": "github",
-      "cursor": "2026-06-13T09:46:01Z",
-      "last_checked": "2026-06-15T02:12:14Z",
+      "cursor": "2026-06-16T12:46:11Z",
+      "last_checked": "2026-06-17T03:19:56Z",
       "last_run": {
         "comments_seen": 1,
-        "comments_processed": 1,
+        "comments_processed": 0,
         "new_rules": 0,
-        "reinforced": 0,
-        "noise": 0
+        "reinforced": 0
       },
       "totals": {
-        "runs": 2,
+        "runs": 3,
         "new_rules_contributed": 50,
         "reinforced_contributed": 52
       },

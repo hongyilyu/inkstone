@@ -1,6 +1,6 @@
 # Learned rules — Performance (`performance`)
 
-_14 rules. Loaded by the `dr-performance` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_15 rules. Loaded by the `dr-performance` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Stream or cap large content instead of buffering it fully in memory  ·  `avoid-buffering-large-content-in-memory`
 - **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #5076, #26262, #27890, #28907
@@ -52,6 +52,11 @@ _14 rules. Loaded by the `dr-performance` specialist. Generated from rules.json 
 - **Rule:** SQLite drops the FTS5 trigram LIKE/GLOB index optimization whenever the LIKE has an ESCAPE clause — even when the needle contains nothing to escape. On a trigram-tokenized column reached by a hot/debounced substring search, an unconditional `LIKE '%'||?||'%' ESCAPE '\'` therefore silently degrades every query to a full table scan. Only take the ESCAPE path when the needle actually contains a `%`, `_`, or the escape char (escaping those literals); route the common no-wildcard needle through the plain unescaped LIKE so the trigram index stays engaged. Confirm with EXPLAIN QUERY PLAN that the index is used on the unescaped path and bypassed on the escaped one.
 - **Detect:** Flag a SQL string with `LIKE '%' || ? || '%' ESCAPE '\'` (or any LIKE ESCAPE) over an FTS5/trigram-tokenized column on a hot/debounced search path. Ask: does EXPLAIN QUERY PLAN still use the index with ESCAPE? Is the escape unconditional even when the needle has no %/_/\?
 
+## Don't run synchronous blocking calls (execSync, *Sync, long sleeps) on the event-loop/UI thread  ·  `no-sync-blocking-call-on-event-loop-or-ui-thread`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #32479
+- **Rule:** Switching from an async/spawn-based call to a synchronous blocking one (execSync, readFileSync of large data, sync network) on the thread that drives rendering or the event loop freezes input and UI for the whole duration (up to the timeout). In TUIs, GUIs, or any single-threaded event loop, keep potentially-slow subprocess/I/O calls asynchronous so the loop stays responsive; apply a timeout/kill on the async path instead.
+- **Detect:** Flag a diff that swaps an existing async subprocess/I/O helper (spawn/exec/command(...)/fetch) for a synchronous blocking variant — execSync/execFileSync/spawnSync, or a *Sync call that runs an external process / network — in code reachable from a render loop, keypress/input handler, or any single-threaded event loop (TUI like Ink/blessed, browser main thread, GUI). Ask: while the external process or sync I/O runs (up to its timeout), is the event loop blocked, freezing input/rendering? If an async sibling exists, prefer it with a timeout/kill. Do NOT flag a one-shot *Sync read of small local data at startup with no async sibling and no UI-path reachability.
+
 ## Hoist computations derived only from static/invariant inputs out of hot paths and loops  ·  `hoist-invariant-computation-out-of-repeated-calls`
 - **Severity:** nit  ·  **Support:** 5  ·  **Seen in:** #4636, #28701, #29208, #29635, #32284
 - **Rule:** If a constructed value or pure-function result inside a loop or frequently-called function depends only on imports/module constants (not on any argument or the loop variable), hoist it to module/loop-outer scope and reuse it (e.g. `new Set(CONST)`, regex built from constants, `await import()` in a hot helper -> cached module-scope promise). Flag only when invariance is clear from the diff.
@@ -68,6 +73,6 @@ _14 rules. Loaded by the `dr-performance` specialist. Generated from rules.json 
 - **Detect:** Find Map-based caches that evict via keys().next().value but whose get/hit branch reads the cache without delete+re-set. Ask: does a cache hit refresh recency, or is eviction purely insertion-ordered?
 
 ## Run independent async fetches concurrently, not sequentially  ·  `run-independent-async-fetches-concurrently`
-- **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #112
+- **Severity:** nit  ·  **Support:** 2  ·  **Seen in:** #112, #175
 - **Rule:** Run independent async fetches concurrently (Effect.all / Promise.all) rather than awaiting them sequentially when neither depends on the other's result — sequential `yield*`/await of two independent list calls doubles latency.
 - **Detect:** Consecutive `yield* client.x(...)` / `await client.x(...)` statements where the second does not use the first's result. Ask: are these two independent fetches awaited sequentially when they could be batched with Effect.all/Promise.all?

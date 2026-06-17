@@ -2,6 +2,47 @@
 
 Append-only. Each entry records what the reviewer learned and when.
 
+## 2026-06-17 — Incremental sweep of all 3 tracked repos (inkstone + opencode + pi)
+
+- **Source:** 91 cleaned inline review comments newer than each repo's cursor —
+  `hongyilyu/inkstone` 83 (cursor → 2026-06-17T03:04:01Z), `anomalyco/opencode` 8
+  (cursor → 2026-06-16T13:38:30Z), `earendil-works/pi` 1 sub-threshold one-liner, no rule
+  (cursor → 2026-06-16T12:46:11Z). Reviewers: CodeRabbit, ChatGPT Codex, GitHub Copilot, humans.
+- **Pipeline (`/deep-review-learn`, background Workflow):** 4 parallel miners (3 inkstone chunks +
+  1 opencode) classified each comment vs the 285-rule digest → 21 candidates · 23 reinforcements ·
+  38 noise → per-candidate adversarial verification.
+- **Result:** **18 new rules added** (14 from inkstone, 4 from opencode), **18 existing rules
+  reinforced** (support_count bumped, PRs added; the 23 reinforcement comments collapsed onto 18
+  distinct rules), **3 candidates dropped in verification** — two on fabricated/inaccurate evidence
+  (a `key=` reset bug that the code already guarded; a build-path invariant whose claimed fix never
+  shipped), one a by-design decision the team already resolved against (omit-vs-null agent-schema
+  clear).
+- **KB grew 285 → 303 rules.** New-rule mix: 15 important · 2 blocking · 1 nit. Heaviest new
+  coverage: correctness +6, testing +3, error-handling +2, security +2, ui-react +2.
+- **Notable new lessons:**
+  - *Bound a computed value at the producer to the downstream validator's range* — an out-of-range
+    year/length/id rejected by a strict validator inside an enclosing tx rolls back the whole write
+    instead of gracefully no-oping (`correctness`, blocking).
+  - *In a three-way merge where absent = preserve, emit explicit null to clear* — `delete obj.key`
+    does NOT clear a stored field under partial-merge semantics; it leaves stale data that violates
+    downstream invariants (`data-persistence`).
+  - *Salvage a correlation/id field before strict decode* — capture the id that lets you record a
+    terminal/error outcome before the parse that may fail, or recovery can't attribute the failure
+    (`error-handling`).
+  - *Optional observability-subsystem init must fail open* — logging/metrics/tracing setup must not
+    abort boot of the primary service when it fails (`error-handling`).
+  - *Prefer an args array over an interpolated shell-command string for subprocesses* — `execSync(\`t
+    ${x}\`)` is a quoting bug and a command-injection vector; use execFile/spawn with `[args]`
+    (`security`).
+  - *Don't run synchronous blocking calls on the event-loop/UI thread* — swapping async spawn for
+    execSync freezes a TUI/GUI for the subprocess duration (`performance`).
+  - *Call preventDefault before the first await in an owning event handler* — an await before the
+    suppression lets the platform default fire during the gap, duplicating the action (`ui-react`).
+  - *A by-name lookup must reapply the listing eligibility filter* — resolving an entity directly by
+    name/id must pass the same gate as discovery, or it leaks records the listing hides (`security`).
+- KB regenerated: `rules.json` (v4 → v5), `INDEX.md`, `by-category/*.md`. Cursors advanced
+  per source in `state.json`.
+
 ## 2026-06-15 — Incremental sweep of all 3 tracked repos (opencode + inkstone + pi)
 
 - **Source:** 133 cleaned inline review comments newer than each repo's cursor —

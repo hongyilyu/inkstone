@@ -2,15 +2,15 @@
 
 _5 rules. Loaded by the `dr-resource-leak` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
+## Subprocess teardown must reliably terminate the child on every path  ·  `ensure-subprocess-reliably-terminates`
+- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #162, #25962
+- **Rule:** When managing a Node child_process/Worker, ensure termination on every path: (1) after posting a fatal startup error to the parent, the child should call process.exit()/self.close(); (2) stop()/shutdown() should return an awaitable Promise that resolves on the child's 'exit'/'stopped' event (force-killing only after a grace timeout) rather than firing a detached setTimeout(kill) that a parent's own exit may cancel. Flag only genuine child_process/Worker management, not generic async cleanup.
+- **Detect:** Two checks per hunk: (1) in a child/worker catch block that does parentPort.postMessage({type:'error'}) or similar, is there a following process.exit/self.close? (2) Does stop()/shutdown() post a 'stop' message then return void/synchronously with a setTimeout(...kill), rather than returning a Promise awaited by relaunch/update/quit callers? Ask: can the subprocess survive a failed startup or a parent that exits before the kill timer fires?
+
 ## Reset transient state flags in finally, not only on the success path  ·  `reset-flag-in-finally-around-await`
 - **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #117, #1723, #26949
 - **Rule:** When a boolean/mode flag is set before an awaited operation, clear it in a try/finally (or on every return and error path) so a thrown rejection or early return cannot leave the flag stuck on.
 - **Detect:** Flag code that sets a flag true (setState('x', true)) before an await/loop containing await, where the reset to false only appears on the success path and there is no try/finally and no clear on early-return/catch. Ask: does every exit path (error, early return) reset this flag?
-
-## Subprocess teardown must reliably terminate the child on every path  ·  `ensure-subprocess-reliably-terminates`
-- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #25962
-- **Rule:** When managing a Node child_process/Worker, ensure termination on every path: (1) after posting a fatal startup error to the parent, the child should call process.exit()/self.close(); (2) stop()/shutdown() should return an awaitable Promise that resolves on the child's 'exit'/'stopped' event (force-killing only after a grace timeout) rather than firing a detached setTimeout(kill) that a parent's own exit may cancel. Flag only genuine child_process/Worker management, not generic async cleanup.
-- **Detect:** Two checks per hunk: (1) in a child/worker catch block that does parentPort.postMessage({type:'error'}) or similar, is there a following process.exit/self.close? (2) Does stop()/shutdown() post a 'stop' message then return void/synchronously with a setTimeout(...kill), rather than returning a Promise awaited by relaunch/update/quit callers? Ask: can the subprocess survive a failed startup or a parent that exits before the kill timer fires?
 
 ## Clean up temp files in finally and don't auto-retry after stream events emitted  ·  `guard-or-finally-cleanup-temp-and-pre-stream-retry`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #1723, #4133

@@ -1,6 +1,6 @@
 # Learned rules — Types (`types`)
 
-_6 rules. Loaded by the `dr-types` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_7 rules. Loaded by the `dr-types` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Do not introduce `any`; prefer a precise type, a derived utility type, or `unknown`  ·  `no-any-prefer-precise-or-unknown`
 - **Severity:** important  ·  **Support:** 5  ·  **Seen in:** #42, #125, #1593, #2910, #23068, #25573
@@ -31,3 +31,8 @@ _6 rules. Loaded by the `dr-types` specialist. Generated from rules.json — do 
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #125, #4759, #26980
 - **Rule:** At trust boundaries (plugin/external/network input), do not rely on a declared TS type to guarantee a value's shape before calling type-specific methods; even `Partial<Record<...,string>>` can arrive `undefined`/non-string. Flag iteration (`Object.entries`/`values`) over an externally-supplied record whose values reach string methods (`startsWith`/`slice`/`trim`) with no preceding `typeof === 'string'`/truthiness guard. Only apply at actual external boundaries, not internally-constructed values.
 - **Detect:** Flag `Object.entries`/`Object.values` over an external- or plugin-provided record where each value is passed to a function that calls string methods (`startsWith`/`slice`/`trim`) without a preceding `typeof === 'string'` / truthiness check — especially when the declared type is `Partial<Record<...>>`.
+
+## A user-defined type guard narrowing to a literal union must check membership, not just the broad runtime typeof  ·  `type-guard-must-check-membership-not-just-typeof`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #150
+- **Rule:** A user-defined type guard of the form `(x): x is LiteralUnion => typeof x === 'string'` (or `typeof x === 'number'`) lies: it narrows to the specific literal union while only proving the broad primitive type, so arbitrary out-of-vocabulary strings/numbers get the narrow type and leak into the parsed model, later round-tripping as malformed data. When parsing external/stored values into a closed-vocabulary field, the guard must verify the value is actually a member of the allowed set (ALLOWED.includes(x)) and, for bounded numbers, check integer-ness and range. Detection: a `.filter((v): v is T => typeof v === 'string'|'number')` (or equivalent predicate) where T is a literal/enum union or a bounded number, with no membership/range check inside. Ask: can a value of the right primitive type but wrong vocabulary pass this guard and acquire the narrow type?
+- **Detect:** Grep for user-defined type predicates `(x): x is <T> => ...` (often inside `.filter()`) where T is a literal/enum union or a bounded number, and the predicate BODY only proves a broad primitive (`typeof x === "string"` / `=== "number"`) — or is even weaker (`=> true`, `=> !!x`, `=> x != null`) — with no `ALLOWED.includes(x)` membership check and, for numbers, no `Number.isInteger(x)` + range check. Flag as unsound narrowing: ask "can a value of the right primitive type but wrong vocabulary pass this and acquire the narrow type?"
