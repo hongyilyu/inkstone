@@ -18,9 +18,12 @@
 //
 // INKSTONE_TOOLWORKER_TOOL
 //   The tool name to request. Default "read_thread" (in the default Workflow's
-//   allowlist → Core dispatches it). Set to an off-list name (e.g.
-//   "nonexistent") to exercise allowlist rejection → Core returns an `err`
-//   outcome and the fixture echoes `tool_outcome=err:<code>`.
+//   allowlist → Core dispatches it). "search_entities" (also allowlisted)
+//   exercises a second, distinctly-shaped dispatch path so a registry that
+//   mis-wired one allowlisted tool to another's handler is caught end-to-end.
+//   Set to an off-list name (e.g. "nonexistent") to exercise allowlist
+//   rejection → Core returns an `err` outcome and the fixture echoes
+//   `tool_outcome=err:<code>`. Params are chosen per tool (see `paramsFor`).
 //
 // INKSTONE_TOOLWORKER_THREAD_ID_FILE
 //   A filesystem path. If set AND the file exists, its trimmed contents are
@@ -103,12 +106,19 @@ const main = async (): Promise<void> => {
 			? readFileSync(idFile, "utf8").trim()
 			: "t-dummy";
 	const toolCallId = `tc_${process.pid}`;
+	// Each tool wants its own arg shape. read_thread (and any off-list name we
+	// only need to see rejected) take a thread_id; search_entities takes a
+	// {type, query}. An empty query matches all accepted entities of the type.
+	const paramsFor = (name: string): Record<string, unknown> =>
+		name === "search_entities"
+			? { type: "person", query: "" }
+			: { thread_id: threadId };
 	emit({
 		kind: "tool_request",
 		run_id: "",
 		tool_call_id: toolCallId,
 		name: tool,
-		params: { thread_id: threadId },
+		params: paramsFor(tool),
 	});
 
 	// Block for the tool_result Core writes back on stdin.
