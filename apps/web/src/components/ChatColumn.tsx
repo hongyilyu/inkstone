@@ -9,8 +9,10 @@ import {
 	startProposalStream,
 } from "@/store/bridge";
 import {
+	clearFocusedMessage,
 	type Message,
 	useActiveRunId,
+	useFocusedMessageId,
 	useFocusedThreadId,
 	useHydrationStatus,
 	useThreadMessages,
@@ -35,6 +37,11 @@ export function ChatColumn() {
 	const activeRunId = useActiveRunId(focusedThreadId ?? "");
 	const hydration = useHydrationStatus(focusedThreadId ?? "");
 	const [sendError, setSendError] = useState<string | null>(null);
+	// The Message a ⌘K search hit jumped to (issue #138): scrolled into view and
+	// briefly ringed once its row is in the DOM. The store anchor is the pending
+	// jump; `highlightId` is the transient visual that lingers ~1.6s then fades.
+	const focusedMessageId = useFocusedMessageId();
+	const [highlightId, setHighlightId] = useState<string | null>(null);
 
 	// No thread focused → fresh chat. Focused + empty: the reactive hydration status (issue #108) decides —
 	// skeleton only while the fetch is genuinely in flight (or about to fire), a recoverable error if it failed
@@ -60,6 +67,39 @@ export function ChatColumn() {
 		const el = scrollerRef.current;
 		if (el) el.scrollTop = el.scrollHeight;
 	}, []);
+
+	// Scroll-to-message (issue #138). Fires when the anchored Message is actually
+	// present in the rendered list — the real precondition, covering both a cold
+	// thread (after thread/get hydrates and repaints) and the already-focused one
+	// on the same tick. Jump straight to it (no glide across deep scrollback) and
+	// hand off to the lamplight ring to land the eye; the scroll itself is
+	// motion-reduce-safe (`auto`, not `smooth`). Consume the anchor one-shot so a
+	// later unrelated re-render can't re-scroll. `messages` is the dependency that
+	// lets the cold-thread path fire once history arrives.
+	useEffect(() => {
+		if (focusedMessageId === null) return;
+		// Gate on the anchored Message being in the rendered list — the real
+		// precondition. `messages` is in the deps so a cold thread re-fires this
+		// once thread/get hydrates and the row mounts; a warm thread has it now.
+		if (!messages.some((m) => m.id === focusedMessageId)) return;
+		const target = scrollerRef.current?.querySelector<HTMLElement>(
+			`[data-message-id="${focusedMessageId}"]`,
+		);
+		if (!target) return;
+		target.scrollIntoView({ block: "center", behavior: "auto" });
+		setHighlightId(focusedMessageId);
+		clearFocusedMessage();
+	}, [focusedMessageId, messages]);
+
+	// Fade the lamplight ring after it has held long enough to be seen. Separate
+	// from the anchor-consume above so consuming the one-shot anchor never cancels
+	// this hold timer. The ring's bloom/fade is CSS (motion-safe); reduced-motion
+	// shows a static ring for the same dwell, then this clears it.
+	useEffect(() => {
+		if (highlightId === null) return;
+		const t = setTimeout(() => setHighlightId(null), 1600);
+		return () => clearTimeout(t);
+	}, [highlightId]);
 
 	// Re-run a failed hydration on demand (issue #108): `hydrateThread` flips status back to `loading`, then `ready`/`error` on settle.
 	const retryHydration = () => {
@@ -92,11 +132,16 @@ export function ChatColumn() {
 					<ol className="mx-auto flex max-w-3xl flex-col gap-6">
 						{messages.map((message, i) =>
 							message.role === "user" ? (
-								<UserBubble key={message.id} message={message} />
+								<UserBubble
+									key={message.id}
+									message={message}
+									highlighted={message.id === highlightId}
+								/>
 							) : (
 								<AssistantBubble
 									key={message.id}
 									message={message}
+									highlighted={message.id === highlightId}
 									onRetry={
 										focusedThreadId !== null && messages[i - 1]?.role === "user"
 											? () => retry(messages[i - 1].text)
@@ -197,10 +242,23 @@ function ChatHydrating() {
 	);
 }
 
-function UserBubble({ message }: { message: Message }) {
+function UserBubble({
+	message,
+	highlighted = false,
+}: {
+	message: Message;
+	highlighted?: boolean;
+}) {
 	return (
-		<li data-role="user" className="flex flex-col items-end gap-1">
-			<div className="max-w-[80%] rounded-xl border border-secondary/50 bg-secondary/50 px-4 py-2 text-sm text-foreground">
+		<li
+			data-role="user"
+			data-message-id={message.id}
+			className="flex flex-col items-end gap-1"
+		>
+			<div
+				data-highlighted={highlighted || undefined}
+				className="search-jump-target relative max-w-[80%] rounded-xl border border-secondary/50 bg-secondary/50 px-4 py-2 text-sm text-foreground"
+			>
 				{message.text}
 			</div>
 		</li>
@@ -209,15 +267,21 @@ function UserBubble({ message }: { message: Message }) {
 
 function AssistantBubble({
 	message,
+	highlighted = false,
 	onRetry,
 }: {
 	message: Message;
+	highlighted?: boolean;
 	onRetry?: () => void;
 }) {
 	const toolCalls = message.toolCalls ?? [];
 	const toolRunning = toolCalls.some((tc) => tc.status === "running");
 	return (
-		<li data-role="assistant" className="group flex flex-col items-start gap-2">
+		<li
+			data-role="assistant"
+			data-message-id={message.id}
+			className="group flex flex-col items-start gap-2"
+		>
 			{toolCalls.length > 0 && <ToolActivity toolCalls={toolCalls} />}
 			{message.status === "streaming" &&
 				message.text === "" &&
@@ -234,7 +298,10 @@ function AssistantBubble({
 					</div>
 				)}
 			{message.text.length > 0 && (
-				<div className="prose prose-pink dark:prose-invert max-w-none">
+				<div
+					data-highlighted={highlighted || undefined}
+					className="search-jump-target prose prose-pink dark:prose-invert relative max-w-none rounded-xl"
+				>
 					<ChatMarkdown text={message.text} />
 				</div>
 			)}

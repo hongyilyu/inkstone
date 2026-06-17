@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Page } from "@playwright/test";
@@ -212,6 +212,10 @@ function writeScenario(scenario: {
 	project_name?: string;
 	person_name?: string;
 }): void {
+	// Re-ensure the dir: under `fullyParallel` the module-level afterAll (rmSync)
+	// can delete the mkdtemp dir between this file's tests on a worker, throwing
+	// ENOENT here. mkdirSync(recursive) is idempotent when it still exists.
+	mkdirSync(scenarioDir, { recursive: true });
 	writeFileSync(extractParamsFile, JSON.stringify(scenario));
 }
 

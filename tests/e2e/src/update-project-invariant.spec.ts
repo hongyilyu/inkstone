@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "./fixtures.js";
@@ -106,6 +106,11 @@ test.describe("agent-proposed update_project", () => {
 		// (propose-time is deliberately un-validated, ADR-0025). `status:"completed"`
 		// with no `completed_at` is exactly what `validate_update_project`'s invariant
 		// must reject.
+		// Re-ensure the dir exists right before the write: under `fullyParallel` the
+		// module-level `afterAll` (rmSync) can run on a worker between this file's
+		// tests, deleting the mkdtemp dir before this write and throwing ENOENT.
+		// mkdirSync(recursive) is idempotent and harmless when the dir is still present.
+		mkdirSync(proposalDir, { recursive: true });
 		writeFileSync(
 			proposalParamsFile,
 			JSON.stringify({

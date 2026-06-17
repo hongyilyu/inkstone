@@ -15,7 +15,7 @@ import {
 	searchLibraryItems,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
-import { setFocusedThread } from "@/store/chat";
+import { focusMessage, setFocusedThread } from "@/store/chat";
 import { closeCommand, toggleCommand, useCommandOpen } from "@/store/command";
 import { EntityGlyph } from "./library/EntityGlyph.js";
 import { SearchField } from "./ui/search-field.js";
@@ -150,8 +150,9 @@ export function CommandPalette() {
 			return;
 		}
 		if (result.type === "message") {
-			// Scroll-to-message is out of scope (issue #138); land on the Thread.
-			setFocusedThread(result.thread_id);
+			// Focus the Thread AND anchor the exact matched Message: ChatColumn
+			// scrolls it into view and briefly highlights it once hydrated (issue #138).
+			focusMessage(result.thread_id, result.message_id);
 			navigate({ to: "/" });
 			return;
 		}

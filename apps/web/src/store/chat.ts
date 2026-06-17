@@ -55,6 +55,15 @@ interface RunRecord {
 interface ChatState {
 	readonly threads: Record<string, ThreadState>;
 	readonly focusedThreadId?: string;
+	/**
+	 * Transient scroll-to-message anchor (issue #138): the id of a Message a ⌘K
+	 * search hit jumped to, which {@link ChatColumn} scrolls into view and briefly
+	 * highlights, then clears. Set ONLY by {@link focusMessage} (an intentional
+	 * palette jump) and dropped by any plain {@link setFocusedThread} /
+	 * {@link clearFocusedThread}, so a later sidebar re-focus of the same thread
+	 * can never re-fire a stale highlight.
+	 */
+	readonly focusedMessageId?: string;
 	/** Live Run lifecycle records, keyed by run id (ADR-0022 boundary, ADR-0028 record-not-FSM). */
 	readonly runs: Record<string, RunRecord>;
 	/** Pending (and decided) Proposals keyed by the parked Run's id (ADR-0025). */
@@ -111,12 +120,45 @@ function withThread(
 }
 
 export function setFocusedThread(threadId: string): void {
-	store.setState((s) => ({ ...s, focusedThreadId: threadId }));
+	// Plain focus (sidebar row, mint-on-send) clears any message anchor: it belongs
+	// to one intentional palette jump only, never to a later re-focus (issue #138).
+	store.setState((s) => ({
+		...s,
+		focusedThreadId: threadId,
+		focusedMessageId: undefined,
+	}));
 }
 
 /** Clear the focused thread (New Chat → null → next send mints a thread). */
 export function clearFocusedThread(): void {
-	store.setState((s) => ({ ...s, focusedThreadId: undefined }));
+	store.setState((s) => ({
+		...s,
+		focusedThreadId: undefined,
+		focusedMessageId: undefined,
+	}));
+}
+
+/**
+ * Jump to a specific Message (issue #138): focus its Thread AND set the
+ * scroll-to-message anchor in one atomic update, so {@link ChatColumn} scrolls
+ * the matched bubble into view and briefly highlights it once the thread's
+ * messages are present. The single verb behind a ⌘K message-search hit.
+ */
+export function focusMessage(threadId: string, messageId: string): void {
+	store.setState((s) => ({
+		...s,
+		focusedThreadId: threadId,
+		focusedMessageId: messageId,
+	}));
+}
+
+/** Consume the scroll-to-message anchor once {@link ChatColumn} has acted on it (one-shot; the highlight's own fade is component-local). */
+export function clearFocusedMessage(): void {
+	store.setState((s) =>
+		s.focusedMessageId === undefined
+			? s
+			: { ...s, focusedMessageId: undefined },
+	);
 }
 
 /** Set a thread's reactive hydration status — drives the focus-hydrate gate and the skeleton-vs-error render (issue #108). */
@@ -482,6 +524,11 @@ export function useThreadMessages(threadId: string): Message[] {
 /** Focused thread id, `null` at the React boundary (undefined internally). */
 export function useFocusedThreadId(): string | null {
 	return useStore(store, (s) => s.focusedThreadId ?? null);
+}
+
+/** The pending scroll-to-message anchor (issue #138), `null` if none. Drives {@link ChatColumn}'s one-shot scroll + highlight. */
+export function useFocusedMessageId(): string | null {
+	return useStore(store, (s) => s.focusedMessageId ?? null);
 }
 
 /** Active run id for a thread, `null` at the React boundary. */
