@@ -33,6 +33,7 @@ function makeStubRuntime(opts: {
 			}),
 		postMessage: () => Effect.succeed(opts.runId),
 		threadList: () => unused,
+		getRunHistory: () => unused,
 		// Park hydrate-on-focus: a focused thread stays `loading` (these tests drive messages directly, not via thread/get).
 		threadGet: () => Effect.never,
 		listEntities: () => unused,
@@ -177,6 +178,7 @@ describe("ChatColumn", () => {
 			threadCreate: () => unused,
 			postMessage: () => unused,
 			threadList: () => unused,
+			getRunHistory: () => unused,
 			threadGet: () => {
 				calls += 1;
 				return calls === 1

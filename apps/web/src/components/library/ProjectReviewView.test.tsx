@@ -30,6 +30,7 @@ function makeRuntime(
 		threadCreate: () => unused,
 		postMessage: () => unused,
 		threadList: () => unused,
+		getRunHistory: () => unused,
 		threadGet: () => unused,
 		listEntities: (type) => {
 			if (type === "project") return Effect.succeed({ entities: projects });
@@ -292,6 +293,7 @@ describe("ProjectReviewView (focused queue)", () => {
 			threadCreate: () => never,
 			postMessage: () => never,
 			threadList: () => never,
+			getRunHistory: () => never,
 			threadGet: () => never,
 			listEntities: () => never,
 			entityMutate: () => never,

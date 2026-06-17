@@ -19,6 +19,7 @@ function makeRuntime() {
 		threadCreate: die,
 		postMessage: die,
 		threadList: die,
+		getRunHistory: die,
 		threadGet: die,
 		listEntities: die,
 		entityMutate: die,
