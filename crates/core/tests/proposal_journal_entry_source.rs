@@ -240,6 +240,22 @@ fn accept_create_todo_sourced_from_journal_entry() {
     rt.block_on(async {
         let pool = ro_pool(&workspace).await;
 
+        let je_result_payload: String = sqlx::query_scalar(
+            "SELECT tc.result_payload \
+             FROM proposals p \
+             JOIN tool_calls tc ON tc.id = p.tool_call_id \
+             JOIN entities e ON e.created_via_proposal_id = p.id \
+             WHERE e.id = ?1",
+        )
+        .bind(&je_id)
+        .fetch_one(&pool)
+        .await
+        .expect("journal entry proposal tool result exists");
+        assert!(
+            je_result_payload.contains(&format!("entity_id={je_id}")),
+            "accepted Journal Entry tool result carries the real entity id for resume: {je_result_payload}"
+        );
+
         // Exactly one entity_sources row for the Todo, sourced from the JE.
         let rows = sqlx::query(
             "SELECT source_entity_id, source_message_id, relation \

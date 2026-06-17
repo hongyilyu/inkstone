@@ -37,6 +37,7 @@ function withExtractScenario(scenario: {
 	journal_text: string;
 	person_name?: string;
 	project_name?: string;
+	journal_entry_id_source?: "read_tool" | "decision_result";
 	todo?: {
 		title: string;
 		person_name?: string;
@@ -783,6 +784,53 @@ describe("faux-worker extraction mode (INKSTONE_FAUX_EXTRACT)", () => {
 		]);
 		const proposals = proposalsIn(requests);
 		expect(proposals).toEqual([
+			{
+				mutation_kind: "create_person",
+				payload: {
+					name: "Alice",
+					source_journal_entry_id: "je-1",
+				},
+			},
+		]);
+	});
+
+	it("resume after JE accepted can source create_person from the Decision result entity id", async () => {
+		withExtractScenario({
+			journal_text: "I had coffee with Alice this morning.",
+			person_name: "Alice",
+			journal_entry_id_source: "decision_result",
+		});
+
+		const { requests } = await runChat(
+			resumeExtractManifest([
+				{ role: "user", text: "I had coffee with Alice." },
+				assistantCall("tc_extract_journal", "propose_workspace_mutation"),
+				decisionResult(
+					"tc_extract_journal",
+					"Accepted. Created Journal Entry (entity_id=je-1, occurred_at=2026-06-10T10:30:00, body=I had coffee with Alice this morning.).",
+				),
+			]),
+			{
+				tc_extract_search_initial: {
+					ok: {
+						content: [{ type: "text", text: JSON.stringify({ results: [] }) }],
+					},
+				},
+				tc_extract_person: {
+					ok: {
+						content: [
+							{ type: "text", text: "Accepted. Created Person (name=Alice)." },
+						],
+					},
+				},
+			},
+		);
+
+		expect(requests.map((r) => r.name)).toEqual([
+			"search_entities",
+			"propose_workspace_mutation",
+		]);
+		expect(proposalsIn(requests)).toEqual([
 			{
 				mutation_kind: "create_person",
 				payload: {
