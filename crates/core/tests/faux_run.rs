@@ -1,5 +1,5 @@
 //! End-to-end interpreter path: Core spawns the generic `pi-agent-core`
-//! interpreter (test-only entry `packages/worker/src/faux-worker.ts`) with a
+//! interpreter (test-only entry `packages/worker/src/faux/faux-worker.ts`) with a
 //! manifest on stdin and a real agent-loop Run streams a completion back.
 //! Determinism comes from pi-ai's `faux` provider (ADR-0019): the workflow
 //! declares `provider="faux"` and the canned response rides

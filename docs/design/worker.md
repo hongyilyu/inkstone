@@ -16,18 +16,18 @@ Mode (ADR-0025): `manifest.mode === "resume"` continues a reconstructed transcri
 
 Both transport channels are sourced from the seam (ADR-0027) once at the top: the synchronous `emit` (Run Events) and the request/response `callTool` (Tool Protocol). Both feed pi's callbacks, which run outside the Effect context (ADR-0027 push-shape).
 
-## interpreter.ts — toAgentMessages
+## manifest-codec.ts — manifestCodec.toAgentMessages
 
-Map the manifest's assembled history into pi `Message[]`. Handles the tagged-union `WorkerManifest` message blocks (ADR-0025):
+The pure translation from a `WorkerManifest`'s assembled history into pi `Message[]`, extracted from `interpreter.ts` into its own seam so the interpreter body reads as pure orchestration and this mapping is testable at its own interface (mirrors the Web side's `entityCodec`; unit-tested in `manifest-codec.test.ts`). Handles the tagged-union `WorkerManifest` message blocks (ADR-0025):
 - `user` → a pi `UserMessage` carrying the text.
 - `assistant` → a pi `AssistantMessage` whose `content` is the optional text block followed by any `tool_calls` as `toolCall` content blocks (so a resumed transcript carries the prior turn's tool requests).
 - `tool_result` → a pi `ToolResultMessage` whose `toolCallId` matches the assistant's `toolCall.id` — the pairing that makes the transcript provider-valid (a `toolResult` is rejected unless its `toolCall` precedes it).
 
 History is oldest-first and, for the fresh path, excludes the current turn (the prompt is appended separately). For the resume path the manifest's `messages` IS the full transcript (ending in a `tool_result`).
 
-## faux-worker.ts — module (TEST-ONLY entry)
+## faux/faux-worker.ts — module (TEST-ONLY entry)
 
-TEST-ONLY Worker entry — never the production worker command.
+TEST-ONLY Worker entry — never the production worker command. Lives under `src/faux/` (with `faux-decisions.ts` and its test), kept out of the top-level `src/` deep core so a reader can tell the Worker from its test mock at a glance.
 
 This file fakes the LLM provider so Core/e2e integration tests can drive the REAL generic interpreter offline and deterministically. It is selected by tests via `INKSTONE_WORKER_CMD` (they spawn `tsx .../faux-worker.ts`); it is never wired into a shipped build. Production uses `cli.ts`. Reading the `INKSTONE_FAUX_*` env vars below is legitimate — this is test code (ADR-0019 as-built: faux scripting lives at a dedicated test-only entry, off the production path).
 
@@ -46,21 +46,7 @@ The five modes (first match wins):
 
 Run only when this file is the process entry (Core/e2e spawn it as `tsx .../faux-worker.ts`), NOT when imported — `faux-worker.test.ts` imports `fauxDepsFor` to unit-test the dep-builder and must not boot a Worker (which would read stdin and `process.exit`). `realpathSync` both sides so the macOS `/var`→`/private/var` symlink doesn't defeat the comparison.
 
-## provider.ts — module (Provider Helper)
-
-The Provider Helper (ADR-0023): a stateless TypeScript process Core spawns to run LLM-provider OAuth via `pi-ai`'s pure functions. It holds no durable state — it prints its result on stdout and exits; Core owns the Credential Store. Two modes, chosen by argv[2]:
-
-- `refresh` — read one line `{ "refresh": "<token>" }` on stdin, rotate it via pi-ai, print one line of Core-shaped credentials.
-- `login` — run pi-ai's PKCE + :1455 loopback flow; print the authorize URL line as soon as it's known, then the credentials line on success. (Orchestrated by Core in slice 8.)
-
-Core-shaped credentials on the wire (snake_case `account_id` to match the Rust Credential Store struct):
-`{ "kind": "credentials", "access", "refresh", "expires", "account_id" }`
-The authorize-URL line (login only):
-`{ "kind": "authorize_url", "url": "https://auth.openai.com/..." }`
-On failure:
-`{ "kind": "error", "message": "..." }`
-
-In login mode, pi runs the :1455 loopback and opens nothing itself; it hands us the authorize URL via `onAuth`. Core relays that URL to the Web Client, which opens it in a new tab; the loopback captures the OpenAI callback. There is no interactive prompt path in the new-tab flow; the loopback callback supplies the code. If pi falls back to `onPrompt` we have no console to read, so reject — the loopback path is the supported one.
+The Provider Helper (`provider.ts`) moved to its own package — see `provider-helper.md` (ADR-0040).
 
 ## tool-proxy.ts — module / makeProxyTools / ToolResultOk
 

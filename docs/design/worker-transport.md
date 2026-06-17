@@ -23,7 +23,7 @@ A chat-only run passes no `tools`; its manifest has no tool descriptors, so `cal
 
 ## transport-stdio.ts — makeStdioService
 
-Production transport (ADR-0027): the Worker's stdio behind the `WorkerTransport` seam. This is the sole module in the Worker's interpreter transport that touches `process.stdin`/`process.stdout` — the Provider Helper (`provider.ts`, ADR-0023) is a separate binary with its own stdio and is out of scope here. Mirrors Core's `ChildWorker` as the sole `Command::spawn` site for the Worker (ADR-0026). It owns the single readline over stdin, the first-line manifest read (ADR-0013), the `tool_call_id` → resolver correlation map for the bidirectional Tool Protocol (ADR-0006), and the stdout NDJSON writer.
+Production transport (ADR-0027): the Worker's stdio behind the `WorkerTransport` seam. This is the sole module in the Worker's interpreter transport that touches `process.stdin`/`process.stdout` — the Provider Helper (`packages/provider-helper/src/provider.ts`, ADR-0023) is a separate binary with its own stdio and is out of scope here. Mirrors Core's `ChildWorker` as the sole `Command::spawn` site for the Worker (ADR-0026). It owns the single readline over stdin, the first-line manifest read (ADR-0013), the `tool_call_id` → resolver correlation map for the bidirectional Tool Protocol (ADR-0006), and the stdout NDJSON writer.
 
 Built over injected `Readable`/`Writable` streams so the adapter is testable with fakes; `StdioTransportLive` binds it to the real process streams.
 

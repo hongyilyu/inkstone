@@ -8,11 +8,11 @@ import type {
 } from "@inkstone/protocol";
 import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
+import { runInterpreter } from "../interpreter.js";
+import type { ToolCallResponse } from "../tool-proxy.js";
+import type { CapturedToolRequest } from "../transport-memory.js";
+import { InMemoryTransport } from "../transport-memory.js";
 import { fauxDepsFor } from "./faux-worker.js";
-import { runInterpreter } from "./interpreter.js";
-import type { ToolCallResponse } from "./tool-proxy.js";
-import type { CapturedToolRequest } from "./transport-memory.js";
-import { InMemoryTransport } from "./transport-memory.js";
 
 // `fauxDepsFor` reads `INKSTONE_FAUX_*` env vars at call time; clear them after each case so modes don't bleed.
 const FAUX_ENV_KEYS = [

@@ -20,9 +20,9 @@ describe("production entry guard", () => {
 		const text = readFileSync(CLI, "utf8");
 		const offenders = BANNED.filter((token) => text.includes(token));
 		expect(offenders).toEqual([]);
-		// Also catch a `./faux-worker` import, which would pull faux scripting into production without tripping a token above.
+		// Also catch a faux entry import (now under ./faux/), which would pull faux scripting into production without tripping a token above.
 		expect(text).not.toMatch(
-			/^\s*import\s+.*from\s+["']\.\/faux-worker(?:\.js)?["'];?/m,
+			/^\s*import\s+.*from\s+["']\.\/faux\/faux-worker(?:\.js)?["'];?/m,
 		);
 	});
 });

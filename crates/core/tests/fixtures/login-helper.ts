@@ -1,5 +1,5 @@
 // Provider-login helper STUB for slice-8 tests. Stands in for
-// `packages/worker/src/provider.ts login` via INKSTONE_PROVIDER_LOGIN_CMD so
+// `packages/provider-helper/src/provider.ts login` via INKSTONE_PROVIDER_LOGIN_CMD so
 // the Core login-orchestration test runs offline (no real :1455 / OpenAI).
 // Node builtins only.
 //
