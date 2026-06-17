@@ -622,6 +622,12 @@ describe("ProposalCard", () => {
 			expect(
 				screen.queryByRole("button", { name: /^edit$/i }),
 			).not.toBeInTheDocument();
+			// reference routes to renderNoBody — pin the empty body so a future re-wire
+			// to a journal strategy (which would render a "Proposed entry" section off
+			// this body-less payload) fails here instead of slipping through.
+			expect(
+				screen.queryByText(/Proposed entry|Current entry/),
+			).not.toBeInTheDocument();
 		});
 
 		it("shows the reference rejected copy when kept", () => {
@@ -1530,6 +1536,13 @@ describe("ProposalCard", () => {
 			expect(
 				screen.getByText("Inkstone wants to create a constructor."),
 			).toBeInTheDocument();
+			// fallbackView routes to renderNoBody: no detail-body section. "Body text"
+			// still shows as the header summary (journalBody fallback), so pin the
+			// EntrySection title — it renders ONLY inside a journal body, so a re-wire
+			// to a journal strategy fails here instead of slipping through.
+			expect(
+				screen.queryByText(/Proposed entry|Current entry/),
+			).not.toBeInTheDocument();
 			const accept = screen.getByRole("button", { name: /add journal entry/i });
 			expect(accept).toBeInTheDocument();
 			fireEvent.click(accept);

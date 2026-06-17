@@ -1,3 +1,4 @@
+import type { ProposalReviewContext } from "@inkstone/protocol";
 import {
 	CalendarDays,
 	Check,
@@ -6,7 +7,7 @@ import {
 	Pencil,
 	RotateCcw,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { KIND_META } from "@/lib/libraryItems";
 import {
 	type CreatePersonDraft,
@@ -68,27 +69,24 @@ type ProposalKind =
 	| "update_person"
 	| "update_project";
 
-// The GTD proposal kinds (Person/Project/Todo create+update) — the single source
-// of truth for "is this a GTD proposal", driving the read-only detail render
-// (`isGtdProposal`). The edit-affordance gate (`isGtdEdit`) is kept SEPARATE
-// because it gates a different surface (which inline edit-form variant renders),
-// so a future render-only GTD kind could legitimately split the two.
-const GTD_PROPOSAL_KINDS: ReadonlySet<ProposalKind> = new Set([
-	"create_person",
-	"create_project",
-	"create_todo",
-	"update_todo",
-	"update_person",
-	"update_project",
-]);
+/**
+ * Inputs a row's `renderBody` strategy reads to draw the card's detail body — the
+ * opaque wire `payload` and the optional review context (the latter carries the
+ * current Journal Entry for update/delete diffs). Both are read through the
+ * defensive helpers, never a typed decode (ADR-0009/0014).
+ */
+interface ProposalBodyArgs {
+	payload: unknown;
+	reviewContext: ProposalReviewContext | undefined;
+}
 
 // Per-kind presentation for a Proposal — the review card's analogue of KIND_META
-// (lib/libraryItems): one entry concentrates the copy, labels, glyph, and
-// edit-ability that distinguish one proposal kind from another, so a new kind is
-// one new row instead of a fork threaded through a dozen ternaries. Glyphs reuse
-// the canonical entity iconography (KIND_META) so a Person proposal wears the same
-// mark it has in the Library, palette, and detail panels; kinds differ by glyph +
-// label, never colour alone (PRODUCT.md a11y).
+// (lib/libraryItems): one entry concentrates the copy, labels, glyph,
+// edit-ability, and detail-body render that distinguish one proposal kind from
+// another, so a new kind is one new row instead of a fork threaded through a dozen
+// ternaries. Glyphs reuse the canonical entity iconography (KIND_META) so a Person
+// proposal wears the same mark it has in the Library, palette, and detail panels;
+// kinds differ by glyph + label, never colour alone (PRODUCT.md a11y).
 interface ProposalView {
 	/** Header glyph — the canonical entity mark. */
 	glyph: LucideIcon;
@@ -119,6 +117,13 @@ interface ProposalView {
 	 * already-read `bodyHasEntityRef` rather than the raw payload.
 	 */
 	canEdit: (bodyHasEntityRef: boolean) => boolean;
+	/**
+	 * The card's detail body, read from the (unvalidated) payload — and, for
+	 * update/delete journal diffs, `reviewContext.current_journal_entry` — through
+	 * the defensive helpers. Returns `null` for kinds with no detail body
+	 * (reference, and the fallback).
+	 */
+	renderBody: (args: ProposalBodyArgs) => ReactNode;
 }
 
 const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
@@ -134,6 +139,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: (bodyHasEntityRef) => !bodyHasEntityRef,
+		renderBody: (args) => renderJournalBody(args, "create"),
 	},
 	update_journal_entry: {
 		glyph: KIND_META.journal_entry.icon,
@@ -147,6 +153,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current entry",
 		rejectBusyLabel: "Keeping current entry...",
 		canEdit: (bodyHasEntityRef) => !bodyHasEntityRef,
+		renderBody: (args) => renderJournalBody(args, "update"),
 	},
 	delete_journal_entry: {
 		glyph: KIND_META.journal_entry.icon,
@@ -160,6 +167,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep Journal Entry",
 		rejectBusyLabel: "Keeping...",
 		canEdit: () => false,
+		renderBody: (args) => renderJournalBody(args, "delete"),
 	},
 	reference_existing_entity_from_journal_entry: {
 		glyph: KIND_META.journal_entry.icon,
@@ -174,6 +182,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Keep current entry",
 		rejectBusyLabel: "Keeping current entry...",
 		canEdit: () => false,
+		renderBody: renderNoBody,
 	},
 	create_person: {
 		glyph: KIND_META.person.icon,
@@ -187,6 +196,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		renderBody: renderPersonBody,
 	},
 	create_project: {
 		glyph: KIND_META.project.icon,
@@ -200,6 +210,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		renderBody: renderProjectBody,
 	},
 	create_todo: {
 		glyph: KIND_META.todo.icon,
@@ -214,6 +225,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		renderBody: renderCreateTodoBody,
 	},
 	update_todo: {
 		glyph: KIND_META.todo.icon,
@@ -227,6 +239,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		renderBody: renderUpdateTodoBody,
 	},
 	update_person: {
 		glyph: KIND_META.person.icon,
@@ -240,6 +253,10 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		// Full-document REPLACE: the proposed payload is the whole new Person body
+		// (the entity_id rides untouched, not surfaced), so its read-only detail
+		// mirrors create_person's.
+		renderBody: renderPersonBody,
 	},
 	update_project: {
 		glyph: KIND_META.project.icon,
@@ -253,6 +270,8 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => true,
+		// Full-document REPLACE: read-only detail mirrors create_project's.
+		renderBody: renderProjectBody,
 	},
 };
 
@@ -260,6 +279,8 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 // raw kind into the review prompt. Unreachable by contract — the Worker only
 // proposes the 8 kinds above — but `mutation_kind` is a bare string on the wire
 // (ADR-0014), so the card stays legible rather than blank if one slips through.
+// No detail body: the raw payload's shape is unknown for an unrecognized kind, so
+// rendering a Journal diff risks a spurious "Proposed entry" block (or worse).
 function fallbackView(kind: string): ProposalView {
 	return {
 		glyph: KIND_META.journal_entry.icon,
@@ -273,6 +294,7 @@ function fallbackView(kind: string): ProposalView {
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
 		canEdit: () => false,
+		renderBody: renderNoBody,
 	};
 }
 
@@ -441,19 +463,14 @@ export function ProposalCard({
 	const bodyText = journalBody(payload);
 	const entityId = textField(payload, "entity_id");
 	const currentJournalEntry = proposal.review_context?.current_journal_entry;
-	const currentOccurredAt = textField(currentJournalEntry, "occurred_at");
-	const currentEndedAt = textField(currentJournalEntry, "ended_at");
-	const currentBodyText = journalBody(currentJournalEntry);
 	const bodyHasEntityRef =
 		journalBodyHasEntityRef(payload) ||
 		journalBodyHasEntityRef(currentJournalEntry);
-	// Retained because OUT-OF-SCOPE code consumes them: the journal payload
-	// validation below reads create/update; the journal detail-render gates on
-	// create/update/delete; the GTD detail-render gates on `isGtdProposal`. The
-	// per-kind copy/labels/glyph these once drove now live in PROPOSAL_VIEWS.
+	// Retained for journal-payload validation only: `payloadIssue` (accept gate)
+	// and `editIssue` (Save gate) read create/update to pick which validator runs.
+	// The detail-body routing these once also drove now lives in `view.renderBody`.
 	const isCreateProposal = mutation_kind === "create_journal_entry";
 	const isUpdateProposal = mutation_kind === "update_journal_entry";
-	const isDeleteProposal = mutation_kind === "delete_journal_entry";
 	// The GTD kinds that render their own inline edit form (vs the journal form).
 	const isCreateTodo = mutation_kind === "create_todo";
 	const isCreatePerson = mutation_kind === "create_person";
@@ -474,7 +491,6 @@ export function ProposalCard({
 	// A GTD kind that surfaces an inline edit form (the creates + the updates).
 	const isGtdEdit =
 		isCreateTodo || showPersonForm || showProjectForm || isUpdateTodo;
-	const isGtdProposal = GTD_PROPOSAL_KINDS.has(mutation_kind as ProposalKind);
 	// The single resolved presentation entry: header glyph, accept-button glyph,
 	// summary, review/accepted/rejected copy, accept/reject labels (+ busy variants),
 	// and edit-ability all read from here instead of a per-kind ternary.
@@ -980,38 +996,10 @@ export function ProposalCard({
 				)
 			) : (
 				<>
-					{isCreateProposal || isUpdateProposal || isDeleteProposal ? (
-						<div className="flex flex-col gap-3 border-border border-t pt-3">
-							{isUpdateProposal || isDeleteProposal ? (
-								currentJournalEntry ? (
-									<EntrySection
-										title="Current entry"
-										occurredAt={currentOccurredAt}
-										endedAt={currentEndedAt}
-										bodyText={currentBodyText}
-									/>
-								) : isDeleteProposal ? (
-									<p className="text-muted-foreground text-sm">
-										Current entry details unavailable.
-									</p>
-								) : null
-							) : null}
-							{isCreateProposal || isUpdateProposal ? (
-								<EntrySection
-									title="Proposed entry"
-									occurredAt={occurredAt}
-									endedAt={endedAt}
-									bodyText={bodyText}
-								/>
-							) : null}
-						</div>
-					) : null}
-
-					{isGtdProposal ? (
-						<div className="flex flex-col gap-3 border-border border-t pt-3">
-							<GtdSection mutationKind={mutation_kind} payload={payload} />
-						</div>
-					) : null}
+					{view.renderBody({
+						payload,
+						reviewContext: proposal.review_context,
+					})}
 
 					{rationale ? (
 						<p className="text-sm leading-relaxed text-muted-foreground">
@@ -1183,19 +1171,64 @@ function personRefFields(
 		});
 }
 
-function GtdSection({
-	mutationKind,
-	payload,
-}: {
-	mutationKind: string;
-	payload: unknown;
-}) {
-	if (mutationKind === "create_person") {
-		const note = textField(payload, "note");
-		const aliases = arrayField(payload, "aliases").filter(
-			(a): a is string => typeof a === "string",
-		);
-		return (
+// --- renderBody strategies -------------------------------------------------
+// One per PROPOSAL_VIEWS row family (journal create/update/delete share one,
+// mode-gated). Each owns the full detail body — including the `border-t` divider
+// the JSX fork used to wrap them in — and reads the opaque payload (and, for
+// journal diffs, the review context) only through the defensive helpers above.
+
+/** Kinds with no detail body (reference, fallback). */
+function renderNoBody(): ReactNode {
+	return null;
+}
+
+/**
+ * Journal create/update/delete share one two-root diff, selected by `mode`:
+ * create → proposed only; update → current (if present) + proposed; delete →
+ * current (or an "unavailable" note when context is absent), no proposed.
+ */
+function renderJournalBody(
+	{ payload, reviewContext }: ProposalBodyArgs,
+	mode: "create" | "update" | "delete",
+): ReactNode {
+	const currentJournalEntry = reviewContext?.current_journal_entry;
+	const showCurrent = mode === "update" || mode === "delete";
+	const showProposed = mode === "create" || mode === "update";
+	return (
+		<div className="flex flex-col gap-3 border-border border-t pt-3">
+			{showCurrent ? (
+				currentJournalEntry ? (
+					<EntrySection
+						title="Current entry"
+						occurredAt={textField(currentJournalEntry, "occurred_at")}
+						endedAt={textField(currentJournalEntry, "ended_at")}
+						bodyText={journalBody(currentJournalEntry)}
+					/>
+				) : mode === "delete" ? (
+					<p className="text-muted-foreground text-sm">
+						Current entry details unavailable.
+					</p>
+				) : null
+			) : null}
+			{showProposed ? (
+				<EntrySection
+					title="Proposed entry"
+					occurredAt={textField(payload, "occurred_at")}
+					endedAt={textField(payload, "ended_at")}
+					bodyText={journalBody(payload)}
+				/>
+			) : null}
+		</div>
+	);
+}
+
+function renderPersonBody({ payload }: ProposalBodyArgs): ReactNode {
+	const note = textField(payload, "note");
+	const aliases = arrayField(payload, "aliases").filter(
+		(a): a is string => typeof a === "string",
+	);
+	return (
+		<div className="flex flex-col gap-3 border-border border-t pt-3">
 			<section className="flex flex-col gap-2">
 				<p className="text-xs font-medium tracking-normal text-muted-foreground">
 					Person
@@ -1208,39 +1241,16 @@ function GtdSection({
 					) : null}
 				</dl>
 			</section>
-		);
-	}
+		</div>
+	);
+}
 
-	// update_person is a FULL-DOCUMENT REPLACE: the proposed payload IS the new Person
-	// body (name + note?/aliases?) plus a top-level entity_id routing key, so its
-	// read-only detail mirrors create_person's (the entity_id rides untouched on
-	// overlay but is not surfaced here).
-	if (mutationKind === "update_person") {
-		const note = textField(payload, "note");
-		const aliases = arrayField(payload, "aliases").filter(
-			(a): a is string => typeof a === "string",
-		);
-		return (
-			<section className="flex flex-col gap-2">
-				<p className="text-xs font-medium tracking-normal text-muted-foreground">
-					Person
-				</p>
-				<dl className="flex flex-col gap-1.5 text-sm">
-					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
-					{note ? <Field label="Note" value={note} /> : null}
-					{aliases.length > 0 ? (
-						<Field label="Aliases" value={aliases.join(", ")} />
-					) : null}
-				</dl>
-			</section>
-		);
-	}
-
-	if (mutationKind === "create_project") {
-		const outcome = textField(payload, "outcome");
-		const status = textField(payload, "status");
-		const note = textField(payload, "note");
-		return (
+function renderProjectBody({ payload }: ProposalBodyArgs): ReactNode {
+	const outcome = textField(payload, "outcome");
+	const status = textField(payload, "status");
+	const note = textField(payload, "note");
+	return (
+		<div className="flex flex-col gap-3 border-border border-t pt-3">
 			<section className="flex flex-col gap-2">
 				<p className="text-xs font-medium tracking-normal text-muted-foreground">
 					Project
@@ -1252,37 +1262,17 @@ function GtdSection({
 					{note ? <Field label="Note" value={note} /> : null}
 				</dl>
 			</section>
-		);
-	}
+		</div>
+	);
+}
 
-	// update_project is a FULL-DOCUMENT REPLACE: the proposed payload IS the new
-	// Project body (name + outcome?/note?/status? + preserved review cadence/dates)
-	// plus a top-level entity_id, so its read-only detail mirrors create_project's.
-	if (mutationKind === "update_project") {
-		const outcome = textField(payload, "outcome");
-		const status = textField(payload, "status");
-		const note = textField(payload, "note");
-		return (
-			<section className="flex flex-col gap-2">
-				<p className="text-xs font-medium tracking-normal text-muted-foreground">
-					Project
-				</p>
-				<dl className="flex flex-col gap-1.5 text-sm">
-					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
-					{outcome ? <Field label="Outcome" value={outcome} /> : null}
-					{status ? <Field label="Status" value={status} /> : null}
-					{note ? <Field label="Note" value={note} /> : null}
-				</dl>
-			</section>
-		);
-	}
-
-	if (mutationKind === "create_todo") {
-		const todo = objectField(payload, "todo");
-		const note = textField(todo, "note");
-		const status = textField(todo, "status");
-		const projectId = textField(todo, "project_id");
-		return (
+function renderCreateTodoBody({ payload }: ProposalBodyArgs): ReactNode {
+	const todo = objectField(payload, "todo");
+	const note = textField(todo, "note");
+	const status = textField(todo, "status");
+	const projectId = textField(todo, "project_id");
+	return (
+		<div className="flex flex-col gap-3 border-border border-t pt-3">
 			<section className="flex flex-col gap-2">
 				<p className="text-xs font-medium tracking-normal text-muted-foreground">
 					Todo
@@ -1295,10 +1285,11 @@ function GtdSection({
 					{personRefFields(payload, "person_refs", "ref", "People")}
 				</dl>
 			</section>
-		);
-	}
+		</div>
+	);
+}
 
-	// update_todo
+function renderUpdateTodoBody({ payload }: ProposalBodyArgs): ReactNode {
 	const todo = objectField(payload, "todo");
 	const title = textField(todo, "title");
 	const note = textField(todo, "note");
@@ -1308,25 +1299,27 @@ function GtdSection({
 		(id): id is string => typeof id === "string",
 	);
 	return (
-		<section className="flex flex-col gap-2">
-			<p className="text-xs font-medium tracking-normal text-muted-foreground">
-				Changes
-			</p>
-			<dl className="flex flex-col gap-1.5 text-sm">
-				<Field
-					label="Todo"
-					value={textField(payload, "todo_id") || "Unknown"}
-				/>
-				{title ? <Field label="Title" value={title} /> : null}
-				{note ? <Field label="Note" value={note} /> : null}
-				{status ? <Field label="Status" value={status} /> : null}
-				{projectId ? <Field label="Project" value={projectId} /> : null}
-				{personRefFields(payload, "set_person_refs", "set", "Set")}
-				{personRefFields(payload, "add_person_refs", "add", "Add")}
-				{removeIds.length > 0 ? (
-					<Field label="Remove" value={removeIds.join(", ")} />
-				) : null}
-			</dl>
-		</section>
+		<div className="flex flex-col gap-3 border-border border-t pt-3">
+			<section className="flex flex-col gap-2">
+				<p className="text-xs font-medium tracking-normal text-muted-foreground">
+					Changes
+				</p>
+				<dl className="flex flex-col gap-1.5 text-sm">
+					<Field
+						label="Todo"
+						value={textField(payload, "todo_id") || "Unknown"}
+					/>
+					{title ? <Field label="Title" value={title} /> : null}
+					{note ? <Field label="Note" value={note} /> : null}
+					{status ? <Field label="Status" value={status} /> : null}
+					{projectId ? <Field label="Project" value={projectId} /> : null}
+					{personRefFields(payload, "set_person_refs", "set", "Set")}
+					{personRefFields(payload, "add_person_refs", "add", "Add")}
+					{removeIds.length > 0 ? (
+						<Field label="Remove" value={removeIds.join(", ")} />
+					) : null}
+				</dl>
+			</section>
+		</div>
 	);
 }
