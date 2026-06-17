@@ -3,7 +3,7 @@
 //
 // Blocks a push or PR unless, in order:
 //   1. the branch is rebased on origin/master (0 commits behind),
-//   2. local CI passed for the CURRENT HEAD (a fresh marker from run-ci.mjs),
+//   2. local CI passed for the CURRENT HEAD (a fresh marker from scripts/run-ci.mjs),
 //   3. for `gh pr create`: the --title matches `verb(module): description`.
 //
 // Reads the tool call on stdin (PreToolUse payload), exits 2 with feedback on
@@ -83,7 +83,7 @@ if (behind !== "0") {
 	block(
 		`pre-push gate: BLOCKED — branch is ${behind} commit(s) behind ${BASE}.\n` +
 			`Rebase first:  git fetch origin && git rebase ${BASE}\n` +
-			`Then re-run local CI:  node .claude/hooks/run-ci.mjs`,
+			`Then re-run local CI:  node scripts/run-ci.mjs`,
 	);
 }
 
@@ -94,14 +94,14 @@ const marker = `${gitDir}/.ci-pass`;
 if (!existsSync(marker)) {
 	block(
 		"pre-push gate: BLOCKED — no local-CI pass recorded.\n" +
-			"Run the full gate:  node .claude/hooks/run-ci.mjs",
+			"Run the full gate:  node scripts/run-ci.mjs",
 	);
 }
 const stamped = readFileSync(marker, "utf8").trim();
 if (stamped !== head) {
 	block(
 		`pre-push gate: BLOCKED — local-CI marker is stale (passed for ${stamped.slice(0, 12)}, HEAD is ${head.slice(0, 12)}).\n` +
-			"Re-run the full gate:  node .claude/hooks/run-ci.mjs",
+			"Re-run the full gate:  node scripts/run-ci.mjs",
 	);
 }
 

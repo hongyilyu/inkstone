@@ -40,18 +40,18 @@ done < <(git log --format='%h %s' "${BASE}..HEAD")
 [ "$BAD" -eq 0 ] || fail "commit subject(s) above don't match verb(module): description (PR title derives from these)"
 ok "all commit subjects well-formed"
 
-# 3. LOCAL CI — delegate to the single source of truth, .claude/hooks/run-ci.mjs,
+# 3. LOCAL CI — delegate to the single source of truth, scripts/run-ci.mjs,
 #    which mirrors the CI jobs (biome ci . / pnpm check / pnpm -r test / cargo test /
-#    pnpm test:e2e) and stamps .git/.ci-pass with the HEAD it passed for. Reuse a
-#    fresh marker (so a prior run-ci pass isn't re-run); otherwise run it now.
-echo "→ local CI (run-ci.mjs)…"
+#    pnpm test:e2e) run IN PARALLEL, and stamps .git/.ci-pass with the HEAD it passed
+#    for. Reuse a fresh marker (so a prior run-ci pass isn't re-run); else run it now.
+echo "→ local CI (scripts/run-ci.mjs)…"
 HEAD_SHA="$(git rev-parse HEAD)"
 GIT_DIR="$(git rev-parse --git-dir)"
 MARKER="${GIT_DIR}/.ci-pass"
 if [ -f "$MARKER" ] && [ "$(cat "$MARKER" 2>/dev/null)" = "$HEAD_SHA" ]; then
   ok "local CI already passed for ${HEAD_SHA:0:12} (fresh marker)"
 else
-  node "${ROOT}/.claude/hooks/run-ci.mjs" || fail "local CI failed — fix, re-run, then push"
+  node "${ROOT}/scripts/run-ci.mjs" || fail "local CI failed — fix, re-run, then push"
 fi
 
 echo "${GRN}── pre-push gate passed — safe to open the PR ──────────────${NC}"
