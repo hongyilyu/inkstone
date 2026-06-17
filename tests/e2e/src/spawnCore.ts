@@ -326,7 +326,14 @@ export async function spawnCore(
 			// authorize URL is harmless in headless Chromium.
 			env.INKSTONE_LOGIN_STUB_URL = "about:blank";
 		}
-	} else {
+	}
+	// The worker command is independent of the provider-helper sibling: configure
+	// it whenever NO worker sibling is in play (the plain non-sibling case AND the
+	// provider-helper-only sibling case). Skipped only when a worker sibling was
+	// copied above (which deliberately auto-detects via NO override). Without this,
+	// `siblingBinaries: { providerHelper }` alone would drop both opts.workerCmd and
+	// the GATE_WORKER_CMD default, leaving the tempdir Core with no worker to spawn.
+	if (siblingWorker === undefined) {
 		const workerCmd =
 			opts.workerCmd !== undefined ? opts.workerCmd : GATE_WORKER_CMD;
 		if (workerCmd) {
