@@ -366,10 +366,12 @@ async fn apply_update_todo(
     }
 
     // Recurrence: completing a recurring Todo spawns its next occurrence in THIS
-    // tx (ADR-0039). Gate on the transition into completed so a re-save of an
-    // already-done Todo never re-spawns; `merged` is the just-written successor
-    // template (carrying the rule, project, dates).
-    if prior_status != "completed"
+    // tx (ADR-0039). Gate on the ACTIVE→completed transition specifically: a
+    // re-save of an already-done Todo never re-spawns, and a dropped→completed
+    // edit does NOT resurrect a series that dropping ended (the editor permits
+    // that status change, clearing dropped_at). `merged` is the just-written
+    // successor template (carrying the rule, project, dates).
+    if prior_status == "active"
         && merged.get("status").and_then(serde_json::Value::as_str) == Some("completed")
         && merged.get("recurrence").is_some()
     {
@@ -1743,6 +1745,51 @@ mod tests {
         assert!(
             other_todos(&pool, &todo_id).await.is_empty(),
             "dropping a recurring Todo ends the series"
+        );
+    }
+
+    /// Re-completing a DROPPED recurring Todo (the editor allows dropped→completed,
+    /// clearing dropped_at) must NOT resurrect the series: generation fires only on
+    /// the ACTIVE→completed transition (PR #172 review). Seeds a dropped recurring
+    /// Todo, then completes it; no successor.
+    #[tokio::test]
+    async fn completing_a_dropped_recurring_todo_spawns_nothing() {
+        let pool = memory_pool().await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Was dropped",
+                    "status": "dropped",
+                    "dropped_at": "2026-06-19T18:00:00",
+                    "due_at": "2026-06-19T17:00:00",
+                    "recurrence": { "interval": 1, "unit": "week", "anchor": "due_at" }
+                }
+            }),
+        )
+        .await;
+
+        // dropped → completed: clear dropped_at, set completed_at (the editor's
+        // three-way merge for a status change).
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({
+                "status": "completed",
+                "completed_at": "2026-06-20T09:00:00",
+                "dropped_at": null
+            }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("re-complete succeeds");
+
+        assert!(
+            other_todos(&pool, &todo_id).await.is_empty(),
+            "dropped→completed does not resurrect the series — only active→completed spawns"
         );
     }
 

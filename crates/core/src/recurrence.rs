@@ -112,11 +112,12 @@ pub(crate) fn next_occurrence(
 /// `YYYY-MM-DDTHH:MM:SS` string. minute/hour/day/week add a fixed span of seconds
 /// (rolling the calendar as needed); month/year shift the calendar month/year and
 /// CLAMP the day to the target month's last valid day (Jan 31 + 1 month →
-/// Feb 28/29), preserving the time-of-day. `None` on an unparseable input OR an
-/// `interval` so large the civil arithmetic would overflow `i64` — checked
-/// arithmetic throughout, so a runaway interval yields "no successor" rather than
-/// a panic (debug) or a wrapped garbage date (release), honoring the
-/// fail-safe contract `next_occurrence` advertises.
+/// Feb 28/29), preserving the time-of-day. `None` on an unparseable input, an
+/// `interval` so large the civil arithmetic would overflow `i64`, OR a generated
+/// year outside the parser's 4-digit `0..=9999` range — checked arithmetic +
+/// the year bound throughout, so a runaway interval yields "no successor" rather
+/// than a panic, a wrapped garbage date, OR a 5-digit-year successor the Todo
+/// validator would later reject (which would roll back the whole completion).
 fn advance(value: &str, interval: u64, unit: &str) -> Option<String> {
     let (year, month, day, hour, minute, second) = parse_local_datetime(value, "recurrence").ok()?;
     let interval = i64::try_from(interval).ok()?;
@@ -138,14 +139,14 @@ fn advance(value: &str, interval: u64, unit: &str) -> Option<String> {
                 .checked_add(interval.checked_mul(per_unit_secs)?)?;
             let (new_days, new_secs) = (total.div_euclid(86_400), total.rem_euclid(86_400));
             let (y, m, d) = civil_from_days(new_days);
-            Some(format_local_datetime(
+            format_bounded(
                 y,
                 m,
                 d,
                 (new_secs / 3_600) as u32,
                 ((new_secs % 3_600) / 60) as u32,
                 (new_secs % 60) as u32,
-            ))
+            )
         }
         "month" | "year" => {
             let added_months = if unit == "year" {
@@ -162,17 +163,35 @@ fn advance(value: &str, interval: u64, unit: &str) -> Option<String> {
             let target_month = total_months.rem_euclid(12) + 1;
             let max_day = i64::from(days_in_month(target_year as u32, target_month as u32));
             let target_day = i64::from(day).min(max_day);
-            Some(format_local_datetime(
+            format_bounded(
                 target_year,
                 target_month,
                 target_day,
                 hour,
                 minute,
                 second,
-            ))
+            )
         }
         _ => None,
     }
+}
+
+/// Format a civil date+time as the wall-clock string, but ONLY when the year is
+/// in the parser's 4-digit `0..=9999` range; otherwise `None`. A successor whose
+/// year overflowed 4 digits would fail [`crate::entities::validate_todo_data`]
+/// and roll back the whole completion tx, so out-of-range simply ends the series.
+fn format_bounded(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> Option<String> {
+    if !(0..=9999).contains(&year) {
+        return None;
+    }
+    Some(format_local_datetime(year, month, day, hour, minute, second))
 }
 
 #[cfg(test)]
@@ -414,6 +433,32 @@ mod tests {
         assert!(
             next_occurrence(&huge_year, None, Some("2026-06-14T09:00:00")).is_none(),
             "a runaway year interval is a safe no-op, not a panic"
+        );
+    }
+
+    #[test]
+    fn year_past_four_digits_yields_no_successor() {
+        // A modest interval that does NOT overflow i64 but pushes the year past
+        // 9999 must return None: a 5-digit-year successor would fail the Todo
+        // validator and roll back the whole completion tx (PR #172 review). Year
+        // 2026 + 8000y = 10026 → out of range.
+        let far_year = json!({ "interval": 8000, "unit": "year", "anchor": "due_at" });
+        assert!(
+            next_occurrence(&far_year, None, Some("2026-06-19T17:00:00")).is_none(),
+            "a successor year past 9999 ends the series rather than producing an unparseable date"
+        );
+        // The month path crossing the boundary is bounded too (2026 + 96000mo = +8000y).
+        let far_month = json!({ "interval": 96_000, "unit": "month", "anchor": "due_at" });
+        assert!(
+            next_occurrence(&far_month, None, Some("2026-06-19T17:00:00")).is_none(),
+            "a month advance past year 9999 is bounded the same way"
+        );
+        // Just under the boundary still generates (2026 + 7000y = 9026).
+        let in_range = json!({ "interval": 7000, "unit": "year", "anchor": "due_at" });
+        assert_eq!(
+            next_due(&in_range, "2026-06-19T17:00:00"),
+            "9026-06-19T17:00:00",
+            "a 4-digit year still generates"
         );
     }
 }
