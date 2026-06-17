@@ -143,6 +143,13 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      # bun is the compiler for the shippable worker binary (ADR-0041): a
+      # build-time tool, not a runtime dep. The harness' globalSetup bun-compiles
+      # the deterministic worker fixture, and the boot-smoke below compiles the
+      # REAL cli.ts. Pinned to the locally-validated 1.3.13.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
       # Full install: the harness' globalSetup runs `pnpm -C apps/web build` and
       # each test spawns a real Core that runs the tsx worker fixtures.
       - name: Install dependencies
@@ -164,9 +171,19 @@ jobs:
       - name: Install Playwright OS deps
         if: steps.playwright-cache.outputs.cache-hit == 'true'
         run: pnpm -C tests/e2e exec playwright install-deps chromium
-      # globalSetup builds debug Core (cargo build) + the web SPA. CI=true is set
-      # by Actions automatically, so playwright.config sets forbidOnly=true and
-      # retries=0; workers=4 everywhere (per-test isolation makes it parallel-safe;
-      # ubuntu-latest is 4 vCPU). No webServer; each test spawns its own Core.
+      # build:worker boot-smoke (ADR-0041): compile the REAL cli.ts to a
+      # self-contained binary and run it with empty stdin → exit 0 (worker-main
+      # treats a null manifest as a clean no-op). Proves the shipping artifact
+      # compiles + boots without a provider. The e2e spec's own input is the
+      # FIXTURE worker, compiled by globalSetup during the E2E step below.
+      - name: build:worker boot-smoke
+        run: |
+          pnpm build:worker
+          printf "" | target/debug/inkstone-worker
+      # globalSetup builds debug Core (cargo build) + the web SPA + bun-compiles
+      # the worker fixture binary. CI=true is set by Actions automatically, so
+      # playwright.config sets forbidOnly=true and retries=0; workers=4 everywhere
+      # (per-test isolation makes it parallel-safe; ubuntu-latest is 4 vCPU). No
+      # webServer; each test spawns its own Core.
       - name: E2E (full-system Playwright harness)
         run: pnpm test:e2e
