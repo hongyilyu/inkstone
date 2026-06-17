@@ -147,6 +147,20 @@ pub struct EntityRow {
     /// `(person_id, role)` pairs for a Todo row's Person References (ADR-0032).
     /// Empty for non-Todo rows and Todos with no references.
     pub person_refs: Vec<(String, String)>,
+    /// The Entity's origin provenance (`created_from`, ADR-0030), or `None` for a
+    /// user-authored Entity (a direct Library write records no source row). Backs
+    /// the Inspector's "Captured from" footer.
+    pub source: Option<EntityProvenance>,
+}
+
+/// The resolved origin of an Entity for the "Captured from" read (ADR-0030). One
+/// of two shapes, mirroring the `entity_sources` CHECK (exactly one source kind):
+/// a user Message (carrying the Thread to link back to) or a source Journal Entry.
+pub enum EntityProvenance {
+    /// `created_from` a user Message: link back to its Thread.
+    Message { thread_id: String, thread_title: String },
+    /// `created_from` a source Entity (a Journal Entry): link to it in the Library.
+    JournalEntry { journal_entry_id: String },
 }
 
 pub struct ResolvedEntityRef {
@@ -173,9 +187,36 @@ pub async fn list_by_type(pool: &SqlitePool, entity_type: &str) -> sqlx::Result<
                 updated_at,
                 refs: Vec::new(),
                 person_refs: Vec::new(),
+                source: None,
             })
         })
         .collect::<sqlx::Result<Vec<_>>>()?;
+
+    // Attach each row's origin provenance ("Captured from", ADR-0030), batched
+    // like the journal refs below to avoid an N+1 over the listed Entities. The
+    // query returns oldest-first per Entity, so the FIRST row per id is the true
+    // origin `created_from` (later cross-Thread sources, if any, are ignored).
+    let entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+    let provenance = queries::provenance_for_entities(pool, &entity_ids).await?;
+    let mut provenance_by_entity = HashMap::<String, EntityProvenance>::new();
+    for (entity_id, source_entity_id, thread_id, thread_title) in provenance {
+        provenance_by_entity
+            .entry(entity_id)
+            .or_insert_with(|| match source_entity_id {
+                Some(journal_entry_id) => EntityProvenance::JournalEntry { journal_entry_id },
+                // Exactly one source kind is non-NULL (schema CHECK); a Message
+                // source carries its Thread id, and the Thread title is present
+                // for every real Thread. Default the title defensively rather
+                // than dropping the whole provenance if the join is somehow thin.
+                None => EntityProvenance::Message {
+                    thread_id: thread_id.unwrap_or_default(),
+                    thread_title: thread_title.unwrap_or_default(),
+                },
+            });
+    }
+    for row in &mut rows {
+        row.source = provenance_by_entity.remove(&row.id);
+    }
 
     if entity_type == "journal_entry" {
         let source_entity_ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
@@ -1283,6 +1324,7 @@ fn entity_row(row: (String, String, String, i64, i64)) -> sqlx::Result<EntityRow
         updated_at,
         refs: Vec::new(),
         person_refs: Vec::new(),
+        source: None,
     })
 }
 
@@ -2328,6 +2370,159 @@ mod tests {
             ids,
             vec!["p-active-due".to_string(), "p-onhold-due".to_string()],
             "active/on_hold with next_review_at <= now; terminal and future excluded"
+        );
+    }
+
+    /// Seed a Thread + Run + user Message chain so a Message-sourced provenance
+    /// row resolves a real `thread_id`/`thread_title`. The `runs.user_message_id`
+    /// and `messages.run_id` FKs are circular but DEFERRABLE, so the whole chain
+    /// commits in one tx. Returns the seeded user-message id.
+    async fn seed_thread_message(
+        pool: &SqlitePool,
+        thread_id: &str,
+        thread_title: &str,
+        message_id: &str,
+    ) {
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, 1, 1)",
+        )
+        .bind(thread_id)
+        .bind(thread_title)
+        .execute(&mut *tx)
+        .await
+        .expect("insert thread");
+        let run_id = format!("run-for-{message_id}");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'completed', 1)",
+        )
+        .bind(&run_id)
+        .bind(thread_id)
+        .bind(message_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'user', 'completed', 1, 1)",
+        )
+        .bind(message_id)
+        .bind(thread_id)
+        .bind(&run_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert message");
+        tx.commit().await.expect("commit thread+message");
+    }
+
+    /// Seed one `entity_sources` row. Exactly one of `source_message_id` /
+    /// `source_entity_id` is set (the schema CHECK); pass the other as `None`.
+    async fn seed_source(
+        pool: &SqlitePool,
+        id: &str,
+        entity_id: &str,
+        source_message_id: Option<&str>,
+        source_entity_id: Option<&str>,
+        relation: &str,
+        created_at: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO entity_sources \
+             (id, entity_id, source_message_id, source_entity_id, relation, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(entity_id)
+        .bind(source_message_id)
+        .bind(source_entity_id)
+        .bind(relation)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .expect("insert entity_source");
+    }
+
+    /// `list_by_type` attaches each Entity's origin provenance ("Captured from",
+    /// ADR-0030): a Message source resolves to its Thread; a Journal-Entry source
+    /// resolves to the source Entity id; a user-authored Entity (no `created_from`)
+    /// carries no source.
+    #[tokio::test]
+    async fn list_by_type_attaches_captured_from_provenance() {
+        let pool = memory_pool().await;
+        seed_thread_message(&pool, "thr-1", "Morning brain dump", "msg-1").await;
+
+        // (a) A Todo extracted from a Journal Entry → JournalEntry provenance.
+        seed_entity(&pool, "je-1", "journal_entry", r#"{"occurred_at":"x"}"#).await;
+        seed_entity(&pool, "t-from-je", "todo", r#"{"title":"Email Alice"}"#).await;
+        seed_source(
+            &pool,
+            "src-je",
+            "t-from-je",
+            None,
+            Some("je-1"),
+            "created_from",
+            10,
+        )
+        .await;
+
+        // (b) A Todo created directly from a user Message → Message provenance.
+        seed_entity(&pool, "t-from-msg", "todo", r#"{"title":"Buy milk"}"#).await;
+        seed_source(
+            &pool,
+            "src-msg",
+            "t-from-msg",
+            Some("msg-1"),
+            None,
+            "created_from",
+            10,
+        )
+        .await;
+
+        // (c) A user-authored Todo (direct Library write) → no source row.
+        seed_entity(&pool, "t-user", "todo", r#"{"title":"Hand-made"}"#).await;
+
+        // A later `updated_from` row on (b) must NOT override its origin.
+        seed_source(
+            &pool,
+            "src-msg-upd",
+            "t-from-msg",
+            Some("msg-1"),
+            None,
+            "updated_from",
+            20,
+        )
+        .await;
+
+        let rows = list_by_type(&pool, "todo").await.expect("list todos");
+        let from_je = rows.iter().find(|r| r.id == "t-from-je").expect("t-from-je");
+        assert!(
+            matches!(
+                from_je.source.as_ref(),
+                Some(EntityProvenance::JournalEntry { journal_entry_id }) if journal_entry_id == "je-1"
+            ),
+            "JE-sourced Todo reports its source Journal Entry"
+        );
+
+        let from_msg = rows
+            .iter()
+            .find(|r| r.id == "t-from-msg")
+            .expect("t-from-msg");
+        assert!(
+            matches!(
+                from_msg.source.as_ref(),
+                Some(EntityProvenance::Message { thread_id, thread_title })
+                    if thread_id == "thr-1" && thread_title == "Morning brain dump"
+            ),
+            "Message-sourced Todo reports its Thread; updated_from does not override created_from"
+        );
+
+        let user = rows.iter().find(|r| r.id == "t-user").expect("t-user");
+        assert!(
+            user.source.is_none(),
+            "a user-authored Entity carries no Captured-from provenance"
         );
     }
 

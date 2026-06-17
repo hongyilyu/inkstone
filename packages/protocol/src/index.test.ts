@@ -550,6 +550,29 @@ describe("EntityRow", () => {
 		const { type: _omit, ...noType } = wire;
 		expect(() => S.decodeUnknownSync(EntityRow)(noType)).toThrow();
 	});
+
+	it("decodes a Message-source provenance row (ADR-0030)", () => {
+		const withMessageSource = {
+			...wire,
+			source: {
+				thread_id: "01900000-0000-7000-8000-0000000000c1",
+				thread_title: "Morning brain dump",
+			},
+		};
+		const decoded = S.decodeUnknownSync(EntityRow)(withMessageSource);
+		expect(decoded).toEqual(withMessageSource);
+		expect(S.encodeSync(EntityRow)(decoded)).toEqual(withMessageSource);
+	});
+
+	it("decodes a Journal-Entry-source provenance row (ADR-0030)", () => {
+		const withJournalSource = {
+			...wire,
+			source: { journal_entry_id: "01900000-0000-7000-8000-0000000000j1" },
+		};
+		const decoded = S.decodeUnknownSync(EntityRow)(withJournalSource);
+		expect(decoded).toEqual(withJournalSource);
+		expect(S.encodeSync(EntityRow)(decoded)).toEqual(withJournalSource);
+	});
 });
 
 describe("EntityListResult", () => {
