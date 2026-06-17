@@ -72,6 +72,7 @@ const FAUX_WORKER_TS = path.join(
 	"packages",
 	"worker",
 	"src",
+	"faux",
 	"faux-worker.ts",
 );
 

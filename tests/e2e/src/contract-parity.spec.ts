@@ -19,7 +19,7 @@ import { expect, test } from "./fixtures.js";
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 // The faux interpreter Worker emits a deterministic `create_journal_entry`
-// proposal (packages/worker/src/faux-worker.ts) — no LLM, no flake.
+// proposal (packages/worker/src/faux/faux-worker.ts) — no LLM, no flake.
 test.use({
 	coreOptions: {
 		workerCmd: FAUX_WORKER_CMD,

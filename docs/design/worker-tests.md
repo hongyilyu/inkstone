@@ -18,4 +18,4 @@ Drift guard (ADR-0024): Core embeds the `openai-codex` model catalog as a JSON f
 
 ## cli.guard.test.ts — "production entry guard"
 
-Production-entry guard (ADR-0019 as-built: faux scripting lives in the test-only `faux-worker.ts`, never the shipping path). `cli.ts` is the production Worker entry Core spawns in a real build; it must carry NO test-only faux-provider code. This guard reads `cli.ts` and asserts none of the faux tokens reappear, so the eviction stays complete as later work stacks on it. (`faux-worker.ts` is the legitimate home for these — not scanned here.)
+Production-entry guard (ADR-0019 as-built: faux scripting lives in the test-only `faux/faux-worker.ts`, never the shipping path). `cli.ts` is the production Worker entry Core spawns in a real build; it must carry NO test-only faux-provider code. This guard reads `cli.ts` and asserts none of the faux tokens reappear, so the eviction stays complete as later work stacks on it. (`faux/faux-worker.ts` is the legitimate home for these — not scanned here.)

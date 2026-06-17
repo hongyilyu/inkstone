@@ -25,9 +25,9 @@ Map the manifest's assembled history into pi `Message[]`. Handles the tagged-uni
 
 History is oldest-first and, for the fresh path, excludes the current turn (the prompt is appended separately). For the resume path the manifest's `messages` IS the full transcript (ending in a `tool_result`).
 
-## faux-worker.ts — module (TEST-ONLY entry)
+## faux/faux-worker.ts — module (TEST-ONLY entry)
 
-TEST-ONLY Worker entry — never the production worker command.
+TEST-ONLY Worker entry — never the production worker command. Lives under `src/faux/` (with `faux-decisions.ts` and its test), kept out of the top-level `src/` deep core so a reader can tell the Worker from its test mock at a glance.
 
 This file fakes the LLM provider so Core/e2e integration tests can drive the REAL generic interpreter offline and deterministically. It is selected by tests via `INKSTONE_WORKER_CMD` (they spawn `tsx .../faux-worker.ts`); it is never wired into a shipped build. Production uses `cli.ts`. Reading the `INKSTONE_FAUX_*` env vars below is legitimate — this is test code (ADR-0019 as-built: faux scripting lives at a dedicated test-only entry, off the production path).
 

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Pre-push gate: rebase-current + full local CI + commit-subject (PR-title) format.
+# Blocks the push if any check fails. Bypass in a true emergency with --no-verify.
+set -uo pipefail
+
+RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; NC=$'\033[0m'
+fail() { echo "${RED}✗ pre-push: $1${NC}" >&2; exit 1; }
+ok()   { echo "${GRN}✓ $1${NC}"; }
+
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT" || fail "cannot cd to repo root"
+
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+BASE="origin/master"
+
+# Skip the gate when pushing master itself (PR-prep only applies to feature branches).
+[ "$BRANCH" = "master" ] && { echo "${YEL}pre-push: on master, skipping PR gate${NC}"; exit 0; }
+
+echo "${YEL}── pre-push gate on ${BRANCH} ───────────────────────────────${NC}"
+
+# 1. REBASE-CURRENT — branch must contain the tip of origin/master.
+echo "→ checking rebase currency vs ${BASE}…"
+git fetch origin master --quiet || fail "git fetch failed"
+BEHIND="$(git rev-list --count "HEAD..${BASE}")"
+[ "$BEHIND" -eq 0 ] || fail "branch is ${BEHIND} commit(s) behind ${BASE} — rebase first: git rebase ${BASE}"
+ok "up to date with ${BASE}"
+
+# 2. COMMIT-SUBJECT FORMAT — every new commit's subject (the PR-title source) must be
+#    verb(module): description  — verb ∈ feat|fix|refactor|docs|test|chore.
+echo "→ checking commit-subject format (verb(module): description)…"
+SUBJECT_RE='^(feat|fix|refactor|docs|test|chore)\([a-z0-9_-]+\): .+'
+BAD=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  sha="${line%% *}"; subj="${line#* }"
+  if ! printf '%s' "$subj" | grep -qE "$SUBJECT_RE"; then
+    echo "${RED}  ✗ ${sha} ${subj}${NC}" >&2; BAD=1
+  fi
+done < <(git log --format='%h %s' "${BASE}..HEAD")
+[ "$BAD" -eq 0 ] || fail "commit subject(s) above don't match verb(module): description (PR title derives from these)"
+ok "all commit subjects well-formed"
+
+# 3. LOCAL CI — the exact gate from CLAUDE.md §6; all must pass.
+run() { echo "→ $1…"; eval "$2" >/tmp/prepush-ci.log 2>&1 || { tail -40 /tmp/prepush-ci.log >&2; fail "$1 failed (full log: /tmp/prepush-ci.log)"; }; ok "$1"; }
+run "pnpm lint"   "pnpm lint"
+run "pnpm check"  "pnpm check"
+run "pnpm -r test" "pnpm -r test"
+run "cargo test"  "cargo test --manifest-path crates/core/Cargo.toml"
+
+echo "${GRN}── pre-push gate passed — safe to open the PR ──────────────${NC}"
+exit 0

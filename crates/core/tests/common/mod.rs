@@ -168,7 +168,7 @@ impl<'a> CoreBuilder<'a> {
     /// offline `faux` provider path that drives the *real* interpreter, not the
     /// production `cli.ts` nor a dumb fixture worker.
     pub fn worker_faux(mut self) -> Self {
-        let cli = repo_root().join("packages/worker/src/faux-worker.ts");
+        let cli = repo_root().join("packages/worker/src/faux/faux-worker.ts");
         self.worker_cmd = Some(format!("{} {}", tsx_bin().display(), cli.display()));
         self
     }

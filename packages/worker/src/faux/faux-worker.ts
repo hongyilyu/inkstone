@@ -9,14 +9,14 @@ import {
 	streamSimple,
 } from "@earendil-works/pi-ai";
 import type { WorkerManifest } from "@inkstone/protocol";
+import type { InterpreterDeps } from "../interpreter.js";
+import { runWorkerMain } from "../worker-main.js";
 import {
 	acceptedCreate,
 	acceptedReference,
 	acceptedVerb,
 	decisionOutcome,
 } from "./faux-decisions.js";
-import type { InterpreterDeps } from "./interpreter.js";
-import { runWorkerMain } from "./worker-main.js";
 
 /** Flatten a pi message `content` (string | content blocks) to plain text. */
 function textOf(content: unknown): string {
