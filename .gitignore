@@ -8,3 +8,4 @@ target
 .claude/worktrees
 .agents/runs
 **/.codex
+.ci-pass
