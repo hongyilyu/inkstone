@@ -212,8 +212,13 @@ test("edit a seeded Person via the rail editor → update_person full-replace pe
 
 	// Post-save signal: the editor closes back to the detail VIEW showing the new
 	// note — visible only after `entity/mutate` resolved and the Library re-read.
-	// (The collection title is unchanged here, so it can't gate the save.)
-	await expect(detail.getByText("Lead designer, design systems")).toBeVisible({
+	// (The collection title is unchanged here, so it can't gate the save.) `exact`
+	// targets the note BODY paragraph only: the header subtitle renders the same
+	// note as "Person · <note>" (libraryItemSubtitle), so a substring match is
+	// ambiguous under strict mode once both re-render.
+	await expect(
+		detail.getByText("Lead designer, design systems", { exact: true }),
+	).toBeVisible({
 		timeout: 15_000,
 	});
 
