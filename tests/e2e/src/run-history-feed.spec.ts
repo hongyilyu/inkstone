@@ -1,4 +1,6 @@
 import { expect, test } from "./fixtures.js";
+// FAUX_WORKER_CMD drives the parked-interpreter angle only (the describe block
+// below); the wire test uses the default echo worker (which reaches `done`).
 import { FAUX_WORKER_CMD } from "./spawnCore.js";
 
 /**

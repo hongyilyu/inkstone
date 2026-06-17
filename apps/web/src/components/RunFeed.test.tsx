@@ -1,7 +1,13 @@
 import type { RunHistoryItem, RunHistoryResult } from "@inkstone/protocol";
 import { WsClient, type WsError } from "@inkstone/ui-sdk";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
@@ -106,9 +112,27 @@ describe("RunFeed", () => {
 		expect(screen.getByText(/Failed ·/)).toBeInTheDocument();
 		expect(screen.getByText(/Waiting ·/)).toBeInTheDocument();
 
-		// Recency grouping: today rows under "Today", the 10-day-old under "Older".
-		expect(screen.getByText("Today")).toBeInTheDocument();
-		expect(screen.getByText("Older")).toBeInTheDocument();
+		// Recency grouping: rows land under the RIGHT section header, not merely
+		// that both headers exist (a misbucketing regression would still render
+		// both headers). Scope each title to its section.
+		const sectionFor = (label: string): HTMLElement => {
+			const section = screen.getByText(label).closest("section");
+			if (section === null) throw new Error(`no <section> for "${label}"`);
+			return section as HTMLElement;
+		};
+		const todaySection = sectionFor("Today");
+		const olderSection = sectionFor("Older");
+		expect(within(todaySection).getByText("Newest run")).toBeInTheDocument();
+		expect(
+			within(olderSection).getByText("Old waiting run"),
+		).toBeInTheDocument();
+		// The 10-day-old row must NOT appear under Today.
+		expect(within(todaySection).queryByText("Old waiting run")).toBeNull();
+
+		// Section order: Today precedes Older in the DOM.
+		const headings = screen.getAllByRole("heading", { level: 2 });
+		const labels = headings.map((h) => h.textContent);
+		expect(labels.indexOf("Today")).toBeLessThan(labels.indexOf("Older"));
 	});
 
 	it("opens a run's thread when its row is clicked", async () => {

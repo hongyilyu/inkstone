@@ -173,6 +173,123 @@ fn run_get_history_returns_runs_newest_first_with_verbatim_kind() {
 }
 
 #[test]
+fn run_get_history_clamps_non_positive_limit_to_the_default() {
+    // A `limit` of 0 or negative is a display cap, not a security boundary, and
+    // must fall back to the default rather than producing an empty (or backwards)
+    // feed — guards the handler's `Some(n) if n > 0 => n, _ => DEFAULT` clamp.
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let (run_a, _t_a) = create_thread(&mut ws, 1, "alpha run").await;
+        drain_to_done(&mut ws, 11, &run_a).await;
+        let (run_b, _t_b) = create_thread(&mut ws, 2, "beta run").await;
+        drain_to_done(&mut ws, 22, &run_b).await;
+
+        for (id, limit) in [(50_i64, 0_i64), (51, -5)] {
+            let req = format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"run/get_history","params":{{"limit":{limit}}}}}"#
+            );
+            ws.send(Message::Text(req.into()))
+                .await
+                .expect("send run/get_history frame");
+            let resp = read_response(&mut ws, id).await;
+            assert!(
+                resp.get("error").is_none(),
+                "limit={limit} is clamped to the default, not an error — body: {resp}"
+            );
+            let runs = resp["result"]["runs"]
+                .as_array()
+                .unwrap_or_else(|| panic!("result.runs is an array — body: {resp}"));
+            assert_eq!(
+                runs.len(),
+                2,
+                "limit={limit} falls back to the default and returns both runs (not LIMIT 0) — body: {resp}"
+            );
+        }
+
+        ws.close(None).await.ok();
+    });
+}
+
+#[test]
+fn run_get_history_rejects_a_malformed_limit_with_invalid_params() {
+    // A present-but-wrong-typed `limit` (a string) is a real `invalid_params`
+    // (-32602), not a silent default — guards the handler's decode arm.
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let req = r#"{"jsonrpc":"2.0","id":5,"method":"run/get_history","params":{"limit":"oops"}}"#;
+        ws.send(Message::Text(req.into()))
+            .await
+            .expect("send run/get_history frame");
+        let resp = read_response(&mut ws, 5).await;
+
+        assert!(
+            resp.get("result").is_none(),
+            "a malformed limit carries no result — body: {resp}"
+        );
+        assert_eq!(
+            resp["error"]["code"],
+            serde_json::json!(-32602),
+            "malformed limit is rejected with invalid_params (-32602) — body: {resp}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+#[test]
+fn run_get_history_accepts_omitted_params() {
+    // `run/get_history` with NO `params` member at all: JsonRpcRequest.params
+    // defaults to Null, and the handler treats Null as defaults — a successful
+    // (non-error) read, not an invalid_params from decoding Null into a struct.
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("slow-worker.ts").spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let req = r#"{"jsonrpc":"2.0","id":6,"method":"run/get_history"}"#;
+        ws.send(Message::Text(req.into()))
+            .await
+            .expect("send run/get_history frame");
+        let resp = read_response(&mut ws, 6).await;
+
+        assert!(
+            resp.get("error").is_none(),
+            "omitted params is treated as defaults, not an error — body: {resp}"
+        );
+        assert!(
+            resp["result"]["runs"].is_array(),
+            "result.runs is an array — body: {resp}"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+#[test]
 fn run_get_history_is_empty_for_a_fresh_workspace() {
     let workspace = Workspace::new();
     let core = workspace.core().worker_fixture("slow-worker.ts").spawn();

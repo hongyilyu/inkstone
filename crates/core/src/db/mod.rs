@@ -2704,4 +2704,25 @@ mod tests {
         assert_eq!(capped[0].2, "newest error");
         assert_eq!(capped[1].2, "middle resumed");
     }
+
+    /// When two Runs' latest milestones share an identical `created_at` (ms ties
+    /// are real at this granularity), the `, rl.run_id DESC` tie-break makes the
+    /// order deterministic — the higher run_id sorts first.
+    #[tokio::test]
+    async fn list_run_history_breaks_created_at_ties_by_run_id() {
+        let pool = memory_pool().await;
+
+        // Two Runs, same latest-milestone created_at (500). Without the tie-break
+        // their relative order would be undefined; with `run_id DESC` the
+        // lexically-greater id ("bbbb…") must precede the lesser ("aaaa…").
+        let lo = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let hi = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        seed_run_with_milestone(&pool, lo, "lo id", "done", 500).await;
+        seed_run_with_milestone(&pool, hi, "hi id", "done", 500).await;
+
+        let rows = list_run_history(&pool, 50).await.expect("history read ok");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, hi, "higher run_id sorts first on a created_at tie");
+        assert_eq!(rows[1].0, lo);
+    }
 }
