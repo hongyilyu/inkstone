@@ -439,6 +439,52 @@ where
     query.build_query_as().fetch_all(executor).await
 }
 
+/// Resolve the **origin** Entity Source (`created_from`) for a batch of Entities,
+/// for the "Captured from" provenance read (ADR-0030). Returns one row per
+/// Entity that HAS a `created_from` source, carrying both possible source shapes
+/// (the schema's CHECK guarantees exactly one is non-NULL):
+///
+/// - a user Message source → its `thread_id` + the Thread `title` (resolved
+///   through `messages`→`threads`), so the Client can link back to the Thread;
+/// - a source-Entity (Journal Entry) source → its `source_entity_id`.
+///
+/// `created_from` is the ORIGIN relation — `updated_from` rows (a later proposal
+/// edit) are excluded, so this answers "why does this Entity exist?", not "what
+/// last touched it". An Entity may carry more than one `created_from` in the
+/// long-term cross-Thread model (ADR-0030), so rows are ordered oldest-first and
+/// the caller keeps the first per Entity (the true origin). Entities with no
+/// `created_from` (user-authored, direct Library writes) simply return no row.
+pub(super) async fn provenance_for_entities<'e, E>(
+    executor: E,
+    entity_ids: &[String],
+) -> sqlx::Result<Vec<(String, Option<String>, Option<String>, Option<String>)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    if entity_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT source.entity_id, source.source_entity_id, \
+                source_message.thread_id, source_thread.title \
+         FROM entity_sources source \
+         LEFT JOIN messages source_message \
+           ON source_message.id = source.source_message_id \
+         LEFT JOIN threads source_thread \
+           ON source_thread.id = source_message.thread_id \
+         WHERE source.relation = 'created_from' \
+           AND source.entity_id IN (",
+    );
+    let mut separated = query.separated(", ");
+    for entity_id in entity_ids {
+        separated.push_bind(entity_id);
+    }
+    separated.push_unseparated(") ORDER BY source.entity_id, source.created_at, source.id");
+
+    query.build_query_as().fetch_all(executor).await
+}
+
 /// Read one accepted Journal Entry's current snapshot by id from the canonical
 /// `entities` row. `None` when the id does not exist or is not a journal entry.
 pub(super) async fn current_journal_entry_by_id<'e, E>(
@@ -987,8 +1033,8 @@ where
 }
 
 /// Read every Todo Person Reference on `todo_id` (ADR-0031) as `(person_id,
-/// role)` pairs. Core-internal V0 read layer (Slice 11).
-#[allow(dead_code)]
+/// role)` pairs. Used by the recurrence successor-spawn (ADR-0039) to carry the
+/// completed Todo's People forward onto its next occurrence.
 pub(super) async fn person_refs_by_todo<'e, E>(
     executor: E,
     todo_id: &str,

@@ -13,6 +13,7 @@ mod mutation;
 mod mutation_target;
 mod protocol;
 mod provider_auth;
+mod recurrence;
 mod resume;
 mod runs;
 mod settings;

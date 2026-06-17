@@ -288,6 +288,7 @@ async fn apply_update_todo(
     todo_id: &str,
     payload: &serde_json::Value,
     schema_version: i64,
+    created_by: &str,
     proposal_id: Option<&str>,
     now_ms: i64,
 ) -> Result<(), ApplyError> {
@@ -299,6 +300,15 @@ async fn apply_update_todo(
         .ok_or(ApplyError::TargetMissing)?;
     let mut merged: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&current)
         .map_err(|e| ApplyError::InvalidMutation(format!("current Todo data is not JSON: {e}")))?;
+
+    // The PRE-merge status decides whether this write is a fresh completion: a
+    // recurrence successor fires only on the transition INTO completed, so a
+    // re-save of an already-completed Todo never re-spawns (ADR-0039).
+    let prior_status = merged
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("active")
+        .to_string();
 
     if let Some(partial) = payload.get("todo").and_then(|t| t.as_object()) {
         for (key, value) in partial {
@@ -355,7 +365,113 @@ async fn apply_update_todo(
         }
     }
 
+    // Recurrence: completing a recurring Todo spawns its next occurrence in THIS
+    // tx (ADR-0039). Gate on the ACTIVE→completed transition specifically: a
+    // re-save of an already-done Todo never re-spawns, and a dropped→completed
+    // edit does NOT resurrect a series that dropping ended (the editor permits
+    // that status change, clearing dropped_at). `merged` is the just-written
+    // successor template (carrying the rule, project, dates).
+    if prior_status == "active"
+        && merged.get("status").and_then(serde_json::Value::as_str) == Some("completed")
+        && merged.get("recurrence").is_some()
+    {
+        spawn_recurrence_successor(tx, todo_id, &merged, created_by, proposal_id, now_ms).await?;
+    }
+
     Ok(())
+}
+
+/// Spawn the next occurrence of a just-completed recurring Todo (ADR-0039), in
+/// the caller's tx so the completion and its successor are atomic. `completed` is
+/// the merged data of the Todo that was just completed (its `recurrence` rule and
+/// stable context are read from here). Computes the next dates via the pure
+/// [`crate::recurrence`] math; when the series has ended (end condition reached),
+/// does NOTHING. Otherwise inserts a fresh active Todo + its seq-1 revision and
+/// copies every Todo Person Reference forward, inheriting the completing
+/// mutation's `created_by`/`proposal_id`.
+async fn spawn_recurrence_successor(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    completed_todo_id: &str,
+    completed: &serde_json::Value,
+    created_by: &str,
+    proposal_id: Option<&str>,
+    now_ms: i64,
+) -> Result<(), ApplyError> {
+    let rule = match completed.get("recurrence") {
+        Some(rule) => rule,
+        None => return Ok(()),
+    };
+    let defer_at = completed.get("defer_at").and_then(serde_json::Value::as_str);
+    let due_at = completed.get("due_at").and_then(serde_json::Value::as_str);
+
+    let Some(next) = crate::recurrence::next_occurrence(rule, defer_at, due_at) else {
+        // The series has ended (until exceeded or after_count exhausted): no
+        // successor. The completed Todo stays completed.
+        return Ok(());
+    };
+
+    // Build the successor data from the completed Todo: carry title/note/
+    // project_id/recurrence forward, reset to active, set the advanced dates, and
+    // drop the resolution timestamps (a fresh occurrence is freshly active).
+    let mut data = completed
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    data.insert("status".to_string(), serde_json::json!("active"));
+    data.remove("completed_at");
+    data.remove("dropped_at");
+    data.insert("recurrence".to_string(), next.recurrence);
+    set_or_remove(&mut data, "defer_at", next.defer_at);
+    set_or_remove(&mut data, "due_at", next.due_at);
+
+    let successor = serde_json::Value::Object(data);
+    // Defense in depth: the successor must be a valid Todo before it is written
+    // (the recompute must not persist an invalid entity — mirrors
+    // apply_mark_project_reviewed).
+    crate::entities::validate_todo_data(&successor).map_err(ApplyError::InvalidMutation)?;
+    let data_str = successor.to_string();
+
+    let successor_id = Uuid::now_v7().to_string();
+    queries::insert_entity(
+        &mut **tx,
+        &successor_id,
+        EntityType::Todo.as_str(),
+        EntityType::Todo.schema_version(),
+        &data_str,
+        created_by,
+        proposal_id,
+        now_ms,
+    )
+    .await?;
+    queries::insert_entity_revision(&mut **tx, &successor_id, 1, &data_str, proposal_id, now_ms)
+        .await?;
+
+    // Carry every Todo Person Reference forward, role preserved (ADR-0039): the
+    // rule is a repeating template and its People are part of it.
+    let refs = queries::person_refs_by_todo(&mut **tx, completed_todo_id).await?;
+    for (person_id, role) in refs {
+        queries::insert_todo_person_ref(&mut **tx, &successor_id, &person_id, &role, now_ms)
+            .await?;
+    }
+
+    Ok(())
+}
+
+/// Set `key` to `value` when present, else remove it — the successor mirrors the
+/// completed Todo's date presence (an absent anchor stays absent).
+fn set_or_remove(
+    data: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: Option<String>,
+) {
+    match value {
+        Some(v) => {
+            data.insert(key.to_string(), serde_json::Value::String(v));
+        }
+        None => {
+            data.remove(key);
+        }
+    }
 }
 
 /// Apply `mark_project_reviewed` (ADR-0034): a read-modify-write that stamps a
@@ -704,6 +820,7 @@ pub(crate) async fn apply_entity_mutation(
                 &entity_id,
                 effective_payload,
                 schema_version,
+                created_by,
                 proposal_id,
                 now_ms,
             )
@@ -1288,6 +1405,607 @@ mod tests {
         assert!(
             matches!(result, Err(ApplyError::TargetMissing)),
             "a vanished Project is TargetMissing: {result:?}"
+        );
+    }
+
+    // ─── recurrence successor generation (ADR-0039) ────────────────────────
+
+    /// Apply an `update_todo` with the given partial, authored by
+    /// `created_by`/`proposal_id`, committing on success. Returns the apply result.
+    async fn update_todo(
+        pool: &SqlitePool,
+        todo_id: &str,
+        partial: serde_json::Value,
+        created_by: &str,
+        proposal_id: Option<&str>,
+        now_ms: i64,
+    ) -> Result<(), ApplyError> {
+        let mut tx = pool.begin().await.expect("begin");
+        let result = apply_entity_mutation(
+            &mut tx,
+            EntityMutationSpec {
+                kind: MutationKind::UpdateTodo,
+                target_entity_id: Some(todo_id),
+                payload: &serde_json::json!({ "todo_id": todo_id, "todo": partial }),
+                edited_payload: None,
+                created_by,
+                proposal_id,
+                source: None,
+                now_ms,
+            },
+        )
+        .await
+        .map(|_| ());
+        if result.is_ok() {
+            tx.commit().await.expect("commit");
+        }
+        result
+    }
+
+    async fn todo_data(pool: &SqlitePool, id: &str) -> serde_json::Value {
+        let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .expect("todo row");
+        serde_json::from_str(&data).expect("todo data is JSON")
+    }
+
+    /// Every todo row OTHER than `original_id`, as parsed data — the successor(s).
+    async fn other_todos(pool: &SqlitePool, original_id: &str) -> Vec<serde_json::Value> {
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, data FROM entities WHERE type = 'todo' AND id != ?1")
+                .bind(original_id)
+                .fetch_all(pool)
+                .await
+                .expect("query todos");
+        rows.into_iter()
+            .map(|(_, data)| serde_json::from_str(&data).expect("todo data is JSON"))
+            .collect()
+    }
+
+    /// Seed the FK chain (thread → run → user message → tool_call → accepted
+    /// proposal) so an entity can carry `created_via_proposal_id` on the agent
+    /// path. Returns the proposal id. Adapted from decide.rs's `seed_parked_proposal`.
+    async fn seed_accepted_proposal(pool: &SqlitePool) -> String {
+        let run = Uuid::now_v7().to_string();
+        let thread = format!("thr-{run}");
+        let user_msg = format!("umsg-{run}");
+        let tool_call_id = format!("tc-{run}");
+        let proposal_id = Uuid::now_v7().to_string();
+        let mut tx = pool.begin().await.expect("begin seed");
+
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, 't', 1, 1)",
+        )
+        .bind(&thread)
+        .execute(&mut *tx)
+        .await
+        .expect("insert thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'parked', 1)",
+        )
+        .bind(&run)
+        .bind(&thread)
+        .bind(&user_msg)
+        .execute(&mut *tx)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'user', 'completed', 1, 1)",
+        )
+        .bind(&user_msg)
+        .bind(&thread)
+        .bind(&run)
+        .execute(&mut *tx)
+        .await
+        .expect("insert user message");
+        sqlx::query(
+            "INSERT INTO tool_calls (id, run_id, name, request_payload, status, requested_at) \
+             VALUES (?, ?, 'propose_workspace_mutation', '{}', 'pending', 1)",
+        )
+        .bind(&tool_call_id)
+        .bind(&run)
+        .execute(&mut *tx)
+        .await
+        .expect("insert tool_call");
+        sqlx::query(
+            "INSERT INTO proposals (id, tool_call_id, mutation_kind, status) \
+             VALUES (?, ?, 'update_todo', 'accepted')",
+        )
+        .bind(&proposal_id)
+        .bind(&tool_call_id)
+        .execute(&mut *tx)
+        .await
+        .expect("insert proposal");
+        tx.commit().await.expect("commit seed");
+        proposal_id
+    }
+
+    /// Completing a recurring Todo spawns ONE successor with the advanced anchor
+    /// date, the original's project_id carried forward, and the original left
+    /// completed. The canonical happy path (ADR-0039).
+    #[tokio::test]
+    async fn completing_recurring_todo_spawns_successor() {
+        let pool = memory_pool().await;
+        let project_id = create(
+            &pool,
+            MutationKind::CreateProject,
+            serde_json::json!({ "name": "Ops" }),
+        )
+        .await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Weekly report",
+                    "due_at": "2026-06-19T17:00:00",
+                    "project_id": project_id,
+                    "recurrence": { "interval": 1, "unit": "week", "anchor": "due_at" }
+                }
+            }),
+        )
+        .await;
+
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "status": "completed", "completed_at": "2026-06-19T18:00:00" }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("completion succeeds");
+
+        // The original stays completed.
+        let original = todo_data(&pool, &todo_id).await;
+        assert_eq!(original["status"].as_str(), Some("completed"));
+
+        // Exactly one successor, active, with the advanced due date + carried project.
+        let successors = other_todos(&pool, &todo_id).await;
+        assert_eq!(successors.len(), 1, "exactly one successor spawned");
+        let successor = &successors[0];
+        assert_eq!(successor["status"].as_str(), Some("active"));
+        assert_eq!(
+            successor["title"].as_str(),
+            Some("Weekly report"),
+            "title carried forward"
+        );
+        assert_eq!(
+            successor["due_at"].as_str(),
+            Some("2026-06-26T17:00:00"),
+            "due advanced one week"
+        );
+        assert_eq!(
+            successor["project_id"].as_str(),
+            Some(project_id.as_str()),
+            "project carried forward"
+        );
+        assert!(
+            successor.get("completed_at").is_none(),
+            "the successor is freshly active, no completed_at: {successor}"
+        );
+        assert_eq!(
+            successor["recurrence"],
+            serde_json::json!({ "interval": 1, "unit": "week", "anchor": "due_at" }),
+            "the rule carries forward"
+        );
+    }
+
+    /// The successor carries every Todo Person Reference forward, role preserved
+    /// (ADR-0039), and inherits the completing mutation's authorship
+    /// (created_by='proposal' + the proposal_id) on the agent path.
+    #[tokio::test]
+    async fn successor_carries_refs_and_inherits_proposal_authorship() {
+        let pool = memory_pool().await;
+        let alice = create(
+            &pool,
+            MutationKind::CreatePerson,
+            serde_json::json!({ "name": "Alice" }),
+        )
+        .await;
+        let bob = create(
+            &pool,
+            MutationKind::CreatePerson,
+            serde_json::json!({ "name": "Bob" }),
+        )
+        .await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Sync",
+                    "due_at": "2026-06-19T17:00:00",
+                    "recurrence": { "interval": 2, "unit": "day", "anchor": "due_at" }
+                },
+                "person_refs": [
+                    { "person_id": alice, "role": "waiting_on" },
+                    { "person_id": bob, "role": "related" }
+                ]
+            }),
+        )
+        .await;
+
+        // Seed the FK chain (thread → run → message → tool_call → proposal) so the
+        // successor's `created_via_proposal_id` FK holds, then complete via the
+        // agent path (created_by='proposal').
+        let proposal_id = seed_accepted_proposal(&pool).await;
+
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "status": "completed", "completed_at": "2026-06-19T18:00:00" }),
+            "proposal",
+            Some(&proposal_id),
+            100,
+        )
+        .await
+        .expect("completion succeeds");
+
+        let successors = other_todos(&pool, &todo_id).await;
+        assert_eq!(successors.len(), 1);
+        let successor_id: String = sqlx::query_scalar(
+            "SELECT id FROM entities WHERE type = 'todo' AND id != ?1",
+        )
+        .bind(&todo_id)
+        .fetch_one(&pool)
+        .await
+        .expect("successor id");
+
+        // Authorship inherited from the completing proposal.
+        let (created_by, created_via): (String, Option<String>) = sqlx::query_as(
+            "SELECT created_by, created_via_proposal_id FROM entities WHERE id = ?1",
+        )
+        .bind(&successor_id)
+        .fetch_one(&pool)
+        .await
+        .expect("successor row");
+        assert_eq!(created_by, "proposal");
+        assert_eq!(created_via.as_deref(), Some(proposal_id.as_str()));
+
+        // Both refs carried forward, roles preserved.
+        let mut refs: Vec<(String, String)> =
+            sqlx::query_as("SELECT person_id, role FROM todo_person_refs WHERE todo_id = ?1")
+                .bind(&successor_id)
+                .fetch_all(&pool)
+                .await
+                .expect("successor refs");
+        refs.sort();
+        let mut expected = vec![
+            (alice, "waiting_on".to_string()),
+            (bob, "related".to_string()),
+        ];
+        expected.sort();
+        assert_eq!(refs, expected, "both refs carried forward with roles");
+    }
+
+    /// Completing a NON-recurring Todo spawns no successor.
+    #[tokio::test]
+    async fn completing_non_recurring_todo_spawns_nothing() {
+        let pool = memory_pool().await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({ "todo": { "title": "One-off", "due_at": "2026-06-19T17:00:00" } }),
+        )
+        .await;
+
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "status": "completed", "completed_at": "2026-06-19T18:00:00" }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("completion succeeds");
+
+        assert!(
+            other_todos(&pool, &todo_id).await.is_empty(),
+            "a non-recurring Todo spawns no successor"
+        );
+    }
+
+    /// DROPPING a recurring Todo ends the series — no successor (ADR-0039).
+    #[tokio::test]
+    async fn dropping_recurring_todo_spawns_nothing() {
+        let pool = memory_pool().await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Stop me",
+                    "due_at": "2026-06-19T17:00:00",
+                    "recurrence": { "interval": 1, "unit": "week", "anchor": "due_at" }
+                }
+            }),
+        )
+        .await;
+
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "status": "dropped", "dropped_at": "2026-06-19T18:00:00" }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("drop succeeds");
+
+        assert!(
+            other_todos(&pool, &todo_id).await.is_empty(),
+            "dropping a recurring Todo ends the series"
+        );
+    }
+
+    /// Re-completing a DROPPED recurring Todo (the editor allows dropped→completed,
+    /// clearing dropped_at) must NOT resurrect the series: generation fires only on
+    /// the ACTIVE→completed transition (PR #172 review). Seeds a dropped recurring
+    /// Todo, then completes it; no successor.
+    #[tokio::test]
+    async fn completing_a_dropped_recurring_todo_spawns_nothing() {
+        let pool = memory_pool().await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Was dropped",
+                    "status": "dropped",
+                    "dropped_at": "2026-06-19T18:00:00",
+                    "due_at": "2026-06-19T17:00:00",
+                    "recurrence": { "interval": 1, "unit": "week", "anchor": "due_at" }
+                }
+            }),
+        )
+        .await;
+
+        // dropped → completed: clear dropped_at, set completed_at (the editor's
+        // three-way merge for a status change).
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({
+                "status": "completed",
+                "completed_at": "2026-06-20T09:00:00",
+                "dropped_at": null
+            }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("re-complete succeeds");
+
+        assert!(
+            other_todos(&pool, &todo_id).await.is_empty(),
+            "dropped→completed does not resurrect the series — only active→completed spawns"
+        );
+    }
+
+    /// Re-saving an already-completed recurring Todo never spawns a SECOND
+    /// successor: generation fires only on the transition into completed (ADR-0039).
+    #[tokio::test]
+    async fn re_saving_completed_recurring_todo_spawns_no_second_successor() {
+        let pool = memory_pool().await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Weekly",
+                    "due_at": "2026-06-19T17:00:00",
+                    "recurrence": { "interval": 1, "unit": "week", "anchor": "due_at" }
+                }
+            }),
+        )
+        .await;
+
+        // First completion spawns one successor.
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "status": "completed", "completed_at": "2026-06-19T18:00:00" }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("first completion succeeds");
+        assert_eq!(other_todos(&pool, &todo_id).await.len(), 1);
+
+        // Editing the still-completed Todo's note must NOT spawn another.
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "note": "tweaked" }),
+            "user",
+            None,
+            200,
+        )
+        .await
+        .expect("note edit succeeds");
+        assert_eq!(
+            other_todos(&pool, &todo_id).await.len(),
+            1,
+            "re-saving a completed Todo spawns no second successor"
+        );
+    }
+
+    /// Completing a recurring Todo whose `after_count == 1` (the last occurrence)
+    /// spawns no successor (ADR-0039 end condition).
+    #[tokio::test]
+    async fn completing_last_after_count_occurrence_spawns_nothing() {
+        let pool = memory_pool().await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Final occurrence",
+                    "due_at": "2026-06-19T17:00:00",
+                    "recurrence": {
+                        "interval": 1, "unit": "week", "anchor": "due_at",
+                        "end": { "after_count": 1 }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "status": "completed", "completed_at": "2026-06-19T18:00:00" }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("completion succeeds");
+
+        assert!(
+            other_todos(&pool, &todo_id).await.is_empty(),
+            "after_count == 1 is the last occurrence, no successor"
+        );
+    }
+
+    /// The successor's `after_count` is decremented: completing an after_count: 3
+    /// recurring Todo leaves a successor carrying after_count: 2 (ADR-0039).
+    #[tokio::test]
+    async fn successor_decrements_after_count() {
+        let pool = memory_pool().await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Three times",
+                    "due_at": "2026-06-19T17:00:00",
+                    "recurrence": {
+                        "interval": 1, "unit": "week", "anchor": "due_at",
+                        "end": { "after_count": 3 }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "status": "completed", "completed_at": "2026-06-19T18:00:00" }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("completion succeeds");
+
+        let successors = other_todos(&pool, &todo_id).await;
+        assert_eq!(successors.len(), 1);
+        assert_eq!(
+            successors[0]["recurrence"]["end"]["after_count"].as_u64(),
+            Some(2),
+            "after_count decremented on the successor"
+        );
+    }
+
+    /// Completing a recurring Todo whose next occurrence would fall past its
+    /// `until` bound spawns no successor — the until end-condition wired through
+    /// the apply layer (ADR-0039), not just the pure module.
+    #[tokio::test]
+    async fn completing_until_exhausted_occurrence_spawns_nothing() {
+        let pool = memory_pool().await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Until the end of June",
+                    "due_at": "2026-06-26T17:00:00",
+                    "recurrence": {
+                        "interval": 1, "unit": "week", "anchor": "due_at",
+                        "end": { "until": "2026-06-30T00:00:00" }
+                    }
+                }
+            }),
+        )
+        .await;
+
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "status": "completed", "completed_at": "2026-06-26T18:00:00" }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("completion succeeds");
+
+        assert!(
+            other_todos(&pool, &todo_id).await.is_empty(),
+            "the next occurrence (2026-07-03) is past until (2026-06-30): no successor"
+        );
+    }
+
+    /// A defer-anchored, due-absent recurring Todo: the successor advances
+    /// `defer_at`, leaves `due_at` absent (presence mirrored), and carries the
+    /// title forward (ADR-0039 set_or_remove + carried context, at the DB layer).
+    #[tokio::test]
+    async fn defer_anchored_successor_advances_defer_and_omits_due() {
+        let pool = memory_pool().await;
+        let todo_id = create(
+            &pool,
+            MutationKind::CreateTodo,
+            serde_json::json!({
+                "todo": {
+                    "title": "Deferred chore",
+                    "defer_at": "2026-06-14T09:00:00",
+                    "recurrence": { "interval": 2, "unit": "day", "anchor": "defer_at" }
+                }
+            }),
+        )
+        .await;
+
+        update_todo(
+            &pool,
+            &todo_id,
+            serde_json::json!({ "status": "completed", "completed_at": "2026-06-14T10:00:00" }),
+            "user",
+            None,
+            100,
+        )
+        .await
+        .expect("completion succeeds");
+
+        let successors = other_todos(&pool, &todo_id).await;
+        assert_eq!(successors.len(), 1);
+        let successor = &successors[0];
+        assert_eq!(
+            successor["defer_at"].as_str(),
+            Some("2026-06-16T09:00:00"),
+            "defer advanced two days"
+        );
+        assert!(
+            successor.get("due_at").is_none(),
+            "the absent due date stays absent on the successor: {successor}"
+        );
+        assert_eq!(
+            successor["title"].as_str(),
+            Some("Deferred chore"),
+            "the title carries forward"
         );
     }
 }

@@ -533,9 +533,9 @@ mod tests {
 
     #[test]
     fn create_todo_with_full_recurrence_validates_against_its_kind() {
-        // A `create_todo` envelope whose `todo` carries a FULL recurrence rule
-        // (interval, unit, schedule, anchor, plus catch_up, only_on, and end)
-        // alongside its `due_at` anchor validates against CreateTodo.
+        // A `create_todo` envelope whose `todo` carries a full recurrence rule
+        // (interval, unit, anchor, plus an `end` condition) alongside its `due_at`
+        // anchor validates against CreateTodo (ADR-0037 slimmed by ADR-0039).
         use crate::mutation::MutationKind;
         crate::entities::validate(
             MutationKind::CreateTodo,
@@ -546,10 +546,7 @@ mod tests {
                     "recurrence": {
                         "interval": 1,
                         "unit": "week",
-                        "schedule": "regular",
                         "anchor": "due_at",
-                        "catch_up": false,
-                        "only_on": { "weekdays": ["mon", "fri"] },
                         "end": { "after_count": 10 }
                     }
                 }
@@ -790,11 +787,7 @@ mod tests {
             "dropped_at",
             "next_review_at",
             "last_reviewed_at",
-            "catch_up",
-            "only_on",
             "end",
-            "weekdays",
-            "month_days",
             "until",
             "after_count",
         ] {

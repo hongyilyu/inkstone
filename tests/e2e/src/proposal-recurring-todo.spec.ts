@@ -4,9 +4,9 @@ import { dbPathFor, sqliteScalar } from "./seed.js";
 import { PROPOSE_WORKER_CMD, REPO_ROOT } from "./spawnCore.js";
 
 /**
- * Agent propose → accept of a `create_todo` carrying a FULL recurrence rule
- * (interval/unit/schedule/anchor + catch_up + only_on.weekdays + end.after_count,
- * ADR-0037), end-to-end through a real browser and real Core.
+ * Agent propose → accept of a `create_todo` carrying a recurrence rule
+ * (interval/unit/anchor + end.after_count, ADR-0037 slimmed by ADR-0039),
+ * end-to-end through a real browser and real Core.
  *
  * This pins the seam the single-source field-schema refactor reshaped most: the
  * recurrence rule's SCHEMA is generated from `MutationKind::payload_spec` (the
@@ -60,13 +60,9 @@ test("agent-proposed recurring Todo applies and the recurrence rule persists", a
 		);
 	expect(recurrenceField("interval")).toBe("1");
 	expect(recurrenceField("unit")).toBe("week");
-	expect(recurrenceField("schedule")).toBe("regular");
 	expect(recurrenceField("anchor")).toBe("due_at");
-	expect(recurrenceField("catch_up")).toBe("0");
-	// The nested only_on / end sub-objects survive too (the deepest part of the
-	// rule the deleted struct tree used to schema, now spec-generated) — assert
-	// BOTH weekdays so a persistence regression dropping an element is caught.
-	expect(recurrenceField("only_on.weekdays[0]")).toBe("mon");
-	expect(recurrenceField("only_on.weekdays[1]")).toBe("fri");
+	// The nested end sub-object survives too (the deepest part of the rule,
+	// spec-generated) — proves a doomed rule didn't slip through and a valid one
+	// wasn't wrongly rejected on the agent decide path.
 	expect(recurrenceField("end.after_count")).toBe("10");
 });

@@ -14,11 +14,23 @@ export type LibraryItemKind =
 	| "todo"
 	| "bookmark";
 
+/**
+ * Where an Entity came from ("Captured from", ADR-0030), resolved from its
+ * origin `created_from` Entity Source. A Message source carries the Thread to
+ * link back to; a Journal-Entry source carries the source entry's id (link to it
+ * in the Library). Absent on a user-authored Entity (direct Library write).
+ */
+export type EntitySource =
+	| { kind: "thread"; threadId: string; threadTitle: string }
+	| { kind: "journal_entry"; journalEntryId: string };
+
 interface LibraryItemBase {
 	id: string;
 	kind: LibraryItemKind;
 	createdAt: string;
 	recency: number;
+	/** The Entity's capture provenance (ADR-0030); absent when user-authored. */
+	source?: EntitySource;
 }
 
 export interface Person extends LibraryItemBase {
@@ -95,21 +107,17 @@ export type RecurrenceUnit =
 	| "month"
 	| "year";
 
-export type Weekday = "sun" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat";
-
 /**
- * A Todo's repeat rule (ADR-0037). The view model camelCases the snake_case
- * fields Core stores in `data.recurrence`; the entity codec maps between the two
- * (`parseTodo` on the way in, `buildTodo` re-snakes it on the way out). Core
- * validates and persists the rule.
+ * A Todo's repeat rule (ADR-0037, slimmed by ADR-0039). The view model
+ * camelCases the snake_case fields Core stores in `data.recurrence`; the entity
+ * codec maps between the two (`parseTodo` on the way in, `buildTodo` re-snakes it
+ * on the way out). Core validates and persists the rule, and on completion
+ * advances `anchor` by `interval × unit` to spawn the successor (ADR-0039).
  */
 export interface RecurrenceRule {
 	interval: number;
 	unit: RecurrenceUnit;
-	schedule: "regular" | "from_completion";
 	anchor: "defer_at" | "due_at";
-	catchUp?: boolean;
-	onlyOn?: { weekdays?: Weekday[]; monthDays?: number[] };
 	end?: { until?: string; afterCount?: number };
 }
 
@@ -555,16 +563,15 @@ const RECURRENCE_ADVERB: Record<RecurrenceUnit, string> = {
 
 /**
  * Human-readable summary of a recurrence rule's common path (ADR-0037). Covers
- * interval, unit, and schedule; `onlyOn`/`end` round-trip but are not spelled
- * out. Sentence case, no em dashes (DESIGN.md/PRODUCT.md copy tone).
+ * interval and unit; `end` round-trips but is not spelled out. Sentence case,
+ * no em dashes (DESIGN.md/PRODUCT.md copy tone).
  */
 export function recurrenceSummary(rule: RecurrenceRule): string {
 	const cadence =
 		rule.interval === 1
 			? RECURRENCE_ADVERB[rule.unit]
 			: `every ${rule.interval} ${rule.unit}s`;
-	const suffix = rule.schedule === "from_completion" ? " from completion" : "";
-	return `Repeats ${cadence}${suffix}`;
+	return `Repeats ${cadence}`;
 }
 
 export function groupJournalEntriesByDay(
