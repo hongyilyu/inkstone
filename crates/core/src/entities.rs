@@ -430,6 +430,7 @@ fn validate_entity_id_only(kind: MutationKind, payload: &Value) -> Result<(), St
     kind.payload_spec().check(payload)
 }
 
+#[cfg(test)]
 fn validate_person(payload: &Value) -> Result<(), String> {
     // PersonData has no cross-field invariant — the spec walk is the whole
     // validator. `note`/`aliases` are clearable optional fields (ADR-0033): a
@@ -440,11 +441,12 @@ fn validate_person(payload: &Value) -> Result<(), String> {
         .check(payload)
 }
 
-/// Validate an `update_person` payload: a required UUID `entity_id` (the target)
-/// plus the rest validated as `PersonData` (the shared Person field core).
+/// Validate an `update_person` payload against the kind's full spec: the
+/// `entity_id` target prepended to the `PersonData` core (the single source).
+/// PersonData has no cross-field invariant, so the spec walk is the whole
+/// validator.
 fn validate_update_person(payload: &Value) -> Result<(), String> {
-    let rest = strip_update_entity_id(payload)?;
-    validate_person(&rest)
+    MutationKind::UpdatePerson.payload_spec().check(payload)
 }
 
 /// Validate a `BookmarkData` object (ADR-0036): a required non-empty `title`;
@@ -458,14 +460,16 @@ fn validate_bookmark(payload: &Value) -> Result<(), String> {
         .check(payload)
 }
 
-/// Validate an `update_bookmark` payload: a required UUID `entity_id` (the target)
-/// plus the rest validated as `BookmarkData`. Update is a full-document replace
-/// (like person/project), so the rest is a complete BookmarkData (ADR-0036).
+/// Validate an `update_bookmark` payload against the kind's full spec: the
+/// `entity_id` target prepended to the `BookmarkData` core (the single source).
+/// Update is a full-document replace (like person/project), so the data is a
+/// complete BookmarkData (ADR-0036); it has no cross-field invariant, so the
+/// spec walk is the whole validator.
 fn validate_update_bookmark(payload: &Value) -> Result<(), String> {
-    let rest = strip_update_entity_id(payload)?;
-    validate_bookmark(&rest)
+    MutationKind::UpdateBookmark.payload_spec().check(payload)
 }
 
+#[cfg(test)]
 fn validate_project(payload: &Value) -> Result<(), String> {
     validate_project_data(payload)
 }
@@ -533,37 +537,14 @@ fn present_non_null(obj: &serde_json::Map<String, Value>, key: &str) -> bool {
     matches!(obj.get(key), Some(v) if !v.is_null())
 }
 
-/// Validate an `update_project` payload: a required UUID `entity_id` (the target)
-/// plus the rest validated as `ProjectData`. `validate_project` tolerates an
-/// absent status, which is fine for an update (status optional on update).
+/// Validate an `update_project` payload against the kind's full spec: the
+/// `entity_id` target prepended to the `ProjectData` core (the single source),
+/// then the status↔timestamp invariant — same hook order as create dispatch and
+/// [`validate_project_data`]. The spec tolerates an absent status, which is fine
+/// for an update (status optional on update).
 fn validate_update_project(payload: &Value) -> Result<(), String> {
-    let rest = strip_update_entity_id(payload)?;
-    validate_project(&rest)
-}
-
-/// Pull a required UUID `entity_id` off an update payload, returning the payload
-/// MINUS `entity_id` (the entity data to validate/store). Shared by the
-/// person/project update validators.
-fn strip_update_entity_id(payload: &Value) -> Result<Value, String> {
-    let obj = payload
-        .as_object()
-        .ok_or_else(|| "update payload must be a JSON object".to_string())?;
-
-    let entity_id = match obj.get("entity_id") {
-        Some(Value::String(value)) if !value.trim().is_empty() => value,
-        Some(Value::String(_)) => return Err("entity_id must not be empty".to_string()),
-        Some(_) => return Err("entity_id must be a string".to_string()),
-        None => return Err("entity_id is required".to_string()),
-    };
-    Uuid::parse_str(entity_id).map_err(|_| "entity_id must be a UUID".to_string())?;
-
-    let mut rest = serde_json::Map::with_capacity(obj.len().saturating_sub(1));
-    for (key, value) in obj {
-        if key != "entity_id" {
-            rest.insert(key.clone(), value.clone());
-        }
-    }
-    Ok(Value::Object(rest))
+    MutationKind::UpdateProject.payload_spec().check(payload)?;
+    project_status_timestamp_invariant(payload.as_object().expect("check accepted an object"))
 }
 
 /// The optional `source_journal_entry_id` provenance directive (ADR-0030/0031) on
@@ -1952,11 +1933,41 @@ mod tests {
 
     #[test]
     fn update_project_requires_a_uuid_entity_id() {
+        // All four `entity_id` failure modes are pinned on one update kind — the
+        // three update kinds share `entity_id_target()`/`FieldSpec::Uuid`, so one
+        // suffices to gate the spec path the validators now route through.
         let reason = validate("update_project", &json!({ "name": "Roadmap" }))
             .expect_err("update requires a target entity_id");
         assert!(
-            reason.contains("entity_id"),
+            reason.contains("entity_id") && reason.contains("required"),
             "reason names the missing entity_id: {reason}"
+        );
+        let reason = validate(
+            "update_project",
+            &json!({ "entity_id": "", "name": "Roadmap" }),
+        )
+        .expect_err("a blank entity_id is not a target");
+        assert!(
+            reason.contains("must not be empty"),
+            "reason rejects the empty entity_id: {reason}"
+        );
+        let reason = validate(
+            "update_project",
+            &json!({ "entity_id": 42, "name": "Roadmap" }),
+        )
+        .expect_err("a non-string entity_id is not a target");
+        assert!(
+            reason.contains("must be a string"),
+            "reason rejects the non-string entity_id: {reason}"
+        );
+        let reason = validate(
+            "update_project",
+            &json!({ "entity_id": "nope", "name": "Roadmap" }),
+        )
+        .expect_err("entity_id must be a UUID");
+        assert!(
+            reason.contains("UUID"),
+            "reason names the malformed entity_id: {reason}"
         );
     }
 
