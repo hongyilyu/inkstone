@@ -662,9 +662,10 @@ describe("ProposalCard", () => {
 			expect(
 				screen.getByText("the user mentioned a new person"),
 			).toBeInTheDocument();
+			// create_person now offers inline Edit at the gate (slice 2).
 			expect(
-				screen.queryByRole("button", { name: /^edit$/i }),
-			).not.toBeInTheDocument();
+				screen.getByRole("button", { name: /^edit$/i }),
+			).toBeInTheDocument();
 		});
 
 		it("calls onDecide('accept') when Add Person is clicked", () => {
@@ -679,6 +680,73 @@ describe("ProposalCard", () => {
 			render(<ProposalCard proposal={createPerson} onDecide={onDecide} />);
 			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
 			expect(onDecide).toHaveBeenCalledWith("reject");
+		});
+
+		it("opening Edit pre-fills Name/Note/Aliases from the proposed person", () => {
+			render(<ProposalCard proposal={createPerson} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			expect(screen.getByRole("textbox", { name: /name/i })).toHaveValue(
+				"Alice Carter",
+			);
+			expect(screen.getByRole("textbox", { name: /note/i })).toHaveValue(
+				"Met at the conference.",
+			);
+			expect(screen.getByRole("textbox", { name: /aliases/i })).toHaveValue(
+				"Ali, AC",
+			);
+		});
+
+		it("editing Name then Save emits onDecide('edit', payload) preserving provenance", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard
+					proposal={{
+						...createPerson,
+						payload: {
+							name: "Alice Carter",
+							note: "Met at the conference.",
+							aliases: ["Ali", "AC"],
+							source_journal_entry_id: "je-7",
+						},
+					}}
+					onDecide={onDecide}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
+				target: { value: "Alice C. Carter" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			expect(onDecide).toHaveBeenCalledWith("edit", {
+				name: "Alice C. Carter",
+				note: "Met at the conference.",
+				aliases: ["Ali", "AC"],
+				source_journal_entry_id: "je-7",
+			});
+			expect(onDecide).toHaveBeenCalledTimes(1);
+		});
+
+		it("blanking the proposed Note omits note from the edited payload", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={createPerson} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /note/i }), {
+				target: { value: "" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect("note" in payload).toBe(false);
+		});
+
+		it("disables Save when Name is blanked", () => {
+			render(<ProposalCard proposal={createPerson} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
+				target: { value: "" },
+			});
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
 		});
 	});
 
@@ -706,9 +774,10 @@ describe("ProposalCard", () => {
 			).toBeGreaterThan(0);
 			expect(screen.getByText("All clients on v2 by Q3.")).toBeInTheDocument();
 			expect(screen.getByText("active")).toBeInTheDocument();
+			// create_project now offers inline Edit at the gate (slice 2).
 			expect(
-				screen.queryByRole("button", { name: /^edit$/i }),
-			).not.toBeInTheDocument();
+				screen.getByRole("button", { name: /^edit$/i }),
+			).toBeInTheDocument();
 		});
 
 		it("calls onDecide('accept') when Add Project is clicked", () => {
@@ -723,6 +792,76 @@ describe("ProposalCard", () => {
 			render(<ProposalCard proposal={createProject} onDecide={onDecide} />);
 			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
 			expect(onDecide).toHaveBeenCalledWith("reject");
+		});
+
+		it("opening Edit pre-fills Name/Outcome/Note/Status from the proposed project", () => {
+			render(<ProposalCard proposal={createProject} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			expect(screen.getByRole("textbox", { name: /name/i })).toHaveValue(
+				"Ship API v2 migration",
+			);
+			expect(screen.getByRole("textbox", { name: /outcome/i })).toHaveValue(
+				"All clients on v2 by Q3.",
+			);
+			expect(screen.getByRole("combobox", { name: /status/i })).toHaveValue(
+				"active",
+			);
+		});
+
+		it("changing Status active→dropped stamps dropped_at, clears completed_at, and preserves provenance", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard
+					proposal={{
+						...createProject,
+						payload: {
+							name: "Ship API v2 migration",
+							outcome: "All clients on v2 by Q3.",
+							status: "active",
+							completed_at: "2026-01-01T00:00:00",
+							source_journal_entry_id: "je-9",
+						},
+					}}
+					onDecide={onDecide}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("combobox", { name: /status/i }), {
+				target: { value: "dropped" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect(payload.status).toBe("dropped");
+			expect(payload.dropped_at).toMatch(
+				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/,
+			);
+			expect("completed_at" in payload).toBe(false);
+			expect(payload.source_journal_entry_id).toBe("je-9");
+		});
+
+		it("supports the on_hold status option (distinct from Todo)", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={createProject} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("combobox", { name: /status/i }), {
+				target: { value: "on_hold" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect(payload.status).toBe("on_hold");
+			expect("completed_at" in payload).toBe(false);
+			expect("dropped_at" in payload).toBe(false);
+		});
+
+		it("disables Save when Name is blanked", () => {
+			render(<ProposalCard proposal={createProject} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
+				target: { value: "" },
+			});
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
 		});
 	});
 
@@ -741,6 +880,7 @@ describe("ProposalCard", () => {
 					{ person_id: "alice-1", role: "related" },
 					{ person_id: "bob-1", role: "waiting_on" },
 				],
+				source_journal_entry_id: "je-7",
 			},
 			rationale: "the user named an explicit obligation",
 			status: "pending",
@@ -758,9 +898,10 @@ describe("ProposalCard", () => {
 			expect(screen.getByText(/proj-1/)).toBeInTheDocument();
 			expect(screen.getByText(/Related: alice-1/)).toBeInTheDocument();
 			expect(screen.getByText(/Waiting on: bob-1/)).toBeInTheDocument();
+			// create_todo now offers inline Edit at the gate (slice 1).
 			expect(
-				screen.queryByRole("button", { name: /^edit$/i }),
-			).not.toBeInTheDocument();
+				screen.getByRole("button", { name: /^edit$/i }),
+			).toBeInTheDocument();
 		});
 
 		it("calls onDecide('accept') when Add Todo is clicked", () => {
@@ -775,6 +916,80 @@ describe("ProposalCard", () => {
 			render(<ProposalCard proposal={createTodo} onDecide={onDecide} />);
 			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
 			expect(onDecide).toHaveBeenCalledWith("reject");
+		});
+
+		it("offers an Edit affordance for the create_todo proposal", () => {
+			render(<ProposalCard proposal={createTodo} onDecide={() => {}} />);
+			expect(
+				screen.getByRole("button", { name: /^edit$/i }),
+			).toBeInTheDocument();
+		});
+
+		it("opening Edit pre-fills Title/Note/Status from the proposed todo", () => {
+			render(<ProposalCard proposal={createTodo} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			expect(screen.getByRole("textbox", { name: /title/i })).toHaveValue(
+				"Email Alice about Project Y",
+			);
+			expect(screen.getByRole("textbox", { name: /note/i })).toHaveValue(
+				"Send the migration plan.",
+			);
+			expect(screen.getByRole("combobox", { name: /status/i })).toHaveValue(
+				"active",
+			);
+		});
+
+		it("editing Title then Save emits onDecide('edit', payload) preserving provenance", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={createTodo} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {
+				target: { value: "Email Alice about the Q3 migration" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			expect(onDecide).toHaveBeenCalledWith("edit", {
+				todo: {
+					title: "Email Alice about the Q3 migration",
+					note: "Send the migration plan.",
+					status: "active",
+					project_id: "proj-1",
+				},
+				person_refs: [
+					{ person_id: "alice-1", role: "related" },
+					{ person_id: "bob-1", role: "waiting_on" },
+				],
+				// Provenance rides untouched through the overlay clone — the field
+				// this test's name promises.
+				source_journal_entry_id: "je-7",
+			});
+			expect(onDecide).toHaveBeenCalledTimes(1);
+		});
+
+		it("changing Status active→completed emits completed_at and no dropped_at", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={createTodo} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("combobox", { name: /status/i }), {
+				target: { value: "completed" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect(payload.todo.status).toBe("completed");
+			expect(payload.todo.completed_at).toMatch(
+				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/,
+			);
+			expect("dropped_at" in payload.todo).toBe(false);
+		});
+
+		it("disables Save when Title is blanked", () => {
+			render(<ProposalCard proposal={createTodo} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {
+				target: { value: "" },
+			});
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
 		});
 	});
 
@@ -808,9 +1023,10 @@ describe("ProposalCard", () => {
 			expect(screen.getByText(/Related: dave-1/)).toBeInTheDocument();
 			expect(screen.getByText(/Waiting on: carol-1/)).toBeInTheDocument();
 			expect(screen.getByText(/bob-1/)).toBeInTheDocument();
+			// update_todo now offers inline Edit at the gate (slice 3).
 			expect(
-				screen.queryByRole("button", { name: /^edit$/i }),
-			).not.toBeInTheDocument();
+				screen.getByRole("button", { name: /^edit$/i }),
+			).toBeInTheDocument();
 		});
 
 		it("calls onDecide('accept') when Update Todo is clicked", () => {
@@ -825,6 +1041,293 @@ describe("ProposalCard", () => {
 			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
 			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
 			expect(onDecide).toHaveBeenCalledWith("reject");
+		});
+
+		it("editing Title then Save emits the partial preserving todo_id and all ref lists", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {
+				target: { value: "Email Alice about the Q3 migration" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			expect(onDecide).toHaveBeenCalledWith("edit", {
+				todo_id: "todo-7",
+				todo: {
+					title: "Email Alice about the Q3 migration",
+					status: "completed",
+				},
+				set_person_refs: [{ person_id: "dave-1", role: "related" }],
+				add_person_refs: [{ person_id: "carol-1", role: "waiting_on" }],
+				remove_person_ids: ["bob-1"],
+			});
+			expect(onDecide).toHaveBeenCalledTimes(1);
+		});
+
+		// The update_todo Status select is wired through its OWN setter
+		// (setUpdateTodoDraft) and overlay (overlayUpdateTodo), distinct from
+		// create_todo's — so drive the card's select→overlay path and assert the
+		// coupled timestamp, not just the unit-tested overlay.
+		it("changing Status completed→active clears completed_at in the edited partial", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("combobox", { name: /status/i }), {
+				target: { value: "active" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect(payload.todo.status).toBe("active");
+			expect("completed_at" in payload.todo).toBe(false);
+			expect("dropped_at" in payload.todo).toBe(false);
+			// The partial's identity + ref lists still ride untouched.
+			expect(payload.todo_id).toBe("todo-7");
+			expect(payload.set_person_refs).toEqual([
+				{ person_id: "dave-1", role: "related" },
+			]);
+		});
+
+		it("blanking a proposed Note omits the note key from the edited partial", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard
+					proposal={{
+						...updateTodo,
+						payload: {
+							todo_id: "todo-7",
+							todo: { title: "Keep title", note: "Drop me" },
+						},
+					}}
+					onDecide={onDecide}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /note/i }), {
+				target: { value: "" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect("note" in payload.todo).toBe(false);
+		});
+
+		it("hides the Status control when the proposed partial carries no status", () => {
+			render(
+				<ProposalCard
+					proposal={{
+						...updateTodo,
+						payload: {
+							todo_id: "todo-7",
+							todo: { title: "Rename me" },
+						},
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			expect(
+				screen.getByRole("textbox", { name: /title/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByRole("combobox", { name: /status/i }),
+			).not.toBeInTheDocument();
+		});
+
+		it("disables Save when a proposed Title is blanked", () => {
+			render(<ProposalCard proposal={updateTodo} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {
+				target: { value: "" },
+			});
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
+		});
+	});
+
+	describe("update_person", () => {
+		const updatePerson: PendingProposal = {
+			proposal_id: "prop-update-person",
+			run_id: "run-update-person",
+			mutation_kind: "update_person",
+			payload: {
+				entity_id: "person-7",
+				name: "Alice Carter",
+				note: "Now leads the daycare committee.",
+				aliases: ["Ali", "AC"],
+			},
+			rationale: "the user corrected Alice's note",
+			status: "pending",
+		};
+
+		it("renders an update Person proposal with its review copy, Update label, and detail — not the journal fallback", () => {
+			render(<ProposalCard proposal={updatePerson} onDecide={() => {}} />);
+			expect(
+				screen.getByText("Inkstone wants to update a Person."),
+			).toBeInTheDocument();
+			// A degraded fallback would echo the raw kind — assert it does NOT.
+			expect(
+				screen.queryByText(/wants to create a update_person/i),
+			).not.toBeInTheDocument();
+			expect(screen.getAllByText("Alice Carter").length).toBeGreaterThan(0);
+			expect(
+				screen.getByText("Now leads the daycare committee."),
+			).toBeInTheDocument();
+			expect(screen.getByText(/Ali, AC/)).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /update person/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /^edit$/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /dismiss/i }),
+			).toBeInTheDocument();
+		});
+
+		it("opening Edit pre-fills Name/Note/Aliases from the proposed person", () => {
+			render(<ProposalCard proposal={updatePerson} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			expect(screen.getByRole("textbox", { name: /name/i })).toHaveValue(
+				"Alice Carter",
+			);
+			expect(screen.getByRole("textbox", { name: /note/i })).toHaveValue(
+				"Now leads the daycare committee.",
+			);
+			expect(screen.getByRole("textbox", { name: /aliases/i })).toHaveValue(
+				"Ali, AC",
+			);
+		});
+
+		it("editing Name then Save emits onDecide('edit', payload) preserving entity_id", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={updatePerson} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
+				target: { value: "Alice C. Carter" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			expect(onDecide).toHaveBeenCalledWith("edit", {
+				entity_id: "person-7",
+				name: "Alice C. Carter",
+				note: "Now leads the daycare committee.",
+				aliases: ["Ali", "AC"],
+			});
+			expect(onDecide).toHaveBeenCalledTimes(1);
+		});
+
+		it("blanking the proposed Note omits note but keeps entity_id (full-replace ⇒ omit ≡ cleared)", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={updatePerson} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /note/i }), {
+				target: { value: "" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect("note" in payload).toBe(false);
+			expect(payload.entity_id).toBe("person-7");
+		});
+
+		it("disables Save when Name is blanked", () => {
+			render(<ProposalCard proposal={updatePerson} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
+				target: { value: "" },
+			});
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
+		});
+	});
+
+	describe("update_project", () => {
+		const updateProject: PendingProposal = {
+			proposal_id: "prop-update-project",
+			run_id: "run-update-project",
+			mutation_kind: "update_project",
+			payload: {
+				entity_id: "project-7",
+				name: "Ship API v2",
+				outcome: "All clients on v2 by Q3.",
+				status: "active",
+			},
+			rationale: "the user re-scoped the project",
+			status: "pending",
+		};
+
+		it("renders an update Project proposal with its review copy, Update label, and detail — not the journal fallback", () => {
+			render(<ProposalCard proposal={updateProject} onDecide={() => {}} />);
+			expect(
+				screen.getByText("Inkstone wants to update a Project."),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText(/wants to create a update_project/i),
+			).not.toBeInTheDocument();
+			expect(screen.getAllByText("Ship API v2").length).toBeGreaterThan(0);
+			expect(screen.getByText("All clients on v2 by Q3.")).toBeInTheDocument();
+			expect(screen.getByText("active")).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /update project/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: /^edit$/i }),
+			).toBeInTheDocument();
+		});
+
+		it("opening Edit pre-fills Name/Outcome/Status from the proposed project", () => {
+			render(<ProposalCard proposal={updateProject} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			expect(screen.getByRole("textbox", { name: /name/i })).toHaveValue(
+				"Ship API v2",
+			);
+			expect(screen.getByRole("textbox", { name: /outcome/i })).toHaveValue(
+				"All clients on v2 by Q3.",
+			);
+			expect(screen.getByRole("combobox", { name: /status/i })).toHaveValue(
+				"active",
+			);
+		});
+
+		it("changing Status active→on_hold clears terminal timestamps and preserves entity_id", () => {
+			const onDecide = vi.fn();
+			render(
+				<ProposalCard
+					proposal={{
+						...updateProject,
+						payload: {
+							entity_id: "project-7",
+							name: "Ship API v2",
+							status: "active",
+							completed_at: "2026-01-01T00:00:00",
+							review_every: { interval: 1, unit: "week" },
+						},
+					}}
+					onDecide={onDecide}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("combobox", { name: /status/i }), {
+				target: { value: "on_hold" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect(payload.status).toBe("on_hold");
+			expect("completed_at" in payload).toBe(false);
+			expect("dropped_at" in payload).toBe(false);
+			// entity_id + the review cadence ride untouched under full replace.
+			expect(payload.entity_id).toBe("project-7");
+			expect(payload.review_every).toEqual({ interval: 1, unit: "week" });
+		});
+
+		it("disables Save when Name is blanked", () => {
+			render(<ProposalCard proposal={updateProject} onDecide={() => {}} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("textbox", { name: /name/i }), {
+				target: { value: "" },
+			});
+			expect(
+				screen.getByRole("button", { name: /save changes/i }),
+			).toBeDisabled();
 		});
 	});
 

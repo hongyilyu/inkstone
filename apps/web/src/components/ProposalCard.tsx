@@ -8,11 +8,52 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { KIND_META } from "@/lib/libraryItems";
+import {
+	type CreatePersonDraft,
+	type CreateProjectDraft,
+	type CreateTodoDraft,
+	overlayCreatePerson,
+	overlayCreateProject,
+	overlayCreateTodo,
+	overlayUpdatePerson,
+	overlayUpdateProject,
+	overlayUpdateTodo,
+	type ProjectEditStatus,
+	seedCreatePerson,
+	seedCreateProject,
+	seedCreateTodo,
+	seedUpdatePerson,
+	seedUpdateProject,
+	seedUpdateTodo,
+	type TodoEditStatus,
+	type UpdateTodoDraft,
+} from "@/lib/proposalEdit";
 import type { PendingProposal } from "@/store/chat";
+import {
+	EditorField,
+	EditorInput,
+	EditorSelect,
+	EditorTextarea,
+} from "./library/EntityEditor.js";
 import { Card } from "./ui/card.js";
 import { Input } from "./ui/input.js";
 
-// The 8 mutation kinds the Worker proposes (ADR-0025). Bookmarks and direct
+const TODO_STATUS_OPTIONS: { value: TodoEditStatus; label: string }[] = [
+	{ value: "active", label: "Active" },
+	{ value: "completed", label: "Completed" },
+	{ value: "dropped", label: "Dropped" },
+];
+
+// Reuses the Library ProjectEditor's STATUS_OPTIONS labels — Project has `on_hold`,
+// which Todo lacks.
+const PROJECT_STATUS_OPTIONS: { value: ProjectEditStatus; label: string }[] = [
+	{ value: "active", label: "Active" },
+	{ value: "on_hold", label: "On hold" },
+	{ value: "completed", label: "Completed" },
+	{ value: "dropped", label: "Dropped" },
+];
+
+// The mutation kinds the Worker proposes (ADR-0025). Bookmarks and direct
 // entity-edits are user-CRUD-only (ADR-0033/0036) — never proposed — so the card
 // has never rendered them; an unrecognized kind degrades through `fallbackView`.
 type ProposalKind =
@@ -23,7 +64,23 @@ type ProposalKind =
 	| "create_person"
 	| "create_project"
 	| "create_todo"
-	| "update_todo";
+	| "update_todo"
+	| "update_person"
+	| "update_project";
+
+// The GTD proposal kinds (Person/Project/Todo create+update) — the single source
+// of truth for "is this a GTD proposal", driving the read-only detail render
+// (`isGtdProposal`). The edit-affordance gate (`isGtdEdit`) is kept SEPARATE
+// because it gates a different surface (which inline edit-form variant renders),
+// so a future render-only GTD kind could legitimately split the two.
+const GTD_PROPOSAL_KINDS: ReadonlySet<ProposalKind> = new Set([
+	"create_person",
+	"create_project",
+	"create_todo",
+	"update_todo",
+	"update_person",
+	"update_project",
+]);
 
 // Per-kind presentation for a Proposal — the review card's analogue of KIND_META
 // (lib/libraryItems): one entry concentrates the copy, labels, glyph, and
@@ -55,9 +112,11 @@ interface ProposalView {
 	rejectLabel: string;
 	rejectBusyLabel: string;
 	/**
-	 * Whether the inline Edit affordance is offered: only journal create/update, and
-	 * only when the body carries no entity_ref (no GTD editor in V0). A function of
-	 * the already-read `bodyHasEntityRef` rather than the raw payload.
+	 * Whether the inline Edit affordance is offered. Journal create/update gate on
+	 * the body carrying no entity_ref (the `bodyHasEntityRef` arg); every GTD
+	 * create/update kind is always editable and ignores the arg. Delete, the
+	 * reference weave, and the fallback view are never editable. A function of the
+	 * already-read `bodyHasEntityRef` rather than the raw payload.
 	 */
 	canEdit: (bodyHasEntityRef: boolean) => boolean;
 }
@@ -127,7 +186,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		acceptBusyLabel: "Adding...",
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
-		canEdit: () => false,
+		canEdit: () => true,
 	},
 	create_project: {
 		glyph: KIND_META.project.icon,
@@ -140,7 +199,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		acceptBusyLabel: "Adding...",
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
-		canEdit: () => false,
+		canEdit: () => true,
 	},
 	create_todo: {
 		glyph: KIND_META.todo.icon,
@@ -154,7 +213,7 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		acceptBusyLabel: "Adding...",
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
-		canEdit: () => false,
+		canEdit: () => true,
 	},
 	update_todo: {
 		glyph: KIND_META.todo.icon,
@@ -167,7 +226,33 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		acceptBusyLabel: "Updating...",
 		rejectLabel: "Dismiss",
 		rejectBusyLabel: "Dismissing...",
-		canEdit: () => false,
+		canEdit: () => true,
+	},
+	update_person: {
+		glyph: KIND_META.person.icon,
+		acceptGlyph: KIND_META.person.icon,
+		summary: (payload) => textField(payload, "name") || "Update Person",
+		reviewCopy: "Inkstone wants to update a Person.",
+		acceptedCopy: "Updated Person.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Update Person",
+		acceptBusyLabel: "Updating...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => true,
+	},
+	update_project: {
+		glyph: KIND_META.project.icon,
+		acceptGlyph: KIND_META.project.icon,
+		summary: (payload) => textField(payload, "name") || "Update Project",
+		reviewCopy: "Inkstone wants to update a Project.",
+		acceptedCopy: "Updated Project.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Update Project",
+		acceptBusyLabel: "Updating...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => true,
 	},
 };
 
@@ -321,6 +406,11 @@ function journalPayloadIssue(
 	return null;
 }
 
+type EditedPayload =
+	| JournalEntryPayload
+	| UpdateJournalEntryPayload
+	| Record<string, unknown>;
+
 export function ProposalCard({
 	proposal,
 	onDecide,
@@ -328,13 +418,23 @@ export function ProposalCard({
 	proposal: PendingProposal;
 	onDecide: (
 		decision: "accept" | "reject" | "edit",
-		editedPayload?: JournalEntryPayload | UpdateJournalEntryPayload,
+		editedPayload?: EditedPayload,
 	) => void;
 }) {
 	const editFormId = useId();
 	const occurredAtInputId = `${editFormId}-proposal-edit-occurred-at`;
 	const endedAtInputId = `${editFormId}-proposal-edit-ended-at`;
 	const bodyInputId = `${editFormId}-proposal-edit-body`;
+	const todoTitleInputId = `${editFormId}-proposal-edit-todo-title`;
+	const todoNoteInputId = `${editFormId}-proposal-edit-todo-note`;
+	const todoStatusInputId = `${editFormId}-proposal-edit-todo-status`;
+	const personNameInputId = `${editFormId}-proposal-edit-person-name`;
+	const personNoteInputId = `${editFormId}-proposal-edit-person-note`;
+	const personAliasesInputId = `${editFormId}-proposal-edit-person-aliases`;
+	const projectNameInputId = `${editFormId}-proposal-edit-project-name`;
+	const projectOutcomeInputId = `${editFormId}-proposal-edit-project-outcome`;
+	const projectNoteInputId = `${editFormId}-proposal-edit-project-note`;
+	const projectStatusInputId = `${editFormId}-proposal-edit-project-status`;
 	const { status, payload, rationale, mutation_kind } = proposal;
 	const occurredAt = textField(payload, "occurred_at");
 	const endedAt = textField(payload, "ended_at");
@@ -354,11 +454,27 @@ export function ProposalCard({
 	const isCreateProposal = mutation_kind === "create_journal_entry";
 	const isUpdateProposal = mutation_kind === "update_journal_entry";
 	const isDeleteProposal = mutation_kind === "delete_journal_entry";
-	const isGtdProposal =
-		mutation_kind === "create_person" ||
-		mutation_kind === "create_project" ||
-		mutation_kind === "create_todo" ||
-		mutation_kind === "update_todo";
+	// The GTD kinds that render their own inline edit form (vs the journal form).
+	const isCreateTodo = mutation_kind === "create_todo";
+	const isCreatePerson = mutation_kind === "create_person";
+	const isCreateProject = mutation_kind === "create_project";
+	// update_todo edits the proposed PARTIAL in place (title/note, status only when
+	// the partial already carries one); todo_id + the three ref lists ride untouched.
+	const isUpdateTodo = mutation_kind === "update_todo";
+	// update_person/update_project are FULL-DOCUMENT REPLACE: the proposed payload is
+	// the whole new entity body plus a top-level entity_id, so they reuse the
+	// create_person/create_project inline forms (same surfaced fields + overlay logic;
+	// the entity_id rides untouched through the overlay clone).
+	const isUpdatePerson = mutation_kind === "update_person";
+	const isUpdateProject = mutation_kind === "update_project";
+	// The person/project inline forms back BOTH their create and update (full-replace)
+	// kinds — identical surfaced fields, so one form each, keyed by these booleans.
+	const showPersonForm = isCreatePerson || isUpdatePerson;
+	const showProjectForm = isCreateProject || isUpdateProject;
+	// A GTD kind that surfaces an inline edit form (the creates + the updates).
+	const isGtdEdit =
+		isCreateTodo || showPersonForm || showProjectForm || isUpdateTodo;
+	const isGtdProposal = GTD_PROPOSAL_KINDS.has(mutation_kind as ProposalKind);
 	// The single resolved presentation entry: header glyph, accept-button glyph,
 	// summary, review/accepted/rejected copy, accept/reject labels (+ busy variants),
 	// and edit-ability all read from here instead of a per-kind ternary.
@@ -391,7 +507,7 @@ export function ProposalCard({
 	// Last decision attempted, retained across `deciding → error` so retry re-issues the SAME decision. See docs/design/web-chat-ui.md.
 	const lastAttempt = useRef<{
 		decision: "accept" | "reject" | "edit";
-		editedPayload?: JournalEntryPayload | UpdateJournalEntryPayload;
+		editedPayload?: EditedPayload;
 	} | null>(null);
 	const decide = (decision: "accept" | "reject") => {
 		setInFlight(decision);
@@ -412,22 +528,75 @@ export function ProposalCard({
 	const [editOccurredAt, setEditOccurredAt] = useState(occurredAt);
 	const [editEndedAt, setEditEndedAt] = useState(endedAt);
 	const [editBody, setEditBody] = useState(bodyText);
+	// Each GTD form's surfaced fields (seeded from the proposed payload on open). The
+	// journal kinds reuse the journal form. The person/project drafts back both the
+	// create and the full-replace update kinds — the update seed reads the same
+	// surfaced fields, so the create seed is the right initial value either way.
+	const [todoDraft, setTodoDraft] = useState<CreateTodoDraft>(() =>
+		seedCreateTodo(payload),
+	);
+	const [personDraft, setPersonDraft] = useState<CreatePersonDraft>(() =>
+		seedCreatePerson(payload),
+	);
+	const [projectDraft, setProjectDraft] = useState<CreateProjectDraft>(() =>
+		seedCreateProject(payload),
+	);
+	const [updateTodoDraft, setUpdateTodoDraft] = useState<UpdateTodoDraft>(() =>
+		seedUpdateTodo(payload),
+	);
 	const editIssue = isCreateProposal
 		? journalPayloadIssue(editOccurredAt, editBody, editEndedAt)
 		: isUpdateProposal
 			? journalPayloadIssue(editOccurredAt, editBody, editEndedAt, entityId)
 			: null;
+	// Required-field gate for each GTD form: Save is disabled when the required field
+	// (Todo title / Person+Project name) is blank.
+	const todoTitleEmpty = todoDraft.title.trim() === "";
+	const personNameEmpty = personDraft.name.trim() === "";
+	const projectNameEmpty = projectDraft.name.trim() === "";
+	// update_todo: title is required ONLY when the partial proposed one (setting an
+	// existing title to "" would be invalid). A partial with no title key has no
+	// title field to gate, so Save stays enabled.
+	const updateTodoTitleEmpty =
+		updateTodoDraft.titlePresent && updateTodoDraft.title.trim() === "";
+	// The single required-field gate the GTD Save reads, by form. update_person/
+	// update_project share the create person/project gates (name required).
+	const gtdRequiredEmpty = isCreateTodo
+		? todoTitleEmpty
+		: showPersonForm
+			? personNameEmpty
+			: showProjectForm
+				? projectNameEmpty
+				: updateTodoTitleEmpty;
 	const bodyRef = useRef<HTMLTextAreaElement>(null);
 	const openEdit = () => {
 		if (!canEdit) return;
-		setEditOccurredAt(occurredAt);
-		setEditEndedAt(endedAt);
-		setEditBody(bodyText);
+		if (isCreateTodo) {
+			setTodoDraft(seedCreateTodo(payload));
+		} else if (showPersonForm) {
+			setPersonDraft(
+				isUpdatePerson ? seedUpdatePerson(payload) : seedCreatePerson(payload),
+			);
+		} else if (showProjectForm) {
+			setProjectDraft(
+				isUpdateProject
+					? seedUpdateProject(payload)
+					: seedCreateProject(payload),
+			);
+		} else if (isUpdateTodo) {
+			setUpdateTodoDraft(seedUpdateTodo(payload));
+		} else {
+			setEditOccurredAt(occurredAt);
+			setEditEndedAt(endedAt);
+			setEditBody(bodyText);
+		}
 		setEditing(true);
 	};
 	useEffect(() => {
-		if (editing) bodyRef.current?.focus();
-	}, [editing]);
+		// The journal form focuses its body textarea on open; each GTD form focuses
+		// its required field via the input's autoFocus (EditorInput forwards no ref).
+		if (editing && !isGtdEdit) bodyRef.current?.focus();
+	}, [editing, isGtdEdit]);
 	const saveEdit = () => {
 		if (inFlight !== null || proposal.status === "deciding") return;
 		if (editIssue !== null) return;
@@ -435,6 +604,32 @@ export function ProposalCard({
 		const decisionPayload = entityId
 			? { entity_id: entityId, ...editedPayload }
 			: editedPayload;
+		setInFlight("edit");
+		setEditing(false);
+		lastAttempt.current = { decision: "edit", editedPayload: decisionPayload };
+		onDecide("edit", decisionPayload);
+	};
+	// Route each GTD kind to its pure overlay (proposalEdit), commit as a single edit
+	// decision through the same inFlight/lastAttempt/retry plumbing as the journal
+	// form. Save is gated on the kind's required field. update_person/update_project
+	// reuse the person/project drafts but route to their full-replace overlays (which
+	// preserve the top-level entity_id + any unsurfaced field).
+	const saveGtdEdit = () => {
+		if (inFlight !== null || proposal.status === "deciding") return;
+		if (gtdRequiredEmpty) return;
+		const decisionPayload = isCreateTodo
+			? overlayCreateTodo(payload, todoDraft)
+			: showPersonForm
+				? (isUpdatePerson ? overlayUpdatePerson : overlayCreatePerson)(
+						payload,
+						personDraft,
+					)
+				: showProjectForm
+					? (isUpdateProject ? overlayUpdateProject : overlayCreateProject)(
+							payload,
+							projectDraft,
+						)
+					: overlayUpdateTodo(payload, updateTodoDraft);
 		setInFlight("edit");
 		setEditing(false);
 		lastAttempt.current = { decision: "edit", editedPayload: decisionPayload };
@@ -485,71 +680,304 @@ export function ProposalCard({
 			</header>
 
 			{editing ? (
-				<form
-					onSubmit={(event) => {
-						event.preventDefault();
-						saveEdit();
-					}}
-					className="flex flex-col gap-3 border-border border-t pt-3"
-				>
-					<label className="flex flex-col gap-1.5" htmlFor={occurredAtInputId}>
-						<span className="text-xs font-medium text-muted-foreground">
-							Occurred at
-						</span>
-						<Input
-							id={occurredAtInputId}
-							value={editOccurredAt}
-							onChange={(event) => setEditOccurredAt(event.target.value)}
-							className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
-						/>
-					</label>
-					<label className="flex flex-col gap-1.5" htmlFor={endedAtInputId}>
-						<span className="text-xs font-medium text-muted-foreground">
-							Ended at
-						</span>
-						<Input
-							id={endedAtInputId}
-							value={editEndedAt}
-							onChange={(event) => setEditEndedAt(event.target.value)}
-							className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
-						/>
-					</label>
-					<label className="flex flex-col gap-1.5" htmlFor={bodyInputId}>
-						<span className="text-xs font-medium text-muted-foreground">
-							Body
-						</span>
-						<textarea
-							id={bodyInputId}
-							ref={bodyRef}
-							value={editBody}
-							onChange={(event) => setEditBody(event.target.value)}
-							className="min-h-24 rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-						/>
-					</label>
-					{editIssue ? (
-						<p role="alert" className="text-sm text-destructive">
-							Edit required fields: {editIssue}.
-						</p>
-					) : null}
-					<footer className="flex items-center gap-2 pt-1">
-						<button
-							type="submit"
-							disabled={submitting || editIssue !== null}
-							className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+				isGtdEdit ? (
+					<form
+						onSubmit={(event) => {
+							event.preventDefault();
+							saveGtdEdit();
+						}}
+						className="flex flex-col gap-3 border-border border-t pt-3"
+					>
+						{/* One inline form per GTD form (the person/project forms back both
+						    their create and full-replace update kinds). Each surfaces exactly
+						    the fields the user can change (approval-gate legibility); the
+						    required field (Todo title / Person+Project name) autoFocuses on
+						    open (mirrors the journal form focusing its body — autoFocus rides
+						    through EditorInput → Input onto the real <input>). */}
+						{isCreateTodo ? (
+							<>
+								<EditorField label="Title" htmlFor={todoTitleInputId}>
+									<EditorInput
+										id={todoTitleInputId}
+										autoFocus
+										value={todoDraft.title}
+										onChange={(event) =>
+											setTodoDraft((d) => ({ ...d, title: event.target.value }))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Note" htmlFor={todoNoteInputId}>
+									<EditorTextarea
+										id={todoNoteInputId}
+										value={todoDraft.note}
+										onChange={(event) =>
+											setTodoDraft((d) => ({ ...d, note: event.target.value }))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Status" htmlFor={todoStatusInputId}>
+									<EditorSelect
+										id={todoStatusInputId}
+										value={todoDraft.status}
+										onChange={(event) =>
+											setTodoDraft((d) => ({
+												...d,
+												status: event.target.value as TodoEditStatus,
+											}))
+										}
+									>
+										{TODO_STATUS_OPTIONS.map((o) => (
+											<option key={o.value} value={o.value}>
+												{o.label}
+											</option>
+										))}
+									</EditorSelect>
+								</EditorField>
+							</>
+						) : showPersonForm ? (
+							<>
+								<EditorField label="Name" htmlFor={personNameInputId}>
+									<EditorInput
+										id={personNameInputId}
+										autoFocus
+										value={personDraft.name}
+										onChange={(event) =>
+											setPersonDraft((d) => ({
+												...d,
+												name: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Note" htmlFor={personNoteInputId}>
+									<EditorTextarea
+										id={personNoteInputId}
+										value={personDraft.note}
+										onChange={(event) =>
+											setPersonDraft((d) => ({
+												...d,
+												note: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Aliases" htmlFor={personAliasesInputId}>
+									<EditorInput
+										id={personAliasesInputId}
+										value={personDraft.aliases}
+										placeholder="Other names, comma-separated"
+										onChange={(event) =>
+											setPersonDraft((d) => ({
+												...d,
+												aliases: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+							</>
+						) : showProjectForm ? (
+							<>
+								<EditorField label="Name" htmlFor={projectNameInputId}>
+									<EditorInput
+										id={projectNameInputId}
+										autoFocus
+										value={projectDraft.name}
+										onChange={(event) =>
+											setProjectDraft((d) => ({
+												...d,
+												name: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Outcome" htmlFor={projectOutcomeInputId}>
+									<EditorTextarea
+										id={projectOutcomeInputId}
+										value={projectDraft.outcome}
+										onChange={(event) =>
+											setProjectDraft((d) => ({
+												...d,
+												outcome: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Note" htmlFor={projectNoteInputId}>
+									<EditorTextarea
+										id={projectNoteInputId}
+										value={projectDraft.note}
+										onChange={(event) =>
+											setProjectDraft((d) => ({
+												...d,
+												note: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								<EditorField label="Status" htmlFor={projectStatusInputId}>
+									<EditorSelect
+										id={projectStatusInputId}
+										value={projectDraft.status}
+										onChange={(event) =>
+											setProjectDraft((d) => ({
+												...d,
+												status: event.target.value as ProjectEditStatus,
+											}))
+										}
+									>
+										{PROJECT_STATUS_OPTIONS.map((o) => (
+											<option key={o.value} value={o.value}>
+												{o.label}
+											</option>
+										))}
+									</EditorSelect>
+								</EditorField>
+							</>
+						) : (
+							/* update_todo — edits the proposed PARTIAL in place. Title shows
+							   only when the partial proposed one; Status shows only when the
+							   partial carried a status (surfacing a select would inject an
+							   unrequested field into the partial). Note is always surfaced. */
+							<>
+								{updateTodoDraft.titlePresent ? (
+									<EditorField label="Title" htmlFor={todoTitleInputId}>
+										<EditorInput
+											id={todoTitleInputId}
+											autoFocus
+											value={updateTodoDraft.title}
+											onChange={(event) =>
+												setUpdateTodoDraft((d) => ({
+													...d,
+													title: event.target.value,
+												}))
+											}
+										/>
+									</EditorField>
+								) : null}
+								<EditorField label="Note" htmlFor={todoNoteInputId}>
+									<EditorTextarea
+										id={todoNoteInputId}
+										autoFocus={!updateTodoDraft.titlePresent}
+										value={updateTodoDraft.note}
+										onChange={(event) =>
+											setUpdateTodoDraft((d) => ({
+												...d,
+												note: event.target.value,
+											}))
+										}
+									/>
+								</EditorField>
+								{updateTodoDraft.statusPresent ? (
+									<EditorField label="Status" htmlFor={todoStatusInputId}>
+										<EditorSelect
+											id={todoStatusInputId}
+											value={updateTodoDraft.status}
+											onChange={(event) =>
+												setUpdateTodoDraft((d) => ({
+													...d,
+													status: event.target.value as TodoEditStatus,
+												}))
+											}
+										>
+											{TODO_STATUS_OPTIONS.map((o) => (
+												<option key={o.value} value={o.value}>
+													{o.label}
+												</option>
+											))}
+										</EditorSelect>
+									</EditorField>
+								) : null}
+							</>
+						)}
+						<footer className="flex items-center gap-2 pt-1">
+							<button
+								type="submit"
+								disabled={submitting || gtdRequiredEmpty}
+								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								<Check className="size-4" aria-hidden />
+								Save changes
+							</button>
+							<button
+								type="button"
+								disabled={submitting}
+								onClick={() => setEditing(false)}
+								className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								Cancel
+							</button>
+						</footer>
+					</form>
+				) : (
+					<form
+						onSubmit={(event) => {
+							event.preventDefault();
+							saveEdit();
+						}}
+						className="flex flex-col gap-3 border-border border-t pt-3"
+					>
+						<label
+							className="flex flex-col gap-1.5"
+							htmlFor={occurredAtInputId}
 						>
-							<Check className="size-4" aria-hidden />
-							Save changes
-						</button>
-						<button
-							type="button"
-							disabled={submitting}
-							onClick={() => setEditing(false)}
-							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-						>
-							Cancel
-						</button>
-					</footer>
-				</form>
+							<span className="text-xs font-medium text-muted-foreground">
+								Occurred at
+							</span>
+							<Input
+								id={occurredAtInputId}
+								value={editOccurredAt}
+								onChange={(event) => setEditOccurredAt(event.target.value)}
+								className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
+							/>
+						</label>
+						<label className="flex flex-col gap-1.5" htmlFor={endedAtInputId}>
+							<span className="text-xs font-medium text-muted-foreground">
+								Ended at
+							</span>
+							<Input
+								id={endedAtInputId}
+								value={editEndedAt}
+								onChange={(event) => setEditEndedAt(event.target.value)}
+								className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
+							/>
+						</label>
+						<label className="flex flex-col gap-1.5" htmlFor={bodyInputId}>
+							<span className="text-xs font-medium text-muted-foreground">
+								Body
+							</span>
+							<textarea
+								id={bodyInputId}
+								ref={bodyRef}
+								value={editBody}
+								onChange={(event) => setEditBody(event.target.value)}
+								className="min-h-24 rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+							/>
+						</label>
+						{editIssue ? (
+							<p role="alert" className="text-sm text-destructive">
+								Edit required fields: {editIssue}.
+							</p>
+						) : null}
+						<footer className="flex items-center gap-2 pt-1">
+							<button
+								type="submit"
+								disabled={submitting || editIssue !== null}
+								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								<Check className="size-4" aria-hidden />
+								Save changes
+							</button>
+							<button
+								type="button"
+								disabled={submitting}
+								onClick={() => setEditing(false)}
+								className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+							>
+								Cancel
+							</button>
+						</footer>
+					</form>
+				)
 			) : (
 				<>
 					{isCreateProposal || isUpdateProposal || isDeleteProposal ? (
@@ -783,7 +1211,54 @@ function GtdSection({
 		);
 	}
 
+	// update_person is a FULL-DOCUMENT REPLACE: the proposed payload IS the new Person
+	// body (name + note?/aliases?) plus a top-level entity_id routing key, so its
+	// read-only detail mirrors create_person's (the entity_id rides untouched on
+	// overlay but is not surfaced here).
+	if (mutationKind === "update_person") {
+		const note = textField(payload, "note");
+		const aliases = arrayField(payload, "aliases").filter(
+			(a): a is string => typeof a === "string",
+		);
+		return (
+			<section className="flex flex-col gap-2">
+				<p className="text-xs font-medium tracking-normal text-muted-foreground">
+					Person
+				</p>
+				<dl className="flex flex-col gap-1.5 text-sm">
+					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
+					{note ? <Field label="Note" value={note} /> : null}
+					{aliases.length > 0 ? (
+						<Field label="Aliases" value={aliases.join(", ")} />
+					) : null}
+				</dl>
+			</section>
+		);
+	}
+
 	if (mutationKind === "create_project") {
+		const outcome = textField(payload, "outcome");
+		const status = textField(payload, "status");
+		const note = textField(payload, "note");
+		return (
+			<section className="flex flex-col gap-2">
+				<p className="text-xs font-medium tracking-normal text-muted-foreground">
+					Project
+				</p>
+				<dl className="flex flex-col gap-1.5 text-sm">
+					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
+					{outcome ? <Field label="Outcome" value={outcome} /> : null}
+					{status ? <Field label="Status" value={status} /> : null}
+					{note ? <Field label="Note" value={note} /> : null}
+				</dl>
+			</section>
+		);
+	}
+
+	// update_project is a FULL-DOCUMENT REPLACE: the proposed payload IS the new
+	// Project body (name + outcome?/note?/status? + preserved review cadence/dates)
+	// plus a top-level entity_id, so its read-only detail mirrors create_project's.
+	if (mutationKind === "update_project") {
 		const outcome = textField(payload, "outcome");
 		const status = textField(payload, "status");
 		const note = textField(payload, "note");
