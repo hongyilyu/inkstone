@@ -1,0 +1,17 @@
+{
+	"name": "@inkstone/provider-helper",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"dependencies": {
+		"@earendil-works/pi-ai": "0.74.0"
+	},
+	"scripts": {
+		"check": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@types/node": "^22.0.0",
+		"tsx": "^4.8.1",
+		"typescript": "^6.0.0"
+	}
+}

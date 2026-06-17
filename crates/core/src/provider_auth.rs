@@ -81,7 +81,8 @@ enum HelperLine {
 /// invocation; tests point it at a stub.
 async fn refresh_via_helper(refresh_token: &str) -> Result<Credentials> {
     let cmd = std::env::var("INKSTONE_PROVIDER_HELPER_CMD").unwrap_or_else(|_| {
-        "packages/worker/node_modules/.bin/tsx packages/worker/src/provider.ts refresh".to_string()
+        "packages/provider-helper/node_modules/.bin/tsx packages/provider-helper/src/provider.ts refresh"
+            .to_string()
     });
     let mut parts = cmd.split_whitespace();
     let program = parts.next().context("INKSTONE_PROVIDER_HELPER_CMD is empty")?;

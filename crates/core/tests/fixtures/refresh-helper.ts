@@ -1,5 +1,5 @@
 // Provider Helper STUB for slice-7 tests (refresh mode only). Stands in for
-// packages/worker/src/provider.ts so the Core refresh-orchestration test
+// packages/provider-helper/src/provider.ts so the Core refresh-orchestration test
 // never touches real OpenAI. Node builtins only.
 //
 // Reads one stdin line `{"refresh":"<token>"}`, records this invocation by

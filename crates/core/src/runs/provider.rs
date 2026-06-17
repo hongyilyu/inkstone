@@ -87,7 +87,7 @@ pub(super) async fn handle_login_start(
         }
 
         let cmd = std::env::var("INKSTONE_PROVIDER_LOGIN_CMD").unwrap_or_else(|_| {
-            "packages/worker/node_modules/.bin/tsx packages/worker/src/provider.ts login"
+            "packages/provider-helper/node_modules/.bin/tsx packages/provider-helper/src/provider.ts login"
                 .to_string()
         });
         let mut parts = cmd.split_whitespace();

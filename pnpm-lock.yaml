@@ -351,6 +351,22 @@ importers:
         specifier: ^4.1.7
         version: 4.1.7(@types/node@22.19.19)(jsdom@25.0.1)(vite@8.0.13(@types/node@22.19.19)(esbuild@0.28.0)(jiti@2.7.0)(tsx@4.22.3))
 
+  packages/provider-helper:
+    dependencies:
+      '@earendil-works/pi-ai':
+        specifier: 0.74.0
+        version: 0.74.0(ws@8.21.0)(zod@4.4.3)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.19
+      tsx:
+        specifier: ^4.8.1
+        version: 4.22.3
+      typescript:
+        specifier: ^6.0.0
+        version: 6.0.3
+
   packages/ui-sdk:
     dependencies:
       '@effect/platform':
