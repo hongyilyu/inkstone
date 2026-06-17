@@ -136,6 +136,24 @@ describe("manifestCodec.toAgentMessages", () => {
 		expect(msg.content).toEqual([{ type: "text", text: "just talking" }]);
 	});
 
+	it("coerces a non-object tool-call arguments payload to an empty object", () => {
+		// `arguments` is S.Unknown on the wire — a string/array/null must not reach
+		// the toolCall as a non-object. Cast through unknown to feed an invalid shape.
+		const [msg] = asRecords(
+			manifestCodec.toAgentMessages(
+				manifest([
+					{
+						role: "assistant",
+						tool_calls: [
+							{ id: "tc_1", name: "read_thread", arguments: "oops" as unknown },
+						],
+					},
+				] as WorkerManifest["messages"]),
+			),
+		);
+		expect((msg.content as AnyMsg[])[0].arguments).toEqual({});
+	});
+
 	it("preserves order across a mixed transcript", () => {
 		const out = manifestCodec.toAgentMessages(
 			manifest([

@@ -45,11 +45,19 @@ function toAgentMessages(manifest: WorkerManifest): AgentMessage[] {
 			assistant.content.push({ type: "text", text: m.text });
 		}
 		for (const tc of m.tool_calls ?? []) {
+			// `arguments` is `S.Unknown` on the wire (ManifestToolCall) — coerce any
+			// non-object payload to {} so the toolCall always carries a real object.
+			const args =
+				typeof tc.arguments === "object" &&
+				tc.arguments !== null &&
+				!Array.isArray(tc.arguments)
+					? (tc.arguments as Record<string, unknown>)
+					: {};
 			assistant.content.push({
 				type: "toolCall",
 				id: tc.id,
 				name: tc.name,
-				arguments: (tc.arguments ?? {}) as Record<string, unknown>,
+				arguments: args,
 			});
 		}
 		return assistant;

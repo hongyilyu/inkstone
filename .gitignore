@@ -6,6 +6,8 @@ target
 .env.*
 .DS_Store
 .claude/worktrees
+.claude/hooks
+.claude/settings.json
 .agents/runs
 **/.codex
 .ci-pass

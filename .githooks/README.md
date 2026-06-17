@@ -2,7 +2,7 @@
 
 Shared, committed hooks. Enable once per clone:
 
-```
+```bash
 git config core.hooksPath .githooks
 ```
 
