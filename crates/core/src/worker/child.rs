@@ -29,22 +29,22 @@ pub(super) struct ChildWorker {
 }
 
 impl ChildWorker {
-    /// Spawn the Worker from `cmd` (whitespace-split program + args), write the
-    /// serialized `manifest_line` to its stdin, and return the live transport.
-    /// `run_id` is carried only for Diagnostic Log correlation (ADR-0038).
-    /// `Err(())` on any pre-stream failure (empty cmd, spawn failure, missing
-    /// stdio) — the caller maps it to `finalize_error`.
-    pub(super) async fn spawn(run_id: Uuid, cmd: &str, manifest_line: String) -> Result<Self, ()> {
-        let mut parts = cmd.split_whitespace();
-        let Some(program) = parts.next() else {
-            tracing::error!(event = "worker.cmd_empty", %run_id);
-            return Err(());
-        };
-        let args: Vec<&str> = parts.collect();
-
+    /// Spawn the Worker from an already-resolved `program` + `args` (the
+    /// `crate::launch` resolver owns the env-override/tsx-default decision and
+    /// the shlex parse — ADR-0041), write the serialized `manifest_line` to its
+    /// stdin, and return the live transport. `run_id` is carried only for
+    /// Diagnostic Log correlation (ADR-0038). `Err(())` on any pre-stream
+    /// failure (spawn failure, missing stdio) — the caller maps it to
+    /// `finalize_error`.
+    pub(super) async fn spawn(
+        run_id: Uuid,
+        program: &str,
+        args: &[String],
+        manifest_line: String,
+    ) -> Result<Self, ()> {
         let mut command = Command::new(program);
         command
-            .args(&args)
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

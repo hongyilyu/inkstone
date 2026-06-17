@@ -19,15 +19,22 @@ use crate::hub::{self, Hubs, RunHub};
 use crate::protocol::{ManifestMessage, WorkerManifest, WorkflowManifest};
 use crate::workflow::Workflow;
 
+use crate::launch::{self, Role};
 use child::ChildWorker;
 use run::run_loop;
 
-/// The Worker command line. `INKSTONE_WORKER_CMD` overrides it (tests point it
-/// at a fixture worker); otherwise the bundled `tsx` entrypoint.
-fn worker_cmd() -> String {
-    std::env::var("INKSTONE_WORKER_CMD").unwrap_or_else(|_| {
-        "packages/worker/node_modules/.bin/tsx packages/worker/src/cli.ts".to_string()
-    })
+/// Resolve the Worker launch command (ADR-0041): the `INKSTONE_WORKER_CMD`
+/// override (shlex-parsed) or the bundled `tsx` entrypoint. An empty override is
+/// an error; logged as `worker.cmd_empty` (preserving the old guard's event) and
+/// surfaced as `None` so the caller runs `finalize_error`.
+fn resolve_worker_cmd(run_id: Uuid) -> Option<launch::ResolvedCommand> {
+    match launch::resolve(Role::Worker) {
+        Ok(cmd) => Some(cmd),
+        Err(e) => {
+            tracing::error!(event = "worker.cmd_empty", %run_id, error = ?e);
+            None
+        }
+    }
 }
 
 /// Spawn a Worker for `run_id` (fresh path). Returns immediately; a Tokio task
@@ -66,7 +73,11 @@ pub fn spawn(
                 hub::remove(&hubs, run_id);
                 return;
             }
-            match ChildWorker::spawn(run_id, &worker_cmd(), line).await {
+            let Some(cmd) = resolve_worker_cmd(run_id) else {
+                finalize_error(&pool, &hubs, run_id).await;
+                return;
+            };
+            match ChildWorker::spawn(run_id, &cmd.program, &cmd.args, line).await {
                 Ok(worker) => {
                     if run_hub.is_cancelled() {
                         drop(worker);
@@ -151,7 +162,11 @@ pub async fn resume(run_id: Uuid, pool: &SqlitePool, hubs: &Hubs) -> anyhow::Res
                 hub::remove(&hubs, run_id);
                 return;
             }
-            match ChildWorker::spawn(run_id, &worker_cmd(), line).await {
+            let Some(cmd) = resolve_worker_cmd(run_id) else {
+                finalize_error(&pool, &hubs, run_id).await;
+                return;
+            };
+            match ChildWorker::spawn(run_id, &cmd.program, &cmd.args, line).await {
                 Ok(worker) => {
                     run_loop(
                         worker,
