@@ -880,6 +880,7 @@ describe("ProposalCard", () => {
 					{ person_id: "alice-1", role: "related" },
 					{ person_id: "bob-1", role: "waiting_on" },
 				],
+				source_journal_entry_id: "je-7",
 			},
 			rationale: "the user named an explicit obligation",
 			status: "pending",
@@ -957,6 +958,9 @@ describe("ProposalCard", () => {
 					{ person_id: "alice-1", role: "related" },
 					{ person_id: "bob-1", role: "waiting_on" },
 				],
+				// Provenance rides untouched through the overlay clone — the field
+				// this test's name promises.
+				source_journal_entry_id: "je-7",
 			});
 			expect(onDecide).toHaveBeenCalledTimes(1);
 		});
@@ -1058,6 +1062,29 @@ describe("ProposalCard", () => {
 				remove_person_ids: ["bob-1"],
 			});
 			expect(onDecide).toHaveBeenCalledTimes(1);
+		});
+
+		// The update_todo Status select is wired through its OWN setter
+		// (setUpdateTodoDraft) and overlay (overlayUpdateTodo), distinct from
+		// create_todo's — so drive the card's select→overlay path and assert the
+		// coupled timestamp, not just the unit-tested overlay.
+		it("changing Status completed→active clears completed_at in the edited partial", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
+			fireEvent.change(screen.getByRole("combobox", { name: /status/i }), {
+				target: { value: "active" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+			const [, payload] = onDecide.mock.calls[0];
+			expect(payload.todo.status).toBe("active");
+			expect("completed_at" in payload.todo).toBe(false);
+			expect("dropped_at" in payload.todo).toBe(false);
+			// The partial's identity + ref lists still ride untouched.
+			expect(payload.todo_id).toBe("todo-7");
+			expect(payload.set_person_refs).toEqual([
+				{ person_id: "dave-1", role: "related" },
+			]);
 		});
 
 		it("blanking a proposed Note omits the note key from the edited partial", () => {

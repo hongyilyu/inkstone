@@ -68,6 +68,20 @@ type ProposalKind =
 	| "update_person"
 	| "update_project";
 
+// The GTD proposal kinds (Person/Project/Todo create+update) — the single source
+// of truth for "is this a GTD proposal", driving the read-only detail render
+// (`isGtdProposal`). The edit-affordance gate (`isGtdEdit`) is kept SEPARATE
+// because it gates a different surface (which inline edit-form variant renders),
+// so a future render-only GTD kind could legitimately split the two.
+const GTD_PROPOSAL_KINDS: ReadonlySet<ProposalKind> = new Set([
+	"create_person",
+	"create_project",
+	"create_todo",
+	"update_todo",
+	"update_person",
+	"update_project",
+]);
+
 // Per-kind presentation for a Proposal — the review card's analogue of KIND_META
 // (lib/libraryItems): one entry concentrates the copy, labels, glyph, and
 // edit-ability that distinguish one proposal kind from another, so a new kind is
@@ -98,9 +112,11 @@ interface ProposalView {
 	rejectLabel: string;
 	rejectBusyLabel: string;
 	/**
-	 * Whether the inline Edit affordance is offered: only journal create/update, and
-	 * only when the body carries no entity_ref (no GTD editor in V0). A function of
-	 * the already-read `bodyHasEntityRef` rather than the raw payload.
+	 * Whether the inline Edit affordance is offered. Journal create/update gate on
+	 * the body carrying no entity_ref (the `bodyHasEntityRef` arg); every GTD
+	 * create/update kind is always editable and ignores the arg. Delete, the
+	 * reference weave, and the fallback view are never editable. A function of the
+	 * already-read `bodyHasEntityRef` rather than the raw payload.
 	 */
 	canEdit: (bodyHasEntityRef: boolean) => boolean;
 }
@@ -458,13 +474,7 @@ export function ProposalCard({
 	// A GTD kind that surfaces an inline edit form (the creates + the updates).
 	const isGtdEdit =
 		isCreateTodo || showPersonForm || showProjectForm || isUpdateTodo;
-	const isGtdProposal =
-		mutation_kind === "create_person" ||
-		mutation_kind === "create_project" ||
-		mutation_kind === "create_todo" ||
-		mutation_kind === "update_todo" ||
-		mutation_kind === "update_person" ||
-		mutation_kind === "update_project";
+	const isGtdProposal = GTD_PROPOSAL_KINDS.has(mutation_kind as ProposalKind);
 	// The single resolved presentation entry: header glyph, accept-button glyph,
 	// summary, review/accepted/rejected copy, accept/reject labels (+ busy variants),
 	// and edit-ability all read from here instead of a per-kind ternary.
