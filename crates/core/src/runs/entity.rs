@@ -9,9 +9,10 @@ use tokio::sync::mpsc::UnboundedSender;
 use super::handler::{self, HandlerError};
 use crate::db;
 use crate::mutate::{self, MutateError};
+use crate::db::EntityProvenance;
 use crate::protocol::{
     EntityListParams, EntityListResult, EntityMutateParams, EntityMutateResult, EntityRow,
-    ResolvedEntityRef, TodoPersonRefView,
+    EntitySourceView, ResolvedEntityRef, TodoPersonRefView,
 };
 
 pub(super) async fn handle_list(
@@ -50,6 +51,21 @@ pub(super) async fn handle_list(
                     .into_iter()
                     .map(|(person_id, role)| TodoPersonRefView { person_id, role })
                     .collect(),
+                source: row.source.map(|source| match source {
+                    EntityProvenance::Message {
+                        thread_id,
+                        thread_title,
+                    } => EntitySourceView {
+                        thread_id: Some(thread_id),
+                        thread_title: Some(thread_title),
+                        journal_entry_id: None,
+                    },
+                    EntityProvenance::JournalEntry { journal_entry_id } => EntitySourceView {
+                        thread_id: None,
+                        thread_title: None,
+                        journal_entry_id: Some(journal_entry_id),
+                    },
+                }),
             })
             .collect();
 

@@ -209,6 +209,26 @@ pub struct EntityRow {
     /// for non-Todo rows and Todos with no references.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub person_refs: Vec<TodoPersonRefView>,
+    /// The Entity's origin provenance ("Captured from", ADR-0030). Omitted for a
+    /// user-authored Entity (a direct Library write records no source row).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<EntitySourceView>,
+}
+
+/// One Entity's origin provenance on an `entity/list` row (ADR-0030). A FLAT
+/// optional shape, safe because Core is the sole producer and fills the fields
+/// from one `entity_sources` row whose CHECK guarantees exactly one source kind:
+/// a user Message source carries `thread_id` + `thread_title` (link back to the
+/// Thread); a Journal-Entry source carries `journal_entry_id` (link to it in the
+/// Library). The Client reads `journal_entry_id` first, else the Thread fields.
+#[derive(Debug, Serialize)]
+pub struct EntitySourceView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub journal_entry_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -658,6 +678,73 @@ mod mirror_tests {
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v, json!({}));
         assert!(v.get("entity_id").is_none());
+    }
+
+    #[test]
+    fn entity_row_omits_source_when_none() {
+        // A user-authored Entity records no `created_from` source, so the wire
+        // row carries no `source` key at all (the TS mirror types it optional).
+        let r = EntityRow {
+            id: UUID_A.to_string(),
+            r#type: "bookmark".to_string(),
+            data: json!({ "title": "Docs" }),
+            created_at: 1,
+            updated_at: 1,
+            refs: vec![],
+            person_refs: vec![],
+            source: None,
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert!(v.get("source").is_none());
+    }
+
+    #[test]
+    fn entity_row_encodes_message_source() {
+        // A Message-sourced Entity carries the Thread to link back to; the
+        // Journal-Entry field is omitted (flat-optional, exactly-one-kind).
+        let r = EntityRow {
+            id: UUID_A.to_string(),
+            r#type: "todo".to_string(),
+            data: json!({ "title": "Buy milk" }),
+            created_at: 1,
+            updated_at: 1,
+            refs: vec![],
+            person_refs: vec![],
+            source: Some(EntitySourceView {
+                thread_id: Some(UUID_B.to_string()),
+                thread_title: Some("Morning brain dump".to_string()),
+                journal_entry_id: None,
+            }),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(
+            v["source"],
+            json!({ "thread_id": UUID_B, "thread_title": "Morning brain dump" }),
+        );
+        assert!(v["source"].get("journal_entry_id").is_none());
+    }
+
+    #[test]
+    fn entity_row_encodes_journal_entry_source() {
+        // A Journal-Entry-sourced Entity carries only `journal_entry_id`; the
+        // Thread fields are omitted.
+        let r = EntityRow {
+            id: UUID_A.to_string(),
+            r#type: "todo".to_string(),
+            data: json!({ "title": "Email Alice" }),
+            created_at: 1,
+            updated_at: 1,
+            refs: vec![],
+            person_refs: vec![],
+            source: Some(EntitySourceView {
+                thread_id: None,
+                thread_title: None,
+                journal_entry_id: Some(UUID_B.to_string()),
+            }),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["source"], json!({ "journal_entry_id": UUID_B }));
+        assert!(v["source"].get("thread_id").is_none());
     }
 
     #[test]

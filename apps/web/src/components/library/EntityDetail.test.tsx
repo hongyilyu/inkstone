@@ -27,6 +27,7 @@ import { RuntimeProvider } from "@/runtime";
 import { EntityDetail } from "./EntityDetail";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
+const { setFocusedThread } = vi.hoisted(() => ({ setFocusedThread: vi.fn() }));
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual =
@@ -37,9 +38,17 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 	};
 });
 
+// The "Captured from" Thread link focuses a thread then routes to chat; spy on
+// the store seam so the test asserts the focus call without a live store.
+vi.mock("@/store/chat", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@/store/chat")>();
+	return { ...actual, setFocusedThread };
+});
+
 afterEach(() => {
 	cleanup();
 	navigate.mockReset();
+	setFocusedThread.mockReset();
 });
 
 // Stub WsClient whose `entityMutate` runs the handler; unused methods die.
@@ -624,5 +633,103 @@ describe("EntityDetail Journal Entry delete", () => {
 				search: {},
 			}),
 		);
+	});
+});
+
+// ── Captured-from provenance footer (ADR-0030) ───────────────────────────────
+
+describe("EntityDetail Captured from", () => {
+	it("links a Thread-sourced Entity back to its originating chat", async () => {
+		const user = userEvent.setup();
+		const todo = todoItem("t_msg", {
+			title: "Buy milk",
+			source: {
+				kind: "thread",
+				threadId: "thr_1",
+				threadTitle: "Morning brain dump",
+			},
+		});
+		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+
+		await user.click(
+			screen.getByRole("button", { name: /Morning brain dump/ }),
+		);
+
+		expect(setFocusedThread).toHaveBeenCalledWith("thr_1");
+		expect(navigate).toHaveBeenCalledWith({ to: "/" });
+	});
+
+	it("links a Journal-Entry-sourced Entity to that entry in the Library", async () => {
+		const user = userEvent.setup();
+		const entry: JournalEntry = {
+			id: "je_1",
+			kind: "journal_entry",
+			occurredAt: "2026-06-10T10:30:00",
+			body: [{ type: "text", text: "Standup notes" }],
+			createdAt: "fixture",
+			recency: 1,
+		};
+		const todo = todoItem("t_je", {
+			title: "Email Alice",
+			source: { kind: "journal_entry", journalEntryId: "je_1" },
+		});
+		renderDetail(<EntityDetail entity={todo} allEntities={[todo, entry]} />);
+
+		// The chip title resolves from the loaded JE (libraryItemTitle of a
+		// text-only entry is its body text).
+		await user.click(screen.getByRole("button", { name: /Standup notes/ }));
+
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/library/$kind",
+			params: { kind: "journal" },
+			search: { id: "je_1" },
+		});
+		expect(setFocusedThread).not.toHaveBeenCalled();
+	});
+
+	it("renders no footer for a user-authored Entity (no source)", () => {
+		const todo = todoItem("t_user", {
+			title: "Hand-made",
+			createdAt: "Jun 14",
+		});
+		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+
+		// A user-authored Entity has no provenance, so the footer is absent
+		// entirely — no "Captured from" header, no origin line.
+		expect(screen.queryByText(/Captured from/)).not.toBeInTheDocument();
+		expect(screen.queryByText(/Created in Library/)).not.toBeInTheDocument();
+	});
+
+	it("renders no footer when the source entry is gone (cascade-deleted)", () => {
+		const todo = todoItem("t_orphan", {
+			title: "Orphaned",
+			source: { kind: "journal_entry", journalEntryId: "missing_je" },
+		});
+		// allEntities lacks `missing_je` → no resolvable target → no dead row.
+		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
+
+		expect(screen.queryByText(/Captured from/)).not.toBeInTheDocument();
+	});
+
+	it("falls back to a label when the source Journal Entry has empty body text", () => {
+		// A text-only entry's title is its body text; an empty body would leave the
+		// link with no accessible name, so the JE branch falls back like the Thread.
+		const entry: JournalEntry = {
+			id: "je_blank",
+			kind: "journal_entry",
+			occurredAt: "2026-06-10T10:30:00",
+			body: [],
+			createdAt: "fixture",
+			recency: 1,
+		};
+		const todo = todoItem("t_blank_je", {
+			title: "From a blank entry",
+			source: { kind: "journal_entry", journalEntryId: "je_blank" },
+		});
+		renderDetail(<EntityDetail entity={todo} allEntities={[todo, entry]} />);
+
+		expect(
+			screen.getByRole("button", { name: /Untitled journal entry/ }),
+		).toBeInTheDocument();
 	});
 });

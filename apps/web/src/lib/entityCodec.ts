@@ -1,6 +1,7 @@
 import type { EntityMutateParams } from "@inkstone/protocol";
 import {
 	type Bookmark,
+	type EntitySource,
 	type JournalEntry,
 	type JournalEntryBodyNode,
 	localNowString,
@@ -25,6 +26,14 @@ export interface LiveEntityRow {
 	readonly created_at: number;
 	readonly refs?: readonly LiveResolvedEntityRef[];
 	readonly person_refs?: readonly LiveTodoPersonRef[];
+	readonly source?: LiveEntitySource;
+}
+
+/** The flat wire provenance shape (ADR-0030); exactly one source kind is set. */
+export interface LiveEntitySource {
+	readonly thread_id?: string;
+	readonly thread_title?: string;
+	readonly journal_entry_id?: string;
 }
 
 export interface LiveTodoPersonRef {
@@ -39,6 +48,39 @@ export interface LiveResolvedEntityRef {
 	readonly target_entity_type: "person" | "project" | "todo";
 	readonly target_title?: string;
 	readonly label_snapshot?: string;
+}
+
+/** A non-empty string id, or undefined — an empty id is treated as absent. */
+function nonEmptyId(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+/**
+ * Map the flat wire provenance (ADR-0030) to the view-model `EntitySource`
+ * union. Reads `journal_entry_id` first, else the Thread fields — the same
+ * precedence Core's exactly-one-kind row guarantees. Returns undefined for a
+ * user-authored Entity (no source) or a malformed/empty source (incl. an
+ * empty-string id, which would otherwise emit a dead link), so a thin row can
+ * never crash the inspector or render a link that navigates nowhere.
+ */
+function parseSource(
+	source: LiveEntitySource | undefined,
+): EntitySource | undefined {
+	if (!source) return undefined;
+	const journalEntryId = nonEmptyId(source.journal_entry_id);
+	if (journalEntryId !== undefined) {
+		return { kind: "journal_entry", journalEntryId };
+	}
+	const threadId = nonEmptyId(source.thread_id);
+	if (threadId !== undefined) {
+		return {
+			kind: "thread",
+			threadId,
+			threadTitle:
+				typeof source.thread_title === "string" ? source.thread_title : "",
+		};
+	}
+	return undefined;
 }
 
 interface JournalEntryData {
@@ -106,6 +148,7 @@ function parseJournalEntry(row: LiveEntityRow): JournalEntry {
 		// round-trip it instead of dropping it (slice-8 trap).
 		endedAt: typeof data.ended_at === "string" ? data.ended_at : undefined,
 		body,
+		source: parseSource(row.source),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies JournalEntry;
@@ -193,6 +236,7 @@ function parseTodo(row: LiveEntityRow): Todo {
 			personId: ref.person_id,
 			role: ref.role,
 		})),
+		source: parseSource(row.source),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Todo;
@@ -217,6 +261,7 @@ function parsePerson(row: LiveEntityRow): Person {
 		name: asString(data.name) ?? "Unnamed",
 		note: asString(data.note),
 		aliases: aliases && aliases.length > 0 ? aliases : undefined,
+		source: parseSource(row.source),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Person;
@@ -257,6 +302,7 @@ function parseProject(row: LiveEntityRow): Project {
 		nextReviewAt: asString(data.next_review_at),
 		lastReviewedAt: asString(data.last_reviewed_at),
 		data: rawData,
+		source: parseSource(row.source),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Project;
@@ -287,6 +333,7 @@ function parseBookmark(row: LiveEntityRow): Bookmark {
 		url: asString(data.url),
 		note: asString(data.note),
 		tags: tags && tags.length > 0 ? tags : undefined,
+		source: parseSource(row.source),
 		recency: row.created_at,
 		createdAt: new Date(row.created_at).toLocaleDateString(),
 	} satisfies Bookmark;

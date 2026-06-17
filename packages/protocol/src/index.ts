@@ -201,6 +201,21 @@ export const TodoPersonRefView = S.Struct({
 });
 export type TodoPersonRefView = S.Schema.Type<typeof TodoPersonRefView>;
 
+/**
+ * One Entity's origin provenance on an `entity/list` row ("Captured from",
+ * ADR-0030). A FLAT optional shape, safe because Core is the sole producer and
+ * fills it from one `entity_sources` row whose CHECK guarantees exactly one
+ * source kind: a user Message source carries `thread_id` + `thread_title` (link
+ * back to the Thread); a Journal-Entry source carries `journal_entry_id` (link to
+ * it in the Library). Read `journal_entry_id` first, else the Thread fields.
+ */
+export const EntitySourceView = S.Struct({
+	thread_id: S.optional(S.String),
+	thread_title: S.optional(S.String),
+	journal_entry_id: S.optional(S.String),
+});
+export type EntitySourceView = S.Schema.Type<typeof EntitySourceView>;
+
 /** One Entity row in an `entity/list` result: the raw tier-2 `entities` columns (ADR-0004). */
 export const EntityRow = S.Struct({
 	id: S.String,
@@ -211,6 +226,8 @@ export const EntityRow = S.Struct({
 	refs: S.optional(S.Array(ResolvedEntityRef)),
 	/** Present on Todo rows: the Todo's Person References (ADR-0032). */
 	person_refs: S.optional(S.Array(TodoPersonRefView)),
+	/** The Entity's origin provenance (ADR-0030); absent for a user-authored Entity. */
+	source: S.optional(EntitySourceView),
 });
 export type EntityRow = S.Schema.Type<typeof EntityRow>;
 

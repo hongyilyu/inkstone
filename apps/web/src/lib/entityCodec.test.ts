@@ -261,6 +261,59 @@ describe("entityCodec parse — todo", () => {
 		expect(vm.dueAt).toBeUndefined();
 	});
 
+	it("carries a Journal-Entry source as provenance (ADR-0030)", () => {
+		const vm = parseTodo(row({}, { source: { journal_entry_id: "je_1" } }));
+		expect(vm.source).toEqual({
+			kind: "journal_entry",
+			journalEntryId: "je_1",
+		});
+	});
+
+	it("carries a Message source as Thread provenance (ADR-0030)", () => {
+		const vm = parseTodo(
+			row(
+				{},
+				{ source: { thread_id: "thr_1", thread_title: "Morning brain dump" } },
+			),
+		);
+		expect(vm.source).toEqual({
+			kind: "thread",
+			threadId: "thr_1",
+			threadTitle: "Morning brain dump",
+		});
+	});
+
+	it("reports no provenance for a user-authored row (no source)", () => {
+		expect(parseTodo(row({})).source).toBeUndefined();
+	});
+
+	it("ignores a thin/empty source object rather than crashing", () => {
+		expect(parseTodo(row({}, { source: {} })).source).toBeUndefined();
+	});
+
+	it("treats an empty-string source id as absent (no dead link)", () => {
+		// An empty thread_id/journal_entry_id is malformed, not a valid target —
+		// degrade to undefined so the inspector never renders a link to nowhere.
+		expect(
+			parseTodo(row({}, { source: { thread_id: "" } })).source,
+		).toBeUndefined();
+		expect(
+			parseTodo(row({}, { source: { journal_entry_id: "  " } })).source,
+		).toBeUndefined();
+	});
+
+	it("prefers the Journal-Entry id when both source fields are present", () => {
+		// Core's exactly-one-kind row makes this unreachable, but the parser must
+		// resolve deterministically regardless: journal_entry_id wins.
+		const vm = parseTodo(
+			row({}, { source: { journal_entry_id: "je_1", thread_id: "thr_1" } }),
+		);
+		expect(vm.source).toEqual({
+			kind: "journal_entry",
+			journalEntryId: "je_1",
+		});
+	});
+
 	it("coerces an unknown status to active", () => {
 		expect(parseTodo(row({ status: "bogus" })).status).toBe("active");
 	});

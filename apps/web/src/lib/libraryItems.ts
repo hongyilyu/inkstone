@@ -14,11 +14,23 @@ export type LibraryItemKind =
 	| "todo"
 	| "bookmark";
 
+/**
+ * Where an Entity came from ("Captured from", ADR-0030), resolved from its
+ * origin `created_from` Entity Source. A Message source carries the Thread to
+ * link back to; a Journal-Entry source carries the source entry's id (link to it
+ * in the Library). Absent on a user-authored Entity (direct Library write).
+ */
+export type EntitySource =
+	| { kind: "thread"; threadId: string; threadTitle: string }
+	| { kind: "journal_entry"; journalEntryId: string };
+
 interface LibraryItemBase {
 	id: string;
 	kind: LibraryItemKind;
 	createdAt: string;
 	recency: number;
+	/** The Entity's capture provenance (ADR-0030); absent when user-authored. */
+	source?: EntitySource;
 }
 
 export interface Person extends LibraryItemBase {

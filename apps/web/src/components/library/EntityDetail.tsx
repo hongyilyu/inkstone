@@ -1,5 +1,11 @@
 import { useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight, Pencil, Trash2 } from "lucide-react";
+import {
+	ArrowUpRight,
+	BookOpenText,
+	MessageSquareText,
+	Pencil,
+	Trash2,
+} from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button.js";
@@ -33,6 +39,7 @@ import {
 	todosForProject,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
+import { setFocusedThread } from "@/store/chat";
 import { BookmarkEditor } from "./BookmarkEditor.js";
 import { EntityGlyph } from "./EntityGlyph.js";
 import { JournalEntryEditor } from "./JournalEntryEditor.js";
@@ -96,11 +103,14 @@ const DELETE_KIND: Record<LibraryItemKind, string> = {
  */
 function InspectorShell({
 	entity,
+	allEntities = [],
 	confirmCopy,
 	renderBody,
 	renderEditor,
 }: {
 	entity: LibraryItem;
+	/** Loaded Library items, used to resolve a Journal-Entry source's title. */
+	allEntities?: LibraryItem[];
 	confirmCopy: string;
 	renderBody: (onOpen: (e: LibraryItem) => void) => ReactNode;
 	renderEditor: (onDone: () => void, onCancel: () => void) => ReactNode;
@@ -169,6 +179,15 @@ function InspectorShell({
 
 			<div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-5 py-5">
 				{renderBody(goToEntity)}
+				<CapturedFrom
+					entity={entity}
+					allEntities={allEntities}
+					onOpenEntity={goToEntity}
+					onOpenThread={(threadId) => {
+						setFocusedThread(threadId);
+						navigate({ to: "/" });
+					}}
+				/>
 			</div>
 
 			<footer className="border-foreground/15 border-t px-5 py-4">
@@ -232,6 +251,7 @@ function TodoDetail({
 	return (
 		<InspectorShell
 			entity={todo}
+			allEntities={allEntities}
 			confirmCopy="Delete this Todo?"
 			renderBody={(onOpen) => (
 				<TodoBody todo={todo} allEntities={allEntities} onOpen={onOpen} />
@@ -260,6 +280,7 @@ function PersonDetail({
 	return (
 		<InspectorShell
 			entity={person}
+			allEntities={allEntities}
 			confirmCopy="Delete this Person?"
 			renderBody={(onOpen) => (
 				<PersonBody person={person} allEntities={allEntities} onOpen={onOpen} />
@@ -291,6 +312,7 @@ function ProjectDetail({
 	return (
 		<InspectorShell
 			entity={project}
+			allEntities={allEntities}
 			confirmCopy="Delete this Project? Its Todos lose their project."
 			renderBody={(onOpen) => (
 				<ProjectBody
@@ -325,6 +347,7 @@ function JournalEntryDetail({
 	return (
 		<InspectorShell
 			entity={journalEntry}
+			allEntities={allEntities}
 			confirmCopy="Delete this Journal Entry?"
 			renderBody={(onOpen) => (
 				<JournalEntryBody
@@ -346,7 +369,13 @@ function JournalEntryDetail({
 	);
 }
 
-/** The Bookmark inspector (ADR-0033/ADR-0036): a read-only body (no relations), edited via `BookmarkEditor`. */
+/**
+ * The Bookmark inspector (ADR-0033/ADR-0036): a read-only body (no relations),
+ * edited via `BookmarkEditor`. Intentionally passes no `allEntities` — a Bookmark
+ * is always a direct user create (the agent never authors one, CONTEXT.md), so it
+ * carries no Entity Source and renders no "Captured from" footer, needing no
+ * entity lookup.
+ */
 function BookmarkDetail({ bookmark }: { bookmark: Bookmark }) {
 	return (
 		<InspectorShell
@@ -362,6 +391,105 @@ function BookmarkDetail({ bookmark }: { bookmark: Bookmark }) {
 				/>
 			)}
 		/>
+	);
+}
+
+/**
+ * The Inspector's "Captured from" provenance footer (ADR-0030). Rendered ONLY
+ * when the Entity's origin resolves to a working link — a Thread source (link
+ * back to the originating chat) or a Journal-Entry source still present in the
+ * Library (link to that entry). Everything else renders nothing: a user-authored
+ * Entity has no source, and an extracted Entity whose source row was removed
+ * (the source Journal Entry/Message was deleted — `entity_sources` cascades) can
+ * no longer point anywhere, so a dead "captured from …" line would mislead. The
+ * signature magenta is reserved for the link title (a rationed "captured-from
+ * link", per DESIGN.md); the footer reads as quiet metadata, not a CTA.
+ */
+function CapturedFrom({
+	entity,
+	allEntities,
+	onOpenEntity,
+	onOpenThread,
+}: {
+	entity: LibraryItem;
+	allEntities: LibraryItem[];
+	onOpenEntity: (e: LibraryItem) => void;
+	onOpenThread: (threadId: string) => void;
+}) {
+	const source = entity.source;
+	if (!source) return null;
+
+	if (source.kind === "journal_entry") {
+		const target = allEntities.find((e) => e.id === source.journalEntryId);
+		// The source entry is gone (deleted): no resolvable link, so render nothing
+		// rather than a dead row.
+		if (!target) return null;
+		return (
+			<ProvenanceFrame>
+				<ProvenanceLink
+					icon={<BookOpenText className="size-4 shrink-0" aria-hidden />}
+					// A text-only entry's title is its body text; fall back so the link
+					// always has an accessible name (mirrors the Thread branch below).
+					title={libraryItemTitle(target) || "Untitled journal entry"}
+					date={entity.createdAt}
+					onClick={() => onOpenEntity(target)}
+				/>
+			</ProvenanceFrame>
+		);
+	}
+
+	return (
+		<ProvenanceFrame>
+			<ProvenanceLink
+				icon={<MessageSquareText className="size-4 shrink-0" aria-hidden />}
+				title={source.threadTitle || "Untitled thread"}
+				date={entity.createdAt}
+				onClick={() => onOpenThread(source.threadId)}
+			/>
+		</ProvenanceFrame>
+	);
+}
+
+/** The hairline-topped wrapper that sets "Captured from" apart as Inspector metadata. */
+function ProvenanceFrame({ children }: { children: ReactNode }) {
+	return (
+		<div className="-mx-2 mt-auto flex flex-col gap-1.5 border-foreground/10 border-t pt-4">
+			<span className="px-2 font-medium text-muted-foreground text-xs">
+				Captured from
+			</span>
+			{children}
+		</div>
+	);
+}
+
+/** A clickable provenance row — same affordance vocabulary as `RelatedRow`. */
+function ProvenanceLink({
+	icon,
+	title,
+	date,
+	onClick,
+}: {
+	icon: ReactNode;
+	title: string;
+	date: string;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			onClick={onClick}
+			className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-secondary/50 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+		>
+			<span className="shrink-0 text-muted-foreground">{icon}</span>
+			<span className="min-w-0 flex-1 truncate text-sm">
+				<span className="font-medium text-primary">{title}</span>
+				<span className="text-muted-foreground"> · {date}</span>
+			</span>
+			<ArrowUpRight
+				className="size-3.5 shrink-0 text-muted-foreground"
+				aria-hidden
+			/>
+		</button>
 	);
 }
 
