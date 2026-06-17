@@ -186,6 +186,38 @@ pub struct ThreadListResult {
     pub threads: Vec<ThreadSummary>,
 }
 
+/// `run/get_history` params: an optional `limit` on how many recent Runs to
+/// return (Core defaults to `RUN_HISTORY_DEFAULT_LIMIT` when omitted/null).
+#[derive(Debug, Default, Deserialize)]
+pub struct RunGetHistoryParams {
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+/// One Run in the `run/get_history` recent-Runs feed (ADR-0028 as-built). `kind`
+/// is the Run's *latest* Run Log milestone verbatim — one of the seven Run Log
+/// kinds, deliberately not folded into `runs.status` (a resumed-still-working
+/// Run reads `proposal_decided`, since `resume` writes no Run Log row). `title`
+/// is the owning Thread's title; `at` is the milestone's ms-epoch `created_at`,
+/// which is also the recency key. Hand-authored wire struct (not a `PayloadSpec`
+/// kind), so it sits outside the schema-parity gate — like `ThreadSummary`.
+#[derive(Debug, Serialize)]
+pub struct RunHistoryItem {
+    pub run_id: String,
+    pub thread_id: String,
+    pub title: String,
+    pub kind: String,
+    pub at: i64,
+}
+
+/// `run/get_history` result: recent Runs, newest-first. Object-wrapper shape
+/// (`{runs: [...]}`) keeps the result forward-extensible, mirroring
+/// `ThreadListResult`.
+#[derive(Debug, Serialize)]
+pub struct RunHistoryResult {
+    pub runs: Vec<RunHistoryItem>,
+}
+
 /// `entity/list` params: the Entity `type` to list, one per call (e.g. `"todo"`,
 /// `"person"`). `r#type` serializes as the wire field `"type"`.
 #[derive(Debug, Deserialize)]

@@ -14,6 +14,7 @@ mod post_message;
 mod proposal;
 mod provider;
 mod reply;
+mod run_history;
 mod settings;
 mod subscribe;
 mod thread_create;
@@ -56,6 +57,9 @@ pub async fn dispatch(
         }
         "thread/list" => {
             thread_list::handle(pool, req.id, req.params, out_tx).await;
+        }
+        "run/get_history" => {
+            run_history::handle(pool, req.id, req.params, out_tx).await;
         }
         "thread/get" => {
             // The combinator (ADR-0029) owns decode + framing; pass raw params.

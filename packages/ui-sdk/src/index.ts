@@ -16,6 +16,7 @@ import {
 	RunCancelResult,
 	type RunEvent,
 	RunEvent as RunEventSchema,
+	RunHistoryResult,
 	SettingsResult,
 	ThreadCreateResult,
 	ThreadGetResult,
@@ -127,6 +128,9 @@ export class WsClient extends Context.Tag("@inkstone/ui-sdk/WsClient")<
 			prompt: string,
 		) => Effect.Effect<RunId, WsError>;
 		readonly threadList: () => Effect.Effect<ThreadListResult, WsError>;
+		readonly getRunHistory: (
+			limit?: number,
+		) => Effect.Effect<RunHistoryResult, WsError>;
 		readonly threadGet: (
 			threadId: string,
 		) => Effect.Effect<ThreadGetResult, WsError>;
@@ -363,6 +367,18 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 			const threadList = (): Effect.Effect<ThreadListResult, WsError> =>
 				request("thread/list", {}, ThreadListResult);
 
+			// run/get_history (ADR-0028 as-built): the recent-Runs feed, newest-first.
+			// A `limit` is sent only when given; omitting it lets Core apply its
+			// default (an undefined field serializes away to `{}`).
+			const getRunHistory = (
+				limit?: number,
+			): Effect.Effect<RunHistoryResult, WsError> =>
+				request(
+					"run/get_history",
+					limit === undefined ? {} : { limit },
+					RunHistoryResult,
+				);
+
 			const threadGet = (
 				threadId: string,
 			): Effect.Effect<ThreadGetResult, WsError> =>
@@ -448,6 +464,7 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 				threadCreate,
 				postMessage,
 				threadList,
+				getRunHistory,
 				threadGet,
 				listEntities,
 				entityMutate,

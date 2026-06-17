@@ -64,14 +64,6 @@ export type FeedEvent = {
 	detail?: string;
 };
 
-export type RunHistoryItem = {
-	id: string;
-	when: string;
-	prompt: string;
-	status: "accepted" | "partial" | "rejected" | "running";
-	changes: number;
-};
-
 /** One chronological, immutable step inside an automation thread waterfall (no user turns — fully autonomous cron run). */
 export type AutomationStep =
 	| { kind: "thought"; t: string; text: string }

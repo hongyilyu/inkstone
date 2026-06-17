@@ -22,6 +22,7 @@ function makeStubRuntime(queue: Queue.Queue<RunEventValue>, runId: RunId) {
 		threadCreate: () => unused,
 		postMessage: () => Effect.succeed(runId),
 		threadList: () => unused,
+		getRunHistory: () => unused,
 		threadGet: () => unused,
 		listEntities: () => unused,
 		entityMutate: () => unused,

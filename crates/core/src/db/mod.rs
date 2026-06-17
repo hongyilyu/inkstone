@@ -122,6 +122,18 @@ pub async fn list_threads(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String
     queries::list_threads(pool).await
 }
 
+/// Read the recent-Runs feed for `run/get_history` (ADR-0028 as-built): one row
+/// per Run carrying its latest Run Log milestone, newest-first, capped at
+/// `limit`. Returns `(run_id, thread_id, title, kind, at)` rows; `kind` is the
+/// milestone kind verbatim (the client maps it to a label). An empty Workspace
+/// returns an empty Vec.
+pub async fn list_run_history(
+    pool: &SqlitePool,
+    limit: i64,
+) -> sqlx::Result<Vec<(String, String, String, String, i64)>> {
+    queries::list_run_history(pool, limit).await
+}
+
 /// Parse a stored Canonical Entity's `data` JSON (tier-2 `entities.data` /
 /// `entity_revisions.data`). A malformed value is a corrupt tier-2 row, not a
 /// blank entity: log a `db.entity_data_parse_failed` Diagnostic Log event
@@ -1285,10 +1297,13 @@ pub async fn error_run_with_message(
 /// swept count for boot logging.
 pub async fn recover_interrupted_runs(pool: &SqlitePool, now_ms: i64) -> sqlx::Result<u64> {
     let mut tx = pool.begin().await?;
-    let swept =
-        queries::recover_interrupted_runs(&mut *tx, "core restarted while run in flight", now_ms)
-            .await?;
+    let error_message = "core restarted while run in flight";
+    let swept = queries::recover_interrupted_runs(&mut *tx, error_message, now_ms).await?;
     queries::mark_recovered_streaming_messages_incomplete(&mut *tx, now_ms).await?;
+    // Append the terminal `error` Run Log row the typed `fail()` verb would have
+    // written, so a crash-recovered Run reads as errored (not Running) in
+    // `run/get_history`. Same tx as the status flip.
+    queries::append_recovered_error_events(&mut *tx, error_message, now_ms).await?;
     tx.commit().await?;
     Ok(swept)
 }
@@ -1565,6 +1580,32 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(parked_msg, "streaming", "parked Run's message untouched");
+
+        // The sweep appends a terminal `error` Run Log milestone for the swept
+        // Run (the raw bulk UPDATE is outside the typed `fail()` verb), so
+        // `run/get_history` reads it as errored, not Running. The preserved
+        // parked Run gets none.
+        assert_eq!(
+            run_event_count(&pool, "run-running", "error").await,
+            1,
+            "swept Run gets one terminal error Run Log row"
+        );
+        assert_eq!(
+            run_event_count(&pool, "run-parked", "error").await,
+            0,
+            "preserved parked Run gets no error row"
+        );
+        let recovered_kind: String = sqlx::query_scalar(
+            "SELECT kind FROM run_log WHERE run_id = 'run-running' \
+             ORDER BY run_seq DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            recovered_kind, "error",
+            "the recovered Run's latest milestone is error, so the feed shows it errored not running"
+        );
     }
 
     async fn run_event_count(pool: &SqlitePool, run_id: &str, kind: &str) -> i64 {
@@ -2556,5 +2597,161 @@ mod tests {
             rows[0].data.get("title").and_then(|v| v.as_str()),
             Some("ok")
         );
+    }
+
+    /// Seed a Thread (with a distinct `title`) + a bare Run, then append one
+    /// Run Log milestone (`kind` at `created_at`) — the minimum to exercise the
+    /// `list_run_history` latest-milestone/recency read directly.
+    async fn seed_run_with_milestone(
+        pool: &SqlitePool,
+        run_id: &str,
+        title: &str,
+        kind: &str,
+        created_at: i64,
+    ) {
+        let mut tx = pool.begin().await.expect("begin");
+        sqlx::query(
+            "INSERT INTO threads (id, title, created_at, last_activity_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(format!("thr-{run_id}"))
+        .bind(title)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await
+        .expect("insert thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', ?)",
+        )
+        .bind(run_id)
+        .bind(format!("thr-{run_id}"))
+        .bind(format!("msg-{run_id}"))
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await
+        .expect("insert run");
+        sqlx::query(
+            "INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at) \
+             VALUES (?, ?, ?, 'assistant', 'streaming', ?, ?)",
+        )
+        .bind(format!("msg-{run_id}"))
+        .bind(format!("thr-{run_id}"))
+        .bind(run_id)
+        .bind(created_at)
+        .bind(created_at)
+        .execute(&mut *tx)
+        .await
+        .expect("insert message");
+        tx.commit().await.expect("commit seeded run");
+
+        // The creation `running` row at seq 0, then the supplied milestone at
+        // seq 1 (so the latest-milestone selection has more than one row to pick
+        // the max from — exactly the live shape `run_log::append` produces).
+        queries::insert_run_log_entry(pool, Uuid::parse_str(run_id).unwrap(), 0, "running", None, created_at)
+            .await
+            .expect("insert running milestone");
+        if kind != "running" {
+            queries::insert_run_log_entry(
+                pool,
+                Uuid::parse_str(run_id).unwrap(),
+                1,
+                kind,
+                None,
+                created_at,
+            )
+            .await
+            .expect("insert latest milestone");
+        }
+    }
+
+    /// `list_run_history` returns one row per Run carrying its *latest* milestone
+    /// kind verbatim, newest-first by that milestone's `created_at`, capped at
+    /// `limit`; an empty Workspace returns an empty Vec.
+    #[tokio::test]
+    async fn list_run_history_orders_by_recency_with_verbatim_kind() {
+        let pool = memory_pool().await;
+
+        // Empty Workspace → empty feed.
+        let empty = list_run_history(&pool, 50).await.expect("empty read ok");
+        assert!(empty.is_empty(), "a never-run Workspace returns no history");
+
+        // Three Runs at increasing milestone times; the newest is `error`, then
+        // `proposal_decided` (a resumed-still-working Run's latest milestone —
+        // NOT folded to `running`), then `done` oldest.
+        seed_run_with_milestone(
+            &pool,
+            "11111111-1111-4111-8111-111111111111",
+            "oldest done",
+            "done",
+            100,
+        )
+        .await;
+        seed_run_with_milestone(
+            &pool,
+            "22222222-2222-4222-8222-222222222222",
+            "middle resumed",
+            "proposal_decided",
+            200,
+        )
+        .await;
+        seed_run_with_milestone(
+            &pool,
+            "33333333-3333-4333-8333-333333333333",
+            "newest error",
+            "error",
+            300,
+        )
+        .await;
+
+        let rows = list_run_history(&pool, 50).await.expect("history read ok");
+        assert_eq!(rows.len(), 3, "one row per Run");
+
+        // Newest-first by the latest milestone's created_at.
+        assert_eq!(rows[0].2, "newest error");
+        assert_eq!(rows[0].3, "error", "latest milestone kind verbatim");
+        assert_eq!(rows[0].4, 300, "recency key is the milestone created_at");
+
+        assert_eq!(rows[1].2, "middle resumed");
+        assert_eq!(
+            rows[1].3, "proposal_decided",
+            "resumed Run surfaces its proposal_decided milestone, not a folded running"
+        );
+
+        assert_eq!(rows[2].2, "oldest done");
+        assert_eq!(rows[2].3, "done");
+
+        // thread_id is the owning Thread; run_id is the Run.
+        assert_eq!(rows[0].0, "33333333-3333-4333-8333-333333333333");
+        assert_eq!(rows[0].1, "thr-33333333-3333-4333-8333-333333333333");
+
+        // The limit caps the row count, keeping the newest.
+        let capped = list_run_history(&pool, 2).await.expect("capped read ok");
+        assert_eq!(capped.len(), 2, "limit caps the feed");
+        assert_eq!(capped[0].2, "newest error");
+        assert_eq!(capped[1].2, "middle resumed");
+    }
+
+    /// When two Runs' latest milestones share an identical `created_at` (ms ties
+    /// are real at this granularity), the `, rl.run_id DESC` tie-break makes the
+    /// order deterministic — the higher run_id sorts first.
+    #[tokio::test]
+    async fn list_run_history_breaks_created_at_ties_by_run_id() {
+        let pool = memory_pool().await;
+
+        // Two Runs, same latest-milestone created_at (500). Without the tie-break
+        // their relative order would be undefined; with `run_id DESC` the
+        // lexically-greater id ("bbbb…") must precede the lesser ("aaaa…").
+        let lo = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        let hi = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        seed_run_with_milestone(&pool, lo, "lo id", "done", 500).await;
+        seed_run_with_milestone(&pool, hi, "hi id", "done", 500).await;
+
+        let rows = list_run_history(&pool, 50).await.expect("history read ok");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, hi, "higher run_id sorts first on a created_at tie");
+        assert_eq!(rows[1].0, lo);
     }
 }

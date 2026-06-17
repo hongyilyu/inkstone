@@ -24,6 +24,7 @@ const stub = WsClient.of({
 	threadCreate: die,
 	postMessage: die,
 	threadList: () => Effect.succeed({ threads: [] }),
+	getRunHistory: () => Effect.die("not exercised"),
 	threadGet: die,
 	listEntities: (type) => {
 		if (type === "person") {

@@ -52,6 +52,17 @@ A later refactor sharpened this area; the decisions above stand, with these delt
 - **Core uses a single SQLite pool connection in WAL mode.** Concurrent async Run tasks still race at the lifecycle guards, but their actual SQLite statements serialize inside the process instead of surfacing transient `SQLITE_BUSY` as user-visible lifecycle failures. This matches the local-first, single-user write profile; revisit if Inkstone grows multi-user or high-throughput workloads.
 - Migration edited in place (pre-release).
 
+## As-built amendment — the Run Log gets its reader (run-get-history)
+
+This ADR twice called the reader out of scope: "this pre-pays a future `run/get_history` without building the reader … the reader stays out of scope" (§"Why complete the event log now") and listed the reader among event-sourcing's unbuilt costs (§"The event log is not a foundation today"). That was the right call *then* — there was no consumer. A consumer now exists (a recent-Runs feed in the Web client), so the reader is built. The decisions above stand; these deltas apply:
+
+- **`run/get_history` is a read-only RPC** mirroring `thread/list`: no transition verbs, no guard, no status mutation. It reads the Run Log; it does not project status from it (status remains the materialized `runs.status` cell — this amendment does **not** reopen the event-sourced-status rejection).
+- **It surfaces each Run's *latest milestone* verbatim.** The reader takes, per Run, the **maximum `run_seq`** Run Log row and returns its `kind` unmapped — one of the seven (`running`, `parked`, `done`, `error`, `cancelled`, `proposal_pending`, `proposal_decided`). Core does not fold the seven into the five `RunStatus` values; presentation (kind → label/icon) lives in the Web client. **Consequence of point (e):** `resume` (`parked → running`) writes no Run Log row, so a resumed-still-working Run's latest milestone is `proposal_decided`, not `running` — the wire `kind` is a *milestone*, deliberately not a re-derivation of `runs.status`. A reader wanting authoritative live status reads `runs.status` (e.g. via `run/subscribe`), not this feed.
+- **Recency + bound.** Rows are ordered by the latest milestone's `created_at` descending and capped by an optional `limit` (Core default 50). No cursor/keyset paging — the single-user log (ADR-0007) does not need it yet.
+- **The wire item carries the Thread title, not the Run prompt.** `RunHistoryItem` joins `runs.thread_id → threads.title` for a one-join human label; it does not walk `user_message_id → messages → message_parts`. The derived "changes" count from earlier UI mocks is dropped — not durably recorded as a Run Log milestone, so out of scope for a verbatim reader.
+- **`RunHistoryItem` is a hand-authored wire struct (Rust `Serialize` / Effect `S.Struct`), not a `PayloadSpec` kind**, so it sits outside the schema-parity gate (which covers only the proposable mutation payloads) — the same stance as `ThreadSummary` and `EntityRow`. Parity is held by paired Rust/TS tests, not the generated fixture gate.
+- This reader needs **no `packages/protocol` schema-parity change and no migration** — it reads the existing `run_log` table through a new RPC method only.
+
 ## Considered and rejected
 
 - **Event-sourced status (project from `run_events`).** Closest to the "auto-derive" intuition, but requires completing the writer + a projection + a reader, re-inventing the guard's concurrency role, and pays event-sourcing's complexity for benefits a single-user tool does not collect. Rejected.

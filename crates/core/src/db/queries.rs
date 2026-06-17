@@ -212,6 +212,42 @@ where
     .map(|r| r.rows_affected())
 }
 
+/// Companion to [`recover_interrupted_runs`]: append an `error` Run Log milestone
+/// for every Run the sweep just errored, so the durable record carries a terminal
+/// row (the bulk recovery `UPDATE` is the lone status change outside the typed
+/// `fail()` verb, which is the usual `run_log::append` site). Without this a
+/// crash-recovered Run's latest milestone stays `running`, and `run/get_history`
+/// would surface it as Running forever. Scoped to this boot's swept set via
+/// `ended_at = ?` (every swept Run shares this boot's `now_ms`); the per-Run
+/// `run_seq` is the correlated `MAX(run_seq)+1`, matching `next_run_seq`.
+pub(super) async fn append_recovered_error_events<'e, E>(
+    executor: E,
+    error_message: &str,
+    ended_at: i64,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let payload =
+        serde_json::json!({ "code": "core_restarted", "message": error_message }).to_string();
+    sqlx::query(
+        "INSERT INTO run_log (run_id, run_seq, kind, payload, created_at) \
+         SELECT r.id, \
+                COALESCE((SELECT MAX(run_seq) FROM run_log WHERE run_id = r.id), -1) + 1, \
+                'error', ?, ? \
+         FROM runs r \
+         WHERE r.status = 'errored' \
+           AND r.terminal_reason = 'core_restarted' \
+           AND r.ended_at = ?",
+    )
+    .bind(payload)
+    .bind(ended_at)
+    .bind(ended_at)
+    .execute(executor)
+    .await
+    .map(|_| ())
+}
+
 /// Companion to [`recover_interrupted_runs`] (ADR-0017): flip every `streaming`
 /// Message whose Run was just swept (now `errored` with
 /// `terminal_reason='core_restarted'`) to `incomplete`, so no Message dangles at
@@ -1733,6 +1769,39 @@ where
     .execute(executor)
     .await
     .map(|_| ())
+}
+
+/// Read the recent-Runs feed for `run/get_history` (ADR-0028 as-built): one row
+/// per Run carrying its *latest* Run Log milestone (the max-`run_seq` entry),
+/// joined to its Thread title, ordered by that milestone's `created_at`
+/// descending and capped at `limit`. Returns `(run_id, thread_id, title, kind,
+/// at)` rows.
+///
+/// The latest milestone is selected with a correlated subquery on `run_seq`
+/// (monotonic per Run, so MAX(run_seq) is the newest entry regardless of
+/// `created_at` ties). A Run always has at least its creation `running` row, so
+/// the inner join never drops a Run. `kind` is returned verbatim — Core does not
+/// fold the seven Run Log kinds into the five `RunStatus` values; presentation
+/// lives in the client.
+pub(super) async fn list_run_history<'e, E>(
+    executor: E,
+    limit: i64,
+) -> sqlx::Result<Vec<(String, String, String, String, i64)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT rl.run_id, r.thread_id, t.title, rl.kind, rl.created_at \
+         FROM run_log rl \
+         JOIN runs r ON r.id = rl.run_id \
+         JOIN threads t ON t.id = r.thread_id \
+         WHERE rl.run_seq = (SELECT MAX(run_seq) FROM run_log WHERE run_id = rl.run_id) \
+         ORDER BY rl.created_at DESC, rl.run_id DESC \
+         LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(executor)
+    .await
 }
 
 // ─── settings ─────────────────────────────────────────────────────────

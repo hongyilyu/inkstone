@@ -1,5 +1,5 @@
-import { ActivityRail } from "./components/ActivityRail.js";
 import { ChatColumn } from "./components/ChatColumn.js";
+import { RunFeed } from "./components/RunFeed.js";
 import { Sidebar } from "./components/Sidebar.js";
 import { WorkspaceShell } from "./components/ui/workspace-shell.js";
 
@@ -7,9 +7,11 @@ import { WorkspaceShell } from "./components/ui/workspace-shell.js";
 export default function App({
 	onOpenSettings = () => {},
 	onOpenLibrary = () => {},
+	onOpenThread = () => {},
 }: {
 	onOpenSettings?: () => void;
 	onOpenLibrary?: () => void;
+	onOpenThread?: (threadId: string) => void;
 } = {}) {
 	return (
 		<WorkspaceShell
@@ -19,8 +21,8 @@ export default function App({
 					onOpenSettings={onOpenSettings}
 				/>
 			}
-			rightRail={<ActivityRail />}
-			railLabel="activity rail"
+			rightRail={<RunFeed onOpenThread={onOpenThread} />}
+			railLabel="recent runs"
 		>
 			<ChatColumn />
 		</WorkspaceShell>

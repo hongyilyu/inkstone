@@ -22,6 +22,7 @@ function makeRuntime(
 		threadCreate: () => unused,
 		postMessage: () => unused,
 		threadList: () => unused,
+		getRunHistory: () => unused,
 		threadGet: () => unused,
 		listEntities: () => unused,
 		entityMutate,

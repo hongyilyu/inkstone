@@ -1,6 +1,7 @@
 import type { ThreadGetResult } from "@inkstone/protocol";
 import { type RunEventValue, WsClient, WsRequestError } from "@inkstone/ui-sdk";
-import { act, cleanup, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -33,6 +34,7 @@ function makeStubRuntime(opts: {
 			}),
 		postMessage: () => Effect.succeed(opts.runId),
 		threadList: () => unused,
+		getRunHistory: () => unused,
 		// Park hydrate-on-focus: a focused thread stays `loading` (these tests drive messages directly, not via thread/get).
 		threadGet: () => Effect.never,
 		listEntities: () => unused,
@@ -95,6 +97,48 @@ describe("ChatColumn", () => {
 			assistantBubble.closest('[data-role="assistant"]'),
 		).toBeInTheDocument();
 
+		await runtime.dispose();
+	});
+
+	it("invalidates both the thread list and the recent-Runs feed on send", async () => {
+		const user = userEvent.setup();
+		const runtime = makeStubRuntime({
+			runId: "run-inv",
+			events: [{ kind: "text_delta", delta: "echo: hi" }, { kind: "done" }],
+		});
+		setFocusedThread("threadA");
+
+		// A real QueryClient whose invalidateQueries we can observe: a send births/
+		// advances a Run, so the right-rail feed (["run-history"]) must refresh
+		// alongside the sidebar (["threads"]).
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const invalidated: unknown[] = [];
+		const spy = vi
+			.spyOn(client, "invalidateQueries")
+			.mockImplementation((filters) => {
+				invalidated.push(filters?.queryKey);
+				return Promise.resolve();
+			});
+
+		render(
+			<QueryClientProvider client={client}>
+				<RuntimeProvider runtime={runtime}>
+					<ChatColumn />
+				</RuntimeProvider>
+			</QueryClientProvider>,
+		);
+
+		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
+		await user.click(screen.getByRole("button", { name: /send/i }));
+
+		await waitFor(() => {
+			expect(invalidated).toContainEqual(["threads"]);
+			expect(invalidated).toContainEqual(["run-history"]);
+		});
+
+		spy.mockRestore();
 		await runtime.dispose();
 	});
 
@@ -177,6 +221,7 @@ describe("ChatColumn", () => {
 			threadCreate: () => unused,
 			postMessage: () => unused,
 			threadList: () => unused,
+			getRunHistory: () => unused,
 			threadGet: () => {
 				calls += 1;
 				return calls === 1

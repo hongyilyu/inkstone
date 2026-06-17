@@ -145,6 +145,98 @@ describe("WsClient", () => {
 		}
 	});
 
+	it("getRunHistory(limit) sends run/get_history with { limit } and round-trips RunHistoryResult", async () => {
+		const expected = {
+			runs: [
+				{
+					run_id: "01999999-0000-7000-8000-000000000aaa",
+					thread_id: "01999999-0000-7000-8000-000000000bbb",
+					title: "Newest run",
+					kind: "proposal_decided",
+					at: 1717200002000,
+				},
+				{
+					run_id: "01999999-0000-7000-8000-000000000ccc",
+					thread_id: "01999999-0000-7000-8000-000000000ddd",
+					title: "Older run",
+					kind: "done",
+					at: 1717200001000,
+				},
+			],
+		};
+
+		let observed: WireRequest | undefined;
+		const server = await makeServer((ws, req) => {
+			if (req.method === "run/get_history") {
+				observed = req;
+				ws.send(
+					JSON.stringify({ jsonrpc: "2.0", id: req.id, result: expected }),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.getRunHistory(25);
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(observed?.method).toBe("run/get_history");
+			expect(observed?.params).toEqual({ limit: 25 });
+			expect(result).toEqual(expected);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("getRunHistory() omits limit and rejects an out-of-domain kind", async () => {
+		let observed: WireRequest | undefined;
+		const server = await makeServer((ws, req) => {
+			if (req.method === "run/get_history") {
+				observed = req;
+				// A kind outside the 7-literal union must fail the decode.
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: {
+							runs: [
+								{
+									run_id: "01999999-0000-7000-8000-000000000eee",
+									thread_id: "01999999-0000-7000-8000-000000000fff",
+									title: "Bad kind",
+									kind: "teleported",
+									at: 1717200003000,
+								},
+							],
+						},
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			return yield* client.getRunHistory();
+		}).pipe(Effect.either);
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			// No limit was passed → params is the empty object.
+			expect(observed?.params).toEqual({});
+			expect(Either.isLeft(result)).toBe(true);
+			if (Either.isLeft(result)) {
+				expect(result.left._tag).toBe("WsRequestError");
+				expect((result.left as { reason?: string }).reason).toBe(
+					"decode_failed",
+				);
+			}
+		} finally {
+			await server.close();
+		}
+	});
+
 	it("listEntities(type) sends entity/list with { type } and round-trips EntityListResult", async () => {
 		const expected = {
 			entities: [

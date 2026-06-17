@@ -50,6 +50,45 @@ export type ThreadSummary = S.Schema.Type<typeof ThreadSummary>;
 export const ThreadListResult = S.Struct({ threads: S.Array(ThreadSummary) });
 export type ThreadListResult = S.Schema.Type<typeof ThreadListResult>;
 
+/** The seven Run Log milestone kinds (ADR-0028). `run/get_history` surfaces a
+ * Run's latest one verbatim — deliberately not folded into the five Run-status
+ * values (a resumed-still-working Run reads `proposal_decided`, since `resume`
+ * writes no Run Log row). The client owns the kind → label/icon presentation. */
+export const RunHistoryKind = S.Literal(
+	"running",
+	"parked",
+	"done",
+	"error",
+	"cancelled",
+	"proposal_pending",
+	"proposal_decided",
+);
+export type RunHistoryKind = S.Schema.Type<typeof RunHistoryKind>;
+
+/** One Run in the `run/get_history` recent-Runs feed (ADR-0028 as-built). `kind`
+ * is the latest Run Log milestone; `title` is the owning Thread's title; `at` is
+ * the milestone's ms-epoch timestamp (also the recency key). Hand-authored wire
+ * struct like {@link ThreadSummary} — NOT a proposable `PayloadSpec` kind, so it
+ * sits outside the schema-parity gate (Rust↔TS parity is held by paired tests). */
+export const RunHistoryItem = S.Struct({
+	run_id: S.String,
+	thread_id: S.String,
+	title: S.String,
+	kind: RunHistoryKind,
+	at: S.Number,
+});
+export type RunHistoryItem = S.Schema.Type<typeof RunHistoryItem>;
+
+/** `run/get_history` params: an optional cap on how many recent Runs to return
+ * (Core defaults to 50 when omitted). No cursor — the single-user log (ADR-0007)
+ * needs no keyset paging yet. */
+export const RunGetHistoryParams = S.Struct({ limit: S.optional(S.Number) });
+export type RunGetHistoryParams = S.Schema.Type<typeof RunGetHistoryParams>;
+
+/** `run/get_history` result: recent Runs, newest-first. */
+export const RunHistoryResult = S.Struct({ runs: S.Array(RunHistoryItem) });
+export type RunHistoryResult = S.Schema.Type<typeof RunHistoryResult>;
+
 export const ThreadGetParams = S.Struct({ thread_id: S.String });
 export type ThreadGetParams = S.Schema.Type<typeof ThreadGetParams>;
 

@@ -115,7 +115,10 @@ export function ChatColumn() {
 			if (!result.ok) {
 				setSendError("Couldn't send your message. Please try again.");
 			}
+			// Refresh both reads this surface shows: the sidebar's thread list and
+			// the right-rail recent-Runs feed (the retried send births/advances a Run).
 			await queryClient.invalidateQueries({ queryKey: ["threads"] });
+			await queryClient.invalidateQueries({ queryKey: ["run-history"] });
 		});
 	};
 
@@ -167,7 +170,9 @@ export function ChatColumn() {
 					if (activeRunId !== null) void cancelRun(runtime, activeRunId);
 				}}
 				onSend={async (text) => {
-					// Send into the focused thread, or mint a new one; then refresh the sidebar's thread/list read.
+					// Send into the focused thread, or mint a new one; then refresh the
+					// reads this surface shows: the sidebar's thread/list and the
+					// right-rail recent-Runs feed (a send births/advances a Run).
 					setSendError(null);
 					const result =
 						focusedThreadId !== null
@@ -177,6 +182,7 @@ export function ChatColumn() {
 						setSendError("Couldn't send your message. Please try again.");
 					}
 					await queryClient.invalidateQueries({ queryKey: ["threads"] });
+					await queryClient.invalidateQueries({ queryKey: ["run-history"] });
 				}}
 			/>
 		</main>
