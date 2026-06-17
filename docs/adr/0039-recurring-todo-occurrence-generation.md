@@ -38,7 +38,7 @@ whose rule's end condition is reached, spawns nothing.
 With `schedule`/`from_completion` removed (ADR-0037 amendment), every recurrence
 is anchored to the stored date. The successor's anchor date is
 
-```
+```text
 next_anchor = old_anchor + interval × unit
 ```
 
