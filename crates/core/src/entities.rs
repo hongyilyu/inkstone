@@ -50,12 +50,19 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
         MutationKind::UpdateTodo => validate_update_todo(payload),
         MutationKind::CreateBookmark => validate_bookmark(payload),
         MutationKind::UpdateBookmark => validate_update_bookmark(payload),
+        // The intent graph (ADR-0042) validates its STRUCTURE via the single-source
+        // spec (optional journal_entry, >= 1 typed entity nodes, the three link
+        // kinds). The cross-node graph invariants (handle references, duplicate
+        // handles, journal_ref-without-journal_entry) are the resolver's job (slice
+        // 2+); slice 1 short-circuits before apply, so structural acceptance is all
+        // the agent path needs here.
+        MutationKind::ApplyIntentGraph => MutationKind::ApplyIntentGraph.payload_spec().check(payload),
     }
 }
 
 /// Render the human-readable Decision text the model reads on resume as the
 /// awaited tool's result (ADR-0025). An inherent method on [`ProposableMutation`]
-/// (declared in [`crate::mutation`]) so it is total over exactly the 13 kinds
+/// (declared in [`crate::mutation`]) so it is total over exactly the 14 kinds
 /// that can reach the agent accept path — the 4 user-only kinds are not in the
 /// type, so there is no `unreachable!` to forget. Defined here, alongside the
 /// private body-text helpers it uses.
@@ -189,6 +196,11 @@ pub(crate) fn render_accept(
                 .unwrap_or("unknown");
             format!("Accepted. Updated Todo (todo_id={todo_id}).")
         }
+        // The graph apply path lands in slice 2 (ADR-0042); slice 1 decide
+        // short-circuits to `Invalid("apply_intent_graph not yet implemented")`
+        // BEFORE rendering, so this arm is unreachable today. It exists only to
+        // keep the match total; slice 2 replaces it with the resolved-plan summary.
+        P::ApplyIntentGraph => "Accepted. Applied intent graph.".to_string(),
     }
 }
 

@@ -162,6 +162,11 @@ fn entity_data_payload(
         // The delete kinds touch no entity data, and the in-tx kinds
         // (update_todo/mark_project_reviewed/reference weave) compute their data
         // inside the tx — none reach this pre-write seam, so store as-is.
+        // ApplyIntentGraph never reaches this single-entity seam — decide
+        // short-circuits in slice 1, and slice 2's resolver loops
+        // `apply_entity_mutation` per node (each node carrying its OWN
+        // single-entity kind), never `apply_entity_mutation(ApplyIntentGraph)`.
+        // Store as-is to keep the match total.
         M::CreateJournalEntry
         | M::DeleteJournalEntry
         | M::ReferenceExistingEntityFromJournalEntry
@@ -170,7 +175,8 @@ fn entity_data_payload(
         | M::MarkProjectReviewed
         | M::DeleteTodo
         | M::UpdateTodo
-        | M::DeleteBookmark => payload.clone(),
+        | M::DeleteBookmark
+        | M::ApplyIntentGraph => payload.clone(),
     }
 }
 
@@ -661,6 +667,19 @@ pub(crate) async fn apply_entity_mutation(
     let schema_version = entity_type.schema_version();
     let mutation_kind = kind.as_wire();
 
+    // `apply_entity_mutation` is the SINGLE-ENTITY write core. The intent graph
+    // (ADR-0042) is not a single-entity mutation: its slice-2 resolver loops THIS
+    // function once per resolved node (each with its own single-entity kind), and
+    // is never called with `ApplyIntentGraph` itself. Reject it here so the two
+    // exhaustive `match kind` blocks below can stay over single-entity kinds and a
+    // graph that somehow reaches here fails loud rather than mis-applying. (Slice 1
+    // decide short-circuits before apply, so this is unreached today.)
+    if kind == MutationKind::ApplyIntentGraph {
+        return Err(ApplyError::InvalidMutation(
+            "apply_intent_graph is not a single-entity mutation".to_string(),
+        ));
+    }
+
     let entity_id = if desc.write_op == WriteOp::Create {
         if target_entity_id.is_some() {
             return Err(ApplyError::InvalidMutation(format!(
@@ -719,6 +738,10 @@ pub(crate) async fn apply_entity_mutation(
         | MutationKind::UpdateBookmark => Some(
             entity_data_payload(kind, effective_payload, now_ms, review_anchor_offset).to_string(),
         ),
+        // Rejected at the guard above (the graph is not a single-entity mutation).
+        MutationKind::ApplyIntentGraph => {
+            unreachable!("apply_intent_graph is rejected before this seam")
+        }
     };
 
     if kind == MutationKind::UpdateJournalEntry {
@@ -999,6 +1022,10 @@ pub(crate) async fn apply_entity_mutation(
                     .await?;
                 }
             }
+        }
+        // Rejected at the guard above (the graph is not a single-entity mutation).
+        MutationKind::ApplyIntentGraph => {
+            unreachable!("apply_intent_graph is rejected before this seam")
         }
     }
 

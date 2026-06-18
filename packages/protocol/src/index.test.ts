@@ -298,6 +298,41 @@ describe("ProposalDecideParams", () => {
 			S.decodeUnknownSync(ProposalDecideParams)({ decision: "accept" }),
 		).toThrow();
 	});
+
+	it("decodes a per-node decision vector (apply_intent_graph, ADR-0042)", () => {
+		const wire = {
+			proposal_id: "01900000-0000-7000-8000-000000000010",
+			decision: "accept",
+			decisions: [
+				{ handle: "@je", decision: "accept" },
+				{ handle: "@leadads", decision: "reject" },
+				{
+					handle: "@morris",
+					decision: "accept",
+					entity_id: "01900000-0000-7000-8000-0000000000a1",
+				},
+				{
+					handle: "@rodeo",
+					decision: "accept",
+					edited_fields: { title: "Figure out the Rodeo side of Lead Ads" },
+				},
+			],
+			decision_idempotency_key: "k-graph",
+		};
+		const decoded = S.decodeUnknownSync(ProposalDecideParams)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ProposalDecideParams)(decoded)).toEqual(wire);
+	});
+
+	it("rejects a per-node decision outside accept/reject", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProposalDecideParams)({
+				proposal_id: "01900000-0000-7000-8000-000000000010",
+				decision: "accept",
+				decisions: [{ handle: "@je", decision: "edit" }],
+			}),
+		).toThrow();
+	});
 });
 
 describe("ProposalDecideResult", () => {

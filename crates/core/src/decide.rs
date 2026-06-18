@@ -277,6 +277,16 @@ async fn apply_or_reject(
     let proposable = ProposableMutation::try_from(kind)
         .map_err(|e| DecideError::Invalid(format!("{} cannot be proposed", e.0.as_wire())))?;
 
+    // Slice 1 (ADR-0042): the intent-graph resolve/apply lands in slice 2. Until
+    // then, accepting the graph short-circuits HERE — before `entities::validate`
+    // and `db::apply_proposal`, which loops the single-entity `apply_entity_mutation`
+    // and cannot apply a graph. Nothing is written; the Proposal stays pending.
+    if kind == MutationKind::ApplyIntentGraph {
+        return Err(DecideError::Invalid(
+            "apply_intent_graph not yet implemented".to_string(),
+        ));
+    }
+
     // An `edit` requires an `edited_payload` (absence → `Invalid`, checked here so
     // a payload-less retry replays via the branches above); a plain accept ignores
     // any wire payload. The applied payload is the edited one for an edit, else the
@@ -1580,6 +1590,64 @@ mod tests {
         assert!(
             matches!(outcome_b, Err(DecideError::Invalid(_))),
             "a wrong-type reference source is Invalid (payload error), got {outcome_b:?}"
+        );
+    }
+
+    // Slice 1 (ADR-0042): accepting an `apply_intent_graph` Proposal short-circuits
+    // to `Invalid("apply_intent_graph not yet implemented")` BEFORE it can reach
+    // `apply_entity_mutation` (which cannot apply a graph). The resolver lands in
+    // slice 2; until then the kind is a contract-only schema. Nothing is written
+    // and the Proposal stays pending.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_is_not_yet_implemented() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        retarget_proposal(
+            &pool,
+            &proposal_id_str,
+            "apply_intent_graph",
+            serde_json::json!({
+                "entities": [
+                    { "handle": "@alice", "type": "person", "name": "Alice" }
+                ],
+                "links": []
+            }),
+        )
+        .await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-graph".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+
+        let Err(DecideError::Invalid(reason)) = outcome else {
+            panic!("expected Invalid not-yet-implemented, got {outcome:?}");
+        };
+        assert!(
+            reason.contains("apply_intent_graph not yet implemented"),
+            "the graph accept short-circuits with a not-implemented message: {reason}"
+        );
+        assert_eq!(
+            entity_count(&pool).await,
+            0,
+            "the graph accept writes nothing in slice 1"
+        );
+        assert_eq!(
+            proposal_status(&pool, &proposal_id_str).await,
+            "pending",
+            "the graph Proposal stays pending (re-decidable once slice 2 lands)"
+        );
+        assert!(
+            !resumed.load(Ordering::SeqCst),
+            "a not-implemented graph accept does not resume"
         );
     }
 

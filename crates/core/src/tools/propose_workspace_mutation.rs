@@ -11,8 +11,8 @@ pub const NAME: &str = "propose_workspace_mutation";
 const DESCRIPTION: &str = "Propose a Workspace mutation for user review: capture a journal-worthy lived event or reflection as a Journal Entry, or extract People/Projects/Todos from an already-accepted Journal Entry. Do not create a Journal Entry for a bare reminder, task, or future obligation the user only wants remembered.";
 const LABEL: &str = "Propose Workspace mutation";
 
-/// The agent tool descriptor (ADR-0018): a top-level `oneOf` over the 13
-/// agent-proposable mutation kinds (ADR-0036), each variant binding its
+/// The agent tool descriptor (ADR-0018): a top-level `oneOf` over the 14
+/// agent-proposable mutation kinds (ADR-0036, ADR-0042), each variant binding its
 /// `mutation_kind` discriminant to the payload schema its
 /// [`crate::mutation::MutationKind::payload_spec`] emits — the SAME single source
 /// the validators derive from. The 4 user-only kinds (the bookmarks +
@@ -74,7 +74,7 @@ mod tests {
     /// expression [`descriptor`] binds — NOT the `{mutation_kind, payload,
     /// rationale}` envelope.
     ///
-    /// It writes ALL 13 fixtures — the TS parity test (`tests/contract`)
+    /// It writes ALL 14 fixtures — the TS parity test (`tests/contract`)
     /// asserts every one against its committed fixture. The output is
     /// deterministic (`serde_json` sorts object keys; pretty-print + trailing
     /// newline), so CI re-runs it and `git diff --exit-code` is the staleness
@@ -168,6 +168,10 @@ mod tests {
             (
                 "delete_todo",
                 include_str!("../../../../tests/contract/fixtures/delete_todo.json"),
+            ),
+            (
+                "apply_intent_graph",
+                include_str!("../../../../tests/contract/fixtures/apply_intent_graph.json"),
             ),
         ];
         // The embedded table must cover exactly the proposable kinds — neither
@@ -577,11 +581,11 @@ mod tests {
         }
     }
 
-    /// The two surfaces that must list the same 13 agent-proposable kinds — the
+    /// The two surfaces that must list the same 14 agent-proposable kinds — the
     /// wire schema generated from `Input`, and `ProposableMutation` (the taxonomy
     /// that carries render_accept/supports_edit/…) — cannot silently drift. Every
     /// `ProposableMutation::ALL` variant binds a top-level schema variant AND
-    /// round-trips through `from_wire` + `try_into`; and the schema has EXACTLY 13
+    /// round-trips through `from_wire` + `try_into`; and the schema has EXACTLY 14
     /// top-level variants, so neither side can gain a kind the other lacks.
     #[test]
     fn input_schema_and_proposable_mutation_agree() {
@@ -615,6 +619,138 @@ mod tests {
                 "{wire} must round-trip to its ProposableMutation"
             );
         }
+    }
+
+    /// Walk the whole schema tree asserting NO node carries a `$ref` — Anthropic
+    /// rejects refs, so every variant (incl. the deeply-nested intent-graph
+    /// entity/link/body unions) must be inlined.
+    fn has_ref(value: &Value) -> bool {
+        match value {
+            Value::Object(obj) => {
+                obj.contains_key("$ref") || obj.values().any(has_ref)
+            }
+            Value::Array(items) => items.iter().any(has_ref),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn descriptor_advertises_apply_intent_graph_inlined() {
+        let d = descriptor();
+        let variant = top_level_variant(&d.json_schema, "apply_intent_graph")
+            .unwrap_or_else(|| panic!("schema must bind apply_intent_graph: {}", d.json_schema));
+        let payload = payload_schema(&d.json_schema, variant);
+
+        // The graph payload requires `entities` (>= 1) and `links`; `journal_entry`
+        // is optional (absent for direct multi-entity capture).
+        let required = payload["required"].as_array().unwrap_or_else(|| {
+            panic!("apply_intent_graph payload declares required fields: {}", d.json_schema)
+        });
+        assert!(
+            required.iter().any(|f| f.as_str() == Some("entities"))
+                && required.iter().any(|f| f.as_str() == Some("links")),
+            "apply_intent_graph must require entities + links: {payload}"
+        );
+        assert!(
+            !required.iter().any(|f| f.as_str() == Some("journal_entry")),
+            "journal_entry is optional (absent for direct multi-entity capture): {payload}"
+        );
+
+        // entities is an array with minItems:1 over a oneOf of person/project/todo
+        // nodes; the node shape carries handle + type + optional existing_id.
+        let entities = &payload["properties"]["entities"];
+        assert_eq!(
+            entities["minItems"],
+            serde_json::json!(1),
+            "entities must require at least one node: {entities}"
+        );
+        let entity_variants = entities["items"]["oneOf"].as_array().unwrap_or_else(|| {
+            panic!("entities items must be a oneOf union of typed nodes: {entities}")
+        });
+        assert_eq!(entity_variants.len(), 3, "person/project/todo entity nodes: {entities}");
+        let schema_text = d.json_schema.to_string();
+        for needle in ["handle", "existing_id", "todo_project", "todo_person", "journal_ref"] {
+            assert!(
+                schema_text.contains(needle),
+                "apply_intent_graph schema advertises {needle}: {}",
+                d.json_schema
+            );
+        }
+
+        // links is a oneOf of the three link kinds.
+        let link_variants = payload["properties"]["links"]["items"]["oneOf"]
+            .as_array()
+            .unwrap_or_else(|| panic!("links items must be a oneOf of link kinds: {payload}"));
+        assert_eq!(link_variants.len(), 3, "todo_project/todo_person/journal_ref: {payload}");
+    }
+
+    /// The advertised graph schema must carry NO `$ref` anywhere (Anthropic
+    /// rejects refs) — pinned over the whole emitted descriptor.
+    #[test]
+    fn descriptor_intent_graph_has_no_ref() {
+        let d = descriptor();
+        assert!(
+            !has_ref(&d.json_schema),
+            "the descriptor schema must be fully inlined (no $ref): {}",
+            d.json_schema
+        );
+    }
+
+    /// A hand-built intent-graph payload is ACCEPTED by the advertised schema
+    /// (not merely round-tripped): the payload's `entities`/`links`/`journal_entry`
+    /// validate against the kind's `payload_spec().check`.
+    #[test]
+    fn apply_intent_graph_payload_is_accepted_by_advertised_schema() {
+        use crate::mutation::MutationKind;
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [
+                    { "type": "text", "text": "Talked to " },
+                    { "type": "entity_ref", "target": "@morris" }
+                ]
+            },
+            "entities": [
+                { "handle": "@morris", "type": "person", "name": "Morris" },
+                {
+                    "handle": "@leadads",
+                    "type": "project",
+                    "name": "Lead Ads",
+                    "existing_id": "00000000-0000-4000-8000-000000000000"
+                },
+                { "handle": "@rodeo", "type": "todo", "title": "Figure out the Rodeo side" }
+            ],
+            "links": [
+                { "kind": "todo_project", "from": "@rodeo", "to": "@leadads" },
+                { "kind": "todo_person", "from": "@rodeo", "to": "@morris", "role": "related" },
+                { "kind": "journal_ref", "from": "@je", "to": "@morris" }
+            ]
+        });
+        MutationKind::ApplyIntentGraph
+            .payload_spec()
+            .check(&graph)
+            .expect("the advertised intent-graph schema accepts a well-formed graph");
+    }
+
+    /// A direct multi-entity capture (no `journal_entry`, no journal_ref) is also
+    /// accepted — the journal_entry node is optional.
+    #[test]
+    fn apply_intent_graph_direct_capture_is_accepted() {
+        use crate::mutation::MutationKind;
+        let graph = serde_json::json!({
+            "entities": [
+                { "handle": "@alice", "type": "person", "name": "Alice" },
+                { "handle": "@email", "type": "todo", "title": "Email Alice" }
+            ],
+            "links": [
+                { "kind": "todo_person", "from": "@email", "to": "@alice", "role": "waiting_on" }
+            ]
+        });
+        MutationKind::ApplyIntentGraph
+            .payload_spec()
+            .check(&graph)
+            .expect("a direct-capture graph (no journal_entry) is accepted");
     }
 
     #[test]
@@ -972,6 +1108,11 @@ mod tests {
                     "target_entity_id",
                 ],
                 &["body", "source_entity_id", "target_entity_id"],
+            ),
+            (
+                "apply_intent_graph",
+                &["entities", "journal_entry", "links"],
+                &["entities", "links"],
             ),
         ];
         // Every proposable kind is covered exactly once by the literal table.

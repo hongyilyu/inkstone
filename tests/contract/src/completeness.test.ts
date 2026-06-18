@@ -1,14 +1,14 @@
 // The completeness lock. The per-kind parity test (`parity.test.ts`) catches a
 // CHANGED field; this catches a MISSING (or stray) KIND — the failure mode that
 // per-kind assertions are blind to. It pins three sets equal, all to the
-// canonical 13 wire kinds:
+// canonical 14 wire kinds:
 //   1. the Effect Schema registry keys (`Object.keys(schemas)`),
 //   2. the committed Rust fixture filenames (`fixtures/*.json`, the
 //      schema-of-record Core emits), and
 //   3. `WIRE_KINDS` — the hand-maintained canonical list mirroring
 //      `ProposableMutation::ALL` (`mutation.rs`).
 //
-// So a 14th proposable kind added Core-side (a new fixture appears) but not
+// So a 15th proposable kind added Core-side (a new fixture appears) but not
 // mirrored in TS trips the fixtures-vs-registry check; dropping a schema from
 // the registry trips registry-vs-canonical; renaming a fixture trips
 // fixtures-vs-canonical. Each failure names the offending kind.
@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { schemas } from "@inkstone/protocol";
 import { describe, expect, it } from "vitest";
 
-/** The 13 agent-proposable wire kinds, verbatim from `ProposableMutation::ALL`
+/** The 14 agent-proposable wire kinds, verbatim from `ProposableMutation::ALL`
  * (`crates/core/src/.../mutation.rs`, via `as_wire`). The single source the two
  * derived sets (registry keys, fixture filenames) are locked against. */
 const WIRE_KINDS = [
@@ -35,6 +35,7 @@ const WIRE_KINDS = [
 	"create_todo",
 	"update_todo",
 	"delete_todo",
+	"apply_intent_graph",
 ] as const;
 
 /** Canonical comparison form: a deduped, sorted array of kind names. */
@@ -47,17 +48,17 @@ const fixtureKinds = (): string[] => {
 		.map((name) => name.replace(/\.json$/, ""));
 };
 
-describe("completeness lock — all 13 proposable kinds covered", () => {
-	it("the canonical list holds exactly 13 unique kinds", () => {
-		expect(WIRE_KINDS).toHaveLength(13);
-		expect(new Set(WIRE_KINDS).size).toBe(13);
+describe("completeness lock — all 14 proposable kinds covered", () => {
+	it("the canonical list holds exactly 14 unique kinds", () => {
+		expect(WIRE_KINDS).toHaveLength(14);
+		expect(new Set(WIRE_KINDS).size).toBe(14);
 	});
 
-	it("registry keys == the 13 wire kinds (no kind unmapped, none extra)", () => {
+	it("registry keys == the 14 wire kinds (no kind unmapped, none extra)", () => {
 		expect(asSet(Object.keys(schemas))).toStrictEqual(asSet(WIRE_KINDS));
 	});
 
-	it("committed fixture filenames == the 13 wire kinds (no stray/missing fixture)", () => {
+	it("committed fixture filenames == the 14 wire kinds (no stray/missing fixture)", () => {
 		expect(asSet(fixtureKinds())).toStrictEqual(asSet(WIRE_KINDS));
 	});
 });

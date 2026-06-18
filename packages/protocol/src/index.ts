@@ -178,11 +178,50 @@ export const ProposalGetResult = S.Struct({
 });
 export type ProposalGetResult = S.Schema.Type<typeof ProposalGetResult>;
 
-/** `proposal/decide` params: the user's Decision on a pending Proposal. */
+/** The closed set of agent-proposable mutation kinds a Proposal can carry
+ * (ADR-0018, ADR-0042 adds `apply_intent_graph`). Mirrors `ProposableMutation`
+ * (`mutation.rs`) / the `schemas` registry; the Client switches its Proposal
+ * rendering on this. */
+export const ProposalKind = S.Literal(
+	"create_journal_entry",
+	"update_journal_entry",
+	"delete_journal_entry",
+	"reference_existing_entity_from_journal_entry",
+	"create_person",
+	"update_person",
+	"delete_person",
+	"create_project",
+	"update_project",
+	"delete_project",
+	"create_todo",
+	"update_todo",
+	"delete_todo",
+	"apply_intent_graph",
+);
+export type ProposalKind = S.Schema.Type<typeof ProposalKind>;
+
+/** One per-node decision in an `apply_intent_graph` decision vector (ADR-0042).
+ * Keyed by the graph-local `handle`; `entity_id` overrides a resolved id and
+ * `edited_fields` corrects a create-node's content (mutually exclusive per node,
+ * accept-only — Core enforces; STRUCT/TYPE only in slice 1, no apply behavior). */
+export const NodeDecision = S.Struct({
+	handle: S.String,
+	decision: S.Literal("accept", "reject"),
+	entity_id: S.optional(S.String),
+	edited_fields: S.optional(S.Unknown),
+});
+export type NodeDecision = S.Schema.Type<typeof NodeDecision>;
+
+/** `proposal/decide` params: the user's Decision on a pending Proposal. The 13
+ * single-entity kinds use the scalar `decision` (+ optional `edited_payload`);
+ * `apply_intent_graph` (ADR-0042) instead carries a `decisions` vector of
+ * per-node decisions keyed by handle. The vector is typed here in slice 1; Core
+ * wires its apply in a later slice. */
 export const ProposalDecideParams = S.Struct({
 	proposal_id: S.String,
 	decision: S.Literal("accept", "reject", "edit"),
 	edited_payload: S.optional(S.Unknown),
+	decisions: S.optional(S.Array(NodeDecision)),
 	decision_idempotency_key: S.optional(S.String),
 });
 export type ProposalDecideParams = S.Schema.Type<typeof ProposalDecideParams>;

@@ -138,6 +138,20 @@ pub(crate) enum FieldSpec {
     /// [`BodyPolicy`]. The array-level `minItems:1` and per-node shape are emitted
     /// here; cross-node invariants are entities hooks (so `check` is a no-op).
     Body(BodyPolicy),
+    /// An array whose every element is one of a closed set of object shapes — a
+    /// `oneOf` of inlined [`PayloadSpec`] variants (ADR-0042 intent graph). Emits
+    /// `{type:array, items:{oneOf:[…]}}` with the inlined variant schemas (no
+    /// `$ref`) and an optional `minItems`. The per-element check accepts the FIRST
+    /// variant whose own `check` passes; an element matching none surfaces the
+    /// LAST variant's message (the deepest structural error). Cross-element graph
+    /// invariants (handle references, duplicate handles, a `journal_ref` without a
+    /// `journal_entry` node) are NOT a flat walk — they are the resolver's job in a
+    /// later slice, like the other [`FieldSpec::HookValidated`]/[`FieldSpec::Body`]
+    /// cross-field rules.
+    OneOfArray {
+        variants: Vec<PayloadSpec>,
+        min_items: Option<u64>,
+    },
 }
 
 impl FieldSpec {
@@ -370,6 +384,22 @@ fn spec_schema(spec: &FieldSpec) -> Value {
         }
         FieldSpec::Object(spec) | FieldSpec::HookValidated(spec) => spec.json_schema(),
         FieldSpec::Body(policy) => body_schema(*policy),
+        FieldSpec::OneOfArray {
+            variants,
+            min_items,
+        } => {
+            let one_of: Vec<Value> = variants.iter().map(PayloadSpec::json_schema).collect();
+            let mut array = Map::new();
+            array.insert("type".to_string(), Value::String("array".to_string()));
+            if let Some(min) = min_items {
+                array.insert("minItems".to_string(), Value::Number((*min).into()));
+            }
+            array.insert(
+                "items".to_string(),
+                serde_json::json!({ "oneOf": one_of }),
+            );
+            Value::Object(array)
+        }
     }
 }
 
@@ -475,7 +505,39 @@ fn check_field(field: &Field, value: &Value) -> Result<(), String> {
             Ok(())
         }
         FieldSpec::Object(spec) => spec.check(value),
+        FieldSpec::OneOfArray {
+            variants,
+            min_items,
+        } => {
+            let array = value
+                .as_array()
+                .ok_or_else(|| format!("{name} must be an array"))?;
+            if let Some(min) = min_items
+                && (array.len() as u64) < *min
+            {
+                return Err(format!("{name} must have at least {min} item(s)"));
+            }
+            for item in array {
+                check_one_of(name, variants, item)?;
+            }
+            Ok(())
+        }
         // Recurrence: schema only; the owning entity's hook validates the rule.
         FieldSpec::HookValidated(_) | FieldSpec::Body(_) => Ok(()),
     }
+}
+
+/// Accept an array element if it matches ANY of the `oneOf` variants. Returns the
+/// LAST variant's rejection message when none match — the deepest structural
+/// error, faithful to how a Worker reads a failed `oneOf` (the variants are
+/// tagged by `type`/`kind`, so the last is the most specific to report).
+fn check_one_of(name: &str, variants: &[PayloadSpec], item: &Value) -> Result<(), String> {
+    let mut last_err = format!("{name} item matches no allowed variant");
+    for variant in variants {
+        match variant.check(item) {
+            Ok(()) => return Ok(()),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
 }
