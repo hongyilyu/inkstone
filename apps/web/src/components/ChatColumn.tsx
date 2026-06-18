@@ -114,29 +114,41 @@ export function ChatColumn() {
 	// lets the cold-thread path fire once history arrives.
 	useEffect(() => {
 		if (focusedMessageId === undefined || focusedThreadId === null) return;
-		// Gate on the anchored Message being in the rendered list — the real
-		// precondition. `messages` is in the deps so a cold thread re-fires this
-		// once thread/get hydrates and the row mounts; a warm thread has it now.
-		if (!messages.some((m) => m.id === focusedMessageId)) return;
-		const target = scrollerRef.current?.querySelector<HTMLElement>(
-			`[data-message-id="${focusedMessageId}"]`,
-		);
-		if (!target) return;
+		// Consume-then-strip (ADR-0042): drop the param so a reload/re-render can't
+		// re-fire the jump, replacing (not pushing) so Back doesn't land un-stripped.
+		const stripAnchor = () =>
+			navigate({
+				to: "/thread/$threadId",
+				params: { threadId: focusedThreadId },
+				search: {},
+				replace: true,
+			});
+		const target = messages.some((m) => m.id === focusedMessageId)
+			? scrollerRef.current?.querySelector<HTMLElement>(
+					`[data-message-id="${focusedMessageId}"]`,
+				)
+			: null;
+		if (!target) {
+			// The anchored Message isn't in the rendered list. Two cases: (a) history
+			// is still arriving (hydrating) — wait for the re-fire once it lands; or
+			// (b) hydration has SETTLED and the id genuinely isn't here (a stale/
+			// deleted/typo'd anchor, or a server-id anchor against a warm thread's
+			// client-minted ids). In case (b) the anchor is unresolvable: strip it so
+			// it can't linger in the URL forever or wedge the cold-load bottom-scroll.
+			const settled =
+				hydration === "ready" ||
+				hydration === "not_found" ||
+				messages.length > 0;
+			if (settled) void stripAnchor();
+			return;
+		}
 		target.scrollIntoView({ block: "center", behavior: "auto" });
 		setHighlightId(focusedMessageId);
 		// The anchor jump IS this thread's initial scroll — claim the ref so the
 		// bottom-scroll effect doesn't clobber it once the param strips below.
 		initialScrollThread.current = focusedThreadId;
-		// Consume-then-strip (ADR-0042): drop the param from the URL so a reload or
-		// re-render can't re-fire the jump, replacing (not pushing) so Back doesn't
-		// land on the un-stripped URL. The visual ring fades on its own timer below.
-		void navigate({
-			to: "/thread/$threadId",
-			params: { threadId: focusedThreadId },
-			search: {},
-			replace: true,
-		});
-	}, [focusedMessageId, focusedThreadId, messages, navigate]);
+		void stripAnchor();
+	}, [focusedMessageId, focusedThreadId, messages, hydration, navigate]);
 
 	// Fade the lamplight ring after it has held long enough to be seen. Separate
 	// from the anchor-consume above so consuming the one-shot anchor never cancels

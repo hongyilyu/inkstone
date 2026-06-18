@@ -100,3 +100,27 @@ test("⌘K message hit deep-links to the exact message, highlights it, then stri
 	// so a reload or Back can't re-fire the jump.
 	await expect.poll(() => chat.search()).toBe("");
 });
+
+test("a stale ?focusedMessageId (no such message) strips itself and still shows the thread", async ({
+	chat,
+}) => {
+	// A shared/typo'd deep link whose message id isn't in the thread must NOT
+	// wedge the thread at the top with the param stuck forever — once hydration
+	// settles and the id isn't found, the anchor strips (ADR-0042 consume-then-strip).
+	await chat.goto();
+	await chat.send("A normal message in this thread");
+	await chat.waitForAssistantText(/noted/i);
+	const threadPath = chat.pathname();
+
+	// Re-open the SAME thread with a bogus anchor (a valid-looking but absent id).
+	await chat.gotoPath(
+		`${threadPath}?focusedMessageId=00000000-0000-0000-0000-000000000bad`,
+	);
+
+	// The thread still renders (it exists), and the dead anchor strips off the URL.
+	await expect(
+		chat.userBubbles().filter({ hasText: "A normal message" }),
+	).toHaveCount(1, { timeout: 15_000 });
+	await expect.poll(() => chat.search()).toBe("");
+	expect(chat.pathname()).toBe(threadPath);
+});

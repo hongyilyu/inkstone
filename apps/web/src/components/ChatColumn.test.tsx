@@ -8,7 +8,7 @@ import {
 import { QueryClient } from "@tanstack/react-query";
 import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Effect, Layer, ManagedRuntime, Stream } from "effect";
+import { Deferred, Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetBridge } from "@/store/bridge";
 import {
@@ -744,6 +744,146 @@ describe("ChatColumn", () => {
 				});
 			});
 			expect(setScrollTop).not.toHaveBeenCalledWith(4000);
+
+			await runtime.dispose();
+		} finally {
+			scrollTopSpy.mockRestore();
+			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+		}
+	});
+
+	it("bottom-scrolls a GENUINELY cold thread once thread/get hydrates (not just the warm pre-seeded path)", async () => {
+		// The other scroll tests pre-seed messages before render (warm path). This
+		// one renders an EMPTY thread with a gated thread/get, then resolves it — so
+		// the bottom-scroll must RE-FIRE after async hydration injects messages
+		// post-mount. A mount-only or messages-less-dep regression fails here.
+		const setScrollTop = vi.fn();
+		Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+			configurable: true,
+			get: () => 4000,
+		});
+		const scrollTopSpy = vi
+			.spyOn(HTMLElement.prototype, "scrollTop", "set")
+			.mockImplementation(setScrollTop);
+		const gate = Effect.runSync(Deferred.make<ThreadGetResult, never>());
+		const history: ThreadGetResult = {
+			thread_id: "threadCold",
+			title: "T",
+			messages: [
+				{
+					id: "m1",
+					role: "user",
+					status: "completed",
+					run_id: "r1",
+					text: "q",
+				},
+				{
+					id: "m2",
+					role: "assistant",
+					status: "completed",
+					run_id: "r1",
+					text: "cold-hydrated reply",
+				},
+			],
+		};
+		const unused = Effect.die("not exercised in this test");
+		const stub = WsClient.of({
+			threadCreate: () => unused,
+			postMessage: () => unused,
+			threadList: () => unused,
+			getRunHistory: () => unused,
+			threadGet: () => Deferred.await(gate),
+			listEntities: () => unused,
+			entityMutate: () => unused,
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => unused,
+			providerStatus: () => unused,
+			providerLoginStart: () => unused,
+			modelCatalog: () => unused,
+			settingsGet: () => unused,
+			settingsSet: () => unused,
+			proposalGet: () => unused,
+			proposalDecide: () => unused,
+			messageSearch: () => unused,
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		try {
+			// Empty store + pending thread/get → the skeleton, no messages yet.
+			await renderFocused(runtime, "threadCold");
+			expect(
+				screen.getByRole("status", { name: /loading conversation/i }),
+			).toBeInTheDocument();
+			expect(setScrollTop).not.toHaveBeenCalledWith(4000);
+
+			// Resolve hydration: messages arrive post-mount, the effect re-fires.
+			await act(async () => {
+				Effect.runSync(Deferred.succeed(gate, history));
+				await Promise.resolve();
+			});
+
+			await screen.findByText("cold-hydrated reply");
+			await waitFor(() => {
+				expect(setScrollTop).toHaveBeenCalledWith(4000);
+			});
+
+			await runtime.dispose();
+		} finally {
+			scrollTopSpy.mockRestore();
+			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+		}
+	});
+
+	it("strips an unresolvable anchor and falls back to the bottom once messages are present", async () => {
+		// A present-but-unmatched ?focusedMessageId (stale/deleted/typo'd id, or a
+		// server-id anchor against a warm thread's client-minted ids): the anchor is
+		// unresolvable. It must NOT linger in the URL forever or wedge the cold-load
+		// bottom-scroll — strip it and pin to the bottom (the deep-review regression).
+		const scrollIntoView = vi.fn();
+		Element.prototype.scrollIntoView = scrollIntoView;
+		const setScrollTop = vi.fn();
+		Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+			configurable: true,
+			get: () => 4000,
+		});
+		const scrollTopSpy = vi
+			.spyOn(HTMLElement.prototype, "scrollTop", "set")
+			.mockImplementation(setScrollTop);
+		try {
+			const runtime = makeStubRuntime({
+				runId: "run-ghost-anchor",
+				events: [],
+			});
+			// The thread is present (warm), but none of its ids is "ghost-id".
+			appendUserMessage("threadA", {
+				id: "u-early",
+				role: "user",
+				status: "completed",
+				text: "first",
+				run_id: "",
+			});
+			seedAssistantMessage("threadA", {
+				id: "a-real",
+				role: "assistant",
+				status: "completed",
+				text: "the only reply",
+				run_id: "r-real",
+			});
+
+			const { router } = await renderFocused(runtime, "threadA", {
+				focusedMessageId: "ghost-id",
+			});
+
+			await screen.findByText("the only reply");
+			// The dead anchor is stripped from the URL (not left to linger/reload-loop).
+			await waitFor(() => {
+				expect(router.state.location.search).toEqual({});
+			});
+			// No row was highlighted (nothing to land on), and the bottom-scroll fired.
+			expect(scrollIntoView).not.toHaveBeenCalled();
+			await waitFor(() => {
+				expect(setScrollTop).toHaveBeenCalledWith(4000);
+			});
 
 			await runtime.dispose();
 		} finally {
