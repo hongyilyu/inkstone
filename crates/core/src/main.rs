@@ -6,6 +6,7 @@ mod dispatcher;
 mod entities;
 mod field_spec;
 mod hub;
+mod launch;
 mod logging;
 mod models;
 mod mutate;

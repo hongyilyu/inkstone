@@ -86,20 +86,19 @@ pub(super) async fn handle_login_start(
             ));
         }
 
-        let cmd = std::env::var("INKSTONE_PROVIDER_LOGIN_CMD").unwrap_or_else(|_| {
-            "packages/provider-helper/node_modules/.bin/tsx packages/provider-helper/src/provider.ts login"
-                .to_string()
-        });
-        let mut parts = cmd.split_whitespace();
-        let Some(program) = parts.next() else {
-            LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
-            return Err(HandlerError::Internal(anyhow::anyhow!(
-                "INKSTONE_PROVIDER_LOGIN_CMD is empty"
-            )));
-        };
-        let args: Vec<String> = parts.map(str::to_string).collect();
+        // The launch command (ADR-0041): the INKSTONE_PROVIDER_LOGIN_CMD
+        // override (shlex-parsed) or the tsx default. An empty override is an
+        // error; release the single-flight latch before surfacing it.
+        let crate::launch::ResolvedCommand { program, args } =
+            match crate::launch::resolve(crate::launch::Role::ProviderLogin) {
+                Ok(cmd) => cmd,
+                Err(e) => {
+                    LOGIN_IN_FLIGHT.store(false, Ordering::SeqCst);
+                    return Err(HandlerError::Internal(e));
+                }
+            };
 
-        let mut child = match Command::new(program)
+        let mut child = match Command::new(&program)
             .args(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

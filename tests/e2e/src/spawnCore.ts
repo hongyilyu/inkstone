@@ -1,5 +1,12 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	copyFileSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +18,33 @@ export const REPO_ROOT = path.resolve(HERE, "..", "..", "..");
 
 export const CORE_BIN = path.join(REPO_ROOT, "target", "debug", "core");
 export const WEB_DIST = path.join(REPO_ROOT, "apps", "web", "dist");
+
+/** Compiled FIXTURE worker binary (ADR-0041 step 2, slice 3). `global-setup.ts`
+ * bun-compiles the deterministic slow-worker to this NON-real name — NOT
+ * `inkstone-worker`, which would sit next to `target/debug/core` and make
+ * `pnpm dev` (and every no-override spec) auto-detect+spawn the echo fixture
+ * instead of the real Worker. The hermetic `siblingBinaries.worker` mode below
+ * copies it to the real `inkstone-worker` name ONLY inside a per-test tempdir. */
+export const WORKER_FIXTURE_BIN = path.join(
+	REPO_ROOT,
+	"target",
+	"debug",
+	"inkstone-worker-fixture",
+);
+
+/** Compiled FIXTURE provider-helper binary (ADR-0041 step 2, slice 4). Same
+ * FOOTGUN as {@link WORKER_FIXTURE_BIN}: `global-setup.ts` bun-compiles the
+ * offline `login-helper.ts` fixture to this NON-real name — NOT
+ * `inkstone-provider-helper`, which would sit next to `target/debug/core` and
+ * hijack real `provider/login_start` in `pnpm dev`. The hermetic
+ * `siblingBinaries.providerHelper` mode below copies it to the real
+ * `inkstone-provider-helper` name ONLY inside a per-test tempdir. */
+export const PROVIDER_HELPER_FIXTURE_BIN = path.join(
+	REPO_ROOT,
+	"target",
+	"debug",
+	"inkstone-provider-helper-fixture",
+);
 const TSX_BIN = path.join(
 	REPO_ROOT,
 	"packages",
@@ -86,6 +120,20 @@ export interface SpawnCoreOptions {
 	readonly webDir?: string;
 	/** Worker command. Default the gate fixture; set to undefined to use Core's default. */
 	readonly workerCmd?: string;
+	/** Hermetic sibling-binary mode (ADR-0041 step 2): run Core from an isolated
+	 * tempdir with compiled sibling binaries next to it and NO `INKSTONE_*_CMD`
+	 * override, so Core's resolver auto-detects them via `current_exe`'s
+	 * directory. `worker` is a path to a compiled worker binary (e.g.
+	 * {@link WORKER_FIXTURE_BIN}); when set, `INKSTONE_WORKER_CMD` is left UNSET
+	 * (and scrubbed from the inherited env) and `workerCmd` is ignored.
+	 * `providerHelper` is a path to a compiled provider-helper binary (e.g.
+	 * {@link PROVIDER_HELPER_FIXTURE_BIN}); when set, `INKSTONE_PROVIDER_LOGIN_CMD`
+	 * is left UNSET (and scrubbed) and `providerLoginCmd` is ignored. Both may be
+	 * set together — one tempdir hosts both siblings. */
+	readonly siblingBinaries?: {
+		readonly worker?: string;
+		readonly providerHelper?: string;
+	};
 	/** Gate-fixture chunk count: `chunks` > 1 splits `echo: <prompt>` into deltas and pauses after chunk 1 until the gate file exists. */
 	readonly chunks?: number;
 	readonly gatePath?: string;
@@ -236,23 +284,79 @@ export async function spawnCore(
 		delete env[key];
 	}
 
-	const workerCmd =
-		opts.workerCmd !== undefined ? opts.workerCmd : GATE_WORKER_CMD;
-	if (workerCmd) {
-		env.INKSTONE_WORKER_CMD = workerCmd;
-		env.INKSTONE_FIXTURE_CHUNKS = String(chunks);
-		if (gatePath) env.INKSTONE_FIXTURE_GATE = gatePath;
-		if (opts.proposalParamsFile !== undefined) {
-			env.INKSTONE_PROPOSE_PARAMS_FILE = opts.proposalParamsFile;
+	// Hermetic sibling-binary mode (ADR-0041 step 2): copy Core + whichever
+	// compiled sibling binaries are provided into ONE isolated tempdir so
+	// `current_exe().parent()` finds them, and leave the corresponding
+	// `INKSTONE_*_CMD` override(s) UNSET (scrubbed from the inherited env too) so
+	// Core's resolver auto-detects each sibling rather than honoring an override.
+	// Worker and provider-helper siblings are independent: either, both, or
+	// neither may be set.
+	const siblingWorker = opts.siblingBinaries?.worker;
+	const siblingProviderHelper = opts.siblingBinaries?.providerHelper;
+	const usingSiblings =
+		siblingWorker !== undefined || siblingProviderHelper !== undefined;
+	let binDir: string | undefined;
+	let coreBin = CORE_BIN;
+	if (usingSiblings) {
+		binDir = mkdtempSync(path.join(tmpdir(), "inkstone-bin-"));
+		coreBin = path.join(binDir, "core");
+		copyFileSync(CORE_BIN, coreBin);
+		chmodSync(coreBin, 0o755);
+		if (siblingWorker !== undefined) {
+			const siblingDest = path.join(binDir, "inkstone-worker");
+			copyFileSync(siblingWorker, siblingDest);
+			chmodSync(siblingDest, 0o755);
+			// Auto-detection only fires when NO override is set. Scrub any inherited
+			// value so nothing leaks through `...process.env`.
+			delete env.INKSTONE_WORKER_CMD;
+			// The fixture honors INKSTONE_FIXTURE_CHUNKS/GATE on stdin like the tsx
+			// form does, so the gate/chunk knobs still work through the sibling.
+			env.INKSTONE_FIXTURE_CHUNKS = String(chunks);
+			if (gatePath) env.INKSTONE_FIXTURE_GATE = gatePath;
 		}
-		if (opts.workerToolCallLogPath !== undefined) {
-			env.INKSTONE_WORKER_TOOL_CALL_LOG = opts.workerToolCallLogPath;
+		if (siblingProviderHelper !== undefined) {
+			const helperDest = path.join(binDir, "inkstone-provider-helper");
+			copyFileSync(siblingProviderHelper, helperDest);
+			chmodSync(helperDest, 0o755);
+			// Auto-detection only fires when NO override is set. Scrub the inherited
+			// value and DON'T re-set it from opts.providerLoginCmd below.
+			delete env.INKSTONE_PROVIDER_LOGIN_CMD;
+			// The compiled login-helper fixture reads INKSTONE_LOGIN_STUB_URL from its
+			// (inherited) env; point it at about:blank so the SPA's window.open of the
+			// authorize URL is harmless in headless Chromium.
+			env.INKSTONE_LOGIN_STUB_URL = "about:blank";
+		}
+	}
+	// The worker command is independent of the provider-helper sibling: configure
+	// it whenever NO worker sibling is in play (the plain non-sibling case AND the
+	// provider-helper-only sibling case). Skipped only when a worker sibling was
+	// copied above (which deliberately auto-detects via NO override). Without this,
+	// `siblingBinaries: { providerHelper }` alone would drop both opts.workerCmd and
+	// the GATE_WORKER_CMD default, leaving the tempdir Core with no worker to spawn.
+	if (siblingWorker === undefined) {
+		const workerCmd =
+			opts.workerCmd !== undefined ? opts.workerCmd : GATE_WORKER_CMD;
+		if (workerCmd) {
+			env.INKSTONE_WORKER_CMD = workerCmd;
+			env.INKSTONE_FIXTURE_CHUNKS = String(chunks);
+			if (gatePath) env.INKSTONE_FIXTURE_GATE = gatePath;
+			if (opts.proposalParamsFile !== undefined) {
+				env.INKSTONE_PROPOSE_PARAMS_FILE = opts.proposalParamsFile;
+			}
+			if (opts.workerToolCallLogPath !== undefined) {
+				env.INKSTONE_WORKER_TOOL_CALL_LOG = opts.workerToolCallLogPath;
+			}
 		}
 	}
 
 	// Per-test credential store so provider/status starts disconnected and a login e2e can observe it flip to connected.
 	env.INKSTONE_CREDENTIALS_DIR = path.join(workspaceDir, "credentials");
-	if (opts.providerLoginCmd !== undefined) {
+	// In provider-helper sibling mode the override is deliberately UNSET (scrubbed
+	// above) so Core auto-detects the sibling; never re-set it from providerLoginCmd.
+	if (
+		siblingProviderHelper === undefined &&
+		opts.providerLoginCmd !== undefined
+	) {
 		env.INKSTONE_PROVIDER_LOGIN_CMD = opts.providerLoginCmd;
 	}
 
@@ -314,7 +418,10 @@ export async function spawnCore(
 	}
 
 	// Own process group (detached) so shutdown can hard-kill orphaned Worker children alongside Core.
-	const child = spawn(CORE_BIN, [], {
+	// `coreBin` is the isolated tempdir copy in sibling-binary mode, else target/debug/core.
+	// cwd stays REPO_ROOT (current_exe — and thus sibling detection — is cwd-independent;
+	// the tsx fallback's repo-relative paths still resolve here for non-sibling specs).
+	const child = spawn(coreBin, [], {
 		cwd: REPO_ROOT,
 		env,
 		stdio: ["ignore", "pipe", "pipe"],
@@ -331,6 +438,7 @@ export async function spawnCore(
 			// already gone
 		}
 		rmSync(workspaceDir, { recursive: true, force: true });
+		if (binDir) rmSync(binDir, { recursive: true, force: true });
 		throw err;
 	}
 
@@ -372,6 +480,7 @@ export async function spawnCore(
 				}
 			});
 			rmSync(workspaceDir, { recursive: true, force: true });
+			if (binDir) rmSync(binDir, { recursive: true, force: true });
 		},
 	};
 }

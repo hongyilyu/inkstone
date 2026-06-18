@@ -76,19 +76,14 @@ enum HelperLine {
 }
 
 /// Spawn the Provider Helper in `refresh` mode, feed it the refresh token on
-/// stdin, and read back the rotated credentials. The command is
-/// `INKSTONE_PROVIDER_HELPER_CMD` (whitespace-split) or the default tsx
-/// invocation; tests point it at a stub.
+/// stdin, and read back the rotated credentials. The command is resolved by
+/// `crate::launch` (ADR-0041): the `INKSTONE_PROVIDER_HELPER_CMD` override
+/// (shlex-parsed) or the default tsx invocation; tests point it at a stub.
 async fn refresh_via_helper(refresh_token: &str) -> Result<Credentials> {
-    let cmd = std::env::var("INKSTONE_PROVIDER_HELPER_CMD").unwrap_or_else(|_| {
-        "packages/provider-helper/node_modules/.bin/tsx packages/provider-helper/src/provider.ts refresh"
-            .to_string()
-    });
-    let mut parts = cmd.split_whitespace();
-    let program = parts.next().context("INKSTONE_PROVIDER_HELPER_CMD is empty")?;
-    let args: Vec<&str> = parts.collect();
+    let crate::launch::ResolvedCommand { program, args } =
+        crate::launch::resolve(crate::launch::Role::ProviderRefresh)?;
 
-    let mut child = Command::new(program)
+    let mut child = Command::new(&program)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
