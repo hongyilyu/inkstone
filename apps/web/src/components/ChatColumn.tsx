@@ -70,10 +70,28 @@ export function ChatColumn() {
 		startProposalStream(runtime);
 	}, [runtime]);
 
+	// The thread whose initial scroll has already been placed — guards the
+	// cold-load bottom-scroll so it fires once per thread-load, not on every
+	// streamed delta (ADR-0042). The anchor effect below also stamps it, so a
+	// consumed deep-link counts as that thread's initial scroll and the bottom
+	// effect can't clobber the just-completed jump.
+	const initialScrollThread = useRef<string | null>(null);
+
+	// Cold-load / thread-switch lands at the latest message (ADR-0042). The old
+	// mount-only scroll no-op'd on a cold thread (messages arrive AFTER mount), so
+	// reloading onto a long thread used to land at the top. Pin to the bottom when
+	// the thread's messages first render — UNLESS a `?focusedMessageId` anchor is
+	// pending, which wins (the anchor effect scrolls to a specific row instead).
+	// Keyed on the message list so the cold-thread path fires once thread/get
+	// hydrates; the per-thread ref keeps streamed deltas from re-pinning.
 	useLayoutEffect(() => {
+		if (focusedMessageId !== undefined || focusedThreadId === null) return;
+		if (messages.length === 0) return;
+		if (initialScrollThread.current === focusedThreadId) return;
 		const el = scrollerRef.current;
 		if (el) el.scrollTop = el.scrollHeight;
-	}, []);
+		initialScrollThread.current = focusedThreadId;
+	}, [focusedThreadId, focusedMessageId, messages]);
 
 	// Scroll-to-message (issue #138). Fires when the anchored Message is actually
 	// present in the rendered list — the real precondition, covering both a cold
@@ -95,6 +113,9 @@ export function ChatColumn() {
 		if (!target) return;
 		target.scrollIntoView({ block: "center", behavior: "auto" });
 		setHighlightId(focusedMessageId);
+		// The anchor jump IS this thread's initial scroll — claim the ref so the
+		// bottom-scroll effect doesn't clobber it once the param strips below.
+		initialScrollThread.current = focusedThreadId;
 		// Consume-then-strip (ADR-0042): drop the param from the URL so a reload or
 		// re-render can't re-fire the jump, replacing (not pushing) so Back doesn't
 		// land on the un-stripped URL. The visual ring fades on its own timer below.

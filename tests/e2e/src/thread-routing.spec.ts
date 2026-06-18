@@ -12,6 +12,9 @@ import { FAUX_WORKER_CMD } from "./spawnCore.js";
  * server-assigned thread id surfaced in the URL.
  */
 test.use({
+	// A short viewport makes a handful of turns overflow, so "last message visible"
+	// after a cold reload can only be the bottom-scroll, not the initial paint.
+	viewport: { width: 1024, height: 600 },
 	coreOptions: {
 		workerCmd: FAUX_WORKER_CMD,
 		fauxResponse: "noted, I will remember that",
@@ -49,6 +52,39 @@ test("reloading a Thread URL cold-hydrates the same conversation", async ({
 		1,
 		{ timeout: 15_000 },
 	);
+});
+
+test("reloading a long Thread cold-lands at the bottom (latest message)", async ({
+	chat,
+}) => {
+	await chat.goto();
+
+	// Build an overflowing transcript: the first turn sits well above the fold,
+	// the last turn at the bottom.
+	const turns = [
+		"First: the very first thing at the top of the list",
+		"Second errand to handle this week",
+		"Third item, still scrolled up high",
+		"Fourth, somewhere in the middle",
+		"Fifth, getting lower now",
+		"Sixth, the final and most recent message",
+	];
+	for (let i = 0; i < turns.length; i++) {
+		await chat.send(turns[i]);
+		await expect(chat.copyButtons()).toHaveCount(i + 1, { timeout: 15_000 });
+	}
+	const threadUrl = chat.pathname();
+
+	// Cold reload: store starts empty, thread/get rehydrates the full transcript.
+	await chat.reload();
+	expect(chat.pathname()).toBe(threadUrl);
+	await expect(chat.userBubbles()).toHaveCount(turns.length, {
+		timeout: 15_000,
+	});
+
+	// Lands at the bottom (ADR-0042): the latest turn is in view, the first is not.
+	await expect(chat.userBubble("the very first thing")).not.toBeInViewport();
+	await expect(chat.userBubble("final and most recent")).toBeInViewport();
 });
 
 test("New Chat returns to the root welcome route", async ({ chat }) => {

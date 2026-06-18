@@ -606,6 +606,98 @@ describe("ChatColumn", () => {
 		}
 	});
 
+	it("scrolls to the bottom on cold-load when no anchor is set (ADR-0042)", async () => {
+		// jsdom has no layout, so stub a non-zero scrollHeight and capture scrollTop
+		// writes — the cold-load effect pins scrollTop to scrollHeight.
+		const setScrollTop = vi.fn();
+		Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+			configurable: true,
+			get: () => 4000,
+		});
+		const scrollTopSpy = vi
+			.spyOn(HTMLElement.prototype, "scrollTop", "set")
+			.mockImplementation(setScrollTop);
+		try {
+			const runtime = makeStubRuntime({ runId: "run-cold", events: [] });
+			// A multi-message thread already present (simulates post-hydration).
+			appendUserMessage("threadA", {
+				id: "u-early",
+				role: "user",
+				status: "completed",
+				text: "first",
+				run_id: "",
+			});
+			seedAssistantMessage("threadA", {
+				id: "a-late",
+				role: "assistant",
+				status: "completed",
+				text: "last reply",
+				run_id: "r-late",
+			});
+
+			await renderFocused(runtime, "threadA");
+
+			await screen.findByText("last reply");
+			// Pinned to the bottom: scrollTop set to the (stubbed) scrollHeight.
+			await waitFor(() => {
+				expect(setScrollTop).toHaveBeenCalledWith(4000);
+			});
+
+			await runtime.dispose();
+		} finally {
+			scrollTopSpy.mockRestore();
+			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+		}
+	});
+
+	it("does NOT bottom-scroll when an anchor is set — the anchor jump wins", async () => {
+		const scrollIntoView = vi.fn();
+		Element.prototype.scrollIntoView = scrollIntoView;
+		const setScrollTop = vi.fn();
+		Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+			configurable: true,
+			get: () => 4000,
+		});
+		const scrollTopSpy = vi
+			.spyOn(HTMLElement.prototype, "scrollTop", "set")
+			.mockImplementation(setScrollTop);
+		try {
+			const runtime = makeStubRuntime({ runId: "run-anchor-wins", events: [] });
+			appendUserMessage("threadA", {
+				id: "u-early",
+				role: "user",
+				status: "completed",
+				text: "first",
+				run_id: "",
+			});
+			seedAssistantMessage("threadA", {
+				id: "a-target",
+				role: "assistant",
+				status: "completed",
+				text: "the anchored reply",
+				run_id: "r-target",
+			});
+
+			await renderFocused(runtime, "threadA", { focusedMessageId: "a-target" });
+
+			await screen.findByText("the anchored reply");
+			// The anchor jump ran (scrollIntoView), and the bottom-scroll did NOT
+			// fight it (scrollTop never pinned to scrollHeight).
+			await waitFor(() => {
+				expect(scrollIntoView).toHaveBeenCalledWith({
+					block: "center",
+					behavior: "auto",
+				});
+			});
+			expect(setScrollTop).not.toHaveBeenCalledWith(4000);
+
+			await runtime.dispose();
+		} finally {
+			scrollTopSpy.mockRestore();
+			delete (HTMLElement.prototype as { scrollHeight?: number }).scrollHeight;
+		}
+	});
+
 	it("offers Try again on an interrupted reply and re-sends the previous turn", async () => {
 		const user = userEvent.setup();
 		const runtime = makeStubRuntime({
