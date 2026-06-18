@@ -15,7 +15,15 @@ import {
 	type Message,
 	prependHistory,
 	setHydrationStatus,
+	type ToolCall,
 } from "./chat.js";
+
+/** A persisted tool call's wire status maps to a live {@link ToolCall} status:
+ * `error` keeps its spelling, anything else (a rehydrated call is `completed`)
+ * settles to `completed`. A rehydrated call is never `running`. */
+function toToolCallStatus(status: string): ToolCall["status"] {
+	return status === "error" ? "error" : "completed";
+}
 
 /** Map a wire `MessageView` to the live {@link Message}, narrowing role/status via defensive guards — see docs/design/web-store.md. */
 export function toMessage(view: ThreadGetResult["messages"][number]): Message {
@@ -26,12 +34,22 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 		view.status === "incomplete"
 			? view.status
 			: "completed";
+	// Rehydrate tool-activity rows (ADR-0043). `MessageView.tool_calls` carries
+	// no id (the durable record has one, but the live row keys only on render
+	// order); synthesize a stable per-index id so React keys stay distinct.
+	const toolCalls: ToolCall[] = view.tool_calls.map((tc, i) => ({
+		id: `${view.id}:tc:${i}`,
+		name: tc.name,
+		status: toToolCallStatus(tc.status),
+		arg: tc.arg,
+	}));
 	return {
 		id: view.id,
 		role,
 		status,
 		text: view.text,
 		run_id: view.run_id,
+		toolCalls,
 	};
 }
 

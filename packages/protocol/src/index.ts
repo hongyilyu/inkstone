@@ -92,12 +92,25 @@ export type RunHistoryResult = S.Schema.Type<typeof RunHistoryResult>;
 export const ThreadGetParams = S.Struct({ thread_id: S.String });
 export type ThreadGetParams = S.Schema.Type<typeof ThreadGetParams>;
 
+/** One rehydrated tool-activity row on a `thread/get` Message (ADR-0043) — what
+ * the live `tool_call` Run Event surfaced, made durable across reload. Carries
+ * `name`, `status`, and an optional display `arg` (the tool's key argument, e.g.
+ * a search query), never payloads; Proposal tool calls are excluded by the read.
+ * `arg` is `optional` (omitted, not null) for argless tools. See docs/design/protocol.md */
+export const ToolCallView = S.Struct({
+	name: S.String,
+	status: S.String,
+	arg: S.optional(S.String),
+});
+export type ToolCallView = S.Schema.Type<typeof ToolCallView>;
+
 export const MessageView = S.Struct({
 	id: S.String,
 	role: S.String,
 	status: S.String,
 	run_id: S.String,
 	text: S.String,
+	tool_calls: S.Array(ToolCallView),
 });
 export type MessageView = S.Schema.Type<typeof MessageView>;
 
@@ -110,12 +123,14 @@ export type ThreadGetResult = S.Schema.Type<typeof ThreadGetResult>;
 
 export const RunEvent = S.Union(
 	S.Struct({ kind: S.Literal("text_delta"), delta: S.String }),
-	// Core-synthesized, ephemeral tool-call boundary (ADR-0006) — see docs/design/protocol.md
+	// Core-synthesized, ephemeral tool-call boundary (ADR-0006); `arg` is the
+	// tool's display argument (ADR-0043), omitted for argless tools — see docs/design/protocol.md
 	S.Struct({
 		kind: S.Literal("tool_call"),
 		tool_call_id: S.String,
 		name: S.String,
 		status: S.Literal("started", "completed", "error"),
+		arg: S.optional(S.String),
 	}),
 	S.Struct({ kind: S.Literal("done") }),
 	S.Struct({ kind: S.Literal("cancelled") }),

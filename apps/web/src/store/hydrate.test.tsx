@@ -41,6 +41,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "r1",
 					text: "hi",
+					tool_calls: [],
 				},
 				{
 					id: "m2",
@@ -48,6 +49,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "r1",
 					text: "echo: hi",
+					tool_calls: [],
 				},
 			],
 		};
@@ -88,6 +90,74 @@ describe("refresh-durable hydration", () => {
 		await runtime.dispose();
 	});
 
+	it("rehydrates tool-activity rows: maps status (error vs completed), carries arg, distinct ids", async () => {
+		const subscribeRun = vi.fn(
+			(_runId: RunId): Stream.Stream<RunEventValue, WsError> => Stream.empty,
+		);
+		const result: ThreadGetResult = {
+			thread_id: "tTools",
+			title: "T",
+			messages: [
+				{
+					id: "m1",
+					role: "user",
+					status: "completed",
+					run_id: "r1",
+					text: "find people",
+					tool_calls: [],
+				},
+				{
+					id: "m2",
+					role: "assistant",
+					status: "completed",
+					run_id: "r1",
+					text: "done",
+					tool_calls: [
+						{ name: "search_entities", status: "completed", arg: "Lev" },
+						{ name: "search_entities", status: "error", arg: "Acme" },
+					],
+				},
+			],
+		};
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: (id) =>
+				id === "tTools" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			subscribeRun,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tTools");
+
+		const assistant = getChatState().threads.tTools?.messages[1];
+		expect(assistant?.toolCalls).toEqual([
+			{
+				id: "m2:tc:0",
+				name: "search_entities",
+				status: "completed",
+				arg: "Lev",
+			},
+			{ id: "m2:tc:1", name: "search_entities", status: "error", arg: "Acme" },
+		]);
+
+		await runtime.dispose();
+	});
+
 	it("hydrates a streaming thread → resubscribes by run_id and resumes the tail", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const subscribeRun = vi.fn(
@@ -104,6 +174,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "r2",
 					text: "hello",
+					tool_calls: [],
 				},
 				{
 					id: "m2",
@@ -111,6 +182,7 @@ describe("refresh-durable hydration", () => {
 					status: "streaming",
 					run_id: "r2",
 					text: "echo: ",
+					tool_calls: [],
 				},
 			],
 		};
@@ -178,6 +250,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "old",
 					text: "earlier",
+					tool_calls: [],
 				},
 				{
 					id: "s2",
@@ -185,6 +258,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "old",
 					text: "earlier reply",
+					tool_calls: [],
 				},
 			],
 		};
@@ -477,6 +551,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "r1",
 					text: "hi",
+					tool_calls: [],
 				},
 			],
 		};

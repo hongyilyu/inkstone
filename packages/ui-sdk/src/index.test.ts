@@ -290,6 +290,7 @@ describe("WsClient", () => {
 					status: "complete",
 					run_id: "01234567-89ab-7def-8012-345678901234",
 					text: "hi",
+					tool_calls: [],
 				},
 				{
 					id: "msg-2",
@@ -297,6 +298,10 @@ describe("WsClient", () => {
 					status: "complete",
 					run_id: "01234567-89ab-7def-8012-345678901234",
 					text: "echo: hi",
+					tool_calls: [
+						{ name: "search_entities", status: "completed", arg: "Lev" },
+						{ name: "read_thread", status: "completed" },
+					],
 				},
 			],
 		};

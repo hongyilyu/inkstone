@@ -36,6 +36,18 @@ pub struct Input {
     pub name: String,
 }
 
+/// The display argument for a `load_skill` tool-activity row (ADR-0043): the
+/// skill `name`. `None` for a malformed payload or an empty name.
+pub fn display_arg(params: &Value) -> Option<String> {
+    let input: Input = serde_json::from_value(params.clone()).ok()?;
+    let name = input.name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 /// The manifest descriptor for this tool.
 pub fn descriptor() -> CoreToolDescriptor {
     CoreToolDescriptor {
@@ -346,6 +358,20 @@ mod tests {
         unsafe {
             std::env::remove_var("INKSTONE_SKILLS_DIR");
         }
+    }
+
+    #[test]
+    fn display_arg_returns_trimmed_name_or_none() {
+        // A non-empty name is the display arg, trimmed (ADR-0043).
+        assert_eq!(
+            display_arg(&json!({ "name": "  weekly-review  " })),
+            Some("weekly-review".to_string())
+        );
+        // An empty / whitespace-only name has no label.
+        assert_eq!(display_arg(&json!({ "name": "" })), None);
+        assert_eq!(display_arg(&json!({ "name": "   " })), None);
+        // A malformed payload (missing `name`) yields None, not a panic.
+        assert_eq!(display_arg(&json!({})), None);
     }
 
     #[test]

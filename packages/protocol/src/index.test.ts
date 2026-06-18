@@ -791,13 +791,29 @@ describe("ThreadGetParams", () => {
 });
 
 describe("MessageView", () => {
-	it("decodes all snake_case fields", () => {
+	it("decodes all snake_case fields, including tool_calls with and without arg", () => {
 		const wire = {
 			id: "01900000-0000-7000-8000-000000000000",
 			role: "assistant",
 			status: "completed",
 			run_id: "01900000-0000-7000-8000-000000000001",
 			text: "echo: hi",
+			tool_calls: [
+				{ name: "search_entities", status: "completed", arg: "Lev" },
+				{ name: "read_thread", status: "completed" },
+			],
+		};
+		expect(S.decodeUnknownSync(MessageView)(wire)).toEqual(wire);
+	});
+
+	it("decodes an empty tool_calls array (user Message / no tool call)", () => {
+		const wire = {
+			id: "01900000-0000-7000-8000-000000000000",
+			role: "user",
+			status: "completed",
+			run_id: "01900000-0000-7000-8000-000000000001",
+			text: "hi",
+			tool_calls: [],
 		};
 		expect(S.decodeUnknownSync(MessageView)(wire)).toEqual(wire);
 	});
@@ -815,6 +831,7 @@ describe("ThreadGetResult", () => {
 					status: "completed",
 					run_id: "01900000-0000-7000-8000-000000000001",
 					text: "hi",
+					tool_calls: [],
 				},
 				{
 					id: "01900000-0000-7000-8000-000000000003",
@@ -822,6 +839,7 @@ describe("ThreadGetResult", () => {
 					status: "streaming",
 					run_id: "01900000-0000-7000-8000-000000000001",
 					text: "echo: hi",
+					tool_calls: [{ name: "read_thread", status: "completed" }],
 				},
 			],
 		};
@@ -839,6 +857,7 @@ describe("ThreadGetResult", () => {
 					status: "completed",
 					run_id: "01900000-0000-7000-8000-000000000001",
 					text: "hi",
+					tool_calls: [],
 				},
 			],
 		};
@@ -896,6 +915,20 @@ describe("RunEvent", () => {
 			status,
 		};
 		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
+	});
+
+	it("round-trips a tool_call variant carrying a display arg (ADR-0043)", () => {
+		const event = {
+			kind: "tool_call",
+			tool_call_id: "tc_02",
+			name: "search_entities",
+			status: "started",
+			arg: "Lev",
+		};
+		const decoded = S.decodeUnknownSync(RunEvent)(event);
+		expect(decoded).toEqual(event);
+		// Lock the encode direction too: optional `arg` must survive the round trip.
+		expect(S.encodeSync(RunEvent)(decoded)).toEqual(event);
 	});
 
 	it("rejects a tool_call with an unknown status", () => {

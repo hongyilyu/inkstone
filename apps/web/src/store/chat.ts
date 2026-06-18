@@ -8,6 +8,8 @@ export interface ToolCall {
 	readonly id: string;
 	readonly name: string;
 	readonly status: "running" | "completed" | "error";
+	/** The tool's display argument (ADR-0043), e.g. a search query; absent for argless tools. */
+	readonly arg?: string;
 }
 
 /** The canonical live UI message; mirrors the wire `MessageView` shape. */
@@ -396,7 +398,15 @@ export function applyEvent(
 					? existing.map((tc) =>
 							tc.id === event.tool_call_id ? { ...tc, status } : tc,
 						)
-					: [...existing, { id: event.tool_call_id, name: event.name, status }];
+					: [
+							...existing,
+							{
+								id: event.tool_call_id,
+								name: event.name,
+								status,
+								arg: event.arg,
+							},
+						];
 				return { ...m, toolCalls };
 			});
 			return withThread(s, threadId, (t) => ({ ...t, messages }));

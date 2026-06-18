@@ -38,12 +38,13 @@ test("a load_skill call renders a completed tool-activity row and the body round
 	await expect(list).toBeVisible();
 	const row = chat.page.getByTestId("tool-call");
 
-	// The row settles to completed and shows the humanized label (load_skill has
-	// no bespoke presentation entry, so it falls back to "Load skill").
+	// The row settles to completed and shows the past-tense label plus the skill
+	// name as its display arg (ADR-0043: load_skill → name).
 	await expect(row).toHaveAttribute("data-status", "completed", {
 		timeout: 15_000,
 	});
-	await expect(row).toContainText("Load skill");
+	await expect(row).toContainText("Loaded skill");
+	await expect(row).toContainText("weekly-review");
 
 	// The row belongs to a real round-trip: the assistant bubble echoes the seeded
 	// weekly-review SKILL.md body (frontmatter stripped → starts at the heading).

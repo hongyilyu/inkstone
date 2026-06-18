@@ -53,14 +53,25 @@ enum Dispatch {
     NoContext(fn(Value) -> ToolFuture<'static>),
 }
 
-/// One registered tool: its wire `name`, its manifest `descriptor`, and how it
-/// dispatches. `REGISTRY` is the single source the reads below derive from, so a
-/// tool can't be described-but-undispatchable (or the reverse) — the gap the old
-/// three parallel name-keyed matches left open.
+/// One registered tool: its wire `name`, its manifest `descriptor`, how it
+/// dispatches, and how to derive its display `arg` (ADR-0043) from its params.
+/// `REGISTRY` is the single source the reads below derive from, so a tool can't
+/// be described-but-undispatchable (or the reverse) — the gap the old three
+/// parallel name-keyed matches left open.
 struct ToolEntry {
     name: &'static str,
     descriptor: fn() -> CoreToolDescriptor,
     dispatch: Dispatch,
+    /// Extracts the tool's display argument from its params for the
+    /// tool-activity row (ADR-0043) — `None` for tools with no meaningful label
+    /// argument. Each extractor deserializes the tool's typed `Input`, so a
+    /// field rename is a compile error here, not a silently-dropped arg.
+    display_arg: fn(&Value) -> Option<String>,
+}
+
+/// The default `display_arg`: a tool with no meaningful label argument.
+fn no_arg(_params: &Value) -> Option<String> {
+    None
 }
 
 /// Every registered tool, in manifest (descriptor) order.
@@ -69,6 +80,7 @@ const REGISTRY: &[ToolEntry] = &[
         name: read_thread::NAME,
         descriptor: read_thread::descriptor,
         dispatch: Dispatch::Pool(|pool, params| Box::pin(read_thread::execute(pool, params))),
+        display_arg: no_arg,
     },
     ToolEntry {
         name: read_current_thread_journal_entries::NAME,
@@ -76,23 +88,38 @@ const REGISTRY: &[ToolEntry] = &[
         dispatch: Dispatch::PoolRun(|pool, run_id, params| {
             Box::pin(read_current_thread_journal_entries::execute(pool, run_id, params))
         }),
+        display_arg: no_arg,
     },
     ToolEntry {
         name: propose_workspace_mutation::NAME,
         descriptor: propose_workspace_mutation::descriptor,
         dispatch: Dispatch::Proposal,
+        display_arg: no_arg,
     },
     ToolEntry {
         name: search_entities::NAME,
         descriptor: search_entities::descriptor,
         dispatch: Dispatch::Pool(|pool, params| Box::pin(search_entities::execute(pool, params))),
+        display_arg: search_entities::display_arg,
     },
     ToolEntry {
         name: load_skill::NAME,
         descriptor: load_skill::descriptor,
         dispatch: Dispatch::NoContext(|params| Box::pin(load_skill::execute(params))),
+        display_arg: load_skill::display_arg,
     },
 ];
+
+/// The display argument for a registered tool's `params` (ADR-0043), or `None`
+/// when the tool exposes none or is unregistered. Used by both the live
+/// `tool_call` Run Event and the `thread/get` rehydration read, so the live and
+/// reloaded rows show the same label.
+pub fn display_arg(name: &str, params: &Value) -> Option<String> {
+    REGISTRY
+        .iter()
+        .find(|e| e.name == name)
+        .and_then(|e| (e.display_arg)(params))
+}
 
 /// The descriptor for a registered tool by name, or `None` if unregistered.
 fn descriptor_for(name: &str) -> Option<CoreToolDescriptor> {
@@ -214,6 +241,25 @@ mod tests {
         assert!(is_registered("read_thread"));
         assert!(is_registered("read_current_thread_journal_entries"));
         assert!(!is_registered("nonexistent"));
+    }
+
+    /// The `display_arg` dispatcher (ADR-0043) routes to a tool's extractor, and
+    /// returns `None` for an unregistered name — the safety net when an unknown
+    /// tool name reaches the live event or rehydration read.
+    #[test]
+    fn display_arg_dispatches_to_tool_and_none_for_unregistered() {
+        // A registered tool with an extractor returns its display arg.
+        assert_eq!(
+            display_arg("search_entities", &serde_json::json!({ "type": "person", "query": "x" })),
+            Some("x".to_string())
+        );
+        // A registered tool with no extractor (read_thread → no_arg) returns None.
+        assert_eq!(
+            display_arg("read_thread", &serde_json::json!({ "thread_id": "t" })),
+            None
+        );
+        // An unregistered name returns None rather than panicking.
+        assert_eq!(display_arg("nonexistent", &serde_json::json!({})), None);
     }
 
     /// The leverage the single-record collapse buys: a descriptor whose `name`

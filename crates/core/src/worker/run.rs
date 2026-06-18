@@ -119,6 +119,11 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                     break;
                 }
 
+                // The display arg (ADR-0043) is derived once from the params and
+                // carried on both the started and terminal `tool_call` events, so
+                // the live row matches the one `thread/get` rehydrates.
+                let arg = crate::tools::display_arg(&name, &params);
+
                 let guard = gate.lock().await;
                 if *cancel_rx.borrow() {
                     drop(guard);
@@ -130,6 +135,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                     tool_call_id: tool_call_id.clone(),
                     name: name.clone(),
                     status: ToolCallStatus::Started,
+                    arg: arg.clone(),
                 });
                 drop(guard);
 
@@ -150,6 +156,7 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                         ToolOutcome::Ok { .. } => ToolCallStatus::Completed,
                         ToolOutcome::Err { .. } => ToolCallStatus::Error,
                     },
+                    arg,
                 });
                 drop(guard);
 
