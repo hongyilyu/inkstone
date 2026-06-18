@@ -132,9 +132,13 @@ export function ChatColumn() {
 				search: {},
 				replace: true,
 			});
+		// The exact-match `.some()` gate already restricts the id to a real message
+		// id, but `focusedMessageId` is URL-supplied, so escape it before it enters
+		// the attribute selector — defense-in-depth against a value with selector
+		// metacharacters (CodeRabbit).
 		const target = messages.some((m) => m.id === focusedMessageId)
 			? scrollerRef.current?.querySelector<HTMLElement>(
-					`[data-message-id="${focusedMessageId}"]`,
+					`[data-message-id="${CSS.escape(focusedMessageId)}"]`,
 				)
 			: null;
 		if (!target) {
