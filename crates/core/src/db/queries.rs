@@ -1681,6 +1681,30 @@ where
     .map(|_| ())
 }
 
+/// Read a Run's tool calls for `thread/get` rehydration (ADR-0043), in timeline
+/// order (`run_steps.seq`). Returns `(name, status)` rows; the caller filters
+/// Proposal tool calls (which render as a `ProposalCard`, not a tool-activity
+/// row) and maps the persisted status to the wire status. Joined through
+/// `run_steps` so the order matches the live arrival order.
+pub(super) async fn tool_calls_by_run<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Vec<(String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT tc.name, tc.status \
+         FROM run_steps rs \
+         JOIN tool_calls tc ON tc.id = rs.tool_call_id \
+         WHERE rs.run_id = ?1 AND rs.kind = 'tool_call' \
+         ORDER BY rs.seq",
+    )
+    .bind(run_id.to_string())
+    .fetch_all(executor)
+    .await
+}
+
 /// Read a Run's ordered timeline for resume transcript reconstruction
 /// (ADR-0025): every `run_steps` row in `seq` order, joined to the message role
 /// or the tool call's name/payloads per step kind. Returns `(kind, message_id,

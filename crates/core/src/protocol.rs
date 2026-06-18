@@ -404,10 +404,24 @@ pub struct ThreadGetParams {
     pub thread_id: uuid::Uuid,
 }
 
+/// One tool call in a `thread/get` result, rehydrating the live tool-activity
+/// row (ADR-0043). Carries only what the row renders — `name`, `status`, and a
+/// `display_arg` — never the request/result payloads. Proposal tool calls are
+/// excluded by the read (they render as a `ProposalCard`). `status` mirrors the
+/// live `ToolCallStatus` wire spelling (`started`→`running` is the live-only
+/// case; a persisted call is always `completed`/`error`).
+#[derive(Debug, Serialize)]
+pub struct ToolCallView {
+    pub name: String,
+    pub status: String,
+}
+
 /// A Message in a `thread/get` result. `text` is the concatenation of the
 /// Message's text parts in `seq` order — no `parts[]` array until attachments
 /// exist (ADR-0017/Q15). `run_id` lets a refreshed Client resubscribe to a
-/// `streaming` Message's Run.
+/// `streaming` Message's Run. `tool_calls` rehydrates the assistant turn's
+/// tool-activity rows (ADR-0043); empty for user Messages and turns with no
+/// (non-Proposal) tool call.
 #[derive(Debug, Serialize)]
 pub struct MessageView {
     pub id: String,
@@ -415,6 +429,7 @@ pub struct MessageView {
     pub status: String,
     pub run_id: String,
     pub text: String,
+    pub tool_calls: Vec<ToolCallView>,
 }
 
 /// `thread/get` result: the Thread header plus its Messages in chronological
@@ -1264,6 +1279,10 @@ mod mirror_tests {
             status: "complete".to_string(),
             run_id: UUID_B.to_string(),
             text: "hello".to_string(),
+            tool_calls: vec![ToolCallView {
+                name: "read_thread".to_string(),
+                status: "completed".to_string(),
+            }],
         };
         assert_eq!(
             serde_json::to_value(&r).unwrap(),
@@ -1272,7 +1291,8 @@ mod mirror_tests {
                 "role": "assistant",
                 "status": "complete",
                 "run_id": UUID_B,
-                "text": "hello"
+                "text": "hello",
+                "tool_calls": [{ "name": "read_thread", "status": "completed" }]
             }),
         );
     }
@@ -1288,6 +1308,7 @@ mod mirror_tests {
                 status: "complete".to_string(),
                 run_id: UUID_A.to_string(),
                 text: "hi".to_string(),
+                tool_calls: vec![],
             }],
         };
         assert_eq!(
@@ -1301,7 +1322,8 @@ mod mirror_tests {
                         "role": "user",
                         "status": "complete",
                         "run_id": UUID_A,
-                        "text": "hi"
+                        "text": "hi",
+                        "tool_calls": []
                     }
                 ]
             }),

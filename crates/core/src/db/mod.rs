@@ -372,14 +372,25 @@ pub async fn current_thread_journal_entries(
         .collect()
 }
 
+/// One tool call rehydrated for a `thread/get` Message (ADR-0043): the
+/// non-Proposal calls of the Message's Run, in timeline order, with the
+/// persisted status mapped to the wire spelling (`errored` → `error`).
+pub struct ToolCallRow {
+    pub name: String,
+    pub status: String,
+}
+
 /// One Message in a `thread/get` read, with `text` already assembled (text
 /// parts concatenated in `seq` order). Flat-text-no-parts per ADR-0017.
+/// `tool_calls` rehydrates the assistant turn's tool-activity rows (ADR-0043);
+/// empty for user Messages and turns with no non-Proposal tool call.
 pub struct MessageRow {
     pub id: String,
     pub role: String,
     pub status: String,
     pub run_id: String,
     pub text: String,
+    pub tool_calls: Vec<ToolCallRow>,
 }
 
 /// Read a Thread plus its Messages for `thread/get` (ADR-0022). `None` when the
@@ -398,16 +409,53 @@ pub async fn get_thread_with_messages(
     let mut messages = Vec::with_capacity(rows.len());
     for (id, role, status, run_id) in rows {
         let text = queries::text_parts_by_message(pool, &id).await?.concat();
+        // Rehydrate tool-activity rows only on the assistant Message (ADR-0043).
+        // A Run's user and assistant Messages share its `run_id`, but tool calls
+        // belong to the assistant turn; attaching them to the user Message would
+        // duplicate every row. Proposal tool calls are excluded (they render as a
+        // `ProposalCard`, not a tool-activity row — ADR-0025).
+        let tool_calls = if role == "assistant" {
+            tool_call_rows_for_run(pool, &run_id).await?
+        } else {
+            Vec::new()
+        };
         messages.push(MessageRow {
             id,
             role,
             status,
             run_id,
             text,
+            tool_calls,
         });
     }
 
     Ok(Some((title, messages)))
+}
+
+/// Read the non-Proposal tool calls of `run_id` for `thread/get` rehydration
+/// (ADR-0043), in timeline order. Filters Proposal tools via the registry
+/// ([`crate::tools::is_proposal`]) — they render as a `ProposalCard`, never a
+/// tool-activity row — and maps the persisted status (`completed`/`errored`) to
+/// the wire spelling (`completed`/`error`), matching the live `ToolCallStatus`.
+/// A `run_id` that does not parse as a UUID yields no rows rather than an error
+/// (the read is best-effort; a malformed id simply has no rehydratable calls).
+async fn tool_call_rows_for_run(pool: &SqlitePool, run_id: &str) -> sqlx::Result<Vec<ToolCallRow>> {
+    let Ok(run_uuid) = Uuid::parse_str(run_id) else {
+        return Ok(Vec::new());
+    };
+    let rows = queries::tool_calls_by_run(pool, run_uuid).await?;
+    Ok(rows
+        .into_iter()
+        .filter(|(name, _)| !crate::tools::is_proposal(name))
+        .map(|(name, status)| ToolCallRow {
+            name,
+            status: if status == "errored" {
+                "error".to_string()
+            } else {
+                status
+            },
+        })
+        .collect())
 }
 
 /// Assemble prior-Run conversation history for a Run's manifest (ADR-0018).
@@ -2763,5 +2811,113 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].0, hi, "higher run_id sorts first on a created_at tie");
         assert_eq!(rows[1].0, lo);
+    }
+
+    /// ADR-0043: `thread/get` rehydrates a Run's non-Proposal tool calls onto the
+    /// assistant Message, in timeline order, but NEVER the Proposal tool call (it
+    /// renders as a `ProposalCard`). Errored status maps to the wire `error`.
+    #[tokio::test]
+    async fn thread_get_rehydrates_tool_calls_excluding_proposals() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        // Seed Thread + Run + assistant Message directly (UUID ids throughout).
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'parked', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "streaming",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        queries::insert_text_part(&mut *tx, assistant_id, 0, "Captured.")
+            .await
+            .expect("text part");
+        tx.commit().await.expect("commit seed");
+
+        // A non-Proposal search tool call (completed), then an errored one, then a
+        // Proposal tool call — interleaved across run_steps in this order.
+        persist_tool_call(&pool, run_id, "tc-1", "search_entities", r#"{"query":"Lev"}"#, 2)
+            .await
+            .expect("persist search 1");
+        resolve_tool_call(&pool, "tc-1", "completed", "{}", 3)
+            .await
+            .expect("resolve search 1");
+        persist_tool_call(
+            &pool,
+            run_id,
+            "tc-2",
+            "search_entities",
+            r#"{"query":"Acme"}"#,
+            4,
+        )
+        .await
+        .expect("persist search 2");
+        resolve_tool_call(&pool, "tc-2", "errored", "{}", 5)
+            .await
+            .expect("resolve search 2");
+        // The Proposal tool call parks the Run; persist it the way park does.
+        park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-x",
+            "tc-3",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"x"}]}}"#,
+            "create_journal_entry",
+            6,
+        )
+        .await
+        .expect("park");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+
+        // Only the two search calls survive — the Proposal tool call is excluded.
+        assert_eq!(
+            assistant.tool_calls.len(),
+            2,
+            "Proposal tool call must not rehydrate as a tool-activity row"
+        );
+        assert_eq!(assistant.tool_calls[0].name, "search_entities");
+        assert_eq!(assistant.tool_calls[0].status, "completed");
+        assert_eq!(assistant.tool_calls[1].name, "search_entities");
+        // `errored` maps to the wire `error` spelling.
+        assert_eq!(assistant.tool_calls[1].status, "error");
+        assert!(
+            assistant
+                .tool_calls
+                .iter()
+                .all(|tc| tc.name != "propose_workspace_mutation"),
+            "no Proposal tool call in rehydrated rows"
+        );
     }
 }

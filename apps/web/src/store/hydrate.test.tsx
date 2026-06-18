@@ -41,6 +41,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "r1",
 					text: "hi",
+					tool_calls: [],
 				},
 				{
 					id: "m2",
@@ -48,6 +49,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "r1",
 					text: "echo: hi",
+					tool_calls: [],
 				},
 			],
 		};
@@ -104,6 +106,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "r2",
 					text: "hello",
+					tool_calls: [],
 				},
 				{
 					id: "m2",
@@ -111,6 +114,7 @@ describe("refresh-durable hydration", () => {
 					status: "streaming",
 					run_id: "r2",
 					text: "echo: ",
+					tool_calls: [],
 				},
 			],
 		};
@@ -178,6 +182,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "old",
 					text: "earlier",
+					tool_calls: [],
 				},
 				{
 					id: "s2",
@@ -185,6 +190,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "old",
 					text: "earlier reply",
+					tool_calls: [],
 				},
 			],
 		};
@@ -477,6 +483,7 @@ describe("refresh-durable hydration", () => {
 					status: "completed",
 					run_id: "r1",
 					text: "hi",
+					tool_calls: [],
 				},
 			],
 		};

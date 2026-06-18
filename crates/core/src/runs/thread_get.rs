@@ -11,7 +11,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use crate::db;
-use crate::protocol::{MessageView, ThreadGetParams, ThreadGetResult};
+use crate::protocol::{MessageView, ThreadGetParams, ThreadGetResult, ToolCallView};
 
 pub(super) async fn handle(
     pool: &SqlitePool,
@@ -34,6 +34,14 @@ pub(super) async fn handle(
                 status: row.status,
                 run_id: row.run_id,
                 text: row.text,
+                tool_calls: row
+                    .tool_calls
+                    .into_iter()
+                    .map(|tc| ToolCallView {
+                        name: tc.name,
+                        status: tc.status,
+                    })
+                    .collect(),
             })
             .collect();
 

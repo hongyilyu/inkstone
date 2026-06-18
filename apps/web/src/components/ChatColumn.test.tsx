@@ -210,6 +210,7 @@ describe("ChatColumn", () => {
 					status: "completed",
 					run_id: "r1",
 					text: "recovered history",
+					tool_calls: [],
 				},
 			],
 		};
@@ -827,6 +828,7 @@ describe("ChatColumn", () => {
 					status: "completed",
 					run_id: "r1",
 					text: "q",
+					tool_calls: [],
 				},
 				{
 					id: "m2",
@@ -834,6 +836,7 @@ describe("ChatColumn", () => {
 					status: "completed",
 					run_id: "r1",
 					text: "cold-hydrated reply",
+					tool_calls: [],
 				},
 			],
 		};
