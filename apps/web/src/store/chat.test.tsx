@@ -4,8 +4,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "./bridge.js";
 import {
 	appendUserMessage,
-	clearFocusedMessage,
-	focusMessage,
 	getChatState,
 	type Message,
 	prependHistory,
@@ -328,24 +326,10 @@ describe("chat store + stream bridge", () => {
 	});
 });
 
-describe("scroll-to-message anchor (issue #138)", () => {
-	it("focusMessage sets the within-thread message anchor (thread focus is the URL, ADR-0042)", () => {
-		focusMessage("m-42");
-		expect(getChatState().focusedMessageId).toBe("m-42");
-	});
-
-	it("clearFocusedMessage consumes the anchor one-shot", () => {
-		focusMessage("m-42");
-		clearFocusedMessage();
-		expect(getChatState().focusedMessageId).toBeUndefined();
-	});
-
-	it("clearFocusedMessage is a no-op (stable state) when no anchor is set", () => {
-		const before = getChatState();
-		clearFocusedMessage();
-		expect(getChatState()).toBe(before);
-	});
-});
+// The scroll-to-message anchor (issue #138) is now URL search-param state
+// (`?focusedMessageId=`, ADR-0042), not a store field — its behavior is proven in
+// ChatColumn.test.tsx (scroll + highlight + consume-then-strip) and the
+// scroll-to-message e2e, not here.
 
 describe("prependHistory", () => {
 	const live = (id: string, run: string, text: string): Message => ({

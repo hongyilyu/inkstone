@@ -8,7 +8,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetBridge } from "@/store/bridge";
 import {
 	appendUserMessage,
-	focusMessage,
 	getChatState,
 	resetChatStore,
 	seedAssistantMessage,
@@ -54,16 +53,22 @@ function makeStubRuntime(opts: {
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
-/** Mount ChatColumn focused on `threadId` (its route is `/thread/<id>`, ADR-0042). */
+/**
+ * Mount ChatColumn focused on `threadId` (its route is `/thread/<id>`, ADR-0042).
+ * `focusedMessageId` appends the `?focusedMessageId=` deep-link search param.
+ */
 function renderFocused(
 	runtime: ReturnType<typeof makeStubRuntime>,
 	threadId: string,
-	queryClient?: QueryClient,
+	opts: { queryClient?: QueryClient; focusedMessageId?: string } = {},
 ) {
+	const query = opts.focusedMessageId
+		? `?focusedMessageId=${opts.focusedMessageId}`
+		: "";
 	return renderChatRoute(<ChatColumn />, {
 		runtime,
-		path: `/thread/${threadId}`,
-		queryClient,
+		path: `/thread/${threadId}${query}`,
+		queryClient: opts.queryClient,
 	});
 }
 
@@ -130,7 +135,7 @@ describe("ChatColumn", () => {
 				return Promise.resolve();
 			});
 
-		await renderFocused(runtime, "threadA", client);
+		await renderFocused(runtime, "threadA", { queryClient: client });
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -513,10 +518,11 @@ describe("ChatColumn", () => {
 			text: "the matched reply deep in scrollback",
 			run_id: "r-deep",
 		});
-		// A ⌘K hit jumped to the deep message: anchor set before the column renders.
-		focusMessage("a-deep");
 
-		await renderFocused(runtime, "threadA");
+		// A ⌘K hit deep-linked to the message via ?focusedMessageId= (ADR-0042).
+		const { router } = await renderFocused(runtime, "threadA", {
+			focusedMessageId: "a-deep",
+		});
 
 		const target = await screen.findByText(
 			"the matched reply deep in scrollback",
@@ -533,8 +539,12 @@ describe("ChatColumn", () => {
 		expect(li).toHaveAttribute("data-message-id", "a-deep");
 		// The matched content box wears the lamplight ring…
 		expect(li?.querySelector("[data-highlighted]")).not.toBeNull();
-		// …and the one-shot store anchor is consumed so a re-render can't re-fire it.
-		expect(getChatState().focusedMessageId).toBeUndefined();
+		// …and the URL anchor is stripped (consume-then-strip) so a reload/re-render
+		// can't re-fire it, while the path stays on the thread.
+		await waitFor(() => {
+			expect(router.state.location.search).toEqual({});
+		});
+		expect(router.state.location.pathname).toBe("/thread/threadA");
 
 		await runtime.dispose();
 	});
@@ -572,9 +582,10 @@ describe("ChatColumn", () => {
 				text: "the briefly-ringed reply",
 				run_id: "r-fade",
 			});
-			focusMessage("a-fade");
 
-			const { container } = await renderFocused(runtime, "threadA");
+			const { container } = await renderFocused(runtime, "threadA", {
+				focusedMessageId: "a-fade",
+			});
 
 			// The ring blooms on the (synchronously-flushed) scroll effect…
 			expect(container.querySelector("[data-highlighted]")).not.toBeNull();

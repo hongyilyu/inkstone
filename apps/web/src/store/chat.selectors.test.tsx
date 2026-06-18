@@ -2,8 +2,8 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	appendUserMessage,
-	focusMessage,
 	resetChatStore,
+	setHydrationStatus,
 	useThreadMessages,
 } from "./chat.js";
 
@@ -30,9 +30,9 @@ describe("chat selectors — reference stability", () => {
 		const first = result.current;
 		expect(first.map((m) => m.text)).toEqual(["hi"]);
 
-		// Unrelated change: setting the message anchor must not re-create threadA's array.
+		// Unrelated change: another thread's hydration status must not re-create threadA's array.
 		act(() => {
-			focusMessage("m1");
+			setHydrationStatus("unrelated", "ready");
 		});
 		rerender();
 
@@ -87,7 +87,7 @@ describe("chat selectors — reference stability", () => {
 		expect(result.current).toBe(first);
 
 		act(() => {
-			focusMessage("m1");
+			setHydrationStatus("unrelated", "ready");
 		});
 		rerender();
 		expect(result.current).toBe(first);

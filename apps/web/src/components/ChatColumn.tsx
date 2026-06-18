@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { RotateCcw, Sparkles, TriangleAlert } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRuntime } from "@/runtime";
@@ -10,10 +10,8 @@ import {
 	startProposalStream,
 } from "@/store/bridge";
 import {
-	clearFocusedMessage,
 	type Message,
 	useActiveRunId,
-	useFocusedMessageId,
 	useHydrationStatus,
 	useThreadMessages,
 } from "@/store/chat";
@@ -43,9 +41,13 @@ export function ChatColumn() {
 	const hydration = useHydrationStatus(focusedThreadId ?? "");
 	const [sendError, setSendError] = useState<string | null>(null);
 	// The Message a ⌘K search hit jumped to (issue #138): scrolled into view and
-	// briefly ringed once its row is in the DOM. The store anchor is the pending
-	// jump; `highlightId` is the transient visual that lingers ~1.6s then fades.
-	const focusedMessageId = useFocusedMessageId();
+	// briefly ringed once its row is in the DOM. The URL search param is the
+	// pending jump (ADR-0042); `highlightId` is the transient visual that lingers
+	// ~1.6s then fades. `strict: false` so the / (welcome) route — which has no
+	// search schema — reads `undefined` rather than throwing.
+	const { focusedMessageId } = useSearch({ strict: false }) as {
+		focusedMessageId?: string;
+	};
 	const [highlightId, setHighlightId] = useState<string | null>(null);
 
 	// No thread focused → fresh chat. Focused + empty: the reactive hydration status (issue #108) decides —
@@ -82,7 +84,7 @@ export function ChatColumn() {
 	// later unrelated re-render can't re-scroll. `messages` is the dependency that
 	// lets the cold-thread path fire once history arrives.
 	useEffect(() => {
-		if (focusedMessageId === null) return;
+		if (focusedMessageId === undefined || focusedThreadId === null) return;
 		// Gate on the anchored Message being in the rendered list — the real
 		// precondition. `messages` is in the deps so a cold thread re-fires this
 		// once thread/get hydrates and the row mounts; a warm thread has it now.
@@ -93,8 +95,16 @@ export function ChatColumn() {
 		if (!target) return;
 		target.scrollIntoView({ block: "center", behavior: "auto" });
 		setHighlightId(focusedMessageId);
-		clearFocusedMessage();
-	}, [focusedMessageId, messages]);
+		// Consume-then-strip (ADR-0042): drop the param from the URL so a reload or
+		// re-render can't re-fire the jump, replacing (not pushing) so Back doesn't
+		// land on the un-stripped URL. The visual ring fades on its own timer below.
+		void navigate({
+			to: "/thread/$threadId",
+			params: { threadId: focusedThreadId },
+			search: {},
+			replace: true,
+		});
+	}, [focusedMessageId, focusedThreadId, messages, navigate]);
 
 	// Fade the lamplight ring after it has held long enough to be seen. Separate
 	// from the anchor-consume above so consuming the one-shot anchor never cancels

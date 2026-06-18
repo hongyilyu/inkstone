@@ -15,7 +15,6 @@ import {
 	searchLibraryItems,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
-import { focusMessage } from "@/store/chat";
 import { closeCommand, toggleCommand, useCommandOpen } from "@/store/command";
 import { EntityGlyph } from "./library/EntityGlyph.js";
 import { SearchField } from "./ui/search-field.js";
@@ -149,14 +148,14 @@ export function CommandPalette() {
 			return;
 		}
 		if (result.type === "message") {
-			// Navigate to the Thread's route AND set the within-thread anchor: ChatColumn
-			// scrolls the matched Message into view and briefly highlights it once
-			// hydrated (issue #138). Thread focus is the URL (ADR-0042); the anchor is
-			// still the store field until slice 2 moves it into the URL.
-			focusMessage(result.message_id);
+			// Deep-link to the Thread AND the within-thread anchor (ADR-0042): the
+			// `?focusedMessageId` param tells ChatColumn to scroll the matched Message
+			// into view and briefly highlight it once hydrated (issue #138), then
+			// strips itself (consume-then-strip).
 			navigate({
 				to: "/thread/$threadId",
 				params: { threadId: result.thread_id },
+				search: { focusedMessageId: result.message_id },
 			});
 			return;
 		}
