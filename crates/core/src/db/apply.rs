@@ -577,6 +577,60 @@ async fn apply_mark_project_reviewed(
     Ok(())
 }
 
+async fn textualize_journal_refs_targeting_deleted_entity(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    target_entity_id: &str,
+    proposal_id: Option<&str>,
+    now_ms: i64,
+) -> Result<(), ApplyError> {
+    let refs = queries::journal_entry_refs_targeting(&mut **tx, target_entity_id).await?;
+    for (ref_id, journal_entry_id, journal_data, label) in refs {
+        let mut data: serde_json::Value = serde_json::from_str(&journal_data).map_err(|e| {
+            ApplyError::InvalidMutation(format!("Journal Entry data is not JSON: {e}"))
+        })?;
+        let Some(body) = data
+            .get_mut("body")
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            return Err(ApplyError::InvalidMutation(
+                "Journal Entry data must contain a body array".to_string(),
+            ));
+        };
+        for node in body {
+            let is_deleted_ref = node.get("type").and_then(serde_json::Value::as_str)
+                == Some("entity_ref")
+                && node.get("ref_id").and_then(serde_json::Value::as_str) == Some(ref_id.as_str());
+            if is_deleted_ref {
+                *node = serde_json::json!({ "type": "text", "text": label });
+            }
+        }
+        let new_data = data.to_string();
+        let updated = queries::update_entity(
+            &mut **tx,
+            &journal_entry_id,
+            EntityType::JournalEntry.as_str(),
+            EntityType::JournalEntry.schema_version(),
+            &new_data,
+            now_ms,
+        )
+        .await?;
+        if updated != 1 {
+            return Err(ApplyError::TargetMissing);
+        }
+        let next_seq = queries::next_entity_revision_seq(&mut **tx, &journal_entry_id).await?;
+        queries::insert_entity_revision(
+            &mut **tx,
+            &journal_entry_id,
+            next_seq,
+            &new_data,
+            proposal_id,
+            now_ms,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// Apply one Entity mutation inside the caller's open tx (ADR-0016, ADR-0033):
 /// the run-independent half of the write. Mints (create) or resolves (update/
 /// delete) the `entity_id`, runs the per-kind data/revision/ref work, and writes
@@ -753,6 +807,8 @@ pub(crate) async fn apply_entity_mutation(
         // title/note and its todo_person_refs are untouched. Handled ahead of the
         // generic delete arm so the plain delete does not also run for it.
         MutationKind::DeleteProject => {
+            textualize_journal_refs_targeting_deleted_entity(tx, &entity_id, proposal_id, now_ms)
+                .await?;
             let affected = queries::todos_with_project(&mut **tx, &entity_id).await?;
             for (todo_id, todo_data) in affected {
                 let mut data: serde_json::Map<String, serde_json::Value> =
@@ -803,6 +859,18 @@ pub(crate) async fn apply_entity_mutation(
         | MutationKind::DeletePerson
         | MutationKind::DeleteTodo
         | MutationKind::DeleteBookmark => {
+            if matches!(
+                kind,
+                MutationKind::DeletePerson | MutationKind::DeleteTodo
+            ) {
+                textualize_journal_refs_targeting_deleted_entity(
+                    tx,
+                    &entity_id,
+                    proposal_id,
+                    now_ms,
+                )
+                .await?;
+            }
             let deleted =
                 queries::delete_entity(&mut **tx, &entity_id, entity_type.as_str()).await?;
             if deleted != 1 {

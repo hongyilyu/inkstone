@@ -152,6 +152,14 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
         lower.contains("outcome, not a category"),
         "default.toml system_prompt must define a Project as an outcome, not a category/area, got: {system_prompt:?}"
     );
+    assert!(
+        lower.contains("names a project")
+            && lower.contains("concrete next")
+            && lower.contains("capture the action")
+            && lower.contains("as a todo first")
+            && lower.contains("do not turn the action phrase into a new project name"),
+        "default.toml system_prompt must route a named Project plus explicit action to Todo-first capture, got: {system_prompt:?}"
+    );
     // Bucket 3 — ordinary conversation captures nothing.
     assert!(
         lower.contains("propose nothing"),
@@ -177,8 +185,7 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
         "default.toml system_prompt must describe same-thread create/update/delete intake, got: {system_prompt:?}"
     );
     assert!(
-        lower.contains("read_current_thread_journal_entries")
-            && lower.contains("for that entry"),
+        lower.contains("read_current_thread_journal_entries") && lower.contains("for that entry"),
         "default.toml system_prompt must tell the model to read current-thread Journal Entries for same-thread corrections/deletions, got: {system_prompt:?}"
     );
     assert!(
@@ -201,6 +208,22 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
             && lower.contains("create_todo")
             && lower.contains("reference_existing_entity_from_journal_entry"),
         "default.toml system_prompt must describe extracting People/Projects/Todos from an accepted Journal Entry and name search_entities, got: {system_prompt:?}"
+    );
+    assert!(
+        lower.contains("includes an explicit action")
+            && lower.contains("prefer extracting the action as create_todo")
+            && lower.contains("payload.todo.project_id")
+            && lower.contains("missing project")
+            && lower.contains("not optional metadata")
+            && lower.contains("create the todo first")
+            && lower.contains("immediately propose create_project")
+            && lower.contains("unrelated people")
+            && lower.contains("final summary")
+            && lower.contains("recover the todo")
+            && lower.contains("search_entities")
+            && lower.contains("then update_todo")
+            && lower.contains("action phrase"),
+        "default.toml system_prompt must describe Journal Entry extraction for a Todo inside a named Project, got: {system_prompt:?}"
     );
     let tools = doc
         .get("tools")

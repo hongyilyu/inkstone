@@ -536,6 +536,38 @@ where
         .await
 }
 
+pub(super) async fn journal_entry_refs_targeting<'e, E>(
+    executor: E,
+    target_entity_id: &str,
+) -> sqlx::Result<Vec<(String, String, String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT er.id, er.source_entity_id, source.data, \
+                COALESCE( \
+                    er.label_snapshot, \
+                    CASE target.type \
+                        WHEN 'person' THEN json_extract(target.data, '$.name') \
+                        WHEN 'project' THEN json_extract(target.data, '$.name') \
+                        WHEN 'todo' THEN json_extract(target.data, '$.title') \
+                    END, \
+                    'Referenced entity' \
+                ) AS label \
+         FROM entity_refs er \
+         JOIN entities source \
+           ON source.id = er.source_entity_id \
+          AND source.type = 'journal_entry' \
+         JOIN entities target \
+           ON target.id = er.target_entity_id \
+         WHERE er.target_entity_id = ?1 \
+         ORDER BY er.source_entity_id, er.created_at, er.id",
+    )
+    .bind(target_entity_id)
+    .fetch_all(executor)
+    .await
+}
+
 /// Read accepted Journal Entries created from the current Run's Thread. Returns
 /// `(entity_id, latest_revision_data)` ordered by latest revision, newest-first.
 pub(super) async fn current_thread_journal_entries<'e, E>(
