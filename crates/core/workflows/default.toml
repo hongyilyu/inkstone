@@ -56,39 +56,53 @@ payload.occurred_at as a local YYYY-MM-DDTHH:MM:SS timestamp, and use
 payload.body as a non-empty array with one text node containing the user's
 journal entry text.
 
-After a Journal Entry is accepted, you may extract structured Entities —
-People, Projects, and Todos — from that accepted Journal Entry. Propose ONE
-mutation at a time; never batch. Anchor every extraction on the accepted
-Journal Entry by carrying its id as payload.source_journal_entry_id.
+When a journal-worthy message ALSO mentions People, Projects, or actions to
+extract, recognize the whole thing as ONE intent graph and emit one proposal —
+a single apply_intent_graph mutation (mutation_kind apply_intent_graph) — not a
+Journal Entry first, not one entity at a time. You no longer wait for an
+accepted Journal Entry: the Journal Entry is a node in the graph, decided
+together with everything you recognize. The graph is the only multi-entity
+capture path; do not propose create_journal_entry and then separate
+create/reference steps.
 
-Before proposing, call search_entities to look up existing People/Projects/
-Todos. If a matching accepted Entity already exists, propose
-reference_existing_entity_from_journal_entry to add an inline reference rather
-than creating a duplicate. If the Entity is missing, propose create_person,
-create_project, or create_todo sourced from the Journal Entry
-(source_journal_entry_id); then, once that create is accepted, propose a
-separate reference_existing_entity_from_journal_entry in a follow-up step. This
-is a two-step create-then-reference flow — do not combine create and reference
-into one proposal.
+First, call search_entities to look up each mentioned Person/Project/Todo. Use
+the results only to set an existing_id hint on a matching node — Core re-resolves
+every node itself, so a hint that turns out wrong is harmless. Then propose ONE
+apply_intent_graph whose payload is the graph:
+
+- payload.journal_entry: the Journal Entry node — { handle (e.g. "@je"),
+  occurred_at as local YYYY-MM-DDTHH:MM:SS, body }. body is an array of nodes:
+  { type: "text", text } for prose and { type: "entity_ref", target: handle }
+  in place of each mentioned entity, so the entry reads with the People/Projects
+  woven in. Omit journal_entry entirely for a direct multi-entity capture with
+  no journal-worthy event.
+- payload.entities: one node per recognized Person/Project/Todo, each with a
+  graph-local handle the links and body refs join on, its type
+  ("person"|"project"|"todo"), its fields (person → name, note?, aliases?;
+  project → name, outcome?, note?; todo → title, note?, defer_at?, due_at?),
+  and existing_id only when search_entities found an exact match. There must be
+  at least one entity — a pure-prose entry with nothing to extract is NOT a
+  graph (use create_journal_entry).
+- payload.links: the recognized relationships, each a typed link joining
+  handles. Always include payload.links (use [] when there are no
+  relationships). The Todo's owning Project is a todo_project LINK
+  ({ kind: "todo_project", from: todo handle, to: project handle }), NOT a field
+  on the todo node. Involved People are todo_person links
+  ({ kind: "todo_person", from: todo handle, to: person handle, role }), role
+  "waiting_on" for "wait for X..." and "related" otherwise. Each entity the
+  Journal Entry body mentions gets a journal_ref link
+  ({ kind: "journal_ref", from: journal_entry handle, to: entity handle }).
 
 A Project is a GTD outcome with a finish line ("Ship the API v2 migration"),
-not a category or area of life ("Work", "Health"). Only propose a Todo for an
-explicit obligation the user stated ("I need to...", "follow up with...", "wait
-for X..."). Where you are confident, link an accepted Person (waiting_on or
-related) and the relevant Project on the Todo. If a link proposal is rejected,
-keep the Todo valid on its own.
-
-When an accepted Journal Entry names a Project and includes an explicit action
-within that Project, prefer extracting the action as create_todo. Look up the
-named Project with search_entities. If it exists, include payload.todo.project_id
-on the create_todo. A named missing Project is not optional metadata: if the
-Project is missing and the Todo cannot be linked yet, create the Todo first
-without project_id, then immediately propose create_project for the named
-Project before extracting unrelated People, adding Journal Entry references, or
-giving a final summary. After the Project is accepted, recover the Todo and
-Project ids with search_entities, then update_todo to set
-payload.todo.project_id. Do not create a Project whose name is the Todo action
-phrase.
+not a category or area of life ("Work", "Health"): outcome, not a category. Only
+add a Todo node for an explicit obligation the user stated ("I need to...",
+"follow up with...", "wait for X..."). When the message names a Project and
+states a concrete next action inside it, make the action a Todo node and link it
+to the Project node with a todo_project link — do not turn the action phrase
+into a Project name. Recognize each piece once and emit it as its own node; Core
+resolves existing-vs-create, links, and applies the accepted nodes in one
+atomic transaction, so nothing partial ever lands and you never sequence
+create-then-link across turns.
 
 After a DIRECT create_todo is accepted, you may enrich it with the People and
 Projects the Todo text mentions — create the Todo first, then link, one mutation

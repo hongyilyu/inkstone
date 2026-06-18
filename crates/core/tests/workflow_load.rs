@@ -95,11 +95,12 @@ fn missing_workflow_file_fails_fast() {
 
 /// Static content guard on the shipped `crates/core/workflows/default.toml`
 /// (not a fixture; never boots Core): its `system_prompt` must route each
-/// Message into one of three intent buckets — journal-worthy material → Journal
-/// Entry first (then extraction); direct actionable/contact/outcome capture →
-/// create_todo/create_project/create_person sourced from the user Message; pure
-/// conversation → no proposal. Real-model behavior is non-deterministic, so this
-/// guards the prompt text only.
+/// Message correctly — journal-worthy material that also mentions
+/// People/Projects/actions → ONE `apply_intent_graph` intent graph (ADR-0042);
+/// direct actionable/contact/outcome capture → create_todo/create_project/
+/// create_person sourced from the user Message; pure conversation → no
+/// proposal. Real-model behavior is non-deterministic, so this guards the
+/// prompt text only.
 #[test]
 fn default_workflow_prompts_for_capture_intent_boundary() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("workflows/default.toml");
@@ -198,32 +199,44 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
     );
     assert!(
         !lower.contains("stop after journal entry intake"),
-        "default.toml system_prompt must no longer stop after intake — extraction now follows an accepted Journal Entry, got: {system_prompt:?}"
+        "default.toml system_prompt must no longer stop after intake — extraction is now one intent graph, got: {system_prompt:?}"
+    );
+    // Intent-graph extraction (ADR-0042): a journal-worthy message that also
+    // mentions People/Projects/actions is recognized as ONE intent graph and
+    // proposed as ONE apply_intent_graph mutation — entity nodes + the three
+    // link kinds, with existing_id hints from search_entities. The old
+    // per-entity, JE-accepted-first, create-then-reference sequencing is gone.
+    assert!(
+        lower.contains("apply_intent_graph")
+            && lower.contains("intent graph")
+            && lower.contains("one proposal")
+            && lower.contains("search_entities")
+            && lower.contains("existing_id")
+            && lower.contains("payload.entities")
+            && lower.contains("payload.links"),
+        "default.toml system_prompt must describe recognizing one intent graph and proposing one apply_intent_graph with entities + links + existing_id hints from search_entities, got: {system_prompt:?}"
     );
     assert!(
-        lower.contains("accepted journal entry")
-            && lower.contains("search_entities")
-            && lower.contains("create_person")
-            && lower.contains("create_project")
-            && lower.contains("create_todo")
-            && lower.contains("reference_existing_entity_from_journal_entry"),
-        "default.toml system_prompt must describe extracting People/Projects/Todos from an accepted Journal Entry and name search_entities, got: {system_prompt:?}"
+        lower.contains("todo_project")
+            && lower.contains("todo_person")
+            && lower.contains("journal_ref")
+            && lower.contains("waiting_on")
+            && lower.contains("related"),
+        "default.toml system_prompt must name the three link kinds (todo_project/todo_person/journal_ref) and the todo_person roles, got: {system_prompt:?}"
     );
+    // The Todo's owning Project is a LINK, not a field on the todo node (#179).
     assert!(
-        lower.contains("includes an explicit action")
-            && lower.contains("prefer extracting the action as create_todo")
-            && lower.contains("payload.todo.project_id")
-            && lower.contains("missing project")
-            && lower.contains("not optional metadata")
-            && lower.contains("create the todo first")
-            && lower.contains("immediately propose create_project")
-            && lower.contains("unrelated people")
-            && lower.contains("final summary")
-            && lower.contains("recover the todo")
-            && lower.contains("search_entities")
-            && lower.contains("then update_todo")
-            && lower.contains("action phrase"),
-        "default.toml system_prompt must describe Journal Entry extraction for a Todo inside a named Project, got: {system_prompt:?}"
+        lower.contains("todo_project link") && lower.contains("not a field"),
+        "default.toml system_prompt must express the Todo→Project relationship as a todo_project link, not a field on the todo node, got: {system_prompt:?}"
+    );
+    // The graph is only for >=1 extracted entity; pure prose stays
+    // create_journal_entry, and the old sequencing wording must be gone.
+    assert!(
+        lower.contains("at least one entity")
+            && lower.contains("use create_journal_entry")
+            && !lower.contains("never batch")
+            && !lower.contains("from that accepted journal entry"),
+        "default.toml system_prompt must keep pure-prose journaling on create_journal_entry and drop the old per-entity/JE-accepted-first sequencing, got: {system_prompt:?}"
     );
     let tools = doc
         .get("tools")
