@@ -277,14 +277,30 @@ async fn apply_or_reject(
     let proposable = ProposableMutation::try_from(kind)
         .map_err(|e| DecideError::Invalid(format!("{} cannot be proposed", e.0.as_wire())))?;
 
-    // Slice 1 (ADR-0042): the intent-graph resolve/apply lands in slice 2. Until
-    // then, accepting the graph short-circuits HERE — before `entities::validate`
-    // and `db::apply_proposal`, which loops the single-entity `apply_entity_mutation`
-    // and cannot apply a graph. Nothing is written; the Proposal stays pending.
+    // The intent graph (ADR-0042) is not a single-entity mutation, so it takes a
+    // SIBLING apply path (`db::apply_intent_graph_proposal`) rather than
+    // `db::apply_proposal`. It does not support the whole-payload `edit` verb
+    // (`supports_edit` is false) — corrections ride the per-node decision vector
+    // (slice 5). An `edit` decision is rejected loud HERE: the generic
+    // `supports_edit` gate sits below this early return, so without this check an
+    // edit would silently degrade to a plain accept with the `edited_payload`
+    // dropped. The structural validate gate (graph shape) still runs inside
+    // `apply_intent_graph`; the run-independent target check is a no-op for the
+    // graph in slice 2 (links land in slice 4).
     if kind == MutationKind::ApplyIntentGraph {
-        return Err(DecideError::Invalid(
-            "apply_intent_graph not yet implemented".to_string(),
-        ));
+        if matches!(decision, Decision::Edit) {
+            return Err(DecideError::Invalid(
+                "apply_intent_graph does not support edit".to_string(),
+            ));
+        }
+        return apply_intent_graph(
+            pool,
+            proposal,
+            proposal_id,
+            proposable,
+            idempotency_key,
+        )
+        .await;
     }
 
     // An `edit` requires an `edited_payload` (absence → `Invalid`, checked here so
@@ -347,6 +363,65 @@ async fn apply_or_reject(
         // A user deleted the target Entity out from under this parked Proposal
         // (ADR-0033). Surface NotDecidable (-32002, "no longer pending") so the
         // parked Run resolves cleanly, not an opaque Internal (-32603).
+        Err(db::ApplyError::TargetMissing) => Err(DecideError::NotDecidable(
+            "proposal target no longer exists".to_string(),
+        )),
+        Err(db::ApplyError::Sql(e)) => Err(DecideError::Internal(e.into())),
+    }
+}
+
+/// The intent-graph accept path (ADR-0042): structurally validate the stored
+/// graph, then resolve+apply it in one transaction via
+/// [`db::apply_intent_graph_proposal`] (the sibling of `apply_proposal` for the
+/// not-a-single-entity kind). Mirrors `apply_or_reject`'s `ApplyError` →
+/// `DecideError` mapping; any failure rolls the whole tx back, so a graph that is
+/// broken at commit time writes nothing. The reported `entity_id` is the JE
+/// anchor (or the first created entity for a JE-less direct-capture graph).
+async fn apply_intent_graph(
+    pool: &SqlitePool,
+    proposal: &db::DecidableProposal,
+    proposal_id: &str,
+    proposable: ProposableMutation,
+    idempotency_key: Option<&str>,
+) -> Result<DecideOutcome, DecideError> {
+    let run_id = proposal.run_id;
+    let kind = MutationKind::ApplyIntentGraph;
+
+    // Decide-time structural gate (ADR-0042 "Validation: receipt + decide"): the
+    // graph shape (optional journal_entry, >= 1 entity nodes, the link kinds) is
+    // checked before the tx opens. The cross-node graph invariants (handle
+    // references, duplicate handles, journal_ref-without-journal_entry) are the
+    // resolver's pre-checks in later slices; slice 2 is create-only.
+    entities::validate(kind, &proposal.payload).map_err(DecideError::Invalid)?;
+    // Run-independent target-ref check — a no-op for the graph in slice 2 (it has
+    // no single target and no links yet; slice 4 adds link-endpoint validation).
+    validate_mutation_target(pool, run_id, kind, &proposal.payload).await?;
+
+    match db::apply_intent_graph_proposal(
+        pool,
+        run_id,
+        proposal_id,
+        &proposal.tool_call_id,
+        &proposal.payload,
+        idempotency_key,
+        |entity_id| {
+            serde_json::json!({
+                "decision": "accept",
+                "content": entities::render_accept(proposable, &proposal.payload, Some(entity_id)),
+            })
+            .to_string()
+        },
+        db::now_ms(),
+    )
+    .await
+    {
+        Ok(entity_id) => Ok(DecideOutcome::Accepted { run_id, entity_id }),
+        Err(db::ApplyError::InvalidMutation(reason)) => Err(DecideError::Invalid(reason)),
+        Err(db::ApplyError::NotPending) => Err(DecideError::LostRace),
+        // The graph mints fresh entities and applies no links in slice 2, so it
+        // touches no pre-existing target — `TargetMissing` is unreachable today.
+        // Map it the same way the single-entity path does (slice 4 links may
+        // surface it once link endpoints can vanish): a clean NotDecidable.
         Err(db::ApplyError::TargetMissing) => Err(DecideError::NotDecidable(
             "proposal target no longer exists".to_string(),
         )),
@@ -663,6 +738,32 @@ mod tests {
             .fetch_one(pool)
             .await
             .expect("count entities")
+    }
+
+    async fn entity_count_of_type(pool: &SqlitePool, entity_type: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM entities WHERE type = ?")
+            .bind(entity_type)
+            .fetch_one(pool)
+            .await
+            .expect("count entities of type")
+    }
+
+    /// The single entity id of `entity_type` (the test graph mints exactly one
+    /// of each).
+    async fn only_entity_id_of_type(pool: &SqlitePool, entity_type: &str) -> String {
+        sqlx::query_scalar("SELECT id FROM entities WHERE type = ?")
+            .bind(entity_type)
+            .fetch_one(pool)
+            .await
+            .expect("entity id of type")
+    }
+
+    async fn entity_sources_count_for(pool: &SqlitePool, entity_id: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM entity_sources WHERE entity_id = ?")
+            .bind(entity_id)
+            .fetch_one(pool)
+            .await
+            .expect("count entity_sources for entity")
     }
 
     async fn proposal_status(pool: &SqlitePool, proposal_id: &str) -> String {
@@ -1593,29 +1694,37 @@ mod tests {
         );
     }
 
-    // Slice 1 (ADR-0042): accepting an `apply_intent_graph` Proposal short-circuits
-    // to `Invalid("apply_intent_graph not yet implemented")` BEFORE it can reach
-    // `apply_entity_mutation` (which cannot apply a graph). The resolver lands in
-    // slice 2; until then the kind is a contract-only schema. Nothing is written
-    // and the Proposal stays pending.
+    /// The slice-2 graph fixture (ADR-0042): a journal-anchored, create-only
+    /// graph — one `journal_entry` node (TEXT-only body, so no slice-6 weave) +
+    /// one new Person, no links. The shape both the accept and reject tests use.
+    fn create_only_graph() -> serde_json::Value {
+        serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Met Morris about the Rodeo side." }]
+            },
+            "entities": [
+                { "handle": "@morris", "type": "person", "name": "Morris" }
+            ],
+            "links": []
+        })
+    }
+
+    // Slice 2 (ADR-0042): accepting an `apply_intent_graph` Proposal RESOLVES and
+    // APPLIES the create-only graph atomically — the Journal Entry node + the
+    // Person, in one tx. Exactly the JE node writes its `created_from`
+    // user-Message GUARD row (the cross-thread-guard input, NOT entity
+    // provenance); the extracted Person writes ZERO entity_sources rows ("No
+    // provenance writes"). The reported `entity_id` is the JE anchor; the
+    // Proposal is accepted and the Run resumes.
     #[tokio::test]
-    async fn accept_apply_intent_graph_is_not_yet_implemented() {
+    async fn accept_apply_intent_graph_creates_je_and_entity_with_only_je_source() {
         let pool = memory_pool().await;
         let (_run, proposal_id) = seed_parked_proposal(&pool).await;
         let proposal_id_str = proposal_id.to_string();
 
-        retarget_proposal(
-            &pool,
-            &proposal_id_str,
-            "apply_intent_graph",
-            serde_json::json!({
-                "entities": [
-                    { "handle": "@alice", "type": "person", "name": "Alice" }
-                ],
-                "links": []
-            }),
-        )
-        .await;
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", create_only_graph()).await;
 
         let resumed = Arc::new(AtomicBool::new(false));
         let outcome = apply(
@@ -1626,29 +1735,195 @@ mod tests {
             Some("k-graph".to_string()),
             resume_closure(pool.clone(), resumed.clone()),
         )
+        .await
+        .expect("graph accept succeeds");
+
+        let entity_id = match outcome {
+            DecideOutcome::Accepted { entity_id, .. } => entity_id,
+            other => panic!("expected Accepted, got {other:?}"),
+        };
+
+        // Exactly TWO entities: one journal_entry + one person.
+        assert_eq!(entity_count(&pool).await, 2, "graph mints the JE + the Person");
+        assert_eq!(entity_count_of_type(&pool, "journal_entry").await, 1);
+        assert_eq!(entity_count_of_type(&pool, "person").await, 1);
+
+        let je_id = only_entity_id_of_type(&pool, "journal_entry").await;
+        let person_id = only_entity_id_of_type(&pool, "person").await;
+
+        // The anchor reported is the JE node's id (ADR-0042).
+        assert_eq!(entity_id, je_id, "the reported anchor is the JE node's id");
+
+        // Exactly ONE entity_sources row total, and it points at the JE — the
+        // `created_from` user-Message guard row.
+        let total_sources: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entity_sources")
+            .fetch_one(&pool)
+            .await
+            .expect("count entity_sources");
+        assert_eq!(total_sources, 1, "only the JE guard row is written");
+        assert_eq!(
+            entity_sources_count_for(&pool, &je_id).await,
+            1,
+            "the one source row points at the JE, not the Person"
+        );
+        let (source_message_id, relation): (Option<String>, String) = sqlx::query_as(
+            "SELECT source_message_id, relation FROM entity_sources WHERE entity_id = ?",
+        )
+        .bind(&je_id)
+        .fetch_one(&pool)
+        .await
+        .expect("JE source row");
+        assert!(
+            source_message_id.is_some(),
+            "the JE guard row is a FromMessage (created_from user message) row"
+        );
+        assert_eq!(relation, "created_from");
+
+        // ADR-0042 "No provenance writes": the Person has ZERO entity_sources rows.
+        assert_eq!(
+            entity_sources_count_for(&pool, &person_id).await,
+            0,
+            "the extracted Person writes no provenance row"
+        );
+
+        assert_eq!(
+            proposal_status(&pool, &proposal_id_str).await,
+            "accepted",
+            "the graph Proposal is accepted"
+        );
+        assert!(resumed.load(Ordering::SeqCst), "the graph accept resumes the run");
+    }
+
+    // Slice 2: rejecting the same graph Proposal writes ZERO entities (the reject
+    // path touches no entity store) and resolves the Proposal as rejected.
+    #[tokio::test]
+    async fn reject_apply_intent_graph_writes_no_entities() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", create_only_graph()).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "reject",
+            None,
+            Some("r-graph".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await
+        .expect("graph reject succeeds");
+
+        assert!(
+            matches!(outcome, DecideOutcome::Rejected { .. }),
+            "reject yields Rejected: {outcome:?}"
+        );
+        assert_eq!(entity_count(&pool).await, 0, "a rejected graph writes no entity");
+        assert_eq!(proposal_status(&pool, &proposal_id_str).await, "rejected");
+        assert!(resumed.load(Ordering::SeqCst), "the graph reject resumes the run");
+    }
+
+    // Slice 2 fix (review): a graph whose Journal Entry body carries an
+    // `entity_ref` node is REJECTED cleanly (the slice-6 weave is not wired yet),
+    // not silently stored with a dangling `target` handle and no backing
+    // entity_ref row. The whole tx fails Invalid — zero entities written, the
+    // Proposal stays pending and re-decidable.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_with_entity_ref_body_is_invalid_until_weave() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        // A journal-anchored graph whose JE body has an entity_ref placeholder
+        // targeting the Person handle — the slice-6 weave shape.
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [
+                    { "type": "text", "text": "Met " },
+                    { "type": "entity_ref", "target": "@morris" }
+                ]
+            },
+            "entities": [
+                { "handle": "@morris", "type": "person", "name": "Morris" }
+            ],
+            "links": [{ "kind": "journal_ref", "from": "@je", "to": "@morris" }]
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-graph-ref-body".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
         .await;
 
-        let Err(DecideError::Invalid(reason)) = outcome else {
-            panic!("expected Invalid not-yet-implemented, got {outcome:?}");
-        };
         assert!(
-            reason.contains("apply_intent_graph not yet implemented"),
-            "the graph accept short-circuits with a not-implemented message: {reason}"
+            matches!(outcome, Err(DecideError::Invalid(_))),
+            "an entity_ref JE body is Invalid until the slice-6 weave lands, got {outcome:?}"
         );
         assert_eq!(
             entity_count(&pool).await,
             0,
-            "the graph accept writes nothing in slice 1"
+            "the rejected graph writes nothing — no dangling JE body node"
         );
+        let entity_refs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entity_refs")
+            .fetch_one(&pool)
+            .await
+            .expect("count entity_refs");
+        assert_eq!(entity_refs, 0, "no entity_ref row is minted");
         assert_eq!(
             proposal_status(&pool, &proposal_id_str).await,
             "pending",
-            "the graph Proposal stays pending (re-decidable once slice 2 lands)"
+            "an Invalid graph stays pending + re-decidable"
         );
+        assert!(!resumed.load(Ordering::SeqCst), "an Invalid graph does not resume");
+    }
+
+    // Slice 2 fix (review): the graph does not support the whole-payload `edit`
+    // verb (corrections ride the per-node decision vector, slice 5). An `edit`
+    // decision on a graph must fail loud (Invalid) rather than silently degrade to
+    // a plain accept with the edited_payload dropped.
+    #[tokio::test]
+    async fn edit_apply_intent_graph_is_invalid() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", create_only_graph()).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "edit",
+            Some(create_only_graph()),
+            Some("k-graph-edit".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+
+        let Err(DecideError::Invalid(reason)) = outcome else {
+            panic!("expected Invalid for edit on a graph, got {outcome:?}");
+        };
         assert!(
-            !resumed.load(Ordering::SeqCst),
-            "a not-implemented graph accept does not resume"
+            reason.contains("does not support edit"),
+            "the reason names the unsupported edit verb: {reason}"
         );
+        assert_eq!(entity_count(&pool).await, 0, "a rejected edit writes nothing");
+        assert_eq!(
+            proposal_status(&pool, &proposal_id_str).await,
+            "pending",
+            "an Invalid edit leaves the graph Proposal pending"
+        );
+        assert!(!resumed.load(Ordering::SeqCst), "an Invalid edit does not resume");
     }
 
     // Guards the gone-vs-wrong-thread distinction: a Journal Entry that EXISTS but

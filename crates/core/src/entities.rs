@@ -196,11 +196,30 @@ pub(crate) fn render_accept(
                 .unwrap_or("unknown");
             format!("Accepted. Updated Todo (todo_id={todo_id}).")
         }
-        // The graph apply path lands in slice 2 (ADR-0042); slice 1 decide
-        // short-circuits to `Invalid("apply_intent_graph not yet implemented")`
-        // BEFORE rendering, so this arm is unreachable today. It exists only to
-        // keep the match total; slice 2 replaces it with the resolved-plan summary.
-        P::ApplyIntentGraph => "Accepted. Applied intent graph.".to_string(),
+        // The graph applies many entities in one tx (ADR-0042); the model reads
+        // this on resume and re-reads the created entities via `entity/changed`.
+        // `entity_id` is the anchor (the Journal Entry node, or the first created
+        // entity for a JE-less direct-capture graph). A concise count of the
+        // applied nodes keeps the transcript honest without re-listing the plan.
+        // slice 5: reflect the per-node decision vector's accepted subset here.
+        P::ApplyIntentGraph => {
+            let anchor = entity_id.unwrap_or("unknown");
+            let entity_count = payload
+                .get("entities")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            let has_journal_entry = payload
+                .get("journal_entry")
+                .is_some_and(|je| !je.is_null());
+            let je_note = if has_journal_entry {
+                " with a Journal Entry"
+            } else {
+                ""
+            };
+            format!(
+                "Accepted. Applied intent graph{je_note} (anchor entity_id={anchor}, {entity_count} entities)."
+            )
+        }
     }
 }
 
