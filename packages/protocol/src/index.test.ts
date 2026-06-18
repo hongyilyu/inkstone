@@ -236,6 +236,48 @@ describe("ProposalGetResult", () => {
 		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(wire);
 	});
 
+	it("decodes an apply_intent_graph resolved_plan (create/reuse/ambiguous) and encodes back unchanged", () => {
+		const withPlan = {
+			...wire,
+			mutation_kind: "apply_intent_graph",
+			payload: {},
+			resolved_plan: [
+				{
+					handle: "@rodeo",
+					type: "todo",
+					disposition: "create",
+					label: "Figure out the Rodeo side",
+				},
+				{
+					handle: "@leadads",
+					type: "project",
+					disposition: "reuse",
+					label: "Lead Ads",
+					entity_id: "01900000-0000-7000-8000-0000000000a1",
+				},
+				{
+					handle: "@morris",
+					type: "person",
+					disposition: "ambiguous",
+					label: "Morris",
+					candidates: [
+						{
+							entity_id: "01900000-0000-7000-8000-0000000000b1",
+							label: "Morris",
+						},
+						{
+							entity_id: "01900000-0000-7000-8000-0000000000b2",
+							label: "Morris",
+						},
+					],
+				},
+			],
+		};
+		const decoded = S.decodeUnknownSync(ProposalGetResult)(withPlan);
+		expect(decoded).toEqual(withPlan);
+		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(withPlan);
+	});
+
 	it("decodes a null rationale", () => {
 		const noReason = { ...wire, rationale: null };
 		expect(S.decodeUnknownSync(ProposalGetResult)(noReason)).toEqual(noReason);

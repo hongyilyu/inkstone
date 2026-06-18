@@ -51,7 +51,7 @@ use super::apply::{self, EntityMutationSpec, EntitySource};
 use super::lifecycle::ProposalStatus;
 use super::queries;
 use crate::mutation::{MutationKind, SourceRelation};
-use crate::protocol::NodeDecision;
+use crate::protocol::{NodeDecision, ResolvedNode, ResolvedNodeCandidate};
 
 /// The result of resolving+applying an `apply_intent_graph` Proposal under a
 /// decision vector (ADR-0042). The graph reconciles its stored nodes against the
@@ -136,6 +136,127 @@ struct ExtractedGraph {
     journal_entry: Option<ResolvedCreate>,
     entities: Vec<EntityNode>,
     links: Vec<Link>,
+}
+
+/// Compute the READ-ONLY resolved plan for an `apply_intent_graph` proposal's
+/// stored graph payload (ADR-0042), so `proposal/get` can ship create/reuse/
+/// ambiguous badges to the Client WITHOUT re-resolving. One [`ResolvedNode`] per
+/// entity node (the JE node is create-only, carries no disposition, and is NOT a
+/// plan node). Each node's disposition mirrors [`resolve_disposition`]'s natural
+/// path EXACTLY — honor an `existing_id` hint, else exact (case-insensitive,
+/// trimmed) label+type match against the accepted set: zero → `create`, one →
+/// `reuse`, two-or-more → `ambiguous` (with the competing candidates). The model's
+/// per-node `edited_fields`/`entity_id` decisions are NOT applied here (this is the
+/// pre-decision display); the Client stages those locally.
+///
+/// This is a plain pool READ (no tx, no write) against the serialized
+/// `max_connections(1)` pool — advisory display only. Resolution is authoritative
+/// at decide, which RE-resolves in-tx; a node that reads `reuse` here but races to
+/// deleted by decide-time is fine (decide handles it). A structurally malformed
+/// graph (which decide would reject anyway) yields an EMPTY plan rather than
+/// failing the read, so the Client still renders the card (degraded) instead of a
+/// blank `proposal/get`.
+pub async fn resolved_plan_for(
+    pool: &sqlx::SqlitePool,
+    payload: &serde_json::Value,
+) -> sqlx::Result<Vec<ResolvedNode>> {
+    let Ok(graph) = extract_graph(payload) else {
+        // A malformed graph has no meaningful plan; the Client degrades to the
+        // raw card. (Decide is the authoritative gate that rejects it.)
+        return Ok(Vec::new());
+    };
+
+    let mut plan = Vec::with_capacity(graph.entities.len());
+    for node in &graph.entities {
+        let label = node.label.clone().unwrap_or_default();
+        let disposition = resolve_plan_disposition(pool, node).await?;
+        plan.push(match disposition {
+            PlanDisposition::Create => ResolvedNode {
+                handle: node.handle.clone(),
+                r#type: node.type_str.to_string(),
+                disposition: "create".to_string(),
+                label,
+                entity_id: None,
+                candidates: None,
+            },
+            PlanDisposition::Reuse(entity_id) => ResolvedNode {
+                handle: node.handle.clone(),
+                r#type: node.type_str.to_string(),
+                disposition: "reuse".to_string(),
+                label,
+                entity_id: Some(entity_id),
+                candidates: None,
+            },
+            PlanDisposition::Ambiguous(candidates) => ResolvedNode {
+                handle: node.handle.clone(),
+                r#type: node.type_str.to_string(),
+                disposition: "ambiguous".to_string(),
+                label,
+                entity_id: None,
+                candidates: Some(candidates),
+            },
+        });
+    }
+    Ok(plan)
+}
+
+/// One entity node's resolved disposition for the READ-ONLY plan (ADR-0042). The
+/// display analogue of the resolver's [`Disposition`]: `Ambiguous` is a VARIANT
+/// here (the plan surfaces the competing candidates so the Client can show the
+/// "needs disambiguation" hint), where the resolver fails the whole apply.
+enum PlanDisposition {
+    Create,
+    Reuse(String),
+    Ambiguous(Vec<ResolvedNodeCandidate>),
+}
+
+/// Resolve one entity node's disposition for the READ-ONLY plan, mirroring
+/// [`resolve_disposition`]'s NATURAL path (no per-node override/edit — those are
+/// staged in the Client). Reads the accepted set via `queries::list_by_type`
+/// against the POOL (not a tx): there is no in-tx state at `proposal/get`. Returns
+/// every competing match for an `ambiguous` node so the Client renders the
+/// candidates.
+async fn resolve_plan_disposition(
+    pool: &sqlx::SqlitePool,
+    node: &EntityNode,
+) -> sqlx::Result<PlanDisposition> {
+    // 1. Honor a usable `existing_id` hint (an accepted entity of the right type),
+    //    exactly as `resolve_disposition` does.
+    if let Some(hint) = node.existing_id.as_deref().filter(|id| !id.is_empty())
+        && queries::entity_is_type(pool, hint, node.type_str).await?
+    {
+        return Ok(PlanDisposition::Reuse(hint.to_string()));
+    }
+
+    // 2. Exact (case-insensitive, trimmed) label + type match. Without a label
+    //    there is nothing to match on → `create`.
+    let Some(label) = node.label.as_deref() else {
+        return Ok(PlanDisposition::Create);
+    };
+    let needle = label.trim().to_lowercase();
+    let label_key = label_key_for(node.type_str);
+
+    let rows = queries::list_by_type(pool, node.type_str).await?;
+    let matches: Vec<ResolvedNodeCandidate> = rows
+        .into_iter()
+        .filter_map(|(id, _, data, _, _)| {
+            let stored = serde_json::from_str::<serde_json::Value>(&data)
+                .ok()?
+                .get(label_key)?
+                .as_str()?
+                .to_string();
+            (stored.trim().to_lowercase() == needle).then_some(ResolvedNodeCandidate {
+                entity_id: id,
+                label: stored,
+            })
+        })
+        .collect();
+
+    Ok(match matches.len() {
+        0 => PlanDisposition::Create,
+        1 => PlanDisposition::Reuse(matches.into_iter().next().expect("len == 1").entity_id),
+        _ => PlanDisposition::Ambiguous(matches),
+    })
 }
 
 /// Apply an accepted `apply_intent_graph` Proposal in one atomic transaction
@@ -1278,4 +1399,146 @@ fn resolve_entity_node(node: &serde_json::Value) -> Result<EntityNode, ApplyErro
         label,
         existing_id,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    /// A migrated in-memory pool with `max_connections(1)` (matches the resolver's
+    /// race-free read assumption).
+    async fn memory_pool() -> sqlx::SqlitePool {
+        let options = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
+        pool
+    }
+
+    /// Insert one accepted Entity (created_by='user', no Proposal anchor) of
+    /// `entity_type` with label `label` — the accepted set the plan reads.
+    async fn insert_named(pool: &sqlx::SqlitePool, entity_type: &str, label: &str) -> String {
+        let id = Uuid::now_v7().to_string();
+        let now = crate::db::now_ms();
+        let label_key = if entity_type == "todo" { "title" } else { "name" };
+        let data = serde_json::json!({ label_key: label }).to_string();
+        sqlx::query(
+            "INSERT INTO entities (id, type, schema_version, data, created_by, created_at, updated_at) \
+             VALUES (?, ?, 1, ?, 'user', ?, ?)",
+        )
+        .bind(&id)
+        .bind(entity_type)
+        .bind(&data)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("insert named entity");
+        id
+    }
+
+    fn node(plan: &[ResolvedNode], handle: &str) -> usize {
+        plan.iter()
+            .position(|n| n.handle == handle)
+            .unwrap_or_else(|| panic!("no plan node for {handle}"))
+    }
+
+    // The JE node is create-only and carries no disposition, so it is NOT a plan
+    // node; a fresh entity with no accepted match is `create`.
+    #[tokio::test]
+    async fn resolved_plan_omits_je_and_marks_new_entities_create() {
+        let pool = memory_pool().await;
+        let payload = serde_json::json!({
+            "journal_entry": { "handle": "@je", "occurred_at": "2026-06-10T10:30:00", "body": [] },
+            "entities": [
+                { "handle": "@morris", "type": "person", "name": "Morris" },
+                { "handle": "@leadads", "type": "project", "name": "Lead Ads" }
+            ],
+            "links": []
+        });
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan.len(), 2, "the JE node is not a plan node");
+        assert!(plan.iter().all(|n| n.disposition == "create"));
+        let morris = &plan[node(&plan, "@morris")];
+        assert_eq!(morris.r#type, "person");
+        assert_eq!(morris.label, "Morris");
+        assert!(morris.entity_id.is_none() && morris.candidates.is_none());
+    }
+
+    // An entity whose exact (case-insensitive) name+type matches exactly one
+    // accepted row resolves to `reuse` carrying that id.
+    #[tokio::test]
+    async fn resolved_plan_marks_single_exact_match_reuse() {
+        let pool = memory_pool().await;
+        let existing = insert_named(&pool, "project", "Lead Ads").await;
+        let payload = serde_json::json!({
+            "entities": [{ "handle": "@leadads", "type": "project", "name": "lead ads" }],
+            "links": []
+        });
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].disposition, "reuse");
+        assert_eq!(plan[0].entity_id.as_deref(), Some(existing.as_str()));
+        assert!(plan[0].candidates.is_none());
+    }
+
+    // Two accepted same-named rows → `ambiguous`, surfacing BOTH candidates (the
+    // Client renders the disambiguation hint; accept-all is blocked).
+    #[tokio::test]
+    async fn resolved_plan_marks_two_matches_ambiguous_with_candidates() {
+        let pool = memory_pool().await;
+        let a = insert_named(&pool, "person", "Morris").await;
+        let b = insert_named(&pool, "person", "Morris").await;
+        let payload = serde_json::json!({
+            "entities": [{ "handle": "@morris", "type": "person", "name": "Morris" }],
+            "links": []
+        });
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].disposition, "ambiguous");
+        assert!(plan[0].entity_id.is_none());
+        let candidates = plan[0].candidates.as_ref().expect("candidates present");
+        let ids: std::collections::HashSet<&str> =
+            candidates.iter().map(|c| c.entity_id.as_str()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(a.as_str()) && ids.contains(b.as_str()));
+    }
+
+    // An `existing_id` hint naming an accepted entity of the right type is honored
+    // as `reuse` (mirrors `resolve_disposition`'s hint path).
+    #[tokio::test]
+    async fn resolved_plan_honors_existing_id_hint() {
+        let pool = memory_pool().await;
+        let existing = insert_named(&pool, "project", "Some Other Name").await;
+        let payload = serde_json::json!({
+            "entities": [{
+                "handle": "@p", "type": "project", "name": "Brand New Project",
+                "existing_id": existing
+            }],
+            "links": []
+        });
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan[0].disposition, "reuse");
+        assert_eq!(plan[0].entity_id.as_deref(), Some(existing.as_str()));
+    }
+
+    // A structurally malformed graph yields an EMPTY plan (the Client degrades to
+    // the raw card; decide is the authoritative reject gate).
+    #[tokio::test]
+    async fn resolved_plan_for_malformed_graph_is_empty() {
+        let pool = memory_pool().await;
+        let plan = resolved_plan_for(&pool, &serde_json::json!({ "not": "a graph" }))
+            .await
+            .unwrap();
+        assert!(plan.is_empty());
+    }
 }

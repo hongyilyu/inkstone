@@ -166,7 +166,32 @@ export const ProposalReviewContext = S.Struct({
 });
 export type ProposalReviewContext = S.Schema.Type<typeof ProposalReviewContext>;
 
-/** `proposal/get` result: the Run's pending Proposal. */
+/** One competing exact match for an `ambiguous` {@link ResolvedNode} (ADR-0042). */
+export const ResolvedNodeCandidate = S.Struct({
+	entity_id: S.String,
+	label: S.String,
+});
+export type ResolvedNodeCandidate = S.Schema.Type<typeof ResolvedNodeCandidate>;
+
+/** One node of an `apply_intent_graph` proposal's resolved plan (ADR-0042),
+ * computed read-only at `proposal/get` so the Client renders create/reuse/
+ * ambiguous badges without re-resolving. A FLAT shape keyed by `disposition`:
+ * `entity_id` is present only for `reuse`, `candidates` only for `ambiguous`
+ * (mirrors the Rust `ResolvedNode`). Advisory — Core re-resolves authoritatively
+ * at decide. The JE node is create-only and is NOT a plan node. */
+export const ResolvedNode = S.Struct({
+	handle: S.String,
+	type: S.Literal("person", "project", "todo"),
+	disposition: S.Literal("create", "reuse", "ambiguous"),
+	label: S.String,
+	entity_id: S.optional(S.String),
+	candidates: S.optional(S.Array(ResolvedNodeCandidate)),
+});
+export type ResolvedNode = S.Schema.Type<typeof ResolvedNode>;
+
+/** `proposal/get` result: the Run's pending Proposal. `resolved_plan` is present
+ * (per-node create/reuse/ambiguous) only for an `apply_intent_graph` proposal
+ * (ADR-0042); omitted for the 13 single-entity kinds. */
 export const ProposalGetResult = S.Struct({
 	proposal_id: S.String,
 	run_id: S.String,
@@ -174,6 +199,7 @@ export const ProposalGetResult = S.Struct({
 	payload: S.Unknown,
 	rationale: S.NullOr(S.String),
 	review_context: S.optional(ProposalReviewContext),
+	resolved_plan: S.optional(S.Array(ResolvedNode)),
 	status: S.String,
 });
 export type ProposalGetResult = S.Schema.Type<typeof ProposalGetResult>;

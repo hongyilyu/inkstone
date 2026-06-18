@@ -1571,4 +1571,110 @@ describe("ProposalCard", () => {
 			).toBeInTheDocument();
 		});
 	});
+
+	// The apply_intent_graph sequential-review card (ADR-0042): a resolved plan
+	// rendered as a node queue with a local staging buffer + one atomic commit.
+	describe("intent graph review card", () => {
+		const graphProposal: PendingProposal = {
+			proposal_id: "graph-prop",
+			run_id: "graph-run",
+			mutation_kind: "apply_intent_graph",
+			payload: {
+				links: [{ kind: "todo_project", from: "@rodeo", to: "@leadads" }],
+			},
+			rationale: "recognized from your note",
+			resolved_plan: [
+				{
+					handle: "@rodeo",
+					type: "todo",
+					disposition: "create",
+					label: "Figure out the Rodeo side",
+				},
+				{
+					handle: "@leadads",
+					type: "project",
+					disposition: "create",
+					label: "Lead Ads",
+				},
+			],
+			status: "pending",
+		};
+
+		it("renders one row per plan node with a create badge", () => {
+			render(<ProposalCard proposal={graphProposal} onDecide={() => {}} />);
+			expect(screen.getByText("Figure out the Rodeo side")).toBeInTheDocument();
+			expect(screen.getByText("Lead Ads")).toBeInTheDocument();
+			expect(screen.getAllByText("New")).toHaveLength(2);
+			expect(screen.getByText(/2 items to review/i)).toBeInTheDocument();
+		});
+
+		it("commits an all-accept decisions vector on Apply", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={graphProposal} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /apply 2 items/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+				{ handle: "@rodeo", decision: "accept" },
+				{ handle: "@leadads", decision: "accept" },
+			]);
+		});
+
+		it("rejecting the project surfaces the Todo downgrade and drops the link in the vector", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={graphProposal} onDecide={onDecide} />);
+			// Reject the project node (its row's Reject toggle).
+			fireEvent.click(screen.getByRole("button", { name: /reject lead ads/i }));
+			// The downgrade notice appears before Apply.
+			expect(screen.getByText(/without its project link/i)).toBeInTheDocument();
+			// Apply now carries the project as a reject; the Todo stays an accept.
+			fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+				{ handle: "@rodeo", decision: "accept" },
+				{ handle: "@leadads", decision: "reject" },
+			]);
+		});
+
+		it("Dismiss all commits a reject", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={graphProposal} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /dismiss all/i }));
+			expect(onDecide).toHaveBeenCalledWith("reject", undefined, [
+				{ handle: "@rodeo", decision: "reject" },
+				{ handle: "@leadads", decision: "reject" },
+			]);
+		});
+
+		it("an ambiguous node cannot be accepted (reject-only, #181)", () => {
+			const onDecide = vi.fn();
+			const withAmbiguous: PendingProposal = {
+				...graphProposal,
+				payload: { links: [] },
+				resolved_plan: [
+					{
+						handle: "@morris",
+						type: "person",
+						disposition: "ambiguous",
+						label: "Morris",
+						candidates: [
+							{ entity_id: "m1", label: "Morris" },
+							{ entity_id: "m2", label: "Morris" },
+						],
+					},
+				],
+			};
+			render(<ProposalCard proposal={withAmbiguous} onDecide={onDecide} />);
+			// The accept toggle for the ambiguous node is disabled.
+			expect(
+				screen.getByRole("button", { name: /accept morris/i }),
+			).toBeDisabled();
+			expect(
+				screen.getByText(/match more than one existing entry/i),
+			).toBeInTheDocument();
+			// The whole plan is the ambiguous node (default reject) → "Dismiss all"
+			// commits a reject-all (Core declines the graph).
+			fireEvent.click(screen.getByRole("button", { name: /dismiss all/i }));
+			expect(onDecide).toHaveBeenCalledWith("reject", undefined, [
+				{ handle: "@morris", decision: "reject" },
+			]);
+		});
+	});
 });

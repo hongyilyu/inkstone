@@ -1,14 +1,41 @@
-import type { ProposalReviewContext } from "@inkstone/protocol";
+import type {
+	NodeDecision,
+	ProposalReviewContext,
+	ResolvedNode,
+} from "@inkstone/protocol";
 import {
 	CalendarDays,
 	Check,
+	GitBranch,
 	Loader2,
 	type LucideIcon,
 	Pencil,
+	Plus,
 	RotateCcw,
+	TriangleAlert,
+	X,
 } from "lucide-react";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
-import { KIND_META } from "@/lib/libraryItems";
+import {
+	type ReactNode,
+	useEffect,
+	useId,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
+import {
+	allRejected,
+	buildDecisions,
+	downgradeNotices,
+	hasAmbiguous,
+	isAcceptable,
+	parseGraphLinks,
+	rejectAll,
+	type StagingBuffer,
+	setStage,
+	stageFor,
+} from "@/lib/intentGraphReview";
+import { KIND_META, type LibraryItemKind } from "@/lib/libraryItems";
 import {
 	type CreatePersonDraft,
 	type CreateProjectDraft,
@@ -67,7 +94,8 @@ type ProposalKind =
 	| "create_todo"
 	| "update_todo"
 	| "update_person"
-	| "update_project";
+	| "update_project"
+	| "apply_intent_graph";
 
 /**
  * Inputs a row's `renderBody` strategy reads to draw the card's detail body — the
@@ -273,6 +301,24 @@ const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		// Full-document REPLACE: read-only detail mirrors create_project's.
 		renderBody: renderProjectBody,
 	},
+	apply_intent_graph: {
+		// The graph card renders its OWN body + footer (the sequential review queue
+		// + staging buffer, ADR-0042) — these fields supply only the header glyph +
+		// copy. `renderBody`/accept/reject labels are unused (the graph branch in
+		// ProposalCard short-circuits before the single-entity render path).
+		glyph: GitBranch,
+		acceptGlyph: Check,
+		summary: () => "Review extracted items",
+		reviewCopy: "Inkstone recognized these from your note.",
+		acceptedCopy: "Applied.",
+		rejectedCopy: "Dismissed.",
+		acceptLabel: "Apply",
+		acceptBusyLabel: "Applying...",
+		rejectLabel: "Dismiss",
+		rejectBusyLabel: "Dismissing...",
+		canEdit: () => false,
+		renderBody: renderNoBody,
+	},
 };
 
 // An unrecognized kind renders like a generic Journal-Entry create, echoing the
@@ -433,15 +479,38 @@ type EditedPayload =
 	| UpdateJournalEntryPayload
 	| Record<string, unknown>;
 
+type DecideHandler = (
+	decision: "accept" | "reject" | "edit",
+	editedPayload?: EditedPayload,
+	decisions?: readonly NodeDecision[],
+) => void;
+
+/**
+ * The review card for a pending Proposal. A pure dispatcher (no hooks of its own)
+ * so the two decision models live in separate components with their own hook
+ * order: the intent graph (ADR-0042) is a sequential review queue with a local
+ * staging buffer and ONE atomic commit, every other kind is the scalar
+ * accept/edit/reject single-entity card.
+ */
 export function ProposalCard({
 	proposal,
 	onDecide,
 }: {
 	proposal: PendingProposal;
-	onDecide: (
-		decision: "accept" | "reject" | "edit",
-		editedPayload?: EditedPayload,
-	) => void;
+	onDecide: DecideHandler;
+}) {
+	if (proposal.mutation_kind === "apply_intent_graph") {
+		return <IntentGraphReviewCard proposal={proposal} onDecide={onDecide} />;
+	}
+	return <SingleEntityProposalCard proposal={proposal} onDecide={onDecide} />;
+}
+
+function SingleEntityProposalCard({
+	proposal,
+	onDecide,
+}: {
+	proposal: PendingProposal;
+	onDecide: DecideHandler;
 }) {
 	const editFormId = useId();
 	const occurredAtInputId = `${editFormId}-proposal-edit-occurred-at`;
@@ -1095,6 +1164,312 @@ export function ProposalCard({
 				</>
 			)}
 		</Card>
+	);
+}
+
+// --- Intent-graph sequential review card (ADR-0042) -------------------------
+
+const GRAPH_VIEW = PROPOSAL_VIEWS.apply_intent_graph;
+
+/** Per-disposition badge copy + tone. Kinds differ by glyph + label, never colour
+ * alone (PRODUCT.md a11y): each badge pairs a glyph with its word. `ambiguous`
+ * wears the warning tone because it BLOCKS accept (no picker yet, #181). */
+const DISPOSITION_BADGE: Record<
+	ResolvedNode["disposition"],
+	{ label: string; glyph: LucideIcon; className: string }
+> = {
+	create: {
+		label: "New",
+		glyph: Plus,
+		className: "bg-secondary text-secondary-foreground",
+	},
+	reuse: {
+		label: "Existing",
+		glyph: Check,
+		className: "bg-secondary text-secondary-foreground",
+	},
+	ambiguous: {
+		label: "Needs disambiguation",
+		glyph: TriangleAlert,
+		className: "bg-destructive/10 text-destructive",
+	},
+};
+
+/**
+ * The `apply_intent_graph` review surface (ADR-0042): the whole resolved plan is
+ * ONE Proposal, one park, one atomic commit, but the user reviews it node by node.
+ * A local staging buffer (component state — NOT the chat store) accumulates each
+ * node's accept/reject; nothing is sent until Apply, which commits ONE
+ * `proposal/decide` carrying the `decisions[]` vector. An `ambiguous` node blocks
+ * accept (reject-only until the picker ships, #181); rejecting a node a Todo links
+ * to surfaces a downgrade notice before Apply.
+ */
+function IntentGraphReviewCard({
+	proposal,
+	onDecide,
+}: {
+	proposal: PendingProposal;
+	onDecide: DecideHandler;
+}) {
+	const plan = proposal.resolved_plan ?? [];
+	const links = useMemo(
+		() => parseGraphLinks(proposal.payload),
+		[proposal.payload],
+	);
+	// The staging buffer starts at the per-node defaults (acceptable → accept,
+	// ambiguous → reject), so a plain Apply with no toggles accepts everything
+	// resolvable — the common path.
+	const [buffer, setBuffer] = useState<StagingBuffer>({});
+	const [inFlight, setInFlight] = useState<"commit" | "reject" | null>(null);
+	useEffect(() => {
+		if (proposal.status !== "deciding") setInFlight(null);
+	}, [proposal.status]);
+
+	const { status } = proposal;
+	if (status === "accepted" || status === "rejected") {
+		const accepted = status === "accepted";
+		return (
+			<Card
+				data-proposal={proposal.run_id}
+				data-proposal-status={status}
+				data-proposal-kind="apply_intent_graph"
+				className="flex items-center gap-2 px-4 py-2.5 text-sm text-muted-foreground motion-safe:transition-opacity motion-safe:duration-200"
+			>
+				{accepted ? (
+					<Check className="size-4 text-card-foreground/60" aria-hidden />
+				) : null}
+				<span aria-live="polite">
+					{accepted ? GRAPH_VIEW.acceptedCopy : GRAPH_VIEW.rejectedCopy}
+				</span>
+			</Card>
+		);
+	}
+
+	const deciding = status === "deciding";
+	const submitting = deciding || inFlight !== null;
+	const isError = status === "error";
+
+	const notices = downgradeNotices(plan, links, buffer);
+	const everythingRejected = plan.length > 0 && allRejected(plan, buffer);
+	const acceptedCount = plan.filter(
+		(node) => stageFor(buffer, node) === "accept",
+	).length;
+	const ambiguousPresent = hasAmbiguous(plan);
+
+	const commit = () => {
+		if (submitting) return;
+		// A vector that rejects every node is a reject-all (Core declines the whole
+		// graph); otherwise it is an accept carrying the per-node subset.
+		const decisions = buildDecisions(plan, buffer);
+		const decision = everythingRejected ? "reject" : "accept";
+		setInFlight(everythingRejected ? "reject" : "commit");
+		onDecide(decision, undefined, decisions);
+	};
+	const rejectEverything = () => {
+		if (submitting) return;
+		setBuffer(rejectAll(plan));
+		setInFlight("reject");
+		onDecide("reject", undefined, buildDecisions(plan, rejectAll(plan)));
+	};
+
+	const HeaderGlyph = GRAPH_VIEW.glyph;
+	const commitLabel = everythingRejected
+		? GRAPH_VIEW.rejectLabel
+		: `Apply ${acceptedCount} ${acceptedCount === 1 ? "item" : "items"}`;
+
+	return (
+		<Card
+			data-proposal={proposal.run_id}
+			data-proposal-status={status}
+			data-proposal-kind="apply_intent_graph"
+			className="flex flex-col gap-3 p-4 motion-safe:transition-opacity motion-safe:duration-200"
+		>
+			<header className="flex items-center gap-2.5">
+				<span
+					className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-secondary text-secondary-foreground"
+					aria-hidden
+				>
+					<HeaderGlyph className="size-4" />
+				</span>
+				<div className="min-w-0">
+					<p className="text-xs font-medium text-muted-foreground">
+						{GRAPH_VIEW.reviewCopy}
+					</p>
+					<p className="truncate text-sm font-semibold text-card-foreground">
+						{plan.length} {plan.length === 1 ? "item" : "items"} to review
+					</p>
+				</div>
+			</header>
+
+			<ul className="flex flex-col gap-2 border-border border-t pt-3">
+				{plan.map((node) => (
+					<GraphNodeRow
+						key={node.handle}
+						node={node}
+						stage={stageFor(buffer, node)}
+						disabled={submitting}
+						onStage={(stage) =>
+							setBuffer((current) => setStage(current, node, stage))
+						}
+					/>
+				))}
+			</ul>
+
+			{ambiguousPresent ? (
+				<p className="text-xs text-muted-foreground">
+					Some items match more than one existing entry. They can only be
+					dismissed for now — disambiguation is coming soon.
+				</p>
+			) : null}
+
+			{notices.length > 0 ? (
+				<ul className="flex flex-col gap-1.5">
+					{notices.map((notice) => (
+						<li
+							key={notice.todoHandle}
+							className="flex items-start gap-1.5 text-xs text-muted-foreground"
+						>
+							<TriangleAlert
+								className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/70"
+								aria-hidden
+							/>
+							<span>{notice.message}</span>
+						</li>
+					))}
+				</ul>
+			) : null}
+
+			{proposal.rationale ? (
+				<p className="text-sm leading-relaxed text-muted-foreground">
+					{proposal.rationale}
+				</p>
+			) : null}
+
+			{isError ? (
+				<p role="alert" className="text-sm text-destructive">
+					Couldn't apply. Try again.
+				</p>
+			) : null}
+
+			<footer className="flex items-center gap-2 pt-1">
+				<button
+					type="button"
+					disabled={submitting || plan.length === 0}
+					onClick={commit}
+					className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+				>
+					{deciding && inFlight === "commit" ? (
+						<>
+							<Loader2
+								className="size-4 motion-safe:animate-spin"
+								aria-hidden
+							/>
+							{GRAPH_VIEW.acceptBusyLabel}
+						</>
+					) : (
+						<>
+							<Check className="size-4" aria-hidden />
+							{commitLabel}
+						</>
+					)}
+				</button>
+
+				<button
+					type="button"
+					disabled={submitting}
+					onClick={rejectEverything}
+					className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+				>
+					{deciding && inFlight === "reject" ? (
+						<>
+							<Loader2
+								className="size-3.5 motion-safe:animate-spin"
+								aria-hidden
+							/>
+							{GRAPH_VIEW.rejectBusyLabel}
+						</>
+					) : (
+						"Dismiss all"
+					)}
+				</button>
+			</footer>
+		</Card>
+	);
+}
+
+/** One node row in the intent-graph review queue: the entity glyph + label, a
+ * create/reuse/ambiguous badge, and an accept/reject toggle. An ambiguous node's
+ * accept is disabled (reject-only, #181). */
+function GraphNodeRow({
+	node,
+	stage,
+	disabled,
+	onStage,
+}: {
+	node: ResolvedNode;
+	stage: "accept" | "reject";
+	disabled: boolean;
+	onStage: (stage: "accept" | "reject") => void;
+}) {
+	const NodeGlyph = KIND_META[node.type as LibraryItemKind].icon;
+	const badge = DISPOSITION_BADGE[node.disposition];
+	const BadgeGlyph = badge.glyph;
+	const acceptable = isAcceptable(node);
+	const rejected = stage === "reject";
+	return (
+		<li
+			data-graph-node={node.handle}
+			data-node-stage={stage}
+			className={`flex items-center gap-2.5 rounded-lg border border-border/60 px-3 py-2 ${
+				rejected ? "opacity-60" : ""
+			}`}
+		>
+			<NodeGlyph
+				className="size-4 shrink-0 text-muted-foreground"
+				aria-hidden
+			/>
+			<div className="min-w-0 flex-1">
+				<p
+					className={`truncate text-sm text-card-foreground ${
+						rejected ? "line-through" : "font-medium"
+					}`}
+				>
+					{node.label || node.handle}
+				</p>
+				<span
+					className={`mt-0.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.6875rem] font-medium ${badge.className}`}
+				>
+					<BadgeGlyph className="size-3" aria-hidden />
+					{badge.label}
+				</span>
+			</div>
+			<div className="flex shrink-0 items-center gap-1">
+				<button
+					type="button"
+					aria-pressed={stage === "accept"}
+					disabled={disabled || !acceptable}
+					title={
+						acceptable ? "Accept" : "Needs disambiguation — cannot accept yet"
+					}
+					onClick={() => onStage("accept")}
+					className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-pressed:bg-primary aria-pressed:text-primary-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+				>
+					<Check className="size-4" aria-hidden />
+					<span className="sr-only">Accept {node.label || node.handle}</span>
+				</button>
+				<button
+					type="button"
+					aria-pressed={stage === "reject"}
+					disabled={disabled}
+					title="Reject"
+					onClick={() => onStage("reject")}
+					className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-pressed:bg-secondary aria-pressed:text-secondary-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+				>
+					<X className="size-4" aria-hidden />
+					<span className="sr-only">Reject {node.label || node.handle}</span>
+				</button>
+			</div>
+		</li>
 	);
 }
 

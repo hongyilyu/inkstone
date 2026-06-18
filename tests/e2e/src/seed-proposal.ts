@@ -93,6 +93,79 @@ export function seedAcceptedProject(
 	});
 }
 
+/**
+ * Seed a PARKED `apply_intent_graph` proposal (ADR-0042) the user can review and
+ * decide. Unlike {@link seedAcceptedEntity} (which lands an already-accepted
+ * Entity), this builds the rows a parked Run carries while it AWAITS a decision:
+ *   threads → runs(status='parked', awaiting_tool_call_id) → messages(user +
+ *   streaming assistant) → tool_calls(pending, request_payload = the graph
+ *   envelope) → proposals(pending) → run_log(proposal_pending milestone)
+ * so opening the Thread rehydrates the review card (the no-hub subscribe reads
+ * `parked` and re-pushes `proposal/pending`, exactly like a real park). Accepting
+ * resolves+applies the graph in one tx (the resume then spawns a Worker, but the
+ * apply is committed before resume, so DB assertions hold regardless).
+ *
+ * `graph` is the intent-graph payload (the `{journal_entry?, entities, links}`
+ * object); it is wrapped in the `{mutation_kind, payload, rationale}` request
+ * envelope Core reads at `proposal/get`.
+ */
+export function seedParkedIntentGraphProposal(
+	dbPath: string,
+	options: { graph: unknown; title?: string; rationale?: string },
+): void {
+	const now = Date.now();
+	// `run_id`/`thread_id` flow through UUID-typed wire params (`run/subscribe`,
+	// `proposal/get`, `thread/get`), so the seeded ids MUST be UUID-shaped — a
+	// non-UUID would fail param decode and never rehydrate the card. (Entity ids
+	// in `seedAcceptedEntity` need not be, since they never cross a UUID param.)
+	const threadId = "01900000-0000-7000-8000-00000000ab01";
+	const runId = "01900000-0000-7000-8000-00000000ab02";
+	const userMessageId = "01900000-0000-7000-8000-00000000ab03";
+	const assistantMessageId = "01900000-0000-7000-8000-00000000ab04";
+	const toolCallId = "tc_seed_intentgraph";
+	const proposalId = "01900000-0000-7000-8000-00000000ab05";
+	const title = options.title ?? "Captured note";
+	const requestPayload = {
+		mutation_kind: "apply_intent_graph",
+		payload: options.graph,
+		rationale: options.rationale ?? "Recognized these from your note.",
+	};
+	sqlite(
+		dbPath,
+		`
+		BEGIN IMMEDIATE;
+		INSERT INTO threads (id, title, created_at, last_activity_at)
+		VALUES (${sqlValue(threadId)}, ${sqlValue(title)}, ${now}, ${now});
+		INSERT INTO runs
+			(id, thread_id, workflow_name, workflow_version, provider, model, thinking_level, user_message_id, status, started_at)
+		VALUES
+			(${sqlValue(runId)}, ${sqlValue(threadId)}, 'default', '1.0.0', 'faux', 'fake-model', 'off', ${sqlValue(userMessageId)}, 'parked', ${now});
+		INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at)
+		VALUES (${sqlValue(userMessageId)}, ${sqlValue(threadId)}, ${sqlValue(runId)}, 'user', 'completed', ${now}, ${now});
+		INSERT INTO message_parts (message_id, seq, type, text)
+		VALUES (${sqlValue(userMessageId)}, 0, 'text', ${sqlValue(title)});
+		INSERT INTO messages (id, thread_id, run_id, role, status, created_at, updated_at)
+		VALUES (${sqlValue(assistantMessageId)}, ${sqlValue(threadId)}, ${sqlValue(runId)}, 'assistant', 'streaming', ${now}, ${now});
+		INSERT INTO message_parts (message_id, seq, type, text)
+		VALUES (${sqlValue(assistantMessageId)}, 0, 'text', '');
+		INSERT INTO run_steps (run_id, seq, kind, message_id, tool_call_id, created_at)
+		VALUES (${sqlValue(runId)}, 0, 'message', ${sqlValue(userMessageId)}, NULL, ${now});
+		INSERT INTO run_steps (run_id, seq, kind, message_id, tool_call_id, created_at)
+		VALUES (${sqlValue(runId)}, 1, 'message', ${sqlValue(assistantMessageId)}, NULL, ${now});
+		INSERT INTO tool_calls (id, run_id, name, request_payload, status, requested_at)
+		VALUES (${sqlValue(toolCallId)}, ${sqlValue(runId)}, 'propose_workspace_mutation', ${jsonValue(requestPayload)}, 'pending', ${now});
+		INSERT INTO run_steps (run_id, seq, kind, message_id, tool_call_id, created_at)
+		VALUES (${sqlValue(runId)}, 2, 'tool_call', NULL, ${sqlValue(toolCallId)}, ${now});
+		INSERT INTO proposals (id, tool_call_id, mutation_kind, status)
+		VALUES (${sqlValue(proposalId)}, ${sqlValue(toolCallId)}, 'apply_intent_graph', 'pending');
+		INSERT INTO run_log (run_id, run_seq, kind, payload, created_at)
+		VALUES (${sqlValue(runId)}, 0, 'proposal_pending', ${jsonValue({ proposal_id: proposalId, tool_call_id: toolCallId, mutation_kind: "apply_intent_graph" })}, ${now});
+		UPDATE runs SET awaiting_tool_call_id = ${sqlValue(toolCallId)} WHERE id = ${sqlValue(runId)};
+		COMMIT;
+		`,
+	);
+}
+
 /** Run `input` against the DB through the `sqlite3` CLI with FKs on. */
 export function sqlite(dbPath: string, input: string): string {
 	return execFileSync("sqlite3", [dbPath], {

@@ -90,9 +90,39 @@ pub struct ProposalReviewContext {
     pub current_journal_entry: Option<ProposalReviewCurrentJournalEntry>,
 }
 
+/// One node of an `apply_intent_graph` proposal's resolved plan (ADR-0042),
+/// computed READ-ONLY at `proposal/get` so the Client renders create/reuse/
+/// ambiguous badges without re-resolving. Mirrors the TS `ResolvedNode`. A flat
+/// shape (not a tagged union) keyed by `disposition`: `entity_id` is present only
+/// for `reuse`, `candidates` only for `ambiguous` — both skipped otherwise. This
+/// is ADVISORY: Core re-resolves authoritatively at decide, so a node that is
+/// `reuse` here but raced to deleted by decide-time is fine (decide handles it).
+#[derive(Debug, Serialize)]
+pub struct ResolvedNode {
+    pub handle: String,
+    pub r#type: String,
+    pub disposition: String,
+    pub label: String,
+    /// The reused entity's id — present only when `disposition == "reuse"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+    /// The competing exact matches — present only when `disposition == "ambiguous"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidates: Option<Vec<ResolvedNodeCandidate>>,
+}
+
+/// One competing exact match for an `ambiguous` [`ResolvedNode`] (ADR-0042).
+#[derive(Debug, Serialize)]
+pub struct ResolvedNodeCandidate {
+    pub entity_id: String,
+    pub label: String,
+}
+
 /// `proposal/get` result (ADR-0025): the Run's pending Proposal. `payload` is
 /// opaque and mutation-specific; `rationale` may be `null`; `review_context` is
-/// optional display-only context for review surfaces.
+/// optional display-only context for review surfaces. `resolved_plan` is the
+/// per-node create/reuse/ambiguous plan for an `apply_intent_graph` proposal only
+/// (ADR-0042) — `None` (omitted) for all 13 single-entity kinds.
 #[derive(Debug, Serialize)]
 pub struct ProposalGetResult {
     pub proposal_id: String,
@@ -102,6 +132,8 @@ pub struct ProposalGetResult {
     pub rationale: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub review_context: Option<ProposalReviewContext>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_plan: Option<Vec<ResolvedNode>>,
     pub status: String,
 }
 
@@ -854,6 +886,7 @@ mod mirror_tests {
             }),
             rationale: Some("because".to_string()),
             review_context: None,
+            resolved_plan: None,
             status: "pending".to_string(),
         };
         assert_eq!(
@@ -881,10 +914,13 @@ mod mirror_tests {
             payload: json!({}),
             rationale: None,
             review_context: None,
+            resolved_plan: None,
             status: "pending".to_string(),
         };
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["rationale"], json!(null));
+        // `resolved_plan` omitted (None) for a non-graph kind.
+        assert!(v.get("resolved_plan").is_none());
     }
 
     #[test]
@@ -917,6 +953,7 @@ mod mirror_tests {
                     ],
                 }),
             }),
+            resolved_plan: None,
             status: "pending".to_string(),
         };
         assert_eq!(
@@ -946,6 +983,75 @@ mod mirror_tests {
                 "status": "pending"
             }),
         );
+    }
+
+    #[test]
+    fn proposal_get_result_encodes_resolved_plan() {
+        // The `apply_intent_graph` resolved plan (ADR-0042): a flat per-node shape
+        // keyed by disposition — `create` carries only the label; `reuse` adds
+        // `entity_id`; `ambiguous` adds `candidates`. `entity_id`/`candidates` are
+        // omitted on the dispositions that do not carry them.
+        let r = ProposalGetResult {
+            proposal_id: UUID_B.to_string(),
+            run_id: UUID_A.to_string(),
+            mutation_kind: "apply_intent_graph".to_string(),
+            payload: json!({}),
+            rationale: None,
+            review_context: None,
+            resolved_plan: Some(vec![
+                ResolvedNode {
+                    handle: "@rodeo".to_string(),
+                    r#type: "todo".to_string(),
+                    disposition: "create".to_string(),
+                    label: "Figure out the Rodeo side".to_string(),
+                    entity_id: None,
+                    candidates: None,
+                },
+                ResolvedNode {
+                    handle: "@leadads".to_string(),
+                    r#type: "project".to_string(),
+                    disposition: "reuse".to_string(),
+                    label: "Lead Ads".to_string(),
+                    entity_id: Some(UUID_A.to_string()),
+                    candidates: None,
+                },
+                ResolvedNode {
+                    handle: "@morris".to_string(),
+                    r#type: "person".to_string(),
+                    disposition: "ambiguous".to_string(),
+                    label: "Morris".to_string(),
+                    entity_id: None,
+                    candidates: Some(vec![
+                        ResolvedNodeCandidate {
+                            entity_id: UUID_A.to_string(),
+                            label: "Morris".to_string(),
+                        },
+                        ResolvedNodeCandidate {
+                            entity_id: UUID_B.to_string(),
+                            label: "Morris".to_string(),
+                        },
+                    ]),
+                },
+            ]),
+            status: "pending".to_string(),
+        };
+        let v = serde_json::to_value(&r).unwrap();
+        let plan = v["resolved_plan"].as_array().expect("resolved_plan array");
+        assert_eq!(plan.len(), 3);
+        // create node: label only, no entity_id / candidates keys.
+        assert_eq!(plan[0]["disposition"], "create");
+        assert_eq!(plan[0]["type"], "todo");
+        assert!(plan[0].get("entity_id").is_none());
+        assert!(plan[0].get("candidates").is_none());
+        // reuse node: carries entity_id, no candidates.
+        assert_eq!(plan[1]["disposition"], "reuse");
+        assert_eq!(plan[1]["entity_id"], UUID_A);
+        assert!(plan[1].get("candidates").is_none());
+        // ambiguous node: carries candidates, no entity_id.
+        assert_eq!(plan[2]["disposition"], "ambiguous");
+        assert!(plan[2].get("entity_id").is_none());
+        assert_eq!(plan[2]["candidates"].as_array().unwrap().len(), 2);
+        assert_eq!(plan[2]["candidates"][0]["entity_id"], UUID_A);
     }
 
     #[test]

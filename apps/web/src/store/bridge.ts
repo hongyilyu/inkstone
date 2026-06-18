@@ -1,3 +1,4 @@
+import type { NodeDecision } from "@inkstone/protocol";
 import { type RunId, WsClient, type WsError } from "@inkstone/ui-sdk";
 import { Effect, Fiber, Stream } from "effect";
 import type { WsRuntime } from "../runtime.js";
@@ -255,6 +256,7 @@ export function startProposalStream(runtime: WsRuntime): void {
 						payload: p.payload,
 						rationale: p.rationale,
 						review_context: p.review_context,
+						resolved_plan: p.resolved_plan,
 						status: "pending",
 					});
 				} else {
@@ -268,12 +270,16 @@ export function startProposalStream(runtime: WsRuntime): void {
 	proposalFiber = runtime.runFork(program);
 }
 
-/** Decide a parked Run's Proposal (accept/reject/edit) and re-subscribe for the resume tail — see docs/design/web-store.md (ADR-0025). */
+/** Decide a parked Run's Proposal (accept/reject/edit) and re-subscribe for the
+ * resume tail — see docs/design/web-store.md (ADR-0025). `decisions` carries the
+ * per-node vector for an `apply_intent_graph` commit (ADR-0042); the single-entity
+ * kinds leave it undefined and use the scalar `decision` (+ `edited_payload`). */
 export async function decideProposal(
 	runtime: WsRuntime,
 	runId: RunId,
 	decision: "accept" | "reject" | "edit",
 	editedPayload?: unknown,
+	decisions?: readonly NodeDecision[],
 ): Promise<void> {
 	const proposal = getChatState().proposals[runId];
 	if (proposal === undefined) {
@@ -291,6 +297,7 @@ export async function decideProposal(
 			proposal_id: proposal.proposal_id,
 			decision,
 			...(decision === "edit" ? { edited_payload: editedPayload } : {}),
+			...(decisions !== undefined ? { decisions } : {}),
 		});
 	});
 
