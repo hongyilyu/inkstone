@@ -63,6 +63,7 @@ pub(super) async fn handle_decide(
         params.proposal_id,
         &params.decision,
         params.edited_payload,
+        params.decisions,
         params.decision_idempotency_key,
         |run_id| crate::worker::resume(run_id, pool, hubs),
     )

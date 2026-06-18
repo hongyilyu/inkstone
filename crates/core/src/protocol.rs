@@ -105,17 +105,41 @@ pub struct ProposalGetResult {
     pub status: String,
 }
 
+/// One per-node decision in an `apply_intent_graph` decision vector (ADR-0042),
+/// mirroring the TS `NodeDecision`. Keyed by the graph-local `handle`; `decision`
+/// is `accept`|`reject`; an accept may carry an `entity_id` override (collapse a
+/// reuse/ambiguous node to that id) OR `edited_fields` (correct a CREATE node's
+/// content before it is minted) — mutually exclusive per node, accept-only, both
+/// enforced by Core in [`crate::decide`]/[`crate::db::apply_intent_graph_proposal`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct NodeDecision {
+    pub handle: String,
+    pub decision: String,
+    #[serde(default)]
+    pub entity_id: Option<String>,
+    #[serde(default)]
+    pub edited_fields: Option<serde_json::Value>,
+}
+
 /// `proposal/decide` params (ADR-0025): the user's Decision on a pending
 /// Proposal. `decision` is accept|reject|edit; `edited_payload` carries edits
 /// for `edit`. `decision_idempotency_key` makes a retried decide safe — a repeat
 /// with the same key returns the prior result without re-applying (ADR-0014).
+///
+/// `decisions` is the per-node vector for `apply_intent_graph` only (ADR-0042):
+/// the 13 single-entity kinds keep the scalar `decision`/`edited_payload`; the
+/// graph reconciles its stored nodes against this vector (reject-cascade,
+/// entity_id override, edited_fields). Absent/empty = accept everything (a
+/// missing per-node entry defaults to accept).
 #[derive(Debug, Deserialize)]
 pub struct ProposalDecideParams {
     pub proposal_id: uuid::Uuid,
     pub decision: String,
     #[serde(default)]
-    #[allow(dead_code)] // consumed by `edit` (slice 5); accept ignores it
+    #[allow(dead_code)] // consumed by `edit`; accept ignores it
     pub edited_payload: Option<serde_json::Value>,
+    #[serde(default)]
+    pub decisions: Option<Vec<NodeDecision>>,
     #[serde(default)]
     pub decision_idempotency_key: Option<String>,
 }
@@ -959,6 +983,56 @@ mod mirror_tests {
             edit.edited_payload.unwrap()["body"][0]["text"],
             json!("Bought oat milk.")
         );
+    }
+
+    #[test]
+    fn proposal_decide_params_decodes_decisions_vector() {
+        // The `apply_intent_graph` shape (ADR-0042): a vector of per-node
+        // decisions keyed by handle, mirroring the TS `NodeDecision`. A plain
+        // accept node, a reject node, an `entity_id` override, and an
+        // `edited_fields` correction — the four per-node forms.
+        let wire = json!({
+            "proposal_id": UUID_B,
+            "decision": "accept",
+            "decisions": [
+                { "handle": "@je", "decision": "accept" },
+                { "handle": "@leadads", "decision": "reject" },
+                { "handle": "@morris", "decision": "accept", "entity_id": UUID_A },
+                { "handle": "@rodeo", "decision": "accept", "edited_fields": { "title": "Fixed" } }
+            ],
+            "decision_idempotency_key": "k-graph"
+        });
+        let p: ProposalDecideParams = serde_json::from_value(wire).unwrap();
+        assert_eq!(p.decision, "accept");
+        assert_eq!(p.decision_idempotency_key.as_deref(), Some("k-graph"));
+        let decisions = p.decisions.expect("decisions vector present");
+        assert_eq!(decisions.len(), 4);
+
+        assert_eq!(decisions[0].handle, "@je");
+        assert_eq!(decisions[0].decision, "accept");
+        assert!(decisions[0].entity_id.is_none());
+        assert!(decisions[0].edited_fields.is_none());
+
+        assert_eq!(decisions[1].handle, "@leadads");
+        assert_eq!(decisions[1].decision, "reject");
+
+        assert_eq!(decisions[2].handle, "@morris");
+        assert_eq!(decisions[2].entity_id.as_deref(), Some(UUID_A));
+
+        assert_eq!(decisions[3].handle, "@rodeo");
+        assert_eq!(
+            decisions[3].edited_fields.as_ref().unwrap()["title"],
+            json!("Fixed")
+        );
+    }
+
+    #[test]
+    fn proposal_decide_params_omits_decisions_when_absent() {
+        // The 13 single-entity kinds send no `decisions` vector; absent decodes
+        // to `None` (the graph cascade treats a missing vector as accept-all).
+        let bare: ProposalDecideParams =
+            serde_json::from_value(json!({ "proposal_id": UUID_B, "decision": "accept" })).unwrap();
+        assert!(bare.decisions.is_none());
     }
 
     #[test]

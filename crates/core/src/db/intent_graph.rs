@@ -42,6 +42,21 @@ use super::apply::{self, EntityMutationSpec, EntitySource};
 use super::lifecycle::ProposalStatus;
 use super::queries;
 use crate::mutation::{MutationKind, SourceRelation};
+use crate::protocol::NodeDecision;
+
+/// The result of resolving+applying an `apply_intent_graph` Proposal under a
+/// decision vector (ADR-0042). The graph reconciles its stored nodes against the
+/// vector inside the one tx:
+///   - `Applied(anchor)` — at least one node was accepted and minted/reused; the
+///     anchor is the Journal Entry id (or the first created entity for a JE-less
+///     direct-capture graph).
+///   - `RejectedAll` — the vector rejected EVERY node, so nothing was written;
+///     the Proposal is flipped *rejected* and the tool call resolved as a
+///     decline (a vector that rejects all nodes is effectively a `reject`).
+pub enum IntentGraphOutcome {
+    Applied(String),
+    RejectedAll,
+}
 
 /// One resolved graph node to MINT in-tx (the JE node + every `create`-disposition
 /// entity node). `kind` is the node's single-entity create kind (selects validator
@@ -131,10 +146,15 @@ pub async fn apply_intent_graph_proposal(
     proposal_id: &str,
     tool_call_id: &str,
     payload: &serde_json::Value,
+    decisions: Option<&[NodeDecision]>,
     decision_idempotency_key: Option<&str>,
     decision_result_payload: impl FnOnce(&str) -> String,
     now_ms: i64,
-) -> Result<String, ApplyError> {
+) -> Result<IntentGraphOutcome, ApplyError> {
+    // The per-node decision vector keyed by handle (ADR-0042). A missing entry =
+    // accept (the common accept-all path; a plain `accept` with no vector accepts
+    // everything). Built before the tx so reconciliation is pure structural work.
+    let decisions = NodeDecisions::from_vector(decisions);
     // Extract the graph BEFORE opening the tx: pure structural work (parse +
     // reconstruct each node's create payload, capture each entity node's
     // exact-match inputs) that needs no DB. A malformed graph fails here as
@@ -142,6 +162,24 @@ pub async fn apply_intent_graph_proposal(
     // runs INSIDE the tx below (it must see freshly-minted entities and be
     // race-free), but extraction + per-type validation stays poolless.
     let graph = extract_graph(payload)?;
+
+    // ADR-0042 reject-all: if the decision vector rejects EVERY node (the JE node
+    // too), nothing can be written — the accepted subset is empty. A vector that
+    // rejects all nodes is effectively a plain `reject` (the primary reject-all
+    // path is the scalar `reject` decision; this is the all-rejected *vector*).
+    // Resolve it as a decline BEFORE the accept-flip so the Proposal lands
+    // `rejected`, not `accepted`-then-empty.
+    if accepted_subset_is_empty(&graph, &decisions) {
+        return reject_whole_graph(
+            pool,
+            run_id,
+            proposal_id,
+            tool_call_id,
+            decision_idempotency_key,
+            now_ms,
+        )
+        .await;
+    }
 
     let mut tx = pool.begin().await?;
 
@@ -153,7 +191,7 @@ pub async fn apply_intent_graph_proposal(
         run_id,
         proposal_id,
         // The graph is not corrected via the whole-payload `edited_payload`
-        // (ADR-0042: per-node `edited_fields`, slice 5). Record no edit here.
+        // (ADR-0042: per-node `edited_fields`, applied below). Record no edit here.
         None,
         decision_idempotency_key,
         now_ms,
@@ -179,20 +217,36 @@ pub async fn apply_intent_graph_proposal(
         std::collections::HashMap::new();
     let mut non_todo_creates: Vec<ResolvedCreate> = Vec::new();
     let mut todo_creates: Vec<ResolvedCreate> = Vec::new();
-    if let Some(je) = graph.journal_entry {
+    // Reject the @je node (ADR-0042 "Reject the @je node"): the journal-anchored
+    // capture collapses — nothing is woven, there is no anchor — but the non-JE
+    // nodes still apply as a JE-less graph (their journal_ref links are dropped by
+    // the cascade; slice 6 weaves body refs). A rejected JE is simply not minted.
+    if let Some(je) = graph.journal_entry
+        && !decisions.is_rejected(&je.handle)
+    {
         non_todo_creates.push(je);
     }
     for node in &graph.entities {
-        match resolve_disposition(&mut tx, node).await? {
+        // A node the decision vector REJECTS is not created/reused (ADR-0042). It
+        // is skipped here; its handle never enters `handle_to_id`, so the cascade
+        // in `fold_links_into_todo` drops every link to it (the reject-cascade).
+        if decisions.is_rejected(&node.handle) {
+            continue;
+        }
+        match resolve_node(&mut tx, node, decisions.for_handle(&node.handle)).await? {
             Disposition::Reuse(existing_id) => {
                 // A reused node mints nothing; its handle resolves to the existing
-                // id so a todo's link can target it (the #179 existing-project case).
+                // id so a todo's link can target it (the #179 existing-project case,
+                // and the `entity_id` override / picker path).
                 handle_to_id.insert(node.handle.clone(), existing_id);
             }
-            Disposition::Create => {
+            Disposition::Create(payload) => {
                 let create = ResolvedCreate {
                     kind: node.kind,
-                    payload: node.payload.clone(),
+                    // The payload may carry an `edited_fields` correction merged
+                    // over the node's create payload (ADR-0042); else it is the
+                    // node's own payload.
+                    payload,
                     is_journal_anchor: false,
                     handle: node.handle.clone(),
                 };
@@ -240,7 +294,13 @@ pub async fn apply_intent_graph_proposal(
     // `project_id` (with its in-tx `recheck_todo_project_link`) and the
     // `todo_person_refs` rows — link application reuses the create-todo path.
     for create in &mut todo_creates {
-        fold_links_into_todo(&graph.links, &create.handle, &mut create.payload, &handle_to_id)?;
+        fold_links_into_todo(
+            &graph.links,
+            &create.handle,
+            &mut create.payload,
+            &handle_to_id,
+            &decisions,
+        )?;
         let entity_id =
             mint_create(&mut tx, create, proposal_id, /* source */ None, now_ms).await?;
         handle_to_id.insert(create.handle.clone(), entity_id.clone());
@@ -259,7 +319,96 @@ pub async fn apply_intent_graph_proposal(
     queries::resolve_tool_call(&mut *tx, tool_call_id, "completed", &result_payload, now_ms).await?;
 
     tx.commit().await?;
-    Ok(anchor)
+    Ok(IntentGraphOutcome::Applied(anchor))
+}
+
+/// Whether the decision vector rejects EVERY node in the graph — the JE node (if
+/// present) AND every entity node (ADR-0042 reject-all). A node with no entry
+/// defaults to accept, so this is true only when an EXPLICIT `reject` covers every
+/// node and none is missing/accepted. An empty graph cannot occur (`extract_graph`
+/// requires `>= 1` entity), so `all()` over a non-empty entity set is well-defined.
+fn accepted_subset_is_empty(graph: &ExtractedGraph, decisions: &NodeDecisions) -> bool {
+    let je_rejected = graph
+        .journal_entry
+        .as_ref()
+        .is_none_or(|je| decisions.is_rejected(&je.handle));
+    let all_entities_rejected = graph
+        .entities
+        .iter()
+        .all(|node| decisions.is_rejected(&node.handle));
+    je_rejected && all_entities_rejected
+}
+
+/// Resolve a reject-all decision vector (ADR-0042): the accepted subset is empty,
+/// so the graph is declined wholesale — the Proposal flips `rejected` and the
+/// awaited tool call resolves as a NON-error decline (so the resumed model
+/// continues conversationally), exactly like a scalar `reject`. Returns
+/// [`IntentGraphOutcome::RejectedAll`]; nothing is minted. The guarded reject-flip
+/// is the SAME concurrency choke `reject_proposal` uses — on 0 rows a racing decide
+/// won (`NotPending`).
+async fn reject_whole_graph(
+    pool: &sqlx::SqlitePool,
+    run_id: Uuid,
+    proposal_id: &str,
+    tool_call_id: &str,
+    decision_idempotency_key: Option<&str>,
+    now_ms: i64,
+) -> Result<IntentGraphOutcome, ApplyError> {
+    let mut tx = pool.begin().await?;
+
+    let rejected =
+        ProposalStatus::reject(&mut tx, run_id, proposal_id, decision_idempotency_key, now_ms)
+            .await?;
+    if !rejected.won() {
+        return Err(ApplyError::NotPending);
+    }
+
+    // A decline renders as a NORMAL (non-error) tool result — mirrors
+    // `reject_proposal`'s decision payload so the resumed model continues
+    // conversationally rather than treating the decline as a tool failure.
+    let decision_payload = serde_json::json!({
+        "decision": "reject",
+        "content": "User declined every node of this proposal.",
+        "is_error": false,
+    })
+    .to_string();
+    queries::resolve_tool_call(&mut *tx, tool_call_id, "completed", &decision_payload, now_ms)
+        .await?;
+
+    tx.commit().await?;
+    Ok(IntentGraphOutcome::RejectedAll)
+}
+
+/// The per-node decision vector keyed by handle (ADR-0042). A node with NO entry
+/// defaults to **accept** — the common accept-all path sends a vector of accepts,
+/// but a missing entry (or no vector at all) accepts everything, so a plain
+/// `accept` with no vector applies the whole stored graph (the regression path).
+struct NodeDecisions {
+    by_handle: std::collections::HashMap<String, NodeDecision>,
+}
+
+impl NodeDecisions {
+    fn from_vector(decisions: Option<&[NodeDecision]>) -> Self {
+        let by_handle = decisions
+            .unwrap_or(&[])
+            .iter()
+            .map(|d| (d.handle.trim().to_string(), d.clone()))
+            .collect();
+        Self { by_handle }
+    }
+
+    /// The decision for `handle`. `None` (no entry) means **accept** with no
+    /// override — the resolver treats absence as a plain accept.
+    fn for_handle(&self, handle: &str) -> Option<&NodeDecision> {
+        self.by_handle.get(handle)
+    }
+
+    /// Whether `handle` is rejected by the vector (its `decision == "reject"`).
+    /// A missing entry is an accept, so it is NOT rejected.
+    fn is_rejected(&self, handle: &str) -> bool {
+        self.for_handle(handle)
+            .is_some_and(|d| d.decision == "reject")
+    }
 }
 
 /// Mint one resolved create node via the shared single-entity create path
@@ -301,17 +450,20 @@ async fn mint_create(
 ///   - `todo_person` → append `{person_id, role}` to the envelope's `person_refs`
 ///     array (the create-todo path writes the `todo_person_refs` rows from it).
 ///
-/// A link endpoint whose handle is not in the map is an unresolvable reference. In
-/// slice 4 that is a malformed graph (no node was rejected mid-graph yet), so it
-/// fails the WHOLE tx as `InvalidMutation`.
-// slice 5: a link to a rejected node is dropped+reported, not Invalid (once the
-// decision vector can reject a node mid-graph; today an unknown handle is a bad
-// graph, not a dropped node).
+/// The reject-CASCADE (ADR-0042 "Core owns the cascade"): a link whose `to` names
+/// a node the decision vector REJECTED is **dropped** — not applied, not an error.
+/// A `todo_project` link to a rejected Project drops, so the Todo lands standalone
+/// (ADR-0031 "keep the Todo valid on its own"); a `todo_person` link to a rejected
+/// Person drops. A link to an UNKNOWN handle (one naming no node at all) was
+/// already rejected as a malformed graph at extraction (`validate_links`), so by
+/// here every surviving endpoint is either resolved (in `handle_to_id`) or
+/// dropped-because-rejected — `resolve_endpoint`'s "no node" arm stays unreachable.
 fn fold_links_into_todo(
     links: &[Link],
     todo_handle: &str,
     payload: &mut serde_json::Value,
     handle_to_id: &std::collections::HashMap<String, String>,
+    decisions: &NodeDecisions,
 ) -> Result<(), ApplyError> {
     let obj = payload.as_object_mut().ok_or_else(|| {
         ApplyError::InvalidMutation("intent graph todo payload must be an object".to_string())
@@ -321,6 +473,12 @@ fn fold_links_into_todo(
     let mut person_refs: Vec<serde_json::Value> = Vec::new();
 
     for link in links.iter().filter(|l| l.from == todo_handle) {
+        // Reject-cascade: drop a link whose target node was rejected. The Todo
+        // survives the dropped link (standalone, ADR-0031); only the relationship
+        // is severed.
+        if decisions.is_rejected(&link.to) {
+            continue;
+        }
         match link.kind {
             LinkKind::TodoProject => {
                 if project_linked {
@@ -378,19 +536,135 @@ fn resolve_endpoint(
 }
 
 /// One entity node's resolved disposition (ADR-0042). `ambiguous` is not a variant
-/// — it surfaces as an `Err(InvalidMutation)` from [`resolve_disposition`] so the
-/// whole apply fails with no fallback. `Reuse`'s id is recorded into the handle→id
-/// map so a todo's link can target a reused Project/Person (the #179 case).
+/// — it surfaces as an `Err(InvalidMutation)` from [`resolve_node`] so the whole
+/// apply fails with no fallback. `Reuse`'s id is recorded into the handle→id map so
+/// a todo's link can target a reused Project/Person (the #179 case). `Create`
+/// carries the create payload — usually the node's own, but a per-node
+/// `edited_fields` correction is merged into it first (ADR-0042).
 enum Disposition {
-    /// Mint a fresh entity (zero exact matches).
-    Create,
-    /// Reuse this accepted entity's id (the `existing_id` hint, or the sole exact
-    /// match). Mints nothing; its handle resolves to this id for links.
+    /// Mint a fresh entity (zero exact matches). The payload is the node's create
+    /// payload, possibly with `edited_fields` merged over it.
+    Create(serde_json::Value),
+    /// Reuse this accepted entity's id (an `entity_id` override, the `existing_id`
+    /// hint, or the sole exact match). Mints nothing; its handle resolves to this
+    /// id for links.
     Reuse(String),
 }
 
 /// Resolve one entity node's disposition against the ACCEPTED set, IN-TX (ADR-0042
-/// "Resolution runs in-tx on the serialized pool"). The order matches the ADR:
+/// "Resolution runs in-tx on the serialized pool"), applying the node's per-node
+/// `decision` (already known to be `accept` — a rejected node is filtered out by
+/// the caller). The `entity_id` override and `edited_fields` correction are
+/// mutually exclusive (ADR-0042 "you edit what you create; you override what you
+/// reuse"):
+///
+/// - **`entity_id` override** (accept + `entity_id`): resolve straight to
+///   `reuse(that id)`, validated as an accepted entity of this node's type
+///   (`entity_is_type`, in-tx), else `Invalid`. This collapses an ambiguous node →
+///   reuse-that-id (the picker path) without running the exact-match step.
+/// - **`edited_fields` correction** (accept + `edited_fields`): merge the fields
+///   over the node's CREATE payload, then resolve naturally — but a node that
+///   resolves to `reuse` cannot be edited (a reuse is linked-to, never rewritten,
+///   ADR-0030), so `edited_fields` on a reuse-disposition node is `Invalid`.
+/// - **no override/edit**: the natural resolution (the slice-3 path):
+///   1. `existing_id` hint → `reuse` if it names an accepted entity of the type;
+///   2. exact (case-insensitive, trimmed) label + type match: one → `reuse`,
+///      zero → `create`, two or more → `ambiguous` (`Err(InvalidMutation)`).
+async fn resolve_node(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    node: &EntityNode,
+    decision: Option<&NodeDecision>,
+) -> Result<Disposition, ApplyError> {
+    // Mutual exclusion: a per-node decision may carry an `entity_id` override OR an
+    // `edited_fields` correction, never both (ADR-0042).
+    let override_id = decision
+        .and_then(|d| d.entity_id.as_deref())
+        .filter(|id| !id.trim().is_empty());
+    let edited_fields = decision.and_then(|d| d.edited_fields.as_ref());
+    if override_id.is_some() && edited_fields.is_some() {
+        return Err(ApplyError::InvalidMutation(format!(
+            "intent graph node {} carries both entity_id override and edited_fields \
+             (mutually exclusive)",
+            node.handle
+        )));
+    }
+
+    // `entity_id` override → reuse-that-id (the picker / disambiguation path). It
+    // bypasses exact-match entirely, collapsing an ambiguous node to a definite
+    // reuse. Validated as an accepted entity of the node's type, else Invalid.
+    if let Some(id) = override_id {
+        if !queries::entity_is_type(&mut **tx, id, node.type_str).await? {
+            return Err(ApplyError::InvalidMutation(format!(
+                "intent graph node {} entity_id override {id:?} is not an accepted {}",
+                node.handle, node.type_str
+            )));
+        }
+        return Ok(Disposition::Reuse(id.to_string()));
+    }
+
+    let disposition = resolve_disposition(tx, node).await?;
+
+    // `edited_fields` corrects a CREATE node's content before minting. A node that
+    // resolves to `reuse` cannot be edited (ADR-0030: a reuse is linked-to, never
+    // rewritten) — that is a contradictory decision, so Invalid.
+    if let Some(edits) = edited_fields {
+        return match disposition {
+            Disposition::Create(payload) => Ok(Disposition::Create(merge_edited_fields(
+                node.type_str,
+                payload,
+                edits,
+            )?)),
+            Disposition::Reuse(_) => Err(ApplyError::InvalidMutation(format!(
+                "intent graph node {} carries edited_fields but resolves to reuse \
+                 (a reused entity is linked-to, not edited)",
+                node.handle
+            ))),
+        };
+    }
+
+    Ok(disposition)
+}
+
+/// Merge a per-node `edited_fields` correction over a CREATE node's payload
+/// (ADR-0042): the edited fields override the model's proposed fields, then the
+/// per-type validator runs at mint (via `apply_entity_mutation`). The graph wraps a
+/// Todo's data in a `{todo: TodoData}` envelope, so a Todo's edits merge into the
+/// INNER `todo` object; Person/Project edit the flat payload. `edited_fields` must
+/// be a JSON object.
+fn merge_edited_fields(
+    type_str: &str,
+    mut payload: serde_json::Value,
+    edited_fields: &serde_json::Value,
+) -> Result<serde_json::Value, ApplyError> {
+    let edits = edited_fields.as_object().ok_or_else(|| {
+        ApplyError::InvalidMutation("intent graph edited_fields must be an object".to_string())
+    })?;
+
+    // A Todo's create payload is `{todo: TodoData}`; edits target the inner object.
+    // Person/Project payloads are flat.
+    let target = if type_str == "todo" {
+        payload
+            .as_object_mut()
+            .and_then(|o| o.get_mut("todo"))
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| {
+                ApplyError::InvalidMutation(
+                    "intent graph todo payload is missing its todo envelope".to_string(),
+                )
+            })?
+    } else {
+        payload.as_object_mut().ok_or_else(|| {
+            ApplyError::InvalidMutation("intent graph entity payload must be an object".to_string())
+        })?
+    };
+    for (key, value) in edits {
+        target.insert(key.clone(), value.clone());
+    }
+    Ok(payload)
+}
+
+/// Resolve one entity node's NATURAL disposition (no override/edit) against the
+/// ACCEPTED set, IN-TX. The order matches ADR-0042:
 ///
 /// 1. **`existing_id` hint** — if present AND it names an accepted entity of this
 ///    node's type, honor it → `reuse`. (A hint that does not resolve — stale or
@@ -417,7 +691,7 @@ async fn resolve_disposition(
     // 2. Exact (case-insensitive, trimmed) label + type match. Without a label
     //    there is nothing to match on, so the node is a fresh `create`.
     let Some(label) = node.label.as_deref() else {
-        return Ok(Disposition::Create);
+        return Ok(Disposition::Create(node.payload.clone()));
     };
     let needle = label.trim().to_lowercase();
     let label_key = label_key_for(node.type_str);
@@ -433,12 +707,12 @@ async fn resolve_disposition(
     });
 
     let Some((first_id, ..)) = matches.next() else {
-        return Ok(Disposition::Create);
+        return Ok(Disposition::Create(node.payload.clone()));
     };
     if matches.next().is_some() {
         // ADR-0042: two or more exact matches → ambiguous, no silent fallback.
         // The whole apply fails; the tx rolls back. The picker / `entity_id`
-        // override (slice 5 / #181) is the only way to resolve this.
+        // override resolves this (handled in `resolve_node` before this step).
         return Err(ApplyError::InvalidMutation(format!(
             "intent graph node {} ({:?}) matches more than one existing {} named {:?}; \
              cannot resolve without disambiguation",
