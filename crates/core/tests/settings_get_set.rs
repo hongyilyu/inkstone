@@ -31,11 +31,13 @@ fn settings_get_set_round_trips_and_validates() {
     rt.block_on(async {
         let mut ws = core.connect().await;
 
-        // Defaults before any set: no model chosen, effort "off", provider is
-        // the default Workflow's (openai-codex).
+        // Defaults before any set: no model *chosen* (preference null), but the
+        // per-provider default is reported so the composer shows what a Run would
+        // use; effort "off", provider is the default Workflow's (openai-codex).
         let got = request(&mut ws, 1, "settings/get", serde_json::json!({})).await;
         assert_eq!(got["result"]["provider"], serde_json::json!("openai-codex"));
         assert_eq!(got["result"]["model"], serde_json::Value::Null);
+        assert_eq!(got["result"]["default_model"], serde_json::json!("gpt-5.5"));
         assert_eq!(got["result"]["effort"], serde_json::json!("off"));
 
         // Set both; the response echoes the updated state.

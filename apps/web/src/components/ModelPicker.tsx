@@ -13,6 +13,7 @@ export function ModelPicker() {
 	const runtime = useRuntime();
 	const [models, setModels] = useState<readonly ModelInfo[]>([]);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
+	const [defaultId, setDefaultId] = useState<string | null>(null);
 	const [open, setOpen] = useState(false);
 	const [query, setQuery] = useState("");
 
@@ -25,7 +26,9 @@ export function ModelPicker() {
 			.catch(() => {});
 		fetchSettings(runtime)
 			.then((s) => {
-				if (alive) setSelectedId(s.model);
+				if (!alive) return;
+				setSelectedId(s.model);
+				setDefaultId(s.default_model ?? null);
 			})
 			.catch(() => {});
 		return () => {
@@ -33,9 +36,12 @@ export function ModelPicker() {
 		};
 	}, [runtime]);
 
+	// Show the picked model, else the per-provider default a Run would use, so a
+	// fresh setup reflects what sending will actually run instead of "Select model".
+	const effectiveId = selectedId ?? defaultId;
 	const selected = useMemo(
-		() => models.find((m) => m.id === selectedId) ?? null,
-		[models, selectedId],
+		() => models.find((m) => m.id === effectiveId) ?? null,
+		[models, effectiveId],
 	);
 
 	const visible = useMemo(() => {
@@ -81,7 +87,7 @@ export function ModelPicker() {
 								</li>
 							) : (
 								visible.map((m) => {
-									const isSel = m.id === selectedId;
+									const isSel = m.id === effectiveId;
 									return (
 										<li key={m.id}>
 											<button

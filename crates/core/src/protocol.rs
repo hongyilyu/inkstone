@@ -604,12 +604,17 @@ pub struct ModelCatalogResult {
 
 /// `settings/get` + `settings/set` result (ADR-0024): the effective model
 /// selection and global effort for the default Workflow. `model` is `null` until
-/// the user picks one (the resolver falls back to the per-provider default);
+/// the user picks one — it is the *preference*, which the Settings page shows.
+/// `default_model` is the per-provider default a Run falls back to when `model`
+/// is null, so the composer can show the model a message will actually use
+/// instead of an empty picker; omitted when the provider has no default.
 /// `effort` defaults to `off`.
 #[derive(Debug, Serialize)]
 pub struct SettingsResult {
     pub provider: String,
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
     pub effort: String,
 }
 

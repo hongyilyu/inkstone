@@ -13,16 +13,19 @@ use crate::protocol::{SettingsResult, SettingsSetParams};
 use crate::{models, settings, workflow};
 
 /// Read the effective settings for the default Workflow: provider, stored
-/// preferred model (`None` until picked), and global effort.
+/// preferred model (`None` until picked), the per-provider default the composer
+/// shows when nothing is picked, and global effort.
 async fn current(pool: &SqlitePool) -> sqlx::Result<SettingsResult> {
     let wf = workflow::default_workflow();
     let model = settings::preferred_model(pool, &wf.name).await?;
+    let default_model = models::default_model(&wf.provider).map(str::to_string);
     let effort = settings::effort_setting(pool)
         .await?
         .unwrap_or_else(|| settings::DEFAULT_EFFORT.to_string());
     Ok(SettingsResult {
         provider: wf.provider.clone(),
         model,
+        default_model,
         effort,
     })
 }

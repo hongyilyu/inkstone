@@ -491,10 +491,11 @@ export type ModelCatalogResult = S.Schema.Type<typeof ModelCatalogResult>;
 
 // settings/* (ADR-0024): the user's preferred model + global effort.
 
-/** `settings/get` / `settings/set` result: the effective model selection and global effort for the default Workflow. */
+/** `settings/get` / `settings/set` result: the effective model selection and global effort for the default Workflow. `model` is the user's preference (null until picked); `default_model` is the per-provider fallback a Run uses when `model` is null, so the composer can show the model a message will actually use. */
 export const SettingsResult = S.Struct({
 	provider: S.String,
 	model: S.NullOr(S.String),
+	default_model: S.optional(S.String),
 	effort: S.String,
 });
 export type SettingsResult = S.Schema.Type<typeof SettingsResult>;
