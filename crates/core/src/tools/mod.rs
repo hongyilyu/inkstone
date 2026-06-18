@@ -243,6 +243,25 @@ mod tests {
         assert!(!is_registered("nonexistent"));
     }
 
+    /// The `display_arg` dispatcher (ADR-0043) routes to a tool's extractor, and
+    /// returns `None` for an unregistered name — the safety net when an unknown
+    /// tool name reaches the live event or rehydration read.
+    #[test]
+    fn display_arg_dispatches_to_tool_and_none_for_unregistered() {
+        // A registered tool with an extractor returns its display arg.
+        assert_eq!(
+            display_arg("search_entities", &serde_json::json!({ "type": "person", "query": "x" })),
+            Some("x".to_string())
+        );
+        // A registered tool with no extractor (read_thread → no_arg) returns None.
+        assert_eq!(
+            display_arg("read_thread", &serde_json::json!({ "thread_id": "t" })),
+            None
+        );
+        // An unregistered name returns None rather than panicking.
+        assert_eq!(display_arg("nonexistent", &serde_json::json!({})), None);
+    }
+
     /// The leverage the single-record collapse buys: a descriptor whose `name`
     /// drifts from its `REGISTRY` key, a duplicate name, or a wrong Proposal
     /// count now fails HERE; a dispatch pointing at a missing or wrong-arity

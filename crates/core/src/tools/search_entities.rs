@@ -399,6 +399,24 @@ mod tests {
     }
 
     #[test]
+    fn display_arg_returns_trimmed_query_or_none() {
+        // A non-empty query is the display arg, trimmed (ADR-0043).
+        assert_eq!(
+            display_arg(&json!({ "type": "person", "query": "  Lev  " })),
+            Some("Lev".to_string())
+        );
+        // An empty / whitespace-only query matches all, so it has no label.
+        assert_eq!(display_arg(&json!({ "type": "person", "query": "" })), None);
+        assert_eq!(
+            display_arg(&json!({ "type": "person", "query": "   " })),
+            None
+        );
+        // A malformed payload (missing required fields) yields None, not a panic.
+        assert_eq!(display_arg(&json!({})), None);
+        assert_eq!(display_arg(&json!({ "query": "x" })), None);
+    }
+
+    #[test]
     fn descriptor_has_name_label_and_type_enum() {
         let d = descriptor();
         assert_eq!(d.name, "search_entities");

@@ -409,7 +409,9 @@ pub struct ThreadGetParams {
 /// optional display `arg` (the tool's key argument, e.g. a search query) —
 /// never the request/result payloads. Proposal tool calls are excluded by the
 /// read (they render as a `ProposalCard`). `status` mirrors the live
-/// `ToolCallStatus` wire spelling; a persisted call is always `completed`/`error`.
+/// `ToolCallStatus` wire spelling; a rehydrated call is always `completed`/`error`
+/// — the read filters out `pending` rows, so an in-flight call is owned by the
+/// live resubscribe tail, never rehydrated as a false-settled row.
 #[derive(Debug, Serialize)]
 pub struct ToolCallView {
     pub name: String,

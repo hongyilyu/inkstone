@@ -361,6 +361,20 @@ mod tests {
     }
 
     #[test]
+    fn display_arg_returns_trimmed_name_or_none() {
+        // A non-empty name is the display arg, trimmed (ADR-0043).
+        assert_eq!(
+            display_arg(&json!({ "name": "  weekly-review  " })),
+            Some("weekly-review".to_string())
+        );
+        // An empty / whitespace-only name has no label.
+        assert_eq!(display_arg(&json!({ "name": "" })), None);
+        assert_eq!(display_arg(&json!({ "name": "   " })), None);
+        // A malformed payload (missing `name`) yields None, not a panic.
+        assert_eq!(display_arg(&json!({})), None);
+    }
+
+    #[test]
     fn registered_and_descriptor_has_name_label_and_schema() {
         assert!(is_registered("load_skill"), "load_skill is registered");
         let d = descriptor();

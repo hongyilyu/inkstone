@@ -1681,12 +1681,22 @@ where
     .map(|_| ())
 }
 
-/// Read a Run's tool calls for `thread/get` rehydration (ADR-0043), in timeline
-/// order (`run_steps.seq`). Returns `(name, status, request_payload)` rows; the
-/// caller filters Proposal tool calls (which render as a `ProposalCard`, not a
-/// tool-activity row), maps the persisted status to the wire status, and derives
-/// the display arg from the request payload. Joined through `run_steps` so the
-/// order matches the live arrival order.
+/// Read a Run's SETTLED tool calls for `thread/get` rehydration (ADR-0043), in
+/// timeline order (`run_steps.seq`). Returns `(name, status, request_payload)`
+/// rows; the caller filters Proposal tool calls (which render as a
+/// `ProposalCard`, not a tool-activity row), maps the persisted status to the
+/// wire status, and derives the display arg from the request payload. Joined
+/// through `run_steps` so the order matches the live arrival order.
+///
+/// `pending` rows are EXCLUDED: a tool call is `pending` only between its
+/// persist (before dispatch) and its resolve, or permanently if its Run was
+/// interrupted mid-dispatch (a boot-swept Run leaves an unresolved row — the
+/// recovery sweep flips the Run/Message, not the `tool_calls` row). Rehydration
+/// is the settled-history reader; an in-flight call at reload time is owned by
+/// the live resubscribe tail, not replayed here — so a `pending` row must never
+/// rehydrate (it would otherwise render as a false `completed` row, since the
+/// wire status vocabulary has no in-progress member). This keeps the invariant
+/// "a rehydrated tool call is always `completed`/`error`" true.
 pub(super) async fn tool_calls_by_run<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -1699,6 +1709,7 @@ where
          FROM run_steps rs \
          JOIN tool_calls tc ON tc.id = rs.tool_call_id \
          WHERE rs.run_id = ?1 AND rs.kind = 'tool_call' \
+           AND tc.status <> 'pending' \
          ORDER BY rs.seq",
     )
     .bind(run_id.to_string())

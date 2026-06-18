@@ -435,13 +435,16 @@ pub async fn get_thread_with_messages(
     Ok(Some((title, messages)))
 }
 
-/// Read the non-Proposal tool calls of `run_id` for `thread/get` rehydration
-/// (ADR-0043), in timeline order. Filters Proposal tools via the registry
-/// ([`crate::tools::is_proposal`]) — they render as a `ProposalCard`, never a
-/// tool-activity row — and maps the persisted status (`completed`/`errored`) to
-/// the wire spelling (`completed`/`error`), matching the live `ToolCallStatus`.
-/// A `run_id` that does not parse as a UUID yields no rows rather than an error
-/// (the read is best-effort; a malformed id simply has no rehydratable calls).
+/// Read the SETTLED non-Proposal tool calls of `run_id` for `thread/get`
+/// rehydration (ADR-0043), in timeline order. Filters Proposal tools via the
+/// registry ([`crate::tools::is_proposal`]) — they render as a `ProposalCard`,
+/// never a tool-activity row — and maps the persisted status to the wire
+/// spelling (`errored` → `error`, `completed` → `completed`), matching the live
+/// `ToolCallStatus`. `pending` rows are already excluded by the query, so the
+/// rehydrated set is always settled; an unexpected status falls back to `error`
+/// rather than leaking a non-vocabulary string to the wire. A `run_id` that does
+/// not parse as a UUID yields no rows rather than an error (the read is
+/// best-effort; a malformed id simply has no rehydratable calls).
 async fn tool_call_rows_for_run(pool: &SqlitePool, run_id: &str) -> sqlx::Result<Vec<ToolCallRow>> {
     let Ok(run_uuid) = Uuid::parse_str(run_id) else {
         return Ok(Vec::new());
@@ -460,10 +463,11 @@ async fn tool_call_rows_for_run(pool: &SqlitePool, run_id: &str) -> sqlx::Result
                 .and_then(|params| crate::tools::display_arg(&name, &params));
             ToolCallRow {
                 name,
-                status: if status == "errored" {
-                    "error".to_string()
-                } else {
-                    status
+                status: match status.as_str() {
+                    "completed" => "completed".to_string(),
+                    // `errored`, or any unexpected value, maps to the wire `error`
+                    // spelling — never leak a non-vocabulary status to the client.
+                    _ => "error".to_string(),
                 },
                 arg,
             }
@@ -2869,11 +2873,20 @@ mod tests {
             .expect("text part");
         tx.commit().await.expect("commit seed");
 
-        // A non-Proposal search tool call (completed), then an errored one, then a
-        // Proposal tool call — interleaved across run_steps in this order.
-        persist_tool_call(&pool, run_id, "tc-1", "search_entities", r#"{"query":"Lev"}"#, 2)
-            .await
-            .expect("persist search 1");
+        // A non-Proposal search tool call (completed), then an errored one — the
+        // request payloads are FAITHFUL to `search_entities::Input` (`type` +
+        // `query`) so `display_arg` derives the query. Then a still-`pending`
+        // search call, then a Proposal tool call — interleaved in this order.
+        persist_tool_call(
+            &pool,
+            run_id,
+            "tc-1",
+            "search_entities",
+            r#"{"type":"person","query":"Lev"}"#,
+            2,
+        )
+        .await
+        .expect("persist search 1");
         resolve_tool_call(&pool, "tc-1", "completed", "{}", 3)
             .await
             .expect("resolve search 1");
@@ -2882,7 +2895,7 @@ mod tests {
             run_id,
             "tc-2",
             "search_entities",
-            r#"{"query":"Acme"}"#,
+            r#"{"type":"project","query":"Acme"}"#,
             4,
         )
         .await
@@ -2890,6 +2903,18 @@ mod tests {
         resolve_tool_call(&pool, "tc-2", "errored", "{}", 5)
             .await
             .expect("resolve search 2");
+        // A tool call left `pending` (persisted, never resolved — the in-flight /
+        // crash-orphaned case): it must NOT rehydrate as a settled row (ADR-0043).
+        persist_tool_call(
+            &pool,
+            run_id,
+            "tc-pending",
+            "search_entities",
+            r#"{"type":"todo","query":"InFlight"}"#,
+            6,
+        )
+        .await
+        .expect("persist pending search");
         // The Proposal tool call parks the Run; persist it the way park does.
         park_on_proposal(
             &pool,
@@ -2899,7 +2924,7 @@ mod tests {
             "propose_workspace_mutation",
             r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"x"}]}}"#,
             "create_journal_entry",
-            6,
+            7,
         )
         .await
         .expect("park");
@@ -2914,23 +2939,35 @@ mod tests {
             .find(|m| m.role == "assistant")
             .expect("assistant row");
 
-        // Only the two search calls survive — the Proposal tool call is excluded.
+        // Only the two SETTLED search calls survive: the Proposal tool call renders
+        // as a ProposalCard (excluded) and the `pending` call is owned by the live
+        // tail, not rehydrated.
         assert_eq!(
             assistant.tool_calls.len(),
             2,
-            "Proposal tool call must not rehydrate as a tool-activity row"
+            "only settled non-Proposal tool calls rehydrate (no Proposal, no pending)"
         );
+        // First call: completed, with its display arg derived from the payload.
         assert_eq!(assistant.tool_calls[0].name, "search_entities");
         assert_eq!(assistant.tool_calls[0].status, "completed");
+        assert_eq!(assistant.tool_calls[0].arg.as_deref(), Some("Lev"));
+        // Second call: `errored` maps to the wire `error` spelling, arg derived.
         assert_eq!(assistant.tool_calls[1].name, "search_entities");
-        // `errored` maps to the wire `error` spelling.
         assert_eq!(assistant.tool_calls[1].status, "error");
+        assert_eq!(assistant.tool_calls[1].arg.as_deref(), Some("Acme"));
         assert!(
             assistant
                 .tool_calls
                 .iter()
                 .all(|tc| tc.name != "propose_workspace_mutation"),
             "no Proposal tool call in rehydrated rows"
+        );
+        assert!(
+            assistant
+                .tool_calls
+                .iter()
+                .all(|tc| tc.arg.as_deref() != Some("InFlight")),
+            "a still-pending tool call must not rehydrate"
         );
     }
 }
