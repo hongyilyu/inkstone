@@ -159,12 +159,16 @@ describe("CommandPalette (⌘K)", () => {
 			within(results).getByText("Send Alice the updated daycare schedule"),
 		).toBeInTheDocument();
 
-		// Activating a message hit focuses its Thread and navigates home.
+		// Activating a message hit navigates to that Thread's route (ADR-0042) and
+		// deep-links the within-thread scroll anchor in the search param — the ONE
+		// thing that distinguishes a message hit from a plain thread hit (the thread
+		// branch carries no search). Assert both so dropping the anchor regresses.
 		await userEvent.click(within(results).getByText(snippet));
 
 		await waitFor(() => {
-			expect(router.state.location.pathname).toBe("/");
+			expect(router.state.location.pathname).toBe("/thread/thread_x");
 		});
+		expect(router.state.location.search).toEqual({ focusedMessageId: "msg_1" });
 	});
 
 	it("shows no Messages group for an empty query", async () => {

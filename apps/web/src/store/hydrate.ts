@@ -1,5 +1,9 @@
 import type { ThreadGetResult } from "@inkstone/protocol";
-import { WsClient } from "@inkstone/ui-sdk";
+import {
+	type InvalidParamsError,
+	type UnknownThreadError,
+	WsClient,
+} from "@inkstone/ui-sdk";
 import { Effect } from "effect";
 import { useEffect } from "react";
 import type { WsRuntime } from "../runtime.js";
@@ -59,7 +63,7 @@ export function hydrateThread(
 		if (threadBecameLive(threadId)) {
 			// Keep the live turn intact; fold history in front and do NOT resubscribe a settled history run.
 			prependHistory(threadId, messages);
-			return;
+			return "ready" as const;
 		}
 		loadThreadMessages(threadId, messages);
 		for (const message of messages) {
@@ -67,11 +71,36 @@ export function hydrateThread(
 				startRunStream(runtime, threadId, message.run_id);
 			}
 		}
-	});
+		return "ready" as const;
+	}).pipe(
+		// Two deterministic dead-ends map to `not_found` (an honest "thread isn't
+		// available" state with a Back-to-New-Chat exit, never a retry that can't
+		// succeed — ADR-0042 B-additive): a genuinely missing Thread (Core `-32001`
+		// → UnknownThreadError) and a malformed thread id (Core `-32602` →
+		// InvalidParamsError, e.g. a typo'd or truncated shared `/thread/<bad>` link —
+		// the id is arbitrary URL input the route does not pre-validate). Both fail
+		// identically on every retry, so neither belongs on the recoverable `error`
+		// path. A transient WsRequestError falls through to the rejection branch and
+		// keeps the existing retry affordance.
+		Effect.catchTag("UnknownThreadError", (_e: UnknownThreadError) =>
+			Effect.succeed("not_found" as const),
+		),
+		Effect.catchTag("InvalidParamsError", (_e: InvalidParamsError) =>
+			Effect.succeed("not_found" as const),
+		),
+	);
 	return runtime.runPromise(program).then(
-		() => setHydrationStatus(threadId, "ready"),
+		(status) => {
+			// A send during the fetch window can turn a "missing" Thread live (the
+			// optimistic seed): keep that live turn rather than blanking it to not-found.
+			if (status === "not_found" && threadBecameLive(threadId)) {
+				setHydrationStatus(threadId, "ready");
+				return;
+			}
+			setHydrationStatus(threadId, status);
+		},
 		() => {
-			// Failed thread/get: if a send made the thread live mid-fetch, keep that live turn (ready);
+			// Failed thread/get (transient): if a send made the thread live mid-fetch, keep that live turn (ready);
 			// otherwise surface a recoverable error rather than spinning the skeleton forever.
 			setHydrationStatus(
 				threadId,

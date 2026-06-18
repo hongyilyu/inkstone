@@ -64,9 +64,9 @@ describe("sendNewThread failure handling", () => {
 
 		const result = await sendNewThread(runtime, "hi");
 
+		// No threadId is surfaced for the caller to navigate to, and nothing was seeded.
 		expect(result).toEqual({ ok: false, error: expect.anything() });
 		expect(Object.keys(getChatState().threads)).toHaveLength(0);
-		expect(getChatState().focusedThreadId).toBeUndefined();
 
 		await runtime.dispose();
 	});

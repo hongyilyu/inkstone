@@ -14,7 +14,6 @@ import {
 	markMessageIncomplete,
 	nextMessageId,
 	seedAssistantMessage,
-	setFocusedThread,
 	setHydrationStatus,
 	setPendingProposal,
 	setProposalStatus,
@@ -35,6 +34,11 @@ export function resetBridge(): void {
 
 /** The outcome of a send — a discriminated result so callers learn of failure off the awaited promise. */
 export type SendResult = { ok: true } | { ok: false; error: unknown };
+
+/** A first-message send also surfaces the minted thread id so its React caller can navigate to `/thread/<id>` (ADR-0042). */
+export type NewThreadResult =
+	| { ok: true; threadId: string }
+	| { ok: false; error: unknown };
 
 /** Optimistically seed a turn into `threadId` (completed user + live assistant), returning the seeded assistant id. */
 function seedTurn(threadId: string, text: string): string {
@@ -125,11 +129,17 @@ export async function send(
 	}
 }
 
-/** First-message path: mint a thread via `threadCreate`, then seed + stream like {@link send} — see docs/design/web-store.md. */
+/**
+ * First-message path: mint a thread via `threadCreate`, then seed + stream like
+ * {@link send}. Returns the minted `threadId` on success so the React caller can
+ * `navigate({ to: "/thread/$threadId" })` — focus is the URL, not a store field
+ * (ADR-0042). The thread is pre-marked `ready` so the post-navigate remount does
+ * not re-hydrate over the optimistic seed. See docs/design/web-store.md.
+ */
 export async function sendNewThread(
 	runtime: WsRuntime,
 	text: string,
-): Promise<SendResult> {
+): Promise<NewThreadResult> {
 	const create = Effect.gen(function* () {
 		const client = yield* WsClient;
 		return yield* client.threadCreate(text);
@@ -137,13 +147,12 @@ export async function sendNewThread(
 
 	try {
 		const { thread_id, run_id } = await runtime.runPromise(create);
-		setFocusedThread(thread_id);
-		// Mark hydrated so focusing a freshly-minted thread does NOT trigger a thread/get hydrate (slice 13 guard).
+		// Mark hydrated so navigating onto a freshly-minted thread does NOT trigger a thread/get hydrate (slice 13 guard).
 		setHydrationStatus(thread_id, "ready");
 		const assistantId = seedTurn(thread_id, text);
 		attachRun(thread_id, assistantId, run_id);
 		startRunStream(runtime, thread_id, run_id);
-		return { ok: true };
+		return { ok: true, threadId: thread_id };
 	} catch (error) {
 		// threadCreate failed before any thread was minted — nothing seeded, no orphaned bubble. Surface the failure.
 		return { ok: false, error };

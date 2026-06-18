@@ -15,7 +15,6 @@ import {
 	searchLibraryItems,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
-import { focusMessage, setFocusedThread } from "@/store/chat";
 import { closeCommand, toggleCommand, useCommandOpen } from "@/store/command";
 import { EntityGlyph } from "./library/EntityGlyph.js";
 import { SearchField } from "./ui/search-field.js";
@@ -145,15 +144,19 @@ export function CommandPalette() {
 		if (!result) return;
 		closeCommand();
 		if (result.type === "thread") {
-			setFocusedThread(result.id);
-			navigate({ to: "/" });
+			navigate({ to: "/thread/$threadId", params: { threadId: result.id } });
 			return;
 		}
 		if (result.type === "message") {
-			// Focus the Thread AND anchor the exact matched Message: ChatColumn
-			// scrolls it into view and briefly highlights it once hydrated (issue #138).
-			focusMessage(result.thread_id, result.message_id);
-			navigate({ to: "/" });
+			// Deep-link to the Thread AND the within-thread anchor (ADR-0042): the
+			// `?focusedMessageId` param tells ChatColumn to scroll the matched Message
+			// into view and briefly highlight it once hydrated (issue #138), then
+			// strips itself (consume-then-strip).
+			navigate({
+				to: "/thread/$threadId",
+				params: { threadId: result.thread_id },
+				search: { focusedMessageId: result.message_id },
+			});
 			return;
 		}
 		const item = result.item;

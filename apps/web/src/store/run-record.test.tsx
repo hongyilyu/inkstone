@@ -13,7 +13,6 @@ import {
 	isRunParked,
 	resetChatStore,
 	seedAssistantMessage,
-	setFocusedThread,
 	setPendingProposal,
 	setProposalStatus,
 } from "./chat.js";
@@ -196,7 +195,6 @@ describe("Run record — terminal transitions", () => {
 			resetBridge();
 			const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 			const runtime = makeStubRuntime(queue, runId as RunId);
-			setFocusedThread("t1");
 			await send(runtime, "t1", "hi");
 			expect(getRun(runId)?.status).toBe("running");
 

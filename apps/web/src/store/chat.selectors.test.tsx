@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
 	appendUserMessage,
 	resetChatStore,
-	setFocusedThread,
+	setHydrationStatus,
 	useThreadMessages,
 } from "./chat.js";
 
@@ -30,9 +30,9 @@ describe("chat selectors — reference stability", () => {
 		const first = result.current;
 		expect(first.map((m) => m.text)).toEqual(["hi"]);
 
-		// Unrelated change: focusing another thread must not re-create threadA's array.
+		// Unrelated change: another thread's hydration status must not re-create threadA's array.
 		act(() => {
-			setFocusedThread("threadB");
+			setHydrationStatus("unrelated", "ready");
 		});
 		rerender();
 
@@ -87,7 +87,7 @@ describe("chat selectors — reference stability", () => {
 		expect(result.current).toBe(first);
 
 		act(() => {
-			setFocusedThread("another");
+			setHydrationStatus("unrelated", "ready");
 		});
 		rerender();
 		expect(result.current).toBe(first);

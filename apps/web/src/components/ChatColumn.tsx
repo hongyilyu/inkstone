@@ -1,5 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { RotateCcw, Sparkles, TriangleAlert } from "lucide-react";
+import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import {
+	MessageSquareDashed,
+	RotateCcw,
+	Sparkles,
+	TriangleAlert,
+} from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRuntime } from "@/runtime";
 import {
@@ -9,11 +15,8 @@ import {
 	startProposalStream,
 } from "@/store/bridge";
 import {
-	clearFocusedMessage,
 	type Message,
 	useActiveRunId,
-	useFocusedMessageId,
-	useFocusedThreadId,
 	useHydrationStatus,
 	useThreadMessages,
 } from "@/store/chat";
@@ -30,7 +33,12 @@ export function ChatColumn() {
 	const scrollerRef = useRef<HTMLDivElement>(null);
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
-	const focusedThreadId = useFocusedThreadId();
+	const navigate = useNavigate();
+	// The focused Thread is the route (ADR-0042): `/thread/$threadId` carries the
+	// id, `/` (welcome) has none. `strict: false` lets one component serve both —
+	// the Library reads its `$kind` the same way (routes/library/route.tsx).
+	const { threadId } = useParams({ strict: false });
+	const focusedThreadId = threadId ?? null;
 	const messages = useThreadMessages(focusedThreadId ?? "");
 	// Set while a Run streams AND while it's parked awaiting a Proposal (only a
 	// terminal Run Event clears it) — so Stop covers both, matching run/cancel.
@@ -38,9 +46,13 @@ export function ChatColumn() {
 	const hydration = useHydrationStatus(focusedThreadId ?? "");
 	const [sendError, setSendError] = useState<string | null>(null);
 	// The Message a ⌘K search hit jumped to (issue #138): scrolled into view and
-	// briefly ringed once its row is in the DOM. The store anchor is the pending
-	// jump; `highlightId` is the transient visual that lingers ~1.6s then fades.
-	const focusedMessageId = useFocusedMessageId();
+	// briefly ringed once its row is in the DOM. The URL search param is the
+	// pending jump (ADR-0042); `highlightId` is the transient visual that lingers
+	// ~1.6s then fades. `strict: false` so the / (welcome) route — which has no
+	// search schema — reads `undefined` rather than throwing.
+	const { focusedMessageId } = useSearch({ strict: false }) as {
+		focusedMessageId?: string;
+	};
 	const [highlightId, setHighlightId] = useState<string | null>(null);
 
 	// No thread focused → fresh chat. Focused + empty: the reactive hydration status (issue #108) decides —
@@ -50,6 +62,12 @@ export function ChatColumn() {
 	const showWelcome = focusedThreadId === null && noMessages;
 	const hydrationFailed =
 		focusedThreadId !== null && noMessages && hydration === "error";
+	// A Thread the URL points at that Core says doesn't exist (stale shared link,
+	// deleted Thread): an honest dead-end, not a retry (ADR-0042). `noMessages` is
+	// not required — a missing Thread never has messages — but keeps the branch
+	// symmetric with the others.
+	const threadNotFound =
+		focusedThreadId !== null && noMessages && hydration === "not_found";
 	const showHydrating =
 		focusedThreadId !== null &&
 		noMessages &&
@@ -63,10 +81,37 @@ export function ChatColumn() {
 		startProposalStream(runtime);
 	}, [runtime]);
 
+	// The thread whose initial scroll has already been placed — guards the
+	// cold-load bottom-scroll so it fires once per thread-load, not on every
+	// streamed delta (ADR-0042). The anchor effect below also stamps it, so a
+	// consumed deep-link counts as that thread's initial scroll and the bottom
+	// effect can't clobber the just-completed jump.
+	const initialScrollThread = useRef<string | null>(null);
+
+	// The anchor value whose jump has already fired. Unlike master's synchronous
+	// store-anchor consume, the URL strip is an ASYNC navigate (the param lingers a
+	// few renders until it commits), so without this guard a `messages` change in
+	// that window — e.g. a ⌘K jump into a thread with a live streaming Run — would
+	// re-fire scrollIntoView every delta and fight the user's scroll. Keyed on the
+	// anchor id (not the thread) so a SECOND ⌘K hit to a different message in the
+	// same thread still jumps, while a strip-window re-fire (same id) does not.
+	const scrolledAnchorId = useRef<string | null>(null);
+
+	// Cold-load / thread-switch lands at the latest message (ADR-0042). The old
+	// mount-only scroll no-op'd on a cold thread (messages arrive AFTER mount), so
+	// reloading onto a long thread used to land at the top. Pin to the bottom when
+	// the thread's messages first render — UNLESS a `?focusedMessageId` anchor is
+	// pending, which wins (the anchor effect scrolls to a specific row instead).
+	// Keyed on the message list so the cold-thread path fires once thread/get
+	// hydrates; the per-thread ref keeps streamed deltas from re-pinning.
 	useLayoutEffect(() => {
+		if (focusedMessageId !== undefined || focusedThreadId === null) return;
+		if (messages.length === 0) return;
+		if (initialScrollThread.current === focusedThreadId) return;
 		const el = scrollerRef.current;
 		if (el) el.scrollTop = el.scrollHeight;
-	}, []);
+		initialScrollThread.current = focusedThreadId;
+	}, [focusedThreadId, focusedMessageId, messages]);
 
 	// Scroll-to-message (issue #138). Fires when the anchored Message is actually
 	// present in the rendered list — the real precondition, covering both a cold
@@ -77,19 +122,50 @@ export function ChatColumn() {
 	// later unrelated re-render can't re-scroll. `messages` is the dependency that
 	// lets the cold-thread path fire once history arrives.
 	useEffect(() => {
-		if (focusedMessageId === null) return;
-		// Gate on the anchored Message being in the rendered list — the real
-		// precondition. `messages` is in the deps so a cold thread re-fires this
-		// once thread/get hydrates and the row mounts; a warm thread has it now.
-		if (!messages.some((m) => m.id === focusedMessageId)) return;
-		const target = scrollerRef.current?.querySelector<HTMLElement>(
-			`[data-message-id="${focusedMessageId}"]`,
-		);
-		if (!target) return;
+		if (focusedMessageId === undefined || focusedThreadId === null) return;
+		// Consume-then-strip (ADR-0042): drop the param so a reload/re-render can't
+		// re-fire the jump, replacing (not pushing) so Back doesn't land un-stripped.
+		const stripAnchor = () =>
+			navigate({
+				to: "/thread/$threadId",
+				params: { threadId: focusedThreadId },
+				search: {},
+				replace: true,
+			});
+		// The exact-match `.some()` gate already restricts the id to a real message
+		// id, but `focusedMessageId` is URL-supplied, so escape it before it enters
+		// the attribute selector — defense-in-depth against a value with selector
+		// metacharacters (CodeRabbit).
+		const target = messages.some((m) => m.id === focusedMessageId)
+			? scrollerRef.current?.querySelector<HTMLElement>(
+					`[data-message-id="${CSS.escape(focusedMessageId)}"]`,
+				)
+			: null;
+		if (!target) {
+			// The anchored Message isn't in the rendered list. Two cases: (a) history
+			// is still arriving (hydrating) — wait for the re-fire once it lands; or
+			// (b) hydration has SETTLED and the id genuinely isn't here (a stale/
+			// deleted/typo'd anchor, or a server-id anchor against a warm thread's
+			// client-minted ids). In case (b) the anchor is unresolvable: strip it so
+			// it can't linger in the URL forever or wedge the cold-load bottom-scroll.
+			const settled =
+				hydration === "ready" ||
+				hydration === "not_found" ||
+				messages.length > 0;
+			if (settled) void stripAnchor();
+			return;
+		}
+		// True one-shot: once we've jumped for this anchor, don't re-scroll if a later
+		// `messages` tick re-runs the effect while the async strip is still in flight.
+		if (scrolledAnchorId.current === focusedMessageId) return;
+		scrolledAnchorId.current = focusedMessageId;
 		target.scrollIntoView({ block: "center", behavior: "auto" });
 		setHighlightId(focusedMessageId);
-		clearFocusedMessage();
-	}, [focusedMessageId, messages]);
+		// The anchor jump IS this thread's initial scroll — claim the ref so the
+		// bottom-scroll effect doesn't clobber it once the param strips below.
+		initialScrollThread.current = focusedThreadId;
+		void stripAnchor();
+	}, [focusedMessageId, focusedThreadId, messages, hydration, navigate]);
 
 	// Fade the lamplight ring after it has held long enough to be seen. Separate
 	// from the anchor-consume above so consuming the one-shot anchor never cancels
@@ -127,6 +203,8 @@ export function ChatColumn() {
 			<div ref={scrollerRef} className="flex-1 overflow-y-auto px-6 pt-14 pb-6">
 				{showWelcome ? (
 					<ChatWelcome />
+				) : threadNotFound ? (
+					<ChatThreadNotFound onNewChat={() => navigate({ to: "/" })} />
 				) : hydrationFailed ? (
 					<ChatHydrationError onRetry={retryHydration} />
 				) : showHydrating ? (
@@ -174,12 +252,25 @@ export function ChatColumn() {
 					// reads this surface shows: the sidebar's thread/list and the
 					// right-rail recent-Runs feed (a send births/advances a Run).
 					setSendError(null);
-					const result =
-						focusedThreadId !== null
-							? await send(runtime, focusedThreadId, text)
-							: await sendNewThread(runtime, text);
-					if (!result.ok) {
-						setSendError("Couldn't send your message. Please try again.");
+					if (focusedThreadId !== null) {
+						const result = await send(runtime, focusedThreadId, text);
+						if (!result.ok) {
+							setSendError("Couldn't send your message. Please try again.");
+						}
+					} else {
+						// Mint-on-send: thread focus is the URL (ADR-0042), so on success
+						// navigate to the new thread's route. The thread is pre-seeded and
+						// marked `ready`, so the post-navigate remount reads it without a
+						// re-hydrate; on failure stay on `/` and surface the error.
+						const result = await sendNewThread(runtime, text);
+						if (result.ok) {
+							void navigate({
+								to: "/thread/$threadId",
+								params: { threadId: result.threadId },
+							});
+						} else {
+							setSendError("Couldn't send your message. Please try again.");
+						}
 					}
 					await queryClient.invalidateQueries({ queryKey: ["threads"] });
 					await queryClient.invalidateQueries({ queryKey: ["run-history"] });
@@ -229,6 +320,26 @@ function ChatHydrationError({ onRetry }: { onRetry: () => void }) {
 }
 
 /** Shown while a selected thread hydrates: placeholder bubbles, not a spinner. */
+/** A Thread the URL points at that Core says doesn't exist (ADR-0042): an honest
+ *  dead-end with a Back-to-New-Chat exit — mirrors the Library's "Unknown
+ *  collection" card. NOT a retry: a missing Thread can't be re-fetched into being. */
+function ChatThreadNotFound({ onNewChat }: { onNewChat: () => void }) {
+	return (
+		<div className="mx-auto flex min-h-full max-w-3xl flex-col items-center justify-center">
+			<EmptyState
+				icon={MessageSquareDashed}
+				size="lg"
+				title="This thread isn't available"
+				description="It may have been deleted, or the link points to a thread that no longer exists."
+				action={
+					<Button variant="chip" size="pill" onClick={onNewChat}>
+						Back to New Chat
+					</Button>
+				}
+			/>
+		</div>
+	);
+}
 function ChatHydrating() {
 	return (
 		<div

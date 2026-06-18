@@ -39,7 +39,6 @@ import {
 	todosForProject,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
-import { setFocusedThread } from "@/store/chat";
 import { BookmarkEditor } from "./BookmarkEditor.js";
 import { EntityGlyph } from "./EntityGlyph.js";
 import { JournalEntryEditor } from "./JournalEntryEditor.js";
@@ -183,10 +182,9 @@ function InspectorShell({
 					entity={entity}
 					allEntities={allEntities}
 					onOpenEntity={goToEntity}
-					onOpenThread={(threadId) => {
-						setFocusedThread(threadId);
-						navigate({ to: "/" });
-					}}
+					onOpenThread={(threadId) =>
+						navigate({ to: "/thread/$threadId", params: { threadId } })
+					}
 				/>
 			</div>
 

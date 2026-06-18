@@ -27,7 +27,6 @@ import { RuntimeProvider } from "@/runtime";
 import { EntityDetail } from "./EntityDetail";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
-const { setFocusedThread } = vi.hoisted(() => ({ setFocusedThread: vi.fn() }));
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual =
@@ -38,17 +37,9 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 	};
 });
 
-// The "Captured from" Thread link focuses a thread then routes to chat; spy on
-// the store seam so the test asserts the focus call without a live store.
-vi.mock("@/store/chat", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("@/store/chat")>();
-	return { ...actual, setFocusedThread };
-});
-
 afterEach(() => {
 	cleanup();
 	navigate.mockReset();
-	setFocusedThread.mockReset();
 });
 
 // Stub WsClient whose `entityMutate` runs the handler; unused methods die.
@@ -656,8 +647,11 @@ describe("EntityDetail Captured from", () => {
 			screen.getByRole("button", { name: /Morning brain dump/ }),
 		);
 
-		expect(setFocusedThread).toHaveBeenCalledWith("thr_1");
-		expect(navigate).toHaveBeenCalledWith({ to: "/" });
+		// The source-thread link navigates to that Thread's route (ADR-0042).
+		expect(navigate).toHaveBeenCalledWith({
+			to: "/thread/$threadId",
+			params: { threadId: "thr_1" },
+		});
 	});
 
 	it("links a Journal-Entry-sourced Entity to that entry in the Library", async () => {
@@ -685,7 +679,10 @@ describe("EntityDetail Captured from", () => {
 			params: { kind: "journal" },
 			search: { id: "je_1" },
 		});
-		expect(setFocusedThread).not.toHaveBeenCalled();
+		// A Journal-Entry source never routes to a Thread.
+		expect(navigate).not.toHaveBeenCalledWith(
+			expect.objectContaining({ to: "/thread/$threadId" }),
+		);
 	});
 
 	it("renders no footer for a user-authored Entity (no source)", () => {

@@ -4,15 +4,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "./bridge.js";
 import {
 	appendUserMessage,
-	clearFocusedMessage,
-	clearFocusedThread,
-	focusMessage,
 	getChatState,
 	type Message,
 	prependHistory,
 	resetChatStore,
 	seedAssistantMessage,
-	setFocusedThread,
 } from "./chat.js";
 
 // Stub WsClient backed by an in-memory Queue — see docs/design/web-store-tests.md
@@ -50,7 +46,6 @@ describe("chat store + stream bridge", () => {
 	it("send → streamed assistant message → finalize on done", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-1");
-		setFocusedThread("threadA");
 
 		await send(runtime, "threadA", "hi");
 
@@ -74,15 +69,13 @@ describe("chat store + stream bridge", () => {
 		await runtime.dispose();
 	});
 
-	it("background thread keeps streaming when focus changes mid-run", async () => {
+	it("a run keeps streaming to completion independently of which thread is focused", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-A");
-		setFocusedThread("threadA");
 
+		// Run lives in the bridge's fiber map, not tied to focus (which is the URL
+		// now, ADR-0042): the stream settles regardless of any navigation.
 		await send(runtime, "threadA", "hi");
-
-		// Switch focus while threadA's run is in flight; its fiber must stay alive.
-		setFocusedThread("threadB");
 
 		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "part1" });
 		Queue.unsafeOffer(queue, { kind: "text_delta", delta: "-part2" });
@@ -94,7 +87,6 @@ describe("chat store + stream bridge", () => {
 		expect(assistant?.text).toBe("part1-part2");
 		expect(assistant?.status).toBe("completed");
 		expect(threadA?.activeRunId).toBeUndefined();
-		expect(getChatState().focusedThreadId).toBe("threadB");
 
 		await runtime.dispose();
 	});
@@ -102,7 +94,6 @@ describe("chat store + stream bridge", () => {
 	it("error event finalizes the run: assistant incomplete, fiber settles", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-err");
-		setFocusedThread("threadA");
 
 		await send(runtime, "threadA", "hi");
 
@@ -127,7 +118,6 @@ describe("chat store + stream bridge", () => {
 	it("cancelled event finalizes the run: partial text kept incomplete, fiber settles", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-cancel");
-		setFocusedThread("threadA");
 
 		await send(runtime, "threadA", "hi");
 
@@ -149,7 +139,6 @@ describe("chat store + stream bridge", () => {
 	it("tool_call events upsert a running row then flip it to completed", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-tool");
-		setFocusedThread("threadA");
 
 		await send(runtime, "threadA", "summarize my other thread");
 
@@ -185,7 +174,6 @@ describe("chat store + stream bridge", () => {
 	it("maps a tool_call error status onto the matching row", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-tool-err");
-		setFocusedThread("threadA");
 
 		await send(runtime, "threadA", "read a missing thread");
 
@@ -215,7 +203,6 @@ describe("chat store + stream bridge", () => {
 	it("tracks multiple concurrent tool calls independently, in arrival order", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-multi");
-		setFocusedThread("threadA");
 
 		await send(runtime, "threadA", "do two things");
 
@@ -259,7 +246,6 @@ describe("chat store + stream bridge", () => {
 	it("settles a still-running tool call when the run finishes (lost terminal boundary)", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-lost");
-		setFocusedThread("threadA");
 
 		await send(runtime, "threadA", "hi");
 
@@ -285,7 +271,6 @@ describe("chat store + stream bridge", () => {
 	it("settles a still-running tool call to error when the run errors", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-lost-err");
-		setFocusedThread("threadA");
 
 		await send(runtime, "threadA", "hi");
 
@@ -310,7 +295,6 @@ describe("chat store + stream bridge", () => {
 	it("keeps SET-then-APPEND text semantics when a tool_call interleaves", async () => {
 		const queue = Effect.runSync(Queue.unbounded<RunEventValue>());
 		const runtime = makeStubRuntime(queue, "run-interleave");
-		setFocusedThread("threadA");
 
 		await send(runtime, "threadA", "hi");
 
@@ -342,42 +326,10 @@ describe("chat store + stream bridge", () => {
 	});
 });
 
-describe("scroll-to-message anchor (issue #138)", () => {
-	it("focusMessage sets the thread focus AND the message anchor atomically", () => {
-		focusMessage("threadA", "m-42");
-		expect(getChatState().focusedThreadId).toBe("threadA");
-		expect(getChatState().focusedMessageId).toBe("m-42");
-	});
-
-	it("setFocusedThread clears a stale anchor (a later sidebar focus never re-fires it)", () => {
-		focusMessage("threadA", "m-42");
-		// Re-focusing the SAME thread by plain means must drop the anchor.
-		setFocusedThread("threadA");
-		expect(getChatState().focusedThreadId).toBe("threadA");
-		expect(getChatState().focusedMessageId).toBeUndefined();
-	});
-
-	it("clearFocusedThread drops the anchor too (New Chat)", () => {
-		focusMessage("threadA", "m-42");
-		clearFocusedThread();
-		expect(getChatState().focusedThreadId).toBeUndefined();
-		expect(getChatState().focusedMessageId).toBeUndefined();
-	});
-
-	it("clearFocusedMessage consumes the anchor but leaves the thread focused", () => {
-		focusMessage("threadA", "m-42");
-		clearFocusedMessage();
-		expect(getChatState().focusedMessageId).toBeUndefined();
-		expect(getChatState().focusedThreadId).toBe("threadA");
-	});
-
-	it("clearFocusedMessage is a no-op (stable state) when no anchor is set", () => {
-		setFocusedThread("threadA");
-		const before = getChatState();
-		clearFocusedMessage();
-		expect(getChatState()).toBe(before);
-	});
-});
+// The scroll-to-message anchor (issue #138) is now URL search-param state
+// (`?focusedMessageId=`, ADR-0042), not a store field — its behavior is proven in
+// ChatColumn.test.tsx (scroll + highlight + consume-then-strip) and the
+// scroll-to-message e2e, not here.
 
 describe("prependHistory", () => {
 	const live = (id: string, run: string, text: string): Message => ({

@@ -1,32 +1,30 @@
+import { useParams } from "@tanstack/react-router";
 import { Copy, Library, Plus, Search } from "lucide-react";
 import { NavShell, navRow } from "@/components/ui/nav-shell";
 import { useThreads } from "@/lib/hooks/useThreads";
-import {
-	clearFocusedThread,
-	setFocusedThread,
-	useFocusedThreadId,
-} from "@/store/chat";
 import { openCommand } from "@/store/command";
 import { cn } from "../lib/utils.js";
 
 export function Sidebar({
 	onOpenLibrary,
 	onOpenSettings,
+	onOpenThread,
+	onNewChat,
 }: {
 	onOpenLibrary?: () => void;
 	onOpenSettings?: () => void;
+	onOpenThread?: (threadId: string) => void;
+	onNewChat?: () => void;
 } = {}) {
-	const focusedThreadId = useFocusedThreadId();
+	// The focused Thread is the route (ADR-0042); read it to mark the current row.
+	const { threadId } = useParams({ strict: false });
+	const focusedThreadId = threadId ?? null;
 
 	// Reads via TanStack Query; live stream stays on store+bridge (ADR-0020). `data` undefined while loading/error → empty list.
 	const { data } = useThreads();
 
 	const threads = data?.threads ?? [];
 	const groups = groupByRecency(threads);
-
-	const newChat = () => {
-		clearFocusedThread();
-	};
 
 	return (
 		<NavShell as="aside" ariaLabel="Sidebar" onOpenSettings={onOpenSettings}>
@@ -56,7 +54,7 @@ export function Sidebar({
 
 			<button
 				type="button"
-				onClick={newChat}
+				onClick={onNewChat}
 				className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-lg bg-secondary px-3 text-left font-semibold text-secondary-foreground text-sm transition-colors hover:bg-[color-mix(in_oklab,var(--primary)_12%,var(--secondary))]"
 			>
 				<Plus className="size-4 shrink-0" aria-hidden />
@@ -93,7 +91,7 @@ export function Sidebar({
 											)}
 											<button
 												type="button"
-												onClick={() => setFocusedThread(item.id)}
+												onClick={() => onOpenThread?.(item.id)}
 												aria-current={isCurrent ? "true" : undefined}
 												className={cn(
 													"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm",

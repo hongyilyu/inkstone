@@ -3,10 +3,9 @@ import { cleanup, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RuntimeProvider } from "@/runtime";
 import { resetBridge } from "@/store/bridge";
-import { getChatState, resetChatStore } from "@/store/chat";
-import { renderWithQuery } from "@/test-utils/renderWithQuery";
+import { resetChatStore } from "@/store/chat";
+import { renderChatRoute } from "@/test-utils/renderChatRoute";
 import { ChatColumn } from "./ChatColumn.js";
 import { Sidebar } from "./Sidebar.js";
 
@@ -90,41 +89,53 @@ afterEach(() => {
 });
 
 describe("Sidebar", () => {
-	it("lists threads from a thread/list read and selects one into focus", async () => {
+	it("lists threads from a thread/list read and asks to open one on click", async () => {
 		const user = userEvent.setup();
 		const runtime = makeStubRuntime();
+		const onOpenThread = vi.fn();
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<Sidebar />
-			</RuntimeProvider>,
-		);
+		renderChatRoute(<Sidebar onOpenThread={onOpenThread} />, { runtime });
 
 		const first = await screen.findByText("Standup digest");
 		expect(await screen.findByText("API rename plan")).toBeInTheDocument();
 
 		await user.click(first);
 
-		expect(getChatState().focusedThreadId).toBe("t-1");
+		// Thread focus is the URL (ADR-0042): the row asks its parent to navigate.
+		expect(onOpenThread).toHaveBeenCalledWith("t-1");
 
 		await runtime.dispose();
 	});
 
-	it("keeps the New Chat button and clears focus on click", async () => {
-		const user = userEvent.setup();
+	it("marks the row matching the focused-thread route as current", async () => {
 		const runtime = makeStubRuntime();
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<Sidebar />
-			</RuntimeProvider>,
-		);
+		// Mounted at /thread/t-2 → the "API rename plan" row is the current one.
+		renderChatRoute(<Sidebar />, { runtime, path: "/thread/t-2" });
 
-		await user.click(await screen.findByText("Standup digest"));
-		expect(getChatState().focusedThreadId).toBe("t-1");
+		const current = await screen.findByRole("button", {
+			name: "API rename plan",
+		});
+		expect(current).toHaveAttribute("aria-current", "true");
+		const other = screen.getByRole("button", { name: "Standup digest" });
+		expect(other).not.toHaveAttribute("aria-current");
 
+		await runtime.dispose();
+	});
+
+	it("keeps the New Chat button and fires its handler on click", async () => {
+		const user = userEvent.setup();
+		const runtime = makeStubRuntime();
+		const onNewChat = vi.fn();
+
+		renderChatRoute(<Sidebar onNewChat={onNewChat} />, {
+			runtime,
+			path: "/thread/t-1",
+		});
+
+		await screen.findByText("Standup digest");
 		await user.click(screen.getByRole("button", { name: /new chat/i }));
-		expect(getChatState().focusedThreadId ?? null).toBeNull();
+		expect(onNewChat).toHaveBeenCalledTimes(1);
 
 		await runtime.dispose();
 	});
@@ -137,12 +148,15 @@ describe("Sidebar", () => {
 			events: [{ kind: "text_delta", delta: "echo: hi" }, { kind: "done" }],
 		});
 
-		// Sidebar + ChatColumn share one runtime + QueryClient — the real app wiring.
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
+		// Sidebar + ChatColumn share one runtime + router — the real app wiring. The
+		// Sidebar's New Chat / open-thread navigations are unused here; the send path
+		// drives ChatColumn, which invalidates ["threads"] so the sidebar re-reads.
+		renderChatRoute(
+			<>
 				<Sidebar />
 				<ChatColumn />
-			</RuntimeProvider>,
+			</>,
+			{ runtime, path: "/" },
 		);
 
 		expect(await screen.findByText(/no threads yet/i)).toBeInTheDocument();
@@ -168,11 +182,7 @@ describe("Sidebar", () => {
 			configurable: true,
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<Sidebar />
-			</RuntimeProvider>,
-		);
+		renderChatRoute(<Sidebar />, { runtime });
 
 		// Copy-id control writes the thread id (not its title) to the clipboard.
 		const copyBtn = await screen.findByRole("button", {
