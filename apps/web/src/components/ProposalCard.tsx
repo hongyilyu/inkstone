@@ -1221,6 +1221,15 @@ function IntentGraphReviewCard({
 	// resolvable — the common path.
 	const [buffer, setBuffer] = useState<StagingBuffer>({});
 	const [inFlight, setInFlight] = useState<"commit" | "reject" | null>(null);
+	// Reset the per-node staging when the proposal IDENTITY changes. The card is
+	// keyed by run_id, not proposal_id, so a multi-step Run that parks a SECOND
+	// `apply_intent_graph` proposal after a resume reuses this same mounted card
+	// with a fresh proposal_id. The buffer is keyed by graph-local handles (ephemeral
+	// model labels that collide across extractions), so without this reset a prior
+	// graph's toggles could leak into the next and submit an unintended decision.
+	useEffect(() => {
+		setBuffer({});
+	}, [proposal.proposal_id]);
 	useEffect(() => {
 		if (proposal.status !== "deciding") setInFlight(null);
 	}, [proposal.status]);

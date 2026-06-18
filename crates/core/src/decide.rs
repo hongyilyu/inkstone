@@ -3554,4 +3554,56 @@ mod tests {
         assert_eq!(entity_count(&pool).await, 0, "nothing is written — no orphan, no mis-link");
         assert_eq!(proposal_status(&pool, &proposal_id_str).await, "pending");
     }
+
+    // Final review (CodeRabbit): a Todo node that resolves to REUSE but carries
+    // outgoing relationship links fails loud — the graph does not edit an existing
+    // Todo's links (ADR-0042 create-and-link-only; ADR-0030 a reuse owns its state),
+    // and silently dropping the link is forbidden. Pre-seed a Todo by title; the
+    // graph reuses it (exact title match) and links it to a Project → Invalid.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_reused_todo_with_links_is_invalid() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        insert_named_entity(&pool, "todo", "Figure out the Rodeo side").await;
+
+        // @rodeo exact-matches the seeded Todo → reuse; it links to a new Project.
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Rodeo work for Lead Ads." }]
+            },
+            "entities": [
+                { "handle": "@leadads", "type": "project", "name": "Lead Ads" },
+                { "handle": "@rodeo", "type": "todo", "title": "Figure out the Rodeo side" }
+            ],
+            "links": [
+                { "kind": "todo_project", "from": "@rodeo", "to": "@leadads" }
+            ]
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            None,
+            Some("k-reused-todo-links".to_string()),
+            resume_closure(pool.clone(), Arc::new(AtomicBool::new(false))),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Err(DecideError::Invalid(_))),
+            "a reused Todo with outgoing links is Invalid (no silent drop), got {outcome:?}"
+        );
+        // Only the pre-seeded Todo remains; the would-be Project + JE are not minted.
+        assert_eq!(entity_count_of_type(&pool, "project").await, 0, "the linked Project is not minted");
+        assert_eq!(entity_count_of_type(&pool, "journal_entry").await, 0);
+        assert_eq!(entity_count(&pool).await, 1, "only the pre-seeded Todo remains");
+        assert_eq!(proposal_status(&pool, &proposal_id_str).await, "pending");
+    }
 }

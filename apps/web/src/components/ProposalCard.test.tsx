@@ -1740,5 +1740,39 @@ describe("ProposalCard", () => {
 				screen.getByText(/without its link to .Morris./i),
 			).toBeInTheDocument();
 		});
+
+		it("resets staging when a new proposal_id renders in the same card (no leak across graphs)", () => {
+			const onDecide = vi.fn();
+			// Graph #1: reject the Rodeo node (handle @rodeo).
+			const { rerender } = render(
+				<ProposalCard proposal={graphProposal} onDecide={onDecide} />,
+			);
+			fireEvent.click(
+				screen.getByRole("button", {
+					name: /reject figure out the rodeo side/i,
+				}),
+			);
+			// Graph #2 arrives on the SAME run_id (same mounted card) with a fresh
+			// proposal_id and an UNRELATED node that happens to reuse the handle @rodeo.
+			const nextGraph: PendingProposal = {
+				...graphProposal,
+				proposal_id: "graph-prop-2",
+				payload: { links: [] },
+				resolved_plan: [
+					{
+						handle: "@rodeo",
+						type: "person",
+						disposition: "create",
+						label: "Rodrigo",
+					},
+				],
+			};
+			rerender(<ProposalCard proposal={nextGraph} onDecide={onDecide} />);
+			// The prior reject must NOT leak: committing accepts the new @rodeo node.
+			fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+			expect(onDecide).toHaveBeenLastCalledWith("accept", undefined, [
+				{ handle: "@rodeo", decision: "accept" },
+			]);
+		});
 	});
 });

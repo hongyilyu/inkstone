@@ -375,6 +375,31 @@ pub async fn apply_intent_graph_proposal(
                 // A reused node mints nothing; its handle resolves to the existing
                 // id so a todo's link can target it (the #179 existing-project case,
                 // and the `entity_id` override / picker path).
+                //
+                // A reused node is linked-TO, never rewritten (ADR-0042
+                // create-and-link-only; a reuse "owns its current structured
+                // state", ADR-0030). Outgoing `todo_project`/`todo_person` links are
+                // folded only into a CREATED todo's payload (the loop below); a
+                // REUSED todo never reaches it, so its surviving outgoing links
+                // would be silently dropped. ADR-0042 forbids a silent drop ("a
+                // link whose endpoint did not resolve is dropped AND reported, never
+                // dangling-written"), and we cannot edit an existing Todo here, so
+                // FAIL LOUD: a reused todo with surviving outgoing relationship
+                // links is Invalid (editing an existing Todo's links is the picker /
+                // direct-edit path, #181 — not the graph apply).
+                if node.type_str == "todo"
+                    && graph.links.iter().any(|link| {
+                        link.from == node.handle
+                            && matches!(link.kind, LinkKind::TodoProject | LinkKind::TodoPerson)
+                            && !decisions.is_rejected(&link.to)
+                    })
+                {
+                    return Err(ApplyError::InvalidMutation(format!(
+                        "intent graph todo {} resolves to an existing Todo but carries outgoing \
+                         relationship links; the graph does not edit an existing Todo's links",
+                        node.handle
+                    )));
+                }
                 handle_to_id.insert(node.handle.clone(), existing_id);
             }
             Disposition::Create(payload) => {
