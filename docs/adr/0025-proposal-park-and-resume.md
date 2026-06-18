@@ -1,5 +1,7 @@
 # Proposals park the Run; resume via Worker tear-down + `agentLoopContinue`
 
+> **Superseded in part by [ADR-0042](./0042-intent-graph-journal-extraction.md).** "One Tool Request = one Proposal = one Decision" still holds, but the `apply_intent_graph` kind widens the *unit* of a Proposal from one entity to one resolved graph. Park/resume is unchanged: `awaiting_tool_call_id` stays singular, the graph rides one frame, one park, one atomic apply.
+
 A **Proposal** is a Tool Request whose Tool Result is a human **Decision**. When a Workflow's tool call needs manual approval, Core persists the Proposal, sets the Run to `parked` (recording the waitpoint in `runs.awaiting_tool_call_id`), emits a `proposal/pending` Notification, and **tears the Worker down**. On `proposal/decide`, Core applies the change atomically to tier 2, **reconstructs the Run's transcript** from tier 2, spawns a fresh Worker, and resumes the agent loop via `pi-agent-core`'s `runAgentLoopContinue` — seeding a transcript whose last message is the awaited tool's result, now carrying the Decision. The model continues from there.
 
 ## Why tear-down + resume (not keep-alive)
