@@ -847,6 +847,31 @@ mod tests {
         entity_id
     }
 
+    /// Insert a canonical accepted Entity of `entity_type` whose label
+    /// (`name`/`title`) is `label` (created_by='user', no Proposal anchor) — the
+    /// "accepted" set slice-3 exact-match resolution reads via `list_by_type`.
+    /// Returns its id.
+    async fn insert_named_entity(pool: &SqlitePool, entity_type: &str, label: &str) -> String {
+        let entity_id = Uuid::now_v7().to_string();
+        let now = db::now_ms();
+        let label_key = if entity_type == "todo" { "title" } else { "name" };
+        let data = serde_json::json!({ label_key: label }).to_string();
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_at, updated_at) \
+             VALUES (?, ?, 1, ?, 'user', ?, ?)",
+        )
+        .bind(&entity_id)
+        .bind(entity_type)
+        .bind(&data)
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await
+        .expect("insert named entity");
+        entity_id
+    }
+
     /// Insert a canonical Journal Entry Entity with a `created_from` source row
     /// pointing at `source_message_id`. Used to seed an update/delete target the
     /// same-thread guard accepts (in-thread message) or rejects (wrong-thread).
@@ -1975,5 +2000,252 @@ mod tests {
             !resumed.load(Ordering::SeqCst),
             "an Invalid accept does not resume"
         );
+    }
+
+    // Slice 3 (ADR-0042): a graph entity node whose exact (case-insensitive)
+    // name+type matches exactly ONE accepted entity resolves to `reuse` — Core
+    // mints NO duplicate. Pre-seed an accepted Project "Lead Ads", then accept a
+    // graph naming a project node "Lead Ads": the project count stays 1 (the
+    // existing row is reused, not re-created); only the JE node mints. A
+    // case-insensitive "lead ads" node reuses the same row too.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_reuses_exact_match_no_duplicate() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        let existing_project = insert_named_entity(&pool, "project", "Lead Ads").await;
+
+        // Graph: a JE + a project node whose name exactly matches the accepted
+        // Project (different case to prove case-insensitivity), no links.
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Worked on the project." }]
+            },
+            "entities": [
+                { "handle": "@leadads", "type": "project", "name": "lead ads" }
+            ],
+            "links": []
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-graph-reuse".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await
+        .expect("graph accept (reuse) succeeds");
+
+        assert!(
+            matches!(outcome, DecideOutcome::Accepted { .. }),
+            "a reuse graph accepts: {outcome:?}"
+        );
+
+        // The existing Project is REUSED — no second project minted.
+        assert_eq!(
+            entity_count_of_type(&pool, "project").await,
+            1,
+            "the exact-match Project is reused, not duplicated"
+        );
+        // The reused project row is the SAME one (the pre-seeded id), unchanged.
+        assert_eq!(
+            only_entity_id_of_type(&pool, "project").await,
+            existing_project,
+            "the reused id is the pre-seeded Project, not a fresh mint"
+        );
+        // Total entities = the pre-seeded Project + the newly minted JE only.
+        assert_eq!(
+            entity_count(&pool).await,
+            2,
+            "only the JE is minted; the Project is reused"
+        );
+        assert_eq!(entity_count_of_type(&pool, "journal_entry").await, 1);
+
+        assert_eq!(
+            proposal_status(&pool, &proposal_id_str).await,
+            "accepted",
+            "the reuse graph Proposal is accepted"
+        );
+        assert!(resumed.load(Ordering::SeqCst), "the reuse graph accept resumes");
+    }
+
+    // Slice 3 (ADR-0042 "An ambiguous node has no silent fallback"): a graph
+    // entity node whose exact name+type matches TWO OR MORE accepted entities is
+    // `ambiguous` — Core neither guesses nor mints a duplicate. The whole accept
+    // fails `Invalid`, the tx rolls back (nothing written: no JE, no Person), the
+    // Proposal stays pending, and the Run is not resumed.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_ambiguous_match_fails_whole_apply() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        // TWO accepted People both named "Morris".
+        insert_named_entity(&pool, "person", "Morris").await;
+        insert_named_entity(&pool, "person", "Morris").await;
+
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Met Morris again." }]
+            },
+            "entities": [
+                { "handle": "@morris", "type": "person", "name": "Morris" }
+            ],
+            "links": []
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-graph-ambiguous".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+
+        let Err(DecideError::Invalid(reason)) = outcome else {
+            panic!("expected Invalid for an ambiguous node, got {outcome:?}");
+        };
+        assert!(
+            reason.contains("@morris") || reason.contains("Morris"),
+            "the ambiguous reason names the offending handle/label: {reason}"
+        );
+
+        // Whole tx rolled back: nothing minted. Only the two seeded People remain;
+        // no JE, no third Person.
+        assert_eq!(
+            entity_count(&pool).await,
+            2,
+            "the ambiguous graph writes nothing — only the two seeded People remain"
+        );
+        assert_eq!(entity_count_of_type(&pool, "journal_entry").await, 0);
+        assert_eq!(entity_count_of_type(&pool, "person").await, 2);
+
+        assert_eq!(
+            proposal_status(&pool, &proposal_id_str).await,
+            "pending",
+            "an ambiguous graph stays pending + re-decidable"
+        );
+        assert!(
+            !resumed.load(Ordering::SeqCst),
+            "an ambiguous graph does not resume"
+        );
+    }
+
+    // Slice 3 (review): pin that the match is EXACT, not substring/prefix. A node
+    // named "Lead" must NOT reuse an accepted Project "Lead Ads" — it mints a
+    // fresh Project. Guards against a `.contains()`/`starts_with` regression the
+    // same-string-modulo-case reuse test cannot catch.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_near_miss_label_creates_not_reuses() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        insert_named_entity(&pool, "project", "Lead Ads").await;
+
+        // The node's name is a PREFIX of the accepted Project, not equal to it.
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Started something new." }]
+            },
+            "entities": [
+                { "handle": "@lead", "type": "project", "name": "Lead" }
+            ],
+            "links": []
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-graph-near-miss".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await
+        .expect("near-miss graph accept succeeds");
+
+        // A substring/prefix match would have REUSED "Lead Ads" (count stays 1);
+        // exact match mints a fresh "Lead", so there are TWO Projects.
+        assert_eq!(
+            entity_count_of_type(&pool, "project").await,
+            2,
+            "a prefix label is NOT an exact match — a fresh Project is minted, not reused"
+        );
+    }
+
+    // Slice 3 (review): pin the `existing_id` hint branch — the model's primary
+    // reuse signal. A node carrying an accepted same-type `existing_id` reuses it
+    // WITHOUT relying on a name match (the node's name here differs from the
+    // seeded Project's, so only the hint can drive the reuse).
+    #[tokio::test]
+    async fn accept_apply_intent_graph_existing_id_hint_reuses() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        let existing_project = insert_named_entity(&pool, "project", "Lead Ads").await;
+
+        // The node's NAME does not match the seeded Project; only the
+        // `existing_id` hint points at it. A reuse here proves the hint is honored.
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Worked on it." }]
+            },
+            "entities": [
+                {
+                    "handle": "@p",
+                    "type": "project",
+                    "name": "A Differently Named Project",
+                    "existing_id": existing_project
+                }
+            ],
+            "links": []
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-graph-hint".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await
+        .expect("existing_id-hint graph accept succeeds");
+
+        // The hint drives reuse: no second Project minted, only the JE is new.
+        assert_eq!(
+            entity_count_of_type(&pool, "project").await,
+            1,
+            "the existing_id hint reuses the accepted Project (no duplicate), despite the name mismatch"
+        );
+        assert_eq!(
+            only_entity_id_of_type(&pool, "project").await,
+            existing_project,
+            "the reused id is the hinted Project"
+        );
+        assert_eq!(entity_count_of_type(&pool, "journal_entry").await, 1);
     }
 }
