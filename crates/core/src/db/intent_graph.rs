@@ -936,11 +936,17 @@ async fn resolve_node(
     // rewritten) — that is a contradictory decision, so Invalid.
     if let Some(edits) = edited_fields {
         return match disposition {
-            Disposition::Create(payload) => Ok(Disposition::Create(merge_edited_fields(
-                node.type_str,
-                payload,
-                edits,
-            )?)),
+            Disposition::Create(payload) => {
+                let merged = merge_edited_fields(node.type_str, payload, edits)?;
+                // Re-validate the CORRECTED payload through the per-type create
+                // validator before minting — parity with the single-entity edit
+                // path (`decide.rs` validates the edited payload). A correction
+                // that violates a per-type invariant (an empty title, a bad enum)
+                // fails the whole tx as Invalid, never minting a malformed entity.
+                crate::entities::validate(node.kind, &merged)
+                    .map_err(ApplyError::InvalidMutation)?;
+                Ok(Disposition::Create(merged))
+            }
             Disposition::Reuse(_) => Err(ApplyError::InvalidMutation(format!(
                 "intent graph node {} carries edited_fields but resolves to reuse \
                  (a reused entity is linked-to, not edited)",
@@ -954,10 +960,17 @@ async fn resolve_node(
 
 /// Merge a per-node `edited_fields` correction over a CREATE node's payload
 /// (ADR-0042): the edited fields override the model's proposed fields, then the
-/// per-type validator runs at mint (via `apply_entity_mutation`). The graph wraps a
-/// Todo's data in a `{todo: TodoData}` envelope, so a Todo's edits merge into the
-/// INNER `todo` object; Person/Project edit the flat payload. `edited_fields` must
-/// be a JSON object.
+/// per-type validator re-runs in `resolve_node` on the merged result. The graph
+/// wraps a Todo's data in a `{todo: TodoData}` envelope, so a Todo's edits merge
+/// into the INNER `todo` object; Person/Project edit the flat payload.
+/// `edited_fields` must be a JSON object.
+///
+/// A `null` edit value is a CLEAR directive (ADR-0033): it REMOVES the key rather
+/// than inserting a JSON null, so blanking a model-proposed optional yields an
+/// absent field — valid uniformly for person/project/todo (a Todo's `note` is not
+/// clearable in create mode, so an inserted `null` would be rejected at validation;
+/// removal sidesteps that). A `null` for a required field (a blanked title/name)
+/// drops it to absent and the re-validation in `resolve_node` rejects it.
 fn merge_edited_fields(
     type_str: &str,
     mut payload: serde_json::Value,
@@ -985,7 +998,11 @@ fn merge_edited_fields(
         })?
     };
     for (key, value) in edits {
-        target.insert(key.clone(), value.clone());
+        if value.is_null() {
+            target.remove(key);
+        } else {
+            target.insert(key.clone(), value.clone());
+        }
     }
     Ok(payload)
 }

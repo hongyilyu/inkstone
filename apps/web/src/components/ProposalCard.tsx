@@ -26,12 +26,19 @@ import {
 import {
 	allRejected,
 	buildDecisions,
+	buildEditedFields,
+	type DraftBuffer,
 	downgradeNotices,
+	draftLabel,
+	draftRequiredEmpty,
+	type GraphNodeDraft,
 	hasAmbiguous,
 	isAcceptable,
+	parseGraphEntities,
 	parseGraphLinks,
 	rejectAll,
 	type StagingBuffer,
+	seedNodeDraft,
 	setStage,
 	stageFor,
 } from "@/lib/intentGraphReview";
@@ -1216,10 +1223,23 @@ function IntentGraphReviewCard({
 		() => parseGraphLinks(proposal.payload),
 		[proposal.payload],
 	);
+	// The graph payload's `entities[]` carry each node's ORIGINAL proposed fields —
+	// the seed an inline edit reads from and diffs the `edited_fields` correction
+	// against. ResolvedNode is label-only, so the fields live here.
+	const entities = useMemo(
+		() => parseGraphEntities(proposal.payload),
+		[proposal.payload],
+	);
 	// The staging buffer starts at the per-node defaults (acceptable → accept,
 	// ambiguous → reject), so a plain Apply with no toggles accepts everything
 	// resolvable — the common path.
 	const [buffer, setBuffer] = useState<StagingBuffer>({});
+	// Per-handle inline edit drafts for create nodes (ADR-0042 `edited_fields`). A
+	// handle gains an entry when its row is opened for edit; the draft survives a
+	// reject→accept toggle so a correction is not lost. `editingHandle` is the ONE
+	// row currently expanded (one open at a time).
+	const [drafts, setDrafts] = useState<DraftBuffer>({});
+	const [editingHandle, setEditingHandle] = useState<string | null>(null);
 	const [inFlight, setInFlight] = useState<"commit" | "reject" | null>(null);
 	// Reset the per-node staging when the proposal IDENTITY changes. The card is
 	// keyed by run_id, not proposal_id, so a multi-step Run that parks a SECOND
@@ -1230,6 +1250,8 @@ function IntentGraphReviewCard({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset keyed on the proposal id.
 	useEffect(() => {
 		setBuffer({});
+		setDrafts({});
+		setEditingHandle(null);
 	}, [proposal.proposal_id]);
 	useEffect(() => {
 		if (proposal.status !== "deciding") setInFlight(null);
@@ -1269,8 +1291,9 @@ function IntentGraphReviewCard({
 	const commit = () => {
 		if (submitting) return;
 		// A vector that rejects every node is a reject-all (Core declines the whole
-		// graph); otherwise it is an accept carrying the per-node subset.
-		const decisions = buildDecisions(plan, buffer);
+		// graph); otherwise it is an accept carrying the per-node subset — each
+		// accepted create node folding in its `edited_fields` correction.
+		const decisions = buildDecisions(plan, buffer, drafts, entities);
 		const decision = everythingRejected ? "reject" : "accept";
 		setInFlight(everythingRejected ? "reject" : "commit");
 		onDecide(decision, undefined, decisions);
@@ -1279,8 +1302,25 @@ function IntentGraphReviewCard({
 		if (submitting) return;
 		setBuffer(rejectAll(plan));
 		setInFlight("reject");
+		// A reject-all mints nothing, so no edited_fields ride along.
 		onDecide("reject", undefined, buildDecisions(plan, rejectAll(plan)));
 	};
+
+	// Open one create node's inline edit form (one row at a time). The form holds its
+	// own working draft; the card's `drafts` buffer gains an entry only on Save.
+	const openEdit = (handle: string) => {
+		if (submitting) return;
+		setEditingHandle(handle);
+	};
+	// Save commits the working draft to the buffer and forces the node ACCEPT (an
+	// edit only applies to a node you keep), then collapses the row.
+	const saveEdit = (node: ResolvedNode, draft: GraphNodeDraft) => {
+		setDrafts((current) => ({ ...current, [node.handle]: draft }));
+		setBuffer((current) => setStage(current, node, "accept"));
+		setEditingHandle(null);
+	};
+	// Cancel discards the working draft (the buffer is untouched) and collapses.
+	const cancelEdit = () => setEditingHandle(null);
 
 	const HeaderGlyph = GRAPH_VIEW.glyph;
 	const commitLabel = everythingRejected
@@ -1318,9 +1358,15 @@ function IntentGraphReviewCard({
 						node={node}
 						stage={stageFor(buffer, node)}
 						disabled={submitting}
+						draft={drafts[node.handle]}
+						seed={entities.get(node.handle)}
+						editing={editingHandle === node.handle}
 						onStage={(stage) =>
 							setBuffer((current) => setStage(current, node, stage))
 						}
+						onEdit={() => openEdit(node.handle)}
+						onSave={(draft) => saveEdit(node, draft)}
+						onCancel={cancelEdit}
 					/>
 				))}
 			</ul>
@@ -1408,28 +1454,85 @@ function IntentGraphReviewCard({
 }
 
 /** One node row in the intent-graph review queue: the entity glyph + label, a
- * create/reuse/ambiguous badge, and an accept/reject toggle. An ambiguous node's
- * accept is disabled (reject-only, #181). */
+ * create/reuse/ambiguous badge, and accept/reject toggles. A `create` node also
+ * carries a pencil that expands the row INLINE into its per-type edit form (the
+ * `edited_fields` correction); reuse/ambiguous nodes are not editable (Core rejects
+ * an edit on a non-create node). An ambiguous node's accept is disabled (reject-only,
+ * #181). When a draft is open the collapsed label reflects the edited name/title. */
 function GraphNodeRow({
 	node,
 	stage,
 	disabled,
+	draft,
+	seed,
+	editing,
 	onStage,
+	onEdit,
+	onSave,
+	onCancel,
 }: {
 	node: ResolvedNode;
 	stage: "accept" | "reject";
 	disabled: boolean;
+	draft: GraphNodeDraft | undefined;
+	seed: Record<string, unknown> | undefined;
+	editing: boolean;
 	onStage: (stage: "accept" | "reject") => void;
+	onEdit: () => void;
+	onSave: (draft: GraphNodeDraft) => void;
+	onCancel: () => void;
 }) {
 	const NodeGlyph = KIND_META[node.type as LibraryItemKind].icon;
 	const badge = DISPOSITION_BADGE[node.disposition];
 	const BadgeGlyph = badge.glyph;
 	const acceptable = isAcceptable(node);
 	const rejected = stage === "reject";
+	const editable = node.disposition === "create";
+	// The collapsed row shows the edited name/title once a draft is COMMITTED, so a
+	// correction is visible without re-opening the form.
+	const shownLabel =
+		(draft !== undefined ? draftLabel(node, draft) : node.label) || node.handle;
+	// "Edited" replaces the disposition badge only when the committed draft will
+	// actually send an `edited_fields` correction — and only on an ACCEPTED node, since
+	// a rejected node commits a plain reject (no edited_fields, see buildDecisions).
+	// Opening + Save with no change stores a draft but sends a plain accept, so the
+	// badge must still read "New". Both cases keep the badge honest about what applies.
+	const edited =
+		editable &&
+		stage === "accept" &&
+		draft !== undefined &&
+		buildEditedFields(seed, draft) !== undefined;
+
+	if (editing) {
+		// Seed the form from the committed draft (re-open) or the node's proposed
+		// fields (first open). A non-create node is never editable, so the seed is
+		// always present here; guard defensively all the same.
+		const initial = draft ?? seedNodeDraft(node, seed);
+		if (initial !== null) {
+			return (
+				<li
+					data-graph-node={node.handle}
+					data-node-stage={stage}
+					data-node-editing="true"
+					className="rounded-lg border border-border/60 px-3 py-2.5"
+				>
+					<GraphNodeEditForm
+						node={node}
+						initial={initial}
+						disabled={disabled}
+						onSave={onSave}
+						onCancel={onCancel}
+					/>
+				</li>
+			);
+		}
+	}
+
 	return (
 		<li
 			data-graph-node={node.handle}
 			data-node-stage={stage}
+			data-node-edited={edited ? "true" : undefined}
 			className={`flex items-center gap-2.5 rounded-lg border border-border/60 px-3 py-2 ${
 				rejected ? "opacity-60" : ""
 			}`}
@@ -1444,16 +1547,28 @@ function GraphNodeRow({
 						rejected ? "line-through" : "font-medium"
 					}`}
 				>
-					{node.label || node.handle}
+					{shownLabel}
 				</p>
 				<span
 					className={`mt-0.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.6875rem] font-medium ${badge.className}`}
 				>
 					<BadgeGlyph className="size-3" aria-hidden />
-					{badge.label}
+					{edited ? "Edited" : badge.label}
 				</span>
 			</div>
 			<div className="flex shrink-0 items-center gap-1">
+				{editable ? (
+					<button
+						type="button"
+						disabled={disabled}
+						title="Edit"
+						onClick={onEdit}
+						className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+					>
+						<Pencil className="size-3.5" aria-hidden />
+						<span className="sr-only">Edit {shownLabel}</span>
+					</button>
+				) : null}
 				<button
 					type="button"
 					aria-pressed={stage === "accept"}
@@ -1465,7 +1580,7 @@ function GraphNodeRow({
 					className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-pressed:bg-primary aria-pressed:text-primary-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
 				>
 					<Check className="size-4" aria-hidden />
-					<span className="sr-only">Accept {node.label || node.handle}</span>
+					<span className="sr-only">Accept {shownLabel}</span>
 				</button>
 				<button
 					type="button"
@@ -1476,10 +1591,164 @@ function GraphNodeRow({
 					className="inline-flex size-7 cursor-pointer items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground aria-pressed:bg-secondary aria-pressed:text-secondary-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
 				>
 					<X className="size-4" aria-hidden />
-					<span className="sr-only">Reject {node.label || node.handle}</span>
+					<span className="sr-only">Reject {shownLabel}</span>
 				</button>
 			</div>
 		</li>
+	);
+}
+
+/** The inline per-type edit form for a create node's `edited_fields` (ADR-0042),
+ * reusing the single-entity card's Editor primitives. Surfaces only the recognition
+ * fields — Todo: title/note; Person: name/aliases/note; Project: name/outcome/note.
+ * No status (a recognized entity is active; status is not a recognition output) and
+ * no defer/due.
+ *
+ * The form owns its WORKING draft (seeded from `initial`); Save commits it to the
+ * card buffer (nothing is sent until the whole graph's Apply), Cancel discards it.
+ * Save is gated on the required field (name/title) being non-empty — an empty
+ * required field cannot be committed (Core rejects it). */
+function GraphNodeEditForm({
+	node,
+	initial,
+	disabled,
+	onSave,
+	onCancel,
+}: {
+	node: ResolvedNode;
+	initial: GraphNodeDraft;
+	disabled: boolean;
+	onSave: (draft: GraphNodeDraft) => void;
+	onCancel: () => void;
+}) {
+	const [draft, setDraft] = useState<GraphNodeDraft>(initial);
+	const nameId = useId();
+	const secondaryId = useId();
+	const noteId = useId();
+	const requiredEmpty = draftRequiredEmpty(draft);
+	const kindLabel =
+		node.type === "todo"
+			? "Todo"
+			: node.type === "person"
+				? "Person"
+				: "Project";
+
+	return (
+		<form
+			onSubmit={(event) => {
+				event.preventDefault();
+				if (!requiredEmpty) onSave(draft);
+			}}
+			className="flex flex-col gap-3"
+		>
+			<p className="text-xs font-medium text-muted-foreground">
+				Edit {kindLabel}
+			</p>
+			{draft.type === "todo" ? (
+				<>
+					<EditorField label="Title" htmlFor={nameId}>
+						<EditorInput
+							id={nameId}
+							autoFocus
+							value={draft.title}
+							onChange={(event) =>
+								setDraft({ ...draft, title: event.target.value })
+							}
+						/>
+					</EditorField>
+					<EditorField label="Note" htmlFor={noteId}>
+						<EditorTextarea
+							id={noteId}
+							value={draft.note}
+							onChange={(event) =>
+								setDraft({ ...draft, note: event.target.value })
+							}
+						/>
+					</EditorField>
+				</>
+			) : draft.type === "person" ? (
+				<>
+					<EditorField label="Name" htmlFor={nameId}>
+						<EditorInput
+							id={nameId}
+							autoFocus
+							value={draft.name}
+							onChange={(event) =>
+								setDraft({ ...draft, name: event.target.value })
+							}
+						/>
+					</EditorField>
+					<EditorField label="Aliases" htmlFor={secondaryId}>
+						<EditorInput
+							id={secondaryId}
+							value={draft.aliases}
+							placeholder="Other names, comma-separated"
+							onChange={(event) =>
+								setDraft({ ...draft, aliases: event.target.value })
+							}
+						/>
+					</EditorField>
+					<EditorField label="Note" htmlFor={noteId}>
+						<EditorTextarea
+							id={noteId}
+							value={draft.note}
+							onChange={(event) =>
+								setDraft({ ...draft, note: event.target.value })
+							}
+						/>
+					</EditorField>
+				</>
+			) : (
+				<>
+					<EditorField label="Name" htmlFor={nameId}>
+						<EditorInput
+							id={nameId}
+							autoFocus
+							value={draft.name}
+							onChange={(event) =>
+								setDraft({ ...draft, name: event.target.value })
+							}
+						/>
+					</EditorField>
+					<EditorField label="Outcome" htmlFor={secondaryId}>
+						<EditorTextarea
+							id={secondaryId}
+							value={draft.outcome}
+							onChange={(event) =>
+								setDraft({ ...draft, outcome: event.target.value })
+							}
+						/>
+					</EditorField>
+					<EditorField label="Note" htmlFor={noteId}>
+						<EditorTextarea
+							id={noteId}
+							value={draft.note}
+							onChange={(event) =>
+								setDraft({ ...draft, note: event.target.value })
+							}
+						/>
+					</EditorField>
+				</>
+			)}
+			<footer className="flex items-center gap-2">
+				<button
+					type="submit"
+					disabled={disabled || requiredEmpty}
+					className="inline-flex cursor-pointer items-center gap-1.5 rounded-md bg-secondary px-3 py-1.5 font-medium text-secondary-foreground text-sm transition-colors hover:bg-secondary/80 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+				>
+					<Check className="size-3.5" aria-hidden />
+					Save
+				</button>
+				<button
+					type="button"
+					disabled={disabled}
+					onClick={onCancel}
+					className="inline-flex cursor-pointer items-center rounded-md px-3 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+				>
+					Cancel
+				</button>
+			</footer>
+		</form>
 	);
 }
 

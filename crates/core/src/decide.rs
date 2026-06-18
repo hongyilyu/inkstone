@@ -3289,6 +3289,141 @@ mod tests {
         assert!(!resumed.load(Ordering::SeqCst));
     }
 
+    /// A graph whose three create nodes each carry a model-proposed `note` (and the
+    /// Person an `aliases`), so a per-node `edited_fields` clear has something to
+    /// remove. JE-less direct-capture graph (no links) keeps the fixture minimal.
+    fn noted_graph() -> serde_json::Value {
+        serde_json::json!({
+            "entities": [
+                { "handle": "@proj", "type": "project", "name": "Lead Ads", "note": "guessed project note" },
+                { "handle": "@person", "type": "person", "name": "Lev", "note": "guessed person note", "aliases": ["Levi"] },
+                { "handle": "@todo", "type": "todo", "title": "Unblock Lead Ads testing", "note": "guessed todo note" }
+            ],
+            "links": []
+        })
+    }
+
+    // A per-node `edited_fields` carrying a `null` value CLEARS that optional (removes
+    // the key) before minting — uniformly for person/project/todo. The Todo note is
+    // the asymmetric case: it is NOT clearable in create mode, so a `null` had to be
+    // removed (not inserted) to pass validation. After apply, none of the three
+    // minted entities carries a `note`.
+    #[tokio::test]
+    async fn decision_vector_edited_fields_null_clears_optional() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", noted_graph()).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some(vec![
+                node_decision("@proj", "accept", None, Some(serde_json::json!({ "note": null }))),
+                node_decision("@person", "accept", None, Some(serde_json::json!({ "note": null }))),
+                node_decision("@todo", "accept", None, Some(serde_json::json!({ "note": null }))),
+            ]),
+            Some("k-clear-notes".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await
+        .expect("null-clearing edited_fields graph accept succeeds");
+
+        for ty in ["project", "person", "todo"] {
+            let data = entity_data(&pool, &only_entity_id_of_type(&pool, ty).await).await;
+            assert!(
+                data.get("note").is_none(),
+                "{ty} note cleared by edited_fields null (not persisted as JSON null): {data}"
+            );
+        }
+        // The Person's untouched alias rides through — a null clear removes ONLY its key.
+        let person = entity_data(&pool, &only_entity_id_of_type(&pool, "person").await).await;
+        assert_eq!(
+            person.get("aliases").and_then(|a| a.as_array()).map(Vec::len),
+            Some(1),
+            "an unedited optional (aliases) survives the note clear: {person}"
+        );
+    }
+
+    // The merged payload is re-validated through the per-type create validator before
+    // minting (parity with the single-entity edit path): an `edited_fields` that blanks
+    // a REQUIRED field (a Todo `title` → null removes it) is Invalid — whole tx drops,
+    // nothing minted, the Proposal stays pending.
+    #[tokio::test]
+    async fn decision_vector_edited_fields_clearing_required_is_invalid() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", linked_graph()).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some(vec![
+                node_decision("@je", "accept", None, None),
+                node_decision("@leadads", "accept", None, None),
+                node_decision("@morris", "accept", None, None),
+                // Blank the required Todo title — the merged payload fails validation.
+                node_decision("@rodeo", "accept", None, Some(serde_json::json!({ "title": null }))),
+            ]),
+            Some("k-clear-required".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Err(DecideError::Invalid(_))),
+            "clearing a required field via edited_fields is Invalid, got {outcome:?}"
+        );
+        assert_eq!(entity_count(&pool).await, 0, "nothing minted — whole tx rolled back");
+        assert_eq!(proposal_status(&pool, &proposal_id_str).await, "pending");
+        assert!(!resumed.load(Ordering::SeqCst));
+    }
+
+    // The merged payload is re-validated before minting: an `edited_fields` setting a
+    // field to a value its per-type invariant rejects (a Project `status` outside the
+    // enum domain) is Invalid — never minting a malformed entity.
+    #[tokio::test]
+    async fn decision_vector_edited_fields_invalid_value_is_invalid() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", noted_graph()).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some(vec![
+                node_decision("@proj", "accept", None, Some(serde_json::json!({ "status": "bogus" }))),
+                node_decision("@person", "accept", None, None),
+                node_decision("@todo", "accept", None, None),
+            ]),
+            Some("k-bad-status".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Err(DecideError::Invalid(_))),
+            "an out-of-domain edited status is Invalid, got {outcome:?}"
+        );
+        assert_eq!(entity_count(&pool).await, 0, "nothing minted — whole tx rolled back");
+        assert_eq!(proposal_status(&pool, &proposal_id_str).await, "pending");
+        assert!(!resumed.load(Ordering::SeqCst));
+    }
+
     // Slice 5 (review): rejecting ONLY the JE node (keeping the entities) applies
     // the rest as a JE-less graph — the entities mint, journal_ref links drop, and
     // the anchor falls to the first minted entity (ADR-0042 "Reject the @je node").

@@ -149,6 +149,73 @@ test("accept-all commit lands all four entities, linked", async ({
 	expect(count(dbPath, "SELECT COUNT(*) FROM entity_refs;")).toBe("2");
 });
 
+test("editing a create node sends edited_fields; the minted entity carries the correction", async ({
+	chat,
+	workspace,
+}) => {
+	const dbPath = dbPathFor(workspace.path);
+	seedParkedIntentGraphProposal(dbPath, { graph: GRAPH, title: NOTE_TITLE });
+
+	await chat.goto();
+	await chat.openThread(NOTE_TITLE);
+
+	const card = chat.page.locator('[data-proposal-kind="apply_intent_graph"]');
+	await expect(card).toBeVisible({ timeout: 15_000 });
+	const runId = await card.getAttribute("data-proposal");
+	expect(runId).not.toBeNull();
+	const decidedCard = chat.page.locator(`[data-proposal="${runId}"]`);
+
+	const EDITED_TITLE = "Sort out the Rodeo logistics";
+
+	// Open the Todo's inline edit form, correct the title, Save. Match the button's
+	// accessible name ("Edit <title>") as a literal substring — no RegExp, so a title
+	// with regex metacharacters can't break the locator.
+	await card
+		.getByRole("button", { name: `Edit ${TODO_TITLE}`, exact: false })
+		.click();
+	const title = card.getByLabel("Title");
+	await expect(title).toHaveValue(TODO_TITLE);
+	await title.fill(EDITED_TITLE);
+	await card.getByRole("button", { name: /save/i }).click();
+
+	// The collapsed row reflects the correction and is badged "Edited".
+	await expect(card.locator('[data-graph-node="@rodeo"]')).toContainText(
+		EDITED_TITLE,
+	);
+	await expect(card.locator('[data-graph-node="@rodeo"]')).toHaveAttribute(
+		"data-node-edited",
+		"true",
+	);
+
+	// Apply: the edited_fields correction rides the decision vector to Core.
+	await card.getByRole("button", { name: /apply 3 items/i }).click();
+	await expect(decidedCard).toContainText(/applied/i, { timeout: 15_000 });
+
+	// The minted Todo carries the EDITED title, not the model's proposed one.
+	expect(
+		count(
+			dbPath,
+			`SELECT COUNT(*) FROM entities WHERE type = 'todo' AND json_extract(data, '$.title') = ${sqlValue(EDITED_TITLE)};`,
+		),
+	).toBe("1");
+	expect(
+		count(
+			dbPath,
+			`SELECT COUNT(*) FROM entities WHERE type = 'todo' AND json_extract(data, '$.title') = ${sqlValue(TODO_TITLE)};`,
+		),
+	).toBe("0");
+	// The edited Todo keeps its project link (the edit does not disturb resolution).
+	expect(
+		count(
+			dbPath,
+			`SELECT COUNT(*) FROM entities todo
+			 JOIN entities project ON project.id = json_extract(todo.data, '$.project_id')
+			 WHERE todo.type = 'todo' AND project.type = 'project'
+			   AND json_extract(project.data, '$.name') = ${sqlValue(PROJECT_NAME)};`,
+		),
+	).toBe("1");
+});
+
 test("rejecting the Project lands the Todo standalone (no project, no link)", async ({
 	chat,
 	workspace,
