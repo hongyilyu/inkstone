@@ -917,7 +917,7 @@ describe("RunEvent", () => {
 		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
 	});
 
-	it("decodes a tool_call variant carrying a display arg (ADR-0043)", () => {
+	it("round-trips a tool_call variant carrying a display arg (ADR-0043)", () => {
 		const event = {
 			kind: "tool_call",
 			tool_call_id: "tc_02",
@@ -925,7 +925,10 @@ describe("RunEvent", () => {
 			status: "started",
 			arg: "Lev",
 		};
-		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
+		const decoded = S.decodeUnknownSync(RunEvent)(event);
+		expect(decoded).toEqual(event);
+		// Lock the encode direction too: optional `arg` must survive the round trip.
+		expect(S.encodeSync(RunEvent)(decoded)).toEqual(event);
 	});
 
 	it("rejects a tool_call with an unknown status", () => {

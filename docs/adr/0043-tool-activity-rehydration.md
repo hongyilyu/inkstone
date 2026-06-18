@@ -45,8 +45,14 @@ since_run_seq)` + a cursor + client-side interleave) is heavier than the need.
   tool's typed `Input` — rename-safe under the Rust compiler, and consistent with
   the existing data/presentation split (Core ships data, the Web Client decides
   presentation).
-- **Status maps on the read path:** the persisted `pending | completed | errored`
-  → the wire `running | completed | error`, matching the live `ToolCallStatus`.
+- **Only settled tool calls rehydrate.** The read excludes `pending` rows
+  (`AND tc.status <> 'pending'`) and maps the surviving persisted status to the
+  wire spelling (`completed` → `completed`, `errored` → `error`). A `pending`
+  call is either in flight (owned by the live resubscribe tail, which delivers
+  its terminal boundary) or orphaned by an interrupted Run; rehydrating it would
+  render a false-settled row, since the wire status vocabulary has no in-progress
+  member. So rehydration is the *settled-history* reader; the live stream owns
+  in-flight rows.
 - **`run/get_history` and `since_run_seq` stay unbuilt.** We need full
   rehydration on focus (the same read that already restores text and proposals),
   not incremental cursor replay. The one-round-trip `thread/get` extension is the

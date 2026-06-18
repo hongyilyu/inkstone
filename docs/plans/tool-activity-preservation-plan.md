@@ -42,7 +42,7 @@ No migration, no new writes.
 - **Live aggregate state.** One row that grows as calls start. `Searching…`
   (spinner) while *any* call is in flight; flips to `Searched ✓` once all settle.
 
-  ```
+  ```text
   t1:  🔍 Searching entities · Lev            ⟳
   t2:  🔍 Searching entities · Lev, Lead Ads  ⟳
   t3:  🔍 Searched entities  · Lev, Lead Ads  ✓
@@ -51,7 +51,7 @@ No migration, no new writes.
 - **Errors break out.** Any errored call becomes its own dedicated row showing
   the failed arg; the surviving calls still group.
 
-  ```
+  ```text
   🔍 Searched entities · Lev, Acme   ✓
   🔍 Searched entities · Lead Ads    ⚠ failed
   ```
@@ -99,17 +99,17 @@ No migration, no new writes.
 
 ### TS protocol (`packages/protocol/src/index.ts`)
 
-6. Mirror `RunEvent.arg` and `MessageView.tool_calls` / `ToolCallView`.
+1. Mirror `RunEvent.arg` and `MessageView.tool_calls` / `ToolCallView`.
    Update paired parity / round-trip tests. Confirm whether the bridges fixture
    gate covers `MessageView`/`RunEvent`; regen fixtures if so.
 
 ### Web
 
-7. `store/chat.ts`: `ToolCall` gains `arg?: string`; live reducer sets it from
+1. `store/chat.ts`: `ToolCall` gains `arg?: string`; live reducer sets it from
    the event.
-8. `store/hydrate.ts`: `toMessage` populates `toolCalls` from `view.tool_calls`
+2. `store/hydrate.ts`: `toMessage` populates `toolCalls` from `view.tool_calls`
    (the one-line fix for the actual reload bug).
-9. `components/ToolActivity.tsx`:
+3. `components/ToolActivity.tsx`:
    - Add `TOOL_PRESENTATION` entries + active/done tense for `search_entities`
      and `load_skill`.
    - Add `groupToolCalls(calls)`: errored calls → their own rows; non-errored →
