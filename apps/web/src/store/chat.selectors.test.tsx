@@ -2,8 +2,8 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	appendUserMessage,
+	focusMessage,
 	resetChatStore,
-	setFocusedThread,
 	useThreadMessages,
 } from "./chat.js";
 
@@ -30,9 +30,9 @@ describe("chat selectors — reference stability", () => {
 		const first = result.current;
 		expect(first.map((m) => m.text)).toEqual(["hi"]);
 
-		// Unrelated change: focusing another thread must not re-create threadA's array.
+		// Unrelated change: setting the message anchor must not re-create threadA's array.
 		act(() => {
-			setFocusedThread("threadB");
+			focusMessage("m1");
 		});
 		rerender();
 
@@ -87,7 +87,7 @@ describe("chat selectors — reference stability", () => {
 		expect(result.current).toBe(first);
 
 		act(() => {
-			setFocusedThread("another");
+			focusMessage("m1");
 		});
 		rerender();
 		expect(result.current).toBe(first);

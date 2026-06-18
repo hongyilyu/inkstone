@@ -159,11 +159,12 @@ describe("CommandPalette (⌘K)", () => {
 			within(results).getByText("Send Alice the updated daycare schedule"),
 		).toBeInTheDocument();
 
-		// Activating a message hit focuses its Thread and navigates home.
+		// Activating a message hit navigates to that Thread's route (ADR-0042) and
+		// sets the within-thread scroll anchor.
 		await userEvent.click(within(results).getByText(snippet));
 
 		await waitFor(() => {
-			expect(router.state.location.pathname).toBe("/");
+			expect(router.state.location.pathname).toBe("/thread/thread_x");
 		});
 	});
 

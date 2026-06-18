@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { useNavigate, useParams } from "@tanstack/react-router";
 import { RotateCcw, Sparkles, TriangleAlert } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRuntime } from "@/runtime";
@@ -13,7 +14,6 @@ import {
 	type Message,
 	useActiveRunId,
 	useFocusedMessageId,
-	useFocusedThreadId,
 	useHydrationStatus,
 	useThreadMessages,
 } from "@/store/chat";
@@ -30,7 +30,12 @@ export function ChatColumn() {
 	const scrollerRef = useRef<HTMLDivElement>(null);
 	const runtime = useRuntime();
 	const queryClient = useQueryClient();
-	const focusedThreadId = useFocusedThreadId();
+	const navigate = useNavigate();
+	// The focused Thread is the route (ADR-0042): `/thread/$threadId` carries the
+	// id, `/` (welcome) has none. `strict: false` lets one component serve both —
+	// the Library reads its `$kind` the same way (routes/library/route.tsx).
+	const { threadId } = useParams({ strict: false });
+	const focusedThreadId = threadId ?? null;
 	const messages = useThreadMessages(focusedThreadId ?? "");
 	// Set while a Run streams AND while it's parked awaiting a Proposal (only a
 	// terminal Run Event clears it) — so Stop covers both, matching run/cancel.
@@ -174,12 +179,25 @@ export function ChatColumn() {
 					// reads this surface shows: the sidebar's thread/list and the
 					// right-rail recent-Runs feed (a send births/advances a Run).
 					setSendError(null);
-					const result =
-						focusedThreadId !== null
-							? await send(runtime, focusedThreadId, text)
-							: await sendNewThread(runtime, text);
-					if (!result.ok) {
-						setSendError("Couldn't send your message. Please try again.");
+					if (focusedThreadId !== null) {
+						const result = await send(runtime, focusedThreadId, text);
+						if (!result.ok) {
+							setSendError("Couldn't send your message. Please try again.");
+						}
+					} else {
+						// Mint-on-send: thread focus is the URL (ADR-0042), so on success
+						// navigate to the new thread's route. The thread is pre-seeded and
+						// marked `ready`, so the post-navigate remount reads it without a
+						// re-hydrate; on failure stay on `/` and surface the error.
+						const result = await sendNewThread(runtime, text);
+						if (result.ok) {
+							void navigate({
+								to: "/thread/$threadId",
+								params: { threadId: result.threadId },
+							});
+						} else {
+							setSendError("Couldn't send your message. Please try again.");
+						}
 					}
 					await queryClient.invalidateQueries({ queryKey: ["threads"] });
 					await queryClient.invalidateQueries({ queryKey: ["run-history"] });

@@ -9,16 +9,22 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as SettingsRouteRouteImport } from './routes/settings/route'
 import { Route as LibraryRouteRouteImport } from './routes/library/route'
-import { Route as IndexRouteImport } from './routes/index'
 import { Route as LibraryIndexRouteImport } from './routes/library/index'
+import { Route as ChatIndexRouteImport } from './routes/_chat/index'
 import { Route as SettingsModelsRouteImport } from './routes/settings/models'
 import { Route as LibraryWaitingRouteImport } from './routes/library/waiting'
 import { Route as LibraryReviewRouteImport } from './routes/library/review'
 import { Route as LibraryInboxRouteImport } from './routes/library/inbox'
 import { Route as LibraryKindRouteImport } from './routes/library/$kind'
+import { Route as ChatThreadThreadIdRouteImport } from './routes/_chat/thread.$threadId'
 
+const ChatRoute = ChatRouteImport.update({
+  id: '/_chat',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRouteRoute = SettingsRouteRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -29,15 +35,15 @@ const LibraryRouteRoute = LibraryRouteRouteImport.update({
   path: '/library',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const LibraryIndexRoute = LibraryIndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => LibraryRouteRoute,
+} as any)
+const ChatIndexRoute = ChatIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ChatRoute,
 } as any)
 const SettingsModelsRoute = SettingsModelsRouteImport.update({
   id: '/models',
@@ -64,83 +70,103 @@ const LibraryKindRoute = LibraryKindRouteImport.update({
   path: '/$kind',
   getParentRoute: () => LibraryRouteRoute,
 } as any)
+const ChatThreadThreadIdRoute = ChatThreadThreadIdRouteImport.update({
+  id: '/thread/$threadId',
+  path: '/thread/$threadId',
+  getParentRoute: () => ChatRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
   '/library': typeof LibraryRouteRouteWithChildren
   '/settings': typeof SettingsRouteRouteWithChildren
+  '/': typeof ChatIndexRoute
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
   '/library/': typeof LibraryIndexRoute
+  '/thread/$threadId': typeof ChatThreadThreadIdRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
   '/settings': typeof SettingsRouteRouteWithChildren
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
+  '/': typeof ChatIndexRoute
   '/library': typeof LibraryIndexRoute
+  '/thread/$threadId': typeof ChatThreadThreadIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
   '/library': typeof LibraryRouteRouteWithChildren
   '/settings': typeof SettingsRouteRouteWithChildren
+  '/_chat': typeof ChatRouteWithChildren
   '/library/$kind': typeof LibraryKindRoute
   '/library/inbox': typeof LibraryInboxRoute
   '/library/review': typeof LibraryReviewRoute
   '/library/waiting': typeof LibraryWaitingRoute
   '/settings/models': typeof SettingsModelsRoute
+  '/_chat/': typeof ChatIndexRoute
   '/library/': typeof LibraryIndexRoute
+  '/_chat/thread/$threadId': typeof ChatThreadThreadIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    | '/'
     | '/library'
     | '/settings'
+    | '/'
     | '/library/$kind'
     | '/library/inbox'
     | '/library/review'
     | '/library/waiting'
     | '/settings/models'
     | '/library/'
+    | '/thread/$threadId'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/'
     | '/settings'
     | '/library/$kind'
     | '/library/inbox'
     | '/library/review'
     | '/library/waiting'
     | '/settings/models'
+    | '/'
     | '/library'
+    | '/thread/$threadId'
   id:
     | '__root__'
-    | '/'
     | '/library'
     | '/settings'
+    | '/_chat'
     | '/library/$kind'
     | '/library/inbox'
     | '/library/review'
     | '/library/waiting'
     | '/settings/models'
+    | '/_chat/'
     | '/library/'
+    | '/_chat/thread/$threadId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
   LibraryRouteRoute: typeof LibraryRouteRouteWithChildren
   SettingsRouteRoute: typeof SettingsRouteRouteWithChildren
+  ChatRoute: typeof ChatRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/_chat': {
+      id: '/_chat'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof ChatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -155,19 +181,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryRouteRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/library/': {
       id: '/library/'
       path: '/'
       fullPath: '/library/'
       preLoaderRoute: typeof LibraryIndexRouteImport
       parentRoute: typeof LibraryRouteRoute
+    }
+    '/_chat/': {
+      id: '/_chat/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof ChatIndexRouteImport
+      parentRoute: typeof ChatRoute
     }
     '/settings/models': {
       id: '/settings/models'
@@ -204,6 +230,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryKindRouteImport
       parentRoute: typeof LibraryRouteRoute
     }
+    '/_chat/thread/$threadId': {
+      id: '/_chat/thread/$threadId'
+      path: '/thread/$threadId'
+      fullPath: '/thread/$threadId'
+      preLoaderRoute: typeof ChatThreadThreadIdRouteImport
+      parentRoute: typeof ChatRoute
+    }
   }
 }
 
@@ -239,10 +272,22 @@ const SettingsRouteRouteWithChildren = SettingsRouteRoute._addFileChildren(
   SettingsRouteRouteChildren,
 )
 
+interface ChatRouteChildren {
+  ChatIndexRoute: typeof ChatIndexRoute
+  ChatThreadThreadIdRoute: typeof ChatThreadThreadIdRoute
+}
+
+const ChatRouteChildren: ChatRouteChildren = {
+  ChatIndexRoute: ChatIndexRoute,
+  ChatThreadThreadIdRoute: ChatThreadThreadIdRoute,
+}
+
+const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
   LibraryRouteRoute: LibraryRouteRouteWithChildren,
   SettingsRouteRoute: SettingsRouteRouteWithChildren,
+  ChatRoute: ChatRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

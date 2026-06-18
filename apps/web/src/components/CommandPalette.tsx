@@ -15,7 +15,7 @@ import {
 	searchLibraryItems,
 } from "@/lib/libraryItems";
 import { cn } from "@/lib/utils.js";
-import { focusMessage, setFocusedThread } from "@/store/chat";
+import { focusMessage } from "@/store/chat";
 import { closeCommand, toggleCommand, useCommandOpen } from "@/store/command";
 import { EntityGlyph } from "./library/EntityGlyph.js";
 import { SearchField } from "./ui/search-field.js";
@@ -145,15 +145,19 @@ export function CommandPalette() {
 		if (!result) return;
 		closeCommand();
 		if (result.type === "thread") {
-			setFocusedThread(result.id);
-			navigate({ to: "/" });
+			navigate({ to: "/thread/$threadId", params: { threadId: result.id } });
 			return;
 		}
 		if (result.type === "message") {
-			// Focus the Thread AND anchor the exact matched Message: ChatColumn
-			// scrolls it into view and briefly highlights it once hydrated (issue #138).
-			focusMessage(result.thread_id, result.message_id);
-			navigate({ to: "/" });
+			// Navigate to the Thread's route AND set the within-thread anchor: ChatColumn
+			// scrolls the matched Message into view and briefly highlights it once
+			// hydrated (issue #138). Thread focus is the URL (ADR-0042); the anchor is
+			// still the store field until slice 2 moves it into the URL.
+			focusMessage(result.message_id);
+			navigate({
+				to: "/thread/$threadId",
+				params: { threadId: result.thread_id },
+			});
 			return;
 		}
 		const item = result.item;

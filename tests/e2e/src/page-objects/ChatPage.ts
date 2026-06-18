@@ -129,6 +129,16 @@ export class ChatPage {
 		await expect(this.composer()).toBeVisible();
 	}
 
+	/** The current URL path (without origin) — the focused Thread lives here (ADR-0042). */
+	pathname(): string {
+		return new URL(this.page.url()).pathname;
+	}
+
+	/** The current URL's raw query string (e.g. `?focusedMessageId=…`), without the leading `?`. */
+	search(): string {
+		return new URL(this.page.url()).search.replace(/^\?/, "");
+	}
+
 	/** The ⌘K command palette dialog. */
 	commandPalette() {
 		return this.page.getByRole("dialog", { name: "Search" });

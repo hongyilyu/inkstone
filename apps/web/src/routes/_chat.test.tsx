@@ -1,42 +1,46 @@
 import type { RunHistoryResult } from "@inkstone/protocol";
 import { WsClient, type WsError } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+	createMemoryHistory,
+	createRouter,
+	RouterProvider,
+} from "@tanstack/react-router";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
-import type { ReactNode } from "react";
 import { afterEach, describe, expect, it } from "vitest";
+import { routeTree } from "@/routeTree.gen";
+import { RuntimeProvider } from "@/runtime";
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
-import App from "./App.js";
-import { RuntimeProvider } from "./runtime.js";
 
-describe("App", () => {
-	afterEach(cleanup);
+// Multiple routers across tests; vitest config has no `globals`, so clean up manually.
+afterEach(cleanup);
 
-	it("renders the three-region shell with the recent-runs rail", () => {
-		// ChatColumn + Sidebar now call useRuntime(), so App's tree requires a
-		// RuntimeProvider (main.tsx wraps it; this test does the same). A stub url
-		// opens no socket at mount — the runtime is lazy and this test never sends
-		// or reads (the threadList/run-history queries stay pending, which renders
-		// an empty sidebar + a loading feed, not a throw).
+/** The `_chat` layout owns the shared shell (Sidebar + recent-Runs rail) and an
+ *  `<Outlet/>` for the center — ADR-0042. These tests drive the real route tree. */
+describe("_chat layout route (ADR-0042)", () => {
+	it("renders the three-region shell with the recent-runs rail at /", async () => {
 		renderWithQuery(
 			<RuntimeProvider config={{ url: "ws://stub/ws" }}>
-				<App />
+				<RouterProvider
+					router={createRouter({
+						routeTree,
+						history: createMemoryHistory({ initialEntries: ["/"] }),
+					})}
+				/>
 			</RuntimeProvider>,
 		);
+		// RouterProvider mounts the matched route asynchronously.
 		expect(
-			screen.getByRole("complementary", { name: /sidebar/i }),
+			await screen.findByRole("complementary", { name: /sidebar/i }),
 		).toBeInTheDocument();
 		expect(screen.getByRole("main")).toBeInTheDocument();
-		// The right rail is now the recent-Runs feed (replacing the visual-only
-		// ActivityRail), named for its collapse control.
 		expect(
 			screen.getByRole("complementary", { name: /recent runs/i }),
 		).toBeInTheDocument();
 	});
 
-	it("opens a run's thread when a feed row is clicked", async () => {
-		const opened: string[] = [];
+	it("navigates to a run's thread route when a feed row is clicked", async () => {
 		const unused = Effect.die("not exercised in this test");
 		const stub = WsClient.of({
 			threadCreate: () => unused,
@@ -54,7 +58,7 @@ describe("App", () => {
 						},
 					],
 				}),
-			threadGet: () => unused,
+			threadGet: () => Effect.never,
 			listEntities: () => Effect.succeed({ entities: [] }),
 			entityMutate: () => unused,
 			subscribeRun: () => unused,
@@ -70,21 +74,24 @@ describe("App", () => {
 			proposalNotifications: () => unused,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-		const client = new QueryClient({
-			defaultOptions: { queries: { retry: false } },
+		const router = createRouter({
+			routeTree,
+			history: createMemoryHistory({ initialEntries: ["/"] }),
 		});
-		const Wrapper = ({ children }: { children: ReactNode }) => (
-			<QueryClientProvider client={client}>
-				<RuntimeProvider runtime={runtime}>{children}</RuntimeProvider>
-			</QueryClientProvider>
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<RouterProvider router={router} />
+			</RuntimeProvider>,
 		);
-		// App is router-free; the route injects onOpenThread. Mirror that here.
-		render(<App onOpenThread={(id) => opened.push(id)} />, {
-			wrapper: Wrapper,
-		});
 
 		const row = await screen.findByRole("button", { name: /Clickable run/ });
 		await userEvent.click(row);
-		expect(opened).toEqual(["thread-77"]);
+
+		// Opening a Run's Thread is a navigation now (ADR-0042), not a store poke.
+		await waitFor(() => {
+			expect(router.state.location.pathname).toBe("/thread/thread-77");
+		});
+
+		await runtime.dispose();
 	});
 });

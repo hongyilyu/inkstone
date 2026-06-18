@@ -1,11 +1,10 @@
 import type { ThreadGetResult } from "@inkstone/protocol";
 import { type RunEventValue, WsClient, WsRequestError } from "@inkstone/ui-sdk";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient } from "@tanstack/react-query";
+import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RuntimeProvider } from "@/runtime";
 import { resetBridge } from "@/store/bridge";
 import {
 	appendUserMessage,
@@ -13,9 +12,8 @@ import {
 	getChatState,
 	resetChatStore,
 	seedAssistantMessage,
-	setFocusedThread,
 } from "@/store/chat";
-import { renderWithQuery } from "@/test-utils/renderWithQuery";
+import { renderChatRoute } from "@/test-utils/renderChatRoute";
 import { ChatColumn } from "./ChatColumn.js";
 
 // Stub WsClient injected via RuntimeProvider (no real socket); its finite subscribeRun event list drives the store.
@@ -56,6 +54,22 @@ function makeStubRuntime(opts: {
 	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
 }
 
+/** Mount ChatColumn focused on `threadId` (its route is `/thread/<id>`, ADR-0042). */
+function renderFocused(
+	runtime: ReturnType<typeof makeStubRuntime>,
+	threadId: string,
+	queryClient?: QueryClient,
+) {
+	return renderChatRoute(<ChatColumn />, {
+		runtime,
+		path: `/thread/${threadId}`,
+		queryClient,
+	});
+}
+
+// All renders are async (the helper awaits the router's initial load). Tests that
+// were synchronous before now `await renderFocused(...)` / `await renderChatRoute(...)`.
+
 // jsdom ships no scrollIntoView; the search-jump tests stub it on the prototype.
 // Capture the (undefined) original so afterEach can restore it and the stub can't
 // leak into later tests in this file.
@@ -78,13 +92,8 @@ describe("ChatColumn", () => {
 			runId: "run-1",
 			events: [{ kind: "text_delta", delta: "echo: hi" }, { kind: "done" }],
 		});
-		setFocusedThread("threadA");
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -106,7 +115,6 @@ describe("ChatColumn", () => {
 			runId: "run-inv",
 			events: [{ kind: "text_delta", delta: "echo: hi" }, { kind: "done" }],
 		});
-		setFocusedThread("threadA");
 
 		// A real QueryClient whose invalidateQueries we can observe: a send births/
 		// advances a Run, so the right-rail feed (["run-history"]) must refresh
@@ -122,13 +130,7 @@ describe("ChatColumn", () => {
 				return Promise.resolve();
 			});
 
-		render(
-			<QueryClientProvider client={client}>
-				<RuntimeProvider runtime={runtime}>
-					<ChatColumn />
-				</RuntimeProvider>
-			</QueryClientProvider>,
-		);
+		await renderFocused(runtime, "threadA", client);
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -148,13 +150,8 @@ describe("ChatColumn", () => {
 			runId: "run-x",
 			events: [{ kind: "done" }],
 		});
-		setFocusedThread("threadA");
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "   ");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -164,14 +161,10 @@ describe("ChatColumn", () => {
 		await runtime.dispose();
 	});
 
-	it("welcomes the user when no thread is focused and there are no messages", async () => {
+	it("welcomes the user on the / route (no thread focused) with no messages", async () => {
 		const runtime = makeStubRuntime({ runId: "run-welcome", events: [] });
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderChatRoute(<ChatColumn />, { runtime, path: "/" });
 
 		expect(
 			screen.getByRole("heading", { name: /start a chat/i }),
@@ -183,13 +176,8 @@ describe("ChatColumn", () => {
 
 	it("shows a loading skeleton while a focused thread hydrates", async () => {
 		const runtime = makeStubRuntime({ runId: "run-hydrate", events: [] });
-		setFocusedThread("threadA");
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		expect(
 			screen.getByRole("status", { name: /loading conversation/i }),
@@ -243,13 +231,8 @@ describe("ChatColumn", () => {
 			proposalNotifications: () => Stream.empty,
 		});
 		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
-		setFocusedThread("threadA");
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		// The failed fetch resolves to a recoverable error, never the spinning skeleton.
 		const alert = await screen.findByRole("alert");
@@ -267,7 +250,7 @@ describe("ChatColumn", () => {
 		await runtime.dispose();
 	});
 
-	it("mints a new thread on the first send when none is focused", async () => {
+	it("mints a new thread on the first send from / and navigates to its route", async () => {
 		const user = userEvent.setup();
 		const runtime = makeStubRuntime({
 			runId: "run-2",
@@ -275,11 +258,10 @@ describe("ChatColumn", () => {
 			events: [{ kind: "text_delta", delta: "echo: hello" }, { kind: "done" }],
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		const { router } = await renderChatRoute(<ChatColumn />, {
+			runtime,
+			path: "/",
+		});
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hello");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -292,16 +274,16 @@ describe("ChatColumn", () => {
 			assistantBubble.closest('[data-role="assistant"]'),
 		).toBeInTheDocument();
 
+		// Mint-on-send navigates to the new thread's URL (ADR-0042) — focus is the route.
 		await waitFor(() => {
-			expect(getChatState().focusedThreadId).toBe("thread-new");
+			expect(router.state.location.pathname).toBe("/thread/thread-new");
 		});
 
 		await runtime.dispose();
 	});
 
-	it("shows a typing indicator for a streaming assistant message with no text", () => {
+	it("shows a typing indicator for a streaming assistant message with no text", async () => {
 		const runtime = makeStubRuntime({ runId: "run-3", events: [] });
-		setFocusedThread("threadA");
 		seedAssistantMessage("threadA", {
 			id: "a1",
 			role: "assistant",
@@ -310,18 +292,13 @@ describe("ChatColumn", () => {
 			run_id: "r1",
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		expect(screen.getByTestId("typing-indicator")).toBeInTheDocument();
 	});
 
-	it("hides the typing indicator once streamed text arrives", () => {
+	it("hides the typing indicator once streamed text arrives", async () => {
 		const runtime = makeStubRuntime({ runId: "run-4", events: [] });
-		setFocusedThread("threadA");
 		seedAssistantMessage("threadA", {
 			id: "a2",
 			role: "assistant",
@@ -330,11 +307,7 @@ describe("ChatColumn", () => {
 			run_id: "r2",
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 	});
@@ -348,7 +321,6 @@ describe("ChatColumn", () => {
 		});
 
 		const runtime = makeStubRuntime({ runId: "run-6", events: [] });
-		setFocusedThread("threadA");
 		seedAssistantMessage("threadA", {
 			id: "a4",
 			role: "assistant",
@@ -357,11 +329,7 @@ describe("ChatColumn", () => {
 			run_id: "r4",
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		const copyButton = screen.getByRole("button", { name: /copy/i });
 		await user.click(copyButton);
@@ -372,9 +340,8 @@ describe("ChatColumn", () => {
 		});
 	});
 
-	it("shows no copy button on a streaming assistant message", () => {
+	it("shows no copy button on a streaming assistant message", async () => {
 		const runtime = makeStubRuntime({ runId: "run-7", events: [] });
-		setFocusedThread("threadA");
 		seedAssistantMessage("threadA", {
 			id: "a5",
 			role: "assistant",
@@ -383,18 +350,13 @@ describe("ChatColumn", () => {
 			run_id: "r5",
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
 	});
 
-	it("shows no copy button on an empty completed assistant message", () => {
+	it("shows no copy button on an empty completed assistant message", async () => {
 		const runtime = makeStubRuntime({ runId: "run-8", events: [] });
-		setFocusedThread("threadA");
 		seedAssistantMessage("threadA", {
 			id: "a6",
 			role: "assistant",
@@ -403,18 +365,13 @@ describe("ChatColumn", () => {
 			run_id: "r6",
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
 	});
 
-	it("shows no typing indicator on a completed (empty) assistant message", () => {
+	it("shows no typing indicator on a completed (empty) assistant message", async () => {
 		const runtime = makeStubRuntime({ runId: "run-5", events: [] });
-		setFocusedThread("threadA");
 		seedAssistantMessage("threadA", {
 			id: "a3",
 			role: "assistant",
@@ -423,18 +380,13 @@ describe("ChatColumn", () => {
 			run_id: "r3",
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 	});
 
-	it("renders a running tool call with its label and suppresses the typing dots", () => {
+	it("renders a running tool call with its label and suppresses the typing dots", async () => {
 		const runtime = makeStubRuntime({ runId: "run-tc1", events: [] });
-		setFocusedThread("threadA");
 		seedAssistantMessage("threadA", {
 			id: "a7",
 			role: "assistant",
@@ -444,11 +396,7 @@ describe("ChatColumn", () => {
 			toolCalls: [{ id: "tc_1", name: "read_thread", status: "running" }],
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		const row = screen.getByTestId("tool-call");
 		expect(row).toHaveAttribute("data-status", "running");
@@ -458,9 +406,8 @@ describe("ChatColumn", () => {
 		expect(screen.queryByTestId("typing-indicator")).toBeNull();
 	});
 
-	it("renders a completed tool call in its settled past-tense state", () => {
+	it("renders a completed tool call in its settled past-tense state", async () => {
 		const runtime = makeStubRuntime({ runId: "run-tc2", events: [] });
-		setFocusedThread("threadA");
 		seedAssistantMessage("threadA", {
 			id: "a8",
 			role: "assistant",
@@ -470,20 +417,15 @@ describe("ChatColumn", () => {
 			toolCalls: [{ id: "tc_2", name: "read_thread", status: "completed" }],
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		const row = screen.getByTestId("tool-call");
 		expect(row).toHaveAttribute("data-status", "completed");
 		expect(row).toHaveTextContent("Read this thread");
 	});
 
-	it("surfaces an errored tool call with a failed indication", () => {
+	it("surfaces an errored tool call with a failed indication", async () => {
 		const runtime = makeStubRuntime({ runId: "run-tc3", events: [] });
-		setFocusedThread("threadA");
 		seedAssistantMessage("threadA", {
 			id: "a9",
 			role: "assistant",
@@ -493,20 +435,15 @@ describe("ChatColumn", () => {
 			toolCalls: [{ id: "tc_3", name: "read_thread", status: "error" }],
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		const row = screen.getByTestId("tool-call");
 		expect(row).toHaveAttribute("data-status", "error");
 		expect(row).toHaveTextContent(/failed/i);
 	});
 
-	it("falls back to a humanized label for an unregistered tool", () => {
+	it("falls back to a humanized label for an unregistered tool", async () => {
 		const runtime = makeStubRuntime({ runId: "run-tc4", events: [] });
-		setFocusedThread("threadA");
 		seedAssistantMessage("threadA", {
 			id: "a10",
 			role: "assistant",
@@ -516,11 +453,7 @@ describe("ChatColumn", () => {
 			toolCalls: [{ id: "tc_4", name: "search_web", status: "running" }],
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		expect(screen.getByTestId("tool-call")).toHaveTextContent("Search web");
 	});
@@ -539,11 +472,7 @@ describe("ChatColumn", () => {
 			cancelRun,
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		await user.type(screen.getByRole("textbox", { name: /message/i }), "hi");
 		await user.click(screen.getByRole("button", { name: /send/i }));
@@ -570,7 +499,6 @@ describe("ChatColumn", () => {
 		const scrollIntoView = vi.fn();
 		Element.prototype.scrollIntoView = scrollIntoView;
 		const runtime = makeStubRuntime({ runId: "run-jump", events: [] });
-		setFocusedThread("threadA");
 		appendUserMessage("threadA", {
 			id: "u-top",
 			role: "user",
@@ -586,13 +514,9 @@ describe("ChatColumn", () => {
 			run_id: "r-deep",
 		});
 		// A ⌘K hit jumped to the deep message: anchor set before the column renders.
-		focusMessage("threadA", "a-deep");
+		focusMessage("a-deep");
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		const target = await screen.findByText(
 			"the matched reply deep in scrollback",
@@ -619,7 +543,6 @@ describe("ChatColumn", () => {
 		const scrollIntoView = vi.fn();
 		Element.prototype.scrollIntoView = scrollIntoView;
 		const runtime = makeStubRuntime({ runId: "run-noanchor", events: [] });
-		setFocusedThread("threadA");
 		seedAssistantMessage("threadA", {
 			id: "a-plain",
 			role: "assistant",
@@ -628,11 +551,7 @@ describe("ChatColumn", () => {
 			run_id: "r-plain",
 		});
 
-		const { container } = renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		const { container } = await renderFocused(runtime, "threadA");
 
 		await screen.findByText("an ordinary reply");
 		expect(scrollIntoView).not.toHaveBeenCalled();
@@ -646,7 +565,6 @@ describe("ChatColumn", () => {
 		vi.useFakeTimers();
 		try {
 			const runtime = makeStubRuntime({ runId: "run-fade", events: [] });
-			setFocusedThread("threadA");
 			seedAssistantMessage("threadA", {
 				id: "a-fade",
 				role: "assistant",
@@ -654,13 +572,9 @@ describe("ChatColumn", () => {
 				text: "the briefly-ringed reply",
 				run_id: "r-fade",
 			});
-			focusMessage("threadA", "a-fade");
+			focusMessage("a-fade");
 
-			const { container } = renderWithQuery(
-				<RuntimeProvider runtime={runtime}>
-					<ChatColumn />
-				</RuntimeProvider>,
-			);
+			const { container } = await renderFocused(runtime, "threadA");
 
 			// The ring blooms on the (synchronously-flushed) scroll effect…
 			expect(container.querySelector("[data-highlighted]")).not.toBeNull();
@@ -687,7 +601,6 @@ describe("ChatColumn", () => {
 			runId: "run-retry",
 			events: [{ kind: "text_delta", delta: "recovered" }, { kind: "done" }],
 		});
-		setFocusedThread("threadA");
 		appendUserMessage("threadA", {
 			id: "u1",
 			role: "user",
@@ -703,11 +616,7 @@ describe("ChatColumn", () => {
 			run_id: "r-fail",
 		});
 
-		renderWithQuery(
-			<RuntimeProvider runtime={runtime}>
-				<ChatColumn />
-			</RuntimeProvider>,
-		);
+		await renderFocused(runtime, "threadA");
 
 		expect(screen.getByTestId("assistant-error")).toHaveTextContent(
 			/nothing was saved without your approval/i,
