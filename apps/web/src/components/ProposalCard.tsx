@@ -1227,6 +1227,7 @@ function IntentGraphReviewCard({
 	// with a fresh proposal_id. The buffer is keyed by graph-local handles (ephemeral
 	// model labels that collide across extractions), so without this reset a prior
 	// graph's toggles could leak into the next and submit an unintended decision.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset keyed on the proposal id.
 	useEffect(() => {
 		setBuffer({});
 	}, [proposal.proposal_id]);
