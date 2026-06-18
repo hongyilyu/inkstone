@@ -405,15 +405,20 @@ pub struct ThreadGetParams {
 }
 
 /// One tool call in a `thread/get` result, rehydrating the live tool-activity
-/// row (ADR-0043). Carries only what the row renders — `name`, `status`, and a
-/// `display_arg` — never the request/result payloads. Proposal tool calls are
-/// excluded by the read (they render as a `ProposalCard`). `status` mirrors the
-/// live `ToolCallStatus` wire spelling (`started`→`running` is the live-only
-/// case; a persisted call is always `completed`/`error`).
+/// row (ADR-0043). Carries only what the row renders — `name`, `status`, and an
+/// optional display `arg` (the tool's key argument, e.g. a search query) —
+/// never the request/result payloads. Proposal tool calls are excluded by the
+/// read (they render as a `ProposalCard`). `status` mirrors the live
+/// `ToolCallStatus` wire spelling; a persisted call is always `completed`/`error`.
 #[derive(Debug, Serialize)]
 pub struct ToolCallView {
     pub name: String,
     pub status: String,
+    /// The tool's display argument (ADR-0043), present only for tools that
+    /// expose one (`search_entities` → query, `load_skill` → name). Omitted
+    /// (not `null`) when absent, so an argless tool's row carries no `arg` key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arg: Option<String>,
 }
 
 /// A Message in a `thread/get` result. `text` is the concatenation of the
@@ -467,6 +472,11 @@ pub enum RunEvent {
         tool_call_id: String,
         name: String,
         status: ToolCallStatus,
+        /// The tool's display argument (ADR-0043), e.g. a `search_entities`
+        /// query. Omitted for tools that expose none; carried on the live row so
+        /// it matches the rehydrated `ToolCallView`.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        arg: Option<String>,
     },
     Done,
     Cancelled,
@@ -1279,10 +1289,18 @@ mod mirror_tests {
             status: "complete".to_string(),
             run_id: UUID_B.to_string(),
             text: "hello".to_string(),
-            tool_calls: vec![ToolCallView {
-                name: "read_thread".to_string(),
-                status: "completed".to_string(),
-            }],
+            tool_calls: vec![
+                ToolCallView {
+                    name: "search_entities".to_string(),
+                    status: "completed".to_string(),
+                    arg: Some("Lev".to_string()),
+                },
+                ToolCallView {
+                    name: "read_thread".to_string(),
+                    status: "completed".to_string(),
+                    arg: None,
+                },
+            ],
         };
         assert_eq!(
             serde_json::to_value(&r).unwrap(),
@@ -1292,7 +1310,10 @@ mod mirror_tests {
                 "status": "complete",
                 "run_id": UUID_B,
                 "text": "hello",
-                "tool_calls": [{ "name": "read_thread", "status": "completed" }]
+                "tool_calls": [
+                    { "name": "search_entities", "status": "completed", "arg": "Lev" },
+                    { "name": "read_thread", "status": "completed" }
+                ]
             }),
         );
     }
@@ -1308,7 +1329,11 @@ mod mirror_tests {
                 status: "complete".to_string(),
                 run_id: UUID_A.to_string(),
                 text: "hi".to_string(),
-                tool_calls: vec![],
+                tool_calls: vec![ToolCallView {
+                    name: "search_entities".to_string(),
+                    status: "error".to_string(),
+                    arg: Some("Lead Ads".to_string()),
+                }],
             }],
         };
         assert_eq!(
@@ -1323,7 +1348,9 @@ mod mirror_tests {
                         "status": "complete",
                         "run_id": UUID_A,
                         "text": "hi",
-                        "tool_calls": []
+                        "tool_calls": [
+                            { "name": "search_entities", "status": "error", "arg": "Lead Ads" }
+                        ]
                     }
                 ]
             }),
@@ -1389,15 +1416,38 @@ mod mirror_tests {
                     tool_call_id,
                     name,
                     status: got,
+                    arg,
                 } => {
                     assert_eq!(tool_call_id, "tc_01");
                     assert_eq!(name, "read_thread");
                     assert_eq!(*got, status);
+                    assert_eq!(*arg, None, "argless tool omits arg");
                 }
                 other => panic!("expected ToolCall, got {other:?}"),
             }
+            // No `arg` key when absent (skip_serializing_if).
             assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
         }
+    }
+
+    #[test]
+    fn run_event_tool_call_round_trips_with_arg() {
+        let wire = json!({
+            "kind": "tool_call",
+            "tool_call_id": "tc_02",
+            "name": "search_entities",
+            "status": "started",
+            "arg": "Lev",
+        });
+        let ev: RunEvent = serde_json::from_value(wire.clone()).unwrap();
+        match &ev {
+            RunEvent::ToolCall { name, arg, .. } => {
+                assert_eq!(name, "search_entities");
+                assert_eq!(arg.as_deref(), Some("Lev"));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+        assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
     }
 
     // --- Manifest (Serialize-only): encode to the canonical wire JSON. ---

@@ -374,10 +374,13 @@ pub async fn current_thread_journal_entries(
 
 /// One tool call rehydrated for a `thread/get` Message (ADR-0043): the
 /// non-Proposal calls of the Message's Run, in timeline order, with the
-/// persisted status mapped to the wire spelling (`errored` → `error`).
+/// persisted status mapped to the wire spelling (`errored` → `error`) and the
+/// display `arg` derived from the request payload (the same extractor the live
+/// `tool_call` Run Event uses).
 pub struct ToolCallRow {
     pub name: String,
     pub status: String,
+    pub arg: Option<String>,
 }
 
 /// One Message in a `thread/get` read, with `text` already assembled (text
@@ -446,14 +449,24 @@ async fn tool_call_rows_for_run(pool: &SqlitePool, run_id: &str) -> sqlx::Result
     let rows = queries::tool_calls_by_run(pool, run_uuid).await?;
     Ok(rows
         .into_iter()
-        .filter(|(name, _)| !crate::tools::is_proposal(name))
-        .map(|(name, status)| ToolCallRow {
-            name,
-            status: if status == "errored" {
-                "error".to_string()
-            } else {
-                status
-            },
+        .filter(|(name, _, _)| !crate::tools::is_proposal(name))
+        .map(|(name, status, request_payload)| {
+            // Derive the display arg from the stored request payload via the same
+            // per-tool extractor the live `tool_call` Run Event uses (ADR-0043),
+            // so the reloaded row matches the live one. A malformed payload yields
+            // no arg rather than an error (the read is best-effort).
+            let arg = serde_json::from_str::<serde_json::Value>(&request_payload)
+                .ok()
+                .and_then(|params| crate::tools::display_arg(&name, &params));
+            ToolCallRow {
+                name,
+                status: if status == "errored" {
+                    "error".to_string()
+                } else {
+                    status
+                },
+                arg,
+            }
         })
         .collect())
 }

@@ -59,6 +59,19 @@ impl EntityKind {
     }
 }
 
+/// The display argument for a `search_entities` tool-activity row (ADR-0043):
+/// the search `query`. `None` for a malformed payload or an empty query (an
+/// empty query matches all, so it has no meaningful label).
+pub fn display_arg(params: &Value) -> Option<String> {
+    let input: Input = serde_json::from_value(params.clone()).ok()?;
+    let query = input.query.trim();
+    if query.is_empty() {
+        None
+    } else {
+        Some(query.to_string())
+    }
+}
+
 pub fn descriptor() -> CoreToolDescriptor {
     CoreToolDescriptor {
         name: NAME.to_string(),

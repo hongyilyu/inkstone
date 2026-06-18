@@ -518,6 +518,31 @@ describe("ChatColumn", () => {
 		expect(screen.getByTestId("tool-call")).toHaveTextContent("Search web");
 	});
 
+	it("renders a search_entities row with its display arg (ADR-0043)", async () => {
+		const runtime = makeStubRuntime({ runId: "run-tc5", events: [] });
+		seedAssistantMessage("threadA", {
+			id: "a11",
+			role: "assistant",
+			status: "completed",
+			text: "done",
+			run_id: "r11",
+			toolCalls: [
+				{
+					id: "tc_5",
+					name: "search_entities",
+					status: "completed",
+					arg: "Lev",
+				},
+			],
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		const row = screen.getByTestId("tool-call");
+		expect(row).toHaveTextContent("Searched entities");
+		expect(row).toHaveTextContent("· Lev");
+	});
+
 	it("shows a Stop control while a run streams and settles the bubble on cancel", async () => {
 		const user = userEvent.setup();
 		const cancelRun = vi.fn(() =>

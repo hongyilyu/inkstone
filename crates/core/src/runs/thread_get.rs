@@ -40,6 +40,7 @@ pub(super) async fn handle(
                     .map(|tc| ToolCallView {
                         name: tc.name,
                         status: tc.status,
+                        arg: tc.arg,
                     })
                     .collect(),
             })

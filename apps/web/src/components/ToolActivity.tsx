@@ -3,6 +3,8 @@ import {
 	BookOpen,
 	Check,
 	type LucideIcon,
+	Search,
+	Sparkles,
 	Wrench,
 } from "lucide-react";
 import { cn } from "@/lib/utils.js";
@@ -22,6 +24,17 @@ const TOOL_PRESENTATION: Record<string, ToolPresentation> = {
 		done: "Read this thread",
 		Icon: BookOpen,
 		access: "read",
+	},
+	search_entities: {
+		active: "Searching entities",
+		done: "Searched entities",
+		Icon: Search,
+		access: "read",
+	},
+	load_skill: {
+		active: "Loading skill",
+		done: "Loaded skill",
+		Icon: Sparkles,
 	},
 };
 
@@ -65,12 +78,14 @@ function ToolCallRow({ call }: { call: ToolCall }) {
 	const completed = call.status === "completed";
 	const label = running ? active : done;
 	const readOnly = access === "read" && !errored;
+	const arg = call.arg?.trim() ? call.arg.trim() : undefined;
+	const argPhrase = arg ? ` ${arg}` : "";
 
 	const srText = running
-		? `${active}${access === "read" ? ", read-only" : ""}, in progress`
+		? `${active}${argPhrase}${access === "read" ? ", read-only" : ""}, in progress`
 		: errored
-			? `${done} failed`
-			: `${done}${access === "read" ? ", read-only" : ""}, done`;
+			? `${done}${argPhrase} failed`
+			: `${done}${argPhrase}${access === "read" ? ", read-only" : ""}, done`;
 
 	return (
 		<li
@@ -103,6 +118,14 @@ function ToolCallRow({ call }: { call: ToolCall }) {
 			<span aria-hidden className="min-w-0 truncate">
 				{label}
 			</span>
+			{arg && (
+				<span
+					aria-hidden
+					className="min-w-0 shrink truncate text-muted-foreground"
+				>
+					· {arg}
+				</span>
+			)}
 			{readOnly && (
 				<span aria-hidden className="shrink-0 text-muted-foreground text-xs">
 					· read-only

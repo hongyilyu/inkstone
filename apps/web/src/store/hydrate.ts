@@ -41,6 +41,7 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 		id: `${view.id}:tc:${i}`,
 		name: tc.name,
 		status: toToolCallStatus(tc.status),
+		arg: tc.arg,
 	}));
 	return {
 		id: view.id,

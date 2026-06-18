@@ -36,6 +36,18 @@ pub struct Input {
     pub name: String,
 }
 
+/// The display argument for a `load_skill` tool-activity row (ADR-0043): the
+/// skill `name`. `None` for a malformed payload or an empty name.
+pub fn display_arg(params: &Value) -> Option<String> {
+    let input: Input = serde_json::from_value(params.clone()).ok()?;
+    let name = input.name.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
 /// The manifest descriptor for this tool.
 pub fn descriptor() -> CoreToolDescriptor {
     CoreToolDescriptor {

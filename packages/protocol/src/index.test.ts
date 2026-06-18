@@ -791,14 +791,17 @@ describe("ThreadGetParams", () => {
 });
 
 describe("MessageView", () => {
-	it("decodes all snake_case fields, including tool_calls", () => {
+	it("decodes all snake_case fields, including tool_calls with and without arg", () => {
 		const wire = {
 			id: "01900000-0000-7000-8000-000000000000",
 			role: "assistant",
 			status: "completed",
 			run_id: "01900000-0000-7000-8000-000000000001",
 			text: "echo: hi",
-			tool_calls: [{ name: "read_thread", status: "completed" }],
+			tool_calls: [
+				{ name: "search_entities", status: "completed", arg: "Lev" },
+				{ name: "read_thread", status: "completed" },
+			],
 		};
 		expect(S.decodeUnknownSync(MessageView)(wire)).toEqual(wire);
 	});
@@ -910,6 +913,17 @@ describe("RunEvent", () => {
 			tool_call_id: "tc_01",
 			name: "read_thread",
 			status,
+		};
+		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
+	});
+
+	it("decodes a tool_call variant carrying a display arg (ADR-0043)", () => {
+		const event = {
+			kind: "tool_call",
+			tool_call_id: "tc_02",
+			name: "search_entities",
+			status: "started",
+			arg: "Lev",
 		};
 		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
 	});
