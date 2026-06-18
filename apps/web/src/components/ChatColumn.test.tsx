@@ -603,6 +603,57 @@ describe("ChatColumn", () => {
 		await runtime.dispose();
 	});
 
+	it("jumps to the anchor exactly once even as later messages arrive (streaming) before the strip commits", async () => {
+		// The URL strip is async, so focusedMessageId lingers a few renders. A later
+		// `messages` change in that window (e.g. a live Run's text_delta on the
+		// deep-linked thread) must NOT re-fire the jump and yank the viewport — the
+		// per-anchor one-shot guard makes it fire exactly once (deep-review finding).
+		const scrollIntoView = vi.fn();
+		Element.prototype.scrollIntoView = scrollIntoView;
+		const runtime = makeStubRuntime({ runId: "run-once", events: [] });
+		appendUserMessage("threadA", {
+			id: "u-top",
+			role: "user",
+			status: "completed",
+			text: "first",
+			run_id: "",
+		});
+		seedAssistantMessage("threadA", {
+			id: "a-anchor",
+			role: "assistant",
+			status: "completed",
+			text: "the anchored reply",
+			run_id: "r-anchor",
+		});
+
+		await renderFocused(runtime, "threadA", { focusedMessageId: "a-anchor" });
+
+		await screen.findByText("the anchored reply");
+		await waitFor(() => {
+			expect(scrollIntoView).toHaveBeenCalledTimes(1);
+		});
+
+		// Simulate a streaming delta arriving AFTER the jump: a new message mutates
+		// the list (a new array ref), re-running the anchor effect while the async
+		// strip may still be in flight. The anchor is still present in the list.
+		await act(async () => {
+			appendUserMessage("threadA", {
+				id: "u-later",
+				role: "user",
+				status: "completed",
+				text: "a later turn",
+				run_id: "",
+			});
+			await Promise.resolve();
+		});
+		await screen.findByText("a later turn");
+
+		// Still exactly one scroll — the one-shot guard held.
+		expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+		await runtime.dispose();
+	});
+
 	it("does not highlight any message when no search-jump anchor is set", async () => {
 		const scrollIntoView = vi.fn();
 		Element.prototype.scrollIntoView = scrollIntoView;

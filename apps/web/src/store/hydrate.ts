@@ -1,5 +1,9 @@
 import type { ThreadGetResult } from "@inkstone/protocol";
-import { type UnknownThreadError, WsClient } from "@inkstone/ui-sdk";
+import {
+	type InvalidParamsError,
+	type UnknownThreadError,
+	WsClient,
+} from "@inkstone/ui-sdk";
 import { Effect } from "effect";
 import { useEffect } from "react";
 import type { WsRuntime } from "../runtime.js";
@@ -69,12 +73,19 @@ export function hydrateThread(
 		}
 		return "ready" as const;
 	}).pipe(
-		// A genuinely missing Thread (Core `-32001`) is a deterministic dead-end, not
-		// a transient failure — map it to `not_found` so the UI shows an honest
-		// "thread isn't available" state with a Back-to-New-Chat exit, never a retry
-		// that can't succeed (ADR-0042 B-additive). All other failures fall through
-		// to the rejection branch and stay on the existing recoverable `error` path.
+		// Two deterministic dead-ends map to `not_found` (an honest "thread isn't
+		// available" state with a Back-to-New-Chat exit, never a retry that can't
+		// succeed — ADR-0042 B-additive): a genuinely missing Thread (Core `-32001`
+		// → UnknownThreadError) and a malformed thread id (Core `-32602` →
+		// InvalidParamsError, e.g. a typo'd or truncated shared `/thread/<bad>` link —
+		// the id is arbitrary URL input the route does not pre-validate). Both fail
+		// identically on every retry, so neither belongs on the recoverable `error`
+		// path. A transient WsRequestError falls through to the rejection branch and
+		// keeps the existing retry affordance.
 		Effect.catchTag("UnknownThreadError", (_e: UnknownThreadError) =>
+			Effect.succeed("not_found" as const),
+		),
+		Effect.catchTag("InvalidParamsError", (_e: InvalidParamsError) =>
 			Effect.succeed("not_found" as const),
 		),
 	);

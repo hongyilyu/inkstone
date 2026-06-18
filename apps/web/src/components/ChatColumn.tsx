@@ -88,6 +88,15 @@ export function ChatColumn() {
 	// effect can't clobber the just-completed jump.
 	const initialScrollThread = useRef<string | null>(null);
 
+	// The anchor value whose jump has already fired. Unlike master's synchronous
+	// store-anchor consume, the URL strip is an ASYNC navigate (the param lingers a
+	// few renders until it commits), so without this guard a `messages` change in
+	// that window — e.g. a ⌘K jump into a thread with a live streaming Run — would
+	// re-fire scrollIntoView every delta and fight the user's scroll. Keyed on the
+	// anchor id (not the thread) so a SECOND ⌘K hit to a different message in the
+	// same thread still jumps, while a strip-window re-fire (same id) does not.
+	const scrolledAnchorId = useRef<string | null>(null);
+
 	// Cold-load / thread-switch lands at the latest message (ADR-0042). The old
 	// mount-only scroll no-op'd on a cold thread (messages arrive AFTER mount), so
 	// reloading onto a long thread used to land at the top. Pin to the bottom when
@@ -142,6 +151,10 @@ export function ChatColumn() {
 			if (settled) void stripAnchor();
 			return;
 		}
+		// True one-shot: once we've jumped for this anchor, don't re-scroll if a later
+		// `messages` tick re-runs the effect while the async strip is still in flight.
+		if (scrolledAnchorId.current === focusedMessageId) return;
+		scrolledAnchorId.current = focusedMessageId;
 		target.scrollIntoView({ block: "center", behavior: "auto" });
 		setHighlightId(focusedMessageId);
 		// The anchor jump IS this thread's initial scroll — claim the ref so the

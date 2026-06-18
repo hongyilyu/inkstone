@@ -33,3 +33,18 @@ test("a /thread/<unknown-uuid> URL shows the not-found state with a New Chat exi
 	await expect.poll(() => new URL(page.url()).pathname).toBe("/");
 	await expect(chat.composer()).toBeVisible();
 });
+
+test("a /thread/<malformed-id> URL also shows not-found (no futile retry)", async ({
+	chat,
+	page,
+}) => {
+	// A typo'd/truncated shared link carries a non-UUID id → Core rejects it as
+	// invalid_params (-32602), a deterministic dead-end. It must land on the same
+	// honest not-found state, NOT the retryable error card (deep-review finding).
+	await chat.gotoPath("/thread/not-a-real-uuid");
+
+	await expect(page.getByText(/this thread isn't available/i)).toBeVisible({
+		timeout: 15_000,
+	});
+	await expect(page.getByRole("button", { name: /try again/i })).toHaveCount(0);
+});

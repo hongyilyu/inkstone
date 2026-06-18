@@ -1,5 +1,6 @@
 import type { ThreadGetResult } from "@inkstone/protocol";
 import {
+	InvalidParamsError,
 	type RunEventValue,
 	type RunId,
 	UnknownThreadError,
@@ -342,6 +343,43 @@ describe("refresh-durable hydration", () => {
 
 		expect(getHydrationStatus("tGhost")).toBe("not_found");
 		expect(getChatState().threads.tGhost?.messages ?? []).toHaveLength(0);
+
+		await runtime.dispose();
+	});
+
+	it("marks a malformed thread id (`InvalidParamsError`) as `not_found`, not the retryable `error`", async () => {
+		// A non-UUID thread id in the URL (a typo'd/truncated shared link) fails
+		// Core's uuid decode → -32602 → InvalidParamsError. It's as deterministic a
+		// dead-end as an unknown thread — retrying re-fails identically — so it must
+		// land on not_found, NOT the recoverable retry path (deep-review finding).
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: () =>
+				Effect.fail(
+					new InvalidParamsError({ message: "thread_id must be a UUID" }),
+				),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "not-a-uuid");
+
+		expect(getHydrationStatus("not-a-uuid")).toBe("not_found");
 
 		await runtime.dispose();
 	});
