@@ -1,6 +1,11 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { RotateCcw, Sparkles, TriangleAlert } from "lucide-react";
+import {
+	MessageSquareDashed,
+	RotateCcw,
+	Sparkles,
+	TriangleAlert,
+} from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRuntime } from "@/runtime";
 import {
@@ -57,6 +62,12 @@ export function ChatColumn() {
 	const showWelcome = focusedThreadId === null && noMessages;
 	const hydrationFailed =
 		focusedThreadId !== null && noMessages && hydration === "error";
+	// A Thread the URL points at that Core says doesn't exist (stale shared link,
+	// deleted Thread): an honest dead-end, not a retry (ADR-0042). `noMessages` is
+	// not required — a missing Thread never has messages — but keeps the branch
+	// symmetric with the others.
+	const threadNotFound =
+		focusedThreadId !== null && noMessages && hydration === "not_found";
 	const showHydrating =
 		focusedThreadId !== null &&
 		noMessages &&
@@ -163,6 +174,8 @@ export function ChatColumn() {
 			<div ref={scrollerRef} className="flex-1 overflow-y-auto px-6 pt-14 pb-6">
 				{showWelcome ? (
 					<ChatWelcome />
+				) : threadNotFound ? (
+					<ChatThreadNotFound onNewChat={() => navigate({ to: "/" })} />
 				) : hydrationFailed ? (
 					<ChatHydrationError onRetry={retryHydration} />
 				) : showHydrating ? (
@@ -278,6 +291,26 @@ function ChatHydrationError({ onRetry }: { onRetry: () => void }) {
 }
 
 /** Shown while a selected thread hydrates: placeholder bubbles, not a spinner. */
+/** A Thread the URL points at that Core says doesn't exist (ADR-0042): an honest
+ *  dead-end with a Back-to-New-Chat exit — mirrors the Library's "Unknown
+ *  collection" card. NOT a retry: a missing Thread can't be re-fetched into being. */
+function ChatThreadNotFound({ onNewChat }: { onNewChat: () => void }) {
+	return (
+		<div className="mx-auto flex min-h-full max-w-3xl flex-col items-center justify-center">
+			<EmptyState
+				icon={MessageSquareDashed}
+				size="lg"
+				title="This thread isn't available"
+				description="It may have been deleted, or the link points to a thread that no longer exists."
+				action={
+					<Button variant="chip" size="pill" onClick={onNewChat}>
+						Back to New Chat
+					</Button>
+				}
+			/>
+		</div>
+	);
+}
 function ChatHydrating() {
 	return (
 		<div

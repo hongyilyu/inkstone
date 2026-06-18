@@ -13,6 +13,11 @@ export class ChatPage {
 		await expect(this.composer()).toBeVisible();
 	}
 
+	/** Navigate directly to a SPA path (e.g. a deep link `/thread/<id>`), no composer wait. */
+	async gotoPath(path: string): Promise<void> {
+		await this.page.goto(new URL(path, this.baseUrl).href);
+	}
+
 	/** The message composer textarea. */
 	composer() {
 		return this.page.getByRole("textbox", { name: /message/i });

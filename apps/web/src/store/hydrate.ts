@@ -1,5 +1,5 @@
 import type { ThreadGetResult } from "@inkstone/protocol";
-import { WsClient } from "@inkstone/ui-sdk";
+import { type UnknownThreadError, WsClient } from "@inkstone/ui-sdk";
 import { Effect } from "effect";
 import { useEffect } from "react";
 import type { WsRuntime } from "../runtime.js";
@@ -59,7 +59,7 @@ export function hydrateThread(
 		if (threadBecameLive(threadId)) {
 			// Keep the live turn intact; fold history in front and do NOT resubscribe a settled history run.
 			prependHistory(threadId, messages);
-			return;
+			return "ready" as const;
 		}
 		loadThreadMessages(threadId, messages);
 		for (const message of messages) {
@@ -67,11 +67,29 @@ export function hydrateThread(
 				startRunStream(runtime, threadId, message.run_id);
 			}
 		}
-	});
+		return "ready" as const;
+	}).pipe(
+		// A genuinely missing Thread (Core `-32001`) is a deterministic dead-end, not
+		// a transient failure — map it to `not_found` so the UI shows an honest
+		// "thread isn't available" state with a Back-to-New-Chat exit, never a retry
+		// that can't succeed (ADR-0042 B-additive). All other failures fall through
+		// to the rejection branch and stay on the existing recoverable `error` path.
+		Effect.catchTag("UnknownThreadError", (_e: UnknownThreadError) =>
+			Effect.succeed("not_found" as const),
+		),
+	);
 	return runtime.runPromise(program).then(
-		() => setHydrationStatus(threadId, "ready"),
+		(status) => {
+			// A send during the fetch window can turn a "missing" Thread live (the
+			// optimistic seed): keep that live turn rather than blanking it to not-found.
+			if (status === "not_found" && threadBecameLive(threadId)) {
+				setHydrationStatus(threadId, "ready");
+				return;
+			}
+			setHydrationStatus(threadId, status);
+		},
 		() => {
-			// Failed thread/get: if a send made the thread live mid-fetch, keep that live turn (ready);
+			// Failed thread/get (transient): if a send made the thread live mid-fetch, keep that live turn (ready);
 			// otherwise surface a recoverable error rather than spinning the skeleton forever.
 			setHydrationStatus(
 				threadId,

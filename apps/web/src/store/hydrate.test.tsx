@@ -2,6 +2,7 @@ import type { ThreadGetResult } from "@inkstone/protocol";
 import {
 	type RunEventValue,
 	type RunId,
+	UnknownThreadError,
 	WsClient,
 	type WsError,
 	WsRequestError,
@@ -306,6 +307,94 @@ describe("refresh-durable hydration", () => {
 		const thread = getChatState().threads.tD;
 		expect(thread?.messages.map((m) => m.text)).toEqual(["live message", ""]);
 		expect(thread?.activeRunId).toBe("live-run");
+
+		await runtime.dispose();
+	});
+
+	it("marks a missing thread (`UnknownThreadError`) as `not_found`, not `error`", async () => {
+		// A genuinely missing Thread (Core `-32001`) is a deterministic dead-end:
+		// it must end in `not_found` so the UI shows an honest "isn't available"
+		// state with a Back-to-New-Chat exit, never a retry that can't succeed.
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: () =>
+				Effect.fail(new UnknownThreadError({ message: "no such thread" })),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tGhost");
+
+		expect(getHydrationStatus("tGhost")).toBe("not_found");
+		expect(getChatState().threads.tGhost?.messages ?? []).toHaveLength(0);
+
+		await runtime.dispose();
+	});
+
+	it("keeps a became-live turn (`ready`) even when thread/get reports the thread missing", async () => {
+		// A send can turn a "missing" Thread live (the optimistic seed) before the
+		// UnknownThreadError lands — keep that live turn rather than blanking it.
+		const gate = Effect.runSync(Deferred.make<ThreadGetResult, WsError>());
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: (id) =>
+				id === "tRace" ? Deferred.await(gate) : Effect.die("unknown thread"),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		const hydrating = hydrateThread(runtime, "tRace");
+		appendUserMessage("tRace", {
+			id: "u1",
+			role: "user",
+			status: "completed",
+			text: "live message",
+			run_id: "",
+		});
+		attachRun("tRace", "u1", "live-run");
+
+		Effect.runSync(
+			Deferred.fail(
+				gate,
+				new UnknownThreadError({ message: "no such thread" }),
+			),
+		);
+		await hydrating;
+
+		expect(getHydrationStatus("tRace")).toBe("ready");
+		expect(getChatState().threads.tRace?.messages.map((m) => m.text)).toEqual([
+			"live message",
+		]);
 
 		await runtime.dispose();
 	});

@@ -23,8 +23,15 @@ export interface Message {
 	readonly error?: string;
 }
 
-/** Reactive hydrate-on-focus lifecycle (replaces the old non-reactive Set): `loading` while `thread/get` is in flight, `error` on a failed fetch (drives a recoverable affordance), `ready` once history is live or locally-originated. Absent = never hydrated. */
-export type HydrationStatus = "loading" | "ready" | "error";
+/**
+ * Reactive hydrate-on-focus lifecycle (replaces the old non-reactive Set):
+ * `loading` while `thread/get` is in flight, `error` on a transient failed fetch
+ * (drives a recoverable retry affordance), `not_found` when Core reports the
+ * Thread does not exist (`UnknownThreadError`, a dead-end with a Back-to-New-Chat
+ * exit — ADR-0042), `ready` once history is live or locally-originated. Absent =
+ * never hydrated.
+ */
+export type HydrationStatus = "loading" | "ready" | "error" | "not_found";
 
 /** Per-thread state. The Run lifecycle (status / snapshot boundary / parked-ness) lives on {@link RunRecord}, keyed by run id. */
 interface ThreadState {

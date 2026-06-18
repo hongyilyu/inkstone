@@ -1,5 +1,10 @@
 import type { ThreadGetResult } from "@inkstone/protocol";
-import { type RunEventValue, WsClient, WsRequestError } from "@inkstone/ui-sdk";
+import {
+	type RunEventValue,
+	UnknownThreadError,
+	WsClient,
+	WsRequestError,
+} from "@inkstone/ui-sdk";
 import { QueryClient } from "@tanstack/react-query";
 import { act, cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -251,6 +256,55 @@ describe("ChatColumn", () => {
 		// Retry succeeds → history renders, error gone.
 		expect(await screen.findByText("recovered history")).toBeInTheDocument();
 		expect(screen.queryByText(/couldn't load this conversation/i)).toBeNull();
+
+		await runtime.dispose();
+	});
+
+	it("shows an honest not-found state (with a Back-to-New-Chat exit, no retry) for a missing thread", async () => {
+		const user = userEvent.setup();
+		const unused = Effect.die("not exercised in this test");
+		const stub = WsClient.of({
+			threadCreate: () => unused,
+			postMessage: () => unused,
+			threadList: () => unused,
+			getRunHistory: () => unused,
+			threadGet: () =>
+				Effect.fail(new UnknownThreadError({ message: "no such thread" })),
+			listEntities: () => unused,
+			entityMutate: () => unused,
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => unused,
+			providerStatus: () => unused,
+			providerLoginStart: () => unused,
+			modelCatalog: () => unused,
+			settingsGet: () => unused,
+			settingsSet: () => unused,
+			proposalGet: () => unused,
+			proposalDecide: () => unused,
+			messageSearch: () => unused,
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		const { router } = await renderChatRoute(<ChatColumn />, {
+			runtime,
+			path: "/thread/does-not-exist",
+		});
+
+		// The not-found card shows; the recoverable retry affordance does NOT.
+		expect(
+			await screen.findByText(/this thread isn't available/i),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: /try again/i })).toBeNull();
+		expect(
+			screen.queryByRole("status", { name: /loading conversation/i }),
+		).toBeNull();
+
+		// The exit routes back to the welcome surface.
+		await user.click(screen.getByRole("button", { name: /back to new chat/i }));
+		await waitFor(() => {
+			expect(router.state.location.pathname).toBe("/");
+		});
 
 		await runtime.dispose();
 	});
