@@ -168,6 +168,15 @@ async fn ro_pool(workspace: &Workspace) -> sqlx::SqlitePool {
         .expect("connect to migrated DB")
 }
 
+async fn rw_pool(workspace: &Workspace) -> sqlx::SqlitePool {
+    let url = format!("sqlite://{}", workspace.db_path().display());
+    SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("connect to migrated DB")
+}
+
 async fn entity_exists(pool: &sqlx::SqlitePool, entity_id: &str) -> bool {
     let row: Option<String> = sqlx::query_scalar("SELECT id FROM entities WHERE id = ?1")
         .bind(entity_id)
@@ -187,6 +196,54 @@ async fn ref_row_exists(pool: &sqlx::SqlitePool, todo_id: &str, person_id: &str)
     .await
     .expect("query ref row exists");
     row.is_some()
+}
+
+async fn seed_journal_entry_ref_to_person(
+    pool: &sqlx::SqlitePool,
+    person_id: &str,
+) -> (String, String) {
+    let journal_entry_id = "01900000-0000-7000-8000-00000000je01";
+    let ref_id = "01900000-0000-7000-8000-00000000ef01";
+    let data = serde_json::json!({
+        "occurred_at": "2026-06-18T09:00:00",
+        "body": [
+            { "type": "text", "text": "This morning I had a talk with " },
+            { "type": "entity_ref", "ref_id": ref_id },
+            { "type": "text", "text": " about Lead Ads." }
+        ]
+    })
+    .to_string();
+    sqlx::query(
+        "INSERT INTO entities \
+         (id, type, schema_version, data, created_by, created_at, updated_at) \
+         VALUES (?1, 'journal_entry', 1, ?2, 'user', 1, 1)",
+    )
+    .bind(journal_entry_id)
+    .bind(&data)
+    .execute(pool)
+    .await
+    .expect("insert journal entry");
+    sqlx::query(
+        "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
+         VALUES (?1, 1, ?2, NULL, 1)",
+    )
+    .bind(journal_entry_id)
+    .bind(&data)
+    .execute(pool)
+    .await
+    .expect("insert journal entry revision");
+    sqlx::query(
+        "INSERT INTO entity_refs \
+         (id, source_entity_id, target_entity_id, label_snapshot, created_at) \
+         VALUES (?1, ?2, ?3, 'Alice', 1)",
+    )
+    .bind(ref_id)
+    .bind(journal_entry_id)
+    .bind(person_id)
+    .execute(pool)
+    .await
+    .expect("insert entity ref");
+    (journal_entry_id.to_string(), ref_id.to_string())
 }
 
 /// Seed a Person and a Todo (with a waiting_on ref to that Person) against a
@@ -268,6 +325,10 @@ fn delete_person_cascades_refs_and_keeps_todo() {
     let (core, workspace, _params_dir, rt, person_id, todo_id) =
         seed_person_and_linked_todo("inkstone-delete-person-");
     let params_path = _params_dir.path().join("propose-params.json");
+    let (journal_entry_id, ref_id) = rt.block_on(async {
+        let pool = rw_pool(&workspace).await;
+        seed_journal_entry_ref_to_person(&pool, &person_id).await
+    });
 
     rt.block_on(async {
         write_params(
@@ -333,6 +394,32 @@ fn delete_person_cascades_refs_and_keeps_todo() {
             data_json["note"].as_str(),
             Some("ping about daycare"),
             "Todo note is unchanged — got {data}"
+        );
+        let data: String = sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1")
+            .bind(&journal_entry_id)
+            .fetch_one(&pool)
+            .await
+            .expect("journal entry row exists");
+        let data_json: serde_json::Value =
+            serde_json::from_str(&data).expect("journal entry data JSON");
+        assert_eq!(
+            data_json["body"],
+            serde_json::json!([
+                { "type": "text", "text": "This morning I had a talk with " },
+                { "type": "text", "text": "Alice" },
+                { "type": "text", "text": " about Lead Ads." }
+            ]),
+            "delete_person textualizes Journal Entry refs before the target ref row cascades — got {data}"
+        );
+        let ref_exists: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM entity_refs WHERE id = ?1 LIMIT 1")
+                .bind(&ref_id)
+                .fetch_optional(&pool)
+                .await
+                .expect("query entity_ref");
+        assert!(
+            ref_exists.is_none(),
+            "entity_refs row still cascades away after textualization"
         );
     });
 }
