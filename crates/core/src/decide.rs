@@ -1890,19 +1890,20 @@ mod tests {
         assert!(resumed.load(Ordering::SeqCst), "the graph reject resumes the run");
     }
 
-    // Slice 2 fix (review): a graph whose Journal Entry body carries an
-    // `entity_ref` node is REJECTED cleanly (the slice-6 weave is not wired yet),
-    // not silently stored with a dangling `target` handle and no backing
-    // entity_ref row. The whole tx fails Invalid — zero entities written, the
-    // Proposal stays pending and re-decidable.
+    // Slice 6 (was the slice-2 reject-until-weave guard): a graph whose Journal
+    // Entry body carries a SINGLE `entity_ref` placeholder is now WOVEN — the body
+    // node legitimately carries the placeholder, the matching journal_ref link
+    // mints one entity_ref, and the placeholder is rewritten to its `ref_id` in the
+    // JE's single revision (no dangling `target` handle). This replaces the
+    // slice-2 "entity_ref body is Invalid until the weave lands" assertion.
     #[tokio::test]
-    async fn accept_apply_intent_graph_with_entity_ref_body_is_invalid_until_weave() {
+    async fn accept_apply_intent_graph_with_single_entity_ref_body_weaves() {
         let pool = memory_pool().await;
         let (_run, proposal_id) = seed_parked_proposal(&pool).await;
         let proposal_id_str = proposal_id.to_string();
 
-        // A journal-anchored graph whose JE body has an entity_ref placeholder
-        // targeting the Person handle — the slice-6 weave shape.
+        // A journal-anchored graph whose JE body has one entity_ref placeholder
+        // targeting the Person handle, with the matching journal_ref link.
         let graph = serde_json::json!({
             "journal_entry": {
                 "handle": "@je",
@@ -1929,28 +1930,43 @@ mod tests {
             Some("k-graph-ref-body".to_string()),
             resume_closure(pool.clone(), resumed.clone()),
         )
-        .await;
+        .await
+        .expect("single-ref graph weave succeeds");
 
-        assert!(
-            matches!(outcome, Err(DecideError::Invalid(_))),
-            "an entity_ref JE body is Invalid until the slice-6 weave lands, got {outcome:?}"
-        );
+        match outcome {
+            DecideOutcome::Accepted { .. } => {}
+            other => panic!("expected Accepted, got {other:?}"),
+        }
+
+        assert_eq!(entity_count(&pool).await, 2, "JE + Person woven");
+        let je_id = only_entity_id_of_type(&pool, "journal_entry").await;
+        let person_id = only_entity_id_of_type(&pool, "person").await;
+
+        let refs = entity_refs_from(&pool, &je_id).await;
+        assert_eq!(refs.len(), 1, "one entity_ref woven: {refs:?}");
+        assert_eq!(refs[0].1, person_id, "the ref targets Morris");
+
         assert_eq!(
-            entity_count(&pool).await,
-            0,
-            "the rejected graph writes nothing — no dangling JE body node"
+            entity_revision_count(&pool, &je_id).await,
+            1,
+            "the JE is written once"
         );
-        let entity_refs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entity_refs")
-            .fetch_one(&pool)
-            .await
-            .expect("count entity_refs");
-        assert_eq!(entity_refs, 0, "no entity_ref row is minted");
+
+        let je = entity_data(&pool, &je_id).await;
+        let body = je.get("body").and_then(serde_json::Value::as_array).expect("JE body array");
+        let ref_node = body
+            .iter()
+            .find(|n| n.get("type").and_then(serde_json::Value::as_str) == Some("entity_ref"))
+            .expect("the entity_ref body node survives");
+        assert!(ref_node.get("target").is_none(), "no `target` survives: {ref_node}");
         assert_eq!(
-            proposal_status(&pool, &proposal_id_str).await,
-            "pending",
-            "an Invalid graph stays pending + re-decidable"
+            ref_node.get("ref_id").and_then(serde_json::Value::as_str),
+            Some(refs[0].0.as_str()),
+            "the body node points at the minted entity_ref"
         );
-        assert!(!resumed.load(Ordering::SeqCst), "an Invalid graph does not resume");
+
+        assert_eq!(proposal_status(&pool, &proposal_id_str).await, "accepted");
+        assert!(resumed.load(Ordering::SeqCst), "the weave resumes the run");
     }
 
     // Slice 2 fix (review): the graph does not support the whole-payload `edit`
@@ -2325,6 +2341,236 @@ mod tests {
             .fetch_all(pool)
             .await
             .expect("todo_person_refs rows")
+    }
+
+    /// How many `entity_revisions` rows exist for an entity (the "updated once"
+    /// criterion: a freshly-minted JE has exactly ONE, its seq-1 revision).
+    async fn entity_revision_count(pool: &SqlitePool, entity_id: &str) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM entity_revisions WHERE entity_id = ?")
+            .bind(entity_id)
+            .fetch_one(pool)
+            .await
+            .expect("count entity_revisions for entity")
+    }
+
+    /// The `(id, target_entity_id, label_snapshot)` of every `entity_ref` row whose
+    /// source is `source_entity_id` (the JE), ordered by creation.
+    async fn entity_refs_from(
+        pool: &SqlitePool,
+        source_entity_id: &str,
+    ) -> Vec<(String, String, Option<String>)> {
+        sqlx::query_as(
+            "SELECT id, target_entity_id, label_snapshot FROM entity_refs \
+             WHERE source_entity_id = ? ORDER BY created_at, id",
+        )
+        .bind(source_entity_id)
+        .fetch_all(pool)
+        .await
+        .expect("entity_refs rows")
+    }
+
+    /// A journal-anchored graph whose JE body weaves two `entity_ref` placeholders
+    /// (ADR-0042 slice 6): `[text, entity_ref @morris, text, entity_ref @leadads]`,
+    /// with `journal_ref` links @je→@morris and @je→@leadads. Both referenced
+    /// entities are fresh creates.
+    fn woven_graph() -> serde_json::Value {
+        serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [
+                    { "type": "text", "text": "Talked with " },
+                    { "type": "entity_ref", "target": "@morris" },
+                    { "type": "text", "text": " about " },
+                    { "type": "entity_ref", "target": "@leadads" }
+                ]
+            },
+            "entities": [
+                { "handle": "@morris", "type": "person", "name": "Morris" },
+                { "handle": "@leadads", "type": "project", "name": "Lead Ads" }
+            ],
+            "links": [
+                { "kind": "journal_ref", "from": "@je", "to": "@morris" },
+                { "kind": "journal_ref", "from": "@je", "to": "@leadads" }
+            ]
+        })
+    }
+
+    // Slice 6 (ADR-0042 "Multi-ref Journal Entry weave is one write"): accepting a
+    // journal-anchored graph whose JE body carries TWO entity_ref placeholders +
+    // two journal_ref links weaves BOTH refs into the JE in a SINGLE revision. The
+    // JE entity has exactly ONE entity_revisions row (the "updated once"
+    // criterion); two entity_refs rows exist (JE→Morris, JE→Lead Ads); both body
+    // placeholders are rewritten to `ref_id` nodes pointing at those rows (no
+    // `target` key survives).
+    #[tokio::test]
+    async fn accept_apply_intent_graph_weaves_journal_refs_in_one_revision() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", woven_graph()).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            None,
+            Some("k-graph-weave".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await
+        .expect("woven graph accept succeeds");
+
+        let anchor = match outcome {
+            DecideOutcome::Accepted { entity_id, .. } => entity_id,
+            other => panic!("expected Accepted, got {other:?}"),
+        };
+
+        // Three entities: JE + Person + Project.
+        assert_eq!(entity_count(&pool).await, 3, "JE + Person + Project");
+        let je_id = only_entity_id_of_type(&pool, "journal_entry").await;
+        let person_id = only_entity_id_of_type(&pool, "person").await;
+        let project_id = only_entity_id_of_type(&pool, "project").await;
+        assert_eq!(anchor, je_id, "the reported anchor is the JE node's id");
+
+        // "Updated once": the JE has EXACTLY ONE entity_revisions row (seq 1). The
+        // weave is written WITH the JE's first revision, never as a follow-up update.
+        assert_eq!(
+            entity_revision_count(&pool, &je_id).await,
+            1,
+            "the JE is written ONCE — its woven body is its seq-1 revision"
+        );
+
+        // Two entity_refs rows: JE→Morris and JE→Lead Ads, each with a label
+        // snapshot for fallback rendering.
+        let refs = entity_refs_from(&pool, &je_id).await;
+        assert_eq!(refs.len(), 2, "two entity_refs woven: {refs:?}");
+        let targets: std::collections::HashSet<&str> =
+            refs.iter().map(|(_, t, _)| t.as_str()).collect();
+        assert!(
+            targets.contains(person_id.as_str()) && targets.contains(project_id.as_str()),
+            "the refs target Morris and Lead Ads: {refs:?}"
+        );
+        let labels: std::collections::HashSet<Option<&str>> =
+            refs.iter().map(|(_, _, l)| l.as_deref()).collect();
+        assert!(
+            labels.contains(&Some("Morris")) && labels.contains(&Some("Lead Ads")),
+            "each ref carries the entity's label snapshot: {refs:?}"
+        );
+
+        // Both body placeholders are rewritten to `ref_id` nodes that point at the
+        // minted entity_refs — no `target` key remains anywhere in the stored body.
+        let je = entity_data(&pool, &je_id).await;
+        let body = je.get("body").and_then(serde_json::Value::as_array).expect("JE body array");
+        let ref_nodes: Vec<&serde_json::Value> = body
+            .iter()
+            .filter(|n| n.get("type").and_then(serde_json::Value::as_str) == Some("entity_ref"))
+            .collect();
+        assert_eq!(ref_nodes.len(), 2, "two entity_ref body nodes survive: {je}");
+        let minted_ref_ids: std::collections::HashSet<&str> =
+            refs.iter().map(|(id, _, _)| id.as_str()).collect();
+        for node in &ref_nodes {
+            assert!(
+                node.get("target").is_none(),
+                "no `target` key remains on a woven body node: {node}"
+            );
+            let ref_id = node
+                .get("ref_id")
+                .and_then(serde_json::Value::as_str)
+                .expect("woven body node carries ref_id");
+            assert!(
+                minted_ref_ids.contains(ref_id),
+                "body ref_id {ref_id} points at a minted entity_ref: {refs:?}"
+            );
+        }
+
+        assert_eq!(proposal_status(&pool, &proposal_id_str).await, "accepted");
+        assert!(resumed.load(Ordering::SeqCst), "the woven graph accept resumes");
+    }
+
+    // Slice 6 (ADR-0042 "its body entity_ref placeholder collapses to text"):
+    // rejecting a referenced entity drops its journal_ref and collapses its body
+    // placeholder to text — no entity_ref row, no dangling ref_id, and the rejected
+    // entity is never minted. The surviving ref is still woven.
+    #[tokio::test]
+    async fn decision_vector_rejected_ref_collapses_body_to_text() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", woven_graph()).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        // Reject @morris; accept @je and @leadads.
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some(vec![
+                node_decision("@je", "accept", None, None),
+                node_decision("@morris", "reject", None, None),
+                node_decision("@leadads", "accept", None, None),
+            ]),
+            Some("k-graph-weave-reject".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await
+        .expect("woven graph w/ rejection accept succeeds");
+
+        match outcome {
+            DecideOutcome::Accepted { .. } => {}
+            other => panic!("expected Accepted, got {other:?}"),
+        }
+
+        // Morris is NOT minted: only JE + Project survive.
+        assert_eq!(entity_count(&pool).await, 2, "JE + Project (Morris rejected)");
+        assert_eq!(entity_count_of_type(&pool, "person").await, 0, "Morris not minted");
+        let je_id = only_entity_id_of_type(&pool, "journal_entry").await;
+        let project_id = only_entity_id_of_type(&pool, "project").await;
+
+        // Exactly ONE entity_ref row — JE→Lead Ads — and the JE is still written once.
+        let refs = entity_refs_from(&pool, &je_id).await;
+        assert_eq!(refs.len(), 1, "only the surviving ref is woven: {refs:?}");
+        assert_eq!(refs[0].1, project_id, "the surviving ref targets Lead Ads");
+        assert_eq!(
+            entity_revision_count(&pool, &je_id).await,
+            1,
+            "the JE is still written once"
+        );
+
+        // The Morris placeholder collapsed to text: exactly ONE entity_ref body
+        // node (Lead Ads), and no body node carries a dangling ref_id or target for
+        // a rejected entity.
+        let je = entity_data(&pool, &je_id).await;
+        let body = je.get("body").and_then(serde_json::Value::as_array).expect("JE body array");
+        let ref_nodes: Vec<&serde_json::Value> = body
+            .iter()
+            .filter(|n| n.get("type").and_then(serde_json::Value::as_str) == Some("entity_ref"))
+            .collect();
+        assert_eq!(
+            ref_nodes.len(),
+            1,
+            "only Lead Ads remains an entity_ref; Morris collapsed to text: {je}"
+        );
+        let surviving_ref_id = refs[0].0.as_str();
+        assert_eq!(
+            ref_nodes[0].get("ref_id").and_then(serde_json::Value::as_str),
+            Some(surviving_ref_id),
+            "the surviving body ref points at the one minted entity_ref"
+        );
+        // No body node names a `target` handle (every placeholder either wove to a
+        // ref_id or collapsed to text).
+        assert!(
+            body.iter().all(|n| n.get("target").is_none()),
+            "no `target` handle survives in the stored body: {je}"
+        );
+
+        assert_eq!(proposal_status(&pool, &proposal_id_str).await, "accepted");
+        assert!(resumed.load(Ordering::SeqCst));
     }
 
     // Slice 4 (ADR-0042): accepting the #179-shaped graph APPLIES the
@@ -3137,5 +3383,127 @@ mod tests {
             vec![(person_id, "related".to_string())],
             "the omitted Person's todo_person link survives (accepted by omission)"
         );
+    }
+
+    // Slice 6 (review): TWO distinct handles that resolve to the SAME target entity
+    // must share ONE entity_ref (UNIQUE(source,target)) — never a dangling body
+    // ref_id. Pre-seed one accepted "Morris"; a graph with @m1 + @m2 both naming
+    // "Morris" (both reuse the seeded id) + a journal_ref each → exactly ONE
+    // entity_ref row, and BOTH body placeholders rewrite to its ref_id (every body
+    // ref_id backed by a real row).
+    #[tokio::test]
+    async fn accept_apply_intent_graph_two_handles_same_target_share_one_ref() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        let morris = insert_named_entity(&pool, "person", "Morris").await;
+
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [
+                    { "type": "text", "text": "Morris " },
+                    { "type": "entity_ref", "target": "@m1" },
+                    { "type": "text", "text": " and again " },
+                    { "type": "entity_ref", "target": "@m2" }
+                ]
+            },
+            "entities": [
+                { "handle": "@m1", "type": "person", "name": "Morris" },
+                { "handle": "@m2", "type": "person", "name": "Morris" }
+            ],
+            "links": [
+                { "kind": "journal_ref", "from": "@je", "to": "@m1" },
+                { "kind": "journal_ref", "from": "@je", "to": "@m2" }
+            ]
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            None,
+            Some("k-same-target".to_string()),
+            resume_closure(pool.clone(), Arc::new(AtomicBool::new(false))),
+        )
+        .await
+        .expect("same-target graph accept succeeds");
+
+        // No duplicate person minted (both handles reuse the seeded Morris).
+        assert_eq!(entity_count_of_type(&pool, "person").await, 1, "no duplicate Morris minted");
+        let je_id = only_entity_id_of_type(&pool, "journal_entry").await;
+
+        // EXACTLY ONE entity_ref row (JE→Morris) — UNIQUE(source,target).
+        let refs = entity_refs_from(&pool, &je_id).await;
+        assert_eq!(refs.len(), 1, "two handles to one entity share ONE entity_ref: {refs:?}");
+        assert_eq!(refs[0].1, morris, "the ref targets the seeded Morris");
+        let real_ref_id = refs[0].0.as_str();
+
+        // BOTH body placeholders rewrite to that SAME real ref_id — none dangling.
+        let je = entity_data(&pool, &je_id).await;
+        let body = je.get("body").and_then(serde_json::Value::as_array).expect("JE body");
+        let ref_nodes: Vec<&serde_json::Value> = body
+            .iter()
+            .filter(|n| n.get("type").and_then(serde_json::Value::as_str) == Some("entity_ref"))
+            .collect();
+        assert_eq!(ref_nodes.len(), 2, "both placeholders survive as entity_ref nodes: {je}");
+        for node in &ref_nodes {
+            assert!(node.get("target").is_none(), "no target key remains: {node}");
+            assert_eq!(
+                node.get("ref_id").and_then(serde_json::Value::as_str),
+                Some(real_ref_id),
+                "every body ref_id is the single real entity_ref id (no dangling): {node}"
+            );
+        }
+    }
+
+    // Slice 6 (review): validate_body_targets rejects a JE body entity_ref whose
+    // target has NO matching journal_ref link — a malformed graph that would
+    // otherwise weave a dangling/collapsed placeholder. The whole apply fails before
+    // any write.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_body_ref_without_link_is_invalid() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        // Body references @morris, but there is NO journal_ref link to it.
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [
+                    { "type": "text", "text": "Talked with " },
+                    { "type": "entity_ref", "target": "@morris" }
+                ]
+            },
+            "entities": [
+                { "handle": "@morris", "type": "person", "name": "Morris" }
+            ],
+            "links": []
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            None,
+            Some("k-body-no-link".to_string()),
+            resume_closure(pool.clone(), Arc::new(AtomicBool::new(false))),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Err(DecideError::Invalid(_))),
+            "a body entity_ref with no matching journal_ref link is Invalid, got {outcome:?}"
+        );
+        assert_eq!(entity_count(&pool).await, 0, "nothing is written");
+        assert_eq!(proposal_status(&pool, &proposal_id_str).await, "pending");
     }
 }

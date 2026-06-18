@@ -3,12 +3,17 @@
 //! entity. Where `apply_proposal` flips the Proposal, runs ONE
 //! [`super::apply::apply_entity_mutation`], and resolves the tool call,
 //! [`apply_intent_graph_proposal`] keeps the same envelope but its middle is a
-//! GRAPH: it LOOPS `apply_entity_mutation` once per CREATE-disposition node — the
-//! Journal Entry node (if present) and every entity node that did not resolve to
-//! an existing row — in one transaction, topologically ordered (JE first, then
-//! entities). Each node carries its OWN single-entity kind, so the per-type data
-//! normalization, validation, and the seq-1 revision write are exactly the
-//! single-entity create path's, reused.
+//! GRAPH: it LOOPS `apply_entity_mutation` once per CREATE-disposition node — every
+//! entity node that did not resolve to an existing row, then the Journal Entry node
+//! (if present) — in one transaction. Each node carries its OWN single-entity kind,
+//! so the per-type data normalization, validation, and the seq-1 revision write are
+//! exactly the single-entity create path's, reused. The JE *entity row* is minted
+//! LAST (after people/projects/todos) because its body weaves `journal_ref` mentions
+//! into stored `entity_ref` nodes, which need the referenced entities' ids — see
+//! [`weave_and_mint_journal_entry`] (ADR-0042 "Multi-ref Journal Entry weave is one
+//! write"). The topo INTENT (a parent resolved before its dependent) still holds: a
+//! Todo's `project_id`/person refs resolve before it mints, and the JE references
+//! resolve before it mints.
 //!
 //! Slice 3 adds EXACT-MATCH RESOLUTION (ADR-0042 "disposition"): each entity node
 //! resolves to a `disposition` INSIDE the tx, before the create loop, so it sees
@@ -26,7 +31,11 @@
 //!     `entity_id` override is slice 5 / #181.
 //!
 //! The JE node stays create-only (ADR-0042 "the JE node is create-only"): it is
-//! always newborn and carries no disposition.
+//! always newborn and carries no disposition. Its body may carry
+//! `{type:entity_ref, target:@handle}` placeholders, woven into stored
+//! `{type:entity_ref, ref_id}` nodes at mint (one `entity_ref` row per surviving
+//! `journal_ref` link); a placeholder whose target node was rejected collapses to
+//! text (the reject-cascade).
 //!
 //! Provenance (ADR-0042 "No provenance writes"): the ONLY `entity_sources` row
 //! the graph writes is the JE node's `created_from` user-Message guard row (the
@@ -62,23 +71,22 @@ pub enum IntentGraphOutcome {
 /// entity node). `kind` is the node's single-entity create kind (selects validator
 /// + Entity Type); `payload` is the reconstructed single-entity payload the create
 /// path expects (the graph-local `handle`/`type`/`existing_id` removed; a Todo
-/// re-wrapped in its `{todo: …}` envelope). `is_journal_anchor` marks the single
-/// JE node — the only node that writes the `created_from` guard row, and the
-/// anchor reported. `handle` is the node's graph-local label (`@je`/`@rodeo`) —
-/// recorded into the handle→id map as the node mints, so a later todo's links can
-/// join on it.
+/// re-wrapped in its `{todo: …}` envelope). `handle` is the node's graph-local
+/// label (`@je`/`@rodeo`) — recorded into the handle→id map as the node mints, so a
+/// later todo's links + the JE body weave can join on it. The JE node's
+/// `created_from` guard row + anchor reporting are handled by
+/// [`weave_and_mint_journal_entry`], so this struct carries no anchor flag.
 struct ResolvedCreate {
     kind: MutationKind,
     payload: serde_json::Value,
-    is_journal_anchor: bool,
     handle: String,
 }
 
 /// One intended link between two graph handles (ADR-0042). `from`/`to` are
 /// graph-local handles the resolver joins on the handle→id map; `role` is set only
-/// for `todo_person`. Slice 4 applies `todo_project` + `todo_person` by folding
-/// them into the linked Todo's create payload; a `journal_ref` link is parsed and
-/// IGNORED this slice (the JE body weave is slice 6).
+/// for `todo_person`. `todo_project` + `todo_person` fold into the linked Todo's
+/// create payload; a `journal_ref` (JE → entity) weaves into the JE body as an
+/// `entity_ref` (mint a row, rewrite the placeholder), in `weave_and_mint_journal_entry`.
 struct Link {
     kind: LinkKind,
     from: String,
@@ -87,9 +95,9 @@ struct Link {
     role: Option<String>,
 }
 
-/// The three link kinds (ADR-0042). `JournalRef` is parsed so a malformed
-/// `journal_ref` still fails extraction, but it applies NOTHING in slice 4 (the
-/// body weave is slice 6).
+/// The three link kinds (ADR-0042). `JournalRef` (JE → entity) is woven into the JE
+/// body: each surviving link mints an `entity_ref` row and rewrites the body's
+/// `{entity_ref, target}` placeholder to `{entity_ref, ref_id}`.
 enum LinkKind {
     TodoProject,
     TodoPerson,
@@ -215,23 +223,31 @@ pub async fn apply_intent_graph_proposal(
     // projects → todos).
     let mut handle_to_id: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // The model-recognized label per resolved handle (`name`/`title`), used as the
+    // `entity_ref.label_snapshot` for fallback rendering when the JE body weaves a
+    // `journal_ref` to this entity (ADR-0042). For an exact-match reuse this equals
+    // the stored label; for a create it is the minted entity's label.
+    let mut handle_to_label: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut non_todo_creates: Vec<ResolvedCreate> = Vec::new();
     let mut todo_creates: Vec<ResolvedCreate> = Vec::new();
     // Reject the @je node (ADR-0042 "Reject the @je node"): the journal-anchored
     // capture collapses — nothing is woven, there is no anchor — but the non-JE
     // nodes still apply as a JE-less graph (their journal_ref links are dropped by
-    // the cascade; slice 6 weaves body refs). A rejected JE is simply not minted.
-    if let Some(je) = graph.journal_entry
-        && !decisions.is_rejected(&je.handle)
-    {
-        non_todo_creates.push(je);
-    }
+    // the cascade). A rejected JE is simply not minted; `je_create` stays `None`.
+    let je_create = graph
+        .journal_entry
+        .filter(|je| !decisions.is_rejected(&je.handle));
     for node in &graph.entities {
         // A node the decision vector REJECTS is not created/reused (ADR-0042). It
         // is skipped here; its handle never enters `handle_to_id`, so the cascade
-        // in `fold_links_into_todo` drops every link to it (the reject-cascade).
+        // in `fold_links_into_todo` (and the JE body weave) drops every link/
+        // placeholder to it (the reject-cascade: a rejected ref collapses to text).
         if decisions.is_rejected(&node.handle) {
             continue;
+        }
+        if let Some(label) = node.label.clone() {
+            handle_to_label.insert(node.handle.clone(), label);
         }
         match resolve_node(&mut tx, node, decisions.for_handle(&node.handle)).await? {
             Disposition::Reuse(existing_id) => {
@@ -247,7 +263,6 @@ pub async fn apply_intent_graph_proposal(
                     // over the node's create payload (ADR-0042); else it is the
                     // node's own payload.
                     payload,
-                    is_journal_anchor: false,
                     handle: node.handle.clone(),
                 };
                 if node.type_str == "todo" {
@@ -259,37 +274,18 @@ pub async fn apply_intent_graph_proposal(
         }
     }
 
-    // Mint the JE + non-todo creates FIRST, recording each minted handle → id so
-    // the todos minted next can resolve their link endpoints. The JE node writes
-    // its `created_from` guard source row; every entity node writes none.
-    let mut anchor_entity_id: Option<String> = None;
+    // Mint the non-todo entity creates FIRST, recording each minted handle → id so
+    // the todos minted next can resolve their link endpoints. These entities carry
+    // NO source row (ADR-0042 "No provenance writes").
     let mut first_entity_id: Option<String> = None;
     for create in &non_todo_creates {
-        let source = if create.is_journal_anchor {
-            // The JE node's `created_from` user-Message guard row (ADR-0042) —
-            // resolved INSIDE this tx, exactly as `apply_proposal` resolves a
-            // message-sourced create. The JE is always newborn in this Run, so
-            // the guard row is correct by construction (this Run's user Message).
-            let message_id = queries::user_message_id_for_run(&mut *tx, run_id).await?;
-            Some(EntitySource::FromMessage {
-                message_id,
-                relation: SourceRelation::CreatedFrom.as_str().to_string(),
-            })
-        } else {
-            // ADR-0042 "No provenance writes": extracted entities get NO source row.
-            None
-        };
-
-        let entity_id = mint_create(&mut tx, create, proposal_id, source, now_ms).await?;
-
+        let entity_id =
+            mint_create(&mut tx, create, proposal_id, /* source */ None, now_ms).await?;
         handle_to_id.insert(create.handle.clone(), entity_id.clone());
-        first_entity_id.get_or_insert_with(|| entity_id.clone());
-        if create.is_journal_anchor {
-            anchor_entity_id = Some(entity_id);
-        }
+        first_entity_id.get_or_insert(entity_id);
     }
 
-    // Mint the todos LAST, folding their `todo_project`/`todo_person` links into
+    // Mint the todos NEXT, folding their `todo_project`/`todo_person` links into
     // the create payload so the SAME `apply_entity_mutation(CreateTodo, …)` writes
     // `project_id` (with its in-tx `recheck_todo_project_link`) and the
     // `todo_person_refs` rows — link application reuses the create-todo path.
@@ -307,10 +303,37 @@ pub async fn apply_intent_graph_proposal(
         first_entity_id.get_or_insert(entity_id);
     }
 
-    // The anchor is the JE id; a JE-less direct-capture graph reports the first
-    // MINTED entity (ADR-0042). A graph whose only nodes all resolved to `reuse`
-    // (a JE-less graph that mints nothing) has no anchor — that is a degenerate
-    // all-reuse graph and surfaces a clean `InvalidMutation` rather than a panic.
+    // Mint the JE LAST (ADR-0042 "Multi-ref Journal Entry weave is one write"):
+    // every entity the JE could reference is now resolved (in `handle_to_id`), so
+    // the JE body's `{entity_ref, target:@handle}` placeholders weave into stored
+    // `{entity_ref, ref_id}` nodes in the JE's SINGLE seq-1 revision — never a
+    // text-only insert followed by an update. The topo-order is JE → people/
+    // projects → todos for FK/link purposes, but the JE *entity row* is minted last
+    // because its body needs the referenced ids; its `entity_ref` rows (source = JE)
+    // are inserted after the JE row exists.
+    let mut anchor_entity_id: Option<String> = None;
+    if let Some(je) = &je_create {
+        let je_id = weave_and_mint_journal_entry(
+            &mut tx,
+            run_id,
+            je,
+            &graph.links,
+            &handle_to_id,
+            &handle_to_label,
+            &decisions,
+            proposal_id,
+            now_ms,
+        )
+        .await?;
+        first_entity_id.get_or_insert_with(|| je_id.clone());
+        anchor_entity_id = Some(je_id);
+    }
+
+    // The anchor is the JE id; a JE-less direct-capture graph (or a graph whose JE
+    // node was rejected) reports the first MINTED entity (ADR-0042). A graph whose
+    // only nodes all resolved to `reuse` (mints nothing) has no anchor — a
+    // degenerate all-reuse graph that surfaces a clean `InvalidMutation`, not a
+    // panic.
     let anchor = anchor_entity_id.or(first_entity_id).ok_or_else(|| {
         ApplyError::InvalidMutation("intent graph created no entity".to_string())
     })?;
@@ -440,6 +463,164 @@ async fn mint_create(
     .await
 }
 
+/// Weave the JE node's `journal_ref` body mentions and mint the Journal Entry in
+/// ONE revision (ADR-0042 "Multi-ref Journal Entry weave is one write"). Called
+/// AFTER every referenced entity is resolved, so the placeholder rewrite + the
+/// `entity_ref` rows can use real ids:
+///
+/// 1. For each SURVIVING `journal_ref` link (`from == @je`, `to` not rejected and
+///    resolved in `handle_to_id`), generate a fresh `entity_ref` id. This builds a
+///    `target_handle → ref_id` map. A `journal_ref` whose target was rejected has
+///    no resolved id, so it is dropped — its body placeholder collapses to text.
+/// 2. Rewrite the JE body: each `{type:entity_ref, target:@handle}` placeholder
+///    becomes `{type:entity_ref, ref_id:<generated>}` when `@handle` has a ref id,
+///    else collapses to a `{type:text, text:""}` node (the rejected-ref cascade).
+/// 3. Mint the JE entity + its seq-1 revision with the WOVEN body (the JE's only
+///    write), carrying the `created_from` user-Message guard row.
+/// 4. Insert the `entity_ref` rows: source = the JE id (now exists), target = the
+///    referenced entity id, label_snapshot = the entity's recognized label. The
+///    pre-generated id matches the body's `ref_id`, so the FK direction holds (the
+///    JE row exists before its refs).
+///
+/// Returns the minted JE id (the graph anchor).
+#[allow(clippy::too_many_arguments)]
+async fn weave_and_mint_journal_entry(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    run_id: Uuid,
+    je: &ResolvedCreate,
+    links: &[Link],
+    handle_to_id: &std::collections::HashMap<String, String>,
+    handle_to_label: &std::collections::HashMap<String, String>,
+    decisions: &NodeDecisions,
+    proposal_id: &str,
+    now_ms: i64,
+) -> Result<String, ApplyError> {
+    // 1. Surviving journal_ref targets → an entity_ref id. A link whose target node
+    //    was rejected (or otherwise unresolved) is dropped here, so its body
+    //    placeholder collapses to text in step 2.
+    //
+    // The `entity_refs` table is UNIQUE(source_entity_id, target_entity_id): there
+    // is AT MOST ONE EntityRef per (JE, target entity). So the ref_id is keyed by
+    // the resolved TARGET ENTITY ID, not the handle — two distinct handles that
+    // resolve to the SAME entity (two same-named nodes reusing one accepted entity,
+    // or two `existing_id` hints to one id) share ONE entity_ref row and ONE ref_id.
+    // Keying by handle would mint two ref_ids whose second `insert_entity_ref` hits
+    // `ON CONFLICT DO NOTHING` → a dangling body ref_id with no backing row. The
+    // body map (`handle → ref_id`) still rewrites BOTH placeholders to that shared
+    // ref_id.
+    let mut entity_ref_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut target_ref_id: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    // The ordered weave plan: (ref_id, target_entity_id, label_snapshot), one entry
+    // per DISTINCT target entity. Kept ordered so the inserted rows are deterministic.
+    let mut weave_plan: Vec<(String, String, Option<String>)> = Vec::new();
+    for link in links
+        .iter()
+        .filter(|l| matches!(l.kind, LinkKind::JournalRef) && l.from == je.handle)
+    {
+        if decisions.is_rejected(&link.to) {
+            continue;
+        }
+        let Some(entity_id) = handle_to_id.get(&link.to) else {
+            // The target resolved to no id (rejected, or a degenerate handle): drop
+            // the ref. Its body placeholder collapses to text.
+            continue;
+        };
+        // Reuse the entity's ref_id if a prior link already targeted it (same entity
+        // via another handle, or a duplicate journal_ref); else mint one + plan the
+        // single row. Either way this handle's placeholder maps to that ref_id.
+        let ref_id = match entity_ref_id.get(entity_id) {
+            Some(existing) => existing.clone(),
+            None => {
+                let ref_id = Uuid::now_v7().to_string();
+                entity_ref_id.insert(entity_id.clone(), ref_id.clone());
+                let label = handle_to_label.get(&link.to).cloned();
+                weave_plan.push((ref_id.clone(), entity_id.clone(), label));
+                ref_id
+            }
+        };
+        target_ref_id.insert(link.to.clone(), ref_id);
+    }
+
+    // 2. Weave the JE body: rewrite each entity_ref placeholder to its ref_id, or
+    //    collapse to text when its target was rejected/dropped.
+    let mut payload = je.payload.clone();
+    weave_journal_body(&mut payload, &target_ref_id)?;
+
+    // 3. Mint the JE entity (its only write) with the woven body + the guard row.
+    let woven_je = ResolvedCreate {
+        kind: je.kind,
+        payload,
+        handle: je.handle.clone(),
+    };
+    // The JE node's `created_from` user-Message guard row (ADR-0042) — resolved
+    // INSIDE this tx, exactly as `apply_proposal` resolves a message-sourced
+    // create. The JE is always newborn in this Run, so the guard row is correct by
+    // construction (this Run's user Message).
+    let message_id = queries::user_message_id_for_run(&mut **tx, run_id).await?;
+    let source = Some(EntitySource::FromMessage {
+        message_id,
+        relation: SourceRelation::CreatedFrom.as_str().to_string(),
+    });
+    let je_id = mint_create(tx, &woven_je, proposal_id, source, now_ms).await?;
+
+    // 4. Insert the entity_ref rows now that the JE (their source) exists. The id
+    //    matches the body's ref_id minted in step 1.
+    for (ref_id, target_entity_id, label) in &weave_plan {
+        queries::insert_entity_ref(
+            &mut **tx,
+            ref_id,
+            &je_id,
+            target_entity_id,
+            label.as_deref(),
+            now_ms,
+        )
+        .await?;
+    }
+
+    Ok(je_id)
+}
+
+/// Rewrite a JE body's `entity_ref` placeholders in place (ADR-0042 slice 6): a
+/// `{type:entity_ref, target:@handle}` node whose handle has a minted ref id
+/// becomes `{type:entity_ref, ref_id:<id>}` (the STORED shape — entity_ref body
+/// nodes carry `ref_id`, never `target`); a node whose target was rejected/dropped
+/// (no ref id) collapses to a `{type:text, text:""}` node so the body stays valid
+/// (no dangling `target`, no dangling `ref_id`). A non-`entity_ref` node (text) is
+/// left untouched. Body-target handles were validated at extraction
+/// (`validate_links`), so a surviving placeholder names a declared handle.
+fn weave_journal_body(
+    payload: &mut serde_json::Value,
+    target_ref_id: &std::collections::HashMap<String, String>,
+) -> Result<(), ApplyError> {
+    let Some(body) = payload
+        .as_object_mut()
+        .and_then(|o| o.get_mut("body"))
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        // No body array — the JE carries no weavable placeholders (the
+        // create_journal_entry validator at mint enforces the body shape).
+        return Ok(());
+    };
+    for node in body.iter_mut() {
+        if node.get("type").and_then(serde_json::Value::as_str) != Some("entity_ref") {
+            continue;
+        }
+        let target = node
+            .get("target")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim);
+        *node = match target.and_then(|t| target_ref_id.get(t)) {
+            Some(ref_id) => serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
+            // A placeholder whose target was rejected/dropped collapses to text
+            // (ADR-0042 "its body entity_ref placeholder collapses to text").
+            None => serde_json::json!({ "type": "text", "text": "" }),
+        };
+    }
+    Ok(())
+}
+
 /// Fold the `todo_project` + `todo_person` links whose `from` is `todo_handle`
 /// into the Todo's create payload (ADR-0042), so the SAME create-todo path applies
 /// them. The payload is the `{todo: TodoData}` envelope `apply_entity_mutation`
@@ -507,9 +688,9 @@ fn fold_links_into_todo(
                 let role = link.role.as_deref().unwrap_or("related");
                 person_refs.push(serde_json::json!({ "person_id": person_id, "role": role }));
             }
-            // A todo is never a journal_ref `from` (journal_ref is JE → entity), so
-            // this arm is unreachable for a well-formed graph; ignore it regardless
-            // (the JE body weave is slice 6).
+            // A todo is never a journal_ref `from` (journal_ref is JE → entity, woven
+            // into the JE body, not the Todo), so this arm is unreachable for a
+            // well-formed graph; ignore it regardless.
             LinkKind::JournalRef => {}
         }
     }
@@ -814,8 +995,15 @@ fn handle_declared_types(
 /// both endpoints must resolve to a known handle, and each kind constrains its
 /// endpoint types — `todo_project`: todo → project; `todo_person`: todo → person;
 /// `journal_ref`: journal_entry → person|project|todo. A violation fails the whole
-/// apply as `InvalidMutation` before any tx opens (slice 4's all-or-nothing
-/// contract). The softer drop+report on a node a later decision REJECTS is slice 5.
+/// apply as `InvalidMutation` before any tx opens (all-or-nothing). The softer
+/// drop+report on a node a later decision REJECTS is the cascade (in the resolver).
+///
+/// Slice 6 also pins the JE body ↔ `journal_ref` consistency: every JE body
+/// `{type:entity_ref, target:@handle}` placeholder MUST name a declared
+/// referenceable handle AND have a matching `journal_ref` link (`@je → @handle`).
+/// This makes the weave well-defined — a surviving placeholder always maps to a
+/// minted `entity_ref`, and a body placeholder cannot reference an entity the graph
+/// never declared a link to (which would be stored dangling).
 fn validate_links(
     journal_entry: &Option<ResolvedCreate>,
     entities: &[EntityNode],
@@ -849,8 +1037,7 @@ fn validate_links(
                 expect(&link.to, "person", "to", "todo_person")?;
             }
             LinkKind::JournalRef => {
-                // JE → a referenceable entity (slice 6 weaves these; slice 4 only
-                // type-checks so a malformed journal_ref fails loud, not silently).
+                // JE → a referenceable entity, woven into the JE body at mint.
                 expect(&link.from, "journal_entry", "from", "journal_ref")?;
                 let to = declared(&link.to)?;
                 if !matches!(to, "person" | "project" | "todo") {
@@ -862,15 +1049,83 @@ fn validate_links(
             }
         }
     }
+
+    validate_body_targets(journal_entry, &types, links)?;
+    Ok(())
+}
+
+/// Validate the JE body's `entity_ref` placeholder targets against the declared
+/// handles + the `journal_ref` links (ADR-0042 slice 6). Each
+/// `{type:entity_ref, target:@handle}` body node MUST name a declared handle AND
+/// have a matching `journal_ref` link from the JE — so the weave maps every
+/// surviving placeholder to a minted `entity_ref`. A body placeholder with no
+/// `target` string, naming no declared handle, or with no backing `journal_ref`
+/// link, is a malformed graph → `InvalidMutation` before any tx opens. (A
+/// `journal_ref` link WITHOUT a body placeholder is allowed — it simply mints an
+/// `entity_ref` not inlined in the body; ADR-0042 v1 keeps JE refs inline, but the
+/// reverse requirement is not enforced.)
+fn validate_body_targets(
+    journal_entry: &Option<ResolvedCreate>,
+    types: &std::collections::HashMap<String, &'static str>,
+    links: &[Link],
+) -> Result<(), ApplyError> {
+    let Some(je) = journal_entry else {
+        return Ok(());
+    };
+    let Some(body) = je.payload.get("body").and_then(serde_json::Value::as_array) else {
+        return Ok(());
+    };
+    // The set of handles the JE links to via a `journal_ref` (the inline-ref
+    // declarations a body placeholder must match).
+    let journal_ref_targets: std::collections::HashSet<&str> = links
+        .iter()
+        .filter(|l| matches!(l.kind, LinkKind::JournalRef) && l.from == je.handle)
+        .map(|l| l.to.as_str())
+        .collect();
+
+    for node in body {
+        if node.get("type").and_then(serde_json::Value::as_str) != Some("entity_ref") {
+            continue;
+        }
+        let target = node
+            .get("target")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                ApplyError::InvalidMutation(
+                    "intent graph journal entry body entity_ref node must carry a non-empty target handle"
+                        .to_string(),
+                )
+            })?;
+        // The target must name a declared referenceable handle.
+        match types.get(target).copied() {
+            Some("person" | "project" | "todo") => {}
+            Some(other) => {
+                return Err(ApplyError::InvalidMutation(format!(
+                    "intent graph journal entry body entity_ref target {target:?} must be a person, project, or todo, but it is a {other}"
+                )));
+            }
+            None => {
+                return Err(ApplyError::InvalidMutation(format!(
+                    "intent graph journal entry body entity_ref target {target:?} does not name any node"
+                )));
+            }
+        }
+        // And it must have a matching journal_ref link (the inline-ref declaration).
+        if !journal_ref_targets.contains(target) {
+            return Err(ApplyError::InvalidMutation(format!(
+                "intent graph journal entry body references {target:?} but no journal_ref link declares it"
+            )));
+        }
+    }
     Ok(())
 }
 
 /// Parse one `links[]` element into a [`Link`] (ADR-0042). A `todo_project`/
 /// `journal_ref` carries `{kind, from, to}`; a `todo_person` additionally carries
 /// `role`. A malformed link (non-object, missing/blank `from`/`to`, unknown kind)
-/// is `InvalidMutation` — the whole apply fails before any tx opens. A
-/// `journal_ref` is parsed (so it must be well-formed) but applied NOWHERE in
-/// slice 4 (the JE body weave is slice 6).
+/// is `InvalidMutation` — the whole apply fails before any tx opens.
 fn parse_link(value: &serde_json::Value) -> Result<Link, ApplyError> {
     let obj = value.as_object().ok_or_else(|| {
         ApplyError::InvalidMutation("intent graph link must be an object".to_string())
@@ -912,20 +1167,15 @@ fn parse_link(value: &serde_json::Value) -> Result<Link, ApplyError> {
 /// Reconstruct the `journal_entry` node into a `create_journal_entry` payload:
 /// `{occurred_at, ended_at?, body}` — the graph-local `handle` dropped from the
 /// payload (handles are graph-internal join keys, never entity data) but RETAINED
-/// on the `ResolvedCreate` so a `journal_ref`/body weave (slice 6) and the
-/// handle→id map can join on it.
+/// on the `ResolvedCreate` so the `journal_ref` body weave and the handle→id map
+/// can join on it.
 ///
-/// Slice 2 is TEXT-ONLY: a body carrying `entity_ref` nodes is the slice-6 WEAVE
-/// (mint `entity_refs`, rewrite each `target` handle into a stored `ref_id`), so
-/// until that lands we REJECT any non-text body node here. This is load-bearing,
-/// not belt-and-suspenders: the graph's decide-time schema permits `entity_ref`
-/// body nodes, and `apply_entity_mutation` runs no content validation on the
-/// reconstructed `create_journal_entry` payload (validation is the decide gate's
-/// job, which validated the GRAPH shape, not the per-node create payload). Absent
-/// this guard a graph whose JE body has an `{type:entity_ref, target}` node would
-/// be stored VERBATIM — a dangling graph handle with no backing `entity_ref` row.
-/// Rejecting here fails the whole tx cleanly (nothing partial, ADR-0042); slice 6
-/// replaces this rejection with the actual weave.
+/// The body is kept VERBATIM here (including any `{type:entity_ref, target:@handle}`
+/// placeholders): the weave runs at mint time in [`weave_and_mint_journal_entry`]
+/// (ADR-0042 slice 6), once every referenced entity is resolved. Each placeholder's
+/// `target` handle is type-validated against the declared nodes in
+/// [`validate_links`] before any tx opens, so a placeholder naming no declared
+/// handle fails the whole apply loud rather than being stored dangling.
 fn resolve_journal_entry_node(node: &serde_json::Value) -> Result<ResolvedCreate, ApplyError> {
     let obj = node.as_object().ok_or_else(|| {
         ApplyError::InvalidMutation("journal_entry node must be an object".to_string())
@@ -935,20 +1185,6 @@ fn resolve_journal_entry_node(node: &serde_json::Value) -> Result<ResolvedCreate
     for key in ["occurred_at", "ended_at", "body"] {
         if let Some(value) = obj.get(key) {
             payload.insert(key.to_string(), value.clone());
-        }
-    }
-
-    // Reject non-text body nodes until slice 6 wires the weave (see doc above).
-    if let Some(body) = obj.get("body").and_then(serde_json::Value::as_array) {
-        for body_node in body {
-            let node_type = body_node.get("type").and_then(serde_json::Value::as_str);
-            if node_type != Some("text") {
-                return Err(ApplyError::InvalidMutation(
-                    "intent graph journal entry body may carry only text nodes until \
-                     entity_ref weaving lands (ADR-0042 slice 6)"
-                        .to_string(),
-                ));
-            }
         }
     }
 
@@ -965,7 +1201,6 @@ fn resolve_journal_entry_node(node: &serde_json::Value) -> Result<ResolvedCreate
     Ok(ResolvedCreate {
         kind: MutationKind::CreateJournalEntry,
         payload: serde_json::Value::Object(payload),
-        is_journal_anchor: true,
         handle,
     })
 }
