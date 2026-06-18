@@ -1571,4 +1571,208 @@ describe("ProposalCard", () => {
 			).toBeInTheDocument();
 		});
 	});
+
+	// The apply_intent_graph sequential-review card (ADR-0042): a resolved plan
+	// rendered as a node queue with a local staging buffer + one atomic commit.
+	describe("intent graph review card", () => {
+		const graphProposal: PendingProposal = {
+			proposal_id: "graph-prop",
+			run_id: "graph-run",
+			mutation_kind: "apply_intent_graph",
+			payload: {
+				links: [{ kind: "todo_project", from: "@rodeo", to: "@leadads" }],
+			},
+			rationale: "recognized from your note",
+			resolved_plan: [
+				{
+					handle: "@rodeo",
+					type: "todo",
+					disposition: "create",
+					label: "Figure out the Rodeo side",
+				},
+				{
+					handle: "@leadads",
+					type: "project",
+					disposition: "create",
+					label: "Lead Ads",
+				},
+			],
+			status: "pending",
+		};
+
+		it("renders one row per plan node with a create badge", () => {
+			render(<ProposalCard proposal={graphProposal} onDecide={() => {}} />);
+			expect(screen.getByText("Figure out the Rodeo side")).toBeInTheDocument();
+			expect(screen.getByText("Lead Ads")).toBeInTheDocument();
+			expect(screen.getAllByText("New")).toHaveLength(2);
+			expect(screen.getByText(/2 items to review/i)).toBeInTheDocument();
+		});
+
+		it("commits an all-accept decisions vector on Apply", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={graphProposal} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /apply 2 items/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+				{ handle: "@rodeo", decision: "accept" },
+				{ handle: "@leadads", decision: "accept" },
+			]);
+		});
+
+		it("rejecting the project surfaces the Todo downgrade and drops the link in the vector", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={graphProposal} onDecide={onDecide} />);
+			// Reject the project node (its row's Reject toggle).
+			fireEvent.click(screen.getByRole("button", { name: /reject lead ads/i }));
+			// The downgrade notice appears before Apply.
+			expect(screen.getByText(/without its project link/i)).toBeInTheDocument();
+			// Apply now carries the project as a reject; the Todo stays an accept.
+			fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+				{ handle: "@rodeo", decision: "accept" },
+				{ handle: "@leadads", decision: "reject" },
+			]);
+		});
+
+		it("Dismiss all commits a reject", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={graphProposal} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /dismiss all/i }));
+			expect(onDecide).toHaveBeenCalledWith("reject", undefined, [
+				{ handle: "@rodeo", decision: "reject" },
+				{ handle: "@leadads", decision: "reject" },
+			]);
+		});
+
+		it("an ambiguous node cannot be accepted (reject-only, #181)", () => {
+			const onDecide = vi.fn();
+			const withAmbiguous: PendingProposal = {
+				...graphProposal,
+				payload: { links: [] },
+				resolved_plan: [
+					{
+						handle: "@morris",
+						type: "person",
+						disposition: "ambiguous",
+						label: "Morris",
+						candidates: [
+							{ entity_id: "m1", label: "Morris" },
+							{ entity_id: "m2", label: "Morris" },
+						],
+					},
+				],
+			};
+			render(<ProposalCard proposal={withAmbiguous} onDecide={onDecide} />);
+			// The accept toggle for the ambiguous node is disabled.
+			expect(
+				screen.getByRole("button", { name: /accept morris/i }),
+			).toBeDisabled();
+			expect(
+				screen.getByText(/match more than one existing entry/i),
+			).toBeInTheDocument();
+			// The whole plan is the ambiguous node (default reject) → "Dismiss all"
+			// commits a reject-all (Core declines the graph).
+			fireEvent.click(screen.getByRole("button", { name: /dismiss all/i }));
+			expect(onDecide).toHaveBeenCalledWith("reject", undefined, [
+				{ handle: "@morris", decision: "reject" },
+			]);
+		});
+
+		it("renders the Existing badge for a reuse-disposition node", () => {
+			const withReuse: PendingProposal = {
+				...graphProposal,
+				payload: { links: [] },
+				resolved_plan: [
+					{
+						handle: "@leadads",
+						type: "project",
+						disposition: "reuse",
+						label: "Lead Ads",
+						entity_id: "p1",
+					},
+				],
+			};
+			render(<ProposalCard proposal={withReuse} onDecide={() => {}} />);
+			expect(screen.getByText("Lead Ads")).toBeInTheDocument();
+			expect(screen.getByText("Existing")).toBeInTheDocument();
+		});
+
+		it("renders TWO downgrade notices (no key collision) when one Todo loses both links", () => {
+			const onDecide = vi.fn();
+			const bothLinks: PendingProposal = {
+				...graphProposal,
+				payload: {
+					links: [
+						{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
+						{ kind: "todo_person", from: "@rodeo", to: "@morris" },
+					],
+				},
+				resolved_plan: [
+					{
+						handle: "@rodeo",
+						type: "todo",
+						disposition: "create",
+						label: "Rodeo task",
+					},
+					{
+						handle: "@leadads",
+						type: "project",
+						disposition: "create",
+						label: "Lead Ads",
+					},
+					{
+						handle: "@morris",
+						type: "person",
+						disposition: "create",
+						label: "Morris",
+					},
+				],
+			};
+			render(<ProposalCard proposal={bothLinks} onDecide={onDecide} />);
+			// Reject BOTH the project and the person, keeping the Todo accepted.
+			fireEvent.click(screen.getByRole("button", { name: /reject lead ads/i }));
+			fireEvent.click(screen.getByRole("button", { name: /reject morris/i }));
+			// Both distinct downgrade notices render (the project-link and person-link
+			// copy differ) — the key fix means the second is not dropped.
+			expect(
+				screen.getByText(/without its project link to .Lead Ads./i),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText(/without its link to .Morris./i),
+			).toBeInTheDocument();
+		});
+
+		it("resets staging when a new proposal_id renders in the same card (no leak across graphs)", () => {
+			const onDecide = vi.fn();
+			// Graph #1: reject the Rodeo node (handle @rodeo).
+			const { rerender } = render(
+				<ProposalCard proposal={graphProposal} onDecide={onDecide} />,
+			);
+			fireEvent.click(
+				screen.getByRole("button", {
+					name: /reject figure out the rodeo side/i,
+				}),
+			);
+			// Graph #2 arrives on the SAME run_id (same mounted card) with a fresh
+			// proposal_id and an UNRELATED node that happens to reuse the handle @rodeo.
+			const nextGraph: PendingProposal = {
+				...graphProposal,
+				proposal_id: "graph-prop-2",
+				payload: { links: [] },
+				resolved_plan: [
+					{
+						handle: "@rodeo",
+						type: "person",
+						disposition: "create",
+						label: "Rodrigo",
+					},
+				],
+			};
+			rerender(<ProposalCard proposal={nextGraph} onDecide={onDecide} />);
+			// The prior reject must NOT leak: committing accepts the new @rodeo node.
+			fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+			expect(onDecide).toHaveBeenLastCalledWith("accept", undefined, [
+				{ handle: "@rodeo", decision: "accept" },
+			]);
+		});
+	});
 });

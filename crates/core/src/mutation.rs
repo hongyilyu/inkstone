@@ -11,9 +11,9 @@
 //! module; this module is pure and DB-free.
 //!
 //! Two enums, one wide and one narrow:
-//! - [`MutationKind`] — all 17 Core-known kinds. The currency of `validate`,
+//! - [`MutationKind`] — all 18 Core-known kinds. The currency of `validate`,
 //!   `mutate`, `apply`, and the target-reference checks.
-//! - [`ProposableMutation`] — the 13 the agent may propose (ADR-0018). Carries
+//! - [`ProposableMutation`] — the 14 the agent may propose (ADR-0018, ADR-0042). Carries
 //!   the agent-path-only facets (`render_accept`, `supports_edit`,
 //!   `carries_review_context`) so they are total over exactly the kinds that can
 //!   reach the accept path — no `unreachable!` for the 4 user-only kinds.
@@ -474,6 +474,8 @@ impl MutationKind {
             M::DeleteTodo => entity_id_only("delete_todo"),
             M::DeleteBookmark => entity_id_only("delete_bookmark"),
             M::MarkProjectReviewed => entity_id_only("mark_project_reviewed"),
+            // ── intent graph (ADR-0042) ──
+            M::ApplyIntentGraph => intent_graph_payload(),
         }
     }
 
@@ -539,6 +541,169 @@ fn journal_entry_payload(target: Option<Field>, body: BodyPolicy) -> PayloadSpec
     PayloadSpec::payload("journal entry", fields)
 }
 
+// ─── Intent graph payload (ADR-0042) ────────────────────────────────────────
+//
+// The graph is the most structurally complex payload the model emits: an
+// optional `journal_entry` node, a `>= 1` array of typed entity nodes
+// (person/project/todo, each carrying a graph-local `handle` + optional
+// `existing_id` hint), and an array of three link kinds. Slice 1 advertises and
+// structurally accepts the shape — deep per-entity-type field validation and the
+// cross-node graph invariants (handle references, duplicate handles, a
+// `journal_ref` without a `journal_entry`) are the resolver's job in slice 2+.
+// Every variant is INLINED (no `$ref` — Anthropic rejects refs) and carries
+// `additionalProperties:false`, so each node variant must declare ALL its keys.
+
+/// A single-literal `type`/`kind` discriminant for a graph node variant — a
+/// closed enum whose domain is exactly the variant's tag, so a node with the
+/// wrong tag fails this variant (and the `oneOf` falls through to the next).
+fn graph_discriminant(name: &'static str, domain: &'static [&'static str]) -> Field {
+    Field::required(
+        name,
+        FieldSpec::EnumStr {
+            domain,
+            err: "unknown graph node tag",
+        },
+    )
+}
+
+/// One typed entity node: a required graph-local `handle`, the `type`
+/// discriminant, an optional `existing_id` UUID hint (Core re-resolves
+/// regardless), plus the type-specific fields. The fields are advertised so the
+/// model knows the shape; deep cross-field validation is deferred to the
+/// resolver.
+fn entity_node(type_domain: &'static [&'static str], type_fields: Vec<Field>) -> PayloadSpec {
+    let mut fields = vec![
+        Field::required("handle", FieldSpec::non_empty_string()),
+        graph_discriminant("type", type_domain),
+        Field::optional("existing_id", FieldSpec::Uuid { schema_regex: true }),
+    ];
+    fields.extend(type_fields);
+    PayloadSpec::nested("intent graph entity", ObjErr::JsonObject, fields)
+}
+
+/// One graph body node: a `{type:"text", text}` or a `{type:"entity_ref",
+/// target}` whose `target` is a handle declared in `entities` (resolved later).
+fn graph_body_nodes() -> FieldSpec {
+    FieldSpec::OneOfArray {
+        variants: vec![
+            PayloadSpec::nested(
+                "intent graph body text node",
+                ObjErr::JsonObject,
+                vec![
+                    graph_discriminant("type", &["text"]),
+                    Field::required("text", FieldSpec::non_empty_string()),
+                ],
+            ),
+            PayloadSpec::nested(
+                "intent graph body entity_ref node",
+                ObjErr::JsonObject,
+                vec![
+                    graph_discriminant("type", &["entity_ref"]),
+                    Field::required("target", FieldSpec::non_empty_string()),
+                ],
+            ),
+        ],
+        min_items: Some(1),
+    }
+}
+
+/// The optional `journal_entry` node: its own handle, the occurred/ended
+/// timestamps, and a body of text/entity_ref nodes (entity_ref `target`s are
+/// handles). Present for journal-anchored capture, absent for direct capture.
+fn intent_graph_journal_entry_node() -> PayloadSpec {
+    PayloadSpec::nested(
+        "intent graph journal entry",
+        ObjErr::JsonObject,
+        vec![
+            Field::required("handle", FieldSpec::non_empty_string()),
+            Field::datetime("occurred_at").require(),
+            Field::datetime("ended_at"),
+            Field::required("body", graph_body_nodes()),
+        ],
+    )
+}
+
+/// The three link kinds (ADR-0042): each a `kind` discriminant + `from`/`to`
+/// handles, with `todo_person` additionally carrying a `role` enum.
+fn intent_graph_links() -> FieldSpec {
+    let from_to = || {
+        vec![
+            Field::required("from", FieldSpec::non_empty_string()),
+            Field::required("to", FieldSpec::non_empty_string()),
+        ]
+    };
+    let mut todo_project = vec![graph_discriminant("kind", &["todo_project"])];
+    todo_project.extend(from_to());
+    let mut todo_person = vec![graph_discriminant("kind", &["todo_person"])];
+    todo_person.extend(from_to());
+    todo_person.push(Field::required(
+        "role",
+        FieldSpec::EnumStr {
+            domain: &["waiting_on", "related"],
+            err: "todo_person role must be one of waiting_on, related",
+        },
+    ));
+    let mut journal_ref = vec![graph_discriminant("kind", &["journal_ref"])];
+    journal_ref.extend(from_to());
+    FieldSpec::OneOfArray {
+        variants: vec![
+            PayloadSpec::nested("intent graph todo_project link", ObjErr::JsonObject, todo_project),
+            PayloadSpec::nested("intent graph todo_person link", ObjErr::JsonObject, todo_person),
+            PayloadSpec::nested("intent graph journal_ref link", ObjErr::JsonObject, journal_ref),
+        ],
+        min_items: None,
+    }
+}
+
+/// The `apply_intent_graph` payload: an optional `journal_entry` node, a
+/// `minItems:1` array of typed entity nodes, and an array of link nodes.
+fn intent_graph_payload() -> PayloadSpec {
+    let entity_variants = vec![
+        entity_node(
+            &["person"],
+            vec![
+                Field::required("name", FieldSpec::non_empty_string()),
+                Field::optional("note", FieldSpec::string()),
+                Field::optional("aliases", FieldSpec::non_empty_string_array()),
+            ],
+        ),
+        entity_node(
+            &["project"],
+            vec![
+                Field::required("name", FieldSpec::non_empty_string()),
+                Field::optional("outcome", FieldSpec::string()),
+                Field::optional("note", FieldSpec::string()),
+            ],
+        ),
+        entity_node(
+            &["todo"],
+            vec![
+                Field::required("title", FieldSpec::non_empty_string()),
+                Field::optional("note", FieldSpec::string()),
+                Field::datetime("defer_at"),
+                Field::datetime("due_at"),
+            ],
+        ),
+    ];
+    PayloadSpec::payload(
+        "apply_intent_graph",
+        vec![
+            Field::optional(
+                "journal_entry",
+                FieldSpec::Object(intent_graph_journal_entry_node()),
+            ),
+            Field::required(
+                "entities",
+                FieldSpec::OneOfArray {
+                    variants: entity_variants,
+                    min_items: Some(1),
+                },
+            ),
+            Field::required("links", intent_graph_links()),
+        ],
+    )
+}
+
 /// Which top-level payload key names the target Entity of a mutation. A pure
 /// function of the kind (resolved in [`MutationKind::describe`]); the value is
 /// read FROM the payload at the edge via [`target_entity_id`].
@@ -580,8 +745,8 @@ pub(crate) struct Descriptor {
     pub(crate) target_key: Option<TargetKey>,
 }
 
-/// Every Core-known Workspace mutation kind (ADR-0016, ADR-0025, ADR-0036). The
-/// closed taxonomy: 13 are agent-proposable (see [`ProposableMutation`]); the
+/// Every Core-known Workspace mutation kind (ADR-0016, ADR-0025, ADR-0036, ADR-0042). The
+/// closed taxonomy: 14 are agent-proposable (see [`ProposableMutation`]); the
 /// other 4 (`mark_project_reviewed` + the three bookmark kinds) are user-CRUD-only.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MutationKind {
@@ -602,6 +767,10 @@ pub(crate) enum MutationKind {
     CreateBookmark,
     UpdateBookmark,
     DeleteBookmark,
+    /// One intent graph (ADR-0042): candidate entities + intended links, resolved
+    /// and applied by Core in one atomic transaction. Agent-proposable; the
+    /// resolve/apply path lands in a later slice (slice 1 is the schema only).
+    ApplyIntentGraph,
 }
 
 impl MutationKind {
@@ -630,6 +799,7 @@ impl MutationKind {
             "create_bookmark" => MutationKind::CreateBookmark,
             "update_bookmark" => MutationKind::UpdateBookmark,
             "delete_bookmark" => MutationKind::DeleteBookmark,
+            "apply_intent_graph" => MutationKind::ApplyIntentGraph,
             _ => return None,
         })
     }
@@ -657,6 +827,7 @@ impl MutationKind {
             MutationKind::CreateBookmark => "create_bookmark",
             MutationKind::UpdateBookmark => "update_bookmark",
             MutationKind::DeleteBookmark => "delete_bookmark",
+            MutationKind::ApplyIntentGraph => "apply_intent_graph",
         }
     }
 
@@ -760,11 +931,22 @@ impl MutationKind {
                 entity_type: E::Bookmark,
                 target_key: Some(K::EntityId),
             },
+            // A graph spans many entities, so it has NO single target id — like a
+            // create, `target_key` is None. `entity_type` is the JE anchor; the
+            // graph actually mints many types, so this field is unused until the
+            // slice-2 resolver (which loops `apply_entity_mutation` per node with
+            // each node's own type). `write_op: Create` keeps the descriptor total
+            // and matches the create-and-link-only nature of the kind (ADR-0042).
+            M::ApplyIntentGraph => Descriptor {
+                write_op: W::Create,
+                entity_type: E::JournalEntry,
+                target_key: None,
+            },
         }
     }
 }
 
-/// The agent-proposable subset (ADR-0018): the 13 kinds the Worker may emit via
+/// The agent-proposable subset (ADR-0018): the 14 kinds the Worker may emit via
 /// `propose_workspace_mutation`. Carries the agent-path-only facets so each is
 /// total over exactly the kinds that can reach the accept path — the 4 user-only
 /// kinds (`mark_project_reviewed`, the bookmarks) are simply not in the type.
@@ -783,13 +965,14 @@ pub(crate) enum ProposableMutation {
     CreateTodo,
     UpdateTodo,
     DeleteTodo,
+    ApplyIntentGraph,
 }
 
 impl ProposableMutation {
     /// Every agent-proposable kind, in wire order. The single source the
     /// `propose_workspace_mutation` tool descriptor iterates to emit its `oneOf`
     /// schema, and the closed set the drift-guard test pins.
-    pub(crate) const ALL: [ProposableMutation; 13] = [
+    pub(crate) const ALL: [ProposableMutation; 14] = [
         ProposableMutation::CreateJournalEntry,
         ProposableMutation::UpdateJournalEntry,
         ProposableMutation::DeleteJournalEntry,
@@ -803,6 +986,7 @@ impl ProposableMutation {
         ProposableMutation::CreateTodo,
         ProposableMutation::UpdateTodo,
         ProposableMutation::DeleteTodo,
+        ProposableMutation::ApplyIntentGraph,
     ];
 
     /// Widen to the full [`MutationKind`] — infallible, so the shared
@@ -824,13 +1008,14 @@ impl ProposableMutation {
             ProposableMutation::CreateTodo => MutationKind::CreateTodo,
             ProposableMutation::UpdateTodo => MutationKind::UpdateTodo,
             ProposableMutation::DeleteTodo => MutationKind::DeleteTodo,
+            ProposableMutation::ApplyIntentGraph => MutationKind::ApplyIntentGraph,
         }
     }
 
     /// Whether an accepted Proposal of this kind supports an `edit` Decision
     /// (ADR-0025). Deletes carry no editable data, and the reference weave's
     /// shape is fixed (its single entity_ref placeholder), so neither is
-    /// editable; every create/update otherwise is. Total over the 13 (both arms
+    /// editable; every create/update otherwise is. Total over the 14 (both arms
     /// listed) so a new proposable kind must declare its editability.
     pub(crate) fn supports_edit(self) -> bool {
         use ProposableMutation as P;
@@ -839,7 +1024,11 @@ impl ProposableMutation {
             | P::DeletePerson
             | P::DeleteProject
             | P::DeleteTodo
-            | P::ReferenceExistingEntityFromJournalEntry => false,
+            | P::ReferenceExistingEntityFromJournalEntry
+            // The graph is corrected via the per-node decision vector's
+            // `edited_fields` (ADR-0042), NOT the whole-payload `edit` verb. So it
+            // does not support `edit`.
+            | P::ApplyIntentGraph => false,
             P::CreateJournalEntry
             | P::UpdateJournalEntry
             | P::CreatePerson
@@ -854,7 +1043,7 @@ impl ProposableMutation {
     /// Whether `proposal/get` attaches the current Journal Entry as review
     /// context (ADR-0025): the kinds that mutate an EXISTING Journal Entry the
     /// user should see before deciding — update/delete of a Journal Entry, and
-    /// the reference weave. A fresh create has nothing to show. Total over the 13.
+    /// the reference weave. A fresh create has nothing to show. Total over the 14.
     pub(crate) fn carries_review_context(self) -> bool {
         use ProposableMutation as P;
         match self {
@@ -870,7 +1059,11 @@ impl ProposableMutation {
             | P::DeleteProject
             | P::CreateTodo
             | P::UpdateTodo
-            | P::DeleteTodo => false,
+            | P::DeleteTodo
+            // The graph mints its own newborn Journal Entry (ADR-0042 "the JE node
+            // is create-only"); it never mutates an existing JE, so there is no
+            // current-JE review context to attach.
+            | P::ApplyIntentGraph => false,
         }
     }
 }
@@ -901,6 +1094,7 @@ impl TryFrom<MutationKind> for ProposableMutation {
             MutationKind::CreateTodo => ProposableMutation::CreateTodo,
             MutationKind::UpdateTodo => ProposableMutation::UpdateTodo,
             MutationKind::DeleteTodo => ProposableMutation::DeleteTodo,
+            MutationKind::ApplyIntentGraph => ProposableMutation::ApplyIntentGraph,
             user_only @ (MutationKind::MarkProjectReviewed
             | MutationKind::CreateBookmark
             | MutationKind::UpdateBookmark
@@ -944,6 +1138,7 @@ mod tests {
             MutationKind::CreateBookmark,
             MutationKind::UpdateBookmark,
             MutationKind::DeleteBookmark,
+            MutationKind::ApplyIntentGraph,
         ] {
             assert_eq!(MutationKind::from_wire(kind.as_wire()), Some(kind));
         }
@@ -982,7 +1177,7 @@ mod tests {
     #[test]
     fn proposable_all_widens_and_excludes_user_only() {
         // ALL widens cleanly; the 4 user-only kinds are not proposable.
-        assert_eq!(ProposableMutation::ALL.len(), 13);
+        assert_eq!(ProposableMutation::ALL.len(), 14);
         for p in ProposableMutation::ALL {
             assert_eq!(ProposableMutation::try_from(p.kind()).unwrap(), p);
         }

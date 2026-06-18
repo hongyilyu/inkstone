@@ -50,12 +50,19 @@ pub(crate) fn validate(kind: MutationKind, payload: &Value) -> Result<(), String
         MutationKind::UpdateTodo => validate_update_todo(payload),
         MutationKind::CreateBookmark => validate_bookmark(payload),
         MutationKind::UpdateBookmark => validate_update_bookmark(payload),
+        // The intent graph (ADR-0042) validates its STRUCTURE via the single-source
+        // spec (optional journal_entry, >= 1 typed entity nodes, the three link
+        // kinds). The cross-node graph invariants (handle references, duplicate
+        // handles, journal_ref-without-journal_entry) are the resolver's job (slice
+        // 2+); slice 1 short-circuits before apply, so structural acceptance is all
+        // the agent path needs here.
+        MutationKind::ApplyIntentGraph => MutationKind::ApplyIntentGraph.payload_spec().check(payload),
     }
 }
 
 /// Render the human-readable Decision text the model reads on resume as the
 /// awaited tool's result (ADR-0025). An inherent method on [`ProposableMutation`]
-/// (declared in [`crate::mutation`]) so it is total over exactly the 13 kinds
+/// (declared in [`crate::mutation`]) so it is total over exactly the 14 kinds
 /// that can reach the agent accept path — the 4 user-only kinds are not in the
 /// type, so there is no `unreachable!` to forget. Defined here, alongside the
 /// private body-text helpers it uses.
@@ -188,6 +195,31 @@ pub(crate) fn render_accept(
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             format!("Accepted. Updated Todo (todo_id={todo_id}).")
+        }
+        // The graph applies many entities in one tx (ADR-0042); the model reads
+        // this on resume and re-reads the created entities via `entity/changed`.
+        // `entity_id` is the anchor (the Journal Entry node, or the first created
+        // entity for a JE-less direct-capture graph). render_accept sees only the
+        // PROPOSED payload, not the per-node decision vector, so the count is the
+        // proposed node count and is phrased "up to N" — the user may have rejected
+        // some; the model re-reads what actually landed via `entity/changed`.
+        P::ApplyIntentGraph => {
+            let anchor = entity_id.unwrap_or("unknown");
+            let proposed_count = payload
+                .get("entities")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len);
+            let has_journal_entry = payload
+                .get("journal_entry")
+                .is_some_and(|je| !je.is_null());
+            let je_note = if has_journal_entry {
+                " with a Journal Entry"
+            } else {
+                ""
+            };
+            format!(
+                "Accepted. Applied intent graph{je_note} (anchor entity_id={anchor}, up to {proposed_count} entities; some may have been declined)."
+            )
         }
     }
 }

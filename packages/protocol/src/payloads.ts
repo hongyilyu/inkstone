@@ -6,11 +6,12 @@
 // asserts deep-equality with the committed Rust fixture (`fixtures/<kind>.json`,
 // the schema-of-record).
 //
-// All 13 wire kinds are authored and registered in `schemas`. `create_todo` is
-// the deepest payload — nested objects 3 levels deep, arrays of objects, enums,
-// positive integers, datetime pattern+description, the bare-vs-patterned UUID
-// split — so its leaf builders (defined first, below) are the shared vocabulary
-// the other kinds reuse.
+// All 14 wire kinds are authored and registered in `schemas`. `create_todo` is
+// the deepest single-entity payload — nested objects 3 levels deep, arrays of
+// objects, enums, positive integers, datetime pattern+description, the
+// bare-vs-patterned UUID split — so its leaf builders (defined first, below) are
+// the shared vocabulary the other kinds reuse. `apply_intent_graph` (ADR-0042)
+// is the widest: nested oneOf node-unions for entities, links, and the JE body.
 
 import { Schema as S } from "effect";
 
@@ -281,7 +282,107 @@ const referenceExistingEntityFromJournalEntry = S.Struct({
 	body: journalBody(textNode, entityRefPlaceholder),
 });
 
-/** The kind → Effect Schema registry the parity test iterates. All 13 wire
+// ── apply_intent_graph payload (ADR-0042) ──
+//
+// One intent graph: an optional `journal_entry` node, a `minItems:1` array of
+// typed entity nodes (person/project/todo), and an array of three link kinds.
+// Every node is a tagged object; the entity/link/body arrays are `S.Union(...)`
+// of inlined variants → `JSONSchema.make` emits `anyOf` (the normalizer renames
+// to `oneOf`), kept POSITIONAL, so members are declared in the SAME order Rust
+// emits them (`mutation.rs`): entities person→project→todo; body text→entity_ref;
+// links todo_project→todo_person→journal_ref. Each node carries
+// `additionalProperties:false` (every Effect `S.Struct` does), matching Rust.
+// Deep cross-node validation (handle references, duplicate handles) is the
+// resolver's job — NOT advertised here, mirroring the Rust spec.
+
+/** A graph-local handle / handle reference — a non-empty string. */
+const handle = nonEmptyString;
+
+/** The optional `existing_id` hint on an entity node (a patterned UUID). */
+const intentGraphPersonNode = S.Struct({
+	handle,
+	type: S.Literal("person"),
+	existing_id: S.optional(patternedUuid),
+	name: nonEmptyString,
+	note: S.optional(S.String),
+	aliases: S.optional(S.Array(S.String)),
+});
+
+const intentGraphProjectNode = S.Struct({
+	handle,
+	type: S.Literal("project"),
+	existing_id: S.optional(patternedUuid),
+	name: nonEmptyString,
+	outcome: S.optional(S.String),
+	note: S.optional(S.String),
+});
+
+const intentGraphTodoNode = S.Struct({
+	handle,
+	type: S.Literal("todo"),
+	existing_id: S.optional(patternedUuid),
+	title: nonEmptyString,
+	note: S.optional(S.String),
+	defer_at: S.optional(localDateTime),
+	due_at: S.optional(localDateTime),
+});
+
+/** A `journal_entry` body node: text or an `entity_ref` whose `target` is a
+ * handle (declared in `entities`). text-node first, matching Rust's emit order. */
+const intentGraphBodyTextNode = S.Struct({
+	type: S.Literal("text"),
+	text: nonEmptyString,
+});
+const intentGraphBodyEntityRefNode = S.Struct({
+	type: S.Literal("entity_ref"),
+	target: handle,
+});
+
+/** The optional `journal_entry` node (journal-anchored capture). */
+const intentGraphJournalEntry = S.Struct({
+	handle,
+	occurred_at: localDateTime,
+	ended_at: S.optional(localDateTime),
+	body: S.Array(
+		S.Union(intentGraphBodyTextNode, intentGraphBodyEntityRefNode),
+	).pipe(S.minItems(1, { description: undefined })),
+});
+
+/** The three link kinds, declared todo_project→todo_person→journal_ref. */
+const intentGraphTodoProjectLink = S.Struct({
+	kind: S.Literal("todo_project"),
+	from: handle,
+	to: handle,
+});
+const intentGraphTodoPersonLink = S.Struct({
+	kind: S.Literal("todo_person"),
+	from: handle,
+	to: handle,
+	role: S.Literal("waiting_on", "related"),
+});
+const intentGraphJournalRefLink = S.Struct({
+	kind: S.Literal("journal_ref"),
+	from: handle,
+	to: handle,
+});
+
+/** `apply_intent_graph` payload: optional `journal_entry`, `>= 1` entity nodes,
+ * and the link array (ADR-0042). */
+export const applyIntentGraph = S.Struct({
+	journal_entry: S.optional(intentGraphJournalEntry),
+	entities: S.Array(
+		S.Union(intentGraphPersonNode, intentGraphProjectNode, intentGraphTodoNode),
+	).pipe(S.minItems(1, { description: undefined })),
+	links: S.Array(
+		S.Union(
+			intentGraphTodoProjectLink,
+			intentGraphTodoPersonLink,
+			intentGraphJournalRefLink,
+		),
+	),
+});
+
+/** The kind → Effect Schema registry the parity test iterates. All 14 wire
  * kinds are registered here; the test asserts each against its committed
  * `fixtures/<kind>.json`, and `completeness.test.ts` locks this key set to the
  * fixtures dir and the canonical wire-kind list. */
@@ -300,6 +401,7 @@ export const schemas = {
 	delete_journal_entry: deleteByEntityId,
 	reference_existing_entity_from_journal_entry:
 		referenceExistingEntityFromJournalEntry,
+	apply_intent_graph: applyIntentGraph,
 } as const satisfies Record<string, S.Schema.Any>;
 
 export type WireKind = keyof typeof schemas;

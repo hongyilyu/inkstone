@@ -236,6 +236,48 @@ describe("ProposalGetResult", () => {
 		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(wire);
 	});
 
+	it("decodes an apply_intent_graph resolved_plan (create/reuse/ambiguous) and encodes back unchanged", () => {
+		const withPlan = {
+			...wire,
+			mutation_kind: "apply_intent_graph",
+			payload: {},
+			resolved_plan: [
+				{
+					handle: "@rodeo",
+					type: "todo",
+					disposition: "create",
+					label: "Figure out the Rodeo side",
+				},
+				{
+					handle: "@leadads",
+					type: "project",
+					disposition: "reuse",
+					label: "Lead Ads",
+					entity_id: "01900000-0000-7000-8000-0000000000a1",
+				},
+				{
+					handle: "@morris",
+					type: "person",
+					disposition: "ambiguous",
+					label: "Morris",
+					candidates: [
+						{
+							entity_id: "01900000-0000-7000-8000-0000000000b1",
+							label: "Morris",
+						},
+						{
+							entity_id: "01900000-0000-7000-8000-0000000000b2",
+							label: "Morris",
+						},
+					],
+				},
+			],
+		};
+		const decoded = S.decodeUnknownSync(ProposalGetResult)(withPlan);
+		expect(decoded).toEqual(withPlan);
+		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(withPlan);
+	});
+
 	it("decodes a null rationale", () => {
 		const noReason = { ...wire, rationale: null };
 		expect(S.decodeUnknownSync(ProposalGetResult)(noReason)).toEqual(noReason);
@@ -296,6 +338,41 @@ describe("ProposalDecideParams", () => {
 	it("rejects a missing proposal_id", () => {
 		expect(() =>
 			S.decodeUnknownSync(ProposalDecideParams)({ decision: "accept" }),
+		).toThrow();
+	});
+
+	it("decodes a per-node decision vector (apply_intent_graph, ADR-0042)", () => {
+		const wire = {
+			proposal_id: "01900000-0000-7000-8000-000000000010",
+			decision: "accept",
+			decisions: [
+				{ handle: "@je", decision: "accept" },
+				{ handle: "@leadads", decision: "reject" },
+				{
+					handle: "@morris",
+					decision: "accept",
+					entity_id: "01900000-0000-7000-8000-0000000000a1",
+				},
+				{
+					handle: "@rodeo",
+					decision: "accept",
+					edited_fields: { title: "Figure out the Rodeo side of Lead Ads" },
+				},
+			],
+			decision_idempotency_key: "k-graph",
+		};
+		const decoded = S.decodeUnknownSync(ProposalDecideParams)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ProposalDecideParams)(decoded)).toEqual(wire);
+	});
+
+	it("rejects a per-node decision outside accept/reject", () => {
+		expect(() =>
+			S.decodeUnknownSync(ProposalDecideParams)({
+				proposal_id: "01900000-0000-7000-8000-000000000010",
+				decision: "accept",
+				decisions: [{ handle: "@je", decision: "edit" }],
+			}),
 		).toThrow();
 	});
 });

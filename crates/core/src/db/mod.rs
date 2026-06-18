@@ -3,6 +3,7 @@
 //! operations and transaction boundaries.
 
 mod apply;
+mod intent_graph;
 mod lifecycle;
 mod message_fts;
 mod queries;
@@ -19,6 +20,10 @@ use uuid::Uuid;
 
 use crate::workflow::Workflow;
 
+// The intent-graph resolve+apply path (ADR-0042), the sibling of `apply_proposal`
+// for the one mutation kind that is a GRAPH, not a single entity. `decide` routes
+// `apply_intent_graph` here instead of `apply_proposal`.
+pub use intent_graph::{IntentGraphOutcome, apply_intent_graph_proposal, resolved_plan_for};
 pub use lifecycle::Moved;
 // `RunStatus` is the read+write Interface for Run status: the write verbs live on
 // it (ADR-0028), and the read seam (`run_status`, `RunSnapshot.status`) now returns

@@ -16,7 +16,7 @@ use crate::decide::{DecideError, DecideOutcome};
 use crate::hub::Hubs;
 use crate::protocol::{
     JournalEntryBodyNode, ProposalDecideParams, ProposalDecideResult, ProposalGetParams,
-    ProposalGetResult, ProposalReviewContext, ProposalReviewCurrentJournalEntry,
+    ProposalGetResult, ProposalReviewContext, ProposalReviewCurrentJournalEntry, ResolvedNode,
 };
 
 pub(super) async fn handle_get(
@@ -34,6 +34,7 @@ pub(super) async fn handle_get(
                 HandlerError::ProposalNotPending(format!("no pending proposal for run {run_id}"))
             })?;
         let review_context = review_context_for_proposal(pool, run_id, &p).await?;
+        let resolved_plan = resolved_plan_for_proposal(pool, &p).await?;
 
         Ok(ProposalGetResult {
             proposal_id: p.proposal_id,
@@ -42,6 +43,7 @@ pub(super) async fn handle_get(
             payload: p.payload,
             rationale: p.rationale,
             review_context,
+            resolved_plan,
             status: p.status,
         })
     })
@@ -63,6 +65,7 @@ pub(super) async fn handle_decide(
         params.proposal_id,
         &params.decision,
         params.edited_payload,
+        params.decisions,
         params.decision_idempotency_key,
         |run_id| crate::worker::resume(run_id, pool, hubs),
     )
@@ -109,6 +112,27 @@ fn send_decide_result(
         })
         .expect("ProposalDecideResult serializes"),
     );
+}
+
+/// The per-node create/reuse/ambiguous plan for an `apply_intent_graph` proposal
+/// (ADR-0042), `None` (omitted on the wire) for every single-entity kind. Computed
+/// READ-ONLY from the stored graph payload via [`db::resolved_plan_for`] so the
+/// Client renders the badges without re-resolving — advisory display; decide
+/// re-resolves authoritatively. Only `apply_intent_graph` carries a graph payload,
+/// so other kinds short-circuit to `None` (their card is unchanged).
+async fn resolved_plan_for_proposal(
+    pool: &SqlitePool,
+    proposal: &db::ProposalRow,
+) -> Result<Option<Vec<ResolvedNode>>, HandlerError> {
+    if crate::mutation::MutationKind::from_wire(&proposal.mutation_kind)
+        != Some(crate::mutation::MutationKind::ApplyIntentGraph)
+    {
+        return Ok(None);
+    }
+    let plan = db::resolved_plan_for(pool, &proposal.payload)
+        .await
+        .map_err(|e| HandlerError::Internal(e.into()))?;
+    Ok(Some(plan))
 }
 
 async fn review_context_for_proposal(

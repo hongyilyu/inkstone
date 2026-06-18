@@ -1,5 +1,7 @@
 # Journal Entries anchor chat capture; Daily Notes are derived views
 
+> **Superseded in part by [ADR-0042](./0042-intent-graph-journal-extraction.md).** The "Batch Journal Entry and extracted Entities into one Proposal" option rejected below is reversed: extraction is now one resolved intent graph. The Journal Entry anchor still holds — it is minted first in-tx and extracted entities source from it.
+
 Inkstone's chat input serves two different user intents: ordinary conversation and interstitial journaling. A journal-worthy Message should not immediately create a loose set of Person, Project, and Todo Entities. It first becomes a Journal Entry, and the accepted Journal Entry becomes the evidence anchor for any structured Entities extracted from it.
 
 ## Decision

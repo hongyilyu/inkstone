@@ -1,4 +1,4 @@
-import type { ProposalReviewContext } from "@inkstone/protocol";
+import type { ProposalReviewContext, ResolvedNode } from "@inkstone/protocol";
 import type { RunEventValue } from "@inkstone/ui-sdk";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
@@ -78,6 +78,9 @@ export interface PendingProposal {
 	readonly payload: unknown;
 	readonly rationale: string | null;
 	readonly review_context?: ProposalReviewContext;
+	/** The per-node create/reuse/ambiguous plan for an `apply_intent_graph`
+	 * proposal (ADR-0042); absent for the single-entity kinds. */
+	readonly resolved_plan?: readonly ResolvedNode[];
 	readonly status: "pending" | "deciding" | "accepted" | "rejected" | "error";
 }
 
