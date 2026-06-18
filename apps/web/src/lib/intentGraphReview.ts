@@ -116,6 +116,11 @@ export function buildDecisions(
 export interface DowngradeNotice {
 	/** The handle of the Todo that loses a link. */
 	readonly todoHandle: string;
+	/** The handle of the rejected target whose link drops. A single Todo can lose
+	 * MORE than one link (its project AND a person), so a stable render key must
+	 * combine this with `todoHandle` — `todoHandle` alone collides when two notices
+	 * share one Todo and React would drop the second. */
+	readonly targetHandle: string;
 	/** The Todo's label, for display. */
 	readonly todoLabel: string;
 	/** A human sentence describing the dropped link. */
@@ -162,6 +167,7 @@ export function downgradeNotices(
 		const todoLabel = todo.label || todo.handle;
 		notices.push({
 			todoHandle: link.from,
+			targetHandle: link.to,
 			todoLabel,
 			message:
 				link.kind === "todo_project"

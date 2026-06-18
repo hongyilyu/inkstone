@@ -3506,4 +3506,52 @@ mod tests {
         assert_eq!(entity_count(&pool).await, 0, "nothing is written");
         assert_eq!(proposal_status(&pool, &proposal_id_str).await, "pending");
     }
+
+    // Final review (deep-review): a graph declaring the SAME handle on two nodes is
+    // rejected before any tx — a duplicate would silently last-write-win in the
+    // handle→id / handle→type maps and mis-resolve a link to an arbitrary entity
+    // (the silent mis-link #179 set out to eliminate). ADR-0042 lists duplicate
+    // handles as a structural error the gates must catch.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_duplicate_handle_is_invalid() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        // Two entity nodes share the handle @dup (different types).
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Dup handles." }]
+            },
+            "entities": [
+                { "handle": "@dup", "type": "person", "name": "Morris" },
+                { "handle": "@dup", "type": "project", "name": "Lead Ads" }
+            ],
+            "links": []
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            None,
+            Some("k-dup-handle".to_string()),
+            resume_closure(pool.clone(), Arc::new(AtomicBool::new(false))),
+        )
+        .await;
+
+        let Err(DecideError::Invalid(reason)) = outcome else {
+            panic!("expected Invalid for a duplicate handle, got {outcome:?}");
+        };
+        assert!(
+            reason.contains("@dup") || reason.to_lowercase().contains("more than one"),
+            "the reason names the duplicate handle: {reason}"
+        );
+        assert_eq!(entity_count(&pool).await, 0, "nothing is written — no orphan, no mis-link");
+        assert_eq!(proposal_status(&pool, &proposal_id_str).await, "pending");
+    }
 }

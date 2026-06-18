@@ -753,6 +753,39 @@ mod tests {
             .expect("a direct-capture graph (no journal_entry) is accepted");
     }
 
+    /// The OneOfArray schema gate REJECTS malformed graphs at `payload_spec().check`
+    /// — the FIRST gate (decide-time `entities::validate`), independent of the
+    /// resolver's later structural checks. Pins the reject branches directly so a
+    /// regression making the schema gate accept-all is caught here, not masked by
+    /// the resolver backstop.
+    #[test]
+    fn apply_intent_graph_malformed_payloads_are_rejected_by_advertised_schema() {
+        use crate::mutation::MutationKind;
+        let spec = MutationKind::ApplyIntentGraph.payload_spec();
+
+        // entities is empty → min_items reject branch.
+        assert!(
+            spec.check(&serde_json::json!({ "entities": [], "links": [] }))
+                .is_err(),
+            "an empty entities array is rejected (min_items)"
+        );
+        // entities is not an array → non-array reject branch.
+        assert!(
+            spec.check(&serde_json::json!({ "entities": "nope", "links": [] }))
+                .is_err(),
+            "a non-array entities is rejected"
+        );
+        // an entity node with an unknown `type` → check_one_of no-variant-match.
+        assert!(
+            spec.check(&serde_json::json!({
+                "entities": [{ "handle": "@x", "type": "bookmark", "title": "x" }],
+                "links": []
+            }))
+            .is_err(),
+            "an entity node of an unknown type matches no variant and is rejected"
+        );
+    }
+
     #[test]
     fn descriptor_create_todo_requires_title_and_allows_envelope_and_source() {
         let d = descriptor();

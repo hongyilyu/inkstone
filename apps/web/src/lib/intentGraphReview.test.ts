@@ -195,6 +195,33 @@ describe("downgradeNotices", () => {
 		expect(notices[0].message).toMatch(/without its link to/i);
 		expect(notices[0].message).not.toMatch(/project link/i);
 	});
+
+	it("emits TWO distinct, uniquely-keyed notices when one Todo loses both its links", () => {
+		// The #179 graph wires @rodeo with BOTH a todo_project (@leadads) and a
+		// todo_person (@morris). Reject both while keeping the Todo: two notices,
+		// each keyed by (todoHandle, targetHandle) — never a colliding key.
+		const reusePerson: ResolvedNode = {
+			handle: "@morris",
+			type: "person",
+			disposition: "reuse",
+			label: "Morris",
+			entity_id: "m1",
+		};
+		const plan = [createTodo, reuseProject, reusePerson];
+		const bothLinks: GraphLink[] = [
+			{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
+			{ kind: "todo_person", from: "@rodeo", to: "@morris" },
+		];
+		let buffer = setStage({}, reuseProject, "reject");
+		buffer = setStage(buffer, reusePerson, "reject"); // @rodeo stays accepted (default)
+		const notices = downgradeNotices(plan, bothLinks, buffer);
+		expect(notices).toHaveLength(2);
+		// Both notices are about @rodeo, but their (todoHandle:targetHandle) keys differ.
+		const keys = notices.map((n) => `${n.todoHandle}:${n.targetHandle}`);
+		expect(new Set(keys).size).toBe(2);
+		expect(keys).toContain("@rodeo:@leadads");
+		expect(keys).toContain("@rodeo:@morris");
+	});
 });
 
 describe("parseGraphLinks", () => {

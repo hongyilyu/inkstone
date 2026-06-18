@@ -199,12 +199,13 @@ pub(crate) fn render_accept(
         // The graph applies many entities in one tx (ADR-0042); the model reads
         // this on resume and re-reads the created entities via `entity/changed`.
         // `entity_id` is the anchor (the Journal Entry node, or the first created
-        // entity for a JE-less direct-capture graph). A concise count of the
-        // applied nodes keeps the transcript honest without re-listing the plan.
-        // slice 5: reflect the per-node decision vector's accepted subset here.
+        // entity for a JE-less direct-capture graph). render_accept sees only the
+        // PROPOSED payload, not the per-node decision vector, so the count is the
+        // proposed node count and is phrased "up to N" — the user may have rejected
+        // some; the model re-reads what actually landed via `entity/changed`.
         P::ApplyIntentGraph => {
             let anchor = entity_id.unwrap_or("unknown");
-            let entity_count = payload
+            let proposed_count = payload
                 .get("entities")
                 .and_then(Value::as_array)
                 .map_or(0, Vec::len);
@@ -217,7 +218,7 @@ pub(crate) fn render_accept(
                 ""
             };
             format!(
-                "Accepted. Applied intent graph{je_note} (anchor entity_id={anchor}, {entity_count} entities)."
+                "Accepted. Applied intent graph{je_note} (anchor entity_id={anchor}, up to {proposed_count} entities; some may have been declined)."
             )
         }
     }

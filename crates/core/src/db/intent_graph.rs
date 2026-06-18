@@ -1077,6 +1077,14 @@ fn extract_graph(payload: &serde_json::Value) -> Result<ExtractedGraph, ApplyErr
         None => Vec::new(),
     };
 
+    // Reject DUPLICATE handles before any tx opens (ADR-0042 "Validation": a
+    // structural graph error). Handles are the join keys for links, body refs, and
+    // the handle→id map; a repeat would silently last-write-win (two nodes mint but
+    // `handle_to_id`/`handle_declared_types` keep only the last, so a link/body-ref
+    // to that handle resolves to an arbitrary entity — the exact silent mis-link
+    // #179 set out to eliminate). The JE node shares the handle namespace.
+    validate_unique_handles(&journal_entry, &entities)?;
+
     // Validate every link's endpoints against the DECLARED handle types before any
     // tx opens (poolless): both `from` and `to` must name a known handle, and the
     // endpoint types must match the link kind. This is type-correct because
@@ -1093,6 +1101,31 @@ fn extract_graph(payload: &serde_json::Value) -> Result<ExtractedGraph, ApplyErr
         entities,
         links,
     })
+}
+
+/// Reject a graph that declares the same handle on more than one node (ADR-0042).
+/// Handles (the JE node + every entity node) are the join keys for links, body
+/// refs, and the in-tx handle→id map; a duplicate would silently last-write-win,
+/// mis-resolving a link/body-ref to an arbitrary entity. Fails the whole apply as
+/// `InvalidMutation` before any tx opens (and degrades `resolved_plan_for` to an
+/// empty plan rather than a misleading one).
+fn validate_unique_handles(
+    journal_entry: &Option<ResolvedCreate>,
+    entities: &[EntityNode],
+) -> Result<(), ApplyError> {
+    let mut seen = std::collections::HashSet::new();
+    let handles = journal_entry
+        .iter()
+        .map(|je| je.handle.as_str())
+        .chain(entities.iter().map(|n| n.handle.as_str()));
+    for handle in handles {
+        if !seen.insert(handle) {
+            return Err(ApplyError::InvalidMutation(format!(
+                "intent graph handle {handle:?} is declared by more than one node"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The Entity Type a graph handle declares, for link-endpoint type checking.

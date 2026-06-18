@@ -1676,5 +1676,69 @@ describe("ProposalCard", () => {
 				{ handle: "@morris", decision: "reject" },
 			]);
 		});
+
+		it("renders the Existing badge for a reuse-disposition node", () => {
+			const withReuse: PendingProposal = {
+				...graphProposal,
+				payload: { links: [] },
+				resolved_plan: [
+					{
+						handle: "@leadads",
+						type: "project",
+						disposition: "reuse",
+						label: "Lead Ads",
+						entity_id: "p1",
+					},
+				],
+			};
+			render(<ProposalCard proposal={withReuse} onDecide={() => {}} />);
+			expect(screen.getByText("Lead Ads")).toBeInTheDocument();
+			expect(screen.getByText("Existing")).toBeInTheDocument();
+		});
+
+		it("renders TWO downgrade notices (no key collision) when one Todo loses both links", () => {
+			const onDecide = vi.fn();
+			const bothLinks: PendingProposal = {
+				...graphProposal,
+				payload: {
+					links: [
+						{ kind: "todo_project", from: "@rodeo", to: "@leadads" },
+						{ kind: "todo_person", from: "@rodeo", to: "@morris" },
+					],
+				},
+				resolved_plan: [
+					{
+						handle: "@rodeo",
+						type: "todo",
+						disposition: "create",
+						label: "Rodeo task",
+					},
+					{
+						handle: "@leadads",
+						type: "project",
+						disposition: "create",
+						label: "Lead Ads",
+					},
+					{
+						handle: "@morris",
+						type: "person",
+						disposition: "create",
+						label: "Morris",
+					},
+				],
+			};
+			render(<ProposalCard proposal={bothLinks} onDecide={onDecide} />);
+			// Reject BOTH the project and the person, keeping the Todo accepted.
+			fireEvent.click(screen.getByRole("button", { name: /reject lead ads/i }));
+			fireEvent.click(screen.getByRole("button", { name: /reject morris/i }));
+			// Both distinct downgrade notices render (the project-link and person-link
+			// copy differ) — the key fix means the second is not dropped.
+			expect(
+				screen.getByText(/without its project link to .Lead Ads./i),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText(/without its link to .Morris./i),
+			).toBeInTheDocument();
+		});
 	});
 });

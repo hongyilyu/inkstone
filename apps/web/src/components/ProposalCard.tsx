@@ -1326,7 +1326,7 @@ function IntentGraphReviewCard({
 				<ul className="flex flex-col gap-1.5">
 					{notices.map((notice) => (
 						<li
-							key={notice.todoHandle}
+							key={`${notice.todoHandle}:${notice.targetHandle}`}
 							className="flex items-start gap-1.5 text-xs text-muted-foreground"
 						>
 							<TriangleAlert
