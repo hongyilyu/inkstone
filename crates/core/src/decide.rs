@@ -2248,4 +2248,293 @@ mod tests {
         );
         assert_eq!(entity_count_of_type(&pool, "journal_entry").await, 1);
     }
+
+    /// The #179 graph fixture (ADR-0042): a JE + a Project + a Person + a Todo,
+    /// with a `todo_project` link (Todo → Project) and a `todo_person` link
+    /// (Todo → Person, role=related).
+    fn linked_graph() -> serde_json::Value {
+        serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Talked through the Lead Ads work with Morris." }]
+            },
+            "entities": [
+                { "handle": "@leadads", "type": "project", "name": "Lead Ads" },
+                { "handle": "@morris", "type": "person", "name": "Morris" },
+                { "handle": "@rodeo", "type": "todo", "title": "Figure out the Rodeo side" }
+            ],
+            "links": [
+                { "kind": "todo_project", "from": "@rodeo", "to": "@leadads" },
+                { "kind": "todo_person", "from": "@rodeo", "to": "@morris", "role": "related" }
+            ]
+        })
+    }
+
+    /// The `todo_person_refs` rows for a Todo, as `(person_id, role)` pairs.
+    async fn todo_person_refs(pool: &SqlitePool, todo_id: &str) -> Vec<(String, String)> {
+        sqlx::query_as("SELECT person_id, role FROM todo_person_refs WHERE todo_id = ?")
+            .bind(todo_id)
+            .fetch_all(pool)
+            .await
+            .expect("todo_person_refs rows")
+    }
+
+    // Slice 4 (ADR-0042): accepting the #179-shaped graph APPLIES the
+    // `todo_project` + `todo_person` links — topo-ordered so the Project/Person
+    // exist before the Todo is minted. The Todo's stored `data.project_id` is the
+    // minted Project's id, and one `todo_person_refs` row links it to Morris
+    // (role=related). All four entities (JE + Project + Person + Todo) are created
+    // in one tx, anchored on the JE.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_applies_todo_project_and_person_links() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", linked_graph()).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-graph-links".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await
+        .expect("linked graph accept succeeds");
+
+        let anchor = match outcome {
+            DecideOutcome::Accepted { entity_id, .. } => entity_id,
+            other => panic!("expected Accepted, got {other:?}"),
+        };
+
+        // Four entities, one of each type, all in one tx.
+        assert_eq!(entity_count(&pool).await, 4, "JE + Project + Person + Todo");
+        assert_eq!(entity_count_of_type(&pool, "journal_entry").await, 1);
+        assert_eq!(entity_count_of_type(&pool, "project").await, 1);
+        assert_eq!(entity_count_of_type(&pool, "person").await, 1);
+        assert_eq!(entity_count_of_type(&pool, "todo").await, 1);
+
+        let je_id = only_entity_id_of_type(&pool, "journal_entry").await;
+        let project_id = only_entity_id_of_type(&pool, "project").await;
+        let person_id = only_entity_id_of_type(&pool, "person").await;
+        let todo_id = only_entity_id_of_type(&pool, "todo").await;
+
+        assert_eq!(anchor, je_id, "the reported anchor is the JE node's id");
+
+        // The Todo's stored data carries the minted Project's id (todo_project).
+        let todo = entity_data(&pool, &todo_id).await;
+        assert_eq!(
+            todo.get("project_id").and_then(serde_json::Value::as_str),
+            Some(project_id.as_str()),
+            "the todo_project link sets the Todo's project_id to the minted Project: {todo}"
+        );
+
+        // Exactly one todo_person_refs row: (todo, Morris, related) from todo_person.
+        let refs = todo_person_refs(&pool, &todo_id).await;
+        assert_eq!(
+            refs,
+            vec![(person_id, "related".to_string())],
+            "the todo_person link writes one ref to Morris with role=related"
+        );
+
+        assert_eq!(
+            proposal_status(&pool, &proposal_id_str).await,
+            "accepted",
+            "the linked graph Proposal is accepted"
+        );
+        assert!(resumed.load(Ordering::SeqCst), "the linked graph accept resumes");
+    }
+
+    // Slice 4 (ADR-0042, #179 existing-project case): when the graph's Project
+    // node resolves to an EXISTING accepted Project (reuse), the `todo_project`
+    // link points the Todo at the PRE-SEEDED id — no duplicate Project. Pre-seed
+    // "Lead Ads", then accept the #179 graph; the Todo links to the seeded id and
+    // the project count stays 1.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_links_todo_to_reused_project() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        let existing_project = insert_named_entity(&pool, "project", "Lead Ads").await;
+
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", linked_graph()).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-graph-links-reuse".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await
+        .expect("reuse-linked graph accept succeeds");
+
+        // No duplicate Project: the existing one is reused.
+        assert_eq!(
+            entity_count_of_type(&pool, "project").await,
+            1,
+            "the exact-match Project is reused, not duplicated"
+        );
+        assert_eq!(
+            only_entity_id_of_type(&pool, "project").await,
+            existing_project,
+            "the reused id is the pre-seeded Project"
+        );
+
+        // The Todo links to the PRE-SEEDED Project id.
+        let todo_id = only_entity_id_of_type(&pool, "todo").await;
+        let todo = entity_data(&pool, &todo_id).await;
+        assert_eq!(
+            todo.get("project_id").and_then(serde_json::Value::as_str),
+            Some(existing_project.as_str()),
+            "the Todo links to the reused Project id, not a fresh mint: {todo}"
+        );
+    }
+
+    // Slice 4 (review): a todo_person link whose `to` is a NON-Person handle (here
+    // a Project) must FAIL the whole apply — `todo_person_refs.person_id` has no
+    // type check downstream, so an un-validated endpoint would silently write a
+    // corrupt ref. The up-front link-type validation rejects it before any write.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_todo_person_to_non_person_is_invalid() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        // todo_person points at @leadads, which is a PROJECT node — type mismatch.
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Lead Ads work." }]
+            },
+            "entities": [
+                { "handle": "@leadads", "type": "project", "name": "Lead Ads" },
+                { "handle": "@rodeo", "type": "todo", "title": "Figure out the Rodeo side" }
+            ],
+            "links": [
+                { "kind": "todo_person", "from": "@rodeo", "to": "@leadads", "role": "related" }
+            ]
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        let resumed = Arc::new(AtomicBool::new(false));
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-graph-person-wrongtype".to_string()),
+            resume_closure(pool.clone(), resumed.clone()),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Err(DecideError::Invalid(_))),
+            "a todo_person link to a Project handle is Invalid, got {outcome:?}"
+        );
+        assert_eq!(entity_count(&pool).await, 0, "nothing is written — no corrupt person ref");
+        let refs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM todo_person_refs")
+            .fetch_one(&pool)
+            .await
+            .expect("count todo_person_refs");
+        assert_eq!(refs, 0, "no todo_person_refs row is written");
+        assert_eq!(proposal_status(&pool, &proposal_id_str).await, "pending");
+        assert!(!resumed.load(Ordering::SeqCst));
+    }
+
+    // Slice 4 (review): a link endpoint naming an UNKNOWN handle fails the whole
+    // apply (slice 4's all-or-nothing contract; the softer drop+report on a
+    // decision-rejected node is slice 5).
+    #[tokio::test]
+    async fn accept_apply_intent_graph_unknown_link_endpoint_is_invalid() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Lead Ads work." }]
+            },
+            "entities": [
+                { "handle": "@rodeo", "type": "todo", "title": "Figure out the Rodeo side" }
+            ],
+            // @ghost names no node.
+            "links": [
+                { "kind": "todo_project", "from": "@rodeo", "to": "@ghost" }
+            ]
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        let outcome = apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-graph-unknown-endpoint".to_string()),
+            resume_closure(pool.clone(), Arc::new(AtomicBool::new(false))),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, Err(DecideError::Invalid(_))),
+            "an unknown link endpoint is Invalid, got {outcome:?}"
+        );
+        assert_eq!(entity_count(&pool).await, 0, "nothing is written");
+        assert_eq!(proposal_status(&pool, &proposal_id_str).await, "pending");
+    }
+
+    // Slice 4 (review): the todo_person ROLE propagates from the link — a
+    // `waiting_on` link round-trips to a `waiting_on` ref row (not silently
+    // defaulted to `related`). Pins that the resolver reads link.role.
+    #[tokio::test]
+    async fn accept_apply_intent_graph_todo_person_waiting_on_role_round_trips() {
+        let pool = memory_pool().await;
+        let (_run, proposal_id) = seed_parked_proposal(&pool).await;
+        let proposal_id_str = proposal_id.to_string();
+
+        let graph = serde_json::json!({
+            "journal_entry": {
+                "handle": "@je",
+                "occurred_at": "2026-06-10T10:30:00",
+                "body": [{ "type": "text", "text": "Waiting on Morris." }]
+            },
+            "entities": [
+                { "handle": "@morris", "type": "person", "name": "Morris" },
+                { "handle": "@rodeo", "type": "todo", "title": "Figure out the Rodeo side" }
+            ],
+            "links": [
+                { "kind": "todo_person", "from": "@rodeo", "to": "@morris", "role": "waiting_on" }
+            ]
+        });
+        retarget_proposal(&pool, &proposal_id_str, "apply_intent_graph", graph).await;
+
+        apply(
+            &pool,
+            proposal_id,
+            "accept",
+            None,
+            Some("k-graph-waiting-on".to_string()),
+            resume_closure(pool.clone(), Arc::new(AtomicBool::new(false))),
+        )
+        .await
+        .expect("waiting_on graph accept succeeds");
+
+        let person_id = only_entity_id_of_type(&pool, "person").await;
+        let todo_id = only_entity_id_of_type(&pool, "todo").await;
+        assert_eq!(
+            todo_person_refs(&pool, &todo_id).await,
+            vec![(person_id, "waiting_on".to_string())],
+            "the waiting_on role propagates from the link, not defaulted to related"
+        );
+    }
 }
