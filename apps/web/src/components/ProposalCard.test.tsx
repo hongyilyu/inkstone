@@ -1741,6 +1741,190 @@ describe("ProposalCard", () => {
 			).toBeInTheDocument();
 		});
 
+		// Per-node inline edit of a create node (ADR-0042 edited_fields). The card
+		// reads each node's proposed fields off payload.entities to seed the form.
+		const editableGraph: PendingProposal = {
+			proposal_id: "graph-edit",
+			run_id: "graph-edit-run",
+			mutation_kind: "apply_intent_graph",
+			payload: {
+				entities: [
+					{
+						handle: "@rodeo",
+						type: "todo",
+						title: "Figure out the Rodeo side",
+					},
+					{
+						handle: "@leadads",
+						type: "project",
+						name: "Lead Ads",
+						note: "guessed",
+					},
+				],
+				links: [{ kind: "todo_project", from: "@rodeo", to: "@leadads" }],
+			},
+			rationale: null,
+			resolved_plan: [
+				{
+					handle: "@rodeo",
+					type: "todo",
+					disposition: "create",
+					label: "Figure out the Rodeo side",
+				},
+				{
+					handle: "@leadads",
+					type: "project",
+					disposition: "create",
+					label: "Lead Ads",
+				},
+			],
+			status: "pending",
+		};
+
+		it("edits a create node's title and sends edited_fields on Apply", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={editableGraph} onDecide={onDecide} />);
+			// Open the Todo's inline edit form.
+			fireEvent.click(
+				screen.getByRole("button", { name: /edit figure out the rodeo side/i }),
+			);
+			const title = screen.getByLabelText("Title");
+			fireEvent.change(title, {
+				target: { value: "Sort out the Rodeo logistics" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save/i }));
+			// The collapsed row now reflects the edited title and is badged "Edited".
+			expect(
+				screen.getByText("Sort out the Rodeo logistics"),
+			).toBeInTheDocument();
+			expect(screen.getByText("Edited")).toBeInTheDocument();
+			fireEvent.click(screen.getByRole("button", { name: /apply 2 items/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+				{
+					handle: "@rodeo",
+					decision: "accept",
+					edited_fields: { title: "Sort out the Rodeo logistics" },
+				},
+				{ handle: "@leadads", decision: "accept" },
+			]);
+		});
+
+		it("clears a proposed optional with a null edited field", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={editableGraph} onDecide={onDecide} />);
+			fireEvent.click(screen.getByRole("button", { name: /edit lead ads/i }));
+			// The project proposed note:"guessed"; blank it.
+			fireEvent.change(screen.getByLabelText("Note"), {
+				target: { value: "" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save/i }));
+			fireEvent.click(screen.getByRole("button", { name: /apply 2 items/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+				{ handle: "@rodeo", decision: "accept" },
+				{
+					handle: "@leadads",
+					decision: "accept",
+					edited_fields: { note: null },
+				},
+			]);
+		});
+
+		it("opening an edit form and leaving it unchanged commits a plain accept", () => {
+			const onDecide = vi.fn();
+			const { container } = render(
+				<ProposalCard proposal={editableGraph} onDecide={onDecide} />,
+			);
+			fireEvent.click(
+				screen.getByRole("button", { name: /edit figure out the rodeo side/i }),
+			);
+			fireEvent.click(screen.getByRole("button", { name: /save/i }));
+			// An unchanged save sends no correction, so the badge still reads "New" —
+			// the disposition slot must not claim "Edited" when nothing will change.
+			const row = container.querySelector('[data-graph-node="@rodeo"]');
+			expect(row?.getAttribute("data-node-edited")).toBeNull();
+			fireEvent.click(screen.getByRole("button", { name: /apply 2 items/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+				{ handle: "@rodeo", decision: "accept" },
+				{ handle: "@leadads", decision: "accept" },
+			]);
+		});
+
+		it("disables Save when the required field is blanked", () => {
+			render(<ProposalCard proposal={editableGraph} onDecide={() => {}} />);
+			fireEvent.click(
+				screen.getByRole("button", { name: /edit figure out the rodeo side/i }),
+			);
+			fireEvent.change(screen.getByLabelText("Title"), {
+				target: { value: "" },
+			});
+			expect(screen.getByRole("button", { name: /save/i })).toBeDisabled();
+		});
+
+		it("Cancel discards in-progress edits (no edited_fields on Apply)", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={editableGraph} onDecide={onDecide} />);
+			fireEvent.click(
+				screen.getByRole("button", { name: /edit figure out the rodeo side/i }),
+			);
+			fireEvent.change(screen.getByLabelText("Title"), {
+				target: { value: "Discarded rename" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+			// The row reverts to the original label; the edit never reaches the wire.
+			expect(screen.getByText("Figure out the Rodeo side")).toBeInTheDocument();
+			expect(screen.queryByText("Discarded rename")).not.toBeInTheDocument();
+			fireEvent.click(screen.getByRole("button", { name: /apply 2 items/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+				{ handle: "@rodeo", decision: "accept" },
+				{ handle: "@leadads", decision: "accept" },
+			]);
+		});
+
+		it("rejecting an edited node drops its edit from the vector", () => {
+			const onDecide = vi.fn();
+			render(<ProposalCard proposal={editableGraph} onDecide={onDecide} />);
+			// Edit the Todo, then reject it.
+			fireEvent.click(
+				screen.getByRole("button", { name: /edit figure out the rodeo side/i }),
+			);
+			fireEvent.change(screen.getByLabelText("Title"), {
+				target: { value: "Renamed" },
+			});
+			fireEvent.click(screen.getByRole("button", { name: /save/i }));
+			// Accepted-and-edited, the row is badged "Edited"...
+			expect(screen.getByText("Edited")).toBeInTheDocument();
+			fireEvent.click(screen.getByRole("button", { name: /reject renamed/i }));
+			// ...but rejecting it drops the edit, so the badge must NOT claim "Edited"
+			// (a rejected node commits a plain reject — no edited_fields).
+			expect(screen.queryByText("Edited")).not.toBeInTheDocument();
+			// One node accepted (the project); the rejected Todo carries no edit.
+			fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+			expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+				{ handle: "@rodeo", decision: "reject" },
+				{ handle: "@leadads", decision: "accept" },
+			]);
+		});
+
+		it("does not offer an edit affordance on a reuse node", () => {
+			const withReuse: PendingProposal = {
+				...editableGraph,
+				payload: { entities: [], links: [] },
+				resolved_plan: [
+					{
+						handle: "@leadads",
+						type: "project",
+						disposition: "reuse",
+						label: "Lead Ads",
+						entity_id: "p1",
+					},
+				],
+			};
+			render(<ProposalCard proposal={withReuse} onDecide={() => {}} />);
+			expect(
+				screen.queryByRole("button", { name: /edit lead ads/i }),
+			).not.toBeInTheDocument();
+		});
+
 		it("resets staging when a new proposal_id renders in the same card (no leak across graphs)", () => {
 			const onDecide = vi.fn();
 			// Graph #1: reject the Rodeo node (handle @rodeo).
