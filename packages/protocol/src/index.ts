@@ -217,6 +217,12 @@ export const ResolvedNode = S.Struct({
 	label: S.String,
 	entity_id: S.optional(S.String),
 	candidates: S.optional(S.Array(ResolvedNodeCandidate)),
+	/** Advisory near-matches (ADR-0042 near-match amendment): accepted same-type
+	 * entities whose name token-overlaps this node's. Present only on a `create`
+	 * node with ≥1 overlap; never authority (the apply path stays exact-only). The
+	 * Client uses a single near-match to default the node to reuse-that-entity via
+	 * the per-node `entity_id` override; 2+ defer to the picker (#181). */
+	near_matches: S.optional(S.Array(ResolvedNodeCandidate)),
 });
 export type ResolvedNode = S.Schema.Type<typeof ResolvedNode>;
 

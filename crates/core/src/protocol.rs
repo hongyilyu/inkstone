@@ -109,6 +109,13 @@ pub struct ResolvedNode {
     /// The competing exact matches — present only when `disposition == "ambiguous"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candidates: Option<Vec<ResolvedNodeCandidate>>,
+    /// Advisory near-matches (ADR-0042 near-match amendment) — present only on a
+    /// `create` node that token-overlaps (subset/superset) an accepted same-type
+    /// entity. NEVER authority: the apply path stays exact-only. The Client uses a
+    /// single near-match to default the node to reuse-that-entity via the per-node
+    /// `entity_id` override; 2+ are surfaced advisorily (the picker, #181).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub near_matches: Option<Vec<ResolvedNodeCandidate>>,
 }
 
 /// One competing exact match for an `ambiguous` [`ResolvedNode`] (ADR-0042).
@@ -1052,6 +1059,11 @@ mod mirror_tests {
                     label: "Figure out the Rodeo side".to_string(),
                     entity_id: None,
                     candidates: None,
+                    // A create node MAY carry advisory near_matches (ADR-0042 amendment).
+                    near_matches: Some(vec![ResolvedNodeCandidate {
+                        entity_id: UUID_A.to_string(),
+                        label: "Figure out Rodeo".to_string(),
+                    }]),
                 },
                 ResolvedNode {
                     handle: "@leadads".to_string(),
@@ -1060,6 +1072,7 @@ mod mirror_tests {
                     label: "Lead Ads".to_string(),
                     entity_id: Some(UUID_A.to_string()),
                     candidates: None,
+                    near_matches: None,
                 },
                 ResolvedNode {
                     handle: "@morris".to_string(),
@@ -1077,6 +1090,7 @@ mod mirror_tests {
                             label: "Morris".to_string(),
                         },
                     ]),
+                    near_matches: None,
                 },
             ]),
             status: "pending".to_string(),
@@ -1084,20 +1098,25 @@ mod mirror_tests {
         let v = serde_json::to_value(&r).unwrap();
         let plan = v["resolved_plan"].as_array().expect("resolved_plan array");
         assert_eq!(plan.len(), 3);
-        // create node: label only, no entity_id / candidates keys.
+        // create node: label only, no entity_id / candidates keys — but its advisory
+        // near_matches DO serialize (ADR-0042 amendment).
         assert_eq!(plan[0]["disposition"], "create");
         assert_eq!(plan[0]["type"], "todo");
         assert!(plan[0].get("entity_id").is_none());
         assert!(plan[0].get("candidates").is_none());
-        // reuse node: carries entity_id, no candidates.
+        assert_eq!(plan[0]["near_matches"].as_array().unwrap().len(), 1);
+        assert_eq!(plan[0]["near_matches"][0]["entity_id"], UUID_A);
+        // reuse node: carries entity_id, no candidates, no near_matches.
         assert_eq!(plan[1]["disposition"], "reuse");
         assert_eq!(plan[1]["entity_id"], UUID_A);
         assert!(plan[1].get("candidates").is_none());
-        // ambiguous node: carries candidates, no entity_id.
+        assert!(plan[1].get("near_matches").is_none());
+        // ambiguous node: carries candidates, no entity_id, no near_matches.
         assert_eq!(plan[2]["disposition"], "ambiguous");
         assert!(plan[2].get("entity_id").is_none());
         assert_eq!(plan[2]["candidates"].as_array().unwrap().len(), 2);
         assert_eq!(plan[2]["candidates"][0]["entity_id"], UUID_A);
+        assert!(plan[2].get("near_matches").is_none());
     }
 
     #[test]

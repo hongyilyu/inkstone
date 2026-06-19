@@ -74,6 +74,28 @@ type ResolvedNode =
 
 An `ambiguous` node **has no silent fallback** — Core will neither guess one match nor mint a duplicate. Until the disambiguation picker ships (fast-follow, tracked separately), the only valid action on an ambiguous node is **reject** (don't link; the name stays plain text). "Accept all" cannot sweep past an unresolved ambiguity. When the picker ships, the user resolves it via the per-node `entity_id` override, which collapses `ambiguous → reuse`.
 
+### Near-match hints (amendment — narrows "Core does fuzzy matching")
+
+> **As-built refinement.** The original design (and the "Core does fuzzy matching" rejection below) left a recognition gap: when the model names a Project `"Lead Ads testing"` while an accepted `"Lead Ads"` exists, exact-match yields zero hits → `create`, and a duplicate near-twin Project is minted. The model folded an *activity qualifier* into the entity name; neither exact-resolve nor the long-blob `search_entities` query caught it. This amendment closes that gap **without** moving fuzzy logic into the apply transaction.
+
+The fix is split across the two layers the original design already separates — recognition (model) and resolution (Core):
+
+1. **Recognition nudge (`default.toml`).** The extractor is told not to fold an activity/aspect qualifier into a Project *name* ("Lead Ads **testing**" → the Project is "Lead Ads"; the testing work is the Todo / journal prose), and to search `search_entities` by an entity's **base name**, not a whole sentence. This reduces how often a near-twin is emitted at all.
+
+2. **Advisory near-match hints (read-side only).** `proposal/get`'s resolved plan gains, for a `create` node, an optional `near_matches` list: accepted same-type entities whose **normalized token set is a subset OR superset** of the node's name (case-insensitive, whitespace-tokenized — `{lead,ads} ⊆ {lead,ads,testing}` fires in *either* direction). It is computed on the pool READ, never in the apply tx, and is **advisory** — the resolver still resolves exact-only.
+
+```ts
+type ResolvedNode =
+  | { handle: string; type: EntityType; disposition: "create"; label: string;
+      near_matches?: { entity_id: string; label: string }[] }   // NEW — advisory, create only
+  | { handle: string; type: EntityType; disposition: "reuse"; entity_id: string; label: string }
+  | { handle: string; type: EntityType; disposition: "ambiguous"; candidates: { entity_id: string; label: string }[] };
+```
+
+The Client prioritizes the existing entity: a `create` node with **exactly one** `near_match` **defaults to reuse it** — the node commits with the per-node `entity_id` override pointing at that entity (badge "Existing «Lead Ads»"), and a **"Create new instead"** escape lets the user mint a fresh entity when that is genuinely intended. A node with **two or more** near-matches surfaces them advisorily but does **not** auto-pick (that is the same disambiguation-picker work the `ambiguous` case defers); it stays `create` until the picker ships.
+
+Crucially, this rides the resolution machinery already specified above: the re-point is the existing per-node `entity_id` override (which collapses to `reuse` and is type-validated at decide). No new apply path, no in-tx fuzzy match. The hint is never authority — Core re-resolves exactly at decide; the user's `entity_id` confirmation is what links. This **narrows** the "Core does fuzzy matching" rejection (below) rather than reversing it: token-overlap matching lives on the read-side advisory plan and behind explicit user confirmation, never inside the transaction that writes rows.
+
 ## Sequential review, one atomic commit (UX)
 
 The user reviews **one entity card at a time** — the familiar single-entity card — but the whole graph is **one Core Proposal, one park, one atomic apply**. "Sequential" is purely client-side rendering and staging:
@@ -167,7 +189,7 @@ PRODUCT.md's "approval is sacred — show what will change" is the affirmative c
 - **A distinct `accept_partial` / `commit` verb.** Rejected: a partial accept is still an `accept` over a vector; no new verb. Reject-all is the existing `reject`.
 - **Make `apply_intent_graph` subsume the single-entity kinds (graph-of-one).** Rejected: forces every trivial capture and the whole single-entity UI through the graph path — large blast radius, no gain. The graph is additive; the model picks it only for ≥1 extracted entity.
 - **Let the model emit resolved ids it creates.** Rejected: Core could not then guarantee "failed resolution surfaces as an error, not silently dropped." Core-owned resolve makes whole-graph failure enforceable.
-- **Core does fuzzy matching.** Rejected: fuzzy disambiguation is recognition (ADR-0030 places it in the model); fuzzy match in a transaction is a correctness hazard. Core does exact resolve; ambiguity (>1 match) is surfaced, not guessed.
+- **Core does fuzzy matching.** Rejected: fuzzy disambiguation is recognition (ADR-0030 places it in the model); fuzzy match in a transaction is a correctness hazard. Core does exact resolve; ambiguity (>1 match) is surfaced, not guessed. (*Narrowed by the "Near-match hints" amendment above*: token-overlap matching is allowed on the **read-side advisory plan** and behind explicit user `entity_id` confirmation — never inside the apply transaction, which stays exact-only. The hazard this entry names is the *in-tx* fuzzy resolve, and that stays rejected.)
 - **A model-emitted `journal_source` link / per-entity `EntitySource` rows.** Rejected: provenance is not a recognition decision, and entity views need backlinks, not origin. The graph writes no entity provenance; only the JE→message guard row.
 - **Durable per-node staging / N decide calls.** Rejected: nothing is committed mid-review, so restart-surviving per-node state buys nothing and would re-open multi-park. Client-side staging + one vectored decide is simpler and meets every criterion.
 

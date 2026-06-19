@@ -229,6 +229,25 @@ fn default_workflow_prompts_for_capture_intent_boundary() {
         lower.contains("todo_project link") && lower.contains("not a field"),
         "default.toml system_prompt must express the Todo→Project relationship as a todo_project link, not a field on the todo node, got: {system_prompt:?}"
     );
+    // Near-match gap (ADR-0042 near-match amendment): the model must NOT fold an
+    // activity/aspect qualifier (e.g. "testing") into a Project NAME — "Lead Ads
+    // testing" is still the "Lead Ads" Project, with the testing work as the Todo /
+    // journal prose — so an existing Project is reused, not duplicated as a near-twin.
+    assert!(
+        lower.contains("qualifier")
+            && lower.contains("project name")
+            && lower.contains("base name"),
+        "default.toml system_prompt must tell the model not to fold an activity qualifier into a Project name (reuse the base-name Project), got: {system_prompt:?}"
+    );
+    // And the model must search_entities by the entity's BASE NAME, not a whole
+    // sentence/blob — a long query never matches a short stored name (the search
+    // safety-net whiffs otherwise).
+    assert!(
+        lower.contains("search_entities")
+            && lower.contains("by its base name")
+            && lower.contains("not a whole sentence"),
+        "default.toml system_prompt must tell the model to search_entities by an entity's base name, not a whole sentence, got: {system_prompt:?}"
+    );
     // The graph is only for >=1 extracted entity; pure prose stays
     // create_journal_entry, and the old sequencing wording must be gone.
     assert!(

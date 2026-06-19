@@ -36,7 +36,9 @@ import {
 	isAcceptable,
 	parseGraphEntities,
 	parseGraphLinks,
+	type RepointBuffer,
 	rejectAll,
+	repointFor,
 	type StagingBuffer,
 	seedNodeDraft,
 	setStage,
@@ -1240,6 +1242,12 @@ function IntentGraphReviewCard({
 	// row currently expanded (one open at a time).
 	const [drafts, setDrafts] = useState<DraftBuffer>({});
 	const [editingHandle, setEditingHandle] = useState<string | null>(null);
+	// Per-handle near-match re-point choices (ADR-0042 amendment). A create node
+	// with a single near-match DEFAULTS to reusing that existing entity (no entry
+	// needed — `repointFor` derives it); the buffer only records EXPLICIT user
+	// overrides: a string id (a future picker pick) or `null` ("Create new instead",
+	// suppressing the default). Mutually exclusive with an edit draft per node.
+	const [repoints, setRepoints] = useState<RepointBuffer>({});
 	const [inFlight, setInFlight] = useState<"commit" | "reject" | null>(null);
 	// Reset the per-node staging when the proposal IDENTITY changes. The card is
 	// keyed by run_id, not proposal_id, so a multi-step Run that parks a SECOND
@@ -1252,6 +1260,7 @@ function IntentGraphReviewCard({
 		setBuffer({});
 		setDrafts({});
 		setEditingHandle(null);
+		setRepoints({});
 	}, [proposal.proposal_id]);
 	useEffect(() => {
 		if (proposal.status !== "deciding") setInFlight(null);
@@ -1292,8 +1301,9 @@ function IntentGraphReviewCard({
 		if (submitting) return;
 		// A vector that rejects every node is a reject-all (Core declines the whole
 		// graph); otherwise it is an accept carrying the per-node subset — each
-		// accepted create node folding in its `edited_fields` correction.
-		const decisions = buildDecisions(plan, buffer, drafts, entities);
+		// accepted create node folding in its `edited_fields` correction, or its
+		// near-match `entity_id` re-point (default-to-existing, ADR-0042 amendment).
+		const decisions = buildDecisions(plan, buffer, drafts, entities, repoints);
 		const decision = everythingRejected ? "reject" : "accept";
 		setInFlight(everythingRejected ? "reject" : "commit");
 		onDecide(decision, undefined, decisions);
@@ -1321,6 +1331,32 @@ function IntentGraphReviewCard({
 	};
 	// Cancel discards the working draft (the buffer is untouched) and collapses.
 	const cancelEdit = () => setEditingHandle(null);
+
+	// Near-match re-point toggles (ADR-0042 amendment, default-to-existing). A
+	// single-near-match create node defaults to reusing its existing entity; these
+	// record the EXPLICIT departures from that default. "Create new instead" sets
+	// `null` (suppress the default → a plain create); "Reuse existing" clears the
+	// override (back to the default re-point) — and discards any edit draft, since a
+	// reused entity is linked-to, not minted/edited (mutually exclusive). (Named
+	// `reuseExisting`, not `use*`, so it is not mistaken for a React hook.)
+	const createNewInstead = (handle: string) => {
+		if (submitting) return;
+		setRepoints((current) => ({ ...current, [handle]: null }));
+	};
+	const reuseExisting = (node: ResolvedNode) => {
+		if (submitting) return;
+		// Clear the explicit override so the single-near-match default re-applies, and
+		// drop any edit draft (a re-pointed node is reused, not edited).
+		setRepoints((current) => {
+			const { [node.handle]: _drop, ...rest } = current;
+			return rest;
+		});
+		setDrafts((current) => {
+			const { [node.handle]: _drop, ...rest } = current;
+			return rest;
+		});
+		setBuffer((current) => setStage(current, node, "accept"));
+	};
 
 	const HeaderGlyph = GRAPH_VIEW.glyph;
 	const commitLabel = everythingRejected
@@ -1361,12 +1397,15 @@ function IntentGraphReviewCard({
 						draft={drafts[node.handle]}
 						seed={entities.get(node.handle)}
 						editing={editingHandle === node.handle}
+						repointId={repointFor(repoints, node)}
 						onStage={(stage) =>
 							setBuffer((current) => setStage(current, node, stage))
 						}
 						onEdit={() => openEdit(node.handle)}
 						onSave={(draft) => saveEdit(node, draft)}
 						onCancel={cancelEdit}
+						onCreateNew={() => createNewInstead(node.handle)}
+						onReuseExisting={() => reuseExisting(node)}
 					/>
 				))}
 			</ul>
@@ -1458,7 +1497,14 @@ function IntentGraphReviewCard({
  * carries a pencil that expands the row INLINE into its per-type edit form (the
  * `edited_fields` correction); reuse/ambiguous nodes are not editable (Core rejects
  * an edit on a non-create node). An ambiguous node's accept is disabled (reject-only,
- * #181). When a draft is open the collapsed label reflects the edited name/title. */
+ * #181). When a draft is open the collapsed label reflects the edited name/title.
+ *
+ * Near-match (ADR-0042 amendment): a `create` node re-pointed onto an existing
+ * entity (`repointId` set — the default for a single near-match) wears an
+ * "Existing «…»" badge and a "Create new instead" escape, and is NOT editable
+ * (you reuse it, not mint it). A create node with near-matches that the user has
+ * sent back to "New" offers "Use existing «…»"; 2+ near-matches surface an
+ * advisory note (no auto-pick — the picker is #181). */
 function GraphNodeRow({
 	node,
 	stage,
@@ -1466,10 +1512,13 @@ function GraphNodeRow({
 	draft,
 	seed,
 	editing,
+	repointId,
 	onStage,
 	onEdit,
 	onSave,
 	onCancel,
+	onCreateNew,
+	onReuseExisting,
 }: {
 	node: ResolvedNode;
 	stage: "accept" | "reject";
@@ -1477,17 +1526,39 @@ function GraphNodeRow({
 	draft: GraphNodeDraft | undefined;
 	seed: Record<string, unknown> | undefined;
 	editing: boolean;
+	repointId: string | null;
 	onStage: (stage: "accept" | "reject") => void;
 	onEdit: () => void;
 	onSave: (draft: GraphNodeDraft) => void;
 	onCancel: () => void;
+	onCreateNew: () => void;
+	onReuseExisting: () => void;
 }) {
 	const NodeGlyph = KIND_META[node.type as LibraryItemKind].icon;
-	const badge = DISPOSITION_BADGE[node.disposition];
+	const rejected = stage === "reject";
+	const nearMatches = node.near_matches ?? [];
+	// A create node is re-pointed onto an existing entity when `repointId` resolves
+	// (the single-near-match default, or a future picker pick). The re-point target's
+	// label drives the "Existing «…»" badge; fall back to the id if it is not among
+	// the listed near-matches (a picker could pick outside the list later).
+	const repointed = node.disposition === "create" && repointId !== null;
+	const repointLabel = repointed
+		? (nearMatches.find((m) => m.entity_id === repointId)?.label ?? "existing")
+		: null;
+	// A re-pointed node REUSES its target, so it is not editable (a reuse is
+	// linked-to, never rewritten — ADR-0030); editing stays on plain create nodes.
+	const editable = node.disposition === "create" && !repointed;
+	// The badge: a re-pointed node reads "Existing «target»" (reuse tone), else the
+	// node's own disposition badge ("New"/"Existing"/"Needs disambiguation").
+	const badge = repointed
+		? {
+				label: `Existing «${repointLabel}»`,
+				glyph: Check,
+				className: DISPOSITION_BADGE.reuse.className,
+			}
+		: DISPOSITION_BADGE[node.disposition];
 	const BadgeGlyph = badge.glyph;
 	const acceptable = isAcceptable(node);
-	const rejected = stage === "reject";
-	const editable = node.disposition === "create";
 	// The collapsed row shows the edited name/title once a draft is COMMITTED, so a
 	// correction is visible without re-opening the form.
 	const shownLabel =
@@ -1497,11 +1568,17 @@ function GraphNodeRow({
 	// a rejected node commits a plain reject (no edited_fields, see buildDecisions).
 	// Opening + Save with no change stores a draft but sends a plain accept, so the
 	// badge must still read "New". Both cases keep the badge honest about what applies.
+	// A re-pointed node mints nothing, so it never reads "Edited".
 	const edited =
 		editable &&
 		stage === "accept" &&
 		draft !== undefined &&
 		buildEditedFields(seed, draft) !== undefined;
+	// The near-match affordance under the label (only on a non-rejected create node
+	// that has near-matches): re-pointed → "Create new instead"; sent back to New
+	// with a single near-match → "Use existing «…»"; 2+ → an advisory note.
+	const showNearMatchAffordance =
+		node.disposition === "create" && nearMatches.length > 0 && !rejected;
 
 	if (editing) {
 		// Seed the form from the committed draft (re-open) or the node's proposed
@@ -1533,6 +1610,7 @@ function GraphNodeRow({
 			data-graph-node={node.handle}
 			data-node-stage={stage}
 			data-node-edited={edited ? "true" : undefined}
+			data-node-repoint={repointed ? repointId : undefined}
 			className={`flex items-center gap-2.5 rounded-lg border border-border/60 px-3 py-2 ${
 				rejected ? "opacity-60" : ""
 			}`}
@@ -1549,12 +1627,43 @@ function GraphNodeRow({
 				>
 					{shownLabel}
 				</p>
-				<span
-					className={`mt-0.5 inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.6875rem] font-medium ${badge.className}`}
-				>
-					<BadgeGlyph className="size-3" aria-hidden />
-					{edited ? "Edited" : badge.label}
-				</span>
+				<div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+					<span
+						className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.6875rem] font-medium ${badge.className}`}
+					>
+						<BadgeGlyph className="size-3" aria-hidden />
+						{edited ? "Edited" : badge.label}
+					</span>
+					{showNearMatchAffordance ? (
+						repointed ? (
+							// Re-pointed onto an existing entity (the default for a single
+							// near-match): offer the escape back to minting a new one.
+							<button
+								type="button"
+								disabled={disabled}
+								onClick={onCreateNew}
+								className="cursor-pointer text-[0.6875rem] font-medium text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+							>
+								Create new instead
+							</button>
+						) : nearMatches.length === 1 ? (
+							// A single near-match the user sent back to "New": offer to reuse it.
+							<button
+								type="button"
+								disabled={disabled}
+								onClick={onReuseExisting}
+								className="cursor-pointer text-[0.6875rem] font-medium text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+							>
+								Use existing «{nearMatches[0].label}»
+							</button>
+						) : (
+							// 2+ near-matches: surfaced advisorily, no auto-pick (the picker, #181).
+							<span className="text-[0.6875rem] text-muted-foreground">
+								Matches existing: {nearMatches.map((m) => m.label).join(", ")}
+							</span>
+						)
+					) : null}
+				</div>
 			</div>
 			<div className="flex shrink-0 items-center gap-1">
 				{editable ? (

@@ -15,7 +15,9 @@ import {
 	isAcceptable,
 	parseGraphEntities,
 	parseGraphLinks,
+	type RepointBuffer,
 	rejectAll,
+	repointFor,
 	type StagingBuffer,
 	seedNodeDraft,
 	setStage,
@@ -145,6 +147,124 @@ describe("buildDecisions", () => {
 	it("reject-all produces an all-reject vector", () => {
 		const vector = buildDecisions(PLAN, rejectAll(PLAN));
 		expect(vector.every((d) => d.decision === "reject")).toBe(true);
+	});
+});
+
+// A `create` node carrying near_matches (ADR-0042 amendment). The reported bug:
+// "Lead Ads testing" proposed New while "Lead Ads" exists.
+const nearMatchProject: ResolvedNode = {
+	handle: "@leadads",
+	type: "project",
+	disposition: "create",
+	label: "Lead Ads testing",
+	near_matches: [{ entity_id: "existing-leadads", label: "Lead Ads" }],
+};
+// A create node with TWO near-matches — surfaced advisorily, never auto-picked.
+const multiNearMatchProject: ResolvedNode = {
+	handle: "@leadads2",
+	type: "project",
+	disposition: "create",
+	label: "Lead Ads testing",
+	near_matches: [
+		{ entity_id: "lead-ads-1", label: "Lead Ads" },
+		{ entity_id: "lead-ads-2", label: "Lead Ads work" },
+	],
+};
+
+describe("repointFor — default-to-existing on a single near-match", () => {
+	it("a single-near-match create node defaults to its existing entity_id", () => {
+		expect(repointFor({}, nearMatchProject)).toBe("existing-leadads");
+	});
+
+	it("a create node with NO near-matches has no default re-point", () => {
+		expect(repointFor({}, createTodo)).toBeNull();
+	});
+
+	it("a create node with 2+ near-matches does NOT auto-pick (defers to the picker)", () => {
+		expect(repointFor({}, multiNearMatchProject)).toBeNull();
+	});
+
+	it("an explicit 'create new instead' choice clears the default re-point", () => {
+		const buffer: RepointBuffer = { "@leadads": null };
+		expect(repointFor(buffer, nearMatchProject)).toBeNull();
+	});
+
+	it("an explicit re-point id overrides (picker future-proofing)", () => {
+		const buffer: RepointBuffer = { "@leadads": "existing-leadads" };
+		expect(repointFor(buffer, nearMatchProject)).toBe("existing-leadads");
+	});
+
+	// A model-supplied handle equal to an Object.prototype key must NOT make the
+	// empty-buffer lookup return an inherited function (the `in` vs Object.hasOwn
+	// hazard). Such a handle has no explicit entry → falls through to the near-match
+	// default (here: none, so null), never `Object.prototype.toString`.
+	it("a prototype-key handle does not leak an inherited function from an empty buffer", () => {
+		const protoHandleNoNear: ResolvedNode = {
+			handle: "toString",
+			type: "project",
+			disposition: "create",
+			label: "toString",
+		};
+		const result = repointFor({}, protoHandleNoNear);
+		expect(result).toBeNull();
+		expect(typeof result).not.toBe("function");
+		// With a single near-match it falls through to that default, not the prototype fn.
+		const protoHandleWithNear: ResolvedNode = {
+			...protoHandleNoNear,
+			near_matches: [{ entity_id: "real-id", label: "toString" }],
+		};
+		expect(repointFor({}, protoHandleWithNear)).toBe("real-id");
+	});
+});
+
+describe("buildDecisions with near-match re-point", () => {
+	it("defaults a single-near-match create node to accept WITH the existing entity_id", () => {
+		const plan = [nearMatchProject];
+		expect(buildDecisions(plan, {}, {}, new Map(), {})).toEqual([
+			{ handle: "@leadads", decision: "accept", entity_id: "existing-leadads" },
+		]);
+	});
+
+	it("a 'create new instead' choice commits a plain create accept (no entity_id)", () => {
+		const plan = [nearMatchProject];
+		const repoints: RepointBuffer = { "@leadads": null };
+		expect(buildDecisions(plan, {}, {}, new Map(), repoints)).toEqual([
+			{ handle: "@leadads", decision: "accept" },
+		]);
+	});
+
+	it("a multi-near-match node defaults to a plain create accept (no auto entity_id)", () => {
+		const plan = [multiNearMatchProject];
+		expect(buildDecisions(plan, {}, {}, new Map(), {})).toEqual([
+			{ handle: "@leadads2", decision: "accept" },
+		]);
+	});
+
+	it("a rejected near-match node commits a plain reject (no entity_id)", () => {
+		const plan = [nearMatchProject];
+		const buffer = setStage({}, nearMatchProject, "reject");
+		expect(buildDecisions(plan, buffer, {}, new Map(), {})).toEqual([
+			{ handle: "@leadads", decision: "reject" },
+		]);
+	});
+
+	// Mutual exclusion (ADR-0042): a re-point WINS over an edit draft on the same node
+	// — entity_id and edited_fields cannot ride together (Core rejects both). Pins the
+	// early-return precedence so a branch reorder (draft-first) is caught.
+	it("re-point wins over an edit draft on the same node (entity_id, no edited_fields)", () => {
+		const plan = [nearMatchProject];
+		const drafts = {
+			"@leadads": {
+				type: "project",
+				name: "Lead Ads testing — renamed",
+				outcome: "",
+				note: "",
+			} as GraphNodeDraft,
+		};
+		// Default buffer → single near-match re-point active; the draft must be ignored.
+		expect(buildDecisions(plan, {}, drafts, new Map(), {})).toEqual([
+			{ handle: "@leadads", decision: "accept", entity_id: "existing-leadads" },
+		]);
 	});
 });
 
