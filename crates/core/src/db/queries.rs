@@ -1802,6 +1802,34 @@ where
     .await
 }
 
+/// A Run's latest DECIDED Proposal for `thread/get` rehydration (ADR-0044):
+/// `(id, mutation_kind, status)` where `status` is `accepted` or `rejected`.
+/// `pending` and `cancelled` rows are filtered out — a pending Proposal renders
+/// its interactive card (needs the payload, deferred) and a cancelled one is
+/// cleared live. `None` when the Run parked on no decided Proposal. Ordered by
+/// `decided_at DESC` so a multi-step Run that parked twice surfaces its most
+/// recent decision (the card is keyed by run_id, one indicator per turn), with
+/// `p.id DESC` as a deterministic tiebreaker should two decisions share a
+/// millisecond `decided_at` (mirrors the run-history feed's id tiebreak).
+pub(super) async fn decided_proposal_for_run<'e, E>(
+    executor: E,
+    run_id: Uuid,
+) -> sqlx::Result<Option<(String, String, String)>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(
+        "SELECT p.id, p.mutation_kind, p.status \
+         FROM proposals p \
+         JOIN tool_calls tc ON tc.id = p.tool_call_id \
+         WHERE tc.run_id = ?1 AND p.status IN ('accepted', 'rejected') \
+         ORDER BY p.decided_at DESC, p.id DESC LIMIT 1",
+    )
+    .bind(run_id.to_string())
+    .fetch_optional(executor)
+    .await
+}
+
 // ─── run_log ──────────────────────────────────────────────────────────
 
 pub(super) async fn next_run_seq<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<i64>

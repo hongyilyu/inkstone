@@ -104,6 +104,19 @@ export const ToolCallView = S.Struct({
 });
 export type ToolCallView = S.Schema.Type<typeof ToolCallView>;
 
+/** The decided Proposal an assistant turn parked on (ADR-0044), surfaced so the
+ * decided `ProposalCard` (e.g. the "Applied." indicator) survives reload. Only
+ * `accepted`/`rejected` outcomes appear — a still-pending Proposal renders its
+ * full interactive card (deferred), a cancelled one is cleared live. Carries the
+ * minimum the decided card reads: `mutation_kind` drives copy + routing, `status`
+ * the accepted-vs-rejected branch, `proposal_id` the card's stable identity. */
+export const MessageProposalView = S.Struct({
+	proposal_id: S.String,
+	mutation_kind: S.String,
+	status: S.String,
+});
+export type MessageProposalView = S.Schema.Type<typeof MessageProposalView>;
+
 export const MessageView = S.Struct({
 	id: S.String,
 	role: S.String,
@@ -111,6 +124,9 @@ export const MessageView = S.Struct({
 	run_id: S.String,
 	text: S.String,
 	tool_calls: S.Array(ToolCallView),
+	/** Decided Proposal outcome (ADR-0044); omitted (not null) for user Messages
+	 * and turns with no decided Proposal. */
+	proposal: S.optional(MessageProposalView),
 });
 export type MessageView = S.Schema.Type<typeof MessageView>;
 

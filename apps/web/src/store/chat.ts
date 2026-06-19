@@ -205,6 +205,28 @@ export function setProposalStatus(
 	});
 }
 
+/**
+ * Reconstruct a DECIDED Proposal from `thread/get` rehydration (ADR-0044) so the
+ * settled `ProposalCard` (e.g. "Applied.") survives reload. Skips if a Proposal
+ * is already attached for `runId` — a live pending/deciding one (the became-live
+ * window, or a notification that beat hydration) must NOT be clobbered by the
+ * settled-history view. The reconstructed record carries no `payload`/`rationale`/
+ * `resolved_plan`: the decided card reads only `status` + `mutation_kind`, and
+ * every payload reader degrades a missing payload to empty (it never reaches the
+ * interactive branch once `status` is accepted/rejected).
+ */
+export function rehydrateDecidedProposal(proposal: PendingProposal): void {
+	store.setState((s) => {
+		if (s.proposals[proposal.run_id] !== undefined) {
+			return s;
+		}
+		return {
+			...s,
+			proposals: { ...s.proposals, [proposal.run_id]: proposal },
+		};
+	});
+}
+
 /** Drop the Proposal attached to `runId` (e.g. its parked Run was cancelled — there is nothing left to review); no-op if none. */
 export function clearProposal(runId: string): void {
 	store.setState((s) => {

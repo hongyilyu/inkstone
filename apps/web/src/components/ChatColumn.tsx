@@ -422,6 +422,10 @@ function AssistantBubble({
 					<ChatMarkdown text={message.text} />
 				</div>
 			)}
+			{/* The proposal outcome ("Applied.") sits ABOVE the copy button so the
+			    decided indicator reads as part of the turn's result, not below its
+			    copy affordance. */}
+			{message.run_id !== "" && <AssistantProposals runId={message.run_id} />}
 			{message.status === "completed" && message.text.length > 0 && (
 				<div className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
 					<CopyButton text={message.text} />
@@ -450,7 +454,6 @@ function AssistantBubble({
 					)}
 				</div>
 			)}
-			{message.run_id !== "" && <AssistantProposals runId={message.run_id} />}
 		</li>
 	);
 }

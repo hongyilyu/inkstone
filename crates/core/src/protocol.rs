@@ -423,12 +423,29 @@ pub struct ToolCallView {
     pub arg: Option<String>,
 }
 
+/// The settled outcome of a Proposal that an assistant turn parked on (ADR-0044),
+/// surfaced so the decided `ProposalCard` (e.g. the "Applied." indicator) survives
+/// reload. Only `accepted`/`rejected` outcomes appear — a still-`pending` Proposal
+/// renders its full interactive card, which needs the payload (deferred), and a
+/// `cancelled` one is cleared live, so neither is rehydrated. Carries the minimum
+/// the decided card reads: the kind drives the copy ("Applied." vs "Added Todo.")
+/// and the routing (`apply_intent_graph` vs single-entity), `status` the
+/// accepted-vs-rejected branch, `proposal_id` the card's stable identity.
+#[derive(Debug, Serialize)]
+pub struct MessageProposalView {
+    pub proposal_id: String,
+    pub mutation_kind: String,
+    pub status: String,
+}
+
 /// A Message in a `thread/get` result. `text` is the concatenation of the
 /// Message's text parts in `seq` order — no `parts[]` array until attachments
 /// exist (ADR-0017/Q15). `run_id` lets a refreshed Client resubscribe to a
 /// `streaming` Message's Run. `tool_calls` rehydrates the assistant turn's
 /// tool-activity rows (ADR-0043); empty for user Messages and turns with no
-/// (non-Proposal) tool call.
+/// (non-Proposal) tool call. `proposal` rehydrates the assistant turn's decided
+/// Proposal outcome (ADR-0044); omitted for user Messages and turns whose
+/// Proposal is pending/cancelled/absent.
 #[derive(Debug, Serialize)]
 pub struct MessageView {
     pub id: String,
@@ -437,6 +454,8 @@ pub struct MessageView {
     pub run_id: String,
     pub text: String,
     pub tool_calls: Vec<ToolCallView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<MessageProposalView>,
 }
 
 /// `thread/get` result: the Thread header plus its Messages in chronological
@@ -1303,6 +1322,7 @@ mod mirror_tests {
                     arg: None,
                 },
             ],
+            proposal: None,
         };
         assert_eq!(
             serde_json::to_value(&r).unwrap(),
@@ -1316,6 +1336,42 @@ mod mirror_tests {
                     { "name": "search_entities", "status": "completed", "arg": "Lev" },
                     { "name": "read_thread", "status": "completed" }
                 ]
+            }),
+            "no decided Proposal → `proposal` key omitted",
+        );
+    }
+
+    #[test]
+    fn message_view_encodes_decided_proposal() {
+        // A turn that parked on a decided Proposal carries `proposal` (ADR-0044),
+        // so the decided ProposalCard ("Applied.") survives reload.
+        let r = MessageView {
+            id: UUID_A.to_string(),
+            role: "assistant".to_string(),
+            status: "complete".to_string(),
+            run_id: UUID_B.to_string(),
+            text: "Logged.".to_string(),
+            tool_calls: vec![],
+            proposal: Some(MessageProposalView {
+                proposal_id: UUID_A.to_string(),
+                mutation_kind: "apply_intent_graph".to_string(),
+                status: "accepted".to_string(),
+            }),
+        };
+        assert_eq!(
+            serde_json::to_value(&r).unwrap(),
+            json!({
+                "id": UUID_A,
+                "role": "assistant",
+                "status": "complete",
+                "run_id": UUID_B,
+                "text": "Logged.",
+                "tool_calls": [],
+                "proposal": {
+                    "proposal_id": UUID_A,
+                    "mutation_kind": "apply_intent_graph",
+                    "status": "accepted"
+                }
             }),
         );
     }
@@ -1336,6 +1392,7 @@ mod mirror_tests {
                     status: "error".to_string(),
                     arg: Some("Lead Ads".to_string()),
                 }],
+                proposal: None,
             }],
         };
         assert_eq!(

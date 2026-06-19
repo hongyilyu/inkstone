@@ -16,6 +16,7 @@ import {
 	getChatState,
 	resetChatStore,
 	seedAssistantMessage,
+	setPendingProposal,
 } from "@/store/chat";
 import { renderChatRoute } from "@/test-utils/renderChatRoute";
 import { ChatColumn } from "./ChatColumn.js";
@@ -398,6 +399,37 @@ describe("ChatColumn", () => {
 		await waitFor(() => {
 			expect(screen.getByTestId("copy-button-check")).toBeInTheDocument();
 		});
+	});
+
+	it("renders a decided proposal's Applied indicator ABOVE the copy button", async () => {
+		const runtime = makeStubRuntime({ runId: "run-applied", events: [] });
+		seedAssistantMessage("threadA", {
+			id: "a-applied",
+			role: "assistant",
+			status: "completed",
+			text: "Logged.",
+			run_id: "r-applied",
+		});
+		// An accepted apply_intent_graph proposal renders the "Applied." card.
+		setPendingProposal({
+			proposal_id: "p-applied",
+			run_id: "r-applied",
+			mutation_kind: "apply_intent_graph",
+			payload: null,
+			rationale: null,
+			status: "accepted",
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		const appliedCard = screen.getByText("Applied.");
+		const copyButton = screen.getByRole("button", { name: /copy/i });
+		// DOCUMENT_POSITION_FOLLOWING (4) ⇒ the copy button follows the card in DOM
+		// order, i.e. the Applied indicator sits ABOVE the copy affordance.
+		expect(
+			appliedCard.compareDocumentPosition(copyButton) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 
 	it("shows no copy button on a streaming assistant message", async () => {
