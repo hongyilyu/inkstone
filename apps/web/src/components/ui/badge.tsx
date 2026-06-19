@@ -14,6 +14,7 @@ const badgeVariants = cva(
 				destructive: "bg-destructive/12 text-destructive",
 			},
 			size: {
+				xs: "px-1.5 py-0.5 text-[0.6875rem]",
 				sm: "px-2 py-0.5 text-xs",
 				md: "px-2.5 py-1 text-xs",
 			},

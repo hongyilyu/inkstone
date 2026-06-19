@@ -149,6 +149,7 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 			onCancel={onCancel}
 			saving={mutation.isPending}
 			error={error}
+			canSave={!blocked}
 		>
 			<EditorField label="Occurred at" htmlFor={ids.occurred}>
 				<EditorInput

@@ -4,30 +4,26 @@ import { Badge } from "./ui/badge.js";
 
 /** Map a model's output price to a t3-style cost tier badge. */
 function CostBadge({ cost }: { cost: number }) {
-	const { label, dollars, tone } =
+	const { label, dollars } =
 		cost <= 0
-			? { label: "Free", dollars: 0, tone: "text-emerald-500" }
+			? { label: "Free", dollars: 0 }
 			: cost < 5
-				? { label: "Low cost", dollars: 1, tone: "text-emerald-500" }
+				? { label: "Low cost", dollars: 1 }
 				: cost < 15
-					? { label: "Medium cost", dollars: 2, tone: "text-amber-500" }
-					: { label: "High cost", dollars: 3, tone: "text-rose-500" };
+					? { label: "Medium cost", dollars: 2 }
+					: { label: "High cost", dollars: 3 };
 	return (
 		<span
 			role="img"
 			aria-label={label}
-			className="inline-flex items-center font-mono font-semibold text-[10px] tabular-nums tracking-tight"
+			className="inline-flex items-center font-mono font-semibold text-[10px] text-muted-foreground tabular-nums tracking-tight"
 		>
-			{dollars === 0 ? (
-				<span className={tone}>$0</span>
-			) : (
-				Array.from({ length: dollars }, (_, i) => (
-					// biome-ignore lint/suspicious/noArrayIndexKey: fixed-length glyph repeat
-					<span key={i} className={tone}>
-						$
-					</span>
-				))
-			)}
+			{dollars === 0
+				? "$0"
+				: Array.from({ length: dollars }, (_, i) => (
+						// biome-ignore lint/suspicious/noArrayIndexKey: fixed-length glyph repeat
+						<span key={i}>$</span>
+					))}
 		</span>
 	);
 }

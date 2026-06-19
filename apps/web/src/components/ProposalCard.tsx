@@ -72,8 +72,9 @@ import {
 	EditorSelect,
 	EditorTextarea,
 } from "./library/EntityEditor.js";
+import { Badge, type BadgeProps } from "./ui/badge.js";
+import { Button } from "./ui/button.js";
 import { Card } from "./ui/card.js";
-import { Input } from "./ui/input.js";
 
 const TODO_STATUS_OPTIONS: { value: TodoEditStatus; label: string }[] = [
 	{ value: "active", label: "Active" },
@@ -662,7 +663,6 @@ function SingleEntityProposalCard({
 			: showProjectForm
 				? projectNameEmpty
 				: updateTodoTitleEmpty;
-	const bodyRef = useRef<HTMLTextAreaElement>(null);
 	const openEdit = () => {
 		if (!canEdit) return;
 		if (isCreateTodo) {
@@ -686,11 +686,6 @@ function SingleEntityProposalCard({
 		}
 		setEditing(true);
 	};
-	useEffect(() => {
-		// The journal form focuses its body textarea on open; each GTD form focuses
-		// its required field via the input's autoFocus (EditorInput forwards no ref).
-		if (editing && !isGtdEdit) bodyRef.current?.focus();
-	}, [editing, isGtdEdit]);
 	const saveEdit = () => {
 		if (inFlight !== null || proposal.status === "deciding") return;
 		if (editIssue !== null) return;
@@ -984,22 +979,26 @@ function SingleEntityProposalCard({
 							</>
 						)}
 						<footer className="flex items-center gap-2 pt-1">
-							<button
+							<Button
 								type="submit"
+								variant="primary"
+								size="row"
+								className="gap-1.5 px-3.5 py-2"
 								disabled={submitting || gtdRequiredEmpty}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<Check className="size-4" aria-hidden />
 								Save changes
-							</button>
-							<button
+							</Button>
+							<Button
 								type="button"
+								variant="ghost"
+								size="sm"
+								className="ml-auto py-1.5 text-sm"
 								disabled={submitting}
 								onClick={() => setEditing(false)}
-								className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								Cancel
-							</button>
+							</Button>
 						</footer>
 					</form>
 				) : (
@@ -1010,65 +1009,54 @@ function SingleEntityProposalCard({
 						}}
 						className="flex flex-col gap-3 border-border border-t pt-3"
 					>
-						<label
-							className="flex flex-col gap-1.5"
-							htmlFor={occurredAtInputId}
-						>
-							<span className="text-xs font-medium text-muted-foreground">
-								Occurred at
-							</span>
-							<Input
+						<EditorField label="Occurred at" htmlFor={occurredAtInputId}>
+							<EditorInput
 								id={occurredAtInputId}
 								value={editOccurredAt}
 								onChange={(event) => setEditOccurredAt(event.target.value)}
-								className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
 							/>
-						</label>
-						<label className="flex flex-col gap-1.5" htmlFor={endedAtInputId}>
-							<span className="text-xs font-medium text-muted-foreground">
-								Ended at
-							</span>
-							<Input
+						</EditorField>
+						<EditorField label="Ended at" htmlFor={endedAtInputId}>
+							<EditorInput
 								id={endedAtInputId}
 								value={editEndedAt}
 								onChange={(event) => setEditEndedAt(event.target.value)}
-								className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
 							/>
-						</label>
-						<label className="flex flex-col gap-1.5" htmlFor={bodyInputId}>
-							<span className="text-xs font-medium text-muted-foreground">
-								Body
-							</span>
-							<textarea
+						</EditorField>
+						<EditorField label="Body" htmlFor={bodyInputId}>
+							<EditorTextarea
 								id={bodyInputId}
-								ref={bodyRef}
+								autoFocus
 								value={editBody}
 								onChange={(event) => setEditBody(event.target.value)}
-								className="min-h-24 rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 							/>
-						</label>
+						</EditorField>
 						{editIssue ? (
 							<p role="alert" className="text-sm text-destructive">
 								Edit required fields: {editIssue}.
 							</p>
 						) : null}
 						<footer className="flex items-center gap-2 pt-1">
-							<button
+							<Button
 								type="submit"
+								variant="primary"
+								size="row"
+								className="gap-1.5 px-3.5 py-2"
 								disabled={submitting || editIssue !== null}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<Check className="size-4" aria-hidden />
 								Save changes
-							</button>
-							<button
+							</Button>
+							<Button
 								type="button"
+								variant="ghost"
+								size="sm"
+								className="ml-auto py-1.5 text-sm"
 								disabled={submitting}
 								onClick={() => setEditing(false)}
-								className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								Cancel
-							</button>
+							</Button>
 						</footer>
 					</form>
 				)
@@ -1099,8 +1087,11 @@ function SingleEntityProposalCard({
 
 					<footer className="flex items-center gap-2 pt-1">
 						{isError ? (
-							<button
+							<Button
 								type="button"
+								variant="primary"
+								size="row"
+								className="gap-1.5 px-3.5 py-2"
 								// Gate retry on what it will re-send: reject always allowed; a stored edit on its payload; a plain accept on `canApply`. See docs/design/web-chat-ui.md.
 								disabled={
 									lastAttempt.current?.decision === "reject"
@@ -1110,17 +1101,18 @@ function SingleEntityProposalCard({
 											: !canApply
 								}
 								onClick={retry}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<RotateCcw className="size-4" aria-hidden />
 								Try again
-							</button>
+							</Button>
 						) : (
-							<button
+							<Button
 								type="button"
+								variant="primary"
+								size="row"
+								className="gap-1.5 px-3.5 py-2"
 								disabled={submitting || !canApply}
 								onClick={() => decide("accept")}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								{deciding && inFlight === "accept" ? (
 									<>
@@ -1136,26 +1128,30 @@ function SingleEntityProposalCard({
 										{acceptLabel}
 									</>
 								)}
-							</button>
+							</Button>
 						)}
 
 						{canEdit ? (
-							<button
+							<Button
 								type="button"
+								variant="chip"
+								size="pill"
+								className="gap-1.5 px-3"
 								disabled={submitting}
 								onClick={openEdit}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-input px-3 py-1.5 font-medium text-foreground/80 text-sm transition-colors hover:bg-secondary/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<Pencil className="size-3.5" aria-hidden />
 								Edit
-							</button>
+							</Button>
 						) : null}
 
-						<button
+						<Button
 							type="button"
+							variant="ghost"
+							size="sm"
+							className="ml-auto py-1.5 text-sm"
 							disabled={submitting}
 							onClick={() => decide("reject")}
-							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>
 							{deciding && inFlight === "reject" ? (
 								<>
@@ -1168,7 +1164,7 @@ function SingleEntityProposalCard({
 							) : (
 								rejectLabel
 							)}
-						</button>
+						</Button>
 					</footer>
 				</>
 			)}
@@ -1185,22 +1181,22 @@ const GRAPH_VIEW = PROPOSAL_VIEWS.apply_intent_graph;
  * wears the warning tone because it BLOCKS accept (no picker yet, #181). */
 const DISPOSITION_BADGE: Record<
 	ResolvedNode["disposition"],
-	{ label: string; glyph: LucideIcon; className: string }
+	{ label: string; glyph: LucideIcon; variant: BadgeProps["variant"] }
 > = {
 	create: {
 		label: "New",
 		glyph: Plus,
-		className: "bg-secondary text-secondary-foreground",
+		variant: "secondary",
 	},
 	reuse: {
 		label: "Existing",
 		glyph: Check,
-		className: "bg-secondary text-secondary-foreground",
+		variant: "secondary",
 	},
 	ambiguous: {
 		label: "Needs disambiguation",
 		glyph: TriangleAlert,
-		className: "bg-destructive/10 text-destructive",
+		variant: "destructive",
 	},
 };
 
@@ -1447,11 +1443,13 @@ function IntentGraphReviewCard({
 			) : null}
 
 			<footer className="flex items-center gap-2 pt-1">
-				<button
+				<Button
 					type="button"
+					variant="primary"
+					size="row"
+					className="gap-1.5 px-3.5 py-2"
 					disabled={submitting || plan.length === 0}
 					onClick={commit}
-					className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 				>
 					{deciding && inFlight === "commit" ? (
 						<>
@@ -1467,13 +1465,15 @@ function IntentGraphReviewCard({
 							{commitLabel}
 						</>
 					)}
-				</button>
+				</Button>
 
-				<button
+				<Button
 					type="button"
+					variant="ghost"
+					size="sm"
+					className="ml-auto py-1.5 text-sm"
 					disabled={submitting}
 					onClick={rejectEverything}
-					className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 				>
 					{deciding && inFlight === "reject" ? (
 						<>
@@ -1486,7 +1486,7 @@ function IntentGraphReviewCard({
 					) : (
 						"Dismiss all"
 					)}
-				</button>
+				</Button>
 			</footer>
 		</Card>
 	);
@@ -1554,7 +1554,7 @@ function GraphNodeRow({
 		? {
 				label: `Existing «${repointLabel}»`,
 				glyph: Check,
-				className: DISPOSITION_BADGE.reuse.className,
+				variant: DISPOSITION_BADGE.reuse.variant,
 			}
 		: DISPOSITION_BADGE[node.disposition];
 	const BadgeGlyph = badge.glyph;
@@ -1628,12 +1628,10 @@ function GraphNodeRow({
 					{shownLabel}
 				</p>
 				<div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-					<span
-						className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.6875rem] font-medium ${badge.className}`}
-					>
+					<Badge variant={badge.variant} size="xs">
 						<BadgeGlyph className="size-3" aria-hidden />
 						{edited ? "Edited" : badge.label}
-					</span>
+					</Badge>
 					{showNearMatchAffordance ? (
 						repointed ? (
 							// Re-pointed onto an existing entity (the default for a single
@@ -1985,46 +1983,85 @@ function renderJournalBody(
 	);
 }
 
-function renderPersonBody({ payload }: ProposalBodyArgs): ReactNode {
-	const note = textField(payload, "note");
-	const aliases = arrayField(payload, "aliases").filter(
+// One labelled `<section>` of Person `<Field>` rows, read defensively off an
+// opaque body (a proposed payload OR the current entity from review_context). The
+// update card stacks two of these (Current + Proposed) so a field present in the
+// current body but omitted from the full-document replace stays visible (ADR-0016).
+function personSection(title: string, body: unknown): ReactNode {
+	const note = textField(body, "note");
+	const aliases = arrayField(body, "aliases").filter(
 		(a): a is string => typeof a === "string",
 	);
 	return (
+		<section className="flex flex-col gap-2">
+			<p className="text-xs font-medium tracking-normal text-muted-foreground">
+				{title}
+			</p>
+			<dl className="flex flex-col gap-1.5 text-sm">
+				<Field label="Name" value={textField(body, "name") || "Unknown"} />
+				{note ? <Field label="Note" value={note} /> : null}
+				{aliases.length > 0 ? (
+					<Field label="Aliases" value={aliases.join(", ")} />
+				) : null}
+			</dl>
+		</section>
+	);
+}
+
+function renderPersonBody({
+	payload,
+	reviewContext,
+}: ProposalBodyArgs): ReactNode {
+	const currentPerson = reviewContext?.current_person;
+	return (
 		<div className="flex flex-col gap-3 border-border border-t pt-3">
-			<section className="flex flex-col gap-2">
-				<p className="text-xs font-medium tracking-normal text-muted-foreground">
-					Person
-				</p>
-				<dl className="flex flex-col gap-1.5 text-sm">
-					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
-					{note ? <Field label="Note" value={note} /> : null}
-					{aliases.length > 0 ? (
-						<Field label="Aliases" value={aliases.join(", ")} />
-					) : null}
-				</dl>
-			</section>
+			{currentPerson ? (
+				<>
+					{personSection("Current", currentPerson)}
+					{personSection("Replacing with", payload)}
+				</>
+			) : (
+				personSection("Person", payload)
+			)}
 		</div>
 	);
 }
 
-function renderProjectBody({ payload }: ProposalBodyArgs): ReactNode {
-	const outcome = textField(payload, "outcome");
-	const status = textField(payload, "status");
-	const note = textField(payload, "note");
+// One labelled `<section>` of Project `<Field>` rows (sibling of personSection).
+function projectSection(title: string, body: unknown): ReactNode {
+	const outcome = textField(body, "outcome");
+	const status = textField(body, "status");
+	const note = textField(body, "note");
+	return (
+		<section className="flex flex-col gap-2">
+			<p className="text-xs font-medium tracking-normal text-muted-foreground">
+				{title}
+			</p>
+			<dl className="flex flex-col gap-1.5 text-sm">
+				<Field label="Name" value={textField(body, "name") || "Unknown"} />
+				{outcome ? <Field label="Outcome" value={outcome} /> : null}
+				{status ? <Field label="Status" value={status} /> : null}
+				{note ? <Field label="Note" value={note} /> : null}
+			</dl>
+		</section>
+	);
+}
+
+function renderProjectBody({
+	payload,
+	reviewContext,
+}: ProposalBodyArgs): ReactNode {
+	const currentProject = reviewContext?.current_project;
 	return (
 		<div className="flex flex-col gap-3 border-border border-t pt-3">
-			<section className="flex flex-col gap-2">
-				<p className="text-xs font-medium tracking-normal text-muted-foreground">
-					Project
-				</p>
-				<dl className="flex flex-col gap-1.5 text-sm">
-					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
-					{outcome ? <Field label="Outcome" value={outcome} /> : null}
-					{status ? <Field label="Status" value={status} /> : null}
-					{note ? <Field label="Note" value={note} /> : null}
-				</dl>
-			</section>
+			{currentProject ? (
+				<>
+					{projectSection("Current", currentProject)}
+					{projectSection("Replacing with", payload)}
+				</>
+			) : (
+				projectSection("Project", payload)
+			)}
 		</div>
 	);
 }

@@ -84,6 +84,16 @@ async fn create_thread_and_park(core: &CoreHandle, prompt: &str) -> (String, Str
     (run_id, proposal_id, mutation_kind)
 }
 
+async fn proposal_get(core: &CoreHandle, run_id: &str) -> serde_json::Value {
+    rpc(
+        core,
+        3,
+        "proposal/get",
+        serde_json::json!({ "run_id": run_id }),
+    )
+    .await
+}
+
 async fn pending_proposal(core: &CoreHandle, run_id: &str) -> (String, String) {
     let resp = rpc(
         core,
@@ -438,5 +448,186 @@ fn update_person_with_non_person_target_is_invalid() {
             .await
             .expect("run row exists");
         assert_eq!(run_status, "parked", "bad-target update leaves the run parked");
+    });
+}
+
+/// lamplit-desk-alignment: `proposal/get` for an `update_person` returns the
+/// CURRENT stored Person as `review_context.current_person`, so the Client can
+/// render Current-vs-Proposed. The proposed payload OMITS `note` and `aliases`
+/// (an accepted full-document REPLACE would drop them, ADR-0016/ADR-0033); the
+/// current context still surfaces them, making the removal visible before accept.
+#[test]
+fn proposal_get_returns_current_person_with_replaced_away_fields() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("propose-params.json");
+
+    write_params(
+        &params_path,
+        serde_json::json!({
+            "mutation_kind": "create_person",
+            "payload": { "name": "Alice", "note": "daycare coordinator", "aliases": ["Al"] },
+            "rationale": "remember Alice"
+        }),
+    );
+
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let (create_run, create_proposal, kind) =
+            create_thread_and_park(&core, "Remember Alice, the daycare coordinator.").await;
+        assert_eq!(kind, "create_person", "first proposal is a create_person");
+        let resp = decide_accept(&core, &create_proposal, "person-create").await;
+        let entity_id = resp["result"]["entity_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
+            .to_string();
+        await_status(&core, &create_run, "completed").await;
+
+        // The proposed update keeps only `name` (renamed) — `note` and `aliases`
+        // are omitted, so an accepted REPLACE removes them.
+        write_params(
+            &params_path,
+            serde_json::json!({
+                "mutation_kind": "update_person",
+                "payload": { "entity_id": entity_id, "name": "Alice Renamed" },
+                "rationale": "the user renamed Alice and dropped the note"
+            }),
+        );
+        let (update_run, _proposal_id, kind) =
+            create_thread_and_park(&core, "Rename Alice.").await;
+        assert_eq!(kind, "update_person", "second proposal is an update_person");
+
+        let resp = proposal_get(&core, &update_run).await;
+        let current = &resp["result"]["review_context"]["current_person"];
+        assert_eq!(
+            current["entity_id"].as_str(),
+            Some(entity_id.as_str()),
+            "current_person carries the stored entity id — body: {resp}"
+        );
+        assert_eq!(
+            current["name"].as_str(),
+            Some("Alice"),
+            "current_person carries the stored name (pre-rename) — body: {resp}"
+        );
+        assert_eq!(
+            current["note"].as_str(),
+            Some("daycare coordinator"),
+            "current_person surfaces the note the REPLACE would drop — body: {resp}"
+        );
+        assert_eq!(
+            current["aliases"],
+            serde_json::json!(["Al"]),
+            "current_person surfaces the aliases the REPLACE would drop — body: {resp}"
+        );
+        // The proposed payload stays mutation-only (the current context is a
+        // separate review surface, not folded into the payload).
+        assert!(
+            resp["result"]["payload"].get("note").is_none(),
+            "proposed payload omits the dropped note — body: {resp}"
+        );
+    });
+}
+
+/// lamplit-desk-alignment: the `update_project` sibling of the test above. A
+/// `proposal/get` for an `update_project` returns the CURRENT stored Project as
+/// `review_context.current_project`. The proposed payload OMITS `outcome` and
+/// `note` (a full-document REPLACE would drop them, ADR-0016/ADR-0033); the
+/// current context still surfaces them. Also confirms Project review-context
+/// still works after the `update_todo` review-context wiring was removed.
+#[test]
+fn proposal_get_returns_current_project_with_replaced_away_fields() {
+    let workspace = Workspace::new();
+    let params_path = workspace.path().join("propose-params.json");
+
+    write_params(
+        &params_path,
+        serde_json::json!({
+            "mutation_kind": "create_project",
+            "payload": {
+                "name": "Ship API v2",
+                "outcome": "all clients on v2 by Q3",
+                "status": "active",
+                "note": "kickoff next week"
+            },
+            "rationale": "track the project"
+        }),
+    );
+
+    let core = workspace
+        .core()
+        .worker_fixture("propose-worker.ts")
+        .env("INKSTONE_PROPOSE_PARAMS_FILE", &params_path)
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let (create_run, create_proposal, kind) =
+            create_thread_and_park(&core, "Track the Ship API v2 project.").await;
+        assert_eq!(kind, "create_project", "first proposal is a create_project");
+        let resp = decide_accept(&core, &create_proposal, "project-create").await;
+        let entity_id = resp["result"]["entity_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("entity_id is a string — body: {resp}"))
+            .to_string();
+        await_status(&core, &create_run, "completed").await;
+
+        // The proposed update keeps only `name` + `status` — `outcome` and `note`
+        // are omitted, so an accepted REPLACE removes them.
+        write_params(
+            &params_path,
+            serde_json::json!({
+                "mutation_kind": "update_project",
+                "payload": { "entity_id": entity_id, "name": "Ship API v2", "status": "on_hold" },
+                "rationale": "the user paused the project and dropped the note"
+            }),
+        );
+        let (update_run, _proposal_id, kind) =
+            create_thread_and_park(&core, "Put Ship API v2 on hold.").await;
+        assert_eq!(kind, "update_project", "second proposal is an update_project");
+
+        let resp = proposal_get(&core, &update_run).await;
+        let current = &resp["result"]["review_context"]["current_project"];
+        assert_eq!(
+            current["entity_id"].as_str(),
+            Some(entity_id.as_str()),
+            "current_project carries the stored entity id — body: {resp}"
+        );
+        assert_eq!(
+            current["name"].as_str(),
+            Some("Ship API v2"),
+            "current_project carries the stored name — body: {resp}"
+        );
+        assert_eq!(
+            current["outcome"].as_str(),
+            Some("all clients on v2 by Q3"),
+            "current_project surfaces the outcome the REPLACE would drop — body: {resp}"
+        );
+        assert_eq!(
+            current["note"].as_str(),
+            Some("kickoff next week"),
+            "current_project surfaces the note the REPLACE would drop — body: {resp}"
+        );
+        // The proposed payload stays mutation-only.
+        assert!(
+            resp["result"]["payload"].get("note").is_none(),
+            "proposed payload omits the dropped note — body: {resp}"
+        );
+        assert!(
+            resp["result"]["payload"].get("outcome").is_none(),
+            "proposed payload omits the dropped outcome — body: {resp}"
+        );
     });
 }

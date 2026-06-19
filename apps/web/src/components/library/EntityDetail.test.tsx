@@ -16,17 +16,28 @@ import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime } from "effect";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-	JournalEntry,
-	LibraryItem,
-	Person,
-	Project,
-	Todo,
+import {
+	formatDateTime,
+	formatDay,
+	type JournalEntry,
+	type LibraryItem,
+	type Person,
+	type Project,
+	type Todo,
 } from "@/lib/libraryItems";
 import { RuntimeProvider } from "@/runtime";
 import { EntityDetail } from "./EntityDetail";
 
 const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
+
+// Match a humanized date badge locale-independently: the label is literal, the
+// date is derived from the SAME `formatDay` the component uses (so an en-US or a
+// fr-FR ICU runner both pass). Escapes the formatter's output (it can contain
+// regex-special characters like a comma).
+function dayBadge(label: string, iso: string): RegExp {
+	const day = formatDay(iso).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp(`${label}${day}`);
+}
 
 vi.mock("@tanstack/react-router", async (importOriginal) => {
 	const actual =
@@ -113,6 +124,22 @@ function journal(body: JournalEntry["body"]): JournalEntry {
 }
 
 describe("EntityDetail Journal Entry body", () => {
+	it("humanizes the Occurred at timestamp instead of leaking the raw ISO", () => {
+		const entry = journal([{ type: "text", text: "Bought milk." }]);
+		entry.occurredAt = "2026-06-19T14:30:00";
+		renderDetail(<EntityDetail entity={entry} allEntities={[]} />);
+
+		const occurred = screen.getByText("Occurred at")
+			.nextElementSibling as HTMLElement;
+		expect(occurred).not.toHaveTextContent("2026-06-19T14:30:00");
+		expect(occurred.textContent).not.toContain("T");
+		expect(occurred.textContent).not.toMatch(/:\d{2}:\d{2}/);
+		expect(occurred).toHaveTextContent("19");
+		// The exact humanized form, derived from the same formatter the component
+		// uses — locale-independent (en-US "Jun 19, 2026, 2:30 PM", fr-FR differs).
+		expect(occurred).toHaveTextContent(formatDateTime("2026-06-19T14:30:00"));
+	});
+
 	it("renders text-only Journal Entries normally", () => {
 		renderDetail(
 			<EntityDetail
@@ -262,10 +289,15 @@ describe("EntityDetail Todo projection", () => {
 
 		// Status + due also appear in the header subtitle, so allow >1.
 		expect(screen.getAllByText("Active").length).toBeGreaterThanOrEqual(1);
-		expect(screen.getAllByText(/Due 2999-06-14/).length).toBeGreaterThanOrEqual(
-			1,
-		);
-		expect(screen.getByText(/Deferred to 2999-06-10/)).toBeInTheDocument();
+		// The inspector badge humanizes the day through `formatDay` (e.g. "Jun 14,
+		// 2999" in en-US) — derive the expected text from the same formatter so the
+		// assertion holds on any ICU locale.
+		expect(
+			screen.getAllByText(dayBadge("Due ", "2999-06-14T17:00:00")).length,
+		).toBeGreaterThanOrEqual(1);
+		expect(
+			screen.getByText(dayBadge("Deferred to ", "2999-06-10T00:00:00")),
+		).toBeInTheDocument();
 		expect(screen.getByText("Daycare move")).toBeInTheDocument();
 		// Linked person rendered with its waiting_on role label.
 		expect(screen.getByText("Alice")).toBeInTheDocument();
@@ -280,7 +312,9 @@ describe("EntityDetail Todo projection", () => {
 		});
 		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
 		expect(screen.getByText("Dropped")).toBeInTheDocument();
-		expect(screen.getByText(/Dropped 2026-05-20/)).toBeInTheDocument();
+		expect(
+			screen.getByText(dayBadge("Dropped ", "2026-05-20T12:00:00")),
+		).toBeInTheDocument();
 	});
 
 	it("renders a recurrence summary badge for a recurring todo (ADR-0037)", () => {
@@ -477,8 +511,12 @@ describe("EntityDetail Project projection", () => {
 		renderDetail(<EntityDetail entity={proj} allEntities={all} />);
 
 		expect(screen.getByText("Provider switch by August.")).toBeInTheDocument();
-		expect(screen.getByText(/Next review 2026-06-21/)).toBeInTheDocument();
-		expect(screen.getByText(/last reviewed 2026-06-14/)).toBeInTheDocument();
+		expect(
+			screen.getByText(dayBadge("Next review ", "2026-06-21T20:00:00")),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText(dayBadge("last reviewed ", "2026-06-14T20:00:00")),
+		).toBeInTheDocument();
 		// Person derived through the project's todo appears (no direct link).
 		expect(screen.getByText("Alice")).toBeInTheDocument();
 	});

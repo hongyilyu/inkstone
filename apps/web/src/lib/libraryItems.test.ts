@@ -3,6 +3,8 @@ import { parseTodo } from "@/lib/entityCodec";
 import {
 	activeProjectItems,
 	dueSoonTodos,
+	formatDateTime,
+	formatDay,
 	groupJournalEntriesByDay,
 	inboxTodos,
 	type JournalEntry,
@@ -550,5 +552,72 @@ describe("recurrence (ADR-0037 read side)", () => {
 				recurrenceSummary(rule({ unit: "week", end: { afterCount: 5 } })),
 			).toBe("Repeats weekly");
 		});
+	});
+});
+
+describe("formatDateTime", () => {
+	const s = "2026-06-19T14:30:00";
+
+	it("drops the bare T separator", () => {
+		expect(formatDateTime(s)).not.toContain("T");
+	});
+
+	it("drops the seconds", () => {
+		expect(formatDateTime(s)).not.toContain(":00");
+		expect(formatDateTime(s)).not.toMatch(/:\d{2}:\d{2}/);
+	});
+
+	it("includes the day, month, and the 14:30 time", () => {
+		const out = formatDateTime(s);
+		expect(out).toContain("19");
+		// Derive the month name from the same locale the formatter uses, so this
+		// holds on a non-en ICU runner (en-US "Jun", fr-FR "juin", de-DE "Juni").
+		const month = new Date(s).toLocaleDateString(undefined, { month: "short" });
+		expect(out).toContain(month);
+		// Derive hour:minute from the same locale the formatter uses, so this holds
+		// on a locale that pads the 12h hour (e.g. "02:30") or uses 24h ("14:30").
+		const hm = new Date(s).toLocaleTimeString(undefined, {
+			hour: "numeric",
+			minute: "2-digit",
+		});
+		expect(out).toContain(hm);
+	});
+
+	it("returns the input rather than 'Invalid Date' when unparseable", () => {
+		expect(formatDateTime("not a date")).toBe("not a date");
+		expect(formatDateTime("")).toBe("");
+	});
+});
+
+describe("formatDay", () => {
+	const s = "2026-06-19T14:30:00";
+
+	it("returns a day-granularity string with no time", () => {
+		const out = formatDay(s);
+		expect(out).not.toContain("T");
+		expect(out).not.toMatch(/\d{1,2}:\d{2}/);
+		expect(out).toContain("19");
+		// Month name derived from the same locale (see formatDateTime test above).
+		const month = new Date(s).toLocaleDateString(undefined, { month: "short" });
+		expect(out).toContain(month);
+	});
+
+	it("returns the input rather than 'Invalid Date' when unparseable", () => {
+		expect(formatDay("not a date")).toBe("not a date");
+		expect(formatDay("")).toBe("");
+	});
+
+	it("renders a bare date-only input on its own day (no timezone shift)", () => {
+		// `new Date("2026-06-19")` parses as UTC midnight; in negative offsets that
+		// renders the 18th. A date-only field must stay June 19 regardless of zone.
+		const out = formatDay("2026-06-19");
+		expect(out).toContain("19");
+		// Month derived from the local-parts Date `formatDay` builds (not the
+		// UTC-midnight string parse), so it matches on any ICU locale.
+		const month = new Date(2026, 5, 19).toLocaleDateString(undefined, {
+			month: "short",
+		});
+		expect(out).toContain(month);
+		expect(out).not.toContain("18");
 	});
 });

@@ -78,6 +78,7 @@ export function BookmarkEditor({ onDone, onCancel, ...m }: Props) {
 			onCancel={onCancel}
 			saving={mutation.isPending}
 			error={error}
+			canSave={!titleEmpty}
 		>
 			<EditorField label="Title" htmlFor={ids.title}>
 				<EditorInput

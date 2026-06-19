@@ -133,6 +133,7 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 			onCancel={onCancel}
 			saving={mutation.isPending}
 			error={error}
+			canSave={!titleEmpty && !anchorMissing && !intervalInvalid}
 		>
 			<EditorField label="Title" htmlFor={ids.title}>
 				<EditorInput

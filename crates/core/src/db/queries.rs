@@ -1031,6 +1031,22 @@ where
         .await
 }
 
+/// Read a Person's current `data` JSON by id. `None` when the id does not exist
+/// or is not a `person`. Sibling of [`current_todo_data`]/[`current_project_data`],
+/// added for `proposal/get`'s `update_person` review context.
+pub(super) async fn current_person_data<'e, E>(
+    executor: E,
+    person_id: &str,
+) -> sqlx::Result<Option<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT data FROM entities WHERE id = ?1 AND type = 'person'")
+        .bind(person_id)
+        .fetch_optional(executor)
+        .await
+}
+
 /// Read every Todo that owns `project_id` (its `data.project_id` matches), for
 /// the `delete_project` cascade (ADR-0031). Returns `(todo_id, data)` rows so the
 /// caller can rewrite each Todo's JSON with `project_id` unset. `project_id`

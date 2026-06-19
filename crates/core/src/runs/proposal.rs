@@ -16,7 +16,8 @@ use crate::decide::{DecideError, DecideOutcome};
 use crate::hub::Hubs;
 use crate::protocol::{
     JournalEntryBodyNode, ProposalDecideParams, ProposalDecideResult, ProposalGetParams,
-    ProposalGetResult, ProposalReviewContext, ProposalReviewCurrentJournalEntry, ResolvedNode,
+    ProposalGetResult, ProposalReviewContext, ProposalReviewCurrentJournalEntry,
+    ProposalReviewCurrentPerson, ProposalReviewCurrentProject, ResolvedNode,
 };
 
 pub(super) async fn handle_get(
@@ -153,11 +154,11 @@ async fn review_context_for_proposal(
         return Ok(None);
     }
 
-    // The Journal Entry under review is the kind's target — `source_entity_id` for
-    // the reference weave, `entity_id` for update/delete (from the descriptor).
-    let entity_id_field = proposable
-        .kind()
-        .describe()
+    // The Entity under review is the kind's target — `source_entity_id` for the
+    // reference weave, `entity_id` for every other update/delete (from the
+    // descriptor).
+    let descriptor = proposable.kind().describe();
+    let entity_id_field = descriptor
         .target_key
         .map(|k| k.as_str())
         .expect("a review-context kind always has a target key");
@@ -170,27 +171,127 @@ async fn review_context_for_proposal(
         return Ok(None);
     };
 
-    let allowed = db::journal_entry_target_is_valid(pool, run_id, entity_id)
-        .await
-        .map_err(|e| HandlerError::Internal(e.into()))?;
-    if !allowed {
-        return Ok(None);
-    }
-
-    let Some(row) = db::current_journal_entry_by_id(pool, entity_id)
-        .await
-        .map_err(|e| HandlerError::Internal(e.into()))?
-    else {
-        return Ok(None);
+    // Dispatch on the kind's entity type. The Journal Entry path keeps its
+    // cross-thread gate (review context is scoped to the Run's own Thread); the
+    // Person/Project full-document REPLACE updates (lamplit-desk-alignment) read
+    // the stored Entity by id and surface the fields a REPLACE would drop. A
+    // missing/deleted Entity or unparseable snapshot degrades to `None` (the card
+    // shows Proposed only) — never an error.
+    use crate::mutation::EntityType;
+    let context = match descriptor.entity_type {
+        EntityType::JournalEntry => {
+            let allowed = db::journal_entry_target_is_valid(pool, run_id, entity_id)
+                .await
+                .map_err(|e| HandlerError::Internal(e.into()))?;
+            if !allowed {
+                return Ok(None);
+            }
+            let Some(row) = db::current_journal_entry_by_id(pool, entity_id)
+                .await
+                .map_err(|e| HandlerError::Internal(e.into()))?
+            else {
+                return Ok(None);
+            };
+            let Some(current) = review_current_journal_entry(row.entity_id, &row.data) else {
+                return Ok(None);
+            };
+            ProposalReviewContext {
+                current_journal_entry: Some(current),
+                current_person: None,
+                current_project: None,
+            }
+        }
+        EntityType::Person => {
+            let Some(row) = db::current_person_by_id(pool, entity_id)
+                .await
+                .map_err(|e| HandlerError::Internal(e.into()))?
+            else {
+                return Ok(None);
+            };
+            let Some(current) = review_current_person(row.entity_id, &row.data) else {
+                return Ok(None);
+            };
+            ProposalReviewContext {
+                current_journal_entry: None,
+                current_person: Some(current),
+                current_project: None,
+            }
+        }
+        EntityType::Project => {
+            let Some(row) = db::current_project_by_id(pool, entity_id)
+                .await
+                .map_err(|e| HandlerError::Internal(e.into()))?
+            else {
+                return Ok(None);
+            };
+            let Some(current) = review_current_project(row.entity_id, &row.data) else {
+                return Ok(None);
+            };
+            ProposalReviewContext {
+                current_journal_entry: None,
+                current_person: None,
+                current_project: Some(current),
+            }
+        }
+        // `update_todo` is a partial MERGE (ADR-0033): omitted fields are NOT
+        // dropped, so there is no "what a REPLACE removes" diff to surface — it
+        // carries no review context (see `carries_review_context`). No proposable
+        // Bookmark kind carries review context either (Bookmark mutations are
+        // user-path-only). Both degrade gracefully rather than panic if a future
+        // kind reaches here.
+        EntityType::Todo | EntityType::Bookmark => return Ok(None),
     };
 
-    let Some(current_journal_entry) = review_current_journal_entry(row.entity_id, &row.data) else {
-        return Ok(None);
-    };
+    Ok(Some(context))
+}
 
-    Ok(Some(ProposalReviewContext {
-        current_journal_entry: Some(current_journal_entry),
-    }))
+/// Build the display-only Current Person from its stored `data` JSON
+/// (lamplit-desk-alignment). Carries the fields the renderer displays — `name`
+/// plus optional `note`/`aliases`. Returns `None` only when `name` is missing
+/// (an unparseable snapshot), so the card degrades to Proposed-only.
+fn review_current_person(
+    entity_id: String,
+    data: &serde_json::Value,
+) -> Option<ProposalReviewCurrentPerson> {
+    let name = data.get("name")?.as_str()?.to_string();
+    let note = optional_string(data, "note");
+    let aliases = data.get("aliases").and_then(|v| {
+        v.as_array().map(|arr| {
+            arr.iter()
+                .filter_map(|n| n.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+    });
+    Some(ProposalReviewCurrentPerson {
+        entity_id,
+        name,
+        note,
+        aliases,
+    })
+}
+
+/// Build the display-only Current Project from its stored `data` JSON. Carries
+/// `name` plus optional `outcome`/`status`/`note`.
+fn review_current_project(
+    entity_id: String,
+    data: &serde_json::Value,
+) -> Option<ProposalReviewCurrentProject> {
+    let name = data.get("name")?.as_str()?.to_string();
+    Some(ProposalReviewCurrentProject {
+        entity_id,
+        name,
+        outcome: optional_string(data, "outcome"),
+        status: optional_string(data, "status"),
+        note: optional_string(data, "note"),
+    })
+}
+
+/// Read an optional string field from the stored `data` JSON for review context:
+/// a present string is carried; absent/null is `None`. A non-string value is
+/// treated as absent (display-only read — corruption is rejected on apply, not
+/// here).
+fn optional_string(data: &serde_json::Value, key: &str) -> Option<String> {
+    data.get(key).and_then(|v| v.as_str()).map(str::to_string)
 }
 
 fn review_current_journal_entry(

@@ -551,6 +551,35 @@ describe("ProposalCard", () => {
 		});
 	});
 
+	it("renders the journal edit fields through the shared field primitives", () => {
+		const { container } = render(
+			<ProposalCard proposal={updateProposal} onDecide={() => {}} />,
+		);
+		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+
+		// The dead `bg-card-surface/40` class painted no fill (no such token —
+		// `card-surface` is DESIGN.md's alias for `card`). The shared primitives
+		// carry the canonical `bg-card/40` chrome instead.
+		expect(container.querySelector(".bg-card-surface\\/40")).toBeNull();
+
+		const body = screen.getByRole("textbox", { name: /body/i });
+		const occurredAt = screen.getByRole("textbox", { name: /occurred at/i });
+		const endedAt = screen.getByRole("textbox", { name: /ended at/i });
+		// Each field's wrapper (the EditorField primitive's bordered box) supplies
+		// the `bg-card/40` fill the dead class never painted.
+		for (const field of [body, occurredAt, endedAt]) {
+			const wrapper = field.parentElement;
+			expect(wrapper?.className).toContain("bg-card/40");
+		}
+
+		// Body stays editable and focuses on open (the journal form's affordance).
+		fireEvent.change(body, {
+			target: { value: "Bought oat milk after daycare pickup." },
+		});
+		expect(body).toHaveValue("Bought oat milk after daycare pickup.");
+		expect(body).toHaveFocus();
+	});
+
 	it("blocks update proposals missing entity_id from accept and edit submission", () => {
 		const onDecide = vi.fn();
 		render(
@@ -1190,6 +1219,38 @@ describe("ProposalCard", () => {
 			).toBeInTheDocument();
 		});
 
+		it("renders Current + Proposed sections so a note dropped from the full-replace payload is visible", () => {
+			const updatePersonDropsNote: PendingProposal = {
+				...updatePerson,
+				payload: {
+					entity_id: "person-7",
+					name: "Alice Carter",
+					// note + aliases OMITTED from the full-document replace — ADR-0016/0033:
+					// an omitted field is a removal, which must be visible before accept.
+				},
+				review_context: {
+					current_person: {
+						entity_id: "person-7",
+						name: "Alice Carter",
+						note: "Now leads the daycare committee.",
+						aliases: ["Ali", "AC"],
+					},
+				},
+			};
+			render(
+				<ProposalCard proposal={updatePersonDropsNote} onDecide={() => {}} />,
+			);
+			// Both sections present: the current baseline and the proposed replacement.
+			expect(screen.getByText("Current")).toBeInTheDocument();
+			expect(screen.getByText("Replacing with")).toBeInTheDocument();
+			// The dropped note (and aliases) survive only in the Current section — they
+			// are gone from the proposed payload, so seeing them proves the removal.
+			expect(
+				screen.getByText("Now leads the daycare committee."),
+			).toBeInTheDocument();
+			expect(screen.getByText("Ali, AC")).toBeInTheDocument();
+		});
+
 		it("opening Edit pre-fills Name/Note/Aliases from the proposed person", () => {
 			render(<ProposalCard proposal={updatePerson} onDecide={() => {}} />);
 			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
@@ -1278,6 +1339,36 @@ describe("ProposalCard", () => {
 			expect(
 				screen.getByRole("button", { name: /^edit$/i }),
 			).toBeInTheDocument();
+		});
+
+		it("renders Current + Proposed sections so an outcome dropped from the full-replace payload is visible", () => {
+			const updateProjectDropsOutcome: PendingProposal = {
+				...updateProject,
+				payload: {
+					entity_id: "project-7",
+					name: "Ship API v2",
+					status: "active",
+					// outcome OMITTED from the full-document replace — must stay visible.
+				},
+				review_context: {
+					current_project: {
+						entity_id: "project-7",
+						name: "Ship API v2",
+						outcome: "All clients on v2 by Q3.",
+						status: "active",
+					},
+				},
+			};
+			render(
+				<ProposalCard
+					proposal={updateProjectDropsOutcome}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(screen.getByText("Current")).toBeInTheDocument();
+			expect(screen.getByText("Replacing with")).toBeInTheDocument();
+			// The dropped outcome survives only in the Current section.
+			expect(screen.getByText("All clients on v2 by Q3.")).toBeInTheDocument();
 		});
 
 		it("opening Edit pre-fills Name/Outcome/Status from the proposed project", () => {
@@ -1694,6 +1785,43 @@ describe("ProposalCard", () => {
 			render(<ProposalCard proposal={withReuse} onDecide={() => {}} />);
 			expect(screen.getByText("Lead Ads")).toBeInTheDocument();
 			expect(screen.getByText("Existing")).toBeInTheDocument();
+		});
+
+		// The node-row disposition pill routes through the Badge primitive (not a
+		// hand-rolled span): a create/reuse node wears the `secondary` variant — which
+		// carries the hairline border the primitive adds for low-contrast surfaces.
+		it("a create-disposition pill wears the secondary Badge hairline border", () => {
+			render(<ProposalCard proposal={graphProposal} onDecide={() => {}} />);
+			const pill = screen.getAllByText("New")[0].closest("span");
+			expect(pill).not.toBeNull();
+			expect(pill?.className).toContain("border-secondary-foreground/25");
+			expect(pill?.className).toContain("text-[0.6875rem]");
+		});
+
+		// An ambiguous node wears the `destructive` variant — the primitive's
+		// `destructive/12` fill (not the fork's diverged `destructive/10`).
+		it("an ambiguous-disposition pill wears the destructive Badge variant", () => {
+			const withAmbiguous: PendingProposal = {
+				...graphProposal,
+				payload: { links: [] },
+				resolved_plan: [
+					{
+						handle: "@morris",
+						type: "person",
+						disposition: "ambiguous",
+						label: "Morris",
+						candidates: [
+							{ entity_id: "m1", label: "Morris" },
+							{ entity_id: "m2", label: "Morris" },
+						],
+					},
+				],
+			};
+			render(<ProposalCard proposal={withAmbiguous} onDecide={() => {}} />);
+			const pill = screen.getByText("Needs disambiguation").closest("span");
+			expect(pill).not.toBeNull();
+			expect(pill?.className).toContain("bg-destructive/12");
+			expect(pill?.className).toContain("text-destructive");
 		});
 
 		// Near-match default-to-existing (ADR-0042 amendment): a create node carrying

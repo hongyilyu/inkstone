@@ -55,7 +55,7 @@ export function Sidebar({
 			<button
 				type="button"
 				onClick={onNewChat}
-				className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-lg bg-secondary px-3 text-left font-semibold text-secondary-foreground text-sm transition-colors hover:bg-[color-mix(in_oklab,var(--primary)_12%,var(--secondary))]"
+				className="flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-lg bg-secondary px-3 text-left font-semibold text-secondary-foreground text-sm transition-colors hover:bg-[color-mix(in_oklab,var(--primary)_12%,var(--secondary))] focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 			>
 				<Plus className="size-4 shrink-0" aria-hidden />
 				New Chat
@@ -94,7 +94,7 @@ export function Sidebar({
 												onClick={() => onOpenThread?.(item.id)}
 												aria-current={isCurrent ? "true" : undefined}
 												className={cn(
-													"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm",
+													"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
 													isCurrent
 														? "font-semibold text-secondary-foreground"
 														: "text-sidebar-foreground",
@@ -109,7 +109,7 @@ export function Sidebar({
 												onClick={() => {
 													void navigator.clipboard?.writeText(item.id);
 												}}
-												className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+												className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
 											>
 												<Copy className="size-3.5" />
 											</button>

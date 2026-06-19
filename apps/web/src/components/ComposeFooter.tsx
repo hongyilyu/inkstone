@@ -79,6 +79,7 @@ export function ComposeFooter({
 							variant="chip"
 							size="pill"
 							disabled
+							aria-label="Search (coming soon)"
 							title="Web search isn't available yet"
 						>
 							<Search className="h-4 w-4" aria-hidden />
@@ -88,6 +89,7 @@ export function ComposeFooter({
 							variant="chip"
 							size="pill"
 							disabled
+							aria-label="Attach (coming soon)"
 							title="Attachments aren't available yet"
 						>
 							<Paperclip className="h-4 w-4" aria-hidden />

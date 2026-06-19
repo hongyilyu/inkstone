@@ -172,6 +172,29 @@ describe("Sidebar", () => {
 		await runtime.dispose();
 	});
 
+	it("carries the documented focus-visible ring on its hand-rolled buttons", async () => {
+		const runtime = makeStubRuntime();
+
+		renderChatRoute(<Sidebar />, { runtime });
+
+		// DESIGN.md: the 1px ring-ring on focus-visible is "Never removed" — the
+		// hand-rolled New Chat / thread-open / copy-id buttons must all carry it.
+		const threadOpen = await screen.findByRole("button", {
+			name: "Standup digest",
+		});
+		const newChat = screen.getByRole("button", { name: /new chat/i });
+		const copyId = screen.getByRole("button", {
+			name: /copy thread id for standup digest/i,
+		});
+
+		for (const btn of [newChat, threadOpen, copyId]) {
+			expect(btn.className).toContain("focus-visible:ring-ring");
+			expect(btn.className).toContain("focus-visible:ring-1");
+		}
+
+		await runtime.dispose();
+	});
+
 	it("copies a thread's id to the clipboard from its row button", async () => {
 		const user = userEvent.setup();
 		const runtime = makeStubRuntime();

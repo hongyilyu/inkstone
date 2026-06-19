@@ -22,6 +22,8 @@ import type {
 } from "@/lib/libraryItems";
 import {
 	bookmarkHref,
+	formatDateTime,
+	formatDay,
 	journalEntriesMentioning,
 	KIND_META,
 	libraryItemSubtitle,
@@ -564,9 +566,11 @@ function JournalEntryBody({
 	);
 	return (
 		<>
-			<Field label="Occurred at">{journalEntry.occurredAt}</Field>
+			<Field label="Occurred at">
+				{formatDateTime(journalEntry.occurredAt)}
+			</Field>
 			{journalEntry.endedAt ? (
-				<Field label="Ended at">{journalEntry.endedAt}</Field>
+				<Field label="Ended at">{formatDateTime(journalEntry.endedAt)}</Field>
 			) : null}
 			<Field label="Body">
 				<p className="text-pretty">{body}</p>
@@ -730,10 +734,10 @@ function ProjectBody({
 				<Field label="Review">
 					<p className="text-pretty">
 						{project.nextReviewAt
-							? `Next review ${project.nextReviewAt.slice(0, 10)}`
+							? `Next review ${formatDay(project.nextReviewAt)}`
 							: "No next review scheduled"}
 						{project.lastReviewedAt
-							? ` · last reviewed ${project.lastReviewedAt.slice(0, 10)}`
+							? ` · last reviewed ${formatDay(project.lastReviewedAt)}`
 							: ""}
 					</p>
 				</Field>
@@ -861,11 +865,11 @@ function TodoBody({
 				{todo.dueAt ? (
 					<Badge variant={overdue ? "destructive" : "secondary"}>
 						{overdue ? "Overdue · " : "Due "}
-						{todo.dueAt.slice(0, 10)}
+						{formatDay(todo.dueAt)}
 					</Badge>
 				) : null}
 				{todo.deferAt ? (
-					<Badge>Deferred to {todo.deferAt.slice(0, 10)}</Badge>
+					<Badge>Deferred to {formatDay(todo.deferAt)}</Badge>
 				) : null}
 				{todo.recurrence ? (
 					<Badge variant="secondary">
@@ -874,13 +878,11 @@ function TodoBody({
 				) : null}
 				{todo.status === "completed" && todo.completedAt ? (
 					<Badge variant="secondary">
-						Completed {todo.completedAt.slice(0, 10)}
+						Completed {formatDay(todo.completedAt)}
 					</Badge>
 				) : null}
 				{todo.status === "dropped" && todo.droppedAt ? (
-					<Badge variant="secondary">
-						Dropped {todo.droppedAt.slice(0, 10)}
-					</Badge>
+					<Badge variant="secondary">Dropped {formatDay(todo.droppedAt)}</Badge>
 				) : null}
 			</div>
 			{todo.note ? (
