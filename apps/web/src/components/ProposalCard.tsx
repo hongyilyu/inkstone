@@ -72,6 +72,7 @@ import {
 	EditorSelect,
 	EditorTextarea,
 } from "./library/EntityEditor.js";
+import { Badge, type BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { Card } from "./ui/card.js";
 
@@ -1180,22 +1181,22 @@ const GRAPH_VIEW = PROPOSAL_VIEWS.apply_intent_graph;
  * wears the warning tone because it BLOCKS accept (no picker yet, #181). */
 const DISPOSITION_BADGE: Record<
 	ResolvedNode["disposition"],
-	{ label: string; glyph: LucideIcon; className: string }
+	{ label: string; glyph: LucideIcon; variant: BadgeProps["variant"] }
 > = {
 	create: {
 		label: "New",
 		glyph: Plus,
-		className: "bg-secondary text-secondary-foreground",
+		variant: "secondary",
 	},
 	reuse: {
 		label: "Existing",
 		glyph: Check,
-		className: "bg-secondary text-secondary-foreground",
+		variant: "secondary",
 	},
 	ambiguous: {
 		label: "Needs disambiguation",
 		glyph: TriangleAlert,
-		className: "bg-destructive/10 text-destructive",
+		variant: "destructive",
 	},
 };
 
@@ -1553,7 +1554,7 @@ function GraphNodeRow({
 		? {
 				label: `Existing «${repointLabel}»`,
 				glyph: Check,
-				className: DISPOSITION_BADGE.reuse.className,
+				variant: DISPOSITION_BADGE.reuse.variant,
 			}
 		: DISPOSITION_BADGE[node.disposition];
 	const BadgeGlyph = badge.glyph;
@@ -1627,12 +1628,10 @@ function GraphNodeRow({
 					{shownLabel}
 				</p>
 				<div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5">
-					<span
-						className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[0.6875rem] font-medium ${badge.className}`}
-					>
+					<Badge variant={badge.variant} size="xs">
 						<BadgeGlyph className="size-3" aria-hidden />
 						{edited ? "Edited" : badge.label}
-					</span>
+					</Badge>
 					{showNearMatchAffordance ? (
 						repointed ? (
 							// Re-pointed onto an existing entity (the default for a single

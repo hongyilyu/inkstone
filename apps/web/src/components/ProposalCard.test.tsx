@@ -1787,6 +1787,43 @@ describe("ProposalCard", () => {
 			expect(screen.getByText("Existing")).toBeInTheDocument();
 		});
 
+		// The node-row disposition pill routes through the Badge primitive (not a
+		// hand-rolled span): a create/reuse node wears the `secondary` variant — which
+		// carries the hairline border the primitive adds for low-contrast surfaces.
+		it("a create-disposition pill wears the secondary Badge hairline border", () => {
+			render(<ProposalCard proposal={graphProposal} onDecide={() => {}} />);
+			const pill = screen.getAllByText("New")[0].closest("span");
+			expect(pill).not.toBeNull();
+			expect(pill?.className).toContain("border-secondary-foreground/25");
+			expect(pill?.className).toContain("text-[0.6875rem]");
+		});
+
+		// An ambiguous node wears the `destructive` variant — the primitive's
+		// `destructive/12` fill (not the fork's diverged `destructive/10`).
+		it("an ambiguous-disposition pill wears the destructive Badge variant", () => {
+			const withAmbiguous: PendingProposal = {
+				...graphProposal,
+				payload: { links: [] },
+				resolved_plan: [
+					{
+						handle: "@morris",
+						type: "person",
+						disposition: "ambiguous",
+						label: "Morris",
+						candidates: [
+							{ entity_id: "m1", label: "Morris" },
+							{ entity_id: "m2", label: "Morris" },
+						],
+					},
+				],
+			};
+			render(<ProposalCard proposal={withAmbiguous} onDecide={() => {}} />);
+			const pill = screen.getByText("Needs disambiguation").closest("span");
+			expect(pill).not.toBeNull();
+			expect(pill?.className).toContain("bg-destructive/12");
+			expect(pill?.className).toContain("text-destructive");
+		});
+
 		// Near-match default-to-existing (ADR-0042 amendment): a create node carrying
 		// a single near_match defaults to reusing that existing entity.
 		describe("near-match default-to-existing", () => {
