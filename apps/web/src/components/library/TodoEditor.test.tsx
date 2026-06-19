@@ -100,7 +100,12 @@ describe("TodoEditor Save gate", () => {
 	// The compound guard surfaces to the frame: an empty title leaves Save disabled.
 	it("disables Save while the title is empty and enables it once filled", async () => {
 		const user = userEvent.setup();
-		renderEditor({ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} });
+		renderEditor({
+			mode: "create",
+			allEntities,
+			onDone: () => {},
+			onCancel: () => {},
+		});
 
 		const save = screen.getByRole("button", { name: /^save$/i });
 		expect(save).toBeDisabled();
@@ -113,7 +118,12 @@ describe("TodoEditor Save gate", () => {
 	// (Repeats on, no anchor date) keeps Save disabled until the date is set.
 	it("disables Save when Repeats is on but the anchor date is missing", async () => {
 		const user = userEvent.setup();
-		renderEditor({ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} });
+		renderEditor({
+			mode: "create",
+			allEntities,
+			onDone: () => {},
+			onCancel: () => {},
+		});
 
 		await user.type(screen.getByLabelText(/title/i), "Send schedule");
 		const save = screen.getByRole("button", { name: /^save$/i });
