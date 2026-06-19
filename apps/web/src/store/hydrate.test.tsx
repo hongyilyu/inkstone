@@ -278,6 +278,59 @@ describe("refresh-durable hydration", () => {
 		await runtime.dispose();
 	});
 
+	it("ignores an unknown decided-proposal status (does not coerce to accepted)", async () => {
+		// `status` is a bare wire string; a malformed/future value must be dropped,
+		// not coerced to "accepted" (which would render a wrong "Applied." card).
+		const result: ThreadGetResult = {
+			thread_id: "tBad",
+			title: "T",
+			messages: [
+				{
+					id: "m2",
+					role: "assistant",
+					status: "completed",
+					run_id: "rb",
+					text: "Logged.",
+					tool_calls: [],
+					proposal: {
+						proposal_id: "p-b",
+						mutation_kind: "create_journal_entry",
+						status: "superseded",
+					},
+				},
+			],
+		};
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: (id) =>
+				id === "tBad" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tBad");
+
+		// No proposal reconstructed for an unrecognized status.
+		expect(getChatState().proposals.rb).toBeUndefined();
+
+		await runtime.dispose();
+	});
+
 	it("does NOT clobber a live pending Proposal with the rehydrated decided one", async () => {
 		// A proposal/pending notification (or the became-live window) can attach a
 		// live Proposal before hydration's settled view lands. The live one wins.

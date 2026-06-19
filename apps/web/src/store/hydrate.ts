@@ -69,13 +69,21 @@ function rehydrateDecidedProposals(views: ThreadGetResult["messages"]): void {
 		if (view.proposal === undefined || view.run_id === "") {
 			continue;
 		}
+		// Accept ONLY the two ADR-0044 decided outcomes. `status` is a bare wire
+		// string (Core filters to accepted/rejected, but the type is open): ignore
+		// any unknown/future value rather than coercing it to "accepted" and
+		// rendering the wrong settled card.
+		const status = view.proposal.status;
+		if (status !== "accepted" && status !== "rejected") {
+			continue;
+		}
 		const proposal: PendingProposal = {
 			proposal_id: view.proposal.proposal_id,
 			run_id: view.run_id,
 			mutation_kind: view.proposal.mutation_kind,
 			payload: null,
 			rationale: null,
-			status: view.proposal.status === "rejected" ? "rejected" : "accepted",
+			status,
 		};
 		rehydrateDecidedProposal(proposal);
 	}

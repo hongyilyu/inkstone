@@ -1808,7 +1808,9 @@ where
 /// its interactive card (needs the payload, deferred) and a cancelled one is
 /// cleared live. `None` when the Run parked on no decided Proposal. Ordered by
 /// `decided_at DESC` so a multi-step Run that parked twice surfaces its most
-/// recent decision (the card is keyed by run_id, one indicator per turn).
+/// recent decision (the card is keyed by run_id, one indicator per turn), with
+/// `p.id DESC` as a deterministic tiebreaker should two decisions share a
+/// millisecond `decided_at` (mirrors the run-history feed's id tiebreak).
 pub(super) async fn decided_proposal_for_run<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -1821,7 +1823,7 @@ where
          FROM proposals p \
          JOIN tool_calls tc ON tc.id = p.tool_call_id \
          WHERE tc.run_id = ?1 AND p.status IN ('accepted', 'rejected') \
-         ORDER BY p.decided_at DESC LIMIT 1",
+         ORDER BY p.decided_at DESC, p.id DESC LIMIT 1",
     )
     .bind(run_id.to_string())
     .fetch_optional(executor)
