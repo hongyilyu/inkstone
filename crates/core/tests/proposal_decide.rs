@@ -39,6 +39,12 @@ async fn rpc(
 
 /// Create a Run and poll run/subscribe until it parks; returns the run_id.
 async fn create_and_park(core: &CoreHandle) -> String {
+    create_and_park_with_thread(core).await.0
+}
+
+/// Like {@link create_and_park} but also returns the thread_id, for the
+/// `thread/get` rehydration assertion (ADR-0044).
+async fn create_and_park_with_thread(core: &CoreHandle) -> (String, String) {
     let resp = rpc(
         core,
         1,
@@ -49,6 +55,10 @@ async fn create_and_park(core: &CoreHandle) -> String {
     let run_id = resp["result"]["run_id"]
         .as_str()
         .unwrap_or_else(|| panic!("result.run_id is a string — body: {resp}"))
+        .to_string();
+    let thread_id = resp["result"]["thread_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("result.thread_id is a string — body: {resp}"))
         .to_string();
 
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -68,7 +78,7 @@ async fn create_and_park(core: &CoreHandle) -> String {
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
-    run_id
+    (run_id, thread_id)
 }
 
 /// Poll run/subscribe until the Run reaches `completed`; panics on timeout.
@@ -790,5 +800,98 @@ fn accept_resumes_after_multistep_transcript() {
             .await
             .expect("run row exists");
         assert_eq!(run_status, "completed", "run completed after multi-step resume");
+    });
+}
+
+/// ADR-0044: after an accept, `thread/get` carries the decided Proposal on the
+/// assistant Message (`proposal.status = "accepted"`), so the "Applied." card
+/// survives reload. The end-to-end complement to the DB-level
+/// `thread_get_rehydrates_decided_proposal` unit test — proves the handler
+/// serializes the field over the wire.
+#[test]
+fn thread_get_carries_decided_proposal_after_accept() {
+    let workspace = Workspace::new();
+    let core = workspace.core().worker_fixture("propose-worker.ts").spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let (run_id, thread_id) = create_and_park_with_thread(&core).await;
+
+        let resp = rpc(
+            &core,
+            3,
+            "proposal/get",
+            serde_json::json!({ "run_id": run_id }),
+        )
+        .await;
+        let proposal_id = resp["result"]["proposal_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("proposal_id is a string — body: {resp}"))
+            .to_string();
+
+        let resp = rpc(
+            &core,
+            4,
+            "proposal/decide",
+            serde_json::json!({
+                "proposal_id": proposal_id,
+                "decision": "accept",
+                "decision_idempotency_key": "k-rehydrate",
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp["result"]["status"].as_str(),
+            Some("accepted"),
+            "decide accepted — body: {resp}"
+        );
+        await_completed(&core, &run_id).await;
+
+        // Rehydrate the thread: the assistant Message now carries the decided
+        // Proposal (the read filters to accepted/rejected — ADR-0044).
+        let resp = rpc(
+            &core,
+            5,
+            "thread/get",
+            serde_json::json!({ "thread_id": thread_id }),
+        )
+        .await;
+        let messages = resp["result"]["messages"]
+            .as_array()
+            .unwrap_or_else(|| panic!("messages is an array — body: {resp}"));
+        let assistant = messages
+            .iter()
+            .find(|m| m["role"].as_str() == Some("assistant"))
+            .unwrap_or_else(|| panic!("an assistant Message — body: {resp}"));
+        let proposal = &assistant["proposal"];
+        assert_eq!(
+            proposal["proposal_id"].as_str(),
+            Some(proposal_id.as_str()),
+            "thread/get carries the decided proposal_id — body: {resp}"
+        );
+        assert_eq!(
+            proposal["status"].as_str(),
+            Some("accepted"),
+            "rehydrated proposal status is accepted — body: {resp}"
+        );
+        assert_eq!(
+            proposal["mutation_kind"].as_str(),
+            Some("create_journal_entry"),
+            "rehydrated proposal carries its mutation_kind — body: {resp}"
+        );
+
+        // The user Message carries no proposal (it belongs to the assistant turn).
+        let user = messages
+            .iter()
+            .find(|m| m["role"].as_str() == Some("user"))
+            .unwrap_or_else(|| panic!("a user Message — body: {resp}"));
+        assert!(
+            user.get("proposal").is_none() || user["proposal"].is_null(),
+            "user Message carries no decided proposal — body: {resp}"
+        );
     });
 }

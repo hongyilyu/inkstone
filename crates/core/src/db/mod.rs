@@ -383,10 +383,22 @@ pub struct ToolCallRow {
     pub arg: Option<String>,
 }
 
+/// The decided Proposal an assistant turn parked on, for `thread/get`
+/// rehydration (ADR-0044): `(proposal_id, mutation_kind, status)` where `status`
+/// is `accepted` or `rejected`. `None` for a turn with no Proposal, or one still
+/// `pending` (renders its full interactive card — deferred) or `cancelled`.
+pub struct MessageProposalRow {
+    pub proposal_id: String,
+    pub mutation_kind: String,
+    pub status: String,
+}
+
 /// One Message in a `thread/get` read, with `text` already assembled (text
 /// parts concatenated in `seq` order). Flat-text-no-parts per ADR-0017.
 /// `tool_calls` rehydrates the assistant turn's tool-activity rows (ADR-0043);
-/// empty for user Messages and turns with no non-Proposal tool call.
+/// empty for user Messages and turns with no non-Proposal tool call. `proposal`
+/// rehydrates the assistant turn's decided Proposal outcome (ADR-0044); `None`
+/// for user Messages and turns with no decided Proposal.
 pub struct MessageRow {
     pub id: String,
     pub role: String,
@@ -394,6 +406,7 @@ pub struct MessageRow {
     pub run_id: String,
     pub text: String,
     pub tool_calls: Vec<ToolCallRow>,
+    pub proposal: Option<MessageProposalRow>,
 }
 
 /// Read a Thread plus its Messages for `thread/get` (ADR-0022). `None` when the
@@ -412,15 +425,20 @@ pub async fn get_thread_with_messages(
     let mut messages = Vec::with_capacity(rows.len());
     for (id, role, status, run_id) in rows {
         let text = queries::text_parts_by_message(pool, &id).await?.concat();
-        // Rehydrate tool-activity rows only on the assistant Message (ADR-0043).
-        // A Run's user and assistant Messages share its `run_id`, but tool calls
-        // belong to the assistant turn; attaching them to the user Message would
-        // duplicate every row. Proposal tool calls are excluded (they render as a
-        // `ProposalCard`, not a tool-activity row — ADR-0025).
-        let tool_calls = if role == "assistant" {
-            tool_call_rows_for_run(pool, &run_id).await?
+        // Rehydrate tool-activity rows AND the decided Proposal outcome only on
+        // the assistant Message (ADR-0043, ADR-0044). A Run's user and assistant
+        // Messages share its `run_id`, but tool calls and the Proposal belong to
+        // the assistant turn; attaching them to the user Message would duplicate.
+        // Proposal tool calls are excluded from `tool_calls` (they render as a
+        // `ProposalCard`, not a tool-activity row — ADR-0025); the decided outcome
+        // is surfaced separately via `proposal`.
+        let (tool_calls, proposal) = if role == "assistant" {
+            (
+                tool_call_rows_for_run(pool, &run_id).await?,
+                decided_proposal_for_run(pool, &run_id).await?,
+            )
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
         messages.push(MessageRow {
             id,
@@ -429,6 +447,7 @@ pub async fn get_thread_with_messages(
             run_id,
             text,
             tool_calls,
+            proposal,
         });
     }
 
@@ -473,6 +492,28 @@ async fn tool_call_rows_for_run(pool: &SqlitePool, run_id: &str) -> sqlx::Result
             }
         })
         .collect())
+}
+
+/// Read the DECIDED Proposal a Run parked on, for `thread/get` rehydration
+/// (ADR-0044). `None` when the Run has no Proposal, or its Proposal is still
+/// `pending` (renders its full interactive card, which needs the payload —
+/// deferred) or `cancelled` (cleared live, nothing to review). A `run_id` that
+/// does not parse as a UUID yields `None` (the read is best-effort — a malformed
+/// id simply has no rehydratable Proposal), mirroring [`tool_call_rows_for_run`].
+async fn decided_proposal_for_run(
+    pool: &SqlitePool,
+    run_id: &str,
+) -> sqlx::Result<Option<MessageProposalRow>> {
+    let Ok(run_uuid) = Uuid::parse_str(run_id) else {
+        return Ok(None);
+    };
+    Ok(queries::decided_proposal_for_run(pool, run_uuid)
+        .await?
+        .map(|(proposal_id, mutation_kind, status)| MessageProposalRow {
+            proposal_id,
+            mutation_kind,
+            status,
+        }))
 }
 
 /// Assemble prior-Run conversation history for a Run's manifest (ADR-0018).
@@ -2968,6 +3009,251 @@ mod tests {
                 .iter()
                 .all(|tc| tc.arg.as_deref() != Some("InFlight")),
             "a still-pending tool call must not rehydrate"
+        );
+        // The Run parked on a still-`pending` Proposal: its decided outcome is
+        // absent (the live interactive card owns a pending Proposal — ADR-0044).
+        assert!(
+            assistant.proposal.is_none(),
+            "a still-pending Proposal must not rehydrate as a decided outcome"
+        );
+    }
+
+    /// ADR-0044: `thread/get` rehydrates the assistant turn's DECIDED Proposal
+    /// outcome (so the "Applied." indicator survives reload), but only once it is
+    /// `accepted`/`rejected` — a `pending` one renders its interactive card.
+    #[tokio::test]
+    async fn thread_get_rehydrates_decided_proposal() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        // `running` so `park_on_proposal` (which guards on `status='running'`)
+        // wins the park, mirroring the real propose→park→decide flow.
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        queries::insert_text_part(&mut *tx, assistant_id, 0, "Logged.")
+            .await
+            .expect("text part");
+        tx.commit().await.expect("commit seed");
+
+        // Park on an apply_intent_graph Proposal, then ACCEPT it (the decided
+        // outcome the reload must reconstruct).
+        park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-graph",
+            "tc-graph",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"apply_intent_graph","payload":{"entities":[],"links":[]}}"#,
+            "apply_intent_graph",
+            2,
+        )
+        .await
+        .expect("park");
+        let affected = queries::mark_proposal_accepted(&pool, "proposal-graph", None, None, 3)
+            .await
+            .expect("mark accepted");
+        assert_eq!(affected, 1, "accept flips exactly the pending row");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+
+        let proposal = assistant
+            .proposal
+            .as_ref()
+            .expect("decided Proposal rehydrates onto the assistant turn");
+        assert_eq!(proposal.proposal_id, "proposal-graph");
+        assert_eq!(proposal.mutation_kind, "apply_intent_graph");
+        assert_eq!(proposal.status, "accepted");
+        // The Proposal tool call still never rehydrates as a tool-activity row.
+        assert!(
+            assistant
+                .tool_calls
+                .iter()
+                .all(|tc| tc.name != "propose_workspace_mutation"),
+            "the decided Proposal surfaces via `proposal`, never as a tool row"
+        );
+    }
+
+    /// ADR-0044: the REJECTED outcome rehydrates too (the "Dismissed." card), and
+    /// its `status` passes through verbatim — pins the `rejected` arm of the
+    /// `status IN ('accepted','rejected')` filter, which the accepted test alone
+    /// leaves uncovered (a filter narrowed to accepted-only would still be green).
+    #[tokio::test]
+    async fn thread_get_rehydrates_rejected_proposal() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        queries::insert_text_part(&mut *tx, assistant_id, 0, "Logged.")
+            .await
+            .expect("text part");
+        tx.commit().await.expect("commit seed");
+
+        park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-rej",
+            "tc-rej",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"x"}]}}"#,
+            "create_journal_entry",
+            2,
+        )
+        .await
+        .expect("park");
+        let affected = queries::mark_proposal_rejected(&pool, "proposal-rej", None, 3)
+            .await
+            .expect("mark rejected");
+        assert_eq!(affected, 1, "reject flips exactly the pending row");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+        let proposal = assistant
+            .proposal
+            .as_ref()
+            .expect("rejected Proposal rehydrates onto the assistant turn");
+        assert_eq!(proposal.status, "rejected");
+        assert_eq!(proposal.mutation_kind, "create_journal_entry");
+    }
+
+    /// ADR-0044: a CANCELLED Proposal does NOT rehydrate (its parked Run was
+    /// cancelled — nothing to review). Pins the `cancelled` exclusion of the
+    /// `status IN ('accepted','rejected')` allowlist; a filter widened to
+    /// `status <> 'pending'` would wrongly surface it and stay green otherwise.
+    #[tokio::test]
+    async fn thread_get_excludes_cancelled_proposal() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        queries::insert_text_part(&mut *tx, assistant_id, 0, "Logged.")
+            .await
+            .expect("text part");
+        tx.commit().await.expect("commit seed");
+
+        park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-cancel",
+            "tc-cancel",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"x"}]}}"#,
+            "create_journal_entry",
+            2,
+        )
+        .await
+        .expect("park");
+        let affected = queries::mark_proposal_cancelled(&pool, "proposal-cancel")
+            .await
+            .expect("mark cancelled");
+        assert_eq!(affected, 1, "cancel flips exactly the pending row");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+        assert!(
+            assistant.proposal.is_none(),
+            "a cancelled Proposal must not rehydrate as a decided outcome"
         );
     }
 }

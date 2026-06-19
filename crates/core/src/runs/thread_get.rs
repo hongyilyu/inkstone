@@ -11,7 +11,9 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
 use crate::db;
-use crate::protocol::{MessageView, ThreadGetParams, ThreadGetResult, ToolCallView};
+use crate::protocol::{
+    MessageProposalView, MessageView, ThreadGetParams, ThreadGetResult, ToolCallView,
+};
 
 pub(super) async fn handle(
     pool: &SqlitePool,
@@ -43,6 +45,11 @@ pub(super) async fn handle(
                         arg: tc.arg,
                     })
                     .collect(),
+                proposal: row.proposal.map(|p| MessageProposalView {
+                    proposal_id: p.proposal_id,
+                    mutation_kind: p.mutation_kind,
+                    status: p.status,
+                }),
             })
             .collect();
 

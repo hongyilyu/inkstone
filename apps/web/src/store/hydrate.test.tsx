@@ -18,6 +18,7 @@ import {
 	getHydrationStatus,
 	resetChatStore,
 	seedAssistantMessage,
+	setPendingProposal,
 } from "./chat.js";
 import { hydrateThread } from "./hydrate.js";
 
@@ -154,6 +155,187 @@ describe("refresh-durable hydration", () => {
 			},
 			{ id: "m2:tc:1", name: "search_entities", status: "error", arg: "Acme" },
 		]);
+
+		await runtime.dispose();
+	});
+
+	it("reconstructs a decided Proposal (ADR-0044) so the settled card survives reload", async () => {
+		const result: ThreadGetResult = {
+			thread_id: "tProp",
+			title: "T",
+			messages: [
+				{
+					id: "m1",
+					role: "user",
+					status: "completed",
+					run_id: "rp",
+					text: "log it",
+					tool_calls: [],
+				},
+				{
+					id: "m2",
+					role: "assistant",
+					status: "completed",
+					run_id: "rp",
+					text: "Logged.",
+					tool_calls: [],
+					proposal: {
+						proposal_id: "p-1",
+						mutation_kind: "apply_intent_graph",
+						status: "accepted",
+					},
+				},
+			],
+		};
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: (id) =>
+				id === "tProp" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tProp");
+
+		// The decided outcome is reconstructed into the proposals map (keyed by run),
+		// with no payload — the settled card reads only status + mutation_kind.
+		expect(getChatState().proposals.rp).toEqual({
+			proposal_id: "p-1",
+			run_id: "rp",
+			mutation_kind: "apply_intent_graph",
+			payload: null,
+			rationale: null,
+			status: "accepted",
+		});
+
+		await runtime.dispose();
+	});
+
+	it("reconstructs a REJECTED decided Proposal with rejected status (ADR-0044)", async () => {
+		// Pins the rejected arm of the status ternary: a rejected wire outcome must
+		// rehydrate as "rejected" (the "Dismissed." card), not collapse to accepted.
+		const result: ThreadGetResult = {
+			thread_id: "tRej",
+			title: "T",
+			messages: [
+				{
+					id: "m2",
+					role: "assistant",
+					status: "completed",
+					run_id: "rr",
+					text: "Logged.",
+					tool_calls: [],
+					proposal: {
+						proposal_id: "p-r",
+						mutation_kind: "create_journal_entry",
+						status: "rejected",
+					},
+				},
+			],
+		};
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: (id) =>
+				id === "tRej" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tRej");
+
+		expect(getChatState().proposals.rr?.status).toBe("rejected");
+
+		await runtime.dispose();
+	});
+
+	it("does NOT clobber a live pending Proposal with the rehydrated decided one", async () => {
+		// A proposal/pending notification (or the became-live window) can attach a
+		// live Proposal before hydration's settled view lands. The live one wins.
+		setPendingProposal({
+			proposal_id: "p-live",
+			run_id: "rp",
+			mutation_kind: "apply_intent_graph",
+			payload: { entities: [], links: [] },
+			rationale: "live",
+			status: "pending",
+		});
+		const result: ThreadGetResult = {
+			thread_id: "tProp2",
+			title: "T",
+			messages: [
+				{
+					id: "m2",
+					role: "assistant",
+					status: "completed",
+					run_id: "rp",
+					text: "Logged.",
+					tool_calls: [],
+					proposal: {
+						proposal_id: "p-stale",
+						mutation_kind: "apply_intent_graph",
+						status: "accepted",
+					},
+				},
+			],
+		};
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: (id) =>
+				id === "tProp2" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tProp2");
+
+		// The live (pending) Proposal is untouched; the stale settled view is dropped.
+		expect(getChatState().proposals.rp?.proposal_id).toBe("p-live");
+		expect(getChatState().proposals.rp?.status).toBe("pending");
 
 		await runtime.dispose();
 	});

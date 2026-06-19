@@ -13,7 +13,9 @@ import {
 	getHydrationStatus,
 	loadThreadMessages,
 	type Message,
+	type PendingProposal,
 	prependHistory,
+	rehydrateDecidedProposal,
 	setHydrationStatus,
 	type ToolCall,
 } from "./chat.js";
@@ -53,6 +55,32 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 	};
 }
 
+/**
+ * Reconstruct the DECIDED Proposals carried by a thread's rehydration views
+ * (ADR-0044) and merge them into the store, so a settled `ProposalCard` ("Applied.")
+ * survives reload. The wire `MessageView.proposal` only ever carries `accepted`/
+ * `rejected` (Core filters pending/cancelled), and the reconstructed record omits
+ * the payload — the decided card reads only `status` + `mutation_kind`. Skip-if-present
+ * (in {@link rehydrateDecidedProposal}) guarantees a live pending/deciding Proposal is
+ * never clobbered, so this is safe in both the normal and became-live hydration paths.
+ */
+function rehydrateDecidedProposals(views: ThreadGetResult["messages"]): void {
+	for (const view of views) {
+		if (view.proposal === undefined || view.run_id === "") {
+			continue;
+		}
+		const proposal: PendingProposal = {
+			proposal_id: view.proposal.proposal_id,
+			run_id: view.run_id,
+			mutation_kind: view.proposal.mutation_kind,
+			payload: null,
+			rationale: null,
+			status: view.proposal.status === "rejected" ? "rejected" : "accepted",
+		};
+		rehydrateDecidedProposal(proposal);
+	}
+}
+
 /** True when a send during the fetch window turned this thread live (a live turn we must not clobber or flag as failed). */
 function threadBecameLive(threadId: string): boolean {
 	const live = getChatState().threads[threadId];
@@ -77,6 +105,10 @@ export function hydrateThread(
 		const client = yield* WsClient;
 		const result = yield* client.threadGet(threadId);
 		const messages = result.messages.map(toMessage);
+		// Reconstruct decided Proposals (ADR-0044) so the settled card ("Applied.")
+		// survives reload. Skip-if-present, so it never clobbers a live pending one
+		// — safe in both the became-live and normal paths below.
+		rehydrateDecidedProposals(result.messages);
 		// Re-read state AFTER the await: a send during the fetch window may have turned this thread live.
 		if (threadBecameLive(threadId)) {
 			// Keep the live turn intact; fold history in front and do NOT resubscribe a settled history run.
