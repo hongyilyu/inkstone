@@ -2568,6 +2568,24 @@ mod tests {
             body.iter().all(|n| n.get("target").is_none()),
             "no `target` handle survives in the stored body: {je}"
         );
+        // The rejected Morris placeholder collapsed to his NAME as plain text — NOT
+        // an empty text node (ADR-0042 "the name stays plain text"). An empty text
+        // node violates the body's own `minLength:1` and crashes the client codec,
+        // blacking out the whole Library read; pin the non-empty collapse so the
+        // weave can never regress to it.
+        let text_nodes: Vec<&str> = body
+            .iter()
+            .filter(|n| n.get("type").and_then(serde_json::Value::as_str) == Some("text"))
+            .filter_map(|n| n.get("text").and_then(serde_json::Value::as_str))
+            .collect();
+        assert!(
+            text_nodes.iter().all(|t| !t.trim().is_empty()),
+            "no collapsed body node is empty text: {je}"
+        );
+        assert!(
+            text_nodes.contains(&"Morris"),
+            "the rejected ref collapsed to the entity's name: {je}"
+        );
 
         assert_eq!(proposal_status(&pool, &proposal_id_str).await, "accepted");
         assert!(resumed.load(Ordering::SeqCst));
