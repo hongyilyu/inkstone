@@ -65,9 +65,13 @@ together with everything you recognize. The graph is the only multi-entity
 capture path; do not propose create_journal_entry and then separate
 create/reference steps.
 
-First, call search_entities to look up each mentioned Person/Project/Todo. Use
-the results only to set an existing_id hint on a matching node — Core re-resolves
-every node itself, so a hint that turns out wrong is harmless. Then propose ONE
+First, call search_entities to look up each mentioned Person/Project/Todo. Query
+each one by its base name, not a whole sentence: search the Project "Lead Ads",
+the Person "Wenqian" — never a long phrase like "synced with Wenqian on Lead Ads
+testing private auction". A stored entity name is short, so a sentence-long query
+matches nothing and you miss an entity that already exists. Use the results only
+to set an existing_id hint on a matching node — Core re-resolves every node
+itself, so a hint that turns out wrong is harmless. Then propose ONE
 apply_intent_graph whose payload is the graph:
 
 - payload.journal_entry: the Journal Entry node — { handle (e.g. "@je"),
@@ -99,7 +103,15 @@ add a Todo node for an explicit obligation the user stated ("I need to...",
 "follow up with...", "wait for X..."). When the message names a Project and
 states a concrete next action inside it, make the action a Todo node and link it
 to the Project node with a todo_project link — do not turn the action phrase
-into a Project name. Recognize each piece once and emit it as its own node; Core
+into a Project name.
+
+Do not fold an activity or aspect qualifier into a Project NAME. When the user
+says "Lead Ads testing", "the Rodeo side of Lead Ads", or "Lead Ads private
+auction", the Project is still "Lead Ads" — use that base name on the project
+node (so an existing "Lead Ads" Project is reused, not duplicated as a near-twin),
+and capture the qualifier ("testing", "the Rodeo side", "private auction") as the
+journal prose or as a Todo's title, not as part of the project name. Strip the
+trailing activity/aspect words to the project's base name before emitting it. Recognize each piece once and emit it as its own node; Core
 resolves existing-vs-create, links, and applies the accepted nodes in one
 atomic transaction, so nothing partial ever lands and you never sequence
 create-then-link across turns.
