@@ -48,7 +48,13 @@ export function repointFor(
 	buffer: RepointBuffer,
 	node: ResolvedNode,
 ): string | null {
-	if (node.handle in buffer) return buffer[node.handle];
+	// `Object.hasOwn`, not `key in buffer`: `handle` is an unvalidated model-supplied
+	// wire string (protocol `ResolvedNode.handle` is a bare string, no `@` pattern), so
+	// a handle equal to a prototype key ("toString", "constructor", "__proto__") would
+	// make `in` true on an EMPTY buffer and return `Object.prototype.toString` — a
+	// function, not `string | null` — which would then ride to Core as a bogus
+	// `entity_id`. Same hardening the proposal-kind lookup already uses (ProposalCard).
+	if (Object.hasOwn(buffer, node.handle)) return buffer[node.handle];
 	if (node.disposition !== "create") return null;
 	const near = node.near_matches ?? [];
 	return near.length === 1 ? near[0].entity_id : null;

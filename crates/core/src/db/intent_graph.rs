@@ -1702,6 +1702,37 @@ mod tests {
         );
     }
 
+    // The advisory near-match list is CAPPED at MAX_NEAR_MATCHES so a pathological
+    // accepted set can't bloat the plan. Seed more overlapping rows than the cap and
+    // assert the surfaced list is truncated.
+    #[tokio::test]
+    async fn resolved_plan_caps_near_matches_at_max() {
+        let pool = memory_pool().await;
+        // More than MAX_NEAR_MATCHES accepted projects, each token-overlapping the
+        // node "Lead Ads testing" (subset or superset), so all are near-matches.
+        let names = [
+            "Lead",
+            "Ads",
+            "Lead Ads",
+            "Lead testing",
+            "Ads testing",
+            "testing Lead",
+            "Ads Lead",
+        ];
+        assert!(names.len() > MAX_NEAR_MATCHES, "fixture must exceed the cap");
+        for name in names {
+            insert_named(&pool, "project", name).await;
+        }
+        let payload = serde_json::json!({
+            "entities": [{ "handle": "@leadads", "type": "project", "name": "Lead Ads testing" }],
+            "links": []
+        });
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan[0].disposition, "create");
+        let near = plan[0].near_matches.as_ref().expect("near_matches present");
+        assert_eq!(near.len(), MAX_NEAR_MATCHES, "the list is capped");
+    }
+
     // Two accepted same-named rows → `ambiguous`, surfacing BOTH candidates (the
     // Client renders the disambiguation hint; accept-all is blocked).
     #[tokio::test]

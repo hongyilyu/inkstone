@@ -1756,6 +1756,36 @@ describe("ProposalCard", () => {
 				]);
 			});
 
+			it("'Use existing' re-points back after 'Create new instead' (badge + entity_id restored)", () => {
+				const onDecide = vi.fn();
+				const { container } = render(
+					<ProposalCard proposal={withNearMatch} onDecide={onDecide} />,
+				);
+				// Opt out, then opt back in via the "Use existing «…»" affordance.
+				fireEvent.click(
+					screen.getByRole("button", { name: /create new instead/i }),
+				);
+				expect(
+					container.querySelector('[data-graph-node="@leadads"]'),
+				).not.toHaveAttribute("data-node-repoint");
+				fireEvent.click(
+					screen.getByRole("button", { name: /use existing «Lead Ads»/i }),
+				);
+				// The re-point is restored: badge + attribute back, and Apply re-emits entity_id.
+				expect(screen.getByText("Existing «Lead Ads»")).toBeInTheDocument();
+				expect(
+					container.querySelector('[data-graph-node="@leadads"]'),
+				).toHaveAttribute("data-node-repoint", "existing-leadads");
+				fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+				expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+					{
+						handle: "@leadads",
+						decision: "accept",
+						entity_id: "existing-leadads",
+					},
+				]);
+			});
+
 			it("surfaces 2+ near-matches advisorily without auto-picking", () => {
 				const onDecide = vi.fn();
 				const multi: PendingProposal = {

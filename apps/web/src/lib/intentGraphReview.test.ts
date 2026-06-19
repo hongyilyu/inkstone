@@ -193,6 +193,28 @@ describe("repointFor — default-to-existing on a single near-match", () => {
 		const buffer: RepointBuffer = { "@leadads": "existing-leadads" };
 		expect(repointFor(buffer, nearMatchProject)).toBe("existing-leadads");
 	});
+
+	// A model-supplied handle equal to an Object.prototype key must NOT make the
+	// empty-buffer lookup return an inherited function (the `in` vs Object.hasOwn
+	// hazard). Such a handle has no explicit entry → falls through to the near-match
+	// default (here: none, so null), never `Object.prototype.toString`.
+	it("a prototype-key handle does not leak an inherited function from an empty buffer", () => {
+		const protoHandleNoNear: ResolvedNode = {
+			handle: "toString",
+			type: "project",
+			disposition: "create",
+			label: "toString",
+		};
+		const result = repointFor({}, protoHandleNoNear);
+		expect(result).toBeNull();
+		expect(typeof result).not.toBe("function");
+		// With a single near-match it falls through to that default, not the prototype fn.
+		const protoHandleWithNear: ResolvedNode = {
+			...protoHandleNoNear,
+			near_matches: [{ entity_id: "real-id", label: "toString" }],
+		};
+		expect(repointFor({}, protoHandleWithNear)).toBe("real-id");
+	});
 });
 
 describe("buildDecisions with near-match re-point", () => {
@@ -223,6 +245,25 @@ describe("buildDecisions with near-match re-point", () => {
 		const buffer = setStage({}, nearMatchProject, "reject");
 		expect(buildDecisions(plan, buffer, {}, new Map(), {})).toEqual([
 			{ handle: "@leadads", decision: "reject" },
+		]);
+	});
+
+	// Mutual exclusion (ADR-0042): a re-point WINS over an edit draft on the same node
+	// — entity_id and edited_fields cannot ride together (Core rejects both). Pins the
+	// early-return precedence so a branch reorder (draft-first) is caught.
+	it("re-point wins over an edit draft on the same node (entity_id, no edited_fields)", () => {
+		const plan = [nearMatchProject];
+		const drafts = {
+			"@leadads": {
+				type: "project",
+				name: "Lead Ads testing — renamed",
+				outcome: "",
+				note: "",
+			} as GraphNodeDraft,
+		};
+		// Default buffer → single near-match re-point active; the draft must be ignored.
+		expect(buildDecisions(plan, {}, drafts, new Map(), {})).toEqual([
+			{ handle: "@leadads", decision: "accept", entity_id: "existing-leadads" },
 		]);
 	});
 });
