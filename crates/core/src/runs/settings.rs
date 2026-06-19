@@ -12,11 +12,14 @@ use super::handler::{self, HandlerError};
 use crate::protocol::{SettingsResult, SettingsSetParams};
 use crate::{models, settings, workflow};
 
-/// Read the effective settings for the default Workflow: provider, stored
-/// preferred model (`None` until picked), and global effort.
+/// Read the effective settings for the default Workflow: provider, preferred
+/// model (falling back to the per-provider default the resolver uses, mirroring
+/// effort), and global effort.
 async fn current(pool: &SqlitePool) -> sqlx::Result<SettingsResult> {
     let wf = workflow::default_workflow();
-    let model = settings::preferred_model(pool, &wf.name).await?;
+    let model = settings::preferred_model(pool, &wf.name)
+        .await?
+        .or_else(|| models::default_model(&wf.provider).map(str::to_string));
     let effort = settings::effort_setting(pool)
         .await?
         .unwrap_or_else(|| settings::DEFAULT_EFFORT.to_string());

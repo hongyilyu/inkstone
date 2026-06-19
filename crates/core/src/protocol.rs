@@ -649,9 +649,9 @@ pub struct ModelCatalogResult {
 }
 
 /// `settings/get` + `settings/set` result (ADR-0024): the effective model
-/// selection and global effort for the default Workflow. `model` is `null` until
-/// the user picks one (the resolver falls back to the per-provider default);
-/// `effort` defaults to `off`.
+/// selection and global effort for the default Workflow. `model` falls back to
+/// the per-provider default when the user has not picked one (`null` only when
+/// the provider has no default); `effort` defaults to `off`.
 #[derive(Debug, Serialize)]
 pub struct SettingsResult {
     pub provider: String,
