@@ -1,0 +1,14 @@
+{
+  "messages": [],
+  "prompt": "now",
+  "run_id": "0190d3c1-0000-7000-8000-000000000003",
+  "workflow": {
+    "model": "faux-1",
+    "name": "default",
+    "provider": "faux",
+    "system_prompt": "hi",
+    "thinking_level": "off",
+    "tools": [],
+    "version": "1.0.0"
+  }
+}

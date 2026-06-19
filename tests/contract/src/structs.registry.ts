@@ -39,6 +39,7 @@ import {
 	ProviderStatusResult,
 	RunCancelParams,
 	RunCancelResult,
+	RunEvent,
 	RunGetHistoryParams,
 	RunHistoryResult,
 	SettingsResult,
@@ -50,6 +51,9 @@ import {
 	ThreadGetParams,
 	ThreadGetResult,
 	ThreadListResult,
+	ToolResult,
+	WorkerManifest,
+	WorkerOutbound,
 } from "@inkstone/protocol";
 import type { Schema as S } from "effect";
 
@@ -356,6 +360,108 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: SettingsResult,
 		dir: "emitted",
 	},
+
+	// ── slice 4: worker↔core protocol — the surface ADR-0009 was written about ──
+	// RunEvent (5 variants; tool_call gets one fixture per ToolCallStatus value so
+	// the closed status domain is locked), ToolResult (ToolOutcome ok/err arms),
+	// WorkerManifest (ManifestMessage 3 variants transitively), WorkerStdout (4
+	// variants, hand-authored — decoded against the BROADER TS WorkerOutbound union,
+	// see the asymmetry note in structs.test.ts).
+	{
+		message: "RunEvent",
+		file: "run_event.text_delta.json",
+		schema: RunEvent,
+		dir: "emitted",
+	},
+	{
+		message: "RunEvent",
+		file: "run_event.tool_call.started.json",
+		schema: RunEvent,
+		dir: "emitted",
+	},
+	{
+		message: "RunEvent",
+		file: "run_event.tool_call.completed.json",
+		schema: RunEvent,
+		dir: "emitted",
+	},
+	{
+		message: "RunEvent",
+		file: "run_event.tool_call.error.json",
+		schema: RunEvent,
+		dir: "emitted",
+	},
+	{
+		message: "RunEvent",
+		file: "run_event.done.json",
+		schema: RunEvent,
+		dir: "emitted",
+	},
+	{
+		message: "RunEvent",
+		file: "run_event.cancelled.json",
+		schema: RunEvent,
+		dir: "emitted",
+	},
+	{
+		message: "RunEvent",
+		file: "run_event.error.json",
+		schema: RunEvent,
+		dir: "emitted",
+	},
+	{
+		message: "ToolResult",
+		file: "tool_result.ok.json",
+		schema: ToolResult,
+		dir: "emitted",
+	},
+	{
+		message: "ToolResult",
+		file: "tool_result.err.json",
+		schema: ToolResult,
+		dir: "emitted",
+	},
+	{
+		message: "WorkerManifest",
+		file: "worker_manifest.json",
+		schema: WorkerManifest,
+		dir: "emitted",
+	},
+	{
+		message: "WorkerManifest",
+		file: "worker_manifest.bare.json",
+		schema: WorkerManifest,
+		dir: "emitted",
+	},
+	// WorkerStdout: Rust deser-only (4 variants); decoded against the TS
+	// WorkerOutbound = RunEvent | ToolRequest union, which is deliberately BROADER
+	// (the Worker never emits RunEvent's cancelled/tool_call; Core never sends them
+	// downstream as stdout). text_delta/done/error decode as RunEvent members;
+	// tool_request as the ToolRequest member.
+	{
+		message: "WorkerStdout",
+		file: "worker_stdout.text_delta.json",
+		schema: WorkerOutbound,
+		dir: "authored",
+	},
+	{
+		message: "WorkerStdout",
+		file: "worker_stdout.done.json",
+		schema: WorkerOutbound,
+		dir: "authored",
+	},
+	{
+		message: "WorkerStdout",
+		file: "worker_stdout.error.json",
+		schema: WorkerOutbound,
+		dir: "authored",
+	},
+	{
+		message: "WorkerStdout",
+		file: "worker_stdout.tool_request.json",
+		schema: WorkerOutbound,
+		dir: "authored",
+	},
 ];
 
 /** The hand-maintained canonical set of in-scope wire messages (grilling Q5: 31
@@ -397,12 +503,31 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ProviderLoginStartResult",
 	"ModelCatalogResult",
 	"SettingsResult",
+	// slice 4 — worker↔core protocol (4 messages)
+	"RunEvent",
+	"ToolResult",
+	"WorkerManifest",
+	"WorkerStdout",
 ];
 
 /** Expected fixture count per tagged-union message (grilling Q10). A union must
  * contribute exactly one fixture per wire variant; a dropped variant fixture reds
  * the completeness lock. Populated as unions are added (slices 3–4). */
 export const UNION_VARIANTS: Readonly<Record<string, number>> = {
-	// RunEvent: 5, WorkerStdout: 4, ManifestMessage: 3, ToolOutcome: 2,
-	// JournalEntryBodyNode: 2, ToolCallStatus: 3  — added in slices 3–4.
+	// A tagged union must contribute a fixture for EVERY wire variant. The count
+	// is fixtures-per-message, so a variant carrying multiple fixtures (RunEvent's
+	// tool_call spans 3 ToolCallStatus values) raises the total. A dropped variant
+	// fixture drops the count and reds the lock.
+	//
+	// RunEvent (5 variants): text_delta, tool_call ×3 statuses, done, cancelled,
+	//   error = 7 fixtures.
+	RunEvent: 7,
+	// ToolResult carries the ToolOutcome union (ok / err) = 2 fixtures.
+	ToolResult: 2,
+	// WorkerStdout (4 variants): text_delta, done, error, tool_request = 4.
+	WorkerStdout: 4,
+	// WorkerManifest: maximal (all 3 ManifestMessage variants in one fixture) +
+	// bare = 2 fixtures; the per-ManifestMessage-variant coverage is asserted
+	// structurally in the Rust self-lock, not by fixture count.
+	WorkerManifest: 2,
 };

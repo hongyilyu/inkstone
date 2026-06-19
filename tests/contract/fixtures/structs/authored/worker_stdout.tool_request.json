@@ -1,0 +1,7 @@
+{
+  "kind": "tool_request",
+  "run_id": "",
+  "tool_call_id": "tc_01",
+  "name": "read_thread",
+  "params": { "thread_id": "0190d3c1-0000-7000-8000-000000000001" }
+}

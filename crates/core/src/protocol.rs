@@ -2393,6 +2393,150 @@ mod parity_fixtures {
                     effort: "off".to_string(),
                 }
             ),
+            // ── slice 4: worker↔core protocol (the surface ADR-0009 was written
+            // about). RunEvent (ser+deser) emitted per variant; the tool_call
+            // variant gets one fixture per ToolCallStatus value (started carries an
+            // arg, completed/error omit it) so the closed status domain is locked. ──
+            fx!(
+                "run_event.text_delta.json",
+                RunEvent::TextDelta {
+                    delta: "Bought ".to_string(),
+                }
+            ),
+            fx!(
+                "run_event.tool_call.started.json",
+                RunEvent::ToolCall {
+                    tool_call_id: "tc_01".to_string(),
+                    name: "search_entities".to_string(),
+                    status: ToolCallStatus::Started,
+                    arg: Some("Lev".to_string()),
+                }
+            ),
+            fx!(
+                "run_event.tool_call.completed.json",
+                RunEvent::ToolCall {
+                    tool_call_id: "tc_02".to_string(),
+                    name: "read_thread".to_string(),
+                    status: ToolCallStatus::Completed,
+                    arg: None,
+                }
+            ),
+            fx!(
+                "run_event.tool_call.error.json",
+                RunEvent::ToolCall {
+                    tool_call_id: "tc_03".to_string(),
+                    name: "read_thread".to_string(),
+                    status: ToolCallStatus::Error,
+                    arg: None,
+                }
+            ),
+            fx!("run_event.done.json", RunEvent::Done),
+            fx!("run_event.cancelled.json", RunEvent::Cancelled),
+            fx!(
+                "run_event.error.json",
+                RunEvent::Error {
+                    message: "boom".to_string(),
+                }
+            ),
+            // ToolResult (ser-only, Core → Worker): the ok / err arms of the
+            // untagged ToolOutcome union (covers AgentToolResult + ToolTextContent +
+            // ToolErrorWire transitively).
+            fx!(
+                "tool_result.ok.json",
+                ToolResult {
+                    kind: "tool_result",
+                    run_id: UUID_RUN.to_string(),
+                    tool_call_id: "tc_01".to_string(),
+                    outcome: ToolOutcome::Ok {
+                        ok: AgentToolResult {
+                            content: vec![ToolTextContent {
+                                r#type: "text".to_string(),
+                                text: "{\"messages\":[]}".to_string(),
+                            }],
+                            details: None,
+                            terminate: None,
+                        },
+                    },
+                }
+            ),
+            fx!(
+                "tool_result.err.json",
+                ToolResult {
+                    kind: "tool_result",
+                    run_id: UUID_RUN.to_string(),
+                    tool_call_id: "tc_01".to_string(),
+                    outcome: ToolOutcome::Err {
+                        err: ToolErrorWire {
+                            code: "tool_not_allowed".to_string(),
+                            message: "no".to_string(),
+                        },
+                    },
+                }
+            ),
+            // WorkerManifest (ser-only, borrowed-lifetime <'a> — owned literals live
+            // to the serialize call inside `fx!`). Maximal: resume mode, all THREE
+            // ManifestMessage variants (user / assistant-with-tool_calls /
+            // tool_result), access_token present, a tool descriptor (covers
+            // WorkflowManifest + CoreToolDescriptor + ManifestToolCall transitively).
+            fx!(
+                "worker_manifest.json",
+                WorkerManifest {
+                    run_id: UUID_RUN.parse().expect("valid uuid"),
+                    workflow: WorkflowManifest {
+                        name: "default",
+                        version: "1.0.0",
+                        provider: "openai-codex",
+                        model: "gpt-5.5",
+                        system_prompt: "hi",
+                        thinking_level: "off",
+                        tools: vec![CoreToolDescriptor {
+                            name: "read_thread".to_string(),
+                            description: "Read a thread".to_string(),
+                            label: "Read thread".to_string(),
+                            json_schema: serde_json::json!({ "type": "object" }),
+                        }],
+                    },
+                    prompt: "",
+                    messages: vec![
+                        ManifestMessage::User { text: "earlier q" },
+                        ManifestMessage::Assistant {
+                            text: None,
+                            tool_calls: Some(vec![ManifestToolCall {
+                                id: "tc_1",
+                                name: "propose_workspace_mutation",
+                                arguments: serde_json::json!({ "mutation_kind": "create_journal_entry" }),
+                            }]),
+                        },
+                        ManifestMessage::ToolResult {
+                            tool_call_id: "tc_1",
+                            content: "Accepted.",
+                            is_error: None,
+                        },
+                    ],
+                    mode: Some("resume"),
+                    access_token: Some("tok_abc"),
+                }
+            ),
+            // WorkerManifest bare: fresh start, empty history, no mode / token.
+            fx!(
+                "worker_manifest.bare.json",
+                WorkerManifest {
+                    run_id: UUID_RUN.parse().expect("valid uuid"),
+                    workflow: WorkflowManifest {
+                        name: "default",
+                        version: "1.0.0",
+                        provider: "faux",
+                        model: "faux-1",
+                        system_prompt: "hi",
+                        thinking_level: "off",
+                        tools: vec![],
+                    },
+                    prompt: "now",
+                    messages: vec![],
+                    mode: None,
+                    access_token: None,
+                }
+            ),
         ]
     }
 
@@ -2460,6 +2604,17 @@ mod parity_fixtures {
             "model_catalog_result.json",
             "settings_result.json",
             "settings_result.bare.json",
+            "run_event.text_delta.json",
+            "run_event.tool_call.started.json",
+            "run_event.tool_call.completed.json",
+            "run_event.tool_call.error.json",
+            "run_event.done.json",
+            "run_event.cancelled.json",
+            "run_event.error.json",
+            "tool_result.ok.json",
+            "tool_result.err.json",
+            "worker_manifest.json",
+            "worker_manifest.bare.json",
         ];
         // The embedded table must cover exactly what the writer emits — neither can
         // gain or drop a fixture the other lacks.
@@ -2527,6 +2682,13 @@ mod parity_fixtures {
         parses!(ProviderLoginStartParams, "provider_login_start_params.json");
         parses!(SettingsSetParams, "settings_set_params.json");
         parses!(SettingsSetParams, "settings_set_params.bare.json");
+
+        // WorkerStdout (deser-only): the 4 variants Core reads off the Worker's
+        // stdout. Hand-authored because Core never serializes them.
+        parses!(WorkerStdout, "worker_stdout.text_delta.json");
+        parses!(WorkerStdout, "worker_stdout.done.json");
+        parses!(WorkerStdout, "worker_stdout.error.json");
+        parses!(WorkerStdout, "worker_stdout.tool_request.json");
 
         // Spot-check the maximal ProposalDecideParams carries every per-node form,
         // so a future fixture edit can't silently drop the rich graph shape.
