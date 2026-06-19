@@ -30,9 +30,13 @@ const fixtureFilesOnDisk = (dir: string): string[] => {
 	);
 	try {
 		return readdirSync(root).filter((n) => n.endsWith(".json"));
-	} catch {
-		// Directory may not exist yet on an early slice — treat as empty.
-		return [];
+	} catch (error: unknown) {
+		// A not-yet-created dir is empty; any other error (EACCES, EIO) is real and
+		// must red the lock rather than vacuously pass the existence/stray loops.
+		if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+			return [];
+		}
+		throw error;
 	}
 };
 
@@ -56,10 +60,12 @@ describe("non-payload completeness lock", () => {
 	});
 
 	it("no stray fixture file lacks a registry entry", () => {
-		const declaredFiles = asSet(fixtures.map((f) => f.file));
+		// Dir-qualified (`<dir>/<file>`), so a misregistered cross-dir copy — a stray
+		// authored/foo.json when only emitted/foo.json is declared — is caught too.
+		const declaredFiles = asSet(fixtures.map((f) => `${f.dir}/${f.file}`));
 		for (const dir of ["emitted", "authored"] as const) {
 			for (const file of fixtureFilesOnDisk(dir)) {
-				expect(declaredFiles).toContain(file);
+				expect(declaredFiles).toContain(`${dir}/${file}`);
 			}
 		}
 	});
