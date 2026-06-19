@@ -1,0 +1,6 @@
+{
+  "mutation_kind": "create_person",
+  "payload": {
+    "name": "Alice"
+  }
+}

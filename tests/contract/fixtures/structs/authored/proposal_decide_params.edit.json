@@ -1,0 +1,8 @@
+{
+  "proposal_id": "0190d3c1-0000-7000-8000-000000000002",
+  "decision": "edit",
+  "edited_payload": {
+    "occurred_at": "2026-06-10T10:35:00",
+    "body": [{ "type": "text", "text": "Bought oat milk." }]
+  }
+}

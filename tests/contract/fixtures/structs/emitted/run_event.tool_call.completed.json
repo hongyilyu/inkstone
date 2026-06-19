@@ -1,0 +1,6 @@
+{
+  "kind": "tool_call",
+  "name": "read_thread",
+  "status": "completed",
+  "tool_call_id": "tc_02"
+}

@@ -1,0 +1,21 @@
+{
+  "providers": [
+    {
+      "id": "openai-codex",
+      "label": "OpenAI",
+      "models": [
+        {
+          "cost_input": 5.0,
+          "cost_output": 30.0,
+          "id": "gpt-5.5",
+          "input": [
+            "text",
+            "image"
+          ],
+          "name": "GPT-5.5",
+          "reasoning": true
+        }
+      ]
+    }
+  ]
+}

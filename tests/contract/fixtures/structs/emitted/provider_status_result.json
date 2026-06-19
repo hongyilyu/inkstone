@@ -1,0 +1,8 @@
+{
+  "providers": [
+    {
+      "connected": true,
+      "id": "openai-codex"
+    }
+  ]
+}

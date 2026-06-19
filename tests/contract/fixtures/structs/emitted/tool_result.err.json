@@ -1,0 +1,11 @@
+{
+  "kind": "tool_result",
+  "outcome": {
+    "err": {
+      "code": "tool_not_allowed",
+      "message": "no"
+    }
+  },
+  "run_id": "0190d3c1-0000-7000-8000-000000000003",
+  "tool_call_id": "tc_01"
+}

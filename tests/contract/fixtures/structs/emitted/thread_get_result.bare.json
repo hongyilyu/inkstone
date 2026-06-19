@@ -1,0 +1,14 @@
+{
+  "messages": [
+    {
+      "id": "0190d3c1-0000-7000-8000-000000000002",
+      "role": "user",
+      "run_id": "0190d3c1-0000-7000-8000-000000000003",
+      "status": "complete",
+      "text": "I bought milk.",
+      "tool_calls": []
+    }
+  ],
+  "thread_id": "0190d3c1-0000-7000-8000-000000000001",
+  "title": "Morning brain dump"
+}
