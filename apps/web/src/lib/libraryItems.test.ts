@@ -3,6 +3,8 @@ import { parseTodo } from "@/lib/entityCodec";
 import {
 	activeProjectItems,
 	dueSoonTodos,
+	formatDateTime,
+	formatDay,
 	groupJournalEntriesByDay,
 	inboxTodos,
 	type JournalEntry,
@@ -550,5 +552,57 @@ describe("recurrence (ADR-0037 read side)", () => {
 				recurrenceSummary(rule({ unit: "week", end: { afterCount: 5 } })),
 			).toBe("Repeats weekly");
 		});
+	});
+});
+
+describe("formatDateTime", () => {
+	const s = "2026-06-19T14:30:00";
+
+	it("drops the bare T separator", () => {
+		expect(formatDateTime(s)).not.toContain("T");
+	});
+
+	it("drops the seconds", () => {
+		expect(formatDateTime(s)).not.toContain(":00");
+		expect(formatDateTime(s)).not.toMatch(/:\d{2}:\d{2}/);
+	});
+
+	it("includes the day, month, and the 14:30 time", () => {
+		const out = formatDateTime(s);
+		expect(out).toContain("19");
+		expect(out).toMatch(/jun/i);
+		// 24h "14:30" or 12h "2:30" — assert the minutes regardless of locale hour.
+		expect(out).toMatch(/(14|2):30/);
+	});
+
+	it("returns the input rather than 'Invalid Date' when unparseable", () => {
+		expect(formatDateTime("not a date")).toBe("not a date");
+		expect(formatDateTime("")).toBe("");
+	});
+});
+
+describe("formatDay", () => {
+	const s = "2026-06-19T14:30:00";
+
+	it("returns a day-granularity string with no time", () => {
+		const out = formatDay(s);
+		expect(out).not.toContain("T");
+		expect(out).not.toMatch(/\d{1,2}:\d{2}/);
+		expect(out).toContain("19");
+		expect(out).toMatch(/jun/i);
+	});
+
+	it("returns the input rather than 'Invalid Date' when unparseable", () => {
+		expect(formatDay("not a date")).toBe("not a date");
+		expect(formatDay("")).toBe("");
+	});
+
+	it("renders a bare date-only input on its own day (no timezone shift)", () => {
+		// `new Date("2026-06-19")` parses as UTC midnight; in negative offsets that
+		// renders the 18th. A date-only field must stay June 19 regardless of zone.
+		const out = formatDay("2026-06-19");
+		expect(out).toContain("19");
+		expect(out).toMatch(/jun/i);
+		expect(out).not.toContain("18");
 	});
 });

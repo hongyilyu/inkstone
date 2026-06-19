@@ -113,6 +113,20 @@ function journal(body: JournalEntry["body"]): JournalEntry {
 }
 
 describe("EntityDetail Journal Entry body", () => {
+	it("humanizes the Occurred at timestamp instead of leaking the raw ISO", () => {
+		const entry = journal([{ type: "text", text: "Bought milk." }]);
+		entry.occurredAt = "2026-06-19T14:30:00";
+		renderDetail(<EntityDetail entity={entry} allEntities={[]} />);
+
+		const occurred = screen.getByText("Occurred at")
+			.nextElementSibling as HTMLElement;
+		expect(occurred).not.toHaveTextContent("2026-06-19T14:30:00");
+		expect(occurred.textContent).not.toContain("T");
+		expect(occurred.textContent).not.toMatch(/:\d{2}:\d{2}/);
+		expect(occurred).toHaveTextContent("19");
+		expect(occurred).toHaveTextContent(/jun/i);
+	});
+
 	it("renders text-only Journal Entries normally", () => {
 		renderDetail(
 			<EntityDetail
@@ -262,10 +276,11 @@ describe("EntityDetail Todo projection", () => {
 
 		// Status + due also appear in the header subtitle, so allow >1.
 		expect(screen.getAllByText("Active").length).toBeGreaterThanOrEqual(1);
-		expect(screen.getAllByText(/Due 2999-06-14/).length).toBeGreaterThanOrEqual(
-			1,
-		);
-		expect(screen.getByText(/Deferred to 2999-06-10/)).toBeInTheDocument();
+		// The inspector badge humanizes the day through `formatDay` (Jun 14, 2999).
+		expect(
+			screen.getAllByText(/Due Jun 14, 2999/).length,
+		).toBeGreaterThanOrEqual(1);
+		expect(screen.getByText(/Deferred to Jun 10, 2999/)).toBeInTheDocument();
 		expect(screen.getByText("Daycare move")).toBeInTheDocument();
 		// Linked person rendered with its waiting_on role label.
 		expect(screen.getByText("Alice")).toBeInTheDocument();
@@ -280,7 +295,7 @@ describe("EntityDetail Todo projection", () => {
 		});
 		renderDetail(<EntityDetail entity={todo} allEntities={[todo]} />);
 		expect(screen.getByText("Dropped")).toBeInTheDocument();
-		expect(screen.getByText(/Dropped 2026-05-20/)).toBeInTheDocument();
+		expect(screen.getByText(/Dropped May 20, 2026/)).toBeInTheDocument();
 	});
 
 	it("renders a recurrence summary badge for a recurring todo (ADR-0037)", () => {
@@ -477,8 +492,8 @@ describe("EntityDetail Project projection", () => {
 		renderDetail(<EntityDetail entity={proj} allEntities={all} />);
 
 		expect(screen.getByText("Provider switch by August.")).toBeInTheDocument();
-		expect(screen.getByText(/Next review 2026-06-21/)).toBeInTheDocument();
-		expect(screen.getByText(/last reviewed 2026-06-14/)).toBeInTheDocument();
+		expect(screen.getByText(/Next review Jun 21, 2026/)).toBeInTheDocument();
+		expect(screen.getByText(/last reviewed Jun 14, 2026/)).toBeInTheDocument();
 		// Person derived through the project's todo appears (no direct link).
 		expect(screen.getByText("Alice")).toBeInTheDocument();
 	});

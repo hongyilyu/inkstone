@@ -436,6 +436,49 @@ export function recentlyCapturedItems(
 	return [...all].sort((a, b) => b.recency - a.recency).slice(0, limit);
 }
 
+/**
+ * Humanize a local-datetime string (`YYYY-MM-DDTHH:MM:SS`, already local per
+ * Core) for DISPLAY: date + time, no bare `T`, no seconds. The single source of
+ * date-time formatting for Library inspector panels — anything user-facing
+ * routes through here rather than printing the raw ISO. Returns the input
+ * unchanged when it can't be parsed (no "Invalid Date" leaking to the panel).
+ */
+export function formatDateTime(s: string): string {
+	const d = new Date(s);
+	if (Number.isNaN(d.getTime())) return s;
+	return d.toLocaleString(undefined, {
+		year: "numeric",
+		month: "short",
+		day: "numeric",
+		hour: "numeric",
+		minute: "2-digit",
+	});
+}
+
+/**
+ * Humanize a local-datetime string for DISPLAY at day granularity (no time).
+ * Same parse-guard contract as `formatDateTime`. Robust to both a full
+ * `YYYY-MM-DDTHH:MM:SS` and a bare date-only `YYYY-MM-DD`: a bare date is parsed
+ * from its parts as a local Date, because `new Date("2026-06-19")` would land on
+ * UTC midnight and render the previous day in negative-offset zones.
+ */
+export function formatDay(s: string): string {
+	const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+	const d = dateOnly
+		? new Date(
+				Number(dateOnly[1]),
+				Number(dateOnly[2]) - 1,
+				Number(dateOnly[3]),
+			)
+		: new Date(s);
+	if (Number.isNaN(d.getTime())) return s;
+	return d.toLocaleDateString(undefined, {
+		year: "numeric",
+		month: "short",
+		day: "numeric",
+	});
+}
+
 /** Local wall-clock "now" as the `YYYY-MM-DDTHH:MM:SS` string Core dates compare against. */
 export function localNowString(now: Date = new Date()): string {
 	const pad = (n: number) => String(n).padStart(2, "0");
