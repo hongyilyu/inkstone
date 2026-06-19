@@ -32,7 +32,7 @@ See [ARTIFACTS.md](ARTIFACTS.md) for the per-slice file layout and STATE.md form
 
 Before any slice runs, you need a runnable `FEATURE-PLAN.md`. The user may have given you any of:
 
-- An existing path: `.agents/runs/<slug>/FEATURE-PLAN.md` already exists. **Load and validate.** If it parses against the template, skip to "Confirm before running."
+- An existing path: `.agents/runs/<slug>/FEATURE-PLAN.md` already exists. **Load and validate.** If it parses against the template, skip to "Proceed to running."
 - A slug only: assume the path above; if it exists, load; if not, treat as a new feature and start grilling.
 - A vague request, paragraph, or feature name: start grilling from scratch.
 
@@ -80,7 +80,7 @@ You are *deciding*, not implementing. The hardest decision is **slicing** — sp
 
    **Two-component slices need an explicit `Order:` line.** Producer goes first. Example: Core's RED test asserts "GET / returns the Web bundle"; UI is producer, Core is consumer, UI runs first.
 
-8. **Read the slice list back. Get explicit sign-off** before saving.
+8. **State the slice list briefly** for the record — this is not a gate. Don't wait for sign-off; continue to step 9.
 
 9. **Confirm ADRs are written.** Every ADR you decided to author/amend exists at its declared path on disk.
 
@@ -158,18 +158,18 @@ If the user pointed at an existing FEATURE-PLAN.md:
 
 If anything is missing, grill to fill it. Don't run with placeholders.
 
-### Confirm before running
+### Proceed to running
 
-Read the slice list back briefly:
+Once the slice list is concrete and the plan + ADRs are written, state the plan briefly for the record and continue straight to Phase 0 — no sign-off gate:
 
-> Plan ready at `.agents/runs/<slug>/FEATURE-PLAN.md`. <N> slices: <one-line per slice>. Run it?
+> Plan ready at `.agents/runs/<slug>/FEATURE-PLAN.md`. <N> slices: <one-line per slice>. Running.
 
-Wait for explicit go-ahead. Then proceed to Phase 0.
+Grilling already resolved the design with the user; the slice loop is autonomous from here. The user steers in real time if needed — there's no rubber-stamp checkpoint.
 
 ### Rules
 
 - One question per turn during grilling. No bundles.
-- Don't write the plan until the slice list is concrete and the user has signed off.
+- Don't write the plan until the slice list is concrete.
 - Each slice's RED test must be a real, runnable test — not "verify that X works."
 - If you can't slice the feature into vertical pieces, the feature is too big or the architecture is wrong. Stop and surface — don't ship a horizontally-sliced plan.
 
@@ -208,7 +208,7 @@ Slice failures don't block other slices from being attempted **only if** the fai
 
 ## Phase 0: setup (once per flow)
 
-Intake already validated the plan and received user sign-off. This phase is mechanical setup:
+Intake already validated the plan (grilling resolved the design with the user). This phase is mechanical setup:
 
 1. Verify working tree clean: `git status --porcelain`. If not, stop — don't risk WIP.
 2. Confirm `master` is the base branch.
@@ -471,6 +471,10 @@ gh pr checks <pr-number> --watch
 Only once CI is green (or explicitly unverifiable in handoff mode) is the feature done.
 
 Then write `REPORT.md` listing each slice, its squashed commit on `feature/<slug>`, the final review's outcome (structured reviewers + deep-review), the CI status, and the PR URL (or handoff commands). Then run the **Summary phase** — see below.
+
+### Handoff: the CodeRabbit loop
+
+This skill's "done" is **CI green**; it stops before CodeRabbit's review lands, and the merge is yours. The natural next step is [`/review-loop <pr>`](../review-loop/SKILL.md), which waits for CodeRabbit, adversarially verifies each finding, fixes the real ones, replies-and-resolves the rest, re-gates, and pushes until CodeRabbit is quiet — still without merging. It's a separate skill on purpose (composable on any PR, not just feature-flow's), so chain it explicitly: feature-flow reports the PR URL, then run `/review-loop` on it.
 
 ## Summary phase (terminal)
 

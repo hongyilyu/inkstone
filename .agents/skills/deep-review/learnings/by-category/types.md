@@ -1,6 +1,6 @@
 # Learned rules — Types (`types`)
 
-_7 rules. Loaded by the `dr-types` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_8 rules. Loaded by the `dr-types` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Do not introduce `any`; prefer a precise type, a derived utility type, or `unknown`  ·  `no-any-prefer-precise-or-unknown`
 - **Severity:** important  ·  **Support:** 5  ·  **Seen in:** #42, #125, #1593, #2910, #23068, #25573
@@ -36,3 +36,8 @@ _7 rules. Loaded by the `dr-types` specialist. Generated from rules.json — do 
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #150
 - **Rule:** A user-defined type guard of the form `(x): x is LiteralUnion => typeof x === 'string'` (or `typeof x === 'number'`) lies: it narrows to the specific literal union while only proving the broad primitive type, so arbitrary out-of-vocabulary strings/numbers get the narrow type and leak into the parsed model, later round-tripping as malformed data. When parsing external/stored values into a closed-vocabulary field, the guard must verify the value is actually a member of the allowed set (ALLOWED.includes(x)) and, for bounded numbers, check integer-ness and range. Detection: a `.filter((v): v is T => typeof v === 'string'|'number')` (or equivalent predicate) where T is a literal/enum union or a bounded number, with no membership/range check inside. Ask: can a value of the right primitive type but wrong vocabulary pass this guard and acquire the narrow type?
 - **Detect:** Grep for user-defined type predicates `(x): x is <T> => ...` (often inside `.filter()`) where T is a literal/enum union or a bounded number, and the predicate BODY only proves a broad primitive (`typeof x === "string"` / `=== "number"`) — or is even weaker (`=> true`, `=> !!x`, `=> x != null`) — with no `ALLOWED.includes(x)` membership check and, for numbers, no `Number.isInteger(x)` + range check. Flag as unsound narrowing: ask "can a value of the right primitive type but wrong vocabulary pass this and acquire the narrow type?"
+
+## Cast-to-object after a nullish-only fallback still admits non-object values  ·  `cast-to-object-needs-runtime-object-check-not-just-nullish-fallback`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #177
+- **Rule:** When coercing a loosely-typed or `unknown` value into an object shape via `(x ?? {}) as Record<string, unknown>` (or similar `as`), the `??`/`||` fallback only replaces null/undefined — a present-but-wrong-shape value (array, string, number, boolean) passes straight through the cast and is emitted as a fake object, which can violate the consumer's contract at runtime. Before the cast, check the runtime shape (`typeof x === 'object' && x !== null && !Array.isArray(x)`) and default to `{}` otherwise.
+- **Detect:** Grep for `(<expr> ?? {}) as Record<` or `as Record<string, unknown>` / `as object` applied to a value typed `unknown`/`any`/a loose external field. Ask: can <expr> be a non-object (array or primitive) at runtime? If so, the `?? {}` does not catch it and a non-object is asserted as an object. Require a `typeof === 'object' && !Array.isArray` guard before the cast.

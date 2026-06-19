@@ -1,6 +1,6 @@
 # Learned rules — Correctness & logic (`correctness`)
 
-_76 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_78 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Hand-rolled shell tokenizers must honor backslash-escape and single-quote semantics  ·  `shell-tokenizer-must-honor-quote-and-escape-rules`
 - **Severity:** blocking  ·  **Support:** 4  ·  **Seen in:** #4732, #4747, #4749, #4750
@@ -92,30 +92,30 @@ _76 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Rule:** When you normalize/canonicalize an identifier or path, use the normalized form only as a cache/query key. Pass the original value to client/server side-effects, normalize BOTH sides of any comparison (or the config entries the same way), and route every matching-key/href builder through the same normalizer. Flag membership tests or client-factory calls fed a normalized value while sibling sites pass the raw value.
 - **Detect:** Flag `sdkFor(key)`/client-factory calls or membership tests (`includes`, `has`) fed a normalized value (`directoryKey(x)`, `realpath`, `.toLowerCase`) while sibling sites pass the raw value. Check `.normalize("NFC")` applied to the query but not the candidate items. When a diff adds a normalizer mapping A→B, grep for other uses of the original id building keys/hrefs not routed through it. When a useIsFetching/status key differs from the fetch's actual key, flag the mismatch.
 
+## Apply dedup/validation/precedence and invariant upserts after all sources merge  ·  `apply-invariants-and-precedence-after-merge`
+- **Severity:** important  ·  **Support:** 6  ·  **Seen in:** #188, #23214, #25846, #27398, #28907, #29000
+- **Rule:** Apply dedup/validation/mutual-exclusion/invariant upserts AFTER all config/env layers merge (or re-apply post-merge), since a later merge can reintroduce a removed entry or overwrite an upsert. When an explicit input is documented to win, return as soon as it is present (after filtering invalid entries), not only when the filtered result is non-empty. Flag `if (filtered.length > 0) return filtered` where a comment claims the input 'wins'.
+- **Detect:** Flag delete/filter/validation/upsert on a config or env map that runs before a known merge (mergeDeep, Object.assign with spread of shellEnv, user-config merge); ask whether a later merge can undo it. Flag `if (filtered.length > 0) return filtered` where a comment claims the input 'wins'. Check whether a per-file schema constraint can be bypassed by cross-layer merge or a write/update path.
+
 ## Branch on, publish, and fall back from the resolved/effective value — not a raw or partial source  ·  `branch-on-resolved-value-not-raw-or-stale-source`
 - **Severity:** important  ·  **Support:** 6  ·  **Seen in:** #160, #2037, #23407, #31021, #31700
 - **Rule:** Downstream code must use the resolved/effective value from a resolver, fallback chain, or override — not a raw stored key or single source's type. Publish the resolver output (not state.active) to globals, branch on which source actually won (not just auth.type) in a fallback chain, pick fallbacks from the complete effective collection, and compute derived values from the overridden value. Flag effects assigning a global from a raw field where a diverging resolver exists.
 - **Detect:** Find an effect assigning `window.*`/a global from a raw stored field (state.active) where a resolver (current()/computed) exists that can diverge. Find a `?? `-chain resolving a credential followed by `if (auth?.type === ...)` that can fire even when an earlier source won. Find removal/fallback logic searching `store.list` when a broader accessor (allServers()) exists. Find `effectiveLimit(...)` introduced but the base `input.model` still passed to derived computations.
 
-## Apply dedup/validation/precedence and invariant upserts after all sources merge  ·  `apply-invariants-and-precedence-after-merge`
-- **Severity:** important  ·  **Support:** 5  ·  **Seen in:** #23214, #25846, #27398, #28907, #29000
-- **Rule:** Apply dedup/validation/mutual-exclusion/invariant upserts AFTER all config/env layers merge (or re-apply post-merge), since a later merge can reintroduce a removed entry or overwrite an upsert. When an explicit input is documented to win, return as soon as it is present (after filtering invalid entries), not only when the filtered result is non-empty. Flag `if (filtered.length > 0) return filtered` where a comment claims the input 'wins'.
-- **Detect:** Flag delete/filter/validation/upsert on a config or env map that runs before a known merge (mergeDeep, Object.assign with spread of shellEnv, user-config merge); ask whether a later merge can undo it. Flag `if (filtered.length > 0) return filtered` where a comment claims the input 'wins'. Check whether a per-file schema constraint can be bypassed by cross-layer merge or a write/update path.
-
 ## Validation/matching regexes must cover all intended inputs (compound extensions, streaming, whitespace)  ·  `regex-must-match-all-intended-and-streaming-inputs`
-- **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #26168, #27934, #29028, #31700
+- **Severity:** important  ·  **Support:** 5  ·  **Seen in:** #177, #26168, #27934, #29028, #31700
 - **Rule:** Ensure matching regexes accept every legitimate input: multi-segment extensions (`.js.map`) via `(\.\w+)+$`, end-of-string as a valid boundary for streaming/partial input, and consistent character classes across validators for the same identifier type. Flag asset-classifying filename regexes ending in `\.\w+$` and regexes requiring a trailing separator on streamed text.
 - **Detect:** Flag filename regexes ending in `\.\w+$` used to classify build assets (does it match foo.js.map?). Flag regexes requiring a trailing blank-line/separator on streamed text (should `$` be an accepted boundary?). When a diff adds/changes an identifier-validation regex, compare its character class against other validators for the same concept (one allows `_`, another forbids it). Flag normalizers that lack an early `.trim()` while validation elsewhere trims.
+
+## Documentation examples and capability claims must be accurate and runnable  ·  `docs-examples-must-be-runnable-and-true`
+- **Severity:** important  ·  **Support:** 5  ·  **Seen in:** #137, #2426, #2607, #5332, #32937
+- **Rule:** Code examples in docs must be runnable as written: for lifecycle-sensitive commands (reload/restart) show the prerequisite (await ctx.waitForIdle() before ctx.reload()) or pick an example that works inline. User-facing onboarding/help/status copy must only claim capabilities that are true in every supported install/runtime mode, and warning/status messages should state the concrete consequence (e.g. an untrusted-project banner should say project-local extensions/config won't load), not just the state.
+- **Detect:** Docs snippets invoking reload/restart without the prerequisite await/wait step; onboarding/help strings asserting a concrete capability not guaranteed in all environments; or a warning/notice string describing a state with no clause explaining its effect.
 
 ## Default/fallback branches and edge cases must implement the intended (not legacy/failing) behavior  ·  `default-branch-and-edge-cases-must-implement-intended-behavior`
 - **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #166, #23407, #26895, #28255
 - **Rule:** Ensure the undefined/default branch implements the intended new behavior, not a legacy constant. Distinguish real failures from valid edge cases: don't fail-closed on a valid baseline sentinel (e.g. git empty-tree hash), and don't drop the currently-selected entry from a derived list just because its status changed — surface or handle the disappearance. Flag `if (state.kind !== "ready") continue` loops that can exclude the active item.
 - **Detect:** When a feature adds a config option, check whether the undefined/default branch reproduces old behavior while only an explicit value triggers the new behavior. Flag early returns discarding a result on a known sentinel (emptyTreeHash). Find list-building loops with `if (state.kind !== "ready") continue` — can the active/selected item match the excluded state and cause a silent fallback?
-
-## Documentation examples and capability claims must be accurate and runnable  ·  `docs-examples-must-be-runnable-and-true`
-- **Severity:** important  ·  **Support:** 4  ·  **Seen in:** #137, #2426, #2607, #5332
-- **Rule:** Code examples in docs must be runnable as written: for lifecycle-sensitive commands (reload/restart) show the prerequisite (await ctx.waitForIdle() before ctx.reload()) or pick an example that works inline. User-facing onboarding/help/status copy must only claim capabilities that are true in every supported install/runtime mode, and warning/status messages should state the concrete consequence (e.g. an untrusted-project banner should say project-local extensions/config won't load), not just the state.
-- **Detect:** Docs snippets invoking reload/restart without the prerequisite await/wait step; onboarding/help strings asserting a concrete capability not guaranteed in all environments; or a warning/notice string describing a state with no clause explaining its effect.
 
 ## Guard browser/runtime globals and degrade gracefully when optional capabilities are missing  ·  `guard-environment-and-optional-runtime-capabilities`
 - **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #26282, #30253, #31309
@@ -136,6 +136,11 @@ _76 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #3241, #25403, #29130
 - **Rule:** Resolve relative path inputs against the explicit intended base directory (e.g. `path.resolve(worktree, file)`), not process CWD, for deterministic normalization. Treat a worktree of '/' or undefined as invalid and fall back to the project dir — a plain `worktree || fallback` misses '/' since it is truthy. Flag `path.resolve(x)`/`process.cwd()` joins where a specific base exists, and `x.worktree || fallback`.
 - **Detect:** Flag `path.resolve(x)` / `path.join(process.cwd(), x)` where x may be relative but the logic compares against a specific base (worktree/root). Flag `x.worktree || fallback` cwd resolution — can worktree be '/' for non-git repos, bypassing the fallback?
+
+## Add a unique tie-breaker to ORDER BY (and sort merged sources) when row order matters  ·  `order-by-unique-tiebreaker-when-row-order-matters`
+- **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #15, #25, #192
+- **Rule:** SQL does not guarantee order among rows with equal sort keys; ORDER BY a non-unique column (created_at, timestamp) is non-deterministic when rows share the key (user+assistant messages stamped from one now_ms). Add a monotonic/unique tie-breaker (a seq column, rowid, explicit role filter) when order matters — especially in tests indexing positionally. Likewise, when merging rows from multiple sources for an order-sensitive view, sort the merged list by the semantic key rather than relying on `[...a, ...b]` concatenation order.
+- **Detect:** `ORDER BY <col>` where <col> may be non-unique and code/tests index results positionally (rows[0]=user, rows[1]=assistant); or `return [...editRows, ...autoRows]` feeding an order-sensitive list with no subsequent sort. Ask: could two rows share this key, and is there a unique tie-breaker / explicit sort?
 
 ## Don't leave half-mutated state on failure or mark state live before the update applies  ·  `no-partial-mutation-and-no-premature-touch`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #29208, #30300
@@ -202,15 +207,20 @@ _76 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Rule:** Compute local calendar-day boundaries (start of yesterday, last N days, start of week) with Date calendar arithmetic (setDate(getDate()-1) / setHours(0,0,0,0)), not by subtracting a fixed 86_400_000 ms / 24*60*60*1000 from local midnight. Across DST a calendar day is not 24h, so fixed-ms day math lands at the wrong wall-clock instant and mis-buckets items.
 - **Detect:** Date math subtracting a fixed 86_400_000 / 24*60*60*1000 constant from a local midnight to derive 'yesterday'/'last N days'. Fixed-ms day arithmetic for local-calendar buckets = DST bug.
 
-## Add a unique tie-breaker to ORDER BY (and sort merged sources) when row order matters  ·  `order-by-unique-tiebreaker-when-row-order-matters`
-- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #15, #25
-- **Rule:** SQL does not guarantee order among rows with equal sort keys; ORDER BY a non-unique column (created_at, timestamp) is non-deterministic when rows share the key (user+assistant messages stamped from one now_ms). Add a monotonic/unique tie-breaker (a seq column, rowid, explicit role filter) when order matters — especially in tests indexing positionally. Likewise, when merging rows from multiple sources for an order-sensitive view, sort the merged list by the semantic key rather than relying on `[...a, ...b]` concatenation order.
-- **Detect:** `ORDER BY <col>` where <col> may be non-unique and code/tests index results positionally (rows[0]=user, rows[1]=assistant); or `return [...editRows, ...autoRows]` feeding an order-sensitive list with no subsequent sort. Ask: could two rows share this key, and is there a unique tie-breaker / explicit sort?
+## Expand ~ consistently in env-var-supplied filesystem paths  ·  `expand-tilde-in-env-supplied-paths-consistently`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #3963, #32937
+- **Rule:** When an env-var-supplied directory path may contain a leading ~ or ~/, expand it to homedir() in every place it is consumed (ideally normalize once at startup by rewriting the env value), so downstream consumers do not treat ~ as a literal directory. Also ensure log/crash directories are created with mkdirSync(dir,{recursive:true}) before appendFileSync/writeFileSync, especially inside debug-flag-guarded blocks.
+- **Detect:** process.env.<PATH_VAR> used directly in path.join/return without a === "~" or .startsWith("~/") check while a sibling expands tilde; or appendFileSync/writeFileSync(path.join(configDir,...)) with no preceding mkdirSync(...,{recursive:true}).
 
 ## Decide tool-specific subcommands from the same source that resolves the executed command  ·  `runtime-command-decision-from-resolved-command-source`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #3241, #3244
 - **Rule:** Decide which tool-specific subcommands to run from the same source that resolves the executed command (the configured/resolved command kind), not from an independent environment detector, or a user-configured command (e.g. npm under Bun) can trigger a manager-specific subcommand against the wrong tool. Do not assume <binDir>/../node_modules is the global package root for non-npm managers; validate candidate paths with existsSync.
 - **Detect:** One path branching on detectInstallMethod() while a sibling executes getNpmCommand()/configured command; or join(binDir, '..', 'node_modules') used as the global package root for bun.
+
+## Ensure key uniqueness when list entries become map keys  ·  `unique-keys-when-list-entries-index-a-map`
+- **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #188, #4005
+- **Rule:** When list/array entries are later indexed into a map by one of their fields (contexts[item.label]), the chosen key must be unique across entries; a duplicate key (minimax vs minimax-cn sharing a label) silently overwrites another entry and drops its coverage. Verify uniqueness whenever a new entry is added.
+- **Detect:** A diff adds an entry to an array whose elements are indexed by a field (map[item.label]) where the new entry's key value duplicates an existing entry's.
 
 ## Ensure newline separation and idempotency when appending to config/dotfiles  ·  `appended-config-lines-need-newline-separator`
 - **Severity:** important  ·  **Support:** 2  ·  **Seen in:** #440, #5076
@@ -267,11 +277,6 @@ _76 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Rule:** When cloning an object to mutate it without affecting the source, ensure the clone reaches the depth that is actually mutated. A one-level spread like { ...m, content: [...m.content] } leaves nested block objects as shared references, so mutating a block field leaks back to the original; clone each nested element (content.map(b => ({ ...b }))) or document that only the array shape is mutated.
 - **Detect:** Look for { ...x, content: [...x.content] } (one-level spread) followed by code that assigns to properties of elements inside content.
 
-## Expand ~ consistently in env-var-supplied filesystem paths  ·  `expand-tilde-in-env-supplied-paths-consistently`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #3963
-- **Rule:** When an env-var-supplied directory path may contain a leading ~ or ~/, expand it to homedir() in every place it is consumed (ideally normalize once at startup by rewriting the env value), so downstream consumers do not treat ~ as a literal directory. Also ensure log/crash directories are created with mkdirSync(dir,{recursive:true}) before appendFileSync/writeFileSync, especially inside debug-flag-guarded blocks.
-- **Detect:** process.env.<PATH_VAR> used directly in path.join/return without a === "~" or .startsWith("~/") check while a sibling expands tilde; or appendFileSync/writeFileSync(path.join(configDir,...)) with no preceding mkdirSync(...,{recursive:true}).
-
 ## Strip consumed global CLI flags before forwarding argv to subcommand handlers  ·  `strip-global-cli-flag-before-forwarding-argv`
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #3963
 - **Rule:** When adding a global CLI flag parsed in the top-level arg loop, strip it (and its value) from argv before forwarding to subcommand handlers that index args[0] or reject unknown options; otherwise both `tool --flag x subcmd` and `tool subcmd --flag x` break argument parsing.
@@ -311,11 +316,6 @@ _76 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #4606
 - **Rule:** In a codebase without strictNullChecks, the type system will not catch calling .startsWith()/.includes() on a possibly-undefined field (e.g. an error field populated only in some branches). Guard such calls with a truthiness check or optional chaining before the call.
 - **Detect:** x.error.startsWith( / result.error.includes( or similar string/array-method call on an object property inside an error/failure branch with no preceding x.error && or x.error?. guard, especially on union/result types.
-
-## Ensure key uniqueness when list entries become map keys  ·  `unique-keys-when-list-entries-index-a-map`
-- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #4005
-- **Rule:** When list/array entries are later indexed into a map by one of their fields (contexts[item.label]), the chosen key must be unique across entries; a duplicate key (minimax vs minimax-cn sharing a label) silently overwrites another entry and drops its coverage. Verify uniqueness whenever a new entry is added.
-- **Detect:** A diff adds an entry to an array whose elements are indexed by a field (map[item.label]) where the new entry's key value duplicates an existing entry's.
 
 ## Read mutable/feature settings at use time, not captured at session construction  ·  `use-injectable-platform-or-honest-skip`
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #492
@@ -357,6 +357,11 @@ _76 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Rule:** A CI/checkout step that uses a default shallow clone will be missing ancestor/base commits; any later operation that requires those commits (fetching a bundle, diffing against a base branch, git describe, merge-base) can fail intermittently when the base branch advances. When a job consumes a branch bundle, computes a diff against a base ref, or otherwise depends on commit history beyond the tip, fetch full history.
 - **Detect:** In a CI workflow diff, flag a job ONLY when BOTH hold: (a) its checkout uses default/shallow depth — an actions/checkout step with no `fetch-depth:` or `fetch-depth: 1` (or git-clone with `--depth`); AND (b) a later step in the SAME job consumes commit history beyond the tip: `git fetch <something>.bundle`, `git merge-base`, `git describe`, `git diff <base>..`/`<base>...`, `git log <base>..`, `git rev-list ^origin/<base>`, or `git cherry`. A bare `git fetch origin <base>` earlier in the job is NOT sufficient — it does not unshallow the checkout clone. When both (a) and (b) co-occur, require `fetch-depth: 0` on the checkout. Do not flag a default-depth checkout that has no history-dependent consumer.
 
+## Independent options merged into one OR-gate drop the cross-combination  ·  `independent-toggles-must-not-collapse-into-one-or-gated-branch`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #178
+- **Rule:** When two (or more) options are documented/intended as independent (either, both, or neither may be set), do not gate their setup with a single combined boolean like `usingX = a || b` and place one option's setup in the `else` branch. With `if (a || b) {...} else {...}`, passing only `b` enters the `if` and silently skips the `a`-specific setup that lived in the `else`. Give each independent option its own condition (`if (a === undefined) { ...a-setup }`), or compute its setup unconditionally, so every combination is honored.
+- **Detect:** Find a boolean built from OR of multiple option presences (`const using = optA !== undefined || optB !== undefined`) used as `if (using) {...} else { /* setup for one of the options */ }`. Ask: when only ONE of the OR'd options is set, does the `if` branch still perform the setup that the `else` performs (default command, fallback env, etc.)? If that setup is reachable only via the `else`, the single-option-set combination drops it.
+
 ## Don't append a separator/newline to output that may already end with one  ·  `no-double-separator-on-already-terminated-output`
 - **Severity:** nit  ·  **Support:** 2  ·  **Seen in:** #440, #30547
 - **Rule:** Only append a trailing newline/separator when the string doesn't already end with one (check `endsWith('\n')`/EOL), or keep the contract of callers including it. Unconditional appends produce double newlines that break snapshots or downstream parsers. Flag `write(x + EOL)` on text whose origin isn't guaranteed newline-free with no preceding endsWith guard.
@@ -381,3 +386,8 @@ _76 rules. Loaded by the `dr-correctness` specialist. Generated from rules.json 
 - **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #24725
 - **Rule:** Initialize a signal/state with its real value at creation when the source data is synchronously available, rather than starting empty and populating it in onMount/useEffect — otherwise selection-tracking effects run against an empty list on first render and settle on a wrong default. Flag signals created empty and filled in onMount when the source is synchronously available and first-render effects depend on it.
 - **Detect:** Flag signals/state created empty and then filled in onMount/useEffect when the source data is synchronously available; ask whether first-render effects depend on the populated value.
+
+## Escape a dynamic string before embedding it in a RegExp constructor  ·  `escape-dynamic-string-before-regexp-construction`
+- **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #189
+- **Rule:** Building a regular expression from a runtime/variable string via `new RegExp(`...${value}...`)` treats regex metacharacters in `value` (`. * + ? ^ $ { } ( ) | [ ] \`) as pattern syntax, so the match misbehaves (mis-matches or fails) when the value contains them, and an attacker- or data-controlled value can cause catastrophic backtracking (ReDoS). Either escape the interpolated value with an escapeRegExp helper (`value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")`) or `RegExp.escape` where available, or avoid the dynamic regex entirely (use a literal-string matcher / exact-name option). Applies even in test fixtures: a fixture string with metacharacters makes the assertion brittle when fixtures change.
+- **Detect:** Grep for `new RegExp(` (or `RegExp(`) whose argument is a template literal or concatenation containing an interpolated variable that is not the output of an escapeRegExp/RegExp.escape call. Ask: can this interpolated value ever contain `. * + ? [ ] ( ) { } | ^ $ \`, and is it escaped before construction?
