@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import {
 	type BookmarkDraft,
 	bookmarkDraftFromVm,
-	entityCodec,
+	buildBookmark,
 } from "@/lib/entityCodec.js";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
 import type { Bookmark } from "@/lib/libraryItems";
@@ -46,13 +46,13 @@ export function BookmarkEditor({ onDone, onCancel, ...m }: Props) {
 	const submit = () => {
 		if (titleEmpty) return;
 		const params = existing
-			? entityCodec.bookmark.build({
+			? buildBookmark({
 					mode: "update",
 					existing,
 					baseline,
 					draft,
 				})
-			: entityCodec.bookmark.build({ mode: "create", draft });
+			: buildBookmark({ mode: "create", draft });
 		if (params === null) {
 			// Nothing changed — close without a write.
 			onDone(existing?.id ?? draft.title);

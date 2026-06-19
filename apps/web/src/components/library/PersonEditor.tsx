@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import {
-	entityCodec,
+	buildPerson,
 	type PersonDraft,
 	personDraftFromVm,
 } from "@/lib/entityCodec.js";
@@ -43,13 +43,13 @@ export function PersonEditor({ onDone, onCancel, ...m }: Props) {
 	const submit = () => {
 		if (nameEmpty) return;
 		const params = existing
-			? entityCodec.person.build({
+			? buildPerson({
 					mode: "update",
 					existing,
 					baseline,
 					draft,
 				})
-			: entityCodec.person.build({ mode: "create", draft });
+			: buildPerson({ mode: "create", draft });
 		if (params === null) {
 			// Nothing changed — close without a write.
 			onDone(existing?.id ?? draft.name);

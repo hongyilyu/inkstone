@@ -3,9 +3,9 @@ import { useId, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import {
 	buildBody,
+	buildJournalEntry,
 	buildJournalReference,
 	type DraftBodyNode,
-	entityCodec,
 	type JournalDraft,
 	journalDraftFromVm,
 	journalScalarsDiffer,
@@ -101,8 +101,8 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 		const referencing = existing !== undefined && newChip !== undefined;
 		if (!referencing) {
 			const params = existing
-				? entityCodec.journal_entry.build({ mode: "update", existing, draft })
-				: entityCodec.journal_entry.build({ mode: "create", draft });
+				? buildJournalEntry({ mode: "update", existing, draft })
+				: buildJournalEntry({ mode: "create", draft });
 			mutation.mutate(params, {
 				onSuccess: (result) =>
 					onDone(result.entity_id ?? existing?.id ?? draft.occurredAt),
@@ -120,7 +120,7 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 		const run = async () => {
 			if (journalScalarsDiffer(entry, draft)) {
 				await mutation.mutateAsync(
-					entityCodec.journal_entry.build({
+					buildJournalEntry({
 						mode: "update",
 						existing: entry,
 						draft,

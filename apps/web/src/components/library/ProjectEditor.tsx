@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import {
-	entityCodec,
+	buildProject,
 	type ProjectDraft,
 	projectDraftFromVm,
 } from "@/lib/entityCodec.js";
@@ -52,13 +52,13 @@ export function ProjectEditor({ onDone, onCancel, ...m }: Props) {
 	const submit = () => {
 		if (nameEmpty) return;
 		const params = existing
-			? entityCodec.project.build({
+			? buildProject({
 					mode: "update",
 					existing,
 					baseline,
 					draft,
 				})
-			: entityCodec.project.build({ mode: "create", draft });
+			: buildProject({ mode: "create", draft });
 		if (params === null) {
 			// Nothing changed — close without a write.
 			onDone(existing?.id ?? draft.name);
