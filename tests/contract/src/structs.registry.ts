@@ -77,7 +77,8 @@ export interface FixtureEntry {
 }
 
 /** Every committed non-payload fixture, paired with its schema + source dir.
- * Grows one slice at a time until all 31 wire messages are covered. */
+ * Grows one slice at a time until all 35 wire messages are covered (13 params +
+ * 18 results/notifications + 4 worker↔core protocol). */
 export const fixtures: readonly FixtureEntry[] = [
 	// ── slice 1: one per source-direction, to exercise the harness end-to-end ──
 	{
@@ -464,8 +465,8 @@ export const fixtures: readonly FixtureEntry[] = [
 	},
 ];
 
-/** The hand-maintained canonical set of in-scope wire messages (grilling Q5: 31
- * at completion; grows per slice). The completeness lock pins this equal to the
+/** The hand-maintained canonical set of in-scope wire messages (35 at
+ * completion; grows per slice). The completeness lock pins this equal to the
  * distinct `message` values in {@link fixtures}, so a message can't be covered
  * without being declared, nor declared without a fixture. */
 export const CANONICAL_MESSAGES: readonly string[] = [
