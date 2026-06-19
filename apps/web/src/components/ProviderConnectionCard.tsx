@@ -1,5 +1,6 @@
 import { Check } from "lucide-react";
 import { cn } from "@/lib/utils.js";
+import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { Card } from "./ui/card.js";
 
@@ -38,7 +39,7 @@ export function ProviderConnectionCard({
 						data-testid="provider-status"
 						className={cn(
 							"text-xs",
-							connected ? "text-emerald-500" : "text-muted-foreground",
+							connected ? "text-foreground" : "text-muted-foreground",
 						)}
 					>
 						{status}
@@ -46,10 +47,10 @@ export function ProviderConnectionCard({
 				</div>
 			</div>
 			{connected ? (
-				<span className="inline-flex items-center gap-1 font-medium text-emerald-500 text-xs">
+				<Badge variant="secondary">
 					<Check className="size-4" aria-hidden />
 					Connected
-				</span>
+				</Badge>
 			) : (
 				<Button
 					variant="chip"
