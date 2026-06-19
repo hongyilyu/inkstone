@@ -427,6 +427,21 @@ fn validate_reference_existing_entity_from_journal_entry(payload: &Value) -> Res
     Ok(())
 }
 
+/// Validate a Journal-Entry `body` array Core itself constructs at mint time — the
+/// intent-graph weave (ADR-0042), which rewrites each placeholder to a stored
+/// `{type:entity_ref, ref_id}` node or collapses a rejected ref to a `{type:text,
+/// text:<label>}` node. Reuses the same per-node content checks as the
+/// `update_journal_entry` path (`TextOrExistingEntityRef`: a stored entity_ref
+/// carries a `ref_id`), so an empty text node, a blank `ref_id`, or any malformed
+/// node fails loud as `InvalidMutation` rather than being persisted and later
+/// crashing the client codec. A defense-in-depth gate: the weave is expected to
+/// emit only valid nodes, so this never fires in practice — it backstops a future
+/// weave bug from writing a body the advertised schema forbids.
+pub(crate) fn validate_woven_journal_body(body: &Value) -> Result<(), String> {
+    let obj = serde_json::Map::from_iter([("body".to_string(), body.clone())]);
+    validate_journal_body(&obj, BodyNodePolicy::TextOrExistingEntityRef)
+}
+
 pub(crate) fn reference_existing_entity_data_payload(
     current_data: &Value,
     payload: &Value,
@@ -1306,6 +1321,31 @@ mod tests {
         assert!(
             reason.contains("text nodes"),
             "reason names text-only body: {reason}"
+        );
+    }
+
+    #[test]
+    fn woven_body_accepts_text_and_existing_entity_ref_nodes() {
+        // The shape the intent-graph weave produces: collapsed-to-text + stored refs.
+        assert!(validate_woven_journal_body(&json!([
+            { "type": "text", "text": "Talked with Morris about " },
+            { "type": "entity_ref", "ref_id": Uuid::now_v7().to_string() }
+        ]))
+        .is_ok());
+    }
+
+    #[test]
+    fn woven_body_rejects_empty_text_node() {
+        // The exact regression: a rejected-ref collapse that emits empty text must
+        // fail loud here (defense in depth) rather than persist and crash the client.
+        let reason = validate_woven_journal_body(&json!([
+            { "type": "text", "text": "Synced on " },
+            { "type": "text", "text": "" }
+        ]))
+        .expect_err("an empty text node is not a valid woven body");
+        assert!(
+            reason.contains("must not be empty"),
+            "reason names the empty text: {reason}"
         );
     }
 

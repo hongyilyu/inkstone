@@ -412,15 +412,21 @@ pub async fn apply_intent_graph_proposal(
         .journal_entry
         .filter(|je| !decisions.is_rejected(&je.handle));
     for node in &graph.entities {
+        // Record EVERY declared node's label first — including a rejected one's —
+        // so the JE body weave can collapse a rejected ref's placeholder to that
+        // node's NAME as plain text (ADR-0042 "the name stays plain text"), not an
+        // empty text node. The label map is read downstream only for resolved
+        // handles (the `entity_ref.label_snapshot`) plus this collapse fallback, so
+        // carrying rejected labels is harmless to the snapshot path.
+        if let Some(label) = node.label.clone() {
+            handle_to_label.insert(node.handle.clone(), label);
+        }
         // A node the decision vector REJECTS is not created/reused (ADR-0042). It
         // is skipped here; its handle never enters `handle_to_id`, so the cascade
         // in `fold_links_into_todo` (and the JE body weave) drops every link/
         // placeholder to it (the reject-cascade: a rejected ref collapses to text).
         if decisions.is_rejected(&node.handle) {
             continue;
-        }
-        if let Some(label) = node.label.clone() {
-            handle_to_label.insert(node.handle.clone(), label);
         }
         match resolve_node(&mut tx, node, decisions.for_handle(&node.handle)).await? {
             Disposition::Reuse(existing_id) => {
@@ -672,7 +678,8 @@ async fn mint_create(
 ///    no resolved id, so it is dropped — its body placeholder collapses to text.
 /// 2. Rewrite the JE body: each `{type:entity_ref, target:@handle}` placeholder
 ///    becomes `{type:entity_ref, ref_id:<generated>}` when `@handle` has a ref id,
-///    else collapses to a `{type:text, text:""}` node (the rejected-ref cascade).
+///    else collapses to a `{type:text, text:<label>}` node carrying the target's
+///    name (the rejected-ref cascade — never an empty text node).
 /// 3. Mint the JE entity + its seq-1 revision with the WOVEN body (the JE's only
 ///    write), carrying the `created_from` user-Message guard row.
 /// 4. Insert the `entity_ref` rows: source = the JE id (now exists), target = the
@@ -742,9 +749,18 @@ async fn weave_and_mint_journal_entry(
     }
 
     // 2. Weave the JE body: rewrite each entity_ref placeholder to its ref_id, or
-    //    collapse to text when its target was rejected/dropped.
+    //    collapse to the target's NAME as plain text when it was rejected/dropped.
     let mut payload = je.payload.clone();
-    weave_journal_body(&mut payload, &target_ref_id)?;
+    weave_journal_body(&mut payload, &target_ref_id, handle_to_label)?;
+
+    // Defense in depth (ADR-0042): the woven body is Core-constructed, but validate
+    // it against the same per-node content rules the client codec enforces before
+    // minting — so a future weave bug fails loud as InvalidMutation rather than
+    // persisting a body (e.g. an empty text node) that the advertised schema forbids
+    // and that would later black out the client's Library read.
+    if let Some(body) = payload.get("body") {
+        crate::entities::validate_woven_journal_body(body).map_err(ApplyError::InvalidMutation)?;
+    }
 
     // 3. Mint the JE entity (its only write) with the woven body + the guard row.
     let woven_je = ResolvedCreate {
@@ -784,13 +800,20 @@ async fn weave_and_mint_journal_entry(
 /// `{type:entity_ref, target:@handle}` node whose handle has a minted ref id
 /// becomes `{type:entity_ref, ref_id:<id>}` (the STORED shape — entity_ref body
 /// nodes carry `ref_id`, never `target`); a node whose target was rejected/dropped
-/// (no ref id) collapses to a `{type:text, text:""}` node so the body stays valid
-/// (no dangling `target`, no dangling `ref_id`). A non-`entity_ref` node (text) is
-/// left untouched. Body-target handles were validated at extraction
-/// (`validate_links`), so a surviving placeholder names a declared handle.
+/// (no ref id) collapses to a `{type:text, text:<label>}` node carrying the
+/// target's recognized NAME (ADR-0042 "the name stays plain text"), falling back
+/// to `"Referenced entity"` when the node declared no usable label — NEVER an empty
+/// text node, which would violate the body's own `minLength:1` and make the stored
+/// JE unreadable by the client codec. This mirrors the delete-cascade collapse
+/// (`textualize_journal_refs_targeting_deleted_entity`), which COALESCEs to the
+/// same non-empty fallback. A non-`entity_ref` node (text) is left untouched.
+/// Body-target handles were validated at extraction (`validate_links`), so a
+/// surviving placeholder names a declared handle (present in `handle_to_label`
+/// unless that node carried no label).
 fn weave_journal_body(
     payload: &mut serde_json::Value,
     target_ref_id: &std::collections::HashMap<String, String>,
+    handle_to_label: &std::collections::HashMap<String, String>,
 ) -> Result<(), ApplyError> {
     let Some(body) = payload
         .as_object_mut()
@@ -811,9 +834,16 @@ fn weave_journal_body(
             .map(str::trim);
         *node = match target.and_then(|t| target_ref_id.get(t)) {
             Some(ref_id) => serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }),
-            // A placeholder whose target was rejected/dropped collapses to text
-            // (ADR-0042 "its body entity_ref placeholder collapses to text").
-            None => serde_json::json!({ "type": "text", "text": "" }),
+            // A placeholder whose target was rejected/dropped collapses to its
+            // recognized name as plain text (ADR-0042 "the name stays plain text").
+            None => {
+                let label = target
+                    .and_then(|t| handle_to_label.get(t))
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("Referenced entity");
+                serde_json::json!({ "type": "text", "text": label })
+            }
         };
     }
     Ok(())
@@ -1782,5 +1812,48 @@ mod tests {
             .await
             .unwrap();
         assert!(plan.is_empty());
+    }
+
+    // weave_journal_body pins all three placeholder outcomes in isolation, including
+    // the two collapse arms a decide-level test can't easily distinguish: a
+    // dropped ref WITH a known label collapses to that label, and a dropped ref with
+    // NO label collapses to the "Referenced entity" fallback. NEITHER is ever an
+    // empty text node (the regression this slice fixes — empty text crashes the
+    // client codec).
+    #[test]
+    fn weave_collapses_dropped_refs_to_label_or_fallback_never_empty() {
+        let ref_id = Uuid::now_v7().to_string();
+        let mut payload = serde_json::json!({
+            "body": [
+                { "type": "text", "text": "saw " },
+                { "type": "entity_ref", "target": "@kept" },     // resolved → ref_id
+                { "type": "text", "text": " and " },
+                { "type": "entity_ref", "target": "@dropped" },  // rejected, HAS label
+                { "type": "text", "text": " and " },
+                { "type": "entity_ref", "target": "@bare" }      // dropped, NO label
+            ]
+        });
+        let target_ref_id =
+            std::collections::HashMap::from([("@kept".to_string(), ref_id.clone())]);
+        // @dropped declared a label; @bare did not (it is absent from the map).
+        let handle_to_label =
+            std::collections::HashMap::from([("@dropped".to_string(), "Morris".to_string())]);
+
+        weave_journal_body(&mut payload, &target_ref_id, &handle_to_label).expect("weave ok");
+
+        let body = payload["body"].as_array().expect("body array");
+        // The surviving placeholder wove to the minted ref_id.
+        assert_eq!(body[1], serde_json::json!({ "type": "entity_ref", "ref_id": ref_id }));
+        // The labeled drop collapsed to its name; the bare drop to the fallback.
+        assert_eq!(body[3], serde_json::json!({ "type": "text", "text": "Morris" }));
+        assert_eq!(
+            body[5],
+            serde_json::json!({ "type": "text", "text": "Referenced entity" })
+        );
+        // No node carries a dangling `target`, and no text node is empty.
+        assert!(body.iter().all(|n| n.get("target").is_none()));
+        assert!(body.iter().all(|n| n.get("type").and_then(serde_json::Value::as_str)
+            != Some("text")
+            || n.get("text").and_then(serde_json::Value::as_str).is_some_and(|t| !t.is_empty())));
     }
 }
