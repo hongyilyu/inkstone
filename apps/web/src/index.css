@@ -12,6 +12,7 @@
 }
 
 :root {
+	color-scheme: light;
 	--background: #f2e1f4;
 	--foreground: #501854;
 	--card: #faf3fb;
@@ -45,6 +46,7 @@
 }
 
 [data-theme="dark"] {
+	color-scheme: dark;
 	--background: #21141e;
 	--foreground: #f9f8fb;
 	--card: #0b080b;
@@ -306,4 +308,15 @@ body {
 ::selection {
 	background: var(--primary);
 	color: white;
+}
+
+/* Native form controls (date / datetime-local / checkbox in the editors) take
+   the brand magenta for their tick + field highlight instead of the OS-default
+   blue. `--primary` already flips to the dark-theme oxblood, so One-Ink holds
+   across both schemes. Custom-styled controls set their own colors and override
+   this where needed. */
+input,
+textarea,
+select {
+	accent-color: var(--primary);
 }
