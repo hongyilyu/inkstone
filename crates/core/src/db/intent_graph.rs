@@ -171,13 +171,15 @@ pub async fn resolved_plan_for(
         let label = node.label.clone().unwrap_or_default();
         let disposition = resolve_plan_disposition(pool, node).await?;
         plan.push(match disposition {
-            PlanDisposition::Create => ResolvedNode {
+            PlanDisposition::Create(near_matches) => ResolvedNode {
                 handle: node.handle.clone(),
                 r#type: node.type_str.to_string(),
                 disposition: "create".to_string(),
                 label,
                 entity_id: None,
                 candidates: None,
+                // Advisory near-matches (ADR-0042 amendment): empty → omit the field.
+                near_matches: (!near_matches.is_empty()).then_some(near_matches),
             },
             PlanDisposition::Reuse(entity_id) => ResolvedNode {
                 handle: node.handle.clone(),
@@ -186,6 +188,7 @@ pub async fn resolved_plan_for(
                 label,
                 entity_id: Some(entity_id),
                 candidates: None,
+                near_matches: None,
             },
             PlanDisposition::Ambiguous(candidates) => ResolvedNode {
                 handle: node.handle.clone(),
@@ -194,6 +197,7 @@ pub async fn resolved_plan_for(
                 label,
                 entity_id: None,
                 candidates: Some(candidates),
+                near_matches: None,
             },
         });
     }
@@ -204,11 +208,39 @@ pub async fn resolved_plan_for(
 /// display analogue of the resolver's [`Disposition`]: `Ambiguous` is a VARIANT
 /// here (the plan surfaces the competing candidates so the Client can show the
 /// "needs disambiguation" hint), where the resolver fails the whole apply.
+///
+/// `Create` carries advisory NEAR-MATCHES (ADR-0042 amendment): accepted same-type
+/// entities whose name token-overlaps this node's (subset/superset). Empty when
+/// there is no overlap. Never authority — the apply path stays exact-only.
 enum PlanDisposition {
-    Create,
+    Create(Vec<ResolvedNodeCandidate>),
     Reuse(String),
     Ambiguous(Vec<ResolvedNodeCandidate>),
 }
+
+/// The whitespace-tokenized, lowercased token set of a name — the unit the
+/// near-match predicate compares (ADR-0042 amendment). Empty/whitespace-only names
+/// yield an empty set (which never overlaps, so a blank name near-matches nothing).
+fn name_tokens(name: &str) -> std::collections::BTreeSet<String> {
+    name.split_whitespace().map(str::to_lowercase).collect()
+}
+
+/// The near-match predicate (ADR-0042 amendment): two names are near-matches when
+/// one's non-empty token set is a SUBSET of the other's (either direction) — e.g.
+/// {lead,ads} ⊆ {lead,ads,testing}. An exact token-set equality also satisfies
+/// this, but the caller only computes near-matches on the `create` (non-exact-label)
+/// path, so an exact-label match never reaches here. Both sets must be non-empty.
+fn is_near_match(
+    a: &std::collections::BTreeSet<String>,
+    b: &std::collections::BTreeSet<String>,
+) -> bool {
+    !a.is_empty() && !b.is_empty() && (a.is_subset(b) || b.is_subset(a))
+}
+
+/// The most near-matches surfaced per node (ADR-0042 amendment). A single one
+/// drives the Client's default-to-existing; 2+ defer to the picker (#181). Capped
+/// so a pathological accepted set can't bloat the advisory plan.
+const MAX_NEAR_MATCHES: usize = 5;
 
 /// Resolve one entity node's disposition for the READ-ONLY plan, mirroring
 /// [`resolve_disposition`]'s NATURAL path (no per-node override/edit — those are
@@ -229,31 +261,51 @@ async fn resolve_plan_disposition(
     }
 
     // 2. Exact (case-insensitive, trimmed) label + type match. Without a label
-    //    there is nothing to match on → `create`.
+    //    there is nothing to match on → `create` (no near-matches without a name).
     let Some(label) = node.label.as_deref() else {
-        return Ok(PlanDisposition::Create);
+        return Ok(PlanDisposition::Create(Vec::new()));
     };
     let needle = label.trim().to_lowercase();
     let label_key = label_key_for(node.type_str);
 
+    // One pass over the accepted same-type rows collects BOTH the exact matches and
+    // the token-overlap near-matches (ADR-0042 amendment) — the near-match list is
+    // only used when the node falls through to `create` (zero exact matches), so a
+    // single `list_by_type` read backs both (no double-query).
+    let node_tokens = name_tokens(label);
     let rows = queries::list_by_type(pool, node.type_str).await?;
-    let matches: Vec<ResolvedNodeCandidate> = rows
-        .into_iter()
-        .filter_map(|(id, _, data, _, _)| {
-            let stored = serde_json::from_str::<serde_json::Value>(&data)
-                .ok()?
-                .get(label_key)?
-                .as_str()?
-                .to_string();
-            (stored.trim().to_lowercase() == needle).then_some(ResolvedNodeCandidate {
+    let mut matches: Vec<ResolvedNodeCandidate> = Vec::new();
+    let mut near_matches: Vec<ResolvedNodeCandidate> = Vec::new();
+    for (id, _, data, _, _) in rows {
+        let Some(stored) = serde_json::from_str::<serde_json::Value>(&data)
+            .ok()
+            .as_ref()
+            .and_then(|v| v.get(label_key))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if stored.trim().to_lowercase() == needle {
+            matches.push(ResolvedNodeCandidate {
                 entity_id: id,
                 label: stored,
-            })
-        })
-        .collect();
+            });
+        } else if is_near_match(&node_tokens, &name_tokens(&stored)) {
+            near_matches.push(ResolvedNodeCandidate {
+                entity_id: id,
+                label: stored,
+            });
+        }
+    }
 
     Ok(match matches.len() {
-        0 => PlanDisposition::Create,
+        0 => {
+            near_matches.truncate(MAX_NEAR_MATCHES);
+            PlanDisposition::Create(near_matches)
+        }
+        // An exact match wins outright — near-matches are advisory only for a node
+        // with NO exact resolution, so a reuse/ambiguous node carries none.
         1 => PlanDisposition::Reuse(matches.into_iter().next().expect("len == 1").entity_id),
         _ => PlanDisposition::Ambiguous(matches),
     })
@@ -1564,6 +1616,90 @@ mod tests {
         assert_eq!(plan[0].disposition, "reuse");
         assert_eq!(plan[0].entity_id.as_deref(), Some(existing.as_str()));
         assert!(plan[0].candidates.is_none());
+    }
+
+    // NEAR-MATCH (ADR-0042 amendment): a `create` node whose normalized token set
+    // is a SUPERSET of an accepted same-type entity's ("Lead Ads testing" ⊇ "Lead
+    // Ads") carries that entity in `near_matches` — advisory, the node stays
+    // `create`, the apply path is untouched. This is the reported bug's safety net.
+    #[tokio::test]
+    async fn resolved_plan_flags_near_match_on_create_node() {
+        let pool = memory_pool().await;
+        let existing = insert_named(&pool, "project", "Lead Ads").await;
+        let payload = serde_json::json!({
+            "entities": [{ "handle": "@leadads", "type": "project", "name": "Lead Ads testing" }],
+            "links": []
+        });
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].disposition, "create", "an extra qualifier is NOT an exact match");
+        assert!(plan[0].entity_id.is_none() && plan[0].candidates.is_none());
+        let near = plan[0]
+            .near_matches
+            .as_ref()
+            .expect("near_matches present for the near-twin create node");
+        assert_eq!(near.len(), 1);
+        assert_eq!(near[0].entity_id, existing);
+        assert_eq!(near[0].label, "Lead Ads");
+    }
+
+    // The predicate fires in the OTHER direction too (prioritize existing): a node
+    // named "Lead Ads" with an accepted "Lead Ads testing" — the model dropped a
+    // qualifier — still surfaces the existing entity. {lead,ads} ⊆ {lead,ads,testing}.
+    #[tokio::test]
+    async fn resolved_plan_flags_near_match_when_node_is_subset() {
+        let pool = memory_pool().await;
+        let existing = insert_named(&pool, "project", "Lead Ads testing").await;
+        let payload = serde_json::json!({
+            "entities": [{ "handle": "@leadads", "type": "project", "name": "Lead Ads" }],
+            "links": []
+        });
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan[0].disposition, "create");
+        let near = plan[0].near_matches.as_ref().expect("near_matches present");
+        assert_eq!(near.len(), 1);
+        assert_eq!(near[0].entity_id, existing);
+    }
+
+    // An exact match resolves to `reuse` and carries NO near_matches (the existing
+    // entity is the resolution, not a hint). No false near-match on the exact path.
+    #[tokio::test]
+    async fn resolved_plan_exact_match_has_no_near_matches() {
+        let pool = memory_pool().await;
+        insert_named(&pool, "project", "Lead Ads").await;
+        let payload = serde_json::json!({
+            "entities": [{ "handle": "@leadads", "type": "project", "name": "lead ads" }],
+            "links": []
+        });
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        assert_eq!(plan[0].disposition, "reuse");
+        assert!(plan[0].near_matches.is_none());
+    }
+
+    // A disjoint name (no shared tokens) on a `create` node carries NO near_matches,
+    // and a near-match only matches the SAME type (a Person "Lead Ads" does not
+    // near-match a Project "Lead Ads").
+    #[tokio::test]
+    async fn resolved_plan_no_near_match_for_disjoint_or_cross_type() {
+        let pool = memory_pool().await;
+        insert_named(&pool, "project", "Lead Ads").await;
+        let payload = serde_json::json!({
+            "entities": [
+                { "handle": "@other", "type": "project", "name": "Quarterly Planning" },
+                { "handle": "@person", "type": "person", "name": "Lead Ads" }
+            ],
+            "links": []
+        });
+        let plan = resolved_plan_for(&pool, &payload).await.unwrap();
+        let other = &plan[node(&plan, "@other")];
+        assert_eq!(other.disposition, "create");
+        assert!(other.near_matches.is_none(), "no shared tokens → no near-match");
+        let person = &plan[node(&plan, "@person")];
+        assert_eq!(person.disposition, "create");
+        assert!(
+            person.near_matches.is_none(),
+            "a Person must not near-match a Project of the same name (same-type only)"
+        );
     }
 
     // Two accepted same-named rows → `ambiguous`, surfacing BOTH candidates (the

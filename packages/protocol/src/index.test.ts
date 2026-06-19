@@ -278,6 +278,31 @@ describe("ProposalGetResult", () => {
 		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(withPlan);
 	});
 
+	it("decodes a create node carrying advisory near_matches (ADR-0042 amendment) and round-trips", () => {
+		const withNearMatch = {
+			...wire,
+			mutation_kind: "apply_intent_graph",
+			payload: {},
+			resolved_plan: [
+				{
+					handle: "@leadads",
+					type: "project",
+					disposition: "create",
+					label: "Lead Ads testing",
+					near_matches: [
+						{
+							entity_id: "01900000-0000-7000-8000-0000000000a1",
+							label: "Lead Ads",
+						},
+					],
+				},
+			],
+		};
+		const decoded = S.decodeUnknownSync(ProposalGetResult)(withNearMatch);
+		expect(decoded).toEqual(withNearMatch);
+		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(withNearMatch);
+	});
+
 	it("decodes a null rationale", () => {
 		const noReason = { ...wire, rationale: null };
 		expect(S.decodeUnknownSync(ProposalGetResult)(noReason)).toEqual(noReason);
