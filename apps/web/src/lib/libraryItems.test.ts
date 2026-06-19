@@ -574,8 +574,13 @@ describe("formatDateTime", () => {
 		// holds on a non-en ICU runner (en-US "Jun", fr-FR "juin", de-DE "Juni").
 		const month = new Date(s).toLocaleDateString(undefined, { month: "short" });
 		expect(out).toContain(month);
-		// 24h "14:30" or 12h "2:30" — assert the minutes regardless of locale hour.
-		expect(out).toMatch(/(14|2):30/);
+		// Derive hour:minute from the same locale the formatter uses, so this holds
+		// on a locale that pads the 12h hour (e.g. "02:30") or uses 24h ("14:30").
+		const hm = new Date(s).toLocaleTimeString(undefined, {
+			hour: "numeric",
+			minute: "2-digit",
+		});
+		expect(out).toContain(hm);
 	});
 
 	it("returns the input rather than 'Invalid Date' when unparseable", () => {
