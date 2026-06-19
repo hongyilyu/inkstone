@@ -1,0 +1,5 @@
+{
+  "effort": "high",
+  "model": "gpt-5.5",
+  "provider": "openai-codex"
+}

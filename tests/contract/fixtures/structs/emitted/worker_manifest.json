@@ -1,0 +1,47 @@
+{
+  "access_token": "tok_abc",
+  "messages": [
+    {
+      "role": "user",
+      "text": "earlier q"
+    },
+    {
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "mutation_kind": "create_journal_entry"
+          },
+          "id": "tc_1",
+          "name": "propose_workspace_mutation"
+        }
+      ]
+    },
+    {
+      "content": "Accepted.",
+      "role": "tool_result",
+      "tool_call_id": "tc_1"
+    }
+  ],
+  "mode": "resume",
+  "prompt": "",
+  "run_id": "0190d3c1-0000-7000-8000-000000000003",
+  "workflow": {
+    "model": "gpt-5.5",
+    "name": "default",
+    "provider": "openai-codex",
+    "system_prompt": "hi",
+    "thinking_level": "off",
+    "tools": [
+      {
+        "description": "Read a thread",
+        "json_schema": {
+          "type": "object"
+        },
+        "label": "Read thread",
+        "name": "read_thread"
+      }
+    ],
+    "version": "1.0.0"
+  }
+}

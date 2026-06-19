@@ -1,15 +1,27 @@
 # @inkstone/contract — wire-schema parity gate
 
 A CI gate that proves the **Rust** and **TypeScript** definitions of the wire
-`payload` for the 13 agent-proposable Workspace mutations agree, per kind.
+protocol agree. It has two legs:
+
+1. **Payload parity** (schema-vs-schema) — the wire `payload` for the 14
+   agent-proposable Workspace mutations, per kind.
+2. **Non-payload parity** (instance-based) — the ~35 plain serde wire messages
+   (params, results, notifications, the Worker manifest, the run-event /
+   tool-result frames) hand-mirrored in `crates/core/src/protocol.rs` and
+   `packages/protocol/src/index.ts`. See "Non-payload structs" below.
+
+## Payload parity (the 14 proposable kinds)
 
 - **Rust** (`crates/core`) is the schema-of-record. An inline test
   (`regenerate_schema_fixtures` in `src/tools/propose_workspace_mutation.rs`)
   dumps each kind's `MutationKind::payload_spec().json_schema()` — the same
   expression that drives the agent tool descriptor — to `fixtures/<wire_kind>.json`.
-- **TypeScript** (`src/schemas.ts`) hand-authors one Effect Schema per kind.
-  `parity.test.ts` runs each through `JSONSchema.make`, runs both it and the Rust
-  fixture through `normalize.ts`, and asserts deep-equality.
+- **TypeScript** hand-authors one Effect Schema per kind in
+  `packages/protocol/src/payloads.ts` (the `schemas` registry, re-exported from
+  the package barrel and consumed by the Web codec at runtime). `parity.test.ts`
+  runs each through `JSONSchema.make`, runs both it and the Rust fixture through
+  `normalize.ts`, and asserts deep-equality. `completeness.test.ts` locks the
+  registry to the 14 committed fixtures.
 
 This implements ADR-0009's already-decided "manually mirrored types + contract
 tests" discipline (this contract-test package lives at `tests/contract`), using
@@ -24,8 +36,8 @@ Rust inlines), strip `title` (Effect combinator noise), empty `required` ≡ abs
 (Rust omits, Effect emits `[]`), and deep key-sort (the two order keys
 differently). Effect's per-combinator `description` noise (e.g. `minLength(1)` →
 "a string at least 1 character(s) long") is suppressed at the source in
-`schemas.ts` so the one real `description` — the `LocalDateTime` format hint —
-survives untouched.
+`packages/protocol/src/payloads.ts` so the one real `description` — the
+`LocalDateTime` format hint — survives untouched.
 
 ## In scope (what turns CI red)
 
@@ -61,17 +73,53 @@ This gate locks the **advertised wire schema's structure**, nothing more.
   framing. That is Core-owned (a hand-built `json!` in the tool descriptor) and
   not duplicated on the Web; the fixtures are the `payload` body alone.
 
+## Non-payload structs (ADR-0009 as-built)
+
+The second leg covers the plain serde wire messages — those mirrored in
+`protocol.rs` (serde) and `packages/protocol/src/index.ts` (Effect Schema) but
+historically verified only per-side. It is **instance-based**, not
+schema-vs-schema: the fixture is a real *serialized value*, so it dodges the
+`skip_serializing_if` null-vs-omit lie a type-derived schema would introduce.
+
+- **Core-emitted** (`fixtures/structs/emitted/`) — for Serialize-capable messages.
+  `regenerate_struct_fixtures` (in `protocol.rs mod parity_fixtures`) serializes one
+  canonical instance per message through the real serde path;
+  `emitted_fixtures_match_committed` `include_str!`-locks them so `cargo test` bites
+  on staleness. CI regenerates + `git diff`s this dir.
+- **Hand-authored** (`fixtures/structs/authored/`) — for Deserialize-only params
+  (the 13 `*Params`, `WorkerStdout`) Core never serializes. The fixture is the
+  canonical wire JSON Web sends; `authored_fixtures_parse` asserts each
+  deserializes. **Never** regenerated.
+
+`src/structs.test.ts` decodes each fixture (`onExcessProperty: "error"`) and
+re-encodes it back to deep-equal the fixture; `src/structs.registry.ts` pairs each
+fixture with its Effect Schema; `src/structs.completeness.test.ts` locks the
+message set + per-union variant counts. `normalize.ts` is **not** used here (it is
+the payload gate's schema-dialect reconciler). The accepted blind spot — a field
+optional on the TS side and absent on the Rust side — and the JSON-RPC envelope
+(out of scope, no TS mirror) are recorded in ADR-0009's as-built section.
+
 ## Layout
 
 ```text
-fixtures/<wire_kind>.json   the 13 Rust-emitted schemas (the schema-of-record)
-src/schemas.ts              kind → Effect Schema registry + shared sub-schemas
-src/normalize.ts            the dialect-reconciling normalizer
-src/parity.test.ts          the per-kind deep-equality assertions
+fixtures/<wire_kind>.json          the 14 Rust-emitted payload schemas (schema-of-record)
+fixtures/structs/emitted/*.json    Core-emitted non-payload wire values (serialize side)
+fixtures/structs/authored/*.json   hand-authored param wire JSON (deserialize side)
+src/parity.test.ts                 per-kind payload deep-equality (schema-vs-schema)
+src/completeness.test.ts           locks the 14-payload registry/fixtures/canonical sets
+src/normalize.ts                   the dialect-reconciling normalizer (payload leg only)
+src/structs.test.ts                per-message non-payload decode + re-encode (instance-based)
+src/structs.registry.ts            fixture → Effect Schema registry + canonical message list
+src/structs.completeness.test.ts   locks the message set + per-union variant counts
 ```
 
-Regenerate the fixtures after any `PayloadSpec` change:
+The TS payload schemas live in `packages/protocol/src/payloads.ts` (the `schemas`
+registry), not in this package.
+
+Regenerate the committed fixtures after a `PayloadSpec` change (payloads) or a
+Serialize-capable wire-struct change (non-payload):
 
 ```shell
 cargo test --manifest-path crates/core/Cargo.toml regenerate_schema_fixtures
+cargo test --manifest-path crates/core/Cargo.toml regenerate_struct_fixtures
 ```

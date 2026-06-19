@@ -1,0 +1,13 @@
+{
+  "hits": [
+    {
+      "created_at": 1700000000000,
+      "message_id": "0190d3c1-0000-7000-8000-000000000001",
+      "role": "assistant",
+      "run_id": "0190d3c1-0000-7000-8000-000000000003",
+      "snippet": "…daycare schedule…",
+      "thread_id": "0190d3c1-0000-7000-8000-000000000002",
+      "thread_title": "Planning"
+    }
+  ]
+}

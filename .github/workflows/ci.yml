@@ -107,17 +107,28 @@ jobs:
         run: cargo check --locked --manifest-path crates/core/Cargo.toml
       - name: Cargo test
         run: cargo test --locked --manifest-path crates/core/Cargo.toml
-      # Re-dump the proposable payload schemas, then fail if any committed
-      # fixture drifted from a fresh dump — the schema-parity staleness gate
-      # (tests/contract). A PayloadSpec change that wasn't re-committed turns
-      # this red.
+      # Re-dump BOTH committed-fixture sets, then fail if any drifted from a
+      # fresh dump — the schema-parity staleness gate (tests/contract):
+      #   - regenerate_schema_fixtures → the 14 proposable PAYLOAD schemas
+      #     (fixtures/*.json), and
+      #   - regenerate_struct_fixtures → the Core-emitted NON-PAYLOAD wire
+      #     structs (fixtures/structs/emitted/*.json, ADR-0009 as-built).
+      # The hand-authored params under fixtures/structs/authored/ are NOT
+      # regenerated (Core never serializes them) — they can't drift here, and
+      # the Rust `authored_fixtures_parse` + TS decode hold them instead.
       - name: Regenerate schema fixtures
-        run: cargo test --locked --manifest-path crates/core/Cargo.toml regenerate_schema_fixtures
+        run: |
+          cargo test --locked --manifest-path crates/core/Cargo.toml regenerate_schema_fixtures
+          cargo test --locked --manifest-path crates/core/Cargo.toml regenerate_struct_fixtures
       # `git add -N` stages intent-to-add for any NEW fixture (a freshly-added
-      # proposable kind), so `git diff --exit-code` catches it too — plain
-      # `git diff` only sees tracked files and would miss an un-added new kind.
-      # (Defense-in-depth: the Rust `fixtures_match_committed` include_str! table
-      # and `completeness.test.ts` also fail on a new kind.)
+      # proposable kind or emitted struct), so `git diff --exit-code` catches it
+      # too — plain `git diff` only sees tracked files and would miss an un-added
+      # new fixture. The glob covers the whole fixtures tree, so the emitted
+      # struct dir is gated alongside the payloads; the authored dir, never
+      # rewritten by the regenerate step above, never reds here.
+      # (Defense-in-depth: the Rust `*_match_committed` include_str! tables and
+      # the `completeness.test.ts` / `structs.completeness.test.ts` locks also
+      # fail on a new or dropped fixture.)
       - name: Schema fixtures are committed (no drift)
         run: |
           git add -N tests/contract/fixtures/

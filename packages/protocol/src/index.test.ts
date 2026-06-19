@@ -9,7 +9,6 @@ import {
 	MessageHit,
 	MessageSearchParams,
 	MessageSearchResult,
-	MessageView,
 	PostMessageParams,
 	PostMessageResult,
 	ProposalChangedNotification,
@@ -27,10 +26,7 @@ import {
 	SubscribeParams,
 	SubscribeResult,
 	ThreadCreateParams,
-	ThreadCreateResult,
 	ThreadGetParams,
-	ThreadGetResult,
-	ThreadListResult,
 	ThreadSummary,
 	ToolRequest,
 	ToolResult,
@@ -40,14 +36,6 @@ import {
 } from "./index.js";
 
 describe("PostMessageParams", () => {
-	it("decodes a valid thread_id and prompt", () => {
-		const wire = {
-			thread_id: "01900000-0000-7000-8000-000000000000",
-			prompt: "hi",
-		};
-		expect(S.decodeUnknownSync(PostMessageParams)(wire)).toEqual(wire);
-	});
-
 	it("rejects a missing thread_id", () => {
 		expect(() =>
 			S.decodeUnknownSync(PostMessageParams)({ prompt: "hi" }),
@@ -70,61 +58,21 @@ describe("PostMessageParams", () => {
 			}),
 		).toThrow();
 	});
-
-	it("encodes back to the same snake_case wire shape", () => {
-		const decoded = S.decodeUnknownSync(PostMessageParams)({
-			thread_id: "01900000-0000-7000-8000-000000000000",
-			prompt: "hi",
-		});
-		expect(S.encodeSync(PostMessageParams)(decoded)).toEqual({
-			thread_id: "01900000-0000-7000-8000-000000000000",
-			prompt: "hi",
-		});
-	});
 });
 
 describe("PostMessageResult", () => {
-	it("decodes a valid run_id without renaming the wire field", () => {
-		const wire = { run_id: "01900000-0000-7000-8000-000000000000" };
-		expect(S.decodeUnknownSync(PostMessageResult)(wire)).toEqual(wire);
-	});
-
-	it("encodes back to the same snake_case wire shape", () => {
-		const decoded = S.decodeUnknownSync(PostMessageResult)({
-			run_id: "01900000-0000-7000-8000-000000000000",
-		});
-		expect(S.encodeSync(PostMessageResult)(decoded)).toEqual({
-			run_id: "01900000-0000-7000-8000-000000000000",
-		});
-	});
-
 	it("rejects a missing run_id", () => {
 		expect(() => S.decodeUnknownSync(PostMessageResult)({})).toThrow();
 	});
 });
 
 describe("SubscribeParams", () => {
-	it("decodes a run_id", () => {
-		const wire = { run_id: "01900000-0000-7000-8000-000000000000" };
-		expect(S.decodeUnknownSync(SubscribeParams)(wire)).toEqual(wire);
-	});
-
 	it("rejects a missing run_id", () => {
 		expect(() => S.decodeUnknownSync(SubscribeParams)({})).toThrow();
 	});
 });
 
 describe("SubscribeResult", () => {
-	it("decodes run_id and status and encodes back unchanged", () => {
-		const wire = {
-			run_id: "01900000-0000-7000-8000-000000000000",
-			status: "parked",
-		};
-		const decoded = S.decodeUnknownSync(SubscribeResult)(wire);
-		expect(decoded).toEqual(wire);
-		expect(S.encodeSync(SubscribeResult)(decoded)).toEqual(wire);
-	});
-
 	it("rejects a missing status", () => {
 		expect(() =>
 			S.decodeUnknownSync(SubscribeResult)({
@@ -135,13 +83,6 @@ describe("SubscribeResult", () => {
 });
 
 describe("RunCancelParams", () => {
-	it("decodes a run_id and encodes back unchanged", () => {
-		const wire = { run_id: "01900000-0000-7000-8000-000000000000" };
-		const decoded = S.decodeUnknownSync(RunCancelParams)(wire);
-		expect(decoded).toEqual(wire);
-		expect(S.encodeSync(RunCancelParams)(decoded)).toEqual(wire);
-	});
-
 	it("rejects a missing run_id", () => {
 		expect(() => S.decodeUnknownSync(RunCancelParams)({})).toThrow();
 	});
@@ -169,13 +110,6 @@ describe("RunCancelResult", () => {
 });
 
 describe("ProposalGetParams", () => {
-	it("decodes a run_id and encodes back unchanged", () => {
-		const wire = { run_id: "01900000-0000-7000-8000-000000000000" };
-		const decoded = S.decodeUnknownSync(ProposalGetParams)(wire);
-		expect(decoded).toEqual(wire);
-		expect(S.encodeSync(ProposalGetParams)(decoded)).toEqual(wire);
-	});
-
 	it("rejects a missing run_id", () => {
 		expect(() => S.decodeUnknownSync(ProposalGetParams)({})).toThrow();
 	});
@@ -194,113 +128,10 @@ describe("ProposalGetResult", () => {
 		status: "pending",
 	};
 
-	it("decodes a full proposal with opaque data and encodes back unchanged", () => {
-		const decoded = S.decodeUnknownSync(ProposalGetResult)(wire);
-		expect(decoded).toEqual(wire);
-		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(wire);
-	});
-
-	it("decodes review_context.current_journal_entry and encodes back unchanged", () => {
-		const withReviewContext = {
-			...wire,
-			mutation_kind: "update_journal_entry",
-			payload: {
-				entity_id: "01900000-0000-7000-8000-000000000099",
-				occurred_at: "2026-06-10T11:00:00",
-				body: [{ type: "text", text: "Bought oat milk." }],
-			},
-			review_context: {
-				current_journal_entry: {
-					entity_id: "01900000-0000-7000-8000-000000000099",
-					occurred_at: "2026-06-10T10:30:00",
-					ended_at: "2026-06-10T10:45:00",
-					body: [
-						{ type: "text", text: "Bought " },
-						{
-							type: "entity_ref",
-							ref_id: "01900000-0000-7000-8000-000000000111",
-						},
-						{ type: "text", text: "." },
-					],
-				},
-			},
-		};
-		const decoded = S.decodeUnknownSync(ProposalGetResult)(withReviewContext);
-		expect(decoded).toEqual(withReviewContext);
-		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(withReviewContext);
-	});
-
 	it("remains backward compatible when review_context is absent", () => {
 		const decoded = S.decodeUnknownSync(ProposalGetResult)(wire);
 		expect(decoded).toEqual(wire);
 		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(wire);
-	});
-
-	it("decodes an apply_intent_graph resolved_plan (create/reuse/ambiguous) and encodes back unchanged", () => {
-		const withPlan = {
-			...wire,
-			mutation_kind: "apply_intent_graph",
-			payload: {},
-			resolved_plan: [
-				{
-					handle: "@rodeo",
-					type: "todo",
-					disposition: "create",
-					label: "Figure out the Rodeo side",
-				},
-				{
-					handle: "@leadads",
-					type: "project",
-					disposition: "reuse",
-					label: "Lead Ads",
-					entity_id: "01900000-0000-7000-8000-0000000000a1",
-				},
-				{
-					handle: "@morris",
-					type: "person",
-					disposition: "ambiguous",
-					label: "Morris",
-					candidates: [
-						{
-							entity_id: "01900000-0000-7000-8000-0000000000b1",
-							label: "Morris",
-						},
-						{
-							entity_id: "01900000-0000-7000-8000-0000000000b2",
-							label: "Morris",
-						},
-					],
-				},
-			],
-		};
-		const decoded = S.decodeUnknownSync(ProposalGetResult)(withPlan);
-		expect(decoded).toEqual(withPlan);
-		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(withPlan);
-	});
-
-	it("decodes a create node carrying advisory near_matches (ADR-0042 amendment) and round-trips", () => {
-		const withNearMatch = {
-			...wire,
-			mutation_kind: "apply_intent_graph",
-			payload: {},
-			resolved_plan: [
-				{
-					handle: "@leadads",
-					type: "project",
-					disposition: "create",
-					label: "Lead Ads testing",
-					near_matches: [
-						{
-							entity_id: "01900000-0000-7000-8000-0000000000a1",
-							label: "Lead Ads",
-						},
-					],
-				},
-			],
-		};
-		const decoded = S.decodeUnknownSync(ProposalGetResult)(withNearMatch);
-		expect(decoded).toEqual(withNearMatch);
-		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(withNearMatch);
 	});
 
 	it("decodes a null rationale", () => {
@@ -326,23 +157,6 @@ describe("ProposalDecideParams", () => {
 		expect(S.encodeSync(ProposalDecideParams)(decoded)).toEqual(wire);
 	});
 
-	it("decodes a bare accept (no key, no edited_payload)", () => {
-		const wire = {
-			proposal_id: "01900000-0000-7000-8000-000000000010",
-			decision: "accept",
-		};
-		expect(S.decodeUnknownSync(ProposalDecideParams)(wire)).toEqual(wire);
-	});
-
-	it("decodes an edit carrying an opaque edited_payload", () => {
-		const wire = {
-			proposal_id: "01900000-0000-7000-8000-000000000010",
-			decision: "edit",
-			edited_payload: { title: "buy oat milk", done: false },
-		};
-		expect(S.decodeUnknownSync(ProposalDecideParams)(wire)).toEqual(wire);
-	});
-
 	it("decodes reject", () => {
 		const wire = {
 			proposal_id: "01900000-0000-7000-8000-000000000010",
@@ -366,31 +180,6 @@ describe("ProposalDecideParams", () => {
 		).toThrow();
 	});
 
-	it("decodes a per-node decision vector (apply_intent_graph, ADR-0042)", () => {
-		const wire = {
-			proposal_id: "01900000-0000-7000-8000-000000000010",
-			decision: "accept",
-			decisions: [
-				{ handle: "@je", decision: "accept" },
-				{ handle: "@leadads", decision: "reject" },
-				{
-					handle: "@morris",
-					decision: "accept",
-					entity_id: "01900000-0000-7000-8000-0000000000a1",
-				},
-				{
-					handle: "@rodeo",
-					decision: "accept",
-					edited_fields: { title: "Figure out the Rodeo side of Lead Ads" },
-				},
-			],
-			decision_idempotency_key: "k-graph",
-		};
-		const decoded = S.decodeUnknownSync(ProposalDecideParams)(wire);
-		expect(decoded).toEqual(wire);
-		expect(S.encodeSync(ProposalDecideParams)(decoded)).toEqual(wire);
-	});
-
 	it("rejects a per-node decision outside accept/reject", () => {
 		expect(() =>
 			S.decodeUnknownSync(ProposalDecideParams)({
@@ -403,21 +192,6 @@ describe("ProposalDecideParams", () => {
 });
 
 describe("ProposalDecideResult", () => {
-	it("decodes an accepted result with an entity_id and encodes back unchanged", () => {
-		const wire = {
-			status: "accepted",
-			entity_id: "01900000-0000-7000-8000-000000000020",
-		};
-		const decoded = S.decodeUnknownSync(ProposalDecideResult)(wire);
-		expect(decoded).toEqual(wire);
-		expect(S.encodeSync(ProposalDecideResult)(decoded)).toEqual(wire);
-	});
-
-	it("decodes a rejected result with no entity_id", () => {
-		const wire = { status: "rejected" };
-		expect(S.decodeUnknownSync(ProposalDecideResult)(wire)).toEqual(wire);
-	});
-
 	it("rejects an unknown status", () => {
 		expect(() =>
 			S.decodeUnknownSync(ProposalDecideResult)({ status: "deferred" }),
@@ -426,16 +200,6 @@ describe("ProposalDecideResult", () => {
 });
 
 describe("ProposalPendingNotification", () => {
-	it("decodes run_id and proposal_id and encodes back unchanged", () => {
-		const wire = {
-			run_id: "01900000-0000-7000-8000-000000000000",
-			proposal_id: "01900000-0000-7000-8000-000000000010",
-		};
-		const decoded = S.decodeUnknownSync(ProposalPendingNotification)(wire);
-		expect(decoded).toEqual(wire);
-		expect(S.encodeSync(ProposalPendingNotification)(decoded)).toEqual(wire);
-	});
-
 	it("rejects a missing proposal_id", () => {
 		expect(() =>
 			S.decodeUnknownSync(ProposalPendingNotification)({
@@ -480,48 +244,12 @@ describe("ProposalChangedNotification", () => {
 });
 
 describe("ThreadCreateParams", () => {
-	it("decodes a prompt", () => {
-		expect(S.decodeUnknownSync(ThreadCreateParams)({ prompt: "hi" })).toEqual({
-			prompt: "hi",
-		});
-	});
-
 	it("rejects a missing prompt", () => {
 		expect(() => S.decodeUnknownSync(ThreadCreateParams)({})).toThrow();
 	});
 });
 
-describe("ThreadCreateResult", () => {
-	it("decodes thread_id and run_id without renaming the wire fields", () => {
-		const wire = {
-			thread_id: "01900000-0000-7000-8000-000000000000",
-			run_id: "01900000-0000-7000-8000-000000000001",
-		};
-		expect(S.decodeUnknownSync(ThreadCreateResult)(wire)).toEqual(wire);
-	});
-
-	it("encodes back to the same snake_case wire shape", () => {
-		const decoded = S.decodeUnknownSync(ThreadCreateResult)({
-			thread_id: "01900000-0000-7000-8000-000000000000",
-			run_id: "01900000-0000-7000-8000-000000000001",
-		});
-		expect(S.encodeSync(ThreadCreateResult)(decoded)).toEqual({
-			thread_id: "01900000-0000-7000-8000-000000000000",
-			run_id: "01900000-0000-7000-8000-000000000001",
-		});
-	});
-});
-
 describe("ThreadSummary", () => {
-	it("decodes id, title, and a numeric last_activity_at", () => {
-		const wire = {
-			id: "01900000-0000-7000-8000-000000000000",
-			title: "First thread",
-			last_activity_at: 1_700_000_000_000,
-		};
-		expect(S.decodeUnknownSync(ThreadSummary)(wire)).toEqual(wire);
-	});
-
 	it("rejects a non-number last_activity_at", () => {
 		expect(() =>
 			S.decodeUnknownSync(ThreadSummary)({
@@ -533,42 +261,6 @@ describe("ThreadSummary", () => {
 	});
 });
 
-describe("ThreadListResult", () => {
-	it("decodes a threads array", () => {
-		const wire = {
-			threads: [
-				{
-					id: "01900000-0000-7000-8000-000000000000",
-					title: "First thread",
-					last_activity_at: 1_700_000_000_000,
-				},
-			],
-		};
-		expect(S.decodeUnknownSync(ThreadListResult)(wire)).toEqual(wire);
-	});
-
-	it("encodes back preserving last_activity_at as a number", () => {
-		const decoded = S.decodeUnknownSync(ThreadListResult)({
-			threads: [
-				{
-					id: "01900000-0000-7000-8000-000000000000",
-					title: "First thread",
-					last_activity_at: 1_700_000_000_000,
-				},
-			],
-		});
-		expect(S.encodeSync(ThreadListResult)(decoded)).toEqual({
-			threads: [
-				{
-					id: "01900000-0000-7000-8000-000000000000",
-					title: "First thread",
-					last_activity_at: 1_700_000_000_000,
-				},
-			],
-		});
-	});
-});
-
 describe("EntityRow", () => {
 	const wire = {
 		id: "01900000-0000-7000-8000-000000000030",
@@ -577,61 +269,6 @@ describe("EntityRow", () => {
 		created_at: 1_700_000_000_000,
 		updated_at: 1_700_000_000_000,
 	};
-
-	it("decodes a row with opaque data and encodes back unchanged", () => {
-		const decoded = S.decodeUnknownSync(EntityRow)(wire);
-		expect(decoded).toEqual(wire);
-		expect(S.encodeSync(EntityRow)(decoded)).toEqual(wire);
-	});
-
-	it("decodes resolved Journal Entry refs when present", () => {
-		const withRefs = {
-			...wire,
-			type: "journal_entry",
-			data: {
-				occurred_at: "2026-06-10T10:30:00",
-				body: [
-					{ type: "text", text: "Met " },
-					{
-						type: "entity_ref",
-						ref_id: "01900000-0000-7000-8000-0000000000f1",
-					},
-				],
-			},
-			refs: [
-				{
-					id: "01900000-0000-7000-8000-0000000000f1",
-					source_entity_id: "01900000-0000-7000-8000-000000000030",
-					target_entity_id: "01900000-0000-7000-8000-0000000000a1",
-					target_entity_type: "person",
-					target_title: "Ada Lovelace",
-					label_snapshot: "Ada",
-				},
-			],
-		};
-
-		const decoded = S.decodeUnknownSync(EntityRow)(withRefs);
-		expect(decoded).toEqual(withRefs);
-		expect(S.encodeSync(EntityRow)(decoded)).toEqual(withRefs);
-	});
-
-	it("decodes Todo person_refs when present (ADR-0032)", () => {
-		const withPersonRefs = {
-			...wire,
-			data: { title: "Send Alice the schedule", status: "active" },
-			person_refs: [
-				{
-					person_id: "01900000-0000-7000-8000-0000000000a1",
-					role: "waiting_on",
-				},
-				{ person_id: "01900000-0000-7000-8000-0000000000a2", role: "related" },
-			],
-		};
-
-		const decoded = S.decodeUnknownSync(EntityRow)(withPersonRefs);
-		expect(decoded).toEqual(withPersonRefs);
-		expect(S.encodeSync(EntityRow)(decoded)).toEqual(withPersonRefs);
-	});
 
 	it("rejects a person_ref with an unknown role", () => {
 		expect(() =>
@@ -652,49 +289,9 @@ describe("EntityRow", () => {
 		const { type: _omit, ...noType } = wire;
 		expect(() => S.decodeUnknownSync(EntityRow)(noType)).toThrow();
 	});
-
-	it("decodes a Message-source provenance row (ADR-0030)", () => {
-		const withMessageSource = {
-			...wire,
-			source: {
-				thread_id: "01900000-0000-7000-8000-0000000000c1",
-				thread_title: "Morning brain dump",
-			},
-		};
-		const decoded = S.decodeUnknownSync(EntityRow)(withMessageSource);
-		expect(decoded).toEqual(withMessageSource);
-		expect(S.encodeSync(EntityRow)(decoded)).toEqual(withMessageSource);
-	});
-
-	it("decodes a Journal-Entry-source provenance row (ADR-0030)", () => {
-		const withJournalSource = {
-			...wire,
-			source: { journal_entry_id: "01900000-0000-7000-8000-0000000000j1" },
-		};
-		const decoded = S.decodeUnknownSync(EntityRow)(withJournalSource);
-		expect(decoded).toEqual(withJournalSource);
-		expect(S.encodeSync(EntityRow)(decoded)).toEqual(withJournalSource);
-	});
 });
 
 describe("EntityListResult", () => {
-	it("decodes an entities array and encodes back unchanged", () => {
-		const wire = {
-			entities: [
-				{
-					id: "01900000-0000-7000-8000-000000000030",
-					type: "todo",
-					data: { title: "buy milk", done: false },
-					created_at: 1_700_000_000_000,
-					updated_at: 1_700_000_000_000,
-				},
-			],
-		};
-		const decoded = S.decodeUnknownSync(EntityListResult)(wire);
-		expect(decoded).toEqual(wire);
-		expect(S.encodeSync(EntityListResult)(decoded)).toEqual(wire);
-	});
-
 	it("decodes an empty entities array", () => {
 		expect(S.decodeUnknownSync(EntityListResult)({ entities: [] })).toEqual({
 			entities: [],
@@ -703,15 +300,6 @@ describe("EntityListResult", () => {
 });
 
 describe("EntityListParams", () => {
-	it("decodes a type and encodes back to the same wire shape", () => {
-		const wire = { type: "person" };
-		const decoded = S.decodeUnknownSync(EntityListParams)(wire);
-		expect(decoded).toEqual(wire);
-		// The Client ENCODES this param onto the wire, so guard the encode
-		// mirror too (the Rust side decodes it).
-		expect(S.encodeSync(EntityListParams)(decoded)).toEqual(wire);
-	});
-
 	it("rejects a missing type", () => {
 		expect(() => S.decodeUnknownSync(EntityListParams)({})).toThrow();
 	});
@@ -722,15 +310,6 @@ describe("EntityListParams", () => {
 });
 
 describe("MessageSearchParams", () => {
-	it("decodes a query and encodes back to the same wire shape", () => {
-		const wire = { query: "daycare" };
-		const decoded = S.decodeUnknownSync(MessageSearchParams)(wire);
-		expect(decoded).toEqual(wire);
-		// The Client ENCODES this param onto the wire, so guard the encode
-		// mirror too (the Rust side decodes it).
-		expect(S.encodeSync(MessageSearchParams)(decoded)).toEqual(wire);
-	});
-
 	it("rejects a missing query", () => {
 		expect(() => S.decodeUnknownSync(MessageSearchParams)({})).toThrow();
 	});
@@ -759,11 +338,6 @@ describe("MessageHit", () => {
 		expect(S.encodeSync(MessageHit)(decoded)).toEqual(wire);
 	});
 
-	it("decodes an assistant-role hit", () => {
-		const assistant = { ...wire, role: "assistant" };
-		expect(S.decodeUnknownSync(MessageHit)(assistant)).toEqual(assistant);
-	});
-
 	it("rejects an unknown role", () => {
 		expect(() =>
 			S.decodeUnknownSync(MessageHit)({ ...wire, role: "system" }),
@@ -778,25 +352,6 @@ describe("MessageHit", () => {
 });
 
 describe("MessageSearchResult", () => {
-	it("decodes a hits array and encodes back unchanged", () => {
-		const wire = {
-			hits: [
-				{
-					message_id: "01900000-0000-7000-8000-000000000040",
-					thread_id: "01900000-0000-7000-8000-000000000000",
-					run_id: "01900000-0000-7000-8000-000000000001",
-					role: "user",
-					snippet: "...the daycare schedule...",
-					thread_title: "Planning the week",
-					created_at: 1_700_000_000_000,
-				},
-			],
-		};
-		const decoded = S.decodeUnknownSync(MessageSearchResult)(wire);
-		expect(decoded).toEqual(wire);
-		expect(S.encodeSync(MessageSearchResult)(decoded)).toEqual(wire);
-	});
-
 	it("decodes an empty hits array", () => {
 		expect(S.decodeUnknownSync(MessageSearchResult)({ hits: [] })).toEqual({
 			hits: [],
@@ -805,115 +360,12 @@ describe("MessageSearchResult", () => {
 });
 
 describe("ThreadGetParams", () => {
-	it("decodes a thread_id", () => {
-		const wire = { thread_id: "01900000-0000-7000-8000-000000000000" };
-		expect(S.decodeUnknownSync(ThreadGetParams)(wire)).toEqual(wire);
-	});
-
 	it("rejects a missing thread_id", () => {
 		expect(() => S.decodeUnknownSync(ThreadGetParams)({})).toThrow();
 	});
 });
 
-describe("MessageView", () => {
-	it("decodes all snake_case fields, including tool_calls with and without arg", () => {
-		const wire = {
-			id: "01900000-0000-7000-8000-000000000000",
-			role: "assistant",
-			status: "completed",
-			run_id: "01900000-0000-7000-8000-000000000001",
-			text: "echo: hi",
-			tool_calls: [
-				{ name: "search_entities", status: "completed", arg: "Lev" },
-				{ name: "read_thread", status: "completed" },
-			],
-		};
-		expect(S.decodeUnknownSync(MessageView)(wire)).toEqual(wire);
-	});
-
-	it("decodes an empty tool_calls array (user Message / no tool call)", () => {
-		const wire = {
-			id: "01900000-0000-7000-8000-000000000000",
-			role: "user",
-			status: "completed",
-			run_id: "01900000-0000-7000-8000-000000000001",
-			text: "hi",
-			tool_calls: [],
-		};
-		expect(S.decodeUnknownSync(MessageView)(wire)).toEqual(wire);
-	});
-});
-
-describe("ThreadGetResult", () => {
-	it("decodes thread header plus a messages array", () => {
-		const wire = {
-			thread_id: "01900000-0000-7000-8000-000000000000",
-			title: "First thread",
-			messages: [
-				{
-					id: "01900000-0000-7000-8000-000000000002",
-					role: "user",
-					status: "completed",
-					run_id: "01900000-0000-7000-8000-000000000001",
-					text: "hi",
-					tool_calls: [],
-				},
-				{
-					id: "01900000-0000-7000-8000-000000000003",
-					role: "assistant",
-					status: "streaming",
-					run_id: "01900000-0000-7000-8000-000000000001",
-					text: "echo: hi",
-					tool_calls: [{ name: "read_thread", status: "completed" }],
-				},
-			],
-		};
-		expect(S.decodeUnknownSync(ThreadGetResult)(wire)).toEqual(wire);
-	});
-
-	it("encodes back preserving all snake_case fields", () => {
-		const wire = {
-			thread_id: "01900000-0000-7000-8000-000000000000",
-			title: "First thread",
-			messages: [
-				{
-					id: "01900000-0000-7000-8000-000000000002",
-					role: "user",
-					status: "completed",
-					run_id: "01900000-0000-7000-8000-000000000001",
-					text: "hi",
-					tool_calls: [],
-				},
-			],
-		};
-		const decoded = S.decodeUnknownSync(ThreadGetResult)(wire);
-		expect(S.encodeSync(ThreadGetResult)(decoded)).toEqual(wire);
-	});
-});
-
 describe("RunEvent", () => {
-	it("decodes a text_delta variant", () => {
-		const event = { kind: "text_delta", delta: "echo: hi" };
-		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
-	});
-
-	it("decodes a done variant", () => {
-		expect(S.decodeUnknownSync(RunEvent)({ kind: "done" })).toEqual({
-			kind: "done",
-		});
-	});
-
-	it("decodes a cancelled variant", () => {
-		expect(S.decodeUnknownSync(RunEvent)({ kind: "cancelled" })).toEqual({
-			kind: "cancelled",
-		});
-	});
-
-	it("decodes an error variant carrying a message", () => {
-		const event = { kind: "error", message: "provider rejected the request" };
-		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
-	});
-
 	it("rejects an error variant missing its message field", () => {
 		expect(() => S.decodeUnknownSync(RunEvent)({ kind: "error" })).toThrow();
 	});
@@ -926,34 +378,6 @@ describe("RunEvent", () => {
 		expect(() =>
 			S.decodeUnknownSync(RunEvent)({ kind: "text_delta" }),
 		).toThrow();
-	});
-
-	it.each([
-		"started",
-		"completed",
-		"error",
-	] as const)("decodes a tool_call variant with status %s", (status) => {
-		const event = {
-			kind: "tool_call",
-			tool_call_id: "tc_01",
-			name: "read_thread",
-			status,
-		};
-		expect(S.decodeUnknownSync(RunEvent)(event)).toEqual(event);
-	});
-
-	it("round-trips a tool_call variant carrying a display arg (ADR-0043)", () => {
-		const event = {
-			kind: "tool_call",
-			tool_call_id: "tc_02",
-			name: "search_entities",
-			status: "started",
-			arg: "Lev",
-		};
-		const decoded = S.decodeUnknownSync(RunEvent)(event);
-		expect(decoded).toEqual(event);
-		// Lock the encode direction too: optional `arg` must survive the round trip.
-		expect(S.encodeSync(RunEvent)(decoded)).toEqual(event);
 	});
 
 	it("rejects a tool_call with an unknown status", () => {
@@ -1002,20 +426,6 @@ describe("WorkerOutbound", () => {
 });
 
 describe("ProviderStatusResult", () => {
-	it("decodes a providers array with connection flags", () => {
-		const wire = { providers: [{ id: "openai-codex", connected: false }] };
-		expect(S.decodeUnknownSync(ProviderStatusResult)(wire)).toEqual(wire);
-	});
-
-	it("encodes back to the same wire shape", () => {
-		const decoded = S.decodeUnknownSync(ProviderStatusResult)({
-			providers: [{ id: "openai-codex", connected: true }],
-		});
-		expect(S.encodeSync(ProviderStatusResult)(decoded)).toEqual({
-			providers: [{ id: "openai-codex", connected: true }],
-		});
-	});
-
 	it("rejects a non-boolean connected", () => {
 		expect(() =>
 			S.decodeUnknownSync(ProviderStatusResult)({
@@ -1026,26 +436,12 @@ describe("ProviderStatusResult", () => {
 });
 
 describe("ProviderLoginStartResult", () => {
-	it("decodes an authorize_url", () => {
-		const wire = { authorize_url: "https://auth.openai.com/oauth/authorize" };
-		expect(S.decodeUnknownSync(ProviderLoginStartResult)(wire)).toEqual(wire);
-	});
-
 	it("rejects a missing authorize_url", () => {
 		expect(() => S.decodeUnknownSync(ProviderLoginStartResult)({})).toThrow();
 	});
 });
 
 describe("ProviderLoginStartParams", () => {
-	it("decodes a provider and encodes back to the same wire shape", () => {
-		const wire = { provider: "openai-codex" };
-		const decoded = S.decodeUnknownSync(ProviderLoginStartParams)(wire);
-		expect(decoded).toEqual(wire);
-		// The Client ENCODES this param onto the wire, so guard the encode
-		// mirror too (the Rust side decodes it).
-		expect(S.encodeSync(ProviderLoginStartParams)(decoded)).toEqual(wire);
-	});
-
 	it("rejects a missing provider", () => {
 		expect(() => S.decodeUnknownSync(ProviderLoginStartParams)({})).toThrow();
 	});
@@ -1080,14 +476,6 @@ describe("WorkerManifest", () => {
 		expect(S.decodeUnknownSync(WorkerManifest)(noToken)).toEqual(noToken);
 	});
 
-	it("decodes an empty history and empty tools", () => {
-		const minimal = { ...valid, messages: [], access_token: undefined };
-		const { access_token: _o, ...expected } = minimal;
-		expect(S.decodeUnknownSync(WorkerManifest)({ ...expected })).toEqual(
-			expected,
-		);
-	});
-
 	it("rejects an unknown thinking_level", () => {
 		expect(() =>
 			S.decodeUnknownSync(WorkerManifest)({
@@ -1111,24 +499,6 @@ describe("WorkerManifest", () => {
 		expect(() => S.decodeUnknownSync(WorkerManifest)(noRunId)).toThrow();
 	});
 
-	it("decodes a manifest whose tools carry descriptor objects", () => {
-		const withTools = {
-			...valid,
-			workflow: {
-				...valid.workflow,
-				tools: [
-					{
-						name: "read_file",
-						description: "Read a file from disk.",
-						label: "Read file",
-						json_schema: { type: "object", properties: {} },
-					},
-				],
-			},
-		};
-		expect(S.decodeUnknownSync(WorkerManifest)(withTools)).toEqual(withTools);
-	});
-
 	it("rejects a bare-string entry in workflow.tools", () => {
 		expect(() =>
 			S.decodeUnknownSync(WorkerManifest)({
@@ -1136,38 +506,6 @@ describe("WorkerManifest", () => {
 				workflow: { ...valid.workflow, tools: ["read_file"] },
 			}),
 		).toThrow();
-	});
-
-	it("decodes mode: resume with a typed-block resume transcript (ADR-0025)", () => {
-		const resume = {
-			...valid,
-			mode: "resume",
-			messages: [
-				{ role: "user", text: "remember to buy milk" },
-				{
-					role: "assistant",
-					tool_calls: [
-						{
-							id: "tc_1",
-							name: "propose_workspace_mutation",
-							arguments: {
-								mutation_kind: "create_journal_entry",
-								payload: {
-									occurred_at: "2026-06-10T10:30:00",
-									body: [{ type: "text", text: "Bought milk." }],
-								},
-							},
-						},
-					],
-				},
-				{
-					role: "tool_result",
-					tool_call_id: "tc_1",
-					content: "Accepted. Created Journal Entry.",
-				},
-			],
-		};
-		expect(S.decodeUnknownSync(WorkerManifest)(resume)).toEqual(resume);
 	});
 
 	it("decodes mode: fresh and a tool_result carrying is_error", () => {
@@ -1205,13 +543,6 @@ describe("WorkerManifest", () => {
 });
 
 describe("ToolTextContent / AgentToolResult", () => {
-	it("decodes a content array of text blocks", () => {
-		const wire = {
-			content: [{ type: "text", text: "file contents" }],
-		};
-		expect(S.decodeUnknownSync(AgentToolResult)(wire)).toEqual(wire);
-	});
-
 	it("decodes optional details and terminate", () => {
 		const wire = {
 			content: [{ type: "text", text: "ok" }],
@@ -1252,15 +583,6 @@ describe("ToolRequest", () => {
 		params: { path: "/etc/hosts" },
 	};
 
-	it("decodes a valid tool_request with opaque params", () => {
-		expect(S.decodeUnknownSync(ToolRequest)(valid)).toEqual(valid);
-	});
-
-	it("encodes back to the same snake_case wire shape", () => {
-		const decoded = S.decodeUnknownSync(ToolRequest)(valid);
-		expect(S.encodeSync(ToolRequest)(decoded)).toEqual(valid);
-	});
-
 	it("rejects a missing tool_call_id", () => {
 		const { tool_call_id: _omit, ...noId } = valid;
 		expect(() => S.decodeUnknownSync(ToolRequest)(noId)).toThrow();
@@ -1286,19 +608,6 @@ describe("ToolResult", () => {
 		tool_call_id: "call_1",
 		outcome: { err: { code: "not_found", message: "no such file" } },
 	};
-
-	it("decodes an ok outcome carrying an AgentToolResult", () => {
-		expect(S.decodeUnknownSync(ToolResult)(ok)).toEqual(ok);
-	});
-
-	it("decodes an err outcome carrying a code and message", () => {
-		expect(S.decodeUnknownSync(ToolResult)(err)).toEqual(err);
-	});
-
-	it("encodes the ok outcome back to the same wire shape", () => {
-		const decoded = S.decodeUnknownSync(ToolResult)(ok);
-		expect(S.encodeSync(ToolResult)(decoded)).toEqual(ok);
-	});
 
 	it("rejects a missing tool_call_id", () => {
 		const { tool_call_id: _omit, ...noId } = ok;
@@ -1328,15 +637,6 @@ describe("CoreToolDescriptor", () => {
 		label: "Read file",
 		json_schema: { type: "object", properties: { path: { type: "string" } } },
 	};
-
-	it("decodes a descriptor with an opaque json_schema", () => {
-		expect(S.decodeUnknownSync(CoreToolDescriptor)(valid)).toEqual(valid);
-	});
-
-	it("encodes back to the same wire shape", () => {
-		const decoded = S.decodeUnknownSync(CoreToolDescriptor)(valid);
-		expect(S.encodeSync(CoreToolDescriptor)(decoded)).toEqual(valid);
-	});
 
 	it("rejects a missing label", () => {
 		const { label: _omit, ...noLabel } = valid;

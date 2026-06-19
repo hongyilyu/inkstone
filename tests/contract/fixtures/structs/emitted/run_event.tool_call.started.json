@@ -1,0 +1,7 @@
+{
+  "arg": "Lev",
+  "kind": "tool_call",
+  "name": "search_entities",
+  "status": "started",
+  "tool_call_id": "tc_01"
+}

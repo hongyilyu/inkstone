@@ -1,0 +1,14 @@
+{
+  "entities": [
+    {
+      "created_at": 1700000000000,
+      "data": {
+        "title": "Docs",
+        "url": "https://x"
+      },
+      "id": "0190d3c1-0000-7000-8000-000000000001",
+      "type": "bookmark",
+      "updated_at": 1700000000000
+    }
+  ]
+}

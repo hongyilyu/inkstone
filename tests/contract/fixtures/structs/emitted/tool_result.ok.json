@@ -1,0 +1,15 @@
+{
+  "kind": "tool_result",
+  "outcome": {
+    "ok": {
+      "content": [
+        {
+          "text": "{\"messages\":[]}",
+          "type": "text"
+        }
+      ]
+    }
+  },
+  "run_id": "0190d3c1-0000-7000-8000-000000000003",
+  "tool_call_id": "tc_01"
+}

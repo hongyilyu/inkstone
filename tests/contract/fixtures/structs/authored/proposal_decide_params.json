@@ -1,0 +1,11 @@
+{
+  "proposal_id": "0190d3c1-0000-7000-8000-000000000002",
+  "decision": "accept",
+  "decisions": [
+    { "handle": "@je", "decision": "accept" },
+    { "handle": "@leadads", "decision": "reject" },
+    { "handle": "@morris", "decision": "accept", "entity_id": "0190d3c1-0000-7000-8000-000000000001" },
+    { "handle": "@rodeo", "decision": "accept", "edited_fields": { "title": "Fixed" } }
+  ],
+  "decision_idempotency_key": "k-graph"
+}

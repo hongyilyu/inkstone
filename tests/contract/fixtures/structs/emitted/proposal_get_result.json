@@ -1,0 +1,58 @@
+{
+  "mutation_kind": "apply_intent_graph",
+  "payload": {},
+  "proposal_id": "0190d3c1-0000-7000-8000-000000000002",
+  "rationale": "because",
+  "resolved_plan": [
+    {
+      "disposition": "create",
+      "handle": "@rodeo",
+      "label": "Figure out the Rodeo side",
+      "near_matches": [
+        {
+          "entity_id": "0190d3c1-0000-7000-8000-000000000001",
+          "label": "Figure out Rodeo"
+        }
+      ],
+      "type": "todo"
+    },
+    {
+      "disposition": "reuse",
+      "entity_id": "0190d3c1-0000-7000-8000-000000000001",
+      "handle": "@leadads",
+      "label": "Lead Ads",
+      "type": "project"
+    },
+    {
+      "candidates": [
+        {
+          "entity_id": "0190d3c1-0000-7000-8000-000000000002",
+          "label": "Morris"
+        }
+      ],
+      "disposition": "ambiguous",
+      "handle": "@morris",
+      "label": "Morris",
+      "type": "person"
+    }
+  ],
+  "review_context": {
+    "current_journal_entry": {
+      "body": [
+        {
+          "text": "Bought ",
+          "type": "text"
+        },
+        {
+          "ref_id": "0190d3c1-0000-7000-8000-000000000001",
+          "type": "entity_ref"
+        }
+      ],
+      "ended_at": "2026-06-10T10:45:00",
+      "entity_id": "0190d3c1-0000-7000-8000-000000000002",
+      "occurred_at": "2026-06-10T10:30:00"
+    }
+  },
+  "run_id": "0190d3c1-0000-7000-8000-000000000003",
+  "status": "pending"
+}
