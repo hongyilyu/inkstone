@@ -1966,3 +1966,138 @@ mod mirror_tests {
         assert_eq!(serde_json::to_value(&empty).unwrap(), json!({ "hits": [] }));
     }
 }
+
+/// Non-payload wire-message parity fixtures (the contract-test leg ADR-0009 was
+/// originally written about, finished as-built). The 14 agent-proposable
+/// *payloads* are gated by `propose_workspace_mutation.rs`'s schema-vs-schema
+/// fixtures; this module gates the ~31 plain serde wire structs INSTANCE-based:
+/// Core serializes one canonical instance per Serialize-capable message to a
+/// committed fixture (ground truth — the exact bytes the real serde path emits),
+/// and the `@inkstone/contract` TS gate decodes + re-encodes that fixture against
+/// the hand-authored Effect Schema. A field added/omitted/mistyped on EITHER side
+/// turns the TS gate red against the one shared artifact.
+///
+/// Deserialize-only params (the 13 `*Params`, `WorkerStdout`, `NodeDecision`) are
+/// the OTHER half (grilling Q2): Core never serializes them in production, so
+/// their fixtures are HAND-AUTHORED canonical wire JSON committed under
+/// `fixtures/structs/authored/`. This module's `authored_fixtures_parse` self-lock
+/// asserts each one round-trips through the Rust `Deserialize` (the producer-side
+/// check); the TS gate decodes them against the Effect Schema (the consumer side).
+///
+/// Like the payload gate, the emitter MUST live inline in `src/` (not
+/// `crates/core/tests/`): `crates/core` is binary-only, so these `pub(crate)`
+/// types are unreachable from an integration-test crate. The self-lock embeds the
+/// committed fixtures via `include_str!` (compile-time) to dodge a disk-read race
+/// with the concurrent writer test.
+#[cfg(test)]
+mod parity_fixtures {
+    use super::*;
+    use serde_json::json;
+    use std::path::Path;
+
+    // Shared id constants — identical spelling to the values baked into the
+    // committed fixtures, so the round-trip comparison is exact.
+    const UUID_A: &str = "0190d3c1-0000-7000-8000-000000000001";
+
+    /// The Serialize-capable messages Core EMITS as fixtures. Each entry is
+    /// `(filename, serialized-JSON)`: the writer dumps the JSON to
+    /// `fixtures/structs/emitted/<filename>`, and the self-lock re-dumps the same
+    /// instance and asserts it equals the committed bytes. ONE source of truth for
+    /// both halves — the writer can never drift from what the lock checks.
+    ///
+    /// Grows per slice (slice 1 seeds one message to exercise the harness; slices
+    /// 3–4 fill results/notifications/protocol). Maximal/omitted pairs and union
+    /// variants are distinct entries with distinct filenames.
+    fn emitted_fixtures() -> Vec<(&'static str, String)> {
+        let pretty = |v: &serde_json::Value| {
+            let mut s = serde_json::to_string_pretty(v).expect("fixture serializes");
+            s.push('\n');
+            s
+        };
+        vec![(
+            "post_message_result.json",
+            pretty(
+                &serde_json::to_value(PostMessageResult {
+                    run_id: UUID_A.to_string(),
+                })
+                .expect("PostMessageResult serializes"),
+            ),
+        )]
+    }
+
+    /// Dump every emitted fixture to `tests/contract/fixtures/structs/emitted/`.
+    /// Deterministic (serde sorts object keys; pretty-print + trailing newline), so
+    /// CI re-runs it and `git diff --exit-code` is the staleness gate — exactly the
+    /// payload gate's contract. CI regenerates ONLY this dir; `authored/` is
+    /// hand-maintained and never regenerated.
+    #[test]
+    fn regenerate_struct_fixtures() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("tests/contract/fixtures/structs/emitted");
+        std::fs::create_dir_all(&dir).expect("create emitted fixtures dir");
+        for (file, json) in emitted_fixtures() {
+            let path = dir.join(file);
+            std::fs::write(&path, json).unwrap_or_else(|e| panic!("write {path:?}: {e}"));
+        }
+    }
+
+    /// Lift CI's `git diff --exit-code` into the test suite so `cargo test` ITSELF
+    /// bites on a stale emitted fixture. The committed bytes are EMBEDDED via
+    /// `include_str!` (compile-time, NOT a disk read): `regenerate_struct_fixtures`
+    /// rewrites the same files and runs concurrently in this binary — a disk read
+    /// would race the writer and tear. Both sides parse to `Value` before asserting
+    /// (robust to trailing-newline / whitespace), naming the stale file on mismatch.
+    #[test]
+    fn emitted_fixtures_match_committed() {
+        // (filename, committed bytes). `include_str!` resolves relative to this
+        // source file (`crates/core/src/protocol.rs`): `../../../tests/contract/…`.
+        let committed: &[(&str, &str)] = &[(
+            "post_message_result.json",
+            include_str!("../../../tests/contract/fixtures/structs/emitted/post_message_result.json"),
+        )];
+        // The embedded table must cover exactly what the writer emits — neither can
+        // gain or drop a fixture the other lacks.
+        let emitted = emitted_fixtures();
+        assert_eq!(
+            committed.len(),
+            emitted.len(),
+            "the embedded fixture table must cover every emitted struct fixture"
+        );
+        for (file, fresh) in emitted {
+            let raw = committed
+                .iter()
+                .find_map(|(f, raw)| (*f == file).then_some(*raw))
+                .unwrap_or_else(|| panic!("embedded fixture table is missing {file}"));
+            let committed_value: serde_json::Value = serde_json::from_str(raw)
+                .unwrap_or_else(|e| panic!("parse committed fixture {file}: {e}"));
+            let fresh_value: serde_json::Value =
+                serde_json::from_str(&fresh).expect("fresh fixture parses");
+            assert_eq!(
+                committed_value, fresh_value,
+                "committed emitted fixture {file} is stale; run `cargo test regenerate_struct_fixtures` and commit tests/contract/fixtures/structs/emitted/{file}"
+            );
+        }
+    }
+
+    /// The hand-authored params self-lock (grilling Q2): each Deserialize-only
+    /// param's committed fixture must round-trip through the Rust `Deserialize` —
+    /// the producer-side half of the gate (Core is the consumer of params in
+    /// production, so "Core accepts this shape" is the meaningful Rust check). The
+    /// TS gate independently decodes the same file against the Effect Schema. The
+    /// fixtures are NEVER regenerated — they are the canonical wire JSON Web sends,
+    /// authored by hand. `include_str!` embeds them (no disk read needed; no
+    /// concurrent writer for this dir, but kept consistent with the emitted lock).
+    #[test]
+    fn authored_fixtures_parse() {
+        let subscribe_params =
+            include_str!("../../../tests/contract/fixtures/structs/authored/subscribe_params.json");
+        let parsed: SubscribeParams =
+            serde_json::from_str(subscribe_params).expect("subscribe_params.json deserializes");
+        assert_eq!(parsed.run_id.to_string(), UUID_A);
+
+        // A sanity check that the canonical fixture is the shape we think it is.
+        let value: serde_json::Value = serde_json::from_str(subscribe_params).unwrap();
+        assert_eq!(value, json!({ "run_id": UUID_A }));
+    }
+}
