@@ -551,6 +551,35 @@ describe("ProposalCard", () => {
 		});
 	});
 
+	it("renders the journal edit fields through the shared field primitives", () => {
+		const { container } = render(
+			<ProposalCard proposal={updateProposal} onDecide={() => {}} />,
+		);
+		fireEvent.click(screen.getByRole("button", { name: /edit/i }));
+
+		// The dead `bg-card-surface/40` class painted no fill (no such token —
+		// `card-surface` is DESIGN.md's alias for `card`). The shared primitives
+		// carry the canonical `bg-card/40` chrome instead.
+		expect(container.querySelector(".bg-card-surface\\/40")).toBeNull();
+
+		const body = screen.getByRole("textbox", { name: /body/i });
+		const occurredAt = screen.getByRole("textbox", { name: /occurred at/i });
+		const endedAt = screen.getByRole("textbox", { name: /ended at/i });
+		// Each field's wrapper (the EditorField primitive's bordered box) supplies
+		// the `bg-card/40` fill the dead class never painted.
+		for (const field of [body, occurredAt, endedAt]) {
+			const wrapper = field.parentElement;
+			expect(wrapper?.className).toContain("bg-card/40");
+		}
+
+		// Body stays editable and focuses on open (the journal form's affordance).
+		fireEvent.change(body, {
+			target: { value: "Bought oat milk after daycare pickup." },
+		});
+		expect(body).toHaveValue("Bought oat milk after daycare pickup.");
+		expect(body).toHaveFocus();
+	});
+
 	it("blocks update proposals missing entity_id from accept and edit submission", () => {
 		const onDecide = vi.fn();
 		render(

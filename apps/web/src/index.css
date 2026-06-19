@@ -81,6 +81,9 @@
 @theme inline {
 	--color-background: var(--background);
 	--color-foreground: var(--foreground);
+	/* `--card` / `bg-card` IS DESIGN.md's `card-surface` alias — there is no
+	   `--color-card-surface` token, so `bg-card-surface` paints nothing. Reach for
+	   `bg-card`. */
 	--color-card: var(--card);
 	--color-card-foreground: var(--card-foreground);
 	--color-popover: var(--popover);

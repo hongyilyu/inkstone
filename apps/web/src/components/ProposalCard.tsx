@@ -73,7 +73,6 @@ import {
 	EditorTextarea,
 } from "./library/EntityEditor.js";
 import { Card } from "./ui/card.js";
-import { Input } from "./ui/input.js";
 
 const TODO_STATUS_OPTIONS: { value: TodoEditStatus; label: string }[] = [
 	{ value: "active", label: "Active" },
@@ -662,7 +661,6 @@ function SingleEntityProposalCard({
 			: showProjectForm
 				? projectNameEmpty
 				: updateTodoTitleEmpty;
-	const bodyRef = useRef<HTMLTextAreaElement>(null);
 	const openEdit = () => {
 		if (!canEdit) return;
 		if (isCreateTodo) {
@@ -686,11 +684,6 @@ function SingleEntityProposalCard({
 		}
 		setEditing(true);
 	};
-	useEffect(() => {
-		// The journal form focuses its body textarea on open; each GTD form focuses
-		// its required field via the input's autoFocus (EditorInput forwards no ref).
-		if (editing && !isGtdEdit) bodyRef.current?.focus();
-	}, [editing, isGtdEdit]);
 	const saveEdit = () => {
 		if (inFlight !== null || proposal.status === "deciding") return;
 		if (editIssue !== null) return;
@@ -1010,43 +1003,28 @@ function SingleEntityProposalCard({
 						}}
 						className="flex flex-col gap-3 border-border border-t pt-3"
 					>
-						<label
-							className="flex flex-col gap-1.5"
-							htmlFor={occurredAtInputId}
-						>
-							<span className="text-xs font-medium text-muted-foreground">
-								Occurred at
-							</span>
-							<Input
+						<EditorField label="Occurred at" htmlFor={occurredAtInputId}>
+							<EditorInput
 								id={occurredAtInputId}
 								value={editOccurredAt}
 								onChange={(event) => setEditOccurredAt(event.target.value)}
-								className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
 							/>
-						</label>
-						<label className="flex flex-col gap-1.5" htmlFor={endedAtInputId}>
-							<span className="text-xs font-medium text-muted-foreground">
-								Ended at
-							</span>
-							<Input
+						</EditorField>
+						<EditorField label="Ended at" htmlFor={endedAtInputId}>
+							<EditorInput
 								id={endedAtInputId}
 								value={editEndedAt}
 								onChange={(event) => setEditEndedAt(event.target.value)}
-								className="rounded-lg border border-input bg-card-surface/40 px-3 py-2 focus-visible:ring-1 focus-visible:ring-ring"
 							/>
-						</label>
-						<label className="flex flex-col gap-1.5" htmlFor={bodyInputId}>
-							<span className="text-xs font-medium text-muted-foreground">
-								Body
-							</span>
-							<textarea
+						</EditorField>
+						<EditorField label="Body" htmlFor={bodyInputId}>
+							<EditorTextarea
 								id={bodyInputId}
-								ref={bodyRef}
+								autoFocus
 								value={editBody}
 								onChange={(event) => setEditBody(event.target.value)}
-								className="min-h-24 rounded-lg border border-input bg-card-surface/40 px-3 py-2 text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 							/>
-						</label>
+						</EditorField>
 						{editIssue ? (
 							<p role="alert" className="text-sm text-destructive">
 								Edit required fields: {editIssue}.
