@@ -1,6 +1,6 @@
 # Learned rules — Security (`security`)
 
-_16 rules. Loaded by the `dr-security` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_18 rules. Loaded by the `dr-security` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Validate and normalize untrusted paths (and use literal pathspecs) before passing them to file/VCS APIs  ·  `validate-untrusted-path-before-file-api`
 - **Severity:** blocking  ·  **Support:** 4  ·  **Seen in:** #2037, #25403, #30722
@@ -42,6 +42,11 @@ _16 rules. Loaded by the `dr-security` specialist. Generated from rules.json —
 - **Rule:** A server exposing actionable endpoints (prompt/exec/agent control) must not default its bind host to 0.0.0.0 while authentication is only enforced when an optional token happens to be set. Default to 127.0.0.1, or require/auto-generate a token before binding to a non-loopback interface. Also bracket IPv6 literals when interpolating host into URLs.
 - **Detect:** Grep for default host literals like host:"0.0.0.0" or listen(port,"0.0.0.0") where auth is gated on a possibly-empty token (if (token && ...)); and template URLs http://${host}:${port} where host may be an IPv6 literal and is not bracketed.
 
+## Statement-boundary regex used as a guard must treat newline as a separator  ·  `statement-boundary-regex-must-include-newline-separator`
+- **Severity:** blocking  ·  **Support:** 1  ·  **Seen in:** #177
+- **Rule:** A regex that anchors a match to a shell/command statement boundary — used to detect or block a command (`git push`, `gh pr create`, `rm`) anywhere in a possibly-multiline payload — must include the newline as a valid statement separator alongside `^ ; & | (`. Omitting `\n` from the boundary character class lets a multiline command bypass detection entirely (the dangerous statement on a fresh line is never matched), defeating a security/policy gate. Include `\n` (and `\r`) in the separator class, and test a multiline input.
+- **Detect:** Find a boundary regex like `(?:^|[;&|(])\s*` (or similar) whose character class of statement separators is used to detect a command in user-controlled or multiline text. Ask: does the class include `\n`? If a command can appear after a newline in the payload, a missing `\n` makes the guard bypassable. Confirm with a multiline test fixture.
+
 ## Do not log or export raw user content, secret-bearing errors, or identifying paths  ·  `no-sensitive-data-in-logs-or-diagnostics`
 - **Severity:** important  ·  **Support:** 3  ·  **Seen in:** #25615, #26262, #29208
 - **Rule:** Do not write raw user-supplied content (question/prompt/message bodies), full pretty-printed exceptions/causes whose message can embed parsed secret/config input, or user-identifying details (absolute home/userData paths, env vars) into logs or shareable diagnostic bundles. Log only redacted identifiers/metadata (IDs, error type/name/location) and redact before generating any exportable archive. Treat info/warn-level logging of free-text input fields as the primary flag.
@@ -76,6 +81,11 @@ _16 rules. Loaded by the `dr-security` specialist. Generated from rules.json —
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #32479
 - **Rule:** Building a single command string by interpolating a variable (path, filename, user/FS-derived value) and passing it to a shell-executing API runs through the shell: it is brittle (quoting/escaping) and a command-injection vector. Invoke the executable directly with an args array (execFile/spawn/execFileSync or the project's args-array helper) so arguments are passed verbatim and never shell-interpreted.
 - **Detect:** Grep for execSync/exec/`child_process.exec`/`sh -c`/`bash -c`/`powershell -Command "..."` whose sole argument is a template literal that interpolates a variable (e.g. ``execSync(`tool ${x}`)``). Then ask: (1) is the interpolated value FS-, filename-, or otherwise externally derived (paths with spaces/quotes/`$`/`;` are both a quoting bug AND an injection vector)? and (2) would an args-array form (execFile/execFileSync/spawn with `[args]`, or the project's args-array helper) pass it verbatim and avoid the shell entirely? Flag the shell-string form even when it sits next to a sibling that already uses the args-array API (a regression that collapsed an array invocation into a string is the strongest signal).
+
+## Escape untrusted/external values before interpolating them into a CSS selector string  ·  `escape-untrusted-values-interpolated-into-css-selectors`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #187
+- **Rule:** When a value you do not fully control (a URL search param, route param, server-supplied id, or any user-influenced string) is interpolated into a CSS selector string passed to querySelector/querySelectorAll/matches/closest, escape it with CSS.escape(value) (or validate it against a strict format). A raw value containing selector metacharacters (", ], \, whitespace, #, .) can break the selector (throwing or mis-parsing) or match unintended elements, turning a focus/scroll/highlight lookup into a no-op or a wrong-target hit. CSS.escape is the standard, allocation-cheap fix; reserve format validation for cases where the id should be a known shape (e.g. a UUID).
+- **Detect:** grep for template literals embedded in a selector passed to querySelector/querySelectorAll/closest/matches: /querySelector(All)?\(`[^`]*\$\{/ or an attribute selector like `[data-x="${v}"]`. For each, trace v's origin; if it comes from URL/search params, route params, network/server data, or user input and is NOT wrapped in CSS.escape() or pre-validated to a safe charset, flag it. Plain literals or values already CSS.escape()'d are fine.
 
 ## Don't surface internal identifiers into user-facing display text  ·  `no-internal-ids-in-user-facing-text`
 - **Severity:** nit  ·  **Support:** 1  ·  **Seen in:** #130

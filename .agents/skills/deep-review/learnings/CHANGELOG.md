@@ -2,6 +2,45 @@
 
 Append-only. Each entry records what the reviewer learned and when.
 
+## 2026-06-19 — Incremental sweep of all 3 tracked repos (inkstone + opencode + pi)
+
+- **Source:** 61 cleaned inline review comments newer than each repo's cursor —
+  `hongyilyu/inkstone` 52 (cursor → 2026-06-19T03:25:00Z), `anomalyco/opencode` 9
+  (cursor → 2026-06-19T04:52:59Z), `earendil-works/pi` 0 (caught up, cursor unchanged).
+  Reviewers: CodeRabbit, GitHub Copilot, humans.
+- **Pipeline (`/deep-review-learn`, background Workflow):** 4 parallel miners (3 inkstone chunks +
+  1 opencode) classified each comment vs the 303-rule digest → 36 top-level findings → 15 new-lesson ·
+  15 already-covered · 6 noise → 14 candidates → single adversarial verifier pass.
+- **Result:** **13 new rules added** (11 from inkstone, 2 from opencode), **13 existing rules
+  reinforced** (support_count bumped, PRs added; 15 reinforcement comments collapsed onto 13 distinct
+  rules — PR#32937 hit `docs-examples-must-be-runnable-and-true` 3×), **1 candidate dropped in
+  verification** (`binary-status-ternary-must-not-coerce-unknown-enum-values` — restates the existing
+  `dispatch-must-cover-all-producible-values`; the PR#192 bug is real but already caught).
+- **KB grew 303 → 316 rules.** New-rule mix: 11 important · 1 blocking · 1 nit (escape-dynamic-regex
+  and round-trip-codec are nits). Heaviest new coverage: testing +3, ui-react +2, security +2.
+- **Notable new lessons:**
+  - *Escape untrusted values before interpolating into a CSS selector* — a URL/route-param id dropped
+    into `querySelector(`[data-x="${v}"]`)` can break the query or hit the wrong element; use
+    `CSS.escape` (`security`, important). (inkstone #187)
+  - *A statement-boundary regex used as a guard must treat newline as a separator* — a `(?:^|[;&|(])`
+    boundary class missing `\n` lets a multiline payload smuggle `git push`/`gh pr create` past a
+    policy gate (`security`, blocking). (inkstone #177, the pre-push-PR-gate hook)
+  - *Reset local staging state when the mount key is coarser than the staged item identity* — a card
+    keyed by `run_id` but buffering per-`proposal_id` decisions leaks one proposal's choices into the
+    next; the positive converse of the existing "don't flag when key==identity" nit (`ui-react`,
+    important). (inkstone #188)
+  - *A derived "Edited" badge must be gated on the same condition that submits the edit* — a rejected
+    node showing "Edited" while `buildDecisions` sends no `edited_fields` is a dishonest indicator
+    (`ui-react`, important). (inkstone #189)
+  - *Fail fast on a missing required field instead of a placeholder sentinel* — `unwrap_or("unknown")`
+    on a provenance id bakes a misleading value into model-facing output and survives a wiring
+    regression silently (`error-handling`, important). (inkstone #176)
+  - *A compat version range must keep an upper bound* — relaxing a runtime guard to open-ended `>=x.y.z`
+    admits every future breaking major (`api-compat`, important). (opencode #32827)
+  - *A specialized test config must scope discovery to its own subtree* — `testDir: ".."` runs the whole
+    e2e tree under uncapped/perf flags once the opt-in env gate is satisfied (`testing`, important).
+    (opencode #32937)
+
 ## 2026-06-17 — Incremental sweep of all 3 tracked repos (inkstone + opencode + pi)
 
 - **Source:** 91 cleaned inline review comments newer than each repo's cursor —

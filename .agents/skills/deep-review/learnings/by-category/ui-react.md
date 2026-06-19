@@ -1,6 +1,6 @@
 # Learned rules — UI (React/Solid) (`ui-react`)
 
-_38 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_40 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Don't replace a wired feature with a placeholder shell on the mainline  ·  `do-not-orphan-wired-feature-behind-placeholder-shell`
 - **Severity:** blocking  ·  **Support:** 3  ·  **Seen in:** #10, #70, #2037
@@ -161,6 +161,16 @@ _38 rules. Loaded by the `dr-ui-react` specialist. Generated from rules.json —
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #32479
 - **Rule:** In an event handler that intends to fully own an action (e.g. suppress the platform/terminal default via preventDefault), any await before that suppression lets the default behavior fire during the async gap, causing duplicated or unwanted side effects. Move preventDefault (or the equivalent claim) before the first await on every path that means to take over handling.
 - **Detect:** In an event/keypress/paste handler, find an `await` that precedes `event.preventDefault()` (or stopPropagation/the suppression call) on a path that handles the event itself. Compare against sibling paths in the same handler that call preventDefault synchronously. Ask: can the default action run during the await, producing a duplicate insertion/navigation?
+
+## A derived edit/override indicator must be gated on the same condition that submits the edit  ·  `derived-edit-indicator-must-match-submit-condition`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #189
+- **Rule:** A UI indicator that signals a row has been edited/overridden (an "Edited" badge, a dirty dot, a modified marker) must be computed under the exact same condition that determines whether the edit is actually submitted. If the badge is derived only from "a draft exists and differs from the seed" but the submit path additionally requires the row to be in an accept/active stage (skipping edited_fields for rejected/disabled rows), then a rejected/inactive row can display "Edited" while no correction is ever sent — a dishonest indicator. Add the stage/accept gate (and any other submit precondition) to the derived flag so the badge can only show when the edit will genuinely take effect.
+- **Detect:** Find a derived boolean for an edited/modified/overridden badge built from draft-vs-seed difference (e.g. `draft !== undefined && buildEditedFields(seed, draft) !== undefined`) and compare it to the submit/decision builder for the same row. Ask: does the submit path apply this edit unconditionally, or does it also require an accept/enabled stage that the badge expression omits — letting a rejected/disabled row show "Edited" while sending no correction?
+
+## Reset local per-item draft/staging state when the component's mount key is coarser than the item identity it stages  ·  `reset-local-staging-state-when-keyed-identity-is-coarser-than-item-identity`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #188
+- **Rule:** When a long-lived component accumulates local draft/staging state (a per-row decision buffer, an edit form, accumulated selections) that is scoped to a specific item identity, but the component is mounted/keyed by a COARSER identity (a parent key that does not change when the item does), the local state survives across item switches and leaks one item's choices into the next. Add an effect that resets the local state whenever the fine-grained item identity changes (useEffect(() => setBuffer(initial), [item.id])), or remount by keying on the fine-grained identity. This is the converse of the carve-out that says not to flag a reset when the parent already keys on the exact identity: here the key (e.g. a run/session id) is coarser than the staged identity (e.g. a proposal/record id), so a fresh instance is NOT guaranteed and an explicit reset is required.
+- **Detect:** Find a component holding useState that accumulates per-item decisions/edits (a buffer/draft/selection keyed by an inner id) where the only reset is on an unrelated signal (status) or none. Check the parent's key={...}: if it keys on a coarser id (runId/sessionId/threadId) than the per-item id the state is scoped to (proposalId/recordId), ask: when a new item with the same coarse key renders into this still-mounted component, does the stale buffer carry over? If yes and there is no useEffect(reset, [fineId]) and no key={fineId}, flag it.
 
 ## Route user-facing strings (including aria-labels) through the existing i18n helper  ·  `route-user-facing-strings-through-i18n`
 - **Severity:** nit  ·  **Support:** 6  ·  **Seen in:** #492, #28420, #28442, #31208, #32331

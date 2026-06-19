@@ -5,10 +5,12 @@
     "raw_insights": 374,
     "rules_kept": 148,
     "rules_dropped_in_verification": 34,
-    "version": 5,
+    "version": 6,
     "sources": [
+      "anomalyco/opencode",
       "anomalyco/opencode (bootstrap)",
       "earendil-works/pi (Copilot+human)",
+      "hongyilyu/inkstone",
       "hongyilyu/inkstone (CodeRabbit+Codex+human)"
     ],
     "learn_runs": [
@@ -155,13 +157,17 @@
       "detection_hint": "Flag delete/filter/validation/upsert on a config or env map that runs before a known merge (mergeDeep, Object.assign with spread of shellEnv, user-config merge); ask whether a later merge can undo it. Flag `if (filtered.length > 0) return filtered` where a comment claims the input 'wins'. Check whether a per-file schema constraint can be bypassed by cross-layer merge or a write/update path.",
       "severity": "important",
       "example_prs": [
+        188,
         23214,
         25846,
         27398,
         28907,
         29000
       ],
-      "support_count": 5
+      "support_count": 6,
+      "reinforced_by": [
+        188
+      ]
     },
     {
       "id": "preserve-behavior-and-side-effects-when-refactoring",
@@ -222,12 +228,16 @@
       "detection_hint": "Flag filename regexes ending in `\\.\\w+$` used to classify build assets (does it match foo.js.map?). Flag regexes requiring a trailing blank-line/separator on streamed text (should `$` be an accepted boundary?). When a diff adds/changes an identifier-validation regex, compare its character class against other validators for the same concept (one allows `_`, another forbids it). Flag normalizers that lack an early `.trim()` while validation elsewhere trims.",
       "severity": "important",
       "example_prs": [
+        177,
         26168,
         27934,
         29028,
         31700
       ],
-      "support_count": 4
+      "support_count": 5,
+      "reinforced_by": [
+        177
+      ]
     },
     {
       "id": "branch-on-resolved-value-not-raw-or-stale-source",
@@ -1019,6 +1029,7 @@
         139,
         145,
         162,
+        187,
         3136,
         4873,
         27053,
@@ -1028,11 +1039,12 @@
         31395,
         32284
       ],
-      "support_count": 11,
+      "support_count": 12,
       "reinforced_by": [
+        187,
         "inkstone",
-        "pi",
-        "opencode"
+        "opencode",
+        "pi"
       ]
     },
     {
@@ -2388,11 +2400,13 @@
         131,
         133,
         150,
-        155
+        155,
+        188
       ],
-      "support_count": 9,
+      "support_count": 10,
       "source_repo": "inkstone",
       "reinforced_by": [
+        188,
         "inkstone"
       ]
     },
@@ -2877,11 +2891,13 @@
         13,
         132,
         134,
+        189,
         32261
       ],
-      "support_count": 4,
+      "support_count": 5,
       "source_repo": "inkstone",
       "reinforced_by": [
+        189,
         "opencode"
       ]
     },
@@ -2906,10 +2922,14 @@
       "detection_hint": "A diff adding a test file defines helper fns (async fn migrated_pool, fn seed_thread, fn rpc) that already exist verbatim in sibling test files / the imported mod common. Ask: is this helper a duplicate of one in another test file?",
       "severity": "nit",
       "example_prs": [
-        123
+        123,
+        32937
       ],
-      "support_count": 1,
-      "source_repo": "inkstone"
+      "support_count": 2,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        32937
+      ]
     },
     {
       "id": "add-mirror-decode-test-for-new-wire-params-struct",
@@ -3206,10 +3226,14 @@
       "severity": "important",
       "example_prs": [
         15,
-        25
+        25,
+        192
       ],
-      "support_count": 2,
-      "source_repo": "inkstone"
+      "support_count": 3,
+      "source_repo": "inkstone",
+      "reinforced_by": [
+        192
+      ]
     },
     {
       "id": "batch-resolve-related-data-no-n-plus-one-on-list-paths",
@@ -3336,11 +3360,13 @@
         113,
         120,
         123,
-        135
+        135,
+        191
       ],
-      "support_count": 7,
+      "support_count": 8,
       "source_repo": "inkstone",
       "reinforced_by": [
+        191,
         "inkstone"
       ]
     },
@@ -3516,10 +3542,14 @@
       "detection_hint": "process.env.<PATH_VAR> used directly in path.join/return without a === \"~\" or .startsWith(\"~/\") check while a sibling expands tilde; or appendFileSync/writeFileSync(path.join(configDir,...)) with no preceding mkdirSync(...,{recursive:true}).",
       "severity": "important",
       "example_prs": [
-        3963
+        3963,
+        32937
       ],
-      "support_count": 1,
-      "source_repo": "earendil-works/pi"
+      "support_count": 2,
+      "source_repo": "earendil-works/pi",
+      "reinforced_by": [
+        32937
+      ]
     },
     {
       "id": "strip-global-cli-flag-before-forwarding-argv",
@@ -3728,10 +3758,14 @@
       "detection_hint": "A diff adds an entry to an array whose elements are indexed by a field (map[item.label]) where the new entry's key value duplicates an existing entry's.",
       "severity": "important",
       "example_prs": [
+        188,
         4005
       ],
-      "support_count": 1,
-      "source_repo": "earendil-works/pi"
+      "support_count": 2,
+      "source_repo": "earendil-works/pi",
+      "reinforced_by": [
+        188
+      ]
     },
     {
       "id": "verify-provider-env-var-name-and-precedence",
@@ -3800,11 +3834,13 @@
         137,
         2426,
         2607,
-        5332
+        5332,
+        32937
       ],
-      "support_count": 4,
+      "support_count": 5,
       "source_repo": "earendil-works/pi",
       "reinforced_by": [
+        32937,
         "inkstone"
       ]
     },
@@ -3968,13 +4004,15 @@
         120,
         125,
         154,
+        180,
         3963,
         4112,
         32282
       ],
-      "support_count": 6,
+      "support_count": 7,
       "source_repo": "earendil-works/pi",
       "reinforced_by": [
+        180,
         "opencode"
       ]
     },
@@ -4246,11 +4284,14 @@
       "detection_hint": "A handler/apply fn hard-codes a struct field to None/default (e.g. `source: None`, `proposal_id: None`) where a shared `validate(...)` earlier in the same flow accepts that same field from the payload. Ask: can a caller supply the field, pass validation, and then have it silently discarded with no persisted effect?",
       "severity": "important",
       "example_prs": [
-        135
+        135,
+        188
       ],
       "source_repo": "inkstone",
-      "support_count": 1,
-      "reinforced_by": []
+      "support_count": 2,
+      "reinforced_by": [
+        188
+      ]
     },
     {
       "id": "like-escape-clause-disables-fts5-trigram-index",
@@ -4553,6 +4594,175 @@
       "severity": "important",
       "example_prs": [
         32479
+      ],
+      "support_count": 1,
+      "source_repo": "anomalyco/opencode"
+    },
+    {
+      "id": "guard-nullable-attribute-getter-before-selector-interpolation",
+      "category": "testing",
+      "title": "Assert non-null on a nullable attribute getter before interpolating it into a selector",
+      "rule": "In an e2e/UI test, a value read from an element attribute getter (Playwright getAttribute, DOM getAttribute, dataset access) has type string | null and returns null when the attribute is absent. Interpolating it straight into a selector/locator string builds a query like `[data-x=\"null\"]` that matches nothing (or the wrong element) and silently passes loose existence checks, masking a real regression where the attribute went missing. Assert the value is non-null (e.g. expect(v).not.toBeNull()) immediately after reading it and before building any locator from it. Apply the guard to EVERY such read in the file, not just the first \u2014 a sibling test that copies the pattern but drops the guard reintroduces the hole.",
+      "detection_hint": "Grep for a variable assigned from `await <loc>.getAttribute(...)` / `el.getAttribute(...)` / `.dataset.x` that is then interpolated into a selector template (`locator(`[...=\"${v}\"]`)`, `page.locator(`...${v}...`)`) with no intervening `expect(v).not.toBeNull()` / `if (v === null) throw`. Ask: if the attribute is missing, does this locator silently target `\"null\"` and let the assertion pass?",
+      "severity": "important",
+      "example_prs": [
+        193
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "escape-dynamic-string-before-regexp-construction",
+      "category": "correctness",
+      "title": "Escape a dynamic string before embedding it in a RegExp constructor",
+      "rule": "Building a regular expression from a runtime/variable string via `new RegExp(`...${value}...`)` treats regex metacharacters in `value` (`. * + ? ^ $ { } ( ) | [ ] \\`) as pattern syntax, so the match misbehaves (mis-matches or fails) when the value contains them, and an attacker- or data-controlled value can cause catastrophic backtracking (ReDoS). Either escape the interpolated value with an escapeRegExp helper (`value.replace(/[.*+?^${}()|[\\]\\\\]/g, \"\\\\$&\")`) or `RegExp.escape` where available, or avoid the dynamic regex entirely (use a literal-string matcher / exact-name option). Applies even in test fixtures: a fixture string with metacharacters makes the assertion brittle when fixtures change.",
+      "detection_hint": "Grep for `new RegExp(` (or `RegExp(`) whose argument is a template literal or concatenation containing an interpolated variable that is not the output of an escapeRegExp/RegExp.escape call. Ask: can this interpolated value ever contain `. * + ? [ ] ( ) { } | ^ $ \\`, and is it escaped before construction?",
+      "severity": "nit",
+      "example_prs": [
+        189
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "round-trip-codec-test-must-exercise-encode-and-optional-subfields",
+      "category": "testing",
+      "title": "Round-trip codec tests must assert the encode direction and exercise new optional fields",
+      "rule": "A test for a serialization codec (Schema/serde/zod round-trip) that only decodes a fixture locks just one half of the wire contract: a regression in the encode direction (or in how an optional field serializes when present vs omitted) passes silently. For a new or changed wire field \u2014 especially an OPTIONAL one \u2014 assert BOTH directions (decode the canonical JSON AND re-encode the decoded value back to the original) and include a fixture that actually carries the optional field with a value, not only one that omits it. A presence-only fixture proves the field parses but not that its payload (the arg/value) propagates end to end.",
+      "detection_hint": "In a codec/round-trip test, flag a case that calls only `decode(...)` (decodeUnknownSync / from_str / parse) and asserts equality, with no matching `encode(decoded)` assertion \u2014 particularly when the PR adds an optional field. Also flag a new fixture for an optional field that sets only its sibling required fields (presence asserted) but never assigns the optional field a value to verify it carries through.",
+      "severity": "nit",
+      "example_prs": [
+        191
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "derived-edit-indicator-must-match-submit-condition",
+      "category": "ui-react",
+      "title": "A derived edit/override indicator must be gated on the same condition that submits the edit",
+      "rule": "A UI indicator that signals a row has been edited/overridden (an \"Edited\" badge, a dirty dot, a modified marker) must be computed under the exact same condition that determines whether the edit is actually submitted. If the badge is derived only from \"a draft exists and differs from the seed\" but the submit path additionally requires the row to be in an accept/active stage (skipping edited_fields for rejected/disabled rows), then a rejected/inactive row can display \"Edited\" while no correction is ever sent \u2014 a dishonest indicator. Add the stage/accept gate (and any other submit precondition) to the derived flag so the badge can only show when the edit will genuinely take effect.",
+      "detection_hint": "Find a derived boolean for an edited/modified/overridden badge built from draft-vs-seed difference (e.g. `draft !== undefined && buildEditedFields(seed, draft) !== undefined`) and compare it to the submit/decision builder for the same row. Ask: does the submit path apply this edit unconditionally, or does it also require an accept/enabled stage that the badge expression omits \u2014 letting a rejected/disabled row show \"Edited\" while sending no correction?",
+      "severity": "important",
+      "example_prs": [
+        189
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "reset-local-staging-state-when-keyed-identity-is-coarser-than-item-identity",
+      "category": "ui-react",
+      "title": "Reset local per-item draft/staging state when the component's mount key is coarser than the item identity it stages",
+      "rule": "When a long-lived component accumulates local draft/staging state (a per-row decision buffer, an edit form, accumulated selections) that is scoped to a specific item identity, but the component is mounted/keyed by a COARSER identity (a parent key that does not change when the item does), the local state survives across item switches and leaks one item's choices into the next. Add an effect that resets the local state whenever the fine-grained item identity changes (useEffect(() => setBuffer(initial), [item.id])), or remount by keying on the fine-grained identity. This is the converse of the carve-out that says not to flag a reset when the parent already keys on the exact identity: here the key (e.g. a run/session id) is coarser than the staged identity (e.g. a proposal/record id), so a fresh instance is NOT guaranteed and an explicit reset is required.",
+      "detection_hint": "Find a component holding useState that accumulates per-item decisions/edits (a buffer/draft/selection keyed by an inner id) where the only reset is on an unrelated signal (status) or none. Check the parent's key={...}: if it keys on a coarser id (runId/sessionId/threadId) than the per-item id the state is scoped to (proposalId/recordId), ask: when a new item with the same coarse key renders into this still-mounted component, does the stale buffer carry over? If yes and there is no useEffect(reset, [fineId]) and no key={fineId}, flag it.",
+      "severity": "important",
+      "example_prs": [
+        188
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "escape-untrusted-values-interpolated-into-css-selectors",
+      "category": "security",
+      "title": "Escape untrusted/external values before interpolating them into a CSS selector string",
+      "rule": "When a value you do not fully control (a URL search param, route param, server-supplied id, or any user-influenced string) is interpolated into a CSS selector string passed to querySelector/querySelectorAll/matches/closest, escape it with CSS.escape(value) (or validate it against a strict format). A raw value containing selector metacharacters (\", ], \\, whitespace, #, .) can break the selector (throwing or mis-parsing) or match unintended elements, turning a focus/scroll/highlight lookup into a no-op or a wrong-target hit. CSS.escape is the standard, allocation-cheap fix; reserve format validation for cases where the id should be a known shape (e.g. a UUID).",
+      "detection_hint": "grep for template literals embedded in a selector passed to querySelector/querySelectorAll/closest/matches: /querySelector(All)?\\(`[^`]*\\$\\{/ or an attribute selector like `[data-x=\"${v}\"]`. For each, trace v's origin; if it comes from URL/search params, route params, network/server data, or user input and is NOT wrapped in CSS.escape() or pre-validated to a safe charset, flag it. Plain literals or values already CSS.escape()'d are fine.",
+      "severity": "important",
+      "example_prs": [
+        187
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "restore-monkey-patched-prototype-methods-in-tests",
+      "category": "testing",
+      "title": "Restore monkey-patched prototype methods after a test",
+      "rule": "When a test overwrites a method on a shared prototype or built-in object (e.g. Element.prototype.scrollIntoView = vi.fn(), HTMLElement.prototype.scrollTop setter, Date.prototype.toISOString) to spy on or stub it, capture the original and restore it in finally / afterEach. Unlike full-object global stubs (vi.stubGlobal, globalThis.X =), a patched prototype method is not undone by vi.unstubAllGlobals(), so an unrestored patch leaks into every later test that touches that method, making the suite order-dependent and masking or fabricating behavior.",
+      "detection_hint": "Grep test files for `<Type>.prototype.<method> = ` or `Object.defineProperty(<Type>.prototype, ...)` (e.g. Element.prototype.scrollIntoView, HTMLElement.prototype.scrollTop). For each, ask: is the original captured before the assignment and restored in a finally block or afterEach? vi.unstubAllGlobals() does NOT restore prototype-method patches, so a sibling test in the file restoring via unstub is not sufficient.",
+      "severity": "important",
+      "example_prs": [
+        187
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "independent-toggles-must-not-collapse-into-one-or-gated-branch",
+      "category": "correctness",
+      "title": "Independent options merged into one OR-gate drop the cross-combination",
+      "rule": "When two (or more) options are documented/intended as independent (either, both, or neither may be set), do not gate their setup with a single combined boolean like `usingX = a || b` and place one option's setup in the `else` branch. With `if (a || b) {...} else {...}`, passing only `b` enters the `if` and silently skips the `a`-specific setup that lived in the `else`. Give each independent option its own condition (`if (a === undefined) { ...a-setup }`), or compute its setup unconditionally, so every combination is honored.",
+      "detection_hint": "Find a boolean built from OR of multiple option presences (`const using = optA !== undefined || optB !== undefined`) used as `if (using) {...} else { /* setup for one of the options */ }`. Ask: when only ONE of the OR'd options is set, does the `if` branch still perform the setup that the `else` performs (default command, fallback env, etc.)? If that setup is reachable only via the `else`, the single-option-set combination drops it.",
+      "severity": "important",
+      "example_prs": [
+        178
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "cast-to-object-needs-runtime-object-check-not-just-nullish-fallback",
+      "category": "types",
+      "title": "Cast-to-object after a nullish-only fallback still admits non-object values",
+      "rule": "When coercing a loosely-typed or `unknown` value into an object shape via `(x ?? {}) as Record<string, unknown>` (or similar `as`), the `??`/`||` fallback only replaces null/undefined \u2014 a present-but-wrong-shape value (array, string, number, boolean) passes straight through the cast and is emitted as a fake object, which can violate the consumer's contract at runtime. Before the cast, check the runtime shape (`typeof x === 'object' && x !== null && !Array.isArray(x)`) and default to `{}` otherwise.",
+      "detection_hint": "Grep for `(<expr> ?? {}) as Record<` or `as Record<string, unknown>` / `as object` applied to a value typed `unknown`/`any`/a loose external field. Ask: can <expr> be a non-object (array or primitive) at runtime? If so, the `?? {}` does not catch it and a non-object is asserted as an object. Require a `typeof === 'object' && !Array.isArray` guard before the cast.",
+      "severity": "important",
+      "example_prs": [
+        177
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "statement-boundary-regex-must-include-newline-separator",
+      "category": "security",
+      "title": "Statement-boundary regex used as a guard must treat newline as a separator",
+      "rule": "A regex that anchors a match to a shell/command statement boundary \u2014 used to detect or block a command (`git push`, `gh pr create`, `rm`) anywhere in a possibly-multiline payload \u2014 must include the newline as a valid statement separator alongside `^ ; & | (`. Omitting `\\n` from the boundary character class lets a multiline command bypass detection entirely (the dangerous statement on a fresh line is never matched), defeating a security/policy gate. Include `\\n` (and `\\r`) in the separator class, and test a multiline input.",
+      "detection_hint": "Find a boundary regex like `(?:^|[;&|(])\\s*` (or similar) whose character class of statement separators is used to detect a command in user-controlled or multiline text. Ask: does the class include `\\n`? If a command can appear after a newline in the payload, a missing `\\n` makes the guard bypassable. Confirm with a multiline test fixture.",
+      "severity": "blocking",
+      "example_prs": [
+        177
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "fail-fast-on-missing-required-field-no-placeholder-sentinel",
+      "category": "error-handling",
+      "title": "Fail fast on a missing required field instead of a placeholder sentinel",
+      "rule": "When a render/serialization path needs a field that is contractually required (a provenance id, target id, owner) and the input type makes it optional, do not paper over absence with a placeholder sentinel (`unwrap_or(\"unknown\")`, `?? \"n/a\"`, `|| 'missing'`) that gets baked into user- or model-facing output. The sentinel silently survives a wiring regression and produces an unusable/misleading transcript instead of surfacing the bug. Require the value (`.expect(...)` / throw / return Err) so a missing field fails loudly at the point it is consumed, and have callers/tests pass a real value.",
+      "detection_hint": "Grep for `unwrap_or(\"...\")` / `?? \"...\"` / `|| \"...\"` where the default is a human placeholder string (\"unknown\", \"n/a\", \"missing\", \"none\") and the result flows into rendered output, a stored snapshot, or a message replayed to a model. Ask: is this field actually required for the output to be correct? If yes, prefer failing fast over emitting the sentinel; a default that masks missing wiring is the smell.",
+      "severity": "important",
+      "example_prs": [
+        176
+      ],
+      "support_count": 1,
+      "source_repo": "hongyilyu/inkstone"
+    },
+    {
+      "id": "specialized-test-config-must-not-widen-discovery-scope",
+      "category": "testing",
+      "title": "A specialized test config must scope discovery to its own subtree, not a broad parent dir",
+      "rule": "When a test config variant exists to run a specific subset under special conditions (uncapped browser flags, different launchOptions, extra env, perf/integration-only), set its discovery root (testDir/roots/testMatch/glob) to that subset's own directory \u2014 do not point it at a broad parent that also contains unrelated specs. Otherwise, once the opt-in gate that normally excludes the subset is satisfied (e.g. an env flag that lifts testIgnore), the config discovers and runs every unrelated test under those special conditions, applying flags/timeouts meant only for the specialized suite to the whole tree. Keep both a tight discovery root AND the opt-in gate; don't rely on the gate alone.",
+      "detection_hint": "In a Playwright/Jest/Vitest config that spreads a base config and overrides launchOptions/use/args/env for a special purpose, flag testDir/roots/testMatch set to a parent dir ('..', repo e2e root) rather than the config's own folder ('.'). Ask: when the gate that normally hides the specialized specs (a testIgnore keyed on an env var) is lifted, does this config now match unrelated specs and run them with the special flags?",
+      "severity": "important",
+      "example_prs": [
+        32937
+      ],
+      "support_count": 1,
+      "source_repo": "anomalyco/opencode"
+    },
+    {
+      "id": "compat-version-range-needs-upper-bound",
+      "category": "api-compat",
+      "title": "A compatibility version range must keep an upper bound, not become an open-ended >=",
+      "rule": "When a runtime/toolchain compatibility check derives an accepted version range from a pinned version, do not relax it to an open-ended lower bound (>=x.y.z). An open >= admits every future major and minor, so an as-yet-unreleased breaking version silently passes the guard whose whole purpose is to reject incompatible runtimes. If the intent is 'this major.minor, patch updates allowed', encode that as a bounded range (^x.y.0, ~x.y.0, or >=x.y.z <x.(y+1).0 / <(x+1).0.0) so the comparator and the stated intent agree.",
+      "detection_hint": "Flag a version-range constructor that interpolates a parsed version into a bare lower-bound string used to validate a runtime/tool version \u2014 e.g. `>=${major}.${minor}.0`, `>=${ver}` \u2014 with no accompanying upper bound, especially when an adjacent comment or PR claims it pins to 'major.minor' / 'this version only'. Ask: does a future major or higher minor satisfy this range when the guard is meant to reject incompatible versions?",
+      "severity": "important",
+      "example_prs": [
+        32827
       ],
       "support_count": 1,
       "source_repo": "anomalyco/opencode"

@@ -1,6 +1,6 @@
 # Learned rules — API & compatibility (`api-compat`)
 
-_14 rules. Loaded by the `dr-api-compat` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_15 rules. Loaded by the `dr-api-compat` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Avoid runtime-specific globals in cross-runtime code paths  ·  `no-runtime-specific-globals-in-cross-runtime-code`
 - **Severity:** blocking  ·  **Support:** 2  ·  **Seen in:** #6, #26754
@@ -8,7 +8,7 @@ _14 rules. Loaded by the `dr-api-compat` specialist. Generated from rules.json �
 - **Detect:** Grep for `Bun.`, `Deno.`, or similar runtime-global references in modules known/documented to run under multiple runtimes (server + Node/Desktop adapter). Flag any such reference in a shared path.
 
 ## Keep the advertised tool/JSON schema in sync with backend dispatch and validation  ·  `advertised-schema-must-enumerate-all-dispatch-variants`
-- **Severity:** important  ·  **Support:** 9  ·  **Seen in:** #118, #130, #131, #133, #150, #155
+- **Severity:** important  ·  **Support:** 10  ·  **Seen in:** #118, #130, #131, #133, #150, #155
 - **Rule:** When adding new variants/kinds to a backend dispatcher (validate/apply match arms) or tightening a runtime validator, verify the externally-advertised tool/JSON schema (the descriptor a constrained model or client is bound to) enumerates exactly the same variants and constraints. A kind reachable only by tests that bypass the descriptor is dead in production; a schema that advertises looser constraints (nullable/empty/plain-String) than the validator deterministically rejects deadlocks the request server-side.
 - **Detect:** Diff adds match arms for new *_kind literals in a validate/apply file but no enum change in the descriptor (e.g. propose_workspace_mutation.rs); OR a JsonSchema/Schemars struct exposes Option<String> + #[serde(default)] / plain String ids where a validate_* fn rejects null/non-string/non-UUID. Ask: does the advertised schema list every dispatch kind and forbid every value the validator rejects?
 
@@ -71,3 +71,8 @@ _14 rules. Loaded by the `dr-api-compat` specialist. Generated from rules.json �
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #3928
 - **Rule:** Treat unrelated diffs in regenerated/generated files as suspect: renamed or removed public identifiers (model ids), removed entries, and changed numeric pricing are breaking/behavior changes. Confirm they are intentional and documented in the PR description, or revert if the regeneration picked up unexpected upstream source-data changes.
 - **Detect:** In a diff to a *.generated.* file, removed top-level keys, renamed id/key strings, or changed numeric cost/pricing fields not mentioned in the PR description.
+
+## A compatibility version range must keep an upper bound, not become an open-ended >=  ·  `compat-version-range-needs-upper-bound`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #32827
+- **Rule:** When a runtime/toolchain compatibility check derives an accepted version range from a pinned version, do not relax it to an open-ended lower bound (>=x.y.z). An open >= admits every future major and minor, so an as-yet-unreleased breaking version silently passes the guard whose whole purpose is to reject incompatible runtimes. If the intent is 'this major.minor, patch updates allowed', encode that as a bounded range (^x.y.0, ~x.y.0, or >=x.y.z <x.(y+1).0 / <(x+1).0.0) so the comparator and the stated intent agree.
+- **Detect:** Flag a version-range constructor that interpolates a parsed version into a bare lower-bound string used to validate a runtime/tool version — e.g. `>=${major}.${minor}.0`, `>=${ver}` — with no accompanying upper bound, especially when an adjacent comment or PR claims it pins to 'major.minor' / 'this version only'. Ask: does a future major or higher minor satisfy this range when the guard is meant to reject incompatible versions?

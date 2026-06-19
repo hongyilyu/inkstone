@@ -1,6 +1,6 @@
 # Learned rules — Error handling (`error-handling`)
 
-_25 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
+_26 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.json — do not edit by hand; run build_kb.py._
 
 ## Do not swallow errors silently in catch/handler blocks  ·  `no-silent-error-swallowing`
 - **Severity:** important  ·  **Support:** 7  ·  **Seen in:** #24, #71, #125, #25516, #27936, #28207
@@ -111,6 +111,11 @@ _25 rules. Loaded by the `dr-error-handling` specialist. Generated from rules.js
 - **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #151
 - **Rule:** Setup of an optional, non-product subsystem (logging/tracing sink, metrics, telemetry, crash reporter) must not be a hard availability dependency at boot. Propagating its init error with `?`/throw turns a recoverable condition (e.g. an unwritable log dir) into a full startup failure, even though deleting the artifact changes no product behavior. Initialize it fail-open: on error, emit a single distinctive stderr marker and continue booting. Detection: a boot/startup sequence calls `<observability>::init()?` / `await initLogging()` whose failure propagates to the process entrypoint, while the subsystem is documented as derived/lossy/optional and its other sinks already degrade silently. Ask: should an unwritable log/metrics path crash the whole service?
 - **Detect:** In a process/service startup sequence, an init call for an optional/diagnostic subsystem (logging/tracing sink, metrics, telemetry, crash reporter) propagates its error to the entrypoint — Rust `logging::init()?` / `tracing_subscriber...try_init()?`, or JS `await initLogging()` that can throw — so the whole boot aborts. Discriminator (the deletion test): if you deleted this subsystem's output artifact, would any PRODUCT behavior change? If no, its init is not an availability dependency. Flag when such an init can fail on an environmental condition (unwritable/absent log/metrics dir, missing sink path) and that failure isn't caught. Stronger signal: a sibling sink for the same subsystem already degrades silently (env-gated try/catch, best-effort) — the boot path should match it. Fix: catch the error, emit one distinctive stderr marker, and continue booting.
+
+## Fail fast on a missing required field instead of a placeholder sentinel  ·  `fail-fast-on-missing-required-field-no-placeholder-sentinel`
+- **Severity:** important  ·  **Support:** 1  ·  **Seen in:** #176
+- **Rule:** When a render/serialization path needs a field that is contractually required (a provenance id, target id, owner) and the input type makes it optional, do not paper over absence with a placeholder sentinel (`unwrap_or("unknown")`, `?? "n/a"`, `|| 'missing'`) that gets baked into user- or model-facing output. The sentinel silently survives a wiring regression and produces an unusable/misleading transcript instead of surfacing the bug. Require the value (`.expect(...)` / throw / return Err) so a missing field fails loudly at the point it is consumed, and have callers/tests pass a real value.
+- **Detect:** Grep for `unwrap_or("...")` / `?? "..."` / `|| "..."` where the default is a human placeholder string ("unknown", "n/a", "missing", "none") and the result flows into rendered output, a stored snapshot, or a message replayed to a model. Ask: is this field actually required for the output to be correct? If yes, prefer failing fast over emitting the sentinel; a default that masks missing wiring is the smell.
 
 ## Preserve underlying error cause/details in user-facing and log messages  ·  `preserve-error-cause-in-messages`
 - **Severity:** nit  ·  **Support:** 4  ·  **Seen in:** #4133, #28207, #29635, #29784
