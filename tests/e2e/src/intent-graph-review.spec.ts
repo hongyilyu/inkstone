@@ -386,6 +386,7 @@ test("'Create new instead' overrides the near-match and mints the new Project", 
 	);
 
 	const runId = await card.getAttribute("data-proposal");
+	expect(runId).not.toBeNull();
 	const decidedCard = chat.page.locator(`[data-proposal="${runId}"]`);
 
 	// Opt out of the default: mint a new Project instead.

@@ -86,10 +86,10 @@ The fix is split across the two layers the original design already separates —
 
 ```ts
 type ResolvedNode =
-  | { handle; type; disposition: "create"; label;
+  | { handle: string; type: EntityType; disposition: "create"; label: string;
       near_matches?: { entity_id: string; label: string }[] }   // NEW — advisory, create only
-  | { handle; type; disposition: "reuse"; entity_id; label }
-  | { handle; type; disposition: "ambiguous"; candidates: { entity_id; label }[] };
+  | { handle: string; type: EntityType; disposition: "reuse"; entity_id: string; label: string }
+  | { handle: string; type: EntityType; disposition: "ambiguous"; candidates: { entity_id: string; label: string }[] };
 ```
 
 The Client prioritizes the existing entity: a `create` node with **exactly one** `near_match` **defaults to reuse it** — the node commits with the per-node `entity_id` override pointing at that entity (badge "Existing «Lead Ads»"), and a **"Create new instead"** escape lets the user mint a fresh entity when that is genuinely intended. A node with **two or more** near-matches surfaces them advisorily but does **not** auto-pick (that is the same disambiguation-picker work the `ambiguous` case defers); it stays `create` until the picker ships.
