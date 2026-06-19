@@ -72,6 +72,7 @@ import {
 	EditorSelect,
 	EditorTextarea,
 } from "./library/EntityEditor.js";
+import { Button } from "./ui/button.js";
 import { Card } from "./ui/card.js";
 
 const TODO_STATUS_OPTIONS: { value: TodoEditStatus; label: string }[] = [
@@ -977,22 +978,26 @@ function SingleEntityProposalCard({
 							</>
 						)}
 						<footer className="flex items-center gap-2 pt-1">
-							<button
+							<Button
 								type="submit"
+								variant="primary"
+								size="row"
+								className="gap-1.5 px-3.5 py-2"
 								disabled={submitting || gtdRequiredEmpty}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<Check className="size-4" aria-hidden />
 								Save changes
-							</button>
-							<button
+							</Button>
+							<Button
 								type="button"
+								variant="ghost"
+								size="sm"
+								className="ml-auto py-1.5 text-sm"
 								disabled={submitting}
 								onClick={() => setEditing(false)}
-								className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								Cancel
-							</button>
+							</Button>
 						</footer>
 					</form>
 				) : (
@@ -1031,22 +1036,26 @@ function SingleEntityProposalCard({
 							</p>
 						) : null}
 						<footer className="flex items-center gap-2 pt-1">
-							<button
+							<Button
 								type="submit"
+								variant="primary"
+								size="row"
+								className="gap-1.5 px-3.5 py-2"
 								disabled={submitting || editIssue !== null}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<Check className="size-4" aria-hidden />
 								Save changes
-							</button>
-							<button
+							</Button>
+							<Button
 								type="button"
+								variant="ghost"
+								size="sm"
+								className="ml-auto py-1.5 text-sm"
 								disabled={submitting}
 								onClick={() => setEditing(false)}
-								className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								Cancel
-							</button>
+							</Button>
 						</footer>
 					</form>
 				)
@@ -1077,8 +1086,11 @@ function SingleEntityProposalCard({
 
 					<footer className="flex items-center gap-2 pt-1">
 						{isError ? (
-							<button
+							<Button
 								type="button"
+								variant="primary"
+								size="row"
+								className="gap-1.5 px-3.5 py-2"
 								// Gate retry on what it will re-send: reject always allowed; a stored edit on its payload; a plain accept on `canApply`. See docs/design/web-chat-ui.md.
 								disabled={
 									lastAttempt.current?.decision === "reject"
@@ -1088,17 +1100,18 @@ function SingleEntityProposalCard({
 											: !canApply
 								}
 								onClick={retry}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<RotateCcw className="size-4" aria-hidden />
 								Try again
-							</button>
+							</Button>
 						) : (
-							<button
+							<Button
 								type="button"
+								variant="primary"
+								size="row"
+								className="gap-1.5 px-3.5 py-2"
 								disabled={submitting || !canApply}
 								onClick={() => decide("accept")}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								{deciding && inFlight === "accept" ? (
 									<>
@@ -1114,26 +1127,30 @@ function SingleEntityProposalCard({
 										{acceptLabel}
 									</>
 								)}
-							</button>
+							</Button>
 						)}
 
 						{canEdit ? (
-							<button
+							<Button
 								type="button"
+								variant="chip"
+								size="pill"
+								className="gap-1.5 px-3"
 								disabled={submitting}
 								onClick={openEdit}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-input px-3 py-1.5 font-medium text-foreground/80 text-sm transition-colors hover:bg-secondary/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 							>
 								<Pencil className="size-3.5" aria-hidden />
 								Edit
-							</button>
+							</Button>
 						) : null}
 
-						<button
+						<Button
 							type="button"
+							variant="ghost"
+							size="sm"
+							className="ml-auto py-1.5 text-sm"
 							disabled={submitting}
 							onClick={() => decide("reject")}
-							className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 						>
 							{deciding && inFlight === "reject" ? (
 								<>
@@ -1146,7 +1163,7 @@ function SingleEntityProposalCard({
 							) : (
 								rejectLabel
 							)}
-						</button>
+						</Button>
 					</footer>
 				</>
 			)}
@@ -1425,11 +1442,13 @@ function IntentGraphReviewCard({
 			) : null}
 
 			<footer className="flex items-center gap-2 pt-1">
-				<button
+				<Button
 					type="button"
+					variant="primary"
+					size="row"
+					className="gap-1.5 px-3.5 py-2"
 					disabled={submitting || plan.length === 0}
 					onClick={commit}
-					className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-primary px-3.5 py-2 font-medium text-sm text-primary-foreground shadow-sm transition-colors hover:bg-primary/90 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 				>
 					{deciding && inFlight === "commit" ? (
 						<>
@@ -1445,13 +1464,15 @@ function IntentGraphReviewCard({
 							{commitLabel}
 						</>
 					)}
-				</button>
+				</Button>
 
-				<button
+				<Button
 					type="button"
+					variant="ghost"
+					size="sm"
+					className="ml-auto py-1.5 text-sm"
 					disabled={submitting}
 					onClick={rejectEverything}
-					className="ml-auto inline-flex cursor-pointer items-center gap-1 rounded-md px-2 py-1.5 font-medium text-muted-foreground text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 				>
 					{deciding && inFlight === "reject" ? (
 						<>
@@ -1464,7 +1485,7 @@ function IntentGraphReviewCard({
 					) : (
 						"Dismiss all"
 					)}
-				</button>
+				</Button>
 			</footer>
 		</Card>
 	);

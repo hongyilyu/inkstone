@@ -64,12 +64,7 @@ export function EntityEditorFrame({
 					>
 						Cancel
 					</Button>
-					<Button
-						type="submit"
-						variant="primary-icon"
-						size="pill"
-						disabled={saving}
-					>
+					<Button type="submit" variant="primary" size="row" disabled={saving}>
 						{saving ? "Saving…" : saveLabel}
 					</Button>
 				</div>
