@@ -15,10 +15,9 @@ import {
 } from "@/lib/libraryItems";
 
 // The per-Entity-Type wire codec. THIS module owns each kind's row-input shape
-// and the PARSE direction (row → view-model). The `build` direction (draft →
-// mutation payload) lands in later slices. Behavior here is byte-for-behavior
-// identical to the `toLibrary*` parsers that still live in
-// `hooks/useLibraryItems.ts` (they migrate onto this codec in a later slice).
+// and BOTH directions: PARSE (row → view-model) and BUILD (draft → mutation
+// payload). `hooks/useLibraryItems.ts` consumes the `parse*` functions to map
+// live Core rows into Library view-models.
 
 export interface LiveEntityRow {
 	readonly id: string;
@@ -1077,16 +1076,4 @@ export {
 	recurAnchorDatePresent,
 	stagedNewChip,
 	todoDraftFromVm,
-};
-
-/**
- * The per-Entity-Type codec. Grows monotonically across slices — `build` is
- * added per kind in later slices.
- */
-export const entityCodec = {
-	journal_entry: { parse: parseJournalEntry, build: buildJournalEntry },
-	todo: { parse: parseTodo, build: buildTodo },
-	person: { parse: parsePerson, build: buildPerson },
-	project: { parse: parseProject, build: buildProject },
-	bookmark: { parse: parseBookmark, build: buildBookmark },
 };
