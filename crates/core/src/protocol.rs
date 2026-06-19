@@ -1992,12 +1992,13 @@ mod mirror_tests {
 #[cfg(test)]
 mod parity_fixtures {
     use super::*;
-    use serde_json::json;
     use std::path::Path;
 
     // Shared id constants — identical spelling to the values baked into the
     // committed fixtures, so the round-trip comparison is exact.
     const UUID_A: &str = "0190d3c1-0000-7000-8000-000000000001";
+    const UUID_B: &str = "0190d3c1-0000-7000-8000-000000000002";
+    const UUID_RUN: &str = "0190d3c1-0000-7000-8000-000000000003";
 
     /// The Serialize-capable messages Core EMITS as fixtures. Each entry is
     /// `(filename, serialized-JSON)`: the writer dumps the JSON to
@@ -2005,24 +2006,394 @@ mod parity_fixtures {
     /// instance and asserts it equals the committed bytes. ONE source of truth for
     /// both halves — the writer can never drift from what the lock checks.
     ///
-    /// Grows per slice (slice 1 seeds one message to exercise the harness; slices
-    /// 3–4 fill results/notifications/protocol). Maximal/omitted pairs and union
-    /// variants are distinct entries with distinct filenames.
+    /// Each instance is serialized through the REAL serde path, so the fixture is
+    /// ground-truth wire bytes. A struct with optional / `skip_serializing_if`
+    /// fields gets a maximal entry (every optional populated, so the gate
+    /// exercises those fields) plus a `.bare`/`.omitted` companion (the None /
+    /// empty branch). Leaf sub-structs (`ThreadSummary`, `EntityRow`,
+    /// `MessageView`, `ModelInfo`, …) are covered TRANSITIVELY inside their
+    /// wrapper result here.
     fn emitted_fixtures() -> Vec<(&'static str, String)> {
-        let pretty = |v: &serde_json::Value| {
-            let mut s = serde_json::to_string_pretty(v).expect("fixture serializes");
+        let pretty = |v: serde_json::Value| {
+            let mut s = serde_json::to_string_pretty(&v).expect("fixture serializes");
             s.push('\n');
             s
         };
-        vec![(
-            "post_message_result.json",
-            pretty(
-                &serde_json::to_value(PostMessageResult {
-                    run_id: UUID_A.to_string(),
-                })
-                .expect("PostMessageResult serializes"),
+        // Each entry serializes one instance through the real serde path.
+        macro_rules! fx {
+            ($file:literal, $val:expr) => {
+                (
+                    $file,
+                    pretty(serde_json::to_value(&$val).expect(concat!($file, " serializes"))),
+                )
+            };
+        }
+
+        vec![
+            // ── run/subscribe, run/cancel ──
+            fx!(
+                "subscribe_result.json",
+                SubscribeResult {
+                    run_id: UUID_RUN.to_string(),
+                    status: "parked".to_string(),
+                }
             ),
-        )]
+            fx!(
+                "run_cancel_result.json",
+                RunCancelResult {
+                    outcome: "accepted".to_string(),
+                }
+            ),
+            // ── proposal/* results + notifications ──
+            // ProposalGetResult maximal: rationale + review_context + resolved_plan
+            // all present (covers ResolvedNode create/reuse/ambiguous + near_matches,
+            // ResolvedNodeCandidate, ProposalReviewContext, ProposalReviewCurrentJournalEntry,
+            // JournalEntryBodyNode both variants — all transitively).
+            fx!(
+                "proposal_get_result.json",
+                ProposalGetResult {
+                    proposal_id: UUID_B.to_string(),
+                    run_id: UUID_RUN.to_string(),
+                    mutation_kind: "apply_intent_graph".to_string(),
+                    payload: serde_json::json!({}),
+                    rationale: Some("because".to_string()),
+                    review_context: Some(ProposalReviewContext {
+                        current_journal_entry: Some(ProposalReviewCurrentJournalEntry {
+                            entity_id: UUID_B.to_string(),
+                            occurred_at: "2026-06-10T10:30:00".to_string(),
+                            ended_at: Some("2026-06-10T10:45:00".to_string()),
+                            body: vec![
+                                JournalEntryBodyNode::Text {
+                                    text: "Bought ".to_string(),
+                                },
+                                JournalEntryBodyNode::EntityRef {
+                                    ref_id: UUID_A.to_string(),
+                                },
+                            ],
+                        }),
+                    }),
+                    resolved_plan: Some(vec![
+                        ResolvedNode {
+                            handle: "@rodeo".to_string(),
+                            r#type: "todo".to_string(),
+                            disposition: "create".to_string(),
+                            label: "Figure out the Rodeo side".to_string(),
+                            entity_id: None,
+                            candidates: None,
+                            near_matches: Some(vec![ResolvedNodeCandidate {
+                                entity_id: UUID_A.to_string(),
+                                label: "Figure out Rodeo".to_string(),
+                            }]),
+                        },
+                        ResolvedNode {
+                            handle: "@leadads".to_string(),
+                            r#type: "project".to_string(),
+                            disposition: "reuse".to_string(),
+                            label: "Lead Ads".to_string(),
+                            entity_id: Some(UUID_A.to_string()),
+                            candidates: None,
+                            near_matches: None,
+                        },
+                        ResolvedNode {
+                            handle: "@morris".to_string(),
+                            r#type: "person".to_string(),
+                            disposition: "ambiguous".to_string(),
+                            label: "Morris".to_string(),
+                            entity_id: None,
+                            candidates: Some(vec![ResolvedNodeCandidate {
+                                entity_id: UUID_B.to_string(),
+                                label: "Morris".to_string(),
+                            }]),
+                            near_matches: None,
+                        },
+                    ]),
+                    status: "pending".to_string(),
+                }
+            ),
+            // ProposalGetResult bare: a single-entity kind — rationale null, no
+            // review_context, no resolved_plan (omitted).
+            fx!(
+                "proposal_get_result.bare.json",
+                ProposalGetResult {
+                    proposal_id: UUID_B.to_string(),
+                    run_id: UUID_RUN.to_string(),
+                    mutation_kind: "create_journal_entry".to_string(),
+                    payload: serde_json::json!({}),
+                    rationale: None,
+                    review_context: None,
+                    resolved_plan: None,
+                    status: "pending".to_string(),
+                }
+            ),
+            fx!(
+                "proposal_decide_result.json",
+                ProposalDecideResult {
+                    status: "accepted".to_string(),
+                    entity_id: Some(UUID_A.to_string()),
+                }
+            ),
+            fx!(
+                "proposal_decide_result.bare.json",
+                ProposalDecideResult {
+                    status: "rejected".to_string(),
+                    entity_id: None,
+                }
+            ),
+            fx!(
+                "proposal_pending_notification.json",
+                ProposalPendingNotification {
+                    run_id: UUID_RUN.to_string(),
+                    proposal_id: UUID_B.to_string(),
+                }
+            ),
+            fx!(
+                "proposal_changed_notification.json",
+                ProposalChangedNotification {
+                    run_id: UUID_RUN.to_string(),
+                    proposal_id: UUID_B.to_string(),
+                    status: "accepted".to_string(),
+                }
+            ),
+            // ── run/post_message, thread/create, thread/list ──
+            fx!(
+                "post_message_result.json",
+                PostMessageResult {
+                    run_id: UUID_RUN.to_string(),
+                }
+            ),
+            fx!(
+                "thread_create_result.json",
+                ThreadCreateResult {
+                    thread_id: UUID_A.to_string(),
+                    run_id: UUID_RUN.to_string(),
+                }
+            ),
+            fx!(
+                "thread_list_result.json",
+                ThreadListResult {
+                    threads: vec![ThreadSummary {
+                        id: UUID_A.to_string(),
+                        title: "Morning brain dump".to_string(),
+                        last_activity_at: 1_700_000_000_000,
+                    }],
+                }
+            ),
+            // ── run/get_history ──
+            fx!(
+                "run_history_result.json",
+                RunHistoryResult {
+                    runs: vec![RunHistoryItem {
+                        run_id: UUID_RUN.to_string(),
+                        thread_id: UUID_A.to_string(),
+                        title: "Morning brain dump".to_string(),
+                        kind: "proposal_decided".to_string(),
+                        at: 1_700_000_000_000,
+                    }],
+                }
+            ),
+            // ── entity/list (EntityRow maximal + bare, transitively) ──
+            // Maximal row: refs + person_refs + source all present (covers
+            // ResolvedEntityRef with its optionals, TodoPersonRefView, EntitySourceView
+            // message-source branch).
+            fx!(
+                "entity_list_result.json",
+                EntityListResult {
+                    entities: vec![EntityRow {
+                        id: UUID_A.to_string(),
+                        r#type: "todo".to_string(),
+                        data: serde_json::json!({ "title": "Buy milk" }),
+                        created_at: 1_700_000_000_000,
+                        updated_at: 1_700_000_000_001,
+                        refs: vec![ResolvedEntityRef {
+                            id: UUID_B.to_string(),
+                            source_entity_id: UUID_A.to_string(),
+                            target_entity_id: UUID_RUN.to_string(),
+                            target_entity_type: "project".to_string(),
+                            target_title: Some("Lead Ads".to_string()),
+                            label_snapshot: Some("Lead Ads".to_string()),
+                        }],
+                        person_refs: vec![TodoPersonRefView {
+                            person_id: UUID_B.to_string(),
+                            role: "waiting_on".to_string(),
+                        }],
+                        source: Some(EntitySourceView {
+                            thread_id: Some(UUID_A.to_string()),
+                            thread_title: Some("Morning brain dump".to_string()),
+                            journal_entry_id: None,
+                        }),
+                    }],
+                }
+            ),
+            // Bare row: no refs, no person_refs, no source — all omitted
+            // (skip_serializing_if Vec::is_empty / Option::is_none). The
+            // EntitySourceView journal-entry branch is covered here? No — covered by
+            // a dedicated entry below to exercise that exactly-one-kind branch.
+            fx!(
+                "entity_list_result.bare.json",
+                EntityListResult {
+                    entities: vec![EntityRow {
+                        id: UUID_A.to_string(),
+                        r#type: "bookmark".to_string(),
+                        data: serde_json::json!({ "title": "Docs", "url": "https://x" }),
+                        created_at: 1_700_000_000_000,
+                        updated_at: 1_700_000_000_000,
+                        refs: vec![],
+                        person_refs: vec![],
+                        source: None,
+                    }],
+                }
+            ),
+            // EntitySourceView journal-entry branch (the other exactly-one-kind arm):
+            // a row whose source carries only journal_entry_id.
+            fx!(
+                "entity_list_result.je_source.json",
+                EntityListResult {
+                    entities: vec![EntityRow {
+                        id: UUID_A.to_string(),
+                        r#type: "todo".to_string(),
+                        data: serde_json::json!({ "title": "Email Alice" }),
+                        created_at: 1_700_000_000_000,
+                        updated_at: 1_700_000_000_000,
+                        refs: vec![],
+                        person_refs: vec![],
+                        source: Some(EntitySourceView {
+                            thread_id: None,
+                            thread_title: None,
+                            journal_entry_id: Some(UUID_B.to_string()),
+                        }),
+                    }],
+                }
+            ),
+            // ── entity/mutate ──
+            fx!(
+                "entity_mutate_result.json",
+                EntityMutateResult {
+                    entity_id: Some(UUID_A.to_string()),
+                }
+            ),
+            fx!(
+                "entity_mutate_result.bare.json",
+                EntityMutateResult { entity_id: None }
+            ),
+            // ── message/search ──
+            fx!(
+                "message_search_result.json",
+                MessageSearchResult {
+                    hits: vec![MessageHit {
+                        message_id: UUID_A.to_string(),
+                        thread_id: UUID_B.to_string(),
+                        run_id: UUID_RUN.to_string(),
+                        role: "assistant".to_string(),
+                        snippet: "…daycare schedule…".to_string(),
+                        thread_title: "Planning".to_string(),
+                        created_at: 1_700_000_000_000,
+                    }],
+                }
+            ),
+            // ── thread/get (MessageView maximal + bare, transitively) ──
+            // Maximal: an assistant turn with tool_calls (one with arg, one without —
+            // covers ToolCallView optional arg) AND a decided proposal (covers
+            // MessageProposalView).
+            fx!(
+                "thread_get_result.json",
+                ThreadGetResult {
+                    thread_id: UUID_A.to_string(),
+                    title: "Morning brain dump".to_string(),
+                    messages: vec![MessageView {
+                        id: UUID_B.to_string(),
+                        role: "assistant".to_string(),
+                        status: "complete".to_string(),
+                        run_id: UUID_RUN.to_string(),
+                        text: "Logged.".to_string(),
+                        tool_calls: vec![
+                            ToolCallView {
+                                name: "search_entities".to_string(),
+                                status: "completed".to_string(),
+                                arg: Some("Lev".to_string()),
+                            },
+                            ToolCallView {
+                                name: "read_thread".to_string(),
+                                status: "completed".to_string(),
+                                arg: None,
+                            },
+                        ],
+                        proposal: Some(MessageProposalView {
+                            proposal_id: UUID_A.to_string(),
+                            mutation_kind: "apply_intent_graph".to_string(),
+                            status: "accepted".to_string(),
+                        }),
+                    }],
+                }
+            ),
+            // Bare: a user turn — empty tool_calls, no proposal (omitted).
+            fx!(
+                "thread_get_result.bare.json",
+                ThreadGetResult {
+                    thread_id: UUID_A.to_string(),
+                    title: "Morning brain dump".to_string(),
+                    messages: vec![MessageView {
+                        id: UUID_B.to_string(),
+                        role: "user".to_string(),
+                        status: "complete".to_string(),
+                        run_id: UUID_RUN.to_string(),
+                        text: "I bought milk.".to_string(),
+                        tool_calls: vec![],
+                        proposal: None,
+                    }],
+                }
+            ),
+            // ── provider/status, provider/login_start ──
+            fx!(
+                "provider_status_result.json",
+                ProviderStatusResult {
+                    providers: vec![ProviderStatus {
+                        id: "openai-codex".to_string(),
+                        connected: true,
+                    }],
+                }
+            ),
+            fx!(
+                "provider_login_start_result.json",
+                ProviderLoginStartResult {
+                    authorize_url: "https://auth.openai.com/oauth/authorize?x=1".to_string(),
+                }
+            ),
+            // ── model/catalog ──
+            fx!(
+                "model_catalog_result.json",
+                ModelCatalogResult {
+                    providers: vec![ProviderModels {
+                        id: "openai-codex".to_string(),
+                        label: "OpenAI".to_string(),
+                        models: vec![ModelInfo {
+                            id: "gpt-5.5".to_string(),
+                            name: "GPT-5.5".to_string(),
+                            reasoning: true,
+                            input: vec!["text".to_string(), "image".to_string()],
+                            cost_input: 5.0,
+                            cost_output: 30.0,
+                        }],
+                    }],
+                }
+            ),
+            // ── settings/* (model present + null branch) ──
+            fx!(
+                "settings_result.json",
+                SettingsResult {
+                    provider: "openai-codex".to_string(),
+                    model: Some("gpt-5.5".to_string()),
+                    effort: "high".to_string(),
+                }
+            ),
+            fx!(
+                "settings_result.bare.json",
+                SettingsResult {
+                    provider: "openai-codex".to_string(),
+                    model: None,
+                    effort: "off".to_string(),
+                }
+            ),
+        ]
     }
 
     /// Dump every emitted fixture to `tests/contract/fixtures/structs/emitted/`.
@@ -2052,10 +2423,44 @@ mod parity_fixtures {
     fn emitted_fixtures_match_committed() {
         // (filename, committed bytes). `include_str!` resolves relative to this
         // source file (`crates/core/src/protocol.rs`): `../../../tests/contract/…`.
-        let committed: &[(&str, &str)] = &[(
+        macro_rules! committed {
+            ($($file:literal),+ $(,)?) => {
+                &[$((
+                    $file,
+                    include_str!(concat!(
+                        "../../../tests/contract/fixtures/structs/emitted/",
+                        $file
+                    )),
+                )),+]
+            };
+        }
+        let committed: &[(&str, &str)] = committed![
+            "subscribe_result.json",
+            "run_cancel_result.json",
+            "proposal_get_result.json",
+            "proposal_get_result.bare.json",
+            "proposal_decide_result.json",
+            "proposal_decide_result.bare.json",
+            "proposal_pending_notification.json",
+            "proposal_changed_notification.json",
             "post_message_result.json",
-            include_str!("../../../tests/contract/fixtures/structs/emitted/post_message_result.json"),
-        )];
+            "thread_create_result.json",
+            "thread_list_result.json",
+            "run_history_result.json",
+            "entity_list_result.json",
+            "entity_list_result.bare.json",
+            "entity_list_result.je_source.json",
+            "entity_mutate_result.json",
+            "entity_mutate_result.bare.json",
+            "message_search_result.json",
+            "thread_get_result.json",
+            "thread_get_result.bare.json",
+            "provider_status_result.json",
+            "provider_login_start_result.json",
+            "model_catalog_result.json",
+            "settings_result.json",
+            "settings_result.bare.json",
+        ];
         // The embedded table must cover exactly what the writer emits — neither can
         // gain or drop a fixture the other lacks.
         let emitted = emitted_fixtures();

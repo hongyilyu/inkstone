@@ -1,0 +1,8 @@
+{
+  "mutation_kind": "create_journal_entry",
+  "payload": {},
+  "proposal_id": "0190d3c1-0000-7000-8000-000000000002",
+  "rationale": null,
+  "run_id": "0190d3c1-0000-7000-8000-000000000003",
+  "status": "pending"
+}

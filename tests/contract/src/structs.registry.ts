@@ -20,19 +20,36 @@
 
 import {
 	EntityListParams,
+	EntityListResult,
 	EntityMutateParams,
+	EntityMutateResult,
 	MessageSearchParams,
+	MessageSearchResult,
+	ModelCatalogResult,
 	PostMessageParams,
 	PostMessageResult,
+	ProposalChangedNotification,
 	ProposalDecideParams,
+	ProposalDecideResult,
 	ProposalGetParams,
+	ProposalGetResult,
+	ProposalPendingNotification,
 	ProviderLoginStartParams,
+	ProviderLoginStartResult,
+	ProviderStatusResult,
 	RunCancelParams,
+	RunCancelResult,
 	RunGetHistoryParams,
+	RunHistoryResult,
+	SettingsResult,
 	SettingsSetParams,
 	SubscribeParams,
+	SubscribeResult,
 	ThreadCreateParams,
+	ThreadCreateResult,
 	ThreadGetParams,
+	ThreadGetResult,
+	ThreadListResult,
 } from "@inkstone/protocol";
 import type { Schema as S } from "effect";
 
@@ -178,6 +195,167 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: SettingsSetParams,
 		dir: "authored",
 	},
+
+	// ── slice 3: the 18 Serialize-capable results + notifications (Core-emitted) ──
+	// Core serializes a canonical instance through its real serde path. Maximal
+	// fixtures populate every optional (so the gate exercises those fields); a
+	// `.bare`/`.je_source` companion covers the omitted / alternate branch. Leaf
+	// sub-structs are covered transitively inside their wrapper result.
+	{
+		message: "SubscribeResult",
+		file: "subscribe_result.json",
+		schema: SubscribeResult,
+		dir: "emitted",
+	},
+	{
+		message: "RunCancelResult",
+		file: "run_cancel_result.json",
+		schema: RunCancelResult,
+		dir: "emitted",
+	},
+	// ProposalGetResult: maximal (rationale + review_context + resolved_plan —
+	// covers ResolvedNode/ResolvedNodeCandidate/ProposalReviewContext/JournalEntryBodyNode
+	// transitively) + bare (single-entity kind, all optionals omitted).
+	{
+		message: "ProposalGetResult",
+		file: "proposal_get_result.json",
+		schema: ProposalGetResult,
+		dir: "emitted",
+	},
+	{
+		message: "ProposalGetResult",
+		file: "proposal_get_result.bare.json",
+		schema: ProposalGetResult,
+		dir: "emitted",
+	},
+	{
+		message: "ProposalDecideResult",
+		file: "proposal_decide_result.json",
+		schema: ProposalDecideResult,
+		dir: "emitted",
+	},
+	{
+		message: "ProposalDecideResult",
+		file: "proposal_decide_result.bare.json",
+		schema: ProposalDecideResult,
+		dir: "emitted",
+	},
+	{
+		message: "ProposalPendingNotification",
+		file: "proposal_pending_notification.json",
+		schema: ProposalPendingNotification,
+		dir: "emitted",
+	},
+	{
+		message: "ProposalChangedNotification",
+		file: "proposal_changed_notification.json",
+		schema: ProposalChangedNotification,
+		dir: "emitted",
+	},
+	{
+		message: "ThreadCreateResult",
+		file: "thread_create_result.json",
+		schema: ThreadCreateResult,
+		dir: "emitted",
+	},
+	{
+		message: "ThreadListResult",
+		file: "thread_list_result.json",
+		schema: ThreadListResult,
+		dir: "emitted",
+	},
+	{
+		message: "RunHistoryResult",
+		file: "run_history_result.json",
+		schema: RunHistoryResult,
+		dir: "emitted",
+	},
+	// EntityListResult: maximal row (refs + person_refs + message-source) + bare
+	// row (all omitted) + je_source row (the journal-entry source branch — the
+	// other exactly-one-kind arm of EntitySourceView).
+	{
+		message: "EntityListResult",
+		file: "entity_list_result.json",
+		schema: EntityListResult,
+		dir: "emitted",
+	},
+	{
+		message: "EntityListResult",
+		file: "entity_list_result.bare.json",
+		schema: EntityListResult,
+		dir: "emitted",
+	},
+	{
+		message: "EntityListResult",
+		file: "entity_list_result.je_source.json",
+		schema: EntityListResult,
+		dir: "emitted",
+	},
+	{
+		message: "EntityMutateResult",
+		file: "entity_mutate_result.json",
+		schema: EntityMutateResult,
+		dir: "emitted",
+	},
+	{
+		message: "EntityMutateResult",
+		file: "entity_mutate_result.bare.json",
+		schema: EntityMutateResult,
+		dir: "emitted",
+	},
+	{
+		message: "MessageSearchResult",
+		file: "message_search_result.json",
+		schema: MessageSearchResult,
+		dir: "emitted",
+	},
+	// ThreadGetResult: maximal (assistant turn w/ tool_calls + decided proposal —
+	// covers ToolCallView optional arg + MessageProposalView) + bare (user turn,
+	// empty tool_calls, no proposal).
+	{
+		message: "ThreadGetResult",
+		file: "thread_get_result.json",
+		schema: ThreadGetResult,
+		dir: "emitted",
+	},
+	{
+		message: "ThreadGetResult",
+		file: "thread_get_result.bare.json",
+		schema: ThreadGetResult,
+		dir: "emitted",
+	},
+	{
+		message: "ProviderStatusResult",
+		file: "provider_status_result.json",
+		schema: ProviderStatusResult,
+		dir: "emitted",
+	},
+	{
+		message: "ProviderLoginStartResult",
+		file: "provider_login_start_result.json",
+		schema: ProviderLoginStartResult,
+		dir: "emitted",
+	},
+	{
+		message: "ModelCatalogResult",
+		file: "model_catalog_result.json",
+		schema: ModelCatalogResult,
+		dir: "emitted",
+	},
+	// SettingsResult: maximal (model present) + bare (model null — NullOr, so
+	// null is valid here, unlike the S.optional params).
+	{
+		message: "SettingsResult",
+		file: "settings_result.json",
+		schema: SettingsResult,
+		dir: "emitted",
+	},
+	{
+		message: "SettingsResult",
+		file: "settings_result.bare.json",
+		schema: SettingsResult,
+		dir: "emitted",
+	},
 ];
 
 /** The hand-maintained canonical set of in-scope wire messages (grilling Q5: 31
@@ -201,6 +379,24 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ThreadGetParams",
 	"ProviderLoginStartParams",
 	"SettingsSetParams",
+	// slice 3 — the 18 results + notifications
+	"SubscribeResult",
+	"RunCancelResult",
+	"ProposalGetResult",
+	"ProposalDecideResult",
+	"ProposalPendingNotification",
+	"ProposalChangedNotification",
+	"ThreadCreateResult",
+	"ThreadListResult",
+	"RunHistoryResult",
+	"EntityListResult",
+	"EntityMutateResult",
+	"MessageSearchResult",
+	"ThreadGetResult",
+	"ProviderStatusResult",
+	"ProviderLoginStartResult",
+	"ModelCatalogResult",
+	"SettingsResult",
 ];
 
 /** Expected fixture count per tagged-union message (grilling Q10). A union must

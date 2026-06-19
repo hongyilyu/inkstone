@@ -1,0 +1,16 @@
+{
+  "entities": [
+    {
+      "created_at": 1700000000000,
+      "data": {
+        "title": "Email Alice"
+      },
+      "id": "0190d3c1-0000-7000-8000-000000000001",
+      "source": {
+        "journal_entry_id": "0190d3c1-0000-7000-8000-000000000002"
+      },
+      "type": "todo",
+      "updated_at": 1700000000000
+    }
+  ]
+}

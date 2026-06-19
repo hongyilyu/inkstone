@@ -1,0 +1,29 @@
+{
+  "messages": [
+    {
+      "id": "0190d3c1-0000-7000-8000-000000000002",
+      "proposal": {
+        "mutation_kind": "apply_intent_graph",
+        "proposal_id": "0190d3c1-0000-7000-8000-000000000001",
+        "status": "accepted"
+      },
+      "role": "assistant",
+      "run_id": "0190d3c1-0000-7000-8000-000000000003",
+      "status": "complete",
+      "text": "Logged.",
+      "tool_calls": [
+        {
+          "arg": "Lev",
+          "name": "search_entities",
+          "status": "completed"
+        },
+        {
+          "name": "read_thread",
+          "status": "completed"
+        }
+      ]
+    }
+  ],
+  "thread_id": "0190d3c1-0000-7000-8000-000000000001",
+  "title": "Morning brain dump"
+}
