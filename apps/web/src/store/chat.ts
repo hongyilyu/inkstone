@@ -370,6 +370,48 @@ function terminateRun(
 }
 
 /**
+ * Transform the assistant bubble for `runId` within its thread. Owns the
+ * "locate this run's bubble" predicate ONCE (it was open-coded across every
+ * event branch, in two spellings). Routes through {@link withThread} so
+ * unrelated threads keep stable object identities (the reference-stability gate
+ * in chat.selectors.test.tsx).
+ */
+function updateRunMessage(
+	s: ChatState,
+	threadId: string,
+	runId: string,
+	transform: (m: Message) => Message,
+): ChatState {
+	return withThread(s, threadId, (t) => ({
+		...t,
+		messages: t.messages.map((m) =>
+			m.role === "assistant" && m.run_id === runId ? transform(m) : m,
+		),
+	}));
+}
+
+/**
+ * Settle a terminated Run: clear the thread's `activeRunId` (if it still points
+ * at this run) and flip the keyed record to `terminal`. Message-free — the
+ * per-message finalize (status + {@link settleRunningToolCalls}) is applied
+ * first via {@link updateRunMessage}, so this only ever touches `activeRunId`
+ * and `runs`.
+ */
+function settleTerminal(
+	s: ChatState,
+	threadId: string,
+	runId: string,
+): ChatState {
+	return {
+		...withThread(s, threadId, (t) => ({
+			...t,
+			activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
+		})),
+		runs: terminateRun(s.runs, runId),
+	};
+}
+
+/**
  * Apply a streamed run event to the thread's assistant message for `runId`.
  * SET-vs-APPEND rule: the FIRST `text_delta` after subscribe is the cumulative
  * snapshot → SET (driven by the record's armed `snapshotArmed` bit); subsequent
@@ -391,29 +433,25 @@ export function applyEvent(
 			// Armed (or no record yet) → the cumulative snapshot SETs; an attached,
 			// disarmed tail APPENDs (ADR-0022 snapshot/tail boundary).
 			const armed = s.runs[runId]?.snapshotArmed ?? true;
-			const messages = thread.messages.map(
-				(m): Message =>
-					m.role === "assistant" && m.run_id === runId
-						? { ...m, text: armed ? event.delta : m.text + event.delta }
-						: m,
-			);
-			const run = s.runs[runId];
+			const next = updateRunMessage(s, threadId, runId, (m) => ({
+				...m,
+				text: armed ? event.delta : m.text + event.delta,
+			}));
+			// Disarm the snapshot bit — text_delta's OWN concern, fits neither helper.
+			const run = next.runs[runId];
+			if (run === undefined) {
+				return next;
+			}
 			return {
-				...withThread(s, threadId, (t) => ({ ...t, messages })),
-				runs:
-					run === undefined
-						? s.runs
-						: { ...s.runs, [runId]: { ...run, snapshotArmed: false } },
+				...next,
+				runs: { ...next.runs, [runId]: { ...run, snapshotArmed: false } },
 			};
 		}
 
 		if (event.kind === "tool_call") {
 			// Upsert: `started` appends a `running` row, terminal flips the matching row.
 			const status = event.status === "started" ? "running" : event.status;
-			const messages = thread.messages.map((m): Message => {
-				if (m.role !== "assistant" || m.run_id !== runId) {
-					return m;
-				}
+			return updateRunMessage(s, threadId, runId, (m) => {
 				const existing = m.toolCalls ?? [];
 				const found = existing.some((tc) => tc.id === event.tool_call_id);
 				const toolCalls: ToolCall[] = found
@@ -431,73 +469,36 @@ export function applyEvent(
 						];
 				return { ...m, toolCalls };
 			});
-			return withThread(s, threadId, (t) => ({ ...t, messages }));
 		}
 
 		if (event.kind === "error") {
 			// Terminal worker error (ADR-0006): mark incomplete, attach the message, clear the active run.
-			const messages = thread.messages.map(
-				(m): Message =>
-					m.role === "assistant" && m.run_id === runId
-						? {
-								...m,
-								status: "incomplete",
-								error: event.message,
-								toolCalls: settleRunningToolCalls(m.toolCalls, "error"),
-							}
-						: m,
-			);
-			return {
-				...withThread(s, threadId, (t) => ({
-					...t,
-					messages,
-					activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
-				})),
-				runs: terminateRun(s.runs, runId),
-			};
+			const next = updateRunMessage(s, threadId, runId, (m) => ({
+				...m,
+				status: "incomplete",
+				error: event.message,
+				toolCalls: settleRunningToolCalls(m.toolCalls, "error"),
+			}));
+			return settleTerminal(next, threadId, runId);
 		}
 
 		if (event.kind === "cancelled") {
 			// Terminal but NOT a failure (ADR-0014): mark incomplete, no `error` attached. Core mirrors this server-side.
-			const messages = thread.messages.map(
-				(m): Message =>
-					m.role === "assistant" && m.run_id === runId
-						? {
-								...m,
-								status: "incomplete",
-								toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
-							}
-						: m,
-			);
-			return {
-				...withThread(s, threadId, (t) => ({
-					...t,
-					messages,
-					activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
-				})),
-				runs: terminateRun(s.runs, runId),
-			};
+			const next = updateRunMessage(s, threadId, runId, (m) => ({
+				...m,
+				status: "incomplete",
+				toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
+			}));
+			return settleTerminal(next, threadId, runId);
 		}
 
 		// done: finalize the assistant message and clear the active run.
-		const messages = thread.messages.map(
-			(m): Message =>
-				m.role === "assistant" && m.run_id === runId
-					? {
-							...m,
-							status: "completed",
-							toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
-						}
-					: m,
-		);
-		return {
-			...withThread(s, threadId, (t) => ({
-				...t,
-				messages,
-				activeRunId: t.activeRunId === runId ? undefined : t.activeRunId,
-			})),
-			runs: terminateRun(s.runs, runId),
-		};
+		const next = updateRunMessage(s, threadId, runId, (m) => ({
+			...m,
+			status: "completed",
+			toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
+		}));
+		return settleTerminal(next, threadId, runId);
 	});
 }
 
