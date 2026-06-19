@@ -1537,6 +1537,8 @@ mod parity_fixtures {
                                 },
                             ],
                         }),
+                        current_person: None,
+                        current_project: None,
                     }),
                     resolved_plan: Some(vec![
                         ResolvedNode {
