@@ -97,9 +97,36 @@ describe("ComposeFooter", () => {
 		expect(await screen.findByText(/^Off$/)).toBeInTheDocument();
 
 		// Search + Attach have no Core backing yet, so they ship disabled rather
-		// than masquerading as live controls.
-		expect(screen.getByRole("button", { name: /^search$/i })).toBeDisabled();
-		expect(screen.getByRole("button", { name: /^attach$/i })).toBeDisabled();
+		// than masquerading as live controls. Their accessible name carries the
+		// "(coming soon)" reason (see the dedicated test below).
+		expect(
+			screen.getByRole("button", { name: /search \(coming soon\)/i }),
+		).toBeDisabled();
+		expect(
+			screen.getByRole("button", { name: /attach \(coming soon\)/i }),
+		).toBeDisabled();
+
+		await runtime.dispose();
+	});
+
+	it("folds the unavailable reason into the accessible name of the placeholder chips", async () => {
+		const onSend = vi.fn();
+		const runtime = makeRuntime();
+		renderWithQuery(
+			<RuntimeProvider runtime={runtime}>
+				<ComposeFooter onSend={onSend} />
+			</RuntimeProvider>,
+		);
+
+		// A disabled native button is out of the tab order, so the `title` tooltip
+		// is unreachable by keyboard/touch/AT — the reason must live in the
+		// accessible name instead.
+		expect(
+			screen.getByRole("button", { name: /search \(coming soon\)/i }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /attach \(coming soon\)/i }),
+		).toBeInTheDocument();
 
 		await runtime.dispose();
 	});
