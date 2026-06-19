@@ -29,6 +29,31 @@ export function isAcceptable(node: ResolvedNode): boolean {
 	return node.disposition !== "ambiguous";
 }
 
+/** The per-handle re-point buffer (component state) for the near-match
+ * default-to-existing affordance (ADR-0042 amendment). A handle maps to:
+ *   - a string entity_id → re-point this create node onto that existing entity
+ *     (the per-node `entity_id` override; collapses create → reuse at decide);
+ *   - `null` → the user explicitly chose "Create new instead" (suppress the
+ *     default re-point a single near-match would otherwise apply);
+ *   - absent → no explicit choice; the default applies (see {@link repointFor}). */
+export type RepointBuffer = Readonly<Record<string, string | null>>;
+
+/** The effective re-point id for a node (ADR-0042 amendment), prioritizing the
+ * existing entity: an explicit buffer entry wins (a string id re-points; `null`
+ * means "create new instead" → no re-point). With no explicit entry, a `create`
+ * node carrying EXACTLY ONE near-match defaults to that entity's id (the
+ * default-to-existing behavior). Zero or 2+ near-matches → no default (2+ defer to
+ * the disambiguation picker, #181). Returns `null` when there is no re-point. */
+export function repointFor(
+	buffer: RepointBuffer,
+	node: ResolvedNode,
+): string | null {
+	if (node.handle in buffer) return buffer[node.handle];
+	if (node.disposition !== "create") return null;
+	const near = node.near_matches ?? [];
+	return near.length === 1 ? near[0].entity_id : null;
+}
+
 /** Whether the plan contains an `ambiguous` node — these block "accept all"
  * (ADR-0042: "Accept all cannot sweep past an unresolved ambiguity"). */
 export function hasAmbiguous(plan: readonly ResolvedNode[]): boolean {
@@ -299,17 +324,30 @@ function sameStrings(a: readonly string[], b: readonly string[]): boolean {
  * correction from its proposed fields (omitted when the draft is unchanged, so an
  * opened-but-untouched form leaves a plain accept). A rejected node never carries an
  * edit (a rejected node is not minted); the draft survives in the buffer so
- * re-accepting restores it. `entity_id` overrides (the #181 picker) are still out of
- * scope. */
+ * re-accepting restores it.
+ *
+ * An accepted create node with an effective near-match RE-POINT (ADR-0042
+ * amendment — {@link repointFor}, default-to-existing) instead carries
+ * `entity_id`: the existing entity it is re-pointed onto. `entity_id` and
+ * `edited_fields` are mutually exclusive per node (Core rejects both — you reuse
+ * what you re-point, you edit what you mint), so a re-point WINS over any edit
+ * draft (the node is reused, not minted). */
 export function buildDecisions(
 	plan: readonly ResolvedNode[],
 	buffer: StagingBuffer,
 	drafts: DraftBuffer = {},
 	entities: Map<string, Record<string, unknown>> = new Map(),
+	repoints: RepointBuffer = {},
 ): NodeDecision[] {
 	return plan.map((node) => {
 		const decision = stageFor(buffer, node);
 		if (decision === "accept" && node.disposition === "create") {
+			// A near-match re-point reuses an existing entity — it takes precedence
+			// over an edit draft (mutually exclusive: reuse vs mint).
+			const repoint = repointFor(repoints, node);
+			if (repoint !== null) {
+				return { handle: node.handle, decision, entity_id: repoint };
+			}
 			const draft = drafts[node.handle];
 			if (draft !== undefined) {
 				const edited = buildEditedFields(entities.get(node.handle), draft);

@@ -1696,6 +1696,100 @@ describe("ProposalCard", () => {
 			expect(screen.getByText("Existing")).toBeInTheDocument();
 		});
 
+		// Near-match default-to-existing (ADR-0042 amendment): a create node carrying
+		// a single near_match defaults to reusing that existing entity.
+		describe("near-match default-to-existing", () => {
+			const withNearMatch: PendingProposal = {
+				...graphProposal,
+				payload: { links: [] },
+				resolved_plan: [
+					{
+						handle: "@leadads",
+						type: "project",
+						disposition: "create",
+						label: "Lead Ads testing",
+						near_matches: [
+							{ entity_id: "existing-leadads", label: "Lead Ads" },
+						],
+					},
+				],
+			};
+
+			it("badges a single-near-match node 'Existing «…»' and defaults Apply to the existing entity_id", () => {
+				const onDecide = vi.fn();
+				const { container } = render(
+					<ProposalCard proposal={withNearMatch} onDecide={onDecide} />,
+				);
+				// The node keeps its proposed label, but the badge points at the existing.
+				expect(screen.getByText("Lead Ads testing")).toBeInTheDocument();
+				expect(screen.getByText("Existing «Lead Ads»")).toBeInTheDocument();
+				expect(
+					container.querySelector('[data-graph-node="@leadads"]'),
+				).toHaveAttribute("data-node-repoint", "existing-leadads");
+				// A blind Apply re-points onto the existing project (no duplicate minted).
+				fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+				expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+					{
+						handle: "@leadads",
+						decision: "accept",
+						entity_id: "existing-leadads",
+					},
+				]);
+			});
+
+			it("'Create new instead' clears the re-point so Apply mints a new entity", () => {
+				const onDecide = vi.fn();
+				const { container } = render(
+					<ProposalCard proposal={withNearMatch} onDecide={onDecide} />,
+				);
+				fireEvent.click(
+					screen.getByRole("button", { name: /create new instead/i }),
+				);
+				// The badge reverts to "New" and the re-point attribute is gone.
+				expect(screen.getByText("New")).toBeInTheDocument();
+				expect(
+					container.querySelector('[data-graph-node="@leadads"]'),
+				).not.toHaveAttribute("data-node-repoint");
+				fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+				expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+					{ handle: "@leadads", decision: "accept" },
+				]);
+			});
+
+			it("surfaces 2+ near-matches advisorily without auto-picking", () => {
+				const onDecide = vi.fn();
+				const multi: PendingProposal = {
+					...graphProposal,
+					payload: { links: [] },
+					resolved_plan: [
+						{
+							handle: "@leadads",
+							type: "project",
+							disposition: "create",
+							label: "Lead Ads testing",
+							near_matches: [
+								{ entity_id: "la1", label: "Lead Ads" },
+								{ entity_id: "la2", label: "Lead Ads work" },
+							],
+						},
+					],
+				};
+				const { container } = render(
+					<ProposalCard proposal={multi} onDecide={onDecide} />,
+				);
+				// Still "New" (no auto-pick), but the matches are surfaced.
+				expect(screen.getByText("New")).toBeInTheDocument();
+				expect(
+					container.querySelector('[data-graph-node="@leadads"]'),
+				).not.toHaveAttribute("data-node-repoint");
+				expect(screen.getByText(/matches existing/i)).toBeInTheDocument();
+				fireEvent.click(screen.getByRole("button", { name: /apply 1 item/i }));
+				expect(onDecide).toHaveBeenCalledWith("accept", undefined, [
+					{ handle: "@leadads", decision: "accept" },
+				]);
+			});
+		});
+
 		it("renders TWO downgrade notices (no key collision) when one Todo loses both links", () => {
 			const onDecide = vi.fn();
 			const bothLinks: PendingProposal = {
