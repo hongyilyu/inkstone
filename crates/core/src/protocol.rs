@@ -2090,14 +2090,46 @@ mod parity_fixtures {
     /// concurrent writer for this dir, but kept consistent with the emitted lock).
     #[test]
     fn authored_fixtures_parse() {
-        let subscribe_params =
-            include_str!("../../../tests/contract/fixtures/structs/authored/subscribe_params.json");
-        let parsed: SubscribeParams =
-            serde_json::from_str(subscribe_params).expect("subscribe_params.json deserializes");
-        assert_eq!(parsed.run_id.to_string(), UUID_A);
+        // Each authored param fixture must deserialize through its Rust type — the
+        // producer-side half of the gate. A macro keeps each line to the type +
+        // file it checks; the TS gate independently decodes the same files. UUID
+        // fields are real UUIDs (Rust parses them) though TS types them `S.String`.
+        macro_rules! parses {
+            ($ty:ty, $file:literal) => {{
+                let raw = include_str!(concat!(
+                    "../../../tests/contract/fixtures/structs/authored/",
+                    $file
+                ));
+                let _parsed: $ty = serde_json::from_str(raw)
+                    .unwrap_or_else(|e| panic!(concat!($file, " must deserialize: {}"), e));
+            }};
+        }
 
-        // A sanity check that the canonical fixture is the shape we think it is.
-        let value: serde_json::Value = serde_json::from_str(subscribe_params).unwrap();
-        assert_eq!(value, json!({ "run_id": UUID_A }));
+        parses!(SubscribeParams, "subscribe_params.json");
+        parses!(PostMessageParams, "post_message_params.json");
+        parses!(RunCancelParams, "run_cancel_params.json");
+        parses!(ProposalGetParams, "proposal_get_params.json");
+        parses!(ProposalDecideParams, "proposal_decide_params.json");
+        parses!(ProposalDecideParams, "proposal_decide_params.edit.json");
+        parses!(ProposalDecideParams, "proposal_decide_params.bare.json");
+        parses!(ThreadCreateParams, "thread_create_params.json");
+        parses!(RunGetHistoryParams, "run_get_history_params.json");
+        parses!(RunGetHistoryParams, "run_get_history_params.bare.json");
+        parses!(EntityListParams, "entity_list_params.json");
+        parses!(EntityMutateParams, "entity_mutate_params.json");
+        parses!(MessageSearchParams, "message_search_params.json");
+        parses!(ThreadGetParams, "thread_get_params.json");
+        parses!(ProviderLoginStartParams, "provider_login_start_params.json");
+        parses!(SettingsSetParams, "settings_set_params.json");
+        parses!(SettingsSetParams, "settings_set_params.bare.json");
+
+        // Spot-check the maximal ProposalDecideParams carries every per-node form,
+        // so a future fixture edit can't silently drop the rich graph shape.
+        let graph: ProposalDecideParams = serde_json::from_str(include_str!(
+            "../../../tests/contract/fixtures/structs/authored/proposal_decide_params.json"
+        ))
+        .unwrap();
+        let decisions = graph.decisions.expect("maximal carries a decisions vector");
+        assert_eq!(decisions.len(), 4, "all four per-node decision forms present");
     }
 }

@@ -18,7 +18,22 @@
 // convention. Leaf sub-structs are covered TRANSITIVELY inside their parent's
 // fixture; they never appear here standalone (they never cross the wire alone).
 
-import { PostMessageResult, SubscribeParams } from "@inkstone/protocol";
+import {
+	EntityListParams,
+	EntityMutateParams,
+	MessageSearchParams,
+	PostMessageParams,
+	PostMessageResult,
+	ProposalDecideParams,
+	ProposalGetParams,
+	ProviderLoginStartParams,
+	RunCancelParams,
+	RunGetHistoryParams,
+	SettingsSetParams,
+	SubscribeParams,
+	ThreadCreateParams,
+	ThreadGetParams,
+} from "@inkstone/protocol";
 import type { Schema as S } from "effect";
 
 export type FixtureDir = "emitted" | "authored";
@@ -56,6 +71,113 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: SubscribeParams,
 		dir: "authored",
 	},
+
+	// ── slice 2: the 13 Deserialize-only params (hand-authored wire JSON) ──
+	// Params Core never serializes in production, so the fixture is the exact
+	// shape Web sends. Rust `from_str` is the producer-side check (Core accepts
+	// it); TS decode is the consumer side. UUID-typed Rust fields require valid
+	// UUID strings even though TS types them `S.String`. Optional-bearing params
+	// get a `.bare` companion exercising the omitted branch.
+	{
+		message: "PostMessageParams",
+		file: "post_message_params.json",
+		schema: PostMessageParams,
+		dir: "authored",
+	},
+	{
+		message: "RunCancelParams",
+		file: "run_cancel_params.json",
+		schema: RunCancelParams,
+		dir: "authored",
+	},
+	{
+		message: "ProposalGetParams",
+		file: "proposal_get_params.json",
+		schema: ProposalGetParams,
+		dir: "authored",
+	},
+	// ProposalDecideParams: maximal (graph accept, all 4 per-node decision forms),
+	// the scalar `edit` path, and the bare single-entity accept.
+	{
+		message: "ProposalDecideParams",
+		file: "proposal_decide_params.json",
+		schema: ProposalDecideParams,
+		dir: "authored",
+	},
+	{
+		message: "ProposalDecideParams",
+		file: "proposal_decide_params.edit.json",
+		schema: ProposalDecideParams,
+		dir: "authored",
+	},
+	{
+		message: "ProposalDecideParams",
+		file: "proposal_decide_params.bare.json",
+		schema: ProposalDecideParams,
+		dir: "authored",
+	},
+	{
+		message: "ThreadCreateParams",
+		file: "thread_create_params.json",
+		schema: ThreadCreateParams,
+		dir: "authored",
+	},
+	// RunGetHistoryParams: maximal (limit present) + bare (omitted).
+	{
+		message: "RunGetHistoryParams",
+		file: "run_get_history_params.json",
+		schema: RunGetHistoryParams,
+		dir: "authored",
+	},
+	{
+		message: "RunGetHistoryParams",
+		file: "run_get_history_params.bare.json",
+		schema: RunGetHistoryParams,
+		dir: "authored",
+	},
+	{
+		message: "EntityListParams",
+		file: "entity_list_params.json",
+		schema: EntityListParams,
+		dir: "authored",
+	},
+	{
+		message: "EntityMutateParams",
+		file: "entity_mutate_params.json",
+		schema: EntityMutateParams,
+		dir: "authored",
+	},
+	{
+		message: "MessageSearchParams",
+		file: "message_search_params.json",
+		schema: MessageSearchParams,
+		dir: "authored",
+	},
+	{
+		message: "ThreadGetParams",
+		file: "thread_get_params.json",
+		schema: ThreadGetParams,
+		dir: "authored",
+	},
+	{
+		message: "ProviderLoginStartParams",
+		file: "provider_login_start_params.json",
+		schema: ProviderLoginStartParams,
+		dir: "authored",
+	},
+	// SettingsSetParams: maximal (both fields) + bare (both omitted).
+	{
+		message: "SettingsSetParams",
+		file: "settings_set_params.json",
+		schema: SettingsSetParams,
+		dir: "authored",
+	},
+	{
+		message: "SettingsSetParams",
+		file: "settings_set_params.bare.json",
+		schema: SettingsSetParams,
+		dir: "authored",
+	},
 ];
 
 /** The hand-maintained canonical set of in-scope wire messages (grilling Q5: 31
@@ -63,8 +185,22 @@ export const fixtures: readonly FixtureEntry[] = [
  * distinct `message` values in {@link fixtures}, so a message can't be covered
  * without being declared, nor declared without a fixture. */
 export const CANONICAL_MESSAGES: readonly string[] = [
+	// slice 1
 	"PostMessageResult",
 	"SubscribeParams",
+	// slice 2 — the 13 params (12 new + SubscribeParams above = 13 total)
+	"PostMessageParams",
+	"RunCancelParams",
+	"ProposalGetParams",
+	"ProposalDecideParams",
+	"ThreadCreateParams",
+	"RunGetHistoryParams",
+	"EntityListParams",
+	"EntityMutateParams",
+	"MessageSearchParams",
+	"ThreadGetParams",
+	"ProviderLoginStartParams",
+	"SettingsSetParams",
 ];
 
 /** Expected fixture count per tagged-union message (grilling Q10). A union must
