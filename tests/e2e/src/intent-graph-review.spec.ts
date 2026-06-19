@@ -1,6 +1,7 @@
 import path from "node:path";
 import { expect, test } from "./fixtures.js";
 import {
+	seedAcceptedProject,
 	seedParkedIntentGraphProposal,
 	sqlite,
 	sqlValue,
@@ -264,4 +265,145 @@ test("rejecting the Project lands the Todo standalone (no project, no link)", as
 		),
 	).toBe("1");
 	expect(count(dbPath, "SELECT COUNT(*) FROM todo_person_refs;")).toBe("1");
+});
+
+// --- Near-match default-to-existing (ADR-0042 amendment) --------------------
+// The reported bug: a note "...synced on Lead Ads testing..." proposed "Lead Ads
+// testing" as a NEW Project when a "Lead Ads" Project already exists. With the
+// near-match safety net, Core flags the existing "Lead Ads" on the create node's
+// resolved plan, and the card DEFAULTS to reusing it — a blind Apply links to the
+// existing Project and mints NO duplicate.
+
+const EXISTING_PROJECT_ID = "01900000-0000-7000-8000-00000000c001";
+const NEAR_MATCH_NOTE = "1600-1800 synced on Lead Ads testing";
+
+// A graph proposing a Project named "Lead Ads testing" (the near-twin) + a Todo.
+const NEAR_MATCH_GRAPH = {
+	journal_entry: {
+		handle: "@je",
+		occurred_at: "2026-06-10T16:00:00",
+		body: [
+			{ type: "text", text: "Synced on " },
+			{ type: "entity_ref", target: "@leadads" },
+			{ type: "text", text: "." },
+		],
+	},
+	entities: [
+		{ handle: "@leadads", type: "project", name: "Lead Ads testing" },
+		{
+			handle: "@figure",
+			type: "todo",
+			title: "Figure out why Lead Ads testing ads still do not show up",
+		},
+	],
+	links: [
+		{ kind: "todo_project", from: "@figure", to: "@leadads" },
+		{ kind: "journal_ref", from: "@je", to: "@leadads" },
+	],
+};
+
+test("a near-twin Project defaults to the existing entity; Apply mints no duplicate", async ({
+	chat,
+	workspace,
+}) => {
+	const dbPath = dbPathFor(workspace.path);
+	// An accepted "Lead Ads" Project already exists.
+	seedAcceptedProject(dbPath, EXISTING_PROJECT_ID, "Lead Ads");
+	seedParkedIntentGraphProposal(dbPath, {
+		graph: NEAR_MATCH_GRAPH,
+		title: NEAR_MATCH_NOTE,
+	});
+
+	await chat.goto();
+	await chat.openThread(NEAR_MATCH_NOTE);
+
+	const card = chat.page.locator('[data-proposal-kind="apply_intent_graph"]');
+	await expect(card).toBeVisible({ timeout: 15_000 });
+
+	// The Project node defaults to reusing the existing "Lead Ads": "Existing «…»"
+	// badge + the re-point attribute carrying the existing entity's id.
+	const projectRow = card.locator('[data-graph-node="@leadads"]');
+	await expect(projectRow).toContainText("Lead Ads testing"); // proposed label kept
+	await expect(projectRow).toContainText(/Existing «Lead Ads»/);
+	await expect(projectRow).toHaveAttribute(
+		"data-node-repoint",
+		EXISTING_PROJECT_ID,
+	);
+
+	const runId = await card.getAttribute("data-proposal");
+	expect(runId).not.toBeNull();
+	const decidedCard = chat.page.locator(`[data-proposal="${runId}"]`);
+
+	// Apply everything — the default re-points the Project onto the existing one.
+	await card.getByRole("button", { name: /apply 2 items/i }).click();
+	await expect(decidedCard).toContainText(/applied/i, { timeout: 15_000 });
+
+	// NO duplicate: exactly ONE project named "Lead Ads", and ZERO "Lead Ads testing".
+	expect(
+		count(dbPath, "SELECT COUNT(*) FROM entities WHERE type = 'project';"),
+	).toBe("1");
+	expect(
+		count(
+			dbPath,
+			`SELECT COUNT(*) FROM entities WHERE type = 'project' AND json_extract(data, '$.name') = ${sqlValue("Lead Ads")};`,
+		),
+	).toBe("1");
+	expect(
+		count(
+			dbPath,
+			`SELECT COUNT(*) FROM entities WHERE type = 'project' AND json_extract(data, '$.name') = ${sqlValue("Lead Ads testing")};`,
+		),
+	).toBe("0");
+	// The Todo is linked to the EXISTING "Lead Ads" project (re-point joined the link).
+	expect(
+		count(
+			dbPath,
+			`SELECT COUNT(*) FROM entities WHERE type = 'todo' AND json_extract(data, '$.project_id') = ${sqlValue(EXISTING_PROJECT_ID)};`,
+		),
+	).toBe("1");
+});
+
+test("'Create new instead' overrides the near-match and mints the new Project", async ({
+	chat,
+	workspace,
+}) => {
+	const dbPath = dbPathFor(workspace.path);
+	seedAcceptedProject(dbPath, EXISTING_PROJECT_ID, "Lead Ads");
+	seedParkedIntentGraphProposal(dbPath, {
+		graph: NEAR_MATCH_GRAPH,
+		title: NEAR_MATCH_NOTE,
+	});
+
+	await chat.goto();
+	await chat.openThread(NEAR_MATCH_NOTE);
+
+	const card = chat.page.locator('[data-proposal-kind="apply_intent_graph"]');
+	await expect(card).toBeVisible({ timeout: 15_000 });
+	const projectRow = card.locator('[data-graph-node="@leadads"]');
+	await expect(projectRow).toHaveAttribute(
+		"data-node-repoint",
+		EXISTING_PROJECT_ID,
+	);
+
+	const runId = await card.getAttribute("data-proposal");
+	const decidedCard = chat.page.locator(`[data-proposal="${runId}"]`);
+
+	// Opt out of the default: mint a new Project instead.
+	await projectRow.getByRole("button", { name: /create new instead/i }).click();
+	await expect(projectRow).not.toHaveAttribute("data-node-repoint");
+	await expect(projectRow).toContainText("New");
+
+	await card.getByRole("button", { name: /apply 2 items/i }).click();
+	await expect(decidedCard).toContainText(/applied/i, { timeout: 15_000 });
+
+	// NOW there are TWO projects — the existing "Lead Ads" and the new "Lead Ads testing".
+	expect(
+		count(dbPath, "SELECT COUNT(*) FROM entities WHERE type = 'project';"),
+	).toBe("2");
+	expect(
+		count(
+			dbPath,
+			`SELECT COUNT(*) FROM entities WHERE type = 'project' AND json_extract(data, '$.name') = ${sqlValue("Lead Ads testing")};`,
+		),
+	).toBe("1");
 });
