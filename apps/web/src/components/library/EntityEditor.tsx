@@ -19,6 +19,7 @@ export function EntityEditorFrame({
 	saving,
 	error,
 	saveLabel = "Save",
+	canSave = true,
 	children,
 }: {
 	title: string;
@@ -27,6 +28,8 @@ export function EntityEditorFrame({
 	saving: boolean;
 	error: string | null;
 	saveLabel?: string;
+	/** Disables Save (showing its disabled affordance) when a required field guard fails. */
+	canSave?: boolean;
 	children: ReactNode;
 }) {
 	const submit = (e: FormEvent) => {
@@ -64,7 +67,12 @@ export function EntityEditorFrame({
 					>
 						Cancel
 					</Button>
-					<Button type="submit" variant="primary" size="row" disabled={saving}>
+					<Button
+						type="submit"
+						variant="primary"
+						size="row"
+						disabled={saving || !canSave}
+					>
 						{saving ? "Saving…" : saveLabel}
 					</Button>
 				</div>

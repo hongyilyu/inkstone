@@ -96,6 +96,38 @@ const allEntities: LibraryItem[] = [alice, project, existing];
 
 afterEach(cleanup);
 
+describe("TodoEditor Save gate", () => {
+	// The compound guard surfaces to the frame: an empty title leaves Save disabled.
+	it("disables Save while the title is empty and enables it once filled", async () => {
+		const user = userEvent.setup();
+		renderEditor({ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} });
+
+		const save = screen.getByRole("button", { name: /^save$/i });
+		expect(save).toBeDisabled();
+
+		await user.type(screen.getByLabelText(/title/i), "Send schedule");
+		expect(save).toBeEnabled();
+	});
+
+	// Beyond the single-field case: even with a title, an invalid recurrence rule
+	// (Repeats on, no anchor date) keeps Save disabled until the date is set.
+	it("disables Save when Repeats is on but the anchor date is missing", async () => {
+		const user = userEvent.setup();
+		renderEditor({ mode: "create", allEntities, onDone: () => {}, onCancel: () => {} });
+
+		await user.type(screen.getByLabelText(/title/i), "Send schedule");
+		const save = screen.getByRole("button", { name: /^save$/i });
+		expect(save).toBeEnabled();
+
+		await user.click(screen.getByLabelText(/repeats/i));
+		// Repeats defaults the anchor to defer (no due date set), whose date is absent.
+		expect(save).toBeDisabled();
+
+		await user.type(screen.getByLabelText(/defer until/i), "2026-07-01");
+		expect(save).toBeEnabled();
+	});
+});
+
 describe("TodoEditor create", () => {
 	it("emits create_todo with only the filled fields", async () => {
 		const user = userEvent.setup();

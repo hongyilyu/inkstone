@@ -75,6 +75,21 @@ const existing: Person = {
 
 afterEach(cleanup);
 
+describe("PersonEditor Save gate", () => {
+	// The required-field guard must be legible: an empty name leaves Save disabled
+	// (not a dead control that swallows the click). Typing a name enables it.
+	it("disables Save while the name is empty and enables it once filled", async () => {
+		const user = userEvent.setup();
+		renderEditor({ mode: "create", onDone: () => {}, onCancel: () => {} });
+
+		const save = screen.getByRole("button", { name: /^save$/i });
+		expect(save).toBeDisabled();
+
+		await user.type(screen.getByLabelText(/name/i), "Bob");
+		expect(save).toBeEnabled();
+	});
+});
+
 describe("PersonEditor create", () => {
 	it("emits create_person with only the filled fields", async () => {
 		const user = userEvent.setup();
