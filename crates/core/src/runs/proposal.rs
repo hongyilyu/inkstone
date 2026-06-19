@@ -17,8 +17,7 @@ use crate::hub::Hubs;
 use crate::protocol::{
     JournalEntryBodyNode, ProposalDecideParams, ProposalDecideResult, ProposalGetParams,
     ProposalGetResult, ProposalReviewContext, ProposalReviewCurrentJournalEntry,
-    ProposalReviewCurrentPerson, ProposalReviewCurrentProject, ProposalReviewCurrentTodo,
-    ResolvedNode,
+    ProposalReviewCurrentPerson, ProposalReviewCurrentProject, ResolvedNode,
 };
 
 pub(super) async fn handle_get(
@@ -156,8 +155,8 @@ async fn review_context_for_proposal(
     }
 
     // The Entity under review is the kind's target — `source_entity_id` for the
-    // reference weave, `todo_id` for `update_todo`, `entity_id` for every other
-    // update/delete (from the descriptor).
+    // reference weave, `entity_id` for every other update/delete (from the
+    // descriptor).
     let descriptor = proposable.kind().describe();
     let entity_id_field = descriptor
         .target_key
@@ -174,10 +173,10 @@ async fn review_context_for_proposal(
 
     // Dispatch on the kind's entity type. The Journal Entry path keeps its
     // cross-thread gate (review context is scoped to the Run's own Thread); the
-    // GTD updates (lamplit-desk-alignment) read the stored Entity by id and
-    // surface the fields a full-document REPLACE would drop. A missing/deleted
-    // Entity or unparseable snapshot degrades to `None` (the card shows Proposed
-    // only) — never an error.
+    // Person/Project full-document REPLACE updates (lamplit-desk-alignment) read
+    // the stored Entity by id and surface the fields a REPLACE would drop. A
+    // missing/deleted Entity or unparseable snapshot degrades to `None` (the card
+    // shows Proposed only) — never an error.
     use crate::mutation::EntityType;
     let context = match descriptor.entity_type {
         EntityType::JournalEntry => {
@@ -200,7 +199,6 @@ async fn review_context_for_proposal(
                 current_journal_entry: Some(current),
                 current_person: None,
                 current_project: None,
-                current_todo: None,
             }
         }
         EntityType::Person => {
@@ -217,7 +215,6 @@ async fn review_context_for_proposal(
                 current_journal_entry: None,
                 current_person: Some(current),
                 current_project: None,
-                current_todo: None,
             }
         }
         EntityType::Project => {
@@ -234,30 +231,15 @@ async fn review_context_for_proposal(
                 current_journal_entry: None,
                 current_person: None,
                 current_project: Some(current),
-                current_todo: None,
             }
         }
-        EntityType::Todo => {
-            let Some(row) = db::current_todo_by_id(pool, entity_id)
-                .await
-                .map_err(|e| HandlerError::Internal(e.into()))?
-            else {
-                return Ok(None);
-            };
-            let Some(current) = review_current_todo(row.entity_id, &row.data) else {
-                return Ok(None);
-            };
-            ProposalReviewContext {
-                current_journal_entry: None,
-                current_person: None,
-                current_project: None,
-                current_todo: Some(current),
-            }
-        }
-        // No proposable Bookmark kind carries review context (creates/updates of
-        // Bookmarks are user-path-only), so this is unreachable today; degrade
-        // gracefully rather than panic if a future kind reaches here.
-        EntityType::Bookmark => return Ok(None),
+        // `update_todo` is a partial MERGE (ADR-0033): omitted fields are NOT
+        // dropped, so there is no "what a REPLACE removes" diff to surface — it
+        // carries no review context (see `carries_review_context`). No proposable
+        // Bookmark kind carries review context either (Bookmark mutations are
+        // user-path-only). Both degrade gracefully rather than panic if a future
+        // kind reaches here.
+        EntityType::Todo | EntityType::Bookmark => return Ok(None),
     };
 
     Ok(Some(context))
@@ -301,22 +283,6 @@ fn review_current_project(
         outcome: optional_string(data, "outcome"),
         status: optional_string(data, "status"),
         note: optional_string(data, "note"),
-    })
-}
-
-/// Build the display-only Current Todo from its stored `data` JSON. Carries
-/// `title` plus optional `note`/`status`/`project_id`.
-fn review_current_todo(
-    entity_id: String,
-    data: &serde_json::Value,
-) -> Option<ProposalReviewCurrentTodo> {
-    let title = data.get("title")?.as_str()?.to_string();
-    Some(ProposalReviewCurrentTodo {
-        entity_id,
-        title,
-        note: optional_string(data, "note"),
-        status: optional_string(data, "status"),
-        project_id: optional_string(data, "project_id"),
     })
 }
 

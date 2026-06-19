@@ -115,22 +115,6 @@ pub struct ProposalReviewCurrentProject {
     pub note: Option<String>,
 }
 
-/// The stored Todo surfaced for an `update_todo` Proposal's Current section
-/// (sibling of [`ProposalReviewCurrentPerson`]). Carries `title` plus optional
-/// `note`/`status`/`project_id`. Identity is standardized as `entity_id` to match
-/// the siblings, even though `update_todo`'s payload field is `todo_id`.
-#[derive(Debug, Serialize)]
-pub struct ProposalReviewCurrentTodo {
-    pub entity_id: String,
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
-}
-
 #[derive(Debug, Serialize)]
 pub struct ProposalReviewContext {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -139,8 +123,6 @@ pub struct ProposalReviewContext {
     pub current_person: Option<ProposalReviewCurrentPerson>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_project: Option<ProposalReviewCurrentProject>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub current_todo: Option<ProposalReviewCurrentTodo>,
 }
 
 /// One node of an `apply_intent_graph` proposal's resolved plan (ADR-0042),
@@ -920,7 +902,6 @@ mod mirror_tests {
                 }),
                 current_person: None,
                 current_project: None,
-                current_todo: None,
             }),
             resolved_plan: None,
             status: "pending".to_string(),
@@ -977,7 +958,6 @@ mod mirror_tests {
                     aliases: Some(vec!["Al".to_string()]),
                 }),
                 current_project: None,
-                current_todo: None,
             }),
             resolved_plan: None,
             status: "pending".to_string(),
@@ -1020,19 +1000,6 @@ mod mirror_tests {
         assert_eq!(
             project,
             json!({ "entity_id": UUID_A, "name": "Ship API v2", "status": "active" }),
-        );
-
-        let todo = serde_json::to_value(ProposalReviewCurrentTodo {
-            entity_id: UUID_A.to_string(),
-            title: "Buy milk".to_string(),
-            note: None,
-            status: None,
-            project_id: Some(UUID_B.to_string()),
-        })
-        .unwrap();
-        assert_eq!(
-            todo,
-            json!({ "entity_id": UUID_A, "title": "Buy milk", "project_id": UUID_B }),
         );
     }
 

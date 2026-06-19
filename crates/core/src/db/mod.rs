@@ -357,7 +357,7 @@ pub async fn current_journal_entry_by_id(
     }))
 }
 
-/// One accepted GTD Entity (Person/Project/Todo) for `proposal/get` review
+/// One accepted GTD Entity (Person/Project) for `proposal/get` review
 /// context (lamplit-desk-alignment). `data` is the current `entities.data`
 /// snapshot. Like [`CurrentJournalEntryRow`], this is a display-only review read:
 /// a malformed `data` degrades to `Value::Null` rather than failing the read. The
@@ -391,21 +391,6 @@ pub async fn current_project_by_id(
     entity_id: &str,
 ) -> sqlx::Result<Option<CurrentEntityRow>> {
     let Some(data) = queries::current_project_data(pool, entity_id).await? else {
-        return Ok(None);
-    };
-    Ok(Some(CurrentEntityRow {
-        entity_id: entity_id.to_string(),
-        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
-    }))
-}
-
-/// Read one accepted Todo by id. `None` when it does not exist or is not a todo.
-/// Display-only review read (see [`current_journal_entry_by_id`]).
-pub async fn current_todo_by_id(
-    pool: &SqlitePool,
-    entity_id: &str,
-) -> sqlx::Result<Option<CurrentEntityRow>> {
-    let Some(data) = queries::current_todo_data(pool, entity_id).await? else {
         return Ok(None);
     };
     Ok(Some(CurrentEntityRow {

@@ -222,25 +222,10 @@ export type ProposalReviewCurrentProject = S.Schema.Type<
 	typeof ProposalReviewCurrentProject
 >;
 
-/** The stored Todo body surfaced for an `update_todo` Proposal's Current section
- * (sibling of {@link ProposalReviewCurrentPerson}). Carries the fields the Todo
- * renderer displays — `title` plus optional `note`/`status`/`project_id`. */
-export const ProposalReviewCurrentTodo = S.Struct({
-	entity_id: S.String,
-	title: S.String,
-	note: S.optional(S.String),
-	status: S.optional(S.String),
-	project_id: S.optional(S.String),
-});
-export type ProposalReviewCurrentTodo = S.Schema.Type<
-	typeof ProposalReviewCurrentTodo
->;
-
 export const ProposalReviewContext = S.Struct({
 	current_journal_entry: S.optional(ProposalReviewCurrentJournalEntry),
 	current_person: S.optional(ProposalReviewCurrentPerson),
 	current_project: S.optional(ProposalReviewCurrentProject),
-	current_todo: S.optional(ProposalReviewCurrentTodo),
 });
 export type ProposalReviewContext = S.Schema.Type<typeof ProposalReviewContext>;
 

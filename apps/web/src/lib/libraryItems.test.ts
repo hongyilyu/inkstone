@@ -570,7 +570,10 @@ describe("formatDateTime", () => {
 	it("includes the day, month, and the 14:30 time", () => {
 		const out = formatDateTime(s);
 		expect(out).toContain("19");
-		expect(out).toMatch(/jun/i);
+		// Derive the month name from the same locale the formatter uses, so this
+		// holds on a non-en ICU runner (en-US "Jun", fr-FR "juin", de-DE "Juni").
+		const month = new Date(s).toLocaleDateString(undefined, { month: "short" });
+		expect(out).toContain(month);
 		// 24h "14:30" or 12h "2:30" — assert the minutes regardless of locale hour.
 		expect(out).toMatch(/(14|2):30/);
 	});
@@ -589,7 +592,9 @@ describe("formatDay", () => {
 		expect(out).not.toContain("T");
 		expect(out).not.toMatch(/\d{1,2}:\d{2}/);
 		expect(out).toContain("19");
-		expect(out).toMatch(/jun/i);
+		// Month name derived from the same locale (see formatDateTime test above).
+		const month = new Date(s).toLocaleDateString(undefined, { month: "short" });
+		expect(out).toContain(month);
 	});
 
 	it("returns the input rather than 'Invalid Date' when unparseable", () => {
@@ -602,7 +607,12 @@ describe("formatDay", () => {
 		// renders the 18th. A date-only field must stay June 19 regardless of zone.
 		const out = formatDay("2026-06-19");
 		expect(out).toContain("19");
-		expect(out).toMatch(/jun/i);
+		// Month derived from the local-parts Date `formatDay` builds (not the
+		// UTC-midnight string parse), so it matches on any ICU locale.
+		const month = new Date(2026, 5, 19).toLocaleDateString(undefined, {
+			month: "short",
+		});
+		expect(out).toContain(month);
 		expect(out).not.toContain("18");
 	});
 });

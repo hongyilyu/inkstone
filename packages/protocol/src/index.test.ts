@@ -186,8 +186,8 @@ describe("ProposalGetResult", () => {
 		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(withCurrentPerson);
 	});
 
-	it("decodes review_context.current_project / current_todo (optional fields) and round-trips", () => {
-		const withCurrentSiblings = {
+	it("decodes review_context.current_project (optional field) and round-trips", () => {
+		const withCurrentProject = {
 			...wire,
 			mutation_kind: "update_project",
 			payload: {
@@ -202,18 +202,12 @@ describe("ProposalGetResult", () => {
 					status: "active",
 					note: "Q3 priority",
 				},
-				current_todo: {
-					entity_id: "01900000-0000-7000-8000-0000000000d1",
-					title: "Draft the brief",
-					status: "active",
-					project_id: "01900000-0000-7000-8000-0000000000c1",
-				},
 			},
 		};
-		const decoded = S.decodeUnknownSync(ProposalGetResult)(withCurrentSiblings);
-		expect(decoded).toEqual(withCurrentSiblings);
+		const decoded = S.decodeUnknownSync(ProposalGetResult)(withCurrentProject);
+		expect(decoded).toEqual(withCurrentProject);
 		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(
-			withCurrentSiblings,
+			withCurrentProject,
 		);
 	});
 
