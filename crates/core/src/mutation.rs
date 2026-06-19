@@ -1040,25 +1040,29 @@ impl ProposableMutation {
         }
     }
 
-    /// Whether `proposal/get` attaches the current Journal Entry as review
-    /// context (ADR-0025): the kinds that mutate an EXISTING Journal Entry the
-    /// user should see before deciding — update/delete of a Journal Entry, and
-    /// the reference weave. A fresh create has nothing to show. Total over the 14.
+    /// Whether `proposal/get` attaches the current stored Entity as review
+    /// context (ADR-0025): the kinds that mutate an EXISTING Entity the user
+    /// should see before deciding — update/delete of a Journal Entry and the
+    /// reference weave, plus the three GTD full-document REPLACE updates
+    /// (lamplit-desk-alignment), so the Client can render Current-vs-Proposed and
+    /// surface what an accepted REPLACE removes (ADR-0016, ADR-0033). A fresh
+    /// create has nothing to show; a GTD delete needs no current-vs-proposed diff.
+    /// Total over the 14.
     pub(crate) fn carries_review_context(self) -> bool {
         use ProposableMutation as P;
         match self {
             P::UpdateJournalEntry
             | P::DeleteJournalEntry
-            | P::ReferenceExistingEntityFromJournalEntry => true,
+            | P::ReferenceExistingEntityFromJournalEntry
+            | P::UpdatePerson
+            | P::UpdateProject
+            | P::UpdateTodo => true,
             P::CreateJournalEntry
             | P::CreatePerson
-            | P::UpdatePerson
             | P::DeletePerson
             | P::CreateProject
-            | P::UpdateProject
             | P::DeleteProject
             | P::CreateTodo
-            | P::UpdateTodo
             | P::DeleteTodo
             // The graph mints its own newborn Journal Entry (ADR-0042 "the JE node
             // is create-only"); it never mutates an existing JE, so there is no
@@ -1244,5 +1248,46 @@ mod tests {
         assert!(EntityType::Todo.is_referenceable());
         assert!(!EntityType::JournalEntry.is_referenceable());
         assert!(!EntityType::Bookmark.is_referenceable());
+    }
+
+    #[test]
+    fn carries_review_context_covers_journal_and_gtd_updates() {
+        use ProposableMutation as P;
+        // The kinds that mutate an EXISTING Entity the user should see before
+        // deciding: the three Journal Entry review kinds plus the three GTD
+        // full-document REPLACE updates (lamplit-desk-alignment) — so the Client
+        // can show what an accepted REPLACE removes.
+        for carries in [
+            P::UpdateJournalEntry,
+            P::DeleteJournalEntry,
+            P::ReferenceExistingEntityFromJournalEntry,
+            P::UpdatePerson,
+            P::UpdateProject,
+            P::UpdateTodo,
+        ] {
+            assert!(
+                carries.carries_review_context(),
+                "{} carries review context",
+                carries.kind().as_wire()
+            );
+        }
+        // Creates have no current Entity; deletes of GTD kinds and the graph do
+        // not surface current-vs-proposed context.
+        for omits in [
+            P::CreateJournalEntry,
+            P::CreatePerson,
+            P::DeletePerson,
+            P::CreateProject,
+            P::DeleteProject,
+            P::CreateTodo,
+            P::DeleteTodo,
+            P::ApplyIntentGraph,
+        ] {
+            assert!(
+                !omits.carries_review_context(),
+                "{} omits review context",
+                omits.kind().as_wire()
+            );
+        }
     }
 }

@@ -128,6 +128,95 @@ describe("ProposalGetResult", () => {
 		status: "pending",
 	};
 
+	it("decodes a full proposal with opaque data and encodes back unchanged", () => {
+		const decoded = S.decodeUnknownSync(ProposalGetResult)(wire);
+		expect(decoded).toEqual(wire);
+		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(wire);
+	});
+
+	it("decodes review_context.current_journal_entry and encodes back unchanged", () => {
+		const withReviewContext = {
+			...wire,
+			mutation_kind: "update_journal_entry",
+			payload: {
+				entity_id: "01900000-0000-7000-8000-000000000099",
+				occurred_at: "2026-06-10T11:00:00",
+				body: [{ type: "text", text: "Bought oat milk." }],
+			},
+			review_context: {
+				current_journal_entry: {
+					entity_id: "01900000-0000-7000-8000-000000000099",
+					occurred_at: "2026-06-10T10:30:00",
+					ended_at: "2026-06-10T10:45:00",
+					body: [
+						{ type: "text", text: "Bought " },
+						{
+							type: "entity_ref",
+							ref_id: "01900000-0000-7000-8000-000000000111",
+						},
+						{ type: "text", text: "." },
+					],
+				},
+			},
+		};
+		const decoded = S.decodeUnknownSync(ProposalGetResult)(withReviewContext);
+		expect(decoded).toEqual(withReviewContext);
+		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(withReviewContext);
+	});
+
+	it("decodes review_context.current_person (update_person) and encodes back unchanged", () => {
+		const withCurrentPerson = {
+			...wire,
+			mutation_kind: "update_person",
+			payload: {
+				entity_id: "01900000-0000-7000-8000-000000000099",
+				name: "Ada Lovelace",
+			},
+			review_context: {
+				current_person: {
+					entity_id: "01900000-0000-7000-8000-000000000099",
+					name: "Ada Lovelace",
+					note: "met at the analytical-engine demo",
+					aliases: ["Ada", "Countess Lovelace"],
+				},
+			},
+		};
+		const decoded = S.decodeUnknownSync(ProposalGetResult)(withCurrentPerson);
+		expect(decoded).toEqual(withCurrentPerson);
+		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(withCurrentPerson);
+	});
+
+	it("decodes review_context.current_project / current_todo (optional fields) and round-trips", () => {
+		const withCurrentSiblings = {
+			...wire,
+			mutation_kind: "update_project",
+			payload: {
+				entity_id: "01900000-0000-7000-8000-0000000000c1",
+				name: "Lead Ads",
+			},
+			review_context: {
+				current_project: {
+					entity_id: "01900000-0000-7000-8000-0000000000c1",
+					name: "Lead Ads",
+					outcome: "ship the testing variant",
+					status: "active",
+					note: "Q3 priority",
+				},
+				current_todo: {
+					entity_id: "01900000-0000-7000-8000-0000000000d1",
+					title: "Draft the brief",
+					status: "active",
+					project_id: "01900000-0000-7000-8000-0000000000c1",
+				},
+			},
+		};
+		const decoded = S.decodeUnknownSync(ProposalGetResult)(withCurrentSiblings);
+		expect(decoded).toEqual(withCurrentSiblings);
+		expect(S.encodeSync(ProposalGetResult)(decoded)).toEqual(
+			withCurrentSiblings,
+		);
+	});
+
 	it("remains backward compatible when review_context is absent", () => {
 		const decoded = S.decodeUnknownSync(ProposalGetResult)(wire);
 		expect(decoded).toEqual(wire);

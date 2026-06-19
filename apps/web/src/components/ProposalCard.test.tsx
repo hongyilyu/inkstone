@@ -1190,6 +1190,38 @@ describe("ProposalCard", () => {
 			).toBeInTheDocument();
 		});
 
+		it("renders Current + Proposed sections so a note dropped from the full-replace payload is visible", () => {
+			const updatePersonDropsNote: PendingProposal = {
+				...updatePerson,
+				payload: {
+					entity_id: "person-7",
+					name: "Alice Carter",
+					// note + aliases OMITTED from the full-document replace — ADR-0016/0033:
+					// an omitted field is a removal, which must be visible before accept.
+				},
+				review_context: {
+					current_person: {
+						entity_id: "person-7",
+						name: "Alice Carter",
+						note: "Now leads the daycare committee.",
+						aliases: ["Ali", "AC"],
+					},
+				},
+			};
+			render(
+				<ProposalCard proposal={updatePersonDropsNote} onDecide={() => {}} />,
+			);
+			// Both sections present: the current baseline and the proposed replacement.
+			expect(screen.getByText("Current")).toBeInTheDocument();
+			expect(screen.getByText("Replacing with")).toBeInTheDocument();
+			// The dropped note (and aliases) survive only in the Current section — they
+			// are gone from the proposed payload, so seeing them proves the removal.
+			expect(
+				screen.getByText("Now leads the daycare committee."),
+			).toBeInTheDocument();
+			expect(screen.getByText("Ali, AC")).toBeInTheDocument();
+		});
+
 		it("opening Edit pre-fills Name/Note/Aliases from the proposed person", () => {
 			render(<ProposalCard proposal={updatePerson} onDecide={() => {}} />);
 			fireEvent.click(screen.getByRole("button", { name: /^edit$/i }));
@@ -1278,6 +1310,36 @@ describe("ProposalCard", () => {
 			expect(
 				screen.getByRole("button", { name: /^edit$/i }),
 			).toBeInTheDocument();
+		});
+
+		it("renders Current + Proposed sections so an outcome dropped from the full-replace payload is visible", () => {
+			const updateProjectDropsOutcome: PendingProposal = {
+				...updateProject,
+				payload: {
+					entity_id: "project-7",
+					name: "Ship API v2",
+					status: "active",
+					// outcome OMITTED from the full-document replace — must stay visible.
+				},
+				review_context: {
+					current_project: {
+						entity_id: "project-7",
+						name: "Ship API v2",
+						outcome: "All clients on v2 by Q3.",
+						status: "active",
+					},
+				},
+			};
+			render(
+				<ProposalCard
+					proposal={updateProjectDropsOutcome}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(screen.getByText("Current")).toBeInTheDocument();
+			expect(screen.getByText("Replacing with")).toBeInTheDocument();
+			// The dropped outcome survives only in the Current section.
+			expect(screen.getByText("All clients on v2 by Q3.")).toBeInTheDocument();
 		});
 
 		it("opening Edit pre-fills Name/Outcome/Status from the proposed project", () => {

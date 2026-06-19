@@ -1985,46 +1985,85 @@ function renderJournalBody(
 	);
 }
 
-function renderPersonBody({ payload }: ProposalBodyArgs): ReactNode {
-	const note = textField(payload, "note");
-	const aliases = arrayField(payload, "aliases").filter(
+// One labelled `<section>` of Person `<Field>` rows, read defensively off an
+// opaque body (a proposed payload OR the current entity from review_context). The
+// update card stacks two of these (Current + Proposed) so a field present in the
+// current body but omitted from the full-document replace stays visible (ADR-0016).
+function personSection(title: string, body: unknown): ReactNode {
+	const note = textField(body, "note");
+	const aliases = arrayField(body, "aliases").filter(
 		(a): a is string => typeof a === "string",
 	);
 	return (
+		<section className="flex flex-col gap-2">
+			<p className="text-xs font-medium tracking-normal text-muted-foreground">
+				{title}
+			</p>
+			<dl className="flex flex-col gap-1.5 text-sm">
+				<Field label="Name" value={textField(body, "name") || "Unknown"} />
+				{note ? <Field label="Note" value={note} /> : null}
+				{aliases.length > 0 ? (
+					<Field label="Aliases" value={aliases.join(", ")} />
+				) : null}
+			</dl>
+		</section>
+	);
+}
+
+function renderPersonBody({
+	payload,
+	reviewContext,
+}: ProposalBodyArgs): ReactNode {
+	const currentPerson = reviewContext?.current_person;
+	return (
 		<div className="flex flex-col gap-3 border-border border-t pt-3">
-			<section className="flex flex-col gap-2">
-				<p className="text-xs font-medium tracking-normal text-muted-foreground">
-					Person
-				</p>
-				<dl className="flex flex-col gap-1.5 text-sm">
-					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
-					{note ? <Field label="Note" value={note} /> : null}
-					{aliases.length > 0 ? (
-						<Field label="Aliases" value={aliases.join(", ")} />
-					) : null}
-				</dl>
-			</section>
+			{currentPerson ? (
+				<>
+					{personSection("Current", currentPerson)}
+					{personSection("Replacing with", payload)}
+				</>
+			) : (
+				personSection("Person", payload)
+			)}
 		</div>
 	);
 }
 
-function renderProjectBody({ payload }: ProposalBodyArgs): ReactNode {
-	const outcome = textField(payload, "outcome");
-	const status = textField(payload, "status");
-	const note = textField(payload, "note");
+// One labelled `<section>` of Project `<Field>` rows (sibling of personSection).
+function projectSection(title: string, body: unknown): ReactNode {
+	const outcome = textField(body, "outcome");
+	const status = textField(body, "status");
+	const note = textField(body, "note");
+	return (
+		<section className="flex flex-col gap-2">
+			<p className="text-xs font-medium tracking-normal text-muted-foreground">
+				{title}
+			</p>
+			<dl className="flex flex-col gap-1.5 text-sm">
+				<Field label="Name" value={textField(body, "name") || "Unknown"} />
+				{outcome ? <Field label="Outcome" value={outcome} /> : null}
+				{status ? <Field label="Status" value={status} /> : null}
+				{note ? <Field label="Note" value={note} /> : null}
+			</dl>
+		</section>
+	);
+}
+
+function renderProjectBody({
+	payload,
+	reviewContext,
+}: ProposalBodyArgs): ReactNode {
+	const currentProject = reviewContext?.current_project;
 	return (
 		<div className="flex flex-col gap-3 border-border border-t pt-3">
-			<section className="flex flex-col gap-2">
-				<p className="text-xs font-medium tracking-normal text-muted-foreground">
-					Project
-				</p>
-				<dl className="flex flex-col gap-1.5 text-sm">
-					<Field label="Name" value={textField(payload, "name") || "Unknown"} />
-					{outcome ? <Field label="Outcome" value={outcome} /> : null}
-					{status ? <Field label="Status" value={status} /> : null}
-					{note ? <Field label="Note" value={note} /> : null}
-				</dl>
-			</section>
+			{currentProject ? (
+				<>
+					{projectSection("Current", currentProject)}
+					{projectSection("Replacing with", payload)}
+				</>
+			) : (
+				projectSection("Project", payload)
+			)}
 		</div>
 	);
 }

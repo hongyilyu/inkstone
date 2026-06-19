@@ -192,8 +192,55 @@ export type ProposalReviewCurrentJournalEntry = S.Schema.Type<
 	typeof ProposalReviewCurrentJournalEntry
 >;
 
+/** The stored Person body surfaced for an `update_person` Proposal's Current
+ * section (mirror of {@link ProposalReviewCurrentJournalEntry}). Carries exactly
+ * the fields the create/update renderer displays (`renderPersonBody`) — `name`
+ * plus optional `note`/`aliases` — so the Client renders Current row-for-row
+ * against the Proposed payload, making an omitted (thus removed, per ADR-0033)
+ * field visible before accept. Non-identity fields are optional. */
+export const ProposalReviewCurrentPerson = S.Struct({
+	entity_id: S.String,
+	name: S.String,
+	note: S.optional(S.String),
+	aliases: S.optional(S.Array(S.String)),
+});
+export type ProposalReviewCurrentPerson = S.Schema.Type<
+	typeof ProposalReviewCurrentPerson
+>;
+
+/** The stored Project body surfaced for an `update_project` Proposal's Current
+ * section (sibling of {@link ProposalReviewCurrentPerson}). Carries the fields
+ * `renderProjectBody` displays — `name` plus optional `outcome`/`status`/`note`. */
+export const ProposalReviewCurrentProject = S.Struct({
+	entity_id: S.String,
+	name: S.String,
+	outcome: S.optional(S.String),
+	status: S.optional(S.String),
+	note: S.optional(S.String),
+});
+export type ProposalReviewCurrentProject = S.Schema.Type<
+	typeof ProposalReviewCurrentProject
+>;
+
+/** The stored Todo body surfaced for an `update_todo` Proposal's Current section
+ * (sibling of {@link ProposalReviewCurrentPerson}). Carries the fields the Todo
+ * renderer displays — `title` plus optional `note`/`status`/`project_id`. */
+export const ProposalReviewCurrentTodo = S.Struct({
+	entity_id: S.String,
+	title: S.String,
+	note: S.optional(S.String),
+	status: S.optional(S.String),
+	project_id: S.optional(S.String),
+});
+export type ProposalReviewCurrentTodo = S.Schema.Type<
+	typeof ProposalReviewCurrentTodo
+>;
+
 export const ProposalReviewContext = S.Struct({
 	current_journal_entry: S.optional(ProposalReviewCurrentJournalEntry),
+	current_person: S.optional(ProposalReviewCurrentPerson),
+	current_project: S.optional(ProposalReviewCurrentProject),
+	current_todo: S.optional(ProposalReviewCurrentTodo),
 });
 export type ProposalReviewContext = S.Schema.Type<typeof ProposalReviewContext>;
 
