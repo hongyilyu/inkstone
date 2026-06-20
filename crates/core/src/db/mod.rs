@@ -3260,6 +3260,19 @@ mod tests {
             .await
             .expect("mark accepted");
         assert_eq!(affected, 1, "accept flips exactly the pending row");
+        // The accept minted an Entity stamped with this Proposal's id (the anchor of
+        // the apply_intent_graph commit), so the decided segment names + deep-links
+        // it (ADR-0044 entity_id amendment). Pins the `created_via_proposal_id`
+        // create-arm of the resolver.
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_via_proposal_id, \
+              created_at, updated_at) \
+             VALUES ('entity-graph', 'todo', 1, '{\"title\":\"x\"}', 'proposal', 'proposal-graph', 4, 4)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed entity created via the proposal");
 
         // The resume reply: a text segment opened AFTER the proposal (its
         // `message_parts` row + `run_steps` message row at the next seq, ADR-0045).
@@ -3298,10 +3311,13 @@ mod tests {
                 proposal_id,
                 mutation_kind,
                 status,
+                entity_id,
             } => {
                 assert_eq!(proposal_id, "proposal-graph");
                 assert_eq!(mutation_kind, "apply_intent_graph");
                 assert_eq!(status, "accepted");
+                // The decided card names what changed: the anchor Entity the apply created.
+                assert_eq!(entity_id.as_deref(), Some("entity-graph"));
             }
             other => panic!("segment[0] is the decided proposal, got {other:?}"),
         }
@@ -3401,6 +3417,312 @@ mod tests {
             .expect("rejected Proposal rehydrates as a proposal segment");
         assert_eq!(proposal.1, "rejected");
         assert_eq!(proposal.0, "create_journal_entry");
+    }
+
+    /// ADR-0044 (entity_id amendment, re-landed on the ADR-0045 segment timeline):
+    /// an UPDATE-kind decided Proposal (update_person/project/todo) names the Entity
+    /// it revised. The revision wrote an `entity_revisions` row stamped with the
+    /// Proposal's id — there is NO `created_via_proposal_id` entities row for this
+    /// Proposal (the Entity pre-existed, minted by another decision). Pins the
+    /// `entity_revisions.proposal_id` UNION arm of the entity_id subquery, which the
+    /// create-arm test never exercises. The assertion target moved from the deleted
+    /// `MessageProposalView.entity_id` to the proposal SEGMENT's `entity_id`.
+    #[tokio::test]
+    async fn thread_get_rehydrates_updated_entity_via_revision_arm() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        queries::insert_text_part(&mut *tx, assistant_id, 0, "Updated.")
+            .await
+            .expect("text part");
+        tx.commit().await.expect("commit seed");
+
+        park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-update",
+            "tc-update",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"update_todo","payload":{"entity_id":"entity-pre","status":"done"}}"#,
+            "update_todo",
+            2,
+        )
+        .await
+        .expect("park");
+        let affected = queries::mark_proposal_accepted(&pool, "proposal-update", None, None, 3)
+            .await
+            .expect("mark accepted");
+        assert_eq!(affected, 1, "accept flips exactly the pending row");
+
+        // The Entity pre-existed (minted by an earlier user/decision, NOT this
+        // Proposal — so `created_via_proposal_id` is NULL here). The update wrote a
+        // seq-2 `entity_revisions` row carrying THIS Proposal's id. Only the
+        // revision arm of the subquery can resolve it.
+        sqlx::query(
+            "INSERT INTO entities \
+             (id, type, schema_version, data, created_by, created_via_proposal_id, \
+              created_at, updated_at) \
+             VALUES ('entity-pre', 'todo', 1, '{\"title\":\"x\"}', 'user', NULL, 1, 4)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed pre-existing entity");
+        sqlx::query(
+            "INSERT INTO entity_revisions (entity_id, seq, data, proposal_id, created_at) \
+             VALUES ('entity-pre', 2, '{\"title\":\"x\",\"status\":\"done\"}', 'proposal-update', 4)",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed revision stamped with the proposal");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+        let (mutation_kind, status, entity_id) = assistant
+            .segments
+            .iter()
+            .find_map(|s| match s {
+                MessageSegment::Proposal {
+                    mutation_kind,
+                    status,
+                    entity_id,
+                    ..
+                } => Some((mutation_kind, status, entity_id)),
+                _ => None,
+            })
+            .expect("decided update Proposal rehydrates as a proposal segment");
+        assert_eq!(status, "accepted");
+        assert_eq!(mutation_kind, "update_todo");
+        // The decided update card names the revised Entity, resolved via the
+        // `entity_revisions.proposal_id` arm.
+        assert_eq!(entity_id.as_deref(), Some("entity-pre"));
+    }
+
+    /// ADR-0044 finding 1 (re-landed on the ADR-0045 segment timeline): a
+    /// multi-entity `apply_intent_graph` apply mints several entities in ONE tx, ALL
+    /// stamped with the same `created_at`. The live decide anchor (and the
+    /// decide-result entity_id) is the Journal Entry id when a JE node is present
+    /// (`intent_graph.rs` `anchor_entity_id`), else the first minted entity. The
+    /// read-path subquery must resolve that SAME anchor deterministically — without
+    /// a JE-biased, stable tiebreaker its `ORDER BY created_at DESC` ties and returns
+    /// an arbitrary entity that can flip between reloads.
+    #[tokio::test]
+    async fn thread_get_resolves_journal_entry_anchor_on_tie() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        queries::insert_text_part(&mut *tx, assistant_id, 0, "Logged.")
+            .await
+            .expect("text part");
+        tx.commit().await.expect("commit seed");
+
+        park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-multi",
+            "tc-multi",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"apply_intent_graph","payload":{"entities":[],"links":[]}}"#,
+            "apply_intent_graph",
+            2,
+        )
+        .await
+        .expect("park");
+        let affected = queries::mark_proposal_accepted(&pool, "proposal-multi", None, None, 3)
+            .await
+            .expect("mark accepted");
+        assert_eq!(affected, 1, "accept flips exactly the pending row");
+
+        // Three entities minted in one tx, ALL at created_at = 4 (no clock advances
+        // within an apply). The JE is the anchor. The non-JE ids sort AFTER the JE
+        // id lexicographically, so a tiebreaker-less `created_at DESC` (or one that
+        // only adds `entity_id DESC`) would pick a non-JE row — this pins the
+        // JE-first bias.
+        for (id, ty) in [
+            ("entity-person", "person"),
+            ("entity-je", "journal_entry"),
+            ("entity-todo", "todo"),
+        ] {
+            sqlx::query(
+                "INSERT INTO entities \
+                 (id, type, schema_version, data, created_by, created_via_proposal_id, \
+                  created_at, updated_at) \
+                 VALUES (?, ?, 1, '{}', 'proposal', 'proposal-multi', 4, 4)",
+            )
+            .bind(id)
+            .bind(ty)
+            .execute(&pool)
+            .await
+            .expect("seed entity minted via the proposal");
+        }
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+        let (status, entity_id) = assistant
+            .segments
+            .iter()
+            .find_map(|s| match s {
+                MessageSegment::Proposal {
+                    status, entity_id, ..
+                } => Some((status, entity_id)),
+                _ => None,
+            })
+            .expect("decided multi-entity Proposal rehydrates as a proposal segment");
+        assert_eq!(status, "accepted");
+        // The read resolves the JE anchor — the SAME entity the live decide result
+        // named — not an arbitrary tie winner.
+        assert_eq!(entity_id.as_deref(), Some("entity-je"));
+    }
+
+    /// ADR-0044 (entity_id amendment): a REJECTED Proposal created nothing, so the
+    /// proposal segment carries no `entity_id` — pins the `None` arm (the resolver is
+    /// only invoked for the decided proposal, and a reject resolves no Entity).
+    #[tokio::test]
+    async fn thread_get_rejected_proposal_segment_has_no_entity_id() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        queries::insert_text_part(&mut *tx, assistant_id, 0, "Logged.")
+            .await
+            .expect("text part");
+        tx.commit().await.expect("commit seed");
+
+        park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-rej-eid",
+            "tc-rej-eid",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"x"}]}}"#,
+            "create_journal_entry",
+            2,
+        )
+        .await
+        .expect("park");
+        let affected = queries::mark_proposal_rejected(&pool, "proposal-rej-eid", None, 3)
+            .await
+            .expect("mark rejected");
+        assert_eq!(affected, 1, "reject flips exactly the pending row");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+        let (status, entity_id) = assistant
+            .segments
+            .iter()
+            .find_map(|s| match s {
+                MessageSegment::Proposal {
+                    status, entity_id, ..
+                } => Some((status, entity_id)),
+                _ => None,
+            })
+            .expect("rejected Proposal rehydrates as a proposal segment");
+        assert_eq!(status, "rejected");
+        // A rejected Proposal created nothing, so there is no entity to name.
+        assert_eq!(*entity_id, None);
     }
 
     /// ADR-0044: a CANCELLED Proposal does NOT rehydrate (its parked Run was
