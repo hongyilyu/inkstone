@@ -1,8 +1,28 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { LibraryItem } from "@/lib/libraryItems";
 import { isGtdEditKind } from "@/lib/proposalEdit";
 import type { PendingProposal } from "@/store/chat";
 import { PROPOSAL_VIEWS, ProposalCard } from "./ProposalCard.js";
+
+// The decided card (ADR-0044 entity_id amendment) resolves its named entity live
+// from the warm library-items cache and deep-links to it via `useNavigate`. Mock
+// both seams so the card renders without a QueryClient/RuntimeProvider or a real
+// router: the hook returns whatever items the test seeds, navigate is a spy.
+const { navigate, libraryItems } = vi.hoisted(() => ({
+	navigate: vi.fn(),
+	libraryItems: { current: [] as LibraryItem[] },
+}));
+
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("@tanstack/react-router")>();
+	return { ...actual, useNavigate: () => navigate };
+});
+
+vi.mock("@/lib/hooks/useLibraryItems", () => ({
+	useLibraryItems: () => ({ data: libraryItems.current }),
+}));
 
 const base: PendingProposal = {
 	proposal_id: "prop-1",
@@ -1072,10 +1092,12 @@ describe("ProposalCard", () => {
 			expect(onDecide).toHaveBeenCalledWith("accept");
 		});
 
-		it("calls onDecide('reject') when Dismiss is clicked", () => {
+		it("calls onDecide('reject') when Keep current Todo is clicked", () => {
 			const onDecide = vi.fn();
 			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+			fireEvent.click(
+				screen.getByRole("button", { name: /keep current todo/i }),
+			);
 			expect(onDecide).toHaveBeenCalledWith("reject");
 		});
 
@@ -1216,7 +1238,7 @@ describe("ProposalCard", () => {
 				screen.getByRole("button", { name: /^edit$/i }),
 			).toBeInTheDocument();
 			expect(
-				screen.getByRole("button", { name: /dismiss/i }),
+				screen.getByRole("button", { name: /keep current person/i }),
 			).toBeInTheDocument();
 		});
 
@@ -2210,6 +2232,184 @@ describe("ProposalCard", () => {
 			expect(onDecide).toHaveBeenLastCalledWith("accept", undefined, [
 				{ handle: "@rodeo", decision: "accept" },
 			]);
+		});
+	});
+
+	// The decided card names what changed and links to it in the Library (ADR-0044
+	// entity_id amendment): an accepted Proposal whose `entity_id` resolves in the
+	// warm library cache shows the entity's current title + a "View in Library"
+	// deep-link; anything unresolvable degrades to the generic decided copy.
+	describe("decided card names the entity and links to the Library", () => {
+		const priya: LibraryItem = {
+			id: "person_priya",
+			kind: "person",
+			name: "Priya Nair",
+			createdAt: "Today, 10:42",
+			recency: 95,
+		};
+
+		afterEach(() => {
+			navigate.mockReset();
+			libraryItems.current = [];
+		});
+
+		it("shows the entity title and a View-in-Library deep-link when accepted and resolvable", () => {
+			libraryItems.current = [priya];
+			render(
+				<ProposalCard
+					proposal={{
+						...base,
+						mutation_kind: "create_person",
+						status: "accepted",
+						entity_id: "person_priya",
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(screen.getByText("Priya Nair")).toBeInTheDocument();
+			const link = screen.getByRole("button", { name: /view in library/i });
+			fireEvent.click(link);
+			expect(navigate).toHaveBeenCalledWith({
+				to: "/library/$kind",
+				params: { kind: "people" },
+				search: { id: "person_priya" },
+			});
+		});
+
+		it("degrades to the generic accepted copy with no link when the entity_id is unresolvable", () => {
+			// entity_id present but absent from the warm cache (still loading / Core
+			// unreachable / since-deleted) → never worse than the generic decided card.
+			libraryItems.current = [];
+			render(
+				<ProposalCard
+					proposal={{
+						...base,
+						mutation_kind: "create_person",
+						status: "accepted",
+						entity_id: "person_ghost",
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(screen.getByText(/added person/i)).toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: /view in library/i }),
+			).not.toBeInTheDocument();
+			expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
+		});
+
+		it("links an accepted intent-graph card to its anchor entity", () => {
+			libraryItems.current = [priya];
+			render(
+				<ProposalCard
+					proposal={{
+						proposal_id: "graph-prop",
+						run_id: "graph-run",
+						mutation_kind: "apply_intent_graph",
+						payload: null,
+						rationale: null,
+						status: "accepted",
+						entity_id: "person_priya",
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+			const link = screen.getByRole("button", { name: /view in library/i });
+			fireEvent.click(link);
+			expect(navigate).toHaveBeenCalledWith({
+				to: "/library/$kind",
+				params: { kind: "people" },
+				search: { id: "person_priya" },
+			});
+		});
+	});
+
+	// Rejecting an UPDATE proposal must reassure that the current entity was kept,
+	// not leave a bare "Dismissed." that reads as if the entity were discarded. CREATE
+	// kinds keep "Dismissed." — nothing existed to keep.
+	describe("update-reject copy reassures the current entity was kept", () => {
+		const updateTodo: PendingProposal = {
+			proposal_id: "prop-reject-update-todo",
+			run_id: "run-reject-update-todo",
+			mutation_kind: "update_todo",
+			payload: { todo_id: "todo-7", todo: { title: "Email Alice" } },
+			rationale: null,
+			status: "pending",
+		};
+		const updatePerson: PendingProposal = {
+			proposal_id: "prop-reject-update-person",
+			run_id: "run-reject-update-person",
+			mutation_kind: "update_person",
+			payload: { entity_id: "person-7", name: "Alice Carter" },
+			rationale: null,
+			status: "pending",
+		};
+		const updateProject: PendingProposal = {
+			proposal_id: "prop-reject-update-project",
+			run_id: "run-reject-update-project",
+			mutation_kind: "update_project",
+			payload: { entity_id: "project-7", name: "Ship API v2" },
+			rationale: null,
+			status: "pending",
+		};
+
+		it("update_todo rejected reads 'Kept current Todo.'", () => {
+			render(
+				<ProposalCard
+					proposal={{ ...updateTodo, status: "rejected" }}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(screen.getByText("Kept current Todo.")).toBeInTheDocument();
+		});
+
+		it("update_person rejected reads 'Kept current Person.'", () => {
+			render(
+				<ProposalCard
+					proposal={{ ...updatePerson, status: "rejected" }}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(screen.getByText("Kept current Person.")).toBeInTheDocument();
+		});
+
+		it("update_project rejected reads 'Kept current Project.'", () => {
+			render(
+				<ProposalCard
+					proposal={{ ...updateProject, status: "rejected" }}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(screen.getByText("Kept current Project.")).toBeInTheDocument();
+		});
+
+		// Regression guard: a CREATE created nothing, so its reject stays "Dismissed."
+		// — flipping a create to reassurance copy must fail here.
+		it("create_person rejected still reads 'Dismissed.'", () => {
+			render(
+				<ProposalCard
+					proposal={{
+						...base,
+						mutation_kind: "create_person",
+						payload: { name: "Alice Carter" },
+						status: "rejected",
+					}}
+					onDecide={() => {}}
+				/>,
+			);
+			expect(screen.getByText("Dismissed.")).toBeInTheDocument();
+		});
+
+		// The pending reject button must offer the reassuring "Keep current …" verb,
+		// not a bare "Dismiss".
+		it("update_todo pending offers a 'Keep current Todo' reject button", () => {
+			render(<ProposalCard proposal={updateTodo} onDecide={() => {}} />);
+			expect(
+				screen.getByRole("button", { name: /keep current todo/i }),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", { name: /^dismiss$/i }),
+			).not.toBeInTheDocument();
 		});
 	});
 });

@@ -475,11 +475,17 @@ pub enum Segment {
     /// `accepted`/`rejected` appear — a still-`pending` Proposal renders its
     /// interactive card (deferred), a `cancelled` one is cleared live. The Client
     /// looks the live interactive payload up by `proposal_id`; `mutation_kind` drives
-    /// the decided card's copy + routing, `status` the accepted-vs-rejected branch.
+    /// the decided card's copy + routing, `status` the accepted-vs-rejected branch,
+    /// and `entity_id` (ADR-0044 amendment) the durable Entity the accepted change
+    /// created/updated — the anchor for `apply_intent_graph` — so the card can name +
+    /// deep-link it. `entity_id` is omitted (not `null`, matching the TS `S.optional`)
+    /// for a `rejected` Proposal (nothing created) or when no Entity resolves.
     Proposal {
         proposal_id: String,
         mutation_kind: String,
         status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        entity_id: Option<String>,
     },
 }
 
@@ -1788,6 +1794,10 @@ mod parity_fixtures {
                                 proposal_id: UUID_A.to_string(),
                                 mutation_kind: "apply_intent_graph".to_string(),
                                 status: "accepted".to_string(),
+                                // The anchor Entity the accepted apply created/updated
+                                // (ADR-0044 entity_id amendment) — the decided card
+                                // names + deep-links it. Omitted when absent (S.optional).
+                                entity_id: Some(UUID_B.to_string()),
                             },
                             Segment::Text {
                                 text: "Logged.".to_string(),

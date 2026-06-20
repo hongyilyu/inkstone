@@ -47,10 +47,12 @@ pub(super) async fn handle(
                             proposal_id,
                             mutation_kind,
                             status,
+                            entity_id,
                         } => Segment::Proposal {
                             proposal_id,
                             mutation_kind,
                             status,
+                            entity_id,
                         },
                     })
                     .collect(),

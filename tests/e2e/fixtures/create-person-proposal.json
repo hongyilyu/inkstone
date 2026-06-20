@@ -1,0 +1,7 @@
+{
+	"mutation_kind": "create_person",
+	"payload": {
+		"name": "Lev Petrov"
+	},
+	"rationale": "The user mentioned a person worth remembering."
+}

@@ -121,6 +121,9 @@ function rehydrateDecidedProposals(views: ThreadGetResult["messages"]): void {
 			mutation_kind: proposalSegment.mutation_kind,
 			payload: null,
 			rationale: null,
+			// The Entity the accepted change created/updated (ADR-0044 amendment); the
+			// decided card names + deep-links it. Omitted for a rejected Proposal.
+			entity_id: proposalSegment.entity_id,
 			status,
 		};
 		rehydrateDecidedProposal(proposal);

@@ -127,6 +127,11 @@ export interface PendingProposal {
 	/** The per-node create/reuse/ambiguous plan for an `apply_intent_graph`
 	 * proposal (ADR-0042); absent for the single-entity kinds. */
 	readonly resolved_plan?: readonly ResolvedNode[];
+	/** The durable Entity the accepted change created/updated (ADR-0044 amendment):
+	 * the decided card names + deep-links it. Set from the `proposal/decide` result
+	 * (live) or the `proposal` SEGMENT's `entity_id` (rehydration); absent for a
+	 * pending or rejected Proposal, or when no Entity resolves. */
+	readonly entity_id?: string;
 	readonly status: "pending" | "deciding" | "accepted" | "rejected" | "error";
 }
 
@@ -241,19 +246,29 @@ function parkRun(runs: ChatState["runs"], runId: string): ChatState["runs"] {
 	return { ...runs, [runId]: { ...run, status: "parked" } };
 }
 
-/** Move a Proposal to a new review `status`; no-op if none is attached for `runId`. */
+/**
+ * Move a Proposal to a new review `status`; no-op if none is attached for `runId`.
+ * A settled decide also carries the created/updated `entity_id` (ADR-0044
+ * amendment) so the decided card can name + deep-link it; omitting it (the
+ * `deciding`/`error` callers) leaves any existing id untouched.
+ */
 export function setProposalStatus(
 	runId: string,
 	status: PendingProposal["status"],
+	entityId?: string,
 ): void {
 	store.setState((s) => {
 		const existing = s.proposals[runId];
 		if (existing === undefined) {
 			return s;
 		}
+		const next: PendingProposal =
+			entityId === undefined
+				? { ...existing, status }
+				: { ...existing, status, entity_id: entityId };
 		return {
 			...s,
-			proposals: { ...s.proposals, [runId]: { ...existing, status } },
+			proposals: { ...s.proposals, [runId]: next },
 		};
 	});
 }

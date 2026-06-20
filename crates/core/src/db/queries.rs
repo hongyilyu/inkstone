@@ -327,9 +327,18 @@ where
     .await
 }
 
-/// The Entity created by a Proposal, for idempotent decide (ADR-0025): a
-/// repeated decide returns the already-created `entities.id` rather than
-/// applying again. `None` when no Entity was created via this Proposal.
+/// The Entity created or updated by a Proposal — resolved over
+/// `entities.created_via_proposal_id` UNION `entity_revisions.proposal_id` for this
+/// Proposal (the revision arm joins `entities` to read its `type`). Backs BOTH the
+/// idempotent decide check (ADR-0025: a repeated accept returns the prior id rather
+/// than re-applying) and the `thread/get` decided-proposal segment's `entity_id`
+/// (ADR-0044 amendment). A single-entity create/update yields exactly one row; a
+/// multi-entity `apply_intent_graph` apply mints several entities sharing one
+/// `created_at`, so the resolution matches the live decide anchor deterministically:
+/// it prefers the `journal_entry` row (the JE is the `apply_intent_graph` anchor —
+/// see `intent_graph.rs`), then newest `created_at`, then `entity_id DESC` as a
+/// stable final tiebreaker so two non-JE entities never flip between reloads.
+/// `None` when no Entity was created/updated via this Proposal.
 pub(super) async fn entity_id_for_proposal<'e, E>(
     executor: E,
     proposal_id: &str,
@@ -339,10 +348,13 @@ where
 {
     sqlx::query_scalar(
         "SELECT entity_id FROM ( \
-             SELECT id AS entity_id, created_at FROM entities WHERE created_via_proposal_id = ?1 \
+             SELECT id AS entity_id, type, created_at FROM entities \
+                 WHERE created_via_proposal_id = ?1 \
              UNION ALL \
-             SELECT entity_id, created_at FROM entity_revisions WHERE proposal_id = ?1 \
-         ) ORDER BY created_at DESC LIMIT 1",
+             SELECT er.entity_id, e.type, er.created_at FROM entity_revisions er \
+                 JOIN entities e ON e.id = er.entity_id \
+                 WHERE er.proposal_id = ?1 \
+         ) ORDER BY (type = 'journal_entry') DESC, created_at DESC, entity_id DESC LIMIT 1",
     )
     .bind(proposal_id)
     .fetch_optional(executor)

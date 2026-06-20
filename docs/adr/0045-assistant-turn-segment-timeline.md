@@ -85,6 +85,35 @@ markers in seq order." The write path never honored it; this ADR does.
   pill chrome (`inline-flex w-fit rounded-lg px-2.5 py-1.5 text-sm font-medium
   text-muted-foreground` + a `Check` glyph) rather than the bordered `Card`.
 
+### Amendment: the `proposal` segment carries `entity_id` (decided card names what changed)
+
+The original [ADR-0044](./0044-decided-proposal-rehydration.md) amendment added
+`entity_id` to the (since-superseded) `MessageProposalView` so the decided card could
+name the created/updated entity and deep-link to the Library, surviving reload (this
+closed the impeccable-critique "Applied." context-free hole). Since this ADR folds
+`MessageProposalView` into the `proposal` Segment, that field re-lands here:
+
+- **The `proposal` segment gains `entity_id: Option<String>`** — `{ kind:"proposal",
+  proposal_id, mutation_kind, status, entity_id }`. Core resolves it at segment
+  assembly (`segment_rows_for_run`) for the one rehydrated decided proposal, via the
+  existing `entity_id_for_proposal` resolver. `None` for a `rejected` proposal
+  (nothing created) or when no entity resolves; omitted (not null) on the wire to
+  match the TS `S.optional`.
+- **`entity_id_for_proposal` resolves the live decide anchor deterministically.** For
+  a single-entity create/update it is the one row; for a multi-entity
+  `apply_intent_graph` apply (whose mints share one `created_at`), it prefers the
+  `journal_entry` row (the graph's anchor — see `intent_graph.rs`), then newest
+  `created_at`, then `entity_id DESC` as a stable final tiebreaker — so the reloaded
+  card names the SAME entity the live decide reported, and never flips between
+  reloads. (This carries forward a deep-review finding from the pre-segment-timeline
+  build of the feature.)
+- **The web `proposals` map carries `entity_id`** onto the live `PendingProposal`
+  (from the `proposal/decide` result) and the rehydrated one (from the segment), and
+  the decided `DecidedLibraryLink` resolves it → `{kind,title}` from the warm
+  `library-items` cache, degrading to the generic copy on a cache miss. The View-in-
+  Library link is the "record + a way back" after commit; a true reversal verb stays
+  deferred.
+
 ## Consequences
 
 - The screenshot scenario (`search → propose → accept → reply`) renders as
