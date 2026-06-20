@@ -23,9 +23,9 @@ import { localNowString } from "@/lib/libraryItems";
 // read it, so there is no second hand-maintained GTD kind list to drift.
 //
 // The 6 GTD wire kinds collapse to 4 behavior variants: update_person and
-// update_project are FULL-DOCUMENT REPLACE whose seed/overlay are pure
-// delegations to their create twins (seedUpdatePerson/overlayUpdatePerson, …), so
-// they share the create variant — nothing downstream distinguishes the twins.
+// update_project are FULL-DOCUMENT REPLACE that surface the same fields as their
+// create twins, so they reuse the create seed/overlay directly and share the create
+// variant — nothing downstream distinguishes the twins.
 // ---------------------------------------------------------------------------
 
 export type GtdEditVariant =
@@ -466,51 +466,12 @@ export function overlayUpdateTodo(
 // ---------------------------------------------------------------------------
 // update_person / update_project — FULL-DOCUMENT REPLACE. Unlike update_todo (a
 // partial), the proposed payload IS the whole new entity body — the create_person/
-// create_project shape PLUS a top-level `entity_id` routing key. So the surfaced
-// fields are identical to the creates (Name/Note/Aliases; Name/Outcome/Note/Status),
-// and the overlays are the create overlays: `clonePayload` already carries every
-// UNSURFACED top-level field through — the `entity_id` for both, and the review
-// cadence (`review_every`/`next_review_at`/`last_reviewed_at`) + dates for project.
-// Omit-empty (ADR-0033): a blanked optional is OMITTED, not sentinel-null — under a
-// full replace, omit ≡ cleared (matching the entityCodec replace-build discipline).
-//
-// These delegate to the create seed/overlay (same draft types) rather than duplicate
-// the field/coupling/parseAliases logic; the distinct names keep the card's per-kind
-// dispatch explicit and let the update surface diverge later without a rename.
+// create_project shape PLUS a top-level `entity_id` routing key. They surface the
+// SAME fields as their create twins (Name/Note/Aliases; Name/Outcome/Note/Status),
+// so the card reuses `seedCreatePerson`/`overlayCreatePerson` (resp. project)
+// DIRECTLY — no separate update seed/overlay exists. `clonePayload` carries every
+// unsurfaced top-level field through untouched: the `entity_id` for both, plus the
+// review cadence (`review_every`/`next_review_at`/`last_reviewed_at`) + dates for
+// project. Omit-empty (ADR-0033): a blanked optional is OMITTED, not sentinel-null —
+// under a full replace, omit ≡ cleared.
 // ---------------------------------------------------------------------------
-
-/** Seed an update_person draft from the proposed payload, never throwing. */
-export function seedUpdatePerson(payload: unknown): CreatePersonDraft {
-	return seedCreatePerson(payload);
-}
-
-/**
- * Overlay the update_person draft onto a CLONE of the proposed payload. Only the
- * surfaced name/note/aliases change; the top-level `entity_id` and every unsurfaced
- * field ride untouched (full-replace ⇒ a blanked optional is omitted, never a
- * sentinel-null).
- */
-export function overlayUpdatePerson(
-	payload: unknown,
-	draft: CreatePersonDraft,
-): Record<string, unknown> {
-	return overlayCreatePerson(payload, draft);
-}
-
-/** Seed an update_project draft from the proposed payload, never throwing. */
-export function seedUpdateProject(payload: unknown): CreateProjectDraft {
-	return seedCreateProject(payload);
-}
-
-/**
- * Overlay the update_project draft onto a CLONE of the proposed payload. Only the
- * surfaced name/outcome/note/status change (with the same status↔timestamp coupling
- * as create_project); the top-level `entity_id`, the review cadence, and the dates
- * ride untouched (full-replace ⇒ a blanked optional is omitted, never a sentinel-null).
- */
-export function overlayUpdateProject(
-	payload: unknown,
-	draft: CreateProjectDraft,
-): Record<string, unknown> {
-	return overlayCreateProject(payload, draft);
-}
