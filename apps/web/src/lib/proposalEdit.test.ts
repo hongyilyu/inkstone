@@ -3,17 +3,16 @@ import {
 	type CreatePersonDraft,
 	type CreateProjectDraft,
 	type CreateTodoDraft,
+	type GtdEditVariant,
+	gtdEditVariant,
+	isGtdEditKind,
 	overlayCreatePerson,
 	overlayCreateProject,
 	overlayCreateTodo,
-	overlayUpdatePerson,
-	overlayUpdateProject,
 	overlayUpdateTodo,
 	seedCreatePerson,
 	seedCreateProject,
 	seedCreateTodo,
-	seedUpdatePerson,
-	seedUpdateProject,
 	seedUpdateTodo,
 	type UpdateTodoDraft,
 } from "./proposalEdit.js";
@@ -265,6 +264,43 @@ describe("proposalEdit — create_person", () => {
 			}) as Record<string, unknown>;
 			expect("note" in edited).toBe(false);
 		});
+
+		// update_person rides this same create overlay (FULL-DOCUMENT REPLACE): the
+		// proposed payload carries a top-level `entity_id` routing key, and clonePayload
+		// must ride it through untouched while only the surfaced fields change.
+		describe("full-replace update path (proposed carries a top-level entity_id)", () => {
+			const updateProposed = {
+				entity_id: "person-7",
+				name: "Alice Carter",
+				note: "Met at the conference.",
+				aliases: ["Ali", "AC"],
+			};
+
+			it("preserves a top-level entity_id and unsurfaced fields when editing name", () => {
+				const draft = seedCreatePerson(updateProposed);
+				const edited = overlayCreatePerson(updateProposed, {
+					...draft,
+					name: "Alice C. Carter",
+				});
+				expect(edited).toEqual({
+					entity_id: "person-7",
+					name: "Alice C. Carter",
+					note: "Met at the conference.",
+					aliases: ["Ali", "AC"],
+				});
+			});
+
+			it("blanking note/aliases under full replace still rides the entity_id through", () => {
+				const edited = overlayCreatePerson(updateProposed, {
+					name: "Alice",
+					note: "",
+					aliases: "   ",
+				}) as Record<string, unknown>;
+				expect("note" in edited).toBe(false);
+				expect("aliases" in edited).toBe(false);
+				expect(edited.entity_id).toBe("person-7");
+			});
+		});
 	});
 });
 
@@ -419,6 +455,66 @@ describe("proposalEdit — create_project", () => {
 			const draft = seedCreateProject(proposed);
 			overlayCreateProject(proposed, { ...draft, name: "Changed" });
 			expect(proposed.name).toBe("Ship API v2 migration");
+		});
+
+		// update_project rides this same create overlay (FULL-DOCUMENT REPLACE): the
+		// proposed payload carries a top-level `entity_id` plus the review cadence and
+		// dates, all of which clonePayload must ride through untouched.
+		describe("full-replace update path (proposed carries entity_id + cadence + dates)", () => {
+			const updateProposed = {
+				entity_id: "project-7",
+				name: "Ship API v2 migration",
+				outcome: "All clients on v2 by Q3.",
+				note: "Coordinate with the platform team.",
+				status: "active",
+				review_every: { interval: 1, unit: "week" },
+				next_review_at: "2026-07-01T09:00:00",
+				last_reviewed_at: "2026-06-01T09:00:00",
+				due_at: "2026-09-30T00:00:00",
+			};
+
+			it("preserves entity_id, review cadence, and dates when editing name", () => {
+				const draft = seedCreateProject(updateProposed);
+				const edited = overlayCreateProject(updateProposed, {
+					...draft,
+					name: "Ship API v2",
+				});
+				expect(edited).toEqual({
+					entity_id: "project-7",
+					name: "Ship API v2",
+					outcome: "All clients on v2 by Q3.",
+					note: "Coordinate with the platform team.",
+					status: "active",
+					review_every: { interval: 1, unit: "week" },
+					next_review_at: "2026-07-01T09:00:00",
+					last_reviewed_at: "2026-06-01T09:00:00",
+					due_at: "2026-09-30T00:00:00",
+				});
+			});
+
+			it("preserves the entity_id across a status↔timestamp coupling change", () => {
+				const completedProposed = {
+					entity_id: "project-9",
+					name: "Done project",
+					status: "completed",
+					completed_at: "2026-06-01T09:00:00",
+				};
+				const draft = seedCreateProject(completedProposed);
+				const edited = overlayCreateProject(completedProposed, {
+					...draft,
+					status: "on_hold",
+				}) as Record<string, unknown>;
+				expect(edited.status).toBe("on_hold");
+				expect("completed_at" in edited).toBe(false);
+				expect(edited.entity_id).toBe("project-9");
+			});
+
+			it("does not mutate the proposed payload, leaving the entity_id intact", () => {
+				const draft = seedCreateProject(updateProposed);
+				overlayCreateProject(updateProposed, { ...draft, name: "Changed" });
+				expect(updateProposed.name).toBe("Ship API v2 migration");
+				expect(updateProposed.entity_id).toBe("project-7");
+			});
 		});
 	});
 });
@@ -595,205 +691,67 @@ describe("proposalEdit — update_todo (partial)", () => {
 	});
 });
 
-// update_person/update_project are FULL-DOCUMENT REPLACE — the proposed payload is
-// the whole new entity body plus a top-level `entity_id` routing key. Their seeds
-// surface the same fields as the creates, and their overlays clone-and-overwrite the
-// same surfaced keys while PRESERVING the top-level `entity_id` (and, for project,
-// the review cadence + dates). Omit-empty (ADR-0033): a blanked optional is OMITTED
-// (omit ≡ cleared under replace), never a sentinel-null.
+// The single source of GTD-editability: `gtdEditVariant` maps the 6 GTD wire
+// kinds to 4 behavior variants (update_person/update_project collapse onto their
+// create twins), and `isGtdEditKind` is the boolean derived from it. The resolver
+// must reject every non-GTD kind — AND every prototype key ("toString",
+// "constructor", "__proto__", "hasOwnProperty") — with `null`; a bare `?? null`
+// would leak inherited Object.prototype members for the prototype keys.
 
-describe("proposalEdit — update_person", () => {
-	const proposed = {
-		entity_id: "person-7",
-		name: "Alice Carter",
-		note: "Met at the conference.",
-		aliases: ["Ali", "AC"],
-	};
+describe("gtdEditVariant / isGtdEditKind", () => {
+	const GTD_KINDS: ReadonlyArray<[string, GtdEditVariant]> = [
+		["create_todo", "todo_create"],
+		["update_todo", "todo_update"],
+		["create_person", "person"],
+		["update_person", "person"],
+		["create_project", "project"],
+		["update_project", "project"],
+	];
 
-	describe("seed", () => {
-		it("seeds name/note and joins proposed aliases back to a comma string", () => {
-			expect(seedUpdatePerson(proposed)).toEqual({
-				name: "Alice Carter",
-				note: "Met at the conference.",
-				aliases: "Ali, AC",
-			} satisfies CreatePersonDraft);
-		});
+	// Every kind the resolver must reject: real non-GTD wire kinds + the bare ""/
+	// nonsense, AND the Object.prototype keys that a bare `?? null` would leak.
+	const NULL_KINDS: ReadonlyArray<string> = [
+		"create_journal_entry",
+		"update_journal_entry",
+		"delete_todo",
+		"apply_intent_graph",
+		"",
+		"nonsense_kind",
+		"toString",
+		"constructor",
+		"__proto__",
+		"hasOwnProperty",
+	];
 
-		it("seeds an empty draft from a null payload without throwing", () => {
-			expect(seedUpdatePerson(null)).toEqual({
-				name: "",
-				note: "",
-				aliases: "",
-			});
-		});
+	it.each(GTD_KINDS)("maps %s to its variant", (kind, variant) => {
+		expect(gtdEditVariant(kind)).toBe(variant);
 	});
 
-	describe("overlay", () => {
-		it("editing name preserves the top-level entity_id and unsurfaced fields", () => {
-			const draft = seedUpdatePerson(proposed);
-			const edited = overlayUpdatePerson(proposed, {
-				...draft,
-				name: "Alice C. Carter",
-			});
-			expect(edited).toEqual({
-				entity_id: "person-7",
-				name: "Alice C. Carter",
-				note: "Met at the conference.",
-				aliases: ["Ali", "AC"],
-			});
-		});
-
-		it("does not mutate the proposed payload (overlay clones)", () => {
-			const draft = seedUpdatePerson(proposed);
-			overlayUpdatePerson(proposed, { ...draft, name: "Changed" });
-			expect(proposed.name).toBe("Alice Carter");
-			expect(proposed.entity_id).toBe("person-7");
-		});
-
-		it("splits the comma-separated aliases field to a trimmed non-empty array", () => {
-			const edited = overlayUpdatePerson(proposed, {
-				name: "Alice",
-				note: "",
-				aliases: " Ali ,, AC , Allie ",
-			}) as Record<string, unknown>;
-			expect(edited.aliases).toEqual(["Ali", "AC", "Allie"]);
-		});
-
-		it("omits the note key when the field is blanked (replace ⇒ omit ≡ cleared)", () => {
-			const edited = overlayUpdatePerson(proposed, {
-				name: "Alice",
-				note: "",
-				aliases: "Ali, AC",
-			}) as Record<string, unknown>;
-			expect("note" in edited).toBe(false);
-			// The routing key still rides through.
-			expect(edited.entity_id).toBe("person-7");
-		});
-
-		it("omits the aliases key when the field is blanked", () => {
-			const edited = overlayUpdatePerson(proposed, {
-				name: "Alice",
-				note: "Met at the conference.",
-				aliases: "   ",
-			}) as Record<string, unknown>;
-			expect("aliases" in edited).toBe(false);
-		});
-	});
-});
-
-describe("proposalEdit — update_project", () => {
-	const proposed = {
-		entity_id: "project-7",
-		name: "Ship API v2 migration",
-		outcome: "All clients on v2 by Q3.",
-		note: "Coordinate with the platform team.",
-		status: "active",
-		review_every: { interval: 1, unit: "week" },
-		next_review_at: "2026-07-01T09:00:00",
-		last_reviewed_at: "2026-06-01T09:00:00",
-		due_at: "2026-09-30T00:00:00",
-	};
-
-	describe("seed", () => {
-		it("seeds name/outcome/note/status from a well-formed proposed project", () => {
-			expect(seedUpdateProject(proposed)).toEqual({
-				name: "Ship API v2 migration",
-				outcome: "All clients on v2 by Q3.",
-				note: "Coordinate with the platform team.",
-				status: "active",
-			} satisfies CreateProjectDraft);
-		});
-
-		it("degrades a wrong/unknown status to active", () => {
-			expect(
-				seedUpdateProject({ entity_id: "p-1", name: "P", status: "weird" })
-					.status,
-			).toBe("active");
-		});
+	it.each(GTD_KINDS)("isGtdEditKind is true for the GTD kind %s", (kind) => {
+		expect(isGtdEditKind(kind)).toBe(true);
 	});
 
-	describe("overlay", () => {
-		it("editing name preserves entity_id, review cadence, and dates", () => {
-			const draft = seedUpdateProject(proposed);
-			const edited = overlayUpdateProject(proposed, {
-				...draft,
-				name: "Ship API v2",
-			});
-			expect(edited).toEqual({
-				entity_id: "project-7",
-				name: "Ship API v2",
-				outcome: "All clients on v2 by Q3.",
-				note: "Coordinate with the platform team.",
-				status: "active",
-				review_every: { interval: 1, unit: "week" },
-				next_review_at: "2026-07-01T09:00:00",
-				last_reviewed_at: "2026-06-01T09:00:00",
-				due_at: "2026-09-30T00:00:00",
-			});
-		});
+	it.each(NULL_KINDS)("returns null for the non-editable kind %s", (kind) => {
+		expect(gtdEditVariant(kind)).toBeNull();
+	});
 
-		describe("status↔timestamp coupling", () => {
-			it("active→on_hold clears both terminal timestamps and preserves entity_id", () => {
-				const completedProposed = {
-					entity_id: "project-9",
-					name: "Done project",
-					status: "completed",
-					completed_at: "2026-06-01T09:00:00",
-				};
-				const draft = seedUpdateProject(completedProposed);
-				const edited = overlayUpdateProject(completedProposed, {
-					...draft,
-					status: "on_hold",
-				}) as Record<string, unknown>;
-				expect(edited.status).toBe("on_hold");
-				expect("completed_at" in edited).toBe(false);
-				expect("dropped_at" in edited).toBe(false);
-				expect(edited.entity_id).toBe("project-9");
-			});
+	it.each(
+		NULL_KINDS,
+	)("isGtdEditKind is false for the non-editable kind %s", (kind) => {
+		expect(isGtdEditKind(kind)).toBe(false);
+	});
 
-			it("active→dropped stamps a valid dropped_at and omits completed_at", () => {
-				const draft = seedUpdateProject(proposed);
-				const edited = overlayUpdateProject(proposed, {
-					...draft,
-					status: "dropped",
-				}) as Record<string, unknown>;
-				expect(edited.status).toBe("dropped");
-				expect(edited.dropped_at).toMatch(LOCAL_DATETIME_RE);
-				expect("completed_at" in edited).toBe(false);
-			});
+	it("isGtdEditKind(k) === (gtdEditVariant(k) !== null) across the full set", () => {
+		for (const [kind] of GTD_KINDS) {
+			expect(isGtdEditKind(kind)).toBe(gtdEditVariant(kind) !== null);
+		}
+		for (const kind of NULL_KINDS) {
+			expect(isGtdEditKind(kind)).toBe(gtdEditVariant(kind) !== null);
+		}
+	});
 
-			it("leaves a stored completed_at intact when status is unchanged", () => {
-				const completedProposed = {
-					entity_id: "project-9",
-					name: "Done project",
-					status: "completed",
-					completed_at: "2026-06-01T09:00:00",
-				};
-				const draft = seedUpdateProject(completedProposed);
-				const edited = overlayUpdateProject(completedProposed, {
-					...draft,
-					name: "Done project edited",
-				}) as Record<string, unknown>;
-				expect(edited.completed_at).toBe("2026-06-01T09:00:00");
-			});
-		});
-
-		it("omits blank outcome and note keys", () => {
-			const draft = seedUpdateProject(proposed);
-			const edited = overlayUpdateProject(proposed, {
-				...draft,
-				outcome: "",
-				note: "",
-			}) as Record<string, unknown>;
-			expect("outcome" in edited).toBe(false);
-			expect("note" in edited).toBe(false);
-		});
-
-		it("does not mutate the proposed payload (overlay clones)", () => {
-			const draft = seedUpdateProject(proposed);
-			overlayUpdateProject(proposed, { ...draft, name: "Changed" });
-			expect(proposed.name).toBe("Ship API v2 migration");
-			expect(proposed.entity_id).toBe("project-7");
-		});
+	it("isGtdEditKind is true for exactly the 6 GTD kinds and false otherwise", () => {
+		expect(GTD_KINDS.filter(([kind]) => isGtdEditKind(kind))).toHaveLength(6);
+		expect(NULL_KINDS.filter((kind) => isGtdEditKind(kind))).toHaveLength(0);
 	});
 });

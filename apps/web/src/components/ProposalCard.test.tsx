@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { isGtdEditKind } from "@/lib/proposalEdit";
 import type { PendingProposal } from "@/store/chat";
-import { ProposalCard } from "./ProposalCard.js";
+import { PROPOSAL_VIEWS, ProposalCard } from "./ProposalCard.js";
 
 const base: PendingProposal = {
 	proposal_id: "prop-1",
@@ -2210,5 +2211,36 @@ describe("ProposalCard", () => {
 				{ handle: "@rodeo", decision: "accept" },
 			]);
 		});
+	});
+});
+
+// The edit-affordance fork is two-world: a GTD-editable kind routes to GtdEditForm,
+// a journal create/update to the journal form, everything else is read-only. This
+// partition invariant pins that the two selectors (canEdit and isGtdEditKind) never
+// disagree on a GTD kind, and that no editable kind falls through to NEITHER editor —
+// so the extracted fork stays exhaustive. The behavior gate is the DOM suite above;
+// this is the structural lock.
+describe("proposal edit fork partition", () => {
+	const JOURNAL_EDIT_KINDS = new Set([
+		"create_journal_entry",
+		"update_journal_entry",
+	]);
+
+	it("every GTD-editable kind is also Edit-offered (canEdit and isGtdEditKind agree)", () => {
+		for (const [kind, view] of Object.entries(PROPOSAL_VIEWS)) {
+			if (isGtdEditKind(kind)) {
+				// A GTD kind ignores bodyHasEntityRef and is always editable.
+				expect(view.canEdit(false)).toBe(true);
+				expect(view.canEdit(true)).toBe(true);
+			}
+		}
+	});
+
+	it("every editable kind routes to GtdEditForm or the journal form — none falls through", () => {
+		for (const [kind, view] of Object.entries(PROPOSAL_VIEWS)) {
+			const editable = view.canEdit(false) || view.canEdit(true);
+			if (!editable) continue;
+			expect(isGtdEditKind(kind) || JOURNAL_EDIT_KINDS.has(kind)).toBe(true);
+		}
 	});
 });
