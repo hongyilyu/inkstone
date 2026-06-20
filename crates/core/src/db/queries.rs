@@ -1386,6 +1386,26 @@ where
     .map(|_| ())
 }
 
+/// Whether a Message is still `streaming` (ADR-0045): the streaming guard for
+/// opening a new assistant text segment, mirroring [`append_text_part`]'s inline
+/// `EXISTS … status='streaming'` so a late delta after a terminal transition
+/// neither opens a stray part nor appends.
+pub(super) async fn message_is_streaming<'e, E>(
+    executor: E,
+    message_id: Uuid,
+) -> sqlx::Result<bool>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    let row: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM messages WHERE id = ?1 AND status = 'streaming' LIMIT 1",
+    )
+    .bind(message_id.to_string())
+    .fetch_optional(executor)
+    .await?;
+    Ok(row.is_some())
+}
+
 pub(super) async fn mark_assistant_messages_completed<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -1532,9 +1552,13 @@ where
 }
 
 /// Read a Run's snapshot for `run/subscribe`: the assistant message's
-/// cumulative `message_parts.text` at `seq=0` plus the Run's `status`. Returns
-/// `None` when the Run does not exist. Text is `Some("")` once streaming begins
-/// but no delta is persisted; the outer `None` means no assistant part row.
+/// cumulative text — ALL its text parts concatenated in `seq` order (ADR-0045;
+/// text is no longer a single `seq=0` blob, so the snapshot must span the
+/// per-segment parts) — plus the Run's `status`. Returns `None` when the Run has
+/// no assistant Message (an unknown run id). The inner `None` text means the
+/// assistant Message exists but has streamed no part yet; mod.rs defaults it to
+/// `""`. The ordered inner subquery feeds `group_concat`, the portable SQLite
+/// idiom for an order-stable concat.
 pub(super) async fn select_run_snapshot<'e, E>(
     executor: E,
     run_id: Uuid,
@@ -1543,10 +1567,15 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     let row: Option<(Option<String>, String)> = sqlx::query_as(
-        "SELECT mp.text, r.status \
+        "SELECT ( \
+                  SELECT group_concat(text, '') FROM ( \
+                    SELECT text FROM message_parts \
+                    WHERE message_id = m.id AND type = 'text' ORDER BY seq \
+                  ) \
+                ) AS text, \
+                r.status \
          FROM runs r \
          JOIN messages m ON m.run_id = r.id AND m.role = 'assistant' \
-         JOIN message_parts mp ON mp.message_id = m.id AND mp.seq = 0 \
          WHERE r.id = ?1",
     )
     .bind(run_id.to_string())
@@ -1578,11 +1607,15 @@ where
 
 // ─── run_steps ────────────────────────────────────────────────────────
 
+/// Insert a `run_steps` row of kind `message`, resolving to a SPECIFIC text part
+/// via `(message_id, part_seq)` (ADR-0045). `seq` is the run-timeline position;
+/// `part_seq` is the `message_parts.seq` this step's text lives in.
 pub(super) async fn insert_message_run_step<'e, E>(
     executor: E,
     run_id: Uuid,
     seq: i64,
     message_id: Uuid,
+    part_seq: i64,
     now_ms: i64,
 ) -> sqlx::Result<()>
 where
@@ -1590,12 +1623,13 @@ where
 {
     sqlx::query(
         "INSERT INTO run_steps \
-         (run_id, seq, kind, message_id, tool_call_id, created_at) \
-         VALUES (?, ?, 'message', ?, NULL, ?)",
+         (run_id, seq, kind, message_id, part_seq, tool_call_id, created_at) \
+         VALUES (?, ?, 'message', ?, ?, NULL, ?)",
     )
     .bind(run_id.to_string())
     .bind(seq)
     .bind(message_id.to_string())
+    .bind(part_seq)
     .bind(now_ms)
     .execute(executor)
     .await
@@ -1603,14 +1637,30 @@ where
 }
 
 /// The next `run_steps.seq` for a Run (`MAX(seq)+1`, or 0 for the first). The
-/// initial run inserts user/assistant message steps at seq 0/1, so the first
-/// tool-call step lands at seq 2.
+/// initial run inserts only the user message step at seq 0 (ADR-0045: no eager
+/// assistant step); the first assistant text segment / tool call lands at seq 1.
 pub(super) async fn next_run_step_seq<'e, E>(executor: E, run_id: Uuid) -> sqlx::Result<i64>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM run_steps WHERE run_id = ?")
         .bind(run_id.to_string())
+        .fetch_one(executor)
+        .await
+}
+
+/// The next `message_parts.seq` for a Message (`MAX(seq)+1`, or 0 for the
+/// first). Used to open a fresh assistant text segment (ADR-0045): each contiguous
+/// run of text after a boundary is a new part at the next seq.
+pub(super) async fn next_message_part_seq<'e, E>(
+    executor: E,
+    message_id: Uuid,
+) -> sqlx::Result<i64>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_scalar("SELECT COALESCE(MAX(seq), -1) + 1 FROM message_parts WHERE message_id = ?")
+        .bind(message_id.to_string())
         .fetch_one(executor)
         .await
 }
@@ -1734,10 +1784,12 @@ where
 }
 
 /// Read a Run's ordered timeline for resume transcript reconstruction
-/// (ADR-0025): every `run_steps` row in `seq` order, joined to the message role
-/// or the tool call's name/payloads per step kind. Returns `(kind, message_id,
-/// role, tool_call_id, tc_name, request_payload, result_payload)` tuples; the
-/// caller assembles message text from parts separately.
+/// (ADR-0025/0045): every `run_steps` row in `seq` order. A `message` step now
+/// resolves to a SPECIFIC text part via `(message_id, part_seq)`, so the part's
+/// `text` is joined here (`part_text`) and the reader replays per-part text in
+/// `seq` order rather than lumping a message's parts onto one step. Returns
+/// `(kind, message_id, role, part_text, tool_call_id, tc_name, request_payload,
+/// result_payload)` tuples.
 #[allow(clippy::type_complexity)]
 pub(super) async fn run_timeline<'e, E>(
     executor: E,
@@ -1751,16 +1803,19 @@ pub(super) async fn run_timeline<'e, E>(
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<String>,
     )>,
 >
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(
-        "SELECT rs.kind, rs.message_id, m.role, rs.tool_call_id, \
+        "SELECT rs.kind, rs.message_id, m.role, mp.text, rs.tool_call_id, \
                 tc.name, tc.request_payload, tc.result_payload \
          FROM run_steps rs \
          LEFT JOIN messages m ON m.id = rs.message_id \
+         LEFT JOIN message_parts mp \
+           ON mp.message_id = rs.message_id AND mp.seq = rs.part_seq \
          LEFT JOIN tool_calls tc ON tc.id = rs.tool_call_id \
          WHERE rs.run_id = ?1 \
          ORDER BY rs.seq",

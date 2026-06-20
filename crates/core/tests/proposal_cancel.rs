@@ -304,10 +304,19 @@ fn cancel_during_resume_pre_spawn_prevents_continuation() {
         assert_eq!(run_status, "cancelled", "resuming run ends cancelled");
 
         // The resumed Worker never ran: no continuation text, stays incomplete.
+        // The Run parked before any text, so (ADR-0045: open-on-first-delta) the
+        // assistant Message has NO text part at all — LEFT JOIN + concat so the
+        // row still materializes with empty text rather than relying on an eager
+        // seq-0 part that no longer exists.
         let row = sqlx::query(
-            "SELECT m.status AS message_status, mp.text AS text \
+            "SELECT m.status AS message_status, \
+                    COALESCE(( \
+                      SELECT group_concat(text, '') FROM ( \
+                        SELECT text FROM message_parts \
+                        WHERE message_id = m.id AND type = 'text' ORDER BY seq \
+                      ) \
+                    ), '') AS text \
              FROM messages m \
-             JOIN message_parts mp ON mp.message_id = m.id AND mp.seq = 0 \
              WHERE m.run_id = ?1 AND m.role = 'assistant'",
         )
         .bind(&run_id)

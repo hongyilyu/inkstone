@@ -92,8 +92,10 @@ pub async fn reconstruct(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Vec<Bl
         match step {
             TimelineStep::Message { role, text } => {
                 if role == "assistant" {
-                    // Skip the empty seq-0 streaming assistant row — it carries
-                    // nothing and resume continues appending into it.
+                    // Each assistant text segment is its own step (ADR-0045); the
+                    // eager empty seq-0 row that used to be skipped here no longer
+                    // exists (open-on-first-delta). A genuinely empty segment (an
+                    // empty-string delta) carries nothing, so it is still dropped.
                     if text.is_empty() {
                         continue;
                     }

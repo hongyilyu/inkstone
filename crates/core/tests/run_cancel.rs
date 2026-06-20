@@ -315,11 +315,20 @@ fn cancel_before_worker_start_prevents_worker_output() {
             .await
             .expect("connect to migrated DB");
 
+        // The Run was cancelled before any text streamed, so (ADR-0045:
+        // open-on-first-delta) the assistant Message has NO text part. LEFT JOIN +
+        // concat so the row still materializes with empty text, rather than
+        // relying on an eager seq-0 part that no longer exists.
         let row = sqlx::query(
-            "SELECT r.status AS run_status, m.status AS message_status, mp.text AS text \
+            "SELECT r.status AS run_status, m.status AS message_status, \
+                    COALESCE(( \
+                      SELECT group_concat(text, '') FROM ( \
+                        SELECT text FROM message_parts \
+                        WHERE message_id = m.id AND type = 'text' ORDER BY seq \
+                      ) \
+                    ), '') AS text \
              FROM runs r \
              JOIN messages m ON m.run_id = r.id AND m.role = 'assistant' \
-             JOIN message_parts mp ON mp.message_id = m.id AND mp.seq = 0 \
              WHERE r.id = ?1",
         )
         .bind(&run_id)

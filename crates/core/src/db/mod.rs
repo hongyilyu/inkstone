@@ -579,8 +579,8 @@ pub async fn history_for_run(
 
 /// Persist a Run's initial rows in one deferred-FK transaction: the FK cycle
 /// between `runs.user_message_id` and `messages.run_id` resolves only at COMMIT.
-/// Pre-inserts the assistant `messages` row (`streaming`) + an empty `seq=0`
-/// text part for [`append_assistant_text`] to append into.
+/// Inserts the assistant `messages` row (`streaming`) with NO text part yet —
+/// [`open_assistant_text_part`] opens the first one on the first delta (ADR-0045).
 pub async fn persist_initial_run(
     pool: &SqlitePool,
     run_id: Uuid,
@@ -643,9 +643,9 @@ pub async fn persist_thread_with_first_run(
 }
 
 /// Shared initial-run inserts inside the caller's open transaction (caller owns
-/// begin/commit): the Run row, user Message + `seq=0` text part, assistant
-/// Message (`streaming`) + empty `seq=0` text part, the two run steps, the
-/// `running` run-log row, and the Thread activity touch.
+/// begin/commit): the Run row, user Message + `seq=0` text part + its message
+/// run step, the assistant Message (`streaming`, NO eager text part/step —
+/// ADR-0045), the `running` run-log row, and the Thread activity touch.
 #[allow(clippy::too_many_arguments)]
 async fn insert_initial_run_rows(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -705,10 +705,11 @@ async fn insert_initial_run_rows(
         now_ms,
     )
     .await?;
-    queries::insert_text_part(&mut **tx, assistant_message_id, 0, "").await?;
-
-    queries::insert_message_run_step(&mut **tx, run_id, 0, user_message_id, now_ms).await?;
-    queries::insert_message_run_step(&mut **tx, run_id, 1, assistant_message_id, now_ms).await?;
+    // No eager assistant text part or message step (ADR-0045): the assistant
+    // Message row exists, but its first `message_parts` row + `run_steps` row
+    // open on the FIRST `text_delta`, at the live seq — so text emitted after a
+    // tool call sequences after it instead of being pinned ahead at run start.
+    queries::insert_message_run_step(&mut **tx, run_id, 0, user_message_id, 0, now_ms).await?;
 
     run_log::append(
         &mut **tx,
@@ -722,14 +723,53 @@ async fn insert_initial_run_rows(
     queries::touch_thread_activity(&mut **tx, thread_id, now_ms).await
 }
 
-/// Append a streaming `text_delta` to the assistant's pre-inserted `seq=0`
-/// text part. Single statement; SQLite serializes writes.
+/// Open a NEW assistant text segment on the first `text_delta` after a boundary
+/// (run start / a tool / a park), per ADR-0045. In one transaction: insert a
+/// fresh `message_parts` text row at the message's next `part_seq` seeded with
+/// `delta`, plus its `run_steps` `message` row at the Run's live `seq` carrying
+/// that `part_seq` — so the segment sequences at the point the text actually
+/// began. Returns `Some(part_seq)` (the open part the run loop appends into), or
+/// `None` if the assistant Message is no longer `streaming` (a late delta after a
+/// terminal transition — dropped, mirroring [`append_assistant_text`]'s guard).
+pub async fn open_assistant_text_part(
+    pool: &SqlitePool,
+    run_id: Uuid,
+    assistant_message_id: Uuid,
+    delta: &str,
+    now_ms: i64,
+) -> sqlx::Result<Option<i64>> {
+    let mut tx = pool.begin().await?;
+    if !queries::message_is_streaming(&mut *tx, assistant_message_id).await? {
+        return Ok(None);
+    }
+    let part_seq = queries::next_message_part_seq(&mut *tx, assistant_message_id).await?;
+    let step_seq = queries::next_run_step_seq(&mut *tx, run_id).await?;
+    queries::insert_text_part(&mut *tx, assistant_message_id, part_seq, delta).await?;
+    queries::insert_message_run_step(
+        &mut *tx,
+        run_id,
+        step_seq,
+        assistant_message_id,
+        part_seq,
+        now_ms,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Some(part_seq))
+}
+
+/// Append a streaming `text_delta` to the currently-open assistant text segment
+/// at `part_seq` (ADR-0045; the run loop tracks which part is open and opens a
+/// fresh one after each tool/park boundary via [`open_assistant_text_part`]).
+/// Single statement; SQLite serializes writes. Returns `false` (no row updated)
+/// when the Message is no longer `streaming`, so a late delta is dropped.
 pub async fn append_assistant_text(
     pool: &SqlitePool,
     assistant_message_id: Uuid,
+    part_seq: i64,
     delta: &str,
 ) -> sqlx::Result<bool> {
-    queries::append_text_part(pool, assistant_message_id, 0, delta)
+    queries::append_text_part(pool, assistant_message_id, part_seq, delta)
         .await
         .map(|rows| rows == 1)
 }
@@ -1303,19 +1343,33 @@ pub enum TimelineStep {
 }
 
 /// Read a Run's ordered timeline for resume transcript reconstruction
-/// (ADR-0025): each `run_steps` row, resolving message text from parts and
-/// the tool call's name/request/result. Ordered by `run_steps.seq`.
+/// (ADR-0025/0045): each `run_steps` row in `seq` order. A `message` step now
+/// resolves to its SPECIFIC text part (`run_timeline` joins `(message_id,
+/// part_seq)`), so each contiguous text segment replays as its own step in
+/// position — text after a tool follows it — rather than a message's parts lumped
+/// onto one step. Tool steps carry the name/request/result.
 pub async fn read_run_timeline(pool: &SqlitePool, run_id: Uuid) -> sqlx::Result<Vec<TimelineStep>> {
     let rows = queries::run_timeline(pool, run_id).await?;
     let mut steps = Vec::with_capacity(rows.len());
-    for (kind, message_id, role, tool_call_id, tc_name, request_payload, result_payload) in rows {
+    for (
+        kind,
+        message_id,
+        role,
+        part_text,
+        tool_call_id,
+        tc_name,
+        request_payload,
+        result_payload,
+    ) in rows
+    {
         match kind.as_str() {
             "message" => {
-                let Some(mid) = message_id else { continue };
-                let text = queries::text_parts_by_message(pool, &mid).await?.concat();
+                if message_id.is_none() {
+                    continue;
+                }
                 steps.push(TimelineStep::Message {
                     role: role.unwrap_or_default(),
-                    text,
+                    text: part_text.unwrap_or_default(),
                 });
             }
             "tool_call" => {
@@ -1350,8 +1404,9 @@ pub struct RunSnapshot {
 }
 
 /// Read the snapshot-then-tail starting point: the assistant message's
-/// cumulative `seq=0` text and the Run status. `None` when the Run does not
-/// exist (subscribe handler stays defensible against unknown run ids).
+/// cumulative text (all `message_parts` concatenated in `seq` order) and the
+/// Run status. `None` when the Run does not exist (subscribe handler stays
+/// defensible against unknown run ids).
 ///
 /// The stored status is parsed into [`RunStatus`] at this seam; an unknown value
 /// surfaces as a loud `sqlx::Error::Decode` (see [`run_status`]).
