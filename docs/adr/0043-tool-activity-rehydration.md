@@ -1,5 +1,7 @@
 # Tool-call activity rehydrates via `thread/get`, not a coarse-event replay
 
+> **Superseded in part by [ADR-0045](./0045-assistant-turn-segment-timeline.md).** The persistence and the read are unchanged, but the *wire projection* moved: `MessageView.tool_calls` is folded into the ordered `MessageView.segments[]` timeline (a `tool_call` segment), so tool activity now rehydrates in chronological order interleaved with text and the decided Proposal, rather than as a separate bucket.
+
 Tool-call activity rows that surface live inside an assistant turn (the
 `tool_call` Run Event, ADR-0006) are made durable across a reload by folding the
 persisted tool calls into the existing `thread/get` rehydration read, as a new

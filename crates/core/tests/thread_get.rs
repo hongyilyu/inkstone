@@ -31,6 +31,22 @@ async fn send(ws: &mut Ws, frame: String) {
         .expect("send frame");
 }
 
+/// The concatenated text of a Message's `text` segments (ADR-0045): `MessageView`
+/// no longer carries a flat `text` field, so a test reads the reply text from the
+/// ordered `segments[]` (the same `concatText` the Web client derives).
+fn segment_text(message: &serde_json::Value) -> String {
+    message["segments"]
+        .as_array()
+        .map(|segments| {
+            segments
+                .iter()
+                .filter(|seg| seg["kind"] == serde_json::json!("text"))
+                .filter_map(|seg| seg["text"].as_str())
+                .collect::<String>()
+        })
+        .unwrap_or_default()
+}
+
 #[test]
 fn thread_get_completed_run_returns_full_text() {
     let workspace = Workspace::new();
@@ -135,7 +151,7 @@ fn thread_get_completed_run_returns_full_text() {
             serde_json::json!("completed"),
             "user message completed — {got}"
         );
-        assert_eq!(user["text"], serde_json::json!("hi"), "user text — {got}");
+        assert_eq!(segment_text(user), "hi", "user text segment — {got}");
         assert_eq!(
             user["run_id"],
             serde_json::json!(run_id),
@@ -159,9 +175,9 @@ fn thread_get_completed_run_returns_full_text() {
             "assistant completed after done — {got}"
         );
         assert_eq!(
-            asst["text"],
-            serde_json::json!("echo: hi"),
-            "assistant assembled text — {got}"
+            segment_text(asst),
+            "echo: hi",
+            "assistant assembled text segment — {got}"
         );
         assert_eq!(
             asst["run_id"],
@@ -268,7 +284,7 @@ fn thread_get_midstream_run_returns_streaming_partial() {
             serde_json::json!("completed"),
             "user completed — {got}"
         );
-        assert_eq!(user["text"], serde_json::json!("hello"), "user text — {got}");
+        assert_eq!(segment_text(user), "hello", "user text segment — {got}");
 
         // assistant: streaming, text is a non-empty prefix of "echo: hello"
         // (not the full text), carrying run_id for resubscribe.
@@ -283,12 +299,10 @@ fn thread_get_midstream_run_returns_streaming_partial() {
             serde_json::json!("streaming"),
             "assistant still streaming mid-run — {got}"
         );
-        let asst_text = asst["text"]
-            .as_str()
-            .unwrap_or_else(|| panic!("assistant text is a string — {got}"));
+        let asst_text = segment_text(asst);
         assert!(!asst_text.is_empty(), "assistant partial text non-empty — {got}");
         assert!(
-            "echo: hello".starts_with(asst_text),
+            "echo: hello".starts_with(asst_text.as_str()),
             "assistant text is a prefix of the full output — got {asst_text:?}"
         );
         assert_ne!(

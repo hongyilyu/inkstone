@@ -10,10 +10,8 @@ use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
-use crate::db;
-use crate::protocol::{
-    MessageProposalView, MessageView, ThreadGetParams, ThreadGetResult, ToolCallView,
-};
+use crate::db::{self, MessageSegment};
+use crate::protocol::{MessageView, Segment, ThreadGetParams, ThreadGetResult};
 
 pub(super) async fn handle(
     pool: &SqlitePool,
@@ -35,21 +33,27 @@ pub(super) async fn handle(
                 role: row.role,
                 status: row.status,
                 run_id: row.run_id,
-                text: row.text,
-                tool_calls: row
-                    .tool_calls
+                // Map each db-side timeline item to its wire `Segment` variant,
+                // preserving order (ADR-0045). The variants are 1:1.
+                segments: row
+                    .segments
                     .into_iter()
-                    .map(|tc| ToolCallView {
-                        name: tc.name,
-                        status: tc.status,
-                        arg: tc.arg,
+                    .map(|segment| match segment {
+                        MessageSegment::Text { text } => Segment::Text { text },
+                        MessageSegment::ToolCall { name, status, arg } => {
+                            Segment::ToolCall { name, status, arg }
+                        }
+                        MessageSegment::Proposal {
+                            proposal_id,
+                            mutation_kind,
+                            status,
+                        } => Segment::Proposal {
+                            proposal_id,
+                            mutation_kind,
+                            status,
+                        },
                     })
                     .collect(),
-                proposal: row.proposal.map(|p| MessageProposalView {
-                    proposal_id: p.proposal_id,
-                    mutation_kind: p.mutation_kind,
-                    status: p.status,
-                }),
             })
             .collect();
 

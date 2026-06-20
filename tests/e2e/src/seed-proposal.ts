@@ -148,14 +148,14 @@ export function seedParkedIntentGraphProposal(
 		VALUES (${sqlValue(assistantMessageId)}, ${sqlValue(threadId)}, ${sqlValue(runId)}, 'assistant', 'streaming', ${now}, ${now});
 		INSERT INTO message_parts (message_id, seq, type, text)
 		VALUES (${sqlValue(assistantMessageId)}, 0, 'text', '');
-		INSERT INTO run_steps (run_id, seq, kind, message_id, tool_call_id, created_at)
-		VALUES (${sqlValue(runId)}, 0, 'message', ${sqlValue(userMessageId)}, NULL, ${now});
-		INSERT INTO run_steps (run_id, seq, kind, message_id, tool_call_id, created_at)
-		VALUES (${sqlValue(runId)}, 1, 'message', ${sqlValue(assistantMessageId)}, NULL, ${now});
+		INSERT INTO run_steps (run_id, seq, kind, message_id, part_seq, tool_call_id, created_at)
+		VALUES (${sqlValue(runId)}, 0, 'message', ${sqlValue(userMessageId)}, 0, NULL, ${now});
+		INSERT INTO run_steps (run_id, seq, kind, message_id, part_seq, tool_call_id, created_at)
+		VALUES (${sqlValue(runId)}, 1, 'message', ${sqlValue(assistantMessageId)}, 0, NULL, ${now});
 		INSERT INTO tool_calls (id, run_id, name, request_payload, status, requested_at)
 		VALUES (${sqlValue(toolCallId)}, ${sqlValue(runId)}, 'propose_workspace_mutation', ${jsonValue(requestPayload)}, 'pending', ${now});
-		INSERT INTO run_steps (run_id, seq, kind, message_id, tool_call_id, created_at)
-		VALUES (${sqlValue(runId)}, 2, 'tool_call', NULL, ${sqlValue(toolCallId)}, ${now});
+		INSERT INTO run_steps (run_id, seq, kind, message_id, part_seq, tool_call_id, created_at)
+		VALUES (${sqlValue(runId)}, 2, 'tool_call', NULL, NULL, ${sqlValue(toolCallId)}, ${now});
 		INSERT INTO proposals (id, tool_call_id, mutation_kind, status)
 		VALUES (${sqlValue(proposalId)}, ${sqlValue(toolCallId)}, 'apply_intent_graph', 'pending');
 		INSERT INTO run_log (run_id, run_seq, kind, payload, created_at)

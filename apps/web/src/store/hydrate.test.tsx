@@ -14,6 +14,7 @@ import { awaitRun, resetBridge } from "./bridge.js";
 import {
 	appendUserMessage,
 	attachRun,
+	concatText,
 	getChatState,
 	getHydrationStatus,
 	resetChatStore,
@@ -41,16 +42,14 @@ describe("refresh-durable hydration", () => {
 					role: "user",
 					status: "completed",
 					run_id: "r1",
-					text: "hi",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "hi" }],
 				},
 				{
 					id: "m2",
 					role: "assistant",
 					status: "completed",
 					run_id: "r1",
-					text: "echo: hi",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "echo: hi" }],
 				},
 			],
 		};
@@ -80,7 +79,9 @@ describe("refresh-durable hydration", () => {
 		await hydrateThread(runtime, "tA");
 
 		const thread = getChatState().threads.tA;
-		expect(thread?.messages.map((m) => [m.role, m.text, m.status])).toEqual([
+		expect(
+			thread?.messages.map((m) => [m.role, concatText(m.segments), m.status]),
+		).toEqual([
 			["user", "hi", "completed"],
 			["assistant", "echo: hi", "completed"],
 		]);
@@ -104,18 +105,27 @@ describe("refresh-durable hydration", () => {
 					role: "user",
 					status: "completed",
 					run_id: "r1",
-					text: "find people",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "find people" }],
 				},
 				{
 					id: "m2",
 					role: "assistant",
 					status: "completed",
 					run_id: "r1",
-					text: "done",
-					tool_calls: [
-						{ name: "search_entities", status: "completed", arg: "Lev" },
-						{ name: "search_entities", status: "error", arg: "Acme" },
+					segments: [
+						{
+							kind: "tool_call",
+							name: "search_entities",
+							status: "completed",
+							arg: "Lev",
+						},
+						{
+							kind: "tool_call",
+							name: "search_entities",
+							status: "error",
+							arg: "Acme",
+						},
+						{ kind: "text", text: "done" },
 					],
 				},
 			],
@@ -146,14 +156,25 @@ describe("refresh-durable hydration", () => {
 		await hydrateThread(runtime, "tTools");
 
 		const assistant = getChatState().threads.tTools?.messages[1];
-		expect(assistant?.toolCalls).toEqual([
+		expect(assistant?.segments.filter((s) => s.kind === "tool_call")).toEqual([
 			{
-				id: "m2:tc:0",
-				name: "search_entities",
-				status: "completed",
-				arg: "Lev",
+				kind: "tool_call",
+				call: {
+					id: "m2:seg:0",
+					name: "search_entities",
+					status: "completed",
+					arg: "Lev",
+				},
 			},
-			{ id: "m2:tc:1", name: "search_entities", status: "error", arg: "Acme" },
+			{
+				kind: "tool_call",
+				call: {
+					id: "m2:seg:1",
+					name: "search_entities",
+					status: "error",
+					arg: "Acme",
+				},
+			},
 		]);
 
 		await runtime.dispose();
@@ -169,21 +190,22 @@ describe("refresh-durable hydration", () => {
 					role: "user",
 					status: "completed",
 					run_id: "rp",
-					text: "log it",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "log it" }],
 				},
 				{
 					id: "m2",
 					role: "assistant",
 					status: "completed",
 					run_id: "rp",
-					text: "Logged.",
-					tool_calls: [],
-					proposal: {
-						proposal_id: "p-1",
-						mutation_kind: "apply_intent_graph",
-						status: "accepted",
-					},
+					segments: [
+						{ kind: "text", text: "Logged." },
+						{
+							kind: "proposal",
+							proposal_id: "p-1",
+							mutation_kind: "apply_intent_graph",
+							status: "accepted",
+						},
+					],
 				},
 			],
 		};
@@ -226,6 +248,70 @@ describe("refresh-durable hydration", () => {
 		await runtime.dispose();
 	});
 
+	it("attaches the decided-proposal SEGMENT to the reloaded message, so the pill survives reload (ADR-0044/0045)", async () => {
+		// B2 regression: the segment-only AssistantBubble (ADR-0045) renders the decided
+		// card ONLY from a `proposal` segment. Rehydration must attach that segment AFTER
+		// the messages are in the store (a rehydrated decided proposal has no live
+		// RunRecord, so attachProposalSegment locates the message by scanning run ids —
+		// which is empty until loadThreadMessages runs). Asserting only the proposals map
+		// (the prior tests) missed this: the map write succeeds even with no message present.
+		const result: ThreadGetResult = {
+			thread_id: "tSeg",
+			title: "T",
+			messages: [
+				{
+					id: "m2",
+					role: "assistant",
+					status: "completed",
+					run_id: "rs",
+					segments: [
+						{ kind: "text", text: "Logged." },
+						{
+							kind: "proposal",
+							proposal_id: "p-seg",
+							mutation_kind: "create_journal_entry",
+							status: "accepted",
+						},
+					],
+				},
+			],
+		};
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: (id) =>
+				id === "tSeg" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tSeg");
+
+		// The reloaded assistant message's timeline carries the proposal marker (legacy
+		// order: text, then proposal — slice 3 moves it to its true run_steps slot).
+		const assistant = getChatState().threads.tSeg?.messages[0];
+		expect(assistant?.segments).toContainEqual({
+			kind: "proposal",
+			runId: "rs",
+		});
+
+		await runtime.dispose();
+	});
+
 	it("reconstructs a REJECTED decided Proposal with rejected status (ADR-0044)", async () => {
 		// Pins the rejected arm of the status ternary: a rejected wire outcome must
 		// rehydrate as "rejected" (the "Dismissed." card), not collapse to accepted.
@@ -238,13 +324,15 @@ describe("refresh-durable hydration", () => {
 					role: "assistant",
 					status: "completed",
 					run_id: "rr",
-					text: "Logged.",
-					tool_calls: [],
-					proposal: {
-						proposal_id: "p-r",
-						mutation_kind: "create_journal_entry",
-						status: "rejected",
-					},
+					segments: [
+						{ kind: "text", text: "Logged." },
+						{
+							kind: "proposal",
+							proposal_id: "p-r",
+							mutation_kind: "create_journal_entry",
+							status: "rejected",
+						},
+					],
 				},
 			],
 		};
@@ -290,13 +378,15 @@ describe("refresh-durable hydration", () => {
 					role: "assistant",
 					status: "completed",
 					run_id: "rb",
-					text: "Logged.",
-					tool_calls: [],
-					proposal: {
-						proposal_id: "p-b",
-						mutation_kind: "create_journal_entry",
-						status: "superseded",
-					},
+					segments: [
+						{ kind: "text", text: "Logged." },
+						{
+							kind: "proposal",
+							proposal_id: "p-b",
+							mutation_kind: "create_journal_entry",
+							status: "superseded",
+						},
+					],
 				},
 			],
 		};
@@ -351,13 +441,15 @@ describe("refresh-durable hydration", () => {
 					role: "assistant",
 					status: "completed",
 					run_id: "rp",
-					text: "Logged.",
-					tool_calls: [],
-					proposal: {
-						proposal_id: "p-stale",
-						mutation_kind: "apply_intent_graph",
-						status: "accepted",
-					},
+					segments: [
+						{ kind: "text", text: "Logged." },
+						{
+							kind: "proposal",
+							proposal_id: "p-stale",
+							mutation_kind: "apply_intent_graph",
+							status: "accepted",
+						},
+					],
 				},
 			],
 		};
@@ -408,16 +500,14 @@ describe("refresh-durable hydration", () => {
 					role: "user",
 					status: "completed",
 					run_id: "r2",
-					text: "hello",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "hello" }],
 				},
 				{
 					id: "m2",
 					role: "assistant",
 					status: "streaming",
 					run_id: "r2",
-					text: "echo: ",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "echo: " }],
 				},
 			],
 		};
@@ -448,7 +538,9 @@ describe("refresh-durable hydration", () => {
 
 		// activeRunId set; no Run record yet, so the resubscribe arms the snapshot and its first delta SETs.
 		const hydrated = getChatState().threads.tB;
-		expect(hydrated?.messages.map((m) => [m.role, m.text, m.status])).toEqual([
+		expect(
+			hydrated?.messages.map((m) => [m.role, concatText(m.segments), m.status]),
+		).toEqual([
 			["user", "hello", "completed"],
 			["assistant", "echo: ", "streaming"],
 		]);
@@ -462,7 +554,7 @@ describe("refresh-durable hydration", () => {
 		expect(subscribeRun).toHaveBeenCalledWith("r2");
 		const resumed = getChatState().threads.tB;
 		const assistant = resumed?.messages[1];
-		expect(assistant?.text).toBe("echo: hello");
+		expect(concatText(assistant?.segments ?? [])).toBe("echo: hello");
 		expect(assistant?.status).toBe("completed");
 		expect(resumed?.activeRunId).toBeUndefined();
 
@@ -484,16 +576,14 @@ describe("refresh-durable hydration", () => {
 					role: "user",
 					status: "completed",
 					run_id: "old",
-					text: "earlier",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "earlier" }],
 				},
 				{
 					id: "s2",
 					role: "assistant",
 					status: "completed",
 					run_id: "old",
-					text: "earlier reply",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "earlier reply" }],
 				},
 			],
 		};
@@ -528,15 +618,15 @@ describe("refresh-durable hydration", () => {
 			id: "u1",
 			role: "user",
 			status: "completed",
-			text: "live message",
 			run_id: "",
+			segments: [{ kind: "text", text: "live message" }],
 		});
 		seedAssistantMessage("tC", {
 			id: "a1",
 			role: "assistant",
 			status: "streaming",
-			text: "",
 			run_id: "",
+			segments: [],
 		});
 		attachRun("tC", "a1", "live-run");
 
@@ -546,7 +636,7 @@ describe("refresh-durable hydration", () => {
 
 		// The seeded live turn survives; fetched history is folded in front (older first).
 		const thread = getChatState().threads.tC;
-		expect(thread?.messages.map((m) => m.text)).toEqual([
+		expect(thread?.messages.map((m) => concatText(m.segments))).toEqual([
 			"earlier",
 			"earlier reply",
 			"live message",
@@ -595,15 +685,15 @@ describe("refresh-durable hydration", () => {
 			id: "u1",
 			role: "user",
 			status: "completed",
-			text: "live message",
 			run_id: "",
+			segments: [{ kind: "text", text: "live message" }],
 		});
 		seedAssistantMessage("tD", {
 			id: "a1",
 			role: "assistant",
 			status: "streaming",
-			text: "",
 			run_id: "",
+			segments: [],
 		});
 		attachRun("tD", "a1", "live-run");
 
@@ -615,7 +705,10 @@ describe("refresh-durable hydration", () => {
 		expect(getHydrationStatus("tD")).toBe("ready");
 		// The live turn survives intact — no error screen painted over valid content.
 		const thread = getChatState().threads.tD;
-		expect(thread?.messages.map((m) => m.text)).toEqual(["live message", ""]);
+		expect(thread?.messages.map((m) => concatText(m.segments))).toEqual([
+			"live message",
+			"",
+		]);
 		expect(thread?.activeRunId).toBe("live-run");
 
 		await runtime.dispose();
@@ -725,8 +818,8 @@ describe("refresh-durable hydration", () => {
 			id: "u1",
 			role: "user",
 			status: "completed",
-			text: "live message",
 			run_id: "",
+			segments: [{ kind: "text", text: "live message" }],
 		});
 		attachRun("tRace", "u1", "live-run");
 
@@ -739,9 +832,9 @@ describe("refresh-durable hydration", () => {
 		await hydrating;
 
 		expect(getHydrationStatus("tRace")).toBe("ready");
-		expect(getChatState().threads.tRace?.messages.map((m) => m.text)).toEqual([
-			"live message",
-		]);
+		expect(
+			getChatState().threads.tRace?.messages.map((m) => concatText(m.segments)),
+		).toEqual(["live message"]);
 
 		await runtime.dispose();
 	});
@@ -785,8 +878,7 @@ describe("refresh-durable hydration", () => {
 					role: "user",
 					status: "completed",
 					run_id: "r1",
-					text: "hi",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "hi" }],
 				},
 			],
 		};
@@ -815,9 +907,9 @@ describe("refresh-durable hydration", () => {
 		await hydrateThread(okRuntime, "tFail");
 
 		expect(getHydrationStatus("tFail")).toBe("ready");
-		expect(getChatState().threads.tFail?.messages.map((m) => m.text)).toEqual([
-			"hi",
-		]);
+		expect(
+			getChatState().threads.tFail?.messages.map((m) => concatText(m.segments)),
+		).toEqual(["hi"]);
 
 		await runtime.dispose();
 		await okRuntime.dispose();

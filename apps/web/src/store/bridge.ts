@@ -42,20 +42,23 @@ export type NewThreadResult =
 
 /** Optimistically seed a turn into `threadId` (completed user + live assistant), returning the seeded assistant id. */
 function seedTurn(threadId: string, text: string): string {
+	// The user message is its single `text` segment (ADR-0045: segments is the sole
+	// source; there is no flat `text` field). The assistant opens with an empty
+	// timeline the live `text_delta`/`tool_call` builders then fill.
 	appendUserMessage(threadId, {
 		id: nextMessageId(),
 		role: "user",
 		status: "completed",
-		text,
 		run_id: "",
+		segments: [{ kind: "text", text }],
 	});
 	const assistantId = nextMessageId();
 	seedAssistantMessage(threadId, {
 		id: assistantId,
 		role: "assistant",
 		status: "streaming",
-		text: "",
 		run_id: "",
+		segments: [],
 	});
 	return assistantId;
 }

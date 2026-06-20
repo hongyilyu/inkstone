@@ -4,11 +4,17 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "./bridge.js";
 import {
 	appendUserMessage,
+	applyEvent,
+	attachRun,
+	beginRunSubscription,
+	concatText,
 	getChatState,
 	type Message,
 	prependHistory,
 	resetChatStore,
+	type Segment,
 	seedAssistantMessage,
+	setPendingProposal,
 } from "./chat.js";
 
 // Stub WsClient backed by an in-memory Queue — see docs/design/web-store-tests.md
@@ -50,7 +56,9 @@ describe("chat store + stream bridge", () => {
 		await send(runtime, "threadA", "hi");
 
 		const seeded = getChatState().threads.threadA;
-		expect(seeded?.messages.map((m) => [m.role, m.text, m.status])).toEqual([
+		expect(
+			seeded?.messages.map((m) => [m.role, concatText(m.segments), m.status]),
+		).toEqual([
 			["user", "hi", "completed"],
 			["assistant", "", "streaming"],
 		]);
@@ -62,7 +70,7 @@ describe("chat store + stream bridge", () => {
 
 		const finalized = getChatState().threads.threadA;
 		const assistant = finalized?.messages[1];
-		expect(assistant?.text).toBe("echo: hi");
+		expect(concatText(assistant?.segments ?? [])).toBe("echo: hi");
 		expect(assistant?.status).toBe("completed");
 		expect(finalized?.activeRunId).toBeUndefined();
 
@@ -84,7 +92,7 @@ describe("chat store + stream bridge", () => {
 
 		const threadA = getChatState().threads.threadA;
 		const assistant = threadA?.messages[1];
-		expect(assistant?.text).toBe("part1-part2");
+		expect(concatText(assistant?.segments ?? [])).toBe("part1-part2");
 		expect(assistant?.status).toBe("completed");
 		expect(threadA?.activeRunId).toBeUndefined();
 
@@ -107,7 +115,7 @@ describe("chat store + stream bridge", () => {
 
 		const threadA = getChatState().threads.threadA;
 		const assistant = threadA?.messages[1];
-		expect(assistant?.text).toBe("partial");
+		expect(concatText(assistant?.segments ?? [])).toBe("partial");
 		expect(assistant?.status).toBe("incomplete");
 		expect(assistant?.error).toBe("provider rejected the request");
 		expect(threadA?.activeRunId).toBeUndefined();
@@ -128,7 +136,7 @@ describe("chat store + stream bridge", () => {
 
 		const threadA = getChatState().threads.threadA;
 		const assistant = threadA?.messages[1];
-		expect(assistant?.text).toBe("partial");
+		expect(concatText(assistant?.segments ?? [])).toBe("partial");
 		expect(assistant?.status).toBe("incomplete");
 		expect(assistant?.error).toBeUndefined();
 		expect(threadA?.activeRunId).toBeUndefined();
@@ -162,10 +170,12 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-tool");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.toolCalls).toEqual([
-			{ id: "tc_1", name: "read_thread", status: "completed" },
-		]);
-		expect(assistant?.text).toBe("Here's what I found");
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([{ id: "tc_1", name: "read_thread", status: "completed" }]);
+		expect(concatText(assistant?.segments ?? [])).toBe("Here's what I found");
 		expect(assistant?.status).toBe("completed");
 
 		await runtime.dispose();
@@ -193,9 +203,11 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-tool-err");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.toolCalls).toEqual([
-			{ id: "tc_2", name: "read_thread", status: "error" },
-		]);
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([{ id: "tc_2", name: "read_thread", status: "error" }]);
 
 		await runtime.dispose();
 	});
@@ -235,7 +247,11 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-multi");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.toolCalls).toEqual([
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([
 			{ id: "a", name: "read_thread", status: "completed" },
 			{ id: "b", name: "search_web", status: "error" },
 		]);
@@ -260,9 +276,11 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-lost");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.toolCalls).toEqual([
-			{ id: "x", name: "read_thread", status: "completed" },
-		]);
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([{ id: "x", name: "read_thread", status: "completed" }]);
 		expect(assistant?.status).toBe("completed");
 
 		await runtime.dispose();
@@ -284,9 +302,11 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-lost-err");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.toolCalls).toEqual([
-			{ id: "x", name: "read_thread", status: "error" },
-		]);
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([{ id: "x", name: "read_thread", status: "error" }]);
 		expect(assistant?.status).toBe("incomplete");
 
 		await runtime.dispose();
@@ -317,10 +337,12 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-interleave");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.text).toBe("AB");
-		expect(assistant?.toolCalls).toEqual([
-			{ id: "t", name: "read_thread", status: "completed" },
-		]);
+		expect(concatText(assistant?.segments ?? [])).toBe("AB");
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([{ id: "t", name: "read_thread", status: "completed" }]);
 
 		await runtime.dispose();
 	});
@@ -336,8 +358,8 @@ describe("prependHistory", () => {
 		id,
 		role: id.startsWith("u") ? "user" : "assistant",
 		status: "completed",
-		text,
 		run_id: run,
+		segments: text !== "" ? [{ kind: "text", text }] : [],
 	});
 
 	it("folds fetched history in front of the live turn, skipping runs already present", () => {
@@ -346,7 +368,7 @@ describe("prependHistory", () => {
 			id: "a-live",
 			role: "assistant",
 			status: "streaming",
-			text: "",
+			segments: [],
 			run_id: "live",
 		});
 
@@ -374,5 +396,160 @@ describe("prependHistory", () => {
 		appendUserMessage("t2", live("u", "r", "u"));
 		prependHistory("t2", [live("dup", "r", "dup")]);
 		expect(getChatState().threads.t2?.messages.map((m) => m.id)).toEqual(["u"]);
+	});
+});
+
+describe("segment timeline (ADR-0045)", () => {
+	/** Seed a live assistant turn bound to `runId`, snapshot armed (the live-send shape). */
+	function seedRun(threadId: string, runId: string): void {
+		const id = "a-seg";
+		seedAssistantMessage(threadId, {
+			id,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun(threadId, id, runId);
+		beginRunSubscription(threadId, runId);
+	}
+
+	function segmentsOf(threadId: string, runId: string): readonly Segment[] {
+		const msg = getChatState().threads[threadId]?.messages.find(
+			(m) => m.run_id === runId,
+		);
+		return msg?.segments ?? [];
+	}
+
+	it("orders segments by event arrival; post-proposal text opens a NEW segment", () => {
+		seedRun("tSeg", "run-seg");
+
+		// The screenshot scenario, live: text → search(started→completed) → propose → reply.
+		applyEvent("tSeg", "run-seg", { kind: "text_delta", delta: "a" });
+		applyEvent("tSeg", "run-seg", {
+			kind: "tool_call",
+			tool_call_id: "tc",
+			name: "search_entities",
+			status: "started",
+		});
+		applyEvent("tSeg", "run-seg", {
+			kind: "tool_call",
+			tool_call_id: "tc",
+			name: "search_entities",
+			status: "completed",
+		});
+		setPendingProposal({
+			proposal_id: "p-seg",
+			run_id: "run-seg",
+			mutation_kind: "create_journal_entry",
+			payload: null,
+			rationale: null,
+			status: "pending",
+		});
+		// The post-proposal delta is NOT armed (the first delta disarmed it) and the
+		// trailing segment is a proposal, so "b" must open a NEW text segment.
+		applyEvent("tSeg", "run-seg", { kind: "text_delta", delta: "b" });
+
+		expect(segmentsOf("tSeg", "run-seg")).toEqual([
+			{ kind: "text", text: "a" },
+			{
+				kind: "tool_call",
+				call: { id: "tc", name: "search_entities", status: "completed" },
+			},
+			{ kind: "proposal", runId: "run-seg" },
+			{ kind: "text", text: "b" },
+		]);
+	});
+
+	it("a resume cumulative snapshot reconciles multiple pre-park text runs without duplicating the prefix (B1)", () => {
+		// B1 regression: a turn with ≥2 pre-park text runs (text → tool → text → park →
+		// resume). Core's resume snapshot is the CUMULATIVE concat of ALL the turn's text
+		// (group_concat, select_run_snapshot), delivered as the armed first delta. The
+		// prior rule replaced only the LAST text segment, leaving the earlier one in place
+		// → concatText duplicated the prefix ("First. " + "First. Second. "). The fix
+		// collapses every text segment into the single snapshot at the first text slot,
+		// preserving the interleaved tool/proposal positions.
+		seedRun("tB1", "run-b1");
+
+		applyEvent("tB1", "run-b1", { kind: "text_delta", delta: "First. " });
+		applyEvent("tB1", "run-b1", {
+			kind: "tool_call",
+			tool_call_id: "tc",
+			name: "search_entities",
+			status: "started",
+		});
+		applyEvent("tB1", "run-b1", {
+			kind: "tool_call",
+			tool_call_id: "tc",
+			name: "search_entities",
+			status: "completed",
+		});
+		// Second pre-park text run (disarmed APPEND opens a fresh segment after the tool).
+		applyEvent("tB1", "run-b1", { kind: "text_delta", delta: "Second. " });
+		setPendingProposal({
+			proposal_id: "p-b1",
+			run_id: "run-b1",
+			mutation_kind: "create_journal_entry",
+			payload: null,
+			rationale: null,
+			status: "pending",
+		});
+
+		// Resume re-subscribe re-arms the snapshot; its first delta is the cumulative text.
+		beginRunSubscription("tB1", "run-b1");
+		applyEvent("tB1", "run-b1", {
+			kind: "text_delta",
+			delta: "First. Second. ",
+		});
+		// The genuine reply opens a NEW text segment after the proposal marker.
+		applyEvent("tB1", "run-b1", { kind: "text_delta", delta: "Done." });
+		applyEvent("tB1", "run-b1", { kind: "done" });
+
+		const segs = segmentsOf("tB1", "run-b1");
+		// The pre-park prefix appears exactly once (no duplicated "First. ").
+		expect(segs).toEqual([
+			{ kind: "text", text: "First. Second. " },
+			{
+				kind: "tool_call",
+				call: { id: "tc", name: "search_entities", status: "completed" },
+			},
+			{ kind: "proposal", runId: "run-b1" },
+			{ kind: "text", text: "Done." },
+		]);
+		// The render-source invariant holds: concatText(segments) === the flat reply text.
+		expect(concatText(segs)).toBe("First. Second. Done.");
+	});
+
+	it("appends a proposal segment exactly once per run (skip-if-present)", () => {
+		seedRun("tDup", "run-dup");
+		const proposal = {
+			proposal_id: "p-dup",
+			run_id: "run-dup",
+			mutation_kind: "create_journal_entry",
+			payload: null,
+			rationale: null,
+			status: "pending" as const,
+		};
+		setPendingProposal(proposal);
+		// A status flip re-attaches the same run's proposal; the segment must not double up.
+		setPendingProposal({ ...proposal, status: "accepted" });
+
+		const segs = segmentsOf("tDup", "run-dup");
+		expect(segs.filter((s) => s.kind === "proposal")).toHaveLength(1);
+	});
+});
+
+describe("concatText", () => {
+	it("concatenates only the text segments, in order", () => {
+		expect(
+			concatText([
+				{ kind: "text", text: "x" },
+				{
+					kind: "tool_call",
+					call: { id: "t", name: "n", status: "completed" },
+				},
+				{ kind: "text", text: "y" },
+			]),
+		).toBe("xy");
 	});
 });

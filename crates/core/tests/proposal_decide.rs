@@ -867,7 +867,14 @@ fn thread_get_carries_decided_proposal_after_accept() {
             .iter()
             .find(|m| m["role"].as_str() == Some("assistant"))
             .unwrap_or_else(|| panic!("an assistant Message — body: {resp}"));
-        let proposal = &assistant["proposal"];
+        // The decided Proposal rehydrates as a `proposal` SEGMENT in the assistant
+        // turn's ordered `segments[]` (ADR-0045 folds the former `proposal` field in).
+        let proposal = assistant["segments"]
+            .as_array()
+            .unwrap_or_else(|| panic!("assistant segments is an array — body: {resp}"))
+            .iter()
+            .find(|seg| seg["kind"].as_str() == Some("proposal"))
+            .unwrap_or_else(|| panic!("a decided proposal segment — body: {resp}"));
         assert_eq!(
             proposal["proposal_id"].as_str(),
             Some(proposal_id.as_str()),
@@ -884,14 +891,16 @@ fn thread_get_carries_decided_proposal_after_accept() {
             "rehydrated proposal carries its mutation_kind — body: {resp}"
         );
 
-        // The user Message carries no proposal (it belongs to the assistant turn).
+        // The user Message carries no proposal segment (it belongs to the assistant turn).
         let user = messages
             .iter()
             .find(|m| m["role"].as_str() == Some("user"))
             .unwrap_or_else(|| panic!("a user Message — body: {resp}"));
         assert!(
-            user.get("proposal").is_none() || user["proposal"].is_null(),
-            "user Message carries no decided proposal — body: {resp}"
+            user["segments"]
+                .as_array()
+                .is_none_or(|segs| !segs.iter().any(|s| s["kind"].as_str() == Some("proposal"))),
+            "user Message carries no decided proposal segment — body: {resp}"
         );
     });
 }

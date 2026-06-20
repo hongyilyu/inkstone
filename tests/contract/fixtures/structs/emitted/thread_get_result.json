@@ -2,26 +2,32 @@
   "messages": [
     {
       "id": "0190d3c1-0000-7000-8000-000000000002",
-      "proposal": {
-        "mutation_kind": "apply_intent_graph",
-        "proposal_id": "0190d3c1-0000-7000-8000-000000000001",
-        "status": "accepted"
-      },
       "role": "assistant",
       "run_id": "0190d3c1-0000-7000-8000-000000000003",
-      "status": "complete",
-      "text": "Logged.",
-      "tool_calls": [
+      "segments": [
         {
           "arg": "Lev",
+          "kind": "tool_call",
           "name": "search_entities",
           "status": "completed"
         },
         {
+          "kind": "tool_call",
           "name": "read_thread",
           "status": "completed"
+        },
+        {
+          "kind": "proposal",
+          "mutation_kind": "apply_intent_graph",
+          "proposal_id": "0190d3c1-0000-7000-8000-000000000001",
+          "status": "accepted"
+        },
+        {
+          "kind": "text",
+          "text": "Logged."
         }
-      ]
+      ],
+      "status": "complete"
     }
   ],
   "thread_id": "0190d3c1-0000-7000-8000-000000000001",

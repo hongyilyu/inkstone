@@ -40,6 +40,12 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
     let mut worker_error: Option<String> = None;
     let mut parked = false;
     let mut cancelled_by_core = false;
+    // The currently-open assistant text segment's `part_seq` (ADR-0045), or
+    // `None` at a boundary (run start / after a tool / after a park). The first
+    // delta after a boundary opens a fresh part + run step; subsequent deltas
+    // append into it; a tool/park seals it back to `None`. Resume starts here at
+    // `None`, so the post-resume reply opens its own segment.
+    let mut open_part: Option<i64> = None;
 
     if *cancel_rx.borrow() {
         worker.shutdown().await;
@@ -73,7 +79,33 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
             // in the tail, never split or duplicated.
             WorkerStdout::TextDelta { delta } => {
                 let guard = gate.lock().await;
-                match db::append_assistant_text(&pool, assistant_message_id, &delta).await {
+                // Open a fresh segment on the first delta after a boundary
+                // (ADR-0045), else append into the open one. Either path advances
+                // only which part is "open" — the gate's critical section is
+                // unchanged (ADR-0022). `open_part` caches the open seq so steady
+                // streaming is one UPDATE per delta, the part opening only once.
+                let written = match open_part {
+                    Some(part_seq) => {
+                        db::append_assistant_text(&pool, assistant_message_id, part_seq, &delta)
+                            .await
+                    }
+                    None => match db::open_assistant_text_part(
+                        &pool,
+                        run_id,
+                        assistant_message_id,
+                        &delta,
+                        db::now_ms(),
+                    )
+                    .await
+                    {
+                        Ok(seq) => {
+                            open_part = seq;
+                            Ok(seq.is_some())
+                        }
+                        Err(e) => Err(e),
+                    },
+                };
+                match written {
                     Ok(true) => {
                         let _ = tx.send(RunEvent::TextDelta { delta });
                     }
@@ -111,6 +143,11 @@ pub(super) async fn run_loop<P: WorkerPort + Send>(
                 params,
                 ..
             } => {
+                // Seal the open text segment (ADR-0045): the tool's own
+                // `run_steps` row lands at the next seq, so the next delta opens a
+                // fresh segment sequenced AFTER this tool. Holds for both the park
+                // and dispatch branches below.
+                open_part = None;
                 if crate::tools::is_proposal(&name) && !db::should_auto_approve() {
                     let guard = gate.lock().await;
                     parked = park_on_proposal(&pool, run_id, &tool_call_id, &name, &params).await;
@@ -659,6 +696,111 @@ mod tests {
         assert_eq!(exit, Exit::Done);
         // Tool dispatched and a Tool Result written back, correlated by id.
         assert_eq!(sent.lock().unwrap().as_slice(), &["tc1".to_string()]);
+    }
+
+    /// One `run_steps` row resolved to its kind + content, ordered by `seq`. A
+    /// `message` step resolves its text from the specific `(message_id, part_seq)`
+    /// part (ADR-0045); a `tool_call` step resolves the tool name. Read straight
+    /// from tier 2 so the test pins the durable timeline, not a wire projection.
+    async fn run_steps_kinds_and_content(pool: &SqlitePool, run_id: Uuid) -> Vec<(String, String)> {
+        let rows: Vec<(String, Option<String>, Option<i64>, Option<String>)> = sqlx::query_as(
+            "SELECT rs.kind, rs.message_id, rs.part_seq, tc.name \
+             FROM run_steps rs \
+             LEFT JOIN tool_calls tc ON tc.id = rs.tool_call_id \
+             WHERE rs.run_id = ?1 ORDER BY rs.seq",
+        )
+        .bind(run_id.to_string())
+        .fetch_all(pool)
+        .await
+        .expect("read run_steps");
+
+        let mut out = Vec::with_capacity(rows.len());
+        for (kind, message_id, part_seq, tc_name) in rows {
+            match kind.as_str() {
+                "message" => {
+                    let message_id = message_id.expect("message step has a message_id");
+                    let part_seq = part_seq.expect("message step resolves a specific text part");
+                    let text: String = sqlx::query_scalar(
+                        "SELECT text FROM message_parts WHERE message_id = ?1 AND seq = ?2",
+                    )
+                    .bind(&message_id)
+                    .bind(part_seq)
+                    .fetch_one(pool)
+                    .await
+                    .expect("message step's part exists");
+                    out.push(("message".to_string(), text));
+                }
+                "tool_call" => out.push(("tool_call".to_string(), tc_name.unwrap_or_default())),
+                other => panic!("unexpected run_step kind {other:?}"),
+            }
+        }
+        out
+    }
+
+    /// Within ONE Run, assistant text emitted AFTER a tool call is sequenced
+    /// AFTER that tool call in `run_steps` (ADR-0045). A scripted Run streams
+    /// text, calls a tool, then streams more text: the durable timeline must read
+    /// `[message(user prompt), text("let me look "), tool_call(read_thread),
+    /// text("found it")]` — TWO distinct assistant text parts, the second after
+    /// the tool. The legacy concat read still returns the full reply, so the wire
+    /// shape `thread/get` emits is unchanged.
+    #[tokio::test]
+    async fn run_steps_sequences_post_tool_text_after_tool_call() {
+        let pool = memory_pool().await;
+        let wf = test_workflow(&["read_thread"]);
+        let (run_id, thread_id, amid) = seed_run(&pool, &wf).await;
+        let (hubs, run_hub) = fixtures(run_id);
+        let (worker, _sent, _sd) = ScriptedWorker::new(vec![
+            WorkerStdout::TextDelta {
+                delta: "let me look ".to_string(),
+            },
+            WorkerStdout::ToolRequest {
+                run_id: String::new(),
+                tool_call_id: "tc-look".to_string(),
+                name: "read_thread".to_string(),
+                params: serde_json::json!({ "thread_id": thread_id.to_string() }),
+            },
+            WorkerStdout::TextDelta {
+                delta: "found it".to_string(),
+            },
+            WorkerStdout::Done,
+        ]);
+
+        let exit = run_loop(
+            worker,
+            run_id,
+            wf,
+            pool.clone(),
+            amid,
+            hubs,
+            run_hub.tx.clone(),
+            run_hub.gate.clone(),
+            run_hub.cancel_rx(),
+        )
+        .await;
+
+        assert_eq!(exit, Exit::Done);
+
+        // The durable timeline interleaves the two text segments around the tool.
+        let timeline = run_steps_kinds_and_content(&pool, run_id).await;
+        assert_eq!(
+            timeline,
+            vec![
+                ("message".to_string(), "prompt".to_string()),
+                ("message".to_string(), "let me look ".to_string()),
+                ("tool_call".to_string(), "read_thread".to_string()),
+                ("message".to_string(), "found it".to_string()),
+            ],
+            "post-tool text is a distinct segment sequenced AFTER the tool call"
+        );
+
+        // The wire shape is unchanged: the snapshot/thread-get concat read still
+        // returns the assistant's full reply across both parts, in order.
+        let snap = db::select_run_snapshot(&pool, run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(snap.text, "let me look found it");
     }
 
     #[tokio::test]

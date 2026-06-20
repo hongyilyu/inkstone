@@ -309,9 +309,24 @@ mod tests {
             .await
             .expect("read assistant message id")
             .expect("run has an assistant message");
-        crate::db::append_assistant_text(pool, assistant_message_id, assistant_text)
-            .await
-            .expect("append assistant text");
+        // Open the first assistant text segment (ADR-0045: text now opens
+        // on-first-delta, no eager seq-0 part). One delta is one segment here.
+        // `open_assistant_text_part` returns `None` if the Message isn't `streaming`;
+        // this seed leaves it streaming, so assert a part actually opened rather than
+        // silently accept `Ok(None)` and seed a broken (partless) state.
+        let opened = crate::db::open_assistant_text_part(
+            pool,
+            run_id,
+            assistant_message_id,
+            assistant_text,
+            crate::db::now_ms(),
+        )
+        .await
+        .expect("open assistant text part");
+        assert!(
+            opened.is_some(),
+            "seed expects a streaming assistant Message so the first text segment opens"
+        );
         (thread_id, run_id, assistant_message_id)
     }
 

@@ -314,9 +314,9 @@ export const fixtures: readonly FixtureEntry[] = [
 		schema: MessageSearchResult,
 		dir: "emitted",
 	},
-	// ThreadGetResult: maximal (assistant turn w/ tool_calls + decided proposal —
-	// covers ToolCallView optional arg + MessageProposalView) + bare (user turn,
-	// empty tool_calls, no proposal).
+	// ThreadGetResult: maximal (assistant turn whose ordered segments[] cover all
+	// three Segment variants — tool_call with + without arg, proposal, text) + bare
+	// (user turn, a single text segment). ADR-0045.
 	{
 		message: "ThreadGetResult",
 		file: "thread_get_result.json",

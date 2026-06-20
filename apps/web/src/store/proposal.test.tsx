@@ -21,6 +21,7 @@ import {
 } from "./bridge.js";
 import {
 	attachRun,
+	concatText,
 	getChatState,
 	nextMessageId,
 	resetChatStore,
@@ -282,7 +283,7 @@ describe("proposal stream + decide", () => {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
-			text: "",
+			segments: [],
 			run_id: "",
 		});
 		attachRun("thread-1", assistantId, "run-1");
@@ -317,7 +318,7 @@ describe("proposal stream + decide", () => {
 		const msg = getChatState().threads["thread-1"]?.messages.find(
 			(m) => m.run_id === "run-1",
 		);
-		expect(msg?.text).toBe("Done. added it.");
+		expect(concatText(msg?.segments ?? [])).toBe("Done. added it.");
 
 		await runtime.dispose();
 	});
@@ -339,7 +340,7 @@ describe("proposal stream + decide", () => {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
-			text: "",
+			segments: [],
 			run_id: "",
 		});
 		attachRun("thread-1", assistantId, "run-1");
@@ -354,7 +355,9 @@ describe("proposal stream + decide", () => {
 			const msg = getChatState().threads["thread-1"]?.messages.find(
 				(m) => m.run_id === "run-1",
 			);
-			return msg?.text === "Let me check the other thread. ";
+			return (
+				concatText(msg?.segments ?? []) === "Let me check the other thread. "
+			);
 		});
 
 		// Park + decide → resume re-subscribe whose snapshot re-includes the pre-park prose.
@@ -390,7 +393,93 @@ describe("proposal stream + decide", () => {
 			(m) => m.run_id === "run-1",
 		);
 		// SET replaces the on-screen prefix; the M1 bug appended → duplicated prefix.
-		expect(msg?.text).toBe("Let me check the other thread. Done — added it.");
+		expect(concatText(msg?.segments ?? [])).toBe(
+			"Let me check the other thread. Done — added it.",
+		);
+
+		await runtime.dispose();
+	});
+
+	it("resume-after-park lands the reply AFTER the proposal segment, no duplicated prefix (ADR-0045)", async () => {
+		const proposalQueue = Effect.runSync(
+			Queue.unbounded<ProposalNotification>(),
+		);
+		const parkedQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const resumeQueue = Effect.runSync(Queue.unbounded<RunEventValue>());
+		const runtime = makeStubRuntime({
+			proposalQueue,
+			runQueues: [parkedQueue, resumeQueue],
+		});
+
+		const assistantId = nextMessageId();
+		seedAssistantMessage("thread-1", {
+			id: assistantId,
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("thread-1", assistantId, "run-1");
+		startRunStream(runtime, "thread-1", "run-1");
+
+		// Pre-park prose (snapshot SET), then park.
+		Queue.unsafeOffer(parkedQueue, {
+			kind: "text_delta",
+			delta: "Let me check the other thread. ",
+		});
+		await waitFor(() => {
+			const msg = getChatState().threads["thread-1"]?.messages.find(
+				(m) => m.run_id === "run-1",
+			);
+			return (
+				concatText(msg?.segments ?? []) === "Let me check the other thread. "
+			);
+		});
+
+		startProposalStream(runtime);
+		Queue.unsafeOffer(proposalQueue, {
+			kind: "pending",
+			run_id: "run-1",
+			proposal_id: "prop-1",
+		});
+		await waitFor(() => getChatState().proposals["run-1"] !== undefined);
+
+		await decideProposal(runtime, "run-1", "accept");
+
+		// Resume: the snapshot re-includes the pre-park prose (armed SET → reconciles
+		// the EXISTING pre-park text segment, not a duplicate after the proposal), then
+		// the genuine reply opens a NEW text segment after the proposal marker.
+		Queue.unsafeOffer(resumeQueue, {
+			kind: "text_delta",
+			delta: "Let me check the other thread. ",
+		});
+		Queue.unsafeOffer(resumeQueue, {
+			kind: "text_delta",
+			delta: "Done — added it.",
+		});
+		Queue.unsafeOffer(resumeQueue, { kind: "done" });
+
+		await waitFor(() => {
+			const msg = getChatState().threads["thread-1"]?.messages.find(
+				(m) => m.run_id === "run-1",
+			);
+			return msg?.status === "completed";
+		});
+
+		const msg = getChatState().threads["thread-1"]?.messages.find(
+			(m) => m.run_id === "run-1",
+		);
+		// search → propose → accept → reply: the timeline is pre-park text, the
+		// proposal marker, THEN the reply. The pre-park prefix appears exactly once.
+		expect(msg?.segments).toEqual([
+			{ kind: "text", text: "Let me check the other thread. " },
+			{ kind: "proposal", runId: "run-1" },
+			{ kind: "text", text: "Done — added it." },
+		]);
+		// The render-source invariant: concatText(segments) === the flat reply text.
+		expect(concatText(msg?.segments ?? [])).toBe(
+			"Let me check the other thread. Done — added it.",
+		);
 
 		await runtime.dispose();
 	});

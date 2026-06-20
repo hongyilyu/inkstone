@@ -68,18 +68,27 @@ CREATE TABLE tool_calls (
 CREATE INDEX idx_tool_calls_run ON tool_calls(run_id);
 
 -- run_steps interleaves messages and tool_calls in chronological order
--- per Run, so the timeline is one ordered query.
+-- per Run, so the timeline is one ordered query (ADR-0017). A `message` step
+-- resolves to a SPECIFIC text part via `(message_id, part_seq)`, not just the
+-- message: each contiguous run of assistant text is its own `message_parts`
+-- row + `run_steps` row, so post-tool text sequences AFTER the tool (ADR-0045).
 CREATE TABLE run_steps (
   run_id         TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
   seq            INTEGER NOT NULL,
   kind           TEXT NOT NULL CHECK (kind IN ('message','tool_call')),
   message_id     TEXT REFERENCES messages(id),
+  part_seq       INTEGER,                          -- the message_parts.seq this step resolves to (kind='message')
   tool_call_id   TEXT REFERENCES tool_calls(id),
   created_at     INTEGER NOT NULL,
   PRIMARY KEY (run_id, seq),
+  -- A `message` step's `(message_id, part_seq)` resolves a SPECIFIC text part, so
+  -- enforce that pointer: a message step can never reference a missing part. The
+  -- composite FK is skipped (MATCH SIMPLE) for `tool_call` steps, whose
+  -- message_id/part_seq are both NULL per the CHECK below.
+  FOREIGN KEY (message_id, part_seq) REFERENCES message_parts(message_id, seq),
   CHECK (
-    (kind = 'message'   AND message_id   IS NOT NULL AND tool_call_id IS NULL) OR
-    (kind = 'tool_call' AND tool_call_id IS NOT NULL AND message_id   IS NULL)
+    (kind = 'message'   AND message_id   IS NOT NULL AND part_seq IS NOT NULL AND tool_call_id IS NULL) OR
+    (kind = 'tool_call' AND tool_call_id IS NOT NULL AND part_seq IS NULL     AND message_id   IS NULL)
   )
 );
 

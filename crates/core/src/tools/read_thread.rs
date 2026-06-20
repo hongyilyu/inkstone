@@ -63,7 +63,7 @@ pub async fn execute(pool: &SqlitePool, params: Value) -> Result<AgentToolResult
         "title": title,
         "messages": messages
             .iter()
-            .map(|m| serde_json::json!({ "role": m.role, "text": m.text }))
+            .map(|m| serde_json::json!({ "role": m.role, "text": m.text() }))
             .collect::<Vec<_>>(),
     });
 
