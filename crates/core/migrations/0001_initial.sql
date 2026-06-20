@@ -81,6 +81,11 @@ CREATE TABLE run_steps (
   tool_call_id   TEXT REFERENCES tool_calls(id),
   created_at     INTEGER NOT NULL,
   PRIMARY KEY (run_id, seq),
+  -- A `message` step's `(message_id, part_seq)` resolves a SPECIFIC text part, so
+  -- enforce that pointer: a message step can never reference a missing part. The
+  -- composite FK is skipped (MATCH SIMPLE) for `tool_call` steps, whose
+  -- message_id/part_seq are both NULL per the CHECK below.
+  FOREIGN KEY (message_id, part_seq) REFERENCES message_parts(message_id, seq),
   CHECK (
     (kind = 'message'   AND message_id   IS NOT NULL AND part_seq IS NOT NULL AND tool_call_id IS NULL) OR
     (kind = 'tool_call' AND tool_call_id IS NOT NULL AND part_seq IS NULL     AND message_id   IS NULL)
