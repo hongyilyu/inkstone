@@ -6,8 +6,9 @@ import { FAUX_WORKER_CMD } from "./spawnCore.js";
  * inside an assistant turn (the ephemeral `tool_call` Run Event, ADR-0006) must
  * SURVIVE a page reload. Before this feature, the row was built only from the
  * live stream and `thread/get` rehydration carried no tool calls, so a refresh
- * dropped it. Now `thread/get` folds the persisted `tool_calls` into
- * `MessageView.tool_calls`, and `hydrate.toMessage` rebuilds the row cold.
+ * dropped it. Now `thread/get` folds the persisted tool calls into the ordered
+ * `MessageView.segments[]` timeline (a `tool_call` segment; ADR-0045), and
+ * `hydrate.toMessage` rebuilds the row cold from that segment.
  *
  * Driven by the same real `read_thread` round-trip `tool-activity.spec.ts` uses
  * (faux-provider Worker in tool-call mode, ADR-0019); this spec adds the reload.

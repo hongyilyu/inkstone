@@ -1747,38 +1747,70 @@ where
     .map(|_| ())
 }
 
-/// Read a Run's SETTLED tool calls for `thread/get` rehydration (ADR-0043), in
-/// timeline order (`run_steps.seq`). Returns `(name, status, request_payload)`
-/// rows; the caller filters Proposal tool calls (which render as a
-/// `ProposalCard`, not a tool-activity row), maps the persisted status to the
-/// wire status, and derives the display arg from the request payload. Joined
-/// through `run_steps` so the order matches the live arrival order.
+/// Read a Run's ordered `segments[]` timeline for `thread/get` rehydration
+/// (ADR-0045): every `run_steps` row in `seq` order, with the data each segment
+/// kind renders joined on. Supersedes the separate `tool_calls_by_run` (ADR-0043)
+/// + `decided_proposal_for_run` (ADR-0044) reads — one walk yields the whole
+/// ordered turn. Returns
+/// `(kind, part_text, tc_name, tc_status, request_payload, proposal_id,
+/// mutation_kind, proposal_status)` tuples; the caller ([`super::segment_rows_for_run`])
+/// turns each row into a `text` / `tool_call` / `proposal` segment, in this order:
 ///
-/// `pending` rows are EXCLUDED: a tool call is `pending` only between its
-/// persist (before dispatch) and its resolve, or permanently if its Run was
-/// interrupted mid-dispatch (a boot-swept Run leaves an unresolved row — the
-/// recovery sweep flips the Run/Message, not the `tool_calls` row). Rehydration
-/// is the settled-history reader; an in-flight call at reload time is owned by
-/// the live resubscribe tail, not replayed here — so a `pending` row must never
-/// rehydrate (it would otherwise render as a false `completed` row, since the
-/// wire status vocabulary has no in-progress member). This keeps the invariant
-/// "a rehydrated tool call is always `completed`/`error`" true.
-pub(super) async fn tool_calls_by_run<'e, E>(
+/// - `kind='message'` → a `text` segment from `part_text` (the resolved
+///   `message_parts` row); the caller filters an empty-text part.
+/// - `kind='tool_call'` with a `proposals` row → a `proposal` segment carrying
+///   `proposal_id`/`mutation_kind`/`proposal_status`. The caller keeps only the
+///   decided (`accepted`/`rejected`) ones, mirroring ADR-0044 (a `pending` one
+///   renders its interactive card, deferred; a `cancelled` one is cleared live).
+/// - `kind='tool_call'` without a `proposals` row → a `tool_call` segment from
+///   `tc_name`/`tc_status`/`request_payload`. The caller filters a `pending` tool
+///   call (an in-flight call at reload time is owned by the live tail, ADR-0043)
+///   and Proposal-named tools that somehow carry no `proposals` row.
+///
+/// All filtering of statuses lives in the caller (over the parsed strings) rather
+/// than the SQL, so one ordered walk drives every segment kind and the seq order is
+/// never broken by a per-kind sub-read.
+///
+/// `message` steps are restricted to `assistant_message_id`: a Run's `run_steps`
+/// also carry the USER Message's text step (seq 0), which belongs to the user
+/// `MessageRow`, not the assistant turn — including it would prepend the prompt to
+/// the assistant's segments. `tool_call` steps have no `message_id`, so they pass
+/// the filter and stay in seq order between the assistant text segments.
+#[allow(clippy::type_complexity)]
+pub(super) async fn segment_timeline<'e, E>(
     executor: E,
     run_id: Uuid,
-) -> sqlx::Result<Vec<(String, String, String)>>
+    assistant_message_id: &str,
+) -> sqlx::Result<
+    Vec<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )>,
+>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(
-        "SELECT tc.name, tc.status, tc.request_payload \
+        "SELECT rs.kind, mp.text, \
+                tc.name, tc.status, tc.request_payload, \
+                p.id, p.mutation_kind, p.status \
          FROM run_steps rs \
-         JOIN tool_calls tc ON tc.id = rs.tool_call_id \
-         WHERE rs.run_id = ?1 AND rs.kind = 'tool_call' \
-           AND tc.status <> 'pending' \
+         LEFT JOIN message_parts mp \
+           ON mp.message_id = rs.message_id AND mp.seq = rs.part_seq \
+         LEFT JOIN tool_calls tc ON tc.id = rs.tool_call_id \
+         LEFT JOIN proposals p ON p.tool_call_id = rs.tool_call_id \
+         WHERE rs.run_id = ?1 \
+           AND (rs.kind = 'tool_call' OR rs.message_id = ?2) \
          ORDER BY rs.seq",
     )
     .bind(run_id.to_string())
+    .bind(assistant_message_id)
     .fetch_all(executor)
     .await
 }
@@ -1867,34 +1899,6 @@ where
          JOIN tool_calls tc ON tc.id = p.tool_call_id \
          WHERE tc.run_id = ?1 AND p.status = 'pending' \
          ORDER BY tc.requested_at DESC LIMIT 1",
-    )
-    .bind(run_id.to_string())
-    .fetch_optional(executor)
-    .await
-}
-
-/// A Run's latest DECIDED Proposal for `thread/get` rehydration (ADR-0044):
-/// `(id, mutation_kind, status)` where `status` is `accepted` or `rejected`.
-/// `pending` and `cancelled` rows are filtered out — a pending Proposal renders
-/// its interactive card (needs the payload, deferred) and a cancelled one is
-/// cleared live. `None` when the Run parked on no decided Proposal. Ordered by
-/// `decided_at DESC` so a multi-step Run that parked twice surfaces its most
-/// recent decision (the card is keyed by run_id, one indicator per turn), with
-/// `p.id DESC` as a deterministic tiebreaker should two decisions share a
-/// millisecond `decided_at` (mirrors the run-history feed's id tiebreak).
-pub(super) async fn decided_proposal_for_run<'e, E>(
-    executor: E,
-    run_id: Uuid,
-) -> sqlx::Result<Option<(String, String, String)>>
-where
-    E: Executor<'e, Database = Sqlite>,
-{
-    sqlx::query_as(
-        "SELECT p.id, p.mutation_kind, p.status \
-         FROM proposals p \
-         JOIN tool_calls tc ON tc.id = p.tool_call_id \
-         WHERE tc.run_id = ?1 AND p.status IN ('accepted', 'rejected') \
-         ORDER BY p.decided_at DESC, p.id DESC LIMIT 1",
     )
     .bind(run_id.to_string())
     .fetch_optional(executor)

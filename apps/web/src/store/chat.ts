@@ -29,24 +29,23 @@ export interface Message {
 	readonly id: string;
 	readonly role: "user" | "assistant";
 	readonly status: "streaming" | "completed" | "incomplete";
-	readonly text: string;
 	readonly run_id: string;
 	/**
-	 * The assistant turn's ordered timeline (ADR-0045) — the SOLE render source for
-	 * the bubble. Built incrementally (live) or from the wire fields (hydration); the
-	 * flat `text`/`toolCalls` below are kept consistent for the non-render consumers
-	 * (copy/search/retry) that read them, and `text` is also derivable via
-	 * {@link concatText}. User messages carry an empty timeline (they don't render it).
+	 * The turn's ordered timeline (ADR-0045) — the SINGLE source of truth: both the
+	 * bubble's render source AND where the flat reply text derives from (via
+	 * {@link concatText}, for the copy button / ⌘K search-match / typing-indicator /
+	 * retry). Built incrementally (live, via the segment builders) or read verbatim
+	 * from the wire `segments[]` (hydration). A user message carries a single `text`
+	 * segment; an assistant turn interleaves text/tool_call/proposal items in order.
 	 */
 	readonly segments: readonly Segment[];
-	/** Tool calls observed during this assistant turn, in arrival order (ephemeral; ADR-0006). */
-	readonly toolCalls?: readonly ToolCall[];
 	/** Worker/provider failure message when a Run terminates with an `error` event (ADR-0006). */
 	readonly error?: string;
 }
 
 /** Concatenate the text of every `text` segment in order — the single source for the
- * flat reply text the copy button, ⌘K search-match, and typing-indicator read (ADR-0045). */
+ * flat reply text the copy button, ⌘K search-match, typing-indicator, and retry read
+ * (ADR-0045: there is no denormalized flat `text`; it derives from segments). */
 export function concatText(segments: readonly Segment[]): string {
 	let text = "";
 	for (const seg of segments) {
@@ -58,27 +57,19 @@ export function concatText(segments: readonly Segment[]): string {
 /**
  * A message as constructed by a caller (the bridge's optimistic seed, a test): the
  * stored {@link Message} minus its required `segments`, which the store derives. A
- * caller MAY supply `segments` explicitly to seed a specific timeline (hydration,
- * tests); otherwise {@link withSegments} builds one from the flat `text`/`toolCalls`.
+ * caller MAY supply `segments` explicitly to seed a specific timeline (hydration, a
+ * user message's single text segment, tests); otherwise the message opens with an
+ * EMPTY timeline (a fresh assistant turn the live builders then fill).
  */
 export type MessageInput = Omit<Message, "segments"> & {
 	readonly segments?: readonly Segment[];
 };
 
 /** Normalize a {@link MessageInput} into a stored {@link Message}: keep an explicit
- * `segments` if supplied, else derive the legacy-order timeline from the flat fields. */
+ * `segments` if supplied, else open with an EMPTY timeline (ADR-0045 — text/tool
+ * segments arrive via the live builders or the wire, never a flat-field derivation). */
 function withSegments(input: MessageInput): Message {
-	if (input.segments !== undefined) {
-		return { ...input, segments: input.segments };
-	}
-	const segments: Segment[] = [];
-	for (const call of input.toolCalls ?? []) {
-		segments.push({ kind: "tool_call", call });
-	}
-	if (input.text !== "") {
-		segments.push({ kind: "text", text: input.text });
-	}
-	return { ...input, segments };
+	return { ...input, segments: input.segments ?? [] };
 }
 
 /**
@@ -415,22 +406,6 @@ export function markMessageIncomplete(
 	});
 }
 
-/** Settle any tool call still marked `running` when its Run terminates (the terminal `tool_call` boundary is ephemeral; ADR-0022). */
-function settleRunningToolCalls(
-	toolCalls: readonly ToolCall[] | undefined,
-	terminal: "completed" | "error",
-): readonly ToolCall[] | undefined {
-	if (
-		toolCalls === undefined ||
-		!toolCalls.some((tc) => tc.status === "running")
-	) {
-		return toolCalls;
-	}
-	return toolCalls.map((tc) =>
-		tc.status === "running" ? { ...tc, status: terminal } : tc,
-	);
-}
-
 // ── Segment timeline builders (ADR-0045) ──────────────────────────────────────
 // The web mirror of Core's run_steps sequencer: each Run Event extends the ordered
 // `segments[]` so the live render is the same shape the reload will read (slice 3).
@@ -647,13 +622,12 @@ export function applyEvent(
 
 		if (event.kind === "text_delta") {
 			// Armed (or no record yet) → the cumulative snapshot SETs; an attached,
-			// disarmed tail APPENDs (ADR-0022 snapshot/tail boundary). The same armed
-			// bit drives the open-trailing-text segment (ADR-0045); the flat `text`
-			// stays consistent for the non-render consumers.
+			// disarmed tail APPENDs (ADR-0022 snapshot/tail boundary). The armed bit
+			// drives the open-trailing-text segment (ADR-0045); `segments` is the sole
+			// text source, so the flat reply text derives from it via `concatText`.
 			const armed = s.runs[runId]?.snapshotArmed ?? true;
 			const next = updateRunMessage(s, threadId, runId, (m) => ({
 				...m,
-				text: armed ? event.delta : m.text + event.delta,
 				segments: appendTextSegment(m.segments, event.delta, armed),
 			}));
 			// Disarm the snapshot bit — text_delta's OWN concern, fits neither helper.
@@ -668,7 +642,8 @@ export function applyEvent(
 		}
 
 		if (event.kind === "tool_call") {
-			// Upsert: `started` appends a `running` row, terminal flips the matching row.
+			// Upsert into the timeline: `started` appends a `running` segment, a
+			// terminal status flips the matching one in place (ADR-0045).
 			const status = event.status === "started" ? "running" : event.status;
 			const call: ToolCall = {
 				id: event.tool_call_id,
@@ -676,20 +651,10 @@ export function applyEvent(
 				status,
 				arg: event.arg,
 			};
-			return updateRunMessage(s, threadId, runId, (m) => {
-				const existing = m.toolCalls ?? [];
-				const found = existing.some((tc) => tc.id === event.tool_call_id);
-				const toolCalls: ToolCall[] = found
-					? existing.map((tc) =>
-							tc.id === event.tool_call_id ? { ...tc, status } : tc,
-						)
-					: [...existing, call];
-				return {
-					...m,
-					toolCalls,
-					segments: upsertToolSegment(m.segments, call),
-				};
-			});
+			return updateRunMessage(s, threadId, runId, (m) => ({
+				...m,
+				segments: upsertToolSegment(m.segments, call),
+			}));
 		}
 
 		if (event.kind === "error") {
@@ -698,7 +663,6 @@ export function applyEvent(
 				...m,
 				status: "incomplete",
 				error: event.message,
-				toolCalls: settleRunningToolCalls(m.toolCalls, "error"),
 				segments: settleRunningToolSegments(m.segments, "error"),
 			}));
 			return settleTerminal(next, threadId, runId);
@@ -709,7 +673,6 @@ export function applyEvent(
 			const next = updateRunMessage(s, threadId, runId, (m) => ({
 				...m,
 				status: "incomplete",
-				toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
 				segments: settleRunningToolSegments(m.segments, "completed"),
 			}));
 			return settleTerminal(next, threadId, runId);
@@ -719,7 +682,6 @@ export function applyEvent(
 		const next = updateRunMessage(s, threadId, runId, (m) => ({
 			...m,
 			status: "completed",
-			toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
 			segments: settleRunningToolSegments(m.segments, "completed"),
 		}));
 		return settleTerminal(next, threadId, runId);

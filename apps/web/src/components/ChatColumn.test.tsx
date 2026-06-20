@@ -210,8 +210,7 @@ describe("ChatColumn", () => {
 					role: "assistant",
 					status: "completed",
 					run_id: "r1",
-					text: "recovered history",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "recovered history" }],
 				},
 			],
 		};
@@ -349,7 +348,7 @@ describe("ChatColumn", () => {
 			id: "a1",
 			role: "assistant",
 			status: "streaming",
-			text: "",
+			segments: [],
 			run_id: "r1",
 		});
 
@@ -364,7 +363,7 @@ describe("ChatColumn", () => {
 			id: "a2",
 			role: "assistant",
 			status: "streaming",
-			text: "hi",
+			segments: [{ kind: "text", text: "hi" }],
 			run_id: "r2",
 		});
 
@@ -386,7 +385,7 @@ describe("ChatColumn", () => {
 			id: "a4",
 			role: "assistant",
 			status: "completed",
-			text: "hello world",
+			segments: [{ kind: "text", text: "hello world" }],
 			run_id: "r4",
 		});
 
@@ -407,7 +406,7 @@ describe("ChatColumn", () => {
 			id: "a-applied",
 			role: "assistant",
 			status: "completed",
-			text: "Logged.",
+			segments: [{ kind: "text", text: "Logged." }],
 			run_id: "r-applied",
 		});
 		// An accepted apply_intent_graph proposal renders the "Applied." card.
@@ -440,7 +439,6 @@ describe("ChatColumn", () => {
 			id: "a-order",
 			role: "assistant",
 			status: "completed",
-			text: "the reply text",
 			run_id: "r-order",
 			segments: [
 				{
@@ -483,7 +481,7 @@ describe("ChatColumn", () => {
 			id: "a5",
 			role: "assistant",
 			status: "streaming",
-			text: "partial response",
+			segments: [{ kind: "text", text: "partial response" }],
 			run_id: "r5",
 		});
 
@@ -498,7 +496,7 @@ describe("ChatColumn", () => {
 			id: "a6",
 			role: "assistant",
 			status: "completed",
-			text: "",
+			segments: [],
 			run_id: "r6",
 		});
 
@@ -513,7 +511,7 @@ describe("ChatColumn", () => {
 			id: "a3",
 			role: "assistant",
 			status: "completed",
-			text: "",
+			segments: [],
 			run_id: "r3",
 		});
 
@@ -528,9 +526,13 @@ describe("ChatColumn", () => {
 			id: "a7",
 			role: "assistant",
 			status: "streaming",
-			text: "",
 			run_id: "r7",
-			toolCalls: [{ id: "tc_1", name: "read_thread", status: "running" }],
+			segments: [
+				{
+					kind: "tool_call",
+					call: { id: "tc_1", name: "read_thread", status: "running" },
+				},
+			],
 		});
 
 		await renderFocused(runtime, "threadA");
@@ -549,9 +551,14 @@ describe("ChatColumn", () => {
 			id: "a8",
 			role: "assistant",
 			status: "completed",
-			text: "done",
 			run_id: "r8",
-			toolCalls: [{ id: "tc_2", name: "read_thread", status: "completed" }],
+			segments: [
+				{
+					kind: "tool_call",
+					call: { id: "tc_2", name: "read_thread", status: "completed" },
+				},
+				{ kind: "text", text: "done" },
+			],
 		});
 
 		await renderFocused(runtime, "threadA");
@@ -567,9 +574,13 @@ describe("ChatColumn", () => {
 			id: "a9",
 			role: "assistant",
 			status: "streaming",
-			text: "",
 			run_id: "r9",
-			toolCalls: [{ id: "tc_3", name: "read_thread", status: "error" }],
+			segments: [
+				{
+					kind: "tool_call",
+					call: { id: "tc_3", name: "read_thread", status: "error" },
+				},
+			],
 		});
 
 		await renderFocused(runtime, "threadA");
@@ -585,9 +596,13 @@ describe("ChatColumn", () => {
 			id: "a10",
 			role: "assistant",
 			status: "streaming",
-			text: "",
 			run_id: "r10",
-			toolCalls: [{ id: "tc_4", name: "search_web", status: "running" }],
+			segments: [
+				{
+					kind: "tool_call",
+					call: { id: "tc_4", name: "search_web", status: "running" },
+				},
+			],
 		});
 
 		await renderFocused(runtime, "threadA");
@@ -601,15 +616,18 @@ describe("ChatColumn", () => {
 			id: "a11",
 			role: "assistant",
 			status: "completed",
-			text: "done",
 			run_id: "r11",
-			toolCalls: [
+			segments: [
 				{
-					id: "tc_5",
-					name: "search_entities",
-					status: "completed",
-					arg: "Lev",
+					kind: "tool_call",
+					call: {
+						id: "tc_5",
+						name: "search_entities",
+						status: "completed",
+						arg: "Lev",
+					},
 				},
+				{ kind: "text", text: "done" },
 			],
 		});
 
@@ -665,14 +683,16 @@ describe("ChatColumn", () => {
 			id: "u-top",
 			role: "user",
 			status: "completed",
-			text: "first message",
+			segments: [{ kind: "text", text: "first message" }],
 			run_id: "",
 		});
 		seedAssistantMessage("threadA", {
 			id: "a-deep",
 			role: "assistant",
 			status: "completed",
-			text: "the matched reply deep in scrollback",
+			segments: [
+				{ kind: "text", text: "the matched reply deep in scrollback" },
+			],
 			run_id: "r-deep",
 		});
 
@@ -718,14 +738,14 @@ describe("ChatColumn", () => {
 			id: "u-top",
 			role: "user",
 			status: "completed",
-			text: "first",
+			segments: [{ kind: "text", text: "first" }],
 			run_id: "",
 		});
 		seedAssistantMessage("threadA", {
 			id: "a-anchor",
 			role: "assistant",
 			status: "completed",
-			text: "the anchored reply",
+			segments: [{ kind: "text", text: "the anchored reply" }],
 			run_id: "r-anchor",
 		});
 
@@ -744,7 +764,7 @@ describe("ChatColumn", () => {
 				id: "u-later",
 				role: "user",
 				status: "completed",
-				text: "a later turn",
+				segments: [{ kind: "text", text: "a later turn" }],
 				run_id: "",
 			});
 			await Promise.resolve();
@@ -765,7 +785,7 @@ describe("ChatColumn", () => {
 			id: "a-plain",
 			role: "assistant",
 			status: "completed",
-			text: "an ordinary reply",
+			segments: [{ kind: "text", text: "an ordinary reply" }],
 			run_id: "r-plain",
 		});
 
@@ -787,7 +807,7 @@ describe("ChatColumn", () => {
 				id: "a-fade",
 				role: "assistant",
 				status: "completed",
-				text: "the briefly-ringed reply",
+				segments: [{ kind: "text", text: "the briefly-ringed reply" }],
 				run_id: "r-fade",
 			});
 
@@ -832,14 +852,14 @@ describe("ChatColumn", () => {
 				id: "u-early",
 				role: "user",
 				status: "completed",
-				text: "first",
+				segments: [{ kind: "text", text: "first" }],
 				run_id: "",
 			});
 			seedAssistantMessage("threadA", {
 				id: "a-late",
 				role: "assistant",
 				status: "completed",
-				text: "last reply",
+				segments: [{ kind: "text", text: "last reply" }],
 				run_id: "r-late",
 			});
 
@@ -875,14 +895,14 @@ describe("ChatColumn", () => {
 				id: "u-early",
 				role: "user",
 				status: "completed",
-				text: "first",
+				segments: [{ kind: "text", text: "first" }],
 				run_id: "",
 			});
 			seedAssistantMessage("threadA", {
 				id: "a-target",
 				role: "assistant",
 				status: "completed",
-				text: "the anchored reply",
+				segments: [{ kind: "text", text: "the anchored reply" }],
 				run_id: "r-target",
 			});
 
@@ -929,16 +949,14 @@ describe("ChatColumn", () => {
 					role: "user",
 					status: "completed",
 					run_id: "r1",
-					text: "q",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "q" }],
 				},
 				{
 					id: "m2",
 					role: "assistant",
 					status: "completed",
 					run_id: "r1",
-					text: "cold-hydrated reply",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "cold-hydrated reply" }],
 				},
 			],
 		};
@@ -1015,14 +1033,14 @@ describe("ChatColumn", () => {
 				id: "u-early",
 				role: "user",
 				status: "completed",
-				text: "first",
+				segments: [{ kind: "text", text: "first" }],
 				run_id: "",
 			});
 			seedAssistantMessage("threadA", {
 				id: "a-real",
 				role: "assistant",
 				status: "completed",
-				text: "the only reply",
+				segments: [{ kind: "text", text: "the only reply" }],
 				run_id: "r-real",
 			});
 
@@ -1058,14 +1076,14 @@ describe("ChatColumn", () => {
 			id: "u1",
 			role: "user",
 			status: "completed",
-			text: "do it",
+			segments: [{ kind: "text", text: "do it" }],
 			run_id: "",
 		});
 		seedAssistantMessage("threadA", {
 			id: "a-fail",
 			role: "assistant",
 			status: "incomplete",
-			text: "",
+			segments: [],
 			run_id: "r-fail",
 		});
 

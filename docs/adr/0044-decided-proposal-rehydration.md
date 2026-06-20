@@ -1,5 +1,7 @@
 # Decided Proposal outcomes rehydrate via `thread/get`, like tool activity
 
+> **Superseded in part by [ADR-0045](./0045-assistant-turn-segment-timeline.md).** The decided-outcome read is unchanged, but the *wire projection* moved: `MessageView.proposal` is folded into the ordered `MessageView.segments[]` timeline (a `proposal` segment positioned by its `run_steps` seq), so the decided card rehydrates at its true chronological slot rather than as a separate field. The decided-vs-pending rule below still holds.
+
 A Proposal's settled outcome (the decided `ProposalCard` — e.g. the "Applied."
 indicator) is made durable across a reload by folding it into the existing
 `thread/get` rehydration read, as a new optional `MessageView.proposal` field.

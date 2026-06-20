@@ -2,6 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
 	appendUserMessage,
+	concatText,
 	resetChatStore,
 	setHydrationStatus,
 	useThreadMessages,
@@ -21,14 +22,14 @@ describe("chat selectors — reference stability", () => {
 				id: "m1",
 				role: "user",
 				status: "completed",
-				text: "hi",
+				segments: [{ kind: "text", text: "hi" }],
 				run_id: "",
 			});
 		});
 
 		const { result, rerender } = renderHook(() => useThreadMessages("threadA"));
 		const first = result.current;
-		expect(first.map((m) => m.text)).toEqual(["hi"]);
+		expect(first.map((m) => concatText(m.segments))).toEqual(["hi"]);
 
 		// Unrelated change: another thread's hydration status must not re-create threadA's array.
 		act(() => {
@@ -45,7 +46,7 @@ describe("chat selectors — reference stability", () => {
 				id: "m1",
 				role: "user",
 				status: "completed",
-				text: "hi",
+				segments: [{ kind: "text", text: "hi" }],
 				run_id: "",
 			});
 		});
@@ -59,7 +60,7 @@ describe("chat selectors — reference stability", () => {
 				id: "m2",
 				role: "user",
 				status: "completed",
-				text: "other",
+				segments: [{ kind: "text", text: "other" }],
 				run_id: "",
 			});
 		});
@@ -79,7 +80,7 @@ describe("chat selectors — reference stability", () => {
 				id: "m1",
 				role: "user",
 				status: "completed",
-				text: "x",
+				segments: [{ kind: "text", text: "x" }],
 				run_id: "",
 			});
 		});

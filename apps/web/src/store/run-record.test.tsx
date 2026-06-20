@@ -7,6 +7,7 @@ import {
 	applyEvent,
 	attachRun,
 	beginRunSubscription,
+	concatText,
 	getChatState,
 	getRun,
 	getRunThreadId,
@@ -53,14 +54,14 @@ function seedTurn(runId: RunId): void {
 		id: "u1",
 		role: "user",
 		status: "completed",
-		text: "hi",
+		segments: [{ kind: "text", text: "hi" }],
 		run_id: "",
 	});
 	seedAssistantMessage("t1", {
 		id: "a1",
 		role: "assistant",
 		status: "streaming",
-		text: "",
+		segments: [],
 		run_id: "",
 	});
 	attachRun("t1", "a1", runId);
@@ -151,7 +152,7 @@ describe("Run record — snapshot SET-vs-APPEND is a record read, not caller fla
 		const msg = getChatState().threads.t1?.messages.find(
 			(m) => m.run_id === runId,
 		);
-		expect(msg?.text).toBe("cumulative tail");
+		expect(concatText(msg?.segments ?? [])).toBe("cumulative tail");
 	});
 
 	it("a re-armed resume SETs the cumulative snapshot over the on-screen prefix (M1)", () => {
@@ -180,7 +181,7 @@ describe("Run record — snapshot SET-vs-APPEND is a record read, not caller fla
 			(m) => m.run_id === runId,
 		);
 		// SET replaces the on-screen prefix; the M1 bug appended → duplicated prefix.
-		expect(msg?.text).toBe("Let me check. Done.");
+		expect(concatText(msg?.segments ?? [])).toBe("Let me check. Done.");
 	});
 });
 

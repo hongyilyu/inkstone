@@ -446,58 +446,57 @@ pub struct ThreadGetParams {
     pub thread_id: uuid::Uuid,
 }
 
-/// One tool call in a `thread/get` result, rehydrating the live tool-activity
-/// row (ADR-0043). Carries only what the row renders — `name`, `status`, and an
-/// optional display `arg` (the tool's key argument, e.g. a search query) —
-/// never the request/result payloads. Proposal tool calls are excluded by the
-/// read (they render as a `ProposalCard`). `status` mirrors the live
-/// `ToolCallStatus` wire spelling; a rehydrated call is always `completed`/`error`
-/// — the read filters out `pending` rows, so an in-flight call is owned by the
-/// live resubscribe tail, never rehydrated as a false-settled row.
+/// One item in an assistant turn's ordered `segments[]` timeline (ADR-0045): a
+/// contiguous run of text, a tool-activity row, or the decided Proposal — replayed
+/// in `run_steps` `seq` order so the reload renders the turn's pieces in the order
+/// they happened. A `#[serde(tag = "kind")]` snake_case union, modeled on
+/// [`RunEvent`]. The variant field shapes are exactly what each row renders — the
+/// former `ToolCallView` (`name`/`status`/optional `arg`) and `MessageProposalView`
+/// (`proposal_id`/`mutation_kind`/`status`) — inlined here, not wrapped, because the
+/// `kind` tag IS the discriminant. The union is left OPEN for a future `reasoning`
+/// kind (#202) without reshaping `MessageView`. This SUPERSEDES the read-path shapes
+/// of ADR-0043 (`tool_calls`) and ADR-0044 (`proposal`): both fold into `segments`.
 #[derive(Debug, Serialize)]
-pub struct ToolCallView {
-    pub name: String,
-    pub status: String,
-    /// The tool's display argument (ADR-0043), present only for tools that
-    /// expose one (`search_entities` → query, `load_skill` → name). Omitted
-    /// (not `null`) when absent, so an argless tool's row carries no `arg` key.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub arg: Option<String>,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Segment {
+    /// A contiguous run of assistant text (one `message_parts` row).
+    Text { text: String },
+    /// A settled tool-activity row (ADR-0043): `name`, `status` (`completed`/`error`
+    /// — the read filters `pending`), and an optional display `arg`, omitted (not
+    /// `null`) for argless tools. Proposal tool calls are NOT emitted here — they
+    /// become a `proposal` segment.
+    ToolCall {
+        name: String,
+        status: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        arg: Option<String>,
+    },
+    /// The decided Proposal an assistant turn parked on (ADR-0044). Only
+    /// `accepted`/`rejected` appear — a still-`pending` Proposal renders its
+    /// interactive card (deferred), a `cancelled` one is cleared live. The Client
+    /// looks the live interactive payload up by `proposal_id`; `mutation_kind` drives
+    /// the decided card's copy + routing, `status` the accepted-vs-rejected branch.
+    Proposal {
+        proposal_id: String,
+        mutation_kind: String,
+        status: String,
+    },
 }
 
-/// The settled outcome of a Proposal that an assistant turn parked on (ADR-0044),
-/// surfaced so the decided `ProposalCard` (e.g. the "Applied." indicator) survives
-/// reload. Only `accepted`/`rejected` outcomes appear — a still-`pending` Proposal
-/// renders its full interactive card, which needs the payload (deferred), and a
-/// `cancelled` one is cleared live, so neither is rehydrated. Carries the minimum
-/// the decided card reads: the kind drives the copy ("Applied." vs "Added Todo.")
-/// and the routing (`apply_intent_graph` vs single-entity), `status` the
-/// accepted-vs-rejected branch, `proposal_id` the card's stable identity.
-#[derive(Debug, Serialize)]
-pub struct MessageProposalView {
-    pub proposal_id: String,
-    pub mutation_kind: String,
-    pub status: String,
-}
-
-/// A Message in a `thread/get` result. `text` is the concatenation of the
-/// Message's text parts in `seq` order — no `parts[]` array until attachments
-/// exist (ADR-0017/Q15). `run_id` lets a refreshed Client resubscribe to a
-/// `streaming` Message's Run. `tool_calls` rehydrates the assistant turn's
-/// tool-activity rows (ADR-0043); empty for user Messages and turns with no
-/// (non-Proposal) tool call. `proposal` rehydrates the assistant turn's decided
-/// Proposal outcome (ADR-0044); omitted for user Messages and turns whose
-/// Proposal is pending/cancelled/absent.
+/// A Message in a `thread/get` result. `run_id` lets a refreshed Client resubscribe
+/// to a `streaming` Message's Run. `segments` is the assistant turn's ordered
+/// timeline (ADR-0045) — `text | tool_call | proposal` items in `run_steps` order —
+/// replacing the prior three independent buckets (`text`, `tool_calls`, `proposal`).
+/// A user Message carries a single `text` segment. There is no denormalized flat
+/// `text`: the Client derives it via one `concatText(segments)` helper, a single
+/// source of truth (ADR-0045).
 #[derive(Debug, Serialize)]
 pub struct MessageView {
     pub id: String,
     pub role: String,
     pub status: String,
     pub run_id: String,
-    pub text: String,
-    pub tool_calls: Vec<ToolCallView>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub proposal: Option<MessageProposalView>,
+    pub segments: Vec<Segment>,
 }
 
 /// `thread/get` result: the Thread header plus its Messages in chronological
@@ -1759,9 +1758,11 @@ mod parity_fixtures {
                 }
             ),
             // ── thread/get (MessageView maximal + bare, transitively) ──
-            // Maximal: an assistant turn with tool_calls (one with arg, one without —
-            // covers ToolCallView optional arg) AND a decided proposal (covers
-            // MessageProposalView).
+            // Maximal: an assistant turn whose ORDERED segments are the screenshot
+            // order (ADR-0045) — two tool_call segments (one with arg, one without —
+            // covers Segment::ToolCall optional arg), then the decided proposal
+            // segment (Segment::Proposal), then the reply text (Segment::Text). All
+            // three Segment variants are thus covered transitively here.
             fx!(
                 "thread_get_result.json",
                 ThreadGetResult {
@@ -1772,28 +1773,30 @@ mod parity_fixtures {
                         role: "assistant".to_string(),
                         status: "complete".to_string(),
                         run_id: UUID_RUN.to_string(),
-                        text: "Logged.".to_string(),
-                        tool_calls: vec![
-                            ToolCallView {
+                        segments: vec![
+                            Segment::ToolCall {
                                 name: "search_entities".to_string(),
                                 status: "completed".to_string(),
                                 arg: Some("Lev".to_string()),
                             },
-                            ToolCallView {
+                            Segment::ToolCall {
                                 name: "read_thread".to_string(),
                                 status: "completed".to_string(),
                                 arg: None,
                             },
+                            Segment::Proposal {
+                                proposal_id: UUID_A.to_string(),
+                                mutation_kind: "apply_intent_graph".to_string(),
+                                status: "accepted".to_string(),
+                            },
+                            Segment::Text {
+                                text: "Logged.".to_string(),
+                            },
                         ],
-                        proposal: Some(MessageProposalView {
-                            proposal_id: UUID_A.to_string(),
-                            mutation_kind: "apply_intent_graph".to_string(),
-                            status: "accepted".to_string(),
-                        }),
                     }],
                 }
             ),
-            // Bare: a user turn — empty tool_calls, no proposal (omitted).
+            // Bare: a user turn — a single text segment.
             fx!(
                 "thread_get_result.bare.json",
                 ThreadGetResult {
@@ -1804,9 +1807,9 @@ mod parity_fixtures {
                         role: "user".to_string(),
                         status: "complete".to_string(),
                         run_id: UUID_RUN.to_string(),
-                        text: "I bought milk.".to_string(),
-                        tool_calls: vec![],
-                        proposal: None,
+                        segments: vec![Segment::Text {
+                            text: "I bought milk.".to_string(),
+                        }],
                     }],
                 }
             ),

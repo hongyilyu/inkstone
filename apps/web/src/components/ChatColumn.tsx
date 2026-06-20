@@ -228,7 +228,7 @@ export function ChatColumn() {
 									highlighted={message.id === highlightId}
 									onRetry={
 										focusedThreadId !== null && messages[i - 1]?.role === "user"
-											? () => retry(messages[i - 1].text)
+											? () => retry(concatText(messages[i - 1].segments))
 											: undefined
 									}
 								/>
@@ -379,7 +379,7 @@ function UserBubble({
 				data-highlighted={highlighted || undefined}
 				className="search-jump-target relative max-w-[80%] rounded-xl border border-secondary/50 bg-secondary/50 px-4 py-2 text-sm text-foreground"
 			>
-				{message.text}
+				{concatText(message.segments)}
 			</div>
 		</li>
 	);

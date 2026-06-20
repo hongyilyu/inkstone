@@ -18,17 +18,52 @@ import {
 	rehydrateDecidedProposal,
 	type Segment,
 	setHydrationStatus,
-	type ToolCall,
 } from "./chat.js";
 
-/** A persisted tool call's wire status maps to a live {@link ToolCall} status:
+type WireSegment = ThreadGetResult["messages"][number]["segments"][number];
+
+/** A persisted tool call's wire status maps to a live `tool_call` segment status:
  * `error` keeps its spelling, anything else (a rehydrated call is `completed`)
  * settles to `completed`. A rehydrated call is never `running`. */
-function toToolCallStatus(status: string): ToolCall["status"] {
+function toToolCallStatus(status: string): "completed" | "error" {
 	return status === "error" ? "error" : "completed";
 }
 
-/** Map a wire `MessageView` to the live {@link Message}, narrowing role/status via defensive guards — see docs/design/web-store.md. */
+/** Map one wire `Segment` to a live store {@link Segment} (ADR-0045), preserving
+ * its timeline position. A `tool_call` segment carries no id (the durable record
+ * has one, but the live row keys only on render order), so synthesize a stable
+ * `<messageId>:seg:<i>` id from its index, keeping React keys distinct. The wire
+ * `proposal` segment becomes a positional `{kind:"proposal", runId}` marker — the
+ * decided card's interactive state lives in the `proposals` map, seeded separately
+ * by {@link rehydrateDecidedProposals}. */
+function toSegment(
+	messageId: string,
+	runId: string,
+	segment: WireSegment,
+	index: number,
+): Segment {
+	switch (segment.kind) {
+		case "text":
+			return { kind: "text", text: segment.text };
+		case "tool_call":
+			return {
+				kind: "tool_call",
+				call: {
+					id: `${messageId}:seg:${index}`,
+					name: segment.name,
+					status: toToolCallStatus(segment.status),
+					arg: segment.arg,
+				},
+			};
+		case "proposal":
+			return { kind: "proposal", runId };
+	}
+}
+
+/** Map a wire `MessageView` to the live {@link Message}, narrowing role/status via
+ * defensive guards. The ordered `segments[]` is consumed VERBATIM (ADR-0045): the
+ * wire already carries the true `run_steps` order, so the reload renders the same
+ * timeline the live stream built — no legacy bucket reconstruction. See docs/design/web-store.md. */
 export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 	const role: Message["role"] = view.role === "user" ? "user" : "assistant";
 	const status: Message["status"] =
@@ -37,64 +72,53 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 		view.status === "incomplete"
 			? view.status
 			: "completed";
-	// Rehydrate tool-activity rows (ADR-0043). `MessageView.tool_calls` carries
-	// no id (the durable record has one, but the live row keys only on render
-	// order); synthesize a stable per-index id so React keys stay distinct.
-	const toolCalls: ToolCall[] = view.tool_calls.map((tc, i) => ({
-		id: `${view.id}:tc:${i}`,
-		name: tc.name,
-		status: toToolCallStatus(tc.status),
-		arg: tc.arg,
-	}));
-	// Build the timeline from the legacy wire buckets in LEGACY order (ADR-0045): all
-	// tool_call segments, then a text segment if any. The proposal segment is appended
-	// by `rehydrateDecidedProposals` (skip-if-present). Reload therefore still
-	// mis-orders this slice; slice 3 carries `segments[]` on the wire and reads the
-	// true run_steps order directly.
-	const segments: Segment[] = toolCalls.map((call) => ({
-		kind: "tool_call",
-		call,
-	}));
-	if (view.text !== "") {
-		segments.push({ kind: "text", text: view.text });
-	}
+	const segments: Segment[] = view.segments.map((segment, i) =>
+		toSegment(view.id, view.run_id, segment, i),
+	);
 	return {
 		id: view.id,
 		role,
 		status,
-		text: view.text,
 		run_id: view.run_id,
-		toolCalls,
 		segments,
 	};
 }
 
 /**
  * Reconstruct the DECIDED Proposals carried by a thread's rehydration views
- * (ADR-0044) and merge them into the store, so a settled `ProposalCard` ("Applied.")
- * survives reload. The wire `MessageView.proposal` only ever carries `accepted`/
- * `rejected` (Core filters pending/cancelled), and the reconstructed record omits
- * the payload — the decided card reads only `status` + `mutation_kind`. Skip-if-present
- * (in {@link rehydrateDecidedProposal}) guarantees a live pending/deciding Proposal is
- * never clobbered, so this is safe in both the normal and became-live hydration paths.
+ * (ADR-0044) and merge them into the `proposals` map, so a settled `ProposalCard`
+ * ("Applied.") survives reload. The decided Proposal now arrives as a `proposal`
+ * SEGMENT in `view.segments` (ADR-0045 folds the former `view.proposal` field in);
+ * its timeline POSITION is already carried by `toMessage`, so this only seeds the
+ * interactive map state (status + mutation_kind; the payload is omitted — the
+ * decided card reads neither). The segment only ever carries `accepted`/`rejected`
+ * (Core filters pending/cancelled). Skip-if-present (in {@link
+ * rehydrateDecidedProposal}) guarantees a live pending/deciding Proposal is never
+ * clobbered, so this is safe in both the normal and became-live hydration paths.
  */
 function rehydrateDecidedProposals(views: ThreadGetResult["messages"]): void {
 	for (const view of views) {
-		if (view.proposal === undefined || view.run_id === "") {
+		if (view.run_id === "") {
+			continue;
+		}
+		const proposalSegment = view.segments.find(
+			(seg) => seg.kind === "proposal",
+		);
+		if (proposalSegment === undefined) {
 			continue;
 		}
 		// Accept ONLY the two ADR-0044 decided outcomes. `status` is a bare wire
 		// string (Core filters to accepted/rejected, but the type is open): ignore
 		// any unknown/future value rather than coercing it to "accepted" and
 		// rendering the wrong settled card.
-		const status = view.proposal.status;
+		const status = proposalSegment.status;
 		if (status !== "accepted" && status !== "rejected") {
 			continue;
 		}
 		const proposal: PendingProposal = {
-			proposal_id: view.proposal.proposal_id,
+			proposal_id: proposalSegment.proposal_id,
 			run_id: view.run_id,
-			mutation_kind: view.proposal.mutation_kind,
+			mutation_kind: proposalSegment.mutation_kind,
 			payload: null,
 			rationale: null,
 			status,

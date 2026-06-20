@@ -283,7 +283,7 @@ describe("proposal stream + decide", () => {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
-			text: "",
+			segments: [],
 			run_id: "",
 		});
 		attachRun("thread-1", assistantId, "run-1");
@@ -318,7 +318,7 @@ describe("proposal stream + decide", () => {
 		const msg = getChatState().threads["thread-1"]?.messages.find(
 			(m) => m.run_id === "run-1",
 		);
-		expect(msg?.text).toBe("Done. added it.");
+		expect(concatText(msg?.segments ?? [])).toBe("Done. added it.");
 
 		await runtime.dispose();
 	});
@@ -340,7 +340,7 @@ describe("proposal stream + decide", () => {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
-			text: "",
+			segments: [],
 			run_id: "",
 		});
 		attachRun("thread-1", assistantId, "run-1");
@@ -355,7 +355,9 @@ describe("proposal stream + decide", () => {
 			const msg = getChatState().threads["thread-1"]?.messages.find(
 				(m) => m.run_id === "run-1",
 			);
-			return msg?.text === "Let me check the other thread. ";
+			return (
+				concatText(msg?.segments ?? []) === "Let me check the other thread. "
+			);
 		});
 
 		// Park + decide → resume re-subscribe whose snapshot re-includes the pre-park prose.
@@ -391,7 +393,9 @@ describe("proposal stream + decide", () => {
 			(m) => m.run_id === "run-1",
 		);
 		// SET replaces the on-screen prefix; the M1 bug appended → duplicated prefix.
-		expect(msg?.text).toBe("Let me check the other thread. Done — added it.");
+		expect(concatText(msg?.segments ?? [])).toBe(
+			"Let me check the other thread. Done — added it.",
+		);
 
 		await runtime.dispose();
 	});
@@ -412,7 +416,7 @@ describe("proposal stream + decide", () => {
 			id: assistantId,
 			role: "assistant",
 			status: "streaming",
-			text: "",
+			segments: [],
 			run_id: "",
 		});
 		attachRun("thread-1", assistantId, "run-1");
@@ -427,7 +431,9 @@ describe("proposal stream + decide", () => {
 			const msg = getChatState().threads["thread-1"]?.messages.find(
 				(m) => m.run_id === "run-1",
 			);
-			return msg?.text === "Let me check the other thread. ";
+			return (
+				concatText(msg?.segments ?? []) === "Let me check the other thread. "
+			);
 		});
 
 		startProposalStream(runtime);
@@ -471,7 +477,9 @@ describe("proposal stream + decide", () => {
 			{ kind: "text", text: "Done — added it." },
 		]);
 		// The render-source invariant: concatText(segments) === the flat reply text.
-		expect(concatText(msg?.segments ?? [])).toBe(msg?.text);
+		expect(concatText(msg?.segments ?? [])).toBe(
+			"Let me check the other thread. Done — added it.",
+		);
 
 		await runtime.dispose();
 	});

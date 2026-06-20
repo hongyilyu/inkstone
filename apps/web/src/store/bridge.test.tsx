@@ -108,14 +108,14 @@ describe("decideProposal resume fiber tracking (M2)", () => {
 			id: "u1",
 			role: "user",
 			status: "completed",
-			text: "hi",
+			segments: [{ kind: "text", text: "hi" }],
 			run_id: runId,
 		});
 		seedAssistantMessage("t1", {
 			id: "a1",
 			role: "assistant",
 			status: "streaming",
-			text: "",
+			segments: [],
 			run_id: "",
 		});
 		attachRun("t1", "a1", runId);
@@ -188,14 +188,14 @@ describe("cancelRun (ADR-0014)", () => {
 			id: "u1",
 			role: "user",
 			status: "completed",
-			text: "hi",
+			segments: [{ kind: "text", text: "hi" }],
 			run_id: "",
 		});
 		seedAssistantMessage("t1", {
 			id: "a1",
 			role: "assistant",
 			status: "streaming",
-			text: "echo: h",
+			segments: [{ kind: "text", text: "echo: h" }],
 			run_id: "",
 		});
 		attachRun("t1", "a1", runId);

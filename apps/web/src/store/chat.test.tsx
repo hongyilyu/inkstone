@@ -56,7 +56,9 @@ describe("chat store + stream bridge", () => {
 		await send(runtime, "threadA", "hi");
 
 		const seeded = getChatState().threads.threadA;
-		expect(seeded?.messages.map((m) => [m.role, m.text, m.status])).toEqual([
+		expect(
+			seeded?.messages.map((m) => [m.role, concatText(m.segments), m.status]),
+		).toEqual([
 			["user", "hi", "completed"],
 			["assistant", "", "streaming"],
 		]);
@@ -68,7 +70,7 @@ describe("chat store + stream bridge", () => {
 
 		const finalized = getChatState().threads.threadA;
 		const assistant = finalized?.messages[1];
-		expect(assistant?.text).toBe("echo: hi");
+		expect(concatText(assistant?.segments ?? [])).toBe("echo: hi");
 		expect(assistant?.status).toBe("completed");
 		expect(finalized?.activeRunId).toBeUndefined();
 
@@ -90,7 +92,7 @@ describe("chat store + stream bridge", () => {
 
 		const threadA = getChatState().threads.threadA;
 		const assistant = threadA?.messages[1];
-		expect(assistant?.text).toBe("part1-part2");
+		expect(concatText(assistant?.segments ?? [])).toBe("part1-part2");
 		expect(assistant?.status).toBe("completed");
 		expect(threadA?.activeRunId).toBeUndefined();
 
@@ -113,7 +115,7 @@ describe("chat store + stream bridge", () => {
 
 		const threadA = getChatState().threads.threadA;
 		const assistant = threadA?.messages[1];
-		expect(assistant?.text).toBe("partial");
+		expect(concatText(assistant?.segments ?? [])).toBe("partial");
 		expect(assistant?.status).toBe("incomplete");
 		expect(assistant?.error).toBe("provider rejected the request");
 		expect(threadA?.activeRunId).toBeUndefined();
@@ -134,7 +136,7 @@ describe("chat store + stream bridge", () => {
 
 		const threadA = getChatState().threads.threadA;
 		const assistant = threadA?.messages[1];
-		expect(assistant?.text).toBe("partial");
+		expect(concatText(assistant?.segments ?? [])).toBe("partial");
 		expect(assistant?.status).toBe("incomplete");
 		expect(assistant?.error).toBeUndefined();
 		expect(threadA?.activeRunId).toBeUndefined();
@@ -168,10 +170,12 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-tool");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.toolCalls).toEqual([
-			{ id: "tc_1", name: "read_thread", status: "completed" },
-		]);
-		expect(assistant?.text).toBe("Here's what I found");
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([{ id: "tc_1", name: "read_thread", status: "completed" }]);
+		expect(concatText(assistant?.segments ?? [])).toBe("Here's what I found");
 		expect(assistant?.status).toBe("completed");
 
 		await runtime.dispose();
@@ -199,9 +203,11 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-tool-err");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.toolCalls).toEqual([
-			{ id: "tc_2", name: "read_thread", status: "error" },
-		]);
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([{ id: "tc_2", name: "read_thread", status: "error" }]);
 
 		await runtime.dispose();
 	});
@@ -241,7 +247,11 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-multi");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.toolCalls).toEqual([
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([
 			{ id: "a", name: "read_thread", status: "completed" },
 			{ id: "b", name: "search_web", status: "error" },
 		]);
@@ -266,9 +276,11 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-lost");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.toolCalls).toEqual([
-			{ id: "x", name: "read_thread", status: "completed" },
-		]);
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([{ id: "x", name: "read_thread", status: "completed" }]);
 		expect(assistant?.status).toBe("completed");
 
 		await runtime.dispose();
@@ -290,9 +302,11 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-lost-err");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.toolCalls).toEqual([
-			{ id: "x", name: "read_thread", status: "error" },
-		]);
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([{ id: "x", name: "read_thread", status: "error" }]);
 		expect(assistant?.status).toBe("incomplete");
 
 		await runtime.dispose();
@@ -323,10 +337,12 @@ describe("chat store + stream bridge", () => {
 		await awaitRun(runtime, "run-interleave");
 
 		const assistant = getChatState().threads.threadA?.messages[1];
-		expect(assistant?.text).toBe("AB");
-		expect(assistant?.toolCalls).toEqual([
-			{ id: "t", name: "read_thread", status: "completed" },
-		]);
+		expect(concatText(assistant?.segments ?? [])).toBe("AB");
+		expect(
+			(assistant?.segments ?? [])
+				.filter((s) => s.kind === "tool_call")
+				.map((s) => s.call),
+		).toEqual([{ id: "t", name: "read_thread", status: "completed" }]);
 
 		await runtime.dispose();
 	});
@@ -342,7 +358,6 @@ describe("prependHistory", () => {
 		id,
 		role: id.startsWith("u") ? "user" : "assistant",
 		status: "completed",
-		text,
 		run_id: run,
 		segments: text !== "" ? [{ kind: "text", text }] : [],
 	});
@@ -353,7 +368,7 @@ describe("prependHistory", () => {
 			id: "a-live",
 			role: "assistant",
 			status: "streaming",
-			text: "",
+			segments: [],
 			run_id: "live",
 		});
 
@@ -392,7 +407,7 @@ describe("segment timeline (ADR-0045)", () => {
 			id,
 			role: "assistant",
 			status: "streaming",
-			text: "",
+			segments: [],
 			run_id: "",
 		});
 		attachRun(threadId, id, runId);
@@ -502,11 +517,7 @@ describe("segment timeline (ADR-0045)", () => {
 			{ kind: "text", text: "Done." },
 		]);
 		// The render-source invariant holds: concatText(segments) === the flat reply text.
-		const msg = getChatState().threads.tB1?.messages.find(
-			(m) => m.run_id === "run-b1",
-		);
-		expect(concatText(segs)).toBe(msg?.text);
-		expect(msg?.text).toBe("First. Second. Done.");
+		expect(concatText(segs)).toBe("First. Second. Done.");
 	});
 
 	it("appends a proposal segment exactly once per run (skip-if-present)", () => {

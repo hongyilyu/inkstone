@@ -289,18 +289,24 @@ describe("WsClient", () => {
 					role: "user",
 					status: "complete",
 					run_id: "01234567-89ab-7def-8012-345678901234",
-					text: "hi",
-					tool_calls: [],
+					segments: [{ kind: "text", text: "hi" }],
 				},
 				{
 					id: "msg-2",
 					role: "assistant",
 					status: "complete",
 					run_id: "01234567-89ab-7def-8012-345678901234",
-					text: "echo: hi",
-					tool_calls: [
-						{ name: "search_entities", status: "completed", arg: "Lev" },
-						{ name: "read_thread", status: "completed" },
+					// The assistant turn's ordered segments[] (ADR-0045): tool rows, then
+					// the reply text — covers the text + tool_call (with/without arg) variants.
+					segments: [
+						{
+							kind: "tool_call",
+							name: "search_entities",
+							status: "completed",
+							arg: "Lev",
+						},
+						{ kind: "tool_call", name: "read_thread", status: "completed" },
+						{ kind: "text", text: "echo: hi" },
 					],
 				},
 			],

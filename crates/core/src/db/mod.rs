@@ -414,41 +414,60 @@ pub async fn current_thread_journal_entries(
         .collect()
 }
 
-/// One tool call rehydrated for a `thread/get` Message (ADR-0043): the
-/// non-Proposal calls of the Message's Run, in timeline order, with the
-/// persisted status mapped to the wire spelling (`errored` → `error`) and the
-/// display `arg` derived from the request payload (the same extractor the live
-/// `tool_call` Run Event uses).
-pub struct ToolCallRow {
-    pub name: String,
-    pub status: String,
-    pub arg: Option<String>,
+/// One item of an assistant turn's ordered `segments[]` timeline for `thread/get`
+/// rehydration (ADR-0045), in `run_steps` `seq` order. The db-side mirror of the
+/// wire `protocol::Segment`; [`crate::runs::thread_get`] maps each variant to the
+/// wire union. Supersedes the read-path shapes of ADR-0043 (`tool_calls`) and
+/// ADR-0044 (`proposal`): both fold into this ordered list.
+#[derive(Debug)]
+pub enum MessageSegment {
+    /// A contiguous run of assistant text (one `message_parts` row).
+    Text { text: String },
+    /// A settled tool-activity row (ADR-0043): the persisted status mapped to the
+    /// wire spelling (`errored`/anything-unexpected → `error`, `completed` →
+    /// `completed`) and the display `arg` derived from the request payload via the
+    /// same per-tool extractor the live `tool_call` Run Event uses.
+    ToolCall {
+        name: String,
+        status: String,
+        arg: Option<String>,
+    },
+    /// The decided Proposal the turn parked on (ADR-0044): `accepted`/`rejected`
+    /// only — pending/cancelled are skipped at assembly.
+    Proposal {
+        proposal_id: String,
+        mutation_kind: String,
+        status: String,
+    },
 }
 
-/// The decided Proposal an assistant turn parked on, for `thread/get`
-/// rehydration (ADR-0044): `(proposal_id, mutation_kind, status)` where `status`
-/// is `accepted` or `rejected`. `None` for a turn with no Proposal, or one still
-/// `pending` (renders its full interactive card — deferred) or `cancelled`.
-pub struct MessageProposalRow {
-    pub proposal_id: String,
-    pub mutation_kind: String,
-    pub status: String,
-}
-
-/// One Message in a `thread/get` read, with `text` already assembled (text
-/// parts concatenated in `seq` order). Flat-text-no-parts per ADR-0017.
-/// `tool_calls` rehydrates the assistant turn's tool-activity rows (ADR-0043);
-/// empty for user Messages and turns with no non-Proposal tool call. `proposal`
-/// rehydrates the assistant turn's decided Proposal outcome (ADR-0044); `None`
-/// for user Messages and turns with no decided Proposal.
+/// One Message in a `thread/get` read. `segments` is the assistant turn's ordered
+/// timeline (ADR-0045) — text/tool_call/proposal items in `run_steps` order; a user
+/// Message carries a single `text` segment. Replaces the prior assembled flat
+/// `text` + separate `tool_calls` (ADR-0043) + `proposal` (ADR-0044) fields, which
+/// all fold into the ordered list.
 pub struct MessageRow {
     pub id: String,
     pub role: String,
     pub status: String,
     pub run_id: String,
-    pub text: String,
-    pub tool_calls: Vec<ToolCallRow>,
-    pub proposal: Option<MessageProposalRow>,
+    pub segments: Vec<MessageSegment>,
+}
+
+impl MessageRow {
+    /// The Message's flat reply text — its `text` segments concatenated in order
+    /// (ADR-0045: there is no denormalized flat field; text derives from segments,
+    /// the Rust analogue of the Client's `concatText`). Backs the `read_thread`
+    /// tool, which surfaces each prior Message's text to the model.
+    pub fn text(&self) -> String {
+        self.segments
+            .iter()
+            .filter_map(|segment| match segment {
+                MessageSegment::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 /// Read a Thread plus its Messages for `thread/get` (ADR-0022). `None` when the
@@ -466,96 +485,116 @@ pub async fn get_thread_with_messages(
     let rows = queries::messages_by_thread(pool, thread_id).await?;
     let mut messages = Vec::with_capacity(rows.len());
     for (id, role, status, run_id) in rows {
-        let text = queries::text_parts_by_message(pool, &id).await?.concat();
-        // Rehydrate tool-activity rows AND the decided Proposal outcome only on
-        // the assistant Message (ADR-0043, ADR-0044). A Run's user and assistant
-        // Messages share its `run_id`, but tool calls and the Proposal belong to
-        // the assistant turn; attaching them to the user Message would duplicate.
-        // Proposal tool calls are excluded from `tool_calls` (they render as a
-        // `ProposalCard`, not a tool-activity row — ADR-0025); the decided outcome
-        // is surfaced separately via `proposal`.
-        let (tool_calls, proposal) = if role == "assistant" {
-            (
-                tool_call_rows_for_run(pool, &run_id).await?,
-                decided_proposal_for_run(pool, &run_id).await?,
-            )
+        // The assistant turn replays its ORDERED segment timeline from `run_steps`
+        // (text/tool_call/proposal interleaved in seq order, ADR-0045). A user
+        // Message has no run-step timeline of its own — it is a single text
+        // segment from its concatenated text parts. Both forms drop an empty text
+        // segment so a blank part never renders.
+        let segments = if role == "assistant" {
+            segment_rows_for_run(pool, &run_id, &id).await?
         } else {
-            (Vec::new(), None)
+            let text = queries::text_parts_by_message(pool, &id).await?.concat();
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![MessageSegment::Text { text }]
+            }
         };
         messages.push(MessageRow {
             id,
             role,
             status,
             run_id,
-            text,
-            tool_calls,
-            proposal,
+            segments,
         });
     }
 
     Ok(Some((title, messages)))
 }
 
-/// Read the SETTLED non-Proposal tool calls of `run_id` for `thread/get`
-/// rehydration (ADR-0043), in timeline order. Filters Proposal tools via the
-/// registry ([`crate::tools::is_proposal`]) — they render as a `ProposalCard`,
-/// never a tool-activity row — and maps the persisted status to the wire
-/// spelling (`errored` → `error`, `completed` → `completed`), matching the live
-/// `ToolCallStatus`. `pending` rows are already excluded by the query, so the
-/// rehydrated set is always settled; an unexpected status falls back to `error`
-/// rather than leaking a non-vocabulary string to the wire. A `run_id` that does
-/// not parse as a UUID yields no rows rather than an error (the read is
-/// best-effort; a malformed id simply has no rehydratable calls).
-async fn tool_call_rows_for_run(pool: &SqlitePool, run_id: &str) -> sqlx::Result<Vec<ToolCallRow>> {
+/// Assemble an assistant Run's ordered `segments[]` for `thread/get` rehydration
+/// (ADR-0045): walk [`queries::segment_timeline`] in `run_steps` `seq` order and
+/// turn each step into a `text` / `tool_call` / `proposal` segment, applying the
+/// settled-history filters ADR-0043/0044 specify (all over the parsed status
+/// strings here, so the one ordered SQL walk is never broken by a per-kind
+/// sub-read):
+///
+/// - `message` step → a `Text` segment, skipping an empty-text part.
+/// - `tool_call` step carrying a `proposals` row → a `Proposal` segment, but only
+///   for a DECIDED (`accepted`/`rejected`) Proposal — a `pending` one renders its
+///   interactive card (deferred) and a `cancelled` one is cleared live (ADR-0044).
+/// - `tool_call` step without a `proposals` row → a `ToolCall` segment, skipping a
+///   `pending` call (an in-flight call at reload time is owned by the live tail,
+///   ADR-0043) and any Proposal-named tool that somehow lacks its `proposals` row
+///   (defensive: a Proposal renders as a card, never a tool-activity row).
+///
+/// `message` steps are scoped to `assistant_message_id` (the Run's user-Message
+/// text step belongs to the user `MessageRow`, not this turn — see
+/// [`queries::segment_timeline`]). A `run_id` that does not parse as a UUID yields
+/// no segments (best-effort read; a malformed id has no rehydratable timeline).
+async fn segment_rows_for_run(
+    pool: &SqlitePool,
+    run_id: &str,
+    assistant_message_id: &str,
+) -> sqlx::Result<Vec<MessageSegment>> {
     let Ok(run_uuid) = Uuid::parse_str(run_id) else {
         return Ok(Vec::new());
     };
-    let rows = queries::tool_calls_by_run(pool, run_uuid).await?;
-    Ok(rows
-        .into_iter()
-        .filter(|(name, _, _)| !crate::tools::is_proposal(name))
-        .map(|(name, status, request_payload)| {
-            // Derive the display arg from the stored request payload via the same
-            // per-tool extractor the live `tool_call` Run Event uses (ADR-0043),
-            // so the reloaded row matches the live one. A malformed payload yields
-            // no arg rather than an error (the read is best-effort).
-            let arg = serde_json::from_str::<serde_json::Value>(&request_payload)
-                .ok()
-                .and_then(|params| crate::tools::display_arg(&name, &params));
-            ToolCallRow {
-                name,
-                status: match status.as_str() {
-                    "completed" => "completed".to_string(),
-                    // `errored`, or any unexpected value, maps to the wire `error`
-                    // spelling — never leak a non-vocabulary status to the client.
-                    _ => "error".to_string(),
-                },
-                arg,
+    let rows = queries::segment_timeline(pool, run_uuid, assistant_message_id).await?;
+    let mut segments = Vec::with_capacity(rows.len());
+    for (kind, part_text, tc_name, tc_status, request_payload, proposal_id, mutation_kind, proposal_status) in
+        rows
+    {
+        match kind.as_str() {
+            "message" => {
+                let text = part_text.unwrap_or_default();
+                if !text.is_empty() {
+                    segments.push(MessageSegment::Text { text });
+                }
             }
-        })
-        .collect())
-}
-
-/// Read the DECIDED Proposal a Run parked on, for `thread/get` rehydration
-/// (ADR-0044). `None` when the Run has no Proposal, or its Proposal is still
-/// `pending` (renders its full interactive card, which needs the payload —
-/// deferred) or `cancelled` (cleared live, nothing to review). A `run_id` that
-/// does not parse as a UUID yields `None` (the read is best-effort — a malformed
-/// id simply has no rehydratable Proposal), mirroring [`tool_call_rows_for_run`].
-async fn decided_proposal_for_run(
-    pool: &SqlitePool,
-    run_id: &str,
-) -> sqlx::Result<Option<MessageProposalRow>> {
-    let Ok(run_uuid) = Uuid::parse_str(run_id) else {
-        return Ok(None);
-    };
-    Ok(queries::decided_proposal_for_run(pool, run_uuid)
-        .await?
-        .map(|(proposal_id, mutation_kind, status)| MessageProposalRow {
-            proposal_id,
-            mutation_kind,
-            status,
-        }))
+            "tool_call" => {
+                let name = tc_name.unwrap_or_default();
+                if let Some(proposal_id) = proposal_id {
+                    // A Proposal step: rehydrate only the DECIDED outcome as a
+                    // `proposal` segment (ADR-0044). Pending/cancelled emit nothing.
+                    let status = proposal_status.unwrap_or_default();
+                    if status == "accepted" || status == "rejected" {
+                        segments.push(MessageSegment::Proposal {
+                            proposal_id,
+                            mutation_kind: mutation_kind.unwrap_or_default(),
+                            status,
+                        });
+                    }
+                } else if !crate::tools::is_proposal(&name) {
+                    // A non-Proposal tool call → a settled tool-activity row
+                    // (ADR-0043). Skip a `pending` call; map the persisted status to
+                    // the wire spelling, never leaking a non-vocabulary value.
+                    let status = tc_status.unwrap_or_default();
+                    if status != "pending" {
+                        // Derive the display arg from the stored request payload via
+                        // the same per-tool extractor the live `tool_call` Run Event
+                        // uses, so the reloaded row matches the live one. A malformed
+                        // payload yields no arg (best-effort read).
+                        let arg = request_payload
+                            .as_deref()
+                            .and_then(|p| serde_json::from_str::<serde_json::Value>(p).ok())
+                            .and_then(|params| crate::tools::display_arg(&name, &params));
+                        segments.push(MessageSegment::ToolCall {
+                            name,
+                            status: if status == "completed" {
+                                "completed".to_string()
+                            } else {
+                                "error".to_string()
+                            },
+                            arg,
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(segments)
 }
 
 /// Assemble prior-Run conversation history for a Run's manifest (ADR-0018).
@@ -2968,11 +3007,17 @@ mod tests {
         assert_eq!(rows[1].0, lo);
     }
 
-    /// ADR-0043: `thread/get` rehydrates a Run's non-Proposal tool calls onto the
-    /// assistant Message, in timeline order, but NEVER the Proposal tool call (it
-    /// renders as a `ProposalCard`). Errored status maps to the wire `error`.
+    /// ADR-0045: `thread/get` rehydrates the assistant turn's ORDERED `segments[]`
+    /// from `run_steps` in seq order — text/tool_call/proposal interleaved as they
+    /// happened. Folds in the ADR-0043 rules (a non-Proposal tool call rehydrates as
+    /// a `tool_call` segment; the Proposal tool call NEVER does — a pending one is
+    /// skipped here, a settled one becomes a `proposal` segment; `errored` maps to
+    /// the wire `error`; a `pending` tool call is skipped). The canonical round-trip:
+    /// a Run whose run_steps are `[assistant-text, tool_call(completed),
+    /// tool_call(errored), tool_call(pending), proposal(pending)]` yields segments
+    /// `[text, tool_call(completed), tool_call(error)]` — the in-order survivors.
     #[tokio::test]
-    async fn thread_get_rehydrates_tool_calls_excluding_proposals() {
+    async fn thread_get_assembles_ordered_segments_excluding_proposals() {
         let pool = memory_pool().await;
         let thread_id = Uuid::now_v7();
         let run_id = Uuid::now_v7();
@@ -3006,9 +3051,15 @@ mod tests {
         )
         .await
         .expect("assistant message");
+        // An assistant text segment at seq 0: its `message_parts` row AND its
+        // `run_steps` message row (ADR-0045 — text is sequenced via run_steps, not a
+        // free-floating part), so it appears FIRST in the ordered walk.
         queries::insert_text_part(&mut *tx, assistant_id, 0, "Captured.")
             .await
             .expect("text part");
+        queries::insert_message_run_step(&mut *tx, run_id, 0, assistant_id, 0, 1)
+            .await
+            .expect("assistant text step");
         tx.commit().await.expect("commit seed");
 
         // A non-Proposal search tool call (completed), then an errored one — the
@@ -3077,49 +3128,63 @@ mod tests {
             .find(|m| m.role == "assistant")
             .expect("assistant row");
 
-        // Only the two SETTLED search calls survive: the Proposal tool call renders
-        // as a ProposalCard (excluded) and the `pending` call is owned by the live
-        // tail, not rehydrated.
+        // The ordered survivors: the text segment FIRST (seq 0), then the two
+        // SETTLED search calls in seq order. The `pending` search call is owned by
+        // the live tail (skipped), and the still-`pending` Proposal tool call
+        // renders as a ProposalCard, never a tool-activity row (skipped) — so the
+        // turn has exactly three segments, in this order.
         assert_eq!(
-            assistant.tool_calls.len(),
-            2,
-            "only settled non-Proposal tool calls rehydrate (no Proposal, no pending)"
+            assistant.segments.len(),
+            3,
+            "text + two settled tool calls, in order (no pending tool, no pending proposal)"
         );
-        // First call: completed, with its display arg derived from the payload.
-        assert_eq!(assistant.tool_calls[0].name, "search_entities");
-        assert_eq!(assistant.tool_calls[0].status, "completed");
-        assert_eq!(assistant.tool_calls[0].arg.as_deref(), Some("Lev"));
-        // Second call: `errored` maps to the wire `error` spelling, arg derived.
-        assert_eq!(assistant.tool_calls[1].name, "search_entities");
-        assert_eq!(assistant.tool_calls[1].status, "error");
-        assert_eq!(assistant.tool_calls[1].arg.as_deref(), Some("Acme"));
+        match &assistant.segments[0] {
+            MessageSegment::Text { text } => assert_eq!(text, "Captured."),
+            other => panic!("segment[0] is the text segment, got {other:?}"),
+        }
+        match &assistant.segments[1] {
+            MessageSegment::ToolCall { name, status, arg } => {
+                assert_eq!(name, "search_entities");
+                assert_eq!(status, "completed");
+                assert_eq!(arg.as_deref(), Some("Lev"));
+            }
+            other => panic!("segment[1] is the completed search, got {other:?}"),
+        }
+        match &assistant.segments[2] {
+            MessageSegment::ToolCall { name, status, arg } => {
+                assert_eq!(name, "search_entities");
+                // `errored` maps to the wire `error` spelling.
+                assert_eq!(status, "error");
+                assert_eq!(arg.as_deref(), Some("Acme"));
+            }
+            other => panic!("segment[2] is the errored search, got {other:?}"),
+        }
+        // No Proposal tool call, no pending tool call leaked into the segments.
         assert!(
-            assistant
-                .tool_calls
-                .iter()
-                .all(|tc| tc.name != "propose_workspace_mutation"),
-            "no Proposal tool call in rehydrated rows"
-        );
-        assert!(
-            assistant
-                .tool_calls
-                .iter()
-                .all(|tc| tc.arg.as_deref() != Some("InFlight")),
+            !assistant.segments.iter().any(|s| matches!(
+                s,
+                MessageSegment::ToolCall { arg, .. } if arg.as_deref() == Some("InFlight")
+            )),
             "a still-pending tool call must not rehydrate"
         );
-        // The Run parked on a still-`pending` Proposal: its decided outcome is
-        // absent (the live interactive card owns a pending Proposal — ADR-0044).
         assert!(
-            assistant.proposal.is_none(),
-            "a still-pending Proposal must not rehydrate as a decided outcome"
+            !assistant
+                .segments
+                .iter()
+                .any(|s| matches!(s, MessageSegment::Proposal { .. })),
+            "a still-pending Proposal must not rehydrate as a segment"
         );
     }
 
-    /// ADR-0044: `thread/get` rehydrates the assistant turn's DECIDED Proposal
-    /// outcome (so the "Applied." indicator survives reload), but only once it is
-    /// `accepted`/`rejected` — a `pending` one renders its interactive card.
+    /// ADR-0044 + ADR-0045: `thread/get` rehydrates the assistant turn's DECIDED
+    /// Proposal as a `proposal` SEGMENT (so the "Applied." indicator survives reload),
+    /// but only once it is `accepted`/`rejected` — a `pending` one renders its
+    /// interactive card. And it sits in TIMELINE ORDER: the screenshot scenario
+    /// (park on a Proposal, then reply after deciding) yields segments
+    /// `[proposal(accepted), text]` — the decided pill BEFORE the reply text, the
+    /// Core-side proof of the pill-above-reply order the reload must preserve.
     #[tokio::test]
-    async fn thread_get_rehydrates_decided_proposal() {
+    async fn thread_get_rehydrates_decided_proposal_segment_in_order() {
         let pool = memory_pool().await;
         let thread_id = Uuid::now_v7();
         let run_id = Uuid::now_v7();
@@ -3154,13 +3219,10 @@ mod tests {
         )
         .await
         .expect("assistant message");
-        queries::insert_text_part(&mut *tx, assistant_id, 0, "Logged.")
-            .await
-            .expect("text part");
         tx.commit().await.expect("commit seed");
 
-        // Park on an apply_intent_graph Proposal, then ACCEPT it (the decided
-        // outcome the reload must reconstruct).
+        // Park on an apply_intent_graph Proposal (the proposal tool step lands at
+        // seq 0), then ACCEPT it — the decided outcome the reload must reconstruct.
         park_on_proposal(
             &pool,
             run_id,
@@ -3178,6 +3240,23 @@ mod tests {
             .expect("mark accepted");
         assert_eq!(affected, 1, "accept flips exactly the pending row");
 
+        // The resume reply: a text segment opened AFTER the proposal (its
+        // `message_parts` row + `run_steps` message row at the next seq, ADR-0045).
+        let mut tx = pool.begin().await.expect("begin reply");
+        let part_seq = queries::next_message_part_seq(&mut *tx, assistant_id)
+            .await
+            .expect("part seq");
+        let step_seq = queries::next_run_step_seq(&mut *tx, run_id)
+            .await
+            .expect("step seq");
+        queries::insert_text_part(&mut *tx, assistant_id, part_seq, "Done — added it.")
+            .await
+            .expect("reply part");
+        queries::insert_message_run_step(&mut *tx, run_id, step_seq, assistant_id, part_seq, 4)
+            .await
+            .expect("reply step");
+        tx.commit().await.expect("commit reply");
+
         let (_title, rows) = get_thread_with_messages(&pool, thread_id)
             .await
             .expect("read ok")
@@ -3187,20 +3266,35 @@ mod tests {
             .find(|m| m.role == "assistant")
             .expect("assistant row");
 
-        let proposal = assistant
-            .proposal
-            .as_ref()
-            .expect("decided Proposal rehydrates onto the assistant turn");
-        assert_eq!(proposal.proposal_id, "proposal-graph");
-        assert_eq!(proposal.mutation_kind, "apply_intent_graph");
-        assert_eq!(proposal.status, "accepted");
-        // The Proposal tool call still never rehydrates as a tool-activity row.
+        // The decided proposal pill is BEFORE the reply text (timeline order).
+        assert_eq!(
+            assistant.segments.len(),
+            2,
+            "the turn is [proposal, text] — pill above reply"
+        );
+        match &assistant.segments[0] {
+            MessageSegment::Proposal {
+                proposal_id,
+                mutation_kind,
+                status,
+            } => {
+                assert_eq!(proposal_id, "proposal-graph");
+                assert_eq!(mutation_kind, "apply_intent_graph");
+                assert_eq!(status, "accepted");
+            }
+            other => panic!("segment[0] is the decided proposal, got {other:?}"),
+        }
+        match &assistant.segments[1] {
+            MessageSegment::Text { text } => assert_eq!(text, "Done — added it."),
+            other => panic!("segment[1] is the reply text, got {other:?}"),
+        }
+        // The Proposal tool call never rehydrates as a tool-activity row.
         assert!(
-            assistant
-                .tool_calls
+            !assistant
+                .segments
                 .iter()
-                .all(|tc| tc.name != "propose_workspace_mutation"),
-            "the decided Proposal surfaces via `proposal`, never as a tool row"
+                .any(|s| matches!(s, MessageSegment::ToolCall { .. })),
+            "the decided Proposal surfaces via a proposal segment, never a tool row"
         );
     }
 
@@ -3273,11 +3367,19 @@ mod tests {
             .find(|m| m.role == "assistant")
             .expect("assistant row");
         let proposal = assistant
-            .proposal
-            .as_ref()
-            .expect("rejected Proposal rehydrates onto the assistant turn");
-        assert_eq!(proposal.status, "rejected");
-        assert_eq!(proposal.mutation_kind, "create_journal_entry");
+            .segments
+            .iter()
+            .find_map(|s| match s {
+                MessageSegment::Proposal {
+                    mutation_kind,
+                    status,
+                    ..
+                } => Some((mutation_kind, status)),
+                _ => None,
+            })
+            .expect("rejected Proposal rehydrates as a proposal segment");
+        assert_eq!(proposal.1, "rejected");
+        assert_eq!(proposal.0, "create_journal_entry");
     }
 
     /// ADR-0044: a CANCELLED Proposal does NOT rehydrate (its parked Run was
@@ -3349,8 +3451,11 @@ mod tests {
             .find(|m| m.role == "assistant")
             .expect("assistant row");
         assert!(
-            assistant.proposal.is_none(),
-            "a cancelled Proposal must not rehydrate as a decided outcome"
+            !assistant
+                .segments
+                .iter()
+                .any(|s| matches!(s, MessageSegment::Proposal { .. })),
+            "a cancelled Proposal must not rehydrate as a proposal segment"
         );
     }
 }
