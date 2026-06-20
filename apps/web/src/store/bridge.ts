@@ -323,7 +323,9 @@ export async function decideProposal(
 		if (getChatState().proposals[runId] === undefined) {
 			return;
 		}
-		setProposalStatus(runId, result.status);
+		// Persist the created/updated `entity_id` (ADR-0044 amendment) so the decided
+		// card can name + deep-link it; absent on a reject.
+		setProposalStatus(runId, result.status, result.entity_id);
 		const threadId = getRunThreadId(runId);
 		if (threadId !== undefined) {
 			// Stale-fiber guard (M2): interrupt the parked fiber, then re-subscribe.

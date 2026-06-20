@@ -1092,10 +1092,12 @@ describe("ProposalCard", () => {
 			expect(onDecide).toHaveBeenCalledWith("accept");
 		});
 
-		it("calls onDecide('reject') when Dismiss is clicked", () => {
+		it("calls onDecide('reject') when Keep current Todo is clicked", () => {
 			const onDecide = vi.fn();
 			render(<ProposalCard proposal={updateTodo} onDecide={onDecide} />);
-			fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+			fireEvent.click(
+				screen.getByRole("button", { name: /keep current todo/i }),
+			);
 			expect(onDecide).toHaveBeenCalledWith("reject");
 		});
 
@@ -1236,7 +1238,7 @@ describe("ProposalCard", () => {
 				screen.getByRole("button", { name: /^edit$/i }),
 			).toBeInTheDocument();
 			expect(
-				screen.getByRole("button", { name: /dismiss/i }),
+				screen.getByRole("button", { name: /keep current person/i }),
 			).toBeInTheDocument();
 		});
 

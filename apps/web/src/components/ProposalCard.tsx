@@ -3,7 +3,9 @@ import type {
 	ProposalReviewContext,
 	ResolvedNode,
 } from "@inkstone/protocol";
+import { useNavigate } from "@tanstack/react-router";
 import {
+	ArrowUpRight,
 	CalendarDays,
 	Check,
 	GitBranch,
@@ -23,6 +25,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
 	allRejected,
 	buildDecisions,
@@ -44,7 +47,12 @@ import {
 	setStage,
 	stageFor,
 } from "@/lib/intentGraphReview";
-import { KIND_META, type LibraryItemKind } from "@/lib/libraryItems";
+import {
+	KIND_META,
+	type LibraryItem,
+	type LibraryItemKind,
+	libraryItemTitle,
+} from "@/lib/libraryItems";
 import {
 	type CreatePersonDraft,
 	type CreateProjectDraft,
@@ -270,11 +278,11 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		summary: () => "Update Todo",
 		reviewCopy: "Inkstone wants to update a Todo.",
 		acceptedCopy: "Updated Todo.",
-		rejectedCopy: "Dismissed.",
+		rejectedCopy: "Kept current Todo.",
 		acceptLabel: "Update Todo",
 		acceptBusyLabel: "Updating...",
-		rejectLabel: "Dismiss",
-		rejectBusyLabel: "Dismissing...",
+		rejectLabel: "Keep current Todo",
+		rejectBusyLabel: "Keeping current Todo...",
 		canEdit: () => true,
 		renderBody: renderUpdateTodoBody,
 	},
@@ -284,11 +292,11 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		summary: (payload) => textField(payload, "name") || "Update Person",
 		reviewCopy: "Inkstone wants to update a Person.",
 		acceptedCopy: "Updated Person.",
-		rejectedCopy: "Dismissed.",
+		rejectedCopy: "Kept current Person.",
 		acceptLabel: "Update Person",
 		acceptBusyLabel: "Updating...",
-		rejectLabel: "Dismiss",
-		rejectBusyLabel: "Dismissing...",
+		rejectLabel: "Keep current Person",
+		rejectBusyLabel: "Keeping current Person...",
 		canEdit: () => true,
 		// Full-document REPLACE: the proposed payload is the whole new Person body
 		// (the entity_id rides untouched, not surfaced), so its read-only detail
@@ -301,11 +309,11 @@ export const PROPOSAL_VIEWS: Record<ProposalKind, ProposalView> = {
 		summary: (payload) => textField(payload, "name") || "Update Project",
 		reviewCopy: "Inkstone wants to update a Project.",
 		acceptedCopy: "Updated Project.",
-		rejectedCopy: "Dismissed.",
+		rejectedCopy: "Kept current Project.",
 		acceptLabel: "Update Project",
 		acceptBusyLabel: "Updating...",
-		rejectLabel: "Dismiss",
-		rejectBusyLabel: "Dismissing...",
+		rejectLabel: "Keep current Project",
+		rejectBusyLabel: "Keeping current Project...",
 		canEdit: () => true,
 		// Full-document REPLACE: read-only detail mirrors create_project's.
 		renderBody: renderProjectBody,
@@ -495,6 +503,56 @@ type DecideHandler = (
 ) => void;
 
 /**
+ * Names the Entity an accepted Proposal created/updated and deep-links to it in the
+ * Library (ADR-0044 amendment — the link IS the undo answer, no reversal verb).
+ * Resolves `entityId` live from the warm library-items cache. Renders `null`
+ * (degrading to the caller's generic decided copy, never worse than before) when
+ * there is no `entityId`, or it is not (yet) in the cache (still loading / Core
+ * unreachable / since-deleted). `withTitle` shows the entity's current name before
+ * the link (the single-entity card); the graph card keeps its own "Applied." copy
+ * and adds only the anchor link. Always mounted by the decided branch so its hooks
+ * are unconditional.
+ */
+function DecidedLibraryLink({
+	entityId,
+	withTitle,
+}: {
+	entityId: string | undefined;
+	withTitle: boolean;
+}) {
+	const navigate = useNavigate();
+	const { data: items } = useLibraryItems();
+	const item: LibraryItem | undefined =
+		entityId === undefined ? undefined : items?.find((i) => i.id === entityId);
+	if (item === undefined) {
+		return null;
+	}
+	const open = () =>
+		navigate({
+			to: "/library/$kind",
+			params: { kind: KIND_META[item.kind].slug },
+			search: { id: item.id },
+		});
+	return (
+		<>
+			{withTitle ? (
+				<span className="truncate font-medium text-card-foreground">
+					{libraryItemTitle(item)}
+				</span>
+			) : null}
+			<button
+				type="button"
+				onClick={open}
+				className="flex shrink-0 items-center gap-1 text-primary transition-colors hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+			>
+				View in Library
+				<ArrowUpRight className="size-3.5 shrink-0" aria-hidden />
+			</button>
+		</>
+	);
+}
+
+/**
  * The review card for a pending Proposal. A pure dispatcher (no hooks of its own)
  * so the two decision models live in separate components with their own hook
  * order: the intent graph (ADR-0042) is a sequential review queue with a local
@@ -649,6 +707,12 @@ function SingleEntityProposalCard({
 			>
 				{accepted ? <Check className="size-4 shrink-0" aria-hidden /> : null}
 				<span aria-live="polite">{accepted ? acceptedCopy : rejectedCopy}</span>
+				{/* Name + deep-link the created/updated Entity (ADR-0044 amendment); a
+				    reject created nothing, so only an accept gets the link. Degrades to
+				    the copy above when the Entity is unresolvable. */}
+				{accepted ? (
+					<DecidedLibraryLink entityId={proposal.entity_id} withTitle />
+				) : null}
 			</div>
 		);
 	}
@@ -1328,6 +1392,12 @@ function IntentGraphReviewCard({
 				<span aria-live="polite">
 					{accepted ? GRAPH_VIEW.acceptedCopy : GRAPH_VIEW.rejectedCopy}
 				</span>
+				{/* Deep-link the graph's anchor Entity (ADR-0044 amendment); keep the
+				    "Applied." copy (the accepted-node count isn't carried on a rehydrated
+				    decided graph). Degrades to the copy when the anchor is unresolvable. */}
+				{accepted ? (
+					<DecidedLibraryLink entityId={proposal.entity_id} withTitle={false} />
+				) : null}
 			</div>
 		);
 	}
