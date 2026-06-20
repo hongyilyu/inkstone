@@ -17,6 +17,7 @@
           "status": "completed"
         },
         {
+          "entity_id": "0190d3c1-0000-7000-8000-000000000002",
           "kind": "proposal",
           "mutation_kind": "apply_intent_graph",
           "proposal_id": "0190d3c1-0000-7000-8000-000000000001",

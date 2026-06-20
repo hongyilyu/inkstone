@@ -433,11 +433,16 @@ pub enum MessageSegment {
         arg: Option<String>,
     },
     /// The decided Proposal the turn parked on (ADR-0044): `accepted`/`rejected`
-    /// only — pending/cancelled are skipped at assembly.
+    /// only — pending/cancelled are skipped at assembly. `entity_id` (ADR-0044
+    /// entity_id amendment) is the durable Entity the accepted change
+    /// created/updated — the anchor for `apply_intent_graph` — so the decided card
+    /// can name + deep-link it. `None` for a `rejected` Proposal (nothing created)
+    /// or when no Entity resolves.
     Proposal {
         proposal_id: String,
         mutation_kind: String,
         status: String,
+        entity_id: Option<String>,
     },
 }
 
@@ -580,10 +585,19 @@ async fn segment_rows_for_run(
                     if (status == "accepted" || status == "rejected")
                         && Some(idx) == last_decided_proposal
                     {
+                        // Resolve the durable Entity the decided change created/updated
+                        // (ADR-0044 entity_id amendment) so the decided card can name +
+                        // deep-link it. `entity_id_for_proposal` is JE-anchor
+                        // deterministic, matching the live decide result. Only the
+                        // single decided proposal is resolved (one round-trip). A reject
+                        // created nothing, so this resolves `None`.
+                        let entity_id =
+                            queries::entity_id_for_proposal(pool, &proposal_id).await?;
                         segments.push(MessageSegment::Proposal {
                             proposal_id,
                             mutation_kind: mutation_kind.unwrap_or_default(),
                             status,
+                            entity_id,
                         });
                     }
                 } else if !crate::tools::is_proposal(&name) {

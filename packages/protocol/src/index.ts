@@ -114,6 +114,11 @@ export const Segment = S.Union(
 		proposal_id: S.String,
 		mutation_kind: S.String,
 		status: S.String,
+		/** The durable Entity the accepted change created/updated (ADR-0044
+		 * amendment) — the anchor for `apply_intent_graph` — so the decided card can
+		 * name + deep-link it. Omitted (not null) for a rejected Proposal (nothing
+		 * created) or when no Entity resolves. */
+		entity_id: S.optional(S.String),
 	}),
 );
 export type Segment = S.Schema.Type<typeof Segment>;
