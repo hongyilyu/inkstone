@@ -523,6 +523,13 @@ pub async fn get_thread_with_messages(
 /// - `tool_call` step carrying a `proposals` row → a `Proposal` segment, but only
 ///   for a DECIDED (`accepted`/`rejected`) Proposal — a `pending` one renders its
 ///   interactive card (deferred) and a `cancelled` one is cleared live (ADR-0044).
+///   A Run that parks more than once (decide, resume, park again) holds several
+///   decided Proposals; only the MOST-RECENT rehydrates, as a single indicator per
+///   turn — the live store shows one card per `run_id`, and the superseded ADR-0044
+///   read collapsed to `decided_at DESC LIMIT 1`. Proposal steps appear in `seq`
+///   order, which is `decided_at` order (a Run must decide its first Proposal before
+///   resuming to park on a second), so the LAST decided step in the walk is the
+///   most-recent; earlier decided Proposals emit nothing.
 /// - `tool_call` step without a `proposals` row → a `ToolCall` segment, skipping a
 ///   `pending` call (an in-flight call at reload time is owned by the live tail,
 ///   ADR-0043) and any Proposal-named tool that somehow lacks its `proposals` row
@@ -541,9 +548,19 @@ async fn segment_rows_for_run(
         return Ok(Vec::new());
     };
     let rows = queries::segment_timeline(pool, run_uuid, assistant_message_id).await?;
+    // The row index of the LAST decided Proposal step — the only Proposal that
+    // rehydrates, so a multi-park Run surfaces one indicator (its most-recent
+    // decision), matching the live store and the superseded ADR-0044 read.
+    let last_decided_proposal = rows.iter().rposition(
+        |(kind, _, _, _, _, proposal_id, _, proposal_status)| {
+            kind == "tool_call"
+                && proposal_id.is_some()
+                && matches!(proposal_status.as_deref(), Some("accepted" | "rejected"))
+        },
+    );
     let mut segments = Vec::with_capacity(rows.len());
-    for (kind, part_text, tc_name, tc_status, request_payload, proposal_id, mutation_kind, proposal_status) in
-        rows
+    for (idx, (kind, part_text, tc_name, tc_status, request_payload, proposal_id, mutation_kind, proposal_status)) in
+        rows.into_iter().enumerate()
     {
         match kind.as_str() {
             "message" => {
@@ -555,10 +572,14 @@ async fn segment_rows_for_run(
             "tool_call" => {
                 let name = tc_name.unwrap_or_default();
                 if let Some(proposal_id) = proposal_id {
-                    // A Proposal step: rehydrate only the DECIDED outcome as a
-                    // `proposal` segment (ADR-0044). Pending/cancelled emit nothing.
+                    // A Proposal step: rehydrate only the DECIDED outcome (ADR-0044),
+                    // and only the MOST-RECENT decided Proposal of a multi-park Run
+                    // (`last_decided_proposal`). Earlier decided Proposals, and any
+                    // pending/cancelled one, emit nothing.
                     let status = proposal_status.unwrap_or_default();
-                    if status == "accepted" || status == "rejected" {
+                    if (status == "accepted" || status == "rejected")
+                        && Some(idx) == last_decided_proposal
+                    {
                         segments.push(MessageSegment::Proposal {
                             proposal_id,
                             mutation_kind: mutation_kind.unwrap_or_default(),
@@ -3457,5 +3478,114 @@ mod tests {
                 .any(|s| matches!(s, MessageSegment::Proposal { .. })),
             "a cancelled Proposal must not rehydrate as a proposal segment"
         );
+    }
+
+    /// ADR-0044/0045: a Run that parks MORE THAN ONCE (decide, resume, park again)
+    /// rehydrates exactly ONE proposal segment — its MOST-RECENT decided outcome —
+    /// not one per park. The superseded `decided_proposal_for_run` read collapsed to
+    /// `decided_at DESC LIMIT 1`; the segment walk must preserve that one-indicator-
+    /// per-turn rule, else a double-park turn shows the first outcome twice (both
+    /// cards read the single `run_id`-keyed live proposal) and loses the second.
+    #[tokio::test]
+    async fn thread_get_rehydrates_only_the_most_recent_of_two_decided_proposals() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        let run_id = Uuid::now_v7();
+        let assistant_id = Uuid::now_v7();
+
+        let mut tx = pool.begin().await.expect("begin");
+        queries::insert_thread(&mut *tx, thread_id, "T", 1)
+            .await
+            .expect("thread");
+        sqlx::query(
+            "INSERT INTO runs \
+             (id, thread_id, workflow_name, workflow_version, provider, model, \
+              thinking_level, user_message_id, status, started_at) \
+             VALUES (?, ?, 'w', '1', 'p', 'm', 'off', ?, 'running', 1)",
+        )
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(assistant_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .expect("run");
+        queries::insert_message(
+            &mut *tx,
+            assistant_id,
+            thread_id,
+            run_id,
+            "assistant",
+            "completed",
+            1,
+        )
+        .await
+        .expect("assistant message");
+        tx.commit().await.expect("commit seed");
+
+        // FIRST park + accept (the earlier decision).
+        park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-first",
+            "tc-first",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"apply_intent_graph","payload":{"entities":[],"links":[]}}"#,
+            "apply_intent_graph",
+            2,
+        )
+        .await
+        .expect("park 1");
+        queries::mark_proposal_accepted(&pool, "proposal-first", None, None, 3)
+            .await
+            .expect("accept 1");
+        // Resume returns the Run to `running` so the second park can win its guard,
+        // mirroring `worker::resume` (parked -> running) before a second proposal.
+        queries::mark_run_running(&pool, run_id)
+            .await
+            .expect("resume 1 -> running");
+
+        // SECOND park + accept (the later decision; lands at a higher seq).
+        park_on_proposal(
+            &pool,
+            run_id,
+            "proposal-second",
+            "tc-second",
+            "propose_workspace_mutation",
+            r#"{"mutation_kind":"create_journal_entry","payload":{"occurred_at":"2026-06-10T10:30:00","body":[{"type":"text","text":"x"}]}}"#,
+            "create_journal_entry",
+            4,
+        )
+        .await
+        .expect("park 2");
+        queries::mark_proposal_accepted(&pool, "proposal-second", None, None, 5)
+            .await
+            .expect("accept 2");
+
+        let (_title, rows) = get_thread_with_messages(&pool, thread_id)
+            .await
+            .expect("read ok")
+            .expect("thread exists");
+        let assistant = rows
+            .iter()
+            .find(|m| m.role == "assistant")
+            .expect("assistant row");
+
+        let proposals: Vec<&MessageSegment> = assistant
+            .segments
+            .iter()
+            .filter(|s| matches!(s, MessageSegment::Proposal { .. }))
+            .collect();
+        assert_eq!(
+            proposals.len(),
+            1,
+            "a twice-parked Run rehydrates ONE proposal segment, not one per park"
+        );
+        match proposals[0] {
+            MessageSegment::Proposal { proposal_id, .. } => assert_eq!(
+                proposal_id, "proposal-second",
+                "the surviving segment is the MOST-RECENT decided Proposal"
+            ),
+            other => panic!("expected a proposal segment, got {other:?}"),
+        }
     }
 }
