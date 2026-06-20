@@ -226,6 +226,68 @@ describe("refresh-durable hydration", () => {
 		await runtime.dispose();
 	});
 
+	it("attaches the decided-proposal SEGMENT to the reloaded message, so the pill survives reload (ADR-0044/0045)", async () => {
+		// B2 regression: the segment-only AssistantBubble (ADR-0045) renders the decided
+		// card ONLY from a `proposal` segment. Rehydration must attach that segment AFTER
+		// the messages are in the store (a rehydrated decided proposal has no live
+		// RunRecord, so attachProposalSegment locates the message by scanning run ids —
+		// which is empty until loadThreadMessages runs). Asserting only the proposals map
+		// (the prior tests) missed this: the map write succeeds even with no message present.
+		const result: ThreadGetResult = {
+			thread_id: "tSeg",
+			title: "T",
+			messages: [
+				{
+					id: "m2",
+					role: "assistant",
+					status: "completed",
+					run_id: "rs",
+					text: "Logged.",
+					tool_calls: [],
+					proposal: {
+						proposal_id: "p-seg",
+						mutation_kind: "create_journal_entry",
+						status: "accepted",
+					},
+				},
+			],
+		};
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			threadGet: (id) =>
+				id === "tSeg" ? Effect.succeed(result) : Effect.die("unknown thread"),
+			subscribeRun: () => Stream.empty,
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await hydrateThread(runtime, "tSeg");
+
+		// The reloaded assistant message's timeline carries the proposal marker (legacy
+		// order: text, then proposal — slice 3 moves it to its true run_steps slot).
+		const assistant = getChatState().threads.tSeg?.messages[0];
+		expect(assistant?.segments).toContainEqual({
+			kind: "proposal",
+			runId: "rs",
+		});
+
+		await runtime.dispose();
+	});
+
 	it("reconstructs a REJECTED decided Proposal with rejected status (ADR-0044)", async () => {
 		// Pins the rejected arm of the status ternary: a rejected wire outcome must
 		// rehydrate as "rejected" (the "Dismissed." card), not collapse to accepted.

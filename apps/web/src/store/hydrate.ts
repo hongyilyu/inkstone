@@ -16,6 +16,7 @@ import {
 	type PendingProposal,
 	prependHistory,
 	rehydrateDecidedProposal,
+	type Segment,
 	setHydrationStatus,
 	type ToolCall,
 } from "./chat.js";
@@ -45,6 +46,18 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 		status: toToolCallStatus(tc.status),
 		arg: tc.arg,
 	}));
+	// Build the timeline from the legacy wire buckets in LEGACY order (ADR-0045): all
+	// tool_call segments, then a text segment if any. The proposal segment is appended
+	// by `rehydrateDecidedProposals` (skip-if-present). Reload therefore still
+	// mis-orders this slice; slice 3 carries `segments[]` on the wire and reads the
+	// true run_steps order directly.
+	const segments: Segment[] = toolCalls.map((call) => ({
+		kind: "tool_call",
+		call,
+	}));
+	if (view.text !== "") {
+		segments.push({ kind: "text", text: view.text });
+	}
 	return {
 		id: view.id,
 		role,
@@ -52,6 +65,7 @@ export function toMessage(view: ThreadGetResult["messages"][number]): Message {
 		text: view.text,
 		run_id: view.run_id,
 		toolCalls,
+		segments,
 	};
 }
 
@@ -113,17 +127,24 @@ export function hydrateThread(
 		const client = yield* WsClient;
 		const result = yield* client.threadGet(threadId);
 		const messages = result.messages.map(toMessage);
-		// Reconstruct decided Proposals (ADR-0044) so the settled card ("Applied.")
-		// survives reload. Skip-if-present, so it never clobbers a live pending one
-		// — safe in both the became-live and normal paths below.
-		rehydrateDecidedProposals(result.messages);
 		// Re-read state AFTER the await: a send during the fetch window may have turned this thread live.
 		if (threadBecameLive(threadId)) {
 			// Keep the live turn intact; fold history in front and do NOT resubscribe a settled history run.
 			prependHistory(threadId, messages);
+			// Reconstruct decided Proposals (ADR-0044) AFTER the history is in the store
+			// (see normal path below for why position matters).
+			rehydrateDecidedProposals(result.messages);
 			return "ready" as const;
 		}
 		loadThreadMessages(threadId, messages);
+		// Reconstruct decided Proposals (ADR-0044) so the settled card ("Applied.")
+		// survives reload. Runs AFTER loadThreadMessages: it attaches the `proposal`
+		// SEGMENT to the run's assistant message (the segment-only bubble renders the
+		// decided card ONLY from that segment, ADR-0045), and a rehydrated decided
+		// proposal has no live RunRecord, so the message must already be in the store
+		// for `attachProposalSegment` to locate it. Skip-if-present, so it never
+		// clobbers a live pending one — safe in both this and the became-live path.
+		rehydrateDecidedProposals(result.messages);
 		for (const message of messages) {
 			if (message.status === "streaming" && message.run_id !== "") {
 				startRunStream(runtime, threadId, message.run_id);

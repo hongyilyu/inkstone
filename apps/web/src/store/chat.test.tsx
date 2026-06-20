@@ -4,11 +4,17 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "./bridge.js";
 import {
 	appendUserMessage,
+	applyEvent,
+	attachRun,
+	beginRunSubscription,
+	concatText,
 	getChatState,
 	type Message,
 	prependHistory,
 	resetChatStore,
+	type Segment,
 	seedAssistantMessage,
+	setPendingProposal,
 } from "./chat.js";
 
 // Stub WsClient backed by an in-memory Queue — see docs/design/web-store-tests.md
@@ -338,6 +344,7 @@ describe("prependHistory", () => {
 		status: "completed",
 		text,
 		run_id: run,
+		segments: text !== "" ? [{ kind: "text", text }] : [],
 	});
 
 	it("folds fetched history in front of the live turn, skipping runs already present", () => {
@@ -374,5 +381,164 @@ describe("prependHistory", () => {
 		appendUserMessage("t2", live("u", "r", "u"));
 		prependHistory("t2", [live("dup", "r", "dup")]);
 		expect(getChatState().threads.t2?.messages.map((m) => m.id)).toEqual(["u"]);
+	});
+});
+
+describe("segment timeline (ADR-0045)", () => {
+	/** Seed a live assistant turn bound to `runId`, snapshot armed (the live-send shape). */
+	function seedRun(threadId: string, runId: string): void {
+		const id = "a-seg";
+		seedAssistantMessage(threadId, {
+			id,
+			role: "assistant",
+			status: "streaming",
+			text: "",
+			run_id: "",
+		});
+		attachRun(threadId, id, runId);
+		beginRunSubscription(threadId, runId);
+	}
+
+	function segmentsOf(threadId: string, runId: string): readonly Segment[] {
+		const msg = getChatState().threads[threadId]?.messages.find(
+			(m) => m.run_id === runId,
+		);
+		return msg?.segments ?? [];
+	}
+
+	it("orders segments by event arrival; post-proposal text opens a NEW segment", () => {
+		seedRun("tSeg", "run-seg");
+
+		// The screenshot scenario, live: text → search(started→completed) → propose → reply.
+		applyEvent("tSeg", "run-seg", { kind: "text_delta", delta: "a" });
+		applyEvent("tSeg", "run-seg", {
+			kind: "tool_call",
+			tool_call_id: "tc",
+			name: "search_entities",
+			status: "started",
+		});
+		applyEvent("tSeg", "run-seg", {
+			kind: "tool_call",
+			tool_call_id: "tc",
+			name: "search_entities",
+			status: "completed",
+		});
+		setPendingProposal({
+			proposal_id: "p-seg",
+			run_id: "run-seg",
+			mutation_kind: "create_journal_entry",
+			payload: null,
+			rationale: null,
+			status: "pending",
+		});
+		// The post-proposal delta is NOT armed (the first delta disarmed it) and the
+		// trailing segment is a proposal, so "b" must open a NEW text segment.
+		applyEvent("tSeg", "run-seg", { kind: "text_delta", delta: "b" });
+
+		expect(segmentsOf("tSeg", "run-seg")).toEqual([
+			{ kind: "text", text: "a" },
+			{
+				kind: "tool_call",
+				call: { id: "tc", name: "search_entities", status: "completed" },
+			},
+			{ kind: "proposal", runId: "run-seg" },
+			{ kind: "text", text: "b" },
+		]);
+	});
+
+	it("a resume cumulative snapshot reconciles multiple pre-park text runs without duplicating the prefix (B1)", () => {
+		// B1 regression: a turn with ≥2 pre-park text runs (text → tool → text → park →
+		// resume). Core's resume snapshot is the CUMULATIVE concat of ALL the turn's text
+		// (group_concat, select_run_snapshot), delivered as the armed first delta. The
+		// prior rule replaced only the LAST text segment, leaving the earlier one in place
+		// → concatText duplicated the prefix ("First. " + "First. Second. "). The fix
+		// collapses every text segment into the single snapshot at the first text slot,
+		// preserving the interleaved tool/proposal positions.
+		seedRun("tB1", "run-b1");
+
+		applyEvent("tB1", "run-b1", { kind: "text_delta", delta: "First. " });
+		applyEvent("tB1", "run-b1", {
+			kind: "tool_call",
+			tool_call_id: "tc",
+			name: "search_entities",
+			status: "started",
+		});
+		applyEvent("tB1", "run-b1", {
+			kind: "tool_call",
+			tool_call_id: "tc",
+			name: "search_entities",
+			status: "completed",
+		});
+		// Second pre-park text run (disarmed APPEND opens a fresh segment after the tool).
+		applyEvent("tB1", "run-b1", { kind: "text_delta", delta: "Second. " });
+		setPendingProposal({
+			proposal_id: "p-b1",
+			run_id: "run-b1",
+			mutation_kind: "create_journal_entry",
+			payload: null,
+			rationale: null,
+			status: "pending",
+		});
+
+		// Resume re-subscribe re-arms the snapshot; its first delta is the cumulative text.
+		beginRunSubscription("tB1", "run-b1");
+		applyEvent("tB1", "run-b1", {
+			kind: "text_delta",
+			delta: "First. Second. ",
+		});
+		// The genuine reply opens a NEW text segment after the proposal marker.
+		applyEvent("tB1", "run-b1", { kind: "text_delta", delta: "Done." });
+		applyEvent("tB1", "run-b1", { kind: "done" });
+
+		const segs = segmentsOf("tB1", "run-b1");
+		// The pre-park prefix appears exactly once (no duplicated "First. ").
+		expect(segs).toEqual([
+			{ kind: "text", text: "First. Second. " },
+			{
+				kind: "tool_call",
+				call: { id: "tc", name: "search_entities", status: "completed" },
+			},
+			{ kind: "proposal", runId: "run-b1" },
+			{ kind: "text", text: "Done." },
+		]);
+		// The render-source invariant holds: concatText(segments) === the flat reply text.
+		const msg = getChatState().threads.tB1?.messages.find(
+			(m) => m.run_id === "run-b1",
+		);
+		expect(concatText(segs)).toBe(msg?.text);
+		expect(msg?.text).toBe("First. Second. Done.");
+	});
+
+	it("appends a proposal segment exactly once per run (skip-if-present)", () => {
+		seedRun("tDup", "run-dup");
+		const proposal = {
+			proposal_id: "p-dup",
+			run_id: "run-dup",
+			mutation_kind: "create_journal_entry",
+			payload: null,
+			rationale: null,
+			status: "pending" as const,
+		};
+		setPendingProposal(proposal);
+		// A status flip re-attaches the same run's proposal; the segment must not double up.
+		setPendingProposal({ ...proposal, status: "accepted" });
+
+		const segs = segmentsOf("tDup", "run-dup");
+		expect(segs.filter((s) => s.kind === "proposal")).toHaveLength(1);
+	});
+});
+
+describe("concatText", () => {
+	it("concatenates only the text segments, in order", () => {
+		expect(
+			concatText([
+				{ kind: "text", text: "x" },
+				{
+					kind: "tool_call",
+					call: { id: "t", name: "n", status: "completed" },
+				},
+				{ kind: "text", text: "y" },
+			]),
+		).toBe("xy");
 	});
 });

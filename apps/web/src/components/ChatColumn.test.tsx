@@ -432,6 +432,51 @@ describe("ChatColumn", () => {
 		).toBeTruthy();
 	});
 
+	it("renders segments in timeline order: tool row, THEN proposal, THEN text (ADR-0045)", async () => {
+		const runtime = makeStubRuntime({ runId: "run-order", events: [] });
+		// A turn whose timeline is tool_call → proposal → text. The hardcoded bubble
+		// always put text before the proposal; segment-ordered render must honor this.
+		seedAssistantMessage("threadA", {
+			id: "a-order",
+			role: "assistant",
+			status: "completed",
+			text: "the reply text",
+			run_id: "r-order",
+			segments: [
+				{
+					kind: "tool_call",
+					call: { id: "tc", name: "search_entities", status: "completed" },
+				},
+				{ kind: "proposal", runId: "r-order" },
+				{ kind: "text", text: "the reply text" },
+			],
+		});
+		setPendingProposal({
+			proposal_id: "p-order",
+			run_id: "r-order",
+			mutation_kind: "apply_intent_graph",
+			payload: null,
+			rationale: null,
+			status: "accepted",
+		});
+
+		await renderFocused(runtime, "threadA");
+
+		const toolRow = screen.getByTestId("tool-call");
+		const proposal = document.querySelector('[data-proposal="r-order"]');
+		const text = screen.getByText("the reply text");
+		expect(proposal).not.toBeNull();
+		// tool row precedes proposal, proposal precedes text (DOCUMENT_POSITION_FOLLOWING = 4).
+		expect(
+			toolRow.compareDocumentPosition(proposal as Node) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(
+			(proposal as Node).compareDocumentPosition(text) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+	});
+
 	it("shows no copy button on a streaming assistant message", async () => {
 		const runtime = makeStubRuntime({ runId: "run-7", events: [] });
 		seedAssistantMessage("threadA", {

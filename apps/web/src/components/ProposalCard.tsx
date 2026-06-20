@@ -639,17 +639,17 @@ function SingleEntityProposalCard({
 
 	if (status === "accepted" || status === "rejected") {
 		const accepted = status === "accepted";
+		// Settled inline in the turn timeline next to tool rows, so it wears the
+		// ToolCallRow pill chrome (ADR-0045) rather than the bordered Card.
 		return (
-			<Card
+			<div
 				data-proposal={proposal.run_id}
 				data-proposal-status={status}
-				className="flex items-center gap-2 px-4 py-2.5 text-sm text-muted-foreground motion-safe:transition-opacity motion-safe:duration-200"
+				className="inline-flex w-fit max-w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm font-medium text-muted-foreground motion-safe:transition-opacity motion-safe:duration-200"
 			>
-				{accepted ? (
-					<Check className="size-4 text-card-foreground/60" aria-hidden />
-				) : null}
+				{accepted ? <Check className="size-4 shrink-0" aria-hidden /> : null}
 				<span aria-live="polite">{accepted ? acceptedCopy : rejectedCopy}</span>
-			</Card>
+			</div>
 		);
 	}
 
@@ -1315,20 +1315,20 @@ function IntentGraphReviewCard({
 	const { status } = proposal;
 	if (status === "accepted" || status === "rejected") {
 		const accepted = status === "accepted";
+		// Settled inline in the turn timeline next to tool rows, so it wears the
+		// ToolCallRow pill chrome (ADR-0045) rather than the bordered Card.
 		return (
-			<Card
+			<div
 				data-proposal={proposal.run_id}
 				data-proposal-status={status}
 				data-proposal-kind="apply_intent_graph"
-				className="flex items-center gap-2 px-4 py-2.5 text-sm text-muted-foreground motion-safe:transition-opacity motion-safe:duration-200"
+				className="inline-flex w-fit max-w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm font-medium text-muted-foreground motion-safe:transition-opacity motion-safe:duration-200"
 			>
-				{accepted ? (
-					<Check className="size-4 text-card-foreground/60" aria-hidden />
-				) : null}
+				{accepted ? <Check className="size-4 shrink-0" aria-hidden /> : null}
 				<span aria-live="polite">
 					{accepted ? GRAPH_VIEW.acceptedCopy : GRAPH_VIEW.rejectedCopy}
 				</span>
-			</Card>
+			</div>
 		);
 	}
 

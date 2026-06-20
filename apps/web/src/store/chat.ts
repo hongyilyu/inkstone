@@ -12,6 +12,18 @@ export interface ToolCall {
 	readonly arg?: string;
 }
 
+/**
+ * One item in an assistant turn's ordered timeline (ADR-0045): a contiguous run
+ * of text, a tool-call boundary, or a positional marker for the Proposal card.
+ * The `proposal` segment carries ONLY `runId` — the {@link PendingProposal} map
+ * stays the source of interactive state; this segment just says "the card renders
+ * HERE in the timeline". The union is left open for a future `reasoning` kind.
+ */
+export type Segment =
+	| { readonly kind: "text"; readonly text: string }
+	| { readonly kind: "tool_call"; readonly call: ToolCall }
+	| { readonly kind: "proposal"; readonly runId: string };
+
 /** The canonical live UI message; mirrors the wire `MessageView` shape. */
 export interface Message {
 	readonly id: string;
@@ -19,10 +31,54 @@ export interface Message {
 	readonly status: "streaming" | "completed" | "incomplete";
 	readonly text: string;
 	readonly run_id: string;
+	/**
+	 * The assistant turn's ordered timeline (ADR-0045) — the SOLE render source for
+	 * the bubble. Built incrementally (live) or from the wire fields (hydration); the
+	 * flat `text`/`toolCalls` below are kept consistent for the non-render consumers
+	 * (copy/search/retry) that read them, and `text` is also derivable via
+	 * {@link concatText}. User messages carry an empty timeline (they don't render it).
+	 */
+	readonly segments: readonly Segment[];
 	/** Tool calls observed during this assistant turn, in arrival order (ephemeral; ADR-0006). */
 	readonly toolCalls?: readonly ToolCall[];
 	/** Worker/provider failure message when a Run terminates with an `error` event (ADR-0006). */
 	readonly error?: string;
+}
+
+/** Concatenate the text of every `text` segment in order — the single source for the
+ * flat reply text the copy button, ⌘K search-match, and typing-indicator read (ADR-0045). */
+export function concatText(segments: readonly Segment[]): string {
+	let text = "";
+	for (const seg of segments) {
+		if (seg.kind === "text") text += seg.text;
+	}
+	return text;
+}
+
+/**
+ * A message as constructed by a caller (the bridge's optimistic seed, a test): the
+ * stored {@link Message} minus its required `segments`, which the store derives. A
+ * caller MAY supply `segments` explicitly to seed a specific timeline (hydration,
+ * tests); otherwise {@link withSegments} builds one from the flat `text`/`toolCalls`.
+ */
+export type MessageInput = Omit<Message, "segments"> & {
+	readonly segments?: readonly Segment[];
+};
+
+/** Normalize a {@link MessageInput} into a stored {@link Message}: keep an explicit
+ * `segments` if supplied, else derive the legacy-order timeline from the flat fields. */
+function withSegments(input: MessageInput): Message {
+	if (input.segments !== undefined) {
+		return { ...input, segments: input.segments };
+	}
+	const segments: Segment[] = [];
+	for (const call of input.toolCalls ?? []) {
+		segments.push({ kind: "tool_call", call });
+	}
+	if (input.text !== "") {
+		segments.push({ kind: "text", text: input.text });
+	}
+	return { ...input, segments };
 }
 
 /**
@@ -172,11 +228,17 @@ export function getRunThreadId(runId: string): string | undefined {
 
 /** Attach (or replace) the pending Proposal for `runId` and park its Run (ADR-0025): a parked Run has no live tail. */
 export function setPendingProposal(proposal: PendingProposal): void {
-	store.setState((s) => ({
-		...s,
-		runs: parkRun(s.runs, proposal.run_id),
-		proposals: { ...s.proposals, [proposal.run_id]: proposal },
-	}));
+	store.setState((s) => {
+		// Park the Run and write the proposals map exactly as before, THEN drop a
+		// `proposal` segment into the timeline (skip-if-present) — the seam where a
+		// Proposal enters the ordered turn (ADR-0045); it does not flow through applyEvent.
+		const parked: ChatState = {
+			...s,
+			runs: parkRun(s.runs, proposal.run_id),
+			proposals: { ...s.proposals, [proposal.run_id]: proposal },
+		};
+		return attachProposalSegment(parked, proposal.run_id);
+	});
 }
 
 /** Park `runId`'s record if it exists; a Proposal awaiting a decision has no live subscribe tail. */
@@ -220,10 +282,14 @@ export function rehydrateDecidedProposal(proposal: PendingProposal): void {
 		if (s.proposals[proposal.run_id] !== undefined) {
 			return s;
 		}
-		return {
+		const withProposal: ChatState = {
 			...s,
 			proposals: { ...s.proposals, [proposal.run_id]: proposal },
 		};
+		// Give the rehydrated card a timeline slot too (skip-if-present, ADR-0045).
+		// Appended at the END after the hydration-built segments (legacy order this
+		// slice; slice 3 moves it to its true run_steps position via the wire).
+		return attachProposalSegment(withProposal, proposal.run_id);
 	});
 }
 
@@ -238,21 +304,29 @@ export function clearProposal(runId: string): void {
 	});
 }
 
-export function appendUserMessage(threadId: string, message: Message): void {
+export function appendUserMessage(
+	threadId: string,
+	message: MessageInput,
+): void {
+	const normalized = withSegments(message);
 	store.setState((s) =>
 		withThread(s, threadId, (t) => ({
 			...t,
-			messages: [...t.messages, message],
+			messages: [...t.messages, normalized],
 		})),
 	);
 }
 
 /** Append a live (streaming) assistant message before the run id is known; {@link attachRun} promotes it. */
-export function seedAssistantMessage(threadId: string, message: Message): void {
+export function seedAssistantMessage(
+	threadId: string,
+	message: MessageInput,
+): void {
+	const normalized = withSegments(message);
 	store.setState((s) =>
 		withThread(s, threadId, (t) => ({
 			...t,
-			messages: [...t.messages, message],
+			messages: [...t.messages, normalized],
 		})),
 	);
 }
@@ -357,6 +431,148 @@ function settleRunningToolCalls(
 	);
 }
 
+// ── Segment timeline builders (ADR-0045) ──────────────────────────────────────
+// The web mirror of Core's run_steps sequencer: each Run Event extends the ordered
+// `segments[]` so the live render is the same shape the reload will read (slice 3).
+
+/**
+ * Thread a `text_delta` into the timeline (ADR-0045), mirroring the flat-text
+ * SET-vs-APPEND rule (ADR-0022) so `concatText(segments) === flat text` always holds:
+ *
+ * - **APPEND** (disarmed tail): extend the OPEN trailing text segment; if the trailing
+ *   segment is non-text (a tool/proposal just sealed the run) or the timeline is empty,
+ *   OPEN a fresh text segment — the web mirror of Core's open-on-first-delta.
+ * - **SET** (armed cumulative snapshot): the delta is the cumulative concat of ALL the
+ *   turn's text so far (`group_concat`, no boundary markers — `select_run_snapshot`), so
+ *   it replaces EVERY existing text segment, not just the trailing one. Collapse all text
+ *   segments into ONE carrying the snapshot at the position of the FIRST text segment, and
+ *   drop the rest — PRESERVING the interleaved tool_call/proposal segments' order. If no
+ *   text segment exists yet, OPEN one at the end. Replacing only the last text segment (the
+ *   prior rule) left earlier text segments in place, so a post-park resume snapshot that
+ *   re-includes pre-park prose DUPLICATED it (concatText = "A" + "A B" ≠ flat "A B").
+ */
+function appendTextSegment(
+	segments: readonly Segment[],
+	delta: string,
+	armed: boolean,
+): readonly Segment[] {
+	if (armed) {
+		return setCumulativeText(segments, delta);
+	}
+	const last = segments[segments.length - 1];
+	if (last?.kind === "text") {
+		return [
+			...segments.slice(0, -1),
+			{ kind: "text", text: last.text + delta },
+		];
+	}
+	return [...segments, { kind: "text", text: delta }];
+}
+
+/**
+ * Reconcile a cumulative-snapshot SET into the timeline: the snapshot is the WHOLE
+ * turn's text, so the result has exactly one text segment carrying it (at the first
+ * existing text position) and keeps every non-text segment in its place. With no text
+ * segment yet, the snapshot opens one at the end. This is what makes
+ * `concatText(segments) === snapshot` hold even when the turn had multiple pre-snapshot
+ * text runs (text→tool→text→park→resume) — the duplicated-prefix case the prior
+ * last-text-only rule missed.
+ */
+function setCumulativeText(
+	segments: readonly Segment[],
+	snapshot: string,
+): readonly Segment[] {
+	const firstTextIndex = segments.findIndex((seg) => seg.kind === "text");
+	if (firstTextIndex === -1) {
+		return [...segments, { kind: "text", text: snapshot }];
+	}
+	const result: Segment[] = [];
+	for (let i = 0; i < segments.length; i++) {
+		const seg = segments[i];
+		if (i === firstTextIndex) {
+			result.push({ kind: "text", text: snapshot });
+		} else if (seg.kind !== "text") {
+			result.push(seg);
+		}
+		// Drop every other text segment — its content is already in the snapshot.
+	}
+	return result;
+}
+
+/** Upsert a `tool_call` segment by call id (ADR-0045): a new id appends a fresh
+ * segment at the end of the timeline; a known id flips its call's status in place. */
+function upsertToolSegment(
+	segments: readonly Segment[],
+	call: ToolCall,
+): readonly Segment[] {
+	const found = segments.some(
+		(seg) => seg.kind === "tool_call" && seg.call.id === call.id,
+	);
+	if (!found) {
+		return [...segments, { kind: "tool_call", call }];
+	}
+	return segments.map((seg) =>
+		seg.kind === "tool_call" && seg.call.id === call.id
+			? { kind: "tool_call", call: { ...seg.call, status: call.status } }
+			: seg,
+	);
+}
+
+/** Settle any `running` tool_call SEGMENT to `terminal` when its Run ends (the
+ * segment-aware twin of {@link settleRunningToolCalls}; the lost-boundary case). */
+function settleRunningToolSegments(
+	segments: readonly Segment[],
+	terminal: "completed" | "error",
+): readonly Segment[] {
+	return segments.map((seg) =>
+		seg.kind === "tool_call" && seg.call.status === "running"
+			? { kind: "tool_call", call: { ...seg.call, status: terminal } }
+			: seg,
+	);
+}
+
+/** Append a `proposal` segment for `runId` at the current end of the timeline,
+ * unless one is already present (skip-if-present): the seam where a Proposal enters
+ * the timeline (it does NOT flow through {@link applyEvent}) — see {@link setPendingProposal}. */
+function appendProposalSegment(
+	segments: readonly Segment[],
+	runId: string,
+): readonly Segment[] {
+	if (segments.some((seg) => seg.kind === "proposal")) {
+		return segments;
+	}
+	return [...segments, { kind: "proposal", runId }];
+}
+
+/** Attach a `proposal` segment (skip-if-present) to the assistant message owning
+ * `runId` within its thread — the {@link setPendingProposal} / {@link
+ * rehydrateDecidedProposal} timeline seam, shared so both enter the timeline identically.
+ * The owning thread is the run→thread index when a record exists (live), else a scan
+ * of message run ids (a rehydrated decided proposal on a settled Run has no record). */
+function attachProposalSegment(s: ChatState, runId: string): ChatState {
+	const threadId = s.runs[runId]?.threadId ?? threadIdForRun(s, runId);
+	if (threadId === undefined) {
+		return s;
+	}
+	return updateRunMessage(s, threadId, runId, (m) => ({
+		...m,
+		segments: appendProposalSegment(m.segments, runId),
+	}));
+}
+
+/** The thread holding an assistant message for `runId` (the rehydration fallback when
+ * no live {@link RunRecord} exists); `undefined` if no message references the run. */
+function threadIdForRun(s: ChatState, runId: string): string | undefined {
+	for (const [id, thread] of Object.entries(s.threads)) {
+		if (
+			thread.messages.some((m) => m.role === "assistant" && m.run_id === runId)
+		) {
+			return id;
+		}
+	}
+	return undefined;
+}
+
 /** Mark `runId`'s record terminal; no-op if no record exists. The keyed companion to clearing `activeRunId`. */
 function terminateRun(
 	runs: ChatState["runs"],
@@ -431,11 +647,14 @@ export function applyEvent(
 
 		if (event.kind === "text_delta") {
 			// Armed (or no record yet) → the cumulative snapshot SETs; an attached,
-			// disarmed tail APPENDs (ADR-0022 snapshot/tail boundary).
+			// disarmed tail APPENDs (ADR-0022 snapshot/tail boundary). The same armed
+			// bit drives the open-trailing-text segment (ADR-0045); the flat `text`
+			// stays consistent for the non-render consumers.
 			const armed = s.runs[runId]?.snapshotArmed ?? true;
 			const next = updateRunMessage(s, threadId, runId, (m) => ({
 				...m,
 				text: armed ? event.delta : m.text + event.delta,
+				segments: appendTextSegment(m.segments, event.delta, armed),
 			}));
 			// Disarm the snapshot bit — text_delta's OWN concern, fits neither helper.
 			const run = next.runs[runId];
@@ -451,6 +670,12 @@ export function applyEvent(
 		if (event.kind === "tool_call") {
 			// Upsert: `started` appends a `running` row, terminal flips the matching row.
 			const status = event.status === "started" ? "running" : event.status;
+			const call: ToolCall = {
+				id: event.tool_call_id,
+				name: event.name,
+				status,
+				arg: event.arg,
+			};
 			return updateRunMessage(s, threadId, runId, (m) => {
 				const existing = m.toolCalls ?? [];
 				const found = existing.some((tc) => tc.id === event.tool_call_id);
@@ -458,16 +683,12 @@ export function applyEvent(
 					? existing.map((tc) =>
 							tc.id === event.tool_call_id ? { ...tc, status } : tc,
 						)
-					: [
-							...existing,
-							{
-								id: event.tool_call_id,
-								name: event.name,
-								status,
-								arg: event.arg,
-							},
-						];
-				return { ...m, toolCalls };
+					: [...existing, call];
+				return {
+					...m,
+					toolCalls,
+					segments: upsertToolSegment(m.segments, call),
+				};
 			});
 		}
 
@@ -478,6 +699,7 @@ export function applyEvent(
 				status: "incomplete",
 				error: event.message,
 				toolCalls: settleRunningToolCalls(m.toolCalls, "error"),
+				segments: settleRunningToolSegments(m.segments, "error"),
 			}));
 			return settleTerminal(next, threadId, runId);
 		}
@@ -488,6 +710,7 @@ export function applyEvent(
 				...m,
 				status: "incomplete",
 				toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
+				segments: settleRunningToolSegments(m.segments, "completed"),
 			}));
 			return settleTerminal(next, threadId, runId);
 		}
@@ -497,6 +720,7 @@ export function applyEvent(
 			...m,
 			status: "completed",
 			toolCalls: settleRunningToolCalls(m.toolCalls, "completed"),
+			segments: settleRunningToolSegments(m.segments, "completed"),
 		}));
 		return settleTerminal(next, threadId, runId);
 	});

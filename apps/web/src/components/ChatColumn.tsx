@@ -15,7 +15,10 @@ import {
 	startProposalStream,
 } from "@/store/bridge";
 import {
+	concatText,
 	type Message,
+	type Segment,
+	type ToolCall,
 	useActiveRunId,
 	useHydrationStatus,
 	useThreadMessages,
@@ -382,6 +385,36 @@ function UserBubble({
 	);
 }
 
+/** A maximal run of consecutive `tool_call` segments collapsed for one
+ * {@link ToolActivity} (so grouping/`+N` overflow is preserved), or a single
+ * `text`/`proposal` segment — the unit the bubble renders in timeline order (ADR-0045). */
+type RenderGroup =
+	| { readonly kind: "tools"; readonly calls: ToolCall[] }
+	| { readonly kind: "text"; readonly text: string }
+	| { readonly kind: "proposal"; readonly runId: string };
+
+/** Fold the ordered timeline into render groups: consecutive `tool_call` segments
+ * coalesce into ONE group (existing grouping + tests stay intact); text/proposal
+ * segments render between such runs, preserving event-arrival order. */
+function toRenderGroups(segments: readonly Segment[]): RenderGroup[] {
+	const groups: RenderGroup[] = [];
+	for (const seg of segments) {
+		if (seg.kind === "tool_call") {
+			const last = groups[groups.length - 1];
+			if (last?.kind === "tools") {
+				last.calls.push(seg.call);
+			} else {
+				groups.push({ kind: "tools", calls: [seg.call] });
+			}
+		} else if (seg.kind === "text") {
+			groups.push({ kind: "text", text: seg.text });
+		} else {
+			groups.push({ kind: "proposal", runId: seg.runId });
+		}
+	}
+	return groups;
+}
+
 function AssistantBubble({
 	message,
 	highlighted = false,
@@ -391,44 +424,62 @@ function AssistantBubble({
 	highlighted?: boolean;
 	onRetry?: () => void;
 }) {
-	const toolCalls = message.toolCalls ?? [];
-	const toolRunning = toolCalls.some((tc) => tc.status === "running");
+	// `segments` is the SOLE render source (ADR-0045); the flat reply text the copy
+	// button / typing-indicator read derives through `concatText` — one source of truth.
+	const text = concatText(message.segments);
+	const toolRunning = message.segments.some(
+		(seg) => seg.kind === "tool_call" && seg.call.status === "running",
+	);
+	const groups = toRenderGroups(message.segments);
 	return (
 		<li
 			data-role="assistant"
 			data-message-id={message.id}
 			className="group flex flex-col items-start gap-2"
 		>
-			{toolCalls.length > 0 && <ToolActivity toolCalls={toolCalls} />}
-			{message.status === "streaming" &&
-				message.text === "" &&
-				!toolRunning && (
+			{/* Render the turn's pieces in event-arrival order (ADR-0045): tool rows,
+			    the Proposal, and text interleave by their timeline position, not a
+			    fixed JSX child order. The decided "Applied." pill therefore sits where
+			    the Proposal happened — above a reply that followed it. */}
+			{groups.map((group, i) =>
+				group.kind === "tools" ? (
+					<ToolActivity
+						// biome-ignore lint/suspicious/noArrayIndexKey: timeline position is the identity here
+						key={`tools-${i}`}
+						toolCalls={group.calls}
+					/>
+				) : group.kind === "proposal" ? (
+					<AssistantProposals
+						// biome-ignore lint/suspicious/noArrayIndexKey: timeline position is the identity here
+						key={`proposal-${i}`}
+						runId={group.runId}
+					/>
+				) : (
 					<div
-						data-testid="typing-indicator"
-						role="status"
-						aria-label="Assistant is typing"
-						className="flex items-center gap-1 px-1 py-2"
+						// biome-ignore lint/suspicious/noArrayIndexKey: timeline position is the identity here
+						key={`text-${i}`}
+						data-highlighted={highlighted || undefined}
+						className="search-jump-target prose prose-pink dark:prose-invert relative max-w-none rounded-xl"
 					>
-						<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite]" />
-						<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite] motion-safe:[animation-delay:0.2s]" />
-						<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite] motion-safe:[animation-delay:0.4s]" />
+						<ChatMarkdown text={group.text} />
 					</div>
-				)}
-			{message.text.length > 0 && (
+				),
+			)}
+			{message.status === "streaming" && text === "" && !toolRunning && (
 				<div
-					data-highlighted={highlighted || undefined}
-					className="search-jump-target prose prose-pink dark:prose-invert relative max-w-none rounded-xl"
+					data-testid="typing-indicator"
+					role="status"
+					aria-label="Assistant is typing"
+					className="flex items-center gap-1 px-1 py-2"
 				>
-					<ChatMarkdown text={message.text} />
+					<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite]" />
+					<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite] motion-safe:[animation-delay:0.2s]" />
+					<span className="size-2 rounded-full bg-muted-foreground motion-safe:[animation:typing-pulse_1.2s_ease-in-out_infinite] motion-safe:[animation-delay:0.4s]" />
 				</div>
 			)}
-			{/* The proposal outcome ("Applied.") sits ABOVE the copy button so the
-			    decided indicator reads as part of the turn's result, not below its
-			    copy affordance. */}
-			{message.run_id !== "" && <AssistantProposals runId={message.run_id} />}
-			{message.status === "completed" && message.text.length > 0 && (
+			{message.status === "completed" && text.length > 0 && (
 				<div className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-					<CopyButton text={message.text} />
+					<CopyButton text={text} />
 				</div>
 			)}
 			{message.status === "incomplete" && (
