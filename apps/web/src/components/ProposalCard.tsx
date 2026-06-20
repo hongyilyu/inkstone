@@ -49,6 +49,7 @@ import {
 	type CreatePersonDraft,
 	type CreateProjectDraft,
 	type CreateTodoDraft,
+	isGtdEditKind,
 	overlayCreatePerson,
 	overlayCreateProject,
 	overlayCreateTodo,
@@ -568,8 +569,7 @@ function SingleEntityProposalCard({
 	const showPersonForm = isCreatePerson || isUpdatePerson;
 	const showProjectForm = isCreateProject || isUpdateProject;
 	// A GTD kind that surfaces an inline edit form (the creates + the updates).
-	const isGtdEdit =
-		isCreateTodo || showPersonForm || showProjectForm || isUpdateTodo;
+	const isGtdEdit = isGtdEditKind(mutation_kind);
 	// The single resolved presentation entry: header glyph, accept-button glyph,
 	// summary, review/accepted/rejected copy, accept/reject labels (+ busy variants),
 	// and edit-ability all read from here instead of a per-kind ternary.

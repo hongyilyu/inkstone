@@ -17,6 +17,51 @@ import { localNowString } from "@/lib/libraryItems";
 // fields, or wrong-typed — so every read degrades like the card's own
 // `textField`/`objectField` helpers and never throws.
 
+// ---------------------------------------------------------------------------
+// GTD edit-variant resolver — the SINGLE source of GTD-editability. The card's
+// editor-selector (`isGtdEditKind`) and the GtdEditForm's per-kind dispatch both
+// read it, so there is no second hand-maintained GTD kind list to drift.
+//
+// The 6 GTD wire kinds collapse to 4 behavior variants: update_person and
+// update_project are FULL-DOCUMENT REPLACE whose seed/overlay are pure
+// delegations to their create twins (seedUpdatePerson/overlayUpdatePerson, …), so
+// they share the create variant — nothing downstream distinguishes the twins.
+// ---------------------------------------------------------------------------
+
+export type GtdEditVariant =
+	| "todo_create"
+	| "todo_update"
+	| "person"
+	| "project";
+
+const GTD_EDIT_VARIANTS: Record<string, GtdEditVariant> = {
+	create_todo: "todo_create",
+	update_todo: "todo_update",
+	create_person: "person",
+	update_person: "person",
+	create_project: "project",
+	update_project: "project",
+};
+
+/**
+ * Resolve a wire `mutation_kind` to its GTD edit variant, or `null` for every
+ * non-GTD kind. Gate on OWN membership (`Object.hasOwn`), not a bare `?? null`:
+ * `kind` is an unvalidated wire string (ADR-0014), and indexing the record with a
+ * prototype key ("toString", "constructor", …) would return an inherited
+ * Object.prototype member — truthy, so `?? null` would NOT fire and the key would
+ * wrongly read as editable (mirrors the `proposalView` guard in ProposalCard.tsx).
+ */
+export function gtdEditVariant(kind: string): GtdEditVariant | null {
+	return Object.hasOwn(GTD_EDIT_VARIANTS, kind)
+		? GTD_EDIT_VARIANTS[kind]
+		: null;
+}
+
+/** Whether a wire `mutation_kind` surfaces the GTD inline edit form. */
+export function isGtdEditKind(kind: string): boolean {
+	return gtdEditVariant(kind) !== null;
+}
+
 const TODO_STATUSES = ["active", "completed", "dropped"] as const;
 export type TodoEditStatus = (typeof TODO_STATUSES)[number];
 

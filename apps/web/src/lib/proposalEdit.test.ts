@@ -3,6 +3,9 @@ import {
 	type CreatePersonDraft,
 	type CreateProjectDraft,
 	type CreateTodoDraft,
+	type GtdEditVariant,
+	gtdEditVariant,
+	isGtdEditKind,
 	overlayCreatePerson,
 	overlayCreateProject,
 	overlayCreateTodo,
@@ -795,5 +798,70 @@ describe("proposalEdit — update_project", () => {
 			expect(proposed.name).toBe("Ship API v2 migration");
 			expect(proposed.entity_id).toBe("project-7");
 		});
+	});
+});
+
+// The single source of GTD-editability: `gtdEditVariant` maps the 6 GTD wire
+// kinds to 4 behavior variants (update_person/update_project collapse onto their
+// create twins), and `isGtdEditKind` is the boolean derived from it. The resolver
+// must reject every non-GTD kind — AND every prototype key ("toString",
+// "constructor", "__proto__", "hasOwnProperty") — with `null`; a bare `?? null`
+// would leak inherited Object.prototype members for the prototype keys.
+
+describe("gtdEditVariant / isGtdEditKind", () => {
+	const GTD_KINDS: ReadonlyArray<[string, GtdEditVariant]> = [
+		["create_todo", "todo_create"],
+		["update_todo", "todo_update"],
+		["create_person", "person"],
+		["update_person", "person"],
+		["create_project", "project"],
+		["update_project", "project"],
+	];
+
+	// Every kind the resolver must reject: real non-GTD wire kinds + the bare ""/
+	// nonsense, AND the Object.prototype keys that a bare `?? null` would leak.
+	const NULL_KINDS: ReadonlyArray<string> = [
+		"create_journal_entry",
+		"update_journal_entry",
+		"delete_todo",
+		"apply_intent_graph",
+		"",
+		"nonsense_kind",
+		"toString",
+		"constructor",
+		"__proto__",
+		"hasOwnProperty",
+	];
+
+	it.each(GTD_KINDS)("maps %s to its variant", (kind, variant) => {
+		expect(gtdEditVariant(kind)).toBe(variant);
+	});
+
+	it.each(GTD_KINDS)("isGtdEditKind is true for the GTD kind %s", (kind) => {
+		expect(isGtdEditKind(kind)).toBe(true);
+	});
+
+	it.each(NULL_KINDS)("returns null for the non-editable kind %s", (kind) => {
+		expect(gtdEditVariant(kind)).toBeNull();
+	});
+
+	it.each(
+		NULL_KINDS,
+	)("isGtdEditKind is false for the non-editable kind %s", (kind) => {
+		expect(isGtdEditKind(kind)).toBe(false);
+	});
+
+	it("isGtdEditKind(k) === (gtdEditVariant(k) !== null) across the full set", () => {
+		for (const [kind] of GTD_KINDS) {
+			expect(isGtdEditKind(kind)).toBe(gtdEditVariant(kind) !== null);
+		}
+		for (const kind of NULL_KINDS) {
+			expect(isGtdEditKind(kind)).toBe(gtdEditVariant(kind) !== null);
+		}
+	});
+
+	it("isGtdEditKind is true for exactly the 6 GTD kinds and false otherwise", () => {
+		expect(GTD_KINDS.filter(([kind]) => isGtdEditKind(kind))).toHaveLength(6);
+		expect(NULL_KINDS.filter((kind) => isGtdEditKind(kind))).toHaveLength(0);
 	});
 });
