@@ -120,6 +120,15 @@ export function resetNotificationHandlers(): void {
 	notificationHandlers.clear();
 }
 
+/**
+ * Unregister one method's handler (runtime disposal). A consumer tears down only
+ * its own handler — `resetNotificationHandlers` (clear-all) is for test isolation
+ * and would clobber sibling methods on the method-keyed channel.
+ */
+export function clearNotificationHandler(method: string): void {
+	notificationHandlers.delete(method);
+}
+
 // run/subscribe acknowledgement is not a pinned protocol shape; accept {} or {run_id}.
 const SubscribeAck = S.Struct({ run_id: S.optional(S.String) });
 

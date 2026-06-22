@@ -75,8 +75,14 @@ async fn read_until_method(
             return None;
         }
         let frame = match tokio::time::timeout(remaining, ws.next()).await {
-            // Timed out, socket closed, or an error: no wanted frame arrived.
-            Err(_) | Ok(None) | Ok(Some(Err(_))) => return None,
+            // Budget elapsed: the legitimate "no wanted frame arrived" outcome —
+            // the only case an absence assertion (`expect None`) should accept.
+            Err(_) => return None,
+            // Socket closed / read error is a TRANSPORT failure, not a quiet
+            // channel: make it loud so an absence assertion can't pass vacuously
+            // on a dead connection (CodeRabbit #210).
+            Ok(None) => panic!("socket closed before a `{want_method}` frame arrived"),
+            Ok(Some(Err(e))) => panic!("websocket read error awaiting `{want_method}`: {e}"),
             Ok(Some(Ok(f))) => f,
         };
         let Message::Text(text) = frame else {

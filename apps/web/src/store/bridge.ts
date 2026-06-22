@@ -4,8 +4,8 @@ import {
 	ThreadTitledNotification,
 } from "@inkstone/protocol";
 import {
+	clearNotificationHandler,
 	type RunId,
-	resetNotificationHandlers,
 	setNotificationHandler,
 	WsClient,
 	type WsError,
@@ -87,9 +87,10 @@ export function applyThreadTitled(
  * Wire the SDK's generic notification seam (ADR-0047) to the `["threads"]` cache
  * patch so the sidebar row re-titles live — no refetch. Decode-guards `params`
  * (the SDK passes raw `unknown`); a malformed frame is ignored, matching the
- * SDK's own decode-guard arms. Returns a disposer for the `__root.tsx` unmount.
- * The single-handler clear reuses `resetNotificationHandlers()` — there is one
- * app-edge consumer today, and the SDK exposes no per-method clear.
+ * SDK's own decode-guard arms. Returns a disposer for the `__root.tsx` unmount
+ * that clears ONLY this method's handler (`clearNotificationHandler`), so a
+ * future run-less consumer's handler survives this one's teardown — the
+ * method-keyed channel's teardown is method-scoped, not clear-all.
  */
 export function registerThreadTitledHandler(
 	queryClient: QueryClient,
@@ -101,7 +102,7 @@ export function registerThreadTitledHandler(
 		}
 		applyThreadTitled(queryClient, decoded.right);
 	});
-	return () => resetNotificationHandlers();
+	return () => clearNotificationHandler("thread/titled");
 }
 
 /** The outcome of a send — a discriminated result so callers learn of failure off the awaited promise. */

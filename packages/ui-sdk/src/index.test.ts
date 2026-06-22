@@ -10,6 +10,7 @@ import {
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsConn } from "ws";
 import {
+	clearNotificationHandler,
 	resetNotificationHandlers,
 	setNotificationHandler,
 	WsClient,
@@ -838,6 +839,65 @@ describe("WsClient", () => {
 		try {
 			const after = await Effect.runPromise(provide(server.url)(program));
 			expect(after).toEqual(expected);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("clearNotificationHandler removes only its method — siblings still dispatch", async () => {
+		// Register two methods, clear ONE, then push both frames. Only the
+		// surviving method's handler must fire — proving teardown is method-scoped,
+		// not clear-all (a mutation reverting to resetNotificationHandlers fails this).
+		const titled: unknown[] = [];
+		const other: unknown[] = [];
+
+		// Push both notifications once, on the FIRST thread/list only; a SECOND
+		// thread/list is a flush barrier — frames ahead of its response are all
+		// processed by the time it resolves (single-socket frame order).
+		let pushed = false;
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/list") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { threads: [] },
+					}),
+				);
+				if (!pushed) {
+					pushed = true;
+					ws.send(
+						JSON.stringify({
+							jsonrpc: "2.0",
+							method: "thread/titled",
+							params: { thread_id: "t1", title: "x" },
+						}),
+					);
+					ws.send(
+						JSON.stringify({
+							jsonrpc: "2.0",
+							method: "other/event",
+							params: { v: 1 },
+						}),
+					);
+				}
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			setNotificationHandler("thread/titled", (p) => titled.push(p));
+			setNotificationHandler("other/event", (p) => other.push(p));
+			// Dispose only "thread/titled" — "other/event" must keep dispatching.
+			clearNotificationHandler("thread/titled");
+			yield* client.threadList(); // triggers both pushes
+			yield* client.threadList(); // flush barrier
+		});
+
+		try {
+			await Effect.runPromise(provide(server.url)(program));
+			expect(titled).toEqual([]); // cleared method: handler gone
+			expect(other).toEqual([{ v: 1 }]); // sibling survives and dispatched
 		} finally {
 			await server.close();
 		}
