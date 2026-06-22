@@ -27,6 +27,11 @@
 pub enum Role {
     /// The Worker interpreter (`packages/worker`, `cli.ts`).
     Worker,
+    /// The one-shot title worker — the SAME program as [`Role::Worker`] (the
+    /// title-ness lives in the manifest, not a different binary), but with its
+    /// own `INKSTONE_TITLE_WORKER_CMD` override so it stays independently
+    /// injectable.
+    Titler,
     /// The Provider Helper in `login` mode (`packages/provider-helper`).
     ProviderLogin,
     /// The Provider Helper in `refresh` mode.
@@ -38,6 +43,7 @@ impl Role {
     fn env_var(self) -> &'static str {
         match self {
             Role::Worker => "INKSTONE_WORKER_CMD",
+            Role::Titler => "INKSTONE_TITLE_WORKER_CMD",
             Role::ProviderLogin => "INKSTONE_PROVIDER_LOGIN_CMD",
             Role::ProviderRefresh => "INKSTONE_PROVIDER_HELPER_CMD",
         }
@@ -47,7 +53,11 @@ impl Role {
     /// from the old inline spawn sites.
     fn tsx_default(self) -> &'static str {
         match self {
-            Role::Worker => "packages/worker/node_modules/.bin/tsx packages/worker/src/cli.ts",
+            // The Titler runs the SAME program as the Worker — title-ness is a
+            // manifest concern, not a different script.
+            Role::Worker | Role::Titler => {
+                "packages/worker/node_modules/.bin/tsx packages/worker/src/cli.ts"
+            }
             Role::ProviderLogin => {
                 "packages/provider-helper/node_modules/.bin/tsx packages/provider-helper/src/provider.ts login"
             }
@@ -62,7 +72,7 @@ impl Role {
     /// (`inkstone-provider-helper`), dispatched by [`Role::binary_args`].
     fn binary_name(self) -> &'static str {
         match self {
-            Role::Worker => "inkstone-worker",
+            Role::Worker | Role::Titler => "inkstone-worker",
             Role::ProviderLogin | Role::ProviderRefresh => "inkstone-provider-helper",
         }
     }
@@ -72,7 +82,7 @@ impl Role {
     /// (`login` / `refresh`), mirroring `provider.ts <mode>`.
     fn binary_args(self) -> Vec<String> {
         match self {
-            Role::Worker => Vec::new(),
+            Role::Worker | Role::Titler => Vec::new(),
             Role::ProviderLogin => vec!["login".to_string()],
             Role::ProviderRefresh => vec!["refresh".to_string()],
         }
@@ -230,7 +240,12 @@ mod tests {
     /// (c) An empty/whitespace-only override is an error per role.
     #[test]
     fn empty_override_is_error_per_role() {
-        for role in [Role::Worker, Role::ProviderLogin, Role::ProviderRefresh] {
+        for role in [
+            Role::Worker,
+            Role::Titler,
+            Role::ProviderLogin,
+            Role::ProviderRefresh,
+        ] {
             assert!(
                 resolve_with(role, Some(""), None, &exists_false).is_err(),
                 "empty override → error for {role:?}"
@@ -248,7 +263,12 @@ mod tests {
     /// (which tokenizes to zero words); this exercises the parse-failure branch.
     #[test]
     fn unbalanced_quote_override_is_error_per_role() {
-        for role in [Role::Worker, Role::ProviderLogin, Role::ProviderRefresh] {
+        for role in [
+            Role::Worker,
+            Role::Titler,
+            Role::ProviderLogin,
+            Role::ProviderRefresh,
+        ] {
             assert!(
                 resolve_with(role, Some("\"/unterminated/tsx script.ts"), None, &exists_false)
                     .is_err(),
@@ -329,5 +349,61 @@ mod tests {
             .expect("tsx fallback with no exe dir");
         assert_eq!(resolved.program, "packages/worker/node_modules/.bin/tsx");
         assert_eq!(resolved.args, vec!["packages/worker/src/cli.ts"]);
+    }
+
+    // --- Slice 2: the Titler role mirrors the Worker (same program, own env
+    // var). The title-ness lives in the manifest, not a different program — so
+    // `Role::Titler` resolves to the SAME tsx default and the SAME
+    // `inkstone-worker` sibling binary as `Role::Worker`, but reads its own
+    // `INKSTONE_TITLE_WORKER_CMD` override. ---
+
+    /// The Titler owns its own override env var, distinct from the Worker's.
+    #[test]
+    fn titler_env_var_is_title_worker_cmd() {
+        assert_eq!(Role::Titler.env_var(), "INKSTONE_TITLE_WORKER_CMD");
+    }
+
+    /// Override wins over everything for the Titler too (ADR-0041 step 1),
+    /// shlex-parsed.
+    #[test]
+    fn titler_override_wins() {
+        let resolved = resolve_no_detection(Role::Titler, Some("/custom/titler --flag"));
+        assert_eq!(resolved.program, "/custom/titler");
+        assert_eq!(resolved.args, vec!["--flag"]);
+    }
+
+    /// No override + a sibling `inkstone-worker` present → that binary with no
+    /// argv (same sibling as the Worker; manifest arrives on stdin).
+    #[test]
+    fn titler_sibling_worker_binary_wins_over_tsx() {
+        let exe_dir = PathBuf::from("/opt/inkstone/bin");
+        let resolved = resolve_with(Role::Titler, None, Some(&exe_dir), &exists_true)
+            .expect("sibling worker resolves for titler");
+        assert_eq!(resolved.program, "/opt/inkstone/bin/inkstone-worker");
+        assert!(
+            resolved.args.is_empty(),
+            "Titler binary takes no argv (manifest on stdin) — got {:?}",
+            resolved.args
+        );
+    }
+
+    /// No override + no sibling → the SAME tsx default as the Worker (the
+    /// title-ness comes from the manifest, not a different program). Asserted
+    /// two ways: the literal pin (the byte-exact command) AND direct structural
+    /// equality with the Worker's own resolution — `ResolvedCommand: PartialEq`
+    /// covers both program and args, so a future divergence in either arm trips
+    /// the equality even if the literal pin were updated in step.
+    #[test]
+    fn titler_tsx_default_matches_worker() {
+        let resolved = resolve_no_detection(Role::Titler, None);
+        assert_eq!(resolved.program, "packages/worker/node_modules/.bin/tsx");
+        assert_eq!(resolved.args, vec!["packages/worker/src/cli.ts"]);
+
+        // Structural equality with the Worker arm — the Titler IS the Worker
+        // program (only its override env var differs). Reachable via `use
+        // super::*`; compares program AND args in one shot.
+        assert_eq!(resolved, resolve_no_detection(Role::Worker, None));
+        // The sibling-binary name agrees too (both probe `inkstone-worker`).
+        assert_eq!(Role::Titler.binary_name(), Role::Worker.binary_name());
     }
 }
