@@ -1,7 +1,21 @@
-import { Effect, Either, Fiber, Layer, Stream } from "effect";
-import { describe, expect, it } from "vitest";
+import {
+	Deferred,
+	Effect,
+	Either,
+	Fiber,
+	Layer,
+	Runtime,
+	Stream,
+} from "effect";
+import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsConn } from "ws";
-import { WsClient, WsClientConfig, WsClientLive } from "./index.js";
+import {
+	resetNotificationHandlers,
+	setNotificationHandler,
+	WsClient,
+	WsClientConfig,
+	WsClientLive,
+} from "./index.js";
 
 type WireRequest = {
 	id?: number;
@@ -37,6 +51,12 @@ const provide =
 		);
 
 describe("WsClient", () => {
+	// The notification-handler registry is module-global state; clear it between
+	// cases so a registered handler never leaks into another test.
+	afterEach(() => {
+		resetNotificationHandlers();
+	});
+
 	it("threadCreate returns the ids and subscribeRun streams the run's events after run/subscribe", async () => {
 		const threadId = "01999999-0000-7000-8000-000000000001";
 		const runId = "01234567-89ab-7def-8012-345678901234";
@@ -674,6 +694,150 @@ describe("WsClient", () => {
 			expect(captured?.proposal_id).toBe(proposalId);
 			expect(captured?.decision).toBe("accept");
 			expect(captured?.decision_idempotency_key).toBe("k1");
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("routes a registered notification method to its handler", async () => {
+		const threadId = "01999999-0000-7000-8000-000000000001";
+		const title = "Buying milk and other errands";
+
+		// On a benign request the server pushes an unsolicited (id-less)
+		// thread/titled notification frame.
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/list") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: req.id,
+						result: { threads: [] },
+					}),
+				);
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "thread/titled",
+						params: { thread_id: threadId, title },
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			// A Deferred completed by the registered handler; the program awaits it
+			// so the assertion runs only after the pushed frame is dispatched. The
+			// handler is invoked synchronously from onFrame (off-fiber), so complete
+			// the Deferred through the program's own runtime.
+			const received = yield* Deferred.make<unknown>();
+			const runtime = yield* Effect.runtime();
+			setNotificationHandler("thread/titled", (params) => {
+				Runtime.runFork(runtime)(Deferred.succeed(received, params));
+			});
+			// Trigger the push.
+			yield* client.threadList();
+			return yield* Deferred.await(received);
+		});
+
+		try {
+			const params = await Effect.runPromise(provide(server.url)(program));
+			expect(params).toEqual({ thread_id: threadId, title });
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("drops an unregistered notification method silently", async () => {
+		const expected = {
+			threads: [
+				{
+					id: "01999999-0000-7000-8000-000000000001",
+					title: "First thread",
+					last_activity_at: 1717200000000,
+				},
+			],
+		};
+
+		// The server pushes an unhandled notification, then answers a later
+		// request — proving the unknown frame neither threw nor tore down the loop.
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/list") {
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "thread/titled",
+						params: { thread_id: "whatever", title: "no handler" },
+					}),
+				);
+				ws.send(
+					JSON.stringify({ jsonrpc: "2.0", id: req.id, result: expected }),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			// No setNotificationHandler call: "thread/titled" is unregistered.
+			return yield* client.threadList();
+		});
+
+		try {
+			const result = await Effect.runPromise(provide(server.url)(program));
+			expect(result).toEqual(expected);
+		} finally {
+			await server.close();
+		}
+	});
+
+	it("a throwing notification handler does not tear down the socket", async () => {
+		const expected = {
+			threads: [
+				{
+					id: "01999999-0000-7000-8000-000000000001",
+					title: "First thread",
+					last_activity_at: 1717200000000,
+				},
+			],
+		};
+
+		// The first thread/list answer is followed by an unsolicited thread/titled
+		// notification whose registered handler throws; the server then answers a
+		// SECOND thread/list. If the throw escaped onFrame it would kill the
+		// receive loop and the follow-up request would never resolve.
+		const server = await makeServer((ws, req) => {
+			if (req.method === "thread/list") {
+				ws.send(
+					JSON.stringify({ jsonrpc: "2.0", id: req.id, result: expected }),
+				);
+				ws.send(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						method: "thread/titled",
+						params: {
+							thread_id: "01999999-0000-7000-8000-000000000001",
+							title: "boom title",
+						},
+					}),
+				);
+			}
+		});
+
+		const program = Effect.gen(function* () {
+			const client = yield* WsClient;
+			setNotificationHandler("thread/titled", () => {
+				throw new Error("boom");
+			});
+			// First request triggers the push that fires the throwing handler.
+			yield* client.threadList();
+			// A subsequent request must still resolve — proves onFrame's try/catch
+			// contained the throw and the receive loop kept running.
+			return yield* client.threadList();
+		});
+
+		try {
+			const after = await Effect.runPromise(provide(server.url)(program));
+			expect(after).toEqual(expected);
 		} finally {
 			await server.close();
 		}

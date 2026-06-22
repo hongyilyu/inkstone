@@ -97,6 +97,29 @@ export type ProposalNotification =
 			readonly status: "accepted" | "rejected";
 	  };
 
+// Generic by-method inbound-notification dispatch (ADR-0047): the Client half of
+// the run-less notification channel. A producer at the app edge registers a
+// handler for a method string; `onFrame`'s fallthrough routes any matching
+// non-`run/event`, non-`proposal/*` notification to it with raw `params`. The
+// SDK stays message-agnostic — it never decodes the payload or special-cases a
+// method, so a new run-less message is a registered handler, not an interface
+// change. Module-global, mirroring the `proposalQueue` state below; tests must
+// `resetNotificationHandlers()` between cases.
+const notificationHandlers = new Map<string, (params: unknown) => void>();
+
+/** Register (overwriting) a handler for an inbound notification `method`. */
+export function setNotificationHandler(
+	method: string,
+	handler: (params: unknown) => void,
+): void {
+	notificationHandlers.set(method, handler);
+}
+
+/** Clear all registered notification handlers (test isolation). */
+export function resetNotificationHandlers(): void {
+	notificationHandlers.clear();
+}
+
 // run/subscribe acknowledgement is not a pinned protocol shape; accept {} or {run_id}.
 const SubscribeAck = S.Struct({ run_id: S.optional(S.String) });
 
@@ -251,6 +274,17 @@ export const WsClientLive: Layer.Layer<WsClient, never, WsClientConfig> =
 						});
 					}
 					return;
+				}
+				// Generic fallthrough (ADR-0047): route any other notification to a
+				// registered by-method handler with raw `params`. An unregistered
+				// method stays a silent no-op (preserves the drop-unknown behavior).
+				// A throwing handler is swallowed so it can't tear down the receive
+				// loop — same defensive posture as the decode-guarded arms above.
+				const handler = notificationHandlers.get(frame.method);
+				if (handler !== undefined) {
+					try {
+						handler(frame.params);
+					} catch {}
 				}
 			};
 
