@@ -14,7 +14,12 @@
 //     Emit a whitespace-only text_delta ("   ") then done — sanitize → None, so
 //     Core keeps the prompt-derived placeholder (the placeholder-kept test).
 //
-//   (neither set)
+//   INKSTONE_TITLE_FIXTURE_HANG=1
+//     Emit ONE partial text_delta then BLOCK FOREVER — never emit done. Core's
+//     collector must time out, kill this worker (kill_on_drop), and keep the
+//     placeholder (the timeout test). The worker exits only when Core drops it.
+//
+//   (none set)
 //     Emit a default "Generated Title" then done.
 //
 // Node builtins ONLY (via ./transport.js, like slow-worker.ts) so it runs
@@ -34,6 +39,14 @@ const main = async (): Promise<void> => {
 	// Parse the manifest to mirror the real Worker's first move, but the fixture
 	// does not depend on any of its fields (the title is scripted via env).
 	JSON.parse(line);
+
+	// Hang mode: emit one partial delta, then never settle — no done, no exit.
+	// Core's collector must time out and kill us (kill_on_drop reaps the child).
+	const hang = process.env.INKSTONE_TITLE_FIXTURE_HANG;
+	if (hang !== undefined && hang.length > 0) {
+		emit({ kind: "text_delta", delta: "partial" });
+		await new Promise<void>(() => {}); // block forever — never resolves
+	}
 
 	const empty = process.env.INKSTONE_TITLE_FIXTURE_EMPTY;
 	const output = process.env.INKSTONE_TITLE_FIXTURE_OUTPUT;

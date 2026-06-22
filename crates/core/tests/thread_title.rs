@@ -192,6 +192,56 @@ fn whitespace_output_keeps_placeholder() {
     });
 }
 
+/// A title Worker that never finishes is killed at the timeout and the
+/// placeholder is kept — no hang, no leaked child. The `create` response returns
+/// immediately (the titler is detached), so the TEST itself completes fast even
+/// though the titler waits out its (low, env-set) timeout against a hung Worker.
+#[test]
+fn timeout_keeps_placeholder() {
+    let workspace = Workspace::new();
+    let creds_dir = workspace.path().join("credentials");
+    seed_codex_credential(&creds_dir);
+
+    let core = workspace
+        .core()
+        .worker_fixture("slow-worker.ts")
+        .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
+        .env("INKSTONE_TITLE_WORKER_CMD", fixture_cmd("title-worker.ts", &[]))
+        // The title Worker emits one partial delta then blocks forever.
+        .env("INKSTONE_TITLE_FIXTURE_HANG", "1")
+        // A short timeout so the titler gives up well within the test's wait.
+        .env("INKSTONE_TITLE_TIMEOUT_MS", "200")
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let prompt = "reconcile the vendor invoices";
+        let thread_id = create_thread(&mut ws, 1, prompt).await;
+
+        // Wait comfortably past the 200ms timeout. If the titler hadn't been
+        // time-bound, it would wait on the hung Worker forever; the title would
+        // still read as the placeholder (a hung Worker never updates), so the
+        // env seam + timeout fn (`title_timeout`) — exercised by the unit test —
+        // are what make the behavior, and the RED→GREEN, meaningful.
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let title = title_of(&mut ws, 100, &thread_id)
+            .await
+            .expect("created thread is in the feed");
+        assert_eq!(
+            title, prompt,
+            "titler timed out, kept the placeholder (never sanitized the partial output)"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
 /// With no credential the strict token gate returns before spawning the titler,
 /// so the placeholder stays.
 #[test]
