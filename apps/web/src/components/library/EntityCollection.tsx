@@ -91,10 +91,18 @@ export function EntityCollection({
 						<h1 className="font-bold text-2xl text-foreground tracking-tight">
 							{meta.plural}
 						</h1>
-						<span className="text-muted-foreground text-sm">
-							{ofKind.length}
-						</span>
-						{onNew ? (
+						{/* Hide the count on a failed read — a "0" beside the body's
+						    "Couldn't load…" would contradict it (the read FAILED, the
+						    collection isn't empty). */}
+						{isError ? null : (
+							<span className="text-muted-foreground text-sm">
+								{ofKind.length}
+							</span>
+						)}
+						{/* Suppress New while the read failed: the create editor's relation
+						    pickers source from this same (failed) list, so opening it offline
+						    would show empty People/Project options as if none exist. */}
+						{onNew && !isError ? (
 							<Button
 								variant="chip"
 								size="pill"

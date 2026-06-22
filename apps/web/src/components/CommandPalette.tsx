@@ -50,7 +50,7 @@ function useDebounced<T>(value: T, delayMs: number): T {
 export function CommandPalette() {
 	const open = useCommandOpen();
 	const navigate = useNavigate();
-	const { data: libraryItems } = useLibraryItems();
+	const { data: libraryItems, isError: libraryError } = useLibraryItems();
 	const [query, setQuery] = useState("");
 	const [active, setActive] = useState(0);
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -237,6 +237,15 @@ export function CommandPalette() {
 						aria-label="Results"
 						className="min-h-0 flex-1 overflow-y-auto p-2"
 					>
+						{/* The library read failed — say so rather than silently omitting
+						    People/Projects/Todos/Bookmarks as if there are none. Threads and
+						    Messages search independently and still work. */}
+						{libraryError ? (
+							<p className="px-3 pt-2 pb-1 text-destructive text-xs">
+								Couldn't load Library items — only Threads and Messages are
+								searchable right now.
+							</p>
+						) : null}
 						{flat.length === 0 ? (
 							<p className="px-3 py-10 text-center text-muted-foreground text-sm">
 								{!query.trim()

@@ -31,6 +31,13 @@ function ModelsSettings() {
 	// the EFFECT is serialized to the user's last action.
 	const effortSaveToken = useRef(0);
 	const modelSaveToken = useRef(0);
+	// The last CONFIRMED-persisted value per field — the only safe rollback target.
+	// Rolling back to the pre-click UI value would be wrong: with rapid clicks that
+	// value can itself be an unsaved optimistic state, so a failure could leave the
+	// UI showing something that was never saved. Seeded on load, advanced only on a
+	// non-stale success.
+	const persistedEffort = useRef<string>("off");
+	const persistedModel = useRef<string | null>(null);
 
 	const refreshConnected = useCallback(() => {
 		fetchConnected(runtime, PROVIDER_OPENAI_CODEX)
@@ -60,6 +67,9 @@ function ModelsSettings() {
 				if (!alive) return;
 				setEffort(s.effort);
 				setSelectedModel(s.model);
+				// Seed the rollback snapshots from the loaded (persisted) values.
+				persistedEffort.current = s.effort;
+				persistedModel.current = s.model;
 			})
 			.catch(() => {});
 		fetchCatalog(runtime)
@@ -85,7 +95,6 @@ function ModelsSettings() {
 
 	const onEffortChange = useCallback(
 		(next: EffortLevel) => {
-			const prev = effort; // capture for rollback
 			const token = ++effortSaveToken.current; // latest-write-wins guard
 			setEffort(next); // optimistic
 			saveSettings(runtime, { effort: next })
@@ -94,35 +103,40 @@ function ModelsSettings() {
 					// this one, so its value must not overwrite the newer choice.
 					if (token !== effortSaveToken.current) return;
 					setEffort(s.effort);
+					persistedEffort.current = s.effort; // advance the rollback snapshot
 					setSaveStatus("saved");
 				})
 				.catch(() => {
 					if (token !== effortSaveToken.current) return;
-					setEffort(prev); // revert the optimistic value
+					// Roll back to the last CONFIRMED-persisted value, not the pre-click
+					// UI value (which may itself be an unsaved optimistic state).
+					setEffort(persistedEffort.current);
 					setSaveStatus("error");
 				});
 		},
-		[runtime, effort],
+		[runtime],
 	);
 
 	const onSelectModel = useCallback(
 		(id: string) => {
-			const prev = selectedModel; // capture for rollback
 			const token = ++modelSaveToken.current; // latest-write-wins guard
 			setSelectedModel(id); // optimistic
 			saveSettings(runtime, { model: id })
 				.then((s) => {
 					if (token !== modelSaveToken.current) return;
 					setSelectedModel(s.model);
+					persistedModel.current = s.model; // advance the rollback snapshot
 					setSaveStatus("saved");
 				})
 				.catch(() => {
 					if (token !== modelSaveToken.current) return;
-					setSelectedModel(prev); // revert the optimistic value
+					// Roll back to the last CONFIRMED-persisted value (not the pre-click
+					// UI value, which may be an unsaved optimistic state).
+					setSelectedModel(persistedModel.current);
 					setSaveStatus("error");
 				});
 		},
-		[runtime, selectedModel],
+		[runtime],
 	);
 
 	return (

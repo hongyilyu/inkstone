@@ -127,6 +127,88 @@ describe("Models settings page (ADR-0024)", () => {
 		);
 	});
 
+	it("on a failed effort save, rolls back to the last PERSISTED value, not the pre-click optimistic one", async () => {
+		const user = userEvent.setup();
+		// Each save rejects (gated), so we control ordering. Persisted starts "low".
+		const releases: Array<() => void> = [];
+		const settingsSet = vi.fn(() =>
+			Effect.promise(
+				() => new Promise<void>((_, reject) => releases.push(() => reject())),
+			).pipe(Effect.as({ provider: "openai-codex", model: null, effort: "x" })),
+		);
+		const stub = WsClient.of({
+			threadCreate: die,
+			postMessage: die,
+			threadList: die,
+			getRunHistory: die,
+			threadGet: die,
+			listEntities: die,
+			entityMutate: die,
+			subscribeRun: dieStream,
+			cancelRun: die,
+			providerStatus: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", connected: false }],
+				}),
+			providerLoginStart: die,
+			modelCatalog: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
+				}),
+			settingsGet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "low",
+				}),
+			settingsSet,
+			proposalGet: die,
+			proposalDecide: die,
+			messageSearch: die,
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		renderPage(runtime);
+
+		// Loads persisted "low".
+		await waitFor(() =>
+			expect(screen.getByRole("radio", { name: "Low" })).toHaveAttribute(
+				"aria-checked",
+				"true",
+			),
+		);
+
+		// Click Max (optimistic), then High (optimistic, newest). Both saves pending.
+		await user.click(screen.getByRole("radio", { name: "Max" }));
+		await user.click(screen.getByRole("radio", { name: "High" }));
+		await waitFor(() => expect(releases).toHaveLength(2));
+
+		// The newest (High) save fails. The OLD bug rolled back to `prev` = the
+		// pre-click value captured at High's click = "Max" (never persisted). The
+		// fix rolls back to the last persisted value = "Low".
+		releases[1]();
+		await waitFor(() =>
+			expect(screen.getByRole("radio", { name: "Low" })).toHaveAttribute(
+				"aria-checked",
+				"true",
+			),
+		);
+		expect(screen.getByRole("radio", { name: "Max" })).toHaveAttribute(
+			"aria-checked",
+			"false",
+		);
+		// The older (Max) save then also fails — still rolls back to "Low", no flicker to a stale value.
+		releases[0]();
+		await waitFor(() =>
+			expect(screen.getByRole("radio", { name: "Low" })).toHaveAttribute(
+				"aria-checked",
+				"true",
+			),
+		);
+
+		await runtime.dispose();
+	});
+
 	it("lists the catalog and persists a preferred model via settings/set", async () => {
 		const user = userEvent.setup();
 		const models: ModelInfo[] = [

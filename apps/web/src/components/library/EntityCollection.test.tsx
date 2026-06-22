@@ -177,7 +177,12 @@ describe("EntityCollection", () => {
 			},
 		});
 		render(
-			<EntityCollection kind="person" selectedId={null} onSelect={() => {}} />,
+			<EntityCollection
+				kind="person"
+				selectedId={null}
+				onSelect={() => {}}
+				onNew={() => {}}
+			/>,
 			{
 				wrapper: ({ children }: { children: ReactNode }) => (
 					<QueryClientProvider client={client}>
@@ -194,6 +199,12 @@ describe("EntityCollection", () => {
 		).toBeInTheDocument();
 		expect(screen.queryByText("Ada Lovelace")).not.toBeInTheDocument();
 		expect(screen.queryByText("No people yet")).not.toBeInTheDocument();
+		// The header count is hidden (a "0" would contradict "Couldn't load"), and
+		// New is suppressed (its editor's relation pickers source the failed list).
+		expect(screen.queryByText("0")).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /new person/i }),
+		).not.toBeInTheDocument();
 	});
 
 	it("renders live Todos read from entity/list", async () => {
