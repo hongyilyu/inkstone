@@ -109,7 +109,9 @@ export function Sidebar({
 												onClick={() => onOpenThread?.(item.id)}
 												aria-current={isCurrent ? "true" : undefined}
 												// Long titles clip with CSS `truncate`; a native tooltip
-												// reveals the full prompt on hover without a layout shift.
+												// reveals the full title (a generated title, or the
+												// prompt-derived fallback slug — ADR-0048) on hover
+												// without a layout shift.
 												title={item.title}
 												className={cn(
 													"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
