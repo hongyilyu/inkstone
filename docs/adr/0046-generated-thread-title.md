@@ -98,7 +98,11 @@ stops on `done`/`error`/EOF.
 - **Delivery is lazy.** The generated title lands in `threads.title`; clients
   pick it up on the next `thread/list` read (a cold load / reconnect). There is
   **no** live push to an open client, and **no** retry on failure — both are
-  deferred (see Related: follow-up issue).
+  deferred (see Related: follow-up issue). *(Live push superseded by
+  [ADR-0047](./0047-connection-notification-channel.md): the title is now pushed
+  to the creating connection via the run-less notification channel; lazy
+  `thread/list` remains the fallback when the push can't be delivered. Retry
+  stays deferred.)*
 
 ## Considered and rejected
 
@@ -138,5 +142,8 @@ stops on `done`/`error`/EOF.
   `default_title_model` is product policy authored beside `default_model`.
 - [ADR-0041](./0041-compiled-worker-binaries.md) — the role-keyed launch
   resolver `Role::Titler` extends.
-- Follow-up issue: live delivery (global push) + transient-failure retry
-  affordance, both out of scope for v1.
+- [ADR-0047](./0047-connection-notification-channel.md) — the run-less
+  connection-notification channel that delivers the generated title live to the
+  creating connection, superseding this ADR's lazy-only delivery.
+- Follow-up issue: transient-failure retry affordance, still out of scope (live
+  delivery shipped in ADR-0047).
