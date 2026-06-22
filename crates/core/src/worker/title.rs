@@ -91,7 +91,7 @@ pub fn spawn_title_generation(
                 mode: None,
                 access_token: Some(&token),
             };
-            let manifest_line = serialize_manifest(&manifest);
+            let manifest_line = super::serialize_manifest(&manifest);
 
             // Resolve the title-Worker launch command (ADR-0041 Titler role); a
             // resolution failure keeps the placeholder.
@@ -171,15 +171,6 @@ fn title_timeout() -> std::time::Duration {
         .and_then(|raw| raw.parse::<u64>().ok())
         .unwrap_or(DEFAULT_MS);
     std::time::Duration::from_millis(ms)
-}
-
-/// Serialize a manifest to a newline-terminated NDJSON line, mirroring
-/// [`super::serialize_manifest`]. Kept local to avoid widening the parent
-/// module's surface.
-fn serialize_manifest(manifest: &WorkerManifest<'_>) -> String {
-    let mut line = serde_json::to_string(manifest).expect("WorkerManifest serializes");
-    line.push('\n');
-    line
 }
 
 #[cfg(test)]
