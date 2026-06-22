@@ -13,7 +13,10 @@ mod message;
 mod post_message;
 mod proposal;
 mod provider;
-mod reply;
+// `pub(crate)` so the non-Run titler (`crate::worker::title`) can frame a
+// `thread/titled` notification onto its connection (ADR-0047); the request
+// handlers reach it as `super::reply`.
+pub(crate) mod reply;
 mod run_history;
 mod settings;
 mod subscribe;

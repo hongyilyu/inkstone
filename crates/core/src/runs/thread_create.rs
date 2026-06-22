@@ -75,13 +75,17 @@ pub(super) async fn handle(
         // Fire the one-shot title Worker (ADR-0046) — fire-and-forget, so the
         // create RESPONSE never waits on it. Clone the prompt + provider because
         // both `params.prompt` and `workflow` are moved into the Run's
-        // `worker::spawn` below. With no credential, or empty/whitespace output,
-        // it silently keeps the prompt-derived placeholder.
+        // `worker::spawn` below. `out_tx.clone()` is this connection's outbound
+        // channel: on a successful generation the titler frames a `thread/titled`
+        // notification onto it (ADR-0047) so the creating tab's sidebar updates
+        // live. With no credential, or empty/whitespace output, it silently keeps
+        // the prompt-derived placeholder and pushes nothing.
         worker::spawn_title_generation(
             thread_id,
             params.prompt.clone(),
             workflow.provider.clone(),
             pool.clone(),
+            out_tx.clone(),
         );
 
         worker::spawn(

@@ -353,6 +353,15 @@ export type ProposalChangedNotification = S.Schema.Type<
 	typeof ProposalChangedNotification
 >;
 
+/** `thread/titled` Notification: the one-shot titler pushes the generated `title` to the connection that created `thread_id` (ADR-0047). */
+export const ThreadTitledNotification = S.Struct({
+	thread_id: S.String,
+	title: S.String,
+});
+export type ThreadTitledNotification = S.Schema.Type<
+	typeof ThreadTitledNotification
+>;
+
 // entity/* (ADR-0004): the accepted Entities the Library reads; `entity/list` is type-parameterized (one type per call).
 
 /** `entity/list` params: the Entity type to list (one type per call). */

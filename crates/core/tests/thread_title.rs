@@ -1,7 +1,9 @@
 //! `thread/create` fires a one-shot, non-Run title Worker (ADR-0046): with a
 //! connected provider its sanitized output overwrites `threads.title` (visible
 //! via `thread/list`); with no credential, or empty/whitespace output, the
-//! prompt-derived placeholder stays.
+//! prompt-derived placeholder stays. On a successful generation Core also frames
+//! a `thread/titled` notification onto the creating connection (ADR-0047) so the
+//! sidebar updates live, without a `thread/list` poll.
 //!
 //! The title Worker is pointed at `title-worker.ts` via
 //! `INKSTONE_TITLE_WORKER_CMD`; the Run's own Worker stays on `slow-worker.ts`
@@ -11,7 +13,7 @@
 
 use std::time::Duration;
 
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
@@ -55,8 +57,45 @@ async fn create_thread(ws: &mut common::Ws, id: u64, prompt: &str) -> String {
         .to_string()
 }
 
+/// Read text frames off the SAME socket until a JSON-RPC notification with
+/// `method == want_method` arrives, returning its `params`. Bounded by `budget`
+/// so a never-arriving frame fails fast rather than hanging. Frames for other
+/// methods (and any responses) are skipped. `None` if the budget elapses without
+/// the wanted notification — used both to assert a push DID arrive (expect
+/// `Some`) and that it did NOT (expect `None`).
+async fn read_until_method(
+    ws: &mut common::Ws,
+    want_method: &str,
+    budget: Duration,
+) -> Option<serde_json::Value> {
+    let deadline = tokio::time::Instant::now() + budget;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        let frame = match tokio::time::timeout(remaining, ws.next()).await {
+            // Timed out, socket closed, or an error: no wanted frame arrived.
+            Err(_) | Ok(None) | Ok(Some(Err(_))) => return None,
+            Ok(Some(Ok(f))) => f,
+        };
+        let Message::Text(text) = frame else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        if v["method"].as_str() == Some(want_method) {
+            return Some(v["params"].clone());
+        }
+    }
+}
+
 /// Read the current title of `thread_id` via `thread/list`, or `None` if the
-/// thread is absent from the feed.
+/// thread is absent from the feed. Reads by request `id`: an unsolicited
+/// `thread/titled` notification (ADR-0047) can interleave on the socket between
+/// the request and its response, so frames that aren't the response for `id` are
+/// skipped.
 async fn title_of(ws: &mut common::Ws, id: u64, thread_id: &str) -> Option<String> {
     let list = serde_json::json!({
         "jsonrpc": "2.0",
@@ -68,19 +107,25 @@ async fn title_of(ws: &mut common::Ws, id: u64, thread_id: &str) -> Option<Strin
     ws.send(Message::Text(list.into()))
         .await
         .expect("send thread/list frame");
-    let body = next_text(ws).await;
-    let v: serde_json::Value = serde_json::from_str(&body)
-        .unwrap_or_else(|e| panic!("thread/list response is JSON: {e} — body: {body}"));
+    // Skip any interleaved notification (no `id`) until the response for `id`.
+    let v = loop {
+        let body = next_text(ws).await;
+        let frame: serde_json::Value = serde_json::from_str(&body)
+            .unwrap_or_else(|e| panic!("thread/list response is JSON: {e} — body: {body}"));
+        if frame["id"].as_u64() == Some(id) {
+            break frame;
+        }
+    };
     let threads = v["result"]["threads"]
         .as_array()
-        .unwrap_or_else(|| panic!("result.threads is an array — body: {body}"));
+        .unwrap_or_else(|| panic!("result.threads is an array — body: {v}"));
     threads
         .iter()
         .find(|t| t["id"].as_str() == Some(thread_id))
         .map(|t| {
             t["title"]
                 .as_str()
-                .unwrap_or_else(|| panic!("thread.title is a string — body: {body}"))
+                .unwrap_or_else(|| panic!("thread.title is a string — body: {v}"))
                 .to_string()
         })
 }
@@ -287,6 +332,103 @@ fn no_credential_keeps_placeholder() {
         assert_eq!(
             title, prompt,
             "no credential → titler never spawns → placeholder kept"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+/// A successful generation pushes a `thread/titled` notification onto the
+/// creating connection (ADR-0047): the SAME socket that sent `thread/create`
+/// receives an unsolicited `{thread_id, title}` frame carrying the SANITIZED
+/// title — no `thread/list` poll required. Proves the live
+/// create→titler→sanitize→push wiring end to end.
+#[test]
+fn generated_title_pushes_notification() {
+    let workspace = Workspace::new();
+    let creds_dir = workspace.path().join("credentials");
+    seed_codex_credential(&creds_dir);
+
+    let core = workspace
+        .core()
+        .worker_fixture("slow-worker.ts")
+        .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
+        .env("INKSTONE_TITLE_WORKER_CMD", fixture_cmd("title-worker.ts", &[]))
+        // The SAME dirty output the lazy test uses: asserting the sanitized
+        // `title` in the pushed frame proves the push rides AFTER sanitize, not
+        // the raw blob.
+        .env(
+            "INKSTONE_TITLE_FIXTURE_OUTPUT",
+            "<think>the user wants a budget plan</think>\n\"Budget planning for Q3\"",
+        )
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let prompt = "i need to plan the q3 budget across all teams and figure out headcount";
+        let thread_id = create_thread(&mut ws, 1, prompt).await;
+
+        // On the SAME socket, read past any interleaved frames until the live
+        // push arrives (bounded, so a missing push fails fast).
+        let params = read_until_method(&mut ws, "thread/titled", Duration::from_secs(2))
+            .await
+            .expect("a thread/titled notification was pushed on the creating connection");
+        assert_eq!(
+            params["thread_id"].as_str(),
+            Some(thread_id.as_str()),
+            "push names the created thread"
+        );
+        assert_eq!(
+            params["title"].as_str(),
+            Some("Budget planning for Q3"),
+            "pushed title is the SANITIZED generated title"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+/// Silent-on-failure (ADR-0047): when the generation sanitizes to None
+/// (`INKSTONE_TITLE_FIXTURE_EMPTY`), the title is never written, so NO
+/// `thread/titled` frame is pushed — the placeholder stays and the channel stays
+/// quiet. A bounded read asserts the absence.
+#[test]
+fn empty_generation_pushes_no_notification() {
+    let workspace = Workspace::new();
+    let creds_dir = workspace.path().join("credentials");
+    seed_codex_credential(&creds_dir);
+
+    let core = workspace
+        .core()
+        .worker_fixture("slow-worker.ts")
+        .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
+        .env("INKSTONE_TITLE_WORKER_CMD", fixture_cmd("title-worker.ts", &[]))
+        .env("INKSTONE_TITLE_FIXTURE_EMPTY", "1")
+        .spawn();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let prompt = "draft the offsite agenda";
+        let _thread_id = create_thread(&mut ws, 1, prompt).await;
+
+        // Give the titler ample time to run and sanitize to None, watching the
+        // socket the whole time: no `thread/titled` frame must ever arrive.
+        let pushed = read_until_method(&mut ws, "thread/titled", Duration::from_millis(600)).await;
+        assert!(
+            pushed.is_none(),
+            "empty-after-sanitize generation pushes no thread/titled frame — got {pushed:?}"
         );
 
         ws.close(None).await.ok();

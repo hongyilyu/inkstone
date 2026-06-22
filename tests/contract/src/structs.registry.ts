@@ -51,6 +51,7 @@ import {
 	ThreadGetParams,
 	ThreadGetResult,
 	ThreadListResult,
+	ThreadTitledNotification,
 	ToolResult,
 	WorkerManifest,
 	WorkerOutbound,
@@ -255,6 +256,12 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "ProposalChangedNotification",
 		file: "proposal_changed_notification.json",
 		schema: ProposalChangedNotification,
+		dir: "emitted",
+	},
+	{
+		message: "ThreadTitledNotification",
+		file: "thread_titled_notification.json",
+		schema: ThreadTitledNotification,
 		dir: "emitted",
 	},
 	{
@@ -493,6 +500,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ProposalDecideResult",
 	"ProposalPendingNotification",
 	"ProposalChangedNotification",
+	"ThreadTitledNotification",
 	"ThreadCreateResult",
 	"ThreadListResult",
 	"RunHistoryResult",

@@ -246,6 +246,16 @@ pub struct ProposalChangedNotification {
     pub status: String,
 }
 
+/// `thread/titled` Notification (ADR-0047): the one-shot titler (ADR-0046) pushes
+/// the generated `title` to the connection that created `thread_id`, so its
+/// sidebar updates live without a `thread/list` poll. Rides the connection's
+/// `out_tx`, keyed by `method` — not a Run subscription.
+#[derive(Debug, Serialize)]
+pub struct ThreadTitledNotification {
+    pub thread_id: String,
+    pub title: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PostMessageResult {
     pub run_id: String,
@@ -1227,6 +1237,18 @@ mod mirror_tests {
     }
 
     #[test]
+    fn thread_titled_notification_encodes_full_shape() {
+        let n = ThreadTitledNotification {
+            thread_id: UUID_A.to_string(),
+            title: "Budget planning for Q3".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&n).unwrap(),
+            json!({ "thread_id": UUID_A, "title": "Budget planning for Q3" }),
+        );
+    }
+
+    #[test]
     fn thread_get_params_decodes_thread_id() {
         let wire = json!({ "thread_id": UUID_A });
         let p: ThreadGetParams = serde_json::from_value(wire).unwrap();
@@ -1625,6 +1647,13 @@ mod parity_fixtures {
                     run_id: UUID_RUN.to_string(),
                     proposal_id: UUID_B.to_string(),
                     status: "accepted".to_string(),
+                }
+            ),
+            fx!(
+                "thread_titled_notification.json",
+                ThreadTitledNotification {
+                    thread_id: UUID_A.to_string(),
+                    title: "Budget planning for Q3".to_string(),
                 }
             ),
             // ── run/post_message, thread/create, thread/list ──
@@ -2068,6 +2097,7 @@ mod parity_fixtures {
             "proposal_decide_result.bare.json",
             "proposal_pending_notification.json",
             "proposal_changed_notification.json",
+            "thread_titled_notification.json",
             "post_message_result.json",
             "thread_create_result.json",
             "thread_list_result.json",
