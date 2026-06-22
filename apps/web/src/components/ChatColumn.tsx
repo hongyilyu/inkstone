@@ -181,19 +181,6 @@ export function ChatColumn() {
 		return () => clearTimeout(t);
 	}, [highlightId]);
 
-	// The recent-Runs feed (right rail) reflects each Run's latest milestone. The
-	// send/retry paths already refresh it when a Run is born, but a Run that
-	// *finishes* in chat (done/error/cancelled clears `activeRunId`) left the feed
-	// showing a stale "Running"/"Waiting" row until the next send/reload. Refresh
-	// it on the active→idle transition so a finished Run's row settles promptly.
-	const prevActiveRunId = useRef<string | null>(null);
-	useEffect(() => {
-		if (prevActiveRunId.current !== null && activeRunId === null) {
-			void queryClient.invalidateQueries({ queryKey: ["run-history"] });
-		}
-		prevActiveRunId.current = activeRunId;
-	}, [activeRunId, queryClient]);
-
 	// Clear a stale send-failure banner when the focused Thread changes: ChatColumn
 	// serves both `/` and `/thread/$threadId` without remounting (shared `_chat`
 	// layout), so without this a failed-send banner would linger over an untouched

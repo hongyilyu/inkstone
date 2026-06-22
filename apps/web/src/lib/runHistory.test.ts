@@ -85,8 +85,22 @@ describe("formatRunTime", () => {
 	});
 
 	it("omits the year for a same-year older timestamp", () => {
-		const at = NOW - 10 * DAY; // still 2026
-		expect(formatRunTime(at, NOW)).not.toContain("2026");
+		const at = NOW - 10 * DAY; // still the same calendar year as NOW
+		// Equals the bare month/day formatting (no year segment) and is NOT the
+		// year-bearing form — locale-independent, no hardcoded year string.
+		expect(formatRunTime(at, NOW)).toBe(
+			new Date(at).toLocaleDateString(undefined, {
+				month: "short",
+				day: "numeric",
+			}),
+		);
+		expect(formatRunTime(at, NOW)).not.toBe(
+			new Date(at).toLocaleDateString(undefined, {
+				month: "short",
+				day: "numeric",
+				year: "numeric",
+			}),
+		);
 	});
 });
 

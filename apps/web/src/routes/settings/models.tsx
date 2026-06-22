@@ -1,6 +1,6 @@
 import type { ModelInfo } from "@inkstone/protocol";
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { EffortControl, type EffortLevel } from "@/components/EffortControl";
 import { ModelCatalogTable } from "@/components/ModelCatalogTable";
 import { ProviderConnectionCard } from "@/components/ProviderConnectionCard";
@@ -25,6 +25,12 @@ function ModelsSettings() {
 	const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">(
 		"idle",
 	);
+	// Monotonic per-field save tokens (latest-write-wins): a save commits/rolls back
+	// only if it's still the newest for its field, so rapid clicks can't interleave
+	// (an older response overwriting a newer choice). Network stays concurrent; only
+	// the EFFECT is serialized to the user's last action.
+	const effortSaveToken = useRef(0);
+	const modelSaveToken = useRef(0);
 
 	const refreshConnected = useCallback(() => {
 		fetchConnected(runtime, PROVIDER_OPENAI_CODEX)
@@ -80,13 +86,18 @@ function ModelsSettings() {
 	const onEffortChange = useCallback(
 		(next: EffortLevel) => {
 			const prev = effort; // capture for rollback
+			const token = ++effortSaveToken.current; // latest-write-wins guard
 			setEffort(next); // optimistic
 			saveSettings(runtime, { effort: next })
 				.then((s) => {
+					// Ignore an out-of-order response: a newer click already superseded
+					// this one, so its value must not overwrite the newer choice.
+					if (token !== effortSaveToken.current) return;
 					setEffort(s.effort);
 					setSaveStatus("saved");
 				})
 				.catch(() => {
+					if (token !== effortSaveToken.current) return;
 					setEffort(prev); // revert the optimistic value
 					setSaveStatus("error");
 				});
@@ -97,13 +108,16 @@ function ModelsSettings() {
 	const onSelectModel = useCallback(
 		(id: string) => {
 			const prev = selectedModel; // capture for rollback
+			const token = ++modelSaveToken.current; // latest-write-wins guard
 			setSelectedModel(id); // optimistic
 			saveSettings(runtime, { model: id })
 				.then((s) => {
+					if (token !== modelSaveToken.current) return;
 					setSelectedModel(s.model);
 					setSaveStatus("saved");
 				})
 				.catch(() => {
+					if (token !== modelSaveToken.current) return;
 					setSelectedModel(prev); // revert the optimistic value
 					setSaveStatus("error");
 				});

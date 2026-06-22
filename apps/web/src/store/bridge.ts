@@ -26,10 +26,25 @@ const fibers = new Map<RunId, Fiber.RuntimeFiber<void, WsError>>();
 /** The global proposal-notification stream fiber, if started. */
 let proposalFiber: Fiber.RuntimeFiber<void> | undefined;
 
+/**
+ * Notified once per Run when its stream reaches a terminal (done/error/cancelled,
+ * including a synthetic transport-failure error). The React root registers this to
+ * refresh the recent-Runs feed. It lives HERE, on the bridge's terminal seam every
+ * Run flows through, NOT in a route-scoped view — so a Run that finishes while its
+ * Thread is off-screen still settles the feed (a focus-keyed effect would miss it).
+ */
+let onRunSettled: (() => void) | undefined;
+
+/** Register the terminal-event observer (idempotent overwrite); see {@link onRunSettled}. */
+export function setOnRunSettled(fn: (() => void) | undefined): void {
+	onRunSettled = fn;
+}
+
 /** Clear retained fibers — for test isolation (runtime disposal interrupts them). */
 export function resetBridge(): void {
 	fibers.clear();
 	proposalFiber = undefined;
+	onRunSettled = undefined;
 }
 
 /** The outcome of a send — a discriminated result so callers learn of failure off the awaited promise. */
@@ -111,6 +126,11 @@ export function startRunStream(
 				if (fibers.get(runId) === self) {
 					fibers.delete(runId);
 				}
+				// The Run reached a terminal (done/error/cancelled, or the synthetic
+				// transport-failure above) — its recent-Runs milestone changed, even if
+				// its Thread is off-screen. Refresh the feed from the terminal seam, not
+				// a focus-scoped view (which would miss background completions).
+				onRunSettled?.();
 			}),
 		),
 	);

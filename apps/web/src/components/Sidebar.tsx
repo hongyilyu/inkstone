@@ -155,6 +155,11 @@ function CopyThreadIdButton({ id, title }: { id: string; title: string }) {
 			) : (
 				<Copy className="size-3.5" aria-hidden />
 			)}
+			{/* Text-content live region so screen readers announce the outcome (an
+			    icon swap alone is a sighted-only cue; mirrors CopyButton). */}
+			<span className="sr-only" role="status">
+				{copied ? "Copied" : failed ? "Couldn't copy" : ""}
+			</span>
 		</button>
 	);
 }
