@@ -9,6 +9,9 @@
 mod child;
 mod port;
 mod run;
+mod title;
+
+pub use title::spawn_title_generation;
 
 use sqlx::SqlitePool;
 use tracing::Instrument;
