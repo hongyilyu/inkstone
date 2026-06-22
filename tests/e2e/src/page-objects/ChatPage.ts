@@ -36,9 +36,15 @@ export class ChatPage {
 		await this.page.getByRole("button", { name: /^stop$/i }).click();
 	}
 
-	/** The settled "stopped/incomplete" assistant bubble (cancel + error share this state). */
+	/** The settled assistant FAILURE bubble (genuine worker/provider error). */
 	assistantError() {
 		return this.page.getByTestId("assistant-error");
+	}
+
+	/** The settled assistant STOPPED bubble — a deliberate user cancel (calm, not
+	 * the destructive failure alert; ADR-0014 cancel-is-not-an-error). */
+	assistantStopped() {
+		return this.page.getByTestId("assistant-stopped");
 	}
 
 	/** The sidebar landmark. */

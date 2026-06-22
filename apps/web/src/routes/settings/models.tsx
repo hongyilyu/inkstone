@@ -20,12 +20,24 @@ function ModelsSettings() {
 	const [effort, setEffort] = useState<string>("off");
 	const [models, setModels] = useState<readonly ModelInfo[]>([]);
 	const [selectedModel, setSelectedModel] = useState<string | null>(null);
+	// Acknowledge a settings write: "saved" on success, "error" if it failed (so a
+	// failed save isn't swallowed silently while the optimistic value reverts).
+	const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">(
+		"idle",
+	);
 
 	const refreshConnected = useCallback(() => {
 		fetchConnected(runtime, PROVIDER_OPENAI_CODEX)
 			.then(setConnected)
 			.catch(() => setConnected(false));
 	}, [runtime]);
+
+	// Clear the save acknowledgement after a beat so it reads as transient feedback.
+	useEffect(() => {
+		if (saveStatus === "idle") return;
+		const t = setTimeout(() => setSaveStatus("idle"), 2500);
+		return () => clearTimeout(t);
+	}, [saveStatus]);
 
 	// Requery connection on mount + on focus — login happens in a separate tab, so focus-return is when the outcome is known (ADR-0023).
 	useEffect(() => {
@@ -57,29 +69,46 @@ function ModelsSettings() {
 
 	const onConnect = useCallback(() => {
 		setBusy(true);
+		setSaveStatus("idle");
 		startLogin(runtime, PROVIDER_OPENAI_CODEX)
-			.catch(() => {})
+			// A login that can't even start (helper missing, port busy) was swallowed,
+			// leaving the user staring at an unchanged "Not connected" card. Surface it.
+			.catch(() => setSaveStatus("error"))
 			.finally(() => setBusy(false));
 	}, [runtime]);
 
 	const onEffortChange = useCallback(
 		(next: EffortLevel) => {
+			const prev = effort; // capture for rollback
 			setEffort(next); // optimistic
 			saveSettings(runtime, { effort: next })
-				.then((s) => setEffort(s.effort))
-				.catch(() => {});
+				.then((s) => {
+					setEffort(s.effort);
+					setSaveStatus("saved");
+				})
+				.catch(() => {
+					setEffort(prev); // revert the optimistic value
+					setSaveStatus("error");
+				});
 		},
-		[runtime],
+		[runtime, effort],
 	);
 
 	const onSelectModel = useCallback(
 		(id: string) => {
+			const prev = selectedModel; // capture for rollback
 			setSelectedModel(id); // optimistic
 			saveSettings(runtime, { model: id })
-				.then((s) => setSelectedModel(s.model))
-				.catch(() => {});
+				.then((s) => {
+					setSelectedModel(s.model);
+					setSaveStatus("saved");
+				})
+				.catch(() => {
+					setSelectedModel(prev); // revert the optimistic value
+					setSaveStatus("error");
+				});
 		},
-		[runtime],
+		[runtime, selectedModel],
 	);
 
 	return (
@@ -90,6 +119,20 @@ function ModelsSettings() {
 					Connect a provider, choose your preferred model, and set how hard it
 					thinks.
 				</p>
+				{saveStatus !== "idle" && (
+					<p
+						role="status"
+						className={
+							saveStatus === "error"
+								? "mt-2 text-destructive text-sm"
+								: "mt-2 text-muted-foreground text-sm"
+						}
+					>
+						{saveStatus === "error"
+							? "Something didn't go through. Check that Inkstone is running and try again."
+							: "Saved."}
+					</p>
+				)}
 			</div>
 
 			<div className="flex flex-col gap-3">

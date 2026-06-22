@@ -139,13 +139,12 @@ describe("EntityCollection", () => {
 		expect(screen.queryByText("Priya Nair")).not.toBeInTheDocument();
 	});
 
-	it("collapses the whole Library to empty when any one entity read fails (all-or-nothing)", async () => {
+	it("surfaces the error state when any one entity read fails (all-or-nothing)", async () => {
 		// `useLibraryItems` reads all five types in one `Effect.all`; a single
-		// failing read rejects the program and the hook's catch returns []. So even
-		// though People would resolve, the view shows the empty state — NOT the
-		// loaded People, and NOT the isError "Couldn't load" state (which only the
-		// mapper-throws path reaches, after the catch). This pins the live-only
-		// fallback the preview-merge removal introduced.
+		// failing read rejects the whole program. The hook now lets that rejection
+		// surface as the query's `isError` (rather than swallowing it to []), so the
+		// view shows the distinct "Couldn't load" state — NOT a misleading empty
+		// Library that looks identical to a brand-new workspace.
 		const stub = WsClient.of({
 			threadCreate: () => Effect.die("unused"),
 			postMessage: () => Effect.die("unused"),
@@ -188,11 +187,13 @@ describe("EntityCollection", () => {
 			},
 		);
 
-		// The empty state renders, not the otherwise-loadable People rows.
-		expect(await screen.findByText("No people yet")).toBeInTheDocument();
+		// The "Couldn't load" error state renders — not the otherwise-loadable
+		// People rows, and not the misleading "No people yet" empty state.
+		expect(
+			await screen.findByText(/couldn't load people/i),
+		).toBeInTheDocument();
 		expect(screen.queryByText("Ada Lovelace")).not.toBeInTheDocument();
-		// Distinct from the mapper-throws isError path ("Couldn't load people").
-		expect(screen.queryByText(/couldn't load/i)).not.toBeInTheDocument();
+		expect(screen.queryByText("No people yet")).not.toBeInTheDocument();
 	});
 
 	it("renders live Todos read from entity/list", async () => {

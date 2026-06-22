@@ -80,7 +80,8 @@ describe("TodoRow", () => {
 				<TodoRow todo={overdue} onSelect={() => {}} />
 			</ul>,
 		);
-		expect(screen.getByText("Overdue")).toBeInTheDocument();
+		// Overdue keeps the date so multiple overdue rows stay distinguishable.
+		expect(screen.getByText("Overdue · 2000-01-01")).toBeInTheDocument();
 	});
 
 	it("shows the due date when not overdue", () => {
@@ -94,7 +95,7 @@ describe("TodoRow", () => {
 			</ul>,
 		);
 		expect(screen.getByText("2999-01-02")).toBeInTheDocument();
-		expect(screen.queryByText("Overdue")).not.toBeInTheDocument();
+		expect(screen.queryByText(/Overdue/)).not.toBeInTheDocument();
 	});
 });
 

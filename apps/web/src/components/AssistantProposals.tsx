@@ -30,6 +30,10 @@ export function AssistantProposals({ runId }: { runId: string }) {
 							queryKey: ["library-items"],
 						});
 					}
+					// Every decision advances the parked Run (it resumes and runs to a
+					// new milestone), so the recent-Runs feed is now stale regardless of
+					// accept/reject/edit — refresh it so a "Waiting" row doesn't linger.
+					await queryClient.invalidateQueries({ queryKey: ["run-history"] });
 				}}
 			/>
 		</div>

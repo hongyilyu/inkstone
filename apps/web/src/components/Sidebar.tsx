@@ -1,6 +1,7 @@
 import { useParams } from "@tanstack/react-router";
-import { Copy, Library, Plus, Search } from "lucide-react";
+import { Check, Copy, Library, Plus, Search, X } from "lucide-react";
 import { NavShell, navRow } from "@/components/ui/nav-shell";
+import { useCopyToClipboard } from "@/lib/hooks/useCopyToClipboard";
 import { useThreads } from "@/lib/hooks/useThreads";
 import { openCommand } from "@/store/command";
 import { cn } from "../lib/utils.js";
@@ -20,8 +21,8 @@ export function Sidebar({
 	const { threadId } = useParams({ strict: false });
 	const focusedThreadId = threadId ?? null;
 
-	// Reads via TanStack Query; live stream stays on store+bridge (ADR-0020). `data` undefined while loading/error → empty list.
-	const { data } = useThreads();
+	// Reads via TanStack Query; live stream stays on store+bridge (ADR-0020).
+	const { data, isPending, isError } = useThreads();
 
 	const threads = data?.threads ?? [];
 	const groups = groupByRecency(threads);
@@ -62,7 +63,17 @@ export function Sidebar({
 			</button>
 
 			<div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-				{threads.length === 0 ? (
+				{isError ? (
+					// A failed `thread/list` (Core down, WS dropped) must NOT read as a
+					// genuinely empty workspace — a returning user with real threads would
+					// be told their conversations vanished. Show an honest load-failure.
+					<p className="px-3 pt-3 text-muted-foreground text-xs">
+						Couldn't load your conversations. Check that Inkstone is running.
+					</p>
+				) : isPending ? (
+					// Fetch in flight: stay quiet rather than flashing the empty copy.
+					<p className="px-3 pt-3 text-muted-foreground text-xs">Loading…</p>
+				) : threads.length === 0 ? (
 					<p className="px-3 pt-3 text-muted-foreground text-xs">
 						No threads yet.
 					</p>
@@ -93,6 +104,9 @@ export function Sidebar({
 												type="button"
 												onClick={() => onOpenThread?.(item.id)}
 												aria-current={isCurrent ? "true" : undefined}
+												// Long titles clip with CSS `truncate`; a native tooltip
+												// reveals the full prompt on hover without a layout shift.
+												title={item.title}
 												className={cn(
 													"h-full min-w-0 flex-1 cursor-pointer truncate rounded-lg py-0 pr-3 pl-[18px] text-left text-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring",
 													isCurrent
@@ -102,17 +116,7 @@ export function Sidebar({
 											>
 												{item.title}
 											</button>
-											<button
-												type="button"
-												aria-label={`Copy thread id for ${item.title}`}
-												title="Copy thread id"
-												onClick={() => {
-													void navigator.clipboard?.writeText(item.id);
-												}}
-												className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
-											>
-												<Copy className="size-3.5" />
-											</button>
+											<CopyThreadIdButton id={item.id} title={item.title} />
 										</li>
 									);
 								})}
@@ -122,6 +126,36 @@ export function Sidebar({
 				)}
 			</div>
 		</NavShell>
+	);
+}
+
+/** The per-row "copy thread id" control: writes the id to the clipboard and
+ * flips to a checkmark for ~1.5s so the click has visible confirmation (without
+ * this, nothing changed on copy and the user couldn't tell it worked). Reuses
+ * {@link useCopyToClipboard} so the checkmark only shows on a write that actually
+ * succeeded — a denied/unavailable clipboard shows the X, never a fake success.
+ * The aria-label stays `Copy thread id for <title>` so existing tests/e2e
+ * selectors and screen-reader users keep their stable name. */
+function CopyThreadIdButton({ id, title }: { id: string; title: string }) {
+	const { copied, failed, copy } = useCopyToClipboard(1500);
+	return (
+		<button
+			type="button"
+			aria-label={`Copy thread id for ${title}`}
+			title={copied ? "Copied" : failed ? "Couldn't copy" : "Copy thread id"}
+			onClick={() => {
+				void copy(id);
+			}}
+			className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
+		>
+			{copied ? (
+				<Check className="size-3.5 text-primary" aria-hidden />
+			) : failed ? (
+				<X className="size-3.5 text-destructive" aria-hidden />
+			) : (
+				<Copy className="size-3.5" aria-hidden />
+			)}
+		</button>
 	);
 }
 

@@ -18,7 +18,10 @@ const LABELS: Record<EffortLevel, string> = {
 /** Composer reasoning-effort control. Reflects the global `effort` (`settings/get`) and persists changes via `settings/set` (ADR-0024); popover reuses {@link EffortControl}. */
 export function EffortPicker() {
 	const runtime = useRuntime();
-	const [effort, setEffort] = useState<string>("off");
+	// `null` until `settings/get` resolves, so the chip shows the neutral "Effort"
+	// label rather than mislabeling as "Off" before the real value loads (a user
+	// whose effort is "High" would briefly see "Off").
+	const [effort, setEffort] = useState<string | null>(null);
 	const [open, setOpen] = useState(false);
 
 	useEffect(() => {
@@ -55,7 +58,7 @@ export function EffortPicker() {
 				<Popover.Positioner side="top" align="start" sideOffset={8}>
 					<Popover.Popup className="flex w-[360px] flex-col gap-2 rounded-xl border border-border bg-popover p-3 text-popover-foreground shadow-lg outline-none">
 						<div className="font-medium text-sm">Reasoning effort</div>
-						<EffortControl value={effort} onChange={change} />
+						<EffortControl value={effort ?? "off"} onChange={change} />
 						<p className="text-muted-foreground text-xs">
 							Higher effort thinks longer before replying. Applies to new
 							messages.

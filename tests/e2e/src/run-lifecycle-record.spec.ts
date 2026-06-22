@@ -69,6 +69,7 @@ test("Stop is available while parked and settles the parked Run", async ({
 
 	await chat.stop();
 
-	// The cancelled parked Run settles to the shared stopped/incomplete bubble.
-	await expect(chat.assistantError()).toBeVisible({ timeout: 15_000 });
+	// The cancelled parked Run settles to the calm "stopped" bubble (ADR-0014:
+	// a deliberate cancel is not a failure).
+	await expect(chat.assistantStopped()).toBeVisible({ timeout: 15_000 });
 });

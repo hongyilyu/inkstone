@@ -180,6 +180,28 @@ export function ChatColumn() {
 		return () => clearTimeout(t);
 	}, [highlightId]);
 
+	// The recent-Runs feed (right rail) reflects each Run's latest milestone. The
+	// send/retry paths already refresh it when a Run is born, but a Run that
+	// *finishes* in chat (done/error/cancelled clears `activeRunId`) left the feed
+	// showing a stale "Running"/"Waiting" row until the next send/reload. Refresh
+	// it on the active→idle transition so a finished Run's row settles promptly.
+	const prevActiveRunId = useRef<string | null>(null);
+	useEffect(() => {
+		if (prevActiveRunId.current !== null && activeRunId === null) {
+			void queryClient.invalidateQueries({ queryKey: ["run-history"] });
+		}
+		prevActiveRunId.current = activeRunId;
+	}, [activeRunId, queryClient]);
+
+	// Clear a stale send-failure banner when the focused Thread changes: ChatColumn
+	// serves both `/` and `/thread/$threadId` without remounting (shared `_chat`
+	// layout), so without this a failed-send banner would linger over an untouched
+	// thread the user navigated to next.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset keyed on the focused thread id.
+	useEffect(() => {
+		setSendError(null);
+	}, [focusedThreadId]);
+
 	// Re-run a failed hydration on demand (issue #108): `hydrateThread` flips status back to `loading`, then `ready`/`error` on settle.
 	const retryHydration = () => {
 		if (focusedThreadId === null) return;
@@ -377,7 +399,7 @@ function UserBubble({
 		>
 			<div
 				data-highlighted={highlighted || undefined}
-				className="search-jump-target relative max-w-[80%] rounded-xl border border-secondary/50 bg-secondary/50 px-4 py-2 text-sm text-foreground"
+				className="search-jump-target relative max-w-[80%] break-words rounded-xl border border-secondary/50 bg-secondary/50 px-4 py-2 text-sm text-foreground"
 			>
 				{concatText(message.segments)}
 			</div>
@@ -459,7 +481,7 @@ function AssistantBubble({
 						// biome-ignore lint/suspicious/noArrayIndexKey: timeline position is the identity here
 						key={`text-${i}`}
 						data-highlighted={highlighted || undefined}
-						className="search-jump-target prose prose-pink dark:prose-invert relative max-w-none rounded-xl"
+						className="search-jump-target prose prose-pink dark:prose-invert relative max-w-none break-words rounded-xl"
 					>
 						<ChatMarkdown text={group.text} />
 					</div>
@@ -482,29 +504,54 @@ function AssistantBubble({
 					<CopyButton text={text} />
 				</div>
 			)}
-			{message.status === "incomplete" && (
-				<div
-					role="alert"
-					tabIndex={-1}
-					data-testid="assistant-error"
-					className="flex flex-col items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive text-sm outline-none"
-				>
-					<span>
-						{message.error ??
-							"This reply stopped before it finished. Nothing was saved without your approval."}
-					</span>
-					{onRetry && (
-						<button
-							type="button"
-							onClick={onRetry}
-							className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-destructive/40 px-2 py-1 font-medium text-xs transition-colors hover:bg-destructive/20 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive"
-						>
-							<RotateCcw className="size-3.5" aria-hidden />
-							Try again
-						</button>
-					)}
-				</div>
-			)}
+			{message.status === "incomplete" &&
+				(message.cancelled ? (
+					// User-cancelled (ADR-0014): terminal but NOT a failure — a calm,
+					// muted notice (role="status", not "alert") so a deliberate Stop is
+					// never mis-framed as something going wrong. Retry still offered.
+					<div
+						role="status"
+						tabIndex={-1}
+						data-testid="assistant-stopped"
+						className="flex flex-col items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-muted-foreground text-sm outline-none"
+					>
+						<span>
+							You stopped this reply. Nothing was saved without your approval.
+						</span>
+						{onRetry && (
+							<button
+								type="button"
+								onClick={onRetry}
+								className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border px-2 py-1 font-medium text-foreground text-xs transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+							>
+								<RotateCcw className="size-3.5" aria-hidden />
+								Try again
+							</button>
+						)}
+					</div>
+				) : (
+					<div
+						role="alert"
+						tabIndex={-1}
+						data-testid="assistant-error"
+						className="flex flex-col items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive text-sm outline-none"
+					>
+						<span>
+							{message.error ??
+								"This reply stopped before it finished. Nothing was saved without your approval."}
+						</span>
+						{onRetry && (
+							<button
+								type="button"
+								onClick={onRetry}
+								className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-destructive/40 px-2 py-1 font-medium text-xs transition-colors hover:bg-destructive/20 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive"
+							>
+								<RotateCcw className="size-3.5" aria-hidden />
+								Try again
+							</button>
+						)}
+					</div>
+				))}
 		</li>
 	);
 }

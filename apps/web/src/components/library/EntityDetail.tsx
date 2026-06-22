@@ -146,12 +146,13 @@ function InspectorShell({
 			},
 			{
 				onSuccess: () =>
-					// Drop `?id` so the rail returns to empty for the now-gone Entity.
-					navigate({
-						to: "/library/$kind",
-						params: { kind: meta.slug },
-						search: {},
-					}),
+					// Drop `?id` so the rail returns to empty for the now-gone Entity,
+					// but STAY on the current route. The detail rail is opened in-place
+					// from the derived views (Today `/library`, Inbox/Waiting/Review)
+					// too, so hardcoding `/library/$kind` here would yank the user out of
+					// the view they were in onto the entity's kind collection. `to: "."`
+					// keeps the current path and only clears the search.
+					navigate({ to: ".", search: {} }),
 			},
 		);
 

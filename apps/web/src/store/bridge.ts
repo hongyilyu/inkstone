@@ -91,6 +91,20 @@ export function startRunStream(
 			(event) => Effect.sync(() => applyEvent(threadId, runId, event)),
 		);
 	}).pipe(
+		// A transport failure mid-stream (WS drop: laptop sleep, Core restart, network
+		// blip) would otherwise kill the fiber silently, leaving the assistant bubble
+		// stuck "typing" forever with a live-looking Stop button. Settle the turn with a
+		// synthetic terminal error so the user sees an honest "lost connection" notice
+		// and a retry affordance instead of an eternal spinner.
+		Effect.catchAll(() =>
+			Effect.sync(() =>
+				applyEvent(threadId, runId, {
+					kind: "error",
+					message:
+						"Lost the connection before this reply finished. Check that Inkstone is running, then try again.",
+				}),
+			),
+		),
 		// Identity-aware cleanup (M2): delete only when the map still points at THIS fiber — see docs/design/web-store.md.
 		Effect.ensuring(
 			Effect.sync(() => {

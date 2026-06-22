@@ -174,7 +174,11 @@ function ReviewQueue({
 		setCursor(Math.max(0, Math.min(next, queue.length - 1)));
 
 	return (
-		<ReviewFrame count={queue.length}>
+		// Header count tracks the LIVE due count (matching the sidebar Review badge),
+		// not the frozen snapshot size — marking a Project reviewed drops it from both
+		// in lockstep. The queue itself stays snapshot-ordered (cursor stability), so
+		// `position`/`total` below still read against the frozen queue.
+		<ReviewFrame count={liveDue.length}>
 			<FocusedProject
 				key={project.id}
 				project={project}

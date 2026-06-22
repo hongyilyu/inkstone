@@ -21,12 +21,12 @@ test("clicking Stop cancels a streaming run and settles the bubble", async ({
 	// Stop replaces Send while the Run is active; clicking it cancels via run/cancel.
 	await chat.stop();
 
-	// The reply settles to the cancelled/incomplete state. Cancel carries NO
-	// provider error, so the bubble shows the default "stopped" copy (distinct
-	// from run-error.spec.ts, which asserts a provider message).
-	const settled = chat.assistantError();
+	// The reply settles to the calm "stopped" state — a deliberate cancel is NOT a
+	// failure (ADR-0014), so it shows the neutral stopped bubble, distinct from the
+	// destructive error alert in run-error.spec.ts.
+	const settled = chat.assistantStopped();
 	await expect(settled).toBeVisible({ timeout: 15_000 });
-	await expect(settled).toContainText("stopped before it finished");
+	await expect(settled).toContainText("You stopped this reply");
 
 	// The Run never completed: the gated tail never arrives and there is exactly
 	// one assistant turn. Stop is gone; Send is back.

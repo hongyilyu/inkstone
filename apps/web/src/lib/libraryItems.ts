@@ -488,9 +488,17 @@ export function localNowString(now: Date = new Date()): string {
 	);
 }
 
-/** A Todo is overdue when active with a past due date (ADR-0031). */
+/** A Todo is overdue when active and its due *day* is before today (ADR-0031).
+ * Due dates are stored at midnight (`<day>T00:00:00`, see `dayToLocal`), so a
+ * full-timestamp `dueAt < now` comparison would flag a todo due *today* as
+ * overdue from 00:01 onward. Compare the date portion only — consistent with how
+ * `dueSoonTodos` treats "due soon" as a to-the-day notion. */
 export function todoIsOverdue(todo: Todo, now = localNowString()): boolean {
-	return todo.status === "active" && todo.dueAt != null && todo.dueAt < now;
+	return (
+		todo.status === "active" &&
+		todo.dueAt != null &&
+		todo.dueAt.slice(0, 10) < now.slice(0, 10)
+	);
 }
 
 /**
@@ -605,16 +613,24 @@ const RECURRENCE_ADVERB: Record<RecurrenceUnit, string> = {
 };
 
 /**
- * Human-readable summary of a recurrence rule's common path (ADR-0037). Covers
- * interval and unit; `end` round-trips but is not spelled out. Sentence case,
- * no em dashes (DESIGN.md/PRODUCT.md copy tone).
+ * Human-readable summary of a recurrence rule (ADR-0037). Covers interval, unit,
+ * and the `end` condition (until / after_count) so a user can SEE an end that the
+ * editor doesn't surface — e.g. an agent-created "repeats weekly until 2026-12-31"
+ * would otherwise be invisible. Sentence case, no em dashes (DESIGN.md copy tone).
  */
 export function recurrenceSummary(rule: RecurrenceRule): string {
 	const cadence =
 		rule.interval === 1
 			? RECURRENCE_ADVERB[rule.unit]
 			: `every ${rule.interval} ${rule.unit}s`;
-	return `Repeats ${cadence}`;
+	let summary = `Repeats ${cadence}`;
+	if (rule.end?.until) {
+		summary += ` until ${rule.end.until.slice(0, 10)}`;
+	} else if (typeof rule.end?.afterCount === "number") {
+		const n = rule.end.afterCount;
+		summary += `, ${n} ${n === 1 ? "time" : "times"}`;
+	}
+	return summary;
 }
 
 export function groupJournalEntriesByDay(

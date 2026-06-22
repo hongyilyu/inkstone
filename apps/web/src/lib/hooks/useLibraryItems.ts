@@ -2,7 +2,6 @@ import { WsClient } from "@inkstone/ui-sdk";
 import { useQuery } from "@tanstack/react-query";
 import { Effect } from "effect";
 import {
-	type LiveEntityRow,
 	parseBookmark,
 	parseJournalEntry,
 	parsePerson,
@@ -11,7 +10,12 @@ import {
 } from "@/lib/entityCodec";
 import { useRuntime } from "@/runtime";
 
-/** The Library's displayed items — live Journal/Todo/Person/Project/Bookmark rows from Core; an empty list when Core is unreachable. */
+/** The Library's displayed items — live Journal/Todo/Person/Project/Bookmark rows
+ * from Core. A Core-unreachable read REJECTS (surfacing as the query's `isError`)
+ * rather than being swallowed to `[]`: an empty list and a failed read are
+ * different states, and collapsing them showed every collection's first-run empty
+ * copy when the workspace was merely offline. EntityCollection already renders a
+ * distinct "Couldn't load" branch on `isError`. */
 export function useLibraryItems() {
 	const runtime = useRuntime();
 	return useQuery({
@@ -39,19 +43,9 @@ export function useLibraryItems() {
 					bookmarks: bookmarks.entities,
 				};
 			});
-			let rows: {
-				journalEntries: readonly LiveEntityRow[];
-				todos: readonly LiveEntityRow[];
-				people: readonly LiveEntityRow[];
-				projects: readonly LiveEntityRow[];
-				bookmarks: readonly LiveEntityRow[];
-			};
-			try {
-				rows = await runtime.runPromise(program);
-			} catch {
-				// Web preview runs without Core — show an empty Library; strict live row validation stays below this read boundary.
-				return [];
-			}
+			// Let a Core-unreachable read reject — the query surfaces it as `isError`
+			// (a distinct "Couldn't load" state), not a misleading empty Library.
+			const rows = await runtime.runPromise(program);
 			return [
 				...rows.journalEntries.map(parseJournalEntry),
 				...rows.todos.map(parseTodo),

@@ -68,9 +68,12 @@ export const RUN_HISTORY_BUCKET_ORDER = [
 ] as const;
 
 /** A short clock/date stamp for a row's second line. Same-day Runs show the
- * time; older Runs show a compact month/day. */
+ * time; older Runs show a compact month/day, plus the year when it's from a
+ * previous calendar year (so last year's "Mar 5" isn't confused with this
+ * year's). */
 export function formatRunTime(at: number, now: number = Date.now()): string {
 	const d = new Date(at);
+	const nowDate = new Date(now);
 	const startOfToday = new Date(now).setHours(0, 0, 0, 0);
 	if (at >= startOfToday) {
 		return d.toLocaleTimeString(undefined, {
@@ -78,5 +81,10 @@ export function formatRunTime(at: number, now: number = Date.now()): string {
 			minute: "2-digit",
 		});
 	}
-	return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+	return d.toLocaleDateString(undefined, {
+		month: "short",
+		day: "numeric",
+		// Disambiguate a prior-year Run; omit the year for the common same-year case.
+		...(d.getFullYear() !== nowDate.getFullYear() ? { year: "numeric" } : {}),
+	});
 }

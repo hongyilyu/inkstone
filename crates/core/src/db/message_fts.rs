@@ -465,4 +465,27 @@ mod tests {
         assert_eq!(hits.len(), 1, "rebuild reconstructs the user message hit");
         assert_eq!(hits[0].message_id, msg.to_string());
     }
+
+    /// A common substring that matches far more than the cap returns at most 50
+    /// rows (ADR-0035): the palette is a jump-to-message picker, not a dump, so a
+    /// word like "the" must not flood it with thousands of hits.
+    #[tokio::test]
+    async fn search_caps_results_at_fifty() {
+        let pool = memory_pool().await;
+        // 60 messages all containing the needle; newest-first means the 50 most
+        // recent come back and the 10 oldest are dropped.
+        for i in 0..60 {
+            seed_thread_with_user_message(
+                &pool,
+                &format!("Thread {i}"),
+                "the common needle appears here",
+                1000 + i64::from(i),
+            )
+            .await;
+        }
+        let hits = search_messages(&pool, "needle").await.expect("search");
+        assert_eq!(hits.len(), 50, "result set is capped at 50");
+        // Newest-first: the leading hit is the most recent (highest created_at).
+        assert_eq!(hits[0].created_at, 1059, "newest match leads the capped set");
+    }
 }

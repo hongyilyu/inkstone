@@ -36,9 +36,9 @@ test("create a recurring Todo via the rail editor → recurrence persists and th
 	await rail.getByLabel("Repeats").check();
 	await rail.getByLabel("Every").fill("2");
 	await rail.getByLabel("Unit").selectOption({ label: "Weeks" });
-	// Anchor keeps its default (Due date). Toggling Repeats with a due date
-	// present defaults the anchor to "Due date".
-	await expect(rail.getByLabel("Anchor")).toHaveValue("due_at");
+	// "Repeat from" keeps its default (Due date). Toggling Repeats with a due
+	// date present defaults the anchor to "Due date".
+	await expect(rail.getByLabel("Repeat from")).toHaveValue("due_at");
 
 	await rail.getByRole("button", { name: /^save$/i }).click();
 

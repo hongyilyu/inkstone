@@ -150,6 +150,13 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 			saving={mutation.isPending}
 			error={error}
 			canSave={!blocked}
+			disabledReason={
+				occurredEmpty
+					? "Set when this occurred to save"
+					: bodyEmpty
+						? "Write the entry body to save"
+						: undefined
+			}
 		>
 			<EditorField label="Occurred at" htmlFor={ids.occurred}>
 				<EditorInput

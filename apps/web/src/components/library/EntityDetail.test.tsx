@@ -398,9 +398,10 @@ describe("EntityDetail Todo delete", () => {
 			]),
 		);
 		await waitFor(() =>
+			// Stays on the current route (the rail can be opened in-place from a
+			// derived view) and only clears `?id`.
 			expect(navigate).toHaveBeenCalledWith({
-				to: "/library/$kind",
-				params: { kind: "todos" },
+				to: ".",
 				search: {},
 			}),
 		);
@@ -545,11 +546,7 @@ describe("EntityDetail Person delete", () => {
 			]),
 		);
 		await waitFor(() =>
-			expect(navigate).toHaveBeenCalledWith({
-				to: "/library/$kind",
-				params: { kind: "people" },
-				search: {},
-			}),
+			expect(navigate).toHaveBeenCalledWith({ to: ".", search: {} }),
 		);
 	});
 
@@ -597,8 +594,7 @@ describe("EntityDetail Project delete", () => {
 		);
 		await waitFor(() =>
 			expect(navigate).toHaveBeenCalledWith({
-				to: "/library/$kind",
-				params: { kind: "projects" },
+				to: ".",
 				search: {},
 			}),
 		);
@@ -657,11 +653,7 @@ describe("EntityDetail Journal Entry delete", () => {
 			]),
 		);
 		await waitFor(() =>
-			expect(navigate).toHaveBeenCalledWith({
-				to: "/library/$kind",
-				params: { kind: "journal" },
-				search: {},
-			}),
+			expect(navigate).toHaveBeenCalledWith({ to: ".", search: {} }),
 		);
 	});
 });

@@ -1070,7 +1070,9 @@ describe("ProposalCard", () => {
 			expect(
 				screen.getByText("Inkstone wants to update a Todo."),
 			).toBeInTheDocument();
-			expect(screen.getByText(/todo-7/)).toBeInTheDocument();
+			// The raw todo_id UUID is NOT surfaced (unreadable, redundant with the
+			// heading); only the fields that actually change are shown.
+			expect(screen.queryByText(/todo-7/)).toBeNull();
 			expect(screen.getByText("Email Alice (done)")).toBeInTheDocument();
 			expect(screen.getByText("completed")).toBeInTheDocument();
 			// set_person_refs renders under the "Set" label — distinct from add/remove,
@@ -1621,7 +1623,11 @@ describe("ProposalCard", () => {
 					onDecide={() => {}}
 				/>,
 			);
-			expect(screen.getByText(/todo-9/)).toBeInTheDocument();
+			// Degrades without crashing: the heading + accept button still render even
+			// when the ref fields are malformed (the raw todo_id is intentionally not shown).
+			expect(
+				screen.getByText("Inkstone wants to update a Todo."),
+			).toBeInTheDocument();
 			expect(
 				screen.getByRole("button", { name: /update todo/i }),
 			).toBeInTheDocument();

@@ -765,6 +765,7 @@ function SingleEntityProposalCard({
 							<EditorInput
 								id={occurredAtInputId}
 								value={editOccurredAt}
+								placeholder="YYYY-MM-DDTHH:MM:SS"
 								onChange={(event) => setEditOccurredAt(event.target.value)}
 							/>
 						</EditorField>
@@ -772,6 +773,7 @@ function SingleEntityProposalCard({
 							<EditorInput
 								id={endedAtInputId}
 								value={editEndedAt}
+								placeholder="YYYY-MM-DDTHH:MM:SS (optional)"
 								onChange={(event) => setEditEndedAt(event.target.value)}
 							/>
 						</EditorField>
@@ -2225,10 +2227,9 @@ function renderUpdateTodoBody({ payload }: ProposalBodyArgs): ReactNode {
 					Changes
 				</p>
 				<dl className="flex flex-col gap-1.5 text-sm">
-					<Field
-						label="Todo"
-						value={textField(payload, "todo_id") || "Unknown"}
-					/>
+					{/* The raw `todo_id` UUID was surfaced here — unreadable to a user
+					    and redundant with the card's "Update Todo" heading. Show only
+					    the fields that actually change. */}
 					{title ? <Field label="Title" value={title} /> : null}
 					{note ? <Field label="Note" value={note} /> : null}
 					{status ? <Field label="Status" value={status} /> : null}

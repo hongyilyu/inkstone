@@ -24,8 +24,10 @@ import {
 	projectsForReview,
 	recentlyCapturedItems,
 	recurrenceSummary,
+	localNowString,
 	searchLibraryItems,
 	type Todo,
+	todoIsOverdue,
 	todosForPerson,
 	todosForProject,
 	waitingTodos,
@@ -137,6 +139,47 @@ describe("library item helpers", () => {
 			expect(due.every((t) => t.status === "active")).toBe(true);
 			expect(due.some((t) => t.id === "todo_estimate")).toBe(false); // 2026-06-19
 			expect(due.some((t) => t.id === "todo_cutover")).toBe(false); // completed
+		});
+	});
+
+	describe("todoIsOverdue (ADR-0031, due-day comparison)", () => {
+		// Due dates are stored at midnight, so overdue must be a to-the-DAY check —
+		// a todo due today is NOT overdue (the bug was a full-timestamp `dueAt < now`
+		// that flagged today-due todos as overdue from 00:01 onward).
+		const now = localNowString(new Date("2026-06-12T12:00:00"));
+
+		it("a todo due today (stored at midnight) is NOT overdue", () => {
+			expect(
+				todoIsOverdue(mkTodo("today", { dueAt: "2026-06-12T00:00:00" }), now),
+			).toBe(false);
+		});
+
+		it("a todo due yesterday IS overdue", () => {
+			expect(
+				todoIsOverdue(mkTodo("past", { dueAt: "2026-06-11T00:00:00" }), now),
+			).toBe(true);
+		});
+
+		it("a todo due tomorrow is not overdue", () => {
+			expect(
+				todoIsOverdue(mkTodo("future", { dueAt: "2026-06-13T00:00:00" }), now),
+			).toBe(false);
+		});
+
+		it("a completed past-due todo is not overdue (resolved)", () => {
+			expect(
+				todoIsOverdue(
+					mkTodo("done", {
+						status: "completed",
+						dueAt: "2026-06-01T00:00:00",
+					}),
+					now,
+				),
+			).toBe(false);
+		});
+
+		it("a todo with no due date is never overdue", () => {
+			expect(todoIsOverdue(mkTodo("nodue"), now)).toBe(false);
 		});
 	});
 
@@ -547,10 +590,21 @@ describe("recurrence (ADR-0037 read side)", () => {
 			);
 		});
 
-		it("does not throw when an end condition is present", () => {
+		it("spells out an after_count end condition (was invisible before)", () => {
 			expect(
 				recurrenceSummary(rule({ unit: "week", end: { afterCount: 5 } })),
-			).toBe("Repeats weekly");
+			).toBe("Repeats weekly, 5 times");
+			expect(
+				recurrenceSummary(rule({ unit: "day", end: { afterCount: 1 } })),
+			).toBe("Repeats daily, 1 time");
+		});
+
+		it("spells out an until end condition (date only)", () => {
+			expect(
+				recurrenceSummary(
+					rule({ unit: "week", end: { until: "2026-12-31T00:00:00" } }),
+				),
+			).toBe("Repeats weekly until 2026-12-31");
 		});
 	});
 });

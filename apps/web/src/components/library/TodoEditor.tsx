@@ -134,6 +134,15 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 			saving={mutation.isPending}
 			error={error}
 			canSave={!titleEmpty && !anchorMissing && !intervalInvalid}
+			disabledReason={
+				titleEmpty
+					? "Add a title to save"
+					: intervalInvalid
+						? "Enter a whole repeat interval of 1 or more"
+						: anchorMissing
+							? `Set the ${draft.recurAnchor === "due_at" ? "due" : "defer"} date to save this repeat`
+							: undefined
+			}
 		>
 			<EditorField label="Title" htmlFor={ids.title}>
 				<EditorInput
@@ -248,7 +257,7 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 							</EditorSelect>
 						</EditorField>
 
-						<EditorField label="Anchor" htmlFor={ids.recurAnchor}>
+						<EditorField label="Repeat from" htmlFor={ids.recurAnchor}>
 							<EditorSelect
 								id={ids.recurAnchor}
 								value={draft.recurAnchor}
@@ -262,6 +271,9 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 									</option>
 								))}
 							</EditorSelect>
+							<p className="text-muted-foreground text-xs leading-relaxed">
+								Which date the next occurrence counts from.
+							</p>
 						</EditorField>
 
 						{anchorMissing ? (

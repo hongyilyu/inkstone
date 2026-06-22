@@ -41,6 +41,18 @@ export interface Message {
 	readonly segments: readonly Segment[];
 	/** Worker/provider failure message when a Run terminates with an `error` event (ADR-0006). */
 	readonly error?: string;
+	/**
+	 * True when this turn settled to `incomplete` because the user cancelled it
+	 * (clicked Stop), NOT because of a failure. A cancel is terminal but not an
+	 * error (ADR-0014), so the bubble renders a calm "stopped" notice rather than
+	 * the destructive failure alert. Live-only: the wire `MessageView.status` is a
+	 * bare `incomplete` for both cancel and error (Core does not durably split them
+	 * at the message level), so a turn cancelled in a PRIOR session rehydrates with
+	 * `cancelled` unset and falls back to the failure-alert style. Distinguishing
+	 * them across reload would need a contract change (a terminal-reason on the
+	 * wire); out of scope here.
+	 */
+	readonly cancelled?: boolean;
 }
 
 /** Concatenate the text of every `text` segment in order — the single source for the
@@ -684,10 +696,13 @@ export function applyEvent(
 		}
 
 		if (event.kind === "cancelled") {
-			// Terminal but NOT a failure (ADR-0014): mark incomplete, no `error` attached. Core mirrors this server-side.
+			// Terminal but NOT a failure (ADR-0014): mark incomplete and flag it as a
+			// user cancellation so the bubble renders a calm "stopped" notice, not the
+			// destructive failure alert. No `error` attached. Core mirrors this server-side.
 			const next = updateRunMessage(s, threadId, runId, (m) => ({
 				...m,
 				status: "incomplete",
+				cancelled: true,
 				segments: settleRunningToolSegments(m.segments, "completed"),
 			}));
 			return settleTerminal(next, threadId, runId);
