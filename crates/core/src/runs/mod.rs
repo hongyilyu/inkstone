@@ -20,6 +20,7 @@ mod subscribe;
 mod thread_create;
 mod thread_get;
 mod thread_list;
+pub(crate) mod title;
 
 use sqlx::SqlitePool;
 use tokio::sync::mpsc::UnboundedSender;

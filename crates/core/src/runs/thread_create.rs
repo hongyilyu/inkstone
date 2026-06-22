@@ -20,9 +20,7 @@ use crate::hub::{self, Hubs};
 use crate::protocol::{ThreadCreateParams, ThreadCreateResult};
 use crate::worker;
 
-/// Max Thread-title length, in Unicode scalars (not bytes, so the cut never
-/// splits a multi-byte character).
-const TITLE_MAX_CHARS: usize = 80;
+use super::title::TITLE_MAX_CHARS;
 
 pub(super) async fn handle(
     pool: &SqlitePool,
