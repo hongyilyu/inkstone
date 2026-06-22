@@ -187,14 +187,15 @@ fn generated_title_overwrites_placeholder() {
         let prompt = "i need to plan the q3 budget across all teams and figure out headcount";
         let thread_id = create_thread(&mut ws, 1, prompt).await;
 
-        // The initial placeholder is the trimmed prompt (≤ 80 scalars; this one
-        // is shorter, so it is the whole prompt).
+        // The initial placeholder is the word-boundary slug of the prompt
+        // (ADR-0048): collapsed to one line, trimmed to the last whole word
+        // within 32 scalars. This long prompt backs off mid-sentence.
         let placeholder = title_of(&mut ws, 100, &thread_id)
             .await
             .expect("created thread is in the feed");
         assert_eq!(
-            placeholder, prompt,
-            "initial title is the prompt-derived placeholder"
+            placeholder, "i need to plan the q3 budget",
+            "initial title is the prompt-derived word-boundary slug"
         );
 
         // The titler overwrites it with the sanitized fixture output.

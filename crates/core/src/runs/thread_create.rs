@@ -20,7 +20,7 @@ use crate::hub::{self, Hubs};
 use crate::protocol::{ThreadCreateParams, ThreadCreateResult};
 use crate::worker;
 
-use super::title::TITLE_MAX_CHARS;
+use super::title;
 
 pub(super) async fn handle(
     pool: &SqlitePool,
@@ -39,9 +39,12 @@ pub(super) async fn handle(
             ));
         }
 
-        // Title: trimmed prompt truncated to TITLE_MAX_CHARS scalars (never
-        // empty — the guard above rejected blanks).
-        let title: String = trimmed.chars().take(TITLE_MAX_CHARS).collect();
+        // Fallback title: a word-boundary slug derived from the prompt (ADR-0048)
+        // — a terse, legible name (≤ 32 scalars, last whole word, no ellipsis),
+        // not the prompt dumped and cut mid-word. Never empty (the guard above
+        // rejected blanks; an overlong single word is hard-cut). The titler
+        // (ADR-0046) overwrites it with a generated title on success.
+        let title = title::placeholder_title(trimmed);
 
         let now = db::now_ms();
 
