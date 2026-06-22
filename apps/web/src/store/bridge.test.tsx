@@ -1,3 +1,5 @@
+import type { ThreadListResult } from "@inkstone/protocol";
+import * as sdk from "@inkstone/ui-sdk";
 import {
 	type RunEventValue,
 	type RunId,
@@ -5,14 +7,17 @@ import {
 	type WsError,
 	WsRequestError,
 } from "@inkstone/ui-sdk";
+import { QueryClient } from "@tanstack/react-query";
 import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { WsRuntime } from "../runtime.js";
 import {
+	applyThreadTitled,
 	cancelRun as cancelRunBridge,
 	decideProposal,
 	hasRunFiber,
 	interruptRun,
+	registerThreadTitledHandler,
 	resetBridge,
 	sendNewThread,
 	setOnRunSettled,
@@ -585,5 +590,131 @@ describe("cancelRun (ADR-0014)", () => {
 		expect(hasRunFiber(runId)).toBe(false);
 
 		await runtime.dispose();
+	});
+});
+
+describe("thread/titled handler (ADR-0047 — patch the threads cache in place)", () => {
+	/** Seed the `["threads"]` cache with two ordered rows; t1 first (newer). */
+	function seedThreads(): QueryClient {
+		const qc = new QueryClient();
+		qc.setQueryData<ThreadListResult>(["threads"], {
+			threads: [
+				{ id: "t1", title: "old A", last_activity_at: 2 },
+				{ id: "t2", title: "old B", last_activity_at: 1 },
+			],
+		});
+		return qc;
+	}
+
+	it("patches the matching thread's title — others, order, and last_activity_at unchanged", () => {
+		const qc = seedThreads();
+
+		applyThreadTitled(qc, { thread_id: "t1", title: "new A" });
+
+		const after = qc.getQueryData<ThreadListResult>(["threads"]);
+		// Matched row re-titled; the rest verbatim, including last_activity_at (order key).
+		expect(after).toEqual({
+			threads: [
+				{ id: "t1", title: "new A", last_activity_at: 2 },
+				{ id: "t2", title: "old B", last_activity_at: 1 },
+			],
+		});
+		// Order preserved: t1 still before t2.
+		expect(after?.threads.map((t) => t.id)).toEqual(["t1", "t2"]);
+	});
+
+	it("is a no-op for a thread_id not in the cache (does not synthesize a row)", () => {
+		const qc = seedThreads();
+
+		applyThreadTitled(qc, { thread_id: "missing", title: "x" });
+
+		const after = qc.getQueryData<ThreadListResult>(["threads"]);
+		// Both rows intact, no new row appended.
+		expect(after).toEqual({
+			threads: [
+				{ id: "t1", title: "old A", last_activity_at: 2 },
+				{ id: "t2", title: "old B", last_activity_at: 1 },
+			],
+		});
+	});
+
+	it('is a no-op when the `["threads"]` cache is empty (no row synthesized)', () => {
+		// No `["threads"]` data seeded: the `old && …` guard returns undefined, so
+		// React Query bails out and never materializes a cache entry.
+		const qc = new QueryClient();
+
+		expect(() =>
+			applyThreadTitled(qc, { thread_id: "t1", title: "x" }),
+		).not.toThrow();
+
+		expect(qc.getQueryData<ThreadListResult>(["threads"])).toBeUndefined();
+	});
+
+	/**
+	 * Capture the closure `registerThreadTitledHandler` registers under
+	 * "thread/titled" by spying the SDK seam, so a test can drive raw (unknown)
+	 * `params` through the REAL decode→applyThreadTitled glue — the load-bearing
+	 * wiring the feature ships on. A gutted/no-op registration leaves `registered`
+	 * undefined (or never patches), failing these tests where a `.not.toThrow()`
+	 * matcher would not.
+	 */
+	function captureRegisteredHandler(
+		qc: QueryClient,
+	): (params: unknown) => void {
+		let registered: ((params: unknown) => void) | undefined;
+		const spy = vi
+			.spyOn(sdk, "setNotificationHandler")
+			.mockImplementation((method, handler) => {
+				if (method === "thread/titled") {
+					registered = handler;
+				}
+			});
+		registerThreadTitledHandler(qc);
+		spy.mockRestore();
+		if (registered === undefined) {
+			throw new Error(
+				'registerThreadTitledHandler did not register a "thread/titled" handler',
+			);
+		}
+		return registered;
+	}
+
+	it("wires the SDK seam so a valid thread/titled frame re-titles the cached row", () => {
+		const qc = seedThreads();
+		const handler = captureRegisteredHandler(qc);
+
+		// Drive a raw `unknown` params object through the real registered closure
+		// (decode → applyThreadTitled), exactly as the SDK's onFrame would.
+		handler({ thread_id: "t1", title: "new A" });
+
+		expect(qc.getQueryData<ThreadListResult>(["threads"])).toEqual({
+			threads: [
+				{ id: "t1", title: "new A", last_activity_at: 2 },
+				{ id: "t2", title: "old B", last_activity_at: 1 },
+			],
+		});
+	});
+
+	it("ignores a malformed thread/titled frame — no throw, cache untouched", () => {
+		const qc = seedThreads();
+		const handler = captureRegisteredHandler(qc);
+
+		// Missing `title` → the schema decode fails; the Either.isLeft guard must
+		// early-return so the bad frame neither throws nor mutates the cache.
+		expect(() => handler({ thread_id: "t1" })).not.toThrow();
+		expect(() => handler({ nonsense: true })).not.toThrow();
+
+		expect(qc.getQueryData<ThreadListResult>(["threads"])).toEqual({
+			threads: [
+				{ id: "t1", title: "old A", last_activity_at: 2 },
+				{ id: "t2", title: "old B", last_activity_at: 1 },
+			],
+		});
+	});
+
+	it("registers via the SDK seam and its disposer clears without throwing", () => {
+		const qc = new QueryClient();
+		const dispose = registerThreadTitledHandler(qc);
+		expect(() => dispose()).not.toThrow();
 	});
 });

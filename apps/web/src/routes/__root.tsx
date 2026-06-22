@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { CommandPalette } from "@/components/CommandPalette";
-import { setOnRunSettled } from "@/store/bridge";
+import { registerThreadTitledHandler, setOnRunSettled } from "@/store/bridge";
 import { noteNonSettingsLocation } from "@/store/settings-origin";
 
 /** Root route (ADR-0024): renders the active `<Outlet/>` plus the global command palette (⌘K), reachable from every surface. */
@@ -27,6 +27,11 @@ function RootLayout() {
 		});
 		return () => setOnRunSettled(undefined);
 	}, [queryClient]);
+
+	// Patch the ["threads"] cache in place when Core pushes thread/titled, so the
+	// sidebar row re-titles live without a refetch (ADR-0047). The disposer clears
+	// the handler on unmount.
+	useEffect(() => registerThreadTitledHandler(queryClient), [queryClient]);
 
 	return (
 		<>

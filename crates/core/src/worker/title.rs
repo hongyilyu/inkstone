@@ -15,6 +15,7 @@
 //! and a resolution error (`Err`) both return without spawning.
 
 use sqlx::SqlitePool;
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::Instrument;
 use uuid::Uuid;
 
@@ -39,13 +40,16 @@ Rules:
 /// Fire a one-shot title Worker for `thread_id` (ADR-0046). Returns immediately;
 /// a Tokio task resolves the token (strict gate), builds the bespoke manifest,
 /// spawns the Worker, collects its `text_delta`s, sanitizes them, and — on a
-/// non-empty result — overwrites `threads.title`. Any pre-spawn or mid-stream
-/// failure keeps the placeholder.
+/// non-empty result — overwrites `threads.title` AND pushes a `thread/titled`
+/// notification onto `out_tx` (ADR-0047), the creating connection's outbound
+/// channel, so its sidebar updates live. Any pre-spawn or mid-stream failure
+/// keeps the placeholder and pushes nothing.
 pub fn spawn_title_generation(
     thread_id: Uuid,
     prompt: String,
     provider: String,
     pool: SqlitePool,
+    out_tx: UnboundedSender<String>,
 ) {
     // Title generation is not a Run, so the correlation span keys on `thread_id`
     // (ADR-0038). `corr_id` is a throwaway id minted only for the manifest's
@@ -147,11 +151,22 @@ pub fn spawn_title_generation(
             // (`sanitize_title` → `None`) all keep the prompt-derived placeholder.
             if let Ok(Some(acc)) = collected {
                 if let Some(title) = crate::runs::title::sanitize_title(&acc) {
-                    // A persistent write failure is non-fatal degradation (the
-                    // placeholder stays), but it must surface in the diagnostic
-                    // trail (ADR-0038) rather than vanish.
-                    if let Err(e) = crate::db::update_thread_title(&pool, thread_id, &title).await {
-                        tracing::warn!(event = "title.update_failed", %thread_id, error = ?e);
+                    match crate::db::update_thread_title(&pool, thread_id, &title).await {
+                        // The title was durably written: push it live to the
+                        // creating connection (ADR-0047) so its sidebar updates
+                        // without a `thread/list` poll. A dead `out_tx` (the tab
+                        // closed) is a silent no-op; the next `thread/list`
+                        // self-heals.
+                        Ok(()) => {
+                            crate::runs::reply::send_thread_titled(&out_tx, thread_id, &title);
+                        }
+                        // A persistent write failure is non-fatal degradation (the
+                        // placeholder stays, nothing is pushed), but it must
+                        // surface in the diagnostic trail (ADR-0038) rather than
+                        // vanish.
+                        Err(e) => {
+                            tracing::warn!(event = "title.update_failed", %thread_id, error = ?e);
+                        }
                     }
                 }
             }

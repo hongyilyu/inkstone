@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::protocol::{
     JsonRpcResponse, ProposalChangedNotification, ProposalPendingNotification, RunEvent,
+    ThreadTitledNotification,
 };
 
 /// Frame a JSON-RPC RESPONSE carrying `result` for request `id` and queue it.
@@ -95,6 +96,38 @@ pub(super) fn send_proposal_changed(
     });
     let body = serde_json::to_string(&notification).expect("notification serializes");
     let _ = out_tx.send(body);
+}
+
+/// Frame a run-less server→client notification (ADR-0047) — `{jsonrpc, method,
+/// params}` — and queue it on `out_tx`. The foundation of the connection
+/// notification channel: a detached, non-Run task with a durable result delivers
+/// it live over the originating connection, keyed by `method` rather than a Run
+/// subscription. A dead `out_tx` (the tab closed) makes the send a silent no-op
+/// (`let _ = …`); delivery is best-effort / at-most-once, DB-is-truth.
+pub(crate) fn send_notification(
+    out_tx: &UnboundedSender<String>,
+    method: &str,
+    params: serde_json::Value,
+) {
+    let notification = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+    });
+    let body = serde_json::to_string(&notification).expect("notification serializes");
+    let _ = out_tx.send(body);
+}
+
+/// Queue a `thread/titled` notification (ADR-0047): the one-shot titler
+/// (ADR-0046) generated `title` for `thread_id`, pushed to the connection that
+/// created the thread so its sidebar updates without a `thread/list` poll.
+pub(crate) fn send_thread_titled(out_tx: &UnboundedSender<String>, thread_id: Uuid, title: &str) {
+    let params = serde_json::to_value(ThreadTitledNotification {
+        thread_id: thread_id.to_string(),
+        title: title.to_string(),
+    })
+    .expect("ThreadTitledNotification serializes");
+    send_notification(out_tx, "thread/titled", params);
 }
 
 /// Shared JSON-RPC error framer: builds and queues the `{jsonrpc, id,
