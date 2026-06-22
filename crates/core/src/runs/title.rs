@@ -37,35 +37,47 @@ pub(crate) fn sanitize_title(raw: &str) -> Option<String> {
 }
 
 /// Remove every `<think>...</think>` block (case-insensitive tags, possibly
-/// multiline/repeated). A lone opening `<think>` with no close is a cut-off
-/// reasoning stream: drop from that tag to end-of-input. A lone closing
-/// `</think>` with no open is dropped as a bare tag.
+/// multiline/repeated/**nested**). Walks tag by tag tracking nesting `depth`,
+/// emitting text only at `depth == 0` so a nested block (`<think>a<think>b</think>c</think>`)
+/// is removed as one unit rather than leaking the inner fragment. A lone opening
+/// `<think>` with no close is a cut-off reasoning stream: everything from it to
+/// end-of-input is dropped. A lone closing `</think>` with no open keeps the text
+/// before it (depth saturates at 0) and drops the bare tag.
 fn strip_think(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut rest = raw;
+    let mut depth: usize = 0;
 
-    while let Some(open) = find_ci(rest, "<think>") {
-        let after_open = &rest[open + "<think>".len()..];
-        match find_ci(after_open, "</think>") {
-            // Paired block: emit text before the open tag, skip the block.
-            Some(close_rel) => {
-                out.push_str(&rest[..open]);
-                let close_abs = open + "<think>".len() + close_rel + "</think>".len();
-                rest = &rest[close_abs..];
-            }
-            // Open with no close: a cut-off reasoning stream. Emit text up to
-            // the open tag and drop everything from the tag to end-of-input.
-            None => {
-                out.push_str(&rest[..open]);
-                rest = "";
+    loop {
+        // Advance to whichever tag comes first; an open we haven't closed keeps
+        // `depth > 0` so its contents (and any nested tags) are skipped.
+        let (idx, is_open, tag_len) = match (find_ci(rest, "<think>"), find_ci(rest, "</think>")) {
+            (Some(o), Some(c)) if o < c => (o, true, "<think>".len()),
+            (Some(_), Some(c)) => (c, false, "</think>".len()),
+            (Some(o), None) => (o, true, "<think>".len()),
+            (None, Some(c)) => (c, false, "</think>".len()),
+            // No more tags: emit the tail only if we're outside every block.
+            (None, None) => {
+                if depth == 0 {
+                    out.push_str(rest);
+                }
                 break;
             }
-        }
-    }
-    out.push_str(rest);
+        };
 
-    // Drop any orphan `</think>` (close with no open) left over.
-    remove_all_ci(&out, "</think>")
+        // Text before this tag is real output only when not inside a block.
+        if depth == 0 {
+            out.push_str(&rest[..idx]);
+        }
+        if is_open {
+            depth += 1;
+        } else {
+            depth = depth.saturating_sub(1);
+        }
+        rest = &rest[idx + tag_len..];
+    }
+
+    out
 }
 
 /// Byte offset of the first case-insensitive (ASCII) match of `needle` in
@@ -82,18 +94,6 @@ fn find_ci(haystack: &str, needle: &str) -> Option<usize> {
             .zip(nee)
             .all(|(h, n)| h.eq_ignore_ascii_case(n))
     })
-}
-
-/// Remove every case-insensitive occurrence of `needle` from `text`.
-fn remove_all_ci(text: &str, needle: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = find_ci(rest, needle) {
-        out.push_str(&rest[..at]);
-        rest = &rest[at + needle.len()..];
-    }
-    out.push_str(rest);
-    out
 }
 
 /// Collapse runs of whitespace to a single space and trim both ends.
@@ -149,6 +149,12 @@ mod tests {
         assert_eq!(
             sanitize_title("Grocery list</think>"),
             Some("Grocery list".to_string())
+        );
+        // Nested blocks are removed as one unit — the inner fragment `c` must
+        // not leak (the depth-aware strip; CodeRabbit #208).
+        assert_eq!(
+            sanitize_title("<think>a<think>b</think>c</think>Real title"),
+            Some("Real title".to_string())
         );
     }
 

@@ -161,14 +161,16 @@ pub fn spawn_title_generation(
 }
 
 /// The collector timeout for the title Worker (ADR-0046). Reads
-/// `INKSTONE_TITLE_TIMEOUT_MS` as a `u64` of milliseconds; unset or unparseable
-/// falls back to 15s. The env seam lets tests set it low to exercise the
-/// timeout without a wall-clock wait.
+/// `INKSTONE_TITLE_TIMEOUT_MS` as a `u64` of milliseconds; unset, unparseable,
+/// or `0` falls back to 15s. `0` is rejected because a zero-length timeout fires
+/// instantly, turning every title attempt into a silent no-op. The env seam lets
+/// tests set it low to exercise the timeout without a wall-clock wait.
 fn title_timeout() -> std::time::Duration {
     const DEFAULT_MS: u64 = 15_000;
     let ms = std::env::var("INKSTONE_TITLE_TIMEOUT_MS")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
         .unwrap_or(DEFAULT_MS);
     std::time::Duration::from_millis(ms)
 }
@@ -204,6 +206,13 @@ mod tests {
         // Garbage → default 15s (never panics, never a zero-length timeout).
         unsafe {
             std::env::set_var("INKSTONE_TITLE_TIMEOUT_MS", "not-a-number");
+        }
+        assert_eq!(title_timeout(), Duration::from_millis(15_000));
+
+        // Zero → default 15s. A 0ms timeout fires instantly, so every title
+        // attempt would be a silent no-op; reject it (CodeRabbit #208).
+        unsafe {
+            std::env::set_var("INKSTONE_TITLE_TIMEOUT_MS", "0");
         }
         assert_eq!(title_timeout(), Duration::from_millis(15_000));
 
