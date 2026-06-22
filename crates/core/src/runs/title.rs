@@ -190,6 +190,24 @@ mod tests {
     }
 
     #[test]
+    fn placeholder_pins_the_cap_boundary() {
+        // The function's one numeric decision is `count() <= PLACEHOLDER_MAX_CHARS`.
+        // Pin BOTH sides so an off-by-one (`<` for `<=`, or `take(CAP - 1)`) can't
+        // pass silently. `at_cap` is exactly PLACEHOLDER_MAX_CHARS (32) scalars and
+        // ends on a word boundary, so the correct `<=` returns it verbatim; a `<`
+        // regression would instead drop its trailing word.
+        let at_cap = "plan the quarterly budget review";
+        assert_eq!(at_cap.chars().count(), PLACEHOLDER_MAX_CHARS);
+        assert_eq!(placeholder_title(at_cap), at_cap);
+
+        // One scalar over the cap (33): the first input that must trip the
+        // word-boundary back-off, pinning the crossover.
+        let over_cap = "plan the quarterly budget reviews";
+        assert_eq!(over_cap.chars().count(), PLACEHOLDER_MAX_CHARS + 1);
+        assert_eq!(placeholder_title(over_cap), "plan the quarterly budget");
+    }
+
+    #[test]
     fn placeholder_long_prompt_backs_off_to_word_boundary() {
         // The canonical case: a long multi-word prompt becomes a clean slug cut
         // on a WORD boundary within 32 scalars — never mid-word, no ellipsis.
