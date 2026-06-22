@@ -1,6 +1,17 @@
-import type { NodeDecision } from "@inkstone/protocol";
-import { type RunId, WsClient, type WsError } from "@inkstone/ui-sdk";
-import { Effect, Fiber, Stream } from "effect";
+import {
+	type NodeDecision,
+	type ThreadListResult,
+	ThreadTitledNotification,
+} from "@inkstone/protocol";
+import {
+	type RunId,
+	resetNotificationHandlers,
+	setNotificationHandler,
+	WsClient,
+	type WsError,
+} from "@inkstone/ui-sdk";
+import type { QueryClient } from "@tanstack/react-query";
+import { Effect, Either, Fiber, Schema as S, Stream } from "effect";
 import type { WsRuntime } from "../runtime.js";
 import {
 	appendUserMessage,
@@ -45,6 +56,52 @@ export function resetBridge(): void {
 	fibers.clear();
 	proposalFiber = undefined;
 	onRunSettled = undefined;
+}
+
+const decodeThreadTitled = S.decodeUnknownEither(ThreadTitledNotification);
+
+/**
+ * Patch the `["threads"]` cache in place for a `thread/titled` push (ADR-0047):
+ * re-title the matching row, leave everything else verbatim. Immutable map (new
+ * array, spread the matched row) so React Query's change-detection fires. Does
+ * NOT touch `last_activity_at` — the title push must not reorder the sidebar.
+ * A `thread_id` absent from the list matches nothing (no synthesized row); an
+ * empty cache (`old` undefined) is a no-op.
+ */
+export function applyThreadTitled(
+	queryClient: QueryClient,
+	n: { thread_id: string; title: string },
+): void {
+	queryClient.setQueryData<ThreadListResult>(
+		["threads"],
+		(old) =>
+			old && {
+				threads: old.threads.map((t) =>
+					t.id === n.thread_id ? { ...t, title: n.title } : t,
+				),
+			},
+	);
+}
+
+/**
+ * Wire the SDK's generic notification seam (ADR-0047) to the `["threads"]` cache
+ * patch so the sidebar row re-titles live — no refetch. Decode-guards `params`
+ * (the SDK passes raw `unknown`); a malformed frame is ignored, matching the
+ * SDK's own decode-guard arms. Returns a disposer for the `__root.tsx` unmount.
+ * The single-handler clear reuses `resetNotificationHandlers()` — there is one
+ * app-edge consumer today, and the SDK exposes no per-method clear.
+ */
+export function registerThreadTitledHandler(
+	queryClient: QueryClient,
+): () => void {
+	setNotificationHandler("thread/titled", (params) => {
+		const decoded = decodeThreadTitled(params);
+		if (Either.isLeft(decoded)) {
+			return;
+		}
+		applyThreadTitled(queryClient, decoded.right);
+	});
+	return () => resetNotificationHandlers();
 }
 
 /** The outcome of a send — a discriminated result so callers learn of failure off the awaited promise. */
