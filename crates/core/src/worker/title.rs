@@ -147,7 +147,12 @@ pub fn spawn_title_generation(
             // (`sanitize_title` → `None`) all keep the prompt-derived placeholder.
             if let Ok(Some(acc)) = collected {
                 if let Some(title) = crate::runs::title::sanitize_title(&acc) {
-                    let _ = crate::db::update_thread_title(&pool, thread_id, &title).await;
+                    // A persistent write failure is non-fatal degradation (the
+                    // placeholder stays), but it must surface in the diagnostic
+                    // trail (ADR-0038) rather than vanish.
+                    if let Err(e) = crate::db::update_thread_title(&pool, thread_id, &title).await {
+                        tracing::warn!(event = "title.update_failed", %thread_id, error = ?e);
+                    }
                 }
             }
         }

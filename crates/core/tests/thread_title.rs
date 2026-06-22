@@ -115,7 +115,14 @@ fn generated_title_overwrites_placeholder() {
         .worker_fixture("slow-worker.ts")
         .env("INKSTONE_CREDENTIALS_DIR", &creds_dir)
         .env("INKSTONE_TITLE_WORKER_CMD", fixture_cmd("title-worker.ts", &[]))
-        .env("INKSTONE_TITLE_FIXTURE_OUTPUT", "Budget planning for Q3")
+        // DIRTY model output: a reasoning block + a newline + wrapping quotes.
+        // Asserting the SANITIZED result proves the create→titler→sanitize→update
+        // wiring — a regression that dropped `sanitize_title` and wrote `acc`
+        // verbatim would store this raw blob and fail.
+        .env(
+            "INKSTONE_TITLE_FIXTURE_OUTPUT",
+            "<think>the user wants a budget plan</think>\n\"Budget planning for Q3\"",
+        )
         .spawn();
 
     let rt = tokio::runtime::Builder::new_current_thread()

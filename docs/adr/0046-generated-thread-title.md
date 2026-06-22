@@ -134,7 +134,7 @@ stops on `done`/`error`/EOF.
   (truncation → placeholder).
 - [ADR-0023](./0023-provider-oauth-core-owned-credentials.md) — Core-owned
   credentials; the titler's connected-only gate reads the same store.
-- [ADR-0024](./0024-effective-workflow-resolution.md) — model/effort resolution;
+- [ADR-0024](./0024-user-configurable-model-and-effort.md) — model/effort resolution;
   `default_title_model` is product policy authored beside `default_model`.
 - [ADR-0041](./0041-compiled-worker-binaries.md) — the role-keyed launch
   resolver `Role::Titler` extends.
