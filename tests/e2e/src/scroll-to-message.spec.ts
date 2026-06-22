@@ -26,9 +26,9 @@ test.use({
 	},
 });
 
-// Turn 1 becomes the Thread title (Core truncates the prompt to 80 chars), so it
-// must NOT carry the needle — otherwise a Threads-group title match could
-// masquerade as the message-body hit we mean to prove.
+// Turn 1 becomes the Thread title (Core derives a word-boundary slug from the
+// prompt — ADR-0048), so it must NOT carry the needle — otherwise a Threads-group
+// title match could masquerade as the message-body hit we mean to prove.
 const TITLE_PROMPT =
 	"Planning the week ahead and sorting out the various errands I keep forgetting";
 
