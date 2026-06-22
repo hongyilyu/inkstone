@@ -129,7 +129,7 @@ establishes the channel; only `thread/titled` ships on it now.
 - [ADR-0025](./0025-proposal-park-and-resume.md) — proposal notifications: the
   per-run-subscription precedent this channel intentionally does **not** copy
   (it rides a subscription; this rides the bare connection).
-- [ADR-0009](./0009-client-core-wire-protocol.md) — the wire protocol + the
+- [ADR-0009](./0009-protocol-strategy.md) — the wire protocol + the
   contract-parity gate the new notification crosses.
 - Follow-ups (zero code here): provider OAuth-connected notification (the
   strongest future consumer); the title transient-failure retry/regenerate
