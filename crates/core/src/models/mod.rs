@@ -43,3 +43,61 @@ pub fn default_model(provider: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// The default model id for titling a thread when the provider offers a cheaper
+/// title-sized model (ADR-0046). Like [`default_model`], this is product policy
+/// authored here rather than in the drift-tested embedded JSON. Only
+/// `openai-codex` has one today; other providers return `None`.
+pub fn default_title_model(provider: &str) -> Option<&'static str> {
+    match provider {
+        "openai-codex" => Some("gpt-5.4-mini"),
+        _ => None,
+    }
+}
+
+/// The model the titler should use for `provider`: the title model when it is a
+/// known catalog id, otherwise the chat [`default_model`]. An absent or unknown
+/// title model falls through to the chat default.
+pub fn title_model_for(provider: &str) -> Option<&'static str> {
+    default_title_model(provider)
+        .filter(|m| is_known_model(m))
+        .or_else(|| default_model(provider))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_title_model_is_codex_only() {
+        assert_eq!(default_title_model("openai-codex"), Some("gpt-5.4-mini"));
+        assert_eq!(default_title_model("anthropic"), None);
+    }
+
+    #[test]
+    fn title_model_for_prefers_known_title_model() {
+        // openai-codex's title model is in the catalog, so it wins outright.
+        assert!(is_known_model("gpt-5.4-mini"));
+        assert_eq!(title_model_for("openai-codex"), Some("gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn title_model_for_falls_back_to_chat_default() {
+        // A provider with no title model defers to `default_model` (None today).
+        assert_eq!(title_model_for("anthropic"), default_model("anthropic"));
+    }
+
+    #[test]
+    fn title_model_filter_rejects_unknown_id() {
+        // The "present but unknown title model" arm has no real provider to
+        // exercise it (the sole title model, gpt-5.4-mini, is in the catalog),
+        // so assert `title_model_for`'s composition directly: an unknown id is
+        // filtered out and `or_else` recovers the chat default.
+        let unknown = "no-such-title-model";
+        assert!(!is_known_model(unknown));
+        let resolved = Some(unknown)
+            .filter(|m| is_known_model(m))
+            .or_else(|| default_model("openai-codex"));
+        assert_eq!(resolved, default_model("openai-codex"));
+    }
+}

@@ -82,6 +82,26 @@ where
         .await
 }
 
+/// Overwrite a Thread's `title` by id, unconditionally. Touches ONLY `title` —
+/// NOT `last_activity_at` (titling is not activity, unlike
+/// [`touch_thread_activity`]). A missing row matches nothing and is a silent
+/// no-op (no error). Backs the generated-title write.
+pub(super) async fn update_thread_title<'e, E>(
+    executor: E,
+    thread_id: Uuid,
+    title: &str,
+) -> sqlx::Result<()>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query("UPDATE threads SET title = ?2 WHERE id = ?1")
+        .bind(thread_id.to_string())
+        .bind(title)
+        .execute(executor)
+        .await
+        .map(|_| ())
+}
+
 // ─── runs ─────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]

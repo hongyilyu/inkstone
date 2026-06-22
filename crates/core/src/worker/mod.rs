@@ -9,6 +9,9 @@
 mod child;
 mod port;
 mod run;
+mod title;
+
+pub use title::spawn_title_generation;
 
 use sqlx::SqlitePool;
 use tracing::Instrument;
@@ -289,7 +292,7 @@ async fn resolve_token(run_id: Uuid, workflow: &Workflow) -> Option<Option<Strin
     }
 }
 
-fn serialize_manifest(manifest: &WorkerManifest<'_>) -> String {
+pub(super) fn serialize_manifest(manifest: &WorkerManifest<'_>) -> String {
     let mut line = serde_json::to_string(manifest).expect("WorkerManifest serializes");
     line.push('\n');
     line

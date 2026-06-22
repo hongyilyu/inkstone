@@ -20,9 +20,7 @@ use crate::hub::{self, Hubs};
 use crate::protocol::{ThreadCreateParams, ThreadCreateResult};
 use crate::worker;
 
-/// Max Thread-title length, in Unicode scalars (not bytes, so the cut never
-/// splits a multi-byte character).
-const TITLE_MAX_CHARS: usize = 80;
+use super::title::TITLE_MAX_CHARS;
 
 pub(super) async fn handle(
     pool: &SqlitePool,
@@ -73,6 +71,18 @@ pub(super) async fn handle(
         // Create the hub BEFORE spawning the Worker so a subscribe arriving
         // right after the response can't find a missing hub.
         let run_hub = hub::create(hubs, run_id);
+
+        // Fire the one-shot title Worker (ADR-0046) — fire-and-forget, so the
+        // create RESPONSE never waits on it. Clone the prompt + provider because
+        // both `params.prompt` and `workflow` are moved into the Run's
+        // `worker::spawn` below. With no credential, or empty/whitespace output,
+        // it silently keeps the prompt-derived placeholder.
+        worker::spawn_title_generation(
+            thread_id,
+            params.prompt.clone(),
+            workflow.provider.clone(),
+            pool.clone(),
+        );
 
         worker::spawn(
             run_id,

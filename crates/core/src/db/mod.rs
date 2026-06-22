@@ -127,6 +127,17 @@ pub async fn list_threads(pool: &SqlitePool) -> sqlx::Result<Vec<(String, String
     queries::list_threads(pool).await
 }
 
+/// Overwrite a Thread's title by id (the generated-title write). A silent no-op
+/// when the row is absent, and deliberately does NOT bump `last_activity_at` —
+/// titling is not activity, so it must not reorder the `thread/list` feed.
+pub async fn update_thread_title(
+    pool: &SqlitePool,
+    thread_id: Uuid,
+    title: &str,
+) -> sqlx::Result<()> {
+    queries::update_thread_title(pool, thread_id, title).await
+}
+
 /// Read the recent-Runs feed for `run/get_history` (ADR-0028 as-built): one row
 /// per Run carrying its latest Run Log milestone, newest-first, capped at
 /// `limit`. Returns `(run_id, thread_id, title, kind, at)` rows; `kind` is the
@@ -3923,5 +3934,67 @@ mod tests {
             ),
             other => panic!("expected a proposal segment, got {other:?}"),
         }
+    }
+
+    fn fixture_workflow() -> Workflow {
+        Workflow {
+            name: "w".to_string(),
+            version: "1".to_string(),
+            provider: "p".to_string(),
+            model: Some("m".to_string()),
+            system_prompt: String::new(),
+            thinking_level: None,
+            tools: Vec::new(),
+        }
+    }
+
+    /// `update_thread_title` overwrites a Thread's title by id WITHOUT bumping
+    /// `last_activity_at` (titling is not activity), and is a silent no-op when the
+    /// row is absent.
+    #[tokio::test]
+    async fn update_thread_title_overwrites_and_is_noop_when_absent() {
+        let pool = memory_pool().await;
+        let thread_id = Uuid::now_v7();
+        persist_thread_with_first_run(
+            &pool,
+            thread_id,
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            &fixture_workflow(),
+            "hello",
+            "old",
+            7,
+        )
+        .await
+        .expect("persist thread");
+
+        // Capture the persisted last_activity_at before retitling.
+        let before = list_threads(&pool).await.expect("list before");
+        let (_, title_before, activity_before) = before
+            .iter()
+            .find(|(id, _, _)| *id == thread_id.to_string())
+            .expect("thread row before");
+        assert_eq!(title_before, "old");
+
+        update_thread_title(&pool, thread_id, "New Title")
+            .await
+            .expect("update title");
+
+        let after = list_threads(&pool).await.expect("list after");
+        let (_, title_after, activity_after) = after
+            .iter()
+            .find(|(id, _, _)| *id == thread_id.to_string())
+            .expect("thread row after");
+        assert_eq!(title_after, "New Title", "title is overwritten by id");
+        assert_eq!(
+            activity_after, activity_before,
+            "retitling does NOT bump last_activity_at"
+        );
+
+        // An absent id is a silent no-op: Ok, nothing changed, no error/panic.
+        update_thread_title(&pool, Uuid::now_v7(), "X")
+            .await
+            .expect("update of an absent thread is a no-op Ok");
     }
 }
