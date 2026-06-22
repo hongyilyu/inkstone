@@ -101,7 +101,10 @@ export function ModelCatalogTable({
 											type="button"
 											disabled={disabled}
 											onClick={() => onSelect(m.id)}
-											className="cursor-pointer whitespace-nowrap rounded-md px-2 py-1 font-medium text-muted-foreground text-xs opacity-0 transition-opacity hover:bg-muted/40 hover:text-foreground focus-visible:opacity-100 disabled:cursor-not-allowed group-hover/row:opacity-100"
+											// Always visible (was opacity-0 → hover-only, so it was
+											// undiscoverable and unreachable on touch); calm at rest,
+											// brighter on hover/focus.
+											className="cursor-pointer whitespace-nowrap rounded-md border border-border px-2 py-1 font-medium text-muted-foreground text-xs transition-colors hover:bg-muted/40 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 										>
 											Set as preferred
 										</button>

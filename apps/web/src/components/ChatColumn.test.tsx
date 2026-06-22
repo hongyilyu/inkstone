@@ -663,9 +663,11 @@ describe("ChatColumn", () => {
 
 		await user.click(stop);
 
-		// Cancel reached Core and the bubble settled to the cancelled/incomplete state.
+		// Cancel reached Core and the bubble settled to the calm "stopped" state —
+		// NOT the destructive error alert (a deliberate Stop is not a failure, ADR-0014).
 		expect(cancelRun).toHaveBeenCalledWith("run-stop");
-		await screen.findByTestId("assistant-error");
+		await screen.findByTestId("assistant-stopped");
+		expect(screen.queryByTestId("assistant-error")).toBeNull();
 		// Stop is gone (run no longer active) and Send is back.
 		await waitFor(() => {
 			expect(screen.queryByRole("button", { name: /stop/i })).toBeNull();

@@ -20,6 +20,7 @@ export function EntityEditorFrame({
 	error,
 	saveLabel = "Save",
 	canSave = true,
+	disabledReason,
 	children,
 }: {
 	title: string;
@@ -30,6 +31,9 @@ export function EntityEditorFrame({
 	saveLabel?: string;
 	/** Disables Save (showing its disabled affordance) when a required field guard fails. */
 	canSave?: boolean;
+	/** Why Save is disabled (e.g. "Add a title to save"); shown as a muted hint
+	 * beside the disabled button so the block isn't silent. */
+	disabledReason?: string;
 	children: ReactNode;
 }) {
 	const submit = (e: FormEvent) => {
@@ -58,7 +62,12 @@ export function EntityEditorFrame({
 						{error}
 					</p>
 				) : null}
-				<div className="flex justify-end gap-2">
+				<div className="flex items-center justify-end gap-3">
+					{!canSave && !saving && disabledReason ? (
+						<p className="mr-auto text-muted-foreground text-xs leading-relaxed">
+							{disabledReason}
+						</p>
+					) : null}
 					<Button
 						variant="chip"
 						size="pill"

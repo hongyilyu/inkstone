@@ -189,6 +189,52 @@ describe("CommandPalette (⌘K)", () => {
 		expect(await screen.findByText(/no matches for/i)).toBeInTheDocument();
 	});
 
+	it("re-clamps the active row when results shrink so Enter never no-ops", async () => {
+		// "alice" matches BOTH the person (Alice Whitman) and the todo (…Alice…).
+		// Arrow-key down to the last row, then narrow the query so the result set
+		// shrinks out from under the cursor; the active index must re-clamp so Enter
+		// still activates a real row (the bug: a stale index past the end → Enter
+		// silently no-ops on `flat[active] === undefined`).
+		const router = renderApp();
+		openPalette();
+		const input = await screen.findByPlaceholderText(PLACEHOLDER);
+
+		await userEvent.type(input, "alice");
+		const results = screen.getByRole("listbox", { name: /results/i });
+		// Both the person (Alice Whitman) and the todo (…Alice…) match "alice".
+		await waitFor(() =>
+			expect(within(results).getByText("Alice Whitman")).toBeInTheDocument(),
+		);
+		expect(
+			within(results).getByText("Send Alice the updated daycare schedule"),
+		).toBeInTheDocument();
+
+		// Move the selection toward the bottom of the multi-row result set.
+		await userEvent.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}");
+
+		// Narrow to a token only the todo matches ("daycare" is not in the person's
+		// name), shrinking the list — the active index would now point past the end.
+		await userEvent.type(
+			input,
+			"{Backspace}{Backspace}{Backspace}{Backspace}{Backspace}daycare",
+		);
+		await waitFor(() =>
+			expect(
+				within(results).queryByText("Alice Whitman"),
+			).not.toBeInTheDocument(),
+		);
+		// Only the todo remains.
+		expect(
+			within(results).getByText("Send Alice the updated daycare schedule"),
+		).toBeInTheDocument();
+
+		// Enter activates the clamped row (the surviving todo) and navigates — not a no-op.
+		await userEvent.keyboard("{Enter}");
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe("/library/todos"),
+		);
+	});
+
 	it("closes on Escape", async () => {
 		renderApp();
 		openPalette();

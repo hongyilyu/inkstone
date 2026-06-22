@@ -58,7 +58,9 @@ export function DueChip({ due, overdue }: { due: string; overdue: boolean }) {
 			className="shrink-0"
 		>
 			{overdue ? <AlertTriangle className="size-3" aria-hidden /> : null}
-			{overdue ? "Overdue" : due}
+			{/* Keep the date even when overdue so multiple overdue rows stay
+			    distinguishable (matches EntityDetail's "Overdue · <date>"). */}
+			{overdue ? `Overdue · ${due}` : due}
 		</Badge>
 	);
 }

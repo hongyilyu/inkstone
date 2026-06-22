@@ -23,12 +23,17 @@ import { openCommand } from "@/store/command";
 /** Left nav for the Library takeover: return-to-chat, search, GTD views, the kinds. */
 export function LibraryNav() {
 	const navigate = useNavigate();
-	const { data } = useLibraryItems();
+	const { data, isError } = useLibraryItems();
 	const items = data ?? [];
 	const counts = libraryItemKindCounts(items);
 	const inboxCount = inboxTodos(items).length;
 	const waitingCount = waitingTodos(items).length;
 	const reviewCount = projectsForReview(items).length;
+	// Suppress the count badges ONLY when the read failed AND there's no cached data
+	// to count — otherwise a misleading `0` reads as a fake-empty workspace. A
+	// refetch error with a coherent cache keeps the real (stale-but-usable) counts.
+	const countsUnknown = isError && items.length === 0;
+	const countLabel = (n: number): string => (countsUnknown ? "" : String(n));
 
 	return (
 		<NavShell
@@ -74,7 +79,7 @@ export function LibraryNav() {
 					<Inbox className="size-4 shrink-0" aria-hidden />
 					<span className="flex-1 truncate">Inbox</span>
 					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
-						{inboxCount}
+						{countLabel(inboxCount)}
 					</span>
 				</Link>
 				<Link
@@ -85,7 +90,7 @@ export function LibraryNav() {
 					<Hourglass className="size-4 shrink-0" aria-hidden />
 					<span className="flex-1 truncate">Waiting</span>
 					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
-						{waitingCount}
+						{countLabel(waitingCount)}
 					</span>
 				</Link>
 				<Link
@@ -96,7 +101,7 @@ export function LibraryNav() {
 					<CalendarClock className="size-4 shrink-0" aria-hidden />
 					<span className="flex-1 truncate">Review</span>
 					<span className="text-sidebar-foreground/45 text-xs tabular-nums">
-						{reviewCount}
+						{countLabel(reviewCount)}
 					</span>
 				</Link>
 				{KIND_ORDER.map((kind) => {
@@ -113,7 +118,7 @@ export function LibraryNav() {
 							<Icon className="size-4 shrink-0" aria-hidden />
 							<span className="flex-1 truncate">{meta.plural}</span>
 							<span className="text-sidebar-foreground/45 text-xs tabular-nums">
-								{counts[kind]}
+								{countLabel(counts[kind])}
 							</span>
 						</Link>
 					);

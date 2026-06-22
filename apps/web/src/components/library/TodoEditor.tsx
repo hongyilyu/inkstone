@@ -92,19 +92,25 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 			recurAnchor: recurs ? (d.dueDay ? "due_at" : "defer_at") : d.recurAnchor,
 		}));
 
-	const titleEmpty = draft.title.trim() === "";
-	// Repeats is on but the anchor's date is absent: Core would reject the rule, so
-	// block Save until the date is set rather than silently dropping the rule.
-	const anchorMissing = draft.recurs && !recurAnchorDatePresent(draft);
-	// The interval is free text on a number input; Core requires a positive integer,
-	// so block Save on empty/0/fractional/negative rather than emitting an invalid rule.
-	const intervalInvalid =
-		draft.recurs &&
-		(!Number.isInteger(Number(draft.recurInterval)) ||
-			Number(draft.recurInterval) < 1);
+	// Single source of truth for "can't save yet, and why" (null = savable). The
+	// frame derives both the disabled Save and the hint from this one value, so a
+	// guard can't be added to one place and forgotten in the other. Order = priority.
+	const saveBlock: string | null = (() => {
+		if (draft.title.trim() === "") return "Add a title to save";
+		if (draft.recurs) {
+			// Interval is free text on a number input; Core requires a positive integer.
+			const interval = Number(draft.recurInterval);
+			if (!Number.isInteger(interval) || interval < 1)
+				return "Enter a whole repeat interval of 1 or more";
+			// Repeats on but the anchor's date absent: Core would reject the rule.
+			if (!recurAnchorDatePresent(draft))
+				return `Set the ${draft.recurAnchor === "due_at" ? "due" : "defer"} date to save this repeat`;
+		}
+		return null;
+	})();
 
 	const submit = () => {
-		if (titleEmpty || anchorMissing || intervalInvalid) return;
+		if (saveBlock !== null) return;
 		const params = existing
 			? buildTodo({ mode: "update", existing, baseline, draft })
 			: buildTodo({ mode: "create", draft });
@@ -133,7 +139,8 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 			onCancel={onCancel}
 			saving={mutation.isPending}
 			error={error}
-			canSave={!titleEmpty && !anchorMissing && !intervalInvalid}
+			canSave={saveBlock === null}
+			disabledReason={saveBlock ?? undefined}
 		>
 			<EditorField label="Title" htmlFor={ids.title}>
 				<EditorInput
@@ -225,12 +232,8 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 								onChange={(e) => set("recurInterval", e.target.value)}
 							/>
 						</EditorField>
-
-						{intervalInvalid ? (
-							<p className="text-muted-foreground text-xs leading-relaxed">
-								Enter a whole number of 1 or more to save this repeat.
-							</p>
-						) : null}
+						{/* The interval-invalid guidance lives in the frame's
+						    `disabledReason` (by Save), so it isn't duplicated here. */}
 
 						<EditorField label="Unit" htmlFor={ids.recurUnit}>
 							<EditorSelect
@@ -248,7 +251,7 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 							</EditorSelect>
 						</EditorField>
 
-						<EditorField label="Anchor" htmlFor={ids.recurAnchor}>
+						<EditorField label="Repeat from" htmlFor={ids.recurAnchor}>
 							<EditorSelect
 								id={ids.recurAnchor}
 								value={draft.recurAnchor}
@@ -262,14 +265,12 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 									</option>
 								))}
 							</EditorSelect>
-						</EditorField>
-
-						{anchorMissing ? (
 							<p className="text-muted-foreground text-xs leading-relaxed">
-								Set the {draft.recurAnchor === "due_at" ? "due" : "defer"} date
-								to save this repeat.
+								Which date the next occurrence counts from.
 							</p>
-						) : null}
+						</EditorField>
+						{/* The anchor-missing guidance now lives in the frame's
+						    `disabledReason` (by Save), so it isn't duplicated here. */}
 					</>
 				) : null}
 			</div>

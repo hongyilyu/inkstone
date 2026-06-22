@@ -33,12 +33,11 @@ test("clicking Stop cancels a parked run and clears its pending proposal", async
 	// response (a synthesized `cancelled`), not a streamed terminal event.
 	await chat.stop();
 
-	// The reply settles to the cancelled/incomplete state. Cancel carries NO
-	// provider error, so the bubble shows the default "stopped" copy (the same
-	// settle running-cancel produces in run-cancel-ui.spec.ts).
-	const settled = chat.assistantError();
+	// The reply settles to the calm "stopped" state — a deliberate cancel is not a
+	// failure (ADR-0014), the same settle running-cancel produces in run-cancel-ui.spec.ts.
+	const settled = chat.assistantStopped();
 	await expect(settled).toBeVisible({ timeout: 15_000 });
-	await expect(settled).toContainText("stopped before it finished");
+	await expect(settled).toContainText("You stopped this reply");
 
 	// The pending Proposal is cleared — the parked Run was cancelled, so there is
 	// nothing left to review.

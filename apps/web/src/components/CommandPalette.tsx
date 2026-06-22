@@ -50,7 +50,7 @@ function useDebounced<T>(value: T, delayMs: number): T {
 export function CommandPalette() {
 	const open = useCommandOpen();
 	const navigate = useNavigate();
-	const { data: libraryItems } = useLibraryItems();
+	const { data: libraryItems, isError: libraryError } = useLibraryItems();
 	const [query, setQuery] = useState("");
 	const [active, setActive] = useState(0);
 	const inputRef = useRef<HTMLInputElement>(null);
@@ -75,7 +75,16 @@ export function CommandPalette() {
 	// Debounce keystrokes so server message search fires once typing settles; the
 	// query is disabled for an empty input, so an empty palette makes no server call.
 	const debouncedQuery = useDebounced(query, 180);
-	const { data: messageData } = useMessageSearch(debouncedQuery);
+	const { data: messageData, isFetching: searchFetching } =
+		useMessageSearch(debouncedQuery);
+
+	// The message search is still resolving when the user is mid-debounce (the
+	// typed query hasn't reached the debounced one yet) OR the query is in flight.
+	// Used to hold back the "No matches" copy so it doesn't flash before results
+	// for a message-only query have had a chance to arrive.
+	const searchSettling =
+		query.trim().length > 0 &&
+		(query.trim() !== debouncedQuery.trim() || searchFetching);
 
 	const groups = useMemo<Group[]>(() => {
 		const all = libraryItems ?? [];
@@ -122,6 +131,13 @@ export function CommandPalette() {
 	}, [libraryItems, threadData, messageData, query, debouncedQuery]);
 
 	const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
+
+	// Re-clamp the active index when the result set shrinks (async data settling can
+	// drop rows out from under an arrow-keyed selection). Without this, `active` can
+	// point past the end and Enter silently no-ops on `flat[active] === undefined`.
+	useEffect(() => {
+		setActive((i) => Math.min(i, Math.max(flat.length - 1, 0)));
+	}, [flat.length]);
 
 	// Reset transient state every time the palette opens; focus the input.
 	useEffect(() => {
@@ -221,11 +237,22 @@ export function CommandPalette() {
 						aria-label="Results"
 						className="min-h-0 flex-1 overflow-y-auto p-2"
 					>
+						{/* The library read failed — say so rather than silently omitting
+						    People/Projects/Todos/Bookmarks as if there are none. Threads and
+						    Messages search independently and still work. */}
+						{libraryError ? (
+							<p className="px-3 pt-2 pb-1 text-destructive text-xs">
+								Couldn't load Library items — only Threads and Messages are
+								searchable right now.
+							</p>
+						) : null}
 						{flat.length === 0 ? (
 							<p className="px-3 py-10 text-center text-muted-foreground text-sm">
-								{query.trim()
-									? `No matches for "${query.trim()}".`
-									: "Type to search your workspace."}
+								{!query.trim()
+									? "Type to search your workspace."
+									: searchSettling
+										? "Searching…"
+										: `No matches for "${query.trim()}".`}
 							</p>
 						) : (
 							groups.map((group) => (
@@ -251,7 +278,10 @@ export function CommandPalette() {
 												data-index={index}
 												role="option"
 												aria-selected={isActive}
-												onMouseMove={() => setActive(index)}
+												// `onMouseEnter`, not `onMouseMove`: a resting cursor over the
+												// list must not hijack the keyboard-driven selection on every
+												// scroll-induced mousemove (it fought arrow-key nav).
+												onMouseEnter={() => setActive(index)}
 												onClick={() => activate(item)}
 												className={cn(
 													"flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left",

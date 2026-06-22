@@ -1,5 +1,5 @@
 import { type RunEventValue, WsClient } from "@inkstone/ui-sdk";
-import { cleanup, screen } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -214,6 +214,53 @@ describe("Sidebar", () => {
 		await user.click(copyBtn);
 
 		expect(writeText).toHaveBeenCalledWith("t-1");
+
+		await runtime.dispose();
+	});
+
+	it("confirms a successful copy with a 'Copied' affordance", async () => {
+		const user = userEvent.setup();
+		const runtime = makeStubRuntime();
+
+		Object.defineProperty(navigator, "clipboard", {
+			value: { writeText: vi.fn(() => Promise.resolve()) },
+			configurable: true,
+		});
+
+		renderChatRoute(<Sidebar />, { runtime });
+
+		const copyBtn = await screen.findByRole("button", {
+			name: /copy thread id for standup digest/i,
+		});
+		await user.click(copyBtn);
+
+		// The button flips its title to "Copied" so the click has visible feedback
+		// (only on a write that actually resolved — never a fake success).
+		await waitFor(() => expect(copyBtn).toHaveAttribute("title", "Copied"));
+
+		await runtime.dispose();
+	});
+
+	it("shows 'Couldn't copy' (never a fake checkmark) when the clipboard write fails", async () => {
+		const user = userEvent.setup();
+		const runtime = makeStubRuntime();
+
+		Object.defineProperty(navigator, "clipboard", {
+			value: { writeText: vi.fn(() => Promise.reject(new Error("denied"))) },
+			configurable: true,
+		});
+
+		renderChatRoute(<Sidebar />, { runtime });
+
+		const copyBtn = await screen.findByRole("button", {
+			name: /copy thread id for standup digest/i,
+		});
+		await user.click(copyBtn);
+
+		await waitFor(() =>
+			expect(copyBtn).toHaveAttribute("title", "Couldn't copy"),
+		);
+		expect(copyBtn).not.toHaveAttribute("title", "Copied");
 
 		await runtime.dispose();
 	});

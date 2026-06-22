@@ -79,6 +79,7 @@ export function BookmarkEditor({ onDone, onCancel, ...m }: Props) {
 			saving={mutation.isPending}
 			error={error}
 			canSave={!titleEmpty}
+			disabledReason="Add a title to save"
 		>
 			<EditorField label="Title" htmlFor={ids.title}>
 				<EditorInput

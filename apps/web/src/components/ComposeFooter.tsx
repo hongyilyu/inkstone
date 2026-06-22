@@ -3,6 +3,7 @@ import {
 	type FormEvent,
 	type KeyboardEvent,
 	type MouseEvent,
+	useEffect,
 	useRef,
 	useState,
 } from "react";
@@ -23,6 +24,20 @@ export function ComposeFooter({
 }) {
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+	// Auto-grow the composer with its content so a multi-line or pasted message is
+	// fully visible instead of hidden in a single scrolling row. Reset to `auto`
+	// first so it shrinks back when text is deleted. The growth CAP lives solely in
+	// CSS (`max-h-[200px]` + `overflow-y-auto` below) — one source of truth — so we
+	// set the natural content height here and let CSS clamp + scroll past it. Keyed
+	// on `value` (the trigger) even though the body reads the DOM node, not the value.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: resize keyed on the composed value.
+	useEffect(() => {
+		const el = textareaRef.current;
+		if (!el) return;
+		el.style.height = "auto";
+		el.style.height = `${el.scrollHeight}px`;
+	}, [value]);
 
 	const submit = () => {
 		// While a Run is active, Send is replaced by Stop — Enter/form-submit must
@@ -69,7 +84,7 @@ export function ComposeFooter({
 					onKeyDown={handleKey}
 					rows={1}
 					placeholder="Type your message here…"
-					className="w-full resize-none bg-transparent text-base text-foreground outline-none placeholder:text-muted-foreground"
+					className="max-h-[200px] w-full resize-none overflow-y-auto bg-transparent text-base text-foreground outline-none placeholder:text-muted-foreground"
 				/>
 				<div className="mt-3 flex items-end justify-between gap-2">
 					<div className="flex flex-wrap items-center gap-2">

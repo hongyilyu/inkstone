@@ -83,6 +83,11 @@ export function EntityCollection({
 		return [...ofKind].sort(compareForKind(kind));
 	}, [ofKind, kind, query]);
 
+	// Show the load-failure state ONLY when the read errored AND we have no cached
+	// rows of this kind to fall back on. A refetch error with a coherent cache keeps
+	// the stale-but-usable list (count + New stay live against it).
+	const showError = isError && ofKind.length === 0;
+
 	return (
 		<section aria-label={meta.plural} className="flex h-full min-h-0 flex-col">
 			<header className="shrink-0 px-6 pt-6 pb-4">
@@ -91,10 +96,18 @@ export function EntityCollection({
 						<h1 className="font-bold text-2xl text-foreground tracking-tight">
 							{meta.plural}
 						</h1>
-						<span className="text-muted-foreground text-sm">
-							{ofKind.length}
-						</span>
-						{onNew ? (
+						{/* Hide the count on a failed read — a "0" beside the body's
+						    "Couldn't load…" would contradict it (the read FAILED, the
+						    collection isn't empty). */}
+						{showError ? null : (
+							<span className="text-muted-foreground text-sm">
+								{ofKind.length}
+							</span>
+						)}
+						{/* Suppress New while the read failed: the create editor's relation
+						    pickers source from this same (failed) list, so opening it offline
+						    would show empty People/Project options as if none exist. */}
+						{onNew && !showError ? (
 							<Button
 								variant="chip"
 								size="pill"
@@ -122,7 +135,11 @@ export function EntityCollection({
 				<div className="mx-auto w-full max-w-3xl">
 					{isPending ? (
 						<EntitySkeleton rows={8} />
-					) : isError ? (
+					) : showError ? (
+						// Error with NO cached rows of this kind → an honest load failure.
+						// If a later refetch fails but TanStack still has a coherent cached
+						// snapshot, fall through and render the stale-but-usable rows rather
+						// than blanking the collection on a transient outage.
 						<EmptyState
 							icon={meta.icon}
 							tone="danger"

@@ -1,4 +1,10 @@
-import { type RunEventValue, type RunId, WsClient } from "@inkstone/ui-sdk";
+import {
+	type RunEventValue,
+	type RunId,
+	WsClient,
+	type WsError,
+	WsRequestError,
+} from "@inkstone/ui-sdk";
 import { Effect, Layer, ManagedRuntime, Queue, Stream } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import { awaitRun, resetBridge, send } from "./bridge.js";
@@ -118,6 +124,9 @@ describe("chat store + stream bridge", () => {
 		expect(concatText(assistant?.segments ?? [])).toBe("partial");
 		expect(assistant?.status).toBe("incomplete");
 		expect(assistant?.error).toBe("provider rejected the request");
+		// A failure is NOT a cancellation: no `cancelled` flag, so the bubble renders
+		// the destructive error alert, not the calm "stopped" notice (ADR-0014).
+		expect(assistant?.cancelled).toBeUndefined();
 		expect(threadA?.activeRunId).toBeUndefined();
 
 		await runtime.dispose();
@@ -139,6 +148,59 @@ describe("chat store + stream bridge", () => {
 		expect(concatText(assistant?.segments ?? [])).toBe("partial");
 		expect(assistant?.status).toBe("incomplete");
 		expect(assistant?.error).toBeUndefined();
+		// A user cancel is flagged so the bubble renders the calm "stopped" notice
+		// rather than the destructive failure alert (ADR-0014).
+		expect(assistant?.cancelled).toBe(true);
+		expect(threadA?.activeRunId).toBeUndefined();
+
+		await runtime.dispose();
+	});
+
+	it("a transport failure mid-stream settles the turn as an error (no eternal typing)", async () => {
+		// A WS drop mid-stream (laptop sleep, Core restart) fails the subscribe stream
+		// rather than emitting a terminal event. Without a failure handler the fiber
+		// would die silently and the bubble would hang at `streaming` forever with a
+		// live Stop button. The bridge's catchAll must synthesize a terminal error.
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.succeed("run-drop" as RunId),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			threadGet: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			// Emit one delta, then FAIL the stream like a dropped socket would.
+			subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
+				Stream.fromIterable<RunEventValue>([
+					{ kind: "text_delta", delta: "partial" },
+				]).pipe(
+					Stream.concat(
+						Stream.fail(new WsRequestError({ reason: "socket closed" })),
+					),
+				),
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+
+		await send(runtime, "threadA", "hi");
+		await awaitRun(runtime, "run-drop" as RunId);
+
+		const threadA = getChatState().threads.threadA;
+		const assistant = threadA?.messages[1];
+		expect(concatText(assistant?.segments ?? [])).toBe("partial");
+		expect(assistant?.status).toBe("incomplete");
+		expect(assistant?.error).toMatch(/lost the connection/i);
+		// A transport failure is NOT a user cancel — render the error alert.
+		expect(assistant?.cancelled).toBeUndefined();
 		expect(threadA?.activeRunId).toBeUndefined();
 
 		await runtime.dispose();

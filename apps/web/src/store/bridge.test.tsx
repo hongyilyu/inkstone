@@ -15,6 +15,7 @@ import {
 	interruptRun,
 	resetBridge,
 	sendNewThread,
+	setOnRunSettled,
 	startRunStream,
 } from "./bridge.js";
 import {
@@ -67,6 +68,145 @@ describe("sendNewThread failure handling", () => {
 		// No threadId is surfaced for the caller to navigate to, and nothing was seeded.
 		expect(result).toEqual({ ok: false, error: expect.anything() });
 		expect(Object.keys(getChatState().threads)).toHaveLength(0);
+
+		await runtime.dispose();
+	});
+});
+
+describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
+	/** A stub whose subscribeRun replays a fixed event sequence then closes. */
+	function makeRuntime(events: RunEventValue[]) {
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			threadGet: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			subscribeRun: () => Stream.fromIterable<RunEventValue>(events),
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+	}
+
+	function seed(runId: RunId) {
+		seedAssistantMessage("t1", {
+			id: "a1",
+			role: "assistant",
+			status: "streaming",
+			segments: [],
+			run_id: "",
+		});
+		attachRun("t1", "a1", runId);
+	}
+
+	it("fires once when a Run reaches a terminal — regardless of focus (background completions)", async () => {
+		const settled = vi.fn();
+		setOnRunSettled(settled);
+		const runtime = makeRuntime([
+			{ kind: "text_delta", delta: "hi" },
+			{ kind: "done" },
+		]);
+		const runId = "run-term" as RunId;
+		seed(runId);
+		startRunStream(runtime, "t1", runId);
+
+		// Drain the stream fiber to its terminal.
+		await new Promise((r) => setTimeout(r, 0));
+		expect(settled).toHaveBeenCalledTimes(1);
+
+		await runtime.dispose();
+	});
+
+	it("fires on a transport failure too (the synthetic error path settles the feed)", async () => {
+		const settled = vi.fn();
+		setOnRunSettled(settled);
+		// A stream that fails mid-flight rather than emitting a terminal event.
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			threadGet: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
+				Stream.fromIterable<RunEventValue>([
+					{ kind: "text_delta", delta: "partial" },
+				]).pipe(
+					Stream.concat(
+						Stream.fail(new WsRequestError({ reason: "socket closed" })),
+					),
+				),
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		const runId = "run-drop" as RunId;
+		seed(runId);
+		startRunStream(runtime, "t1", runId);
+
+		await new Promise((r) => setTimeout(r, 0));
+		expect(settled).toHaveBeenCalledTimes(1);
+
+		await runtime.dispose();
+	});
+
+	it("does NOT fire on an interrupt (no genuine settle → no spurious feed refetch)", async () => {
+		const settled = vi.fn();
+		setOnRunSettled(settled);
+		// A stream that never terminates — the fiber ends only via interruption.
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			threadGet: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
+				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		const runId = "run-interrupt" as RunId;
+		seed(runId);
+		startRunStream(runtime, "t1", runId);
+		await new Promise((r) => setTimeout(r, 0));
+
+		// Interrupt removes the tracked entry BEFORE the finalizer runs, so the
+		// identity guard fails and onRunSettled must not fire (this is the
+		// decideProposal-resume / unmount teardown, not a terminal).
+		interruptRun(runtime, runId);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(settled).not.toHaveBeenCalled();
 
 		await runtime.dispose();
 	});

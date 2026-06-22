@@ -85,6 +85,7 @@ export function ProjectEditor({ onDone, onCancel, ...m }: Props) {
 			saving={mutation.isPending}
 			error={error}
 			canSave={!nameEmpty}
+			disabledReason="Add a name to save"
 		>
 			<EditorField label="Name" htmlFor={ids.name}>
 				<EditorInput

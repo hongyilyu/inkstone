@@ -127,6 +127,88 @@ describe("Models settings page (ADR-0024)", () => {
 		);
 	});
 
+	it("on a failed effort save, rolls back to the last PERSISTED value, not the pre-click optimistic one", async () => {
+		const user = userEvent.setup();
+		// Each save rejects (gated), so we control ordering. Persisted starts "low".
+		const releases: Array<() => void> = [];
+		const settingsSet = vi.fn(() =>
+			Effect.promise(
+				() => new Promise<void>((_, reject) => releases.push(() => reject())),
+			).pipe(Effect.as({ provider: "openai-codex", model: null, effort: "x" })),
+		);
+		const stub = WsClient.of({
+			threadCreate: die,
+			postMessage: die,
+			threadList: die,
+			getRunHistory: die,
+			threadGet: die,
+			listEntities: die,
+			entityMutate: die,
+			subscribeRun: dieStream,
+			cancelRun: die,
+			providerStatus: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", connected: false }],
+				}),
+			providerLoginStart: die,
+			modelCatalog: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
+				}),
+			settingsGet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "low",
+				}),
+			settingsSet,
+			proposalGet: die,
+			proposalDecide: die,
+			messageSearch: die,
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		renderPage(runtime);
+
+		// Loads persisted "low".
+		await waitFor(() =>
+			expect(screen.getByRole("radio", { name: "Low" })).toHaveAttribute(
+				"aria-checked",
+				"true",
+			),
+		);
+
+		// Click Max (optimistic), then High (optimistic, newest). Both saves pending.
+		await user.click(screen.getByRole("radio", { name: "Max" }));
+		await user.click(screen.getByRole("radio", { name: "High" }));
+		await waitFor(() => expect(releases).toHaveLength(2));
+
+		// The newest (High) save fails. The OLD bug rolled back to `prev` = the
+		// pre-click value captured at High's click = "Max" (never persisted). The
+		// fix rolls back to the last persisted value = "Low".
+		releases[1]();
+		await waitFor(() =>
+			expect(screen.getByRole("radio", { name: "Low" })).toHaveAttribute(
+				"aria-checked",
+				"true",
+			),
+		);
+		expect(screen.getByRole("radio", { name: "Max" })).toHaveAttribute(
+			"aria-checked",
+			"false",
+		);
+		// The older (Max) save then also fails — still rolls back to "Low", no flicker to a stale value.
+		releases[0]();
+		await waitFor(() =>
+			expect(screen.getByRole("radio", { name: "Low" })).toHaveAttribute(
+				"aria-checked",
+				"true",
+			),
+		);
+
+		await runtime.dispose();
+	});
+
 	it("lists the catalog and persists a preferred model via settings/set", async () => {
 		const user = userEvent.setup();
 		const models: ModelInfo[] = [
@@ -165,5 +247,117 @@ describe("Models settings page (ADR-0024)", () => {
 				/preferred/i,
 			),
 		).toBeInTheDocument();
+	});
+
+	it("ignores an out-of-order save: a stale response cannot overwrite the newer choice", async () => {
+		const user = userEvent.setup();
+		const models: ModelInfo[] = [
+			{
+				id: "gpt-5.5",
+				name: "GPT-5.5",
+				reasoning: true,
+				input: ["text"],
+				cost_input: 5,
+				cost_output: 30,
+			},
+			{
+				id: "gpt-5.4-mini",
+				name: "GPT-5.4 Mini",
+				reasoning: true,
+				input: ["text"],
+				cost_input: 0.75,
+				cost_output: 4.5,
+			},
+		];
+		// Gate each settings/set so the FIRST click's response resolves AFTER the
+		// second's — the out-of-order interleave the version guard must absorb.
+		const releases: Array<() => void> = [];
+		const settingsSet = vi.fn((params: { model?: string; effort?: string }) =>
+			Effect.promise(
+				() => new Promise<void>((resolve) => releases.push(resolve)),
+			).pipe(
+				Effect.as({
+					provider: "openai-codex",
+					model: params.model ?? null,
+					effort: params.effort ?? "off",
+				}),
+			),
+		);
+		const stub = WsClient.of({
+			threadCreate: die,
+			postMessage: die,
+			threadList: die,
+			getRunHistory: die,
+			threadGet: die,
+			listEntities: die,
+			entityMutate: die,
+			subscribeRun: dieStream,
+			cancelRun: die,
+			providerStatus: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", connected: true }],
+				}),
+			providerLoginStart: die,
+			modelCatalog: () =>
+				Effect.succeed({
+					providers: [{ id: "openai-codex", label: "OpenAI", models }],
+				}),
+			settingsGet: () =>
+				Effect.succeed({
+					provider: "openai-codex",
+					model: null,
+					effort: "off",
+				}),
+			settingsSet,
+			proposalGet: die,
+			proposalDecide: die,
+			messageSearch: die,
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		renderPage(runtime);
+
+		const row55 = await screen.findByRole("row", { name: /GPT-5\.5/ });
+		const rowMini = await screen.findByRole("row", { name: /GPT-5\.4 Mini/ });
+
+		// Click 5.5 (first), then Mini (second, the user's latest intent).
+		await user.click(
+			within(row55).getByRole("button", { name: /set as preferred/i }),
+		);
+		await user.click(
+			within(rowMini).getByRole("button", { name: /set as preferred/i }),
+		);
+		await waitFor(() => expect(releases).toHaveLength(2));
+
+		// Resolve OUT OF ORDER: the stale first (5.5) lands AFTER the newer (Mini).
+		releases[1]();
+		releases[0]();
+
+		// The UI must reflect the newer choice (Mini), not the stale first response.
+		// Match the "Preferred" badge exactly — NOT the "Set as preferred" button
+		// label (which also contains "preferred").
+		await waitFor(() =>
+			expect(
+				within(screen.getByRole("row", { name: /GPT-5\.4 Mini/ })).getByText(
+					"Preferred",
+				),
+			).toBeInTheDocument(),
+		);
+		expect(
+			within(screen.getByRole("row", { name: /GPT-5\.5/ })).queryByText(
+				"Preferred",
+			),
+		).toBeNull();
+		// The stale row instead offers "Set as preferred" again (not selected).
+		expect(
+			within(screen.getByRole("row", { name: /GPT-5\.5/ })).getByRole(
+				"button",
+				{
+					name: /set as preferred/i,
+				},
+			),
+		).toBeInTheDocument();
+
+		await runtime.dispose();
 	});
 });

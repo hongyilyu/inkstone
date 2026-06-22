@@ -2173,9 +2173,13 @@ where
            JOIN threads t ON t.id = f.thread_id \
            JOIN messages m ON m.id = f.message_id \
            WHERE f.text LIKE '%' || ?1 || '%'";
+    // Cap the result set: a common substring ("the", "a") otherwise matches every
+    // message in the workspace and floods the palette with thousands of rows. 50
+    // newest matches is plenty for a jump-to-message picker (ADR-0035).
     const SELECT_TAIL: &str = " \
          ) AS s \
-         ORDER BY s.created_at DESC, s.m_rowid DESC";
+         ORDER BY s.created_at DESC, s.m_rowid DESC \
+         LIMIT 50";
 
     // Wildcard needle → ESCAPE path (correct literal `%`/`_`, trigram bypassed by
     // SQLite); plain needle → no ESCAPE (trigram preserved). The bound `?1` matches.

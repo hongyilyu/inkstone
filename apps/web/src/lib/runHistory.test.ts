@@ -70,6 +70,38 @@ describe("formatRunTime", () => {
 			}),
 		);
 	});
+
+	it("includes the year for a prior-calendar-year timestamp", () => {
+		// A run from last year must carry the year so it isn't confused with this
+		// year's same month/day.
+		const at = new Date(2025, 2, 5, 9, 0, 0).getTime(); // 2025-03-05
+		expect(formatRunTime(at, NOW)).toBe(
+			new Date(at).toLocaleDateString(undefined, {
+				month: "short",
+				day: "numeric",
+				year: "numeric",
+			}),
+		);
+	});
+
+	it("omits the year for a same-year older timestamp", () => {
+		const at = NOW - 10 * DAY; // still the same calendar year as NOW
+		// Equals the bare month/day formatting (no year segment) and is NOT the
+		// year-bearing form — locale-independent, no hardcoded year string.
+		expect(formatRunTime(at, NOW)).toBe(
+			new Date(at).toLocaleDateString(undefined, {
+				month: "short",
+				day: "numeric",
+			}),
+		);
+		expect(formatRunTime(at, NOW)).not.toBe(
+			new Date(at).toLocaleDateString(undefined, {
+				month: "short",
+				day: "numeric",
+				year: "numeric",
+			}),
+		);
+	});
 });
 
 describe("RUN_HISTORY_VIEWS", () => {

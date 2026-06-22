@@ -174,6 +174,12 @@ function ReviewQueue({
 		setCursor(Math.max(0, Math.min(next, queue.length - 1)));
 
 	return (
+		// Header count is the SNAPSHOT queue size, consistent with the body's
+		// "Project {n} of {total}" — both read the frozen session queue, so the
+		// screen never shows "Project 1 of 1" under "Review 0". (It can momentarily
+		// differ from the live sidebar Review badge after marking one reviewed; that
+		// is the documented session-snapshot model — the queue holds reviewed items
+		// in place for cursor stability and re-derives on re-entry.)
 		<ReviewFrame count={queue.length}>
 			<FocusedProject
 				key={project.id}
