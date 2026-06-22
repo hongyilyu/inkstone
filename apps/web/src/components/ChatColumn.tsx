@@ -7,6 +7,7 @@ import {
 	TriangleAlert,
 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { cn } from "@/lib/utils";
 import { useRuntime } from "@/runtime";
 import {
 	cancelRun,
@@ -506,52 +507,72 @@ function AssistantBubble({
 			)}
 			{message.status === "incomplete" &&
 				(message.cancelled ? (
-					// User-cancelled (ADR-0014): terminal but NOT a failure — a calm,
-					// muted notice (role="status", not "alert") so a deliberate Stop is
-					// never mis-framed as something going wrong. Retry still offered.
-					<div
-						role="status"
-						tabIndex={-1}
-						data-testid="assistant-stopped"
-						className="flex flex-col items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-muted-foreground text-sm outline-none"
-					>
-						<span>
-							You stopped this reply. Nothing was saved without your approval.
-						</span>
-						{onRetry && (
-							<button
-								type="button"
-								onClick={onRetry}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-border px-2 py-1 font-medium text-foreground text-xs transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-							>
-								<RotateCcw className="size-3.5" aria-hidden />
-								Try again
-							</button>
-						)}
-					</div>
+					// User cancel (ADR-0014): terminal but NOT a failure — a calm, muted
+					// notice so a deliberate Stop is never mis-framed as something wrong.
+					<SettledNotice
+						tone="stopped"
+						message="You stopped this reply. Nothing was saved without your approval."
+						onRetry={onRetry}
+					/>
 				) : (
-					<div
-						role="alert"
-						tabIndex={-1}
-						data-testid="assistant-error"
-						className="flex flex-col items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive text-sm outline-none"
-					>
-						<span>
-							{message.error ??
-								"This reply stopped before it finished. Nothing was saved without your approval."}
-						</span>
-						{onRetry && (
-							<button
-								type="button"
-								onClick={onRetry}
-								className="inline-flex cursor-pointer items-center gap-1.5 rounded-md border border-destructive/40 px-2 py-1 font-medium text-xs transition-colors hover:bg-destructive/20 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-destructive"
-							>
-								<RotateCcw className="size-3.5" aria-hidden />
-								Try again
-							</button>
-						)}
-					</div>
+					<SettledNotice
+						tone="error"
+						message={
+							message.error ??
+							"This reply stopped before it finished. Nothing was saved without your approval."
+						}
+						onRetry={onRetry}
+					/>
 				))}
 		</li>
+	);
+}
+
+/**
+ * The settled-but-incomplete assistant notice: a bordered box + message + an
+ * optional "Try again". One component, two tones — a user `stopped` (calm,
+ * `role="status"`) vs a worker `error` (destructive `role="alert"`). Folding both
+ * into one keeps "cancel and failure differ only in presentation" honest (the
+ * structure can't drift), and `data-testid` distinguishes them for the e2e suite.
+ */
+function SettledNotice({
+	tone,
+	message,
+	onRetry,
+}: {
+	tone: "stopped" | "error";
+	message: string;
+	onRetry?: () => void;
+}) {
+	const isError = tone === "error";
+	return (
+		<div
+			role={isError ? "alert" : "status"}
+			tabIndex={-1}
+			data-testid={isError ? "assistant-error" : "assistant-stopped"}
+			className={cn(
+				"flex flex-col items-start gap-2 rounded-md border px-3 py-2 text-sm outline-none",
+				isError
+					? "border-destructive/40 bg-destructive/10 text-destructive"
+					: "border-border bg-muted/40 text-muted-foreground",
+			)}
+		>
+			<span>{message}</span>
+			{onRetry && (
+				<button
+					type="button"
+					onClick={onRetry}
+					className={cn(
+						"inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 font-medium text-xs transition-colors focus-visible:outline-hidden focus-visible:ring-1",
+						isError
+							? "border-destructive/40 hover:bg-destructive/20 focus-visible:ring-destructive"
+							: "border-border text-foreground hover:bg-muted focus-visible:ring-ring",
+					)}
+				>
+					<RotateCcw className="size-3.5" aria-hidden />
+					Try again
+				</button>
+			)}
+		</div>
 	);
 }

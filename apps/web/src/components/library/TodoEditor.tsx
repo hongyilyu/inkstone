@@ -275,13 +275,8 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 								Which date the next occurrence counts from.
 							</p>
 						</EditorField>
-
-						{anchorMissing ? (
-							<p className="text-muted-foreground text-xs leading-relaxed">
-								Set the {draft.recurAnchor === "due_at" ? "due" : "defer"} date
-								to save this repeat.
-							</p>
-						) : null}
+						{/* The anchor-missing guidance now lives in the frame's
+						    `disabledReason` (by Save), so it isn't duplicated here. */}
 					</>
 				) : null}
 			</div>
