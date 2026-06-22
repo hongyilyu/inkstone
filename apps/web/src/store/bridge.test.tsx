@@ -637,7 +637,7 @@ describe("thread/titled handler (ADR-0047 — patch the threads cache in place)"
 		});
 	});
 
-	it("is a no-op when the `[\"threads\"]` cache is empty (no row synthesized)", () => {
+	it('is a no-op when the `["threads"]` cache is empty (no row synthesized)', () => {
 		// No `["threads"]` data seeded: the `old && …` guard returns undefined, so
 		// React Query bails out and never materializes a cache entry.
 		const qc = new QueryClient();
