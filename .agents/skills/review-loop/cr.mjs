@@ -7,10 +7,13 @@
 //   node cr.mjs resolve <threadId>            → resolve one review thread
 //
 // `findings` and `resolve` are the read/resolve seam. `await-review` also
-// writes: it posts `@coderabbitai review` to (re)trigger a review, once per
-// rate-limit window — CodeRabbit throttles nearly every PR here (20-50 min
-// windows), so surviving the throttle is its whole job. Run it backgrounded:
-// a single wait can exceed the foreground Bash 10-min cap.
+// writes: CodeRabbit does NOT auto-review on this repo (neither a push nor
+// opening the PR triggers it), so EVERY review must be explicitly requested by
+// posting `@coderabbitai review`. await-review owns that post — once per
+// rate-limit window — and CodeRabbit throttles nearly every PR here (20-50 min
+// windows), so surviving the throttle while keeping the explicit trigger live
+// is its whole job. Run it backgrounded: a single wait can exceed the
+// foreground Bash 10-min cap.
 
 import { execFileSync } from "node:child_process";
 
@@ -158,10 +161,12 @@ function reviewedHead(owner, name, pr, headSha) {
 // instead of waking uselessly every few minutes. `maxWaitMin` is generous
 // (default 8h) because riding out several windows is the expected case.
 //
-// Trigger rule `lastTrigger < max(lift, sessionStart)` fires `@coderabbitai
-// review` exactly once per window AND gives one initial nudge when there's no
-// active throttle. MUST be run backgrounded — a single wait routinely exceeds
-// the foreground Bash 10-min cap.
+// CodeRabbit does NOT auto-review here, so the explicit `@coderabbitai review`
+// post is mandatory, not a nudge — without it no review ever happens. The
+// trigger rule `lastTrigger < max(lift, sessionStart)` fires it exactly once
+// per window AND posts it immediately on entry when there's no active throttle.
+// MUST be run backgrounded — a single wait routinely exceeds the foreground
+// Bash 10-min cap.
 async function awaitReview(pr, headSha, maxWaitMin = 480, pollMin = 5) {
   const { owner, name } = repo();
   const MAX_SLEEP_MS = 60 * 60000; // sanity bound on any single sleep (guards a mis-parsed window)
@@ -194,10 +199,11 @@ async function awaitReview(pr, headSha, maxWaitMin = 480, pollMin = 5) {
       sleepMs = Math.ceil((liftMs - now) / 60000) * 60000;
       log(`throttled — ${Math.round((liftMs - now) / 60000)} min until window lifts; sleeping until then`);
     } else if (lastTriggerMs < Math.max(liftMs, sessionStart)) {
-      // Not throttled, no trigger pending for this window → (re-)trigger once.
+      // Not throttled, no trigger pending for this window → post the explicit
+      // `@coderabbitai review` (mandatory — there is no auto-review here).
       triggerReview(owner, name, pr);
       lastTriggerMs = now;
-      log(rl ? "throttle lifted — re-triggered @coderabbitai review" : "nudged @coderabbitai review");
+      log(rl ? "throttle lifted — posted @coderabbitai review" : "posted @coderabbitai review (no auto-review)");
       sleepMs = pollMin * 60000; // short cadence to catch the review landing OR a fresh throttle notice
     } else {
       // Triggered; waiting for CodeRabbit to either post the review or re-throttle us.
