@@ -126,7 +126,7 @@ establishes the channel; only `thread/titled` ships on it now.
 - [ADR-0022](./0022-run-event-delivery-hub-snapshot-tail.md) — the run-event
   hub: the *other* delivery contract (exactly-once / replayable), deliberately
   kept separate from this best-effort channel.
-- [ADR-0025](./0025-proposal-notifications.md) — proposal notifications: the
+- [ADR-0025](./0025-proposal-park-and-resume.md) — proposal notifications: the
   per-run-subscription precedent this channel intentionally does **not** copy
   (it rides a subscription; this rides the bare connection).
 - [ADR-0009](./0009-client-core-wire-protocol.md) — the wire protocol + the
