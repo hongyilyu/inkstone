@@ -112,25 +112,35 @@ export function startRunStream(
 		// synthetic terminal error so the user sees an honest "lost connection" notice
 		// and a retry affordance instead of an eternal spinner.
 		Effect.catchAll(() =>
-			Effect.sync(() =>
+			Effect.sync(() => {
+				// EXCEPT when the Run is parked on a Proposal: parking is non-terminal
+				// (Core tears the Worker down and resumes on the Decision, surviving a
+				// restart — ADR-0025), and the pending Proposal owns the bubble. Forcing a
+				// terminal `error` here would settle the turn as failed while Accept/Reject
+				// still render beneath it, and could even resume the run on reconnect. Leave
+				// the parked turn alone — `proposal/get` rehydrates it after reconnect.
+				if (isRunParked(runId)) return;
 				applyEvent(threadId, runId, {
 					kind: "error",
 					message:
 						"Lost the connection before this reply finished. Check that Inkstone is running, then try again.",
-				}),
-			),
+				});
+			}),
 		),
 		// Identity-aware cleanup (M2): delete only when the map still points at THIS fiber — see docs/design/web-store.md.
 		Effect.ensuring(
 			Effect.sync(() => {
 				if (fibers.get(runId) === self) {
 					fibers.delete(runId);
+					// The Run reached a genuine terminal (done/error/cancelled, or the
+					// synthetic transport-failure above) — its recent-Runs milestone
+					// changed, even if its Thread is off-screen. Refresh the feed from the
+					// terminal seam (not a focus-scoped view, which misses background
+					// completions). Gated by the identity check so an interrupt-then-
+					// resubscribe teardown (decideProposal resume / unmount) — where the
+					// map was already repointed — does NOT fire a spurious refetch.
+					onRunSettled?.();
 				}
-				// The Run reached a terminal (done/error/cancelled, or the synthetic
-				// transport-failure above) — its recent-Runs milestone changed, even if
-				// its Thread is off-screen. Refresh the feed from the terminal seam, not
-				// a focus-scoped view (which would miss background completions).
-				onRunSettled?.();
 			}),
 		),
 	);
@@ -282,6 +292,11 @@ export async function cancelRun(
 	interruptRun(runtime, runId);
 	applyEvent(threadId, runId, { kind: "cancelled" });
 	clearProposal(runId);
+	// A cancel settles the Run HERE, not via the stream finalizer (which we just
+	// interrupted — its onRunSettled is gated off precisely so resume/unmount
+	// teardowns don't fire it). So refresh the recent-Runs feed from this
+	// authoritative settle point, else a user-stopped Run lingers as Running/Waiting.
+	onRunSettled?.();
 }
 
 /** Fork the global `proposalNotifications()` stream into the store, fetching+attaching on `pending` (idempotent; ADR-0025). */

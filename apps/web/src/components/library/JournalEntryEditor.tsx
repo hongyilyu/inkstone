@@ -79,9 +79,15 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 	const hasExistingChip = draft.body.some(
 		(node) => node.type === "entity_ref" && node.refId !== undefined,
 	);
-	const occurredEmpty = draft.occurredAt.trim() === "";
-	const bodyEmpty = buildBody(draft.body).length === 0 && newChip === undefined;
-	const blocked = occurredEmpty || bodyEmpty;
+	// Single source of truth for "can't save yet, and why" (null = savable); the
+	// frame derives both the disabled Save and the hint from it, so the two can't
+	// drift. Order = priority.
+	const saveBlock: string | null =
+		draft.occurredAt.trim() === ""
+			? "Set when this occurred to save"
+			: buildBody(draft.body).length === 0 && newChip === undefined
+				? "Write the entry body to save"
+				: null;
 
 	const dropStagedPlaceholder = () =>
 		// Drop the just-saved placeholder so a follow-up chip is its OWN mutation —
@@ -95,7 +101,7 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 		}));
 
 	const submit = () => {
-		if (blocked) return;
+		if (saveBlock !== null) return;
 		// A staged new chip is its OWN reference mutation (mints a ref_id), distinct
 		// from update_journal_entry (whose entity_ref nodes need an existing ref_id).
 		const referencing = existing !== undefined && newChip !== undefined;
@@ -149,14 +155,8 @@ export function JournalEntryEditor({ onDone, onCancel, ...m }: Props) {
 			onCancel={onCancel}
 			saving={mutation.isPending}
 			error={error}
-			canSave={!blocked}
-			disabledReason={
-				occurredEmpty
-					? "Set when this occurred to save"
-					: bodyEmpty
-						? "Write the entry body to save"
-						: undefined
-			}
+			canSave={saveBlock === null}
+			disabledReason={saveBlock ?? undefined}
 		>
 			<EditorField label="Occurred at" htmlFor={ids.occurred}>
 				<EditorInput

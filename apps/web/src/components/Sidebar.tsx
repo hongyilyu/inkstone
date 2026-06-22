@@ -1,10 +1,11 @@
 import { useParams } from "@tanstack/react-router";
-import { Check, Copy, Library, Plus, Search, X } from "lucide-react";
+import { Library, Plus, Search } from "lucide-react";
 import { NavShell, navRow } from "@/components/ui/nav-shell";
 import { useCopyToClipboard } from "@/lib/hooks/useCopyToClipboard";
 import { useThreads } from "@/lib/hooks/useThreads";
 import { openCommand } from "@/store/command";
 import { cn } from "../lib/utils.js";
+import { CopyOutcome } from "./CopyOutcome.js";
 
 export function Sidebar({
 	onOpenLibrary,
@@ -63,10 +64,13 @@ export function Sidebar({
 			</button>
 
 			<div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-				{isError ? (
-					// A failed `thread/list` (Core down, WS dropped) must NOT read as a
-					// genuinely empty workspace — a returning user with real threads would
-					// be told their conversations vanished. Show an honest load-failure.
+				{isError && threads.length === 0 ? (
+					// A failed `thread/list` with NO cached rows (cold load, Core down)
+					// must NOT read as a genuinely empty workspace — a returning user with
+					// real threads would be told their conversations vanished. Show an
+					// honest load-failure. (If a later refetch fails but TanStack still has
+					// cached rows, we fall through and keep the stale-but-usable list rather
+					// than blanking navigation.)
 					<p className="px-3 pt-3 text-muted-foreground text-xs">
 						Couldn't load your conversations. Check that Inkstone is running.
 					</p>
@@ -148,18 +152,8 @@ function CopyThreadIdButton({ id, title }: { id: string; title: string }) {
 			}}
 			className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-md text-sidebar-foreground/80 opacity-0 transition-opacity hover:bg-foreground/10 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100"
 		>
-			{copied ? (
-				<Check className="size-3.5 text-primary" aria-hidden />
-			) : failed ? (
-				<X className="size-3.5 text-destructive" aria-hidden />
-			) : (
-				<Copy className="size-3.5" aria-hidden />
-			)}
-			{/* Text-content live region so screen readers announce the outcome (an
-			    icon swap alone is a sighted-only cue; mirrors CopyButton). */}
-			<span className="sr-only" role="status">
-				{copied ? "Copied" : failed ? "Couldn't copy" : ""}
-			</span>
+			{/* Icon swap + screen-reader announcement shared with CopyButton. */}
+			<CopyOutcome copied={copied} failed={failed} />
 		</button>
 	);
 }

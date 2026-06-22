@@ -1,9 +1,13 @@
 import type { ModelInfo } from "@inkstone/protocol";
 import { createFileRoute } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { EffortControl, type EffortLevel } from "@/components/EffortControl";
+import { useCallback, useEffect, useState } from "react";
+import { EffortControl } from "@/components/EffortControl";
 import { ModelCatalogTable } from "@/components/ModelCatalogTable";
 import { ProviderConnectionCard } from "@/components/ProviderConnectionCard";
+import {
+	type SaveStatus,
+	useOptimisticSetting,
+} from "@/lib/hooks/useOptimisticSetting";
 import { useRuntime } from "@/runtime";
 import {
 	fetchConnected,
@@ -17,27 +21,38 @@ function ModelsSettings() {
 	const runtime = useRuntime();
 	const [connected, setConnected] = useState<boolean | null>(null);
 	const [busy, setBusy] = useState(false);
-	const [effort, setEffort] = useState<string>("off");
 	const [models, setModels] = useState<readonly ModelInfo[]>([]);
-	const [selectedModel, setSelectedModel] = useState<string | null>(null);
-	// Acknowledge a settings write: "saved" on success, "error" if it failed (so a
-	// failed save isn't swallowed silently while the optimistic value reverts).
-	const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">(
-		"idle",
+	// Whether a provider login failed to start (surfaced in the shared status line).
+	const [connectFailed, setConnectFailed] = useState(false);
+
+	// Effort + preferred model are optimistic, latest-write-wins, roll back to the
+	// last confirmed value (see useOptimisticSetting — closes the rapid-click races).
+	const effort = useOptimisticSetting<string>(
+		"off",
+		useCallback(
+			(next) => saveSettings(runtime, { effort: next }).then((s) => s.effort),
+			[runtime],
+		),
 	);
-	// Monotonic per-field save tokens (latest-write-wins): a save commits/rolls back
-	// only if it's still the newest for its field, so rapid clicks can't interleave
-	// (an older response overwriting a newer choice). Network stays concurrent; only
-	// the EFFECT is serialized to the user's last action.
-	const effortSaveToken = useRef(0);
-	const modelSaveToken = useRef(0);
-	// The last CONFIRMED-persisted value per field — the only safe rollback target.
-	// Rolling back to the pre-click UI value would be wrong: with rapid clicks that
-	// value can itself be an unsaved optimistic state, so a failure could leave the
-	// UI showing something that was never saved. Seeded on load, advanced only on a
-	// non-stale success.
-	const persistedEffort = useRef<string>("off");
-	const persistedModel = useRef<string | null>(null);
+	const model = useOptimisticSetting<string | null>(
+		null,
+		useCallback(
+			(next) =>
+				saveSettings(runtime, { model: next ?? undefined }).then(
+					(s) => s.model,
+				),
+			[runtime],
+		),
+	);
+
+	// One shared acknowledgement line for the section: error wins over saved.
+	const saveStatus: SaveStatus = connectFailed
+		? "error"
+		: effort.status === "error" || model.status === "error"
+			? "error"
+			: effort.status === "saved" || model.status === "saved"
+				? "saved"
+				: "idle";
 
 	const refreshConnected = useCallback(() => {
 		fetchConnected(runtime, PROVIDER_OPENAI_CODEX)
@@ -45,12 +60,18 @@ function ModelsSettings() {
 			.catch(() => setConnected(false));
 	}, [runtime]);
 
-	// Clear the save acknowledgement after a beat so it reads as transient feedback.
+	// Clear the transient acknowledgement after a beat (both hooks + the connect flag).
+	const { clearStatus: clearEffortStatus } = effort;
+	const { clearStatus: clearModelStatus } = model;
 	useEffect(() => {
 		if (saveStatus === "idle") return;
-		const t = setTimeout(() => setSaveStatus("idle"), 2500);
+		const t = setTimeout(() => {
+			clearEffortStatus();
+			clearModelStatus();
+			setConnectFailed(false);
+		}, 2500);
 		return () => clearTimeout(t);
-	}, [saveStatus]);
+	}, [saveStatus, clearEffortStatus, clearModelStatus]);
 
 	// Requery connection on mount + on focus — login happens in a separate tab, so focus-return is when the outcome is known (ADR-0023).
 	useEffect(() => {
@@ -60,16 +81,15 @@ function ModelsSettings() {
 		return () => window.removeEventListener("focus", onFocus);
 	}, [refreshConnected]);
 
+	const { seed: seedEffort } = effort;
+	const { seed: seedModel } = model;
 	useEffect(() => {
 		let alive = true;
 		fetchSettings(runtime)
 			.then((s) => {
 				if (!alive) return;
-				setEffort(s.effort);
-				setSelectedModel(s.model);
-				// Seed the rollback snapshots from the loaded (persisted) values.
-				persistedEffort.current = s.effort;
-				persistedModel.current = s.model;
+				seedEffort(s.effort);
+				seedModel(s.model);
 			})
 			.catch(() => {});
 		fetchCatalog(runtime)
@@ -81,63 +101,17 @@ function ModelsSettings() {
 		return () => {
 			alive = false;
 		};
-	}, [runtime]);
+	}, [runtime, seedEffort, seedModel]);
 
 	const onConnect = useCallback(() => {
 		setBusy(true);
-		setSaveStatus("idle");
+		setConnectFailed(false);
 		startLogin(runtime, PROVIDER_OPENAI_CODEX)
 			// A login that can't even start (helper missing, port busy) was swallowed,
 			// leaving the user staring at an unchanged "Not connected" card. Surface it.
-			.catch(() => setSaveStatus("error"))
+			.catch(() => setConnectFailed(true))
 			.finally(() => setBusy(false));
 	}, [runtime]);
-
-	const onEffortChange = useCallback(
-		(next: EffortLevel) => {
-			const token = ++effortSaveToken.current; // latest-write-wins guard
-			setEffort(next); // optimistic
-			saveSettings(runtime, { effort: next })
-				.then((s) => {
-					// Ignore an out-of-order response: a newer click already superseded
-					// this one, so its value must not overwrite the newer choice.
-					if (token !== effortSaveToken.current) return;
-					setEffort(s.effort);
-					persistedEffort.current = s.effort; // advance the rollback snapshot
-					setSaveStatus("saved");
-				})
-				.catch(() => {
-					if (token !== effortSaveToken.current) return;
-					// Roll back to the last CONFIRMED-persisted value, not the pre-click
-					// UI value (which may itself be an unsaved optimistic state).
-					setEffort(persistedEffort.current);
-					setSaveStatus("error");
-				});
-		},
-		[runtime],
-	);
-
-	const onSelectModel = useCallback(
-		(id: string) => {
-			const token = ++modelSaveToken.current; // latest-write-wins guard
-			setSelectedModel(id); // optimistic
-			saveSettings(runtime, { model: id })
-				.then((s) => {
-					if (token !== modelSaveToken.current) return;
-					setSelectedModel(s.model);
-					persistedModel.current = s.model; // advance the rollback snapshot
-					setSaveStatus("saved");
-				})
-				.catch(() => {
-					if (token !== modelSaveToken.current) return;
-					// Roll back to the last CONFIRMED-persisted value (not the pre-click
-					// UI value, which may be an unsaved optimistic state).
-					setSelectedModel(persistedModel.current);
-					setSaveStatus("error");
-				});
-		},
-		[runtime],
-	);
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col gap-8">
@@ -180,7 +154,7 @@ function ModelsSettings() {
 						How hard the model reasons before answering. Applies to every chat.
 					</p>
 				</div>
-				<EffortControl value={effort} onChange={onEffortChange} />
+				<EffortControl value={effort.value} onChange={effort.set} />
 			</div>
 
 			<div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -192,8 +166,8 @@ function ModelsSettings() {
 				</div>
 				<ModelCatalogTable
 					models={models}
-					selectedId={selectedModel}
-					onSelect={onSelectModel}
+					selectedId={model.value}
+					onSelect={model.set}
 				/>
 			</div>
 		</div>

@@ -169,6 +169,47 @@ describe("onRunSettled (terminal seam → recent-Runs refresh)", () => {
 
 		await runtime.dispose();
 	});
+
+	it("does NOT fire on an interrupt (no genuine settle → no spurious feed refetch)", async () => {
+		const settled = vi.fn();
+		setOnRunSettled(settled);
+		// A stream that never terminates — the fiber ends only via interruption.
+		const stub = WsClient.of({
+			threadCreate: () => Effect.die("unused"),
+			postMessage: () => Effect.die("unused"),
+			threadList: () => Effect.die("unused"),
+			getRunHistory: () => Effect.die("unused"),
+			threadGet: () => Effect.die("unused"),
+			listEntities: () => Effect.die("unused"),
+			entityMutate: () => Effect.die("unused"),
+			subscribeRun: (): Stream.Stream<RunEventValue, WsError> =>
+				Stream.fromQueue(Effect.runSync(Queue.unbounded<RunEventValue>())),
+			cancelRun: () => Effect.die("unused"),
+			providerStatus: () => Effect.die("unused"),
+			providerLoginStart: () => Effect.die("unused"),
+			modelCatalog: () => Effect.die("unused"),
+			settingsGet: () => Effect.die("unused"),
+			settingsSet: () => Effect.die("unused"),
+			proposalGet: () => Effect.die("unused"),
+			proposalDecide: () => Effect.die("unused"),
+			messageSearch: () => Effect.die("unused"),
+			proposalNotifications: () => Stream.empty,
+		});
+		const runtime = ManagedRuntime.make(Layer.succeed(WsClient, stub));
+		const runId = "run-interrupt" as RunId;
+		seed(runId);
+		startRunStream(runtime, "t1", runId);
+		await new Promise((r) => setTimeout(r, 0));
+
+		// Interrupt removes the tracked entry BEFORE the finalizer runs, so the
+		// identity guard fails and onRunSettled must not fire (this is the
+		// decideProposal-resume / unmount teardown, not a terminal).
+		interruptRun(runtime, runId);
+		await new Promise((r) => setTimeout(r, 0));
+		expect(settled).not.toHaveBeenCalled();
+
+		await runtime.dispose();
+	});
 });
 
 describe("decideProposal resume fiber tracking (M2)", () => {

@@ -25,16 +25,18 @@ export function ComposeFooter({
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-	// Auto-grow the composer with its content (up to a cap) so a multi-line or
-	// pasted message is fully visible instead of hidden in a single scrolling row.
-	// Reset to `auto` first so it shrinks back when text is deleted. Keyed on
-	// `value` (the trigger) even though the body reads the DOM node, not the value.
+	// Auto-grow the composer with its content so a multi-line or pasted message is
+	// fully visible instead of hidden in a single scrolling row. Reset to `auto`
+	// first so it shrinks back when text is deleted. The growth CAP lives solely in
+	// CSS (`max-h-[200px]` + `overflow-y-auto` below) — one source of truth — so we
+	// set the natural content height here and let CSS clamp + scroll past it. Keyed
+	// on `value` (the trigger) even though the body reads the DOM node, not the value.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: resize keyed on the composed value.
 	useEffect(() => {
 		const el = textareaRef.current;
 		if (!el) return;
 		el.style.height = "auto";
-		el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+		el.style.height = `${el.scrollHeight}px`;
 	}, [value]);
 
 	const submit = () => {

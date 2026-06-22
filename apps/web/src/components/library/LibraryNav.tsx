@@ -29,10 +29,11 @@ export function LibraryNav() {
 	const inboxCount = inboxTodos(items).length;
 	const waitingCount = waitingTodos(items).length;
 	const reviewCount = projectsForReview(items).length;
-	// When the Library read FAILED (Core unreachable) the counts would all be a
-	// misleading `0` — the same fake-empty signal `useLibraryItems` now rejects to
-	// avoid. Suppress the count badges in that state rather than asserting "0".
-	const countLabel = (n: number): string => (isError ? "" : String(n));
+	// Suppress the count badges ONLY when the read failed AND there's no cached data
+	// to count — otherwise a misleading `0` reads as a fake-empty workspace. A
+	// refetch error with a coherent cache keeps the real (stale-but-usable) counts.
+	const countsUnknown = isError && items.length === 0;
+	const countLabel = (n: number): string => (countsUnknown ? "" : String(n));
 
 	return (
 		<NavShell
