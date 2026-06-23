@@ -7,13 +7,14 @@
 //   node cr.mjs resolve <threadId>            → resolve one review thread
 //
 // `findings` and `resolve` are the read/resolve seam. `await-review` also
-// writes: CodeRabbit does NOT auto-review on this repo (neither a push nor
-// opening the PR triggers it), so EVERY review must be explicitly requested by
-// posting `@coderabbitai review`. await-review owns that post — once per
-// rate-limit window — and CodeRabbit throttles nearly every PR here (20-50 min
-// windows), so surviving the throttle while keeping the explicit trigger live
-// is its whole job. Run it backgrounded: a single wait can exceed the
-// foreground Bash 10-min cap.
+// writes: CodeRabbit AUTO-reviews on this repo (push/open trigger it), and
+// reports a CLEAN review as an inline walkthrough comment naming HEAD — not a
+// formal review object — so await-review accepts EITHER signal (see
+// reviewedHead) and posts `@coderabbitai review` only as a fallback nudge (once
+// per rate-limit window). CodeRabbit throttles nearly every PR here (20-50 min
+// windows), so surviving the throttle while watching for the review is its
+// whole job. Run it backgrounded: a single wait can exceed the foreground Bash
+// 10-min cap.
 
 import { execFileSync } from "node:child_process";
 
@@ -140,13 +141,28 @@ function triggerReview(owner, name, pr) {
   gh(["api", `repos/${owner}/${name}/issues/${pr}/comments`, "-f", "body=@coderabbitai review"]);
 }
 
-function reviewedHead(owner, name, pr, headSha) {
+function reviewedHead(owner, name, pr, headSha, comments) {
+  // CodeRabbit signals "I reviewed headSha" in one of TWO ways, depending on
+  // whether it found anything — and the loop must accept BOTH or it hangs:
+  //
+  // 1. Formal review object with commit_id == headSha. Emitted when CodeRabbit
+  //    leaves inline thread comments. A review of an EARLIER commit does not
+  //    count — that's a stale review of a superseded push.
   const reviews = gh(["api", `repos/${owner}/${name}/pulls/${pr}/reviews`], { json: true });
-  // CodeRabbit has reviewed `headSha` iff a coderabbitai[bot] review carries
-  // commit_id == headSha (verified against real PRs). A review of an EARLIER
-  // commit does not count — that's a stale review of a superseded push.
-  return reviews.some(
-    (r) => (r.user?.login ?? "") === "coderabbitai[bot]" && r.commit_id === headSha,
+  if (reviews.some((r) => (r.user?.login ?? "") === "coderabbitai[bot]" && r.commit_id === headSha)) {
+    return true;
+  }
+  // 2. A walkthrough / summary ISSUE-COMMENT that names headSha. On a CLEAN
+  //    review ("No actionable comments were generated 🎉") CodeRabbit posts NO
+  //    formal review object — only this auto-summary, whose "Commits … between
+  //    <base> and <head>" line carries the reviewed head SHA verbatim. This repo
+  //    also AUTO-reviews on push/open, so the summary often lands before our
+  //    explicit trigger. Without this branch the loop spins forever on a clean
+  //    PR waiting for a review object that never comes — the inline comment IS
+  //    the verdict. (The findings query separately confirms zero open threads.)
+  const cs = comments ?? issueComments(owner, name, pr);
+  return cs.some(
+    (c) => (c.user?.login ?? "") === "coderabbitai[bot]" && (c.body || "").includes(headSha),
   );
 }
 
@@ -161,8 +177,13 @@ function reviewedHead(owner, name, pr, headSha) {
 // instead of waking uselessly every few minutes. `maxWaitMin` is generous
 // (default 8h) because riding out several windows is the expected case.
 //
-// CodeRabbit does NOT auto-review here, so the explicit `@coderabbitai review`
-// post is mandatory, not a nudge — without it no review ever happens. The
+// CodeRabbit AUTO-reviews on this repo (push/open trigger it), and reports a
+// CLEAN review as an inline walkthrough comment naming headSha — see
+// reviewedHead's signal #2. So the auto-review often lands BEFORE our explicit
+// `@coderabbitai review`, and `reviewedHead` returns ready off that comment.
+// We still post the explicit trigger as a FALLBACK (auto-review can be paused,
+// or a re-push needs a nudge) — but it is no longer the only path to a review,
+// and a clean PR no longer hangs waiting for a formal review object. The
 // trigger rule `lastTrigger < max(lift, sessionStart)` fires it exactly once
 // per window AND posts it immediately on entry when there's no active throttle.
 // MUST be run backgrounded — a single wait routinely exceeds the foreground
@@ -175,7 +196,10 @@ async function awaitReview(pr, headSha, maxWaitMin = 480, pollMin = 5) {
   let lastTriggerMs = 0;
 
   for (;;) {
-    if (reviewedHead(owner, name, pr, headSha)) {
+    // One issue-comments fetch per tick, reused for both the completion check
+    // (walkthrough comment naming headSha) and the rate-limit window.
+    const comments = issueComments(owner, name, pr);
+    if (reviewedHead(owner, name, pr, headSha, comments)) {
       log(`reviewed ${headSha.slice(0, 8)} — ready`);
       process.stdout.write(JSON.stringify({ ready: true, headSha }) + "\n");
       return 0;
@@ -186,7 +210,7 @@ async function awaitReview(pr, headSha, maxWaitMin = 480, pollMin = 5) {
       return 1;
     }
 
-    const rl = latestRateLimit(issueComments(owner, name, pr));
+    const rl = latestRateLimit(comments);
     const now = Date.now();
     const liftMs = rl ? rl.liftMs : 0; // 0 ⇒ never throttled ⇒ liftable now
 
@@ -200,10 +224,11 @@ async function awaitReview(pr, headSha, maxWaitMin = 480, pollMin = 5) {
       log(`throttled — ${Math.round((liftMs - now) / 60000)} min until window lifts; sleeping until then`);
     } else if (lastTriggerMs < Math.max(liftMs, sessionStart)) {
       // Not throttled, no trigger pending for this window → post the explicit
-      // `@coderabbitai review` (mandatory — there is no auto-review here).
+      // `@coderabbitai review` as a fallback nudge (auto-review usually fires
+      // first, but a paused auto-review or a re-push may need it).
       triggerReview(owner, name, pr);
       lastTriggerMs = now;
-      log(rl ? "throttle lifted — posted @coderabbitai review" : "posted @coderabbitai review (no auto-review)");
+      log(rl ? "throttle lifted — posted @coderabbitai review" : "posted @coderabbitai review (fallback nudge)");
       sleepMs = pollMin * 60000; // short cadence to catch the review landing OR a fresh throttle notice
     } else {
       // Triggered; waiting for CodeRabbit to either post the review or re-throttle us.
