@@ -4,8 +4,9 @@ import {
 	type ProjectDraft,
 	projectDraftFromVm,
 } from "@/lib/entityCodec.js";
+import { PROJECT_STATUS_OPTIONS, type ProjectStatus } from "@/lib/entityFields";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
-import type { Project, ProjectStatus } from "@/lib/libraryItems";
+import type { Project } from "@/lib/libraryItems";
 import {
 	EditorField,
 	EditorInput,
@@ -22,13 +23,6 @@ type Props = (
 	onDone: (id: string) => void;
 	onCancel: () => void;
 };
-
-const STATUS_OPTIONS: { value: ProjectStatus; label: string }[] = [
-	{ value: "active", label: "Active" },
-	{ value: "on_hold", label: "On hold" },
-	{ value: "completed", label: "Completed" },
-	{ value: "dropped", label: "Dropped" },
-];
 
 /** Create / edit a Project inline in the Library rail (ADR-0033). */
 export function ProjectEditor({ onDone, onCancel, ...m }: Props) {
@@ -120,7 +114,7 @@ export function ProjectEditor({ onDone, onCancel, ...m }: Props) {
 					value={draft.status}
 					onChange={(e) => set("status", e.target.value as ProjectStatus)}
 				>
-					{STATUS_OPTIONS.map((o) => (
+					{PROJECT_STATUS_OPTIONS.map((o) => (
 						<option key={o.value} value={o.value}>
 							{o.label}
 						</option>

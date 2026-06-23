@@ -1,5 +1,15 @@
 import type { EntityMutateParams } from "@inkstone/protocol";
 import {
+	asProjectStatus,
+	asTodoStatus,
+	type ProjectStatus,
+	parseAliases,
+	RECURRENCE_UNITS,
+	type RecurAnchor,
+	type RecurrenceUnit,
+	type TodoStatus,
+} from "@/lib/entityFields";
+import {
 	type Bookmark,
 	type EntitySource,
 	type JournalEntry,
@@ -7,11 +17,8 @@ import {
 	localNowString,
 	type Person,
 	type Project,
-	type ProjectStatus,
 	type RecurrenceRule,
-	type RecurrenceUnit,
 	type Todo,
-	type TodoStatus,
 } from "@/lib/libraryItems";
 
 // The per-Entity-Type wire codec. THIS module owns each kind's row-input shape
@@ -170,19 +177,6 @@ function asString(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
-function asTodoStatus(value: unknown): TodoStatus {
-	return value === "completed" || value === "dropped" ? value : "active";
-}
-
-const RECURRENCE_UNITS: readonly RecurrenceUnit[] = [
-	"minute",
-	"hour",
-	"day",
-	"week",
-	"month",
-	"year",
-];
-
 /**
  * Defensively map a stored snake_case recurrence rule (ADR-0037, slimmed by
  * ADR-0039) to the camelCase view model. Core validates the rule on the way in,
@@ -195,7 +189,7 @@ function asRecurrence(value: unknown): RecurrenceRule | undefined {
 	if (
 		typeof r.interval !== "number" ||
 		typeof r.unit !== "string" ||
-		!RECURRENCE_UNITS.includes(r.unit as RecurrenceUnit) ||
+		!RECURRENCE_UNITS.some((u) => u.value === r.unit) ||
 		(r.anchor !== "defer_at" && r.anchor !== "due_at")
 	) {
 		return undefined;
@@ -276,12 +270,6 @@ interface ProjectData {
 	last_reviewed_at?: unknown;
 }
 
-function asProjectStatus(value: unknown): ProjectStatus {
-	return value === "on_hold" || value === "completed" || value === "dropped"
-		? value
-		: "active";
-}
-
 function parseProject(row: LiveEntityRow): Project {
 	const data = (row.data ?? {}) as ProjectData;
 	// Carry the complete stored object verbatim so the editor can build a
@@ -346,8 +334,6 @@ function parseBookmark(row: LiveEntityRow): Bookmark {
 // completed_at = null) are a VALIDATOR-ONLY extension the advertised update_todo
 // schema rejects — so this path must NOT be routed through S.encode/S.decode.
 // ---------------------------------------------------------------------------
-
-type RecurAnchor = "defer_at" | "due_at";
 
 /** The editable shape of a Todo's scalar fields; `""` means absent/cleared. */
 export interface TodoDraft {
@@ -568,14 +554,6 @@ export interface PersonDraft {
 	note: string;
 	/** Aliases as a comma-separated string; split on save (ADR-0031). */
 	aliases: string;
-}
-
-/** Parse the comma-separated aliases field into a trimmed, non-empty `string[]`. */
-function parseAliases(raw: string): string[] {
-	return raw
-		.split(",")
-		.map((a) => a.trim())
-		.filter((a) => a.length > 0);
 }
 
 /** The editable draft for a Person (or a fresh blank draft when absent). */
