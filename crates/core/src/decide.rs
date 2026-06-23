@@ -46,6 +46,24 @@ pub enum DecideError {
     Internal(anyhow::Error),
 }
 
+/// The `ApplyError → DecideError` vocabulary, owned once. `TargetMissing →
+/// NotDecidable` is ADR-0033 (a user deleted the target out from under a parked
+/// Proposal → resolve cleanly as -32002, not an opaque Internal). The reject
+/// path in `apply_or_reject` pre-empts `TargetMissing` with `unreachable!()`
+/// before delegating here, so this arm only ever fires for accept/graph.
+impl From<db::ApplyError> for DecideError {
+    fn from(e: db::ApplyError) -> Self {
+        match e {
+            db::ApplyError::InvalidMutation(reason) => DecideError::Invalid(reason),
+            db::ApplyError::NotPending => DecideError::LostRace,
+            db::ApplyError::TargetMissing => {
+                DecideError::NotDecidable("proposal target no longer exists".to_string())
+            }
+            db::ApplyError::Sql(e) => DecideError::Internal(e.into()),
+        }
+    }
+}
+
 /// Apply a Decision on a Proposal (ADR-0025, ADR-0016), then re-drive resume if
 /// the Run is still parked:
 ///
@@ -265,16 +283,18 @@ async fn apply_or_reject(
         .await
         {
             Ok(()) => Ok(DecideOutcome::Rejected { run_id }),
-            Err(db::ApplyError::InvalidMutation(reason)) => Err(DecideError::Invalid(reason)),
-            Err(db::ApplyError::NotPending) => Err(DecideError::LostRace),
             // `reject_proposal` touches no entity store (it only flips the
             // proposal status + resolves the tool_call), so it can NEVER return
-            // TargetMissing — a reject is never wedged by a deleted target. The
-            // arm exists solely for match exhaustiveness.
+            // TargetMissing — a reject is never wedged by a deleted target.
             Err(db::ApplyError::TargetMissing) => {
                 unreachable!("reject_proposal never touches an entity, so cannot miss a target")
             }
-            Err(db::ApplyError::Sql(e)) => Err(DecideError::Internal(e.into())),
+            // The remaining arms share the one mapping (impl From above). Named
+            // (not a bare `_`) so a future ApplyError variant breaks compilation
+            // HERE, forcing a "can reject reach this?" reconsideration.
+            Err(e @ (db::ApplyError::InvalidMutation(_)
+                | db::ApplyError::NotPending
+                | db::ApplyError::Sql(_))) => Err(e.into()),
         };
     }
 
@@ -368,15 +388,7 @@ async fn apply_or_reject(
     .await
     {
         Ok(entity_id) => Ok(DecideOutcome::Accepted { run_id, entity_id }),
-        Err(db::ApplyError::InvalidMutation(reason)) => Err(DecideError::Invalid(reason)),
-        Err(db::ApplyError::NotPending) => Err(DecideError::LostRace),
-        // A user deleted the target Entity out from under this parked Proposal
-        // (ADR-0033). Surface NotDecidable (-32002, "no longer pending") so the
-        // parked Run resolves cleanly, not an opaque Internal (-32603).
-        Err(db::ApplyError::TargetMissing) => Err(DecideError::NotDecidable(
-            "proposal target no longer exists".to_string(),
-        )),
-        Err(db::ApplyError::Sql(e)) => Err(DecideError::Internal(e.into())),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -437,16 +449,7 @@ async fn apply_intent_graph(
         // nodes is effectively a `reject`). The resolver flipped the Proposal
         // rejected and resolved the tool call as a decline; nothing was minted.
         Ok(db::IntentGraphOutcome::RejectedAll) => Ok(DecideOutcome::Rejected { run_id }),
-        Err(db::ApplyError::InvalidMutation(reason)) => Err(DecideError::Invalid(reason)),
-        Err(db::ApplyError::NotPending) => Err(DecideError::LostRace),
-        // A link to a node REJECTED by the decision vector is dropped (the
-        // cascade), so the graph touches no pre-existing target — `TargetMissing`
-        // stays unreachable. Map it the same way the single-entity path does: a
-        // clean NotDecidable.
-        Err(db::ApplyError::TargetMissing) => Err(DecideError::NotDecidable(
-            "proposal target no longer exists".to_string(),
-        )),
-        Err(db::ApplyError::Sql(e)) => Err(DecideError::Internal(e.into())),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -3758,5 +3761,25 @@ mod tests {
         assert_eq!(entity_count_of_type(&pool, "journal_entry").await, 0);
         assert_eq!(entity_count(&pool).await, 1, "only the pre-seeded Todo remains");
         assert_eq!(proposal_status(&pool, &proposal_id_str).await, "pending");
+    }
+
+    #[test]
+    fn apply_error_maps_to_decide_vocab() {
+        assert!(matches!(
+            DecideError::from(db::ApplyError::NotPending),
+            DecideError::LostRace
+        ));
+        assert!(matches!(
+            DecideError::from(db::ApplyError::InvalidMutation("x".to_string())),
+            DecideError::Invalid(_)
+        ));
+        assert!(matches!(
+            DecideError::from(db::ApplyError::TargetMissing),
+            DecideError::NotDecidable(_)
+        ));
+        assert!(matches!(
+            DecideError::from(db::ApplyError::Sql(sqlx::Error::RowNotFound)),
+            DecideError::Internal(_)
+        ));
     }
 }
