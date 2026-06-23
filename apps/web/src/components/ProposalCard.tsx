@@ -25,6 +25,12 @@ import {
 	useRef,
 	useState,
 } from "react";
+import {
+	PROJECT_STATUS_OPTIONS,
+	type ProjectStatus,
+	TODO_STATUS_OPTIONS,
+	type TodoStatus,
+} from "@/lib/entityFields";
 import { useLibraryItems } from "@/lib/hooks/useLibraryItems";
 import {
 	allRejected,
@@ -64,12 +70,10 @@ import {
 	overlayCreateProject,
 	overlayCreateTodo,
 	overlayUpdateTodo,
-	type ProjectEditStatus,
 	seedCreatePerson,
 	seedCreateProject,
 	seedCreateTodo,
 	seedUpdateTodo,
-	type TodoEditStatus,
 	type UpdateTodoDraft,
 } from "@/lib/proposalEdit";
 import type { PendingProposal } from "@/store/chat";
@@ -82,21 +86,6 @@ import {
 import { Badge, type BadgeProps } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { Card } from "./ui/card.js";
-
-const TODO_STATUS_OPTIONS: { value: TodoEditStatus; label: string }[] = [
-	{ value: "active", label: "Active" },
-	{ value: "completed", label: "Completed" },
-	{ value: "dropped", label: "Dropped" },
-];
-
-// Reuses the Library ProjectEditor's STATUS_OPTIONS labels — Project has `on_hold`,
-// which Todo lacks.
-const PROJECT_STATUS_OPTIONS: { value: ProjectEditStatus; label: string }[] = [
-	{ value: "active", label: "Active" },
-	{ value: "on_hold", label: "On hold" },
-	{ value: "completed", label: "Completed" },
-	{ value: "dropped", label: "Dropped" },
-];
 
 // The mutation kinds the Worker proposes (ADR-0025). Bookmarks and direct
 // entity-edits are user-CRUD-only (ADR-0033/0036) — never proposed — so the card
@@ -1087,7 +1076,7 @@ function GtdEditForm({
 									variant: "todo_create",
 									draft: {
 										...state.draft,
-										status: event.target.value as TodoEditStatus,
+										status: event.target.value as TodoStatus,
 									},
 								})
 							}
@@ -1189,7 +1178,7 @@ function GtdEditForm({
 									variant: "project",
 									draft: {
 										...state.draft,
-										status: event.target.value as ProjectEditStatus,
+										status: event.target.value as ProjectStatus,
 									},
 								})
 							}
@@ -1247,7 +1236,7 @@ function GtdEditForm({
 										variant: "todo_update",
 										draft: {
 											...state.draft,
-											status: event.target.value as TodoEditStatus,
+											status: event.target.value as TodoStatus,
 										},
 									})
 								}

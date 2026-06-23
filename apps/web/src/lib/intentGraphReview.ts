@@ -1,4 +1,5 @@
 import type { NodeDecision, ResolvedNode } from "@inkstone/protocol";
+import { parseAliases } from "@/lib/entityFields";
 
 /**
  * Pure staging logic for the `apply_intent_graph` sequential-review card
@@ -160,16 +161,6 @@ function readStringArray(source: unknown, key: string): string[] {
 		}
 	}
 	return [];
-}
-
-/** Split a comma-separated aliases field into a trimmed, non-empty `string[]`
- * (mirrors proposalEdit.parseAliases / entityCodec — kept local so this module
- * stays self-contained). */
-function parseAliases(raw: string): string[] {
-	return raw
-		.split(",")
-		.map((a) => a.trim())
-		.filter((a) => a.length > 0);
 }
 
 /** Index the graph payload's `entities[]` by handle, so an edit can seed from — and

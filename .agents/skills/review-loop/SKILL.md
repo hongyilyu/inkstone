@@ -6,10 +6,10 @@ description: >-
   across BOTH Claude (subagents) and the cross engine (Codex/Claude via CLI) —
   verify findings, fix the real ones, and loop until both engines and both
   reviews are clean, THEN open the PR. Phase 1 (post-PR): wait for CodeRabbit's
-  review of the current HEAD (explicitly requested via `@coderabbitai review` —
-  it does not auto-review), adversarially verify each finding, fix, reply/
-  resolve, re-run the CI gate, push, post a fresh `@coderabbitai review`, and loop
-  until clean or a cap. Never merges — the merge stays the user's. Use to take an
+  auto-review of the current HEAD (a fallback `@coderabbitai review` nudges it if
+  it stalls), adversarially verify each finding, fix, reply/resolve, re-run the
+  CI gate, push, and loop until clean or a cap. Never merges — the merge stays
+  the user's. Use to take an
   open change all the way to "every reviewer is quiet."
 ---
 
@@ -82,7 +82,7 @@ On a clean/quiescent Phase 0, push the branch, then resolve the PR — **capture
 
 - **No PR yet:** create one **non-interactively** (bare `gh pr create` prompts and will hang an autonomous run). Write the dual-engine review summary (found / fixed / deferred) to a file and pass it:
   `git push -u origin HEAD && gh pr create --title "<subject>" --body-file <summary> && PR=$(gh pr view --json number -q .number)`
-- **PR already open for the branch:** `git push`, then `PR=$(gh pr view --json number -q .number)`. CodeRabbit does **not** auto-review the new HEAD on this repo — Phase 1's `await-review` step posts the explicit `@coderabbitai review` trigger.
+- **PR already open for the branch:** `git push`, then `PR=$(gh pr view --json number -q .number)`. CodeRabbit auto-reviews the new HEAD on push; Phase 1's `await-review` step waits for that review (and posts a fallback `@coderabbitai review` if it stalls).
 
 Then continue into **Phase 1** with that `PR`.
 
@@ -108,7 +108,7 @@ Up to `--max-rounds` rounds (default 3). Each round:
 4. fix     → apply the confirmed-real fixes on the PR branch
 5. respond → reply on every thread; resolve the refuted/deferred ones
 6. gate    → run the local §6 CI mirror; red ⇒ fix before pushing, never push red
-7. push    → push the branch → next round (the round's `await` step posts `@coderabbitai review`; the push alone does NOT trigger CodeRabbit)
+7. push    → push the branch → next round (the push auto-triggers CodeRabbit; the round's `await` step also posts a fallback `@coderabbitai review` if it stalls)
 ```
 
 Exit per the [shared termination conditions](#termination-conditions-shared-by-both-phases), read against CodeRabbit threads: **clean** = `fetch` returns zero unresolved threads at HEAD after a fresh review; **quiescent** = a round produced no code change (every thread refuted/deferred + resolved, nothing to push, so CodeRabbit won't re-review); **cap-hit** = `--max-rounds` reached with threads still open (surfaced in the digest verbatim). On exit, write the [digest](#terminal-digest).
@@ -126,12 +126,17 @@ Surviving this is the script's whole job, so it lives there, not in prose:
 node .agents/skills/review-loop/cr.mjs await-review <PR> <HEAD> [maxWaitMin=480] [pollMin=5]
 ```
 
-CodeRabbit does **not** auto-review on this repo — neither a push nor opening the PR triggers it. **Every** review is explicitly requested by posting `@coderabbitai review`, which `await-review` owns (don't post it yourself). It blocks until a `coderabbitai[bot]` review carries `commit_id == HEAD` (the verified "reviewed *this* commit" signal — a stale review of an earlier commit does not count), with a **dynamic** cadence:
+CodeRabbit **auto-reviews** on this repo — a push or opening the PR triggers a review on its own. `await-review` recognizes completion via **two** signals (whichever lands first), so it doesn't hang waiting for the wrong one:
 
-- returns ready the moment HEAD is reviewed;
+1. a `coderabbitai[bot]` **review object** with `commit_id == HEAD` — emitted when CodeRabbit leaves inline thread comments (a stale review of an earlier commit does not count);
+2. a CodeRabbit **walkthrough / summary issue-comment that names HEAD's SHA** — this is how a **clean** review reports ("*No actionable comments were generated in the recent review.* 🎉"); on a clean pass CodeRabbit posts **no** review object, only this inline comment. Its "Commits … between `<base>` and `<head>`" line carries the reviewed head. **A clean review is an inline comment, not a review object** — without this signal the loop would spin forever on a clean PR.
+
+`await-review` still posts `@coderabbitai review` (don't post it yourself), but now as a **fallback nudge** — the auto-review usually lands first; the explicit trigger covers a paused auto-review or a re-push that needs poking. CodeRabbit will reply "*does not re-review already reviewed commits*" if it already reviewed HEAD, which is itself a confirmation. The cadence is **dynamic**:
+
+- returns ready the moment either signal shows HEAD is reviewed;
 - **when throttled, sleeps the window's actual remaining time** (parsed from CodeRabbit's "available in N minutes and M seconds" notice, +30s buffer, rounded up to the minute) — not a fixed poll. No point waking every 5 min through a 40-min window;
-- once not throttled, posts the explicit `@coderabbitai review` trigger **exactly once per window** (a lift-gate prevents a fresh trigger every tick), then polls every `pollMin` (default **5 min**) to catch either the review landing or a *fresh* throttle notice (the per-user contention case — re-throttled before our turn), and loops;
-- posts the trigger immediately on entry when there's no active throttle (the explicit request is mandatory — there is no auto-review to fall back on).
+- once not throttled, posts the fallback `@coderabbitai review` trigger **exactly once per window** (a lift-gate prevents a fresh trigger every tick), then polls every `pollMin` (default **5 min**) to catch either the review landing or a *fresh* throttle notice (the per-user contention case — re-throttled before our turn), and loops;
+- posts the fallback trigger immediately on entry when there's no active throttle.
 
 `maxWaitMin` defaults to **480 (8h)** precisely because riding out several contended windows is the expected case — set it higher for a busy multi-PR day; it's a backstop against a genuinely dead CodeRabbit, not a normal exit.
 
@@ -157,7 +162,7 @@ Returns `{ head, count, actionable, threads[] }`. Each thread:
 | `aiPrompt` | CodeRabbit's "🤖 Prompt for AI Agents" block — its own fix instructions |
 | `body` | full markdown, for the verifier |
 
-Only unresolved, non-outdated threads authored by CodeRabbit are returned — threads CodeRabbit already auto-resolved (e.g. it confirmed a prior fix) drop out on their own. `count == 0` ⇒ **Clean** exit.
+Only unresolved, non-outdated threads authored by CodeRabbit are returned — threads CodeRabbit already auto-resolved (e.g. it confirmed a prior fix) drop out on their own. `count == 0` ⇒ **Clean** exit. A clean review reports as a walkthrough comment ("*No actionable comments were generated* 🎉") with **no threads** — `await-review` already returned ready off that comment, so `count == 0` here is the expected clean state, not a "didn't review yet" ambiguity.
 
 ### 3. verify (adversarial: the heart of full-auto)
 
@@ -216,7 +221,7 @@ Before pushing, run [the gate](#the-gate-shared-by-both-phases). **Red ⇒ fix b
 git push
 ```
 
-Pushing the new commit does **not** re-trigger CodeRabbit on this repo — the next round's `await` step (step 1) posts the explicit `@coderabbitai review` for the new HEAD (reviews carry distinct `commit_id`s per push, so the await correctly waits for a review of the *new* commit). Update `HEAD := git rev-parse HEAD` and start the next round at step 1. No push happened this round (Quiescent) ⇒ exit instead.
+Pushing the new commit auto-triggers a fresh CodeRabbit review of the new HEAD; the next round's `await` step (step 1) waits for it (matching on the new HEAD's SHA via either signal — review object `commit_id` or walkthrough comment — so a stale review of the prior commit doesn't satisfy it), and posts a fallback `@coderabbitai review` if the auto-review stalls. Update `HEAD := git rev-parse HEAD` and start the next round at step 1. No push happened this round (Quiescent) ⇒ exit instead.
 
 ## Terminal digest
 
@@ -257,7 +262,7 @@ node .agents/skills/review-loop/cr.mjs await-review <pr> <sha> [maxWaitMin=480] 
 node .agents/skills/review-loop/cr.mjs resolve <threadId>                          # resolve one thread
 ```
 
-`await-review` owns the `@coderabbitai review` trigger (once per rate-limit window) — don't post it yourself. Per-thread replies are plain `gh api … /replies` calls (shown inline above); they didn't warrant wrapping.
+`await-review` owns the fallback `@coderabbitai review` trigger (once per rate-limit window) — don't post it yourself; it also detects the auto-review's completion (review object or walkthrough comment naming HEAD). Per-thread replies are plain `gh api … /replies` calls (shown inline above); they didn't warrant wrapping.
 
 ## Spawning the reviewers (Phase 0)
 

@@ -5,15 +5,16 @@ import {
 	type TodoDraft,
 	todoDraftFromVm,
 } from "@/lib/entityCodec.js";
+import {
+	RECUR_ANCHOR_OPTIONS,
+	RECURRENCE_UNIT_OPTIONS,
+	type RecurAnchor,
+	type RecurrenceUnit,
+	TODO_STATUS_OPTIONS,
+	type TodoStatus,
+} from "@/lib/entityFields";
 import { useEntityMutation } from "@/lib/hooks/useEntityMutation";
-import type {
-	LibraryItem,
-	Person,
-	Project,
-	RecurrenceUnit,
-	Todo,
-	TodoStatus,
-} from "@/lib/libraryItems";
+import type { LibraryItem, Person, Project, Todo } from "@/lib/libraryItems";
 import {
 	EditorField,
 	EditorInput,
@@ -31,28 +32,6 @@ type Props = (
 	onDone: (id: string) => void;
 	onCancel: () => void;
 };
-
-const STATUS_OPTIONS: { value: TodoStatus; label: string }[] = [
-	{ value: "active", label: "Active" },
-	{ value: "completed", label: "Completed" },
-	{ value: "dropped", label: "Dropped" },
-];
-
-const UNIT_OPTIONS: { value: RecurrenceUnit; label: string }[] = [
-	{ value: "minute", label: "Minutes" },
-	{ value: "hour", label: "Hours" },
-	{ value: "day", label: "Days" },
-	{ value: "week", label: "Weeks" },
-	{ value: "month", label: "Months" },
-	{ value: "year", label: "Years" },
-];
-
-type RecurAnchor = "defer_at" | "due_at";
-
-const ANCHOR_OPTIONS: { value: RecurAnchor; label: string }[] = [
-	{ value: "defer_at", label: "Defer date" },
-	{ value: "due_at", label: "Due date" },
-];
 
 /** Create / edit a Todo inline in the Library rail (ADR-0033). */
 export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
@@ -166,7 +145,7 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 					value={draft.status}
 					onChange={(e) => set("status", e.target.value as TodoStatus)}
 				>
-					{STATUS_OPTIONS.map((o) => (
+					{TODO_STATUS_OPTIONS.map((o) => (
 						<option key={o.value} value={o.value}>
 							{o.label}
 						</option>
@@ -243,7 +222,7 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 									set("recurUnit", e.target.value as RecurrenceUnit)
 								}
 							>
-								{UNIT_OPTIONS.map((o) => (
+								{RECURRENCE_UNIT_OPTIONS.map((o) => (
 									<option key={o.value} value={o.value}>
 										{o.label}
 									</option>
@@ -259,7 +238,7 @@ export function TodoEditor({ allEntities, onDone, onCancel, ...m }: Props) {
 									set("recurAnchor", e.target.value as RecurAnchor)
 								}
 							>
-								{ANCHOR_OPTIONS.map((o) => (
+								{RECUR_ANCHOR_OPTIONS.map((o) => (
 									<option key={o.value} value={o.value}>
 										{o.label}
 									</option>

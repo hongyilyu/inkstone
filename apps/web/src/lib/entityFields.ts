@@ -1,0 +1,82 @@
+// The single source of truth for the entity FIELD SURFACE: the status/unit/anchor
+// value domains, the `{value,label}` option arrays the editors render, the
+// derived `*_STATUS_LABEL` maps, and the three pure coercers
+// (parseAliases/asTodoStatus/asProjectStatus). A PURE LEAF — it imports nothing
+// (no React, no lucide, no libraryItems/entityCodec/components), so every
+// consumer (codec, proposalEdit, intentGraphReview, the rail editors, the
+// proposal card) reads ONE answer for "how is a Todo's status spelled, what
+// recurrence units exist, what does the recur-anchor union look like".
+
+/** The Todo GTD status domain, value + display label (ADR-0031). */
+export const TODO_STATUSES = [
+	{ value: "active", label: "Active" },
+	{ value: "completed", label: "Completed" },
+	{ value: "dropped", label: "Dropped" },
+] as const;
+
+/** The Project GTD status domain — note `on_hold`, which Todo lacks (ADR-0031). */
+export const PROJECT_STATUSES = [
+	{ value: "active", label: "Active" },
+	{ value: "on_hold", label: "On hold" },
+	{ value: "completed", label: "Completed" },
+	{ value: "dropped", label: "Dropped" },
+] as const;
+
+/** The recurrence unit domain, value + display label (ADR-0037/0039). */
+export const RECURRENCE_UNITS = [
+	{ value: "minute", label: "Minutes" },
+	{ value: "hour", label: "Hours" },
+	{ value: "day", label: "Days" },
+	{ value: "week", label: "Weeks" },
+	{ value: "month", label: "Months" },
+	{ value: "year", label: "Years" },
+] as const;
+
+/** The recurrence anchor domain — which date the next occurrence counts from. */
+export const RECUR_ANCHORS = [
+	{ value: "defer_at", label: "Defer date" },
+	{ value: "due_at", label: "Due date" },
+] as const;
+
+export type TodoStatus = (typeof TODO_STATUSES)[number]["value"];
+export type ProjectStatus = (typeof PROJECT_STATUSES)[number]["value"];
+export type RecurrenceUnit = (typeof RECURRENCE_UNITS)[number]["value"];
+export type RecurAnchor = (typeof RECUR_ANCHORS)[number]["value"];
+
+// The option arrays the `<EditorSelect>` call sites map over. Each canonical
+// array already IS `[{value,label}]`, so the option arrays simply alias the
+// canonical arrays under the names the call sites use.
+export const TODO_STATUS_OPTIONS = TODO_STATUSES;
+export const PROJECT_STATUS_OPTIONS = PROJECT_STATUSES;
+export const RECURRENCE_UNIT_OPTIONS = RECURRENCE_UNITS;
+export const RECUR_ANCHOR_OPTIONS = RECUR_ANCHORS;
+
+/** Status → display label, derived from the canonical arrays so a new status is
+ * a one-line edit in one place (the maps can never drift from the domain). */
+export const TODO_STATUS_LABEL = Object.fromEntries(
+	TODO_STATUSES.map((o) => [o.value, o.label]),
+) as Record<TodoStatus, string>;
+
+export const PROJECT_STATUS_LABEL = Object.fromEntries(
+	PROJECT_STATUSES.map((o) => [o.value, o.label]),
+) as Record<ProjectStatus, string>;
+
+/** Parse a comma-separated aliases/field string into a trimmed, non-empty `string[]`. */
+export function parseAliases(raw: string): string[] {
+	return raw
+		.split(",")
+		.map((a) => a.trim())
+		.filter((a) => a.length > 0);
+}
+
+/** Coerce an unknown to a Todo status, degrading anything unrecognized to "active". */
+export function asTodoStatus(value: unknown): TodoStatus {
+	return value === "completed" || value === "dropped" ? value : "active";
+}
+
+/** Coerce an unknown to a Project status, degrading anything unrecognized to "active". */
+export function asProjectStatus(value: unknown): ProjectStatus {
+	return value === "on_hold" || value === "completed" || value === "dropped"
+		? value
+		: "active";
+}

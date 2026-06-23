@@ -1,3 +1,10 @@
+import {
+	asProjectStatus,
+	asTodoStatus,
+	type ProjectStatus,
+	parseAliases,
+	type TodoStatus,
+} from "@/lib/entityFields";
 import { localNowString } from "@/lib/libraryItems";
 
 // Pure overlay builders for the Proposal review card's inline GTD edit (ADR-0025).
@@ -62,9 +69,6 @@ export function isGtdEditKind(kind: string): boolean {
 	return gtdEditVariant(kind) !== null;
 }
 
-const TODO_STATUSES = ["active", "completed", "dropped"] as const;
-export type TodoEditStatus = (typeof TODO_STATUSES)[number];
-
 /** Read `key` off `payload` as a string, degrading anything else to "". */
 function readString(payload: unknown, key: string): string {
 	if (payload && typeof payload === "object" && key in payload) {
@@ -100,15 +104,11 @@ function clonePayload(payload: unknown): Record<string, unknown> {
 	return {};
 }
 
-function asTodoStatus(value: unknown): TodoEditStatus {
-	return value === "completed" || value === "dropped" ? value : "active";
-}
-
 /** The surfaced, editable fields of a `create_todo`'s `todo{}`. */
 export interface CreateTodoDraft {
 	title: string;
 	note: string;
-	status: TodoEditStatus;
+	status: TodoStatus;
 }
 
 /** Seed a create_todo draft from the proposed payload, never throwing. */
@@ -194,18 +194,6 @@ export interface CreatePersonDraft {
 	note: string;
 }
 
-/**
- * Split the comma-separated aliases field into a trimmed, non-empty `string[]`
- * (mirrors entityCodec.parseAliases — kept local so this module never imports the
- * codec, whose build direction is structurally wrong for a create payload).
- */
-function parseAliases(raw: string): string[] {
-	return raw
-		.split(",")
-		.map((a) => a.trim())
-		.filter((a) => a.length > 0);
-}
-
 /** Read `key` off `payload` as a `string[]`, dropping non-string entries; [] otherwise. */
 function readStringArray(payload: unknown, key: string): string[] {
 	if (payload && typeof payload === "object" && key in payload) {
@@ -269,21 +257,12 @@ export function overlayCreatePerson(
 // optional ⇒ omit (ADR-0033).
 // ---------------------------------------------------------------------------
 
-const PROJECT_STATUSES = ["active", "on_hold", "completed", "dropped"] as const;
-export type ProjectEditStatus = (typeof PROJECT_STATUSES)[number];
-
-function asProjectStatus(value: unknown): ProjectEditStatus {
-	return value === "on_hold" || value === "completed" || value === "dropped"
-		? value
-		: "active";
-}
-
 /** The surfaced, editable fields of a `create_project` payload. */
 export interface CreateProjectDraft {
 	name: string;
 	outcome: string;
 	note: string;
-	status: ProjectEditStatus;
+	status: ProjectStatus;
 }
 
 /** Seed a create_project draft from the proposed payload, never throwing. */
@@ -382,7 +361,7 @@ export interface UpdateTodoDraft {
 	/** Whether the proposed partial carried a `title` key (gates the title field + Save). */
 	titlePresent: boolean;
 	note: string;
-	status: TodoEditStatus;
+	status: TodoStatus;
 	/** Whether the proposed partial carried a `status` key (gates the Status control + coupling). */
 	statusPresent: boolean;
 }
