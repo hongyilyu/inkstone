@@ -415,22 +415,41 @@ describe("EntityCollection", () => {
 		).toBeInTheDocument();
 	});
 
-	it("shows an error for malformed live Journal Entry rows", async () => {
+	it("drops a malformed live Journal Entry row but still renders the valid ones (slice-3)", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		renderCollection("journal_entry", {
 			journalEntries: [
 				{
+					// Malformed: no `occurred_at` — the strict parser throws on this row.
 					id: "01900000-0000-7000-8000-0000000000b1",
 					type: "journal_entry",
 					data: { body: [{ type: "text", text: "missing occurred time" }] },
 					created_at: 1_700_000_000_000,
 					updated_at: 1_700_000_000_000,
 				},
+				{
+					// Valid sibling — must survive even though the row above is dropped.
+					id: "01900000-0000-7000-8000-0000000000b2",
+					type: "journal_entry",
+					data: {
+						occurred_at: "2026-06-10T09:00:00",
+						body: [{ type: "text", text: "valid entry survives" }],
+					},
+					created_at: 1_700_000_100_000,
+					updated_at: 1_700_000_100_000,
+				},
 			],
 		});
 
+		// The valid entry renders (the Library is NOT blanked by the bad row), and
+		// the "Couldn't load" error state never appears.
+		expect(await screen.findByText("valid entry survives")).toBeInTheDocument();
 		expect(
-			await screen.findByText(/couldn't load journal/i),
-		).toBeInTheDocument();
+			screen.queryByText(/couldn't load journal/i),
+		).not.toBeInTheDocument();
 		expect(screen.queryByText("missing occurred time")).not.toBeInTheDocument();
+		// The dropped row left a diagnostic trail (ADR-0038).
+		expect(warn).toHaveBeenCalledTimes(1);
+		vi.restoreAllMocks();
 	});
 });

@@ -1,6 +1,7 @@
 import {
 	type EntityMutateParams,
 	readBookmarkData,
+	readJournalEntryData,
 	readPersonData,
 	readProjectData,
 	readTodoData,
@@ -39,6 +40,7 @@ const decodeTodoData = S.decodeUnknownSync(readTodoData);
 const decodePersonData = S.decodeUnknownSync(readPersonData);
 const decodeProjectData = S.decodeUnknownSync(readProjectData);
 const decodeBookmarkData = S.decodeUnknownSync(readBookmarkData);
+const decodeJournalEntryData = S.decodeUnknownSync(readJournalEntryData);
 
 // The per-Entity-Type wire codec. THIS module owns each kind's row-input shape
 // and BOTH directions: PARSE (row → view-model) and BUILD (draft → mutation
@@ -108,16 +110,15 @@ function parseSource(
 	return undefined;
 }
 
-interface JournalEntryData {
-	occurred_at?: unknown;
-	ended_at?: unknown;
-	body?: unknown;
-}
-
 const LOCAL_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
 
+// Unlike the four fail-soft parsers, parseJournalEntry stays STRICT: it throws on
+// a malformed entry (bad occurred_at, empty/ill-formed body). The decode below
+// only bounds the field-SET it reads; the value-level rules `S.Unknown` can't
+// express stay as the inline throws. `useLibraryItems` catches the throw and
+// drops the row so one bad entry never blanks the whole Library (slice-3).
 function parseJournalEntry(row: LiveEntityRow): JournalEntry {
-	const data = (row.data ?? {}) as JournalEntryData;
+	const data = decodeJournalEntryData(asRecord(row.data));
 	if (
 		typeof data.occurred_at !== "string" ||
 		!LOCAL_DATETIME_RE.test(data.occurred_at)
