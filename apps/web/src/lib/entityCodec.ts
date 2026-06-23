@@ -33,9 +33,10 @@ import {
 // stored `data` FIELD-SET; `readSchemas.test.ts` pins the gated trio as a
 // superset of the write `*_core`. The codec decodes `row.data` against them
 // (lenient — every field `S.optional(S.Unknown)`, unknown keys ignored) and then
-// COERCES the loose values to the view model below. A decode is total: it never
-// throws on these schemas, so the `?? {}` fallbacks stay as a belt-and-braces
-// guard for a non-object `data`.
+// COERCES the loose values to the view model below. A decode is total ONLY over a
+// plain object, so `asRecord()` first coerces a null / array / non-object `data`
+// to `{}` — that guard is what keeps the four fail-soft parsers from ever throwing
+// (an `S.Struct` decode rejects a top-level array, `typeof [] === "object"`).
 const decodeTodoData = S.decodeUnknownSync(readTodoData);
 const decodePersonData = S.decodeUnknownSync(readPersonData);
 const decodeProjectData = S.decodeUnknownSync(readProjectData);
@@ -181,10 +182,13 @@ function parseJournalEntry(row: LiveEntityRow): JournalEntry {
 }
 
 /** A stored `data` blob coerced to a record for decoding — `{}` when Core sent a
- * null/non-object `data`, so a decode (and the coercion below) can never throw on
- * a malformed row. */
+ * null / array / non-object `data`, so a decode (and the coercion below) can never
+ * throw on a malformed row. Arrays are excluded deliberately: `typeof [] ===
+ * "object"`, but an `S.Struct` decode rejects a top-level array, so without the
+ * `!Array.isArray` guard an array `data` would throw and the fail-soft parsers
+ * would drop the row instead of defaulting it. */
 function asRecord(value: unknown): Record<string, unknown> {
-	return value && typeof value === "object"
+	return value && typeof value === "object" && !Array.isArray(value)
 		? (value as Record<string, unknown>)
 		: {};
 }
@@ -276,11 +280,9 @@ function parseProject(row: LiveEntityRow): Project {
 	// fields the projection above omits (slice-7). This reads `row.data` directly,
 	// NOT the decoded fields — the decode strips unknown keys, but the verbatim
 	// passthrough must keep them (e.g. a legacy `review_every: "P1W"` the schema
-	// can't model) so update_project's full-replace round-trips.
-	const rawData =
-		row.data && typeof row.data === "object"
-			? { ...(row.data as Record<string, unknown>) }
-			: {};
+	// can't model) so update_project's full-replace round-trips. `asRecord` shares
+	// the same null/array/non-object guard as the decode above.
+	const rawData = { ...asRecord(row.data) };
 	return {
 		id: row.id,
 		kind: "project",

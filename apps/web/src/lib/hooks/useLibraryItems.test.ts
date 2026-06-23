@@ -6,8 +6,8 @@ import { assembleLibraryItems, type LibraryRows } from "./useLibraryItems.js";
 // malformed entry (bad occurred_at, empty body). The Library read maps all five
 // row kinds, so before this fix one bad JE row rejected the whole `entity/list`
 // read and blanked the ENTIRE Library (todos, people, projects, bookmarks
-// included). assembleLibraryItems drops the offending row (with a console.warn,
-// ADR-0038 diagnostic posture) so the rest renders.
+// included). assembleLibraryItems drops the offending row (with a browser
+// console.warn so it isn't lost silently) so the rest renders.
 
 const empty: LibraryRows = {
 	journalEntries: [],

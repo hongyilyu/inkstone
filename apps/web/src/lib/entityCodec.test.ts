@@ -496,6 +496,44 @@ describe("entityCodec parse — decode-against-read-schema (slice-2 seam)", () =
 	});
 });
 
+// The fail-soft contract the decode MUST preserve: the four non-JE parsers never
+// throw, so a malformed row renders with defaults rather than being dropped by
+// useLibraryItems' parseKind. Two ways decode could regress this and still pass
+// the rest of the suite: (a) an array `data` (typeof [] === "object") slipping
+// past asRecord into an S.Struct decode that rejects arrays; (b) tightening a
+// readField from S.Unknown so a wrong-typed scalar is rejected. Both are pinned
+// here — the latter reds the moment readField stops being S.optional(S.Unknown).
+describe("entityCodec parse — fail-soft decode never throws (slice-2 contract)", () => {
+	const failSoft = [
+		{ name: "todo", parse: parseTodo, titleKey: "title" as const },
+		{ name: "person", parse: parsePerson, titleKey: "name" as const },
+		{ name: "project", parse: parseProject, titleKey: "name" as const },
+		{ name: "bookmark", parse: parseBookmark, titleKey: "title" as const },
+	];
+
+	for (const { name, parse } of failSoft) {
+		it(`parse${name} defaults (never throws) on an ARRAY data`, () => {
+			expect(() =>
+				parse({ id: `${name}_arr`, data: ["nope"], created_at: 9000 }),
+			).not.toThrow();
+		});
+
+		it(`parse${name} defaults (never throws) on a wrong-typed scalar field`, () => {
+			// A numeric `title`/`name` is a wrong-typed top-level scalar. The decode
+			// must stay total (S.Unknown) and let the imperative coercion default it;
+			// tightening the read field to S.String would throw here and drop the row.
+			const vm = parse({
+				id: `${name}_badscalar`,
+				data: { title: 123, name: 123 },
+				created_at: 9100,
+			}) as unknown as Record<string, unknown>;
+			expect(typeof vm.title === "string" || typeof vm.name === "string").toBe(
+				true,
+			);
+		});
+	}
+});
+
 describe("entityCodec parse — bookmark", () => {
 	const row = (data: unknown): LiveEntityRow => ({
 		id: "b_1",

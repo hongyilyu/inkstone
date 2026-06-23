@@ -448,7 +448,7 @@ describe("EntityCollection", () => {
 			screen.queryByText(/couldn't load journal/i),
 		).not.toBeInTheDocument();
 		expect(screen.queryByText("missing occurred time")).not.toBeInTheDocument();
-		// The dropped row left a diagnostic trail (ADR-0038).
+		// The dropped row left a browser console.warn so it isn't lost silently.
 		expect(warn).toHaveBeenCalledTimes(1);
 		vi.restoreAllMocks();
 	});

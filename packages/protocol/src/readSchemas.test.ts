@@ -46,6 +46,20 @@ describe("read-data schema is a superset of the write-data schema (gated trio)",
 			expect(missing).toEqual([]);
 		});
 	}
+
+	// The gate has teeth: a write field the read schema lacks MUST surface as
+	// `missing`. This locks in that the comparison is a real, independent diff —
+	// so a future refactor that derived the read keys from the write cores (the
+	// vacuity that would silently turn the gate into a no-op) can no longer pass.
+	it("flags a write field the read schema is missing (the gate is not vacuous)", () => {
+		const writeWithExtra = S.Struct({
+			...todoDataFull.fields,
+			brand_new_write_field: S.String,
+		});
+		const readKeys = new Set(keysOf(readTodoData));
+		const missing = keysOf(writeWithExtra).filter((k) => !readKeys.has(k));
+		expect(missing).toEqual(["brand_new_write_field"]);
+	});
 });
 
 describe("read-data schema tolerates what the write schema rejects", () => {

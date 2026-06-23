@@ -26,9 +26,11 @@ export interface LibraryRows {
  * `parseJournalEntry` is strict — it throws on a malformed entry — and the
  * Library maps all five kinds into one list, so an un-guarded throw rejected the
  * whole `entity/list` read and blanked the ENTIRE Library (every kind, not just
- * the bad row). Dropping the offending row keeps the rest renderable; the warn
- * leaves a diagnostic trail (ADR-0038) so a malformed row isn't lost silently.
- * The four fail-soft parsers never throw, so they always pass through.
+ * the bad row). Dropping the offending row keeps the rest renderable; the
+ * `console.warn` ensures a dropped row isn't lost silently. (This is a plain
+ * browser-console diagnostic, not the structured Core trail — ADR-0038 scopes
+ * Web-client capture out of v1.) The four fail-soft parsers never throw, so they
+ * always pass through.
  */
 function parseKind(
 	kind: string,
