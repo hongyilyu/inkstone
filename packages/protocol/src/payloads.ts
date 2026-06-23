@@ -68,10 +68,23 @@ const recurrenceEnd = S.Struct({
 	after_count: S.optional(positiveInt),
 });
 
+/** The recurrence cadence units (ADR-0037). The single source the write
+ * schema's `unit` literal AND the Web codec's runtime membership check both
+ * derive from — previously triplicated (here, `entityCodec.ts`, `recurrence.rs`).
+ * `as const` so `S.Literal(...)` emits the same fixed-domain schema. */
+export const RECURRENCE_UNITS = [
+	"minute",
+	"hour",
+	"day",
+	"week",
+	"month",
+	"year",
+] as const;
+
 /** The recurrence rule (ADR-0037, slimmed by ADR-0039). */
 const recurrence = S.Struct({
 	interval: positiveInt,
-	unit: S.Literal("minute", "hour", "day", "week", "month", "year"),
+	unit: S.Literal(...RECURRENCE_UNITS),
 	anchor: S.Literal("defer_at", "due_at"),
 	end: S.optional(recurrenceEnd),
 });
@@ -91,8 +104,9 @@ const todoDataRest = {
 };
 
 /** The TodoData core in `Mode::Full` (create path): `title` required, the rest
- * optional. */
-const todoDataFull = S.Struct({
+ * optional. Exported so the read-data superset gate (`readSchemas.test.ts`) can
+ * introspect its field-set independently of the read schema. */
+export const todoDataFull = S.Struct({
 	title: nonEmptyString,
 	...todoDataRest,
 });
@@ -153,8 +167,9 @@ const deleteByEntityId = S.Struct({
 /** The Person core: `name` required (non-empty), `note` optional bare string,
  * `aliases` optional array of BARE strings (the non-empty rule is validator-only,
  * deliberately absent from the schema — the fixture shows plain `{type:string}`
- * items). Spread into both create/update structs so neither duplicates it. */
-const personCore = {
+ * items). Spread into both create/update structs so neither duplicates it.
+ * Exported for the read-data superset gate (`readSchemas.test.ts`). */
+export const personCore = {
 	name: nonEmptyString,
 	note: S.optional(S.String),
 	aliases: S.optional(S.Array(S.String)),
@@ -184,8 +199,9 @@ const reviewEvery = S.Struct({
 /** The Project core: `name` required; `outcome`/`note` optional bare strings;
  * `status` optional enum; the six scheduling/review datetimes optional; the
  * `review_every` cadence optional. Spread into create/update (create adds the
- * provenance id, update prepends `entity_id`). */
-const projectCore = {
+ * provenance id, update prepends `entity_id`). Exported for the read-data
+ * superset gate (`readSchemas.test.ts`). */
+export const projectCore = {
 	name: nonEmptyString,
 	outcome: S.optional(S.String),
 	note: S.optional(S.String),
@@ -441,3 +457,89 @@ export const updateBookmark = S.Struct({
 
 /** `delete_bookmark`: the shared single-`entity_id` delete payload. */
 export const deleteBookmark = deleteByEntityId;
+
+// ── read-data schemas (ADR-0009 as-built: read-data schema coverage) ──
+//
+// The Web codec (`apps/web/src/lib/entityCodec.ts`) decodes a stored Entity's
+// opaque `data` blob against these on the way IN. They are deliberately the
+// LOOSE twin of the write schemas above: the write side rejects a sparse/legacy
+// row (required non-empty `title`/`name`, `additionalProperties:false`), but the
+// read side must ACCEPT it — the codec then defaults/coerces (`asString(x) ??
+// "Untitled"`, out-of-enum status → "active", partial recurrence → dropped). So
+// every field is `S.optional(S.Unknown)`: the schema owns the field-SET (which
+// `readSchemas.test.ts` pins as a superset of the write `*_core` field-set, so a
+// Rust field-add reds the gate until the read path tracks it), while the codec's
+// imperative coercion owns the value TYPES. A tighter field type here would
+// REJECT the wrong-typed values the parsers tolerate and reintroduce the very
+// blanking the read path guards against.
+//
+// The key lists below are written by hand, NOT derived from the write cores —
+// that independence is the gate's whole point: a new write field must FORCE a
+// conscious read-schema edit (and a decision about how the codec reads it), not
+// silently auto-appear. Read schemas are open (`onExcessProperty` defaults to
+// "ignore"), so an unknown/legacy stored key is tolerated, not rejected.
+
+/** A read-data field: present-or-absent, any stored value (the codec coerces). */
+const readField = S.optional(S.Unknown);
+
+/** Relaxed read schema for a stored Todo's `data` (ADR-0031/0037). Superset of
+ * `todoDataFull`'s field-set; every field tolerant. */
+export const readTodoData = S.Struct({
+	title: readField,
+	note: readField,
+	status: readField,
+	project_id: readField,
+	defer_at: readField,
+	due_at: readField,
+	completed_at: readField,
+	dropped_at: readField,
+	recurrence: readField,
+});
+
+/** Relaxed read schema for a stored Person's `data` (ADR-0031). Superset of
+ * `personCore`'s field-set. */
+export const readPersonData = S.Struct({
+	name: readField,
+	note: readField,
+	aliases: readField,
+});
+
+/** Relaxed read schema for a stored Project's `data` (ADR-0031). Superset of
+ * `projectCore`'s field-set. The codec additionally carries the whole stored
+ * object verbatim onto the view model (for the full-document-replace
+ * `update_project`), so an unknown stored key here is intentionally tolerated. */
+export const readProjectData = S.Struct({
+	name: readField,
+	outcome: readField,
+	note: readField,
+	status: readField,
+	defer_at: readField,
+	due_at: readField,
+	completed_at: readField,
+	dropped_at: readField,
+	next_review_at: readField,
+	last_reviewed_at: readField,
+	review_every: readField,
+});
+
+/** Relaxed read schema for a stored Bookmark's `data` (ADR-0036). Hand-authored
+ * and OUTSIDE the superset gate: bookmark is user-CRUD-only, so Core advertises
+ * no `PayloadSpec` and there is no write fixture to pin against. */
+export const readBookmarkData = S.Struct({
+	title: readField,
+	url: readField,
+	note: readField,
+	tags: readField,
+});
+
+/** Relaxed read schema for a stored Journal Entry's `data` (ADR-0030).
+ * Hand-authored and OUTSIDE the superset gate: JE's write payload models the
+ * write-only `body`/`target` INPUT shape, not the stored read shape, so there is
+ * no write-DATA core to derive from. The codec still validates the stored shape
+ * strictly (required `occurred_at` pattern, non-empty `body`) and DROPS a row
+ * that fails — this schema only bounds the field-SET it reads. */
+export const readJournalEntryData = S.Struct({
+	occurred_at: readField,
+	ended_at: readField,
+	body: readField,
+});
