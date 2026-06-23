@@ -31,6 +31,16 @@ async function main(): Promise<void> {
 		process.env.INKSTONE_LOGIN_STUB_URL ??
 		"https://auth.openai.com/oauth/authorize?stub=1";
 	emit({ kind: "authorize_url", url });
+
+	// No-credentials injection (Core provider-connected negative-path test): when
+	// INKSTONE_LOGIN_STUB_NO_CREDS is set, exit AFTER the authorize_url WITHOUT
+	// ever emitting a credentials line — mirroring a helper whose OAuth flow never
+	// completes (the browser callback never fires). Core's drain task then sees
+	// `Ok(None)` and must send NO `provider/connected` notification.
+	if (process.env.INKSTONE_LOGIN_STUB_NO_CREDS) {
+		return;
+	}
+
 	// Simulate the user completing the browser flow + the :1455 callback.
 	await new Promise((r) => setTimeout(r, 100));
 	emit({

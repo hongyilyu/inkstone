@@ -34,6 +34,7 @@ import {
 	ProposalGetParams,
 	ProposalGetResult,
 	ProposalPendingNotification,
+	ProviderConnectedNotification,
 	ProviderLoginStartParams,
 	ProviderLoginStartResult,
 	ProviderStatusResult,
@@ -262,6 +263,12 @@ export const fixtures: readonly FixtureEntry[] = [
 		message: "ThreadTitledNotification",
 		file: "thread_titled_notification.json",
 		schema: ThreadTitledNotification,
+		dir: "emitted",
+	},
+	{
+		message: "ProviderConnectedNotification",
+		file: "provider_connected_notification.json",
+		schema: ProviderConnectedNotification,
 		dir: "emitted",
 	},
 	{
@@ -501,6 +508,7 @@ export const CANONICAL_MESSAGES: readonly string[] = [
 	"ProposalPendingNotification",
 	"ProposalChangedNotification",
 	"ThreadTitledNotification",
+	"ProviderConnectedNotification",
 	"ThreadCreateResult",
 	"ThreadListResult",
 	"RunHistoryResult",

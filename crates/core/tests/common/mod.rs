@@ -389,3 +389,17 @@ pub async fn next_text(ws: &mut Ws) -> String {
         other => panic!("expected text frame, got {other:?}"),
     }
 }
+
+/// Read the next text frame within `timeout`, returning `None` if none arrives
+/// (vs. [`next_text`], which panics on timeout). For assertions that a frame is
+/// ABSENT within a bounded window — the negative half of a push test.
+pub async fn try_next_text(ws: &mut Ws, timeout: Duration) -> Option<String> {
+    match tokio::time::timeout(timeout, ws.next()).await {
+        Ok(Some(Ok(Message::Text(t)))) => Some(t.to_string()),
+        Ok(Some(Ok(other))) => panic!("expected text frame, got {other:?}"),
+        // Stream ended / errored — treat as "no text frame arrived".
+        Ok(_) => None,
+        // Timed out — the bounded window elapsed with no frame.
+        Err(_) => None,
+    }
+}

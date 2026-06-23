@@ -256,6 +256,18 @@ pub struct ThreadTitledNotification {
     pub title: String,
 }
 
+/// `provider/connected` Notification (ADR-0047 second consumer, ADR-0049): the
+/// detached credential-drain task (`provider/login_start`, ADR-0023) persisted
+/// the rotated OAuth credentials, so Core pushes `{provider}` to the connection
+/// that started the login — the Settings → Models card flips to Connected live,
+/// without waiting for the tab to regain focus. Rides the connection's `out_tx`,
+/// keyed by `method` — not a Run subscription. Carries only the provider id (a
+/// ping, not the connection state); the Client refetches `provider/status`.
+#[derive(Debug, Serialize)]
+pub struct ProviderConnectedNotification {
+    pub provider: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct PostMessageResult {
     pub run_id: String,
@@ -1249,6 +1261,17 @@ mod mirror_tests {
     }
 
     #[test]
+    fn provider_connected_notification_encodes_full_shape() {
+        let n = ProviderConnectedNotification {
+            provider: "openai-codex".to_string(),
+        };
+        assert_eq!(
+            serde_json::to_value(&n).unwrap(),
+            json!({ "provider": "openai-codex" }),
+        );
+    }
+
+    #[test]
     fn thread_get_params_decodes_thread_id() {
         let wire = json!({ "thread_id": UUID_A });
         let p: ThreadGetParams = serde_json::from_value(wire).unwrap();
@@ -1654,6 +1677,12 @@ mod parity_fixtures {
                 ThreadTitledNotification {
                     thread_id: UUID_A.to_string(),
                     title: "Budget planning for Q3".to_string(),
+                }
+            ),
+            fx!(
+                "provider_connected_notification.json",
+                ProviderConnectedNotification {
+                    provider: "openai-codex".to_string(),
                 }
             ),
             // ── run/post_message, thread/create, thread/list ──
@@ -2098,6 +2127,7 @@ mod parity_fixtures {
             "proposal_pending_notification.json",
             "proposal_changed_notification.json",
             "thread_titled_notification.json",
+            "provider_connected_notification.json",
             "post_message_result.json",
             "thread_create_result.json",
             "thread_list_result.json",

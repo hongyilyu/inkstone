@@ -362,6 +362,14 @@ export type ThreadTitledNotification = S.Schema.Type<
 	typeof ThreadTitledNotification
 >;
 
+/** `provider/connected` Notification: Core pushes `{provider}` when the detached credential-drain task persists the rotated OAuth credentials, so the Settings → Models card flips to Connected live without a focus refetch (ADR-0047 second consumer, ADR-0049). */
+export const ProviderConnectedNotification = S.Struct({
+	provider: S.String,
+});
+export type ProviderConnectedNotification = S.Schema.Type<
+	typeof ProviderConnectedNotification
+>;
+
 // entity/* (ADR-0004): the accepted Entities the Library reads; `entity/list` is type-parameterized (one type per call).
 
 /** `entity/list` params: the Entity type to list (one type per call). */
