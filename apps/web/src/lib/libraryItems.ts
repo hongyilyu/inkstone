@@ -6,6 +6,14 @@ import {
 	type LucideIcon,
 	User,
 } from "lucide-react";
+import {
+	PROJECT_STATUSES,
+	type ProjectStatus,
+	type RecurAnchor,
+	type RecurrenceUnit,
+	TODO_STATUSES,
+	type TodoStatus,
+} from "@/lib/entityFields";
 
 export type LibraryItemKind =
 	| "journal_entry"
@@ -72,8 +80,6 @@ export interface JournalEntryBodyEntityRefNode {
 	labelSnapshot?: string;
 }
 
-export type ProjectStatus = "active" | "on_hold" | "completed" | "dropped";
-
 export interface Project extends LibraryItemBase {
 	kind: "project";
 	name: string;
@@ -95,17 +101,7 @@ export interface Project extends LibraryItemBase {
 	data?: Record<string, unknown>;
 }
 
-export type TodoStatus = "active" | "completed" | "dropped";
-
 export type TodoPersonRole = "waiting_on" | "related";
-
-export type RecurrenceUnit =
-	| "minute"
-	| "hour"
-	| "day"
-	| "week"
-	| "month"
-	| "year";
 
 /**
  * A Todo's repeat rule (ADR-0037, slimmed by ADR-0039). The view model
@@ -117,7 +113,7 @@ export type RecurrenceUnit =
 export interface RecurrenceRule {
 	interval: number;
 	unit: RecurrenceUnit;
-	anchor: "defer_at" | "due_at";
+	anchor: RecurAnchor;
 	end?: { until?: string; afterCount?: number };
 }
 
@@ -296,18 +292,13 @@ export function bookmarkHref(url: string | undefined): string | null {
 	}
 }
 
-export const PROJECT_STATUS_LABEL: Record<Project["status"], string> = {
-	active: "Active",
-	on_hold: "On hold",
-	completed: "Completed",
-	dropped: "Dropped",
-};
+export const PROJECT_STATUS_LABEL = Object.fromEntries(
+	PROJECT_STATUSES.map((o) => [o.value, o.label]),
+) as Record<ProjectStatus, string>;
 
-export const TODO_STATUS_LABEL: Record<TodoStatus, string> = {
-	active: "Active",
-	completed: "Completed",
-	dropped: "Dropped",
-};
+export const TODO_STATUS_LABEL = Object.fromEntries(
+	TODO_STATUSES.map((o) => [o.value, o.label]),
+) as Record<TodoStatus, string>;
 
 export function libraryItemKindCounts(
 	all: LibraryItem[],

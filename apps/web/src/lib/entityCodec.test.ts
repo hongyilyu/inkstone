@@ -324,6 +324,20 @@ describe("entityCodec parse — todo", () => {
 		).toBeUndefined();
 	});
 
+	// Reaches the RECURRENCE_UNITS membership check directly: a present-but-bogus
+	// string unit clears the `typeof unit === "string"` guard the missing-unit case
+	// short-circuits at, so this is the only fixture exercising the reject side of
+	// the `RECURRENCE_UNITS.some((u) => u.value === r.unit)` predicate.
+	it("drops a recurrence rule with an unrecognized unit string → undefined", () => {
+		expect(
+			parseTodo(
+				row({
+					recurrence: { interval: 1, unit: "fortnight", anchor: "due_at" },
+				}),
+			).recurrence,
+		).toBeUndefined();
+	});
+
 	it("maps an until end condition", () => {
 		const vm = parseTodo(
 			row({
