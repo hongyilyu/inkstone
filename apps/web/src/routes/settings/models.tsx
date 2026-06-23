@@ -1,4 +1,8 @@
 import type { ModelInfo } from "@inkstone/protocol";
+import {
+	clearNotificationHandler,
+	setNotificationHandler,
+} from "@inkstone/ui-sdk";
 import { createFileRoute } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { EffortControl } from "@/components/EffortControl";
@@ -79,6 +83,17 @@ function ModelsSettings() {
 		const onFocus = () => refreshConnected();
 		window.addEventListener("focus", onFocus);
 		return () => window.removeEventListener("focus", onFocus);
+	}, [refreshConnected]);
+
+	// Live push: Core signals `provider/connected` on the originating connection
+	// when credentials persist, so the card flips without waiting for focus-return
+	// (ADR-0049). The push is a ping, not the truth — refetch `provider/status`
+	// rather than patch (it carries `{provider}`, not `connected`). Route-scoped:
+	// registered/torn down with the Models route, alongside the global
+	// `thread/titled` handler (two real consumers of the by-method channel, ADR-0047).
+	useEffect(() => {
+		setNotificationHandler("provider/connected", () => refreshConnected());
+		return () => clearNotificationHandler("provider/connected");
 	}, [refreshConnected]);
 
 	const { seed: seedEffort } = effort;

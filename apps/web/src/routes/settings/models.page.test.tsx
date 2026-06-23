@@ -1,4 +1,5 @@
 import type { ModelInfo } from "@inkstone/protocol";
+import * as sdk from "@inkstone/ui-sdk";
 import { WsClient, type WsError } from "@inkstone/ui-sdk";
 import {
 	createMemoryHistory,
@@ -13,7 +14,10 @@ import { routeTree } from "@/routeTree.gen";
 import { RuntimeProvider } from "@/runtime";
 import { renderWithQuery } from "@/test-utils/renderWithQuery";
 
-afterEach(cleanup);
+afterEach(() => {
+	cleanup();
+	sdk.resetNotificationHandlers();
+});
 
 const die = (): Effect.Effect<never, never> => Effect.die("unused");
 const dieStream = (): Stream.Stream<never, WsError> =>
@@ -359,5 +363,120 @@ describe("Models settings page (ADR-0024)", () => {
 		).toBeInTheDocument();
 
 		await runtime.dispose();
+	});
+});
+
+// A runtime whose `provider/status` flips false → true across calls: the first
+// poll is "Not connected", every poll after a (re)fetch reports "Connected".
+// Models the credential write that lands between the first mount-poll and the
+// refetch the live push (or focus) triggers.
+function makeFlippingRuntime() {
+	let calls = 0;
+	const providerStatus = vi.fn(() => {
+		const connected = calls > 0;
+		calls += 1;
+		return Effect.succeed({
+			providers: [{ id: "openai-codex", connected }],
+		});
+	});
+	const stub = WsClient.of({
+		threadCreate: die,
+		postMessage: die,
+		threadList: die,
+		getRunHistory: die,
+		threadGet: die,
+		listEntities: die,
+		entityMutate: die,
+		subscribeRun: dieStream,
+		cancelRun: die,
+		providerStatus,
+		providerLoginStart: () =>
+			Effect.succeed({ authorize_url: "https://auth.example/x" }),
+		modelCatalog: () =>
+			Effect.succeed({
+				providers: [{ id: "openai-codex", label: "OpenAI", models: [] }],
+			}),
+		settingsGet: () =>
+			Effect.succeed({ provider: "openai-codex", model: null, effort: "off" }),
+		settingsSet: () =>
+			Effect.succeed({ provider: "openai-codex", model: null, effort: "off" }),
+		proposalGet: die,
+		proposalDecide: die,
+		messageSearch: die,
+		proposalNotifications: () => Stream.empty,
+	});
+	return ManagedRuntime.make(Layer.succeed(WsClient, stub));
+}
+
+describe("Models settings page — provider/connected live push (ADR-0049)", () => {
+	it("flips the card to Connected from the live push alone — no window 'focus'", async () => {
+		// Capture the closure the page registers under "provider/connected" by
+		// spying the SDK seam (the bridge.test.tsx captureRegisteredHandler pattern).
+		let pushed: ((params: unknown) => void) | undefined;
+		const spy = vi
+			.spyOn(sdk, "setNotificationHandler")
+			.mockImplementation((method, handler) => {
+				if (method === "provider/connected") pushed = handler;
+			});
+
+		// Watch every window 'focus' dispatch — the verdict-critical assertion is
+		// that the push path NEVER relies on one.
+		const focusSpy = vi.fn();
+		window.addEventListener("focus", focusSpy);
+
+		try {
+			const runtime = makeFlippingRuntime();
+			renderPage(runtime);
+
+			// First poll (mount) reports Not connected.
+			await waitFor(() =>
+				expect(screen.getByTestId("provider-status")).toHaveTextContent(
+					/not connected/i,
+				),
+			);
+
+			if (pushed === undefined) {
+				throw new Error(
+					'ModelsSettings did not register a "provider/connected" handler',
+				);
+			}
+
+			// Fire the captured push handler (params ignored) — this alone must
+			// trigger a refetch that flips the card.
+			pushed({ provider: "openai-codex" });
+
+			await waitFor(() =>
+				expect(screen.getByTestId("provider-status")).toHaveTextContent(
+					/^connected$/i,
+				),
+			);
+
+			// No focus event was dispatched anywhere on the push path.
+			expect(focusSpy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+			window.removeEventListener("focus", focusSpy);
+		}
+	});
+
+	it("focus-refetch fallback flips the card in isolation — no push fired", async () => {
+		// Regression lock for the existing focus-refetch safety net (ADR-0023),
+		// proven independent of the live push: never fire the handler.
+		const runtime = makeFlippingRuntime();
+		renderPage(runtime);
+
+		await waitFor(() =>
+			expect(screen.getByTestId("provider-status")).toHaveTextContent(
+				/not connected/i,
+			),
+		);
+
+		window.dispatchEvent(new Event("focus"));
+
+		await waitFor(() =>
+			expect(screen.getByTestId("provider-status")).toHaveTextContent(
+				/^connected$/i,
+			),
+		);
 	});
 });
