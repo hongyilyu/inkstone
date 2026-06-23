@@ -455,6 +455,47 @@ describe("entityCodec parse — project", () => {
 	});
 });
 
+// Slice-2: the parsers decode `row.data` against the shared relaxed read schema
+// (@inkstone/protocol) before coercing. These pin the two properties that make
+// that refactor safe: (1) decode is LENIENT — an unknown/legacy stored key never
+// makes a parser throw; (2) parseProject's verbatim `data` passthrough is
+// INDEPENDENT of the decoded fields, so the full-document-replace update_project
+// still round-trips shapes the decode/write schema can't model.
+describe("entityCodec parse — decode-against-read-schema (slice-2 seam)", () => {
+	it("parseTodo tolerates an unknown stored key without throwing", () => {
+		const vm = parseTodo({
+			id: "t_x",
+			data: { title: "ship it", legacy_field: { nested: 1 }, status: "active" },
+			created_at: 2500,
+		});
+		expect(vm.title).toBe("ship it");
+		expect(vm.status).toBe("active");
+	});
+
+	it("parsePerson tolerates an unknown stored key without throwing", () => {
+		const vm = parsePerson({
+			id: "p_x",
+			data: { name: "Morris", retired_field: 42 },
+			created_at: 3500,
+		});
+		expect(vm.name).toBe("Morris");
+	});
+
+	it("parseProject carries an un-decodable review_every verbatim onto vm.data", () => {
+		// `review_every: "P1W"` (an ISO-8601 duration STRING) is a real legacy shape
+		// the write `reviewEvery` struct schema cannot decode. The verbatim
+		// passthrough must survive it so update_project's full-replace round-trips.
+		const vm = parseProject({
+			id: "proj_x",
+			data: { name: "Legacy", review_every: "P1W", unknown_key: true },
+			created_at: 4500,
+		});
+		expect(vm.name).toBe("Legacy");
+		expect((vm.data as Record<string, unknown>).review_every).toBe("P1W");
+		expect((vm.data as Record<string, unknown>).unknown_key).toBe(true);
+	});
+});
+
 describe("entityCodec parse — bookmark", () => {
 	const row = (data: unknown): LiveEntityRow => ({
 		id: "b_1",

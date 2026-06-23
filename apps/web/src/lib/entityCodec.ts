@@ -1,4 +1,11 @@
-import type { EntityMutateParams } from "@inkstone/protocol";
+import {
+	type EntityMutateParams,
+	readBookmarkData,
+	readPersonData,
+	readProjectData,
+	readTodoData,
+} from "@inkstone/protocol";
+import { Schema as S } from "effect";
 import {
 	asProjectStatus,
 	asTodoStatus,
@@ -20,6 +27,18 @@ import {
 	type RecurrenceRule,
 	type Todo,
 } from "@/lib/libraryItems";
+
+// The relaxed read-data schemas (@inkstone/protocol) own each Entity Type's
+// stored `data` FIELD-SET; `readSchemas.test.ts` pins the gated trio as a
+// superset of the write `*_core`. The codec decodes `row.data` against them
+// (lenient — every field `S.optional(S.Unknown)`, unknown keys ignored) and then
+// COERCES the loose values to the view model below. A decode is total: it never
+// throws on these schemas, so the `?? {}` fallbacks stay as a belt-and-braces
+// guard for a non-object `data`.
+const decodeTodoData = S.decodeUnknownSync(readTodoData);
+const decodePersonData = S.decodeUnknownSync(readPersonData);
+const decodeProjectData = S.decodeUnknownSync(readProjectData);
+const decodeBookmarkData = S.decodeUnknownSync(readBookmarkData);
 
 // The per-Entity-Type wire codec. THIS module owns each kind's row-input shape
 // and BOTH directions: PARSE (row → view-model) and BUILD (draft → mutation
@@ -160,17 +179,13 @@ function parseJournalEntry(row: LiveEntityRow): JournalEntry {
 	} satisfies JournalEntry;
 }
 
-/** The Todo `data` shape Core stores (ADR-0031): GTD `status` + date fields. */
-interface TodoData {
-	title?: unknown;
-	note?: unknown;
-	status?: unknown;
-	project_id?: unknown;
-	defer_at?: unknown;
-	due_at?: unknown;
-	completed_at?: unknown;
-	dropped_at?: unknown;
-	recurrence?: unknown;
+/** A stored `data` blob coerced to a record for decoding — `{}` when Core sent a
+ * null/non-object `data`, so a decode (and the coercion below) can never throw on
+ * a malformed row. */
+function asRecord(value: unknown): Record<string, unknown> {
+	return value && typeof value === "object"
+		? (value as Record<string, unknown>)
+		: {};
 }
 
 function asString(value: unknown): string | undefined {
@@ -212,7 +227,7 @@ function asRecurrence(value: unknown): RecurrenceRule | undefined {
 
 /** Map a live `entity/list` row to the Library `Todo` view model (ADR-0031). */
 function parseTodo(row: LiveEntityRow): Todo {
-	const data = (row.data ?? {}) as TodoData;
+	const data = decodeTodoData(asRecord(row.data));
 	return {
 		id: row.id,
 		kind: "todo",
@@ -235,16 +250,9 @@ function parseTodo(row: LiveEntityRow): Todo {
 	} satisfies Todo;
 }
 
-/** The Person `data` shape Core stores (ADR-0031): `{name, note?, aliases?}`. */
-interface PersonData {
-	name?: unknown;
-	note?: unknown;
-	aliases?: unknown;
-}
-
 /** Map a live `entity/list` row to the Library `Person` view model (ADR-0031). */
 function parsePerson(row: LiveEntityRow): Person {
-	const data = (row.data ?? {}) as PersonData;
+	const data = decodePersonData(asRecord(row.data));
 	const aliases = Array.isArray(data.aliases)
 		? data.aliases.filter((a): a is string => typeof a === "string")
 		: undefined;
@@ -260,21 +268,14 @@ function parsePerson(row: LiveEntityRow): Person {
 	} satisfies Person;
 }
 
-/** The Project `data` shape Core stores (ADR-0031): GTD `status` + review metadata. */
-interface ProjectData {
-	name?: unknown;
-	status?: unknown;
-	outcome?: unknown;
-	note?: unknown;
-	next_review_at?: unknown;
-	last_reviewed_at?: unknown;
-}
-
 function parseProject(row: LiveEntityRow): Project {
-	const data = (row.data ?? {}) as ProjectData;
+	const data = decodeProjectData(asRecord(row.data));
 	// Carry the complete stored object verbatim so the editor can build a
 	// full-document-replace `update_project` without dropping server-managed
-	// fields the projection above omits (slice-7).
+	// fields the projection above omits (slice-7). This reads `row.data` directly,
+	// NOT the decoded fields — the decode strips unknown keys, but the verbatim
+	// passthrough must keep them (e.g. a legacy `review_every: "P1W"` the schema
+	// can't model) so update_project's full-replace round-trips.
 	const rawData =
 		row.data && typeof row.data === "object"
 			? { ...(row.data as Record<string, unknown>) }
@@ -295,21 +296,13 @@ function parseProject(row: LiveEntityRow): Project {
 	} satisfies Project;
 }
 
-/** The Bookmark `data` shape Core stores (ADR-0036): required `title`, optional `url`/`note`/`tags`. */
-interface BookmarkData {
-	title?: unknown;
-	url?: unknown;
-	note?: unknown;
-	tags?: unknown;
-}
-
 /**
  * Map a live `entity/list` row to the Library `Bookmark` view model (ADR-0036).
  * Every field is defensively defaulted so a sparse `data` cannot crash the
  * inspector — the trap the old non-optional `recipe.ingredients` array masked.
  */
 function parseBookmark(row: LiveEntityRow): Bookmark {
-	const data = (row.data ?? {}) as BookmarkData;
+	const data = decodeBookmarkData(asRecord(row.data));
 	const tags = Array.isArray(data.tags)
 		? data.tags.filter((t): t is string => typeof t === "string")
 		: undefined;

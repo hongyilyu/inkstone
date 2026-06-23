@@ -68,10 +68,23 @@ const recurrenceEnd = S.Struct({
 	after_count: S.optional(positiveInt),
 });
 
+/** The recurrence cadence units (ADR-0037). The single source the write
+ * schema's `unit` literal AND the Web codec's runtime membership check both
+ * derive from — previously triplicated (here, `entityCodec.ts`, `recurrence.rs`).
+ * `as const` so `S.Literal(...)` emits the same fixed-domain schema. */
+export const RECURRENCE_UNITS = [
+	"minute",
+	"hour",
+	"day",
+	"week",
+	"month",
+	"year",
+] as const;
+
 /** The recurrence rule (ADR-0037, slimmed by ADR-0039). */
 const recurrence = S.Struct({
 	interval: positiveInt,
-	unit: S.Literal("minute", "hour", "day", "week", "month", "year"),
+	unit: S.Literal(...RECURRENCE_UNITS),
 	anchor: S.Literal("defer_at", "due_at"),
 	end: S.optional(recurrenceEnd),
 });
