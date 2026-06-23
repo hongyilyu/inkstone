@@ -12,6 +12,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::handler::{self, HandlerError};
+use super::reply;
 use crate::credentials::{self, Credentials, OPENAI_CODEX};
 use crate::protocol::{
     ProviderLoginStartParams, ProviderLoginStartResult, ProviderStatus, ProviderStatusResult,
@@ -159,14 +160,21 @@ pub(super) async fn handle_login_start(
         };
 
         // Drain the helper out-of-band: when it emits the credentials line
-        // (after the browser callback), Core persists them. The Client learns
-        // the outcome by re-querying `provider/status` on focus.
+        // (after the browser callback), Core persists them. On success it pushes
+        // `provider/connected` to THIS connection (ADR-0047 channel, ADR-0049) so
+        // the waiting Settings → Models card flips live; the focus-refetch
+        // (ADR-0023) remains the fallback if the push is missed (dead `out_tx`).
+        let out_tx = out_tx.clone();
         tokio::spawn(async move {
             let result = read_login_credentials(&mut lines).await;
             match result {
                 Ok(Some(creds)) => {
                     if let Err(e) = credentials::write(OPENAI_CODEX, &creds) {
                         eprintln!("provider login: persisting credentials failed: {e}");
+                    } else {
+                        // Persist succeeded — credentials are durable. Push the
+                        // live signal; a dead `out_tx` makes it a silent no-op.
+                        reply::send_provider_connected(&out_tx, OPENAI_CODEX);
                     }
                 }
                 Ok(None) => {

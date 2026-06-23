@@ -6,8 +6,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
 use crate::protocol::{
-    JsonRpcResponse, ProposalChangedNotification, ProposalPendingNotification, RunEvent,
-    ThreadTitledNotification,
+    JsonRpcResponse, ProposalChangedNotification, ProposalPendingNotification,
+    ProviderConnectedNotification, RunEvent, ThreadTitledNotification,
 };
 
 /// Frame a JSON-RPC RESPONSE carrying `result` for request `id` and queue it.
@@ -128,6 +128,18 @@ pub(crate) fn send_thread_titled(out_tx: &UnboundedSender<String>, thread_id: Uu
     })
     .expect("ThreadTitledNotification serializes");
     send_notification(out_tx, "thread/titled", params);
+}
+
+/// Queue a `provider/connected` notification (ADR-0047 second consumer,
+/// ADR-0049): the detached credential-drain task persisted `provider`'s rotated
+/// OAuth credentials, pushed to the connection that started the login so the
+/// Settings → Models card flips to Connected live, without a focus refetch.
+pub(crate) fn send_provider_connected(out_tx: &UnboundedSender<String>, provider: &str) {
+    let params = serde_json::to_value(ProviderConnectedNotification {
+        provider: provider.to_string(),
+    })
+    .expect("ProviderConnectedNotification serializes");
+    send_notification(out_tx, "provider/connected", params);
 }
 
 /// Shared JSON-RPC error framer: builds and queues the `{jsonrpc, id,

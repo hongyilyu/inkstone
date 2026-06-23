@@ -11,7 +11,7 @@ use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::Message;
 
 mod common;
-use common::{CoreHandle, Workspace, Ws, next_text};
+use common::{CoreHandle, Workspace, Ws, next_text, try_next_text};
 
 /// Spawn Core wired to the stub login helper (no Worker — login never starts a
 /// Run). `login_error`, when set, makes the stub emit a sanitized error line
@@ -31,11 +31,40 @@ fn login_core(workspace: &Workspace, creds_dir: &Path, login_error: Option<&str>
     builder.spawn()
 }
 
+/// Like [`login_core`] but the stub helper emits the authorize URL then exits
+/// WITHOUT a credentials line (`INKSTONE_LOGIN_STUB_NO_CREDS`) — Core's drain
+/// task sees `Ok(None)` and must push NO `provider/connected`.
+fn login_core_no_creds(workspace: &Workspace, creds_dir: &Path) -> CoreHandle {
+    workspace
+        .core()
+        .env("INKSTONE_CREDENTIALS_DIR", creds_dir)
+        .env(
+            "INKSTONE_PROVIDER_LOGIN_CMD",
+            common::fixture_cmd("login-helper.ts", &["login"]),
+        )
+        .env("INKSTONE_LOGIN_STUB_NO_CREDS", "1")
+        .spawn()
+}
+
+/// Parse a frame's JSON-RPC `method`, or `""` for a response/error frame.
+fn frame_method(body: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(body).expect("frame json");
+    v["method"].as_str().unwrap_or("").to_string()
+}
+
 async fn codex_connected(ws: &mut Ws, id: u64) -> bool {
     let req = format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"provider/status","params":{{}}}}"#);
     ws.send(Message::Text(req.into())).await.expect("send status");
-    let body = next_text(ws).await;
-    let v: serde_json::Value = serde_json::from_str(&body).expect("status json");
+    // Read until THIS request's response — a `provider/connected` push
+    // (ADR-0049) can interleave on an idle connection, so skip notifications
+    // (no `id`) and any stale response until the matching `id` arrives.
+    let v = loop {
+        let body = next_text(ws).await;
+        let v: serde_json::Value = serde_json::from_str(&body).expect("status json");
+        if v["id"] == serde_json::json!(id) {
+            break v;
+        }
+    };
     v["result"]["providers"]
         .as_array()
         .expect("providers")
@@ -148,6 +177,90 @@ fn login_start_helper_error_surfaces_provider_login_failed() {
             serde_json::json!("provider login failed: account is locked"),
             "the sanitized helper message reaches the client — body: {body}"
         );
+
+        ws.close(None).await.ok();
+    });
+}
+
+#[test]
+fn login_start_pushes_provider_connected_on_persist() {
+    let workspace = Workspace::new();
+    let creds_dir = workspace.path().join("credentials");
+
+    let core = login_core(&workspace, &creds_dir, None);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        // login_start → reply with the authorize URL.
+        let req = r#"{"jsonrpc":"2.0","id":1,"method":"provider/login_start","params":{"provider":"openai-codex"}}"#;
+        ws.send(Message::Text(req.into())).await.expect("send login_start");
+        let body = next_text(&mut ws).await;
+        assert_eq!(frame_method(&body), "", "first frame is the login_start response — body: {body}");
+
+        // The helper emits credentials ~100ms later; once Core persists them it
+        // pushes `provider/connected` onto THIS connection (ADR-0047/0049). Read
+        // frames on the same WS until that notification arrives (bounded by
+        // next_text's timeout; nothing else is pushed on this idle connection).
+        let mut params_provider = None;
+        for _ in 0..4 {
+            let body = next_text(&mut ws).await;
+            if frame_method(&body) == "provider/connected" {
+                let v: serde_json::Value = serde_json::from_str(&body).expect("frame json");
+                params_provider = v["params"]["provider"].as_str().map(str::to_owned);
+                break;
+            }
+        }
+        assert_eq!(
+            params_provider.as_deref(),
+            Some("openai-codex"),
+            "provider/connected push carries params.provider == openai-codex"
+        );
+
+        ws.close(None).await.ok();
+    });
+}
+
+#[test]
+fn login_start_no_credentials_pushes_nothing() {
+    let workspace = Workspace::new();
+    let creds_dir = workspace.path().join("credentials");
+
+    // The stub emits the authorize URL then exits without credentials — the
+    // OAuth flow never completes, so Core's drain task hits `Ok(None)`.
+    let core = login_core_no_creds(&workspace, &creds_dir);
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime builds");
+
+    rt.block_on(async {
+        let mut ws = core.connect().await;
+
+        let req = r#"{"jsonrpc":"2.0","id":1,"method":"provider/login_start","params":{"provider":"openai-codex"}}"#;
+        ws.send(Message::Text(req.into())).await.expect("send login_start");
+        let body = next_text(&mut ws).await;
+        assert_eq!(frame_method(&body), "", "first frame is the login_start response — body: {body}");
+
+        // The helper has already exited (it never delays — it returns right after
+        // the authorize URL), so the drain task has run to `Ok(None)` well within
+        // this window. Any frame that DOES arrive must not be provider/connected;
+        // most runs see none at all. Deterministic: the stub never emits
+        // credentials, so there is no late push to race.
+        let window = Duration::from_millis(500);
+        while let Some(body) = try_next_text(&mut ws, window).await {
+            assert_ne!(
+                frame_method(&body),
+                "provider/connected",
+                "no provider/connected when the helper finished without credentials — body: {body}"
+            );
+        }
 
         ws.close(None).await.ok();
     });
